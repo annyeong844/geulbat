@@ -1,0 +1,56 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - p-work-from-current
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check Node
+        run: node --version && npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Docs current-truth check
+        run: npm run check:docs-current-truth
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run check
+
+      - name: Npm installable distribution
+        run: npm run check:npm-installable-distribution -- --approved-client-id-file release/provider-auth-approved-client-ids.json
+
+      - name: Test
+        run: npm test
+
+      - name: Daemon coverage
+        run: npm run test:cov:daemon
+
+      - name: Install Playwright browser
+        run: npm run smoke:react-bundle:install-browser
+
+      - name: React bundle smoke
+        run: npm run smoke:react-bundle

@@ -1,0 +1,1092 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import type { CancelRequest } from '@geulbat/protocol/cancel';
+import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
+import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
+import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
+import type { RunRequest } from '@geulbat/protocol/run-contract';
+import type {
+  ThreadDetailResponse,
+  ThreadMessage,
+} from '@geulbat/protocol/threads';
+
+import {
+  brandProjectId,
+  brandRunId,
+  brandThreadId,
+} from '../lib/id-brand-helpers.js';
+import { appendThreadNotification } from './run-session-entry-state.js';
+import { selectVisibleRunState } from './run-session-state-selectors.js';
+import {
+  createEmptyActiveRunView,
+  type BackgroundNotificationsByThread,
+} from './run-session-state-types.js';
+import { makeApprovalRequiredFixture } from '../test-support/protocol-fixtures.js';
+import { settleRunEffects, useRunSession } from './use-run-session.js';
+import { renderHook } from '../test-support/hook-test.js';
+import type { RunSessionControllerClient } from './use-run-session.js';
+
+const RUN_ID = brandRunId('run-1');
+const THREAD_ID_VALUE = '00000000-0000-4000-8000-000000000001';
+const OTHER_THREAD_ID_VALUE = '00000000-0000-4000-8000-000000000002';
+const THREAD_ID = brandThreadId(THREAD_ID_VALUE);
+const PROJECT_ID = brandProjectId('workspace');
+type UseRunSessionArgs = Parameters<typeof useRunSession>[0];
+
+interface RunSessionClientHarness {
+  createClient: () => RunSessionControllerClient;
+  emit: (message: RunChannelServerMessage) => void;
+  createClientCalls: () => number;
+  connectCalls: () => number;
+  closeCalls: () => number;
+  subscribeCount: () => number;
+  unsubscribeCount: () => number;
+}
+
+function createPersistedThreadDetail(args?: {
+  snapshotVersion?: string;
+  messages?: ThreadMessage[];
+  artifacts?: ThreadArtifactVersion[];
+}): ThreadDetailResponse {
+  return {
+    threadId: THREAD_ID,
+    projectId: PROJECT_ID,
+    snapshotVersion: args?.snapshotVersion ?? '2026-04-16T00:00:00.000Z',
+    messages: args?.messages ?? [],
+    artifacts: args?.artifacts ?? [],
+  };
+}
+
+function createRunSessionArgs(
+  overrides: Partial<UseRunSessionArgs> = {},
+): UseRunSessionArgs {
+  return {
+    projectId: 'workspace',
+    selectedFile: null,
+    selectedThreadId: null,
+    loadThreads: async () => {},
+    loadTree: async () => {},
+    openThreadForRunSettle: async () => null,
+    openFile: async () => {},
+    appendOptimisticUserMessage: () => {},
+    setSelectedThreadId: () => {},
+    ...overrides,
+  };
+}
+
+function createRunSessionClientHarness(overrides?: {
+  start?: (request: RunRequest) => Promise<string>;
+  approve?: (request: ApprovalRequest) => Promise<string>;
+  cancel?: (request: CancelRequest) => Promise<string>;
+  connect?: () => Promise<unknown>;
+  close?: () => void;
+}): RunSessionClientHarness {
+  let listener: ((message: RunChannelServerMessage) => void) | null = null;
+  let createClientCalls = 0;
+  let connectCalls = 0;
+  let closeCalls = 0;
+  let subscribeCount = 0;
+  let unsubscribeCount = 0;
+
+  const client: RunSessionControllerClient = {
+    subscribe(callback) {
+      subscribeCount += 1;
+      listener = callback;
+      return () => {
+        unsubscribeCount += 1;
+        if (listener === callback) {
+          listener = null;
+        }
+      };
+    },
+    close() {
+      closeCalls += 1;
+      overrides?.close?.();
+    },
+    async start(request) {
+      if (overrides?.start) {
+        return await overrides.start(request);
+      }
+      throw new Error('start not implemented in client harness');
+    },
+    async approve(request) {
+      if (overrides?.approve) {
+        return await overrides.approve(request);
+      }
+      throw new Error('approve not implemented in client harness');
+    },
+    async cancel(request) {
+      if (overrides?.cancel) {
+        return await overrides.cancel(request);
+      }
+      throw new Error('cancel not implemented in client harness');
+    },
+    async connect() {
+      connectCalls += 1;
+      if (overrides?.connect) {
+        return await overrides.connect();
+      }
+      return {};
+    },
+  };
+
+  return {
+    createClient() {
+      createClientCalls += 1;
+      return client;
+    },
+    emit(message) {
+      if (listener === null) {
+        throw new Error('run session listener was not registered');
+      }
+      listener(message);
+    },
+    createClientCalls: () => createClientCalls,
+    connectCalls: () => connectCalls,
+    closeCalls: () => closeCalls,
+    subscribeCount: () => subscribeCount,
+    unsubscribeCount: () => unsubscribeCount,
+  };
+}
+
+void test('settleRunEffects continues running follow-up tasks even if one task rejects', async () => {
+  const seen: string[] = [];
+
+  const results = await settleRunEffects({
+    threadId: THREAD_ID_VALUE,
+    selectedFile: 'hello.txt',
+    openThreadForRunSettle: async () => {
+      seen.push('openThread');
+      throw new Error('openThread failed');
+    },
+    loadThreads: async () => {
+      seen.push('loadThreads');
+    },
+    openFile: async () => {
+      seen.push('openFile');
+    },
+  });
+
+  assert.deepEqual(
+    seen.sort(),
+    ['loadThreads', 'openFile', 'openThread'].sort(),
+  );
+  assert.equal(results.length, 3);
+  assert.equal(results[0]?.status, 'rejected');
+  assert.equal(
+    results.slice(1).every((result) => result.status === 'fulfilled'),
+    true,
+  );
+});
+
+void test('useRunSession does not eagerly connect the run channel on mount', async () => {
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      createClient: harness.createClient,
+    }),
+  );
+
+  assert.equal(harness.createClientCalls(), 1);
+  assert.equal(harness.connectCalls(), 0);
+  hook.unmount();
+});
+
+void test('useRunSession settles with the latest selectedFile instead of a stale closure value', async () => {
+  const openedFiles: string[] = [];
+  const appliedThreadSnapshots: string[] = [];
+  let loadedThreads = 0;
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedFile: 'draft-1.md',
+      loadThreads: async () => {
+        loadedThreads += 1;
+      },
+      openThreadForRunSettle: async () => null,
+      applyThreadSnapshotForRunSettle: (thread) => {
+        appliedThreadSnapshots.push(thread.threadId);
+        return true;
+      },
+      openFile: async (path: string) => {
+        openedFiles.push(path);
+      },
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.rerender(
+    createRunSessionArgs({
+      selectedFile: 'draft-2.md',
+      loadThreads: async () => {
+        loadedThreads += 1;
+      },
+      openThreadForRunSettle: async () => null,
+      applyThreadSnapshotForRunSettle: (thread) => {
+        appliedThreadSnapshots.push(thread.threadId);
+        return true;
+      },
+      openFile: async (path: string) => {
+        openedFiles.push(path);
+      },
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'thread_state_persisted',
+        payload: createPersistedThreadDetail(),
+      },
+    });
+  });
+  await hook.flush();
+
+  assert.deepEqual(openedFiles, ['draft-2.md']);
+  assert.deepEqual(appliedThreadSnapshots, [THREAD_ID_VALUE]);
+  assert.equal(loadedThreads, 1);
+  hook.unmount();
+});
+
+void test('useRunSession ignores stale persisted snapshots without settling the active run', async () => {
+  let loadedThreads = 0;
+  let openedFiles = 0;
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedFile: 'draft.md',
+      loadThreads: async () => {
+        loadedThreads += 1;
+      },
+      applyThreadSnapshotForRunSettle: () => false,
+      openFile: async () => {
+        openedFiles += 1;
+      },
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'run_ack',
+        payload: {
+          runId: RUN_ID,
+          threadId: THREAD_ID,
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 1,
+        ts: new Date().toISOString(),
+        type: 'thread_state_persisted',
+        payload: createPersistedThreadDetail(),
+      },
+    });
+  });
+  await hook.flush();
+
+  assert.equal(hook.result.current.isRunning, true);
+  assert.equal(hook.result.current.isSettling, false);
+  assert.equal(loadedThreads, 1);
+  assert.equal(openedFiles, 0);
+  hook.unmount();
+});
+
+void test('useRunSession starts prompts through a stale callback with the latest selection context', async () => {
+  const startedRequests: Array<{
+    prompt: string;
+    permissionMode?: string;
+    currentFile?: string;
+    threadId?: string;
+  }> = [];
+  const optimisticPrompts: string[] = [];
+  const harness = createRunSessionClientHarness({
+    start: async (request) => {
+      startedRequests.push({
+        prompt: request.prompt,
+        ...(request.permissionMode !== undefined
+          ? { permissionMode: request.permissionMode }
+          : {}),
+        ...(request.currentFile !== undefined
+          ? { currentFile: request.currentFile }
+          : {}),
+        ...(request.threadId !== undefined
+          ? { threadId: request.threadId }
+          : {}),
+      });
+      return RUN_ID;
+    },
+  });
+
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedFile: 'chapter-1.md',
+      appendOptimisticUserMessage: (prompt: string) => {
+        optimisticPrompts.push(prompt);
+      },
+      createClient: harness.createClient,
+    }),
+  );
+
+  const staleSendPrompt = hook.result.current.sendPrompt;
+  await hook.run(async (current) => {
+    current.setPermissionMode('full_access');
+  });
+  await hook.rerender(
+    createRunSessionArgs({
+      selectedFile: 'chapter-2.md',
+      selectedThreadId: THREAD_ID_VALUE,
+      appendOptimisticUserMessage: (prompt: string) => {
+        optimisticPrompts.push(prompt);
+      },
+      createClient: harness.createClient,
+    }),
+  );
+  await hook.run(async () => {
+    await staleSendPrompt('Write the next scene');
+  });
+
+  assert.deepEqual(startedRequests, [
+    {
+      prompt: 'Write the next scene',
+      permissionMode: 'full_access',
+      currentFile: 'chapter-2.md',
+      threadId: THREAD_ID_VALUE,
+    },
+  ]);
+  assert.deepEqual(optimisticPrompts, ['Write the next scene']);
+  hook.unmount();
+});
+
+void test('useRunSession routes approval decisions through the controller command handlers', async () => {
+  const requests: Array<{
+    approved: boolean;
+    grantScope: string;
+    callId: string;
+  }> = [];
+  const harness = createRunSessionClientHarness({
+    approve: async (request) => {
+      requests.push({
+        approved: request.approved,
+        grantScope: request.grantScope,
+        callId: request.callId,
+      });
+      return RUN_ID;
+    },
+  });
+
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      createClient: harness.createClient,
+    }),
+  );
+  const pendingApproval = makeApprovalRequiredFixture({
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+  });
+
+  await hook.run(async (current) => {
+    await current.handleApprove(pendingApproval, 'session');
+    await current.handleDeny(pendingApproval);
+  });
+
+  assert.deepEqual(requests, [
+    {
+      approved: true,
+      grantScope: 'session',
+      callId: 'call-1',
+    },
+    {
+      approved: false,
+      grantScope: 'once',
+      callId: 'call-1',
+    },
+  ]);
+  hook.unmount();
+});
+
+void test('useRunSession reveals queued approvals after the current approval is resolved', async () => {
+  const requests: Array<{
+    approved: boolean;
+    grantScope: string;
+    callId: string;
+  }> = [];
+  const harness = createRunSessionClientHarness({
+    approve: async (request) => {
+      requests.push({
+        approved: request.approved,
+        grantScope: request.grantScope,
+        callId: request.callId,
+      });
+      return RUN_ID;
+    },
+  });
+
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      createClient: harness.createClient,
+    }),
+  );
+  const firstApproval = makeApprovalRequiredFixture({
+    callId: 'call-1',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+  });
+  const secondApproval = makeApprovalRequiredFixture({
+    callId: 'call-2',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+  });
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'run_ack',
+        payload: {
+          runId: RUN_ID,
+          threadId: THREAD_ID,
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 1,
+        ts: new Date().toISOString(),
+        type: 'approval_required',
+        payload: firstApproval,
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 2,
+        ts: new Date().toISOString(),
+        type: 'approval_required',
+        payload: secondApproval,
+      },
+    });
+  });
+  await hook.flush();
+
+  assert.equal(hook.result.current.pendingApproval?.callId, 'call-1');
+
+  await hook.run(async (current) => {
+    await current.handleApprove(firstApproval, 'once');
+  });
+  await hook.flush();
+
+  assert.deepEqual(requests, [
+    {
+      approved: true,
+      grantScope: 'once',
+      callId: 'call-1',
+    },
+  ]);
+  assert.equal(hook.result.current.pendingApproval?.callId, 'call-2');
+  hook.unmount();
+});
+
+void test('useRunSession cancels the active run through a stale callback once the run is acknowledged', async () => {
+  const cancelledRunIds: string[] = [];
+  const harness = createRunSessionClientHarness({
+    cancel: async (request) => {
+      cancelledRunIds.push(request.runId);
+      return RUN_ID;
+    },
+  });
+
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      createClient: harness.createClient,
+    }),
+  );
+  const staleHandleCancel = hook.result.current.handleCancel;
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'run_ack',
+        payload: {
+          runId: RUN_ID,
+          threadId: THREAD_ID,
+        },
+      },
+    });
+  });
+  await hook.run(async () => {
+    await staleHandleCancel();
+  });
+
+  assert.deepEqual(cancelledRunIds, [RUN_ID]);
+  hook.unmount();
+});
+
+void test('useRunSession keeps a reconnect failure visible while cancelling a new-thread pending start', async () => {
+  const harness = createRunSessionClientHarness({
+    start: async () => await new Promise<string>(() => {}),
+    connect: async () => {
+      throw new Error('socket down');
+    },
+  });
+
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run((current) => {
+    void current.sendPrompt('Write the next scene');
+  });
+  await hook.flush();
+  await hook.run(async (current) => {
+    await current.handleCancel();
+  });
+  await hook.flush();
+
+  assert.equal(hook.result.current.isRunStarting, false);
+  assert.equal(hook.result.current.streamError, '[internal] socket down');
+  hook.unmount();
+});
+
+void test('useRunSession keeps a new-thread run visible after ack before thread selection catches up', async () => {
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'run_ack',
+        payload: {
+          runId: RUN_ID,
+          threadId: THREAD_ID,
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 1,
+        ts: new Date().toISOString(),
+        type: 'commentary_delta',
+        payload: {
+          text: 'Thinking...',
+        },
+      },
+    });
+  });
+  await hook.flush();
+
+  assert.equal(hook.result.current.visibleThreadId, THREAD_ID_VALUE);
+  assert.equal(hook.result.current.activeRunId, RUN_ID);
+  assert.equal(hook.result.current.isRunning, true);
+  assert.deepEqual(hook.result.current.transcriptEntries, [
+    { kind: 'assistant_text', text: 'Thinking...' },
+  ]);
+  hook.unmount();
+});
+
+void test('useRunSession applies persisted thread snapshots immediately and runs follow-up effects in the background', async () => {
+  let resolveLoadThreads!: () => void;
+  const loadThreadsGate = new Promise<void>((resolve) => {
+    resolveLoadThreads = resolve;
+  });
+  const appliedSnapshots: string[] = [];
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      loadThreads: async () => {
+        await loadThreadsGate;
+      },
+      applyThreadSnapshotForRunSettle: (thread) => {
+        appliedSnapshots.push(thread.threadId);
+        return true;
+      },
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'run_ack',
+        payload: {
+          runId: RUN_ID,
+          threadId: THREAD_ID,
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 1,
+        ts: new Date().toISOString(),
+        type: 'commentary_delta',
+        payload: {
+          text: 'Still visible',
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 2,
+        ts: new Date().toISOString(),
+        type: 'thread_state_persisted',
+        payload: createPersistedThreadDetail({
+          messages: [
+            {
+              role: 'assistant',
+              content: 'Still visible',
+              timestamp: new Date().toISOString(),
+            },
+          ],
+        }),
+      },
+    });
+  });
+  await hook.flush();
+
+  assert.equal(hook.result.current.isRunning, false);
+  assert.equal(hook.result.current.isSettling, false);
+  assert.equal(hook.result.current.activeRunId, null);
+  assert.deepEqual(appliedSnapshots, [THREAD_ID_VALUE]);
+
+  resolveLoadThreads();
+  await hook.flush();
+  hook.unmount();
+});
+
+void test('useRunSession keeps artifact-only output visible until run settle effects complete', async () => {
+  const appliedSnapshots: string[] = [];
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      applyThreadSnapshotForRunSettle: (thread) => {
+        appliedSnapshots.push(thread.threadId);
+        return true;
+      },
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'run_ack',
+        payload: {
+          runId: RUN_ID,
+          threadId: THREAD_ID,
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 1,
+        ts: new Date().toISOString(),
+        type: 'artifact_committed',
+        payload: {
+          artifactId: 'art_js_1',
+          version: 1,
+          parentVersion: null,
+          baseVersion: null,
+          renderer: 'js',
+          payload: 'export default function mount() {}',
+          digest: 'heart demo',
+          contentHash: 'hash-js-1',
+          createdAt: new Date().toISOString(),
+          createdByRunId: 'run-1',
+          previewValidation: { ok: true },
+          title: null,
+          persistenceEpoch: 1,
+          sourceRef: null,
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 2,
+        ts: new Date().toISOString(),
+        type: 'thread_state_persisted',
+        payload: createPersistedThreadDetail({
+          messages: [
+            {
+              role: 'assistant',
+              content: '',
+              timestamp: new Date().toISOString(),
+              metadata: {
+                phase: 'final_answer',
+                artifactRefs: [{ artifactId: 'art_js_1', version: 1 }],
+                activeArtifactRef: { artifactId: 'art_js_1', version: 1 },
+              },
+            },
+          ],
+          artifacts: [
+            {
+              artifactId: 'art_js_1',
+              version: 1,
+              parentVersion: null,
+              baseVersion: null,
+              renderer: 'js',
+              payload: 'export default function mount() {}',
+              digest: 'heart demo',
+              contentHash: 'hash-js-1',
+              createdAt: new Date().toISOString(),
+              createdByRunId: 'run-1',
+              previewValidation: { ok: true },
+              title: null,
+              persistenceEpoch: 1,
+              sourceRef: null,
+            },
+          ],
+        }),
+      },
+    });
+  });
+  await hook.flush();
+
+  assert.equal(hook.result.current.isRunning, false);
+  assert.equal(hook.result.current.isSettling, false);
+  assert.equal(hook.result.current.activeArtifact, null);
+  assert.deepEqual(appliedSnapshots, [THREAD_ID_VALUE]);
+  hook.unmount();
+});
+
+void test('useRunSession preserves streamed output and reports a daemon-owned sync failure', async () => {
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      openThreadForRunSettle: async () => ({
+        threadId: THREAD_ID,
+        projectId: brandProjectId('workspace'),
+        snapshotVersion: '2026-04-16T00:00:00.000Z',
+        messages: [],
+        artifacts: [],
+      }),
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'run_ack',
+        payload: {
+          runId: RUN_ID,
+          threadId: THREAD_ID,
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 1,
+        ts: new Date().toISOString(),
+        type: 'final_answer_delta',
+        payload: {
+          text: 'settled answer',
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 2,
+        ts: new Date().toISOString(),
+        type: 'thread_state_persist_failed',
+        payload: {
+          message:
+            'Run finished, but refreshing the saved thread state failed. The streamed result is still shown.',
+        },
+      },
+    });
+  });
+  await hook.flush();
+
+  assert.equal(hook.result.current.isRunning, false);
+  assert.equal(hook.result.current.isSettling, false);
+  assert.equal(hook.result.current.activeRunId, RUN_ID);
+  assert.equal(hook.result.current.finalAnswerText, 'settled answer');
+  assert.equal(
+    hook.result.current.streamError,
+    'Run finished, but refreshing the saved thread state failed. The streamed result is still shown.',
+  );
+  hook.unmount();
+});
+
+void test('appendThreadNotification keeps subagent activity entries scoped per thread and capped to ten', () => {
+  let notifications: BackgroundNotificationsByThread = {};
+  for (let index = 0; index < 12; index += 1) {
+    notifications = appendThreadNotification(notifications, THREAD_ID_VALUE, {
+      kind: 'subagent_activity',
+      childRunId: `run-child-${index}`,
+      subagentType: 'worker',
+      state: 'completed',
+    });
+  }
+  notifications = appendThreadNotification(
+    notifications,
+    OTHER_THREAD_ID_VALUE,
+    {
+      kind: 'subagent_activity',
+      childRunId: 'other-thread',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+  );
+
+  assert.deepEqual(notifications[THREAD_ID_VALUE], [
+    {
+      kind: 'subagent_activity',
+      childRunId: 'run-child-2',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+    {
+      kind: 'subagent_activity',
+      childRunId: 'run-child-3',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+    {
+      kind: 'subagent_activity',
+      childRunId: 'run-child-4',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+    {
+      kind: 'subagent_activity',
+      childRunId: 'run-child-5',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+    {
+      kind: 'subagent_activity',
+      childRunId: 'run-child-6',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+    {
+      kind: 'subagent_activity',
+      childRunId: 'run-child-7',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+    {
+      kind: 'subagent_activity',
+      childRunId: 'run-child-8',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+    {
+      kind: 'subagent_activity',
+      childRunId: 'run-child-9',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+    {
+      kind: 'subagent_activity',
+      childRunId: 'run-child-10',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+    {
+      kind: 'subagent_activity',
+      childRunId: 'run-child-11',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+  ]);
+  assert.deepEqual(notifications[OTHER_THREAD_ID_VALUE], [
+    {
+      kind: 'subagent_activity',
+      childRunId: 'other-thread',
+      subagentType: 'worker',
+      state: 'completed',
+    },
+  ]);
+});
+
+void test('appendThreadNotification dedupes terminal replay entries by deliveryId', () => {
+  let notifications: BackgroundNotificationsByThread = {};
+
+  notifications = appendThreadNotification(notifications, THREAD_ID_VALUE, {
+    kind: 'subagent_activity',
+    deliveryId: 'delivery-1',
+    childRunId: 'run-child-1',
+    subagentType: 'worker',
+    state: 'completed',
+  });
+  notifications = appendThreadNotification(notifications, THREAD_ID_VALUE, {
+    kind: 'subagent_activity',
+    deliveryId: 'delivery-1',
+    childRunId: 'run-child-1',
+    subagentType: 'worker',
+    state: 'completed',
+  });
+
+  assert.equal(notifications[THREAD_ID_VALUE]?.length, 1);
+});
+
+void test('selectVisibleRunState only exposes active run state for the selected thread', () => {
+  const state = selectVisibleRunState({
+    selectedThreadId: OTHER_THREAD_ID_VALUE,
+    state: {
+      phase: 'starting',
+      pendingStartThreadId: THREAD_ID_VALUE,
+      activeRunView: {
+        ...createEmptyActiveRunView(THREAD_ID_VALUE),
+        runId: 'run-1',
+        transcriptEntries: [{ kind: 'assistant_text', text: 'commentary' }],
+        finalAnswerText: 'final',
+        pendingApproval: makeApprovalRequiredFixture({
+          runId: RUN_ID,
+          threadId: THREAD_ID,
+        }),
+        streamError: '[internal] failed',
+      },
+      sessionError: null,
+      backgroundNotificationsByThread: {
+        [THREAD_ID_VALUE]: [
+          {
+            kind: 'subagent_activity',
+            childRunId: 'run-child-1',
+            subagentType: 'worker',
+            state: 'failed',
+          },
+        ],
+        [OTHER_THREAD_ID_VALUE]: [
+          {
+            kind: 'subagent_activity',
+            childRunId: 'run-child-2',
+            subagentType: 'explorer',
+            state: 'completed',
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(state.isRunning, false);
+  assert.equal(state.visibleThreadId, OTHER_THREAD_ID_VALUE);
+  assert.equal(state.activeRunId, null);
+  assert.deepEqual(state.transcriptEntries, []);
+  assert.equal(state.finalAnswerText, '');
+  assert.equal(state.streamError, null);
+  assert.equal(state.pendingApproval, null);
+  assert.deepEqual(state.backgroundNotifications, [
+    {
+      kind: 'subagent_activity',
+      childRunId: 'run-child-2',
+      subagentType: 'explorer',
+      state: 'completed',
+    },
+  ]);
+});
+
+void test('selectVisibleRunState keeps threadless transport errors visible for the new-thread composer', () => {
+  const state = selectVisibleRunState({
+    selectedThreadId: null,
+    state: {
+      phase: 'error',
+      pendingStartThreadId: null,
+      activeRunView: {
+        ...createEmptyActiveRunView(null),
+        streamError: '[internal] socket down',
+      },
+      sessionError: null,
+      backgroundNotificationsByThread: {},
+    },
+  });
+
+  assert.equal(state.visibleThreadId, null);
+  assert.equal(state.streamError, '[internal] socket down');
+  assert.equal(state.isRunning, false);
+});

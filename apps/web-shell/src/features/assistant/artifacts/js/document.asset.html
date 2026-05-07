@@ -1,0 +1,967 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #fff;
+        color: #1f2933;
+      }
+
+      #__GEULBAT_JS_RUNTIME_ROOT_ID__ {
+        min-height: 240px;
+      }
+
+      .geulbat-js-runtime-error {
+        margin: 16px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        border: 1px solid #f3b8b2;
+        background: #fff3f1;
+        color: #a23a2a;
+        font:
+          600 13px/1.5 ui-sans-serif,
+          system-ui,
+          sans-serif;
+        white-space: pre-wrap;
+      }
+
+      .geulbat-js-runtime-error small {
+        display: block;
+        margin-top: 6px;
+        font-weight: 500;
+        opacity: 0.88;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="__GEULBAT_JS_RUNTIME_ROOT_ID__"></div>
+    <script>
+      (async () => {
+        const root = document.getElementById(
+          __GEULBAT_JS_RUNTIME_ROOT_ID_JSON__,
+        );
+        const source = __GEULBAT_ESCAPED_PAYLOAD__;
+        const runtimeScopeHandle = __GEULBAT_ESCAPED_SCOPE_HANDLE__;
+        const runtimeParentOrigin = __GEULBAT_PARENT_ORIGIN_JSON__;
+        const awaitStorageBeforePayload =
+          __GEULBAT_AWAIT_STORAGE_BEFORE_PAYLOAD_JSON__;
+        window.__GEULBAT_PARENT_ORIGIN__ = runtimeParentOrigin;
+        const RUNTIME_HOST_MESSAGE_KIND = 'geulbat.artifact_runtime_host';
+        let bootSettled = false;
+        const POLICY_ERROR_NAME = 'GeulbatPolicyBlockedError';
+        const GENERATED_TEXT_EXPORT_MESSAGE_KIND =
+          'geulbat.runtime.generated_text_export';
+        const GENERATED_BINARY_EXPORT_MESSAGE_KIND =
+          'geulbat.runtime.generated_binary_export';
+        const GENERATED_TEXT_EXPORT_ALLOWED_MIME_TYPES = new Set([
+          'text/plain',
+          'text/html',
+          'text/css',
+          'application/json',
+          'image/svg+xml',
+          'text/markdown',
+        ]);
+        __GEULBAT_PERSISTENCE_BOOTSTRAP__;
+        const trackedObjectUrls = new Set();
+        const nativeCreateObjectURL =
+          typeof URL !== 'undefined' &&
+          typeof URL.createObjectURL === 'function'
+            ? URL.createObjectURL.bind(URL)
+            : null;
+        const nativeRevokeObjectURL =
+          typeof URL !== 'undefined' &&
+          typeof URL.revokeObjectURL === 'function'
+            ? URL.revokeObjectURL.bind(URL)
+            : null;
+        const nativeFetch =
+          typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
+        let runtimeResizeSyncStarted = false;
+        let runtimeResizeRafId = 0;
+
+        const cleanupTrackedObjectUrls = (reason) => {
+          if (!nativeRevokeObjectURL || trackedObjectUrls.size === 0) {
+            return;
+          }
+          const urls = Array.from(trackedObjectUrls);
+          trackedObjectUrls.clear();
+          for (const url of urls) {
+            if (typeof url !== 'string' || !url.startsWith('blob:')) {
+              continue;
+            }
+            try {
+              nativeRevokeObjectURL(url);
+            } catch (error) {
+              console.error(
+                'geulbat object URL cleanup failed during ' + reason,
+                error,
+              );
+            }
+          }
+        };
+
+        const postRuntimeResize = () => {
+          const docEl = document.documentElement;
+          const body = document.body;
+          const height = Math.max(
+            Math.ceil(docEl?.getBoundingClientRect?.().height ?? 0),
+            Math.ceil(body?.getBoundingClientRect?.().height ?? 0),
+            docEl?.scrollHeight ?? 0,
+            docEl?.offsetHeight ?? 0,
+            docEl?.clientHeight ?? 0,
+            body?.scrollHeight ?? 0,
+            body?.offsetHeight ?? 0,
+            body?.clientHeight ?? 0,
+          );
+          if (window.parent && window.parent !== window) {
+            window.parent.postMessage(
+              {
+                kind: RUNTIME_HOST_MESSAGE_KIND,
+                action: 'resize',
+                height,
+              },
+              runtimeParentOrigin,
+            );
+          }
+        };
+
+        const scheduleRuntimeResize = () => {
+          if (runtimeResizeRafId !== 0) {
+            return;
+          }
+          runtimeResizeRafId = window.requestAnimationFrame(() => {
+            runtimeResizeRafId = 0;
+            postRuntimeResize();
+          });
+        };
+
+        const installRuntimeResizeSync = () => {
+          if (runtimeResizeSyncStarted) {
+            return;
+          }
+          runtimeResizeSyncStarted = true;
+
+          if (typeof ResizeObserver === 'function') {
+            const resizeObserver = new ResizeObserver(scheduleRuntimeResize);
+            resizeObserver.observe(document.documentElement);
+            if (document.body) {
+              resizeObserver.observe(document.body);
+            }
+          }
+
+          window.addEventListener('load', scheduleRuntimeResize);
+          window.addEventListener('resize', scheduleRuntimeResize);
+          window.setTimeout(scheduleRuntimeResize, 0);
+          window.setTimeout(scheduleRuntimeResize, 120);
+          scheduleRuntimeResize();
+        };
+
+        const postGeneratedTextExportMessage = (message) => {
+          if (!window.parent || window.parent === window) {
+            return;
+          }
+          window.parent.postMessage(message, runtimeParentOrigin);
+        };
+
+        const publishGeneratedTextSnapshot = (snapshot) => {
+          postGeneratedTextExportMessage({
+            kind: GENERATED_TEXT_EXPORT_MESSAGE_KIND,
+            scopeHandle: runtimeScopeHandle,
+            action: 'set_snapshot',
+            snapshot,
+          });
+        };
+
+        const publishGeneratedBinarySnapshot = (snapshot) => {
+          postGeneratedTextExportMessage({
+            kind: GENERATED_BINARY_EXPORT_MESSAGE_KIND,
+            scopeHandle: runtimeScopeHandle,
+            action: 'set_snapshot',
+            snapshot,
+          });
+        };
+
+        const clearPublishedTextSnapshot = () => {
+          postGeneratedTextExportMessage({
+            kind: GENERATED_TEXT_EXPORT_MESSAGE_KIND,
+            scopeHandle: runtimeScopeHandle,
+            action: 'clear_snapshot',
+          });
+        };
+
+        const clearPublishedBinarySnapshot = () => {
+          postGeneratedTextExportMessage({
+            kind: GENERATED_BINARY_EXPORT_MESSAGE_KIND,
+            scopeHandle: runtimeScopeHandle,
+            action: 'clear_snapshot',
+          });
+        };
+
+        const normalizeGeneratedTextSnapshot = (snapshot) => {
+          if (
+            !snapshot ||
+            typeof snapshot !== 'object' ||
+            Array.isArray(snapshot)
+          ) {
+            throw new Error(
+              'window.geulbatExport.setTextSnapshot expects an object snapshot',
+            );
+          }
+          const content = snapshot.content;
+          const mimeType = snapshot.mimeType;
+          const fileNameHintValue = snapshot.fileNameHint;
+          if (typeof content !== 'string') {
+            throw new Error(
+              'window.geulbatExport.setTextSnapshot requires string content',
+            );
+          }
+          if (
+            typeof mimeType !== 'string' ||
+            !GENERATED_TEXT_EXPORT_ALLOWED_MIME_TYPES.has(mimeType)
+          ) {
+            throw new Error(
+              'window.geulbatExport.setTextSnapshot requires a supported text-like mimeType',
+            );
+          }
+          if (
+            fileNameHintValue != null &&
+            typeof fileNameHintValue !== 'string'
+          ) {
+            throw new Error(
+              'window.geulbatExport.setTextSnapshot only accepts string fileNameHint values',
+            );
+          }
+          const fileNameHint =
+            typeof fileNameHintValue === 'string' &&
+            fileNameHintValue.trim() !== ''
+              ? fileNameHintValue.trim()
+              : null;
+          return {
+            content,
+            mimeType,
+            fileNameHint,
+          };
+        };
+
+        const sanitizeBinaryFileNameHint = (value) => {
+          if (typeof value !== 'string') {
+            return null;
+          }
+          const trimmed = value.trim();
+          if (
+            !trimmed ||
+            trimmed === '.' ||
+            trimmed === '..' ||
+            trimmed.includes('/') ||
+            trimmed.includes('\\\\') ||
+            /^[A-Za-z]:/.test(trimmed)
+          ) {
+            return null;
+          }
+          return trimmed;
+        };
+
+        const normalizeGeneratedBinaryMimeType = (value, helperName) => {
+          if (value == null) {
+            return '';
+          }
+          if (typeof value !== 'string') {
+            throw new Error(
+              helperName + ' only accepts string mimeType values',
+            );
+          }
+          const trimmed = value.trim();
+          return trimmed === '' ? '' : trimmed;
+        };
+
+        const normalizeGeneratedBinarySnapshot = (snapshot) => {
+          if (
+            !snapshot ||
+            typeof snapshot !== 'object' ||
+            Array.isArray(snapshot)
+          ) {
+            throw new Error(
+              'window.geulbatExport.setBinarySnapshot expects an object snapshot',
+            );
+          }
+          const blob = snapshot.blob;
+          const fileNameHintValue = snapshot.fileNameHint;
+          if (!(blob instanceof Blob)) {
+            throw new Error(
+              'window.geulbatExport.setBinarySnapshot requires a Blob instance',
+            );
+          }
+          if (
+            fileNameHintValue != null &&
+            typeof fileNameHintValue !== 'string'
+          ) {
+            throw new Error(
+              'window.geulbatExport.setBinarySnapshot only accepts string fileNameHint values',
+            );
+          }
+          const explicitFileNameHint =
+            sanitizeBinaryFileNameHint(fileNameHintValue);
+          const fallbackFileNameHint =
+            explicitFileNameHint ||
+            (typeof File !== 'undefined' && blob instanceof File
+              ? sanitizeBinaryFileNameHint(blob.name)
+              : null);
+          return {
+            blob,
+            fileNameHint: fallbackFileNameHint,
+          };
+        };
+
+        const normalizeGeneratedBinaryBytesSnapshot = (snapshot) => {
+          if (
+            !snapshot ||
+            typeof snapshot !== 'object' ||
+            Array.isArray(snapshot)
+          ) {
+            throw new Error(
+              'window.geulbatExport.setBinaryBytesSnapshot expects an object snapshot',
+            );
+          }
+          const bytes = snapshot.bytes;
+          const fileNameHintValue = snapshot.fileNameHint;
+          if (!(bytes instanceof Uint8Array)) {
+            throw new Error(
+              'window.geulbatExport.setBinaryBytesSnapshot requires a Uint8Array instance',
+            );
+          }
+          if (
+            fileNameHintValue != null &&
+            typeof fileNameHintValue !== 'string'
+          ) {
+            throw new Error(
+              'window.geulbatExport.setBinaryBytesSnapshot only accepts string fileNameHint values',
+            );
+          }
+          const ownedBytes = new Uint8Array(bytes);
+          const mimeType = normalizeGeneratedBinaryMimeType(
+            snapshot.mimeType,
+            'window.geulbatExport.setBinaryBytesSnapshot',
+          );
+          return {
+            blob:
+              mimeType === ''
+                ? new Blob([ownedBytes])
+                : new Blob([ownedBytes], { type: mimeType }),
+            fileNameHint: sanitizeBinaryFileNameHint(fileNameHintValue),
+          };
+        };
+
+        window.geulbatExport = Object.freeze({
+          setTextSnapshot(snapshot) {
+            const normalized = normalizeGeneratedTextSnapshot(snapshot);
+            publishGeneratedTextSnapshot(normalized);
+            return normalized;
+          },
+          setBinarySnapshot(snapshot) {
+            const normalized = normalizeGeneratedBinarySnapshot(snapshot);
+            publishGeneratedBinarySnapshot(normalized);
+            return normalized;
+          },
+          setBinaryBytesSnapshot(snapshot) {
+            const normalized = normalizeGeneratedBinaryBytesSnapshot(snapshot);
+            publishGeneratedBinarySnapshot(normalized);
+            return normalized;
+          },
+          clearTextSnapshot() {
+            clearPublishedTextSnapshot();
+          },
+          clearBinarySnapshot() {
+            clearPublishedBinarySnapshot();
+          },
+        });
+
+        const renderError = (code, detail) => {
+          const mountTarget =
+            root && root.isConnected
+              ? root
+              : document.body || document.documentElement;
+          if (!mountTarget) {
+            return;
+          }
+          clearPublishedTextSnapshot();
+          clearPublishedBinarySnapshot();
+          cleanupTrackedObjectUrls('renderError:' + code);
+          const detailText = String(detail);
+          const headline =
+            code === 'boot_failed'
+              ? '캔버스를 시작하지 못했습니다.'
+              : code === 'runtime_crashed'
+                ? '캔버스가 실행 중 멈췄습니다.'
+                : code === 'policy_blocked'
+                  ? '이 캔버스는 현재 웹쉘 경계를 넘는 동작 때문에 일부 기능을 실행하지 못했습니다.'
+                  : '캔버스를 열 수 없습니다.';
+          const recoveryHint = null;
+
+          mountTarget.innerHTML = '';
+          const container = document.createElement('div');
+          container.className = 'geulbat-js-runtime-error';
+          container.append(document.createTextNode(headline));
+
+          const detailNode = document.createElement('small');
+          detailNode.textContent = detailText;
+          container.append(detailNode);
+
+          if (recoveryHint) {
+            const hintNode = document.createElement('small');
+            hintNode.textContent = recoveryHint;
+            container.append(hintNode);
+          }
+
+          mountTarget.append(container);
+        };
+
+        const failPolicy = (detail) => {
+          renderError('policy_blocked', detail);
+          const error = new Error(detail);
+          error.name = POLICY_ERROR_NAME;
+          throw error;
+        };
+
+        const installGeneratedBlobUrlCapability = () => {
+          if (!nativeCreateObjectURL || !nativeRevokeObjectURL) {
+            return;
+          }
+
+          const wrappedCreateObjectURL = (value) => {
+            const url = nativeCreateObjectURL(value);
+            if (typeof url === 'string' && url.startsWith('blob:')) {
+              trackedObjectUrls.add(url);
+            }
+            return url;
+          };
+
+          const wrappedRevokeObjectURL = (url) => {
+            trackedObjectUrls.delete(url);
+            nativeRevokeObjectURL(url);
+          };
+
+          try {
+            Object.defineProperty(URL, 'createObjectURL', {
+              configurable: true,
+              value: wrappedCreateObjectURL,
+            });
+          } catch {
+            URL.createObjectURL = wrappedCreateObjectURL;
+          }
+
+          try {
+            Object.defineProperty(URL, 'revokeObjectURL', {
+              configurable: true,
+              value: wrappedRevokeObjectURL,
+            });
+          } catch {
+            URL.revokeObjectURL = wrappedRevokeObjectURL;
+          }
+
+          window.addEventListener('pagehide', () => {
+            cleanupTrackedObjectUrls('pagehide');
+            clearPublishedTextSnapshot();
+            clearPublishedBinarySnapshot();
+          });
+          window.addEventListener('beforeunload', () => {
+            cleanupTrackedObjectUrls('beforeunload');
+            clearPublishedTextSnapshot();
+            clearPublishedBinarySnapshot();
+          });
+        };
+
+        const installCssMaskImagePropertyAssignmentCapability = () => {
+          if (typeof CSSStyleDeclaration === 'undefined') {
+            return;
+          }
+
+          try {
+            const descriptor = Object.getOwnPropertyDescriptor(
+              CSSStyleDeclaration.prototype,
+              'maskImage',
+            );
+            if (!descriptor || typeof descriptor.set !== 'function') {
+              return;
+            }
+
+            // Preserve browser-default CSS behavior. Touching the descriptor at
+            // bootstrap level makes the property-assignment surface explicit in
+            // the runtime contract and its regression tests.
+          } catch {
+            // If the engine refuses descriptor access, keep the native path.
+          }
+        };
+
+        const installCssBorderImageSourcePropertyAssignmentCapability = () => {
+          if (typeof CSSStyleDeclaration === 'undefined') {
+            return;
+          }
+
+          try {
+            const descriptor = Object.getOwnPropertyDescriptor(
+              CSSStyleDeclaration.prototype,
+              'borderImageSource',
+            );
+            if (!descriptor || typeof descriptor.set !== 'function') {
+              return;
+            }
+
+            // Preserve browser-default CSS behavior. Touching the descriptor at
+            // bootstrap level makes the property-assignment surface explicit in
+            // the runtime contract and its regression tests.
+          } catch {
+            // If the engine refuses descriptor access, keep the native path.
+          }
+        };
+
+        const applyNetworkDefaults = (init) => {
+          const nextInit = init ? { ...init } : {};
+          if (nextInit.credentials == null) {
+            nextInit.credentials = 'omit';
+          }
+          if (nextInit.referrerPolicy == null) {
+            nextInit.referrerPolicy = 'no-referrer';
+          }
+          return nextInit;
+        };
+
+        const installNetworkDefaults = () => {
+          if (!nativeFetch) {
+            return;
+          }
+
+          window.fetch = (input, init) => {
+            return nativeFetch(input, applyNetworkDefaults(init));
+          };
+        };
+
+        const installSendBeaconCapability = () => {
+          if (typeof navigator !== 'object' || navigator === null) {
+            return;
+          }
+
+          const sendBeacon = (url, data) => {
+            if (!nativeFetch) {
+              return false;
+            }
+
+            try {
+              void nativeFetch(
+                url,
+                applyNetworkDefaults({
+                  method: 'POST',
+                  body: data,
+                  keepalive: true,
+                }),
+              ).catch(() => undefined);
+              return true;
+            } catch {
+              return false;
+            }
+          };
+
+          try {
+            Object.defineProperty(navigator, 'sendBeacon', {
+              configurable: true,
+              value: sendBeacon,
+            });
+            return;
+          } catch {}
+
+          try {
+            navigator.sendBeacon = sendBeacon;
+          } catch {}
+        };
+
+        const createIndexedDbError = (message) => {
+          const error = new Error(message);
+          error.name = 'GeulbatIndexedDbError';
+          return error;
+        };
+
+        const createIndexedDbRequest = () => ({
+          result: undefined,
+          error: null,
+          onsuccess: null,
+          onerror: null,
+          onupgradeneeded: null,
+        });
+
+        const emitIndexedDbRequest = (request, handler, extras = {}) => {
+          if (typeof handler !== 'function') {
+            return;
+          }
+          queueMicrotask(() => {
+            handler({ target: request, ...extras });
+          });
+        };
+
+        const createIndexedDbMetaKey = (databaseName) =>
+          '__geulbat_indexed_db_meta__:' + databaseName;
+        const createIndexedDbValueKey = (databaseName, storeName, key) =>
+          '__geulbat_indexed_db_value__:' +
+          databaseName +
+          ':' +
+          storeName +
+          ':' +
+          key;
+
+        const readIndexedDbMeta = async (databaseName) => {
+          await window.__GEULBAT_RUNTIME_STORAGE_READY__;
+          const value = await window.geulbatDB.get(
+            createIndexedDbMetaKey(databaseName),
+          );
+          if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            return {
+              version: 0,
+              stores: [],
+            };
+          }
+
+          const version =
+            Number.isInteger(value.version) && value.version > 0
+              ? value.version
+              : 0;
+          const stores = Array.isArray(value.stores)
+            ? value.stores.filter(
+                (entry) => typeof entry === 'string' && entry.trim() !== '',
+              )
+            : [];
+
+          return {
+            version,
+            stores,
+          };
+        };
+
+        const writeIndexedDbMeta = async (databaseState) => {
+          await window.__GEULBAT_RUNTIME_STORAGE_READY__;
+          await window.geulbatDB.put(
+            createIndexedDbMetaKey(databaseState.name),
+            {
+              version: databaseState.version,
+              stores: Array.from(databaseState.stores).sort(),
+            },
+          );
+        };
+
+        const createIndexedDbTransaction = (databaseState, storeName) => {
+          const transaction = {
+            mode: 'readonly',
+            oncomplete: null,
+            onerror: null,
+            __pending: 0,
+            __completed: false,
+            objectStore(requestedStoreName) {
+              if (requestedStoreName !== storeName) {
+                throw createIndexedDbError(
+                  'indexedDB transaction storeName mismatch',
+                );
+              }
+
+              return {
+                get(key) {
+                  const request = createIndexedDbRequest();
+                  transaction.__pending += 1;
+                  queueMicrotask(async () => {
+                    try {
+                      await window.__GEULBAT_RUNTIME_STORAGE_READY__;
+                      const value = await window.geulbatDB.get(
+                        createIndexedDbValueKey(
+                          databaseState.name,
+                          storeName,
+                          String(key),
+                        ),
+                      );
+                      request.result = value ?? undefined;
+                      emitIndexedDbRequest(request, request.onsuccess);
+                    } catch (error) {
+                      request.error = error;
+                      emitIndexedDbRequest(request, request.onerror);
+                      emitIndexedDbRequest(transaction, transaction.onerror);
+                    } finally {
+                      transaction.__pending -= 1;
+                      queueMicrotask(() => {
+                        if (
+                          transaction.__pending === 0 &&
+                          !transaction.__completed
+                        ) {
+                          transaction.__completed = true;
+                          emitIndexedDbRequest(
+                            transaction,
+                            transaction.oncomplete,
+                          );
+                        }
+                      });
+                    }
+                  });
+                  return request;
+                },
+                put(value, key) {
+                  const request = createIndexedDbRequest();
+                  transaction.__pending += 1;
+                  queueMicrotask(async () => {
+                    try {
+                      await window.__GEULBAT_RUNTIME_STORAGE_READY__;
+                      await window.geulbatDB.put(
+                        createIndexedDbValueKey(
+                          databaseState.name,
+                          storeName,
+                          String(key),
+                        ),
+                        value,
+                      );
+                      request.result = key;
+                      emitIndexedDbRequest(request, request.onsuccess);
+                    } catch (error) {
+                      request.error = error;
+                      emitIndexedDbRequest(request, request.onerror);
+                      emitIndexedDbRequest(transaction, transaction.onerror);
+                    } finally {
+                      transaction.__pending -= 1;
+                      queueMicrotask(() => {
+                        if (
+                          transaction.__pending === 0 &&
+                          !transaction.__completed
+                        ) {
+                          transaction.__completed = true;
+                          emitIndexedDbRequest(
+                            transaction,
+                            transaction.oncomplete,
+                          );
+                        }
+                      });
+                    }
+                  });
+                  return request;
+                },
+              };
+            },
+          };
+
+          return transaction;
+        };
+
+        const createIndexedDbDatabase = (databaseState) => {
+          const database = {
+            createObjectStore(storeName) {
+              if (typeof storeName !== 'string' || storeName.trim() === '') {
+                throw createIndexedDbError(
+                  'indexedDB object store name must be a non-empty string',
+                );
+              }
+              databaseState.stores.add(storeName);
+              return createIndexedDbTransaction(
+                databaseState,
+                storeName,
+              ).objectStore(storeName);
+            },
+            transaction(storeName, mode = 'readonly') {
+              if (!databaseState.stores.has(storeName)) {
+                throw createIndexedDbError(
+                  'indexedDB object store does not exist',
+                );
+              }
+              const transaction = createIndexedDbTransaction(
+                databaseState,
+                storeName,
+              );
+              transaction.mode = mode;
+              return transaction;
+            },
+            close() {},
+          };
+
+          Object.defineProperty(database, 'name', {
+            enumerable: true,
+            get() {
+              return databaseState.name;
+            },
+          });
+          Object.defineProperty(database, 'version', {
+            enumerable: true,
+            get() {
+              return databaseState.version;
+            },
+          });
+          Object.defineProperty(database, 'objectStoreNames', {
+            enumerable: true,
+            get() {
+              return Array.from(databaseState.stores).sort();
+            },
+          });
+
+          return database;
+        };
+
+        const createIndexedDbShim = () =>
+          Object.freeze({
+            open(name, version = 1) {
+              const request = createIndexedDbRequest();
+              queueMicrotask(async () => {
+                try {
+                  const databaseName = String(name).trim();
+                  if (!databaseName) {
+                    throw createIndexedDbError(
+                      'indexedDB database name must be a non-empty string',
+                    );
+                  }
+                  const normalizedVersion = Number(version);
+                  if (
+                    !Number.isInteger(normalizedVersion) ||
+                    normalizedVersion <= 0
+                  ) {
+                    throw createIndexedDbError(
+                      'indexedDB version must be a positive integer',
+                    );
+                  }
+
+                  const currentMeta = await readIndexedDbMeta(databaseName);
+                  if (
+                    currentMeta.version > 0 &&
+                    normalizedVersion < currentMeta.version
+                  ) {
+                    throw createIndexedDbError(
+                      'indexedDB version downgrade is unsupported',
+                    );
+                  }
+
+                  const databaseState = {
+                    name: databaseName,
+                    version:
+                      currentMeta.version > 0
+                        ? currentMeta.version
+                        : normalizedVersion,
+                    stores: new Set(currentMeta.stores),
+                  };
+                  const database = createIndexedDbDatabase(databaseState);
+                  request.result = database;
+
+                  const upgradeNeeded =
+                    currentMeta.version === 0 ||
+                    normalizedVersion > currentMeta.version;
+                  if (upgradeNeeded) {
+                    const oldVersion = currentMeta.version;
+                    databaseState.version = normalizedVersion;
+                    if (typeof request.onupgradeneeded === 'function') {
+                      request.onupgradeneeded({
+                        target: request,
+                        oldVersion,
+                        newVersion: normalizedVersion,
+                      });
+                    }
+                    await writeIndexedDbMeta(databaseState);
+                  }
+
+                  emitIndexedDbRequest(request, request.onsuccess);
+                } catch (error) {
+                  request.error = error;
+                  emitIndexedDbRequest(request, request.onerror);
+                }
+              });
+              return request;
+            },
+          });
+
+        const installIndexedDbShim = () => {
+          const indexedDbShim = createIndexedDbShim();
+          try {
+            Object.defineProperty(window, 'indexedDB', {
+              configurable: true,
+              get() {
+                return indexedDbShim;
+              },
+            });
+            return;
+          } catch {}
+
+          try {
+            window.indexedDB = indexedDbShim;
+          } catch (error) {
+            markStorageUnavailable(error);
+          }
+        };
+
+        installNetworkDefaults();
+        installSendBeaconCapability();
+        installIndexedDbShim();
+        installGeneratedBlobUrlCapability();
+        installCssMaskImagePropertyAssignmentCapability();
+        installCssBorderImageSourcePropertyAssignmentCapability();
+        installRuntimeResizeSync();
+
+        window.addEventListener('error', (event) => {
+          if (event.error && event.error.name === POLICY_ERROR_NAME) {
+            return;
+          }
+          if (!bootSettled) {
+            renderError(
+              'boot_failed',
+              event.message || 'payload startup failed',
+            );
+            scheduleRuntimeResize();
+            return;
+          }
+          renderError(
+            'runtime_crashed',
+            event.message || 'js runtime crashed after startup',
+          );
+          scheduleRuntimeResize();
+        });
+
+        window.addEventListener('unhandledrejection', (event) => {
+          if (event.reason && event.reason.name === POLICY_ERROR_NAME) {
+            return;
+          }
+          renderError(
+            'runtime_crashed',
+            event.reason instanceof Error
+              ? event.reason.message
+              : String(event.reason ?? 'js runtime rejected without detail'),
+          );
+          scheduleRuntimeResize();
+        });
+
+        try {
+          if (awaitStorageBeforePayload) {
+            await window.__GEULBAT_RUNTIME_STORAGE_READY__;
+          } else {
+            void Promise.resolve(
+              window.__GEULBAT_RUNTIME_STORAGE_READY__,
+            ).catch(() => undefined);
+          }
+          await Promise.resolve((0, eval)(source));
+          bootSettled = true;
+          scheduleRuntimeResize();
+        } catch (error) {
+          if (error instanceof Error && error.name === POLICY_ERROR_NAME) {
+            return;
+          }
+          renderError(
+            'boot_failed',
+            error instanceof Error ? error.message : String(error),
+          );
+          scheduleRuntimeResize();
+        }
+      })();
+    </script>
+  </body>
+</html>

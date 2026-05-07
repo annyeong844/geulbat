@@ -1,0 +1,100 @@
+{
+  "name": "@geulbat/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist/"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.js"
+    },
+    "./ids": {
+      "types": "./dist/ids.d.ts",
+      "import": "./dist/ids.js"
+    },
+    "./shell-auth": {
+      "types": "./dist/shell-auth.d.ts",
+      "import": "./dist/shell-auth.js"
+    },
+    "./artifacts": {
+      "types": "./dist/artifacts.d.ts",
+      "import": "./dist/artifacts.js"
+    },
+    "./public-web-fixtures": {
+      "types": "./dist/public-web-fixtures.d.ts",
+      "import": "./dist/public-web-fixtures.js"
+    },
+    "./react-bundle-inline-compile": {
+      "types": "./dist/react-bundle-inline-compile.d.ts",
+      "import": "./dist/react-bundle-inline-compile.js"
+    },
+    "./run-contract": {
+      "types": "./dist/run-contract.d.ts",
+      "import": "./dist/run-contract.js"
+    },
+    "./run-approval": {
+      "types": "./dist/run-approval.d.ts",
+      "import": "./dist/run-approval.js"
+    },
+    "./cancel": {
+      "types": "./dist/cancel.d.ts",
+      "import": "./dist/cancel.js"
+    },
+    "./files": {
+      "types": "./dist/files.d.ts",
+      "import": "./dist/files.js"
+    },
+    "./projects": {
+      "types": "./dist/projects.d.ts",
+      "import": "./dist/projects.js"
+    },
+    "./threads": {
+      "types": "./dist/threads.d.ts",
+      "import": "./dist/threads.js"
+    },
+    "./thread-metadata": {
+      "types": "./dist/thread-metadata.d.ts",
+      "import": "./dist/thread-metadata.js"
+    },
+    "./run-events": {
+      "types": "./dist/run-events.d.ts",
+      "import": "./dist/run-events.js"
+    },
+    "./provider-auth": {
+      "types": "./dist/provider-auth.d.ts",
+      "import": "./dist/provider-auth.js"
+    },
+    "./artifact-runtime-host": {
+      "types": "./dist/artifact-runtime-host.d.ts",
+      "import": "./dist/artifact-runtime-host.js"
+    },
+    "./run-channel": {
+      "types": "./dist/run-channel.d.ts",
+      "import": "./dist/run-channel.js"
+    },
+    "./runtime-persistence": {
+      "types": "./dist/runtime-persistence.d.ts",
+      "import": "./dist/runtime-persistence.js"
+    },
+    "./runtime-utils": {
+      "types": "./dist/runtime-utils.d.ts",
+      "import": "./dist/runtime-utils.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "node -e \"const fs=require('node:fs'); fs.rmSync('./dist-test', { recursive: true, force: true }); fs.rmSync('./tsconfig.test.tsbuildinfo', { force: true });\" && tsc -p ./tsconfig.test.json && node --test \"./dist-test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}

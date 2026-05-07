@@ -1,0 +1,411 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
+
+import { executeTool } from './executor.js';
+import { createToolRegistryStore } from './registry.js';
+import type {
+  AnyTool,
+  ExecuteResult,
+  ToolExecutionContext,
+  ToolParseResult,
+} from './types.js';
+
+function makeTool<TArgs extends object>(options: {
+  name: string;
+  parseArgs?: (raw: unknown) => ToolParseResult<TArgs>;
+  executeParsed?: (
+    args: TArgs,
+    ctx: ToolExecutionContext,
+  ) => Promise<ExecuteResult>;
+  sideEffectLevel?: AnyTool['sideEffectLevel'];
+  timeoutMs?: number;
+  omitTimeout?: boolean;
+  requiresApproval?: boolean;
+}): AnyTool {
+  return {
+    name: options.name,
+    description: 'test',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+    strict: true,
+    sideEffectLevel: options.sideEffectLevel ?? 'none',
+    ...(options.omitTimeout ? {} : { timeoutMs: options.timeoutMs ?? 1_000 }),
+    requiresApproval: options.requiresApproval ?? false,
+    parseArgs: options.parseArgs ?? (() => ({ ok: true, value: {} as TArgs })),
+    executeParsed:
+      options.executeParsed ??
+      (async () => ({
+        ok: true,
+        output: 'ok',
+      })),
+  };
+}
+
+void test('executeTool supports tools without a watchdog timeout', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'no_timeout_executor_tool',
+      omitTimeout: true,
+      async executeParsed(_args, ctx) {
+        assert.equal(ctx.signal, undefined);
+        return {
+          ok: true,
+          output: 'ok',
+        };
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'no_timeout_executor_tool',
+    {},
+    {
+      callId: 'call_no_timeout',
+      workspaceRoot: '/tmp',
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    output: 'ok',
+  });
+});
+
+void test('executeTool preserves tool-level failure results without wrapping them as success', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'failing_tool_for_executor_test',
+      async executeParsed() {
+        return {
+          ok: false,
+          output: '',
+          errorCode: 'conflict_stale_write',
+          error: 'stale write',
+        };
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'failing_tool_for_executor_test',
+    {},
+    {
+      callId: 'call_1',
+      workspaceRoot: '/tmp',
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'conflict_stale_write',
+    error: 'stale write',
+  });
+});
+
+void test('executeTool returns invalid_args when parseArgs rejects user input', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'parse_failure_executor_tool',
+      parseArgs() {
+        return { ok: false, message: 'path is required.' };
+      },
+      async executeParsed() {
+        throw new Error('should not run');
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'parse_failure_executor_tool',
+    {},
+    {
+      callId: 'call_parse_failure',
+      workspaceRoot: '/tmp',
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'invalid_args',
+    error: 'path is required.',
+  });
+});
+
+void test('executeTool treats parseArgs throws as implementation bugs instead of invalid_args', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'parse_throw_executor_tool',
+      parseArgs() {
+        throw new Error('/private/trace');
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'parse_throw_executor_tool',
+    {},
+    {
+      callId: 'call_parse_throw',
+      workspaceRoot: '/tmp',
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'execution_failed',
+    error: 'tool "parse_throw_executor_tool" execution failed',
+  });
+});
+
+void test('executeTool preserves safe app error codes thrown from parseArgs', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'parse_throw_invalid_args_executor_tool',
+      parseArgs() {
+        throw Object.assign(new Error('path is required.'), {
+          code: 'invalid_args',
+        });
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'parse_throw_invalid_args_executor_tool',
+    {},
+    {
+      callId: 'call_parse_throw_invalid_args',
+      workspaceRoot: '/tmp',
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'invalid_args',
+    error: 'path is required.',
+  });
+});
+
+void test('executeTool fails closed when approval is required but not granted', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'approval_tool_for_executor_test',
+      sideEffectLevel: 'write',
+      requiresApproval: true,
+      async executeParsed() {
+        return {
+          ok: true,
+          output: 'should not run',
+        };
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'approval_tool_for_executor_test',
+    {},
+    {
+      callId: 'call_2',
+      workspaceRoot: '/tmp',
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'approval_required',
+    error: 'tool "approval_tool_for_executor_test" requires approval',
+  });
+});
+
+void test('executeTool sanitizes unknown internal tool errors', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'throwing_tool_for_executor_test',
+      async executeParsed() {
+        throw new Error('/absolute/private/path leaked');
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'throwing_tool_for_executor_test',
+    {},
+    {
+      callId: 'call_3',
+      workspaceRoot: '/tmp',
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'execution_failed',
+    error: 'tool "throwing_tool_for_executor_test" execution failed',
+  });
+});
+
+void test('executeTool rejects invalid runtime result shapes from tools', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'invalid_shape_tool_for_executor_test',
+      async executeParsed() {
+        return { ok: true, output: 123 } as unknown as ExecuteResult;
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'invalid_shape_tool_for_executor_test',
+    {},
+    {
+      callId: 'call_4',
+      workspaceRoot: '/tmp',
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'execution_failed',
+    error:
+      'tool "invalid_shape_tool_for_executor_test" returned an invalid result',
+  });
+});
+
+void test('executeTool can resolve tools from an injected registry without touching the default registry', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'local_registry_only_executor_tool',
+      async executeParsed() {
+        return {
+          ok: true,
+          output: 'from local registry',
+        };
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'local_registry_only_executor_tool',
+    {},
+    {
+      callId: 'call_5',
+      workspaceRoot: '/tmp',
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    output: 'from local registry',
+  });
+});
+
+void test('executeTool preserves the raw runSignal while wrapping signal with the per-tool watchdog', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  const controller = new AbortController();
+  let capturedContext: ToolExecutionContext | undefined;
+  store.registerTool(
+    makeTool({
+      name: 'signal_contract_executor_tool',
+      async executeParsed(_args, ctx) {
+        capturedContext = ctx;
+        return {
+          ok: true,
+          output: 'signal-contract-ok',
+        };
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'signal_contract_executor_tool',
+    {},
+    {
+      callId: 'call_signal_contract',
+      workspaceRoot: '/tmp',
+      signal: controller.signal,
+      runSignal: controller.signal,
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    output: 'signal-contract-ok',
+  });
+  assert.ok(capturedContext);
+  assert.notEqual(capturedContext.signal, controller.signal);
+  assert.equal(capturedContext.runSignal, controller.signal);
+  assert.equal(capturedContext.signal?.aborted, false);
+  assert.equal(capturedContext.runSignal?.aborted, false);
+});
+
+void test('executeTool timeout aborts the per-tool signal without mutating the raw runSignal', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  const controller = new AbortController();
+  let capturedContext: ToolExecutionContext | undefined;
+  store.registerTool(
+    makeTool({
+      name: 'timeout_signal_contract_executor_tool',
+      timeoutMs: 10,
+      async executeParsed(_args, ctx) {
+        capturedContext = ctx;
+        await delay(50);
+        return {
+          ok: true,
+          output: 'should-timeout',
+        };
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'timeout_signal_contract_executor_tool',
+    {},
+    {
+      callId: 'call_timeout_signal_contract',
+      workspaceRoot: '/tmp',
+      signal: controller.signal,
+      runSignal: controller.signal,
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'timeout',
+    error: 'tool "timeout_signal_contract_executor_tool" timed out (10ms)',
+  });
+  assert.ok(capturedContext);
+  assert.equal(capturedContext.signal?.aborted, true);
+  assert.equal(capturedContext.runSignal, controller.signal);
+  assert.equal(capturedContext.runSignal?.aborted, false);
+});
