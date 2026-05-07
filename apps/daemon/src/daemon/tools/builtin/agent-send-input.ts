@@ -1,0 +1,147 @@
+import { z } from 'zod';
+import { isRunId, type RunId } from '@geulbat/protocol/ids';
+import { toolError } from '../result.js';
+import { isAgentToolExecutionContext } from '../types.js';
+import { defineZodTool } from '../zod-tool.js';
+import {
+  buildChildLaunchPayload,
+  buildChildLaunchRejected,
+  isAgentChildTerminalState,
+} from '../../subagent-runtime-contracts.js';
+import type { SubagentRunLauncher } from '../types.js';
+
+const agentSendInputArgsSchema = z.strictObject({
+  child_run_id: z
+    .string()
+    .min(1, 'child_run_id is required.')
+    .describe('Stable child handle returned by agent_spawn.'),
+  task: z
+    .string()
+    .min(1, 'task is required.')
+    .describe('Follow-up plain-text input for the same child thread.'),
+});
+
+function assertToolRunId(value: string): RunId {
+  if (!isRunId(value)) {
+    throw new Error(`invalid runId: ${value}`);
+  }
+  return value;
+}
+
+export function createAgentSendInputTool(
+  options: {
+    startBackgroundRun?: SubagentRunLauncher['startBackgroundRun'];
+    timeoutMs?: number;
+  } = {},
+) {
+  const timeoutMs = options.timeoutMs;
+
+  return defineZodTool({
+    name: 'agent_send_input',
+    description:
+      'Continue a completed child run on the same child thread using the existing child handle.',
+    argsSchema: agentSendInputArgsSchema,
+    sideEffectLevel: 'none',
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    requiresApproval: false,
+    async executeParsed(args, ctx) {
+      const task = args.task.trim();
+      const childRunId = args.child_run_id.trim();
+
+      if (!task) {
+        return toolError('invalid_args', 'task is required.');
+      }
+      if (!ctx.threadId || !ctx.projectId || !ctx.runId || !ctx.runState) {
+        return toolError(
+          'execution_failed',
+          'run context is required for agent_send_input',
+        );
+      }
+      if (ctx.runState.parentRunId) {
+        return toolError(
+          'execution_failed',
+          'agent_send_input is depth-1 only',
+        );
+      }
+      if (!ctx.agentSpawnRuntime) {
+        return toolError(
+          'execution_failed',
+          'agent_send_input requires agent runtime',
+        );
+      }
+
+      const projectId = ctx.projectId;
+      const parentRunId = assertToolRunId(ctx.runId);
+      const ownerThreadId = ctx.threadId;
+      const agentSpawnRuntime = ctx.agentSpawnRuntime;
+      const childRunHandleId = assertToolRunId(childRunId);
+      const childRecord =
+        agentSpawnRuntime.childRuns.getChildRun(childRunHandleId);
+      if (!childRecord) {
+        return toolError('invalid_args', `unknown child run: ${childRunId}`);
+      }
+      if (childRecord.ownerThreadId !== ownerThreadId) {
+        return toolError(
+          'invalid_args',
+          `child run does not belong to current owner thread: ${childRunId}`,
+        );
+      }
+      const subagentType = childRecord.subagentType;
+      if (!isAgentChildTerminalState(childRecord.status)) {
+        return buildChildLaunchPayload(
+          buildChildLaunchRejected({
+            subagentType,
+            errorCode: 'invalid_args',
+            error:
+              'child run is not terminal; wait for completion or stop it first',
+          }),
+        );
+      }
+      const launchAdmission =
+        agentSpawnRuntime.subagentAdmission.reserveSubagentLaunchSlot({
+          runState: ctx.runState,
+        });
+      if (!launchAdmission.ok) {
+        return buildChildLaunchPayload(
+          buildChildLaunchRejected({
+            subagentType,
+            errorCode: launchAdmission.errorCode,
+            error: launchAdmission.error,
+            effectiveMax: launchAdmission.effectiveMax,
+          }),
+        );
+      }
+
+      try {
+        const startBackgroundRun =
+          options.startBackgroundRun ??
+          agentSpawnRuntime.subagentRuns.startBackgroundRun;
+        return await startBackgroundRun({
+          task,
+          subagentType,
+          parentRunId,
+          ownerThreadId,
+          projectId,
+          workspaceRoot: ctx.workspaceRoot,
+          childRunId: childRunHandleId,
+          childThreadId: childRecord.childThreadId,
+          parentRunState: ctx.runState,
+          runtimeServices: agentSpawnRuntime,
+          launchReservation: launchAdmission.reservation,
+          ...(isAgentToolExecutionContext(ctx)
+            ? { emitAgentEvent: ctx.emitAgentEvent }
+            : {}),
+          ...(ctx.approvalSessionId !== undefined
+            ? { approvalSessionId: ctx.approvalSessionId }
+            : {}),
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        });
+      } catch (error: unknown) {
+        launchAdmission.reservation.release();
+        throw error;
+      }
+    },
+  });
+}
+
+export const agentSendInputTool = createAgentSendInputTool();

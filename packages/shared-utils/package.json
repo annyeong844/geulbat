@@ -1,0 +1,28 @@
+{
+  "name": "@geulbat/shared-utils",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist/"
+  ],
+  "exports": {
+    "./error": {
+      "types": "./dist/error.d.ts",
+      "import": "./dist/error.js"
+    },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "import": "./dist/logger.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "node -e \"\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}

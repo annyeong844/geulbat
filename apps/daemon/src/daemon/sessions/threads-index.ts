@@ -1,0 +1,233 @@
+import { isPlainRecord } from '@geulbat/protocol/runtime-utils';
+import { isProjectId, isThreadId } from '@geulbat/protocol/ids';
+import type { ThreadSummary } from '@geulbat/protocol/threads';
+import { readFile } from 'node:fs/promises';
+import { indexFilePath } from './paths.js';
+import { hasErrorCode } from '../utils/error.js';
+import { writeTextFileAtomically } from '../utils/atomic-file.js';
+import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
+import { createLogger } from '@geulbat/shared-utils/logger';
+
+const logger = createLogger('threads-index');
+
+interface LoadThreadIndexOptions {
+  isKnownProjectId?: (projectId: string) => boolean;
+}
+
+export function createThreadIndexStore(
+  options: {
+    runMutationSerial?: <T>(
+      key: string,
+      operation: () => Promise<T>,
+    ) => Promise<T>;
+  } = {},
+): {
+  loadThreadIndex(
+    workspaceRoot: string,
+    options?: LoadThreadIndexOptions,
+  ): Promise<ThreadSummary[]>;
+  saveThreadIndex(
+    workspaceRoot: string,
+    entries: ThreadSummary[],
+  ): Promise<void>;
+  upsertThreadSummary(
+    workspaceRoot: string,
+    summary: ThreadSummary,
+  ): Promise<void>;
+  removeThreadSummary(
+    workspaceRoot: string,
+    threadId: string,
+  ): Promise<boolean>;
+} {
+  const runMutationSerial =
+    options.runMutationSerial ?? createKeyedSerialRunner();
+
+  async function loadThreadIndexForStore(
+    workspaceRoot: string,
+    options?: LoadThreadIndexOptions,
+  ): Promise<ThreadSummary[]> {
+    const filePath = indexFilePath(workspaceRoot);
+    try {
+      const raw = await readFile(filePath, 'utf8');
+      const data: unknown = JSON.parse(raw);
+      return parseThreadIndexEntries(data, options);
+    } catch (err: unknown) {
+      if (hasErrorCode(err, 'ENOENT')) return [];
+      throw err;
+    }
+  }
+
+  async function saveThreadIndexForStore(
+    workspaceRoot: string,
+    entries: ThreadSummary[],
+  ): Promise<void> {
+    const filePath = indexFilePath(workspaceRoot);
+    await writeTextFileAtomically(
+      filePath,
+      JSON.stringify(entries, null, 2) + '\n',
+    );
+  }
+
+  async function mutateThreadIndex<T>(
+    workspaceRoot: string,
+    mutate: (entries: ThreadSummary[]) => Promise<T>,
+  ): Promise<T> {
+    const filePath = indexFilePath(workspaceRoot);
+    return runMutationSerial(filePath, async () => {
+      const entries = await loadThreadIndexForStore(workspaceRoot);
+      return mutate(entries);
+    });
+  }
+
+  return {
+    loadThreadIndex: loadThreadIndexForStore,
+    saveThreadIndex: saveThreadIndexForStore,
+    async upsertThreadSummary(workspaceRoot, summary) {
+      await mutateThreadIndex(workspaceRoot, async (entries) => {
+        const idx = entries.findIndex(
+          (entry) => entry.threadId === summary.threadId,
+        );
+        if (idx >= 0) {
+          entries[idx] = summary;
+        } else {
+          entries.push(summary);
+        }
+        await saveThreadIndexForStore(workspaceRoot, entries);
+      });
+    },
+    async removeThreadSummary(workspaceRoot, threadId) {
+      return mutateThreadIndex(workspaceRoot, async (entries) => {
+        const nextEntries = entries.filter(
+          (entry) => entry.threadId !== threadId,
+        );
+        if (nextEntries.length === entries.length) {
+          return false;
+        }
+        await saveThreadIndexForStore(workspaceRoot, nextEntries);
+        return true;
+      });
+    },
+  };
+}
+
+const defaultThreadIndexStore = createThreadIndexStore();
+
+export async function loadThreadIndex(
+  workspaceRoot: string,
+  options?: LoadThreadIndexOptions,
+): Promise<ThreadSummary[]> {
+  return defaultThreadIndexStore.loadThreadIndex(workspaceRoot, options);
+}
+
+export async function saveThreadIndex(
+  workspaceRoot: string,
+  entries: ThreadSummary[],
+): Promise<void> {
+  await defaultThreadIndexStore.saveThreadIndex(workspaceRoot, entries);
+}
+
+export async function upsertThreadSummary(
+  workspaceRoot: string,
+  summary: ThreadSummary,
+): Promise<void> {
+  await defaultThreadIndexStore.upsertThreadSummary(workspaceRoot, summary);
+}
+
+export async function removeThreadSummary(
+  workspaceRoot: string,
+  threadId: string,
+): Promise<boolean> {
+  return defaultThreadIndexStore.removeThreadSummary(workspaceRoot, threadId);
+}
+
+function parseThreadIndexEntries(
+  value: unknown,
+  options?: LoadThreadIndexOptions,
+): ThreadSummary[] {
+  if (!Array.isArray(value)) {
+    throw new Error('invalid thread index');
+  }
+
+  const entries: ThreadSummary[] = [];
+  let skippedEntryCount = 0;
+  for (const entry of value) {
+    try {
+      entries.push(parseThreadSummaryEntry(entry, options));
+    } catch {
+      skippedEntryCount += 1;
+    }
+  }
+  if (skippedEntryCount > 0) {
+    logger.warn(
+      `Skipped ${skippedEntryCount} malformed thread index entr${skippedEntryCount === 1 ? 'y' : 'ies'}.`,
+    );
+  }
+  return entries;
+}
+
+function parseThreadSummaryEntry(
+  value: unknown,
+  options?: LoadThreadIndexOptions,
+): ThreadSummary {
+  if (!isPlainRecord(value)) {
+    throw new Error('invalid thread index entry');
+  }
+
+  const record = value;
+  const threadId = parseThreadId(record.threadId);
+  const projectId = parseProjectId(record.projectId, options);
+  const title = parseOptionalString(record.title);
+  const lastUpdated = parseRequiredString(record.lastUpdated);
+  const messageCount = parseNonNegativeInteger(record.messageCount);
+
+  return {
+    threadId,
+    projectId,
+    lastUpdated,
+    messageCount,
+    ...(title !== undefined ? { title } : {}),
+  };
+}
+
+function parseThreadId(value: unknown): ThreadSummary['threadId'] {
+  if (typeof value === 'string' && isThreadId(value)) {
+    return value;
+  }
+  throw new Error('invalid thread index entry');
+}
+
+function parseProjectId(
+  value: unknown,
+  options?: LoadThreadIndexOptions,
+): ThreadSummary['projectId'] {
+  if (typeof value === 'string' && isProjectId(value)) {
+    if (!options?.isKnownProjectId || options.isKnownProjectId(value)) {
+      return value;
+    }
+  }
+  throw new Error('invalid thread index entry');
+}
+
+function parseRequiredString(value: unknown): string {
+  if (typeof value === 'string' && value.trim() !== '') {
+    return value;
+  }
+  throw new Error('invalid thread index entry');
+}
+
+function parseOptionalString(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  throw new Error('invalid thread index entry');
+}
+
+function parseNonNegativeInteger(value: unknown): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
+    return value;
+  }
+  throw new Error('invalid thread index entry');
+}

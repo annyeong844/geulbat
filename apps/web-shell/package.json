@@ -1,0 +1,42 @@
+{
+  "name": "@geulbat/web-shell",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync:artifact-runtime-sources": "node ./scripts/sync-artifact-runtime-sources.mjs",
+    "check:artifact-runtime-sources": "node ./scripts/sync-artifact-runtime-sources.mjs --check",
+    "smoke:react-bundle": "node --import tsx ./scripts/react-bundle-smoke.mjs",
+    "smoke:public-web-conformance": "node --import tsx ./scripts/public-web-conformance-smoke.mjs",
+    "smoke:react-bundle:install-browser": "playwright install chromium",
+    "dev": "node ../../scripts/run-with-local-dev-auth.mjs vite",
+    "build:deps": "tsc -b ../../packages/shared-utils/tsconfig.json ../../packages/protocol/tsconfig.json",
+    "build:app": "npm run check:artifact-runtime-sources && tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && vite build",
+    "build": "npm run build:deps && npm run build:app",
+    "check:app": "npm run check:artifact-runtime-sources && tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
+    "check": "npm run build:deps && npm run check:app",
+    "test:clean": "node -e \"const fs=require('node:fs'); fs.rmSync('./dist-test', { recursive: true, force: true }); fs.rmSync('./tsconfig.test.tsbuildinfo', { force: true });\"",
+    "test:prepare:app": "npm run check:artifact-runtime-sources && npm run test:clean && tsc -p tsconfig.test.json",
+    "test:prepare": "npm run build:deps && npm run test:prepare:app",
+    "test:app": "npm run test:prepare:app && node --test \"dist-test/**/*.test.js\"",
+    "test": "npm run test:prepare && node --test \"dist-test/**/*.test.js\"",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@geulbat/protocol": "*",
+    "@geulbat/shared-utils": "*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/react-test-renderer": "^19.1.0",
+    "@vitejs/plugin-react": "^4.4.0",
+    "playwright": "^1.59.1",
+    "react-test-renderer": "^19.2.4",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "name": "@geulbat/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist/",
+    "provider-auth.config.json"
+  ],
+  "imports": {
+    "#web/auth/*.js": "./src/adapter/web/auth/*.ts",
+    "#web/request/*.js": "./src/adapter/web/request/*.ts",
+    "#web/response/*.js": "./src/adapter/web/response/*.ts",
+    "#web/origin-policy.js": "./src/adapter/web/origin-policy.ts"
+  },
+  "scripts": {
+    "build:deps": "tsc -b ../../packages/shared-utils/tsconfig.json ../../packages/protocol/tsconfig.json",
+    "predev": "npm run build:deps && npm run check:app",
+    "dev": "node ../../scripts/run-with-local-dev-auth.mjs node --watch --import tsx src/index.ts",
+    "build:app": "tsc -b tsconfig.app.json && node ./scripts/sync-package-imports.mjs dist",
+    "build": "npm run build:deps && npm run build:app",
+    "check:app": "tsc --noEmit -p tsconfig.app.json",
+    "check": "npm run build:deps && npm run check:app",
+    "test:clean": "node -e \"const fs=require('node:fs'); fs.rmSync('./dist-test', { recursive: true, force: true }); fs.rmSync('./tsconfig.test.tsbuildinfo', { force: true }); fs.rmSync('./coverage', { recursive: true, force: true });\"",
+    "test:prepare:app": "npm run test:clean && tsc -p ./tsconfig.test.json && node ./scripts/sync-package-imports.mjs dist-test",
+    "test:prepare": "npm run build:deps && npm run test:prepare:app",
+    "test:app": "npm run test:prepare:app && node --test \"./dist-test/**/*.test.js\"",
+    "test": "npm run test:prepare && node --test \"./dist-test/**/*.test.js\"",
+    "test:cov": "npm run test:prepare && npx --yes node@24 ../../node_modules/c8/bin/c8.js --check-coverage --statements 91 --branches 82 --functions 90 --lines 91 --reporter=text-summary --reporter=lcov --reports-dir coverage/daemon --all --src src --exclude \"src/**/*.test.ts\" node --test \"./dist-test/**/*.test.js\"",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@geulbat/protocol": "*",
+    "@geulbat/shared-utils": "*",
+    "@vscode/ripgrep": "^1.17.1",
+    "esbuild": "^0.28.0",
+    "express": "^5.0.1",
+    "ws": "^8.20.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

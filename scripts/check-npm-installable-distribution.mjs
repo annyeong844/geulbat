@@ -1,0 +1,354 @@
+#!/usr/bin/env node
+
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+import { collectNpmPackageValidationViolations } from './npm-installable-distribution-validation.mjs';
+import {
+  readApprovedProviderAuthClientIdFile,
+  validateProviderAuthReleaseArtifact,
+} from './provider-auth-release-validation.mjs';
+
+const execFileAsync = promisify(execFile);
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const REPO_ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');
+
+const PACKAGE_WORKSPACES = [
+  {
+    manifestPath: 'packages/shared-utils/package.json',
+    name: '@geulbat/shared-utils',
+  },
+  {
+    manifestPath: 'packages/protocol/package.json',
+    name: '@geulbat/protocol',
+  },
+  {
+    manifestPath: 'apps/daemon/package.json',
+    name: '@geulbat/daemon',
+  },
+];
+
+const ENV_KEYS_TO_SANITIZE = [
+  'PROVIDER_AUTH_CLIENT_ID',
+  'PROVIDER_AUTH_CLIENT_SECRET',
+  'GEULBAT_PROVIDER_AUTH_INSTALLED_CONFIG_PATH',
+  'GEULBAT_PROVIDER_AUTH_BUNDLED_CONFIG_PATH',
+  'GEULBAT_PROVIDER_AUTH_FILE_PATH',
+  'NODE_OPTIONS',
+  'NODE_PATH',
+  'TS_NODE_PROJECT',
+  'TS_NODE_TRANSPILE_ONLY',
+];
+
+export function parseCheckNpmInstallableDistributionArgs(input) {
+  let approvedClientIdFile = null;
+  const approvedClientIds = [];
+  let keepTemp = false;
+  let skipBuild = false;
+
+  for (let index = 0; index < input.length; index += 1) {
+    const current = input[index];
+    const next = input[index + 1];
+
+    switch (current) {
+      case '--approved-client-id':
+        approvedClientIds.push(readOptionValue(current, next));
+        index += 1;
+        break;
+      case '--approved-client-id-file':
+        approvedClientIdFile = readOptionValue(current, next);
+        index += 1;
+        break;
+      case '--keep-temp':
+        keepTemp = true;
+        break;
+      case '--skip-build':
+        skipBuild = true;
+        break;
+      case '--help':
+        throw new Error(readUsage());
+      default:
+        throw new Error(`unknown argument: ${current}\n${readUsage()}`);
+    }
+  }
+
+  if (approvedClientIds.length === 0 && !approvedClientIdFile) {
+    throw new Error(
+      `--approved-client-id or --approved-client-id-file is required\n${readUsage()}`,
+    );
+  }
+
+  return {
+    approvedClientIdFile,
+    approvedClientIds,
+    keepTemp,
+    skipBuild,
+  };
+}
+
+export function createNpmInstallableDistributionChildEnv(options) {
+  const env = { ...(options.env ?? process.env) };
+  for (const key of ENV_KEYS_TO_SANITIZE) {
+    delete env[key];
+  }
+  env.HOME = options.homeDir;
+  env.USERPROFILE = options.homeDir;
+  env.npm_config_cache = path.join(options.homeDir, '.npm-cache');
+  return env;
+}
+
+async function runNpmInstallableDistributionCheck(options) {
+  const tempRoot = await mkdtemp(
+    path.join(tmpdir(), 'geulbat-npm-installable-'),
+  );
+  const packDir = path.join(tempRoot, 'pack');
+  const installDir = path.join(tempRoot, 'install');
+  const homeDir = path.join(tempRoot, 'home');
+  const childEnv = createNpmInstallableDistributionChildEnv({
+    env: options.env,
+    homeDir,
+  });
+
+  try {
+    await mkdir(packDir, { recursive: true });
+    await mkdir(installDir, { recursive: true });
+    await mkdir(homeDir, { recursive: true });
+
+    if (!options.skipBuild) {
+      await runCommand('npm', ['run', 'build:packages'], {
+        cwd: REPO_ROOT,
+        env: childEnv,
+      });
+      await runCommand('npm', ['run', 'build:app', '-w', 'apps/daemon'], {
+        cwd: REPO_ROOT,
+        env: childEnv,
+      });
+    }
+
+    const packedPackages = await packWorkspacePackages(packDir, childEnv);
+    await validatePackedPackages(packedPackages);
+    await installPackedPackages({
+      childEnv,
+      installDir,
+      packDir,
+      packedPackages,
+    });
+    await validateInstalledDaemonProviderAuth({
+      approvedClientIds: options.approvedClientIds,
+      childEnv,
+      homeDir,
+      installDir,
+    });
+    await validateInstalledRuntimeImports({
+      childEnv,
+      installDir,
+    });
+
+    return {
+      installDir,
+      packDir,
+    };
+  } finally {
+    if (!options.keepTemp) {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }
+}
+
+async function packWorkspacePackages(packDir, env) {
+  const { stdout } = await runCommand(
+    'npm',
+    [
+      'pack',
+      '--json',
+      '--pack-destination',
+      packDir,
+      '-w',
+      'packages/shared-utils',
+      '-w',
+      'packages/protocol',
+      '-w',
+      'apps/daemon',
+    ],
+    {
+      cwd: REPO_ROOT,
+      env,
+    },
+  );
+  const packageInfos = JSON.parse(stdout);
+  if (!Array.isArray(packageInfos)) {
+    throw new Error('npm pack did not return a package list');
+  }
+  return packageInfos;
+}
+
+async function validatePackedPackages(packageInfos) {
+  for (const workspace of PACKAGE_WORKSPACES) {
+    const packageInfo = readPackageInfo(packageInfos, workspace.name);
+    const manifest = await readJson(
+      path.join(REPO_ROOT, workspace.manifestPath),
+    );
+    const violations = collectNpmPackageValidationViolations({
+      files: packageInfo.files.map((file) => file.path),
+      manifest,
+    });
+
+    if (violations.length > 0) {
+      throw new Error(
+        `${workspace.name} npm package validation failed:\n${formatViolations(
+          violations,
+        )}`,
+      );
+    }
+
+    console.log(
+      `${workspace.name}: ${packageInfo.entryCount} packed files validated`,
+    );
+  }
+}
+
+async function installPackedPackages(args) {
+  await runCommand('npm', ['init', '-y'], {
+    cwd: args.installDir,
+    env: args.childEnv,
+  });
+  await runCommand(
+    'npm',
+    [
+      'install',
+      '--ignore-scripts',
+      '--package-lock=false',
+      readTarballPath(
+        args.packedPackages,
+        '@geulbat/shared-utils',
+        args.packDir,
+      ),
+      readTarballPath(args.packedPackages, '@geulbat/protocol', args.packDir),
+      readTarballPath(args.packedPackages, '@geulbat/daemon', args.packDir),
+    ],
+    {
+      cwd: args.installDir,
+      env: args.childEnv,
+    },
+  );
+}
+
+async function validateInstalledDaemonProviderAuth(args) {
+  await validateProviderAuthReleaseArtifact({
+    approvedClientIds: args.approvedClientIds,
+    artifactRoot: path.join(
+      args.installDir,
+      'node_modules',
+      '@geulbat',
+      'daemon',
+    ),
+    bundledConfigPath: 'provider-auth.config.json',
+    env: args.childEnv,
+    homeDir: args.homeDir,
+  });
+  console.log('provider auth release validation passed');
+}
+
+async function validateInstalledRuntimeImports(args) {
+  await runCommand(
+    process.execPath,
+    [
+      '-e',
+      [
+        "await import('@geulbat/protocol/provider-auth');",
+        "await import('@geulbat/shared-utils/logger');",
+        "await import('./node_modules/@geulbat/daemon/dist/daemon/auth/bootstrap/config.js');",
+      ].join(' '),
+    ],
+    {
+      cwd: args.installDir,
+      env: args.childEnv,
+    },
+  );
+  console.log('installed runtime imports passed');
+}
+
+function readTarballPath(packageInfos, packageName, packDir) {
+  const packageInfo = readPackageInfo(packageInfos, packageName);
+  return path.join(packDir, packageInfo.filename);
+}
+
+function readPackageInfo(packageInfos, packageName) {
+  const packageInfo = packageInfos.find((info) => info.name === packageName);
+  if (!packageInfo) {
+    throw new Error(`npm pack output is missing ${packageName}`);
+  }
+  return packageInfo;
+}
+
+async function runCommand(command, args, options) {
+  const result = await execFileAsync(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    maxBuffer: 1024 * 1024 * 20,
+  });
+  return result;
+}
+
+async function readJson(filePath) {
+  return JSON.parse(await readFile(filePath, 'utf8'));
+}
+
+function readOptionValue(name, value) {
+  if (!value || value.startsWith('--')) {
+    throw new Error(`${name} requires a value\n${readUsage()}`);
+  }
+  return value;
+}
+
+function formatViolations(violations) {
+  return violations
+    .map((violation) => `${violation.code}: ${violation.message}`)
+    .join('\n');
+}
+
+function readUsage() {
+  return [
+    'Usage:',
+    '  node scripts/check-npm-installable-distribution.mjs (--approved-client-id <client-id> | --approved-client-id-file <path>) [--skip-build] [--keep-temp]',
+    '',
+    'Repeat --approved-client-id for each approved release-channel client id.',
+    'Use --approved-client-id-file to read tracked release metadata.',
+  ].join('\n');
+}
+
+async function main() {
+  const options = parseCheckNpmInstallableDistributionArgs(
+    process.argv.slice(2),
+  );
+  const approvedClientIds = [
+    ...options.approvedClientIds,
+    ...(options.approvedClientIdFile
+      ? await readApprovedProviderAuthClientIdFile(options.approvedClientIdFile)
+      : []),
+  ];
+  const result = await runNpmInstallableDistributionCheck({
+    approvedClientIds,
+    env: process.env,
+    keepTemp: options.keepTemp,
+    skipBuild: options.skipBuild,
+  });
+
+  console.log('npm installable distribution validation passed');
+  if (options.keepTemp) {
+    console.log(`packdir=${result.packDir}`);
+    console.log(`installdir=${result.installDir}`);
+  }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
