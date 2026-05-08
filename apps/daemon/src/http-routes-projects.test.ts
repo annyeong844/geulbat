@@ -56,7 +56,7 @@ void test('authenticated projects route returns canonical registry', async () =>
 
 void test('authenticated projects create route persists new registry entry and root', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  await withProjectRegistrySnapshot(daemonContext.projectStore, async () => {
+  await withProjectRegistrySnapshot(daemonContext, async () => {
     const label = `Route Novel ${randomUUID().slice(0, 8)}`;
     let createdRoot: string | null = null;
 
@@ -122,7 +122,7 @@ void test('authenticated projects create route persists new registry entry and r
 
 void test('authenticated projects rename route updates label without changing project id', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  await withProjectRegistrySnapshot(daemonContext.projectStore, async () => {
+  await withProjectRegistrySnapshot(daemonContext, async () => {
     const createLabel = `Rename Slice ${randomUUID().slice(0, 8)}`;
     const renameLabel = `Renamed Slice ${randomUUID().slice(0, 8)}`;
     let createdRoot: string | null = null;
@@ -198,7 +198,7 @@ void test('authenticated projects rename route updates label without changing pr
 
 void test('authenticated projects rename route rejects default project', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  await withProjectRegistrySnapshot(daemonContext.projectStore, async () => {
+  await withProjectRegistrySnapshot(daemonContext, async () => {
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const res = await fetch(
@@ -224,7 +224,7 @@ void test('authenticated projects rename route rejects default project', async (
 
 void test('authenticated projects delete route unregisters non-default project without wiping root', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  await withProjectRegistrySnapshot(daemonContext.projectStore, async () => {
+  await withProjectRegistrySnapshot(daemonContext, async () => {
     const label = `Delete Slice ${randomUUID().slice(0, 8)}`;
     let createdProjectId: ProjectId | null = null;
     let createdRoot: string | null = null;
@@ -296,7 +296,7 @@ void test('authenticated projects delete route unregisters non-default project w
 
 void test('authenticated projects delete route rejects default project', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  await withProjectRegistrySnapshot(daemonContext.projectStore, async () => {
+  await withProjectRegistrySnapshot(daemonContext, async () => {
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const res = await fetch(
@@ -338,7 +338,7 @@ void test('authenticated projects delete route rejects active-run projects', asy
   );
 
   try {
-    await withProjectRegistrySnapshot(daemonContext.projectStore, async () => {
+    await withProjectRegistrySnapshot(daemonContext, async () => {
       await withAuthenticatedDaemonServer(
         async ({ port }) => {
           const res = await fetch(
@@ -372,16 +372,21 @@ void test('authenticated projects delete route rejects active-run projects', asy
 });
 
 async function withProjectRegistrySnapshot<T>(
-  projectStore: Pick<
-    ProjectStore,
-    | 'bootstrapProjectRegistry'
-    | 'getProjectRegistryFilePath'
-    | 'reloadProjectRegistryFromDisk'
-  >,
+  daemonContext: {
+    projectRegistry: { getProjectRegistryRoot(): string };
+    projectStore: Pick<
+      ProjectStore,
+      | 'bootstrapProjectRegistry'
+      | 'getProjectRegistryFilePath'
+      | 'reloadProjectRegistryFromDisk'
+    >;
+  },
   run: () => Promise<T>,
 ): Promise<T> {
+  const { projectStore } = daemonContext;
   await bootstrapDaemonContext({
     projectStore,
+    repoRoot: daemonContext.projectRegistry.getProjectRegistryRoot(),
   });
   const registryFilePath = projectStore.getProjectRegistryFilePath();
   const registrySnapshot = await snapshotFile(registryFilePath);

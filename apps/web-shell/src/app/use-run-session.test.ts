@@ -426,6 +426,98 @@ void test('useRunSession routes approval decisions through the controller comman
   hook.unmount();
 });
 
+void test('useRunSession reveals queued approvals after the current approval is resolved', async () => {
+  const requests: Array<{
+    approved: boolean;
+    grantScope: string;
+    callId: string;
+  }> = [];
+  const harness = createRunSessionClientHarness({
+    approve: async (request) => {
+      requests.push({
+        approved: request.approved,
+        grantScope: request.grantScope,
+        callId: request.callId,
+      });
+      return RUN_ID;
+    },
+  });
+
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      createClient: harness.createClient,
+    }),
+  );
+  const firstApproval = makeApprovalRequiredFixture({
+    callId: 'call-1',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+  });
+  const secondApproval = makeApprovalRequiredFixture({
+    callId: 'call-2',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+  });
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'run_ack',
+        payload: {
+          runId: RUN_ID,
+          threadId: THREAD_ID,
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 1,
+        ts: new Date().toISOString(),
+        type: 'approval_required',
+        payload: firstApproval,
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 2,
+        ts: new Date().toISOString(),
+        type: 'approval_required',
+        payload: secondApproval,
+      },
+    });
+  });
+  await hook.flush();
+
+  assert.equal(hook.result.current.pendingApproval?.callId, 'call-1');
+
+  await hook.run(async (current) => {
+    await current.handleApprove(firstApproval, 'once');
+  });
+  await hook.flush();
+
+  assert.deepEqual(requests, [
+    {
+      approved: true,
+      grantScope: 'once',
+      callId: 'call-1',
+    },
+  ]);
+  assert.equal(hook.result.current.pendingApproval?.callId, 'call-2');
+  hook.unmount();
+});
+
 void test('useRunSession cancels the active run through a stale callback once the run is acknowledged', async () => {
   const cancelledRunIds: string[] = [];
   const harness = createRunSessionClientHarness({

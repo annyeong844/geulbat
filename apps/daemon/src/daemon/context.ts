@@ -42,6 +42,7 @@ import {
   createResponsesWebSocketSessionStore,
   type ResponsesWebSocketSessionStore,
 } from './llm/provider/transport/responses-websocket-session.js';
+import { resolveProviderRequestOptions } from './llm/provider/provider-options.js';
 import {
   createActiveRunStore,
   type ActiveRunStore,
@@ -121,6 +122,11 @@ export function createDaemonContext(
     subagentRuns: createSubagentRunLauncher(),
     toolRegistry: createBuiltinToolRegistryStore(),
   };
+}
+
+export function validateDaemonRuntimeKnobsFromEnv(): void {
+  resolveSubagentConcurrencyPolicyFromEnv();
+  resolveProviderRequestOptions();
 }
 
 function hasExplicitSubagentConcurrencyPolicy(

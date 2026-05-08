@@ -1,7 +1,7 @@
-export type ProviderReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
-export type ProviderTextVerbosity = 'low' | 'medium' | 'high';
+type ProviderReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+type ProviderTextVerbosity = 'low' | 'medium' | 'high';
 
-export interface ProviderRequestOptions {
+interface ProviderRequestOptions {
   model: string;
   text: { verbosity: ProviderTextVerbosity };
   reasoning: { effort: ProviderReasoningEffort; summary: 'auto' };

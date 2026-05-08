@@ -84,7 +84,9 @@ void test('applySubagentActivity returns the same state when a terminal replay d
     phase: 'running',
     activeRunView: {
       ...createEmptyActiveRunView(THREAD_ID),
-      transcriptEntries: [entry],
+    },
+    backgroundNotificationsByThread: {
+      [THREAD_ID]: [entry],
     },
   });
 

@@ -38,6 +38,56 @@ void test('bootstrapDaemonEntry does not import main when env loading fails', as
   assert.deepEqual(calls, ['loadEnv']);
 });
 
+void test('bootstrapDaemonEntry validates provider runtime knobs before importing main', async () => {
+  const calls: string[] = [];
+  const previous = process.env['GEULBAT_CODEX_REASONING_EFFORT'];
+
+  try {
+    await assert.rejects(
+      () =>
+        bootstrapDaemonEntry({
+          loadEnv: () => {
+            calls.push('loadEnv');
+            process.env['GEULBAT_CODEX_REASONING_EFFORT'] = 'mid';
+          },
+          importMain: async () => {
+            calls.push('importMain');
+          },
+        }),
+      /invalid GEULBAT_CODEX_REASONING_EFFORT: mid/,
+    );
+  } finally {
+    restoreEnv('GEULBAT_CODEX_REASONING_EFFORT', previous);
+  }
+
+  assert.deepEqual(calls, ['loadEnv']);
+});
+
+void test('bootstrapDaemonEntry validates subagent runtime knobs before importing main', async () => {
+  const calls: string[] = [];
+  const previous = process.env['GEULBAT_SUBAGENT_BACKGROUND_CAPACITY'];
+
+  try {
+    await assert.rejects(
+      () =>
+        bootstrapDaemonEntry({
+          loadEnv: () => {
+            calls.push('loadEnv');
+            process.env['GEULBAT_SUBAGENT_BACKGROUND_CAPACITY'] = 'foo';
+          },
+          importMain: async () => {
+            calls.push('importMain');
+          },
+        }),
+      /invalid GEULBAT_SUBAGENT_BACKGROUND_CAPACITY: foo/,
+    );
+  } finally {
+    restoreEnv('GEULBAT_SUBAGENT_BACKGROUND_CAPACITY', previous);
+  }
+
+  assert.deepEqual(calls, ['loadEnv']);
+});
+
 void test('bootstrapDaemonEntry still loads env before surfacing main import failure', async () => {
   const calls: string[] = [];
 
@@ -57,3 +107,11 @@ void test('bootstrapDaemonEntry still loads env before surfacing main import fai
 
   assert.deepEqual(calls, ['loadEnv', 'importMain']);
 });
+
+function restoreEnv(name: string, previous: string | undefined): void {
+  if (previous === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = previous;
+  }
+}

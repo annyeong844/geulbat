@@ -180,8 +180,8 @@ async function submitApprovalAction({
     approved,
     grantScope,
   });
-  if (result.kind === 'approved') {
-    dispatch({ type: 'approval_cleared' });
+  if (result.kind === 'approved' || result.kind === 'denied') {
+    dispatch({ type: 'approval_cleared', callId: pending.callId });
     return;
   }
   if (result.kind === 'failed') {

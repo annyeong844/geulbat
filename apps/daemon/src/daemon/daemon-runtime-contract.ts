@@ -15,6 +15,7 @@ import type {
   SubagentType,
 } from './subagent-runtime-contracts.js';
 import type { AgentEvent, ToolRunState } from './runtime-contracts.js';
+import type { PermissionMode } from '@geulbat/protocol/run-approval';
 
 export type AgentMemoryIndex = Pick<
   MemoryIndexStore,
@@ -32,6 +33,7 @@ export interface StartSubagentBackgroundRunArgs {
   runtimeServices: AgentRuntimeServices;
   launchReservation?: SubagentLaunchReservation;
   approvalSessionId?: string;
+  permissionMode?: PermissionMode;
   emitAgentEvent?: (event: AgentEvent) => void;
   timeoutMs?: number;
   childRunId?: RunId;

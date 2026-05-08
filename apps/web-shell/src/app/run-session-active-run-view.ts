@@ -49,6 +49,7 @@ export function clearPendingApprovalState(
   return {
     ...activeRunView,
     pendingApproval: null,
+    pendingApprovals: [],
     streamError: null,
   };
 }
@@ -63,6 +64,7 @@ export function setRunErrorState(
     threadId,
     runId: null,
     pendingApproval: null,
+    pendingApprovals: [],
     streamError: message,
   };
 }
@@ -76,6 +78,7 @@ export function setRunSyncFailedState(
     ...activeRunView,
     threadId,
     pendingApproval: null,
+    pendingApprovals: [],
     streamError: message,
   };
 }
@@ -124,6 +127,10 @@ export function setPendingApproval(
   threadId: string,
   pendingApproval: ApprovalRequired,
 ): ActiveRunViewState {
+  const pendingApprovals = enqueuePendingApproval(
+    activeRunView.pendingApprovals,
+    pendingApproval,
+  );
   return {
     ...activeRunView,
     threadId,
@@ -131,7 +138,34 @@ export function setPendingApproval(
       activeRunView.transcriptEntries,
       pendingApproval,
     ),
-    pendingApproval,
+    pendingApproval: activeRunView.pendingApproval ?? pendingApproval,
+    pendingApprovals,
+  };
+}
+
+export function clearResolvedPendingApproval(
+  activeRunView: ActiveRunViewState,
+  callId: string | undefined,
+): ActiveRunViewState {
+  if (callId === undefined) {
+    return clearPendingApprovalState(activeRunView);
+  }
+
+  const hadQueuedApproval = activeRunView.pendingApprovals.some(
+    (pendingApproval) => pendingApproval.callId === callId,
+  );
+  const pendingApprovals = activeRunView.pendingApprovals.filter(
+    (pendingApproval) => pendingApproval.callId !== callId,
+  );
+  if (!hadQueuedApproval && activeRunView.pendingApproval?.callId !== callId) {
+    return activeRunView;
+  }
+
+  return {
+    ...activeRunView,
+    pendingApproval: pendingApprovals[0] ?? null,
+    pendingApprovals,
+    streamError: null,
   };
 }
 
@@ -150,4 +184,16 @@ export function appendSubagentActivityToActiveRun(
     ...activeRunView,
     transcriptEntries: nextTranscriptEntries,
   };
+}
+
+function enqueuePendingApproval(
+  pendingApprovals: readonly ApprovalRequired[],
+  pendingApproval: ApprovalRequired,
+): ApprovalRequired[] {
+  if (
+    pendingApprovals.some((entry) => entry.callId === pendingApproval.callId)
+  ) {
+    return [...pendingApprovals];
+  }
+  return [...pendingApprovals, pendingApproval];
 }

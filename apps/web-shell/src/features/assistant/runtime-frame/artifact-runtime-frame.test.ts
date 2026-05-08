@@ -52,9 +52,10 @@ class FakeMessageWindow {
     }
   }
 
-  emitMessage(event: MessageEvent<unknown>) {
+  emitMessage(event: { source: unknown; origin: string; data: unknown }) {
+    const messageEvent = event as MessageEvent<unknown>;
     for (const listener of [...this.messageListeners]) {
-      listener(event);
+      listener(messageEvent);
     }
   }
 }
@@ -162,23 +163,23 @@ async function createArtifactRuntimeFrameHarness(
     async emitReady() {
       await act(async () => {
         fakeWindow.emitMessage({
-          source: frameWindow as unknown as MessageEventSource,
+          source: frameWindow,
           origin: hostOrigin,
           data: {
             kind: ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
             action: ARTIFACT_RUNTIME_HOST_READY_ACTION,
           },
-        } as MessageEvent<unknown>);
+        });
         await Promise.resolve();
       });
     },
     async emitRuntimeMessage(data) {
       await act(async () => {
         fakeWindow.emitMessage({
-          source: frameWindow as unknown as MessageEventSource,
+          source: frameWindow,
           origin: hostOrigin,
           data,
-        } as MessageEvent<unknown>);
+        });
         await Promise.resolve();
       });
     },

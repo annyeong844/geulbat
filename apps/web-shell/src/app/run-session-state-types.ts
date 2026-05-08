@@ -18,6 +18,7 @@ export interface ActiveRunViewState {
   artifactsByRef: Record<string, ThreadArtifactVersion>;
   activeArtifactRef: ArtifactRef | null;
   pendingApproval: ApprovalRequired | null;
+  pendingApprovals: ApprovalRequired[];
   streamError: string | null;
 }
 
@@ -94,7 +95,7 @@ export type RunSessionStateAction =
   | { type: 'session_error_cleared' }
   | { type: 'run_start_failed'; message: string }
   | { type: 'approval_submit_failed'; message: string }
-  | { type: 'approval_cleared' }
+  | { type: 'approval_cleared'; callId?: string }
   | { type: 'run_start_cancelled' };
 
 export function createEmptyActiveRunView(
@@ -108,6 +109,7 @@ export function createEmptyActiveRunView(
     artifactsByRef: {},
     activeArtifactRef: null,
     pendingApproval: null,
+    pendingApprovals: [],
     streamError: null,
   };
 }

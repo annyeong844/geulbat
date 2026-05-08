@@ -463,3 +463,136 @@ void test('agent_send_input forwards child approval events through the shared ch
     await rm(workspaceRoot, { recursive: true, force: true });
   }
 });
+
+void test('agent_send_input lets continued worker inherit current parent permission mode', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-agent-send-input-permission-'),
+  );
+  const threadId = testThreadId(34);
+  const projectId = testProjectId();
+  const daemonContext = createDaemonContext();
+
+  const testAgentSpawnTool = createAgentSpawnTool({
+    startBackgroundRun: createSubagentRunLauncher({
+      runAgentLoop: async () => ({
+        ok: true,
+        finalProse: 'seed child answer',
+      }),
+    }).startBackgroundRun,
+  });
+
+  try {
+    const seeded = await testAgentSpawnTool.execute(
+      {
+        task: 'seed child',
+        subagent_type: 'worker',
+      },
+      {
+        kind: 'agent',
+        callId: 'call-seed-permission-child',
+        workspaceRoot,
+        threadId,
+        runId: 'top-run-seed-permission',
+        projectId,
+        runState: createRunState({
+          runId: 'top-run-seed-permission',
+          runContext: makeRunWorkspaceContext({
+            threadId,
+            projectId,
+            workspaceRoot,
+          }),
+        }),
+        signal: new AbortController().signal,
+        runSignal: new AbortController().signal,
+        currentFile: undefined,
+        selection: undefined,
+        approvalGranted: false,
+        agentSpawnRuntime: daemonContext,
+        memoryIndex: undefined,
+        emitAgentEvent: () => {},
+        permissionMode: 'basic',
+        approvalSessionId: 'session-seed-permission',
+      },
+    );
+
+    assert.equal(seeded.ok, true);
+    const seededPayload = JSON.parse(seeded.output) as {
+      childRunId: string;
+    };
+    const childRunId = assertValidRunId(seededPayload.childRunId);
+    await waitForChildStatus({
+      daemonContext,
+      childRunId,
+      status: 'completed',
+    });
+
+    let capturedApprovalContext:
+      | {
+          sessionId: string;
+          permissionMode: 'basic' | 'full_access';
+          ownerRunId?: string;
+          ownerThreadId?: string;
+        }
+      | undefined;
+    const testAgentSendInputTool = createAgentSendInputTool({
+      startBackgroundRun: createSubagentRunLauncher({
+        runAgentLoop: async (input) => {
+          capturedApprovalContext = input.approvalContext;
+          return {
+            ok: true,
+            finalProse: 'continued child answer',
+          };
+        },
+      }).startBackgroundRun,
+    });
+
+    const continued = await testAgentSendInputTool.execute(
+      {
+        child_run_id: seededPayload.childRunId,
+        task: 'continue child',
+      },
+      {
+        kind: 'agent',
+        callId: 'call-continue-permission',
+        workspaceRoot,
+        threadId,
+        runId: 'top-run-continue-permission',
+        projectId,
+        runState: createRunState({
+          runId: 'top-run-continue-permission',
+          runContext: makeRunWorkspaceContext({
+            threadId,
+            projectId,
+            workspaceRoot,
+          }),
+        }),
+        signal: new AbortController().signal,
+        runSignal: new AbortController().signal,
+        currentFile: undefined,
+        selection: undefined,
+        approvalGranted: false,
+        approvalSessionId: 'session-continue-permission',
+        permissionMode: 'full_access',
+        agentSpawnRuntime: daemonContext,
+        memoryIndex: undefined,
+        emitAgentEvent: () => {},
+      },
+    );
+
+    assert.equal(continued.ok, true);
+    await waitForChildStatus({
+      daemonContext,
+      childRunId,
+      status: 'completed',
+    });
+
+    assert.deepEqual(capturedApprovalContext, {
+      sessionId: 'session-continue-permission',
+      permissionMode: 'full_access',
+      ownerRunId: 'top-run-continue-permission',
+      ownerThreadId: threadId,
+    });
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
