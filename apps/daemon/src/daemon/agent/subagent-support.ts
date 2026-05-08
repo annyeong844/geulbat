@@ -270,6 +270,45 @@ async function launchSubagentBackgroundRun(
   );
 }
 
+function routeChildAgentEvent(args: {
+  event: AgentEvent;
+  parentRunId: RunId;
+  childRunId: RunId;
+  subagentType: SubagentType;
+  runtimeServices: AgentRuntimeServices;
+  emitAgentEvent: ((event: AgentEvent) => void) | undefined;
+}): string | undefined {
+  const {
+    event,
+    parentRunId,
+    childRunId,
+    subagentType,
+    runtimeServices,
+    emitAgentEvent,
+  } = args;
+
+  if (event.type === 'approval_required') {
+    runtimeServices.childRuns.markChildApprovalPending(childRunId);
+    emitAgentEvent?.({
+      type: 'subagent_approval_required',
+      payload: {
+        parentRunId,
+        childRunId,
+        subagentType,
+        approval: event.payload,
+      },
+    });
+    emitAgentEvent?.(event);
+    return undefined;
+  }
+
+  runtimeServices.childRuns.markChildRunning(childRunId);
+  if (event.type === 'error' && typeof event.payload.message === 'string') {
+    return event.payload.message;
+  }
+  return undefined;
+}
+
 async function runBackgroundChild(args: {
   task: string;
   subagentType: SubagentType;
@@ -327,26 +366,16 @@ async function runBackgroundChild(args: {
           : {}),
       },
       onEvent: (event) => {
-        if (event.type === 'approval_required') {
-          runtimeServices.childRuns.markChildApprovalPending(childRunId);
-          emitAgentEvent?.({
-            type: 'subagent_approval_required',
-            payload: {
-              parentRunId,
-              childRunId,
-              subagentType,
-              approval: event.payload,
-            },
-          });
-          emitAgentEvent?.(event);
-          return;
-        }
-        runtimeServices.childRuns.markChildRunning(childRunId);
-        if (
-          event.type === 'error' &&
-          typeof event.payload.message === 'string'
-        ) {
-          terminalMessage = event.payload.message;
+        const message = routeChildAgentEvent({
+          event,
+          parentRunId,
+          childRunId,
+          subagentType,
+          runtimeServices,
+          emitAgentEvent,
+        });
+        if (message !== undefined) {
+          terminalMessage = message;
         }
       },
     });

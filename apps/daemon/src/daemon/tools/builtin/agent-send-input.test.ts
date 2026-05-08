@@ -383,6 +383,10 @@ void test('agent_send_input forwards child approval events through the shared ch
               sideEffectLevel: 'write',
             },
           });
+          assert.equal(
+            daemonContext.childRuns.getChildRun(childRunId)?.status,
+            'approval_pending',
+          );
           return {
             ok: true,
             finalProse: 'continued child answer',

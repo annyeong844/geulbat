@@ -326,6 +326,77 @@ void test('agent_spawn logs child loop throws before publishing terminal failure
   }
 });
 
+void test('agent_spawn uses child error event messages as terminal child results', async () => {
+  const threadId = testThreadId(51);
+  const projectId = testProjectId();
+  const daemonContext = createDaemonContext();
+  const parentState = createRunState({
+    runId: 'top-run-child-error-event',
+    runContext: makeRunWorkspaceContext({
+      threadId,
+      projectId,
+      workspaceRoot: '/tmp/workspace',
+    }),
+  });
+  const testAgentSpawnTool = createAgentSpawnTool({
+    startBackgroundRun: createSubagentRunLauncher({
+      runAgentLoop: async (input) => {
+        input.onEvent({
+          type: 'error',
+          payload: {
+            code: 'internal',
+            message: 'child event failed',
+          },
+        });
+        assert.equal(
+          daemonContext.childRuns.getChildRun(assertRunId(input.runId))?.status,
+          'running',
+        );
+        return {
+          ok: false,
+          finalProse: '',
+        };
+      },
+    }).startBackgroundRun,
+  });
+
+  const result = await testAgentSpawnTool.execute(
+    {
+      task: 'read files',
+      subagent_type: 'explorer',
+    },
+    {
+      callId: 'call-child-error-event',
+      workspaceRoot: '/tmp/workspace',
+      threadId,
+      runId: 'top-run-child-error-event',
+      projectId,
+      runState: parentState,
+      signal: new AbortController().signal,
+      runSignal: new AbortController().signal,
+      agentSpawnRuntime: daemonContext,
+    },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    childRunId: string;
+  };
+  const childRunId = assertRunId(payload.childRunId);
+
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (daemonContext.childRuns.getChildRun(childRunId)?.status === 'failed') {
+      break;
+    }
+    await delay(20);
+  }
+
+  const childRun = daemonContext.childRuns.getChildRun(childRunId);
+  assert.equal(childRun?.status, 'failed');
+  assert.equal(childRun?.reason, 'child_error');
+  assert.equal(childRun?.result, 'child event failed');
+});
+
 void test('agent_spawn catches async publish failures without leaking unhandled rejections', async () => {
   const threadId = testThreadId(6);
   const projectId = testProjectId();
