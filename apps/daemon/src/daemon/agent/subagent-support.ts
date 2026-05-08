@@ -309,6 +309,36 @@ function routeChildAgentEvent(args: {
   return undefined;
 }
 
+async function persistChildAssistantTranscript(args: {
+  workspaceRoot: string;
+  childThreadId: RunWorkspaceContext['threadId'];
+  parentRunId: RunId;
+  childRunId: RunId;
+  subagentType: SubagentType;
+  result: AgentResult;
+}): Promise<void> {
+  if (!args.result.finalProse.trim()) {
+    return;
+  }
+
+  try {
+    await appendChildAssistantTranscriptEntry({
+      workspaceRoot: args.workspaceRoot,
+      threadId: args.childThreadId,
+      childRunId: args.childRunId,
+      content: args.result.finalProse,
+    });
+  } catch (error: unknown) {
+    logger.error('child assistant transcript persistence failed:', {
+      parentRunId: args.parentRunId,
+      childRunId: args.childRunId,
+      childThreadId: args.childThreadId,
+      subagentType: args.subagentType,
+      cause: getErrorMessage(error),
+    });
+  }
+}
+
 async function runBackgroundChild(args: {
   task: string;
   subagentType: SubagentType;
@@ -380,18 +410,17 @@ async function runBackgroundChild(args: {
       },
     });
 
-    if (result.finalProse.trim()) {
-      await appendChildAssistantTranscriptEntry({
-        workspaceRoot,
-        threadId: childThreadId,
-        childRunId,
-        content: result.finalProse,
-      });
-    }
-
     terminalOutcome = buildChildResultTerminalOutcome({
       result,
       terminalMessage,
+    });
+    await persistChildAssistantTranscript({
+      workspaceRoot,
+      childThreadId,
+      parentRunId,
+      childRunId,
+      subagentType,
+      result,
     });
   } catch (error: unknown) {
     const childAbortSignal = childRunState.abortController.signal;

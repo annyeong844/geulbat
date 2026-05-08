@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { agentSpawnTool, createAgentSpawnTool } from './agent-spawn.js';
@@ -7,6 +10,7 @@ import { DEFAULT_MAX_CONCURRENT_BACKGROUND_CHILDREN } from '../../agent/subagent
 import { createSubagentRunLauncher } from '../../agent/subagent-support.js';
 import { createDaemonContext } from '../../context.js';
 import { createRunState } from '../../agent/runtime/run-state.js';
+import { threadFilePath } from '../../sessions/paths.js';
 import { testProjectId } from '../../../test-support/project-id.js';
 import { testRunId } from '../../../test-support/run-id.js';
 import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
@@ -395,6 +399,109 @@ void test('agent_spawn uses child error event messages as terminal child results
   assert.equal(childRun?.status, 'failed');
   assert.equal(childRun?.reason, 'child_error');
   assert.equal(childRun?.result, 'child event failed');
+});
+
+void test('agent_spawn preserves child success when assistant transcript persistence fails', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-agent-spawn-transcript-'),
+  );
+  const threadId = testThreadId(52);
+  const projectId = testProjectId();
+  const childResultText = 'child completed despite transcript failure';
+  const daemonContext = createDaemonContext();
+  const parentState = createRunState({
+    runId: 'top-run-transcript-failure',
+    runContext: makeRunWorkspaceContext({
+      threadId,
+      projectId,
+      workspaceRoot,
+    }),
+  });
+  const diagnostics: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    diagnostics.push(args);
+  };
+
+  try {
+    const testAgentSpawnTool = createAgentSpawnTool({
+      startBackgroundRun: createSubagentRunLauncher({
+        runAgentLoop: async (input) => {
+          const transcriptPath = threadFilePath(
+            input.runContext.workspaceRoot,
+            input.runContext.threadId,
+          );
+          await rm(transcriptPath, { recursive: true, force: true });
+          await mkdir(transcriptPath, { recursive: true });
+          return { ok: true, finalProse: childResultText };
+        },
+      }).startBackgroundRun,
+    });
+
+    const result = await testAgentSpawnTool.execute(
+      {
+        task: 'write result',
+        subagent_type: 'explorer',
+      },
+      {
+        callId: 'call-transcript-persistence-failure',
+        workspaceRoot,
+        threadId,
+        runId: 'top-run-transcript-failure',
+        projectId,
+        runState: parentState,
+        signal: new AbortController().signal,
+        runSignal: new AbortController().signal,
+        agentSpawnRuntime: daemonContext,
+      },
+    );
+
+    assert.equal(result.ok, true);
+    const payload = JSON.parse(result.output) as { childRunId: string };
+    const childRunId = assertRunId(payload.childRunId);
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (
+        daemonContext.childRuns.getChildRun(childRunId)?.status !== 'running'
+      ) {
+        break;
+      }
+      await delay(10);
+    }
+
+    const childRun = daemonContext.childRuns.getChildRun(childRunId);
+    assert.equal(childRun?.status, 'completed');
+    assert.equal(childRun?.result, childResultText);
+
+    const backgroundResults =
+      daemonContext.backgroundNotifications.consumeThreadBackgroundResults(
+        threadId,
+      );
+    assert.equal(backgroundResults.length, 1);
+    assert.equal(backgroundResults[0]?.terminalState, 'completed');
+    assert.equal(backgroundResults[0]?.result, childResultText);
+    const diagnostic = diagnostics.find((entry) =>
+      String(entry[0]).includes(
+        'child assistant transcript persistence failed',
+      ),
+    );
+    assert.ok(diagnostic);
+    assert.equal(
+      (diagnostic[1] as { parentRunId?: unknown })?.parentRunId,
+      'top-run-transcript-failure',
+    );
+    assert.equal(
+      (diagnostic[1] as { childRunId?: unknown })?.childRunId,
+      childRunId,
+    );
+    assert.equal(
+      (diagnostic[1] as { subagentType?: unknown })?.subagentType,
+      'explorer',
+    );
+  } finally {
+    console.error = originalError;
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
 });
 
 void test('agent_spawn catches async publish failures without leaking unhandled rejections', async () => {
