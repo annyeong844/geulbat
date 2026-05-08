@@ -409,3 +409,75 @@ void test('executeTool timeout aborts the per-tool signal without mutating the r
   assert.equal(capturedContext.runSignal, controller.signal);
   assert.equal(capturedContext.runSignal?.aborted, false);
 });
+
+void test('executeTool classifies caller aborts before tool completion as client disconnects', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  const controller = new AbortController();
+  store.registerTool(
+    makeTool({
+      name: 'caller_abort_pending_executor_tool',
+      omitTimeout: true,
+      async executeParsed() {
+        await delay(50);
+        return {
+          ok: true,
+          output: 'should-not-complete',
+        };
+      },
+    }),
+  );
+
+  const waiting = executeTool(
+    'caller_abort_pending_executor_tool',
+    {},
+    {
+      callId: 'call_caller_abort_pending',
+      workspaceRoot: '/tmp',
+      signal: controller.signal,
+    },
+    { toolRegistry: store },
+  );
+
+  await delay(0);
+  controller.abort();
+
+  assert.deepEqual(await waiting, {
+    ok: false,
+    output: '',
+    errorCode: 'aborted',
+    error: 'client disconnected',
+  });
+});
+
+void test('executeTool classifies thrown-after-caller-abort as client disconnects', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  const controller = new AbortController();
+  store.registerTool(
+    makeTool({
+      name: 'caller_abort_throw_executor_tool',
+      omitTimeout: true,
+      async executeParsed() {
+        controller.abort();
+        throw new Error('throw after abort');
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'caller_abort_throw_executor_tool',
+    {},
+    {
+      callId: 'call_caller_abort_throw',
+      workspaceRoot: '/tmp',
+      signal: controller.signal,
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'aborted',
+    error: 'client disconnected',
+  });
+});

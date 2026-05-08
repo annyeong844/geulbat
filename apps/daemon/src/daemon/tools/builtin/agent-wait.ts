@@ -5,6 +5,7 @@ import {
 } from '../parsed-tool.js';
 import { isRunId, type RunId } from '@geulbat/protocol/ids';
 import { toolError } from '../result.js';
+import { getErrorMessage } from '../../utils/error.js';
 import type {
   AgentChildTerminalReason,
   AgentChildTerminalState,
@@ -211,8 +212,14 @@ function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
 
         try {
           await registry.waitForRevisionChange(revision, ctx.signal);
-        } catch {
-          return toolError('execution_failed', 'agent_wait aborted');
+        } catch (error: unknown) {
+          if (ctx.signal?.aborted) {
+            return toolError('aborted', 'agent_wait aborted');
+          }
+          return toolError(
+            'execution_failed',
+            `agent_wait failed: ${getErrorMessage(error)}`,
+          );
         }
       }
     },
