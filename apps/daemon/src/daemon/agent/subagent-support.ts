@@ -38,10 +38,11 @@ import {
   buildChildLaunchPayload,
   buildChildLaunchRejected,
 } from '../subagent-runtime-contracts.js';
+import type { PermissionMode } from '@geulbat/protocol/run-approval';
 
 const logger = createLogger('agent/subagent-support');
 
-const CHILD_PERMISSION_MODE = 'basic' as const;
+const DEFAULT_CHILD_PERMISSION_MODE: PermissionMode = 'basic';
 
 const SUBAGENT_TOOL_SETS = {
   explorer: ['list_files', 'read_file', 'search_files'],
@@ -67,6 +68,7 @@ interface LaunchSubagentBackgroundRunArgs {
   runtimeServices: AgentRuntimeServices;
   launchReservation?: SubagentLaunchReservation;
   approvalSessionId?: string;
+  permissionMode?: PermissionMode;
   emitAgentEvent?: (event: AgentEvent) => void;
   runAgentLoop: (input: AgentInput) => Promise<AgentResult>;
   timeoutMs?: number;
@@ -167,6 +169,9 @@ async function startSubagentBackgroundRun(
     ...(args.approvalSessionId !== undefined
       ? { approvalSessionId: args.approvalSessionId }
       : {}),
+    ...(args.permissionMode !== undefined
+      ? { permissionMode: args.permissionMode }
+      : {}),
     ...(args.emitAgentEvent !== undefined
       ? { emitAgentEvent: args.emitAgentEvent }
       : {}),
@@ -200,6 +205,7 @@ async function launchSubagentBackgroundRun(
     runtimeServices,
     launchReservation,
     approvalSessionId,
+    permissionMode,
     emitAgentEvent,
     runAgentLoop,
     timeoutMs,
@@ -248,6 +254,7 @@ async function launchSubagentBackgroundRun(
     projectId,
     workspaceRoot,
     approvalSessionId,
+    permissionMode,
     emitAgentEvent,
     runAgentLoop,
     runtimeServices,
@@ -271,6 +278,7 @@ async function runBackgroundChild(args: {
   projectId: RunWorkspaceContext['projectId'];
   workspaceRoot: string;
   approvalSessionId: string | undefined;
+  permissionMode: PermissionMode | undefined;
   emitAgentEvent: ((event: AgentEvent) => void) | undefined;
   runAgentLoop: (input: AgentInput) => Promise<AgentResult>;
   runtimeServices: AgentRuntimeServices;
@@ -284,6 +292,7 @@ async function runBackgroundChild(args: {
     projectId,
     workspaceRoot,
     approvalSessionId,
+    permissionMode,
     emitAgentEvent,
     runAgentLoop,
     runtimeServices,
@@ -312,7 +321,7 @@ async function runBackgroundChild(args: {
       runtimeServices,
       approvalContext: {
         sessionId: approvalSessionId ?? childThreadId,
-        permissionMode: CHILD_PERMISSION_MODE,
+        permissionMode: permissionMode ?? DEFAULT_CHILD_PERMISSION_MODE,
         ...(subagentType === 'worker'
           ? { ownerRunId: parentRunId, ownerThreadId }
           : {}),

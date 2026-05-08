@@ -4,6 +4,7 @@ import {
   appendAssistantAnswerText,
   appendAssistantTranscriptTextToActiveRun,
   appendTranscriptActivity,
+  clearResolvedPendingApproval,
   clearPendingApprovalState,
   setPendingApproval,
   setRunErrorState,
@@ -108,7 +109,10 @@ export function reduceRunSessionState(
     case 'approval_cleared':
       return {
         ...state,
-        activeRunView: clearPendingApprovalState(state.activeRunView),
+        activeRunView: clearResolvedPendingApproval(
+          state.activeRunView,
+          action.callId,
+        ),
       };
     case 'run_start_cancelled':
       return transitionToIdle(

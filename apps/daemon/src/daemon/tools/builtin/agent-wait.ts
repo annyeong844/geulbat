@@ -143,7 +143,7 @@ function buildWaitResult(args: {
   };
 }
 
-export function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
+function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
   const timeoutMs = options.timeoutMs;
 
   return defineParsedTool<AgentWaitArgs>({

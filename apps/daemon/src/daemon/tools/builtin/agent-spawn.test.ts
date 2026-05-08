@@ -481,7 +481,7 @@ void test('agent_spawn keeps terminal notification independent from registry pub
   }
 });
 
-void test('agent_spawn keeps child worker on basic permission mode while reusing the parent approval session', async () => {
+void test('agent_spawn lets child worker inherit parent permission mode while reusing the parent approval session', async () => {
   const threadId = testThreadId(7);
   const projectId = testProjectId();
   const daemonContext = createDaemonContext();
@@ -553,7 +553,7 @@ void test('agent_spawn keeps child worker on basic permission mode while reusing
   }
   assert.deepEqual(capturedApprovalContext, {
     sessionId: 'parent-approval-session',
-    permissionMode: 'basic',
+    permissionMode: 'full_access',
     ownerRunId: 'top-run-worker',
     ownerThreadId: threadId,
   });

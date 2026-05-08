@@ -10,6 +10,7 @@ import {
   type SubagentType,
 } from '../../subagent-runtime-contracts.js';
 import type { SubagentRunLauncher } from '../types.js';
+import { runSubagentLaunchPipeline } from './subagent-launch-pipeline.js';
 
 const SPAWN_MODES = ['blocking', 'background'] as const;
 
@@ -78,7 +79,8 @@ export function createAgentSpawnTool(
           }),
         );
       }
-      if (subagentType === 'worker' && !isAgentToolExecutionContext(ctx)) {
+      const agentCtx = isAgentToolExecutionContext(ctx) ? ctx : undefined;
+      if (subagentType === 'worker' && !agentCtx) {
         return toolError(
           'execution_failed',
           'worker requires approval event routing',
@@ -89,47 +91,25 @@ export function createAgentSpawnTool(
       if (!agentSpawnRuntime) {
         return toolError('execution_failed', 'agent spawn runtime is required');
       }
-      const launchAdmission =
-        agentSpawnRuntime.subagentAdmission.reserveSubagentLaunchSlot({
-          runState: ctx.runState,
-        });
-      if (!launchAdmission.ok) {
-        return buildChildLaunchPayload(
-          buildChildLaunchRejected({
-            subagentType,
-            errorCode: launchAdmission.errorCode,
-            error: launchAdmission.error,
-            effectiveMax: launchAdmission.effectiveMax,
-          }),
-        );
-      }
-
-      try {
-        const startBackgroundRun =
-          options.startBackgroundRun ??
-          agentSpawnRuntime.subagentRuns.startBackgroundRun;
-        return await startBackgroundRun({
-          task,
-          subagentType,
-          parentRunId,
-          ownerThreadId,
-          projectId,
-          workspaceRoot: ctx.workspaceRoot,
-          parentRunState: ctx.runState,
-          runtimeServices: agentSpawnRuntime,
-          launchReservation: launchAdmission.reservation,
-          ...(isAgentToolExecutionContext(ctx)
-            ? { emitAgentEvent: ctx.emitAgentEvent }
-            : {}),
-          ...(ctx.approvalSessionId !== undefined
-            ? { approvalSessionId: ctx.approvalSessionId }
-            : {}),
-          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-        });
-      } catch (error: unknown) {
-        launchAdmission.reservation.release();
-        throw error;
-      }
+      return await runSubagentLaunchPipeline({
+        task,
+        subagentType,
+        parentRunId,
+        ownerThreadId,
+        projectId,
+        workspaceRoot: ctx.workspaceRoot,
+        parentRunState: ctx.runState,
+        runtimeServices: agentSpawnRuntime,
+        ...(options.startBackgroundRun !== undefined
+          ? { startBackgroundRun: options.startBackgroundRun }
+          : {}),
+        ...(agentCtx ? { emitAgentEvent: agentCtx.emitAgentEvent } : {}),
+        ...(ctx.approvalSessionId !== undefined
+          ? { approvalSessionId: ctx.approvalSessionId }
+          : {}),
+        ...(agentCtx ? { permissionMode: agentCtx.permissionMode } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      });
     },
   });
 }

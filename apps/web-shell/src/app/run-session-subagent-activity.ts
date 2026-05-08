@@ -8,6 +8,24 @@ export function applySubagentActivity(
   threadId: string,
   entry: Extract<RunTranscriptEntry, { kind: 'subagent_activity' }>,
 ): RunSessionState {
+  if (isTerminalSubagentActivity(entry)) {
+    const nextBackgroundNotificationsByThread = appendThreadNotification(
+      state.backgroundNotificationsByThread,
+      threadId,
+      entry,
+    );
+    if (
+      nextBackgroundNotificationsByThread ===
+      state.backgroundNotificationsByThread
+    ) {
+      return state;
+    }
+    return {
+      ...state,
+      backgroundNotificationsByThread: nextBackgroundNotificationsByThread,
+    };
+  }
+
   const shouldAppendToActiveTranscript =
     state.phase !== 'idle' && state.activeRunView.threadId === threadId;
   if (shouldAppendToActiveTranscript) {
@@ -32,4 +50,10 @@ export function applySubagentActivity(
       entry,
     ),
   };
+}
+
+function isTerminalSubagentActivity(
+  entry: Extract<RunTranscriptEntry, { kind: 'subagent_activity' }>,
+): boolean {
+  return entry.deliveryId !== undefined;
 }

@@ -181,6 +181,45 @@ void test('approval submit failure preserves pending approval and records a visi
   assert.equal(cleared.activeRunView.streamError, null);
 });
 
+void test('multiple pending approvals are revealed one at a time as each is cleared', () => {
+  const firstApproval = makeApprovalRequiredFixture({
+    callId: 'approval-call-1',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+  });
+  const secondApproval = makeApprovalRequiredFixture({
+    callId: 'approval-call-2',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+  });
+  const withApprovals = reduceRunSessionState(
+    reduceRunSessionState(createInitialRunSessionState(), {
+      type: 'approval_requested',
+      threadId: THREAD_ID_VALUE,
+      pendingApproval: firstApproval,
+    }),
+    {
+      type: 'approval_requested',
+      threadId: THREAD_ID_VALUE,
+      pendingApproval: secondApproval,
+    },
+  );
+
+  assert.equal(withApprovals.activeRunView.pendingApproval, firstApproval);
+
+  const afterFirstCleared = reduceRunSessionState(withApprovals, {
+    type: 'approval_cleared',
+    callId: firstApproval.callId,
+  });
+  assert.equal(afterFirstCleared.activeRunView.pendingApproval, secondApproval);
+
+  const afterSecondCleared = reduceRunSessionState(afterFirstCleared, {
+    type: 'approval_cleared',
+    callId: secondApproval.callId,
+  });
+  assert.equal(afterSecondCleared.activeRunView.pendingApproval, null);
+});
+
 void test('run transcript entries stay structured instead of flattening tool events into commentary text', () => {
   const withEntries = reduceRunSessionState(
     reduceRunSessionState(
@@ -293,7 +332,7 @@ void test('subagent activity falls back to thread-scoped background notification
   });
 });
 
-void test('subagent terminal replay with the same deliveryId is deduped in the active transcript', () => {
+void test('subagent terminal replay with the same deliveryId is deduped in thread notifications', () => {
   const initial = reduceRunSessionState(
     reduceRunSessionState(
       reduceRunSessionState(createInitialRunSessionState(), {
@@ -331,7 +370,56 @@ void test('subagent terminal replay with the same deliveryId is deduped in the a
     },
   });
 
-  assert.equal(deduped.activeRunView.transcriptEntries.length, 1);
+  assert.deepEqual(deduped.activeRunView.transcriptEntries, []);
+  assert.equal(
+    deduped.backgroundNotificationsByThread[THREAD_ID_VALUE]?.length,
+    1,
+  );
+});
+
+void test('subagent terminal activity remains visible after the parent run settles', () => {
+  const withTerminalActivity = reduceRunSessionState(
+    reduceRunSessionState(
+      reduceRunSessionState(createInitialRunSessionState(), {
+        type: 'run_start_requested',
+        threadId: THREAD_ID_VALUE,
+      }),
+      {
+        type: 'run_started',
+        threadId: THREAD_ID_VALUE,
+        runId: RUN_ID,
+      },
+    ),
+    {
+      type: 'subagent_activity_added',
+      threadId: THREAD_ID_VALUE,
+      entry: {
+        kind: 'subagent_activity',
+        deliveryId: 'delivery-before-settle',
+        childRunId: 'run-child-before-settle',
+        subagentType: 'worker',
+        state: 'completed',
+        result: 'done before parent settle',
+      },
+    },
+  );
+
+  const settled = reduceRunSessionState(withTerminalActivity, {
+    type: 'run_settled_success',
+  });
+
+  assert.deepEqual(settled.backgroundNotificationsByThread, {
+    [THREAD_ID_VALUE]: [
+      {
+        kind: 'subagent_activity',
+        deliveryId: 'delivery-before-settle',
+        childRunId: 'run-child-before-settle',
+        subagentType: 'worker',
+        state: 'completed',
+        result: 'done before parent settle',
+      },
+    ],
+  });
 });
 
 void test('artifact_activated preserves finalAnswerText and promotes the committed artifact ref', () => {
