@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { bootstrapDaemonEntry } from './bootstrap-entry.js';
+
+const execFileAsync = promisify(execFile);
 
 void test('bootstrapDaemonEntry loads env before importing main', async () => {
   const calls: string[] = [];
@@ -88,6 +92,29 @@ void test('bootstrapDaemonEntry validates subagent runtime knobs before importin
   assert.deepEqual(calls, ['loadEnv']);
 });
 
+void test('bootstrapDaemonEntry loads env before import-time websocket provider headers', async () => {
+  const expectedHeader = 'responses_websockets=test-local-env';
+  const bootstrapEntryUrl = new URL('./bootstrap-entry.js', import.meta.url);
+  const websocketConnectionUrl = new URL(
+    './daemon/llm/provider/transport/responses-websocket-connection.js',
+    import.meta.url,
+  );
+
+  await execFileAsync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      buildWebSocketHeaderBootstrapProbe({
+        bootstrapEntryUrl: bootstrapEntryUrl.href,
+        websocketConnectionUrl: websocketConnectionUrl.href,
+        expectedHeader,
+      }),
+    ],
+    { env: process.env },
+  );
+});
+
 void test('bootstrapDaemonEntry still loads env before surfacing main import failure', async () => {
   const calls: string[] = [];
 
@@ -114,4 +141,54 @@ function restoreEnv(name: string, previous: string | undefined): void {
   } else {
     process.env[name] = previous;
   }
+}
+
+function buildWebSocketHeaderBootstrapProbe(args: {
+  bootstrapEntryUrl: string;
+  websocketConnectionUrl: string;
+  expectedHeader: string;
+}): string {
+  return `
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+
+delete process.env.GEULBAT_WS_BETA_HEADER;
+
+const expectedHeader = ${JSON.stringify(args.expectedHeader)};
+const { bootstrapDaemonEntry } = await import(${JSON.stringify(args.bootstrapEntryUrl)});
+let observedHeader;
+
+await bootstrapDaemonEntry({
+  loadEnv: () => {
+    process.env.GEULBAT_WS_BETA_HEADER = expectedHeader;
+  },
+  importMain: async () => {
+    const server = createServer();
+    server.on('upgrade', (request, socket) => {
+      observedHeader = request.headers['openai-beta'];
+      socket.destroy();
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+
+    try {
+      const { connectWebSocket } = await import(${JSON.stringify(args.websocketConnectionUrl)});
+      await connectWebSocket(\`ws://127.0.0.1:\${address.port}\`, new Headers());
+    } catch {
+      // The local probe server destroys the upgrade socket after reading headers.
+    } finally {
+      if (server.listening) {
+        await new Promise((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    }
+  },
+});
+
+if (observedHeader !== expectedHeader) {
+  throw new Error(\`expected OpenAI-Beta \${expectedHeader}, got \${observedHeader}\`);
+}
+`;
 }
