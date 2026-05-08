@@ -99,6 +99,12 @@ export function createAgentSendInputTool(
           }),
         );
       }
+      if (subagentType === 'worker' && !agentCtx) {
+        return toolError(
+          'execution_failed',
+          'worker requires approval event routing',
+        );
+      }
       return await runSubagentLaunchPipeline({
         task,
         subagentType,
