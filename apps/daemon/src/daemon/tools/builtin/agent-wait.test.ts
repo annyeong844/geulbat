@@ -366,3 +366,71 @@ void test('agent_wait rejects child handles owned by another thread as an outer 
   assert.match(result.error ?? '', /does not belong to current owner thread/);
   assert.equal(result.output, '');
 });
+
+void test('agent_wait reports caller aborts as aborted failures', async () => {
+  const { daemonContext, executionContext } = createWaitContext();
+  const childRunId = testRunId('child-wait-abort');
+  daemonContext.childRuns.registerChildRun({
+    childRunId,
+    childThreadId: testThreadId(100),
+    parentRunId: testRunId('parent-run'),
+    ownerThreadId: executionContext.threadId,
+    subagentType: 'explorer',
+  });
+
+  const abortController = new AbortController();
+  const waiting = agentWaitTool.execute(
+    {
+      child_run_ids: [childRunId],
+    },
+    {
+      ...executionContext,
+      signal: abortController.signal,
+    },
+  );
+
+  await delay(0);
+  abortController.abort();
+
+  const result = await waiting;
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'aborted');
+  assert.match(result.error ?? '', /agent_wait aborted/);
+});
+
+void test('agent_wait reports internal revision wait failures without reclassifying them as aborts', async () => {
+  const { daemonContext, executionContext } = createWaitContext();
+  const childRunId = testRunId('child-wait-internal-failure');
+  daemonContext.childRuns.registerChildRun({
+    childRunId,
+    childThreadId: testThreadId(101),
+    parentRunId: testRunId('parent-run'),
+    ownerThreadId: executionContext.threadId,
+    subagentType: 'explorer',
+  });
+
+  const originalWaitForRevisionChange =
+    daemonContext.childRuns.waitForRevisionChange;
+  daemonContext.childRuns.waitForRevisionChange = async () => {
+    throw new Error('revision tracker failed');
+  };
+
+  try {
+    const result = await agentWaitTool.execute(
+      {
+        child_run_ids: [childRunId],
+      },
+      executionContext,
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'execution_failed');
+    assert.match(
+      result.error ?? '',
+      /agent_wait failed: revision tracker failed/,
+    );
+  } finally {
+    daemonContext.childRuns.waitForRevisionChange =
+      originalWaitForRevisionChange;
+  }
+});
