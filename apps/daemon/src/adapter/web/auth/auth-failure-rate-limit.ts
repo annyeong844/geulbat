@@ -81,11 +81,13 @@ function pruneShellAuthFailureWindowsToCap(
     .filter(([key]) => key !== protectedKey)
     .sort((left, right) => left[1].resetAt - right[1].resetAt);
 
+  let candidateIndex = 0;
   while (
     authFailureWindows.size > MAX_SHELL_AUTH_FAILURE_WINDOWS &&
-    candidates.length > 0
+    candidateIndex < candidates.length
   ) {
-    const entry = candidates.shift();
+    const entry = candidates[candidateIndex];
+    candidateIndex += 1;
     if (!entry) {
       break;
     }
