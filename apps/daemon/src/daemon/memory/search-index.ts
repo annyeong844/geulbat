@@ -61,26 +61,33 @@ export async function searchMemoryIndex(
   const stale =
     snapshot.sourceIndexVersionToken !== manifest.sourceIndexVersionToken;
 
-  const matches = records
-    .filter((record) => matchesPathPrefix(record, pathPrefix))
-    .filter(
-      (record) =>
-        record.title.toLocaleLowerCase().includes(loweredQuery) ||
-        record.searchText.toLocaleLowerCase().includes(loweredQuery),
-    )
-    .map((record) => ({
-      record,
-      titleHit: record.title.toLocaleLowerCase().includes(loweredQuery),
-    }))
-    .sort((a, b) => {
-      if (a.titleHit !== b.titleHit) {
-        return a.titleHit ? -1 : 1;
-      }
-      return (
-        a.record.path.localeCompare(b.record.path) ||
-        a.record.lineStart - b.record.lineStart
-      );
-    });
+  const matches: Array<{ record: MemoryChunkRecord; titleHit: boolean }> = [];
+  for (const record of records) {
+    if (!matchesPathPrefix(record, pathPrefix)) {
+      continue;
+    }
+
+    const titleLower = record.title.toLocaleLowerCase();
+    const titleHit = titleLower.includes(loweredQuery);
+    if (
+      !titleHit &&
+      !record.searchText.toLocaleLowerCase().includes(loweredQuery)
+    ) {
+      continue;
+    }
+
+    matches.push({ record, titleHit });
+  }
+
+  matches.sort((a, b) => {
+    if (a.titleHit !== b.titleHit) {
+      return a.titleHit ? -1 : 1;
+    }
+    return (
+      a.record.path.localeCompare(b.record.path) ||
+      a.record.lineStart - b.record.lineStart
+    );
+  });
 
   return {
     ok: true,
