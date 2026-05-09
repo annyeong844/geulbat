@@ -430,6 +430,38 @@ void test('finalizeAfterToolLimit returns fallback prose without emitting termin
   assert.deepEqual(events, []);
 });
 
+void test('finalizeAfterToolLimit streams final answer deltas without a duplicate fallback emit', async () => {
+  const events: AgentEvent[] = [];
+  const providerAuthRuntime = createProviderAuthRuntimeStore();
+
+  const result = await finalizeAfterToolLimit({
+    history: [],
+    systemPrompt: 'system',
+    threadId: testThreadId(63),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime,
+    emit: makeEmitter(events),
+    callModelImpl: async function* () {
+      yield { type: 'text_delta', text: 'sum', phase: 'final_answer' };
+      yield { type: 'text_delta', text: 'mary', phase: 'final_answer' };
+      yield {
+        type: 'done',
+        assistantText: 'summary',
+        finalText: 'summary',
+      };
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    finalProse: 'summary',
+  });
+  assert.deepEqual(events, [
+    createAgentEvent('final_answer_delta', { text: 'sum' }),
+    createAgentEvent('final_answer_delta', { text: 'mary' }),
+  ]);
+});
+
 void test('finalizeAfterToolLimit keeps raw artifact transport internal without emitting terminal events', async () => {
   const events: AgentEvent[] = [];
   const providerAuthRuntime = createProviderAuthRuntimeStore();
