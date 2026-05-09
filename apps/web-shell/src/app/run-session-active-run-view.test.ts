@@ -8,6 +8,7 @@ import {
   appendAssistantTranscriptTextToActiveRun,
   appendSubagentActivityToActiveRun,
   appendTranscriptActivity,
+  clearResolvedPendingApproval,
   clearPendingApprovalState,
   setPendingApproval,
   setRunErrorState,
@@ -193,6 +194,61 @@ void test('setPendingApproval appends the approval entry and stores the pending 
       pendingApproval,
     },
   ]);
+});
+
+void test('setPendingApproval keeps approvals with matching callId but different run identities queued', () => {
+  const firstApproval = makeApprovalRequiredFixture({
+    callId: 'shared-call',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+  });
+  const secondApproval = makeApprovalRequiredFixture({
+    callId: 'shared-call',
+    runId: brandRunId('run-child-1'),
+    threadId: brandThreadId('00000000-0000-4000-8000-000000000002'),
+  });
+  const withFirst = setPendingApproval(
+    createEmptyActiveRunView(THREAD_ID),
+    THREAD_ID,
+    firstApproval,
+  );
+
+  const withBoth = setPendingApproval(withFirst, THREAD_ID, secondApproval);
+  const afterFirstCleared = clearResolvedPendingApproval(
+    withBoth,
+    firstApproval,
+  );
+
+  assert.equal(withBoth.pendingApproval, firstApproval);
+  assert.deepEqual(withBoth.pendingApprovals, [firstApproval, secondApproval]);
+  assert.equal(afterFirstCleared.pendingApproval, secondApproval);
+  assert.deepEqual(afterFirstCleared.pendingApprovals, [secondApproval]);
+});
+
+void test('setPendingApproval dedupes replayed approvals with the same run identity', () => {
+  const firstApproval = makeApprovalRequiredFixture({
+    callId: 'replayed-call',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+  });
+  const replayedApproval = makeApprovalRequiredFixture({
+    callId: 'replayed-call',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+    argumentsPreview: {
+      path: 'same-approval-replay.md',
+    },
+  });
+  const withFirst = setPendingApproval(
+    createEmptyActiveRunView(THREAD_ID),
+    THREAD_ID,
+    firstApproval,
+  );
+
+  const withReplay = setPendingApproval(withFirst, THREAD_ID, replayedApproval);
+
+  assert.equal(withReplay.pendingApproval, firstApproval);
+  assert.deepEqual(withReplay.pendingApprovals, [firstApproval]);
 });
 
 void test('appendSubagentActivityToActiveRun dedupes terminal replay entries by deliveryId', () => {

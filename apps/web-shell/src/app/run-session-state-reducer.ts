@@ -111,7 +111,7 @@ export function reduceRunSessionState(
         ...state,
         activeRunView: clearResolvedPendingApproval(
           state.activeRunView,
-          action.callId,
+          action.pendingApproval,
         ),
       };
     case 'run_start_cancelled':
