@@ -209,13 +209,13 @@ void test('multiple pending approvals are revealed one at a time as each is clea
 
   const afterFirstCleared = reduceRunSessionState(withApprovals, {
     type: 'approval_cleared',
-    callId: firstApproval.callId,
+    pendingApproval: firstApproval,
   });
   assert.equal(afterFirstCleared.activeRunView.pendingApproval, secondApproval);
 
   const afterSecondCleared = reduceRunSessionState(afterFirstCleared, {
     type: 'approval_cleared',
-    callId: secondApproval.callId,
+    pendingApproval: secondApproval,
   });
   assert.equal(afterSecondCleared.activeRunView.pendingApproval, null);
 });
