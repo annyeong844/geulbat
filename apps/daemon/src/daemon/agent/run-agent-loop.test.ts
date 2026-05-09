@@ -309,7 +309,6 @@ void test('runAgentLoop can consume pending background results from an injected 
     childRunId: testRunId('child-background-1'),
     subagentType: 'explorer',
     terminalState: 'failed',
-    ok: false,
     result: 'background child failed',
     completedAt: '2026-03-30T00:00:01.000Z',
   });
@@ -418,7 +417,6 @@ void test('runAgentLoop can use runtime service defaults for background results 
       childRunId: testRunId('child-context-note-1'),
       subagentType: 'explorer',
       terminalState: 'failed',
-      ok: false,
       result: 'context child failed',
       completedAt: '2026-03-30T00:00:01.000Z',
     },
