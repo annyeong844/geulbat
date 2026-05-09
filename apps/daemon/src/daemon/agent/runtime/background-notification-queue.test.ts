@@ -31,6 +31,9 @@ type _BackgroundChildResultChildRunIdIsBranded = Expect<
 type _QueueConsumedChildRunIdIsBranded = Expect<
   Equal<QueueConsumedBackgroundResult['childRunId'], RunId>
 >;
+type _BackgroundChildResultDoesNotExposeOk = Expect<
+  Equal<'ok' extends keyof BackgroundChildResult ? true : false, false>
+>;
 
 void test('thread background notification queue retains results until the next turn consumes them', () => {
   const queue = createThreadBackgroundNotificationQueue();
@@ -42,7 +45,6 @@ void test('thread background notification queue retains results until the next t
     childRunId: testRunId('child-a'),
     subagentType: 'explorer',
     terminalState: 'completed',
-    ok: true,
     result: 'alpha',
     completedAt: '2026-03-24T00:00:00.000Z',
   });
@@ -52,7 +54,6 @@ void test('thread background notification queue retains results until the next t
     childRunId: testRunId('child-b'),
     subagentType: 'explorer',
     terminalState: 'failed',
-    ok: false,
     result: 'beta',
     completedAt: '2026-03-24T00:00:01.000Z',
   });
@@ -85,7 +86,6 @@ void test('thread background notification queue notifies live subscribers on enq
     childRunId,
     subagentType: 'explorer',
     terminalState: 'completed',
-    ok: true,
     result: 'live',
     completedAt: '2026-03-24T00:00:02.000Z',
   });
@@ -97,7 +97,6 @@ void test('thread background notification queue notifies live subscribers on enq
     childRunId: testRunId('child-after-unsub'),
     subagentType: 'explorer',
     terminalState: 'completed',
-    ok: true,
     result: 'later',
     completedAt: '2026-03-24T00:00:03.000Z',
   });
@@ -136,7 +135,6 @@ void test('thread background notification queue isolates listener failures and c
       childRunId,
       subagentType: 'explorer',
       terminalState: 'completed',
-      ok: true,
       result: 'safe',
       completedAt: '2026-03-24T00:00:04.000Z',
     });
@@ -161,7 +159,6 @@ void test('thread background notification queue replays pending results to late 
     childRunId: testRunId('child-replay'),
     subagentType: 'explorer',
     terminalState: 'completed',
-    ok: true,
     result: 'replay',
     completedAt: '2026-03-24T00:00:09.000Z',
   });
@@ -195,7 +192,6 @@ void test('thread background notification queue caps pending results per thread'
         childRunId: testRunId(`child-${i}`),
         subagentType: 'explorer',
         terminalState: 'completed',
-        ok: true,
         result: `result-${i}`,
         completedAt: `2026-03-24T00:00:${String(i).padStart(2, '0')}.000Z`,
       });
@@ -228,7 +224,6 @@ void test('thread background notification queue evicts the oldest tracked thread
         childRunId: testRunId(`child-${i}`),
         subagentType: 'explorer',
         terminalState: 'completed',
-        ok: true,
         result: `result-${i}`,
         completedAt: `2026-03-24T01:${String(i % 60).padStart(2, '0')}:00.000Z`,
       });

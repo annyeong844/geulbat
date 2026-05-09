@@ -115,7 +115,6 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
     deliveryId: 'delivery-context-a',
     subagentType: 'explorer',
     terminalState: 'completed',
-    ok: true,
     result: 'done',
     completedAt: '2026-03-30T00:00:01.000Z',
   });

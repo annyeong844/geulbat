@@ -156,7 +156,7 @@ export function ensureThreadBackgroundSubscription(
               childRunId: result.childRunId,
               subagentType: result.subagentType,
               terminalState: result.terminalState,
-              ok: result.ok,
+              ok: result.terminalState === 'completed',
               ...(result.reason ? { reason: result.reason } : {}),
               result: result.result,
             },

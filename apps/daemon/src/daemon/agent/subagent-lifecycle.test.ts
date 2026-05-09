@@ -193,7 +193,6 @@ void test('beginBackgroundChildLifecycle registers child run and terminal public
   assert.equal(backgroundResult?.parentRunId, parentRunId);
   assert.equal(backgroundResult?.childRunId, childRunId);
   assert.equal(backgroundResult?.terminalState, 'completed');
-  assert.equal(backgroundResult?.ok, true);
   assert.equal(backgroundResult?.result, 'child done');
 });
 
