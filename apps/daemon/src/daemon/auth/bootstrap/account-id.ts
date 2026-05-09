@@ -1,3 +1,8 @@
+import { createLogger } from '@geulbat/shared-utils/logger';
+import { getErrorMessage } from '../../utils/error.js';
+
+const logger = createLogger('provider-auth');
+
 interface JwtPayloadAuthSection {
   chatgpt_account_id?: unknown;
 }
@@ -66,7 +71,11 @@ export function extractAccountIdFromJwt(
       return payload.account_id.trim();
     }
     return null;
-  } catch {
+  } catch (error: unknown) {
+    logger.warn(
+      'provider account id jwt decode failed:',
+      getErrorMessage(error),
+    );
     return null;
   }
 }
