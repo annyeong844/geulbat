@@ -91,6 +91,15 @@ export type AgentChildTerminalReason =
   | 'sibling_error'
   | 'explicit_stop';
 
+export const AGENT_WAIT_APPROVAL_BLOCKED_REASON = 'approval_pending' as const;
+
+export const AGENT_WAIT_BLOCKED_REASONS = [
+  AGENT_WAIT_APPROVAL_BLOCKED_REASON,
+] as const;
+
+export type AgentWaitBlockedReason =
+  (typeof AGENT_WAIT_BLOCKED_REASONS)[number];
+
 export interface AgentWaitToolRaw {
   ok: true;
   completed: Array<{
@@ -103,7 +112,7 @@ export interface AgentWaitToolRaw {
   pending: string[];
   blocked: Array<{
     childRunId: string;
-    blockedReason: 'approval_pending';
+    blockedReason: AgentWaitBlockedReason;
   }>;
 }
 
@@ -378,11 +387,17 @@ function isAgentWaitCompletedRecord(value: unknown): boolean {
   );
 }
 
+export function isAgentWaitBlockedReason(
+  value: unknown,
+): value is AgentWaitBlockedReason {
+  return value === AGENT_WAIT_APPROVAL_BLOCKED_REASON;
+}
+
 function isAgentWaitBlockedRecord(value: unknown): boolean {
   return (
     isRecord(value) &&
     isString(value.childRunId) &&
-    value.blockedReason === 'approval_pending'
+    isAgentWaitBlockedReason(value.blockedReason)
   );
 }
 

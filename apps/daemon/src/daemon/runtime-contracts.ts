@@ -22,9 +22,12 @@ export type AgentEventEmitter = <Type extends AgentEventType>(
   payload: AgentEventPayloadMap[Type],
 ) => void;
 
+export const RUN_RUNNING_STATUS = 'running' as const;
+export const RUN_APPROVAL_PENDING_STATUS = 'approval_pending' as const;
+
 export type RunStatus =
-  | 'running'
-  | 'awaiting_approval'
+  | typeof RUN_RUNNING_STATUS
+  | typeof RUN_APPROVAL_PENDING_STATUS
   | AgentChildTerminalState;
 
 export interface ToolRunState {

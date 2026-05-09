@@ -29,7 +29,7 @@ import {
 import { recordToolResult } from './loop-tool-support.js';
 import { assertRunId as assertValidRunId } from '@geulbat/protocol/ids';
 import type { ApprovalContext } from './loop-types.js';
-import { markRunAwaitingApproval, type RunState } from './runtime/run-state.js';
+import { markRunApprovalPending, type RunState } from './runtime/run-state.js';
 import type {
   AgentToolCallExecutionRuntime,
   ApprovalTarget,
@@ -225,7 +225,7 @@ export async function resolveApprovalDecision(
   const runContext = getToolRuntimeRunContext(runtime);
 
   if (runState) {
-    markRunAwaitingApproval(runState);
+    markRunApprovalPending(runState);
   }
   emit('approval_required', {
     callId: functionCall.callId,
