@@ -64,6 +64,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   const notifications = runtimeServices.backgroundNotifications;
   const resolvedMemoryIndex = runtimeServices.memoryIndex;
   const providerAuthRuntime = runtimeServices.providerAuthRuntime;
+  const providerRequestOptions = runtimeServices.providerRequestOptions;
   const webSocketSessions = runtimeServices.providerWebSocketSessions;
   const toolDefs = registry.buildToolDefinitions(
     allowedToolNames !== undefined ? { names: allowedToolNames } : {},
@@ -100,6 +101,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       threadId,
       providerWebSocketSessions: webSocketSessions,
       providerAuthRuntime,
+      providerRequestOptions,
       emit,
     };
     if (signal !== undefined) {
@@ -167,6 +169,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     threadId,
     providerWebSocketSessions: webSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions,
     emit,
   };
   if (signal !== undefined) {
