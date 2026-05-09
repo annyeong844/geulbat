@@ -140,7 +140,7 @@ export function createActiveRunStore(): ActiveRunStore {
     abortRun(runId) {
       const run = byRunId.get(runId);
       if (!run) return false;
-      if (run.parentRunId) return false;
+      if (run.parentRunId !== undefined) return false;
       run.abortController.abort();
       return true;
     },

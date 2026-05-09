@@ -1,5 +1,5 @@
-export type ProviderReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
-export type ProviderTextVerbosity = 'low' | 'medium' | 'high';
+type ProviderReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+type ProviderTextVerbosity = 'low' | 'medium' | 'high';
 
 export interface ProviderRequestOptions {
   model: string;

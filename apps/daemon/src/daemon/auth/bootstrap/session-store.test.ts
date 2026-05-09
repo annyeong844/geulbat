@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createProviderAuthBootstrapStore } from './session-store.js';
+import {
+  createProviderAuthBootstrapStore,
+  sanitizeProviderAuthMessage,
+} from './session-store.js';
 
 void test('bootstrap session store reuses the current pending session', () => {
   const bootstrapStore = createProviderAuthBootstrapStore();
@@ -49,6 +52,15 @@ void test('bootstrap session store clears codeVerifier after terminal failure', 
   assert.equal(snapshot?.status, 'exchange_failed');
   assert.equal(snapshot?.codeVerifier, '');
   assert.equal(snapshot?.lastErrorCode, 'provider_auth_exchange_failed');
+});
+
+void test('sanitizeProviderAuthMessage normalizes whitespace and caps message length', () => {
+  const message = ` ${'provider auth failed '.repeat(20)} `;
+
+  const sanitized = sanitizeProviderAuthMessage(message);
+
+  assert.equal(sanitized.length, 240);
+  assert.doesNotMatch(sanitized, /\s{2,}/u);
 });
 
 void test('createProviderAuthBootstrapStore isolates local sessions across instances', () => {

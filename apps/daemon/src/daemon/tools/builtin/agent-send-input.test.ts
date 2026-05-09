@@ -383,6 +383,10 @@ void test('agent_send_input forwards child approval events through the shared ch
               sideEffectLevel: 'write',
             },
           });
+          assert.equal(
+            daemonContext.childRuns.getChildRun(childRunId)?.status,
+            'approval_pending',
+          );
           return {
             ok: true,
             finalProse: 'continued child answer',
@@ -592,6 +596,112 @@ void test('agent_send_input lets continued worker inherit current parent permiss
       ownerRunId: 'top-run-continue-permission',
       ownerThreadId: threadId,
     });
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+void test('agent_send_input rejects standalone worker continuation without approval routing', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-agent-send-input-standalone-worker-'),
+  );
+  const threadId = testThreadId(35);
+  const projectId = testProjectId();
+  const daemonContext = createDaemonContext();
+
+  const testAgentSpawnTool = createAgentSpawnTool({
+    startBackgroundRun: createSubagentRunLauncher({
+      runAgentLoop: async () => ({
+        ok: true,
+        finalProse: 'seed child answer',
+      }),
+    }).startBackgroundRun,
+  });
+
+  try {
+    const seeded = await testAgentSpawnTool.execute(
+      {
+        task: 'seed child',
+        subagent_type: 'worker',
+      },
+      {
+        kind: 'agent',
+        callId: 'call-seed-standalone-worker-child',
+        workspaceRoot,
+        threadId,
+        runId: 'top-run-seed-standalone-worker',
+        projectId,
+        runState: createRunState({
+          runId: 'top-run-seed-standalone-worker',
+          runContext: makeRunWorkspaceContext({
+            threadId,
+            projectId,
+            workspaceRoot,
+          }),
+        }),
+        signal: new AbortController().signal,
+        runSignal: new AbortController().signal,
+        currentFile: undefined,
+        selection: undefined,
+        approvalGranted: false,
+        agentSpawnRuntime: daemonContext,
+        memoryIndex: undefined,
+        emitAgentEvent: () => {},
+        permissionMode: 'basic',
+        approvalSessionId: 'session-seed-standalone-worker',
+      },
+    );
+
+    assert.equal(seeded.ok, true);
+    const seededPayload = JSON.parse(seeded.output) as {
+      childRunId: string;
+    };
+    const childRunId = assertValidRunId(seededPayload.childRunId);
+    await waitForChildStatus({
+      daemonContext,
+      childRunId,
+      status: 'completed',
+    });
+
+    let startCalled = false;
+    const testAgentSendInputTool = createAgentSendInputTool({
+      startBackgroundRun: async () => {
+        startCalled = true;
+        throw new Error('startBackgroundRun should not be called');
+      },
+    });
+
+    const rejected = await testAgentSendInputTool.execute(
+      {
+        child_run_id: seededPayload.childRunId,
+        task: 'continue worker from standalone context',
+      },
+      {
+        callId: 'call-continue-standalone-worker',
+        workspaceRoot,
+        threadId,
+        runId: 'top-run-continue-standalone-worker',
+        projectId,
+        runState: createRunState({
+          runId: 'top-run-continue-standalone-worker',
+          runContext: makeRunWorkspaceContext({
+            threadId,
+            projectId,
+            workspaceRoot,
+          }),
+        }),
+        signal: new AbortController().signal,
+        runSignal: new AbortController().signal,
+        approvalSessionId: 'session-standalone-worker',
+        permissionMode: 'full_access',
+        agentSpawnRuntime: daemonContext,
+      },
+    );
+
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.errorCode, 'execution_failed');
+    assert.match(rejected.error, /approval event routing/);
+    assert.equal(startCalled, false);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }

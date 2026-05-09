@@ -4,7 +4,12 @@ import {
   readToolArgsRecord,
 } from '../parsed-tool.js';
 import { isRunId, type RunId } from '@geulbat/protocol/ids';
+import {
+  AGENT_WAIT_APPROVAL_BLOCKED_REASON,
+  type AgentWaitBlockedReason,
+} from '@geulbat/protocol/run-events';
 import { toolError } from '../result.js';
+import { getErrorMessage } from '../../utils/error.js';
 import type {
   AgentChildTerminalReason,
   AgentChildTerminalState,
@@ -33,7 +38,7 @@ interface AgentWaitResult {
   pending: RunId[];
   blocked: Array<{
     childRunId: RunId;
-    blockedReason: 'approval_pending';
+    blockedReason: AgentWaitBlockedReason;
   }>;
 }
 
@@ -118,7 +123,7 @@ function buildWaitResult(args: {
     if (record.status === 'approval_pending') {
       blocked.push({
         childRunId,
-        blockedReason: 'approval_pending',
+        blockedReason: AGENT_WAIT_APPROVAL_BLOCKED_REASON,
       });
       continue;
     }
@@ -143,7 +148,7 @@ function buildWaitResult(args: {
   };
 }
 
-export function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
+function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
   const timeoutMs = options.timeoutMs;
 
   return defineParsedTool<AgentWaitArgs>({
@@ -211,8 +216,14 @@ export function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
 
         try {
           await registry.waitForRevisionChange(revision, ctx.signal);
-        } catch {
-          return toolError('execution_failed', 'agent_wait aborted');
+        } catch (error: unknown) {
+          if (ctx.signal?.aborted) {
+            return toolError('aborted', 'agent_wait aborted');
+          }
+          return toolError(
+            'execution_failed',
+            `agent_wait failed: ${getErrorMessage(error)}`,
+          );
         }
       }
     },

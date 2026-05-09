@@ -4,13 +4,16 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   stat,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getAppErrorCode } from '../../utils/error.js';
+import { createVersionToken } from '../../files/version-token.js';
 import {
   commitPreparedDeletion,
   commitPreparedDirectoryCreation,
@@ -20,6 +23,98 @@ import {
   prepareResolvedMutatingPath,
   prepareRelocationPaths,
 } from './file-mutation-chain.js';
+
+void test('commitPreparedRelocation waits for in-flight atomic saves on the destination path', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-relocate-save-'));
+  const targetPath = join(workspaceRoot, 'target.txt');
+  const sourcePath = join(workspaceRoot, 'source.txt');
+  const initialTargetContent = 'old target\n';
+  await writeFile(targetPath, initialTargetContent, 'utf8');
+  await writeFile(sourcePath, 'source\n', 'utf8');
+
+  let releaseAtomicFallback!: () => void;
+  const waitForRelease = new Promise<void>((resolve) => {
+    releaseAtomicFallback = resolve;
+  });
+  let reportTargetBackedUp!: () => void;
+  const targetBackedUp = new Promise<void>((resolve) => {
+    reportTargetBackedUp = resolve;
+  });
+  let forcedWindowsFallback = false;
+
+  const savePrepared = await prepareMutatingFilePath(
+    workspaceRoot,
+    'target.txt',
+  );
+  const savePromise = persistPreparedFile(
+    savePrepared,
+    'saved target\n',
+    createVersionToken(initialTargetContent),
+    {
+      atomicFs: {
+        async mkdir(...args) {
+          await mkdir(...args);
+        },
+        async writeFile(...args) {
+          await writeFile(...args);
+        },
+        async rename(from, to) {
+          if (
+            String(to) === targetPath &&
+            String(from).includes('.tmp') &&
+            !forcedWindowsFallback
+          ) {
+            forcedWindowsFallback = true;
+            throw Object.assign(new Error('simulated replace conflict'), {
+              code: 'EEXIST',
+            });
+          }
+          if (String(from) === targetPath && String(to).includes('.bak')) {
+            await rename(from, to);
+            reportTargetBackedUp();
+            await waitForRelease;
+            return;
+          }
+          await rename(from, to);
+        },
+        async unlink(...args) {
+          await unlink(...args);
+        },
+      },
+    },
+  );
+
+  await targetBackedUp;
+  const relocationPrepared = await prepareRelocationPaths(
+    workspaceRoot,
+    'source.txt',
+    'target.txt',
+  );
+  const relocationCommit = commitPreparedRelocation(relocationPrepared).then(
+    (value) => ({ status: 'fulfilled' as const, value }),
+    (error: unknown) => ({ status: 'rejected' as const, error }),
+  );
+  const relocationStateBeforeSaveFinishes = await Promise.race([
+    relocationCommit.then(() => 'settled' as const),
+    delay(50).then(() => 'pending' as const),
+  ]);
+
+  releaseAtomicFallback();
+  await savePromise;
+
+  assert.equal(
+    relocationStateBeforeSaveFinishes,
+    'pending',
+    'relocation commit must wait for the in-flight save on its destination',
+  );
+  const relocationOutcome = await relocationCommit;
+  assert.equal(relocationOutcome.status, 'rejected');
+  if (relocationOutcome.status === 'rejected') {
+    assert.equal(getAppErrorCode(relocationOutcome.error), 'already_exists');
+  }
+  assert.equal(await readFile(targetPath, 'utf8'), 'saved target\n');
+  assert.equal(await readFile(sourcePath, 'utf8'), 'source\n');
+});
 
 void test('commitPreparedRelocation rejects destination created after preparation', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-relocate-'));
@@ -252,3 +347,9 @@ void test('commitPreparedDirectoryCreation reports already_exists when target ap
     },
   );
 });
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}

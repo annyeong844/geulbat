@@ -12,7 +12,7 @@ export type {
   ToolCallArgs,
 } from '../runtime-contracts.js';
 
-export type AgentEventFor<Type extends AgentEventType> = AgentEvent & {
+type AgentEventFor<Type extends AgentEventType> = AgentEvent & {
   type: Type;
   payload: AgentEventPayloadMap[Type];
 };

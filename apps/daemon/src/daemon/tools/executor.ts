@@ -54,6 +54,24 @@ function classifyToolExecutionFailure(
   };
 }
 
+function classifyAbortOutcome(args: {
+  name: string;
+  callerSignal: AbortSignal | undefined;
+  timeoutSignal: AbortSignal | undefined;
+  timeoutMs: number | undefined;
+}): ExecuteResult {
+  if (args.callerSignal?.aborted) {
+    return toolError('aborted', 'client disconnected');
+  }
+  if (args.timeoutSignal?.aborted && args.timeoutMs !== undefined) {
+    return toolError(
+      'timeout',
+      `tool "${args.name}" timed out (${args.timeoutMs}ms)`,
+    );
+  }
+  return toolError('aborted', 'tool aborted');
+}
+
 function isExecuteResult(value: unknown): value is ExecuteResult {
   if (!isRecord(value)) {
     return false;
@@ -158,16 +176,12 @@ export async function executeTool(
       : await execution;
 
     if (combinedSignal?.aborted) {
-      if (ctx.signal?.aborted) {
-        return toolError('aborted', 'client disconnected');
-      }
-      if (timeoutController?.signal.aborted && tool.timeoutMs !== undefined) {
-        return toolError(
-          'timeout',
-          `tool "${name}" timed out (${tool.timeoutMs}ms)`,
-        );
-      }
-      return toolError('aborted', 'tool aborted');
+      return classifyAbortOutcome({
+        name,
+        callerSignal: ctx.signal,
+        timeoutSignal: timeoutController?.signal,
+        timeoutMs: tool.timeoutMs,
+      });
     }
 
     if (result === undefined) {
@@ -187,16 +201,12 @@ export async function executeTool(
     return result;
   } catch (err: unknown) {
     if (combinedSignal?.aborted) {
-      if (ctx.signal?.aborted) {
-        return toolError('aborted', 'client disconnected');
-      }
-      if (timeoutController?.signal.aborted && tool.timeoutMs !== undefined) {
-        return toolError(
-          'timeout',
-          `tool "${name}" timed out (${tool.timeoutMs}ms)`,
-        );
-      }
-      return toolError('aborted', 'tool aborted');
+      return classifyAbortOutcome({
+        name,
+        callerSignal: ctx.signal,
+        timeoutSignal: timeoutController?.signal,
+        timeoutMs: tool.timeoutMs,
+      });
     }
     const failure = classifyToolExecutionFailure(name, err);
     return toolError(failure.errorCode, failure.error);

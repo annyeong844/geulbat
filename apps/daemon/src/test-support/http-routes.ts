@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ProjectId } from '@geulbat/protocol/ids';
 import { DEV_TOKEN_HEADER_NAME } from '@geulbat/protocol/shell-auth';
 
 import { createDaemon } from '../create-daemon.js';
 import { createDaemonContext, type DaemonContext } from '../daemon/context.js';
 import { DEFAULT_PROJECT_ID } from '../daemon/files/project-registry-state.js';
-import { readDefaultRepoRoot } from '../repo-root.js';
 import type {
   ProjectRegistryContext,
   ProjectStoreContext,
@@ -15,11 +18,14 @@ import type {
 import { ensureTestProviderAuthFilePath } from './provider-auth.js';
 
 const DEV_TOKEN = 'geulbat-test-token-1234';
-const TEST_REPO_ROOT = readDefaultRepoRoot();
 ensureTestProviderAuthFilePath();
 
 export function createRouteTestDaemonContext(): DaemonContext {
-  return createDaemonContext();
+  const daemonContext = createDaemonContext();
+  daemonContext.projectRegistry.configureProjectRegistryRoot(
+    createRouteTestRepoRoot(),
+  );
+  return daemonContext;
 }
 
 export function authHeaders(
@@ -69,9 +75,10 @@ export async function withDaemonServer<T>(
 ): Promise<T> {
   const daemonContext = args?.daemonContext ?? createRouteTestDaemonContext();
   const { app } = await createDaemon({
-    repoRoot: TEST_REPO_ROOT,
+    repoRoot: daemonContext.projectRegistry.getProjectRegistryRoot(),
     daemonContext,
   });
+  await ensureRouteTestProjectRoots(daemonContext);
   const server = app.listen(0, '127.0.0.1');
 
   try {
@@ -92,6 +99,20 @@ function setDevToken(): () => void {
   const previous = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = DEV_TOKEN;
   return () => restoreEnv('GEULBAT_DEV_TOKEN', previous);
+}
+
+function createRouteTestRepoRoot(): string {
+  return join(tmpdir(), `geulbat-route-test-${randomUUID()}`);
+}
+
+async function ensureRouteTestProjectRoots(
+  daemonContext: Pick<DaemonContext, 'projectRegistry'>,
+): Promise<void> {
+  await Promise.all(
+    daemonContext.projectRegistry
+      .getProjectRegistryEntries()
+      .map((entry) => mkdir(entry.workspaceRoot, { recursive: true })),
+  );
 }
 
 async function listenPort(server: Server): Promise<number> {

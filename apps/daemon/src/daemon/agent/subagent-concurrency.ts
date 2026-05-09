@@ -6,7 +6,7 @@ import type { SubagentLaunchReservation } from '../subagent-runtime-contracts.js
 export const DEFAULT_MAX_CONCURRENT_BACKGROUND_CHILDREN = 8;
 export const SUBAGENT_BACKGROUND_CAPACITY_ENV =
   'GEULBAT_SUBAGENT_BACKGROUND_CAPACITY';
-export const MAX_CONFIGURED_SUBAGENT_BACKGROUND_CAPACITY = 64;
+const MAX_CONFIGURED_SUBAGENT_BACKGROUND_CAPACITY = 64;
 
 type SubagentConcurrencyEnv = Readonly<
   Partial<Record<typeof SUBAGENT_BACKGROUND_CAPACITY_ENV, string | undefined>>
@@ -18,7 +18,7 @@ export interface SubagentConcurrencyPolicy {
   maxConcurrentChildren?: number | null;
 }
 
-type SubagentLaunchAdmission =
+export type SubagentLaunchAdmission =
   | {
       ok: true;
       reservation: SubagentLaunchReservation;
@@ -31,25 +31,11 @@ type SubagentLaunchAdmission =
     };
 
 export interface SubagentAdmissionController {
-  reserveSubagentLaunchSlot(args: { runState: ToolRunState }):
-    | { ok: true; reservation: SubagentLaunchReservation }
-    | {
-        ok: false;
-        errorCode: 'too_many_child_runs';
-        error: string;
-        effectiveMax: number;
-      };
   reserveSubagentLaunchSlots(args: {
     runState: ToolRunState;
     requestedChildren: number;
-  }):
-    | { ok: true; reservation: SubagentLaunchReservation }
-    | {
-        ok: false;
-        errorCode: 'too_many_child_runs';
-        error: string;
-        effectiveMax: number;
-      };
+    transferExistingReservation?: boolean;
+  }): SubagentLaunchAdmission;
 }
 
 export function createSubagentAdmissionController(
@@ -60,22 +46,15 @@ export function createSubagentAdmissionController(
   const maxConcurrentChildren = resolveMaxConcurrentChildren(options.policy);
 
   return {
-    reserveSubagentLaunchSlot({ runState }) {
-      const reservedSlotId = claimExistingReservation(runState);
-      if (reservedSlotId) {
-        return buildAdmittedReservation(runState, [reservedSlotId]);
-      }
-
-      return reserveSlots({
-        runState,
-        requestedChildren: 1,
-        maxConcurrentChildren,
-      });
-    },
-    reserveSubagentLaunchSlots({ runState, requestedChildren }) {
+    reserveSubagentLaunchSlots({
+      runState,
+      requestedChildren,
+      transferExistingReservation,
+    }) {
       return reserveSlots({
         runState,
         requestedChildren,
+        transferExistingReservation: transferExistingReservation === true,
         maxConcurrentChildren,
       });
     },
@@ -138,13 +117,32 @@ function resolveMaxConcurrentChildren(
 function reserveSlots(args: {
   runState: ToolRunState;
   requestedChildren: number;
+  transferExistingReservation: boolean;
   maxConcurrentChildren: number | null;
 }): SubagentLaunchAdmission {
-  const { runState, requestedChildren, maxConcurrentChildren } = args;
+  // Admission and reservation mutation must stay synchronous so capacity is observed atomically.
+  const {
+    runState,
+    requestedChildren,
+    transferExistingReservation,
+    maxConcurrentChildren,
+  } = args;
   if (!Number.isInteger(requestedChildren) || requestedChildren < 1) {
     throw new Error(
       `invalid subagent requestedChildren: ${String(requestedChildren)}`,
     );
+  }
+  if (transferExistingReservation && requestedChildren !== 1) {
+    throw new Error(
+      `invalid subagent reservation transfer count: ${String(requestedChildren)}`,
+    );
+  }
+
+  const transferredReservationId = transferExistingReservation
+    ? transferOneExistingReservation(runState)
+    : undefined;
+  if (transferredReservationId) {
+    return buildAdmittedReservation(runState, [transferredReservationId]);
   }
 
   if (
@@ -170,7 +168,9 @@ function reserveSlots(args: {
   return buildAdmittedReservation(runState, reservationIds);
 }
 
-function claimExistingReservation(runState: ToolRunState): string | undefined {
+function transferOneExistingReservation(
+  runState: ToolRunState,
+): string | undefined {
   const [existingReservationId] =
     runState.backgroundChildLaunchReservationIds.values();
   if (!existingReservationId) {

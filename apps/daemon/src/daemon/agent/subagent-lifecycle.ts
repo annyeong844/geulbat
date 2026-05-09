@@ -163,7 +163,6 @@ function publishBackgroundChildTerminalOutcome(args: {
         childRunId,
         subagentType,
         terminalState: outcome.terminalState,
-        ok: outcome.terminalState === 'completed',
         ...(outcome.terminalReason ? { reason: outcome.terminalReason } : {}),
         result: outcome.terminalResult,
         completedAt: new Date().toISOString(),

@@ -36,7 +36,7 @@ export function Approvals({
   useEffect(() => {
     setGrantScope('once');
     setPendingAction(null);
-  }, [pending?.callId]);
+  }, [pending?.callId, pending?.runId, pending?.threadId]);
 
   if (!pending) {
     return (

@@ -5,6 +5,7 @@ import type { SourceFileData } from './source-snapshot.js';
 
 const CHUNK_TARGET_LINES = 80;
 const EXCERPT_LIMIT = 160;
+const MAX_HEADING_TITLE_LENGTH = 120;
 
 export function createChunkRecords(
   sourceFile: SourceFileData,
@@ -54,7 +55,7 @@ function deriveTitle(relativePath: string, lines: string[]): string {
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    return trimmed.replace(/^#+\s+/, '').slice(0, 120);
+    return trimmed.replace(/^#+\s+/, '').slice(0, MAX_HEADING_TITLE_LENGTH);
   }
   const fileName = basename(relativePath);
   const ext = extname(fileName);

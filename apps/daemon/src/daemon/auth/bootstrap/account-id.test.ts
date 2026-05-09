@@ -34,7 +34,26 @@ void test('extractAccountIdFromJwt reads OpenAI namespaced claim', () => {
 });
 
 void test('extractAccountIdFromJwt treats malformed jwt payloads as probe misses', () => {
-  assert.equal(extractAccountIdFromJwt('header.invalid-json.sig'), null);
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+
+  try {
+    assert.equal(extractAccountIdFromJwt('header.invalid-json.sig'), null);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  const diagnostic = warnings.find(([line]) =>
+    String(line).includes('provider account id jwt decode failed'),
+  );
+  assert.ok(diagnostic);
+  assert.match(
+    String(diagnostic[0]),
+    /warn \[provider-auth\] provider account id jwt decode failed:/,
+  );
 });
 
 function base64Url(text: string): string {

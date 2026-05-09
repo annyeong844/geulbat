@@ -26,14 +26,18 @@ function createIframeRef(frameWindow: FakeFrameWindow): {
   current: HTMLIFrameElement;
 } {
   return {
-    current: {
-      contentWindow: frameWindow,
-    } as unknown as HTMLIFrameElement,
+    current: createIframeElement(frameWindow),
   };
 }
 
+function createIframeElement(frameWindow: FakeFrameWindow): HTMLIFrameElement {
+  return {
+    contentWindow: frameWindow,
+  } as unknown as HTMLIFrameElement;
+}
+
 function createMessageEvent(args: {
-  source: MessageEventSource | null;
+  source: unknown;
   origin?: string;
   data: unknown;
 }): MessageEvent<unknown> {
@@ -76,7 +80,7 @@ void test('handleArtifactRuntimeFrameMessageEvent ignores messages outside the r
 
   await handleArtifactRuntimeFrameMessageEvent(
     createMessageEvent({
-      source: otherFrameWindow as unknown as MessageEventSource,
+      source: otherFrameWindow,
       data: createReadyMessage(),
     }),
     {
@@ -94,7 +98,7 @@ void test('handleArtifactRuntimeFrameMessageEvent ignores messages outside the r
 
   await handleArtifactRuntimeFrameMessageEvent(
     createMessageEvent({
-      source: frameWindow as unknown as MessageEventSource,
+      source: frameWindow,
       origin: 'https://untrusted.example.test',
       data: createReadyMessage(),
     }),
@@ -122,7 +126,7 @@ void test('handleArtifactRuntimeFrameMessageEvent completes the host ready hands
 
   await handleArtifactRuntimeFrameMessageEvent(
     createMessageEvent({
-      source: frameWindow as unknown as MessageEventSource,
+      source: frameWindow,
       data: createReadyMessage(),
     }),
     {
@@ -174,7 +178,7 @@ void test('handleArtifactRuntimeFrameMessageEvent applies resize and generated s
 
   await handleArtifactRuntimeFrameMessageEvent(
     createMessageEvent({
-      source: frameWindow as unknown as MessageEventSource,
+      source: frameWindow,
       data: {
         kind: ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
         action: ARTIFACT_RUNTIME_HOST_RESIZE_ACTION,
@@ -185,7 +189,7 @@ void test('handleArtifactRuntimeFrameMessageEvent applies resize and generated s
   );
   await handleArtifactRuntimeFrameMessageEvent(
     createMessageEvent({
-      source: frameWindow as unknown as MessageEventSource,
+      source: frameWindow,
       data: {
         kind: 'geulbat.runtime.generated_text_export',
         scopeHandle: SCOPE_HANDLE,
@@ -201,7 +205,7 @@ void test('handleArtifactRuntimeFrameMessageEvent applies resize and generated s
   );
   await handleArtifactRuntimeFrameMessageEvent(
     createMessageEvent({
-      source: frameWindow as unknown as MessageEventSource,
+      source: frameWindow,
       data: {
         kind: 'geulbat.runtime.generated_text_export',
         scopeHandle: SCOPE_HANDLE,
@@ -212,7 +216,7 @@ void test('handleArtifactRuntimeFrameMessageEvent applies resize and generated s
   );
   await handleArtifactRuntimeFrameMessageEvent(
     createMessageEvent({
-      source: frameWindow as unknown as MessageEventSource,
+      source: frameWindow,
       data: {
         kind: 'geulbat.runtime.generated_binary_export',
         scopeHandle: SCOPE_HANDLE,
@@ -227,7 +231,7 @@ void test('handleArtifactRuntimeFrameMessageEvent applies resize and generated s
   );
   await handleArtifactRuntimeFrameMessageEvent(
     createMessageEvent({
-      source: frameWindow as unknown as MessageEventSource,
+      source: frameWindow,
       data: {
         kind: 'geulbat.runtime.generated_binary_export',
         scopeHandle: SCOPE_HANDLE,
@@ -281,7 +285,7 @@ void test('handleArtifactRuntimeFrameMessageEvent delegates persistence messages
 
   await handleArtifactRuntimeFrameMessageEvent(
     createMessageEvent({
-      source: frameWindow as unknown as MessageEventSource,
+      source: frameWindow,
       data,
     }),
     {
@@ -300,7 +304,7 @@ void test('handleArtifactRuntimeFrameMessageEvent delegates persistence messages
 
   assert.deepEqual(bridgeCalls, [
     {
-      source: frameWindow as unknown as MessageEventSource,
+      source: frameWindow,
       data,
     },
   ]);
@@ -333,7 +337,7 @@ void test('handleArtifactRuntimeFrameMessageEvent drops stale bridge responses a
 
   const result = handleArtifactRuntimeFrameMessageEvent(
     createMessageEvent({
-      source: frameWindow as unknown as MessageEventSource,
+      source: frameWindow,
       data: {
         kind: 'geulbat.runtime.persistence.request',
         version: 1,
@@ -352,9 +356,7 @@ void test('handleArtifactRuntimeFrameMessageEvent drops stale bridge responses a
       setFrameHeight() {},
     },
   );
-  iframeRef.current = {
-    contentWindow: nextFrameWindow,
-  } as unknown as HTMLIFrameElement;
+  iframeRef.current = createIframeElement(nextFrameWindow);
 
   resolveResponse({
     kind: 'geulbat.shell.persistence.response',

@@ -9,7 +9,7 @@ import type { ToolDefinition } from '../tools/types.js';
 import type { AgentEventEmitter } from './events.js';
 import { getErrorMessage } from '../utils/error.js';
 import type { CallModelFn } from './loop-types.js';
-import type { AgentArtifactCandidate, AgentResult } from './agent-result.js';
+import type { AgentResult } from './agent-result.js';
 import type { StreamErrorCategory } from '../llm/provider/transport/stream-error.js';
 import { composeAgentResult } from './agent-result.js';
 import {
@@ -18,6 +18,7 @@ import {
   type StepResult,
 } from './loop-shared.js';
 import {
+  consumeFinalizationChunks,
   consumeModelRoundChunks,
   createFinalAnswerDeltaEmitter,
 } from './loop-model-round-chunks.js';
@@ -50,6 +51,7 @@ export async function runModelRound(args: {
   threadId: string;
   providerWebSocketSessions: CallModelInput['providerWebSocketSessions'];
   providerAuthRuntime: CallModelInput['providerAuthRuntime'];
+  providerRequestOptions: CallModelInput['providerRequestOptions'];
   signal?: AbortSignal;
   emit: AgentEventEmitter;
   callModelImpl?: CallModelFn;
@@ -66,6 +68,7 @@ export async function runModelRound(args: {
     threadId,
     providerWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions,
     signal,
     emit,
     callModelImpl,
@@ -90,6 +93,7 @@ export async function runModelRound(args: {
       providerSessionId: threadId,
       providerWebSocketSessions,
       providerAuthRuntime,
+      providerRequestOptions,
     };
     if (signal !== undefined) {
       input.signal = signal;
@@ -201,6 +205,7 @@ export async function finalizeAfterToolLimit(args: {
   threadId: string;
   providerWebSocketSessions: CallModelInput['providerWebSocketSessions'];
   providerAuthRuntime: CallModelInput['providerAuthRuntime'];
+  providerRequestOptions: CallModelInput['providerRequestOptions'];
   signal?: AbortSignal;
   emit: AgentEventEmitter;
   callModelImpl?: CallModelFn;
@@ -211,6 +216,7 @@ export async function finalizeAfterToolLimit(args: {
     threadId,
     providerWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions,
     signal,
     emit,
     callModelImpl,
@@ -223,28 +229,23 @@ export async function finalizeAfterToolLimit(args: {
       providerSessionId: threadId,
       providerWebSocketSessions,
       providerAuthRuntime,
+      providerRequestOptions,
     };
     if (signal !== undefined) {
       input.signal = signal;
     }
     const finalChunks = (callModelImpl ?? callModel)(input);
 
-    let answer = '';
-    let finalText = '';
-    let artifactCandidate: AgentArtifactCandidate | undefined;
     const finalAnswerDeltaEmitter = createFinalAnswerDeltaEmitter(emit);
-    for await (const chunk of finalChunks) {
-      if (chunk.type === 'text_delta') {
-        answer += chunk.text;
-        finalAnswerDeltaEmitter.push(chunk.text);
-        continue;
-      }
-      if (chunk.type === 'done') {
-        finalText = chunk.finalText ?? finalText;
-        artifactCandidate = chunk.artifactCandidate ?? artifactCandidate;
-      }
+    const chunkResult = await consumeFinalizationChunks({
+      chunks: finalChunks,
+      finalAnswerDeltaEmitter,
+    });
+    if (chunkResult.kind === 'failure') {
+      throw chunkResult.error;
     }
 
+    const { answer, finalText, artifactCandidate } = chunkResult;
     const hasModelOutput = finalText.trim() !== '' || answer.trim() !== '';
     const finalAnswer = finalText || answer || 'max tool rounds reached';
     const result =

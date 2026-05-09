@@ -115,7 +115,6 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
     deliveryId: 'delivery-context-a',
     subagentType: 'explorer',
     terminalState: 'completed',
-    ok: true,
     result: 'done',
     completedAt: '2026-03-30T00:00:01.000Z',
   });
@@ -330,6 +329,32 @@ void test('createDaemonContext explicit undefined subagent policy suppresses env
     assert.equal(result.ok, true);
   } finally {
     restoreEnv(SUBAGENT_BACKGROUND_CAPACITY_ENV, previous);
+  }
+});
+
+void test('createDaemonContext freezes provider request options from env', () => {
+  const previousModel = process.env.GEULBAT_CODEX_MODEL;
+  const previousReasoningEffort = process.env.GEULBAT_CODEX_REASONING_EFFORT;
+  const previousTextVerbosity = process.env.GEULBAT_CODEX_TEXT_VERBOSITY;
+  process.env.GEULBAT_CODEX_MODEL = 'gpt-startup-freeze';
+  process.env.GEULBAT_CODEX_REASONING_EFFORT = 'high';
+  process.env.GEULBAT_CODEX_TEXT_VERBOSITY = 'low';
+
+  try {
+    const daemonContext = createDaemonContext();
+    process.env.GEULBAT_CODEX_MODEL = 'gpt-mutated-after-startup';
+    process.env.GEULBAT_CODEX_REASONING_EFFORT = 'xhigh';
+    process.env.GEULBAT_CODEX_TEXT_VERBOSITY = 'high';
+
+    assert.deepEqual(daemonContext.providerRequestOptions, {
+      model: 'gpt-startup-freeze',
+      reasoning: { effort: 'high', summary: 'auto' },
+      text: { verbosity: 'low' },
+    });
+  } finally {
+    restoreEnv('GEULBAT_CODEX_MODEL', previousModel);
+    restoreEnv('GEULBAT_CODEX_REASONING_EFFORT', previousReasoningEffort);
+    restoreEnv('GEULBAT_CODEX_TEXT_VERBOSITY', previousTextVerbosity);
   }
 });
 

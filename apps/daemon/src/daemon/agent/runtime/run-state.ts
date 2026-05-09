@@ -3,6 +3,10 @@ import { assertRunId, type RunId } from '@geulbat/protocol/ids';
 import type { RunWorkspaceContext } from '../../run-workspace-context.js';
 import { createRunWorkspaceContext } from '../../run-workspace-context.js';
 import type { RunStatus, ToolRunState } from '../../runtime-contracts.js';
+import {
+  RUN_APPROVAL_PENDING_STATUS,
+  RUN_RUNNING_STATUS,
+} from '../../runtime-contracts.js';
 import { hasVisibleAgentOutput } from '../agent-result.js';
 import type { AgentResult } from '../agent-result.js';
 
@@ -22,7 +26,7 @@ export function createRunState(params: {
     ...runContext,
     seq: 0,
     abortController: new AbortController(),
-    status: 'running',
+    status: RUN_RUNNING_STATUS,
     createdAt: new Date().toISOString(),
     childRunIds: new Set<RunId>(),
     backgroundChildRunIds: new Set<RunId>(),
@@ -55,15 +59,17 @@ function isValidRunStatusTransition(
   }
 
   switch (current) {
-    case 'running':
+    case RUN_RUNNING_STATUS:
       return (
-        next === 'awaiting_approval' ||
+        next === RUN_APPROVAL_PENDING_STATUS ||
         next === 'completed' ||
         next === 'failed' ||
         next === 'cancelled'
       );
-    case 'awaiting_approval':
-      return next === 'running' || next === 'failed' || next === 'cancelled';
+    case RUN_APPROVAL_PENDING_STATUS:
+      return (
+        next === RUN_RUNNING_STATUS || next === 'failed' || next === 'cancelled'
+      );
     case 'completed':
     case 'failed':
     case 'cancelled':
@@ -75,12 +81,12 @@ function isTerminalRunStatus(status: RunStatus): boolean {
   return isAgentChildTerminalState(status);
 }
 
-export function markRunAwaitingApproval(state: RunState): RunState {
-  return transitionRunStatus(state, 'awaiting_approval');
+export function markRunApprovalPending(state: RunState): RunState {
+  return transitionRunStatus(state, RUN_APPROVAL_PENDING_STATUS);
 }
 
 export function markRunRunning(state: RunState): RunState {
-  return transitionRunStatus(state, 'running');
+  return transitionRunStatus(state, RUN_RUNNING_STATUS);
 }
 
 export function completeRun(state: RunState): RunState {
