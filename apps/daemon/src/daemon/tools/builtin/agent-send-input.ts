@@ -8,6 +8,7 @@ import {
   buildChildLaunchRejected,
   isAgentChildTerminalState,
 } from '../../subagent-runtime-contracts.js';
+import { isChildRunState } from '../../runtime-contracts.js';
 import type { SubagentRunLauncher } from '../types.js';
 import { runSubagentLaunchPipeline } from './subagent-launch-pipeline.js';
 
@@ -58,7 +59,7 @@ export function createAgentSendInputTool(
           'run context is required for agent_send_input',
         );
       }
-      if (ctx.runState.parentRunId) {
+      if (isChildRunState(ctx.runState)) {
         return toolError(
           'execution_failed',
           'agent_send_input is depth-1 only',
