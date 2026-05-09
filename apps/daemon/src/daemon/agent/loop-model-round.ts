@@ -51,6 +51,7 @@ export async function runModelRound(args: {
   threadId: string;
   providerWebSocketSessions: CallModelInput['providerWebSocketSessions'];
   providerAuthRuntime: CallModelInput['providerAuthRuntime'];
+  providerRequestOptions: CallModelInput['providerRequestOptions'];
   signal?: AbortSignal;
   emit: AgentEventEmitter;
   callModelImpl?: CallModelFn;
@@ -67,6 +68,7 @@ export async function runModelRound(args: {
     threadId,
     providerWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions,
     signal,
     emit,
     callModelImpl,
@@ -91,6 +93,7 @@ export async function runModelRound(args: {
       providerSessionId: threadId,
       providerWebSocketSessions,
       providerAuthRuntime,
+      providerRequestOptions,
     };
     if (signal !== undefined) {
       input.signal = signal;
@@ -202,6 +205,7 @@ export async function finalizeAfterToolLimit(args: {
   threadId: string;
   providerWebSocketSessions: CallModelInput['providerWebSocketSessions'];
   providerAuthRuntime: CallModelInput['providerAuthRuntime'];
+  providerRequestOptions: CallModelInput['providerRequestOptions'];
   signal?: AbortSignal;
   emit: AgentEventEmitter;
   callModelImpl?: CallModelFn;
@@ -212,6 +216,7 @@ export async function finalizeAfterToolLimit(args: {
     threadId,
     providerWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions,
     signal,
     emit,
     callModelImpl,
@@ -224,6 +229,7 @@ export async function finalizeAfterToolLimit(args: {
       providerSessionId: threadId,
       providerWebSocketSessions,
       providerAuthRuntime,
+      providerRequestOptions,
     };
     if (signal !== undefined) {
       input.signal = signal;

@@ -46,6 +46,7 @@ async function main() {
       fileStateCache: daemonContext.fileStateCache,
       memoryIndex: daemonContext.memoryIndex,
       providerAuthRuntime: daemonContext.providerAuthRuntime,
+      providerRequestOptions: daemonContext.providerRequestOptions,
       providerWebSocketSessions: daemonContext.providerWebSocketSessions,
       projectRegistry: daemonContext.projectRegistry,
       subagentAdmission: daemonContext.subagentAdmission,

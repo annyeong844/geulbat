@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createProviderAuthRuntimeStore } from '../auth/runtime-state.js';
+import type { ProviderRequestOptions } from '../llm/provider/provider-options.js';
 import type { ResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-session.js';
 import type { AgentEvent, AgentEventEmitter } from './events.js';
 import { createAgentEvent } from './events.js';
@@ -21,6 +22,12 @@ const unusedProviderWebSocketSessions: Pick<
   async acquireWebSocket() {
     throw new Error('provider websocket session store should not be used here');
   },
+};
+
+const defaultProviderRequestOptions: ProviderRequestOptions = {
+  model: 'gpt-5.5',
+  text: { verbosity: 'medium' },
+  reasoning: { effort: 'medium', summary: 'auto' },
 };
 
 function makeEmitter(events: AgentEvent[]): AgentEventEmitter {
@@ -50,6 +57,7 @@ void test('runModelRound aggregates deltas, function calls, and the composed sys
     threadId,
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
     emit: makeEmitter(events),
     callModelImpl: createScriptedProviderCallModel([
       composeProviderRounds(
@@ -113,6 +121,7 @@ void test('runModelRound streams final answer deltas as they arrive without a du
     threadId: testThreadId(57),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
     emit: makeEmitter(events),
     callModelImpl: createScriptedProviderCallModel([
       {
@@ -171,6 +180,7 @@ void test('runModelRound converts provider error chunks into terminal failure', 
     threadId: testThreadId(52),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
     emit: makeEmitter(events),
     callModelImpl: createScriptedProviderCallModel([
       {
@@ -209,6 +219,7 @@ void test('runModelRound retries retryable stream errors before semantic output'
     threadId: testThreadId(59),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
     emit: makeEmitter(events),
     retrySleep: async () => {
       slept = true;
@@ -261,6 +272,7 @@ void test('runModelRound does not retry after semantic output has been emitted',
     threadId: testThreadId(60),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
     emit: makeEmitter(events),
     retrySleep: async () => undefined,
     callModelImpl: async function* () {
@@ -303,6 +315,7 @@ void test('runModelRound classifies thrown stream failures before retrying', asy
     threadId: testThreadId(61),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
     emit: makeEmitter(events),
     retrySleep: async () => undefined,
     callModelImpl: async function* () {
@@ -359,6 +372,7 @@ void test('runModelRound logs a warning when chunks stall', async () => {
       threadId: testThreadId(62),
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerAuthRuntime,
+      providerRequestOptions: defaultProviderRequestOptions,
       emit: makeEmitter(events),
       now: () => nowValues.shift() ?? 10_001,
       callModelImpl: async function* () {
@@ -390,6 +404,7 @@ void test('runModelRound returns aborted terminal failure when the model throws 
     threadId: testThreadId(53),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
     signal: controller.signal,
     emit: makeEmitter(events),
     callModelImpl: async function* () {
@@ -419,6 +434,7 @@ void test('finalizeAfterToolLimit returns fallback prose without emitting termin
     threadId: testThreadId(54),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
     emit: makeEmitter(events),
     callModelImpl: createScriptedProviderCallModel([{ events: [] }]),
   });
@@ -440,6 +456,7 @@ void test('finalizeAfterToolLimit streams final answer deltas without a duplicat
     threadId: testThreadId(63),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
     emit: makeEmitter(events),
     callModelImpl: async function* () {
       yield { type: 'text_delta', text: 'sum', phase: 'final_answer' };
@@ -477,6 +494,7 @@ void test('finalizeAfterToolLimit keeps raw artifact transport internal without 
     threadId: testThreadId(55),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
     emit: makeEmitter(events),
     callModelImpl: createScriptedProviderCallModel([
       providerFinalAnswerRound(answer),
@@ -516,6 +534,7 @@ void test('runModelRound treats wrapped legacy envelope final text as plain pros
     threadId: testThreadId(56),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
     emit: makeEmitter(events),
     callModelImpl: createScriptedProviderCallModel([
       providerFinalAnswerRound(answer),
