@@ -38,3 +38,16 @@ export interface ToolRunState {
   backgroundChildRunIds: Set<RunId>;
   backgroundChildLaunchReservationIds: Set<string>;
 }
+
+export type RootToolRunState = ToolRunState & { parentRunId?: undefined };
+export type ChildToolRunState = ToolRunState & { parentRunId: RunId };
+
+export function isRootRunState(state: ToolRunState): state is RootToolRunState {
+  return state.parentRunId === undefined;
+}
+
+export function isChildRunState(
+  state: ToolRunState,
+): state is ChildToolRunState {
+  return state.parentRunId !== undefined;
+}

@@ -26,6 +26,7 @@ import {
 } from './loop-shared.js';
 import { finalizeAfterToolLimit, runModelRound } from './loop-model-round.js';
 import { processFunctionCalls } from './loop-tool-execution.js';
+import { isRootRunState } from '../runtime-contracts.js';
 
 export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   const {
@@ -68,9 +69,10 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     allowedToolNames !== undefined ? { names: allowedToolNames } : {},
   );
   const history = await loadInitialHistory(workspaceRoot, threadId, prompt);
-  const pendingBackgroundResults = !runState?.parentRunId
-    ? notifications.consumeThreadBackgroundResults(threadId)
-    : [];
+  const pendingBackgroundResults =
+    runState === undefined || isRootRunState(runState)
+      ? notifications.consumeThreadBackgroundResults(threadId)
+      : [];
   const pendingBackgroundSystemNote = formatBackgroundResultNote(
     pendingBackgroundResults,
   );

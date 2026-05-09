@@ -9,6 +9,7 @@ import {
   SUBAGENT_TYPES,
   type SubagentType,
 } from '../../subagent-runtime-contracts.js';
+import { isChildRunState } from '../../runtime-contracts.js';
 import type { SubagentRunLauncher } from '../types.js';
 import { runSubagentLaunchPipeline } from './subagent-launch-pipeline.js';
 
@@ -70,7 +71,7 @@ export function createAgentSpawnTool(
       const ownerThreadId = ctx.threadId;
       const projectId = ctx.projectId;
       const parentRunId = assertToolRunId(ctx.runId);
-      if (ctx.runState.parentRunId) {
+      if (isChildRunState(ctx.runState)) {
         return buildChildLaunchPayload(
           buildChildLaunchRejected({
             subagentType,
