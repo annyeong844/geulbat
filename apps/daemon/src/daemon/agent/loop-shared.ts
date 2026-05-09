@@ -49,8 +49,9 @@ export function formatBackgroundResultNote(
 
   const lines = ['Background child updates:'];
   for (const result of results) {
+    const ok = result.terminalState === 'completed';
     lines.push(`- type: ${result.subagentType}`);
-    lines.push(`  ok: ${result.ok ? 'true' : 'false'}`);
+    lines.push(`  ok: ${ok ? 'true' : 'false'}`);
     lines.push(`  result: ${result.result || '(empty)'}`);
   }
   return lines.join('\n');

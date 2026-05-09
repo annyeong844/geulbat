@@ -59,7 +59,6 @@ export interface BackgroundChildResult {
   childRunId: RunId;
   subagentType: SubagentType;
   terminalState: AgentChildTerminalState;
-  ok: boolean;
   reason?: AgentChildTerminalReason;
   result: string;
   completedAt: string;

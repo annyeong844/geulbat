@@ -5,6 +5,7 @@ export function createKeyedSerialRunner() {
     key: string,
     operation: () => Promise<T>,
   ): Promise<T> {
+    // Queue registration must stay synchronous so later callers observe this tail before any await.
     const previous = tails.get(key) ?? Promise.resolve();
     const waitForPreviousTail = () =>
       previous.then(

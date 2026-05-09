@@ -11,6 +11,36 @@ import {
 import { createProviderAuthRuntimeStore } from '../runtime-state.js';
 import { createProviderAuthTestStores } from '../../../test-support/provider-auth.js';
 
+interface ServerResponseProbe {
+  readonly response: ServerResponse;
+  readonly headers: Map<string, string>;
+  readBody(): string;
+}
+
+function createServerResponseProbe(): ServerResponseProbe {
+  const headers = new Map<string, string>();
+  let body = '';
+  const response = {
+    statusCode: 200,
+    setHeader(name: string, value: string) {
+      headers.set(name.toLowerCase(), value);
+      return this;
+    },
+    end(chunk?: string) {
+      body = chunk ?? '';
+      return this;
+    },
+  } as unknown as ServerResponse;
+
+  return {
+    response,
+    headers,
+    readBody() {
+      return body;
+    },
+  };
+}
+
 void test('callback request handler resolves against injected bootstrap/runtime stores', async () => {
   const { bootstrapStore, runtimeStore } = createProviderAuthTestStores();
   const untouchedRuntimeStore = createProviderAuthRuntimeStore();
@@ -44,25 +74,13 @@ void test('callback request handler resolves against injected bootstrap/runtime 
     url: '/auth/callback?code=code-local&state=state-local',
   } as IncomingMessage;
 
-  const headers = new Map<string, string>();
-  let body = '';
-  const res = {
-    statusCode: 200,
-    setHeader(name: string, value: string) {
-      headers.set(name.toLowerCase(), value);
-      return this;
-    },
-    end(chunk?: string) {
-      body = chunk ?? '';
-      return this;
-    },
-  } as unknown as ServerResponse;
+  const res = createServerResponseProbe();
 
-  await handler(req, res);
+  await handler(req, res.response);
 
-  assert.equal(res.statusCode, 200);
-  assert.match(headers.get('content-type') ?? '', /text\/html/);
-  assert.match(body, /Provider connected/i);
+  assert.equal(res.response.statusCode, 200);
+  assert.match(res.headers.get('content-type') ?? '', /text\/html/);
+  assert.match(res.readBody(), /Provider connected/i);
   assert.equal(
     runtimeStore.getCachedProviderCredential()?.accessToken,
     'handler-local-access-token',
@@ -86,25 +104,13 @@ void test('callback request handler returns generic 500 on unexpected callback f
     url: '/auth/callback?code=code-local&state=state-local',
   } as IncomingMessage;
 
-  const headers = new Map<string, string>();
-  let body = '';
-  const res = {
-    statusCode: 200,
-    setHeader(name: string, value: string) {
-      headers.set(name.toLowerCase(), value);
-      return this;
-    },
-    end(chunk?: string) {
-      body = chunk ?? '';
-      return this;
-    },
-  } as unknown as ServerResponse;
+  const res = createServerResponseProbe();
 
-  await handler(req, res);
+  await handler(req, res.response);
 
-  assert.equal(res.statusCode, 500);
-  assert.equal(headers.get('content-type'), 'text/plain; charset=utf-8');
-  assert.equal(body, 'Internal provider auth callback error');
+  assert.equal(res.response.statusCode, 500);
+  assert.equal(res.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.equal(res.readBody(), 'Internal provider auth callback error');
 });
 
 void test('callback request handler rejects non-GET methods without invoking callback completion', async () => {
@@ -124,25 +130,13 @@ void test('callback request handler rejects non-GET methods without invoking cal
     url: '/auth/callback?code=code-local&state=state-local',
   } as IncomingMessage;
 
-  const headers = new Map<string, string>();
-  let body = '';
-  const res = {
-    statusCode: 200,
-    setHeader(name: string, value: string) {
-      headers.set(name.toLowerCase(), value);
-      return this;
-    },
-    end(chunk?: string) {
-      body = chunk ?? '';
-      return this;
-    },
-  } as unknown as ServerResponse;
+  const res = createServerResponseProbe();
 
-  await handler(req, res);
+  await handler(req, res.response);
 
-  assert.equal(res.statusCode, 405);
-  assert.equal(headers.get('allow'), 'GET');
-  assert.equal(body, 'Method Not Allowed');
+  assert.equal(res.response.statusCode, 405);
+  assert.equal(res.headers.get('allow'), 'GET');
+  assert.equal(res.readBody(), 'Method Not Allowed');
   assert.equal(completeCalled, false);
 });
 
@@ -163,25 +157,13 @@ void test('callback request handler rejects requests for non-callback paths with
     url: '/auth/not-the-callback?code=code-local&state=state-local',
   } as IncomingMessage;
 
-  const headers = new Map<string, string>();
-  let body = '';
-  const res = {
-    statusCode: 200,
-    setHeader(name: string, value: string) {
-      headers.set(name.toLowerCase(), value);
-      return this;
-    },
-    end(chunk?: string) {
-      body = chunk ?? '';
-      return this;
-    },
-  } as unknown as ServerResponse;
+  const res = createServerResponseProbe();
 
-  await handler(req, res);
+  await handler(req, res.response);
 
-  assert.equal(res.statusCode, 404);
-  assert.equal(headers.size, 0);
-  assert.equal(body, 'Not Found');
+  assert.equal(res.response.statusCode, 404);
+  assert.equal(res.headers.size, 0);
+  assert.equal(res.readBody(), 'Not Found');
   assert.equal(completeCalled, false);
 });
 

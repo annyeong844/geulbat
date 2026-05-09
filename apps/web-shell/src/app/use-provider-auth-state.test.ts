@@ -231,6 +231,66 @@ void test('useProviderAuthState keeps the same status reference across identical
   hook.unmount();
 });
 
+void test('useProviderAuthState observes ready status near expiry and surfaces refresh notices', async () => {
+  restoreDocument = installShellAuthDocument();
+  const timeoutCallbacks: Array<{
+    timeout: number | undefined;
+    callback: () => void;
+  }> = [];
+  restoreWindow = installProviderAuthWindow({
+    setTimeout(callback: TimerHandler, timeout?: number) {
+      if (typeof callback !== 'function') {
+        throw new Error('provider auth test expected timeout callback');
+      }
+      timeoutCallbacks.push({ timeout, callback: () => callback() });
+      return timeoutCallbacks.length;
+    },
+    clearTimeout() {
+      return;
+    },
+  });
+  const firstExpiry = Date.now() + 60_000;
+  const fetchMock = installFetchSequence(
+    () =>
+      jsonResponse({
+        state: 'ready',
+        ready: true,
+        expiresAt: firstExpiry,
+      }),
+    () =>
+      jsonResponse({
+        state: 'ready',
+        ready: true,
+        expiresAt: firstExpiry + 60_000,
+      }),
+  );
+  restoreFetch = fetchMock.restore;
+
+  const hook = await renderHook(useProviderAuthState, undefined);
+  await hook.flush();
+  const observeTimer = timeoutCallbacks.find(
+    (entry) => entry.timeout === PROVIDER_AUTH_READY_POLL_MS,
+  );
+  assert.ok(observeTimer);
+
+  await hook.run(async () => {
+    observeTimer.callback();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  assert.equal(fetchMock.calls.length, 2);
+  assert.equal(
+    hook.result.current.providerAuthNotice,
+    'Provider auth refreshed.',
+  );
+  assert.equal(
+    hook.result.current.providerAuthStatus?.expiresAt,
+    firstExpiry + 60_000,
+  );
+  hook.unmount();
+});
+
 interface ProviderAuthWindowStub {
   open(): Window | null;
   location: {

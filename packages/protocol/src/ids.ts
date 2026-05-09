@@ -1,3 +1,9 @@
+/**
+ * Protocol ids use string-literal brands so DTOs stay plain strings at runtime
+ * while TypeScript rejects accidental ProjectId/RunId/ThreadId mixing. Keep the
+ * regexes private; cross-package callers prevalidate with is* guards and brand
+ * at trust boundaries with assert* functions.
+ */
 type Brand<T, Name extends string> = T & { readonly __brand: Name };
 
 export type ProjectId = Brand<string, 'ProjectId'>;

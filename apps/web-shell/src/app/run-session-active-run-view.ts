@@ -8,7 +8,10 @@ import {
   appendAssistantTranscriptText,
   appendSubagentTranscriptEntry,
 } from './run-session-entry-state.js';
-import type { ActiveRunViewState } from './run-session-state-types.js';
+import type {
+  ActiveRunViewState,
+  PendingApprovalIdentity,
+} from './run-session-state-types.js';
 
 export function activateRunningRun(
   activeRunView: ActiveRunViewState,
@@ -145,19 +148,26 @@ export function setPendingApproval(
 
 export function clearResolvedPendingApproval(
   activeRunView: ActiveRunViewState,
-  callId: string | undefined,
+  pendingApproval: PendingApprovalIdentity | undefined,
 ): ActiveRunViewState {
-  if (callId === undefined) {
+  if (pendingApproval === undefined) {
     return clearPendingApprovalState(activeRunView);
   }
 
-  const hadQueuedApproval = activeRunView.pendingApprovals.some(
-    (pendingApproval) => pendingApproval.callId === callId,
+  const hadQueuedApproval = activeRunView.pendingApprovals.some((entry) =>
+    isSamePendingApprovalIdentity(entry, pendingApproval),
   );
   const pendingApprovals = activeRunView.pendingApprovals.filter(
-    (pendingApproval) => pendingApproval.callId !== callId,
+    (entry) => !isSamePendingApprovalIdentity(entry, pendingApproval),
   );
-  if (!hadQueuedApproval && activeRunView.pendingApproval?.callId !== callId) {
+  if (
+    !hadQueuedApproval &&
+    (activeRunView.pendingApproval === null ||
+      !isSamePendingApprovalIdentity(
+        activeRunView.pendingApproval,
+        pendingApproval,
+      ))
+  ) {
     return activeRunView;
   }
 
@@ -191,9 +201,22 @@ function enqueuePendingApproval(
   pendingApproval: ApprovalRequired,
 ): ApprovalRequired[] {
   if (
-    pendingApprovals.some((entry) => entry.callId === pendingApproval.callId)
+    pendingApprovals.some((entry) =>
+      isSamePendingApprovalIdentity(entry, pendingApproval),
+    )
   ) {
     return [...pendingApprovals];
   }
   return [...pendingApprovals, pendingApproval];
+}
+
+function isSamePendingApprovalIdentity(
+  left: PendingApprovalIdentity,
+  right: PendingApprovalIdentity,
+): boolean {
+  return (
+    left.callId === right.callId &&
+    left.runId === right.runId &&
+    left.threadId === right.threadId
+  );
 }

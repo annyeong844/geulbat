@@ -5,5 +5,8 @@ export async function bootstrapDaemonEntry(options?: {
   importMain?: () => Promise<unknown>;
 }): Promise<void> {
   await (options?.loadEnv ?? loadDaemonLocalEnv)();
+  const { validateDaemonRuntimeKnobsFromEnv } =
+    await import('./daemon/context.js');
+  validateDaemonRuntimeKnobsFromEnv();
   await (options?.importMain ?? (() => import('./main.js')))();
 }

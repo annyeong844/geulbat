@@ -26,6 +26,7 @@ import {
 } from './loop-shared.js';
 import { finalizeAfterToolLimit, runModelRound } from './loop-model-round.js';
 import { processFunctionCalls } from './loop-tool-execution.js';
+import { isRootRunState } from '../runtime-contracts.js';
 
 export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   const {
@@ -63,14 +64,16 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   const notifications = runtimeServices.backgroundNotifications;
   const resolvedMemoryIndex = runtimeServices.memoryIndex;
   const providerAuthRuntime = runtimeServices.providerAuthRuntime;
+  const providerRequestOptions = runtimeServices.providerRequestOptions;
   const webSocketSessions = runtimeServices.providerWebSocketSessions;
   const toolDefs = registry.buildToolDefinitions(
     allowedToolNames !== undefined ? { names: allowedToolNames } : {},
   );
   const history = await loadInitialHistory(workspaceRoot, threadId, prompt);
-  const pendingBackgroundResults = !runState?.parentRunId
-    ? notifications.consumeThreadBackgroundResults(threadId)
-    : [];
+  const pendingBackgroundResults =
+    runState === undefined || isRootRunState(runState)
+      ? notifications.consumeThreadBackgroundResults(threadId)
+      : [];
   const pendingBackgroundSystemNote = formatBackgroundResultNote(
     pendingBackgroundResults,
   );
@@ -98,6 +101,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       threadId,
       providerWebSocketSessions: webSocketSessions,
       providerAuthRuntime,
+      providerRequestOptions,
       emit,
     };
     if (signal !== undefined) {
@@ -165,6 +169,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     threadId,
     providerWebSocketSessions: webSocketSessions,
     providerAuthRuntime,
+    providerRequestOptions,
     emit,
   };
   if (signal !== undefined) {

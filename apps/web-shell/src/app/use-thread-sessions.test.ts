@@ -102,6 +102,60 @@ void test('useThreadSessions clears the pending delete dialog after conflict', a
   hook.unmount();
 });
 
+void test('useThreadSessions clears selected thread state after confirmed delete succeeds', async () => {
+  restoreDocument = installShellAuthDocument();
+  const fetchMock = installFetchSequence(
+    () =>
+      jsonResponse({
+        threads: [
+          {
+            threadId: THREAD_ID,
+            projectId: 'workspace',
+            title: 'Thread',
+            lastUpdated: '2026-03-30T00:00:00.000Z',
+            messageCount: 1,
+          },
+        ],
+      }),
+    () =>
+      jsonResponse({
+        threadId: THREAD_ID,
+        projectId: 'workspace',
+        snapshotVersion: '2026-03-30T00:00:00.000Z',
+        messages: [
+          {
+            role: 'assistant',
+            content: 'hello',
+            timestamp: '2026-03-30T00:00:00.000Z',
+          },
+        ],
+        artifacts: [],
+      }),
+    () =>
+      jsonResponse({
+        ok: true,
+        threadId: THREAD_ID,
+        projectId: 'workspace',
+      }),
+  );
+  restoreFetch = fetchMock.restore;
+  const hook = await renderHook(useThreadSessions, 'workspace');
+
+  await hook.run((current) => current.loadThreads());
+  await hook.run((current) => current.openThread(THREAD_ID));
+  await hook.run((current) => current.requestDeleteThread(THREAD_ID));
+  await hook.run((current) => current.confirmDeleteThread());
+
+  assert.equal(hook.result.current.pendingDeleteThread, null);
+  assert.equal(hook.result.current.deletingThreadId, null);
+  assert.equal(hook.result.current.threadError, null);
+  assert.equal(hook.result.current.selectedThreadId, null);
+  assert.deepEqual(hook.result.current.messages, []);
+  assert.deepEqual(hook.result.current.artifacts, []);
+  assert.deepEqual(hook.result.current.threads, []);
+  hook.unmount();
+});
+
 void test('useThreadSessions explicit open selects a previously seen unchanged thread', async () => {
   restoreDocument = installShellAuthDocument();
   const fetchMock = installFetchSequence(

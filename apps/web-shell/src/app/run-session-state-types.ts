@@ -5,6 +5,11 @@ import type {
 import type { ApprovalRequired } from '@geulbat/protocol/run-approval';
 import type { RunTranscriptEntry } from '../lib/run-transcript-entry.js';
 
+export type PendingApprovalIdentity = Pick<
+  ApprovalRequired,
+  'callId' | 'runId' | 'threadId'
+>;
+
 export type BackgroundNotificationEntry = Extract<
   RunTranscriptEntry,
   { kind: 'subagent_activity' }
@@ -95,7 +100,7 @@ export type RunSessionStateAction =
   | { type: 'session_error_cleared' }
   | { type: 'run_start_failed'; message: string }
   | { type: 'approval_submit_failed'; message: string }
-  | { type: 'approval_cleared'; callId?: string }
+  | { type: 'approval_cleared'; pendingApproval?: PendingApprovalIdentity }
   | { type: 'run_start_cancelled' };
 
 export function createEmptyActiveRunView(

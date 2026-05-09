@@ -426,11 +426,13 @@ void test('useRunSession routes approval decisions through the controller comman
   hook.unmount();
 });
 
-void test('useRunSession reveals queued approvals after the current approval is resolved', async () => {
+void test('useRunSession reveals queued approvals with matching callId after the current approval is resolved', async () => {
   const requests: Array<{
     approved: boolean;
     grantScope: string;
     callId: string;
+    runId: string;
+    threadId: string;
   }> = [];
   const harness = createRunSessionClientHarness({
     approve: async (request) => {
@@ -438,6 +440,8 @@ void test('useRunSession reveals queued approvals after the current approval is 
         approved: request.approved,
         grantScope: request.grantScope,
         callId: request.callId,
+        runId: request.runId,
+        threadId: request.threadId,
       });
       return RUN_ID;
     },
@@ -450,13 +454,14 @@ void test('useRunSession reveals queued approvals after the current approval is 
     }),
   );
   const firstApproval = makeApprovalRequiredFixture({
-    callId: 'call-1',
+    callId: 'shared-call',
     runId: RUN_ID,
     threadId: THREAD_ID,
   });
+  const secondApprovalRunId = brandRunId('run-child-1');
   const secondApproval = makeApprovalRequiredFixture({
-    callId: 'call-2',
-    runId: RUN_ID,
+    callId: 'shared-call',
+    runId: secondApprovalRunId,
     threadId: THREAD_ID,
   });
 
@@ -500,7 +505,7 @@ void test('useRunSession reveals queued approvals after the current approval is 
   });
   await hook.flush();
 
-  assert.equal(hook.result.current.pendingApproval?.callId, 'call-1');
+  assert.equal(hook.result.current.pendingApproval, firstApproval);
 
   await hook.run(async (current) => {
     await current.handleApprove(firstApproval, 'once');
@@ -511,10 +516,12 @@ void test('useRunSession reveals queued approvals after the current approval is 
     {
       approved: true,
       grantScope: 'once',
-      callId: 'call-1',
+      callId: 'shared-call',
+      runId: RUN_ID,
+      threadId: THREAD_ID,
     },
   ]);
-  assert.equal(hook.result.current.pendingApproval?.callId, 'call-2');
+  assert.equal(hook.result.current.pendingApproval, secondApproval);
   hook.unmount();
 });
 
