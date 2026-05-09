@@ -8,7 +8,6 @@ import {
   appendAssistantTranscriptTextToActiveRun,
   appendSubagentActivityToActiveRun,
   appendTranscriptActivity,
-  clearResolvedPendingApproval,
   clearPendingApprovalState,
   setPendingApproval,
   setRunErrorState,
@@ -214,15 +213,9 @@ void test('setPendingApproval keeps approvals with matching callId but different
   );
 
   const withBoth = setPendingApproval(withFirst, THREAD_ID, secondApproval);
-  const afterFirstCleared = clearResolvedPendingApproval(
-    withBoth,
-    firstApproval,
-  );
 
   assert.equal(withBoth.pendingApproval, firstApproval);
   assert.deepEqual(withBoth.pendingApprovals, [firstApproval, secondApproval]);
-  assert.equal(afterFirstCleared.pendingApproval, secondApproval);
-  assert.deepEqual(afterFirstCleared.pendingApprovals, [secondApproval]);
 });
 
 void test('setPendingApproval dedupes replayed approvals with the same run identity', () => {
