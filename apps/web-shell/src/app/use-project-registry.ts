@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import type { ProjectId } from '@geulbat/protocol/ids';
 import type {
   ProjectListItem,
@@ -28,6 +35,20 @@ interface ReportProjectRegistryErrorArgs {
   error: unknown;
 }
 
+interface UseProjectMutationsArgs {
+  defaultProjectId: ProjectId;
+  selectedProjectId: ProjectId;
+  applyProjectSnapshot: (response: ProjectListResponse) => void;
+  setProjectError: Dispatch<SetStateAction<string | null>>;
+}
+
+interface ProjectMutations {
+  mutationBusy: boolean;
+  addProject: (label: string) => Promise<boolean>;
+  renameProject: (projectId: string, label: string) => Promise<boolean>;
+  deleteProject: (projectId: string) => Promise<boolean>;
+}
+
 const FALLBACK_PROJECTS: ProjectListItem[] = [
   {
     projectId: DEFAULT_PROJECT_ID,
@@ -48,6 +69,105 @@ function reportProjectRegistryError({
   });
 }
 
+function useProjectMutations({
+  defaultProjectId,
+  selectedProjectId,
+  applyProjectSnapshot,
+  setProjectError,
+}: UseProjectMutationsArgs): ProjectMutations {
+  const [mutationBusy, setMutationBusy] = useState(false);
+
+  const mutateAndSync = useCallback(
+    async (
+      mutation: () => Promise<ProjectListResponse>,
+      visiblePrefix: string,
+    ): Promise<boolean> => {
+      setMutationBusy(true);
+      try {
+        const response = await mutation();
+        applyProjectSnapshot(response);
+        setProjectError(null);
+        return true;
+      } catch (err: unknown) {
+        setProjectError(
+          reportProjectRegistryError({
+            logContext: 'project registry mutation failed',
+            visiblePrefix,
+            error: err,
+          }),
+        );
+        return false;
+      } finally {
+        setMutationBusy(false);
+      }
+    },
+    [applyProjectSnapshot, setProjectError],
+  );
+
+  const addProject = useCallback(
+    async (label: string): Promise<boolean> => {
+      const trimmed = label.trim();
+      if (trimmed.length === 0) {
+        setProjectError('Project label is required.');
+        return false;
+      }
+
+      return mutateAndSync(
+        () => createProjectRequest({ label: trimmed }),
+        'Unable to add project.',
+      );
+    },
+    [mutateAndSync, setProjectError],
+  );
+
+  const renameProject = useCallback(
+    async (projectId: string, label: string): Promise<boolean> => {
+      if (projectId === defaultProjectId) {
+        setProjectError(getDefaultProjectRenameConflictMessage());
+        return false;
+      }
+
+      const trimmed = label.trim();
+      if (trimmed.length === 0) {
+        setProjectError('Project label is required.');
+        return false;
+      }
+
+      return mutateAndSync(
+        () => renameProjectRequest(projectId, { label: trimmed }),
+        'Unable to rename project.',
+      );
+    },
+    [defaultProjectId, mutateAndSync, setProjectError],
+  );
+
+  const deleteProject = useCallback(
+    async (projectId: string): Promise<boolean> => {
+      if (projectId === defaultProjectId) {
+        setProjectError(getDefaultProjectDeleteConflictMessage());
+        return false;
+      }
+      if (projectId === selectedProjectId) {
+        setProjectError(getSelectedProjectDeleteConflictMessage());
+        return false;
+      }
+
+      return mutateAndSync(
+        () => deleteProjectRequest(projectId),
+        'Unable to delete project.',
+      );
+    },
+    [defaultProjectId, mutateAndSync, selectedProjectId, setProjectError],
+  );
+
+  return {
+    mutationBusy,
+    addProject,
+    renameProject,
+    deleteProject,
+  };
+}
+
 export function useProjectRegistry() {
   const [defaultProjectId, setDefaultProjectId] =
     useState<ProjectId>(DEFAULT_PROJECT_ID);
@@ -56,7 +176,6 @@ export function useProjectRegistry() {
   const [projectError, setProjectError] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] =
     useState<ProjectId>(DEFAULT_PROJECT_ID);
-  const [mutationBusy, setMutationBusy] = useState(false);
 
   const applyProjectSnapshot = useCallback((response: ProjectListResponse) => {
     setProjects(response.projects);
@@ -88,38 +207,20 @@ export function useProjectRegistry() {
     void loadProjects();
   }, [loadProjects]);
 
-  const mutateAndSync = useCallback(
-    async (
-      mutation: () => Promise<ProjectListResponse>,
-      visiblePrefix: string,
-    ): Promise<boolean> => {
-      setMutationBusy(true);
-      try {
-        const response = await mutation();
-        applyProjectSnapshot(response);
-        setProjectError(null);
-        return true;
-      } catch (err: unknown) {
-        setProjectError(
-          reportProjectRegistryError({
-            logContext: 'project registry mutation failed',
-            visiblePrefix,
-            error: err,
-          }),
-        );
-        return false;
-      } finally {
-        setMutationBusy(false);
-      }
-    },
-    [applyProjectSnapshot],
+  const projectsById = useMemo<ReadonlyMap<string, ProjectListItem>>(
+    () =>
+      new Map(
+        projects.map((project): [string, ProjectListItem] => [
+          project.projectId,
+          project,
+        ]),
+      ),
+    [projects],
   );
 
   const selectProject = useCallback(
     (projectId: string) => {
-      const nextProject = projects.find(
-        (project) => project.projectId === projectId,
-      );
+      const nextProject = projectsById.get(projectId);
       if (!nextProject) {
         return;
       }
@@ -127,64 +228,15 @@ export function useProjectRegistry() {
       setSelectedProjectId(nextProject.projectId);
       setProjectError(null);
     },
-    [projects],
+    [projectsById],
   );
-
-  const addProject = useCallback(
-    async (label: string): Promise<boolean> => {
-      const trimmed = label.trim();
-      if (trimmed.length === 0) {
-        setProjectError('Project label is required.');
-        return false;
-      }
-
-      return mutateAndSync(
-        () => createProjectRequest({ label: trimmed }),
-        'Unable to add project.',
-      );
-    },
-    [mutateAndSync],
-  );
-
-  const renameProject = useCallback(
-    async (projectId: string, label: string): Promise<boolean> => {
-      if (projectId === defaultProjectId) {
-        setProjectError(getDefaultProjectRenameConflictMessage());
-        return false;
-      }
-
-      const trimmed = label.trim();
-      if (trimmed.length === 0) {
-        setProjectError('Project label is required.');
-        return false;
-      }
-
-      return mutateAndSync(
-        () => renameProjectRequest(projectId, { label: trimmed }),
-        'Unable to rename project.',
-      );
-    },
-    [defaultProjectId, mutateAndSync],
-  );
-
-  const deleteProject = useCallback(
-    async (projectId: string): Promise<boolean> => {
-      if (projectId === defaultProjectId) {
-        setProjectError(getDefaultProjectDeleteConflictMessage());
-        return false;
-      }
-      if (projectId === selectedProjectId) {
-        setProjectError(getSelectedProjectDeleteConflictMessage());
-        return false;
-      }
-
-      return mutateAndSync(
-        () => deleteProjectRequest(projectId),
-        'Unable to delete project.',
-      );
-    },
-    [defaultProjectId, mutateAndSync, selectedProjectId],
-  );
+  const { mutationBusy, addProject, renameProject, deleteProject } =
+    useProjectMutations({
+      defaultProjectId,
+      selectedProjectId,
+      applyProjectSnapshot,
+      setProjectError,
+    });
 
   return {
     defaultProjectId,
