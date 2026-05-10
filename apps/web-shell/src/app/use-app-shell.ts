@@ -1,10 +1,12 @@
-import { createAppShellView } from './app-shell.js';
+import {
+  createAppShellView,
+  type AppShellView,
+  type CreateAppShellViewArgs,
+} from './app-shell.js';
 import { useProjectRegistry } from './use-project-registry.js';
 import { useProviderAuthState } from './use-provider-auth-state.js';
 
-type CreateAppShellViewArgs = Parameters<typeof createAppShellView>[0];
-
-export function useAppShell(): ReturnType<typeof createAppShellView> {
+export function useAppShell(): AppShellView {
   const providerAuth = useProviderAuthState();
   const projectRegistry = useProjectRegistry();
 
