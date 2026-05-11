@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { callModelWithDependencies } from './client.js';
 import { createProviderAuthRuntimeStore } from '../../auth/runtime-state.js';
+import type { ProviderRequestOptions } from './provider-options.js';
 import type { ResponsesWebSocketSessionStore } from './transport/responses-websocket-session.js';
 
 const unusedProviderWebSocketSessions: Pick<
@@ -15,50 +16,60 @@ const unusedProviderWebSocketSessions: Pick<
   },
 };
 
-void test('callModelWithDependencies builds provider body from daemon-local provider request options', async () => {
+const defaultProviderRequestOptions: ProviderRequestOptions = {
+  model: 'gpt-5.5',
+  text: { verbosity: 'medium' },
+  reasoning: { effort: 'medium', summary: 'auto' },
+};
+
+void test('callModelWithDependencies uses frozen provider request options instead of live env', async () => {
   const runtimeStore = createProviderAuthRuntimeStore();
   const previousModel = process.env.GEULBAT_CODEX_MODEL;
   const previousReasoningEffort = process.env.GEULBAT_CODEX_REASONING_EFFORT;
   const previousTextVerbosity = process.env.GEULBAT_CODEX_TEXT_VERBOSITY;
-  process.env.GEULBAT_CODEX_MODEL = 'gpt-5.5';
+  process.env.GEULBAT_CODEX_MODEL = 'gpt-live-env';
   process.env.GEULBAT_CODEX_REASONING_EFFORT = 'xhigh';
   process.env.GEULBAT_CODEX_TEXT_VERBOSITY = 'high';
 
   try {
+    const providerRequestOptions: ProviderRequestOptions = {
+      model: 'gpt-frozen-startup',
+      text: { verbosity: 'low' },
+      reasoning: { effort: 'low', summary: 'auto' },
+    };
+    const input = {
+      history: [],
+      systemPrompt: 'system',
+      providerSessionId: 'provider-session',
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime: runtimeStore,
+      providerRequestOptions,
+    };
     const chunks = [];
-    for await (const chunk of callModelWithDependencies(
-      {
-        history: [],
-        systemPrompt: 'system',
-        providerSessionId: 'provider-session',
-        providerWebSocketSessions: unusedProviderWebSocketSessions,
-        providerAuthRuntime: runtimeStore,
+    for await (const chunk of callModelWithDependencies(input, {
+      getProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      forceRefreshProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      streamResponsesOverWebSocket: async ({ body }) => {
+        assert.equal(body.model, 'gpt-frozen-startup');
+        assert.deepEqual(body.reasoning, {
+          effort: 'low',
+          summary: 'auto',
+        });
+        assert.deepEqual(body.text, { verbosity: 'low' });
+        return {
+          itemsToAppend: [],
+          functionCalls: [],
+          assistantText: 'ok',
+          finalText: 'ok',
+        };
       },
-      {
-        getProviderAuth: async () => ({
-          accessToken: 'token',
-          accountId: 'account',
-        }),
-        forceRefreshProviderAuth: async () => ({
-          accessToken: 'token',
-          accountId: 'account',
-        }),
-        streamResponsesOverWebSocket: async ({ body }) => {
-          assert.equal(body.model, 'gpt-5.5');
-          assert.deepEqual(body.reasoning, {
-            effort: 'xhigh',
-            summary: 'auto',
-          });
-          assert.deepEqual(body.text, { verbosity: 'high' });
-          return {
-            itemsToAppend: [],
-            functionCalls: [],
-            assistantText: 'ok',
-            finalText: 'ok',
-          };
-        },
-      },
-    )) {
+    })) {
       chunks.push(chunk);
     }
 
@@ -88,6 +99,60 @@ void test('callModelWithDependencies builds provider body from daemon-local prov
   }
 });
 
+void test('callModelWithDependencies builds provider body from daemon-local provider request options', async () => {
+  const runtimeStore = createProviderAuthRuntimeStore();
+  const providerRequestOptions: ProviderRequestOptions = {
+    model: 'gpt-5.5',
+    reasoning: { effort: 'xhigh', summary: 'auto' },
+    text: { verbosity: 'high' },
+  };
+  const chunks = [];
+  for await (const chunk of callModelWithDependencies(
+    {
+      history: [],
+      systemPrompt: 'system',
+      providerSessionId: 'provider-session',
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime: runtimeStore,
+      providerRequestOptions,
+    },
+    {
+      getProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      forceRefreshProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      streamResponsesOverWebSocket: async ({ body }) => {
+        assert.equal(body.model, 'gpt-5.5');
+        assert.deepEqual(body.reasoning, {
+          effort: 'xhigh',
+          summary: 'auto',
+        });
+        assert.deepEqual(body.text, { verbosity: 'high' });
+        return {
+          itemsToAppend: [],
+          functionCalls: [],
+          assistantText: 'ok',
+          finalText: 'ok',
+        };
+      },
+    },
+  )) {
+    chunks.push(chunk);
+  }
+
+  assert.deepEqual(chunks, [
+    {
+      type: 'done',
+      assistantText: 'ok',
+      finalText: 'ok',
+    },
+  ]);
+});
+
 void test('callModelWithDependencies streams deltas, then tool calls, then done', async () => {
   const chunks = [];
   const runtimeStore = createProviderAuthRuntimeStore();
@@ -99,6 +164,7 @@ void test('callModelWithDependencies streams deltas, then tool calls, then done'
       providerSessionId: 'provider-session',
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerAuthRuntime: runtimeStore,
+      providerRequestOptions: defaultProviderRequestOptions,
     },
     {
       getProviderAuth: async () => ({
@@ -166,6 +232,7 @@ void test('callModelWithDependencies carries provider artifact candidates in don
       providerSessionId: 'provider-session',
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerAuthRuntime: runtimeStore,
+      providerRequestOptions: defaultProviderRequestOptions,
     },
     {
       getProviderAuth: async () => ({
@@ -223,6 +290,7 @@ void test('callModelWithDependencies aborts the background provider call when th
       providerSessionId: 'provider-session',
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerAuthRuntime: runtimeStore,
+      providerRequestOptions: defaultProviderRequestOptions,
     },
     {
       getProviderAuth: async () => ({
@@ -307,6 +375,7 @@ void test('callModelWithDependencies logs provider failures with provider sessio
         providerSessionId: 'provider-session',
         providerWebSocketSessions: unusedProviderWebSocketSessions,
         providerAuthRuntime: runtimeStore,
+        providerRequestOptions: defaultProviderRequestOptions,
       },
       {
         getProviderAuth: async () => ({
@@ -369,6 +438,7 @@ void test('callModelWithDependencies forces one refresh and retries once after c
       providerSessionId: 'provider-session',
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerAuthRuntime: runtimeStore,
+      providerRequestOptions: defaultProviderRequestOptions,
     },
     {
       getProviderAuth: async () => ({
@@ -429,6 +499,7 @@ void test('callModelWithDependencies does not loop after a second canonical auth
       providerSessionId: 'provider-session',
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerAuthRuntime: runtimeStore,
+      providerRequestOptions: defaultProviderRequestOptions,
     },
     {
       getProviderAuth: async () => ({
@@ -477,6 +548,7 @@ void test('callModelWithDependencies surfaces forced refresh invalidation as ter
       providerSessionId: 'provider-session',
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerAuthRuntime: runtimeStore,
+      providerRequestOptions: defaultProviderRequestOptions,
     },
     {
       getProviderAuth: async () => ({
@@ -530,6 +602,7 @@ void test('callModelWithDependencies does not force refresh after a rate-limit f
       providerSessionId: 'provider-session',
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerAuthRuntime: runtimeStore,
+      providerRequestOptions: defaultProviderRequestOptions,
     },
     {
       getProviderAuth: async () => ({

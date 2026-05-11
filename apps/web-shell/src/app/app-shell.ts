@@ -24,13 +24,13 @@ interface AppProjectRegistryInput {
   deleteProject: (projectId: string) => Promise<boolean>;
 }
 
-interface AppShellView {
+export interface AppShellView {
   workspaceKey: string;
   workspaceProps: ProjectWorkspaceProps;
   providerAuthNotice: string | null;
 }
 
-interface CreateAppShellViewArgs {
+export interface CreateAppShellViewArgs {
   providerAuth: AppProviderAuthInput;
   projectRegistry: AppProjectRegistryInput;
 }

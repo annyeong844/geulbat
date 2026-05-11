@@ -10,7 +10,7 @@ import {
   type SourceMutationTarget,
 } from './file-platform.js';
 import { createBinaryVersionToken } from './version-token.js';
-import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
+import { runSourceMutationSerial } from './file-mutation-serial.js';
 import { hasErrorCode } from '../utils/error.js';
 import {
   AlreadyExistsWriteTargetError,
@@ -20,8 +20,6 @@ import {
 } from './file-domain-error.js';
 
 type SaveBinaryFileResult = FileSaveResponse;
-
-const runSaveBinarySerial = createKeyedSerialRunner();
 
 /**
  * Binary save pipeline owner:
@@ -50,8 +48,12 @@ async function saveResolvedBinaryFile(
   resolvedPath: SourceMutationTarget,
   content: Uint8Array,
 ): Promise<SaveBinaryFileResult> {
-  const { relativePath: normalized, absolutePath } = resolvedPath;
-  return runSaveBinarySerial(absolutePath, async () => {
+  const {
+    relativePath: normalized,
+    absolutePath,
+    canonicalAbsolutePath,
+  } = resolvedPath;
+  return runSourceMutationSerial(canonicalAbsolutePath, async () => {
     await mkdir(dirname(absolutePath), { recursive: true });
     try {
       await fsWriteFile(absolutePath, content, { flag: 'wx' });
@@ -96,8 +98,12 @@ async function replaceResolvedBinaryFile(
   content: Uint8Array,
   expectedToken: string,
 ): Promise<SaveBinaryFileResult> {
-  const { relativePath: normalized, absolutePath } = resolvedPath;
-  return runSaveBinarySerial(absolutePath, async () => {
+  const {
+    relativePath: normalized,
+    absolutePath,
+    canonicalAbsolutePath,
+  } = resolvedPath;
+  return runSourceMutationSerial(canonicalAbsolutePath, async () => {
     let currentContent: Uint8Array;
     try {
       currentContent = await fsReadFile(absolutePath);

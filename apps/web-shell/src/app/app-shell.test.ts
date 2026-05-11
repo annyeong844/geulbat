@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import type { ProjectListItem } from '@geulbat/protocol/projects';
 
 import { brandProjectId } from '../lib/id-brand-helpers.js';
-import { createAppShellView } from './app-shell.js';
-
-type CreateAppShellViewArgs = Parameters<typeof createAppShellView>[0];
+import {
+  createAppShellView,
+  type CreateAppShellViewArgs,
+} from './app-shell.js';
 
 const PROJECT_ID = brandProjectId('workspace');
 

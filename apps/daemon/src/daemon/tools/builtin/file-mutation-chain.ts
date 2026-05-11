@@ -8,6 +8,7 @@ import {
   readResolvedFile,
   type ReadFileResult,
 } from '../../files/read-file.js';
+import { runSourceMutationSerial } from '../../files/file-mutation-serial.js';
 import {
   saveResolvedFile,
   type SaveFileOptions,
@@ -51,6 +52,8 @@ interface FileMutationCacheContext {
   fileStateCache?: FileStateCache;
 }
 
+// Prepared filesystem state is advisory; commit paths must re-check it because
+// approval/preparation and commit can be separated by concurrent file changes.
 export async function prepareMutatingFilePath(
   workspaceRoot: string,
   inputPath: string,
@@ -177,150 +180,181 @@ export async function commitPreparedRelocation(
   prepared: PreparedRelocationPaths,
   context?: FileMutationCacheContext,
 ): Promise<{ from: string; to: string }> {
-  const sourceStats = await stat(prepared.sourcePath.absolutePath).catch(
-    (error: unknown) => {
-      if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {
-        throw new MissingWriteTargetError(prepared.sourcePath.relativePath, {
-          cause: error,
-        });
+  return runSourceMutationSerial(
+    [
+      prepared.sourcePath.canonicalAbsolutePath,
+      prepared.destinationPath.canonicalAbsolutePath,
+    ],
+    async () => {
+      const sourceStats = await stat(prepared.sourcePath.absolutePath).catch(
+        (error: unknown) => {
+          if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {
+            throw new MissingWriteTargetError(
+              prepared.sourcePath.relativePath,
+              {
+                cause: error,
+              },
+            );
+          }
+          throw error;
+        },
+      );
+      const currentSourceKind = sourceStats.isDirectory()
+        ? 'directory'
+        : 'file';
+      if (currentSourceKind !== prepared.sourceKind) {
+        throw new FileAccessError(
+          'conflict',
+          `source changed before relocation: ${prepared.sourcePath.relativePath}`,
+          prepared.sourcePath.relativePath,
+        );
       }
-      throw error;
+
+      if (
+        prepared.sourcePath.canonicalAbsolutePath !==
+          prepared.destinationPath.canonicalAbsolutePath &&
+        (await pathExists(prepared.destinationPath.absolutePath))
+      ) {
+        throw new AlreadyExistsWriteTargetError(
+          prepared.destinationPath.relativePath,
+        );
+      }
+
+      try {
+        await mkdir(dirname(prepared.destinationPath.absolutePath), {
+          recursive: true,
+        });
+      } catch (error: unknown) {
+        if (hasErrorCode(error, 'EEXIST') || hasErrorCode(error, 'ENOTDIR')) {
+          throw new AlreadyExistsWriteTargetError(
+            prepared.destinationPath.relativePath,
+          );
+        }
+        throw error;
+      }
+
+      try {
+        await rename(
+          prepared.sourcePath.absolutePath,
+          prepared.destinationPath.absolutePath,
+        );
+      } catch (error: unknown) {
+        if (hasErrorCode(error, 'ENOENT')) {
+          throw new MissingWriteTargetError(prepared.sourcePath.relativePath, {
+            cause: error,
+          });
+        }
+        if (hasErrorCode(error, 'EEXIST') || hasErrorCode(error, 'ENOTDIR')) {
+          throw new AlreadyExistsWriteTargetError(
+            prepared.destinationPath.relativePath,
+          );
+        }
+        throw error;
+      }
+      const result = {
+        from: prepared.sourcePath.relativePath,
+        to: prepared.destinationPath.relativePath,
+      };
+      invalidateResolvedPath(context?.fileStateCache, prepared.sourcePath);
+      invalidateResolvedPath(context?.fileStateCache, prepared.destinationPath);
+      return result;
     },
   );
-  const currentSourceKind = sourceStats.isDirectory() ? 'directory' : 'file';
-  if (currentSourceKind !== prepared.sourceKind) {
-    throw new FileAccessError(
-      'conflict',
-      `source changed before relocation: ${prepared.sourcePath.relativePath}`,
-      prepared.sourcePath.relativePath,
-    );
-  }
-
-  if (
-    prepared.sourcePath.canonicalAbsolutePath !==
-      prepared.destinationPath.canonicalAbsolutePath &&
-    (await pathExists(prepared.destinationPath.absolutePath))
-  ) {
-    throw new AlreadyExistsWriteTargetError(
-      prepared.destinationPath.relativePath,
-    );
-  }
-
-  try {
-    await mkdir(dirname(prepared.destinationPath.absolutePath), {
-      recursive: true,
-    });
-  } catch (error: unknown) {
-    if (hasErrorCode(error, 'EEXIST') || hasErrorCode(error, 'ENOTDIR')) {
-      throw new AlreadyExistsWriteTargetError(
-        prepared.destinationPath.relativePath,
-      );
-    }
-    throw error;
-  }
-
-  try {
-    await rename(
-      prepared.sourcePath.absolutePath,
-      prepared.destinationPath.absolutePath,
-    );
-  } catch (error: unknown) {
-    if (hasErrorCode(error, 'ENOENT')) {
-      throw new MissingWriteTargetError(prepared.sourcePath.relativePath, {
-        cause: error,
-      });
-    }
-    if (hasErrorCode(error, 'EEXIST') || hasErrorCode(error, 'ENOTDIR')) {
-      throw new AlreadyExistsWriteTargetError(
-        prepared.destinationPath.relativePath,
-      );
-    }
-    throw error;
-  }
-  const result = {
-    from: prepared.sourcePath.relativePath,
-    to: prepared.destinationPath.relativePath,
-  };
-  invalidateResolvedPath(context?.fileStateCache, prepared.sourcePath);
-  invalidateResolvedPath(context?.fileStateCache, prepared.destinationPath);
-  return result;
 }
 
 export async function commitPreparedDeletion(
   prepared: PreparedResolvedPath,
   context?: FileMutationCacheContext,
 ): Promise<{ path: string }> {
-  let stats;
-  try {
-    stats = await stat(prepared.resolvedPath.absolutePath);
-  } catch (error: unknown) {
-    if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {
-      throw new MissingWriteTargetError(prepared.resolvedPath.relativePath, {
-        cause: error,
-      });
-    }
-    throw error;
-  }
+  return runSourceMutationSerial(
+    prepared.resolvedPath.canonicalAbsolutePath,
+    async () => {
+      let stats;
+      try {
+        stats = await stat(prepared.resolvedPath.absolutePath);
+      } catch (error: unknown) {
+        if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {
+          throw new MissingWriteTargetError(
+            prepared.resolvedPath.relativePath,
+            {
+              cause: error,
+            },
+          );
+        }
+        throw error;
+      }
 
-  const currentPathKind: PreparedPathKind = stats.isDirectory()
-    ? 'directory'
-    : 'file';
-  if (
-    prepared.pathKind !== undefined &&
-    currentPathKind !== prepared.pathKind
-  ) {
-    throw new FileAccessError(
-      'conflict',
-      `target changed before deletion: ${prepared.resolvedPath.relativePath}`,
-      prepared.resolvedPath.relativePath,
-    );
-  }
+      const currentPathKind: PreparedPathKind = stats.isDirectory()
+        ? 'directory'
+        : 'file';
+      if (
+        prepared.pathKind !== undefined &&
+        currentPathKind !== prepared.pathKind
+      ) {
+        throw new FileAccessError(
+          'conflict',
+          `target changed before deletion: ${prepared.resolvedPath.relativePath}`,
+          prepared.resolvedPath.relativePath,
+        );
+      }
 
-  try {
-    if (stats.isDirectory()) {
-      await rm(prepared.resolvedPath.absolutePath, { recursive: true });
-    } else {
-      await unlink(prepared.resolvedPath.absolutePath);
-    }
-  } catch (error: unknown) {
-    if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {
-      throw new MissingWriteTargetError(prepared.resolvedPath.relativePath, {
-        cause: error,
-      });
-    }
-    throw error;
-  }
+      try {
+        if (stats.isDirectory()) {
+          await rm(prepared.resolvedPath.absolutePath, { recursive: true });
+        } else {
+          await unlink(prepared.resolvedPath.absolutePath);
+        }
+      } catch (error: unknown) {
+        if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {
+          throw new MissingWriteTargetError(
+            prepared.resolvedPath.relativePath,
+            {
+              cause: error,
+            },
+          );
+        }
+        throw error;
+      }
 
-  const result = {
-    path: prepared.resolvedPath.relativePath,
-  };
-  invalidateResolvedPath(context?.fileStateCache, prepared.resolvedPath);
-  return result;
+      const result = {
+        path: prepared.resolvedPath.relativePath,
+      };
+      invalidateResolvedPath(context?.fileStateCache, prepared.resolvedPath);
+      return result;
+    },
+  );
 }
 
 export async function commitPreparedDirectoryCreation(
   prepared: PreparedResolvedPath,
   context?: FileMutationCacheContext,
 ): Promise<{ path: string }> {
-  if (await pathExists(prepared.resolvedPath.absolutePath)) {
-    throw new AlreadyExistsWriteTargetError(prepared.resolvedPath.relativePath);
-  }
+  return runSourceMutationSerial(
+    prepared.resolvedPath.canonicalAbsolutePath,
+    async () => {
+      if (await pathExists(prepared.resolvedPath.absolutePath)) {
+        throw new AlreadyExistsWriteTargetError(
+          prepared.resolvedPath.relativePath,
+        );
+      }
 
-  try {
-    await mkdir(prepared.resolvedPath.absolutePath, { recursive: true });
-  } catch (error: unknown) {
-    if (hasErrorCode(error, 'EEXIST') || hasErrorCode(error, 'ENOTDIR')) {
-      throw new AlreadyExistsWriteTargetError(
-        prepared.resolvedPath.relativePath,
-      );
-    }
-    throw error;
-  }
-  const result = {
-    path: prepared.resolvedPath.relativePath,
-  };
-  invalidateResolvedPath(context?.fileStateCache, prepared.resolvedPath);
-  return result;
+      try {
+        await mkdir(prepared.resolvedPath.absolutePath, { recursive: true });
+      } catch (error: unknown) {
+        if (hasErrorCode(error, 'EEXIST') || hasErrorCode(error, 'ENOTDIR')) {
+          throw new AlreadyExistsWriteTargetError(
+            prepared.resolvedPath.relativePath,
+          );
+        }
+        throw error;
+      }
+      const result = {
+        path: prepared.resolvedPath.relativePath,
+      };
+      invalidateResolvedPath(context?.fileStateCache, prepared.resolvedPath);
+      return result;
+    },
+  );
 }
 
 async function pathExists(path: string): Promise<boolean> {

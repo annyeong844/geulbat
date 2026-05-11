@@ -181,6 +181,7 @@ export type {
   AgentLaunchRejectedToolRaw,
   AgentLaunchToolRaw,
   AgentStopToolRaw,
+  AgentWaitBlockedReason,
   AgentWaitToolRaw,
   ArtifactCommittedEventPayload,
   DoneEventPayload,
@@ -209,7 +210,10 @@ export type {
   UnknownToolResultSuccessEventPayload,
 } from './run-events.js';
 export {
+  AGENT_WAIT_APPROVAL_BLOCKED_REASON,
+  AGENT_WAIT_BLOCKED_REASONS,
   isArtifactCommittedEventPayload,
+  isAgentWaitBlockedReason,
   isAgentLaunchToolRaw,
   isAgentChildTerminalState,
   isAgentStopToolRaw,

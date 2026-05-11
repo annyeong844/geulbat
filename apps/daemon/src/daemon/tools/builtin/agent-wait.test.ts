@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
+import { AGENT_WAIT_APPROVAL_BLOCKED_REASON } from '@geulbat/protocol/run-events';
 
 import { agentWaitTool } from './agent-wait.js';
 import { createDaemonContext } from '../../context.js';
@@ -125,7 +126,7 @@ void test('agent_wait wait_mode any returns once one child becomes terminal', as
   assert.deepEqual(payload.blocked, [
     {
       childRunId: secondChildRunId,
-      blockedReason: 'approval_pending',
+      blockedReason: AGENT_WAIT_APPROVAL_BLOCKED_REASON,
     },
   ]);
 });

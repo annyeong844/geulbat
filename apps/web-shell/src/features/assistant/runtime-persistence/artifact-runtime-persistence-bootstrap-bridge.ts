@@ -1,5 +1,6 @@
 import type {
   PendingPersistenceRequest,
+  PersistenceBootstrapMessageEvent,
   PersistenceBootstrapRequestMessage,
   PersistenceBootstrapSuccessResponseMessage,
   PersistenceBootstrapVerbs,
@@ -10,6 +11,16 @@ interface BridgeStore {
   createPersistenceError(code: string, message: string): Error;
   assertSharedStorageAvailable(): void;
   isPlainRecord(value: unknown): value is Record<string, unknown>;
+}
+
+interface PersistenceResponseRouterArgs {
+  window: PersistenceBootstrapWindow;
+  verbs: PersistenceBootstrapVerbs;
+  store: BridgeStore;
+  pendingPersistenceRequests: Map<string, PendingPersistenceRequest>;
+  clearPendingPersistenceRequest(
+    requestId: string,
+  ): PendingPersistenceRequest | null;
 }
 
 function isPersistenceBootstrapSuccessResponseMessage(
@@ -31,6 +42,73 @@ function isPersistenceBootstrapSuccessResponseMessage(
       record.revision === null ||
       typeof record.revision === 'string')
   );
+}
+
+function createPersistenceResponseRouter({
+  window,
+  verbs,
+  store,
+  pendingPersistenceRequests,
+  clearPendingPersistenceRequest,
+}: PersistenceResponseRouterArgs): (
+  event: PersistenceBootstrapMessageEvent,
+) => void {
+  return (event) => {
+    if (
+      event.source !== window.parent ||
+      event.origin !== window.__GEULBAT_PERSISTENCE_PARENT_ORIGIN__
+    ) {
+      return;
+    }
+
+    const message = event.data;
+    if (!store.isPlainRecord(message)) {
+      return;
+    }
+    const response = message as Record<string, unknown>;
+    if (
+      response.kind !== window.__GEULBAT_PERSISTENCE_RESPONSE_KIND__ ||
+      response.version !== window.__GEULBAT_PERSISTENCE_BRIDGE_VERSION__ ||
+      typeof response.requestId !== 'string' ||
+      response.scopeHandle !== window.__GEULBAT_PERSISTENCE_SCOPE_HANDLE__ ||
+      (response.verb !== verbs.loadVerb &&
+        response.verb !== verbs.saveVerb &&
+        response.verb !== verbs.clearVerb)
+    ) {
+      return;
+    }
+
+    const pending = pendingPersistenceRequests.get(response.requestId);
+    if (!pending || pending.verb !== response.verb) {
+      return;
+    }
+    clearPendingPersistenceRequest(response.requestId);
+
+    if (response.ok) {
+      if (!isPersistenceBootstrapSuccessResponseMessage(response)) {
+        pending.reject(
+          store.createPersistenceError(
+            'persistence_unavailable',
+            'runtime persistence response was malformed',
+          ),
+        );
+        return;
+      }
+      pending.resolve(response);
+      return;
+    }
+
+    pending.reject(
+      store.createPersistenceError(
+        typeof response.errorCode === 'string'
+          ? response.errorCode
+          : 'persistence_unavailable',
+        typeof response.message === 'string' && response.message
+          ? response.message
+          : 'runtime persistence request failed',
+      ),
+    );
+  };
 }
 
 export function createArtifactRuntimePersistenceBridge(
@@ -142,62 +220,16 @@ export function createArtifactRuntimePersistenceBridge(
       },
     );
 
-  window.addEventListener('message', (event) => {
-    if (
-      event.source !== window.parent ||
-      event.origin !== window.__GEULBAT_PERSISTENCE_PARENT_ORIGIN__
-    ) {
-      return;
-    }
-
-    const message = event.data;
-    if (!store.isPlainRecord(message)) {
-      return;
-    }
-    const response = message as Record<string, unknown>;
-    if (
-      response.kind !== window.__GEULBAT_PERSISTENCE_RESPONSE_KIND__ ||
-      response.version !== window.__GEULBAT_PERSISTENCE_BRIDGE_VERSION__ ||
-      typeof response.requestId !== 'string' ||
-      response.scopeHandle !== window.__GEULBAT_PERSISTENCE_SCOPE_HANDLE__ ||
-      (response.verb !== verbs.loadVerb &&
-        response.verb !== verbs.saveVerb &&
-        response.verb !== verbs.clearVerb)
-    ) {
-      return;
-    }
-
-    const pending = pendingPersistenceRequests.get(response.requestId);
-    if (!pending || pending.verb !== response.verb) {
-      return;
-    }
-    clearPendingPersistenceRequest(response.requestId);
-
-    if (response.ok) {
-      if (!isPersistenceBootstrapSuccessResponseMessage(response)) {
-        pending.reject(
-          store.createPersistenceError(
-            'persistence_unavailable',
-            'runtime persistence response was malformed',
-          ),
-        );
-        return;
-      }
-      pending.resolve(response);
-      return;
-    }
-
-    pending.reject(
-      store.createPersistenceError(
-        typeof response.errorCode === 'string'
-          ? response.errorCode
-          : 'persistence_unavailable',
-        typeof response.message === 'string' && response.message
-          ? response.message
-          : 'runtime persistence request failed',
-      ),
-    );
-  });
+  window.addEventListener(
+    'message',
+    createPersistenceResponseRouter({
+      window,
+      verbs,
+      store,
+      pendingPersistenceRequests,
+      clearPendingPersistenceRequest,
+    }),
+  );
 
   const rawPersistenceApi = Object.freeze({
     loadState() {

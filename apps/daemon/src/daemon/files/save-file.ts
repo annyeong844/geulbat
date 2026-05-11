@@ -12,7 +12,7 @@ import {
   AtomicReplaceConflictError,
   type AtomicWriteLike,
 } from '../utils/atomic-file.js';
-import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
+import { runSourceMutationSerial } from './file-mutation-serial.js';
 import {
   MissingWriteTargetError,
   StaleWriteError,
@@ -23,8 +23,6 @@ export type SaveFileResult = FileSaveResponse;
 export interface SaveFileOptions {
   atomicFs?: AtomicWriteLike;
 }
-
-const runSaveSerial = createKeyedSerialRunner();
 
 /**
  * Save pipeline owner:
@@ -58,8 +56,12 @@ export async function saveResolvedFile(
   expectedToken: string,
   options?: SaveFileOptions,
 ): Promise<SaveFileResult> {
-  const { relativePath: normalized, absolutePath } = resolvedPath;
-  return runSaveSerial(absolutePath, async () => {
+  const {
+    relativePath: normalized,
+    absolutePath,
+    canonicalAbsolutePath,
+  } = resolvedPath;
+  return runSourceMutationSerial(canonicalAbsolutePath, async () => {
     const normalizedExpectedToken = expectedToken.trim();
     let currentToken: string | null = null;
     try {

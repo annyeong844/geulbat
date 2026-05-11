@@ -1,4 +1,9 @@
-import { useCallback, useState } from 'react';
+import {
+  useCallback,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type {
   ThreadDetailResponse,
@@ -45,6 +50,22 @@ interface UseThreadSessionsResult {
   applyThreadSnapshotForRunSettle: (thread: ThreadDetailResponse) => boolean;
 }
 
+interface UseThreadDeleteFlowArgs {
+  projectId: string;
+  threads: ThreadSummary[];
+  setThreads: Dispatch<SetStateAction<ThreadSummary[]>>;
+  setThreadError: Dispatch<SetStateAction<string | null>>;
+  clearThreadSelectionState: (threadId: string) => void;
+}
+
+interface ThreadDeleteFlow {
+  deletingThreadId: string | null;
+  pendingDeleteThread: ThreadSummary | null;
+  requestDeleteThread: (threadId: string) => void;
+  cancelDeleteThread: () => void;
+  confirmDeleteThread: () => Promise<void>;
+}
+
 function reportThreadSessionError({
   logContext,
   visiblePrefix,
@@ -65,13 +86,100 @@ function buildThreadDeleteConflictMessage(
   return `Unable to delete thread ${body.threadId}. Active run ${body.activeRunId} is still in progress.`;
 }
 
-export function useThreadSessions(projectId: string): UseThreadSessionsResult {
-  const [threads, setThreads] = useState<ThreadSummary[]>([]);
-  const [threadError, setThreadError] = useState<string | null>(null);
+function useThreadDeleteFlow({
+  projectId,
+  threads,
+  setThreads,
+  setThreadError,
+  clearThreadSelectionState,
+}: UseThreadDeleteFlowArgs): ThreadDeleteFlow {
   const [deletingThreadId, setDeletingThreadId] = useState<string | null>(null);
   const [pendingDeleteThreadId, setPendingDeleteThreadId] = useState<
     string | null
   >(null);
+
+  const deleteSelectedThreadState = useCallback(
+    (threadId: string) => {
+      setThreads((prev) =>
+        prev.filter((thread) => thread.threadId !== threadId),
+      );
+      setThreadError(null);
+      clearThreadSelectionState(threadId);
+    },
+    [clearThreadSelectionState, setThreadError, setThreads],
+  );
+
+  const handleDeleteThread = useCallback(
+    async (threadId: string) => {
+      setDeletingThreadId(threadId);
+      try {
+        await deleteThread(threadId, brandProjectId(projectId));
+        deleteSelectedThreadState(threadId);
+      } catch (err: unknown) {
+        if (err instanceof ThreadDeleteConflictError) {
+          setThreadError(buildThreadDeleteConflictMessage(err));
+          return;
+        }
+        setThreadError(
+          reportThreadSessionError({
+            logContext: 'deleteThread failed',
+            visiblePrefix: `Unable to delete thread ${threadId}.`,
+            error: err,
+          }),
+        );
+      } finally {
+        setDeletingThreadId((current) =>
+          current === threadId ? null : current,
+        );
+      }
+    },
+    [deleteSelectedThreadState, projectId, setThreadError],
+  );
+
+  const requestDeleteThread = useCallback(
+    (threadId: string) => {
+      setPendingDeleteThreadId(threadId);
+      setThreadError(null);
+    },
+    [setThreadError],
+  );
+
+  const cancelDeleteThread = useCallback(() => {
+    setPendingDeleteThreadId(null);
+  }, []);
+
+  const confirmDeleteThread = useCallback(async () => {
+    if (!pendingDeleteThreadId) {
+      return;
+    }
+    const threadId = pendingDeleteThreadId;
+    try {
+      await handleDeleteThread(threadId);
+    } finally {
+      setPendingDeleteThreadId((current) =>
+        current === threadId ? null : current,
+      );
+    }
+  }, [handleDeleteThread, pendingDeleteThreadId]);
+
+  const pendingDeleteThread =
+    pendingDeleteThreadId === null
+      ? null
+      : (threads.find((thread) => thread.threadId === pendingDeleteThreadId) ??
+        null);
+
+  return {
+    deletingThreadId,
+    pendingDeleteThread,
+    requestDeleteThread,
+    cancelDeleteThread,
+    confirmDeleteThread,
+  };
+}
+
+export function useThreadSessions(projectId: string): UseThreadSessionsResult {
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [threadError, setThreadError] = useState<string | null>(null);
   const {
     selectedThreadId,
     setSelectedThreadId,
@@ -82,6 +190,19 @@ export function useThreadSessions(projectId: string): UseThreadSessionsResult {
     appendOptimisticUserMessage,
     clearThreadSelectionState,
   } = useThreadSessionSelection();
+  const {
+    deletingThreadId,
+    pendingDeleteThread,
+    requestDeleteThread,
+    cancelDeleteThread,
+    confirmDeleteThread,
+  } = useThreadDeleteFlow({
+    projectId,
+    threads,
+    setThreads,
+    setThreadError,
+    clearThreadSelectionState,
+  });
 
   const applyThreadSnapshotForRunSettle = useCallback(
     (thread: Parameters<typeof applyThreadSnapshotSelection>[0]) => {
@@ -149,73 +270,6 @@ export function useThreadSessions(projectId: string): UseThreadSessionsResult {
     },
     [loadThreadDetail, selectThreadSnapshot],
   );
-
-  const deleteSelectedThreadState = useCallback(
-    (threadId: string) => {
-      setThreads((prev) =>
-        prev.filter((thread) => thread.threadId !== threadId),
-      );
-      setThreadError(null);
-      clearThreadSelectionState(threadId);
-    },
-    [clearThreadSelectionState],
-  );
-
-  const handleDeleteThread = useCallback(
-    async (threadId: string) => {
-      setDeletingThreadId(threadId);
-      try {
-        await deleteThread(threadId, brandProjectId(projectId));
-        deleteSelectedThreadState(threadId);
-      } catch (err: unknown) {
-        if (err instanceof ThreadDeleteConflictError) {
-          setThreadError(buildThreadDeleteConflictMessage(err));
-          return;
-        }
-        setThreadError(
-          reportThreadSessionError({
-            logContext: 'deleteThread failed',
-            visiblePrefix: `Unable to delete thread ${threadId}.`,
-            error: err,
-          }),
-        );
-      } finally {
-        setDeletingThreadId((current) =>
-          current === threadId ? null : current,
-        );
-      }
-    },
-    [deleteSelectedThreadState, projectId],
-  );
-
-  const requestDeleteThread = useCallback((threadId: string) => {
-    setPendingDeleteThreadId(threadId);
-    setThreadError(null);
-  }, []);
-
-  const cancelDeleteThread = useCallback(() => {
-    setPendingDeleteThreadId(null);
-  }, []);
-
-  const confirmDeleteThread = useCallback(async () => {
-    if (!pendingDeleteThreadId) {
-      return;
-    }
-    const threadId = pendingDeleteThreadId;
-    try {
-      await handleDeleteThread(threadId);
-    } finally {
-      setPendingDeleteThreadId((current) =>
-        current === threadId ? null : current,
-      );
-    }
-  }, [handleDeleteThread, pendingDeleteThreadId]);
-
-  const pendingDeleteThread =
-    pendingDeleteThreadId === null
-      ? null
-      : (threads.find((thread) => thread.threadId === pendingDeleteThreadId) ??
-        null);
 
   return {
     threads,
