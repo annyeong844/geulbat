@@ -14,6 +14,8 @@
     "check:docs-current-truth": "node scripts/check-doc-current-truth-public-mirror.mjs",
     "check:npm-installable-distribution": "node scripts/check-npm-installable-distribution.mjs",
     "export:public-ci-mirror": "node scripts/export-public-ci-mirror.mjs",
+    "prepare:public-ci-mirror": "node scripts/prepare-public-ci-mirror.mjs",
+    "collect:public-ci-mirror-evidence": "node scripts/collect-public-ci-mirror-evidence.mjs",
     "format:check": "prettier --check AGENTS.md .prettierrc.json eslint.config.js package.json package-lock.json .rustlike/provider.mjs apps/daemon/src apps/web-shell/src apps/web-shell/index.html packages/protocol/src packages/shared-utils/src scripts/*.mjs",
     "lint": "eslint --cache --cache-location .eslintcache \"packages/*/src/**/*.ts\" \"apps/*/src/**/*.{ts,tsx}\" \"apps/*/scripts/**/*.mjs\" \"scripts/*.mjs\" \".rustlike/*.mjs\"",
     "lint:benchmark:web-shell": "node scripts/lint-benchmark-web-shell.mjs",

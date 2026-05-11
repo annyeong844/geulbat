@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import type { ProviderAuthStatusResponse } from '@geulbat/protocol/provider-auth';
 
 import {
@@ -27,9 +34,18 @@ interface ReportProviderAuthErrorArgs {
   error: unknown;
 }
 
+interface UseProviderAuthStatusPollingArgs {
+  providerAuthBusy: boolean;
+  setProviderAuthError: Dispatch<SetStateAction<string | null>>;
+  setProviderAuthNotice: Dispatch<SetStateAction<string | null>>;
+}
+
+interface ProviderAuthStatusPolling {
+  providerAuthStatus: ProviderAuthStatusResponse | null;
+  loadProviderStatus: () => Promise<void>;
+}
+
 export function useProviderAuthState() {
-  const [providerAuthStatus, setProviderAuthStatus] =
-    useState<ProviderAuthStatusResponse | null>(null);
   const [providerAuthBusy, setProviderAuthBusy] = useState(false);
   const [providerAuthError, setProviderAuthError] = useState<string | null>(
     null,
@@ -37,70 +53,17 @@ export function useProviderAuthState() {
   const [providerAuthNotice, setProviderAuthNotice] = useState<string | null>(
     null,
   );
-  const previousStatusRef = useRef<ProviderAuthStatusResponse | null>(null);
+  const { providerAuthStatus, loadProviderStatus } =
+    useProviderAuthStatusPolling({
+      providerAuthBusy,
+      setProviderAuthError,
+      setProviderAuthNotice,
+    });
 
   const showProviderAlreadyConnectedNotice = useCallback(() => {
     setProviderAuthError(null);
     setProviderAuthNotice(PROVIDER_AUTH_ALREADY_CONNECTED_NOTICE);
   }, []);
-
-  const loadProviderStatus = useCallback(async () => {
-    try {
-      const status = await getProviderAuthStatus();
-      setProviderAuthStatus((current) =>
-        isSameProviderAuthStatus(current, status) ? current : status,
-      );
-      setProviderAuthError(null);
-    } catch (err: unknown) {
-      setProviderAuthError(
-        reportProviderAuthError({
-          logContext: 'loadProviderStatus failed',
-          visiblePrefix: 'Unable to load provider auth status.',
-          error: err,
-        }),
-      );
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadProviderStatus();
-  }, [loadProviderStatus]);
-
-  useEffect(() => {
-    if (providerAuthStatus?.state !== 'pending') {
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      void loadProviderStatus();
-    }, providerAuthStatus.pollAfterMs ?? 1000);
-
-    return () => window.clearInterval(timer);
-  }, [loadProviderStatus, providerAuthStatus]);
-
-  useEffect(() => {
-    const previous = previousStatusRef.current;
-    if (didProviderCredentialRefresh(previous, providerAuthStatus)) {
-      setProviderAuthNotice('Provider auth refreshed.');
-    }
-    previousStatusRef.current = providerAuthStatus;
-  }, [providerAuthStatus]);
-
-  useEffect(() => {
-    if (providerAuthBusy) {
-      return;
-    }
-    const delayMs = getProviderStatusObserveDelayMs(providerAuthStatus);
-    if (delayMs === null) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      void loadProviderStatus();
-    }, delayMs);
-
-    return () => window.clearTimeout(timer);
-  }, [loadProviderStatus, providerAuthBusy, providerAuthStatus]);
 
   useEffect(() => {
     if (!providerAuthNotice) {
@@ -180,6 +143,79 @@ export function useProviderAuthState() {
     providerAuthNotice,
     handleConnectProvider,
     handleDisconnectProvider,
+  };
+}
+
+function useProviderAuthStatusPolling({
+  providerAuthBusy,
+  setProviderAuthError,
+  setProviderAuthNotice,
+}: UseProviderAuthStatusPollingArgs): ProviderAuthStatusPolling {
+  const [providerAuthStatus, setProviderAuthStatus] =
+    useState<ProviderAuthStatusResponse | null>(null);
+  const previousStatusRef = useRef<ProviderAuthStatusResponse | null>(null);
+
+  const loadProviderStatus = useCallback(async () => {
+    try {
+      const status = await getProviderAuthStatus();
+      setProviderAuthStatus((current) =>
+        isSameProviderAuthStatus(current, status) ? current : status,
+      );
+      setProviderAuthError(null);
+    } catch (err: unknown) {
+      setProviderAuthError(
+        reportProviderAuthError({
+          logContext: 'loadProviderStatus failed',
+          visiblePrefix: 'Unable to load provider auth status.',
+          error: err,
+        }),
+      );
+    }
+  }, [setProviderAuthError]);
+
+  useEffect(() => {
+    void loadProviderStatus();
+  }, [loadProviderStatus]);
+
+  useEffect(() => {
+    if (providerAuthStatus?.state !== 'pending') {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void loadProviderStatus();
+    }, providerAuthStatus.pollAfterMs ?? 1000);
+
+    return () => window.clearInterval(timer);
+  }, [loadProviderStatus, providerAuthStatus]);
+
+  useEffect(() => {
+    const previous = previousStatusRef.current;
+    if (didProviderCredentialRefresh(previous, providerAuthStatus)) {
+      setProviderAuthNotice('Provider auth refreshed.');
+    }
+    previousStatusRef.current = providerAuthStatus;
+  }, [providerAuthStatus, setProviderAuthNotice]);
+
+  useEffect(() => {
+    if (providerAuthBusy) {
+      return;
+    }
+    const delayMs = getProviderStatusObserveDelayMs(providerAuthStatus);
+    if (delayMs === null) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void loadProviderStatus();
+    }, delayMs);
+
+    return () => window.clearTimeout(timer);
+  }, [loadProviderStatus, providerAuthBusy, providerAuthStatus]);
+
+  return {
+    providerAuthStatus,
+    loadProviderStatus,
   };
 }
 

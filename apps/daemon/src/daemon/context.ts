@@ -42,7 +42,10 @@ import {
   createResponsesWebSocketSessionStore,
   type ResponsesWebSocketSessionStore,
 } from './llm/provider/transport/responses-websocket-session.js';
-import { resolveProviderRequestOptions } from './llm/provider/provider-options.js';
+import {
+  resolveProviderRequestOptions,
+  type ProviderRequestOptions,
+} from './llm/provider/provider-options.js';
 import {
   createActiveRunStore,
   type ActiveRunStore,
@@ -64,6 +67,7 @@ import type { SubagentRunLauncher } from './daemon-runtime-contract.js';
 
 interface DaemonContextOptions {
   subagentConcurrencyPolicy?: SubagentConcurrencyPolicy | undefined;
+  providerRequestOptions?: ProviderRequestOptions | undefined;
 }
 
 export interface DaemonContext {
@@ -76,6 +80,7 @@ export interface DaemonContext {
   providerAuthBootstrap: ProviderAuthBootstrapStore;
   providerAuthCallbackServer: ProviderAuthCallbackServerController;
   providerAuthRuntime: ProviderAuthRuntimeStore;
+  providerRequestOptions: ProviderRequestOptions;
   projectRegistry: ProjectRegistryStore;
   projectStore: ProjectStore;
   memoryIndex: MemoryIndexStore;
@@ -97,6 +102,8 @@ export function createDaemonContext(
   const projectRegistry = createProjectRegistryStore();
   const providerAuthBootstrap = createProviderAuthBootstrapStore();
   const providerAuthRuntime = createProviderAuthRuntimeStore();
+  const providerRequestOptions =
+    options.providerRequestOptions ?? resolveProviderRequestOptions();
   return {
     activeRuns: createActiveRunStore(),
     approvalGrants,
@@ -110,6 +117,7 @@ export function createDaemonContext(
       runtimeStore: providerAuthRuntime,
     }),
     providerAuthRuntime,
+    providerRequestOptions,
     projectRegistry,
     projectStore: createProjectStore({ projectRegistry }),
     memoryIndex: createMemoryIndexStore(),

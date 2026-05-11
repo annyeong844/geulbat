@@ -25,7 +25,7 @@ import {
   sanitizeProviderErrorMessage,
 } from './provider-error.js';
 import { decideProviderRetryPolicy } from './provider-retry-policy.js';
-import { resolveProviderRequestOptions } from './provider-options.js';
+import type { ProviderRequestOptions } from './provider-options.js';
 import { streamResponsesOverWebSocket } from './transport/responses-websocket.js';
 import type { ResponsesWebSocketSessionStore } from './transport/responses-websocket-session.js';
 import type {
@@ -69,6 +69,7 @@ export interface CallModelInput {
     'acquireWebSocket'
   >;
   providerAuthRuntime: ProviderAuthRuntimeStore;
+  providerRequestOptions: ProviderRequestOptions;
   signal?: AbortSignal;
 }
 
@@ -275,7 +276,7 @@ async function callResponsesWithRetryPolicy(
 }
 
 function buildResponsesRequestBody(input: CallModelInput): WireRequestBase {
-  const requestOptions = resolveProviderRequestOptions();
+  const requestOptions = input.providerRequestOptions;
   const body: WireRequestBase = {
     model: requestOptions.model,
     store: false,

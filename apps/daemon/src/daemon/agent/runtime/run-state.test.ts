@@ -8,7 +8,7 @@ import {
   createRunState,
   nextSeq,
   failOrCancelRun,
-  markRunAwaitingApproval,
+  markRunApprovalPending,
   markRunRunning,
   registerChildRun,
   countActiveBackgroundChildren,
@@ -16,6 +16,7 @@ import {
   settleRunAfterTerminalFailure,
   type RunState,
 } from './run-state.js';
+import { RUN_APPROVAL_PENDING_STATUS } from '../../runtime-contracts.js';
 import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
 import { testRunId } from '../../../test-support/run-id.js';
 
@@ -103,8 +104,8 @@ void test('run status helpers follow the canonical lifecycle transitions', () =>
   });
 
   assert.equal(runState.status, 'running');
-  markRunAwaitingApproval(runState);
-  assert.equal(runState.status, 'awaiting_approval');
+  markRunApprovalPending(runState);
+  assert.equal(runState.status, RUN_APPROVAL_PENDING_STATUS);
   markRunRunning(runState);
   completeRun(runState);
   assert.equal(runState.status, 'completed');

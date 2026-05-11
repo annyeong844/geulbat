@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type {
+  AgentWaitBlockedReason,
   ArtifactCommittedEventPayload,
   KnownToolResultRaw,
   KnownToolResultRawTool,
@@ -15,9 +16,12 @@ import type {
 } from './run-events.js';
 import type { ProjectId, RunId, ThreadId } from './ids.js';
 import {
+  AGENT_WAIT_APPROVAL_BLOCKED_REASON,
+  AGENT_WAIT_BLOCKED_REASONS,
   isAgentChildTerminalState,
   isAgentLaunchToolRaw,
   isAgentStopToolRaw,
+  isAgentWaitBlockedReason,
   isAgentWaitToolRaw,
   isArtifactCommittedEventPayload,
   isDoneEventPayload,
@@ -85,12 +89,19 @@ type _GenericToolResultSuccessIsExplicitKnownOrUnknown = Expect<
 type _ToolResultSuccessForUnownedToolUsesUnknownRaw = Expect<
   Equal<ToolResultSuccessEventPayload<'read_file'>['raw'], UnknownToolResultRaw>
 >;
+type _AgentWaitBlockedReasonKeepsApprovalPendingVocabulary = Expect<
+  Equal<AgentWaitBlockedReason, 'approval_pending'>
+>;
 
 void test('shared payload guards accept canonical shapes and reject malformed ones', () => {
   assert.equal(isAgentChildTerminalState('completed'), true);
   assert.equal(isAgentChildTerminalState('failed'), true);
   assert.equal(isAgentChildTerminalState('cancelled'), true);
   assert.equal(isAgentChildTerminalState('blocked'), false);
+  assert.deepEqual(AGENT_WAIT_BLOCKED_REASONS, ['approval_pending']);
+  assert.equal(AGENT_WAIT_APPROVAL_BLOCKED_REASON, 'approval_pending');
+  assert.equal(isAgentWaitBlockedReason('approval_pending'), true);
+  assert.equal(isAgentWaitBlockedReason('awaiting_approval'), false);
 
   assert.equal(isTextDeltaEventPayload({ text: 'hello' }), true);
   assert.equal(isTextDeltaEventPayload({ text: 1 }), false);

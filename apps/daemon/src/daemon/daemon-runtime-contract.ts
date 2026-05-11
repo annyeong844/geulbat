@@ -1,5 +1,6 @@
 import type { ProjectId, RunId, ThreadId } from '@geulbat/protocol/ids';
 import type { ProviderAuthRuntimeStore } from './auth/runtime-state.js';
+import type { ProviderRequestOptions } from './llm/provider/provider-options.js';
 import type { ResponsesWebSocketSessionStore } from './llm/provider/transport/responses-websocket-session.js';
 import type { ActiveRunStore } from './sessions/active-runs.js';
 import type { ApprovalGrantStore } from './tools/approval-grants.js';
@@ -65,6 +66,7 @@ export interface AgentRuntimeServices {
   fileStateCache: FileStateCache;
   memoryIndex: AgentMemoryIndex;
   providerAuthRuntime: ProviderAuthRuntimeStore;
+  providerRequestOptions: ProviderRequestOptions;
   providerWebSocketSessions: ResponsesWebSocketSessionStore;
   subagentAdmission: SubagentAdmissionController;
   subagentRuns: SubagentRunLauncher;

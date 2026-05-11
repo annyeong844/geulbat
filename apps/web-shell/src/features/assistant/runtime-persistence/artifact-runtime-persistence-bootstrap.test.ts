@@ -64,6 +64,14 @@ interface BootstrapWindow {
   };
 }
 
+interface BootstrapResponseEnvelope {
+  eventSource?: object;
+  eventOrigin?: string;
+  eventData: unknown;
+}
+
+type BootstrapResponse = unknown | BootstrapResponseEnvelope;
+
 function createOkResponse(
   request: ArtifactRuntimePersistenceRequestMessage,
   extras: {
@@ -81,6 +89,17 @@ function createOkResponse(
     revision: extras.revision ?? null,
     ...(extras.state === undefined ? {} : { state: extras.state }),
   };
+}
+
+function isBootstrapResponseEnvelope(
+  response: BootstrapResponse,
+): response is BootstrapResponseEnvelope {
+  return (
+    !!response &&
+    typeof response === 'object' &&
+    !Array.isArray(response) &&
+    'eventData' in response
+  );
 }
 
 function createErrorResponse(
@@ -103,7 +122,7 @@ function createErrorResponse(
 function createBootstrapHarness(
   respond: (
     request: ArtifactRuntimePersistenceRequestMessage,
-  ) => unknown | unknown[] | undefined,
+  ) => BootstrapResponse | BootstrapResponse[] | undefined,
   options: {
     definePropertyThrowProperties?: readonly string[];
     postMessageThrowVerb?: string;
@@ -145,7 +164,14 @@ function createBootstrapHarness(
       const responseList = Array.isArray(responses) ? responses : [responses];
       for (const listener of listeners) {
         for (const response of responseList) {
-          listener({ source: parent, origin: parentOrigin, data: response });
+          const event = isBootstrapResponseEnvelope(response)
+            ? {
+                source: response.eventSource ?? parent,
+                origin: response.eventOrigin ?? parentOrigin,
+                data: response.eventData,
+              }
+            : { source: parent, origin: parentOrigin, data: response };
+          listener(event);
         }
       }
     },
@@ -478,6 +504,39 @@ void test('window.storage facade ignores mismatched bridge responses until verb 
             revision: 'rev-1',
           }),
           verb: ARTIFACT_RUNTIME_PERSISTENCE_VERBS.saveState,
+        },
+        createOkResponse(request, {
+          state: { count: 2 },
+          revision: 'rev-2',
+        }),
+      ];
+    }
+
+    return createOkResponse(request, { revision: null });
+  });
+
+  await ready;
+  assert.equal(await window.storage.get('count'), 2);
+});
+
+void test('window.storage facade ignores bridge responses from unexpected source and origin', async () => {
+  const foreignSource = {};
+  const { ready, window } = createBootstrapHarness((request) => {
+    if (request.verb === ARTIFACT_RUNTIME_PERSISTENCE_VERBS.loadState) {
+      return [
+        {
+          eventSource: foreignSource,
+          eventData: createOkResponse(request, {
+            state: { count: 999 },
+            revision: 'rev-wrong-source',
+          }),
+        },
+        {
+          eventOrigin: 'http://malicious.example.test',
+          eventData: createOkResponse(request, {
+            state: { count: 998 },
+            revision: 'rev-wrong-origin',
+          }),
         },
         createOkResponse(request, {
           state: { count: 2 },

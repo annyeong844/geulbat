@@ -120,6 +120,7 @@ function reserveSlots(args: {
   transferExistingReservation: boolean;
   maxConcurrentChildren: number | null;
 }): SubagentLaunchAdmission {
+  // Admission and reservation mutation must stay synchronous so capacity is observed atomically.
   const {
     runState,
     requestedChildren,

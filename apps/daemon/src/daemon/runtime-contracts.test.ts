@@ -5,8 +5,11 @@ import type { RunId } from '@geulbat/protocol/ids';
 import {
   isChildRunState,
   isRootRunState,
+  RUN_APPROVAL_PENDING_STATUS,
+  RUN_RUNNING_STATUS,
   type ChildToolRunState,
   type RootToolRunState,
+  type RunStatus,
   type ToolRunState,
 } from './runtime-contracts.js';
 import { testRunId } from '../test-support/run-id.js';
@@ -22,6 +25,12 @@ type _ChildToolRunStateRequiresParentRunId = Expect<
 >;
 type _RootToolRunStateDoesNotExposeParentRunId = Expect<
   Equal<RootToolRunState['parentRunId'], undefined>
+>;
+type _RunStatusIncludesApprovalPendingVocabulary = Expect<
+  Equal<Extract<RunStatus, 'approval_pending'>, 'approval_pending'>
+>;
+type _RunStatusDoesNotExposeAwaitingApprovalVocabulary = Expect<
+  Equal<Extract<RunStatus, 'awaiting_approval'>, never>
 >;
 
 function makeToolRunState(args: {
@@ -42,6 +51,11 @@ function makeToolRunState(args: {
       : {}),
   };
 }
+
+void test('RunStatus active vocabulary uses approval_pending consistently', () => {
+  assert.equal(RUN_RUNNING_STATUS, 'running');
+  assert.equal(RUN_APPROVAL_PENDING_STATUS, 'approval_pending');
+});
 
 void test('ToolRunState guards classify root and child states', () => {
   const root = makeToolRunState({ runId: testRunId('root') });

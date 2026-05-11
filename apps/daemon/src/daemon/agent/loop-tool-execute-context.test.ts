@@ -7,10 +7,7 @@ import {
   buildToolCallExecutionRuntime,
   executeResolvedFunctionCall,
 } from './loop-tool-approval.js';
-import {
-  createRunState,
-  markRunAwaitingApproval,
-} from './runtime/run-state.js';
+import { createRunState, markRunApprovalPending } from './runtime/run-state.js';
 import { createApprovalGrantStore } from '../tools/approval-grants.js';
 import { createToolRegistryStore } from '../tools/registry.js';
 import type {
@@ -100,7 +97,7 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
     runId: 'run-execute-context',
     runContext,
   });
-  markRunAwaitingApproval(runState);
+  markRunApprovalPending(runState);
   const events: AgentEvent[] = [];
   const selection = {
     startLine: 1,

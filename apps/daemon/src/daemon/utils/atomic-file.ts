@@ -70,6 +70,7 @@ export async function replaceFileAtomically(
     }
   }
 
+  // The PID + UUID suffix keeps Windows fallback backups collision-resistant per replace attempt.
   const backupPath = `${targetPath}.${process.pid}.${randomUUID()}.bak`;
   let movedTargetToBackup = false;
 

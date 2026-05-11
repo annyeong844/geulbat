@@ -101,6 +101,46 @@ void test('useProjectRegistry rejects deleting the selected project locally', as
   hook.unmount();
 });
 
+void test('useProjectRegistry selects projects without scanning the project array', async () => {
+  restoreDocument = installShellAuthDocument();
+  const fetchMock = installFetchSequence(() =>
+    jsonResponse({
+      defaultProjectId: 'workspace',
+      projects: [
+        { projectId: 'workspace', label: 'Workspace' },
+        { projectId: 'alpha', label: 'Alpha' },
+      ],
+    }),
+  );
+  restoreFetch = fetchMock.restore;
+  const hook = await renderHook(() => useProjectRegistry(), undefined);
+
+  await hook.flush();
+  const projects = hook.result.current.projects;
+  const originalFind = projects.find;
+  let findCalls = 0;
+  Object.defineProperty(projects, 'find', {
+    configurable: true,
+    value: (...args: Parameters<typeof originalFind>) => {
+      findCalls += 1;
+      return originalFind.call(projects, ...args);
+    },
+  });
+
+  try {
+    await hook.run((current) => current.selectProject('alpha'));
+  } finally {
+    Object.defineProperty(projects, 'find', {
+      configurable: true,
+      value: originalFind,
+    });
+  }
+
+  assert.equal(hook.result.current.selectedProjectId, 'alpha');
+  assert.equal(findCalls, 0);
+  hook.unmount();
+});
+
 void test('useProjectRegistry clears mutationBusy after delete failures', async () => {
   restoreDocument = installShellAuthDocument();
   const fetchMock = installFetchSequence(

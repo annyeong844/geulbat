@@ -21,6 +21,22 @@ void test('createChunkRecords derives title from first non-empty heading-like li
   assert.equal(records[0]?.lineEnd, 3);
 });
 
+void test('createChunkRecords caps derived heading titles', () => {
+  const heading = 'A'.repeat(150);
+  const records = createChunkRecords(
+    {
+      path: 'docs/long-title.md',
+      sourceVersionToken: 'token-title',
+      updatedAt: '2026-03-25T00:00:00.000Z',
+      content: `# ${heading}\nbody\n`,
+      lines: [`# ${heading}`, 'body'],
+    },
+    10,
+  );
+
+  assert.equal(records[0]?.title, 'A'.repeat(120));
+});
+
 void test('createChunkRecords respects remaining budget', () => {
   const lines = Array.from({ length: 200 }, (_, index) => `line ${index + 1}`);
   const records = createChunkRecords(

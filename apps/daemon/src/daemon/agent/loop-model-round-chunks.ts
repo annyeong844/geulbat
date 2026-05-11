@@ -46,6 +46,22 @@ type ModelRoundChunkResult =
   | ModelRoundChunkThrownError
   | ModelRoundChunkAborted;
 
+interface FinalizationChunkSuccess {
+  kind: 'success';
+  answer: string;
+  finalText: string;
+  artifactCandidate: AgentArtifactCandidate | undefined;
+}
+
+interface FinalizationChunkFailure {
+  kind: 'failure';
+  error: unknown;
+}
+
+type FinalizationChunkResult =
+  | FinalizationChunkSuccess
+  | FinalizationChunkFailure;
+
 export async function consumeModelRoundChunks(args: {
   chunks: AsyncIterable<LLMChunk>;
   signal: AbortSignal | undefined;
@@ -138,6 +154,39 @@ export async function consumeModelRoundChunks(args: {
     finalText,
     artifactCandidate,
     functionCalls,
+  };
+}
+
+export async function consumeFinalizationChunks(args: {
+  chunks: AsyncIterable<LLMChunk>;
+  finalAnswerDeltaEmitter: ReturnType<typeof createFinalAnswerDeltaEmitter>;
+}): Promise<FinalizationChunkResult> {
+  const { chunks, finalAnswerDeltaEmitter } = args;
+  let answer = '';
+  let finalText = '';
+  let artifactCandidate: AgentArtifactCandidate | undefined;
+
+  try {
+    for await (const chunk of chunks) {
+      if (chunk.type === 'text_delta') {
+        answer += chunk.text;
+        finalAnswerDeltaEmitter.push(chunk.text);
+        continue;
+      }
+      if (chunk.type === 'done') {
+        finalText = chunk.finalText ?? finalText;
+        artifactCandidate = chunk.artifactCandidate ?? artifactCandidate;
+      }
+    }
+  } catch (error: unknown) {
+    return { kind: 'failure', error };
+  }
+
+  return {
+    kind: 'success',
+    answer,
+    finalText,
+    artifactCandidate,
   };
 }
 

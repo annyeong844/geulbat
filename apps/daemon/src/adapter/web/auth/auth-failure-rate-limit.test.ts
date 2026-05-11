@@ -31,3 +31,30 @@ void test('recordShellAuthFailure caps the number of tracked auth windows', () =
     MAX_SHELL_AUTH_FAILURE_WINDOWS,
   );
 });
+
+void test('recordShellAuthFailure prunes capped windows without Array.shift reindexing', () => {
+  resetShellAuthFailureRateLimitForTests();
+
+  for (let i = 0; i < MAX_SHELL_AUTH_FAILURE_WINDOWS; i += 1) {
+    recordShellAuthFailure(`10.0.1.${i}`, i);
+  }
+
+  const originalShift = Array.prototype.shift;
+  let shiftCalls = 0;
+  Array.prototype.shift = function patchedShift<T>(this: T[]): T | undefined {
+    shiftCalls += 1;
+    return originalShift.call(this);
+  };
+
+  try {
+    recordShellAuthFailure('10.0.1.new', MAX_SHELL_AUTH_FAILURE_WINDOWS + 1);
+  } finally {
+    Array.prototype.shift = originalShift;
+  }
+
+  assert.equal(
+    getShellAuthFailureWindowCountForTests(),
+    MAX_SHELL_AUTH_FAILURE_WINDOWS,
+  );
+  assert.equal(shiftCalls, 0);
+});
