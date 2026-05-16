@@ -6,11 +6,9 @@ import { appendTranscriptEntry } from '../sessions/transcript-log.js';
 import type { AgentEventEmitter, ToolCallArgs } from './events.js';
 import type { ErrorCode } from '../error-codes.js';
 import type { RunWorkspaceContext } from '../run-workspace-context.js';
+import { maybeOffloadToolResult } from './tool-output-offload.js';
 
-type TranscriptContext = Pick<
-  RunWorkspaceContext,
-  'workspaceRoot' | 'threadId'
->;
+type TranscriptContext = RunWorkspaceContext;
 
 interface TranscriptToolCallRecord {
   id: string;
@@ -99,6 +97,7 @@ async function emitAndPersistToolResult(args: {
   toolResult: ExecuteResult;
   workspaceFilesMayHaveChanged: boolean;
   runContext: TranscriptContext;
+  runId: string;
   history: HistoryItem[];
   emit: AgentEventEmitter;
 }): Promise<void> {
@@ -108,16 +107,23 @@ async function emitAndPersistToolResult(args: {
     toolResult,
     workspaceFilesMayHaveChanged,
     runContext,
+    runId,
     history,
     emit,
   } = args;
-  const parsedResult = parseToolResultRaw(toolResult.output);
+  const recordedToolResult = await maybeOffloadToolResult({
+    functionCall,
+    runContext,
+    runId,
+    toolResult,
+  });
+  const parsedResult = parseToolResultRaw(recordedToolResult.output);
   const displayText = formatDisplayText(
-    toolResult.ok,
-    toolResult.output,
-    toolResult.ok ? undefined : toolResult.error,
+    recordedToolResult.ok,
+    recordedToolResult.output,
+    recordedToolResult.ok ? undefined : recordedToolResult.error,
   );
-  if (toolResult.ok) {
+  if (recordedToolResult.ok) {
     emit('tool_result', {
       callId: functionCall.callId,
       step: round,
@@ -128,8 +134,9 @@ async function emitAndPersistToolResult(args: {
       raw: parsedResult,
     });
   } else {
-    const errorCode = toolResult.errorCode ?? 'execution_failed';
-    const error = toolResult.error ?? 'tool failed without an error message';
+    const errorCode = recordedToolResult.errorCode ?? 'execution_failed';
+    const error =
+      recordedToolResult.error ?? 'tool failed without an error message';
     emit('tool_result', {
       callId: functionCall.callId,
       step: round,
@@ -145,7 +152,7 @@ async function emitAndPersistToolResult(args: {
     history.push({
       kind: 'function_call_output',
       callId: functionCall.callId,
-      output: buildFunctionCallOutput(toolResult),
+      output: buildFunctionCallOutput(recordedToolResult),
     });
 
     await appendToolResultTranscriptEntry(runContext, {
@@ -154,7 +161,7 @@ async function emitAndPersistToolResult(args: {
       ok: false,
       workspaceFilesMayHaveChanged,
       displayText,
-      output: toolResult.output,
+      output: recordedToolResult.output,
       errorCode,
       error,
     });
@@ -164,7 +171,7 @@ async function emitAndPersistToolResult(args: {
   history.push({
     kind: 'function_call_output',
     callId: functionCall.callId,
-    output: buildFunctionCallOutput(toolResult),
+    output: buildFunctionCallOutput(recordedToolResult),
   });
 
   await appendToolResultTranscriptEntry(runContext, {
@@ -173,7 +180,7 @@ async function emitAndPersistToolResult(args: {
     ok: true,
     workspaceFilesMayHaveChanged,
     displayText,
-    output: toolResult.output,
+    output: recordedToolResult.output,
   });
 }
 
@@ -206,6 +213,7 @@ export async function recordToolResult(args: {
   toolResult: ExecuteResult;
   workspaceFilesMayHaveChanged: boolean;
   runContext: TranscriptContext;
+  runId: string;
   history: HistoryItem[];
   emit: AgentEventEmitter;
 }): Promise<void> {
@@ -217,10 +225,12 @@ export async function recordInvalidToolArguments(args: {
   round: number;
   errorResult: ExecuteResult;
   runContext: TranscriptContext;
+  runId: string;
   history: HistoryItem[];
   emit: AgentEventEmitter;
 }): Promise<void> {
-  const { functionCall, round, errorResult, runContext, history, emit } = args;
+  const { functionCall, round, errorResult, runContext, runId, history, emit } =
+    args;
   emit('tool_call', {
     callId: functionCall.callId,
     step: round,
@@ -239,6 +249,7 @@ export async function recordInvalidToolArguments(args: {
     toolResult: errorResult,
     workspaceFilesMayHaveChanged: false,
     runContext,
+    runId,
     history,
     emit,
   });

@@ -1,16 +1,43 @@
 import { PUBLIC_WEB_FIXTURE_PATH_PREFIX } from '@geulbat/protocol/public-web-fixtures';
 import {
   PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX,
+  type ReactBundleRuntimeDependencies,
   type ReactBundleRuntimeManifest,
 } from '@geulbat/protocol/react-bundle-inline-compile';
 
-import { JS_RUNTIME_ROOT_ID } from '../js/document.js';
-import { validateReactBundleEntryUrl } from '../../../artifacts/react-bundle/entry-url-policy.js';
+import { JS_RUNTIME_ROOT_ID } from '../js/root.js';
+import { validateReactBundleEntryUrl } from '../../react-bundle/entry-url-policy.js';
 import { REACT_ARTIFACT_RUNTIME_MODULE_SOURCES } from './runtime-module-sources.js';
 
 export const REACT_BUNDLE_RUNTIME_ROOT_ID = 'geulbat-react-root';
 export const REACT_BUNDLE_RUNTIME_ENTRY_ROOT_ID = 'root';
 export const GEULBAT_REACT_RUNTIME_GLOBAL = '__GEULBAT_REACT_RUNTIME__';
+
+function safeRuntimeScriptJson(value: unknown): string {
+  return (JSON.stringify(value) ?? 'null')
+    .replace(/</g, '\\u003C')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+function normalizeRuntimeDependenciesForDocument(
+  dependencies: ReactBundleRuntimeManifest['runtimeDependencies'],
+): ReactBundleRuntimeDependencies | null {
+  if (!dependencies) {
+    return null;
+  }
+
+  const normalized: ReactBundleRuntimeDependencies = {};
+  const imports = dependencies.importMap?.imports;
+  if (imports && Object.keys(imports).length > 0) {
+    normalized.importMap = { imports };
+  }
+  if (dependencies.stylesheets && dependencies.stylesheets.length > 0) {
+    normalized.stylesheets = dependencies.stylesheets;
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : null;
+}
 
 export function buildReactBundleArtifactRuntimePayload(
   manifest: ReactBundleRuntimeManifest,
@@ -20,13 +47,13 @@ export function buildReactBundleArtifactRuntimePayload(
     throw new Error(entryUrlValidation.detail);
   }
 
-  const escapedEntryUrl = JSON.stringify(entryUrlValidation.entryUrl).replace(
-    /</g,
-    '\\u003C',
+  const escapedEntryUrl = safeRuntimeScriptJson(entryUrlValidation.entryUrl);
+  const escapedRuntimeDependencies = safeRuntimeScriptJson(
+    normalizeRuntimeDependenciesForDocument(manifest.runtimeDependencies),
   );
-  const escapedModuleSources = JSON.stringify(
+  const escapedModuleSources = safeRuntimeScriptJson(
     REACT_ARTIFACT_RUNTIME_MODULE_SOURCES,
-  ).replace(/</g, '\\u003C');
+  );
 
   return [
     '(async () => {',
@@ -101,6 +128,21 @@ export function buildReactBundleArtifactRuntimePayload(
     'const __geulbatStorageReady__ = Promise.resolve(',
     '  window.__GEULBAT_RUNTIME_STORAGE_READY__,',
     ').catch(() => undefined);',
+    `const __geulbatRuntimeDependencies__ = ${escapedRuntimeDependencies};`,
+    'if (__geulbatRuntimeDependencies__?.importMap) {',
+    '  const importMapScript = document.createElement("script");',
+    '  importMapScript.type = "importmap";',
+    '  importMapScript.textContent = JSON.stringify(__geulbatRuntimeDependencies__.importMap);',
+    '  document.head.appendChild(importMapScript);',
+    '}',
+    'if (Array.isArray(__geulbatRuntimeDependencies__?.stylesheets)) {',
+    '  for (const stylesheetHref of __geulbatRuntimeDependencies__.stylesheets) {',
+    '    const stylesheetLink = document.createElement("link");',
+    '    stylesheetLink.rel = "stylesheet";',
+    '    stylesheetLink.href = stylesheetHref;',
+    '    document.head.appendChild(stylesheetLink);',
+    '  }',
+    '}',
     'const __geulbatEntryUrl__ = (() => {',
     `  const parsedEntryUrl = new URL(${escapedEntryUrl});`,
     `  const __geulbatIsFixturePath__ = parsedEntryUrl.pathname.startsWith(${JSON.stringify(PUBLIC_WEB_FIXTURE_PATH_PREFIX)});`,

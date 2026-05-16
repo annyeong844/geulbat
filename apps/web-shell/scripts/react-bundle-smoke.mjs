@@ -12,7 +12,7 @@ import {
 } from '@geulbat/protocol/public-web-fixtures';
 
 import { buildJsArtifactRuntimeDocument } from '../src/features/assistant/artifacts/js/document.ts';
-import { buildReactBundleArtifactRuntimePayload } from '../src/features/assistant/artifacts/react-bundle/document.ts';
+import { buildReactBundleArtifactRuntimePayload } from '../src/features/artifacts/runtime-preview/react-bundle/document.ts';
 import {
   ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
   ARTIFACT_RUNTIME_HOST_READY_ACTION,

@@ -257,6 +257,7 @@ export async function resolveApprovalDecision(
       functionCall,
       round,
       runContext,
+      runtime.executionContextBase.runId,
       history,
       emit,
       runState,
@@ -274,6 +275,7 @@ async function buildDeniedApprovalResult(
   functionCall: ResolveApprovalDecisionArgs['functionCall'],
   round: number,
   runContext: RunWorkspaceContext,
+  runId: string,
   history: ResolveApprovalDecisionArgs['history'],
   emit: ResolveApprovalDecisionArgs['runtime']['emit'],
   runState?: RunState,
@@ -285,6 +287,7 @@ async function buildDeniedApprovalResult(
     toolResult: toolError('approval_denied', deniedError),
     workspaceFilesMayHaveChanged: false,
     runContext,
+    runId,
     history,
     emit,
   });

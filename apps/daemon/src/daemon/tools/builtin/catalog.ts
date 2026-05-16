@@ -6,10 +6,12 @@ import { listFilesTool } from './list-files.js';
 import { manageFilesTool } from './manage-files.js';
 import { patchFileTool } from './patch-file.js';
 import { readFileTool } from './read-file.js';
+import { readToolOutputTool } from './read-tool-output.js';
 import { refreshMemoryIndexTool } from './refresh-memory-index.js';
 import { searchFilesTool } from './search-files.js';
 import { searchMemoryIndexTool } from './search-memory-index.js';
 import { todoTool } from './todo.js';
+import { webFetchTool } from './web-fetch.js';
 import { writeFileTool } from './write-file.js';
 import {
   createToolRegistryStore,
@@ -26,12 +28,14 @@ function getCanonicalBuiltinTools(): readonly AnyTool[] {
     writeFileTool,
     manageFilesTool,
     todoTool,
+    readToolOutputTool,
     agentSpawnTool,
     agentSendInputTool,
     agentStopTool,
     agentWaitTool,
     refreshMemoryIndexTool,
     searchMemoryIndexTool,
+    webFetchTool,
   ];
 }
 

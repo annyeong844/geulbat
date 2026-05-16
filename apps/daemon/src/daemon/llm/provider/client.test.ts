@@ -424,6 +424,97 @@ void test('callModelWithDependencies logs provider failures with provider sessio
   );
 });
 
+void test('callModelWithDependencies logs redacted provider cache telemetry when usage is present', async () => {
+  const runtimeStore = createProviderAuthRuntimeStore();
+  const originalLog = console.log;
+  const logs: unknown[][] = [];
+  console.log = (...args: unknown[]) => {
+    logs.push(args);
+  };
+
+  try {
+    const chunks = [];
+
+    for await (const chunk of callModelWithDependencies(
+      {
+        history: [{ kind: 'user', text: 'private prompt text' }],
+        systemPrompt: 'private system prompt',
+        promptContext: 'private prompt context',
+        providerSessionId: 'provider-session',
+        providerWebSocketSessions: unusedProviderWebSocketSessions,
+        providerAuthRuntime: runtimeStore,
+        providerRequestOptions: defaultProviderRequestOptions,
+      },
+      {
+        getProviderAuth: async () => ({
+          accessToken: 'token',
+          accountId: 'account',
+        }),
+        forceRefreshProviderAuth: async () => ({
+          accessToken: 'token',
+          accountId: 'account',
+        }),
+        streamResponsesOverWebSocket: async () => ({
+          itemsToAppend: [],
+          functionCalls: [],
+          assistantText: 'ok',
+          finalText: 'ok',
+          providerUsageTelemetry: {
+            inputTokens: 100,
+            outputTokens: 25,
+            cachedInputTokens: 80,
+          },
+        }),
+      },
+    )) {
+      chunks.push(chunk);
+    }
+
+    assert.deepEqual(chunks, [
+      {
+        type: 'done',
+        assistantText: 'ok',
+        finalText: 'ok',
+      },
+    ]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  const completedLog = logs.find((entry) =>
+    String(entry[0] ?? '').includes('provider stream completed'),
+  );
+  assert.ok(completedLog);
+  assert.equal(
+    (completedLog[1] as { providerUsage?: unknown })?.providerUsage,
+    'present',
+  );
+  assert.equal(
+    (completedLog[1] as { inputTokens?: unknown })?.inputTokens,
+    100,
+  );
+  assert.equal(
+    (completedLog[1] as { outputTokens?: unknown })?.outputTokens,
+    25,
+  );
+  assert.equal(
+    (completedLog[1] as { cachedInputTokens?: unknown })?.cachedInputTokens,
+    80,
+  );
+  assert.equal(
+    (completedLog[1] as { cacheHitRatio?: unknown })?.cacheHitRatio,
+    0.8,
+  );
+  assert.equal(
+    (completedLog[1] as { promptCacheKey?: unknown })?.promptCacheKey,
+    'provider-session',
+  );
+  assert.doesNotMatch(
+    JSON.stringify(completedLog),
+    /private prompt text|private system prompt|private prompt context|token/,
+  );
+});
+
 void test('callModelWithDependencies forces one refresh and retries once after canonical auth failure', async () => {
   const chunks = [];
   const runtimeStore = createProviderAuthRuntimeStore();

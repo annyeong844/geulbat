@@ -20,8 +20,22 @@ void test('deleteThreadSession removes transcript, summary, and thread index ent
   const transcriptPath = threadFilePath(workspaceRoot, threadId);
   const summaryPath = summaryFilePath(workspaceRoot, threadId);
   const indexPath = indexFilePath(workspaceRoot);
+  const toolOutputPath = join(
+    workspaceRoot,
+    '.geulbat',
+    'tool-outputs',
+    threadId,
+    'run-delete',
+    'call-delete.json',
+  );
 
   await mkdir(join(workspaceRoot, '.geulbat', 'sessions'), { recursive: true });
+  await mkdir(
+    join(workspaceRoot, '.geulbat', 'tool-outputs', threadId, 'run-delete'),
+    {
+      recursive: true,
+    },
+  );
   await writeFile(
     indexPath,
     JSON.stringify([
@@ -45,13 +59,40 @@ void test('deleteThreadSession removes transcript, summary, and thread index ent
     'utf8',
   );
   await writeFile(summaryPath, '# Summary\n', 'utf8');
+  await writeFile(toolOutputPath, '{"output":"large result"}\n', 'utf8');
   await readTranscriptEntries(workspaceRoot, threadId);
   assert.equal(hasTranscriptEntryCacheForTests(workspaceRoot, threadId), true);
 
   assert.equal(await deleteThreadSession(workspaceRoot, threadId), true);
   await assert.rejects(() => readFile(transcriptPath, 'utf8'));
   await assert.rejects(() => readFile(summaryPath, 'utf8'));
+  await assert.rejects(() => readFile(toolOutputPath, 'utf8'));
   assert.equal(await readFile(indexPath, 'utf8'), '[]\n');
+  assert.equal(hasTranscriptEntryCacheForTests(workspaceRoot, threadId), false);
+});
+
+void test('deleteThreadSession clears transcript cache when artifact deletion fails', async () => {
+  resetTranscriptEntryCacheForTests();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-delete-thread-'));
+  const threadId = testThreadId(3);
+  const transcriptPath = threadFilePath(workspaceRoot, threadId);
+  const summaryPath = summaryFilePath(workspaceRoot, threadId);
+
+  await mkdir(join(workspaceRoot, '.geulbat', 'sessions'), { recursive: true });
+  await writeFile(
+    transcriptPath,
+    JSON.stringify({
+      role: 'user',
+      content: 'hello',
+      timestamp: '2026-03-26T00:00:00.000Z',
+    }) + '\n',
+    'utf8',
+  );
+  await mkdir(summaryPath);
+  await readTranscriptEntries(workspaceRoot, threadId);
+  assert.equal(hasTranscriptEntryCacheForTests(workspaceRoot, threadId), true);
+
+  await assert.rejects(() => deleteThreadSession(workspaceRoot, threadId));
   assert.equal(hasTranscriptEntryCacheForTests(workspaceRoot, threadId), false);
 });
 

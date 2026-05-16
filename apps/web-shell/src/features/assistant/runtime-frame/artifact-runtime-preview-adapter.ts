@@ -1,40 +1,19 @@
-import { resolveJsArtifactRuntimePreview } from '../artifacts/js/runtime.js';
-import { resolveReactBundleArtifactRuntimePreview } from '../artifacts/react-bundle/runtime.js';
-import { resolveHtmlArtifactRuntimePreview } from '../artifacts/html/preview.js';
+import { createElement } from 'react';
+
+import { resolveJsArtifactRuntimePreview } from '../../artifacts/runtime-preview/js/preview.js';
+import { resolveReactBundleArtifactRuntimePreview } from '../../artifacts/runtime-preview/react-bundle/preview.js';
+import { resolveHtmlArtifactRuntimePreview } from '../../artifacts/runtime-preview/html/preview.js';
 import type { ArtifactPanePreviewSurfaceModel } from '../../artifacts/artifact-pane/preview-surface-model.js';
-import { describeArtifactRuntimeUnavailableMessage } from '../../artifacts/artifact-runtime-unavailable-message.js';
+import { resolveArtifactPanePreviewSurfaceResult as resolveArtifactPanePreviewSurfaceResultWithResolver } from '../../artifacts/runtime-preview/preview-surface-result.js';
 import type { RuntimeArtifactPreviewRenderer } from '../../artifacts/artifact-renderer-capabilities.js';
 import type {
-  ArtifactPreviewSurface,
-  GeneratedBinaryExportSnapshot,
-  GeneratedTextExportSnapshot,
-  ResolvedArtifactSourceRef,
-} from '../../artifacts/artifact-types.js';
-
-interface ArtifactPreviewContext {
-  digest: string | null;
-  state: 'streaming' | 'completed' | 'fallback';
-  isStreamingPreview: boolean;
-  sourceRef: ResolvedArtifactSourceRef;
-  onGeneratedTextExportSnapshotChange?: (
-    snapshot: GeneratedTextExportSnapshot | null,
-  ) => void;
-  onGeneratedBinaryExportSnapshotChange?: (
-    snapshot: GeneratedBinaryExportSnapshot | null,
-  ) => void;
-}
-
-interface ArtifactRendererDefinition {
-  render: (
-    payload: string,
-    context: ArtifactPreviewContext,
-  ) => ArtifactPreviewSurface;
-}
-
-interface ArtifactPanePreviewSurfaceResult {
-  previewSurface: ArtifactPreviewSurface | null;
-  runtimeUnavailableMessage: string | null;
-}
+  ArtifactRuntimeFrameRenderArgs,
+  ArtifactPanePreviewSurfaceResult,
+  ArtifactRendererDefinition,
+  ArtifactRuntimePreviewContext,
+} from '../../artifacts/runtime-preview/types.js';
+import type { ArtifactPreviewSurface } from '../../artifacts/artifact-types.js';
+import { ArtifactRuntimeFrame } from './artifact-runtime-frame.js';
 
 const runtimeArtifactRendererRegistry: Record<
   RuntimeArtifactPreviewRenderer,
@@ -42,12 +21,13 @@ const runtimeArtifactRendererRegistry: Record<
 > = {
   html5: {
     render(payload, context) {
-      return resolveHtmlArtifactRuntimePreview(
+      return resolveHtmlArtifactRuntimePreview({
         payload,
-        context.isStreamingPreview,
-        context.digest,
-        context.sourceRef,
-      );
+        isStreaming: context.isStreamingPreview,
+        digest: context.digest,
+        sourceRef: context.sourceRef,
+        renderRuntimeFrame: renderArtifactRuntimeFrame,
+      });
     },
   },
   js: {
@@ -68,6 +48,7 @@ const runtimeArtifactRendererRegistry: Record<
                 context.onGeneratedBinaryExportSnapshotChange,
             }
           : {}),
+        renderRuntimeFrame: renderArtifactRuntimeFrame,
       });
     },
   },
@@ -89,15 +70,20 @@ const runtimeArtifactRendererRegistry: Record<
                 context.onGeneratedBinaryExportSnapshotChange,
             }
           : {}),
+        renderRuntimeFrame: renderArtifactRuntimeFrame,
       });
     },
   },
 };
 
+function renderArtifactRuntimeFrame(args: ArtifactRuntimeFrameRenderArgs) {
+  return createElement(ArtifactRuntimeFrame, args);
+}
+
 export function resolveRuntimeArtifactPreview(
   renderer: RuntimeArtifactPreviewRenderer,
   payload: string,
-  context: ArtifactPreviewContext,
+  context: ArtifactRuntimePreviewContext,
 ): ArtifactPreviewSurface {
   return runtimeArtifactRendererRegistry[renderer].render(payload, context);
 }
@@ -105,21 +91,8 @@ export function resolveRuntimeArtifactPreview(
 export function resolveArtifactPanePreviewSurfaceResult(
   model: ArtifactPanePreviewSurfaceModel,
 ): ArtifactPanePreviewSurfaceResult {
-  const previewSurface =
-    model.kind === 'runtime'
-      ? resolveRuntimeArtifactPreview(
-          model.renderer,
-          model.payload,
-          model.context,
-        )
-      : model.previewSurface;
-  const runtimeUnavailableMessage =
-    previewSurface?.kind === 'unavailable'
-      ? describeArtifactRuntimeUnavailableMessage(previewSurface)
-      : null;
-
-  return {
-    previewSurface,
-    runtimeUnavailableMessage,
-  };
+  return resolveArtifactPanePreviewSurfaceResultWithResolver(
+    model,
+    resolveRuntimeArtifactPreview,
+  );
 }

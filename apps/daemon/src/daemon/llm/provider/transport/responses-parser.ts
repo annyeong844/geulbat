@@ -27,6 +27,7 @@ export async function parseResponseEvents(
   };
   let assistantText = '';
   let finalText = '';
+  let parseError: unknown;
 
   try {
     while (true) {
@@ -40,9 +41,18 @@ export async function parseResponseEvents(
         onAssistantDelta,
       );
     }
+  } catch (error: unknown) {
+    parseError = error;
+    throw error;
   } finally {
     if (typeof iterator.return === 'function') {
-      await iterator.return();
+      try {
+        await iterator.return();
+      } catch (error: unknown) {
+        if (parseError === undefined) {
+          throw error;
+        }
+      }
     }
   }
 
@@ -67,6 +77,9 @@ export async function parseResponseEvents(
     assistantText,
     finalText,
     ...(artifactCandidate !== undefined ? { artifactCandidate } : {}),
+    ...(state.providerUsageTelemetry !== undefined
+      ? { providerUsageTelemetry: state.providerUsageTelemetry }
+      : {}),
   };
 }
 

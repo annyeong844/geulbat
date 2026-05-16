@@ -72,6 +72,7 @@ export async function processFunctionCalls(
         round,
         errorResult: parsedArgs.error,
         runContext,
+        runId: runtime.executionContextBase.runId,
         history,
         emit,
       });
@@ -112,6 +113,7 @@ export async function processFunctionCalls(
       toolResult: execution.value,
       workspaceFilesMayHaveChanged,
       runContext,
+      runId: runtime.executionContextBase.runId,
       history,
       emit,
     });
@@ -396,6 +398,7 @@ async function recordParallelExecutionResult(args: {
     workspaceFilesMayHaveChanged:
       preparedFunctionCall.workspaceFilesMayHaveChanged,
     runContext: getToolRuntimeRunContext(runtime),
+    runId: runtime.executionContextBase.runId,
     history,
     emit: runtime.emit,
   });

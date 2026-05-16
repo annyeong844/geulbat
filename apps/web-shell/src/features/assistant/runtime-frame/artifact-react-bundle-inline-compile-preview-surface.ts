@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { createElement, useEffect, useMemo, useState } from 'react';
 import { compileReactBundleInlineSource } from '../../../lib/api/react-bundle-inline-compile.js';
 import type { ArtifactPaneViewModel } from '../../artifacts/artifact-pane-view-model.js';
-import { renderReactBundleArtifactRuntimePreview } from '../artifacts/react-bundle/runtime.js';
+import { renderReactBundleArtifactRuntimePreview } from '../../artifacts/runtime-preview/react-bundle/preview.js';
 import { readReactBundleArtifactInputPayload } from '../../artifacts/react-bundle/validator.js';
 import {
   pendingArtifactPreview,
@@ -11,6 +11,8 @@ import {
   type GeneratedBinaryExportSnapshot,
   type GeneratedTextExportSnapshot,
 } from '../../artifacts/artifact-types.js';
+import type { ArtifactRuntimeFrameRenderArgs } from '../../artifacts/runtime-preview/types.js';
+import { ArtifactRuntimeFrame } from './artifact-runtime-frame.js';
 
 type ReactBundlePreviewSeed =
   | {
@@ -225,6 +227,7 @@ function buildReactBundleInlineCompilePreviewSurface(args: {
       ...(onGeneratedBinaryExportSnapshotChange !== undefined
         ? { onGeneratedBinaryExportSnapshotChange }
         : {}),
+      renderRuntimeFrame: renderArtifactRuntimeFrame,
     });
   }
 
@@ -238,6 +241,7 @@ function buildReactBundleInlineCompilePreviewSurface(args: {
       ...(onGeneratedBinaryExportSnapshotChange !== undefined
         ? { onGeneratedBinaryExportSnapshotChange }
         : {}),
+      renderRuntimeFrame: renderArtifactRuntimeFrame,
     });
   }
 
@@ -249,4 +253,8 @@ function buildReactBundleInlineCompilePreviewSurface(args: {
   }
 
   return pendingArtifactPreview('리액트 번들을 준비하고 있습니다...');
+}
+
+function renderArtifactRuntimeFrame(args: ArtifactRuntimeFrameRenderArgs) {
+  return createElement(ArtifactRuntimeFrame, args);
 }

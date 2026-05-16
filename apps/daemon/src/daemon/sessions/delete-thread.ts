@@ -7,28 +7,32 @@ import {
 } from './paths.js';
 import { removeThreadSummary } from './threads-index.js';
 import { clearTranscriptEntryCacheForThread } from './transcript-log.js';
+import { deleteThreadToolOutputs } from '../files/tool-output-store.js';
 import { hasErrorCode } from '../utils/error.js';
 
 export async function deleteThreadSession(
   workspaceRoot: string,
   threadId: string,
 ): Promise<boolean> {
-  const [
-    indexDeleted,
-    transcriptDeleted,
-    summaryDeleted,
-    artifactStoreDeleted,
-  ] = await Promise.all([
+  const deletionResults = await Promise.allSettled([
     removeThreadSummary(workspaceRoot, threadId),
     deleteThreadArtifactFile(threadFilePath(workspaceRoot, threadId)),
     deleteThreadArtifactFile(summaryFilePath(workspaceRoot, threadId)),
     deleteThreadArtifactFile(artifactStoreFilePath(workspaceRoot, threadId)),
+    deleteThreadToolOutputs({ workspaceRoot, threadId }),
   ]);
 
   clearTranscriptEntryCacheForThread(workspaceRoot, threadId);
 
-  return (
-    indexDeleted || transcriptDeleted || summaryDeleted || artifactStoreDeleted
+  const rejectedResult = deletionResults.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (rejectedResult) {
+    throw rejectedResult.reason;
+  }
+
+  return deletionResults.some(
+    (result) => result.status === 'fulfilled' && result.value,
   );
 }
 
