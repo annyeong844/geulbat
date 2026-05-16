@@ -7,6 +7,7 @@ import {
   decodeReactBundleInlineCompileRequest,
   decodeReactBundleInlineSourceInput,
   isReactBundleInlineCompileResponse,
+  isReactBundleRuntimeManifest,
 } from './react-bundle-inline-compile.js';
 
 void test('decodeReactBundleInlineCompileRequest normalizes valid inline source requests', () => {
@@ -178,5 +179,75 @@ void test('isReactBundleInlineCompileResponse accepts normalized success and fai
         'react bundle inline source compile service is not implemented yet',
     }),
     true,
+  );
+});
+
+void test('isReactBundleRuntimeManifest accepts explicit runtime dependencies', () => {
+  assert.equal(
+    isReactBundleRuntimeManifest({
+      entryUrl: 'https://cdn.example.com/app.js',
+      runtimeDependencies: {
+        importMap: {
+          imports: {
+            'canvas-confetti': 'https://esm.sh/canvas-confetti@1.9.3',
+          },
+        },
+        stylesheets: ['https://cdn.example.com/app.css'],
+      },
+    }),
+    true,
+  );
+});
+
+void test('isReactBundleRuntimeManifest rejects unsupported runtime dependency keys', () => {
+  assert.equal(
+    isReactBundleRuntimeManifest({
+      entryUrl: 'https://cdn.example.com/app.js',
+      runtimeDependencies: {
+        scripts: ['https://cdn.example.com/legacy.js'],
+      },
+    }),
+    false,
+  );
+
+  assert.equal(
+    isReactBundleRuntimeManifest({
+      entryUrl: 'https://cdn.example.com/app.js',
+      runtimeDependencies: {
+        importMap: {
+          imports: {},
+          scopes: {
+            '/': {},
+          },
+        },
+      },
+    }),
+    false,
+  );
+});
+
+void test('isReactBundleRuntimeManifest rejects malformed runtime dependencies', () => {
+  assert.equal(
+    isReactBundleRuntimeManifest({
+      entryUrl: 'https://cdn.example.com/app.js',
+      runtimeDependencies: {
+        importMap: {
+          imports: {
+            'canvas-confetti': 42,
+          },
+        },
+      },
+    }),
+    false,
+  );
+
+  assert.equal(
+    isReactBundleRuntimeManifest({
+      entryUrl: 'https://cdn.example.com/app.js',
+      runtimeDependencies: {
+        stylesheets: ['https://cdn.example.com/app.css', 42],
+      },
+    }),
+    false,
   );
 });

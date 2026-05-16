@@ -81,6 +81,8 @@ export type {
   ReactBundleInlineCompileRequest,
   ReactBundleInlineCompileResponse,
   ReactBundleInlineSourceInput,
+  ReactBundleRuntimeDependencies,
+  ReactBundleRuntimeImportMap,
   ReactBundleRuntimeManifest,
 } from './react-bundle-inline-compile.js';
 export {

@@ -1,8 +1,9 @@
 import { buildJsRuntimePersistenceBootstrap } from '../../runtime-persistence/artifact-runtime-persistence-bootstrap.js';
 import { JS_ARTIFACT_RUNTIME_DOCUMENT_SOURCE } from './document-source.js';
+import { JS_RUNTIME_ROOT_ID } from '../../../artifacts/runtime-preview/js/root.js';
 import { replaceTemplateTokens } from '../../../artifacts/artifact-template-tokens.js';
 
-export const JS_RUNTIME_ROOT_ID = 'geulbat-js-root';
+export { JS_RUNTIME_ROOT_ID };
 
 export function buildJsArtifactRuntimeDocument(
   payload: string,

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH } from '@geulbat/protocol/public-web-fixtures';
+import { PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX } from '@geulbat/protocol/react-bundle-inline-compile';
 
 import {
   resolveArtifactPanePreviewSurfaceResult,
@@ -17,6 +18,8 @@ import {
 } from '../../../lib/id-brand-helpers.js';
 
 const PUBLIC_CDN_REACT_ENTRY_URL = 'https://cdn.example.com/react-entry.js';
+const PRIVATE_LOCAL_REACT_ENTRY_URL = `https://192.168.0.1${PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH}`;
+const LOCAL_GENERATED_REACT_ENTRY_URL = `http://127.0.0.1:3456${PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX}cache-key/entry.js`;
 
 function createResolvedSourceRef(
   overrides: Partial<ResolvedArtifactSourceRef> = {},
@@ -190,6 +193,29 @@ void test('resolveRuntimeArtifactPreview keeps public CDN react_bundle manifest 
     html,
     /src="http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?[^"]*rev=/,
   );
+});
+
+void test('resolveRuntimeArtifactPreview keeps personal-local react_bundle manifest entry URLs rendered', () => {
+  for (const entryUrl of [
+    PRIVATE_LOCAL_REACT_ENTRY_URL,
+    LOCAL_GENERATED_REACT_ENTRY_URL,
+  ]) {
+    const preview = resolveRuntimeArtifactPreview(
+      'react_bundle',
+      JSON.stringify({ entryUrl }),
+      createPreviewContext(),
+    );
+
+    assert.equal(preview.kind, 'rendered');
+    const html = renderToStaticMarkup(preview.node);
+    assert.match(html, /<iframe/);
+    assert.doesNotMatch(html, /sanitize_rejected/);
+    assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
+    assert.match(
+      html,
+      /src="http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?[^"]*rev=/,
+    );
+  }
 });
 
 void test('resolveArtifactPanePreviewSurfaceResult keeps surface previews and unavailable copy together', () => {

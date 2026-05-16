@@ -17,14 +17,17 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
     'manage_files',
     'patch_file',
     'read_file',
+    'read_tool_output',
     'refresh_memory_index',
     'search_files',
     'search_memory_index',
     'todo',
+    'web_fetch',
     'write_file',
   ]);
 
   assert.ok(registry.getTool('read_file'));
+  assert.ok(registry.getTool('read_tool_output'));
   assert.ok(registry.getTool('agent_send_input'));
   assert.ok(registry.getTool('agent_spawn'));
   assert.ok(registry.getTool('agent_stop'));
@@ -37,6 +40,7 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
   assert.ok(registry.getTool('todo'));
   assert.ok(registry.getTool('refresh_memory_index'));
   assert.ok(registry.getTool('search_memory_index'));
+  assert.ok(registry.getTool('web_fetch'));
 });
 
 void test('getTool returns a snapshot instead of the live registry object', () => {
