@@ -9,6 +9,9 @@ import {
   PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_CHUNK_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
   PUBLIC_WEB_REQUEST_IDENTITY_ECHO_PATH,
 } from '@geulbat/protocol/public-web-fixtures';
 
@@ -107,6 +110,49 @@ void test('public react hello-card bundle fixture chunk route exposes a runnable
     assert.match(body, /publicWebFixture\.reactHelloCard/);
     assert.match(body, /안녕하세요 ;ㅅ;/);
     assert.match(body, /클릭 수: \$\{count\}/);
+  });
+});
+
+void test('public react runtime-dependencies bundle fixtures expose entry, module, and stylesheet assets', async () => {
+  await withDaemonServer(async ({ port }) => {
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    const entryRes = await fetch(
+      `${baseUrl}${PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH}`,
+    );
+    assert.equal(entryRes.status, 200);
+    assert.equal(
+      entryRes.headers.get('content-type'),
+      'text/javascript; charset=utf-8',
+    );
+    assert.equal(
+      entryRes.headers.get('cross-origin-resource-policy'),
+      'same-origin',
+    );
+    assert.match(
+      await entryRes.text(),
+      /from 'geulbat-runtime-dependency-fixture'/,
+    );
+
+    const moduleRes = await fetch(
+      `${baseUrl}${PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH}`,
+    );
+    assert.equal(moduleRes.status, 200);
+    assert.equal(
+      moduleRes.headers.get('content-type'),
+      'text/javascript; charset=utf-8',
+    );
+    assert.match(await moduleRes.text(), /runtime dependency loaded/);
+
+    const stylesheetRes = await fetch(
+      `${baseUrl}${PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH}`,
+    );
+    assert.equal(stylesheetRes.status, 200);
+    assert.equal(
+      stylesheetRes.headers.get('content-type'),
+      'text/css; charset=utf-8',
+    );
+    assert.match(await stylesheetRes.text(), /\.runtime-dependency-card/);
   });
 });
 

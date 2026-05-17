@@ -7,6 +7,9 @@ import {
   PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_CHUNK_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
   PUBLIC_WEB_REQUEST_IDENTITY_ECHO_PATH,
 } from '@geulbat/protocol/public-web-fixtures';
 
@@ -131,6 +134,56 @@ const PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_CHUNK_SOURCE = `export function mountHe
 }
 `;
 
+const PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_SOURCE = `import { runtimeDependencyLabel } from 'geulbat-runtime-dependency-fixture';
+
+export default {
+  mount({ root, runtime, storage }) {
+    const { React, createRoot } = runtime;
+
+    function App() {
+      React.useEffect(() => {
+        try {
+          storage?.set?.('publicWebFixture.reactRuntimeDependencies', {
+            booted: true,
+          });
+        } catch (error) {
+          console.warn('react runtime dependencies fixture storage probe failed', error);
+        }
+      }, []);
+
+      return React.createElement(
+        'section',
+        {
+          id: 'runtime-dependency-card',
+          className: 'runtime-dependency-card',
+        },
+        React.createElement(
+          'span',
+          { id: 'runtime-dependency-label' },
+          runtimeDependencyLabel,
+        ),
+      );
+    }
+
+    const reactRoot = createRoot(root);
+    reactRoot.render(React.createElement(App));
+    return () => reactRoot.unmount();
+  },
+};
+`;
+
+const PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_SOURCE = `export const runtimeDependencyLabel = 'runtime dependency loaded';
+`;
+
+const PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_SOURCE = `.runtime-dependency-card {
+  border: 4px solid rgb(70, 120, 50);
+  border-radius: 12px;
+  color: rgb(26, 75, 41);
+  font-weight: 700;
+  padding: 18px;
+}
+`;
+
 const PUBLIC_WEB_DOM_COUNTER_SOURCE = `const button = document.getElementById('btn');
 const value = document.getElementById('value');
 let count = Number(value?.textContent ?? '0');
@@ -161,6 +214,36 @@ export function createPublicWebFixtureRoutes() {
   router.get(PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_CHUNK_PATH, (_req, res) => {
     sendJavascriptFixture(res, PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_CHUNK_SOURCE);
   });
+
+  router.get(
+    PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+    (_req, res) => {
+      sendJavascriptFixture(
+        res,
+        PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_SOURCE,
+      );
+    },
+  );
+
+  router.get(
+    PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
+    (_req, res) => {
+      sendJavascriptFixture(
+        res,
+        PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_SOURCE,
+      );
+    },
+  );
+
+  router.get(
+    PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
+    (_req, res) => {
+      sendCssFixture(
+        res,
+        PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_SOURCE,
+      );
+    },
+  );
 
   router.get(PUBLIC_WEB_DOM_COUNTER_PATH, (_req, res) => {
     sendJavascriptFixture(res, PUBLIC_WEB_DOM_COUNTER_SOURCE);
@@ -199,6 +282,15 @@ export function createPublicWebFixtureRoutes() {
 
 function sendJavascriptFixture(res: Response, source: string): void {
   res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.status(200).send(source);
+}
+
+function sendCssFixture(res: Response, source: string): void {
+  res.setHeader('Content-Type', 'text/css; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
