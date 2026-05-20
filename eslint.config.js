@@ -118,6 +118,10 @@ export default [
           type: 'daemon-memory',
           pattern: ['apps/daemon/src/daemon/memory/**'],
         },
+        {
+          type: 'daemon-network',
+          pattern: ['apps/daemon/src/daemon/network/**'],
+        },
         { type: 'daemon-tools', pattern: ['apps/daemon/src/daemon/tools/**'] },
         { type: 'daemon-llm', pattern: ['apps/daemon/src/daemon/llm/**'] },
         {
@@ -127,6 +131,10 @@ export default [
         {
           type: 'daemon-react-bundle-inline',
           pattern: ['apps/daemon/src/daemon/react-bundle-inline/**'],
+        },
+        {
+          type: 'daemon-sandbox',
+          pattern: ['apps/daemon/src/daemon/sandbox/**'],
         },
         {
           type: 'daemon-sessions',
@@ -360,10 +368,12 @@ export default [
                     'daemon-agent',
                     'daemon-auth',
                     'daemon-memory',
+                    'daemon-network',
                     'daemon-tools',
                     'daemon-llm',
                     'daemon-artifact-runtime-persistence',
                     'daemon-react-bundle-inline',
+                    'daemon-sandbox',
                     'daemon-sessions',
                     'daemon-files',
                     'daemon-utils',
@@ -421,8 +431,17 @@ export default [
                     'daemon-composition',
                     'daemon-files',
                     'daemon-memory',
+                    'daemon-network',
                     'daemon-utils',
                   ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-network' },
+              allow: {
+                to: {
+                  type: ['daemon-network'],
                 },
               },
             },
@@ -488,6 +507,14 @@ export default [
                     'daemon-react-bundle-inline',
                     'daemon-utils',
                   ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-sandbox' },
+              allow: {
+                to: {
+                  type: ['daemon-files', 'daemon-network', 'daemon-utils'],
                 },
               },
             },
