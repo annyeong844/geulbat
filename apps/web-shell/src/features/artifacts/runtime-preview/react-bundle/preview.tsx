@@ -1,16 +1,15 @@
 import type { ReactBundleRuntimeManifest } from '@geulbat/protocol/react-bundle-inline-compile';
 import {
+  renderedArtifactPreview,
   unavailableArtifactPreview,
   type ArtifactPreviewSurface,
+  type GeneratedBinaryExportSnapshot,
+  type GeneratedTextExportSnapshot,
   type ResolvedArtifactSourceRef,
-} from '../../../artifacts/artifact-types.js';
+} from '../../artifact-types.js';
 import { buildReactBundleArtifactRuntimePayload } from './document.js';
-import { validateReactBundleArtifactPayload } from '../../../artifacts/react-bundle/validator.js';
-import { ArtifactRuntimeFrame } from '../../runtime-frame/artifact-runtime-frame.js';
-import type {
-  GeneratedBinaryExportSnapshot,
-  GeneratedTextExportSnapshot,
-} from '../../../artifacts/artifact-types.js';
+import { validateReactBundleArtifactPayload } from '../../react-bundle/validator.js';
+import type { RenderArtifactRuntimeFrame } from '../types.js';
 
 export function resolveReactBundleArtifactRuntimePreview(args: {
   payload: string;
@@ -22,6 +21,7 @@ export function resolveReactBundleArtifactRuntimePreview(args: {
   onGeneratedBinaryExportSnapshotChange?: (
     snapshot: GeneratedBinaryExportSnapshot | null,
   ) => void;
+  renderRuntimeFrame: RenderArtifactRuntimeFrame;
 }): ArtifactPreviewSurface {
   const {
     payload,
@@ -29,6 +29,7 @@ export function resolveReactBundleArtifactRuntimePreview(args: {
     sourceRef,
     onGeneratedTextExportSnapshotChange,
     onGeneratedBinaryExportSnapshotChange,
+    renderRuntimeFrame,
   } = args;
   const validation = validateReactBundleArtifactPayload(payload);
   if (!validation.ok) {
@@ -44,6 +45,7 @@ export function resolveReactBundleArtifactRuntimePreview(args: {
     ...(onGeneratedBinaryExportSnapshotChange !== undefined
       ? { onGeneratedBinaryExportSnapshotChange }
       : {}),
+    renderRuntimeFrame,
   });
 }
 
@@ -56,30 +58,29 @@ export function renderReactBundleArtifactRuntimePreview(args: {
   onGeneratedBinaryExportSnapshotChange?: (
     snapshot: GeneratedBinaryExportSnapshot | null,
   ) => void;
+  renderRuntimeFrame: RenderArtifactRuntimeFrame;
 }): ArtifactPreviewSurface {
   const {
     manifest,
     sourceRef,
     onGeneratedTextExportSnapshotChange,
     onGeneratedBinaryExportSnapshotChange,
+    renderRuntimeFrame,
   } = args;
 
-  return {
-    kind: 'rendered',
-    node: (
-      <ArtifactRuntimeFrame
-        renderer="react_bundle"
-        title="react bundle artifact preview"
-        sandbox="allow-scripts allow-forms allow-same-origin"
-        runtimePayload={buildReactBundleArtifactRuntimePayload(manifest)}
-        sourceRef={sourceRef}
-        {...(onGeneratedTextExportSnapshotChange !== undefined
-          ? { onGeneratedTextExportSnapshotChange }
-          : {})}
-        {...(onGeneratedBinaryExportSnapshotChange !== undefined
-          ? { onGeneratedBinaryExportSnapshotChange }
-          : {})}
-      />
-    ),
-  };
+  return renderedArtifactPreview(
+    renderRuntimeFrame({
+      renderer: 'react_bundle',
+      title: 'react bundle artifact preview',
+      sandbox: 'allow-scripts allow-forms allow-same-origin',
+      runtimePayload: buildReactBundleArtifactRuntimePayload(manifest),
+      sourceRef,
+      ...(onGeneratedTextExportSnapshotChange !== undefined
+        ? { onGeneratedTextExportSnapshotChange }
+        : {}),
+      ...(onGeneratedBinaryExportSnapshotChange !== undefined
+        ? { onGeneratedBinaryExportSnapshotChange }
+        : {}),
+    }),
+  );
 }

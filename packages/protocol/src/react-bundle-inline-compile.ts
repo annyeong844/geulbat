@@ -18,8 +18,18 @@ export type ReactBundleInlineCompileFailureCode =
   | 'boot_failed'
   | 'runtime_crashed';
 
+export interface ReactBundleRuntimeImportMap {
+  imports?: Record<string, string>;
+}
+
+export interface ReactBundleRuntimeDependencies {
+  importMap?: ReactBundleRuntimeImportMap;
+  stylesheets?: string[];
+}
+
 export interface ReactBundleRuntimeManifest {
   entryUrl: string;
+  runtimeDependencies?: ReactBundleRuntimeDependencies;
 }
 
 export interface ReactBundleInlineSourceInput {
@@ -50,7 +60,11 @@ export type ReactBundleInlineCompileResponse =
 export function isReactBundleRuntimeManifest(
   value: unknown,
 ): value is ReactBundleRuntimeManifest {
-  return isPlainRecord(value) && isString(value.entryUrl);
+  return (
+    isPlainRecord(value) &&
+    isString(value.entryUrl) &&
+    isOptionalReactBundleRuntimeDependencies(value.runtimeDependencies)
+  );
 }
 
 export function isReactBundleInlineSourceInput(
@@ -274,6 +288,54 @@ function reject(detail: string): {
     code: 'sanitize_rejected',
     detail,
   };
+}
+
+function isOptionalReactBundleRuntimeDependencies(value: unknown): boolean {
+  return value === undefined || isReactBundleRuntimeDependencies(value);
+}
+
+function isReactBundleRuntimeDependencies(value: unknown): boolean {
+  if (!isPlainRecord(value)) {
+    return false;
+  }
+
+  const keys = Object.keys(value);
+  if (keys.some((key) => key !== 'importMap' && key !== 'stylesheets')) {
+    return false;
+  }
+
+  return (
+    isOptionalReactBundleRuntimeImportMap(value.importMap) &&
+    isOptionalStringArray(value.stylesheets)
+  );
+}
+
+function isOptionalReactBundleRuntimeImportMap(value: unknown): boolean {
+  return value === undefined || isReactBundleRuntimeImportMap(value);
+}
+
+function isReactBundleRuntimeImportMap(value: unknown): boolean {
+  if (!isPlainRecord(value)) {
+    return false;
+  }
+
+  const keys = Object.keys(value);
+  if (keys.some((key) => key !== 'imports')) {
+    return false;
+  }
+
+  return value.imports === undefined || isStringRecord(value.imports);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    isPlainRecord(value) &&
+    Object.values(value).every((entry) => isString(entry))
+  );
+}
+
+function isOptionalStringArray(value: unknown): value is string[] | undefined {
+  return value === undefined || (Array.isArray(value) && value.every(isString));
 }
 
 function measureUtf8Bytes(value: string): number {

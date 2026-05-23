@@ -20,6 +20,7 @@ import { getErrorMessage } from '@geulbat/shared-utils/error';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import { mergeAbortSignals } from '../../utils/abort.js';
 import { AsyncQueue } from './async-queue.js';
+import { buildProviderCacheTelemetryLogFields } from './provider-cache-telemetry.js';
 import {
   normalizeProviderErrorCode,
   sanitizeProviderErrorMessage,
@@ -32,6 +33,7 @@ import type {
   HistoryItem,
   FunctionCall,
   ProviderArtifactCandidate,
+  ProviderUsageTelemetry,
   WireRequestBase,
   WireToolDefinition,
 } from './wire/types.js';
@@ -123,9 +125,20 @@ export async function* callModelWithDependencies(
     deps,
     providerLogger,
   )
-    .then(({ functionCalls, assistantText, finalText, artifactCandidate }) => {
+    .then((result) => {
+      const {
+        functionCalls,
+        assistantText,
+        finalText,
+        artifactCandidate,
+        providerUsageTelemetry,
+      } = result;
       providerLogger.info('provider stream completed', {
         toolCallCount: functionCalls.length,
+        ...buildProviderCacheTelemetryLogFields(providerUsageTelemetry, {
+          providerSessionId: input.providerSessionId,
+          promptCacheKey: input.providerSessionId,
+        }),
       });
       // Yield tool_call chunks for each function call
       for (const fc of functionCalls) {
@@ -190,6 +203,7 @@ async function callResponsesOnce(
   assistantText: string;
   finalText: string;
   artifactCandidate?: ProviderArtifactCandidate;
+  providerUsageTelemetry?: ProviderUsageTelemetry;
 }> {
   const auth = await deps.getProviderAuth({
     ...(options?.allowRefresh !== undefined
@@ -227,6 +241,9 @@ async function callResponsesOnce(
     ...(result.artifactCandidate !== undefined
       ? { artifactCandidate: result.artifactCandidate }
       : {}),
+    ...(result.providerUsageTelemetry !== undefined
+      ? { providerUsageTelemetry: result.providerUsageTelemetry }
+      : {}),
   };
 }
 
@@ -240,6 +257,7 @@ async function callResponsesWithRetryPolicy(
   assistantText: string;
   finalText: string;
   artifactCandidate?: ProviderArtifactCandidate;
+  providerUsageTelemetry?: ProviderUsageTelemetry;
 }> {
   let authRefreshAttempts = 0;
 

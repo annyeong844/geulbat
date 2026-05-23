@@ -9,10 +9,13 @@ import { chromium } from 'playwright';
 import {
   PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
 } from '@geulbat/protocol/public-web-fixtures';
 
 import { buildJsArtifactRuntimeDocument } from '../src/features/assistant/artifacts/js/document.ts';
-import { buildReactBundleArtifactRuntimePayload } from '../src/features/assistant/artifacts/react-bundle/document.ts';
+import { buildReactBundleArtifactRuntimePayload } from '../src/features/artifacts/runtime-preview/react-bundle/document.ts';
 import {
   ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
   ARTIFACT_RUNTIME_HOST_READY_ACTION,
@@ -91,6 +94,11 @@ async function createSmokeHarnessServer() {
     const scopeHandle = `scope-${randomUUID()}`;
     const runtimePayload = buildReactBundleArtifactRuntimePayload({
       entryUrl: reactBundleEntryUrl,
+      ...(smokeFixture.runtimeDependencies
+        ? {
+            runtimeDependencies: smokeFixture.runtimeDependencies(daemonOrigin),
+          }
+        : {}),
     });
     const runtimeDocument = buildJsArtifactRuntimeDocument(runtimePayload, {
       scopeHandle,
@@ -401,8 +409,50 @@ function resolveSmokeFixture(name) {
     };
   }
 
+  if (fixtureName === 'runtime-dependencies') {
+    return {
+      name: 'runtime-dependencies',
+      entryPath: PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+      persistenceState: {
+        'publicWebFixture.reactRuntimeDependencies': {
+          booted: true,
+        },
+      },
+      runtimeDependencies(origin) {
+        return {
+          importMap: {
+            imports: {
+              'geulbat-runtime-dependency-fixture': new URL(
+                PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
+                `${origin}/`,
+              ).toString(),
+            },
+          },
+          stylesheets: [
+            new URL(
+              PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
+              `${origin}/`,
+            ).toString(),
+          ],
+        };
+      },
+      async assertMounted(page) {
+        const frame = page.frameLocator('#artifact-frame');
+        const card = frame.locator('#runtime-dependency-card');
+        const label = frame.locator('#runtime-dependency-label');
+
+        await card.waitFor({ state: 'visible', timeout: 15_000 });
+        assert.equal(await label.textContent(), 'runtime dependency loaded');
+        assert.equal(
+          await card.evaluate((element) => getComputedStyle(element).borderTopColor),
+          'rgb(70, 120, 50)',
+        );
+      },
+    };
+  }
+
   throw new Error(
-    `unsupported react bundle smoke fixture "${fixtureName}". Expected "hello-card" or "counter".`,
+    `unsupported react bundle smoke fixture "${fixtureName}". Expected "hello-card", "counter", or "runtime-dependencies".`,
   );
 }
 
