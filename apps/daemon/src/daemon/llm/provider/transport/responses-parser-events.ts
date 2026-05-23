@@ -1,5 +1,6 @@
 import type { HistoryItem } from '../wire/types.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
+import { normalizeProviderUsageTelemetry } from '../provider-cache-telemetry.js';
 import type {
   AssistantDelta,
   AssistantPhase,
@@ -119,8 +120,15 @@ export function processResponseEvent(
     }
 
     case 'response.completed':
-    case 'response.done':
+    case 'response.done': {
+      const telemetry = normalizeProviderUsageTelemetry(
+        readResponseUsage(event),
+      );
+      if (telemetry) {
+        state.providerUsageTelemetry = telemetry;
+      }
       break;
+    }
 
     case 'error':
     case 'response.failed': {
@@ -137,6 +145,13 @@ export function processResponseEvent(
     default:
       break;
   }
+}
+
+function readResponseUsage(
+  event: Record<string, unknown>,
+): unknown | undefined {
+  const response = asRecord(event.response);
+  return response?.usage ?? event.usage;
 }
 
 export function flushIncompleteAssistantItems(

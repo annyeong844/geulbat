@@ -13,34 +13,68 @@ type ReactBundleEntryUrlValidation =
   | ArtifactValidationSuccess<{ entryUrl: string }>
   | ArtifactPolicyOrBootFailure;
 
+type ReactBundleUrlValidation =
+  | ArtifactValidationSuccess<{ url: string }>
+  | ArtifactPolicyOrBootFailure;
+
 export function validateReactBundleEntryUrl(
   rawEntryUrl: string,
 ): ReactBundleEntryUrlValidation {
-  const entryUrl = rawEntryUrl.trim();
-  if (!entryUrl) {
-    return reject('react bundle manifest requires a non-empty entryUrl');
+  const result = validateReactBundleRuntimeUrl(rawEntryUrl, {
+    emptyDetail: 'react bundle manifest requires a non-empty entryUrl',
+    malformedDetail: 'react bundle manifest entryUrl must be an absolute URL',
+    privilegedDetail:
+      'react bundle manifest entryUrl points at a shell-owned privileged path',
+  });
+  if (!result.ok) {
+    return result;
+  }
+
+  return {
+    ok: true,
+    entryUrl: result.url,
+  };
+}
+
+export function validateReactBundleDependencyUrl(
+  rawUrl: string,
+): ReactBundleUrlValidation {
+  return validateReactBundleRuntimeUrl(rawUrl, {
+    emptyDetail: 'react bundle runtime dependency URL must be non-empty',
+    malformedDetail:
+      'react bundle runtime dependency URL must be an absolute URL',
+    privilegedDetail:
+      'react bundle runtime dependency URL points at a shell-owned privileged path',
+  });
+}
+
+function validateReactBundleRuntimeUrl(
+  rawUrl: string,
+  messages: {
+    emptyDetail: string;
+    malformedDetail: string;
+    privilegedDetail: string;
+  },
+): ReactBundleUrlValidation {
+  const url = rawUrl.trim();
+  if (!url) {
+    return reject(messages.emptyDetail);
   }
 
   let parsedUrl: URL;
   try {
-    parsedUrl = new URL(entryUrl);
+    parsedUrl = new URL(url);
   } catch {
-    return reject('react bundle manifest entryUrl must be an absolute URL');
+    return reject(messages.malformedDetail);
   }
 
   if (isExplicitShellOwnedPrivilegedUrl(parsedUrl)) {
-    return rejectPolicy(
-      'react bundle manifest entryUrl points at a shell-owned privileged path',
-    );
+    return rejectPolicy(messages.privilegedDetail);
   }
 
-  return accept(parsedUrl);
-}
-
-function accept(parsedUrl: URL): ReactBundleEntryUrlValidation {
   return {
     ok: true,
-    entryUrl: parsedUrl.toString(),
+    url: parsedUrl.toString(),
   };
 }
 

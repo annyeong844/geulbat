@@ -10,6 +10,9 @@ import {
   PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_CHUNK_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
   PUBLIC_WEB_REQUEST_IDENTITY_ECHO_PATH,
   PUBLIC_WEB_WEBSOCKET_ECHO_PATH,
   isPublicWebFixturePath,
@@ -32,6 +35,18 @@ void test('public web fixture paths stay canonical and drift-resistant', () => {
   assert.equal(
     PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_CHUNK_PATH,
     '/public-web/react-bundle-hello-card/hello-card-app.js',
+  );
+  assert.equal(
+    PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+    '/public-web/react-bundle-runtime-dependencies/entry.js',
+  );
+  assert.equal(
+    PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
+    '/public-web/react-bundle-runtime-dependencies/dependency.js',
+  );
+  assert.equal(
+    PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
+    '/public-web/react-bundle-runtime-dependencies/theme.css',
   );
   assert.equal(PUBLIC_WEB_DOM_COUNTER_PATH, '/public-web/dom-counter.js');
   assert.equal(PUBLIC_WEB_JSON_ECHO_PATH, '/public-web/echo.json');

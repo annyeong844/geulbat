@@ -1,4 +1,9 @@
-import type { HistoryItem, FunctionCall, CallResult } from '../wire/types.js';
+import type {
+  HistoryItem,
+  FunctionCall,
+  CallResult,
+  ProviderUsageTelemetry,
+} from '../wire/types.js';
 
 export type AssistantPhase = 'commentary' | 'final_answer';
 export type AssistantPhaseIssue = 'missing' | 'invalid';
@@ -40,4 +45,5 @@ export interface ResponsesParseState {
   itemsById: Map<string, ItemBuffer>;
   completedItems: CompletedResponseItem[];
   functionCalls: FunctionCall[];
+  providerUsageTelemetry?: ProviderUsageTelemetry;
 }

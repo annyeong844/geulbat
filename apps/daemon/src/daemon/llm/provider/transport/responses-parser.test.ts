@@ -121,6 +121,26 @@ void test('parseResponseEvents caps oversized provider error messages', async ()
   );
 });
 
+void test('parseResponseEvents preserves the original parse failure when iterator cleanup also fails', async () => {
+  const parseError = new Error('next failed');
+  const cleanupError = new Error('cleanup failed');
+
+  const events: AsyncIterable<Record<string, unknown>> = {
+    [Symbol.asyncIterator]() {
+      return {
+        async next(): Promise<IteratorResult<Record<string, unknown>>> {
+          throw parseError;
+        },
+        async return(): Promise<IteratorResult<Record<string, unknown>>> {
+          throw cleanupError;
+        },
+      };
+    },
+  };
+
+  await assert.rejects(parseResponseEvents(events), /next failed/);
+});
+
 void test('parseResponseEvents rejects invalid assistant phase literals instead of downgrading to commentary', async () => {
   const deltas: Array<{
     itemId: string;
@@ -308,6 +328,31 @@ void test('parseResponseEvents does not surface an artifact candidate from comme
   );
   assert.equal(result.finalText, '');
   assert.equal(result.artifactCandidate, undefined);
+});
+
+void test('parseResponseEvents normalizes provider usage cache telemetry from response completion metadata', async () => {
+  const result = await parseResponseEvents(
+    toAsyncEvents([
+      {
+        type: 'response.completed',
+        response: {
+          usage: {
+            input_tokens: 120,
+            output_tokens: 30,
+            input_tokens_details: {
+              cached_tokens: 90,
+            },
+          },
+        },
+      },
+    ]),
+  );
+
+  assert.deepEqual(result.providerUsageTelemetry, {
+    inputTokens: 120,
+    outputTokens: 30,
+    cachedInputTokens: 90,
+  });
 });
 
 async function* toAsyncEvents(

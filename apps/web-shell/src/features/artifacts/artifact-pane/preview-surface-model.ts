@@ -9,25 +9,12 @@ import {
   resolveStaticArtifactPreview,
 } from '../artifact-static-preview-registry.js';
 import type { ArtifactPaneViewModel } from '../artifact-pane-view-model.js';
+import type { ArtifactRuntimePreviewContext } from '../runtime-preview/types.js';
 import type {
   ArtifactPreviewSurface,
   GeneratedBinaryExportSnapshot,
   GeneratedTextExportSnapshot,
-  ResolvedArtifactSourceRef,
 } from '../artifact-types.js';
-
-interface ArtifactPaneRuntimePreviewContext {
-  digest: string | null;
-  state: 'streaming' | 'completed' | 'fallback';
-  isStreamingPreview: boolean;
-  sourceRef: ResolvedArtifactSourceRef;
-  onGeneratedTextExportSnapshotChange?: (
-    snapshot: GeneratedTextExportSnapshot | null,
-  ) => void;
-  onGeneratedBinaryExportSnapshotChange?: (
-    snapshot: GeneratedBinaryExportSnapshot | null,
-  ) => void;
-}
 
 export type ArtifactPanePreviewSurfaceModel =
   | {
@@ -38,7 +25,7 @@ export type ArtifactPanePreviewSurfaceModel =
       kind: 'runtime';
       renderer: RuntimeArtifactPreviewRenderer;
       payload: string;
-      context: ArtifactPaneRuntimePreviewContext;
+      context: ArtifactRuntimePreviewContext;
     };
 
 export function shouldUseArtifactPaneHookManagedPreview(

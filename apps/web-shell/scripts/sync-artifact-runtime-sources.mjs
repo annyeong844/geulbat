@@ -40,7 +40,7 @@ const generatedModuleGroups = [
   {
     generatedPath: path.join(
       appRoot,
-      'src/features/assistant/artifacts/react-bundle/runtime-module-sources.js',
+      'src/features/artifacts/runtime-preview/react-bundle/runtime-module-sources.js',
     ),
     entries: [
       {

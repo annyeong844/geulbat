@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile as readFsFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -167,6 +167,181 @@ void test('invalid tool arguments persist tool_call and tool_result to transcrip
     transcript.map((entry) => entry.role),
     ['tool_call', 'tool_result'],
   );
+});
+
+void test('large search_files output is offloaded and readable through its output ref', async () => {
+  const threadId = testThreadId(80);
+  const runId = 'run-search-offload';
+  const callId = 'call-search-offload';
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-offload-'),
+  );
+  const runContext = makeRunWorkspaceContext({
+    threadId,
+    projectId: testProjectId('search-offload'),
+    workspaceRoot,
+  });
+
+  for (let index = 0; index < 60; index += 1) {
+    await writeFile(
+      join(workspaceRoot, `match-${String(index).padStart(2, '0')}.txt`),
+      `MATCH_OFFLOAD_${index} ${'x'.repeat(300)}\n`,
+      'utf8',
+    );
+  }
+
+  const history: HistoryItem[] = [];
+  const events: string[] = [];
+
+  const result = await processFunctionCalls({
+    functionCalls: [
+      {
+        id: 'fc-search-offload',
+        callId,
+        name: 'search_files',
+        arguments: JSON.stringify({
+          maxResults: 80,
+          pattern: 'MATCH_OFFLOAD_',
+        }),
+      },
+    ],
+    round: 0,
+    history,
+    runtime: makeExecutionRuntime(daemonContext, {
+      runContext,
+      runId,
+      approvalContext: makeApprovalContext({
+        sessionId: 'session-search-offload',
+      }),
+      emit: (type) => {
+        events.push(type);
+      },
+    }),
+  });
+
+  assert.deepEqual(result, { ok: true, value: undefined });
+  assert.deepEqual(events, ['tool_call', 'tool_result']);
+  assert.equal(history.length, 1);
+  assert.equal(history[0]?.kind, 'function_call_output');
+  if (history[0]?.kind !== 'function_call_output') {
+    throw new Error('expected function_call_output history item');
+  }
+
+  const historyOutput = JSON.parse(history[0].output) as {
+    offloaded?: boolean;
+    outputRef?: string;
+    tool?: string;
+  };
+  assert.equal(historyOutput.offloaded, true);
+  assert.equal(historyOutput.tool, 'search_files');
+  assert.equal(
+    historyOutput.outputRef,
+    `tool-output:${threadId}/${runId}/${callId}`,
+  );
+  assert.doesNotMatch(history[0].output, /MATCH_OFFLOAD_59/);
+
+  const snapshotPath = join(
+    workspaceRoot,
+    '.geulbat',
+    'tool-outputs',
+    threadId,
+    runId,
+    `${callId}.json`,
+  );
+  const snapshot = JSON.parse(await readFsFile(snapshotPath, 'utf8')) as {
+    output: string;
+    outputRef: string;
+    toolName: string;
+  };
+  assert.equal(snapshot.outputRef, historyOutput.outputRef);
+  assert.equal(snapshot.toolName, 'search_files');
+  assert.match(snapshot.output, /MATCH_OFFLOAD_0/);
+  assert.match(snapshot.output, /MATCH_OFFLOAD_59/);
+
+  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
+  const toolResult = transcript.find((entry) => entry.role === 'tool_result');
+  assert.ok(toolResult);
+  const transcriptContent = JSON.parse(toolResult.content) as {
+    output: string;
+  };
+  assert.deepEqual(JSON.parse(transcriptContent.output), historyOutput);
+
+  const firstPageHistory: HistoryItem[] = [];
+  const firstPageResult = await processFunctionCalls({
+    functionCalls: [
+      {
+        id: 'fc-read-output-first',
+        callId: 'call-read-output-first',
+        name: 'read_tool_output',
+        arguments: JSON.stringify({
+          outputRef: historyOutput.outputRef,
+          limit: 2_000,
+        }),
+      },
+    ],
+    round: 1,
+    history: firstPageHistory,
+    runtime: makeExecutionRuntime(daemonContext, {
+      runContext,
+      runId,
+      approvalContext: makeApprovalContext({
+        sessionId: 'session-read-output-first',
+      }),
+      emit: () => {},
+    }),
+  });
+
+  assert.deepEqual(firstPageResult, { ok: true, value: undefined });
+  assert.equal(firstPageHistory[0]?.kind, 'function_call_output');
+  if (firstPageHistory[0]?.kind !== 'function_call_output') {
+    throw new Error('expected read_tool_output history item');
+  }
+  const firstPage = JSON.parse(firstPageHistory[0].output) as {
+    content?: string;
+    totalChars?: number;
+    truncated?: boolean;
+  };
+  assert.equal(firstPage.truncated, true);
+  assert.equal(firstPage.content, snapshot.output.slice(0, 2_000));
+  assert.equal(typeof firstPage.totalChars, 'number');
+
+  const tailHistory: HistoryItem[] = [];
+  const tailOffset = Math.max(0, Number(firstPage.totalChars) - 1_200);
+  const tailResult = await processFunctionCalls({
+    functionCalls: [
+      {
+        id: 'fc-read-output-tail',
+        callId: 'call-read-output-tail',
+        name: 'read_tool_output',
+        arguments: JSON.stringify({
+          outputRef: historyOutput.outputRef,
+          offset: tailOffset,
+          limit: 1_200,
+        }),
+      },
+    ],
+    round: 2,
+    history: tailHistory,
+    runtime: makeExecutionRuntime(daemonContext, {
+      runContext,
+      runId,
+      approvalContext: makeApprovalContext({
+        sessionId: 'session-read-output-tail',
+      }),
+      emit: () => {},
+    }),
+  });
+
+  assert.deepEqual(tailResult, { ok: true, value: undefined });
+  assert.equal(tailHistory[0]?.kind, 'function_call_output');
+  if (tailHistory[0]?.kind !== 'function_call_output') {
+    throw new Error('expected tail read_tool_output history item');
+  }
+  const tailPage = JSON.parse(tailHistory[0].output) as {
+    content?: string;
+  };
+  assert.equal(tailPage.content, snapshot.output.slice(tailOffset));
 });
 
 void test('approval denial persists tool_result to transcript before terminal failure', async () => {

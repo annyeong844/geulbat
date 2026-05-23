@@ -28,7 +28,19 @@ export interface CallResult {
   assistantText: string;
   finalText: string;
   artifactCandidate?: ProviderArtifactCandidate;
+  providerUsageTelemetry?: ProviderUsageTelemetry;
 }
+
+interface ProviderUsageTelemetryFields {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+}
+
+export type ProviderUsageTelemetry =
+  | (ProviderUsageTelemetryFields & { inputTokens: number })
+  | (ProviderUsageTelemetryFields & { outputTokens: number })
+  | (ProviderUsageTelemetryFields & { cachedInputTokens: number });
 
 // ── Provider wire format types ──
 

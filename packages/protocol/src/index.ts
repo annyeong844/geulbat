@@ -73,6 +73,9 @@ export {
   PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_CHUNK_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
   isPublicWebFixturePath,
 } from './public-web-fixtures.js';
 export type {
@@ -81,6 +84,8 @@ export type {
   ReactBundleInlineCompileRequest,
   ReactBundleInlineCompileResponse,
   ReactBundleInlineSourceInput,
+  ReactBundleRuntimeDependencies,
+  ReactBundleRuntimeImportMap,
   ReactBundleRuntimeManifest,
 } from './react-bundle-inline-compile.js';
 export {
