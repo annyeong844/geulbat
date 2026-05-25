@@ -119,6 +119,7 @@ export async function probeHttpMetadata(args: {
   lookup?: HttpLookup;
   signal?: AbortSignal;
   now?: () => number;
+  totalTimeoutMs?: number;
   transport?: HttpMetadataProbeRequestTransport;
 }): Promise<HttpMetadataProbeResult> {
   const now = args.now ?? Date.now;
@@ -128,7 +129,7 @@ export async function probeHttpMetadata(args: {
     currentUrl: args.url,
     redirectsRemaining: MAX_REDIRECTS,
     redirectChain: [],
-    totalDeadlineMs: startedAtMs + TOTAL_TIMEOUT_MS,
+    totalDeadlineMs: startedAtMs + (args.totalTimeoutMs ?? TOTAL_TIMEOUT_MS),
     startedAtMs,
     now,
     transport: args.transport ?? requestHttpMetadata,

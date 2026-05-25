@@ -22,6 +22,32 @@ export interface SandboxAttemptOwner {
   runId?: string;
 }
 
+export type SandboxAttemptCapabilityClass =
+  | 'candidate_generation'
+  | 'read_only'
+  | 'workspace_mutating';
+
+export type SandboxAttemptExecutionClass =
+  | 'in_process_adapter'
+  | 'docker_worker'
+  | 'sandbox_job';
+
+export type SandboxAttemptCommitBehavior =
+  | 'not_applicable'
+  | 'candidate_only'
+  | 'requires_commit_gate';
+
+export type SandboxAttemptPolicyValue = string | number | boolean;
+
+export interface SandboxAttemptCapabilityProjection {
+  schemaVersion: 1;
+  capabilityId: string;
+  capabilityClass: SandboxAttemptCapabilityClass;
+  executionClass: SandboxAttemptExecutionClass;
+  commitBehavior: SandboxAttemptCommitBehavior;
+  policies: Record<string, SandboxAttemptPolicyValue>;
+}
+
 export interface SandboxOutputFileRef {
   relativePath: string;
   bytes: number;
@@ -42,6 +68,7 @@ export interface SandboxAttemptSnapshot {
   jobKind: string;
   adapterKind: string;
   owner: SandboxAttemptOwner;
+  capability: SandboxAttemptCapabilityProjection | null;
   status: SandboxAttemptStatus;
   rootPath: string | null;
   exitCode: number | null;
@@ -58,6 +85,7 @@ export interface SandboxAttemptStore {
     jobKind: string;
     adapterKind: string;
     owner?: SandboxAttemptOwner;
+    capability?: SandboxAttemptCapabilityProjection;
   }): SandboxAttemptSnapshot;
   retryAttempt(attemptId: string): SandboxAttemptSnapshot;
   markRunning(
@@ -101,9 +129,20 @@ export function createSandboxAttemptStore(
     signal.emit(revision);
   };
 
+  const cloneCapability = (
+    capability: SandboxAttemptCapabilityProjection,
+  ): SandboxAttemptCapabilityProjection => ({
+    ...capability,
+    policies: { ...capability.policies },
+  });
+
   const clone = (snapshot: SandboxAttemptSnapshot): SandboxAttemptSnapshot => ({
     ...snapshot,
     owner: { ...snapshot.owner },
+    capability:
+      snapshot.capability === null
+        ? null
+        : cloneCapability(snapshot.capability),
     outputRef:
       snapshot.outputRef === null
         ? null
@@ -119,6 +158,7 @@ export function createSandboxAttemptStore(
     jobKind: string;
     adapterKind: string;
     owner?: SandboxAttemptOwner;
+    capability?: SandboxAttemptCapabilityProjection;
   }): SandboxAttemptSnapshot => {
     const timestamp = now();
     return {
@@ -128,6 +168,7 @@ export function createSandboxAttemptStore(
       jobKind: args.jobKind,
       adapterKind: args.adapterKind,
       owner: { ...(args.owner ?? {}) },
+      capability: args.capability ? cloneCapability(args.capability) : null,
       status: 'queued',
       rootPath: null,
       exitCode: null,

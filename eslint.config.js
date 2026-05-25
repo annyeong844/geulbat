@@ -112,6 +112,13 @@ export default [
           ],
           mode: 'full',
         },
+        {
+          type: 'daemon-agent-sandbox-ingress',
+          pattern: [
+            'apps/daemon/src/daemon/agent/react-bundle-explicit-cdn-artifact-ingress.ts',
+          ],
+          mode: 'full',
+        },
         { type: 'daemon-agent', pattern: ['apps/daemon/src/daemon/agent/**'] },
         { type: 'daemon-auth', pattern: ['apps/daemon/src/daemon/auth/**'] },
         {
@@ -399,6 +406,14 @@ export default [
                     'daemon-files',
                     'daemon-utils',
                   ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-agent-sandbox-ingress' },
+              allow: {
+                to: {
+                  type: ['daemon-agent', 'daemon-sandbox'],
                 },
               },
             },
