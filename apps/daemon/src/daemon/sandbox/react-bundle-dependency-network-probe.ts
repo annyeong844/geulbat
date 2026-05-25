@@ -10,6 +10,7 @@ import {
   type HttpMetadataProbeResult,
 } from '../network/http-metadata-probe.js';
 import type {
+  SandboxAttemptCapabilityProjection,
   SandboxAttemptStore,
   SandboxOutputRef,
   SandboxTerminalStatus,
@@ -24,9 +25,85 @@ import {
   type ValidatedReactBundleDependencyPrepareRequest,
   type ValidatedReactBundleDependencyRef,
 } from './react-bundle-dependency-prepare.js';
+import {
+  checkDockerMetadataProbeBackendAvailable,
+  runDockerMetadataProbeProcess,
+  type DockerCommandRunner,
+} from './react-bundle-dependency-docker-backend.js';
 
 const NETWORK_PROBE_OUTPUT_MAX_FILES = 8;
 const NETWORK_PROBE_OUTPUT_MAX_BYTES = 128 * 1024;
+const IN_PROCESS_METADATA_PROBE_BACKEND_POLICY_ID =
+  'react_bundle_dependency_metadata_probe_in_process_v1';
+export const DOCKER_METADATA_PROBE_BACKEND_POLICY_ID =
+  'react_bundle_dependency_metadata_probe_docker_v1';
+export const DOCKER_METADATA_PROBE_IMAGE_POLICY_ID =
+  'react_bundle_dependency_metadata_probe_image_v1';
+export const DOCKER_METADATA_PROBE_FILESYSTEM_POLICY_ID =
+  'react_bundle_dependency_metadata_probe_fs_v1';
+export const DOCKER_METADATA_PROBE_RESOURCE_POLICY_ID =
+  'react_bundle_dependency_metadata_probe_resource_v1';
+export const DOCKER_METADATA_PROBE_ALLOWLIST_ID =
+  'react_bundle_dependency_cdn_v1';
+export const DOCKER_METADATA_PROBE_CONTAINER_NETWORK_MODE = 'none';
+
+export type ReactBundleDependencyMetadataProbeBackend =
+  | {
+      kind: 'in_process_adapter';
+      backendPolicyId?: typeof IN_PROCESS_METADATA_PROBE_BACKEND_POLICY_ID;
+    }
+  | {
+      kind: 'docker_worker';
+      dockerPath?: string;
+      imageRef: string;
+      backendPolicyId?: typeof DOCKER_METADATA_PROBE_BACKEND_POLICY_ID;
+      imagePolicyId?: typeof DOCKER_METADATA_PROBE_IMAGE_POLICY_ID;
+      filesystemPolicyId?: typeof DOCKER_METADATA_PROBE_FILESYSTEM_POLICY_ID;
+      resourcePolicyId?: typeof DOCKER_METADATA_PROBE_RESOURCE_POLICY_ID;
+      allowlistId?: typeof DOCKER_METADATA_PROBE_ALLOWLIST_ID;
+      containerNetworkMode?: typeof DOCKER_METADATA_PROBE_CONTAINER_NETWORK_MODE;
+    };
+
+export type ReactBundleDependencyMetadataProbeBackendSummary =
+  | {
+      kind: 'in_process_adapter';
+      backendPolicyId: typeof IN_PROCESS_METADATA_PROBE_BACKEND_POLICY_ID;
+    }
+  | {
+      kind: 'docker_worker';
+      backendPolicyId: typeof DOCKER_METADATA_PROBE_BACKEND_POLICY_ID;
+      imagePolicyId: typeof DOCKER_METADATA_PROBE_IMAGE_POLICY_ID;
+      filesystemPolicyId: typeof DOCKER_METADATA_PROBE_FILESYSTEM_POLICY_ID;
+      resourcePolicyId: typeof DOCKER_METADATA_PROBE_RESOURCE_POLICY_ID;
+      allowlistId: typeof DOCKER_METADATA_PROBE_ALLOWLIST_ID;
+      containerNetworkMode: typeof DOCKER_METADATA_PROBE_CONTAINER_NETWORK_MODE;
+      imageRef: string;
+    };
+
+type ReactBundleDependencyMetadataProbeCapabilityProjection = {
+  schemaVersion: 1;
+  capabilityId: 'react_bundle_dependency_metadata_probe';
+  capabilityClass: 'candidate_generation';
+  executionClass: 'in_process_adapter' | 'docker_worker';
+  commitBehavior: 'not_applicable';
+  policies:
+    | {
+        backendPolicyId: typeof IN_PROCESS_METADATA_PROBE_BACKEND_POLICY_ID;
+        networkPolicy: typeof REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY;
+        networkPolicyVersion: typeof REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION;
+        allowlistId: typeof REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID;
+      }
+    | {
+        backendPolicyId: typeof DOCKER_METADATA_PROBE_BACKEND_POLICY_ID;
+        imagePolicyId: typeof DOCKER_METADATA_PROBE_IMAGE_POLICY_ID;
+        filesystemPolicyId: typeof DOCKER_METADATA_PROBE_FILESYSTEM_POLICY_ID;
+        resourcePolicyId: typeof DOCKER_METADATA_PROBE_RESOURCE_POLICY_ID;
+        networkPolicy: typeof REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY;
+        networkPolicyVersion: typeof REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION;
+        allowlistId: typeof REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID;
+        containerNetworkMode: typeof DOCKER_METADATA_PROBE_CONTAINER_NETWORK_MODE;
+      };
+} & SandboxAttemptCapabilityProjection;
 
 type ReactBundleDependencyProbeIdentity = {
   kind: 'esm_import' | 'stylesheet';
@@ -38,6 +115,38 @@ type ReactBundleDependencyProbeIdentity = {
 
 type ReactBundleDependencyProbeResult = ReactBundleDependencyProbeIdentity &
   HttpMetadataProbeResult;
+
+type SuccessfulHttpMetadataProbeResult = Extract<
+  HttpMetadataProbeResult,
+  { ok: true }
+>;
+
+type HttpMetadataProbeTimingBucket =
+  SuccessfulHttpMetadataProbeResult['timingBucket'];
+
+export type ReactBundleDependencyNetworkProbeSummaryProbe =
+  ReactBundleDependencyProbeIdentity &
+    (
+      | {
+          ok: true;
+          requestedUrl: string;
+          finalUrl: string;
+          method: 'HEAD' | 'GET';
+          status: number;
+          contentType: string | null;
+          contentLength: number | null;
+          bytesRead: number;
+          timingBucket: HttpMetadataProbeTimingBucket;
+        }
+      | {
+          ok: false;
+          requestedUrl: string;
+          finalUrl?: string;
+          method?: 'HEAD' | 'GET';
+          status?: number;
+          reasonCode: string;
+        }
+    );
 
 export interface ReactBundleDependencyNetworkProbeCandidate {
   schemaVersion: 1;
@@ -66,9 +175,11 @@ export interface ReactBundleDependencyNetworkProbeSummary {
   networkPolicy: typeof REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY;
   networkPolicyVersion: typeof REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION;
   allowlistId: typeof REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID;
+  backend: ReactBundleDependencyMetadataProbeBackendSummary;
   allRequiredProbesOk: boolean;
   dependencyCount: number;
   failedDependencyCount: number;
+  dependencyProbes: ReactBundleDependencyNetworkProbeSummaryProbe[];
   finalUrls: string[];
   failures: Array<{
     requestedUrl: string;
@@ -78,7 +189,13 @@ export interface ReactBundleDependencyNetworkProbeSummary {
 }
 
 type NetworkProbeProcessResult =
-  | { kind: 'exit'; exitCode: number; stdout: string; stderr: string }
+  | {
+      kind: 'exit';
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+      expectedCandidateHash?: string;
+    }
   | { kind: 'timeout'; stdout: string; stderr: string }
   | { kind: 'cancelled'; stdout: string; stderr: string }
   | { kind: 'crash'; stdout: string; stderr: string };
@@ -98,6 +215,12 @@ type NetworkProbeProcessRunner = (
   args: NetworkProbeProcessRunnerArgs,
 ) => Promise<NetworkProbeProcessResult>;
 
+const IN_PROCESS_METADATA_PROBE_BACKEND_SUMMARY: ReactBundleDependencyMetadataProbeBackendSummary =
+  {
+    kind: 'in_process_adapter',
+    backendPolicyId: IN_PROCESS_METADATA_PROBE_BACKEND_POLICY_ID,
+  };
+
 export async function probeReactBundleExplicitCdnDependencies(args: {
   workspaceRoot: string;
   store: SandboxAttemptStore;
@@ -107,11 +230,16 @@ export async function probeReactBundleExplicitCdnDependencies(args: {
   signal?: AbortSignal;
   probeTransport?: HttpMetadataProbeRequestTransport;
   processRunner?: NetworkProbeProcessRunner;
+  backend?: ReactBundleDependencyMetadataProbeBackend;
+  dockerCommandRunner?: DockerCommandRunner;
 }): Promise<ReactBundleDependencyNetworkProbeSummary> {
   const request = validateReactBundleDependencyPrepareRequest(args.request);
+  const backend = normalizeMetadataProbeBackend(args.backend);
+  const backendSummary = summarizeMetadataProbeBackend(backend);
   const attempt = args.store.createAttempt({
     jobKind: 'react_bundle_dependency_network_probe',
     adapterKind: 'react_bundle_dependency_metadata_probe',
+    capability: projectMetadataProbeCapability(backendSummary),
   });
   let root: Awaited<ReturnType<typeof createDisposableSandboxRoot>> | null =
     null;
@@ -132,27 +260,36 @@ export async function probeReactBundleExplicitCdnDependencies(args: {
     });
 
     const processResult = await runNetworkProbeProcess({
+      rootPath: root.rootPath,
       outputDir: root.outputDir,
       env,
       timeoutMs: args.timeoutMs,
+      timeoutStartedAtMs: Date.now(),
       now: args.now ?? (() => new Date().toISOString()),
       request,
+      backend,
       ...(args.signal ? { signal: args.signal } : {}),
       ...(args.probeTransport ? { probeTransport: args.probeTransport } : {}),
       ...(args.processRunner ? { processRunner: args.processRunner } : {}),
+      ...(args.dockerCommandRunner
+        ? { dockerCommandRunner: args.dockerCommandRunner }
+        : {}),
     });
     const status = classifyNetworkProbeResult(processResult);
     if (status !== 'succeeded' || processResult.kind !== 'exit') {
+      const diagnostics = joinDiagnostics(
+        processResult.stdout,
+        processResult.stderr,
+      );
       args.store.markTerminal(attempt.attemptId, {
         status,
         exitCode: processResult.kind === 'exit' ? processResult.exitCode : null,
-        diagnostics: joinDiagnostics(
-          processResult.stdout,
-          processResult.stderr,
-        ),
+        diagnostics,
       });
       throw new Error(
-        `react bundle dependency metadata probe failed: ${status}`,
+        `react bundle dependency metadata probe failed: ${status}${
+          diagnostics ? `: ${diagnostics}` : ''
+        }`,
       );
     }
 
@@ -161,6 +298,7 @@ export async function probeReactBundleExplicitCdnDependencies(args: {
       store: args.store,
       attemptId: attempt.attemptId,
       request,
+      backendSummary,
       processResult,
       outputDir: root.outputDir,
     });
@@ -183,12 +321,16 @@ export async function probeReactBundleExplicitCdnDependencies(args: {
 
 async function runNetworkProbeProcess(args: {
   processRunner?: NetworkProbeProcessRunner;
+  rootPath: string;
   outputDir: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
+  timeoutStartedAtMs?: number;
   now: () => string;
   signal?: AbortSignal;
   request: ValidatedReactBundleDependencyPrepareRequest;
+  backend: ReactBundleDependencyMetadataProbeBackend;
+  dockerCommandRunner?: DockerCommandRunner;
   probeTransport?: HttpMetadataProbeRequestTransport;
 }): Promise<NetworkProbeProcessResult> {
   const writeOutput = async (
@@ -199,6 +341,63 @@ async function runNetworkProbeProcess(args: {
     await mkdir(dirname(targetPath), { recursive: true });
     await writeFile(targetPath, content, 'utf8');
   };
+
+  if (args.backend.kind === 'docker_worker') {
+    const availabilityTimeoutMs = remainingAttemptTimeoutMs(args);
+    if (availabilityTimeoutMs <= 0) {
+      return timeoutResult();
+    }
+    const availability = await checkDockerMetadataProbeBackendAvailable({
+      timeoutMs: availabilityTimeoutMs,
+      imageRef: args.backend.imageRef,
+      ...(args.backend.dockerPath
+        ? { dockerPath: args.backend.dockerPath }
+        : {}),
+      ...(args.signal ? { signal: args.signal } : {}),
+      ...(args.dockerCommandRunner
+        ? { commandRunner: args.dockerCommandRunner }
+        : {}),
+    });
+    if (availability.kind !== 'exit' || availability.exitCode !== 0) {
+      return availability;
+    }
+
+    const probeTimeoutMs = remainingAttemptTimeoutMs(args);
+    if (probeTimeoutMs <= 0) {
+      return timeoutResult();
+    }
+    const candidate = await buildCandidate({
+      request: args.request,
+      now: args.now,
+      timeoutMs: probeTimeoutMs,
+      ...(args.signal ? { signal: args.signal } : {}),
+      ...(args.probeTransport ? { probeTransport: args.probeTransport } : {}),
+    });
+    const expectedCandidateHash = sha256StableJson(candidate);
+
+    const dockerRunTimeoutMs = remainingAttemptTimeoutMs(args);
+    if (dockerRunTimeoutMs <= 0) {
+      return timeoutResult();
+    }
+    const dockerResult = await runDockerMetadataProbeProcess({
+      imageRef: args.backend.imageRef,
+      rootPath: args.rootPath,
+      outputDir: args.outputDir,
+      candidate,
+      timeoutMs: dockerRunTimeoutMs,
+      skipAvailabilityCheck: true,
+      ...(args.backend.dockerPath
+        ? { dockerPath: args.backend.dockerPath }
+        : {}),
+      ...(args.signal ? { signal: args.signal } : {}),
+      ...(args.dockerCommandRunner
+        ? { commandRunner: args.dockerCommandRunner }
+        : {}),
+    });
+    return dockerResult.kind === 'exit'
+      ? { ...dockerResult, expectedCandidateHash }
+      : dockerResult;
+  }
 
   return (args.processRunner ?? runDefaultNetworkProbeProcess)({
     outputDir: args.outputDir,
@@ -226,6 +425,7 @@ async function runDefaultNetworkProbeProcess(
   const candidate = await buildCandidate({
     request: args.request,
     now: args.now,
+    timeoutMs: args.timeoutMs,
     ...(args.signal ? { signal: args.signal } : {}),
     ...(args.probeTransport ? { probeTransport: args.probeTransport } : {}),
   });
@@ -238,12 +438,14 @@ async function runDefaultNetworkProbeProcess(
     exitCode: 0,
     stdout: 'react bundle dependency metadata probe ok',
     stderr: '',
+    expectedCandidateHash: sha256StableJson(candidate),
   };
 }
 
 async function buildCandidate(args: {
   request: ValidatedReactBundleDependencyPrepareRequest;
   now: () => string;
+  timeoutMs: number;
   signal?: AbortSignal;
   probeTransport?: HttpMetadataProbeRequestTransport;
 }): Promise<ReactBundleDependencyNetworkProbeCandidate> {
@@ -252,6 +454,7 @@ async function buildCandidate(args: {
       ...probeIdentity(dependency),
       ...(await probeHttpMetadata({
         url: dependency.url,
+        totalTimeoutMs: args.timeoutMs,
         ...(args.signal ? { signal: args.signal } : {}),
         ...(args.probeTransport ? { transport: args.probeTransport } : {}),
       })),
@@ -304,6 +507,7 @@ async function importNetworkProbeOutput(args: {
   store: SandboxAttemptStore;
   attemptId: string;
   request: ValidatedReactBundleDependencyPrepareRequest;
+  backendSummary: ReactBundleDependencyMetadataProbeBackendSummary;
   processResult: Extract<NetworkProbeProcessResult, { kind: 'exit' }>;
   outputDir: string;
 }): Promise<ReactBundleDependencyNetworkProbeSummary> {
@@ -340,6 +544,9 @@ async function importNetworkProbeOutput(args: {
     candidate = await readAndValidateCandidate({
       outputRef,
       request: args.request,
+      ...(args.processResult.expectedCandidateHash
+        ? { expectedCandidateHash: args.processResult.expectedCandidateHash }
+        : {}),
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -366,6 +573,7 @@ async function importNetworkProbeOutput(args: {
     attempt: current,
     outputRef,
     candidate,
+    backendSummary: args.backendSummary,
   });
   args.store.markTerminal(args.attemptId, {
     status: 'succeeded',
@@ -382,6 +590,7 @@ async function importNetworkProbeOutput(args: {
 async function readAndValidateCandidate(args: {
   outputRef: SandboxOutputRef;
   request: ValidatedReactBundleDependencyPrepareRequest;
+  expectedCandidateHash?: string;
 }): Promise<ReactBundleDependencyNetworkProbeCandidate> {
   const candidateText = await readFile(
     join(args.outputRef.rootPath, 'candidate.json'),
@@ -410,6 +619,12 @@ async function readAndValidateCandidate(args: {
   }
   if (candidate.allowlistId !== REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID) {
     throw new Error('candidate allowlistId mismatch');
+  }
+  if (
+    args.expectedCandidateHash &&
+    sha256StableJson(candidate) !== args.expectedCandidateHash
+  ) {
+    throw new Error('candidate content hash mismatch');
   }
   if (
     candidate.dependencyProbes.length !== args.request.dependencyRefs.length
@@ -445,6 +660,7 @@ function toSummary(args: {
   attempt: { jobId: string; attemptId: string };
   outputRef: SandboxOutputRef;
   candidate: ReactBundleDependencyNetworkProbeCandidate;
+  backendSummary: ReactBundleDependencyMetadataProbeBackendSummary;
 }): ReactBundleDependencyNetworkProbeSummary {
   return {
     ok: true,
@@ -456,13 +672,210 @@ function toSummary(args: {
     networkPolicy: REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY,
     networkPolicyVersion: REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION,
     allowlistId: REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID,
+    backend: args.backendSummary,
     allRequiredProbesOk: args.candidate.failures.length === 0,
     dependencyCount: args.candidate.dependencyProbes.length,
     failedDependencyCount: args.candidate.failures.length,
+    dependencyProbes: args.candidate.dependencyProbes.map(projectSummaryProbe),
     finalUrls: args.candidate.dependencyProbes.flatMap((probe) =>
       probe.ok ? [probe.finalUrl] : [],
     ),
     failures: args.candidate.failures,
+  };
+}
+
+function projectSummaryProbe(
+  probe: ReactBundleDependencyProbeResult,
+): ReactBundleDependencyNetworkProbeSummaryProbe {
+  if (probe.ok) {
+    return {
+      kind: probe.kind,
+      ...(probe.specifier ? { specifier: probe.specifier } : {}),
+      ...(probe.packageName ? { packageName: probe.packageName } : {}),
+      ...(probe.version ? { version: probe.version } : {}),
+      ok: true,
+      requestedUrl: probe.requestedUrl,
+      finalUrl: probe.finalUrl,
+      method: probe.method,
+      status: probe.status,
+      contentType: probe.contentType,
+      contentLength: probe.contentLength,
+      bytesRead: probe.bytesRead,
+      timingBucket: probe.timingBucket,
+    };
+  }
+
+  return {
+    kind: probe.kind,
+    ...(probe.specifier ? { specifier: probe.specifier } : {}),
+    ...(probe.packageName ? { packageName: probe.packageName } : {}),
+    ...(probe.version ? { version: probe.version } : {}),
+    ok: false,
+    requestedUrl: probe.requestedUrl,
+    ...(probe.finalUrl ? { finalUrl: probe.finalUrl } : {}),
+    ...(probe.method ? { method: probe.method } : {}),
+    ...(probe.status !== undefined ? { status: probe.status } : {}),
+    reasonCode: probe.reasonCode,
+  };
+}
+
+function normalizeMetadataProbeBackend(
+  backend?: ReactBundleDependencyMetadataProbeBackend,
+): ReactBundleDependencyMetadataProbeBackend {
+  if (!backend) {
+    return {
+      kind: 'in_process_adapter',
+      backendPolicyId: IN_PROCESS_METADATA_PROBE_BACKEND_POLICY_ID,
+    };
+  }
+  if (backend.kind === 'in_process_adapter') {
+    assertLiteralPolicy(
+      backend.backendPolicyId,
+      IN_PROCESS_METADATA_PROBE_BACKEND_POLICY_ID,
+      'backendPolicyId',
+    );
+    return {
+      kind: 'in_process_adapter',
+      backendPolicyId: IN_PROCESS_METADATA_PROBE_BACKEND_POLICY_ID,
+    };
+  }
+  if (backend.kind !== 'docker_worker') {
+    throw new Error(
+      'unsupported react bundle dependency metadata probe backend',
+    );
+  }
+  if (backend.imageRef.trim().length === 0) {
+    throw new Error('docker metadata probe backend imageRef is required');
+  }
+  assertLiteralPolicy(
+    backend.backendPolicyId,
+    DOCKER_METADATA_PROBE_BACKEND_POLICY_ID,
+    'backendPolicyId',
+  );
+  assertLiteralPolicy(
+    backend.imagePolicyId,
+    DOCKER_METADATA_PROBE_IMAGE_POLICY_ID,
+    'imagePolicyId',
+  );
+  assertLiteralPolicy(
+    backend.filesystemPolicyId,
+    DOCKER_METADATA_PROBE_FILESYSTEM_POLICY_ID,
+    'filesystemPolicyId',
+  );
+  assertLiteralPolicy(
+    backend.resourcePolicyId,
+    DOCKER_METADATA_PROBE_RESOURCE_POLICY_ID,
+    'resourcePolicyId',
+  );
+  assertLiteralPolicy(
+    backend.allowlistId,
+    DOCKER_METADATA_PROBE_ALLOWLIST_ID,
+    'allowlistId',
+  );
+  assertLiteralPolicy(
+    backend.containerNetworkMode,
+    DOCKER_METADATA_PROBE_CONTAINER_NETWORK_MODE,
+    'containerNetworkMode',
+  );
+
+  return {
+    kind: 'docker_worker',
+    imageRef: backend.imageRef,
+    backendPolicyId: DOCKER_METADATA_PROBE_BACKEND_POLICY_ID,
+    imagePolicyId: DOCKER_METADATA_PROBE_IMAGE_POLICY_ID,
+    filesystemPolicyId: DOCKER_METADATA_PROBE_FILESYSTEM_POLICY_ID,
+    resourcePolicyId: DOCKER_METADATA_PROBE_RESOURCE_POLICY_ID,
+    allowlistId: DOCKER_METADATA_PROBE_ALLOWLIST_ID,
+    containerNetworkMode: DOCKER_METADATA_PROBE_CONTAINER_NETWORK_MODE,
+    ...(backend.dockerPath ? { dockerPath: backend.dockerPath } : {}),
+  };
+}
+
+function assertLiteralPolicy<T extends string>(
+  value: T | undefined,
+  expected: T,
+  fieldName: string,
+): void {
+  if (value !== undefined && value !== expected) {
+    throw new Error(
+      `unsupported react bundle dependency metadata probe backend ${fieldName}`,
+    );
+  }
+}
+
+function remainingAttemptTimeoutMs(args: {
+  timeoutMs: number;
+  timeoutStartedAtMs?: number;
+}): number {
+  if (args.timeoutStartedAtMs === undefined) {
+    return args.timeoutMs;
+  }
+  return args.timeoutMs - (Date.now() - args.timeoutStartedAtMs);
+}
+
+function timeoutResult(): NetworkProbeProcessResult {
+  return {
+    kind: 'timeout',
+    stdout: '',
+    stderr: 'react bundle dependency metadata probe timeout',
+  };
+}
+
+function summarizeMetadataProbeBackend(
+  backend: ReactBundleDependencyMetadataProbeBackend,
+): ReactBundleDependencyMetadataProbeBackendSummary {
+  if (backend.kind === 'in_process_adapter') {
+    return IN_PROCESS_METADATA_PROBE_BACKEND_SUMMARY;
+  }
+
+  return {
+    kind: 'docker_worker',
+    backendPolicyId: DOCKER_METADATA_PROBE_BACKEND_POLICY_ID,
+    imagePolicyId: DOCKER_METADATA_PROBE_IMAGE_POLICY_ID,
+    filesystemPolicyId: DOCKER_METADATA_PROBE_FILESYSTEM_POLICY_ID,
+    resourcePolicyId: DOCKER_METADATA_PROBE_RESOURCE_POLICY_ID,
+    allowlistId: DOCKER_METADATA_PROBE_ALLOWLIST_ID,
+    containerNetworkMode: DOCKER_METADATA_PROBE_CONTAINER_NETWORK_MODE,
+    imageRef: backend.imageRef,
+  };
+}
+
+function projectMetadataProbeCapability(
+  backend: ReactBundleDependencyMetadataProbeBackendSummary,
+): ReactBundleDependencyMetadataProbeCapabilityProjection {
+  const base = {
+    schemaVersion: 1,
+    capabilityId: 'react_bundle_dependency_metadata_probe',
+    capabilityClass: 'candidate_generation',
+    commitBehavior: 'not_applicable',
+  } as const;
+
+  if (backend.kind === 'in_process_adapter') {
+    return {
+      ...base,
+      executionClass: 'in_process_adapter',
+      policies: {
+        backendPolicyId: backend.backendPolicyId,
+        networkPolicy: REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY,
+        networkPolicyVersion: REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION,
+        allowlistId: REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID,
+      },
+    };
+  }
+
+  return {
+    ...base,
+    executionClass: 'docker_worker',
+    policies: {
+      backendPolicyId: backend.backendPolicyId,
+      imagePolicyId: backend.imagePolicyId,
+      filesystemPolicyId: backend.filesystemPolicyId,
+      resourcePolicyId: backend.resourcePolicyId,
+      networkPolicy: REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY,
+      networkPolicyVersion: REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION,
+      allowlistId: backend.allowlistId,
+      containerNetworkMode: backend.containerNetworkMode,
+    },
   };
 }
 

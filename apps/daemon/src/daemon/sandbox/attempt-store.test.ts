@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createSandboxAttemptStore } from './attempt-store.js';
+import {
+  createSandboxAttemptStore,
+  type SandboxAttemptCapabilityProjection,
+} from './attempt-store.js';
 
 void test('sandbox attempt store tracks queued running and terminal status', () => {
   const store = createSandboxAttemptStore({
@@ -55,14 +58,120 @@ void test('sandbox attempt store tracks queued running and terminal status', () 
   assert.equal(snapshot?.outputRef?.files[0]?.relativePath, 'result.json');
 });
 
+void test('sandbox attempt store stores and clones optional capability projection', () => {
+  const store = createSandboxAttemptStore({
+    now: () => '2026-05-23T00:00:00.000Z',
+  });
+
+  const attempt = store.createAttempt({
+    jobKind: 'react_bundle_dependency_network_probe',
+    adapterKind: 'react_bundle_dependency_metadata_probe',
+    capability: {
+      schemaVersion: 1,
+      capabilityId: 'react_bundle_dependency_metadata_probe',
+      capabilityClass: 'candidate_generation',
+      executionClass: 'in_process_adapter',
+      commitBehavior: 'not_applicable',
+      policies: {
+        backendPolicyId: 'react_bundle_dependency_metadata_probe_in_process_v1',
+        networkPolicy: 'allowlisted_metadata_probe',
+        networkPolicyVersion: 1,
+        allowlistId: 'react_bundle_dependency_cdn_v1',
+      },
+    },
+  });
+
+  assert.equal(
+    attempt.capability?.capabilityId,
+    'react_bundle_dependency_metadata_probe',
+  );
+  assert.equal(
+    attempt.capability?.policies.backendPolicyId,
+    'react_bundle_dependency_metadata_probe_in_process_v1',
+  );
+
+  attempt.capability!.capabilityId = 'mutated';
+  attempt.capability!.policies.backendPolicyId = 'mutated';
+
+  const reread = store.getAttempt(attempt.attemptId);
+  assert.equal(
+    reread?.capability?.capabilityId,
+    'react_bundle_dependency_metadata_probe',
+  );
+  assert.equal(
+    reread?.capability?.policies.backendPolicyId,
+    'react_bundle_dependency_metadata_probe_in_process_v1',
+  );
+
+  const listed = store.getAttempts().records[0];
+  listed!.capability!.policies.allowlistId = 'mutated';
+
+  assert.equal(
+    store.getAttempt(attempt.attemptId)?.capability?.policies.allowlistId,
+    'react_bundle_dependency_cdn_v1',
+  );
+});
+
+void test('sandbox attempt store clones capability projection on write', () => {
+  const store = createSandboxAttemptStore({
+    now: () => '2026-05-23T00:00:00.000Z',
+  });
+  const capability: SandboxAttemptCapabilityProjection = {
+    schemaVersion: 1,
+    capabilityId: 'react_bundle_dependency_metadata_probe',
+    capabilityClass: 'candidate_generation',
+    executionClass: 'in_process_adapter',
+    commitBehavior: 'not_applicable',
+    policies: {
+      backendPolicyId: 'react_bundle_dependency_metadata_probe_in_process_v1',
+      networkPolicy: 'allowlisted_metadata_probe',
+      networkPolicyVersion: 1,
+      allowlistId: 'react_bundle_dependency_cdn_v1',
+    },
+  };
+
+  const attempt = store.createAttempt({
+    jobKind: 'react_bundle_dependency_network_probe',
+    adapterKind: 'react_bundle_dependency_metadata_probe',
+    capability,
+  });
+
+  capability.capabilityId = 'mutated';
+  capability.policies.backendPolicyId = 'mutated';
+
+  assert.equal(
+    store.getAttempt(attempt.attemptId)?.capability?.capabilityId,
+    'react_bundle_dependency_metadata_probe',
+  );
+  assert.equal(
+    store.getAttempt(attempt.attemptId)?.capability?.policies.backendPolicyId,
+    'react_bundle_dependency_metadata_probe_in_process_v1',
+  );
+});
+
 void test('sandbox retry creates a new attempt and preserves prior terminal diagnostics', () => {
   const store = createSandboxAttemptStore({
     now: () => '2026-05-17T00:00:00.000Z',
   });
+  const capability: SandboxAttemptCapabilityProjection = {
+    schemaVersion: 1,
+    capabilityId: 'react_bundle_dependency_metadata_probe',
+    capabilityClass: 'candidate_generation',
+    executionClass: 'docker_worker',
+    commitBehavior: 'not_applicable',
+    policies: {
+      backendPolicyId: 'react_bundle_dependency_metadata_probe_docker_v1',
+      networkPolicy: 'allowlisted_metadata_probe',
+      networkPolicyVersion: 1,
+      allowlistId: 'react_bundle_dependency_cdn_v1',
+      containerNetworkMode: 'none',
+    },
+  };
   const first = store.createAttempt({
     jobKind: 'sandbox_probe',
     adapterKind: 'deterministic_probe',
     owner: { runId: 'run-sandbox-retry' },
+    capability,
   });
 
   store.markRunning(first.attemptId, { rootPath: '/tmp/first' });
@@ -76,6 +185,12 @@ void test('sandbox retry creates a new attempt and preserves prior terminal diag
   assert.equal(second.jobId, first.jobId);
   assert.notEqual(second.attemptId, first.attemptId);
   assert.equal(second.previousAttemptId, first.attemptId);
+  assert.deepEqual(second.capability, capability);
+  second.capability!.policies.backendPolicyId = 'mutated';
+  assert.equal(
+    store.getAttempt(second.attemptId)?.capability?.policies.backendPolicyId,
+    'react_bundle_dependency_metadata_probe_docker_v1',
+  );
   assert.equal(store.getAttempt(first.attemptId)?.status, 'timed_out');
   assert.equal(
     store.getAttempt(first.attemptId)?.diagnostics,

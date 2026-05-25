@@ -6,6 +6,12 @@ export const PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_CHUNK_PATH = `${PUBLIC_WEB_FIXTU
 export const PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH = `${PUBLIC_WEB_FIXTURE_PATH_PREFIX}react-bundle-runtime-dependencies/entry.js`;
 export const PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH = `${PUBLIC_WEB_FIXTURE_PATH_PREFIX}react-bundle-runtime-dependencies/dependency.js`;
 export const PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH = `${PUBLIC_WEB_FIXTURE_PATH_PREFIX}react-bundle-runtime-dependencies/theme.css`;
+export const PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_IMPORT_SPECIFIER =
+  'geulbat-runtime-dependency-fixture';
+export const PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_MODULE_URL =
+  'https://esm.sh/geulbat-runtime-dependency-fixture@1.0.0';
+export const PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_STYLESHEET_URL =
+  'https://cdn.jsdelivr.net/npm/geulbat-runtime-dependency-fixture@1.0.0/theme.css';
 export const PUBLIC_WEB_DOM_COUNTER_PATH = `${PUBLIC_WEB_FIXTURE_PATH_PREFIX}dom-counter.js`;
 export const PUBLIC_WEB_JSON_ECHO_PATH = `${PUBLIC_WEB_FIXTURE_PATH_PREFIX}echo.json`;
 export const PUBLIC_WEB_WEBSOCKET_ECHO_PATH = `${PUBLIC_WEB_FIXTURE_PATH_PREFIX}echo.ws`;

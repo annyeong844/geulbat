@@ -36,6 +36,7 @@ void test('runDeterministicSandboxProbe records succeeded attempts and output su
     assert.equal(result.status, 'succeeded');
     assert.equal(result.outputRef?.files[0]?.relativePath, 'result.json');
     assert.equal(store.getAttempt(result.attemptId)?.status, 'succeeded');
+    assert.equal(store.getAttempt(result.attemptId)?.capability, null);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
