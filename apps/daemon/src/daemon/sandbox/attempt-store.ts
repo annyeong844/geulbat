@@ -248,6 +248,9 @@ export function createSandboxAttemptStore(
         jobKind: previous.jobKind,
         adapterKind: previous.adapterKind,
         owner: previous.owner,
+        ...(previous.capability === null
+          ? {}
+          : { capability: previous.capability }),
       });
       records.set(snapshot.attemptId, snapshot);
       bumpRevision();
