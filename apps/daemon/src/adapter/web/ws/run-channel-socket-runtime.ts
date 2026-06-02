@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
 import type { ThreadId } from '@geulbat/protocol/ids';
+import { createLogger } from '@geulbat/shared-utils/logger';
 
 import { mapBackgroundSubagentTerminalToRunEvent } from '../protocol/map-events.js';
 import { sendMessage } from './run-channel-socket.js';
@@ -13,6 +14,9 @@ import type {
   RunChannelSocketCleanupContext,
   RunChannelSubscriptionContext,
 } from './run-channel-runtime-context.js';
+import { getErrorMessage } from '../../../daemon/utils/error.js';
+
+const logger = createLogger('run-channel/heartbeat');
 
 // Runtime state owns per-socket authorization, subscriptions, and run cleanup.
 export interface RunChannelSocketState {
@@ -100,12 +104,27 @@ export function startSocketHeartbeat(
       if (!state.awaitingPong) {
         return;
       }
+      logger
+        .withContext({
+          activeRunCount: state.activeRunIds.size,
+          pongTimeoutMs: options.pongTimeoutMs,
+          remoteAddress: state.remoteAddress,
+        })
+        .warn('terminating websocket after missed heartbeat pong');
       socket.terminate();
     }, options.pongTimeoutMs);
 
     try {
       socket.ping();
-    } catch {
+    } catch (error: unknown) {
+      logger
+        .withContext({
+          activeRunCount: state.activeRunIds.size,
+          remoteAddress: state.remoteAddress,
+        })
+        .warn('terminating websocket after heartbeat ping failed:', {
+          message: getErrorMessage(error),
+        });
       socket.terminate();
     }
   }, options.intervalMs);

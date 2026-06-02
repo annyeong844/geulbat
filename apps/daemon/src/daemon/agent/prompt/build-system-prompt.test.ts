@@ -87,6 +87,7 @@ void test('buildSystemPrompt includes Phase 4 recovery guidance', () => {
 void test('buildSystemPrompt includes author voice for adult fiction co-writing', () => {
   const prompt = buildSystemPrompt();
 
+  assert.match(prompt, /new-file creation path\.\n\nYou are a co-writer/);
   assert.match(prompt, /co-writer for the author's Korean fiction workspace/);
   assert.match(prompt, /intended for an adult readership/);
   assert.match(

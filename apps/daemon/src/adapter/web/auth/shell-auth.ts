@@ -5,8 +5,7 @@ import { createLogger } from '@geulbat/shared-utils/logger';
 
 import { isValidDevToken } from './token.js';
 
-export { DEV_TOKEN_HEADER_NAME };
-export const DEV_AUTH_COOKIE_NAME = 'geulbat_dev_auth';
+const DEV_AUTH_COOKIE_NAME = 'geulbat_dev_auth';
 export const INVALID_DEV_TOKEN_MESSAGE = `missing or invalid ${DEV_TOKEN_HEADER_NAME}`;
 export const SHELL_AUTH_ALLOWED_HEADERS = `Content-Type, ${DEV_TOKEN_HEADER_NAME}`;
 
@@ -14,16 +13,12 @@ const DEV_TOKEN_HEADER_KEY = DEV_TOKEN_HEADER_NAME.toLowerCase();
 const DEV_AUTH_COOKIE_PREFIX = `${DEV_AUTH_COOKIE_NAME}=`;
 const logger = createLogger('shell-auth');
 
-export function readShellAuthHeader(
-  headers: IncomingHttpHeaders,
-): string | undefined {
+function readShellAuthHeader(headers: IncomingHttpHeaders): string | undefined {
   const value = headers[DEV_TOKEN_HEADER_KEY];
   return typeof value === 'string' ? value : undefined;
 }
 
-export function readShellAuthCookie(
-  headers: IncomingHttpHeaders,
-): string | undefined {
+function readShellAuthCookie(headers: IncomingHttpHeaders): string | undefined {
   const rawCookieHeader = headers.cookie;
   const cookieHeader = Array.isArray(rawCookieHeader)
     ? rawCookieHeader.join('; ')
@@ -47,10 +42,6 @@ export function readShellAuthCookie(
   }
 
   return undefined;
-}
-
-export function hasShellAuthCookie(headers: IncomingHttpHeaders): boolean {
-  return typeof readShellAuthCookie(headers) === 'string';
 }
 
 export function isAuthorizedShellHeaders(

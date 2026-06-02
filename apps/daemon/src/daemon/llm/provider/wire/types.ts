@@ -22,12 +22,19 @@ export interface FunctionCall {
   arguments: string;
 }
 
+export interface ProviderStructuredOutput {
+  schemaVersion: number;
+  kind: string;
+  payload: unknown;
+}
+
 export interface CallResult {
   itemsToAppend: HistoryItem[];
   functionCalls: FunctionCall[];
   assistantText: string;
   finalText: string;
   artifactCandidate?: ProviderArtifactCandidate;
+  structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
 }
 

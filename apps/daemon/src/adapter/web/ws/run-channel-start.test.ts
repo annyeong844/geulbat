@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolve } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import type { RunRequest } from '@geulbat/protocol/run-contract';
 import type { ThreadId } from '@geulbat/protocol/ids';
 
@@ -191,5 +193,74 @@ void test('executeRunRequest reports conflict_active_run when the thread already
       existingRun.finish();
     }
     cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('executeRunRequest logs request context when foreground execution fails', async () => {
+  const daemonContext = createDaemonContext();
+  await bootstrapDaemonContext({
+    projectStore: daemonContext.projectStore,
+    repoRoot: process.cwd(),
+  });
+  const root = await mkdtemp(join(tmpdir(), 'geulbat-run-start-log-'));
+  const fileWorkspaceRoot = join(root, 'workspace-file');
+  await writeFile(fileWorkspaceRoot, 'not a directory', 'utf8');
+  const socket = createTestSocket();
+  const threadId = testThreadId(32);
+  const requestId = 'run-start-execute-failure';
+  const errors: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+
+  const runtimeContext = {
+    ...daemonContext,
+    projectRegistry: {
+      isKnownProjectId(projectId: string): boolean {
+        return projectId === testProjectId();
+      },
+      resolveProjectRoot(projectId: string): string | null {
+        return projectId === testProjectId() ? fileWorkspaceRoot : null;
+      },
+    },
+  };
+
+  try {
+    await executeRunRequest({
+      socket,
+      requestId,
+      request: {
+        prompt: 'hello',
+        projectId: testProjectId(),
+        threadId,
+      } satisfies RunRequest,
+      allowedToolNames: undefined,
+      runtimeContext,
+    });
+
+    const executeRunLog = errors.find((entry) =>
+      String(entry[0]).includes('[run-channel/execute-run] unexpected error:'),
+    );
+    assert.ok(executeRunLog);
+    const logLine = String(executeRunLog[0]);
+    assert.match(logLine, /projectId="workspace"/);
+    assert.match(logLine, /requestId="run-start-execute-failure"/);
+    assert.match(logLine, new RegExp(`threadId="${threadId}"`, 'u'));
+
+    const message = readLastSentMessage(socket);
+    assert.equal(message?.type, 'run.event');
+    if (message?.type === 'run.event') {
+      assert.equal(message.event.threadId, threadId);
+      assert.equal(message.event.type, 'error');
+      assert.deepEqual(message.event.payload, {
+        code: 'internal',
+        message: 'internal server error',
+      });
+    }
+  } finally {
+    console.error = originalError;
+    cleanupSocketState(socket, daemonContext);
+    await rm(root, { recursive: true, force: true });
   }
 });

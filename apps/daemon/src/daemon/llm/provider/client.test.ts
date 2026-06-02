@@ -277,6 +277,59 @@ void test('callModelWithDependencies carries provider artifact candidates in don
   ]);
 });
 
+void test('callModelWithDependencies carries provider structured outputs in done metadata', async () => {
+  const chunks = [];
+  const runtimeStore = createProviderAuthRuntimeStore();
+  const structuredOutput = {
+    schemaVersion: 1,
+    kind: 'react_bundle_explicit_cdn_artifact',
+    payload: {
+      entryUrl: 'https://fixtures.geulbat.local/app.js',
+      runtimeDependencies: {},
+      dependencyRefs: [],
+    },
+  };
+
+  for await (const chunk of callModelWithDependencies(
+    {
+      history: [],
+      systemPrompt: 'system',
+      providerSessionId: 'provider-session',
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime: runtimeStore,
+      providerRequestOptions: defaultProviderRequestOptions,
+    },
+    {
+      getProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      forceRefreshProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      streamResponsesOverWebSocket: async () => ({
+        itemsToAppend: [],
+        functionCalls: [],
+        assistantText: '',
+        finalText: '',
+        structuredOutputs: [structuredOutput],
+      }),
+    },
+  )) {
+    chunks.push(chunk);
+  }
+
+  assert.deepEqual(chunks, [
+    {
+      type: 'done',
+      assistantText: '',
+      finalText: '',
+      structuredOutputs: [structuredOutput],
+    },
+  ]);
+});
+
 void test('callModelWithDependencies aborts the background provider call when the consumer stops early', async () => {
   const runtimeStore = createProviderAuthRuntimeStore();
 

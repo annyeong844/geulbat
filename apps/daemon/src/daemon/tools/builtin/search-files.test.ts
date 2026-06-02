@@ -155,3 +155,33 @@ void test('search_files content mode uses the bundled ripgrep backend', async ()
     { path: 'docs/note.md', line: 2, text: 'hello content search' },
   ]);
 });
+
+void test('search_files content mode treats dash-prefixed patterns as literals', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-dash-pattern-'),
+  );
+  await mkdir(join(workspaceRoot, 'docs'), { recursive: true });
+  await writeFile(
+    join(workspaceRoot, 'docs', 'dash.md'),
+    '# dash\n--literal-needle\n',
+    'utf8',
+  );
+
+  const result = await searchFilesTool.execute(
+    { pattern: '--literal-needle' },
+    { callId: 'call-search-dash-pattern', workspaceRoot },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    backend: string;
+    total: number;
+    results: Array<{ path: string; line: number; text: string }>;
+  };
+
+  assert.equal(payload.backend, 'ripgrep');
+  assert.equal(payload.total, 1);
+  assert.deepEqual(payload.results, [
+    { path: 'docs/dash.md', line: 2, text: '--literal-needle' },
+  ]);
+});

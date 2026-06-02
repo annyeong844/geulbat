@@ -11,6 +11,20 @@ import type {
 import { isAgentChildTerminalState } from '../../subagent-runtime-contracts.js';
 import { createSignal } from '../../utils/signal.js';
 
+export type WaitLeaseId = number & { readonly __brand: 'WaitLeaseId' };
+export type ChildRunCollectedReason = 'retention_ttl' | 'memory_budget';
+
+export type AcquireWaitLeaseResult =
+  | { ok: true; leaseId: WaitLeaseId }
+  | { ok: false; message: string };
+
+export interface CollectedChildRunSnapshot {
+  childRunId: RunId;
+  ownerThreadId: ThreadId;
+  collectedReason: ChildRunCollectedReason;
+  collectedAt: string;
+}
+
 export interface ChildRunRegistry {
   registerChildRun(args: {
     childRunId: RunId;
@@ -19,6 +33,21 @@ export interface ChildRunRegistry {
     ownerThreadId: ThreadId;
     subagentType: SubagentType;
   }): void;
+  /**
+   * Register an owner-scoped active wait lease over the given child ids and pin
+   * their terminal records against budget/TTL collection until the owning waiter
+   * hands each off (ack) or releases the lease. Validation runs before any pin is
+   * installed: unknown ids or ids owned by another thread fail the whole acquire
+   * with no pin created.
+   */
+  acquireWaitLease(args: {
+    ownerThreadId: ThreadId;
+    childRunIds: readonly RunId[];
+  }): AcquireWaitLeaseResult;
+  /** Release this lease's claim on one child; the child unpins once no lease claims it. */
+  ackWaiterHandoff(leaseId: WaitLeaseId, childRunId: RunId): void;
+  /** Release all remaining claims held by this lease. Idempotent / safe for unknown ids. */
+  releaseWaitLease(leaseId: WaitLeaseId): void;
   markChildApprovalPending(childRunId: RunId): void;
   markChildRunning(childRunId: RunId): void;
   markChildTerminal(args: {
@@ -28,6 +57,9 @@ export interface ChildRunRegistry {
     reason?: AgentChildTerminalReason | null;
   }): void;
   getChildRun(childRunId: RunId): ChildRunSnapshot | undefined;
+  getCollectedChildRun(
+    childRunId: RunId,
+  ): CollectedChildRunSnapshot | undefined;
   getChildRuns(childRunIds: readonly RunId[]): {
     revision: number;
     records: ChildRunSnapshot[];
@@ -41,6 +73,7 @@ export interface ChildRunRegistry {
 const logger = createLogger('child-run-registry');
 const CHILD_RUN_RETENTION_TTL_MS = 5 * 60 * 1000;
 const MAX_RETAINED_TERMINAL_CHILD_RUNS = 16;
+const MAX_COLLECTED_CHILD_RUN_TOMBSTONES = 256;
 
 interface ChildRunRevisionTracker {
   getRevision(): number;
@@ -55,9 +88,17 @@ interface ChildRunRetentionController {
   clearRetentionTimer(childRunId: RunId): void;
   scheduleRetentionCollection(childRunId: RunId): void;
   enforceTerminalBudget(): void;
+  /** Re-run deferred collection for a record that just lost its last wait-lease pin. */
+  onChildUnpinned(childRunId: RunId): void;
 }
 
 function cloneSnapshot(snapshot: ChildRunSnapshot): ChildRunSnapshot {
+  return { ...snapshot };
+}
+
+function cloneCollectedSnapshot(
+  snapshot: CollectedChildRunSnapshot,
+): CollectedChildRunSnapshot {
   return { ...snapshot };
 }
 
@@ -136,10 +177,21 @@ function createChildRunRetentionController(args: {
   retentionTtlMs: number;
   maxRetainedTerminalRuns: number;
   bumpRevision: () => void;
+  isPinned: (childRunId: RunId) => boolean;
+  rememberCollectedChildRun: (snapshot: CollectedChildRunSnapshot) => void;
 }): ChildRunRetentionController {
-  const { records, retentionTtlMs, maxRetainedTerminalRuns, bumpRevision } =
-    args;
+  const {
+    records,
+    retentionTtlMs,
+    maxRetainedTerminalRuns,
+    bumpRevision,
+    isPinned,
+    rememberCollectedChildRun,
+  } = args;
   const retentionTimers = new Map<RunId, ReturnType<typeof setTimeout>>();
+  // Records whose TTL elapsed while pinned by an active wait lease; collected
+  // once the record loses its last pin (deferred TTL collection).
+  const retentionDue = new Set<RunId>();
 
   function clearRetentionTimer(childRunId: RunId): void {
     const timer = retentionTimers.get(childRunId);
@@ -158,13 +210,50 @@ function createChildRunRetentionController(args: {
     if (!current || !isTerminalSnapshot(current)) {
       return;
     }
+    // An active wait lease still references this record: do not drop it out from
+    // under the waiter. Mark it retention-due and collect once it unpins.
+    if (isPinned(childRunId)) {
+      retentionDue.add(childRunId);
+      return;
+    }
     clearRetentionTimer(childRunId);
+    retentionDue.delete(childRunId);
+    rememberCollectedChildRun({
+      childRunId,
+      ownerThreadId: current.ownerThreadId,
+      collectedReason: reason,
+      collectedAt: new Date().toISOString(),
+    });
     records.delete(childRunId);
     logger.warn('collected retained child run record', {
       childRunId,
       reason,
     });
     bumpRevision();
+  }
+
+  function enforceTerminalBudget(): void {
+    const terminalRecords = [...records.values()]
+      .filter(isTerminalSnapshot)
+      .sort((left, right) => {
+        const leftCompletedAt = Date.parse(left.completedAt);
+        const rightCompletedAt = Date.parse(right.completedAt);
+        return leftCompletedAt - rightCompletedAt;
+      });
+
+    // Pinned records stay (they count toward retained, so the budget may be
+    // transiently exceeded), and the oldest UNPINNED records are evicted.
+    let retained = terminalRecords.length;
+    for (const record of terminalRecords) {
+      if (retained <= maxRetainedTerminalRuns) {
+        break;
+      }
+      if (isPinned(record.childRunId)) {
+        continue;
+      }
+      collectTerminalRecord(record.childRunId, 'memory_budget');
+      retained -= 1;
+    }
   }
 
   return {
@@ -177,22 +266,14 @@ function createChildRunRetentionController(args: {
       timer.unref?.();
       retentionTimers.set(childRunId, timer);
     },
-    enforceTerminalBudget() {
-      const terminalRecords = [...records.values()]
-        .filter(isTerminalSnapshot)
-        .sort((left, right) => {
-          const leftCompletedAt = Date.parse(left.completedAt);
-          const rightCompletedAt = Date.parse(right.completedAt);
-          return leftCompletedAt - rightCompletedAt;
-        });
-
-      while (terminalRecords.length > maxRetainedTerminalRuns) {
-        const oldest = terminalRecords.shift();
-        if (!oldest) {
-          break;
-        }
-        collectTerminalRecord(oldest.childRunId, 'memory_budget');
+    enforceTerminalBudget,
+    onChildUnpinned(childRunId) {
+      // TTL elapsed while pinned -> collect now that the last pin is gone.
+      if (retentionDue.has(childRunId)) {
+        collectTerminalRecord(childRunId, 'retention_ttl');
       }
+      // The newly unpinned record may also have pushed the budget over; sweep.
+      enforceTerminalBudget();
     },
   };
 }
@@ -201,18 +282,60 @@ export function createChildRunRegistry(
   options: {
     retentionTtlMs?: number;
     maxRetainedTerminalRuns?: number;
+    maxCollectedChildRunTombstones?: number;
   } = {},
 ): ChildRunRegistry {
   const records = new Map<RunId, ChildRunSnapshot>();
+  const collectedRecords = new Map<RunId, CollectedChildRunSnapshot>();
   const revisionTracker = createChildRunRevisionTracker();
   const retentionTtlMs = options.retentionTtlMs ?? CHILD_RUN_RETENTION_TTL_MS;
   const maxRetainedTerminalRuns =
     options.maxRetainedTerminalRuns ?? MAX_RETAINED_TERMINAL_CHILD_RUNS;
+  const maxCollectedChildRunTombstones =
+    options.maxCollectedChildRunTombstones ??
+    MAX_COLLECTED_CHILD_RUN_TOMBSTONES;
+
+  function rememberCollectedChildRun(
+    snapshot: CollectedChildRunSnapshot,
+  ): void {
+    collectedRecords.set(snapshot.childRunId, snapshot);
+    while (collectedRecords.size > maxCollectedChildRunTombstones) {
+      const oldestChildRunId = collectedRecords.keys().next().value;
+      if (oldestChildRunId === undefined) {
+        return;
+      }
+      collectedRecords.delete(oldestChildRunId);
+    }
+  }
+
+  // Active wait-lease bookkeeping (lease-scoped pins, §7.2). A child stays pinned
+  // (exempt from budget/TTL eviction) while any lease still holds a claim on it.
+  let nextLeaseId = 1;
+  const leaseTargets = new Map<WaitLeaseId, Set<RunId>>();
+  const pinsByChildId = new Map<RunId, Set<WaitLeaseId>>();
+  function isPinned(childRunId: RunId): boolean {
+    const pins = pinsByChildId.get(childRunId);
+    return pins !== undefined && pins.size > 0;
+  }
+  function dropLeaseClaim(leaseId: WaitLeaseId, childRunId: RunId): void {
+    const pins = pinsByChildId.get(childRunId);
+    if (!pins) {
+      return;
+    }
+    pins.delete(leaseId);
+    if (pins.size === 0) {
+      pinsByChildId.delete(childRunId);
+      retention.onChildUnpinned(childRunId);
+    }
+  }
+
   const retention = createChildRunRetentionController({
     records,
     retentionTtlMs,
     maxRetainedTerminalRuns,
     bumpRevision: () => revisionTracker.bumpRevision(),
+    isPinned,
+    rememberCollectedChildRun,
   });
 
   function mutateRecord(
@@ -235,6 +358,7 @@ export function createChildRunRegistry(
     registerChildRun(args) {
       const now = new Date().toISOString();
       retention.clearRetentionTimer(args.childRunId);
+      collectedRecords.delete(args.childRunId);
       records.set(args.childRunId, {
         childRunId: args.childRunId,
         childThreadId: args.childThreadId,
@@ -312,6 +436,10 @@ export function createChildRunRegistry(
       const snapshot = records.get(childRunId);
       return snapshot ? cloneSnapshot(snapshot) : undefined;
     },
+    getCollectedChildRun(childRunId) {
+      const snapshot = collectedRecords.get(childRunId);
+      return snapshot ? cloneCollectedSnapshot(snapshot) : undefined;
+    },
     getChildRuns(childRunIds) {
       return {
         revision: revisionTracker.getRevision(),
@@ -323,6 +451,57 @@ export function createChildRunRegistry(
     },
     waitForRevisionChange(afterRevision, abortSignal) {
       return revisionTracker.waitForRevisionChange(afterRevision, abortSignal);
+    },
+    acquireWaitLease({ ownerThreadId, childRunIds }) {
+      // Validate every target before installing any pin (§7.2.1): unknown ids or
+      // ids owned by another thread fail the whole acquire with no pin created.
+      for (const childRunId of childRunIds) {
+        const record = records.get(childRunId);
+        if (!record) {
+          return { ok: false, message: `unknown child run: ${childRunId}` };
+        }
+        if (record.ownerThreadId !== ownerThreadId) {
+          return {
+            ok: false,
+            message: `child run does not belong to current owner thread: ${childRunId}`,
+          };
+        }
+      }
+      const leaseId = nextLeaseId as WaitLeaseId;
+      nextLeaseId += 1;
+      const targets = new Set<RunId>();
+      for (const childRunId of childRunIds) {
+        targets.add(childRunId);
+        let pins = pinsByChildId.get(childRunId);
+        if (!pins) {
+          pins = new Set<WaitLeaseId>();
+          pinsByChildId.set(childRunId, pins);
+        }
+        pins.add(leaseId);
+      }
+      leaseTargets.set(leaseId, targets);
+      return { ok: true, leaseId };
+    },
+    ackWaiterHandoff(leaseId, childRunId) {
+      const targets = leaseTargets.get(leaseId);
+      if (!targets || !targets.has(childRunId)) {
+        return;
+      }
+      targets.delete(childRunId);
+      dropLeaseClaim(leaseId, childRunId);
+      if (targets.size === 0) {
+        leaseTargets.delete(leaseId);
+      }
+    },
+    releaseWaitLease(leaseId) {
+      const targets = leaseTargets.get(leaseId);
+      if (!targets) {
+        return;
+      }
+      for (const childRunId of [...targets]) {
+        dropLeaseClaim(leaseId, childRunId);
+      }
+      leaseTargets.delete(leaseId);
     },
   };
 }

@@ -1,7 +1,12 @@
 import type { RunSessionStateAction } from './run-session-state-types.js';
 import type { RunSessionMessageEffect } from './run-session-message-effects.js';
 
-export const RUN_SESSION_STREAM_BATCH_WINDOW_MS = 16;
+// Coalescing window for streamed assistant deltas. Long answers arrive as many
+// tiny deltas (~40/s); a one-frame (~16ms) window is shorter than the typical
+// inter-delta gap, so deltas were each dispatched separately and re-rendered the
+// transcript per delta. A wider window batches deltas in the same target into one
+// dispatch, cutting render/reflow churn during streaming.
+export const RUN_SESSION_STREAM_BATCH_WINDOW_MS = 48;
 
 type StreamedTextEffect = Extract<
   RunSessionMessageEffect,
@@ -89,13 +94,9 @@ export function createRunSessionStreamBatchController(options: {
 }
 
 function scheduleRunSessionStreamFlush(flush: () => void): () => void {
-  if (typeof requestAnimationFrame === 'function') {
-    const frameId = requestAnimationFrame(flush);
-    return () => {
-      cancelAnimationFrame(frameId);
-    };
-  }
-
+  // Use a fixed time window rather than requestAnimationFrame: rAF fires at the
+  // next frame (~16ms) regardless of RUN_SESSION_STREAM_BATCH_WINDOW_MS, which is
+  // too short to coalesce deltas that arrive slower than one per frame.
   const timeoutId = setTimeout(flush, RUN_SESSION_STREAM_BATCH_WINDOW_MS);
   return () => {
     clearTimeout(timeoutId);

@@ -17,6 +17,7 @@
     "build:deps": "tsc -b ../../packages/shared-utils/tsconfig.json ../../packages/protocol/tsconfig.json",
     "predev": "npm run build:deps && npm run check:app",
     "dev": "node ../../scripts/run-with-local-dev-auth.mjs node --watch --import tsx src/index.ts",
+    "discover:oauth-wire": "node --import tsx ./scripts/collect-oauth-structured-output-wire-evidence.mjs",
     "build:app": "tsc -b tsconfig.app.json && node ./scripts/sync-package-imports.mjs dist",
     "build": "npm run build:deps && npm run build:app",
     "check:app": "tsc --noEmit -p tsconfig.app.json",

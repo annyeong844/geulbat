@@ -19,8 +19,10 @@ import type {
 import { createResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-session.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
 import {
+  composeProviderRounds,
   createScriptedProviderCallModel,
   providerFinalAnswerRound,
+  providerStructuredOutputRound,
   providerToolRound,
 } from '../../test-support/provider-response-fixtures.js';
 import { testProjectId } from '../../test-support/project-id.js';
@@ -33,6 +35,20 @@ function registerOnce(
   tool: AnyTool,
 ): void {
   daemonContext.toolRegistry.registerTool(tool);
+}
+
+const STRUCTURED_NO_DEPENDENCY_REQUEST = {
+  entryUrl: 'https://fixtures.geulbat.local/no-deps.js',
+  runtimeDependencies: {},
+  dependencyRefs: [],
+};
+
+function structuredReactBundleOutput(payload: unknown) {
+  return {
+    schemaVersion: 1,
+    kind: 'react_bundle_explicit_cdn_artifact',
+    payload,
+  };
 }
 
 function parseObjectArgs<TArgs extends object>(
@@ -289,6 +305,197 @@ void test('runAgentLoop surfaces a legacy artifact candidate separately from fin
     events.map((event) => event.type),
     ['run_ack'],
   );
+});
+
+void test('runAgentLoop routes structured react bundle output through typed ingress', async () => {
+  const threadId = testThreadId(301);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-structured-react-bundle-'),
+  );
+  const runContext = makeRunWorkspaceContext({
+    threadId,
+    projectId: testProjectId('project'),
+    workspaceRoot,
+  });
+  const runState = createRunState({
+    runId: 'run-loop-structured-react-bundle',
+    runContext,
+  });
+  const events: AgentEvent[] = [];
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-structured-react-bundle',
+    runContext,
+    prompt: 'create a structured react bundle artifact',
+    runState,
+    allowedToolNames: [],
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-structured-react-bundle',
+    }),
+    callModelImpl: createScriptedProviderCallModel([
+      providerStructuredOutputRound(
+        structuredReactBundleOutput(STRUCTURED_NO_DEPENDENCY_REQUEST),
+      ),
+    ]),
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.finalProse, '');
+  assert.equal(result.artifactCandidate?.renderer, 'react_bundle');
+  assert.equal(runState.status, 'completed');
+  assert.deepEqual(
+    daemonContext.sandboxAttempts
+      .getAttempts()
+      .records.map((attempt) => attempt.jobKind),
+    ['react_bundle_dependency_prepare'],
+  );
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['run_ack'],
+  );
+});
+
+void test('runAgentLoop treats final prose JSON as final prose, not structured output', async () => {
+  const threadId = testThreadId(302);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-json-prose-'),
+  );
+  const runContext = makeRunWorkspaceContext({
+    threadId,
+    projectId: testProjectId('project'),
+    workspaceRoot,
+  });
+  const finalJson = JSON.stringify(
+    structuredReactBundleOutput(STRUCTURED_NO_DEPENDENCY_REQUEST),
+  );
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-json-prose',
+    runContext,
+    prompt: 'return json-looking final prose',
+    allowedToolNames: [],
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-json-prose',
+    }),
+    callModelImpl: createScriptedProviderCallModel([
+      providerFinalAnswerRound(finalJson),
+    ]),
+    onEvent: () => {},
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: finalJson,
+  });
+  assert.equal(daemonContext.sandboxAttempts.getAttempts().records.length, 0);
+});
+
+void test('runAgentLoop rejects ambiguous structured react bundle outputs', async () => {
+  const threadId = testThreadId(303);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-ambiguous-structured-'),
+  );
+  const runContext = makeRunWorkspaceContext({
+    threadId,
+    projectId: testProjectId('project'),
+    workspaceRoot,
+  });
+  const runState = createRunState({
+    runId: 'run-loop-ambiguous-structured',
+    runContext,
+  });
+  const events: AgentEvent[] = [];
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-ambiguous-structured',
+    runContext,
+    prompt: 'return two structured artifacts',
+    runState,
+    allowedToolNames: [],
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-ambiguous-structured',
+    }),
+    callModelImpl: createScriptedProviderCallModel([
+      providerStructuredOutputRound([
+        structuredReactBundleOutput(STRUCTURED_NO_DEPENDENCY_REQUEST),
+        structuredReactBundleOutput(STRUCTURED_NO_DEPENDENCY_REQUEST),
+      ]),
+    ]),
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.deepEqual(result, { ok: false, finalProse: '' });
+  assert.equal(runState.status, 'failed');
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'error' &&
+        /structured_output_ambiguous/.test(event.payload.message),
+    ),
+    true,
+  );
+  assert.equal(daemonContext.sandboxAttempts.getAttempts().records.length, 0);
+});
+
+void test('runAgentLoop rejects structured output mixed with tool calls', async () => {
+  const threadId = testThreadId(304);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-structured-tool-mix-'),
+  );
+  const runContext = makeRunWorkspaceContext({
+    threadId,
+    projectId: testProjectId('project'),
+    workspaceRoot,
+  });
+  const runState = createRunState({
+    runId: 'run-loop-structured-tool-mix',
+    runContext,
+  });
+  const events: AgentEvent[] = [];
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-structured-tool-mix',
+    runContext,
+    prompt: 'return a tool call and structured artifact',
+    runState,
+    allowedToolNames: [],
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-structured-tool-mix',
+    }),
+    callModelImpl: createScriptedProviderCallModel([
+      composeProviderRounds(
+        providerToolRound({
+          toolName: 'read_file',
+          commentaryText: '',
+        }),
+        providerStructuredOutputRound(
+          structuredReactBundleOutput(STRUCTURED_NO_DEPENDENCY_REQUEST),
+        ),
+      ),
+    ]),
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.deepEqual(result, { ok: false, finalProse: '' });
+  assert.equal(runState.status, 'failed');
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'error' &&
+        /structured_output_with_tool_calls/.test(event.payload.message),
+    ),
+    true,
+  );
+  assert.equal(daemonContext.sandboxAttempts.getAttempts().records.length, 0);
 });
 
 void test('runAgentLoop can consume pending background results from an injected queue', async () => {

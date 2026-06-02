@@ -169,27 +169,37 @@ void test('runModelRound streams final answer deltas as they arrive without a du
 void test('runModelRound converts provider error chunks into terminal failure', async () => {
   const events: AgentEvent[] = [];
   const providerAuthRuntime = createProviderAuthRuntimeStore();
+  const originalError = console.error;
+  const errors: unknown[][] = [];
 
-  const result = await runModelRound({
-    history: [],
-    systemPrompt: 'system',
-    promptContext: '',
-    pendingBackgroundSystemNote: '',
-    round: 1,
-    toolDefs: [],
-    threadId: testThreadId(52),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    callModelImpl: createScriptedProviderCallModel([
-      {
-        error: Object.assign(new Error('provider said no'), {
-          llmCode: 'not_found',
-        }),
-      },
-    ]),
-  });
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+  let result: Awaited<ReturnType<typeof runModelRound>>;
+  try {
+    result = await runModelRound({
+      history: [],
+      systemPrompt: 'system',
+      promptContext: '',
+      pendingBackgroundSystemNote: '',
+      round: 1,
+      toolDefs: [],
+      threadId: testThreadId(52),
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime,
+      providerRequestOptions: defaultProviderRequestOptions,
+      emit: makeEmitter(events),
+      callModelImpl: createScriptedProviderCallModel([
+        {
+          error: Object.assign(new Error('provider said no'), {
+            llmCode: 'not_found',
+          }),
+        },
+      ]),
+    });
+  } finally {
+    console.error = originalError;
+  }
 
   assert.deepEqual(result, {
     ok: false,
@@ -201,6 +211,13 @@ void test('runModelRound converts provider error chunks into terminal failure', 
       message: 'provider request failed',
     }),
   ]);
+  assert.equal(errors.length, 1);
+  assert.match(String(errors[0]?.[0]), /model round failed/);
+  assert.deepEqual(errors[0]?.[1], {
+    category: 'unknown',
+    code: 'not_found',
+    cause: 'provider request failed',
+  });
 });
 
 void test('runModelRound retries retryable stream errors before semantic output', async () => {

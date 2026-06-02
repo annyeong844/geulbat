@@ -3,6 +3,7 @@ import type { ProviderAuthRuntimeStore } from './auth/runtime-state.js';
 import type { ProviderRequestOptions } from './llm/provider/provider-options.js';
 import type { ResponsesWebSocketSessionStore } from './llm/provider/transport/responses-websocket-session.js';
 import type { ActiveRunStore } from './sessions/active-runs.js';
+import type { SandboxAttemptStore } from './sandbox/attempt-store.js';
 import type { ApprovalGrantStore } from './tools/approval-grants.js';
 import type { ToolRuntimeRegistry } from './tools/tool-registry-model.js';
 import type { MemoryIndexStore } from './memory/build-index.js';
@@ -68,6 +69,7 @@ export interface AgentRuntimeServices {
   providerAuthRuntime: ProviderAuthRuntimeStore;
   providerRequestOptions: ProviderRequestOptions;
   providerWebSocketSessions: ResponsesWebSocketSessionStore;
+  sandboxAttempts: SandboxAttemptStore;
   subagentAdmission: SubagentAdmissionController;
   subagentRuns: SubagentRunLauncher;
   toolRegistry: ToolRuntimeRegistry;

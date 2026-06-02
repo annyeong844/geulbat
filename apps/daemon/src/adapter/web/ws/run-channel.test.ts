@@ -307,46 +307,68 @@ void test('run-channel closes dead peers that stop answering heartbeat pings', a
   const runId = assertValidRunId('run-heartbeat-timeout');
   const threadId = testThreadId(5);
   const abortController = new AbortController();
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
 
-  await withOwnedRunChannel(
-    runId,
-    threadId,
-    async ({ port, wss }) => {
-      const client = await connectAuthenticatedSocket(
-        port,
-        'auth-heartbeat-dead',
-      );
+  try {
+    await withOwnedRunChannel(
+      runId,
+      threadId,
+      async ({ port, wss }) => {
+        const client = await connectAuthenticatedSocket(
+          port,
+          'auth-heartbeat-dead',
+        );
 
-      try {
-        markFirstServerSocketOwnsRun(wss, runId);
-        const serverSocket = Array.from(wss.clients)[0];
-        assert.ok(serverSocket);
-        serverSocket.ping = (() => undefined) as typeof serverSocket.ping;
+        try {
+          markFirstServerSocketOwnsRun(wss, runId);
+          const serverSocket = Array.from(wss.clients)[0];
+          assert.ok(serverSocket);
+          serverSocket.ping = (() => undefined) as typeof serverSocket.ping;
 
-        await Promise.all([
-          new Promise<void>((resolve, reject) => {
-            client.once('close', () => resolve());
-            client.once('error', reject);
-          }),
-          new Promise<void>((resolve) => {
-            abortController.signal.addEventListener('abort', () => resolve(), {
-              once: true,
-            });
-          }),
-        ]);
+          await Promise.all([
+            new Promise<void>((resolve, reject) => {
+              client.once('close', () => resolve());
+              client.once('error', reject);
+            }),
+            new Promise<void>((resolve) => {
+              abortController.signal.addEventListener(
+                'abort',
+                () => resolve(),
+                {
+                  once: true,
+                },
+              );
+            }),
+          ]);
 
-        assert.equal(abortController.signal.aborted, true);
-      } finally {
-        client.close();
-      }
-    },
-    abortController,
-    undefined,
-    {
-      heartbeatIntervalMs: 10,
-      heartbeatPongTimeoutMs: 10,
-    },
-  );
+          assert.equal(abortController.signal.aborted, true);
+        } finally {
+          client.close();
+        }
+      },
+      abortController,
+      undefined,
+      {
+        heartbeatIntervalMs: 10,
+        heartbeatPongTimeoutMs: 10,
+      },
+    );
+
+    const heartbeatWarning = warnings.find((entry) =>
+      String(entry[0]).includes(
+        '[run-channel/heartbeat] terminating websocket after missed heartbeat pong',
+      ),
+    );
+    assert.ok(heartbeatWarning);
+    assert.match(String(heartbeatWarning[0]), /activeRunCount=1/);
+    assert.match(String(heartbeatWarning[0]), /pongTimeoutMs=10/);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 function listen(server: ReturnType<typeof createServer>): Promise<void> {

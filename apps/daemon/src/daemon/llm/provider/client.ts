@@ -28,11 +28,13 @@ import {
 import { decideProviderRetryPolicy } from './provider-retry-policy.js';
 import type { ProviderRequestOptions } from './provider-options.js';
 import { streamResponsesOverWebSocket } from './transport/responses-websocket.js';
+import type { ResponsesWireDiscoverySink } from './transport/responses-websocket.js';
 import type { ResponsesWebSocketSessionStore } from './transport/responses-websocket-session.js';
 import type {
   HistoryItem,
   FunctionCall,
   ProviderArtifactCandidate,
+  ProviderStructuredOutput,
   ProviderUsageTelemetry,
   WireRequestBase,
   WireToolDefinition,
@@ -57,6 +59,7 @@ export type LLMChunk =
       assistantText?: string;
       finalText?: string;
       artifactCandidate?: ProviderArtifactCandidate;
+      structuredOutputs?: ProviderStructuredOutput[];
     }
   | { type: 'error'; code: string; message: string };
 
@@ -72,6 +75,7 @@ export interface CallModelInput {
   >;
   providerAuthRuntime: ProviderAuthRuntimeStore;
   providerRequestOptions: ProviderRequestOptions;
+  oauthWireDiscoverySink?: ResponsesWireDiscoverySink;
   signal?: AbortSignal;
 }
 
@@ -131,6 +135,7 @@ export async function* callModelWithDependencies(
         assistantText,
         finalText,
         artifactCandidate,
+        structuredOutputs,
         providerUsageTelemetry,
       } = result;
       providerLogger.info('provider stream completed', {
@@ -155,6 +160,7 @@ export async function* callModelWithDependencies(
         assistantText,
         finalText,
         ...(artifactCandidate !== undefined ? { artifactCandidate } : {}),
+        ...(structuredOutputs !== undefined ? { structuredOutputs } : {}),
       });
       channel.finish();
     })
@@ -203,6 +209,7 @@ async function callResponsesOnce(
   assistantText: string;
   finalText: string;
   artifactCandidate?: ProviderArtifactCandidate;
+  structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
 }> {
   const auth = await deps.getProviderAuth({
@@ -224,6 +231,9 @@ async function callResponsesOnce(
     history: input.history,
     providerSessionId: input.providerSessionId,
     providerWebSocketSessions: input.providerWebSocketSessions,
+    ...(input.oauthWireDiscoverySink !== undefined
+      ? { discoverySink: input.oauthWireDiscoverySink }
+      : {}),
     onAssistantDelta: (delta) => {
       channel.push({
         type: 'text_delta',
@@ -241,6 +251,9 @@ async function callResponsesOnce(
     ...(result.artifactCandidate !== undefined
       ? { artifactCandidate: result.artifactCandidate }
       : {}),
+    ...(result.structuredOutputs !== undefined
+      ? { structuredOutputs: result.structuredOutputs }
+      : {}),
     ...(result.providerUsageTelemetry !== undefined
       ? { providerUsageTelemetry: result.providerUsageTelemetry }
       : {}),
@@ -257,6 +270,7 @@ async function callResponsesWithRetryPolicy(
   assistantText: string;
   finalText: string;
   artifactCandidate?: ProviderArtifactCandidate;
+  structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
 }> {
   let authRefreshAttempts = 0;

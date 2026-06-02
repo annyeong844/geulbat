@@ -1,4 +1,5 @@
 import { isRecord, tryParseJson } from '@geulbat/protocol/runtime-utils';
+import { createLogger } from '@geulbat/shared-utils/logger';
 import type { FunctionCall } from '../llm/index.js';
 import type { RunWorkspaceContext } from '../run-workspace-context.js';
 import type { ExecuteResult } from '../tools/types.js';
@@ -13,6 +14,7 @@ const TOOL_OUTPUT_OFFLOAD_MIN_OUTPUT_CHARS = 4_096;
 const SEARCH_FILES_PREVIEW_RESULT_COUNT = 10;
 const SEARCH_FILES_PREVIEW_TEXT_CHARS = 160;
 const WEB_FETCH_PREVIEW_CHARS = 320;
+const logger = createLogger('tool-output-offload');
 
 interface ToolOutputOffloadArgs {
   functionCall: FunctionCall;
@@ -92,6 +94,12 @@ export async function maybeOffloadToolResult(
       snapshot,
     });
   } catch {
+    logger.warn('failed to offload large tool output snapshot:', {
+      callId: functionCall.callId,
+      runId,
+      threadId: runContext.threadId,
+      toolName: functionCall.name,
+    });
     return {
       ok: false,
       output: '',

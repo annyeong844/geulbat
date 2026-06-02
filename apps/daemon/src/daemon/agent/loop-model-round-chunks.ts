@@ -1,7 +1,11 @@
 import { ARTIFACT_START_PREFIX } from '@geulbat/protocol/artifacts';
 import { createLogger } from '@geulbat/shared-utils/logger';
 
-import type { FunctionCall, LLMChunk } from '../llm/index.js';
+import type {
+  FunctionCall,
+  LLMChunk,
+  ProviderStructuredOutput,
+} from '../llm/index.js';
 import {
   classifyStreamError,
   type StreamErrorCategory,
@@ -18,6 +22,7 @@ interface ModelRoundChunkSuccess {
   finalText: string;
   artifactCandidate: AgentArtifactCandidate | undefined;
   functionCalls: FunctionCall[];
+  structuredOutputs: ProviderStructuredOutput[];
 }
 
 interface ModelRoundChunkStreamError {
@@ -74,6 +79,7 @@ export async function consumeModelRoundChunks(args: {
   let assistantText = '';
   let finalText = '';
   let artifactCandidate: AgentArtifactCandidate | undefined;
+  let structuredOutputs: ProviderStructuredOutput[] = [];
   let sawSemanticChunk = false;
   let lastChunkAtMs = now();
   const finalAnswerDeltaEmitter = createFinalAnswerDeltaEmitter(emit);
@@ -114,6 +120,10 @@ export async function consumeModelRoundChunks(args: {
           assistantText = chunk.assistantText ?? assistantText;
           finalText = chunk.finalText ?? finalText;
           artifactCandidate = chunk.artifactCandidate ?? artifactCandidate;
+          structuredOutputs =
+            chunk.structuredOutputs !== undefined
+              ? [...chunk.structuredOutputs]
+              : structuredOutputs;
           break;
         case 'error':
           return {
@@ -154,6 +164,7 @@ export async function consumeModelRoundChunks(args: {
     finalText,
     artifactCandidate,
     functionCalls,
+    structuredOutputs,
   };
 }
 

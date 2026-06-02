@@ -1,0 +1,364 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  admitPtcExecutionProfile,
+  createPtcLabLocalDockerPolicyProjection,
+  type PtcLabAdmittedProfile,
+  type PtcLabPolicyProjection,
+} from './lab-profile.js';
+import {
+  runPtcLabBatchCommandExecution,
+  type PtcLabBatchCommandRunner,
+  type PtcLabBatchCommandSessionHandle,
+} from './lab-command-execution.js';
+
+const PRIVATE_TEST_PATH = ['', 'home', 'user', '.geulbat', 'private'].join(
+  '/',
+);
+
+function admittedLab(args: {
+  shellMode: PtcLabPolicyProjection['shell']['mode'];
+  maxCommandMs?: number;
+  maxProcessCount?: number;
+}): {
+  admission: PtcLabAdmittedProfile;
+  session: PtcLabBatchCommandSessionHandle;
+} {
+  const labPolicy: PtcLabPolicyProjection = {
+    ...createPtcLabLocalDockerPolicyProjection(),
+    policyId: 'ptc_lab_test_batch_policy_v1',
+    shell: {
+      mode: args.shellMode,
+      maxCommandMs: args.maxCommandMs ?? 5000,
+      maxProcessCount: args.maxProcessCount ?? 1,
+    },
+  };
+  const admission = admitPtcExecutionProfile({
+    requestedProfile: 'lab',
+    labEnabled: true,
+    reason: 'explicit_user_request',
+    labPolicy,
+  });
+  if (!admission.ok) {
+    throw new Error('expected admitted lab profile');
+  }
+  return {
+    admission: admission.value,
+    session: {
+      profile: 'lab',
+      labSessionId: 'lab-session-1',
+      containerId: 'container-1',
+      policyId: labPolicy.policyId,
+    },
+  };
+}
+
+void test('runPtcLabBatchCommandExecution rejects missing or non-lab admission', async () => {
+  const safeSubset = admitPtcExecutionProfile({
+    requestedProfile: 'default',
+    labEnabled: false,
+    reason: 'default_policy',
+  });
+  if (!safeSubset.ok) {
+    throw new Error('expected safe subset admission');
+  }
+
+  const result = await runPtcLabBatchCommandExecution({
+    admission: safeSubset.value,
+    session: undefined,
+    request: { command: 'echo should-not-run' },
+    runner: async () => {
+      throw new Error('runner should not be called');
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(
+    result.ok ? '' : result.reasonCode,
+    'ptc_lab_admission_required',
+  );
+});
+
+void test('runPtcLabBatchCommandExecution rejects shell-disabled lab policy', async () => {
+  const { admission, session } = admittedLab({ shellMode: 'disabled' });
+
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session,
+    request: { command: 'echo should-not-run' },
+    runner: async () => {
+      throw new Error('runner should not be called');
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? '' : result.reasonCode, 'ptc_lab_shell_disabled');
+});
+
+void test('runPtcLabBatchCommandExecution builds docker exec argv and returns completed exit summary', async () => {
+  const { admission, session } = admittedLab({ shellMode: 'batch_command' });
+  const invocations: Parameters<PtcLabBatchCommandRunner>[0][] = [];
+
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session,
+    request: { command: 'printf hello', timeoutMs: 1000 },
+    now: (() => {
+      let value = 10;
+      return () => {
+        value += 7;
+        return value;
+      };
+    })(),
+    runner: async (invocation) => {
+      invocations.push(invocation);
+      return {
+        kind: 'exit',
+        exitCode: 0,
+        stdout: 'hello',
+        stderr: '',
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.ok ? result.value.executionClass : '',
+    'lab_batch_command',
+  );
+  assert.equal(result.ok ? result.value.interpreter : '', 'bash');
+  assert.equal(result.ok ? result.value.exitCode : -1, 0);
+  assert.equal(result.ok ? result.value.stdout : '', 'hello');
+  assert.equal(result.ok ? result.value.stderr : 'x', '');
+  assert.equal(result.ok ? result.value.effectiveTimeoutMs : 0, 1000);
+  assert.equal(result.ok ? result.value.durationMs : 0, 7);
+
+  assert.equal(invocations.length, 1);
+  assert.deepEqual(invocations[0]?.args, [
+    'exec',
+    'container-1',
+    '/bin/bash',
+    '-lc',
+    'printf hello',
+  ]);
+  assert.equal(invocations[0]?.executable, 'docker');
+  assert.equal(invocations[0]?.timeoutMs, 1000);
+  assert.equal(invocations[0]?.maxProcessCount, 1);
+});
+
+void test('runPtcLabBatchCommandExecution treats non-zero exit as completed command summary', async () => {
+  const { admission, session } = admittedLab({ shellMode: 'batch_command' });
+  let tainted = false;
+
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session,
+    request: { command: 'grep needle missing.txt' },
+    onSessionTainted: async () => {
+      tainted = true;
+    },
+    runner: async () => ({
+      kind: 'exit',
+      exitCode: 1,
+      stdout: '',
+      stderr: 'not found',
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.ok ? result.value.exitCode : 0, 1);
+  assert.equal(result.ok ? result.value.stderr : '', 'not found');
+  assert.equal(tainted, false);
+});
+
+void test('runPtcLabBatchCommandExecution rejects invalid command and timeout before invoking runner', async () => {
+  const { admission, session } = admittedLab({
+    shellMode: 'batch_command',
+    maxCommandMs: 1000,
+  });
+  const commands = [
+    { command: '' },
+    { command: '   ' },
+    { command: 'x', timeoutMs: 0 },
+    { command: 'x', timeoutMs: 1001 },
+    { command: 'x', timeoutMs: Number.POSITIVE_INFINITY },
+  ];
+
+  for (const request of commands) {
+    const result = await runPtcLabBatchCommandExecution({
+      admission,
+      session,
+      request,
+      runner: async () => {
+        throw new Error('runner should not be called');
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.ok ? '' : result.reasonCode, 'ptc_lab_command_invalid');
+  }
+});
+
+void test('runPtcLabBatchCommandExecution rejects policy/session mismatch', async () => {
+  const { admission, session } = admittedLab({ shellMode: 'batch_command' });
+
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session: { ...session, policyId: 'other-policy' },
+    request: { command: 'echo no' },
+    runner: async () => {
+      throw new Error('runner should not be called');
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? '' : result.reasonCode, 'ptc_lab_policy_mismatch');
+});
+
+void test('runPtcLabBatchCommandExecution maps timeout and uncertain cleanup to taint hook', async () => {
+  const { admission, session } = admittedLab({ shellMode: 'batch_command' });
+  const taints: string[] = [];
+
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session,
+    request: { command: 'sleep 999' },
+    onSessionTainted: async (taint) => {
+      taints.push(taint.reasonCode);
+    },
+    runner: async () => ({
+      kind: 'timeout',
+      stdout: '',
+      stderr: '',
+      processTerminated: false,
+    }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? '' : result.reasonCode, 'ptc_lab_command_timeout');
+  assert.deepEqual(taints, ['ptc_lab_command_timeout']);
+});
+
+void test('runPtcLabBatchCommandExecution classifies timeout even when taint hook throws', async () => {
+  const { admission, session } = admittedLab({ shellMode: 'batch_command' });
+
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session,
+    request: { command: 'sleep 999' },
+    onSessionTainted: async () => {
+      throw new Error(PRIVATE_TEST_PATH);
+    },
+    runner: async () => ({
+      kind: 'timeout',
+      stdout: '',
+      stderr: '',
+      processTerminated: false,
+    }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? '' : result.reasonCode, 'ptc_lab_command_timeout');
+  assert.equal(result.ok ? false : result.diagnostics?.taintHookFailed, true);
+  assert.doesNotMatch(JSON.stringify(result), /user|\.geulbat/u);
+});
+
+void test('runPtcLabBatchCommandExecution maps cancellation and uncertain cleanup to taint hook', async () => {
+  const { admission, session } = admittedLab({ shellMode: 'batch_command' });
+  const taints: string[] = [];
+
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session,
+    request: { command: 'sleep 999' },
+    onSessionTainted: async (taint) => {
+      taints.push(taint.reasonCode);
+    },
+    runner: async () => ({
+      kind: 'cancelled',
+      stdout: '',
+      stderr: '',
+      processTerminated: false,
+    }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? '' : result.reasonCode, 'ptc_lab_command_cancelled');
+  assert.deepEqual(taints, ['ptc_lab_command_cancelled']);
+});
+
+void test('runPtcLabBatchCommandExecution maps interpreter unavailable', async () => {
+  const { admission, session } = admittedLab({ shellMode: 'batch_command' });
+
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session,
+    request: { command: 'echo no' },
+    runner: async () => ({
+      kind: 'interpreter_unavailable',
+      stdout: '',
+      stderr: '/bin/bash missing',
+    }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(
+    result.ok ? '' : result.reasonCode,
+    'ptc_lab_interpreter_unavailable',
+  );
+});
+
+void test('runPtcLabBatchCommandExecution caps stdout and stderr', async () => {
+  const { admission, session } = admittedLab({ shellMode: 'batch_command' });
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session,
+    request: { command: 'yes' },
+    outputExcerptByteLimit: 8,
+    runner: async () => ({
+      kind: 'exit',
+      exitCode: 0,
+      stdout: 'abcdefghijklmnop',
+      stderr: 'qrstuvwxyz',
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.ok ? result.value.stdoutTruncated : false, true);
+  assert.equal(result.ok ? result.value.stderrTruncated : false, true);
+  assert.match(result.ok ? result.value.stdout : '', /\[truncated\]/u);
+  assert.match(result.ok ? result.value.stderr : '', /\[truncated\]/u);
+});
+
+void test('runPtcLabBatchCommandExecution does not return private markers in stdout or stderr', async () => {
+  const { admission, session } = admittedLab({ shellMode: 'batch_command' });
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session,
+    request: { command: 'echo private' },
+    runner: async () => ({
+      kind: 'exit',
+      exitCode: 0,
+      stdout: `${PRIVATE_TEST_PATH} /geulbat/callbacks/epoch-1/callback.sock`,
+      stderr: '/var/run/docker.sock callback.sock',
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /user|\.geulbat|docker\.sock|\/geulbat\/callbacks|callback\.sock/u,
+  );
+  assert.match(result.ok ? result.value.stdout : '', /\[redacted:path\]/u);
+  assert.match(
+    result.ok ? result.value.stdout : '',
+    /\[redacted:callback-path\]/u,
+  );
+  assert.match(
+    result.ok ? result.value.stderr : '',
+    /\[redacted:docker-socket\]/u,
+  );
+  assert.match(
+    result.ok ? result.value.stderr : '',
+    /\[redacted:callback-socket\]/u,
+  );
+});

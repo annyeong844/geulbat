@@ -51,6 +51,10 @@ import {
   type ActiveRunStore,
 } from './sessions/active-runs.js';
 import {
+  createSandboxAttemptStore,
+  type SandboxAttemptStore,
+} from './sandbox/attempt-store.js';
+import {
   createApprovalGrantStore,
   type ApprovalGrantStore,
 } from './tools/approval-grants.js';
@@ -85,6 +89,7 @@ export interface DaemonContext {
   projectStore: ProjectStore;
   memoryIndex: MemoryIndexStore;
   providerWebSocketSessions: ResponsesWebSocketSessionStore;
+  sandboxAttempts: SandboxAttemptStore;
   subagentAdmission: SubagentAdmissionController;
   subagentRuns: SubagentRunLauncher;
   toolRegistry: ToolRegistryStore;
@@ -122,6 +127,7 @@ export function createDaemonContext(
     projectStore: createProjectStore({ projectRegistry }),
     memoryIndex: createMemoryIndexStore(),
     providerWebSocketSessions: createResponsesWebSocketSessionStore(),
+    sandboxAttempts: createSandboxAttemptStore(),
     subagentAdmission: createSubagentAdmissionController(
       subagentConcurrencyPolicy === undefined
         ? {}

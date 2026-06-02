@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
-export const MIN_DEV_TOKEN_LENGTH = 16;
+const MIN_DEV_TOKEN_LENGTH = 16;
 
 export function getConfiguredDevToken(): string {
   const token = process.env['GEULBAT_DEV_TOKEN'];

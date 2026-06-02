@@ -116,6 +116,7 @@ export default [
           type: 'daemon-agent-sandbox-ingress',
           pattern: [
             'apps/daemon/src/daemon/agent/react-bundle-explicit-cdn-artifact-ingress.ts',
+            'apps/daemon/src/daemon/agent/react-bundle-structured-output-caller.ts',
           ],
           mode: 'full',
         },
@@ -142,6 +143,15 @@ export default [
         {
           type: 'daemon-sandbox',
           pattern: ['apps/daemon/src/daemon/sandbox/**'],
+        },
+        {
+          type: 'daemon-ptc-sandbox-ingress',
+          pattern: ['apps/daemon/src/daemon/ptc/lab-artifact-workspace.ts'],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-ptc',
+          pattern: ['apps/daemon/src/daemon/ptc/**'],
         },
         {
           type: 'daemon-sessions',
@@ -413,7 +423,12 @@ export default [
               from: { type: 'daemon-agent-sandbox-ingress' },
               allow: {
                 to: {
-                  type: ['daemon-agent', 'daemon-sandbox'],
+                  type: [
+                    'daemon-agent-sandbox-ingress',
+                    'daemon-agent',
+                    'daemon-sandbox',
+                    'daemon-llm',
+                  ],
                 },
               },
             },
@@ -424,6 +439,7 @@ export default [
                   type: [
                     'shared-utils',
                     'daemon-kernel',
+                    'daemon-agent-sandbox-ingress',
                     'daemon-composition',
                     'daemon-memory',
                     'daemon-tools',
@@ -534,6 +550,14 @@ export default [
               },
             },
             {
+              from: { type: 'daemon-ptc-sandbox-ingress' },
+              allow: {
+                to: {
+                  type: ['daemon-ptc', 'daemon-sandbox'],
+                },
+              },
+            },
+            {
               from: { type: 'daemon-memory' },
               allow: {
                 to: {
@@ -571,6 +595,7 @@ export default [
                     'daemon-tools',
                     'daemon-llm',
                     'daemon-artifact-runtime-persistence',
+                    'daemon-sandbox',
                     'daemon-sessions',
                     'daemon-files',
                     'daemon-utils',

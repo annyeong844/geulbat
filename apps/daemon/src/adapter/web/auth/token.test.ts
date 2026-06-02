@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  getConfiguredDevToken,
-  isValidDevToken,
-  MIN_DEV_TOKEN_LENGTH,
-} from './token.js';
+import * as token from './token.js';
+import { getConfiguredDevToken, isValidDevToken } from './token.js';
+
+const MIN_DEV_TOKEN_LENGTH = 16;
+
+void test('token module exposes validators without policy constants', () => {
+  assert.equal('MIN_DEV_TOKEN_LENGTH' in token, false);
+});
 
 void test('getConfiguredDevToken requires env', () => {
   const previous = process.env['GEULBAT_DEV_TOKEN'];

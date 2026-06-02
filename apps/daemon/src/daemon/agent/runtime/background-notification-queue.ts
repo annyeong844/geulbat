@@ -53,6 +53,13 @@ export function createThreadBackgroundNotificationQueue(): BackgroundNotificatio
     );
   }
 
+  function hasPendingDeliveryId(
+    queue: BackgroundChildResult[],
+    deliveryId: string,
+  ): boolean {
+    return queue.some((result) => result.deliveryId === deliveryId);
+  }
+
   function getOrCreateThreadSignal(
     key: ThreadId,
   ): Signal<[BackgroundChildResult]> {
@@ -111,6 +118,9 @@ export function createThreadBackgroundNotificationQueue(): BackgroundNotificatio
       const now = Date.now();
       const pending = pendingByThread.get(key);
       if (pending) {
+        if (hasPendingDeliveryId(pending.results, result.deliveryId)) {
+          return;
+        }
         pending.results.push(result);
         pending.updatedAt = now;
         trimPendingQueue(key, pending.results);

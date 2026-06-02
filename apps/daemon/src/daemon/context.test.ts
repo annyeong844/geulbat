@@ -205,6 +205,20 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
   }
 });
 
+void test('createDaemonContext owns an isolated sandbox attempt store', () => {
+  const first = createDaemonContext();
+  const second = createDaemonContext();
+
+  const firstAttempt = first.sandboxAttempts.createAttempt({
+    jobKind: 'test_sandbox_job',
+    adapterKind: 'test_sandbox_adapter',
+  });
+
+  assert.equal(firstAttempt.attemptId, 'sandbox-attempt-1');
+  assert.equal(first.sandboxAttempts.getAttempts().records.length, 1);
+  assert.equal(second.sandboxAttempts.getAttempts().records.length, 0);
+});
+
 void test('createDaemonContext rejects invalid subagent concurrency policy', () => {
   assert.throws(
     () =>

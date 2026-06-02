@@ -105,3 +105,53 @@ void test('createRunSessionStreamBatchController clearPendingStreamEffects cance
     },
   ]);
 });
+
+void test('coalesces same-target deltas that arrive within the batch window into a single dispatch', async () => {
+  const actions: RunSessionStateAction[] = [];
+  const controller = createRunSessionStreamBatchController({
+    readDispatch: () => (action) => {
+      actions.push(action);
+    },
+  });
+
+  // First delta dispatches immediately (preserves first-token latency).
+  controller.queueStreamedTextEffect({
+    kind: 'assistant_text_streamed',
+    threadId: 'thread-1',
+    target: 'answer',
+    text: 'a',
+  });
+
+  // Wait long enough that a short (one-frame) window would have already flushed
+  // and left the controller idle, but short enough to remain inside the batch window.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  // Two more same-target deltas arrive within the window: they must be buffered
+  // and coalesced into ONE dispatch instead of each forcing its own render.
+  controller.queueStreamedTextEffect({
+    kind: 'assistant_text_streamed',
+    threadId: 'thread-1',
+    target: 'answer',
+    text: 'b',
+  });
+  controller.queueStreamedTextEffect({
+    kind: 'assistant_text_streamed',
+    threadId: 'thread-1',
+    target: 'answer',
+    text: 'c',
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 70));
+
+  // Immediate first delta + one coalesced flush of 'bc' = 2 dispatches, not 3.
+  assert.equal(actions.length, 2);
+  assert.equal(
+    (
+      actions[1] as Extract<
+        RunSessionStateAction,
+        { type: 'assistant_text_streamed' }
+      >
+    ).text,
+    'bc',
+  );
+});

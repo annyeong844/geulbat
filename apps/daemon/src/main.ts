@@ -49,6 +49,7 @@ async function main() {
       providerRequestOptions: daemonContext.providerRequestOptions,
       providerWebSocketSessions: daemonContext.providerWebSocketSessions,
       projectRegistry: daemonContext.projectRegistry,
+      sandboxAttempts: daemonContext.sandboxAttempts,
       subagentAdmission: daemonContext.subagentAdmission,
       subagentRuns: daemonContext.subagentRuns,
       toolRegistry: daemonContext.toolRegistry,
