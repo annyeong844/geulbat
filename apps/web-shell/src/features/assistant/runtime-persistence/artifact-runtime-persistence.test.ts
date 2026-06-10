@@ -5,8 +5,6 @@ import type { ProjectId, ThreadId } from '@geulbat/protocol/ids';
 import { ApiFetchError } from '../../../lib/api/client.js';
 import {
   createArtifactRuntimePersistenceBridgeResponder,
-  createArtifactRuntimePersistenceScopeHandle,
-  createArtifactRuntimePersistenceScopeKey,
   readPersistenceErrorCode,
   readPersistenceErrorMessage,
 } from './artifact-runtime-persistence.js';
@@ -52,28 +50,6 @@ void test('readPersistenceErrorCode falls back for non-persistence api errors', 
   assert.equal(
     readPersistenceErrorMessage(error),
     'API 500: {"code":"internal","message":"internal server error"}',
-  );
-});
-
-void test('createArtifactRuntimePersistenceScopeKey returns the canonical host-owned scope identity', () => {
-  assert.equal(createArtifactRuntimePersistenceScopeKey(null), null);
-  assert.equal(
-    createArtifactRuntimePersistenceScopeKey(createScope()),
-    JSON.stringify([PROJECT_ID, THREAD_ID, ARTIFACT_ID, 0]),
-  );
-});
-
-void test('createArtifactRuntimePersistenceScopeHandle returns a deterministic owner-provided handle', () => {
-  assert.equal(
-    createArtifactRuntimePersistenceScopeHandle('rev2-deadbeef'),
-    'scope-rev2-deadbeef',
-  );
-});
-
-void test('createArtifactRuntimePersistenceScopeHandle rejects empty scope seeds', () => {
-  assert.throws(
-    () => createArtifactRuntimePersistenceScopeHandle(''),
-    /scopeSeed must be non-empty/,
   );
 });
 
@@ -178,6 +154,70 @@ void test('runtime persistence bridge responder requires expectedRevision for sa
     errorCode: 'persistence_blocked',
     message: 'save_state requires expectedRevision',
   });
+});
+
+void test('runtime persistence bridge responder blocks invalid expectedRevision values before client dispatch', async () => {
+  const source = {} as MessageEventSource;
+  const scopeHandle = 'scope-rev2-demo-invalid-revision';
+  let saveCalls = 0;
+  let clearCalls = 0;
+  const responder = createArtifactRuntimePersistenceBridgeResponder({
+    expectedSource: () => source,
+    scope: createScope(),
+    scopeHandle,
+    client: {
+      loadState: async () => ({ state: null, revision: null }),
+      saveState: async () => {
+        saveCalls += 1;
+        return { revision: 'rev-save' };
+      },
+      clearState: async () => {
+        clearCalls += 1;
+        return { revision: null };
+      },
+    },
+  });
+
+  const saveResponse = await responder.handleMessage(source, {
+    kind: 'geulbat.runtime.persistence.request',
+    version: 1,
+    requestId: 'req-invalid-save',
+    scopeHandle: responder.scopeHandle,
+    verb: 'save_state',
+    expectedRevision: 1,
+    state: { count: 1 },
+  });
+  const clearResponse = await responder.handleMessage(source, {
+    kind: 'geulbat.runtime.persistence.request',
+    version: 1,
+    requestId: 'req-invalid-clear',
+    scopeHandle: responder.scopeHandle,
+    verb: 'clear_state',
+    expectedRevision: { revision: 'rev-1' },
+  });
+
+  assert.deepEqual(saveResponse, {
+    kind: 'geulbat.shell.persistence.response',
+    version: 1,
+    requestId: 'req-invalid-save',
+    scopeHandle,
+    verb: 'save_state',
+    ok: false,
+    errorCode: 'persistence_blocked',
+    message: 'save_state expectedRevision must be a string or null',
+  });
+  assert.deepEqual(clearResponse, {
+    kind: 'geulbat.shell.persistence.response',
+    version: 1,
+    requestId: 'req-invalid-clear',
+    scopeHandle,
+    verb: 'clear_state',
+    ok: false,
+    errorCode: 'persistence_blocked',
+    message: 'clear_state expectedRevision must be a string or null',
+  });
+  assert.equal(saveCalls, 0);
+  assert.equal(clearCalls, 0);
 });
 
 void test('runtime persistence bridge responder returns persistence_unavailable when artifact scope is missing', async () => {

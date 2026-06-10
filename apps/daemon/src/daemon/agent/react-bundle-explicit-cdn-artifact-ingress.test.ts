@@ -12,8 +12,8 @@ import {
 import type { HttpMetadataProbeRequestTransport } from '../network/http-metadata-probe.js';
 import { createSandboxAttemptStore } from '../sandbox/attempt-store.js';
 import type {
+  ReactBundleAcceptedManifestArtifactCandidateSource,
   ReactBundleAcceptedManifestArtifactCandidateResult,
-  ReactBundleAcceptedRuntimeManifestSuccess,
 } from '../sandbox/react-bundle-accepted-manifest-artifact-candidate.js';
 import type { ReactBundleRuntimeManifestAcceptanceResult } from '../sandbox/react-bundle-accepted-runtime-manifest.js';
 import type { ReactBundleDependencyPrepareRequest } from '../sandbox/react-bundle-dependency-prepare.js';
@@ -298,7 +298,7 @@ void test('runReactBundleExplicitCdnArtifactIngress preserves artifact candidate
       },
       timeoutMs: 1000,
       buildArtifactCandidate: (_args: {
-        accepted: ReactBundleAcceptedRuntimeManifestSuccess;
+        accepted: ReactBundleAcceptedManifestArtifactCandidateSource;
       }): ReactBundleAcceptedManifestArtifactCandidateResult => ({
         ok: false,
         reasonCode: 'manifest_payload_invalid',

@@ -4,10 +4,8 @@ import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import {
-  buildAgentToolExecutionContextBase,
-  resolveToolApprovalState,
-} from './loop-tool-approval.js';
+import { resolveToolApprovalState } from './loop-tool-approval.js';
+import { buildAgentToolExecutionContextBase } from './loop-tool-runtime.js';
 import { createApprovalGrantStore } from '../tools/approval-grants.js';
 import { createBuiltinToolRegistryStore } from '../tools/builtin/catalog.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';

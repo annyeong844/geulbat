@@ -150,6 +150,25 @@ export default [
           mode: 'full',
         },
         {
+          type: 'daemon-ptc-runtime-contract',
+          pattern: [
+            'apps/daemon/src/daemon/ptc/browser-navigate-runtime-contract.ts',
+            'apps/daemon/src/daemon/ptc/execute-code-runtime-contract.ts',
+            'apps/daemon/src/daemon/ptc/fixed-probe-runtime-contract.ts',
+            'apps/daemon/src/daemon/ptc/lab-session-batch-command-contract.ts',
+          ],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-ptc-runtime-ingress',
+          pattern: [
+            'apps/daemon/src/daemon/ptc/browser-navigate-runtime.ts',
+            'apps/daemon/src/daemon/ptc/fixed-probe-runtime.ts',
+            'apps/daemon/src/daemon/ptc/execute-code-runtime.ts',
+          ],
+          mode: 'full',
+        },
+        {
           type: 'daemon-ptc',
           pattern: ['apps/daemon/src/daemon/ptc/**'],
         },
@@ -441,6 +460,7 @@ export default [
                     'daemon-kernel',
                     'daemon-agent-sandbox-ingress',
                     'daemon-composition',
+                    'daemon-ptc-runtime-contract',
                     'daemon-memory',
                     'daemon-tools',
                     'daemon-sessions',
@@ -558,6 +578,22 @@ export default [
               },
             },
             {
+              from: { type: 'daemon-ptc-runtime-ingress' },
+              allow: {
+                to: {
+                  type: ['daemon-ptc', 'daemon-ptc-runtime-contract'],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc' },
+              allow: {
+                to: {
+                  type: ['daemon-ptc-runtime-contract'],
+                },
+              },
+            },
+            {
               from: { type: 'daemon-memory' },
               allow: {
                 to: {
@@ -595,6 +631,8 @@ export default [
                     'daemon-tools',
                     'daemon-llm',
                     'daemon-artifact-runtime-persistence',
+                    'daemon-ptc-runtime-contract',
+                    'daemon-ptc-runtime-ingress',
                     'daemon-sandbox',
                     'daemon-sessions',
                     'daemon-files',

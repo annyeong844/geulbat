@@ -1,32 +1,34 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import {
+  readPtcSessionDockerBindMountHostPath,
+  withRealPtcSessionDockerManager,
+} from '../../test-support/ptc-session-docker.js';
 import {
   createPtcEpochCallbackChannel,
   type PtcEpochCallbackHandlerInvocation,
 } from './epoch-callback.js';
 import {
-  PTC_FIXED_EPOCH_EXECUTION_PROBE_CAPABILITY_ID,
-  PTC_FIXED_EPOCH_EXECUTION_PROBE_POLICY_ID,
   PTC_FIXED_EPOCH_EXECUTION_PROBE_SCRIPT,
   runPtcFixedEpochExecutionProbe,
   type PtcSessionEpochBridgeFactory,
 } from './fixed-epoch-execution-probe.js';
 import {
-  PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
-  PTC_SESSION_DOCKER_ARTIFACT_WORKSPACE_MOUNT_POLICY_ID,
-  PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
-  PTC_SESSION_DOCKER_DEFAULT_POLICY,
-  normalizePtcSessionDockerReuseKey,
-  type PtcSessionDockerCommandInvocation,
-  type PtcSessionDockerIdentity,
-  type PtcSessionDockerManager,
-  type PtcSessionDockerReuseKey,
-} from './session-docker.js';
-import type { PtcSessionEpochBridge } from './session-epoch-bridge.js';
+  PTC_FIXED_EPOCH_EXECUTION_PROBE_CAPABILITY_ID,
+  PTC_FIXED_EPOCH_EXECUTION_PROBE_POLICY_ID,
+} from './fixed-probe-runtime-contract.js';
+import { PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT } from './session-docker-contract.js';
+import type {
+  PtcSessionDockerCommandInvocation,
+  PtcSessionDockerCommandResult,
+  PtcSessionDockerIdentity,
+  PtcSessionDockerManager,
+} from './session-docker-contract.js';
+import { createPtcSessionEpochBridge } from './session-epoch-bridge.js';
 
 const unixTest = process.platform === 'win32' ? test.skip : test;
 const UNIX_SOCKET_TEMP_ROOT = process.platform === 'win32' ? tmpdir() : '/tmp';
@@ -35,6 +37,87 @@ const IDENTITY: PtcSessionDockerIdentity = Object.freeze({
   workspaceRoot: '/workspace/project-a',
   trustContextId: 'trust-local-v1',
 });
+
+async function withFixedProbeSession<T>(
+  args: {
+    commandResult?: (context: {
+      callbackRootHostPath: string;
+      invocation: PtcSessionDockerCommandInvocation;
+    }) =>
+      | PtcSessionDockerCommandResult
+      | undefined
+      | Promise<PtcSessionDockerCommandResult | undefined>;
+  },
+  fn: (fixture: {
+    callbackRootHostPath(): string;
+    manager: PtcSessionDockerManager;
+    runner: (
+      invocation: PtcSessionDockerCommandInvocation,
+    ) => Promise<PtcSessionDockerCommandResult>;
+  }) => Promise<T>,
+): Promise<T> {
+  let callbackRootHostPath = '';
+  return await withRealPtcSessionDockerManager(
+    {
+      identity: IDENTITY,
+      containerId: 'container-fixed-probe',
+      commandResult: async (invocation) => {
+        if (invocation.args[0] === 'create') {
+          callbackRootHostPath = readPtcSessionDockerBindMountHostPath(
+            invocation,
+            PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
+          );
+          return undefined;
+        }
+        if (invocation.args[0] !== 'exec') {
+          return undefined;
+        }
+        assert.equal(callbackRootHostPath.length > 0, true);
+        return await args.commandResult?.({ callbackRootHostPath, invocation });
+      },
+    },
+    async ({ manager, runner }) =>
+      await fn({
+        callbackRootHostPath: () => callbackRootHostPath,
+        manager,
+        runner,
+      }),
+  );
+}
+
+async function readProbeInputForExec(args: {
+  callbackRootHostPath: string;
+  invocation: PtcSessionDockerCommandInvocation;
+}): Promise<{
+  containerInputPath: string;
+  hostInputPath: string;
+  input: Record<string, unknown>;
+}> {
+  assert.deepEqual(args.invocation.args.slice(0, 5), [
+    'exec',
+    'container-fixed-probe',
+    'node',
+    '-e',
+    PTC_FIXED_EPOCH_EXECUTION_PROBE_SCRIPT,
+  ]);
+  const containerInputPath = String(args.invocation.args[5] ?? '');
+  assert.match(
+    containerInputPath,
+    new RegExp(`^${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/`),
+  );
+  const hostInputPath = containerInputPath.replace(
+    `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/`,
+    `${args.callbackRootHostPath}/`,
+  );
+  return {
+    containerInputPath,
+    hostInputPath,
+    input: JSON.parse(await readFile(hostInputPath, 'utf8')) as Record<
+      string,
+      unknown
+    >,
+  };
+}
 
 void unixTest(
   'fixed PTC epoch probe script reaches epoch callback channel and prints compact JSON',
@@ -46,11 +129,6 @@ void unixTest(
       const invocations: PtcEpochCallbackHandlerInvocation[] = [];
       const channel = await createPtcEpochCallbackChannel({
         rootDir: root,
-        owner: {
-          threadId: 'thread-fixed-probe',
-          workspaceRoot: '/workspace/fixed-probe',
-          approvalScope: 'run',
-        },
         handler: async (invocation) => {
           invocations.push(invocation);
           return { ok: true, result: { kind: 'inline', value: 'pong' } };
@@ -98,46 +176,24 @@ void unixTest(
 void unixTest(
   'runPtcFixedEpochExecutionProbe writes private input, runs fixed docker exec, and returns sanitized summary',
   async () => {
-    const root = await mkdtemp(
-      join(UNIX_SOCKET_TEMP_ROOT, 'geulbat-ptc-fixed-owner-'),
-    );
-    try {
-      const epochDir = join(root, 'ptc-epoch-owned');
-      await mkdir(epochDir, { recursive: true });
-      const bridge = fakeBridge({
-        epochDir,
-        socketHostPath: join(epochDir, 'callback.sock'),
-        socketContainerPath: `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/ptc-epoch-owned/callback.sock`,
-      });
-      let closeCount = 0;
-      bridge.close = async () => {
-        closeCount += 1;
-      };
-      const invocations: PtcSessionDockerCommandInvocation[] = [];
+    let observedInput:
+      | { containerInputPath: string; input: Record<string, unknown> }
+      | undefined;
 
-      const result = await runPtcFixedEpochExecutionProbe({
-        identity: IDENTITY,
-        sessionManager: fakeSessionManager(),
-        bridgeFactory: async () => ({ ok: true, value: bridge }),
-        commandRunner: async (invocation) => {
-          invocations.push(invocation);
-          assert.deepEqual(invocation.args.slice(0, 3), [
-            'exec',
-            'container-fixed-probe',
-            'node',
-          ]);
-          assert.equal(invocation.args[3], '-e');
-          assert.equal(
-            invocation.args[4],
-            PTC_FIXED_EPOCH_EXECUTION_PROBE_SCRIPT,
-          );
-          assert.equal(
-            invocation.args[5],
-            `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/ptc-epoch-owned/fixed-probe-input.json`,
-          );
+    await withFixedProbeSession(
+      {
+        commandResult: async ({ callbackRootHostPath, invocation }) => {
+          const probeInput = await readProbeInputForExec({
+            callbackRootHostPath,
+            invocation,
+          });
+          observedInput = {
+            containerInputPath: probeInput.containerInputPath,
+            input: probeInput.input,
+          };
           assert.doesNotMatch(
             JSON.stringify(invocation.args),
-            /token-fixed|callback\.sock/u,
+            /callback\.sock/u,
           );
           return {
             kind: 'exit',
@@ -146,129 +202,77 @@ void unixTest(
             stderr: '',
           };
         },
-      });
+      },
+      async ({ manager, runner, callbackRootHostPath }) => {
+        const result = await runPtcFixedEpochExecutionProbe({
+          identity: IDENTITY,
+          sessionManager: manager,
+          commandRunner: runner,
+        });
 
-      if (!result.ok) {
-        assert.fail(result.message);
-      }
-      assert.deepEqual(result.value, {
-        ok: true,
-        capabilityId: PTC_FIXED_EPOCH_EXECUTION_PROBE_CAPABILITY_ID,
-        policyId: PTC_FIXED_EPOCH_EXECUTION_PROBE_POLICY_ID,
-        executionClass: 'fixed_docker_exec_probe',
-        executionSurface: 'baked_image_node_eval',
-        containerId: 'container-fixed-probe',
-        epochId: 'epoch-fixed-probe',
-        callbackRoundTrip: 'observed',
-        callbackResultKind: 'inline',
-        exitCode: 0,
-      });
-      assert.equal(invocations.length, 1);
-      assert.equal(closeCount, 1);
-
-      const input = JSON.parse(
-        await readFile(join(epochDir, 'fixed-probe-input.json'), 'utf8'),
-      );
-      assert.equal(input.schemaVersion, 1);
-      assert.equal(
-        input.socketPath,
-        `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/ptc-epoch-owned/callback.sock`,
-      );
-      assert.equal(input.token, 'token-fixed');
-      assert.equal(input.requestId, 'ptc-fixed-probe-1');
-      assert.doesNotMatch(
-        JSON.stringify(result),
-        /token-fixed|callback\.sock|geulbat-ptc-fixed-owner/u,
-      );
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+        if (!result.ok) {
+          assert.fail(result.message);
+        }
+        assert.equal(result.value.ok, true);
+        assert.equal(
+          result.value.capabilityId,
+          PTC_FIXED_EPOCH_EXECUTION_PROBE_CAPABILITY_ID,
+        );
+        assert.equal(
+          result.value.policyId,
+          PTC_FIXED_EPOCH_EXECUTION_PROBE_POLICY_ID,
+        );
+        assert.equal(result.value.executionClass, 'fixed_docker_exec_probe');
+        assert.equal(result.value.executionSurface, 'baked_image_node_eval');
+        assert.equal(result.value.containerId, 'container-fixed-probe');
+        assert.match(result.value.epochId, /^[a-f0-9]{16}$/u);
+        assert.equal(result.value.callbackRoundTrip, 'observed');
+        assert.equal(result.value.callbackResultKind, 'inline');
+        assert.equal(result.value.exitCode, 0);
+        assert.deepEqual(observedInput?.input, {
+          schemaVersion: 1,
+          socketPath: observedInput?.containerInputPath.replace(
+            /\/fixed-probe-input\.json$/u,
+            '/callback.sock',
+          ),
+          token: observedInput?.input.token,
+          requestId: 'ptc-fixed-probe-1',
+        });
+        assert.equal(typeof observedInput?.input.token, 'string');
+        const serialized = JSON.stringify(result);
+        assert.equal(serialized.includes(callbackRootHostPath()), false);
+        assert.doesNotMatch(serialized, /callback\.sock/u);
+      },
+    );
   },
 );
 
 void unixTest(
   'runPtcFixedEpochExecutionProbe reaches the default fixed callback handler',
   async () => {
-    const root = await mkdtemp(
-      join(UNIX_SOCKET_TEMP_ROOT, 'geulbat-ptc-fixed-e2e-'),
-    );
-    try {
-      const callbackRootHostPath = join(root, 'callbacks');
-      await mkdir(callbackRootHostPath, { recursive: true });
-      let channelCloseCount = 0;
-
-      const bridgeFactory: PtcSessionEpochBridgeFactory = async (args) => {
-        const channel = await createPtcEpochCallbackChannel({
-          rootDir: callbackRootHostPath,
-          owner: {
-            threadId: IDENTITY.threadId,
-            workspaceRoot: '/real/workspace/project-a',
-            approvalScope: 'run',
-          },
-          handler: args.callbackHandler,
-        });
-        const epochName = channel.epochDir.split('/').at(-1);
-        assert.ok(epochName);
-        const reuseKey = fakeReuseKey();
-
-        return {
-          ok: true,
-          value: {
-            containerId: 'container-fixed-probe',
-            epochId: channel.epochId,
-            token: channel.token,
-            callbackSocketHostPath: channel.socketPath,
-            callbackSocketContainerPath: `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/${epochName}/callback.sock`,
-            session: {
-              state: 'ready' as const,
-              containerId: 'container-fixed-probe',
-              reuseKey,
-              callbackRootHostPath,
-              callbackRootContainerPath:
-                PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
-              artifactRootHostPath: join(root, 'artifacts'),
-              artifactRootContainerPath:
-                PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
-              artifactWorkspaceMountPolicyId:
-                PTC_SESSION_DOCKER_ARTIFACT_WORKSPACE_MOUNT_POLICY_ID,
-              packageCacheRootHostPath: join(root, 'package-cache'),
-              packageCacheRootContainerPath:
-                reuseKey.packageCacheRootContainerPath,
-              packageCacheMountPolicyId: reuseKey.packageCacheMountPolicyId,
-              packageCacheId: reuseKey.packageCacheId,
-              packageCacheIdentityHash: reuseKey.packageCacheIdentityHash,
-            },
-            close: async () => {
-              channelCloseCount += 1;
-              await channel.close();
-            },
-          },
-        };
-      };
-
-      const result = await runPtcFixedEpochExecutionProbe({
-        identity: IDENTITY,
-        sessionManager: fakeSessionManager(),
-        bridgeFactory,
-        commandRunner: async (invocation) => {
-          const containerInputPath = String(invocation.args[5] ?? '');
-          const hostInputPath = containerInputPath.replace(
-            `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/`,
-            `${callbackRootHostPath}/`,
+    await withFixedProbeSession(
+      {
+        commandResult: async ({ callbackRootHostPath, invocation }) => {
+          const { hostInputPath, input } = await readProbeInputForExec({
+            callbackRootHostPath,
+            invocation,
+          });
+          const localInputPath = join(
+            callbackRootHostPath,
+            'local-fixed-probe-input.json',
           );
-          const localInput = JSON.parse(await readFile(hostInputPath, 'utf8'));
-          const localInputPath = join(root, 'local-fixed-probe-input.json');
           await writeFile(
             localInputPath,
             JSON.stringify({
-              ...localInput,
-              socketPath: String(localInput.socketPath).replace(
+              ...input,
+              socketPath: String(input.socketPath).replace(
                 `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/`,
                 `${callbackRootHostPath}/`,
               ),
             }),
             'utf8',
           );
+          assert.notEqual(hostInputPath, localInputPath);
           const scriptResult = await runNodeProbeScript(localInputPath);
           return {
             kind: 'exit',
@@ -277,21 +281,25 @@ void unixTest(
             stderr: scriptResult.stderr,
           };
         },
-      });
+      },
+      async ({ manager, runner, callbackRootHostPath }) => {
+        const result = await runPtcFixedEpochExecutionProbe({
+          identity: IDENTITY,
+          sessionManager: manager,
+          commandRunner: runner,
+        });
 
-      if (!result.ok) {
-        assert.fail(result.message);
-      }
-      assert.equal(result.value.callbackResultKind, 'inline');
-      assert.equal(result.value.callbackRoundTrip, 'observed');
-      assert.equal(channelCloseCount, 1);
-      assert.doesNotMatch(
-        JSON.stringify(result),
-        /callback\.sock|geulbat-ptc-fixed-e2e/u,
-      );
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+        if (!result.ok) {
+          assert.fail(result.message);
+        }
+        assert.equal(result.value.callbackResultKind, 'inline');
+        assert.equal(result.value.callbackRoundTrip, 'observed');
+        assert.match(result.value.epochId, /^[a-f0-9]{16}$/u);
+        const serialized = JSON.stringify(result);
+        assert.equal(serialized.includes(callbackRootHostPath()), false);
+        assert.doesNotMatch(serialized, /callback\.sock/u);
+      },
+    );
   },
 );
 
@@ -300,7 +308,7 @@ void unixTest(
   async () => {
     const result = await runPtcFixedEpochExecutionProbe({
       identity: IDENTITY,
-      sessionManager: fakeSessionManager(),
+      sessionManager: unusedSessionManager(),
       bridgeFactory: async () => ({
         ok: false,
         reasonCode: 'callback_path_projection_failed',
@@ -331,7 +339,7 @@ void unixTest(
   async () => {
     const result = await runPtcFixedEpochExecutionProbe({
       identity: IDENTITY,
-      sessionManager: fakeSessionManager(),
+      sessionManager: unusedSessionManager(),
       bridgeFactory: async () => {
         throw new Error('/tmp/private/.geulbat/callback.sock');
       },
@@ -360,261 +368,210 @@ void unixTest(
 void unixTest(
   'runPtcFixedEpochExecutionProbe closes bridge and returns sanitized diagnostics on command failure',
   async () => {
-    const root = await mkdtemp(
-      join(UNIX_SOCKET_TEMP_ROOT, 'geulbat-ptc-fixed-failure-'),
-    );
-    try {
-      const epochDir = join(root, 'ptc-epoch-failure');
-      await mkdir(epochDir, { recursive: true });
-      const bridge = fakeBridge({
-        epochDir,
-        socketHostPath: join(epochDir, 'callback.sock'),
-        socketContainerPath: `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/ptc-epoch-failure/callback.sock`,
-      });
-      let closeCount = 0;
-      bridge.close = async () => {
-        closeCount += 1;
-      };
-
-      const result = await runPtcFixedEpochExecutionProbe({
-        identity: IDENTITY,
-        sessionManager: fakeSessionManager(),
-        bridgeFactory: async () => ({ ok: true, value: bridge }),
-        commandRunner: async () => ({
+    await withFixedProbeSession(
+      {
+        commandResult: () => ({
           kind: 'exit',
           exitCode: 42,
           stdout: 'token-fixed /tmp/private/.geulbat/callback.sock',
           stderr: 'socket failed',
         }),
-      });
+      },
+      async ({ manager, runner }) => {
+        const result = await runPtcFixedEpochExecutionProbe({
+          identity: IDENTITY,
+          sessionManager: manager,
+          commandRunner: runner,
+        });
 
-      assert.equal(result.ok, false);
-      if (result.ok) {
-        return;
-      }
-      assert.equal(result.reasonCode, 'execution_failed');
-      assert.deepEqual(result.diagnostics, {
-        commandResultKind: 'exit',
-        exitCode: 42,
-      });
-      assert.equal(closeCount, 1);
-      assert.doesNotMatch(
-        JSON.stringify(result),
-        /token-fixed|\.geulbat|callback\.sock|socket failed/u,
-      );
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+        assert.equal(result.ok, false);
+        if (result.ok) {
+          return;
+        }
+        assert.equal(result.reasonCode, 'execution_failed');
+        assert.deepEqual(result.diagnostics, {
+          commandResultKind: 'exit',
+          exitCode: 42,
+        });
+        assert.doesNotMatch(
+          JSON.stringify(result),
+          /token-fixed|\.geulbat|callback\.sock|socket failed/u,
+        );
+      },
+    );
   },
 );
 
 void unixTest(
   'runPtcFixedEpochExecutionProbe classifies thrown command runner failures without raw error text',
   async () => {
-    const root = await mkdtemp(
-      join(UNIX_SOCKET_TEMP_ROOT, 'geulbat-ptc-fixed-throw-'),
-    );
-    try {
-      const epochDir = join(root, 'ptc-epoch-throw');
-      await mkdir(epochDir, { recursive: true });
-      const result = await runPtcFixedEpochExecutionProbe({
-        identity: IDENTITY,
-        sessionManager: fakeSessionManager(),
-        bridgeFactory: async () => ({
-          ok: true,
-          value: fakeBridge({
-            epochDir,
-            socketHostPath: join(epochDir, 'callback.sock'),
-            socketContainerPath: `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/ptc-epoch-throw/callback.sock`,
-          }),
-        }),
-        commandRunner: async () => {
+    await withFixedProbeSession(
+      {
+        commandResult: () => {
           throw new Error('token-fixed /tmp/private/.geulbat/callback.sock');
         },
-      });
+      },
+      async ({ manager, runner }) => {
+        const result = await runPtcFixedEpochExecutionProbe({
+          identity: IDENTITY,
+          sessionManager: manager,
+          commandRunner: runner,
+        });
 
-      assert.equal(result.ok, false);
-      if (result.ok) {
-        return;
-      }
-      assert.equal(result.reasonCode, 'execution_failed');
-      assert.deepEqual(result.diagnostics, { commandResultKind: 'thrown' });
-      assert.doesNotMatch(
-        JSON.stringify(result),
-        /token-fixed|\.geulbat|callback\.sock/u,
-      );
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+        assert.equal(result.ok, false);
+        if (result.ok) {
+          return;
+        }
+        assert.equal(result.reasonCode, 'execution_failed');
+        assert.deepEqual(result.diagnostics, { commandResultKind: 'thrown' });
+        assert.doesNotMatch(
+          JSON.stringify(result),
+          /token-fixed|\.geulbat|callback\.sock/u,
+        );
+      },
+    );
   },
 );
 
 void unixTest(
   'runPtcFixedEpochExecutionProbe rejects invalid fixed probe stdout without leaking stdout',
   async () => {
-    const root = await mkdtemp(
-      join(UNIX_SOCKET_TEMP_ROOT, 'geulbat-ptc-fixed-invalid-'),
-    );
-    try {
-      const epochDir = join(root, 'ptc-epoch-invalid');
-      await mkdir(epochDir, { recursive: true });
-      const result = await runPtcFixedEpochExecutionProbe({
-        identity: IDENTITY,
-        sessionManager: fakeSessionManager(),
-        bridgeFactory: async () => ({
-          ok: true,
-          value: fakeBridge({
-            epochDir,
-            socketHostPath: join(epochDir, 'callback.sock'),
-            socketContainerPath: `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/ptc-epoch-invalid/callback.sock`,
-          }),
-        }),
-        commandRunner: async () => ({
+    await withFixedProbeSession(
+      {
+        commandResult: () => ({
           kind: 'exit',
           exitCode: 0,
           stdout: 'not-json token-fixed /tmp/private/.geulbat',
           stderr: '',
         }),
-      });
+      },
+      async ({ manager, runner }) => {
+        const result = await runPtcFixedEpochExecutionProbe({
+          identity: IDENTITY,
+          sessionManager: manager,
+          commandRunner: runner,
+        });
 
-      assert.equal(result.ok, false);
-      if (result.ok) {
-        return;
-      }
-      assert.equal(result.reasonCode, 'probe_output_invalid');
-      assert.doesNotMatch(
-        JSON.stringify(result),
-        /not-json|token-fixed|\.geulbat/u,
-      );
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+        assert.equal(result.ok, false);
+        if (result.ok) {
+          return;
+        }
+        assert.equal(result.reasonCode, 'probe_output_invalid');
+        assert.doesNotMatch(
+          JSON.stringify(result),
+          /not-json|token-fixed|\.geulbat/u,
+        );
+      },
+    );
   },
 );
 
 void unixTest(
   'runPtcFixedEpochExecutionProbe rejects multiline fixed probe stdout without leaking stdout',
   async () => {
-    const root = await mkdtemp(
-      join(UNIX_SOCKET_TEMP_ROOT, 'geulbat-ptc-fixed-multiline-'),
-    );
-    try {
-      const epochDir = join(root, 'ptc-epoch-multiline');
-      await mkdir(epochDir, { recursive: true });
-      const result = await runPtcFixedEpochExecutionProbe({
-        identity: IDENTITY,
-        sessionManager: fakeSessionManager(),
-        bridgeFactory: async () => ({
-          ok: true,
-          value: fakeBridge({
-            epochDir,
-            socketHostPath: join(epochDir, 'callback.sock'),
-            socketContainerPath: `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/ptc-epoch-multiline/callback.sock`,
-          }),
-        }),
-        commandRunner: async () => ({
+    await withFixedProbeSession(
+      {
+        commandResult: () => ({
           kind: 'exit',
           exitCode: 0,
           stdout:
             '{"ok":true,"callbackResultKind":"inline"}\n{"token":"token-fixed"}',
           stderr: '',
         }),
-      });
+      },
+      async ({ manager, runner }) => {
+        const result = await runPtcFixedEpochExecutionProbe({
+          identity: IDENTITY,
+          sessionManager: manager,
+          commandRunner: runner,
+        });
 
-      assert.equal(result.ok, false);
-      if (result.ok) {
-        return;
-      }
-      assert.equal(result.reasonCode, 'probe_output_invalid');
-      assert.doesNotMatch(
-        JSON.stringify(result),
-        /token-fixed|callbackResultKind/u,
-      );
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+        assert.equal(result.ok, false);
+        if (result.ok) {
+          return;
+        }
+        assert.equal(result.reasonCode, 'probe_output_invalid');
+        assert.doesNotMatch(
+          JSON.stringify(result),
+          /token-fixed|callbackResultKind/u,
+        );
+      },
+    );
   },
 );
 
 void unixTest(
   'runPtcFixedEpochExecutionProbe surfaces only stable probe error code on failed fixed probe result',
   async () => {
-    const root = await mkdtemp(
-      join(UNIX_SOCKET_TEMP_ROOT, 'geulbat-ptc-fixed-probe-failed-'),
-    );
-    try {
-      const epochDir = join(root, 'ptc-epoch-probe-failed');
-      await mkdir(epochDir, { recursive: true });
-      const result = await runPtcFixedEpochExecutionProbe({
-        identity: IDENTITY,
-        sessionManager: fakeSessionManager(),
-        bridgeFactory: async () => ({
-          ok: true,
-          value: fakeBridge({
-            epochDir,
-            socketHostPath: join(epochDir, 'callback.sock'),
-            socketContainerPath: `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/ptc-epoch-probe-failed/callback.sock`,
-          }),
-        }),
-        commandRunner: async () => ({
+    await withFixedProbeSession(
+      {
+        commandResult: () => ({
           kind: 'exit',
           exitCode: 0,
           stdout:
             '{"ok":false,"errorCode":"callback_connection_failed","message":"token-fixed /tmp/private/.geulbat/callback.sock"}\n',
           stderr: '',
         }),
-      });
+      },
+      async ({ manager, runner }) => {
+        const result = await runPtcFixedEpochExecutionProbe({
+          identity: IDENTITY,
+          sessionManager: manager,
+          commandRunner: runner,
+        });
 
-      assert.equal(result.ok, false);
-      if (result.ok) {
-        return;
-      }
-      assert.equal(result.reasonCode, 'probe_result_failed');
-      assert.deepEqual(result.diagnostics, {
-        probeErrorCode: 'callback_connection_failed',
-      });
-      assert.doesNotMatch(
-        JSON.stringify(result),
-        /token-fixed|\.geulbat|callback\.sock/u,
-      );
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+        assert.equal(result.ok, false);
+        if (result.ok) {
+          return;
+        }
+        assert.equal(result.reasonCode, 'probe_result_failed');
+        assert.deepEqual(result.diagnostics, {
+          probeErrorCode: 'callback_connection_failed',
+        });
+        assert.doesNotMatch(
+          JSON.stringify(result),
+          /token-fixed|\.geulbat|callback\.sock/u,
+        );
+      },
+    );
   },
 );
 
 void unixTest(
   'runPtcFixedEpochExecutionProbe fails closed when the private probe input file already exists',
   async () => {
-    const root = await mkdtemp(
-      join(UNIX_SOCKET_TEMP_ROOT, 'geulbat-ptc-fixed-input-exists-'),
-    );
-    try {
-      const epochDir = join(root, 'ptc-epoch-input-exists');
-      await mkdir(epochDir, { recursive: true });
-      await writeFile(
-        join(epochDir, 'fixed-probe-input.json'),
-        'existing secret',
-        {
-          encoding: 'utf8',
-          mode: 0o600,
-          flag: 'wx',
-        },
-      );
-      const bridge = fakeBridge({
-        epochDir,
-        socketHostPath: join(epochDir, 'callback.sock'),
-        socketContainerPath: `${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}/ptc-epoch-input-exists/callback.sock`,
-      });
-      let closeCount = 0;
-      bridge.close = async () => {
-        closeCount += 1;
+    let closeCount = 0;
+
+    await withFixedProbeSession({}, async ({ manager }) => {
+      const bridgeFactory: PtcSessionEpochBridgeFactory = async (args) => {
+        const bridge = await createPtcSessionEpochBridge(args);
+        if (!bridge.ok) {
+          return bridge;
+        }
+        await writeFile(
+          join(
+            dirname(bridge.value.callbackSocketHostPath),
+            'fixed-probe-input.json',
+          ),
+          'existing secret',
+          {
+            encoding: 'utf8',
+            mode: 0o600,
+            flag: 'wx',
+          },
+        );
+        const close = bridge.value.close;
+        bridge.value.close = async () => {
+          closeCount += 1;
+          await close();
+        };
+        return bridge;
       };
 
       const result = await runPtcFixedEpochExecutionProbe({
         identity: IDENTITY,
-        sessionManager: fakeSessionManager(),
-        bridgeFactory: async () => ({ ok: true, value: bridge }),
+        sessionManager: manager,
+        bridgeFactory,
         commandRunner: async () => {
           assert.fail(
             'command runner should not be called when input write fails',
@@ -630,11 +587,9 @@ void unixTest(
       assert.equal(closeCount, 1);
       assert.doesNotMatch(
         JSON.stringify(result),
-        /existing secret|token-fixed|callback\.sock/u,
+        /existing secret|callback\.sock/u,
       );
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+    });
   },
 );
 
@@ -666,7 +621,7 @@ async function runNodeProbeScript(inputPath: string): Promise<{
   });
 }
 
-function fakeSessionManager(): PtcSessionDockerManager {
+function unusedSessionManager(): PtcSessionDockerManager {
   return {
     getOrCreate: async () => {
       throw new Error(
@@ -676,49 +631,4 @@ function fakeSessionManager(): PtcSessionDockerManager {
     close: async () => ({ ok: true, value: undefined }),
     closeAll: async () => ({ ok: true, value: undefined }),
   };
-}
-
-function fakeBridge(args: {
-  epochDir: string;
-  socketHostPath: string;
-  socketContainerPath: string;
-}): PtcSessionEpochBridge {
-  const reuseKey = fakeReuseKey();
-  return {
-    containerId: 'container-fixed-probe',
-    epochId: 'epoch-fixed-probe',
-    token: 'token-fixed',
-    callbackSocketHostPath: args.socketHostPath,
-    callbackSocketContainerPath: args.socketContainerPath,
-    session: {
-      state: 'ready' as const,
-      containerId: 'container-fixed-probe',
-      reuseKey,
-      callbackRootHostPath: join(args.epochDir, '..'),
-      callbackRootContainerPath: PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
-      artifactRootHostPath: join(args.epochDir, '..', '..', 'artifacts'),
-      artifactRootContainerPath: PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
-      artifactWorkspaceMountPolicyId:
-        PTC_SESSION_DOCKER_ARTIFACT_WORKSPACE_MOUNT_POLICY_ID,
-      packageCacheRootHostPath: join(
-        args.epochDir,
-        '..',
-        '..',
-        'package-cache',
-      ),
-      packageCacheRootContainerPath: reuseKey.packageCacheRootContainerPath,
-      packageCacheMountPolicyId: reuseKey.packageCacheMountPolicyId,
-      packageCacheId: reuseKey.packageCacheId,
-      packageCacheIdentityHash: reuseKey.packageCacheIdentityHash,
-    },
-    close: async () => {},
-  };
-}
-
-function fakeReuseKey(): PtcSessionDockerReuseKey {
-  return normalizePtcSessionDockerReuseKey({
-    identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
-    policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
-  });
 }

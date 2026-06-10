@@ -3,7 +3,22 @@ import {
   createDefaultPtcLabPackageManagerPolicy,
   type PtcLabPackageCachePolicy,
   type PtcLabPackageManagerPolicy,
-} from './lab-package-cache.js';
+} from './lab-package-cache-contract.js';
+import {
+  createPtcLabNetworkDisabledPolicy,
+  type PtcLabNetworkPolicy,
+} from './lab-network-policy.js';
+import {
+  createPtcLabBrowserDisabledPolicy,
+  type PtcLabBrowserPolicy,
+} from './lab-browser-policy.js';
+import {
+  PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_COMMAND_MS,
+  PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_PROCESS_COUNT,
+  PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_POLICY_ID,
+  PTC_LAB_LOCAL_DOCKER_POLICY_ID,
+  PTC_SAFE_SUBSET_DEFAULT_POLICY_ID,
+} from './lab-profile-contract.js';
 
 export type PtcExecutionProfile = 'safe_subset' | 'lab';
 export type PtcExecutionProfileRequest = PtcExecutionProfile | 'default';
@@ -25,22 +40,6 @@ export type PtcLabShellMode =
   | 'disabled'
   | 'batch_command'
   | 'interactive_terminal';
-
-export type PtcLabNetworkPolicy =
-  | {
-      mode: 'disabled';
-      policyVersion: string;
-    }
-  | {
-      mode: 'allowlisted';
-      allowlistId: string;
-      policyVersion: string;
-    }
-  | {
-      mode: 'open';
-      explicitOptInPolicyId: string;
-      policyVersion: string;
-    };
 
 export interface PtcLabPolicyProjection {
   profile: 'lab';
@@ -76,12 +75,7 @@ export interface PtcLabPolicyProjection {
   packageCache: PtcLabPackageCachePolicy;
   packageManager: PtcLabPackageManagerPolicy;
   network: PtcLabNetworkPolicy;
-  browser: {
-    enabled: boolean;
-    maxTabs?: number;
-    maxMs?: number;
-    artifactExportPolicyId?: string;
-  };
+  browser: PtcLabBrowserPolicy;
 }
 
 export type PtcProfileAdmissionFailureReason =
@@ -111,11 +105,6 @@ export interface AdmitPtcExecutionProfileArgs {
   labPolicy?: PtcLabPolicyProjection;
 }
 
-export const PTC_SAFE_SUBSET_DEFAULT_POLICY_ID =
-  'ptc_safe_subset_default_v1' as const;
-export const PTC_LAB_LOCAL_DOCKER_POLICY_ID =
-  'ptc_lab_local_docker_policy_v1' as const;
-
 export function createPtcLabLocalDockerPolicyProjection(): PtcLabPolicyProjection {
   return {
     profile: 'lab',
@@ -138,12 +127,19 @@ export function createPtcLabLocalDockerPolicyProjection(): PtcLabPolicyProjectio
     },
     packageCache: createDefaultPtcLabPackageCachePolicy(),
     packageManager: createDefaultPtcLabPackageManagerPolicy(),
-    network: {
-      mode: 'disabled',
-      policyVersion: 'ptc_lab_network_disabled_v1',
-    },
-    browser: {
-      enabled: false,
+    network: createPtcLabNetworkDisabledPolicy(),
+    browser: createPtcLabBrowserDisabledPolicy(),
+  };
+}
+
+export function createPtcLabLocalDockerBatchCommandPolicyProjection(): PtcLabPolicyProjection {
+  return {
+    ...createPtcLabLocalDockerPolicyProjection(),
+    policyId: PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_POLICY_ID,
+    shell: {
+      mode: 'batch_command',
+      maxProcessCount: PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_PROCESS_COUNT,
+      maxCommandMs: PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_COMMAND_MS,
     },
   };
 }
@@ -204,14 +200,12 @@ export function admitPtcExecutionProfile(
 export type PtcLabWorkspaceReadEgressDecision =
   | 'no_workspace_read'
   | 'workspace_read_without_egress'
-  | 'workspace_read_with_allowlisted_egress'
   | 'workspace_read_with_open_egress';
 
 export interface PtcLabWorkspaceReadEgressSummary {
   workspaceReadEnabled: boolean;
   egressMode: PtcLabEgressMode;
   combinedDecision: PtcLabWorkspaceReadEgressDecision;
-  allowlistId?: string;
 }
 
 export function describePtcLabWorkspaceReadEgressDecision(
@@ -219,30 +213,20 @@ export function describePtcLabWorkspaceReadEgressDecision(
 ): PtcLabWorkspaceReadEgressSummary {
   const workspaceReadEnabled = policy.mounts.workspaceRead?.enabled === true;
   const egressMode = policy.network.mode;
-  const allowlistId =
-    policy.network.mode === 'allowlisted'
-      ? policy.network.allowlistId
-      : undefined;
   if (!workspaceReadEnabled) {
     return {
       workspaceReadEnabled,
       egressMode,
       combinedDecision: 'no_workspace_read',
-      ...(allowlistId ? { allowlistId } : {}),
     };
   }
-
-  const combinedDecision =
-    egressMode === 'open'
-      ? 'workspace_read_with_open_egress'
-      : egressMode === 'allowlisted'
-        ? 'workspace_read_with_allowlisted_egress'
-        : 'workspace_read_without_egress';
 
   return {
     workspaceReadEnabled,
     egressMode,
-    combinedDecision,
-    ...(allowlistId ? { allowlistId } : {}),
+    combinedDecision:
+      egressMode === 'open'
+        ? 'workspace_read_with_open_egress'
+        : 'workspace_read_without_egress',
   };
 }

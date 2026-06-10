@@ -26,12 +26,10 @@ import {
 import {
   PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_ARTIFACT_WORKSPACE_MOUNT_POLICY_ID,
-} from './session-docker.js';
+} from './session-docker-contract.js';
 
-const PRIVATE_TEST_PATH = ['', 'home', 'user', '.geulbat', 'private'].join(
-  '/',
-);
-const PRIVATE_TEST_HOME = ['', 'home', 'user'].join('/');
+const PRIVATE_TEST_PATH = '/tmp/geulbat-private/.geulbat/private';
+const PRIVATE_TEST_HOME = '/tmp/geulbat-private';
 
 async function withTempRoots<T>(
   fn: (roots: { workspaceRoot: string; artifactRoot: string }) => Promise<T>,

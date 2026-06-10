@@ -5,11 +5,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { HttpMetadataProbeRequestTransport } from '../network/http-metadata-probe.js';
 import { createSandboxAttemptStore } from './attempt-store.js';
-import {
-  probeReactBundleExplicitCdnDependencies,
-  type ReactBundleDependencyMetadataProbeBackend,
-  type ReactBundleDependencyNetworkProbeCandidate,
-} from './react-bundle-dependency-network-probe.js';
+import type { ReactBundleDependencyNetworkProbeCandidate } from './react-bundle-dependency-network-probe-candidate.js';
+import { probeReactBundleExplicitCdnDependencies } from './react-bundle-dependency-network-probe.js';
 import {
   prepareReactBundleExplicitCdnDependencies,
   type ReactBundleDependencyPrepareRequest,
@@ -689,35 +686,5 @@ void test('docker backend availability consumes the attempt timeout before metad
     assert.equal(transportCalls, 0);
     const attempt = store.getAttempts().records[0];
     assert.equal(attempt?.status, 'timed_out');
-  });
-});
-
-void test('docker backend rejects unsupported policy metadata before execution', async () => {
-  await withWorkspace(async (workspaceRoot) => {
-    const store = createSandboxAttemptStore({
-      now: () => '2026-05-22T00:00:00.000Z',
-    });
-    const backend = {
-      kind: 'docker_worker',
-      imageRef: 'local/geulbat-metadata-probe:2026-05-22',
-      allowlistId: 'different_allowlist',
-    } as unknown as ReactBundleDependencyMetadataProbeBackend;
-
-    await assert.rejects(
-      () =>
-        probeReactBundleExplicitCdnDependencies({
-          workspaceRoot,
-          store,
-          request: BASE_REQUEST,
-          timeoutMs: 1000,
-          backend,
-          dockerCommandRunner: async () => {
-            throw new Error('docker should not be invoked');
-          },
-        }),
-      /unsupported react bundle dependency metadata probe backend allowlistId/,
-    );
-
-    assert.equal(store.getAttempts().records.length, 0);
   });
 });

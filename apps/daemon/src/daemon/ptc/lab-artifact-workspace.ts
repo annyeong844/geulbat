@@ -17,12 +17,13 @@ import type {
 } from '../sandbox/attempt-store.js';
 import { importSandboxOutputEvidence } from '../sandbox/output-evidence-store.js';
 import type { CollectedSandboxOutput } from '../sandbox/output-validation.js';
-import { PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT } from './lab-package-cache.js';
+import { PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT } from './lab-package-cache-contract.js';
 import type { PtcLabAdmittedProfile } from './lab-profile.js';
+import { sanitizePtcPrivateMarkers } from './output-redaction.js';
 import {
   PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_ARTIFACT_WORKSPACE_MOUNT_POLICY_ID,
-} from './session-docker.js';
+} from './session-docker-contract.js';
 
 export const PTC_LAB_ARTIFACT_IMPORT_MAX_BYTES = 16 * 1024 * 1024;
 
@@ -96,33 +97,7 @@ function failure(
 }
 
 function sanitizeDiagnosticValue(value: string): string {
-  return value
-    .replaceAll(
-      /(?:[A-Za-z]:\\|\/)[^"' \n\r\t]*\.geulbat[^"' \n\r\t]*/gu,
-      '[redacted:path]',
-    )
-    .replaceAll(
-      /(?:[A-Za-z]:\\Users\\|\/Users\/|\/home\/|\/mnt\/c\/Users\/|\/tmp\/|\/var\/folders\/)[^"' \n\r\t]*/gu,
-      '[redacted:path]',
-    )
-    .replaceAll(
-      /\/geulbat\/artifacts\/?[^"' \n\r\t]*/gu,
-      '[redacted:artifact-path]',
-    )
-    .replaceAll(
-      /\/geulbat\/callbacks\/?[^"' \n\r\t]*/gu,
-      '[redacted:callback-path]',
-    )
-    .replaceAll(
-      /\/geulbat\/package-cache\/?[^"' \n\r\t]*/gu,
-      '[redacted:package-cache-path]',
-    )
-    .replaceAll(
-      /[^"' \n\r\t]*ptc-package-caches[^"' \n\r\t]*/gu,
-      '[redacted:package-cache-path]',
-    )
-    .replaceAll(/\/var\/run\/docker\.sock/gu, '[redacted:docker-socket]')
-    .slice(0, 512);
+  return sanitizePtcPrivateMarkers(value).slice(0, 512);
 }
 
 function validateRelativePath(

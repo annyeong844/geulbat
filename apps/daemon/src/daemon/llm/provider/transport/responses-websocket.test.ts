@@ -2,10 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 
-import {
-  buildResponseCreatePayload,
-  streamResponsesOverWebSocket,
-} from './responses-websocket.js';
+import { buildResponseCreatePayload } from './responses-wire-input.js';
+import { streamResponsesOverWebSocket } from './responses-websocket.js';
 
 const baseBody = {
   model: 'test-model',

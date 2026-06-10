@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { callModelWithDependencies } from './client.js';
 import { createProviderAuthRuntimeStore } from '../../auth/runtime-state.js';
 import type { ProviderRequestOptions } from './provider-options.js';
-import type { ResponsesWebSocketSessionStore } from './transport/responses-websocket-session.js';
+import type { ResponsesWebSocketSessionStore } from './transport/responses-websocket-cache.js';
 
 const unusedProviderWebSocketSessions: Pick<
   ResponsesWebSocketSessionStore,

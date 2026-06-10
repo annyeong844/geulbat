@@ -1,12 +1,14 @@
 import type { ReactBundleRuntimeManifest } from '@geulbat/protocol/react-bundle-inline-compile';
+import {
+  normalizeReactBundleEntryUrl,
+  type ReactBundleDependencyPrepareSummary,
+  type ReactBundleRuntimeDependencies,
+} from './react-bundle-dependency-prepare.js';
 import type {
   ReactBundleDependencyNetworkProbeSummary,
   ReactBundleDependencyNetworkProbeSummaryProbe,
 } from './react-bundle-dependency-network-probe.js';
-import type {
-  ReactBundleDependencyPrepareSummary,
-  ReactBundleRuntimeDependencies,
-} from './react-bundle-dependency-prepare.js';
+import { isOpaqueSandboxOutputEvidenceRef } from './output-validation.js';
 
 export type ReactBundleRuntimeManifestAcceptanceFailureReason =
   | 'prepare_summary_invalid'
@@ -108,11 +110,12 @@ export function acceptReactBundleRuntimeManifest(args: {
   const prepareValidation = validatePrepareSummary(args.prepare);
   if (!prepareValidation.ok) return prepareValidation.failure;
 
-  const entryUrl = tryNormalizeUrl(args.prepare.manifest.entryUrl);
-  if (!entryUrl.ok) {
+  try {
+    normalizeReactBundleEntryUrl(args.prepare.manifest.entryUrl);
+  } catch {
     return fail(
       'manifest_entry_url_invalid',
-      'react bundle runtime manifest entryUrl must be a valid absolute URL',
+      'react bundle runtime manifest entryUrl is not admitted by runtime URL policy',
       { prepareEvidenceRef: args.prepare.evidenceRef },
     );
   }
@@ -171,26 +174,12 @@ function validatePrepareSummary(
 ):
   | { ok: true }
   | { ok: false; failure: ReactBundleRuntimeManifestAcceptanceResult } {
-  if (!isOpaqueEvidenceRef(prepare.evidenceRef)) {
+  if (!isOpaqueSandboxOutputEvidenceRef(prepare.evidenceRef)) {
     return {
       ok: false,
       failure: fail(
         'prepare_summary_invalid',
         'react bundle prepare evidence ref must be opaque',
-      ),
-    };
-  }
-  if (
-    prepare.provenanceSummary.provider !== 'explicit_cdn' ||
-    prepare.provenanceSummary.lifecycleScripts !== 'not_applicable' ||
-    prepare.provenanceSummary.networkPolicy !== 'none'
-  ) {
-    return {
-      ok: false,
-      failure: fail(
-        'prepare_summary_invalid',
-        'react bundle prepare summary has unsupported provenance policy',
-        { prepareEvidenceRef: prepare.evidenceRef },
       ),
     };
   }
@@ -346,30 +335,12 @@ function validateProbeSummary(args: {
       probesByKey: ValidatedProbeSummary['probesByKey'];
     }
   | { ok: false; failure: ReactBundleRuntimeManifestAcceptanceResult } {
-  if (!isOpaqueEvidenceRef(args.probe.evidenceRef)) {
+  if (!isOpaqueSandboxOutputEvidenceRef(args.probe.evidenceRef)) {
     return {
       ok: false,
       failure: fail(
         'probe_summary_invalid',
         'react bundle probe evidence ref must be opaque',
-        {
-          prepareEvidenceRef: args.prepareEvidenceRef,
-          probeEvidenceRef: args.probe.evidenceRef,
-        },
-      ),
-    };
-  }
-  if (
-    args.probe.probeMode !== 'metadata' ||
-    args.probe.networkPolicy !== 'allowlisted_metadata_probe' ||
-    args.probe.networkPolicyVersion !== 1 ||
-    args.probe.allowlistId !== 'react_bundle_dependency_cdn_v1'
-  ) {
-    return {
-      ok: false,
-      failure: fail(
-        'probe_summary_invalid',
-        'react bundle metadata probe summary has unsupported policy',
         {
           prepareEvidenceRef: args.prepareEvidenceRef,
           probeEvidenceRef: args.probe.evidenceRef,
@@ -609,16 +580,6 @@ function tryNormalizeUrl(
   } catch {
     return { ok: false };
   }
-}
-
-function isOpaqueEvidenceRef(value: string): boolean {
-  return (
-    value.startsWith('sandbox-output:') &&
-    !value.includes('/') &&
-    !value.includes('\\') &&
-    !value.includes('.geulbat') &&
-    !value.includes('..')
-  );
 }
 
 function fail(

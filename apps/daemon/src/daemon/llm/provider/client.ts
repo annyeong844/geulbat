@@ -29,7 +29,7 @@ import { decideProviderRetryPolicy } from './provider-retry-policy.js';
 import type { ProviderRequestOptions } from './provider-options.js';
 import { streamResponsesOverWebSocket } from './transport/responses-websocket.js';
 import type { ResponsesWireDiscoverySink } from './transport/responses-websocket.js';
-import type { ResponsesWebSocketSessionStore } from './transport/responses-websocket-session.js';
+import type { ResponsesWebSocketSessionStore } from './transport/responses-websocket-cache.js';
 import type {
   HistoryItem,
   FunctionCall,

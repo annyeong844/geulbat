@@ -2,15 +2,32 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   admitPtcExecutionProfile,
+  createPtcLabLocalDockerBatchCommandPolicyProjection,
+  createPtcLabLocalDockerPolicyProjection,
   describePtcLabWorkspaceReadEgressDecision,
-  PTC_LAB_LOCAL_DOCKER_POLICY_ID,
-  type PtcLabPolicyProjection,
 } from './lab-profile.js';
 import {
-  PTC_LAB_PACKAGE_CACHE_DEFAULT_MAX_BYTES,
+  PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_COMMAND_MS,
+  PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_PROCESS_COUNT,
+  PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_POLICY_ID,
+  PTC_LAB_LOCAL_DOCKER_POLICY_ID,
+} from './lab-profile-contract.js';
+import {
+  createPtcLabOpenEgressLocalPolicy,
+  PTC_LAB_NETWORK_DISABLED_POLICY_ID,
+} from './lab-network-policy.js';
+import {
+  PTC_LAB_BROWSER_ARTIFACT_EXPORT_DISABLED_POLICY_ID,
+  PTC_LAB_BROWSER_COOKIE_STORE_NONE_POLICY_ID,
+  PTC_LAB_BROWSER_DISABLED_POLICY_ID,
+  PTC_LAB_BROWSER_PROFILE_NONE_POLICY_ID,
+  PTC_LAB_BROWSER_TELEMETRY_DISABLED_POLICY_ID,
+} from './lab-browser-policy.js';
+import { PTC_LAB_PACKAGE_CACHE_DEFAULT_MAX_BYTES } from './lab-package-cache-contract.js';
+import {
   PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_PACKAGE_CACHE_MOUNT_POLICY_ID,
-} from './lab-package-cache.js';
+} from './lab-package-cache-contract.js';
 
 void test('admitPtcExecutionProfile selects safe_subset for default request', () => {
   const result = admitPtcExecutionProfile({
@@ -102,7 +119,41 @@ void test('admitPtcExecutionProfile projects local docker lab policy when enable
     'ptc_lab_package_telemetry_pending_v1',
   );
   assert.equal(policy.network.mode, 'disabled');
+  assert.equal(
+    policy.network.networkPolicyId,
+    PTC_LAB_NETWORK_DISABLED_POLICY_ID,
+  );
+  assert.deepEqual(policy.browser, {
+    enabled: false,
+    mode: 'disabled',
+    policyVersion: 'ptc_lab_browser_policy_v1',
+    browserPolicyId: PTC_LAB_BROWSER_DISABLED_POLICY_ID,
+    profilePolicyId: PTC_LAB_BROWSER_PROFILE_NONE_POLICY_ID,
+    cookieStorePolicyId: PTC_LAB_BROWSER_COOKIE_STORE_NONE_POLICY_ID,
+    artifactExportPolicyId: PTC_LAB_BROWSER_ARTIFACT_EXPORT_DISABLED_POLICY_ID,
+    telemetryPolicyId: PTC_LAB_BROWSER_TELEMETRY_DISABLED_POLICY_ID,
+  });
+  assert.equal(policy.mounts.artifactWorkspace.enabled, true);
+});
+
+void test('createPtcLabLocalDockerBatchCommandPolicyProjection opens only the batch shell surface', () => {
+  const policy = createPtcLabLocalDockerBatchCommandPolicyProjection();
+
+  assert.equal(policy.policyId, PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_POLICY_ID);
+  assert.equal(policy.profile, 'lab');
+  assert.equal(policy.boundary.kind, 'docker');
+  assert.equal(policy.shell.mode, 'batch_command');
+  assert.equal(
+    policy.shell.maxCommandMs,
+    PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_COMMAND_MS,
+  );
+  assert.equal(
+    policy.shell.maxProcessCount,
+    PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_PROCESS_COUNT,
+  );
+  assert.equal(policy.network.mode, 'disabled');
   assert.equal(policy.browser.enabled, false);
+  assert.equal(policy.packageManager.enabled, false);
   assert.equal(policy.mounts.artifactWorkspace.enabled, true);
 });
 
@@ -113,9 +164,9 @@ void test('admitPtcExecutionProfile returns a fresh default lab policy for each 
     reason: 'explicit_user_request',
   });
   assert.equal(first.ok, true);
+  assert.ok(first.ok ? first.value.labPolicy : undefined);
   if (first.ok && first.value.labPolicy) {
-    (first.value.labPolicy.network as unknown as { mode: 'open' }).mode =
-      'open';
+    first.value.labPolicy.network = createPtcLabOpenEgressLocalPolicy();
   }
 
   const second = admitPtcExecutionProfile({
@@ -141,58 +192,30 @@ void test('admitPtcExecutionProfile never silently downgrades requested lab to s
   assert.equal(disabled.ok ? '' : disabled.reasonCode, 'ptc_lab_not_enabled');
 });
 
-void test('describePtcLabWorkspaceReadEgressDecision records combined workspace-read and egress policy', () => {
-  const policy: PtcLabPolicyProjection = {
-    profile: 'lab',
-    policyId: 'ptc_lab_test_policy_v1',
-    boundary: { kind: 'docker', boundaryClaim: 'docker_containment' },
+void test('describePtcLabWorkspaceReadEgressDecision distinguishes disabled and open egress', () => {
+  const disabledPolicy = createPtcLabLocalDockerPolicyProjection();
+
+  assert.deepEqual(describePtcLabWorkspaceReadEgressDecision(disabledPolicy), {
+    workspaceReadEnabled: false,
+    egressMode: 'disabled',
+    combinedDecision: 'no_workspace_read',
+  });
+
+  const openPolicy = {
+    ...createPtcLabLocalDockerPolicyProjection(),
     mounts: {
+      ...createPtcLabLocalDockerPolicyProjection().mounts,
       workspaceRead: {
         enabled: true,
-        roots: [{ id: 'project-root', mode: 'read_only' }],
-      },
-      artifactWorkspace: {
-        enabled: true,
-        workspaceId: 'artifact-workspace',
-        exportPolicyId: 'ptc_lab_artifact_export_v1',
+        roots: [{ id: 'workspace-root', mode: 'read_only' as const }],
       },
     },
-    shell: { mode: 'disabled', maxProcessCount: 0, maxCommandMs: 0 },
-    packageCache: {
-      enabled: true,
-      cacheId: 'ptc_lab_package_cache_local_v1',
-      mountPolicyId: PTC_SESSION_DOCKER_PACKAGE_CACHE_MOUNT_POLICY_ID,
-      containerRoot: PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT,
-      quota: {
-        maxBytes: PTC_LAB_PACKAGE_CACHE_DEFAULT_MAX_BYTES,
-        enforcement: 'not_enforced_record_only',
-        evictionPolicy: 'manual',
-      },
-    },
-    packageManager: {
-      enabled: false,
-      managers: [],
-      installMode: 'disabled',
-      lifecycleScripts: {
-        policy: 'disabled',
-        policyId: 'ptc_lab_lifecycle_scripts_disabled_v1',
-      },
-      maxInstallMs: 0,
-      maxInstallOutputBytes: 0,
-      telemetryPolicyId: 'ptc_lab_package_telemetry_pending_v1',
-    },
-    network: {
-      mode: 'allowlisted',
-      allowlistId: 'docs-crawl-v1',
-      policyVersion: 'ptc_lab_network_policy_v1',
-    },
-    browser: { enabled: false },
+    network: createPtcLabOpenEgressLocalPolicy(),
   };
 
-  assert.deepEqual(describePtcLabWorkspaceReadEgressDecision(policy), {
+  assert.deepEqual(describePtcLabWorkspaceReadEgressDecision(openPolicy), {
     workspaceReadEnabled: true,
-    egressMode: 'allowlisted',
-    combinedDecision: 'workspace_read_with_allowlisted_egress',
-    allowlistId: 'docs-crawl-v1',
+    egressMode: 'open',
+    combinedDecision: 'workspace_read_with_open_egress',
   });
 });

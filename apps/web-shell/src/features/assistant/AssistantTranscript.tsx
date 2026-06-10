@@ -10,10 +10,10 @@ import {
   createStableOccurrenceKeys,
   getRunTranscriptEntryBaseKey,
   getThreadMessageBaseKey,
-  TranscriptMessage,
 } from './assistant-transcript-content.js';
 import { RunTranscriptEntryBlock } from './assistant-transcript-entry-blocks.js';
 import { AssistantTranscriptLiveTail } from './assistant-transcript-live-tail.js';
+import { TranscriptMessage } from './assistant-transcript-message.js';
 import { useAssistantTranscriptScrollState } from './use-assistant-transcript-scroll-state.js';
 
 interface AssistantTranscriptProps {

@@ -1,12 +1,15 @@
-import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { sha256StableJson } from '@geulbat/shared-utils/stable-json';
 import type {
   SandboxAttemptStore,
   SandboxOutputRef,
   SandboxTerminalStatus,
 } from './attempt-store.js';
-import { createDisposableSandboxRoot } from './disposable-root.js';
+import {
+  sandboxRootFailureDiagnostics,
+  withRunningSandboxAttemptRoot,
+} from './attempt-root.js';
 import { buildSandboxEnvironment } from './environment.js';
 import { importSandboxOutputEvidence } from './output-evidence-store.js';
 import { collectSandboxOutputRef } from './output-validation.js';
@@ -119,6 +122,7 @@ export function validateReactBundleDependencyPrepareRequest(
   request: ReactBundleDependencyPrepareRequest,
 ): ValidatedReactBundleDependencyPrepareRequest {
   assertNonEmptyString(request.entryUrl, 'entryUrl');
+  const entryUrl = normalizeReactBundleEntryUrl(request.entryUrl);
   assertObject(request.runtimeDependencies, 'runtimeDependencies');
   if (!Array.isArray(request.dependencyRefs)) {
     throw new Error('dependencyRefs must be an array');
@@ -146,10 +150,10 @@ export function validateReactBundleDependencyPrepareRequest(
   }
 
   return {
-    entryUrl: request.entryUrl,
+    entryUrl,
     runtimeDependencies,
     dependencyRefs: normalizedRefs,
-    inputHash: sha256StableJson(request),
+    inputHash: sha256StableJson({ ...request, entryUrl }),
     lifecycleScripts: 'not_applicable',
     networkPolicy: 'none',
   };
@@ -168,72 +172,65 @@ export async function prepareReactBundleExplicitCdnDependencies(args: {
     jobKind: 'react_bundle_dependency_prepare',
     adapterKind: 'react_bundle_explicit_cdn_dependency_prepare',
   });
-  let root: Awaited<ReturnType<typeof createDisposableSandboxRoot>> | null =
-    null;
 
-  try {
-    root = await createDisposableSandboxRoot({
-      attemptId: attempt.attemptId,
-    });
-    args.store.markRunning(attempt.attemptId, { rootPath: root.rootPath });
-
-    const env = buildSandboxEnvironment({
-      homeDir: root.homeDir,
-      tempDir: root.tempDir,
-      adapterEnv: {
-        GEULBAT_REACT_BUNDLE_DEPENDENCY_PREPARE: '1',
-        GEULBAT_SANDBOX_NETWORK_POLICY: 'none',
-      },
-    });
-
-    const processResult = await runDependencyPrepareProcess({
-      cwd: root.rootPath,
-      outputDir: root.outputDir,
-      env,
-      timeoutMs: args.timeoutMs,
-      request,
-      ...(args.signal ? { signal: args.signal } : {}),
-      ...(args.processRunner ? { processRunner: args.processRunner } : {}),
-    });
-    const status = classifyDependencyPrepareResult(processResult);
-    if (status !== 'succeeded') {
-      args.store.markTerminal(attempt.attemptId, {
-        status,
-        exitCode: processResult.kind === 'exit' ? processResult.exitCode : null,
-        diagnostics: joinDiagnostics(
-          processResult.stdout,
-          processResult.stderr,
-        ),
-      });
-      throw new Error(`react bundle dependency prepare failed: ${status}`);
-    }
-    if (processResult.kind !== 'exit') {
-      throw new Error('succeeded dependency prepare did not exit');
-    }
-
-    return await importDependencyPrepareOutput({
-      workspaceRoot: args.workspaceRoot,
-      store: args.store,
-      attemptId: attempt.attemptId,
-      request,
-      processResult,
-      outputDir: root.outputDir,
-    });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (root === null) {
+  return await withRunningSandboxAttemptRoot({
+    attemptId: attempt.attemptId,
+    store: args.store,
+    onRootFailure: (message) => {
       args.store.markTerminal(attempt.attemptId, {
         status: 'failed',
-        diagnostics: `sandbox_root_failed: ${message}`,
+        diagnostics: sandboxRootFailureDiagnostics(message),
       });
       throw new Error(
         `react bundle dependency prepare sandbox_root_failed: ${message}`,
       );
-    }
-    throw error;
-  } finally {
-    await root?.cleanup();
-  }
+    },
+    run: async (root) => {
+      const env = buildSandboxEnvironment({
+        homeDir: root.homeDir,
+        tempDir: root.tempDir,
+        adapterEnv: {
+          GEULBAT_REACT_BUNDLE_DEPENDENCY_PREPARE: '1',
+          GEULBAT_SANDBOX_NETWORK_POLICY: 'none',
+        },
+      });
+
+      const processResult = await runDependencyPrepareProcess({
+        cwd: root.rootPath,
+        outputDir: root.outputDir,
+        env,
+        timeoutMs: args.timeoutMs,
+        request,
+        ...(args.signal ? { signal: args.signal } : {}),
+        ...(args.processRunner ? { processRunner: args.processRunner } : {}),
+      });
+      const status = classifyDependencyPrepareResult(processResult);
+      if (status !== 'succeeded') {
+        args.store.markTerminal(attempt.attemptId, {
+          status,
+          exitCode:
+            processResult.kind === 'exit' ? processResult.exitCode : null,
+          diagnostics: joinDiagnostics(
+            processResult.stdout,
+            processResult.stderr,
+          ),
+        });
+        throw new Error(`react bundle dependency prepare failed: ${status}`);
+      }
+      if (processResult.kind !== 'exit') {
+        throw new Error('succeeded dependency prepare did not exit');
+      }
+
+      return await importDependencyPrepareOutput({
+        workspaceRoot: args.workspaceRoot,
+        store: args.store,
+        attemptId: attempt.attemptId,
+        request,
+        processResult,
+        outputDir: root.outputDir,
+      });
+    },
+  });
 }
 
 async function runDependencyPrepareProcess(args: {
@@ -288,7 +285,6 @@ async function runDefaultDependencyPrepareProcess(
     stderr: '',
   };
 }
-
 function buildCandidate(request: ValidatedReactBundleDependencyPrepareRequest) {
   return {
     schemaVersion: 1 as const,
@@ -571,13 +567,21 @@ function assertUrlContainsVersion(url: string, version: string): void {
   }
 }
 
+export function normalizeReactBundleEntryUrl(url: string): string {
+  try {
+    return normalizeDependencyUrl(url);
+  } catch {
+    throw new Error('entryUrl must be an admitted absolute http or https URL');
+  }
+}
+
 function normalizeDependencyUrl(url: string): string {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       throw new Error(`dependency URL must be http or https: ${url}`);
     }
-    if (parsed.username || parsed.password) {
+    if (hasUserinfoDelimiter(url) || parsed.username || parsed.password) {
       throw new Error(`dependency URL must not include credentials: ${url}`);
     }
     if (isUnsafeDependencyHostname(parsed.hostname)) {
@@ -597,6 +601,11 @@ function normalizeDependencyUrl(url: string): string {
   }
 }
 
+function hasUserinfoDelimiter(url: string): boolean {
+  const authority = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/iu.exec(url)?.[1];
+  return authority?.includes('@') ?? false;
+}
+
 function isUnsafeDependencyHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[(.*)\]$/u, '$1');
   return (
@@ -604,6 +613,7 @@ function isUnsafeDependencyHostname(hostname: string): boolean {
     normalized === '127.0.0.1' ||
     normalized === '::1' ||
     normalized.startsWith('10.') ||
+    normalized.startsWith('169.254.') ||
     normalized.startsWith('192.168.') ||
     /^172\.(1[6-9]|2\d|3[0-1])\./u.test(normalized)
   );
@@ -622,22 +632,4 @@ function assertNonEmptyString(
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new Error(`${label} must be a non-empty string`);
   }
-}
-
-function sha256StableJson(value: unknown): string {
-  return createHash('sha256').update(stableStringify(value)).digest('hex');
-}
-
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(',')}]`;
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
 }

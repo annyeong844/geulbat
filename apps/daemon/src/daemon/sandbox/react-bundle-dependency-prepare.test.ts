@@ -40,6 +40,19 @@ const BASE_REQUEST: ReactBundleDependencyPrepareRequest = {
   ],
 };
 
+const UNSAFE_RUNTIME_URLS = [
+  'file:///tmp/app.js',
+  'ftp://example.com/app.js',
+  'data:text/javascript,alert(1)',
+  'javascript:alert(1)',
+  'https://user:pass@example.com/pkg.js',
+  'https://@example.com/pkg.js',
+  'http://127.0.0.1/pkg.js',
+  'http://localhost/pkg.js',
+  'http://169.254.169.254/latest/meta-data',
+  'https://example.com/.geulbat/sandbox-outputs/pkg.js',
+] as const;
+
 async function withInvalidTmpdir<T>(fn: () => Promise<T>): Promise<T> {
   const invalidTempRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-invalid-sandbox-parent-'),
@@ -159,15 +172,7 @@ void test('validateReactBundleDependencyPrepareRequest rejects extra provenance 
 });
 
 void test('validateReactBundleDependencyPrepareRequest rejects unsafe dependency URLs even without network I/O', () => {
-  for (const url of [
-    'ftp://example.com/app.js',
-    'data:text/javascript,alert(1)',
-    'javascript:alert(1)',
-    'https://user:pass@example.com/pkg.js',
-    'http://127.0.0.1/pkg.js',
-    'http://localhost/pkg.js',
-    'https://example.com/.geulbat/sandbox-outputs/pkg.js',
-  ]) {
+  for (const url of UNSAFE_RUNTIME_URLS) {
     assert.throws(
       () =>
         validateReactBundleDependencyPrepareRequest({
@@ -188,6 +193,20 @@ void test('validateReactBundleDependencyPrepareRequest rejects unsafe dependency
         }),
       /dependency URL/,
       url,
+    );
+  }
+});
+
+void test('validateReactBundleDependencyPrepareRequest rejects unsafe entryUrl before sandbox execution', () => {
+  for (const entryUrl of UNSAFE_RUNTIME_URLS) {
+    assert.throws(
+      () =>
+        validateReactBundleDependencyPrepareRequest({
+          ...BASE_REQUEST,
+          entryUrl,
+        }),
+      /entryUrl/,
+      entryUrl,
     );
   }
 });

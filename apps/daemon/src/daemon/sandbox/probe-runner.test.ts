@@ -4,7 +4,10 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createSandboxAttemptStore } from './attempt-store.js';
+import {
+  createSandboxAttemptStore,
+  type SandboxAttemptStore,
+} from './attempt-store.js';
 import { runDeterministicSandboxProbe } from './probe-runner.js';
 
 void test('runDeterministicSandboxProbe records succeeded attempts and output summaries', async () => {
@@ -170,5 +173,42 @@ void test('runDeterministicSandboxProbe records failed attempts when root creati
     }
     await rm(workspaceRoot, { recursive: true, force: true });
     await rm(invalidTempRoot, { recursive: true, force: true });
+  }
+});
+
+void test('runDeterministicSandboxProbe rejects when terminal status cannot be recorded', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-sandbox-probe-workspace-'),
+  );
+  try {
+    const backingStore = createSandboxAttemptStore({
+      now: () => '2026-05-17T00:00:00.000Z',
+    });
+    const store: SandboxAttemptStore = {
+      ...backingStore,
+      markTerminal: () => undefined,
+    };
+
+    await assert.rejects(
+      () =>
+        runDeterministicSandboxProbe({
+          workspaceRoot,
+          store,
+          timeoutMs: 1_000,
+          processRunner: async () => ({
+            kind: 'exit',
+            exitCode: 1,
+            stdout: 'failed',
+            stderr: '',
+          }),
+        }),
+      /sandbox probe terminal update failed for sandbox-attempt-1/u,
+    );
+    assert.equal(
+      backingStore.getAttempt('sandbox-attempt-1')?.status,
+      'running',
+    );
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
   }
 });

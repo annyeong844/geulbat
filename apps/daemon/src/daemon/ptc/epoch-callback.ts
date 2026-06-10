@@ -2,12 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
-
-export interface PtcEpochOwnerContext {
-  threadId: string;
-  workspaceRoot: string;
-  approvalScope: 'run';
-}
+import { isRecord } from '@geulbat/protocol/runtime-utils';
 
 export type PtcEpochCallbackHandlerResult =
   | { ok: true; result: unknown }
@@ -17,7 +12,6 @@ export interface PtcEpochCallbackHandlerInvocation {
   requestId: string;
   kind: string;
   args: unknown;
-  owner: PtcEpochOwnerContext;
   signal: AbortSignal;
 }
 
@@ -35,7 +29,6 @@ export interface PtcEpochCallbackChannel {
 
 export interface CreatePtcEpochCallbackChannelArgs {
   rootDir: string;
-  owner: PtcEpochOwnerContext;
   handler: PtcEpochCallbackHandler;
   maxFrameBytes?: number;
   maxCallbacks?: number;
@@ -59,7 +52,6 @@ export async function createPtcEpochCallbackChannel(
 
   const epochId = randomBytes(8).toString('hex');
   const token = randomBytes(32).toString('hex');
-  const owner = Object.freeze({ ...args.owner });
   const maxFrameBytes = args.maxFrameBytes ?? 64 * 1024;
   const maxCallbacks = args.maxCallbacks ?? 100;
   const maxOpenConnections = args.maxOpenConnections ?? 16;
@@ -131,7 +123,6 @@ export async function createPtcEpochCallbackChannel(
             line,
             socket,
             token,
-            owner,
             handler: args.handler,
             callbackTimeoutMs,
             maxResponseBytes,
@@ -181,7 +172,6 @@ interface HandleCallbackFrameArgs {
   line: string;
   socket: Socket;
   token: string;
-  owner: PtcEpochOwnerContext;
   handler: PtcEpochCallbackHandler;
   callbackTimeoutMs: number;
   maxResponseBytes: number;
@@ -254,7 +244,6 @@ async function handleCallbackFrame(
         requestId: request.requestId,
         kind: request.kind,
         args: request.args,
-        owner: args.owner,
         signal: callbackController.signal,
       }),
       args.callbackTimeoutMs,
@@ -378,10 +367,6 @@ function invalidRequestResponse(): { ok: false; response: PtcWireResponse } {
       message: 'PTC callback request must include requestId, token, and kind',
     },
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function writeResponse(

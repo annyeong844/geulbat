@@ -205,6 +205,29 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
   }
 });
 
+void test('createDaemonContext owns a PTC fixed probe runtime service', () => {
+  const daemonContext = createDaemonContext();
+
+  assert.equal(
+    typeof daemonContext.ptcFixedProbe.runFixedEpochProbe,
+    'function',
+  );
+});
+
+void test('createDaemonContext owns a PTC execute_code runtime service', () => {
+  const daemonContext = createDaemonContext();
+
+  assert.equal(typeof daemonContext.ptcExecuteCode.executeCode, 'function');
+  assert.equal(typeof daemonContext.ptcExecuteCode.closeAll, 'function');
+});
+
+void test('createDaemonContext owns a PTC browser navigation runtime service', () => {
+  const daemonContext = createDaemonContext();
+
+  assert.equal(typeof daemonContext.ptcBrowserNavigate.navigate, 'function');
+  assert.equal(typeof daemonContext.ptcBrowserNavigate.closeAll, 'function');
+});
+
 void test('createDaemonContext owns an isolated sandbox attempt store', () => {
   const first = createDaemonContext();
   const second = createDaemonContext();

@@ -15,6 +15,20 @@ export interface CollectedSandboxOutput {
   totalBytes: number;
 }
 
+export function isOpaqueSandboxOutputEvidenceRef(value: string): boolean {
+  const prefix = 'sandbox-output:';
+  if (!value.startsWith(prefix)) return false;
+  const suffix = value.slice(prefix.length);
+  if (suffix.length === 0) return false;
+  if (/[\s\u0000-\u001f\u007f]/u.test(value)) return false;
+  return (
+    !value.includes('/') &&
+    !value.includes('\\') &&
+    !value.includes('.geulbat') &&
+    !value.includes('..')
+  );
+}
+
 export async function collectSandboxOutputRef(
   outputDir: string,
   budget: SandboxOutputBudget,

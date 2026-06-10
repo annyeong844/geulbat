@@ -3,22 +3,18 @@ import {
   runPtcLabBatchCommandExecution,
   type PtcLabBatchCommandExecutionResult,
   type PtcLabBatchCommandExecutionSummary,
-  type PtcLabBatchCommandFailureReason,
   type PtcLabBatchCommandRequest,
   type PtcLabBatchCommandRunner,
   type PtcLabBatchCommandSessionHandle,
 } from './lab-command-execution.js';
+import type { PtcLabSessionBatchCommandFailureReason } from './lab-session-batch-command-contract.js';
+import { buildPtcLabPublicSessionId } from './lab-session-public-id.js';
 import type {
   PtcSessionDockerFailureReason,
   PtcSessionDockerHandle,
   PtcSessionDockerIdentity,
   PtcSessionDockerManager,
-} from './session-docker.js';
-
-export type PtcLabSessionBatchCommandFailureReason =
-  | PtcLabBatchCommandFailureReason
-  | 'ptc_lab_session_unavailable'
-  | 'ptc_lab_session_busy';
+} from './session-docker-contract.js';
 
 export type PtcLabSessionBatchCommandResult<T> =
   | { ok: true; value: T }
@@ -161,7 +157,7 @@ function projectBatchSessionHandle(args: {
 }): PtcLabBatchCommandSessionHandle {
   return {
     profile: 'lab',
-    labSessionId: `ptc-lab-${args.handle.reuseKey.identityHash.slice(0, 32)}`,
+    labSessionId: buildPtcLabPublicSessionId(args.handle),
     containerId: args.handle.containerId,
     policyId: args.policyId,
   };

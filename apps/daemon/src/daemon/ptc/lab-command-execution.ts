@@ -2,26 +2,16 @@ import type {
   PtcLabAdmittedProfile,
   PtcLabPolicyProjection,
 } from './lab-profile.js';
-import {
-  runPtcSessionDockerCommand,
-  type PtcSessionDockerCommandResult,
-} from './session-docker.js';
+import { sanitizePtcOutput } from './output-redaction.js';
+import { runPtcSessionDockerCommand } from './session-docker-command.js';
+import type {
+  PtcSessionDockerCommandResult,
+  PtcSessionDockerCommandRunner,
+} from './session-docker-contract.js';
+import type { PtcLabBatchCommandFailureReason } from './lab-session-batch-command-contract.js';
 
 export const PTC_LAB_BATCH_COMMAND_MAX_COMMAND_CHARS = 32 * 1024;
 export const PTC_LAB_BATCH_COMMAND_OUTPUT_EXCERPT_BYTES = 16 * 1024;
-
-export type PtcLabBatchCommandFailureReason =
-  | 'ptc_lab_admission_required'
-  | 'ptc_lab_shell_disabled'
-  | 'ptc_lab_session_unavailable'
-  | 'ptc_lab_policy_mismatch'
-  | 'ptc_lab_interpreter_unavailable'
-  | 'ptc_lab_command_invalid'
-  | 'ptc_lab_command_timeout'
-  | 'ptc_lab_command_cancelled'
-  | 'ptc_lab_command_failed'
-  | 'ptc_lab_process_limit_exceeded'
-  | 'ptc_lab_command_output_invalid';
 
 export type PtcLabBatchCommandExecutionResult<T> =
   | { ok: true; value: T }
@@ -68,11 +58,6 @@ export type PtcLabBatchCommandRunnerResult =
     }
   | {
       kind: 'interpreter_unavailable';
-      stdout: string;
-      stderr: string;
-    }
-  | {
-      kind: 'process_limit_exceeded';
       stdout: string;
       stderr: string;
     }
@@ -263,11 +248,26 @@ function buildDockerExecArgs(args: {
   return ['exec', args.containerId, executable, '-lc', args.command];
 }
 
-async function runDefaultDockerRunner(
-  invocation: PtcLabBatchCommandRunnerInvocation,
-): Promise<PtcLabBatchCommandRunnerResult> {
-  const result: PtcSessionDockerCommandResult =
-    await runPtcSessionDockerCommand(invocation);
+const runDefaultDockerRunner: PtcLabBatchCommandRunner =
+  adaptPtcSessionDockerCommandRunner(runPtcSessionDockerCommand);
+
+export function adaptPtcSessionDockerCommandRunner(
+  commandRunner: PtcSessionDockerCommandRunner,
+): PtcLabBatchCommandRunner {
+  return async (invocation) => {
+    const result = await commandRunner({
+      executable: invocation.executable,
+      args: invocation.args,
+      timeoutMs: invocation.timeoutMs,
+      ...(invocation.signal ? { signal: invocation.signal } : {}),
+    });
+    return mapPtcSessionDockerCommandResult(result);
+  };
+}
+
+function mapPtcSessionDockerCommandResult(
+  result: PtcSessionDockerCommandResult,
+): PtcLabBatchCommandRunnerResult {
   if (result.kind === 'exit') {
     if (result.exitCode === 126 || result.exitCode === 127) {
       return {
@@ -316,8 +316,14 @@ async function mapRunnerResult(args: {
 > {
   switch (args.runnerResult.kind) {
     case 'exit': {
-      const stdout = sanitizeOutput(args.runnerResult.stdout, args.outputLimit);
-      const stderr = sanitizeOutput(args.runnerResult.stderr, args.outputLimit);
+      const stdout = sanitizePtcOutput(
+        args.runnerResult.stdout,
+        args.outputLimit,
+      );
+      const stderr = sanitizePtcOutput(
+        args.runnerResult.stderr,
+        args.outputLimit,
+      );
       return {
         ok: true,
         value: {
@@ -369,11 +375,6 @@ async function mapRunnerResult(args: {
         'ptc_lab_interpreter_unavailable',
         'PTC lab batch command interpreter is unavailable',
       );
-    case 'process_limit_exceeded':
-      return failure(
-        'ptc_lab_process_limit_exceeded',
-        'PTC lab batch command process limit was exceeded',
-      );
     case 'failed':
       return failure('ptc_lab_command_failed', 'PTC lab batch command failed');
   }
@@ -398,45 +399,6 @@ async function maybeTaintSession(args: {
   } catch {
     return { ok: false };
   }
-}
-
-function sanitizeOutput(
-  value: string,
-  limit: number,
-): { value: string; truncated: boolean } {
-  const redacted = sanitizePrivateMarkers(value);
-  if (Buffer.byteLength(redacted, 'utf8') <= limit) {
-    return { value: redacted, truncated: false };
-  }
-  const sliced = Buffer.from(redacted, 'utf8')
-    .subarray(0, Math.max(0, limit))
-    .toString('utf8');
-  return { value: `${sliced}\n[truncated]`, truncated: true };
-}
-
-function sanitizePrivateMarkers(value: string): string {
-  return value
-    .replaceAll(/\/var\/run\/docker\.sock/gu, '[redacted:docker-socket]')
-    .replaceAll(
-      /\/geulbat\/callbacks\/[^"' \n\r\t]*/gu,
-      '[redacted:callback-path]',
-    )
-    .replaceAll(
-      /[^"' \n\r\t]*callback\.sock[^"' \n\r\t]*/gu,
-      '[redacted:callback-socket]',
-    )
-    .replaceAll(
-      /(?:[A-Za-z]:\\|\/)[^"' \n\r\t]*\.geulbat[^"' \n\r\t]*/gu,
-      '[redacted:path]',
-    )
-    .replaceAll(
-      /(?:[A-Za-z]:\\Users\\|\/Users\/|\/home\/|\/mnt\/c\/Users\/|\/tmp\/|\/var\/folders\/)[^"' \n\r\t]*/gu,
-      '[redacted:path]',
-    )
-    .replaceAll(
-      /(?:provider|oauth|session|token)[_-]?(?:secret|token|material)?=["':][^"'\s]+/giu,
-      '[redacted:secret]',
-    );
 }
 
 function failure(

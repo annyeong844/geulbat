@@ -5,16 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import {
-  createPtcEpochCallbackChannel,
-  type PtcEpochOwnerContext,
-} from './epoch-callback.js';
-
-const OWNER: PtcEpochOwnerContext = Object.freeze({
-  threadId: 'thread-ptc-1',
-  workspaceRoot: '/workspace/project-a',
-  approvalScope: 'run',
-});
+import { createPtcEpochCallbackChannel } from './epoch-callback.js';
 
 const PRIVATE_HANDLER_PATH = ['', 'home', 'user', '.geulbat', 'path'].join('/');
 
@@ -68,7 +59,6 @@ void unixTest(
     await withTempRoot(async (root) => {
       const channel = await createPtcEpochCallbackChannel({
         rootDir: root,
-        owner: OWNER,
         handler: async () => ({
           ok: true,
           result: { kind: 'inline', value: 'ok' },
@@ -99,7 +89,6 @@ void unixTest(
       let calls = 0;
       const channel = await createPtcEpochCallbackChannel({
         rootDir: root,
-        owner: OWNER,
         handler: async () => {
           calls += 1;
           return { ok: true, result: 'unexpected' };
@@ -129,15 +118,12 @@ void unixTest(
 );
 
 void unixTest(
-  'callback channel derives owner from channel state and never echoes forged owner fields',
+  'callback channel ignores forged owner fields in callback frames',
   async () => {
     await withTempRoot(async (root) => {
-      let observedOwner: PtcEpochOwnerContext | null = null;
       const channel = await createPtcEpochCallbackChannel({
         rootDir: root,
-        owner: OWNER,
         handler: async (invocation) => {
-          observedOwner = invocation.owner;
           return {
             ok: true,
             result: {
@@ -159,7 +145,6 @@ void unixTest(
           approvalScope: 'forged',
         });
 
-        assert.deepEqual(observedOwner, OWNER);
         assert.deepEqual(response, {
           requestId: 'req-owner',
           ok: true,
@@ -185,7 +170,6 @@ void unixTest(
     await withTempRoot(async (root) => {
       const channel = await createPtcEpochCallbackChannel({
         rootDir: root,
-        owner: OWNER,
         maxFrameBytes: 64,
         handler: async () => ({ ok: true, result: 'unexpected' }),
       });
@@ -212,7 +196,6 @@ void unixTest('callback channel enforces per-epoch callback cap', async () => {
   await withTempRoot(async (root) => {
     const channel = await createPtcEpochCallbackChannel({
       rootDir: root,
-      owner: OWNER,
       maxCallbacks: 1,
       handler: async () => ({ ok: true, result: 'ok' }),
     });
@@ -250,7 +233,6 @@ void unixTest('callback channel classifies handler timeout', async () => {
   await withTempRoot(async (root) => {
     const channel = await createPtcEpochCallbackChannel({
       rootDir: root,
-      owner: OWNER,
       callbackTimeoutMs: 10,
       handler: async () => {
         await delay(50);
@@ -284,7 +266,6 @@ void unixTest(
     await withTempRoot(async (root) => {
       const channel = await createPtcEpochCallbackChannel({
         rootDir: root,
-        owner: OWNER,
         maxOpenConnections: 1,
         handler: async () => ({ ok: true, result: 'ok' }),
       });
@@ -316,53 +297,11 @@ void unixTest(
 );
 
 void unixTest(
-  'callback channel snapshots owner context at creation time',
-  async () => {
-    await withTempRoot(async (root) => {
-      const mutableOwner: PtcEpochOwnerContext = {
-        threadId: 'thread-original',
-        workspaceRoot: '/workspace/original',
-        approvalScope: 'run',
-      };
-      let observedOwner: PtcEpochOwnerContext | null = null;
-      const channel = await createPtcEpochCallbackChannel({
-        rootDir: root,
-        owner: mutableOwner,
-        handler: async (invocation) => {
-          observedOwner = invocation.owner;
-          return { ok: true, result: 'ok' };
-        },
-      });
-
-      mutableOwner.threadId = 'thread-mutated';
-      mutableOwner.workspaceRoot = '/workspace/mutated';
-
-      try {
-        await sendFrame(channel.socketPath, {
-          requestId: 'req-owner-snapshot',
-          token: channel.token,
-          kind: 'read_file',
-        });
-
-        assert.deepEqual(observedOwner, {
-          threadId: 'thread-original',
-          workspaceRoot: '/workspace/original',
-          approvalScope: 'run',
-        });
-      } finally {
-        await channel.close();
-      }
-    });
-  },
-);
-
-void unixTest(
   'callback channel classifies handler rejection without leaking raw errors',
   async () => {
     await withTempRoot(async (root) => {
       const channel = await createPtcEpochCallbackChannel({
         rootDir: root,
-        owner: OWNER,
         handler: async () => {
           throw new Error(`secret ${PRIVATE_HANDLER_PATH}`);
         },
@@ -399,7 +338,6 @@ void unixTest(
       const observed: { signal?: AbortSignal } = {};
       const channel = await createPtcEpochCallbackChannel({
         rootDir: root,
-        owner: OWNER,
         callbackTimeoutMs: 10,
         handler: async (invocation) => {
           observed.signal = invocation.signal;
@@ -439,7 +377,6 @@ void unixTest(
       circular.self = circular;
       const channel = await createPtcEpochCallbackChannel({
         rootDir: root,
-        owner: OWNER,
         handler: async () => ({ ok: true, result: circular }),
       });
 
@@ -468,7 +405,6 @@ void unixTest('callback channel bounds serialized response size', async () => {
   await withTempRoot(async (root) => {
     const channel = await createPtcEpochCallbackChannel({
       rootDir: root,
-      owner: OWNER,
       maxResponseBytes: 96,
       handler: async () => ({ ok: true, result: 'x'.repeat(256) }),
     });
@@ -499,7 +435,6 @@ void unixTest(
     await withTempRoot(async (root) => {
       const channel = await createPtcEpochCallbackChannel({
         rootDir: root,
-        owner: OWNER,
         handler: async () => ({ ok: true, result: 'ok' }),
       });
 

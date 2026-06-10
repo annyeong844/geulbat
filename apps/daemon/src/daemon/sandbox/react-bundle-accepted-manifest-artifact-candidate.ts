@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { ParsedCanonicalArtifactEnvelope } from '@geulbat/protocol/artifacts';
 import { isReactBundleRuntimeManifest } from '@geulbat/protocol/react-bundle-inline-compile';
-import type {
-  ReactBundleAcceptedRuntimeManifestSummary,
-  ReactBundleRuntimeManifestAcceptanceResult,
-} from './react-bundle-accepted-runtime-manifest.js';
+import { stableStringify } from '@geulbat/shared-utils/stable-json';
+import type { ReactBundleRuntimeManifestAcceptanceResult } from './react-bundle-accepted-runtime-manifest.js';
+import { isOpaqueSandboxOutputEvidenceRef } from './output-validation.js';
 
 export type ReactBundleAcceptedManifestArtifactCandidate =
   ParsedCanonicalArtifactEnvelope;
@@ -13,6 +12,22 @@ export type ReactBundleAcceptedRuntimeManifestSuccess = Extract<
   ReactBundleRuntimeManifestAcceptanceResult,
   { ok: true }
 >;
+
+type ReactBundleAcceptedRuntimeManifestFailure = Extract<
+  ReactBundleRuntimeManifestAcceptanceResult,
+  { ok: false }
+>;
+
+type ReactBundleAcceptedRuntimeManifestBoundarySuccess = Omit<
+  ReactBundleAcceptedRuntimeManifestSuccess,
+  'manifest'
+> & {
+  manifest: unknown;
+};
+
+export type ReactBundleAcceptedManifestArtifactCandidateSource =
+  | ReactBundleAcceptedRuntimeManifestBoundarySuccess
+  | ReactBundleAcceptedRuntimeManifestFailure;
 
 export type ReactBundleAcceptedManifestArtifactCandidateFailureReason =
   | 'accepted_summary_invalid'
@@ -58,10 +73,10 @@ type FailureDiagnostics = Extract<
   { ok: false }
 >['diagnostics'];
 
-export function buildReactBundleAcceptedManifestArtifactCandidate(_args: {
-  accepted: ReactBundleAcceptedRuntimeManifestSuccess;
+export function buildReactBundleAcceptedManifestArtifactCandidate(args: {
+  accepted: ReactBundleAcceptedManifestArtifactCandidateSource;
 }): ReactBundleAcceptedManifestArtifactCandidateResult {
-  const accepted = _args.accepted as ReactBundleRuntimeManifestAcceptanceResult;
+  const { accepted } = args;
   if (accepted.ok !== true) {
     return fail(
       'accepted_summary_invalid',
@@ -85,7 +100,9 @@ export function buildReactBundleAcceptedManifestArtifactCandidate(_args: {
     );
   }
 
-  if (!isOpaqueEvidenceRef(accepted.acceptance.prepareEvidenceRef)) {
+  if (
+    !isOpaqueSandboxOutputEvidenceRef(accepted.acceptance.prepareEvidenceRef)
+  ) {
     return fail(
       'evidence_ref_not_opaque',
       'react bundle accepted manifest prepare evidence ref must be opaque',
@@ -93,7 +110,7 @@ export function buildReactBundleAcceptedManifestArtifactCandidate(_args: {
   }
   if (
     accepted.acceptance.probeEvidenceRef !== undefined &&
-    !isOpaqueEvidenceRef(accepted.acceptance.probeEvidenceRef)
+    !isOpaqueSandboxOutputEvidenceRef(accepted.acceptance.probeEvidenceRef)
   ) {
     return fail(
       'evidence_ref_not_opaque',
@@ -107,7 +124,9 @@ export function buildReactBundleAcceptedManifestArtifactCandidate(_args: {
   const policyValidation = validateDependencyPolicy(accepted);
   if (!policyValidation.ok) return policyValidation.failure;
 
-  const payload = stableStringify(accepted.manifest);
+  const payload = stableStringify(accepted.manifest, {
+    omitUndefinedObjectKeys: true,
+  });
   const parsed = parsePayload(payload);
   if (!parsed.ok) {
     return fail(
@@ -159,10 +178,8 @@ export function buildReactBundleAcceptedManifestArtifactCandidate(_args: {
   };
 }
 
-export type { ReactBundleAcceptedRuntimeManifestSummary as ReactBundleAcceptedManifestArtifactCandidateSource };
-
 function validateDependencyPolicy(
-  accepted: ReactBundleAcceptedRuntimeManifestSuccess,
+  accepted: ReactBundleAcceptedRuntimeManifestBoundarySuccess,
 ):
   | { ok: true }
   | {
@@ -215,21 +232,6 @@ function validateDependencyPolicy(
   return { ok: true };
 }
 
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(',')}]`;
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .filter((key) => record[key] !== undefined)
-      .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
 function parsePayload(
   payload: string,
 ): { ok: true; value: unknown } | { ok: false } {
@@ -265,21 +267,6 @@ function containsPrivateMetadata(value: unknown): boolean {
   return false;
 }
 
-function isOpaqueEvidenceRef(value: string): boolean {
-  const prefix = 'sandbox-output:';
-  if (!value.startsWith(prefix)) return false;
-  const suffix = value.slice(prefix.length);
-  if (suffix.length === 0) return false;
-  if (/[\s\u0000-\u001f\u007f]/u.test(value)) return false;
-  return (
-    !value.includes('/') &&
-    !value.includes('\\') &&
-    !value.includes('.geulbat') &&
-    !value.includes('..') &&
-    !value.startsWith('file:')
-  );
-}
-
 function sameStringArray(
   actual: readonly string[],
   expected: readonly string[],
@@ -291,7 +278,7 @@ function sameStringArray(
 }
 
 function evidenceDiagnostics(
-  accepted: ReactBundleAcceptedRuntimeManifestSuccess,
+  accepted: ReactBundleAcceptedRuntimeManifestBoundarySuccess,
 ): FailureDiagnostics {
   return safeEvidenceDiagnostics({
     prepareEvidenceRef: accepted.acceptance.prepareEvidenceRef,
@@ -306,13 +293,13 @@ function safeEvidenceDiagnostics(args: {
   const diagnostics: NonNullable<FailureDiagnostics> = {};
   if (
     args.prepareEvidenceRef !== undefined &&
-    isOpaqueEvidenceRef(args.prepareEvidenceRef)
+    isOpaqueSandboxOutputEvidenceRef(args.prepareEvidenceRef)
   ) {
     diagnostics.prepareEvidenceRef = args.prepareEvidenceRef;
   }
   if (
     args.probeEvidenceRef !== undefined &&
-    isOpaqueEvidenceRef(args.probeEvidenceRef)
+    isOpaqueSandboxOutputEvidenceRef(args.probeEvidenceRef)
   ) {
     diagnostics.probeEvidenceRef = args.probeEvidenceRef;
   }

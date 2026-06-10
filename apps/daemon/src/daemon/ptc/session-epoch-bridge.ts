@@ -1,17 +1,17 @@
 import { posix as pathPosix } from 'node:path';
+import { isRecord } from '@geulbat/protocol/runtime-utils';
 import {
   createPtcEpochCallbackChannel,
   type CreatePtcEpochCallbackChannelArgs,
   type PtcEpochCallbackChannel,
   type PtcEpochCallbackHandler,
-  type PtcEpochOwnerContext,
 } from './epoch-callback.js';
-import {
-  type PtcSessionDockerFailureReason,
-  type PtcSessionDockerHandle,
-  type PtcSessionDockerIdentity,
-  type PtcSessionDockerManager,
-} from './session-docker.js';
+import type {
+  PtcSessionDockerFailureReason,
+  PtcSessionDockerHandle,
+  PtcSessionDockerIdentity,
+  PtcSessionDockerManager,
+} from './session-docker-contract.js';
 
 export type PtcSessionEpochBridgeFailureReason =
   | 'session_unavailable'
@@ -65,14 +65,14 @@ export async function createPtcSessionEpochBridge(
   try {
     channel = await (args.callbackFactory ?? createPtcEpochCallbackChannel)({
       rootDir: handle.callbackRootHostPath,
-      owner: toEpochOwner(handle),
       handler: args.callbackHandler,
     });
-  } catch {
+  } catch (error: unknown) {
     return {
       ok: false,
       reasonCode: 'callback_channel_failed',
       message: 'PTC epoch callback channel creation failed',
+      diagnostics: callbackChannelFailureDiagnostics(error),
     };
   }
 
@@ -110,12 +110,22 @@ export async function createPtcSessionEpochBridge(
   };
 }
 
-function toEpochOwner(handle: PtcSessionDockerHandle): PtcEpochOwnerContext {
-  return {
-    threadId: handle.reuseKey.threadId,
-    workspaceRoot: handle.reuseKey.workspaceRootRealpath,
-    approvalScope: 'run',
+function callbackChannelFailureDiagnostics(
+  error: unknown,
+): Record<string, string | number | boolean> {
+  const diagnostics: Record<string, string | number | boolean> = {
+    callbackChannelFailed: true,
   };
+  if (error instanceof Error && error.name.length > 0) {
+    diagnostics.callbackChannelErrorName = error.name;
+  }
+  if (isRecord(error)) {
+    const code = error.code;
+    if (typeof code === 'string' || typeof code === 'number') {
+      diagnostics.callbackChannelErrorCode = code;
+    }
+  }
+  return diagnostics;
 }
 
 function projectCallbackSocketPath(args: {

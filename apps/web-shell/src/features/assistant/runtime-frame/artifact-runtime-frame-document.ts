@@ -1,6 +1,7 @@
 import type { ArtifactRuntimePersistenceRenderer } from '@geulbat/protocol/runtime-persistence';
 
-import { buildJsArtifactRuntimeDocument } from '../artifacts/js/document.js';
+import { buildJsArtifactRuntimeDocument } from '../../artifacts/runtime-preview/js/document.js';
+import { buildJsRuntimePersistenceBootstrap } from '../runtime-persistence/artifact-runtime-persistence-bootstrap.js';
 
 export function createArtifactRuntimeFrameDocument(args: {
   renderer: ArtifactRuntimePersistenceRenderer;
@@ -8,12 +9,17 @@ export function createArtifactRuntimeFrameDocument(args: {
   scopeHandle: string;
   runtimeParentOrigin: string;
 }): string {
-  return buildJsArtifactRuntimeDocument(args.runtimePayload, {
+  const awaitStorageBeforePayload =
+    shouldAwaitStorageBeforeArtifactRuntimePayload(args.renderer);
+  const persistenceBootstrap = {
     scopeHandle: args.scopeHandle,
     parentOrigin: args.runtimeParentOrigin,
-    awaitStorageBeforePayload: shouldAwaitStorageBeforeArtifactRuntimePayload(
-      args.renderer,
-    ),
+    awaitStorageBeforePayload,
+  };
+
+  return buildJsArtifactRuntimeDocument(args.runtimePayload, {
+    ...persistenceBootstrap,
+    bootstrapSource: buildJsRuntimePersistenceBootstrap(persistenceBootstrap),
   });
 }
 

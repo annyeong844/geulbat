@@ -17,7 +17,7 @@ import {
   PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
 } from '@geulbat/protocol/public-web-fixtures';
 
-import { buildJsArtifactRuntimeDocument } from '../src/features/assistant/artifacts/js/document.ts';
+import { buildJsArtifactRuntimeDocument } from '../src/features/artifacts/runtime-preview/js/document.ts';
 import { buildReactBundleArtifactRuntimePayload } from '../src/features/artifacts/runtime-preview/react-bundle/document.ts';
 import {
   ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
@@ -26,6 +26,7 @@ import {
   createArtifactRuntimeHostBootMessage,
   DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN,
 } from '../src/features/assistant/runtime-frame/artifact-runtime-host.ts';
+import { buildJsRuntimePersistenceBootstrap } from '../src/features/assistant/runtime-persistence/artifact-runtime-persistence-bootstrap.ts';
 import {
   ARTIFACT_RUNTIME_PERSISTENCE_VERBS,
   PERSISTENCE_BRIDGE_VERSION,
@@ -97,9 +98,13 @@ async function createSmokeHarnessServer(smokeFixture) {
     const scopeHandle = `scope-${randomUUID()}`;
     const manifest = smokeFixture.manifest(daemonOrigin);
     const runtimePayload = buildReactBundleArtifactRuntimePayload(manifest);
-    const runtimeDocument = buildJsArtifactRuntimeDocument(runtimePayload, {
+    const persistenceBootstrap = {
       scopeHandle,
       parentOrigin: harnessOrigin,
+    };
+    const runtimeDocument = buildJsArtifactRuntimeDocument(runtimePayload, {
+      ...persistenceBootstrap,
+      bootstrapSource: buildJsRuntimePersistenceBootstrap(persistenceBootstrap),
     });
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');

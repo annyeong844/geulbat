@@ -55,6 +55,18 @@ const BASE_REQUEST: ReactBundleDependencyPrepareRequest = {
   ],
 };
 
+const UNSAFE_ENTRY_URLS = [
+  'file:///tmp/app.js',
+  'data:text/javascript,alert(1)',
+  'javascript:alert(1)',
+  'https://user:pass@example.com/pkg.js',
+  'https://@example.com/pkg.js',
+  'http://127.0.0.1/pkg.js',
+  'http://localhost/pkg.js',
+  'http://169.254.169.254/latest/meta-data',
+  'https://example.com/.geulbat/sandbox-outputs/pkg.js',
+] as const;
+
 async function withWorkspace<T>(
   fn: (workspaceRoot: string) => Promise<T>,
 ): Promise<T> {
@@ -243,6 +255,34 @@ void test('acceptReactBundleRuntimeManifest accepts no-dependency manifest witho
   assert.equal(result.acceptance.unprobedDependencyCount, 0);
   assert.deepEqual(result.acceptance.networkPolicies, ['none']);
   assert.deepEqual(result.dependencyEvidence, []);
+});
+
+void test('acceptReactBundleRuntimeManifest rejects tampered unsafe entryUrl before accepted artifact', async () => {
+  const prepare = await prepareOnly({
+    entryUrl: 'https://cdn.example.com/app.js',
+    runtimeDependencies: {},
+    dependencyRefs: [],
+  });
+
+  for (const entryUrl of UNSAFE_ENTRY_URLS) {
+    const result = acceptReactBundleRuntimeManifest({
+      prepare: {
+        ...prepare,
+        manifest: {
+          ...prepare.manifest,
+          entryUrl,
+        },
+      },
+      now: () => '2026-05-24T12:00:00.000Z',
+    });
+
+    assert.equal(result.ok, false, entryUrl);
+    assert.equal(
+      result.ok ? null : result.reasonCode,
+      'manifest_entry_url_invalid',
+      entryUrl,
+    );
+  }
 });
 
 void test('acceptReactBundleRuntimeManifest compares probe requested URLs instead of final URLs', async () => {

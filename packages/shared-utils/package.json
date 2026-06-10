@@ -14,12 +14,20 @@
     "./logger": {
       "types": "./dist/logger.d.ts",
       "import": "./dist/logger.js"
+    },
+    "./process-command": {
+      "types": "./dist/process-command.d.ts",
+      "import": "./dist/process-command.js"
+    },
+    "./stable-json": {
+      "types": "./dist/stable-json.d.ts",
+      "import": "./dist/stable-json.js"
     }
   },
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "test": "node -e \"\""
+    "test": "node -e \"const fs=require('node:fs'); fs.rmSync('./dist-test', { recursive: true, force: true }); fs.rmSync('./tsconfig.test.tsbuildinfo', { force: true });\" && tsc -p ./tsconfig.test.json && node --test \"./dist-test/**/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

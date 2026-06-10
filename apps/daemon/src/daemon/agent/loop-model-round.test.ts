@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createProviderAuthRuntimeStore } from '../auth/runtime-state.js';
 import type { ProviderRequestOptions } from '../llm/provider/provider-options.js';
-import type { ResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-session.js';
+import type { ResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-cache.js';
 import type { AgentEvent, AgentEventEmitter } from './events.js';
 import { createAgentEvent } from './events.js';
 import { finalizeAfterToolLimit, runModelRound } from './loop-model-round.js';

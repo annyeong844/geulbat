@@ -13,6 +13,8 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
     'agent_spawn',
     'agent_stop',
     'agent_wait',
+    'browser_navigate',
+    'execute_code',
     'list_files',
     'manage_files',
     'patch_file',
@@ -32,6 +34,8 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
   assert.ok(registry.getTool('agent_spawn'));
   assert.ok(registry.getTool('agent_stop'));
   assert.ok(registry.getTool('agent_wait'));
+  assert.ok(registry.getTool('execute_code'));
+  assert.ok(registry.getTool('browser_navigate'));
   assert.ok(registry.getTool('list_files'));
   assert.ok(registry.getTool('search_files'));
   assert.ok(registry.getTool('write_file'));

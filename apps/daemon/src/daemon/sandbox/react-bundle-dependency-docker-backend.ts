@@ -1,7 +1,10 @@
-import { spawn } from 'node:child_process';
+import {
+  buildAllowlistedProcessEnv,
+  runBoundedProcessCommand,
+} from '@geulbat/shared-utils/process-command';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ReactBundleDependencyNetworkProbeCandidate } from './react-bundle-dependency-network-probe.js';
+import type { ReactBundleDependencyNetworkProbeCandidate } from './react-bundle-dependency-network-probe-candidate.js';
 
 export type DockerCommandResult =
   | { kind: 'exit'; exitCode: number; stdout: string; stderr: string }
@@ -14,12 +17,21 @@ export interface DockerCommandInvocation {
   args: string[];
   timeoutMs: number;
   signal?: AbortSignal;
-  writeOutput(relativePath: string, content: string): Promise<void>;
 }
 
 export type DockerCommandRunner = (
   invocation: DockerCommandInvocation,
 ) => Promise<DockerCommandResult>;
+
+export interface DockerMetadataProbeCommandInvocation extends DockerCommandInvocation {
+  writeOutput(relativePath: string, content: string): Promise<void>;
+}
+
+export type DockerMetadataProbeCommandRunner = (
+  invocation: DockerMetadataProbeCommandInvocation,
+) => Promise<DockerCommandResult>;
+
+const MAX_DOCKER_OUTPUT_BYTES = 64 * 1024;
 
 export const DOCKER_METADATA_PROBE_ENTRYPOINT = `
 const { readFileSync, writeFileSync } = require('node:fs');
@@ -92,7 +104,6 @@ export async function checkDockerMetadataProbeBackendAvailable(args: {
     args: ['--version'],
     timeoutMs: dockerAvailabilityTimeoutMs(deadlineMs),
     ...(args.signal ? { signal: args.signal } : {}),
-    writeOutput: rejectDockerAvailabilityOutput,
   });
   const versionFailure = dockerUnavailableResult(
     versionResult,
@@ -111,7 +122,6 @@ export async function checkDockerMetadataProbeBackendAvailable(args: {
     args: ['image', 'inspect', args.imageRef],
     timeoutMs: dockerAvailabilityTimeoutMs(deadlineMs),
     ...(args.signal ? { signal: args.signal } : {}),
-    writeOutput: rejectDockerAvailabilityOutput,
   });
   return (
     dockerUnavailableResult(
@@ -133,18 +143,23 @@ export async function runDockerMetadataProbeProcess(args: {
   candidate: ReactBundleDependencyNetworkProbeCandidate;
   timeoutMs: number;
   signal?: AbortSignal;
-  commandRunner?: DockerCommandRunner;
+  commandRunner?: DockerMetadataProbeCommandRunner;
   skipAvailabilityCheck?: boolean;
 }): Promise<DockerCommandResult> {
   const executable = args.dockerPath ?? 'docker';
-  const runner = args.commandRunner ?? runDockerCommand;
+  const runner: DockerMetadataProbeCommandRunner =
+    args.commandRunner ?? runDockerCommand;
   if (!args.skipAvailabilityCheck) {
     const availability = await checkDockerMetadataProbeBackendAvailable({
       timeoutMs: args.timeoutMs,
       imageRef: args.imageRef,
       ...(args.dockerPath ? { dockerPath: args.dockerPath } : {}),
       ...(args.signal ? { signal: args.signal } : {}),
-      commandRunner: runner,
+      commandRunner: async (invocation) =>
+        await runner({
+          ...invocation,
+          writeOutput: rejectDockerAvailabilityOutput,
+        }),
     });
     if (availability.kind !== 'exit' || availability.exitCode !== 0) {
       return availability;
@@ -237,97 +252,19 @@ function formatDiagnosticsSuffix(result: {
 export async function runDockerCommand(
   invocation: DockerCommandInvocation,
 ): Promise<DockerCommandResult> {
-  if (invocation.signal?.aborted) {
-    return {
-      kind: 'cancelled',
-      stdout: '',
-      stderr: 'docker command cancelled',
-    };
-  }
-
-  return new Promise((resolve) => {
-    const child = spawn(invocation.executable, invocation.args, {
-      env: buildDockerCommandEnv(),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-
-    let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
-    let pendingTermination: 'timeout' | 'cancelled' | null = null;
-
-    const finish = (result: DockerCommandResult): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-      }
-      invocation.signal?.removeEventListener('abort', onAbort);
-      resolve(result);
-    };
-
-    const terminate = (kind: 'timeout' | 'cancelled'): void => {
-      if (settled || pendingTermination) {
-        return;
-      }
-      pendingTermination = kind;
-      child.kill('SIGTERM');
-      forceKillTimer = setTimeout(() => {
-        child.kill('SIGKILL');
-      }, 1_000);
-      forceKillTimer.unref?.();
-    };
-
-    const timer = setTimeout(() => {
-      terminate('timeout');
-    }, invocation.timeoutMs);
-    timer.unref?.();
-
-    const onAbort = (): void => {
-      terminate('cancelled');
-    };
-
-    invocation.signal?.addEventListener('abort', onAbort, { once: true });
-    if (invocation.signal?.aborted) {
-      terminate('cancelled');
-    }
-
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on('error', (error) => {
-      finish({ kind: 'crash', stdout, stderr: error.message });
-    });
-    child.on('close', (exitCode) => {
-      if (pendingTermination) {
-        finish({ kind: pendingTermination, stdout, stderr });
-        return;
-      }
-      finish({ kind: 'exit', exitCode: exitCode ?? 1, stdout, stderr });
-    });
+  return await runBoundedProcessCommand({
+    executable: invocation.executable,
+    args: invocation.args,
+    timeoutMs: invocation.timeoutMs,
+    env: buildDockerCommandEnv(),
+    maxOutputBytes: MAX_DOCKER_OUTPUT_BYTES,
+    ...(invocation.signal ? { signal: invocation.signal } : {}),
+    cancelledStderr: 'docker command cancelled',
   });
 }
 
 function buildDockerCommandEnv(): NodeJS.ProcessEnv {
-  return {
-    PATH: process.env.PATH ?? '',
-    ...Object.fromEntries(
-      DOCKER_CLIENT_ENV_KEYS.flatMap((key) => {
-        const value = process.env[key];
-        return value === undefined ? [] : [[key, value]];
-      }),
-    ),
-  };
+  return buildAllowlistedProcessEnv(DOCKER_CLIENT_ENV_KEYS);
 }
 
 function joinDiagnostics(stdout: string, stderr: string): string {

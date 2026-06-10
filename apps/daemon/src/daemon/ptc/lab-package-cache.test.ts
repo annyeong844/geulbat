@@ -6,15 +6,17 @@ import test from 'node:test';
 import {
   buildPtcPackageCacheRoot,
   cleanupPtcPackageCacheRoot,
-  createDefaultPtcLabPackageCachePolicy,
-  createDefaultPtcLabPackageManagerPolicy,
   normalizePtcPackageCacheIdentity,
   preparePtcPackageCacheRoot,
+} from './lab-package-cache.js';
+import {
+  createDefaultPtcLabPackageCachePolicy,
+  createDefaultPtcLabPackageManagerPolicy,
   PTC_LAB_PACKAGE_CACHE_DEFAULT_MAX_BYTES,
   PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_PACKAGE_CACHE_MOUNT_POLICY_ID,
   type PtcPackageCacheIdentityInput,
-} from './lab-package-cache.js';
+} from './lab-package-cache-contract.js';
 
 async function withTempRuntimeRoot<T>(
   fn: (runtimeRoot: string) => Promise<T>,
@@ -96,7 +98,7 @@ void test('normalizePtcPackageCacheIdentity changes hash for lifecycle and netwo
   });
   const networkChanged = normalizePtcPackageCacheIdentity({
     ...BASE_IDENTITY,
-    networkInstallPolicyId: 'ptc_lab_network_allowlisted_registry_v1',
+    networkInstallPolicyId: 'ptc_lab_open_egress_local_v1',
   });
 
   assert.notEqual(lifecycleChanged.cacheIdentityHash, base.cacheIdentityHash);

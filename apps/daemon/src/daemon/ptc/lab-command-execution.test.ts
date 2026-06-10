@@ -7,14 +7,15 @@ import {
   type PtcLabPolicyProjection,
 } from './lab-profile.js';
 import {
+  adaptPtcSessionDockerCommandRunner,
   runPtcLabBatchCommandExecution,
   type PtcLabBatchCommandRunner,
+  type PtcLabBatchCommandRunnerResult,
   type PtcLabBatchCommandSessionHandle,
 } from './lab-command-execution.js';
+import type { PtcSessionDockerCommandResult } from './session-docker-contract.js';
 
-const PRIVATE_TEST_PATH = ['', 'home', 'user', '.geulbat', 'private'].join(
-  '/',
-);
+const PRIVATE_TEST_PATH = '/tmp/geulbat-private/.geulbat/private';
 
 function admittedLab(args: {
   shellMode: PtcLabPolicyProjection['shell']['mode'];
@@ -146,6 +147,88 @@ void test('runPtcLabBatchCommandExecution builds docker exec argv and returns co
   assert.equal(invocations[0]?.maxProcessCount, 1);
 });
 
+void test('adaptPtcSessionDockerCommandRunner maps session Docker edge results into batch-command results', async () => {
+  const cases: Array<{
+    name: string;
+    sessionResult: PtcSessionDockerCommandResult;
+    expected: PtcLabBatchCommandRunnerResult;
+  }> = [
+    {
+      name: 'interpreter unavailable exit',
+      sessionResult: {
+        kind: 'exit',
+        exitCode: 127,
+        stdout: '',
+        stderr: '/bin/bash: not found',
+      },
+      expected: {
+        kind: 'interpreter_unavailable',
+        stdout: '',
+        stderr: '/bin/bash: not found',
+      },
+    },
+    {
+      name: 'timeout requires uncertain taint',
+      sessionResult: {
+        kind: 'timeout',
+        stdout: 'partial stdout',
+        stderr: 'partial stderr',
+      },
+      expected: {
+        kind: 'timeout',
+        stdout: 'partial stdout',
+        stderr: 'partial stderr',
+        processTerminated: false,
+      },
+    },
+    {
+      name: 'cancelled requires uncertain taint',
+      sessionResult: {
+        kind: 'cancelled',
+        stdout: 'cancel stdout',
+        stderr: 'cancel stderr',
+      },
+      expected: {
+        kind: 'cancelled',
+        stdout: 'cancel stdout',
+        stderr: 'cancel stderr',
+        processTerminated: false,
+      },
+    },
+    {
+      name: 'crash is execution failure',
+      sessionResult: {
+        kind: 'crash',
+        stdout: 'crash stdout',
+        stderr: 'crash stderr',
+      },
+      expected: {
+        kind: 'failed',
+        stdout: 'crash stdout',
+        stderr: 'crash stderr',
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const runner = adaptPtcSessionDockerCommandRunner(async (invocation) => {
+      assert.equal(invocation.executable, 'docker');
+      assert.deepEqual(invocation.args, ['exec', 'container-1', 'node']);
+      assert.equal(invocation.timeoutMs, 1234);
+      return item.sessionResult;
+    });
+
+    const result = await runner({
+      executable: 'docker',
+      args: ['exec', 'container-1', 'node'],
+      timeoutMs: 1234,
+      maxProcessCount: 1,
+    });
+
+    assert.deepEqual(result, item.expected, item.name);
+  }
+});
+
 void test('runPtcLabBatchCommandExecution treats non-zero exit as completed command summary', async () => {
   const { admission, session } = admittedLab({ shellMode: 'batch_command' });
   let tainted = false;
@@ -259,7 +342,7 @@ void test('runPtcLabBatchCommandExecution classifies timeout even when taint hoo
   assert.equal(result.ok, false);
   assert.equal(result.ok ? '' : result.reasonCode, 'ptc_lab_command_timeout');
   assert.equal(result.ok ? false : result.diagnostics?.taintHookFailed, true);
-  assert.doesNotMatch(JSON.stringify(result), /user|\.geulbat/u);
+  assert.doesNotMatch(JSON.stringify(result), /geulbat-private|\.geulbat/u);
 });
 
 void test('runPtcLabBatchCommandExecution maps cancellation and uncertain cleanup to taint hook', async () => {
@@ -338,15 +421,15 @@ void test('runPtcLabBatchCommandExecution does not return private markers in std
     runner: async () => ({
       kind: 'exit',
       exitCode: 0,
-      stdout: `${PRIVATE_TEST_PATH} /geulbat/callbacks/epoch-1/callback.sock`,
-      stderr: '/var/run/docker.sock callback.sock',
+      stdout: `${PRIVATE_TEST_PATH} /geulbat/callbacks/epoch-1/callback.sock token=secret access_token=secret`,
+      stderr: '/var/run/docker.sock callback.sock provider_secret=secret',
     }),
   });
 
   assert.equal(result.ok, true);
   assert.doesNotMatch(
     JSON.stringify(result),
-    /user|\.geulbat|docker\.sock|\/geulbat\/callbacks|callback\.sock/u,
+    /geulbat-private|\.geulbat|docker\.sock|\/geulbat\/callbacks|callback\.sock|token=secret|access_token|provider_secret/u,
   );
   assert.match(result.ok ? result.value.stdout : '', /\[redacted:path\]/u);
   assert.match(
@@ -361,4 +444,6 @@ void test('runPtcLabBatchCommandExecution does not return private markers in std
     result.ok ? result.value.stderr : '',
     /\[redacted:callback-socket\]/u,
   );
+  assert.match(result.ok ? result.value.stdout : '', /\[redacted:secret\]/u);
+  assert.match(result.ok ? result.value.stderr : '', /\[redacted:secret\]/u);
 });

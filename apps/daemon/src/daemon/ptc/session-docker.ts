@@ -1,171 +1,32 @@
-import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { chmod, mkdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { sha256StableJson } from '@geulbat/shared-utils/stable-json';
+import { normalizePtcPackageCacheIdentity } from './lab-package-cache.js';
+import { PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT } from './lab-package-cache-contract.js';
+import { toPtcLabNetworkIdentitySnapshot } from './lab-network-policy.js';
+import { toPtcLabBrowserIdentitySnapshot } from './lab-browser-policy.js';
+import { sanitizePtcPrivateMarkers } from './output-redaction.js';
+import { runPtcSessionDockerCommand } from './session-docker-command.js';
+import { buildPtcSessionDockerCreateArgs } from './session-docker-create-args.js';
 import {
-  buildPtcPackageCacheRoot,
-  normalizePtcPackageCacheIdentity,
-  preparePtcPackageCacheRoot,
-  PTC_LAB_LIFECYCLE_SCRIPTS_DISABLED_POLICY_ID,
-  PTC_LAB_NETWORK_INSTALL_DISABLED_POLICY_ID,
-  PTC_LAB_PACKAGE_CACHE_DEFAULT_ID,
-  PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT,
-  PTC_SESSION_DOCKER_PACKAGE_CACHE_MOUNT_POLICY_ID,
-  type PtcLabPackageManagerName,
-  type PtcPackageCacheIdentity,
-} from './lab-package-cache.js';
-
-export const PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT = '/geulbat/callbacks';
-export const PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT =
-  '/geulbat/artifacts' as const;
-export const PTC_SESSION_DOCKER_ARTIFACT_WORKSPACE_MOUNT_POLICY_ID =
-  'ptc_session_artifact_workspace_mount_v1' as const;
-const MAX_DOCKER_OUTPUT_BYTES = 64 * 1024;
-
-export interface PtcSessionDockerIdentity {
-  threadId: string;
-  workspaceRoot: string;
-  trustContextId: string;
-}
-
-export interface PtcSessionDockerPolicy {
-  imageRef: string;
-  launchPolicyId: string;
-  imagePolicyId: string;
-  idleEntrypointVersion: string;
-  callbackMountPolicyId: string;
-  artifactWorkspaceMountPolicyId: string;
-  labPolicyId: string;
-  packageCacheId: string;
-  packageCacheMountPolicyId: string;
-  packageManagerFamilies: PtcLabPackageManagerName[];
-  lifecycleScriptsPolicyId: string;
-  networkInstallPolicyId: string;
-  cpus: string;
-  memory: string;
-  pidsLimit: string;
-  scratchTmpfs: string;
-  tmpTmpfs: string;
-}
-
-export interface PtcSessionDockerReuseKey {
-  threadId: string;
-  workspaceRootRealpath: string;
-  trustContextId: string;
-  launchPolicyId: string;
-  imagePolicyId: string;
-  idleEntrypointVersion: string;
-  callbackMountPolicyId: string;
-  artifactWorkspaceMountPolicyId: string;
-  labPolicyId: string;
-  packageCacheId: string;
-  packageCacheMountPolicyId: string;
-  packageCacheRootContainerPath: typeof PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT;
-  packageManagerFamilies: PtcLabPackageManagerName[];
-  lifecycleScriptsPolicyId: string;
-  networkInstallPolicyId: string;
-  packageCacheIdentityHash: string;
-  identityHash: string;
-}
-
-export type PtcSessionDockerState =
-  | 'starting'
-  | 'ready'
-  | 'closing'
-  | 'closed'
-  | 'crashed';
-
-export type PtcSessionDockerFailureReason =
-  | 'docker_unavailable'
-  | 'image_unavailable'
-  | 'unsupported_platform'
-  | 'launch_policy_invalid'
-  | 'container_create_failed'
-  | 'container_start_failed'
-  | 'container_inspect_failed'
-  | 'container_crashed'
-  | 'container_remove_failed'
-  | 'container_host_root_cleanup_failed'
-  | 'container_start_cleanup_failed'
-  | 'manager_closing';
-
-export type PtcSessionDockerResult<T> =
-  | { ok: true; value: T }
-  | {
-      ok: false;
-      reasonCode: PtcSessionDockerFailureReason;
-      message: string;
-      diagnostics?: Record<string, string | number | boolean>;
-    };
-
-export type PtcSessionDockerCommandResult =
-  | { kind: 'exit'; exitCode: number; stdout: string; stderr: string }
-  | { kind: 'timeout'; stdout: string; stderr: string }
-  | { kind: 'cancelled'; stdout: string; stderr: string }
-  | { kind: 'crash'; stdout: string; stderr: string };
-
-export interface PtcSessionDockerCommandInvocation {
-  executable: string;
-  args: string[];
-  timeoutMs: number;
-  signal?: AbortSignal;
-}
-
-export type PtcSessionDockerCommandRunner = (
-  invocation: PtcSessionDockerCommandInvocation,
-) => Promise<PtcSessionDockerCommandResult>;
-
-export interface PtcSessionDockerHandle {
-  state: 'ready';
-  containerId: string;
-  reuseKey: PtcSessionDockerReuseKey;
-  callbackRootHostPath: string;
-  callbackRootContainerPath: typeof PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT;
-  artifactRootHostPath: string;
-  artifactRootContainerPath: typeof PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT;
-  artifactWorkspaceMountPolicyId: string;
-  packageCacheRootHostPath: string;
-  packageCacheRootContainerPath: typeof PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT;
-  packageCacheMountPolicyId: string;
-  packageCacheId: string;
-  packageCacheIdentityHash: string;
-}
-
-export interface PtcSessionDockerManager {
-  getOrCreate(
-    identity: PtcSessionDockerIdentity,
-    options?: { signal?: AbortSignal },
-  ): Promise<PtcSessionDockerResult<PtcSessionDockerHandle>>;
-  close(
-    identity: PtcSessionDockerIdentity,
-    options?: { signal?: AbortSignal },
-  ): Promise<PtcSessionDockerResult<void>>;
-  closeAll(options?: {
-    signal?: AbortSignal;
-  }): Promise<PtcSessionDockerResult<void>>;
-}
-
-export const PTC_SESSION_DOCKER_DEFAULT_POLICY: PtcSessionDockerPolicy =
-  Object.freeze({
-    imageRef: 'local/geulbat-ptc-session:2026-05-31',
-    launchPolicyId: 'ptc_session_docker_launch_v1',
-    imagePolicyId: 'ptc_session_docker_image_v1',
-    idleEntrypointVersion: 'ptc_session_idle_entrypoint_v1',
-    callbackMountPolicyId: 'ptc_session_callback_mount_v1',
-    artifactWorkspaceMountPolicyId:
-      PTC_SESSION_DOCKER_ARTIFACT_WORKSPACE_MOUNT_POLICY_ID,
-    labPolicyId: 'ptc_lab_local_docker_policy_v1',
-    packageCacheId: PTC_LAB_PACKAGE_CACHE_DEFAULT_ID,
-    packageCacheMountPolicyId: PTC_SESSION_DOCKER_PACKAGE_CACHE_MOUNT_POLICY_ID,
-    packageManagerFamilies: [],
-    lifecycleScriptsPolicyId: PTC_LAB_LIFECYCLE_SCRIPTS_DISABLED_POLICY_ID,
-    networkInstallPolicyId: PTC_LAB_NETWORK_INSTALL_DISABLED_POLICY_ID,
-    cpus: '1',
-    memory: '512m',
-    pidsLimit: '128',
-    scratchTmpfs: '/geulbat/scratch:rw,noexec,nosuid,nodev,size=64m',
-    tmpTmpfs: '/tmp:rw,nosuid,nodev,size=64m',
-  });
+  PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
+  PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
+  PTC_SESSION_DOCKER_DEFAULT_POLICY,
+} from './session-docker-contract.js';
+import {
+  preparePtcSessionDockerHostDirs,
+  ptcSessionDockerHostRootPrepareDiagnostics,
+  removePtcSessionDockerHostRoot,
+} from './session-docker-host-roots.js';
+import type {
+  PtcSessionDockerCommandResult,
+  PtcSessionDockerCommandRunner,
+  PtcSessionDockerFailureReason,
+  PtcSessionDockerHandle,
+  PtcSessionDockerIdentity,
+  PtcSessionDockerManager,
+  PtcSessionDockerPolicy,
+  PtcSessionDockerResult,
+  PtcSessionDockerReuseKey,
+} from './session-docker-contract.js';
 
 export function normalizePtcSessionDockerReuseKey(args: {
   identity: PtcSessionDockerIdentity;
@@ -187,6 +48,7 @@ export function normalizePtcSessionDockerReuseKey(args: {
     workspaceRootRealpath: args.workspaceRootRealpath,
     trustContextId: args.identity.trustContextId,
     launchPolicyId: args.policy.launchPolicyId,
+    imageRef: args.policy.imageRef,
     imagePolicyId: args.policy.imagePolicyId,
     idleEntrypointVersion: args.policy.idleEntrypointVersion,
     callbackMountPolicyId: args.policy.callbackMountPolicyId,
@@ -199,180 +61,17 @@ export function normalizePtcSessionDockerReuseKey(args: {
     packageManagerFamilies: packageCacheIdentity.packageManagerFamilies,
     lifecycleScriptsPolicyId: packageCacheIdentity.lifecycleScriptsPolicyId,
     networkInstallPolicyId: packageCacheIdentity.networkInstallPolicyId,
+    network: toPtcLabNetworkIdentitySnapshot(args.policy.network),
+    browser: toPtcLabBrowserIdentitySnapshot(args.policy.browser),
+    cpus: args.policy.cpus,
+    memory: args.policy.memory,
+    pidsLimit: args.policy.pidsLimit,
+    scratchTmpfs: args.policy.scratchTmpfs,
+    tmpTmpfs: args.policy.tmpTmpfs,
     packageCacheIdentityHash: packageCacheIdentity.cacheIdentityHash,
   };
-  const identityHash = createHash('sha256')
-    .update(stableStringify(base), 'utf8')
-    .digest('hex');
+  const identityHash = sha256StableJson(base);
   return { ...base, identityHash };
-}
-
-export function buildPtcSessionDockerCallbackRoot(args: {
-  runtimeRoot: string;
-  reuseKey: PtcSessionDockerReuseKey;
-}): string {
-  return join(buildPtcSessionDockerSessionRoot(args), 'callbacks');
-}
-
-export function buildPtcSessionDockerSessionRoot(args: {
-  runtimeRoot: string;
-  reuseKey: PtcSessionDockerReuseKey;
-}): string {
-  return join(args.runtimeRoot, 'ptc-sessions', args.reuseKey.identityHash);
-}
-
-export function buildPtcSessionDockerArtifactRoot(args: {
-  runtimeRoot: string;
-  reuseKey: PtcSessionDockerReuseKey;
-}): string {
-  return join(buildPtcSessionDockerSessionRoot(args), 'artifacts');
-}
-
-function toPtcPackageCacheIdentity(
-  reuseKey: PtcSessionDockerReuseKey,
-): PtcPackageCacheIdentity {
-  return {
-    trustContextId: reuseKey.trustContextId,
-    workspaceRootRealpath: reuseKey.workspaceRootRealpath,
-    labPolicyId: reuseKey.labPolicyId,
-    packageCacheId: reuseKey.packageCacheId,
-    packageCacheMountPolicyId: reuseKey.packageCacheMountPolicyId,
-    packageManagerFamilies: reuseKey.packageManagerFamilies,
-    lifecycleScriptsPolicyId: reuseKey.lifecycleScriptsPolicyId,
-    networkInstallPolicyId: reuseKey.networkInstallPolicyId,
-    cacheIdentityHash: reuseKey.packageCacheIdentityHash,
-  };
-}
-
-export async function preparePtcSessionDockerHostDirs(args: {
-  runtimeRoot: string;
-  reuseKey: PtcSessionDockerReuseKey;
-}): Promise<{
-  callbackRoot: string;
-  artifactRoot: string;
-  packageCacheRoot: string;
-}> {
-  const sessionsRoot = join(args.runtimeRoot, 'ptc-sessions');
-  const sessionRoot = buildPtcSessionDockerSessionRoot(args);
-  const callbackRoot = buildPtcSessionDockerCallbackRoot(args);
-  const artifactRoot = buildPtcSessionDockerArtifactRoot(args);
-  const packageCacheRoot = await preparePtcPackageCacheRoot({
-    runtimeRoot: args.runtimeRoot,
-    identity: toPtcPackageCacheIdentity(args.reuseKey),
-  });
-  await mkdir(sessionsRoot, { recursive: true });
-  await chmod(sessionsRoot, 0o700).catch(() => {});
-  await mkdir(sessionRoot, { recursive: true });
-  await chmod(sessionRoot, 0o700).catch(() => {});
-  await mkdir(callbackRoot, { recursive: true });
-  await chmod(callbackRoot, 0o700).catch(() => {});
-  await mkdir(artifactRoot, { recursive: true });
-  await chmod(artifactRoot, 0o700).catch(() => {});
-  return {
-    callbackRoot,
-    artifactRoot,
-    packageCacheRoot: packageCacheRoot.hostPath,
-  };
-}
-
-async function removePtcSessionDockerHostRoot(args: {
-  runtimeRoot: string;
-  reuseKey: PtcSessionDockerReuseKey;
-}): Promise<PtcSessionDockerResult<void>> {
-  try {
-    await rm(buildPtcSessionDockerSessionRoot(args), {
-      recursive: true,
-      force: true,
-    });
-    return { ok: true, value: undefined };
-  } catch {
-    return {
-      ok: false,
-      reasonCode: 'container_host_root_cleanup_failed',
-      message: 'failed to clean PTC session host root',
-      diagnostics: { cleanupFailed: true },
-    };
-  }
-}
-
-export function buildPtcSessionDockerCreateArgs(args: {
-  reuseKey: PtcSessionDockerReuseKey;
-  runtimeRoot: string;
-  policy: PtcSessionDockerPolicy;
-}): string[] {
-  const callbackRoot = buildPtcSessionDockerCallbackRoot({
-    runtimeRoot: args.runtimeRoot,
-    reuseKey: args.reuseKey,
-  });
-  const artifactRoot = buildPtcSessionDockerArtifactRoot({
-    runtimeRoot: args.runtimeRoot,
-    reuseKey: args.reuseKey,
-  });
-  const packageCacheRoot = buildPtcPackageCacheRoot({
-    runtimeRoot: args.runtimeRoot,
-    identity: toPtcPackageCacheIdentity(args.reuseKey),
-  });
-
-  return [
-    'create',
-    '--network',
-    'none',
-    '--read-only',
-    '--cap-drop',
-    'ALL',
-    '--security-opt',
-    'no-new-privileges',
-    '--tmpfs',
-    args.policy.scratchTmpfs,
-    '--tmpfs',
-    args.policy.tmpTmpfs,
-    '--mount',
-    `type=bind,src=${callbackRoot},dst=${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT},rw`,
-    '--mount',
-    `type=bind,src=${artifactRoot},dst=${PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT},rw`,
-    '--mount',
-    `type=bind,src=${packageCacheRoot.hostPath},dst=${PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT},rw`,
-    '--cpus',
-    args.policy.cpus,
-    '--memory',
-    args.policy.memory,
-    '--pids-limit',
-    args.policy.pidsLimit,
-    '-e',
-    'HOME=/geulbat/scratch/home',
-    '-e',
-    'TMPDIR=/tmp',
-    '-e',
-    'XDG_CACHE_HOME=/geulbat/scratch/cache',
-    '--label',
-    'geulbat.kind=ptc-session',
-    '--label',
-    'geulbat.owner=daemon',
-    '--label',
-    `geulbat.identityHash=${args.reuseKey.identityHash}`,
-    '--label',
-    `geulbat.launchPolicyId=${args.reuseKey.launchPolicyId}`,
-    '--label',
-    `geulbat.imagePolicyId=${args.reuseKey.imagePolicyId}`,
-    '--label',
-    `geulbat.callbackMountPolicyId=${args.reuseKey.callbackMountPolicyId}`,
-    '--label',
-    `geulbat.artifactWorkspaceMountPolicyId=${args.reuseKey.artifactWorkspaceMountPolicyId}`,
-    '--label',
-    `geulbat.packageCacheMountPolicyId=${args.reuseKey.packageCacheMountPolicyId}`,
-    '--label',
-    `geulbat.packageCacheId=${args.reuseKey.packageCacheId}`,
-    '--label',
-    `geulbat.packageCacheIdentityHash=${args.reuseKey.packageCacheIdentityHash}`,
-    '--label',
-    `geulbat.idleEntrypointVersion=${args.reuseKey.idleEntrypointVersion}`,
-    '--label',
-    'geulbat.managerVersion=ptc-session-docker-v1',
-    args.policy.imageRef,
-    'node',
-    '-e',
-    "setInterval(() => {}, 60_000); process.on('SIGTERM', () => process.exit(0));",
-  ];
 }
 
 export function createPtcSessionDockerManager(args: {
@@ -387,6 +86,7 @@ export function createPtcSessionDockerManager(args: {
   const policy = args.policy ?? PTC_SESSION_DOCKER_DEFAULT_POLICY;
   const timeoutMs = args.timeoutMs ?? 10_000;
   const sessions = new Map<string, PtcSessionDockerHandle>();
+  const taintedSessionIdentityHashes = new Set<string>();
   const operationQueues = new Map<string, Promise<unknown>>();
   let closingAll = false;
 
@@ -461,19 +161,37 @@ export function createPtcSessionDockerManager(args: {
       return available;
     }
 
-    await preparePtcSessionDockerHostDirs({
-      runtimeRoot: args.runtimeRoot,
-      reuseKey,
-    });
+    let hostDirs: Awaited<ReturnType<typeof preparePtcSessionDockerHostDirs>>;
+    try {
+      hostDirs = await preparePtcSessionDockerHostDirs({
+        runtimeRoot: args.runtimeRoot,
+        reuseKey,
+      });
+    } catch (error: unknown) {
+      return failureDiagnostics(
+        'container_host_root_prepare_failed',
+        'failed to prepare PTC session host roots',
+        ptcSessionDockerHostRootPrepareDiagnostics(error),
+      );
+    }
     const create = await runDocker(
       buildPtcSessionDockerCreateArgs({
         reuseKey,
         runtimeRoot: args.runtimeRoot,
-        policy,
       }),
       signal,
     );
     if (!isSuccessfulExit(create)) {
+      if (
+        policy.network.mode === 'open' &&
+        isOpenNetworkBackendUnavailable(create.stderr)
+      ) {
+        return failure(
+          'network_backend_unavailable',
+          'PTC lab open egress Docker network is unavailable',
+          create,
+        );
+      }
       return failure(
         'container_create_failed',
         'failed to create PTC session container',
@@ -530,21 +248,12 @@ export function createPtcSessionDockerManager(args: {
       state: 'ready',
       containerId,
       reuseKey,
-      callbackRootHostPath: buildPtcSessionDockerCallbackRoot({
-        runtimeRoot: args.runtimeRoot,
-        reuseKey,
-      }),
+      callbackRootHostPath: hostDirs.callbackRoot,
       callbackRootContainerPath: PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
-      artifactRootHostPath: buildPtcSessionDockerArtifactRoot({
-        runtimeRoot: args.runtimeRoot,
-        reuseKey,
-      }),
+      artifactRootHostPath: hostDirs.artifactRoot,
       artifactRootContainerPath: PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
       artifactWorkspaceMountPolicyId: reuseKey.artifactWorkspaceMountPolicyId,
-      packageCacheRootHostPath: buildPtcPackageCacheRoot({
-        runtimeRoot: args.runtimeRoot,
-        identity: toPtcPackageCacheIdentity(reuseKey),
-      }).hostPath,
+      packageCacheRootHostPath: hostDirs.packageCacheRoot,
       packageCacheRootContainerPath:
         PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT,
       packageCacheMountPolicyId: reuseKey.packageCacheMountPolicyId,
@@ -555,11 +264,37 @@ export function createPtcSessionDockerManager(args: {
     return { ok: true, value: handle };
   }
 
+  async function removeTrackedSessionContainerAndHostRoot(request: {
+    handle: PtcSessionDockerHandle;
+    signal: AbortSignal | undefined;
+    removeFailureMessage: string;
+  }): Promise<PtcSessionDockerResult<void>> {
+    const removed = await runDocker(
+      ['rm', '-f', request.handle.containerId],
+      request.signal,
+    );
+    if (!isSuccessfulExit(removed)) {
+      taintedSessionIdentityHashes.add(request.handle.reuseKey.identityHash);
+      return failure(
+        'container_remove_failed',
+        request.removeFailureMessage,
+        removed,
+      );
+    }
+    sessions.delete(request.handle.reuseKey.identityHash);
+    taintedSessionIdentityHashes.delete(request.handle.reuseKey.identityHash);
+    return await removePtcSessionDockerHostRoot({
+      runtimeRoot: args.runtimeRoot,
+      reuseKey: request.handle.reuseKey,
+    });
+  }
+
   return {
     async getOrCreate(identity, options) {
       const reuseKey = await buildKey(identity);
+      const requestedDuringCloseAll = closingAll;
       return await serializeForKey(reuseKey.identityHash, async () => {
-        if (closingAll) {
+        if (requestedDuringCloseAll || closingAll) {
           return {
             ok: false,
             reasonCode: 'manager_closing',
@@ -569,6 +304,18 @@ export function createPtcSessionDockerManager(args: {
 
         const current = sessions.get(reuseKey.identityHash);
         if (current) {
+          if (taintedSessionIdentityHashes.has(reuseKey.identityHash)) {
+            const cleanup = await removeTrackedSessionContainerAndHostRoot({
+              handle: current,
+              signal: options?.signal,
+              removeFailureMessage:
+                'failed to remove tainted PTC session container',
+            });
+            if (!cleanup.ok) {
+              return cleanup;
+            }
+            return await startSessionContainer(reuseKey, options?.signal);
+          }
           const inspect = await runDocker(
             ['inspect', current.containerId],
             options?.signal,
@@ -579,21 +326,11 @@ export function createPtcSessionDockerManager(args: {
           ) {
             return { ok: true, value: current };
           }
-          const removed = await runDocker(
-            ['rm', '-f', current.containerId],
-            options?.signal,
-          );
-          if (!isSuccessfulExit(removed)) {
-            return failure(
-              'container_remove_failed',
+          const cleanup = await removeTrackedSessionContainerAndHostRoot({
+            handle: current,
+            signal: options?.signal,
+            removeFailureMessage:
               'failed to remove crashed PTC session container',
-              removed,
-            );
-          }
-          sessions.delete(reuseKey.identityHash);
-          const cleanup = await removePtcSessionDockerHostRoot({
-            runtimeRoot: args.runtimeRoot,
-            reuseKey,
           });
           if (!cleanup.ok) {
             return cleanup;
@@ -611,21 +348,10 @@ export function createPtcSessionDockerManager(args: {
         if (!existing) {
           return { ok: true, value: undefined };
         }
-        const removed = await runDocker(
-          ['rm', '-f', existing.containerId],
-          options?.signal,
-        );
-        if (!isSuccessfulExit(removed)) {
-          return failure(
-            'container_remove_failed',
-            'failed to remove PTC session container',
-            removed,
-          );
-        }
-        sessions.delete(reuseKey.identityHash);
-        return await removePtcSessionDockerHostRoot({
-          runtimeRoot: args.runtimeRoot,
-          reuseKey,
+        return await removeTrackedSessionContainerAndHostRoot({
+          handle: existing,
+          signal: options?.signal,
+          removeFailureMessage: 'failed to remove PTC session container',
         });
       });
     },
@@ -644,21 +370,10 @@ export function createPtcSessionDockerManager(args: {
               if (!current) {
                 return { ok: true, value: undefined };
               }
-              const removed = await runDocker(
-                ['rm', '-f', current.containerId],
-                options?.signal,
-              );
-              if (!isSuccessfulExit(removed)) {
-                return failure(
-                  'container_remove_failed',
-                  'failed to remove PTC session container',
-                  removed,
-                );
-              }
-              sessions.delete(handle.reuseKey.identityHash);
-              return await removePtcSessionDockerHostRoot({
-                runtimeRoot: args.runtimeRoot,
-                reuseKey: current.reuseKey,
+              return await removeTrackedSessionContainerAndHostRoot({
+                handle: current,
+                signal: options?.signal,
+                removeFailureMessage: 'failed to remove PTC session container',
               });
             },
           );
@@ -671,114 +386,6 @@ export function createPtcSessionDockerManager(args: {
         closingAll = false;
       }
     },
-  };
-}
-
-export async function runPtcSessionDockerCommand(
-  invocation: PtcSessionDockerCommandInvocation,
-): Promise<PtcSessionDockerCommandResult> {
-  if (invocation.signal?.aborted) {
-    return {
-      kind: 'cancelled',
-      stdout: '',
-      stderr: 'docker command cancelled',
-    };
-  }
-
-  return await new Promise((resolve) => {
-    const child = spawn(invocation.executable, invocation.args, {
-      env: buildDockerClientEnv(),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    let pendingTermination: 'timeout' | 'cancelled' | null = null;
-    let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const finish = (result: PtcSessionDockerCommandResult): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-      }
-      invocation.signal?.removeEventListener('abort', onAbort);
-      resolve(result);
-    };
-
-    const terminate = (kind: 'timeout' | 'cancelled'): void => {
-      if (settled || pendingTermination) {
-        return;
-      }
-      pendingTermination = kind;
-      child.kill('SIGTERM');
-      forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 1_000);
-      forceKillTimer.unref?.();
-    };
-
-    const timer = setTimeout(() => terminate('timeout'), invocation.timeoutMs);
-    timer.unref?.();
-
-    const onAbort = (): void => terminate('cancelled');
-    invocation.signal?.addEventListener('abort', onAbort, { once: true });
-    if (invocation.signal?.aborted) {
-      terminate('cancelled');
-    }
-
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout = appendBoundedDockerOutput(stdout, chunk);
-    });
-    child.stderr.on('data', (chunk: string) => {
-      stderr = appendBoundedDockerOutput(stderr, chunk);
-    });
-    child.on('error', (error) => {
-      finish({ kind: 'crash', stdout, stderr: error.message });
-    });
-    child.on('close', (exitCode) => {
-      if (pendingTermination) {
-        finish({ kind: pendingTermination, stdout, stderr });
-        return;
-      }
-      finish({ kind: 'exit', exitCode: exitCode ?? 1, stdout, stderr });
-    });
-  });
-}
-
-function appendBoundedDockerOutput(current: string, chunk: string): string {
-  if (current.includes('[truncated]')) {
-    return current;
-  }
-  const next = current + chunk;
-  if (Buffer.byteLength(next, 'utf8') <= MAX_DOCKER_OUTPUT_BYTES) {
-    return next;
-  }
-  return `${next.slice(0, MAX_DOCKER_OUTPUT_BYTES)}\n[truncated]`;
-}
-
-const DOCKER_CLIENT_ENV_KEYS = [
-  'DOCKER_API_VERSION',
-  'DOCKER_CERT_PATH',
-  'DOCKER_CONFIG',
-  'DOCKER_CONTEXT',
-  'DOCKER_HOST',
-  'DOCKER_TLS_VERIFY',
-  'DOCKER_BUILDKIT',
-] as const;
-
-function buildDockerClientEnv(): NodeJS.ProcessEnv {
-  return {
-    PATH: process.env.PATH ?? '',
-    ...Object.fromEntries(
-      DOCKER_CLIENT_ENV_KEYS.flatMap((key) => {
-        const value = process.env[key];
-        return value === undefined ? [] : [[key, value]];
-      }),
-    ),
   };
 }
 
@@ -802,18 +409,16 @@ function failure(
   };
 }
 
+function failureDiagnostics(
+  reasonCode: PtcSessionDockerFailureReason,
+  message: string,
+  diagnostics: Record<string, string | number | boolean>,
+): PtcSessionDockerResult<never> {
+  return { ok: false, reasonCode, message, diagnostics };
+}
+
 function sanitizeDockerDiagnostic(value: string): string {
-  return value
-    .replaceAll(
-      /(?:[A-Za-z]:\\|\/)[^"' \n\r\t]*\.geulbat[^"' \n\r\t]*/gu,
-      '[redacted:path]',
-    )
-    .replaceAll(/\/var\/run\/docker\.sock/gu, '[redacted:docker-socket]')
-    .replaceAll(
-      /(?:[A-Za-z]:\\Users\\|\/Users\/|\/home\/|\/mnt\/c\/Users\/|\/tmp\/|\/var\/folders\/)[^"' \n\r\t]*/gu,
-      '[redacted:path]',
-    )
-    .slice(0, 512);
+  return sanitizePtcPrivateMarkers(value).slice(0, 512);
 }
 
 function inspectReportsRunning(stdout: string, containerId: string): boolean {
@@ -831,16 +436,8 @@ function inspectReportsRunning(stdout: string, containerId: string): boolean {
   }
 }
 
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(',')}]`;
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
+function isOpenNetworkBackendUnavailable(stderr: string): boolean {
+  return /(?:network\s+\S+\s+not found|no such network|network .* unavailable)/iu.test(
+    stderr,
+  );
 }

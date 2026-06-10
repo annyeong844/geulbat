@@ -13,6 +13,7 @@ import {
 } from '@geulbat/protocol/react-bundle-inline-compile';
 import {
   buildReactBundleAcceptedManifestArtifactCandidate,
+  type ReactBundleAcceptedManifestArtifactCandidateSource,
   type ReactBundleAcceptedManifestArtifactCandidateResult,
   type ReactBundleAcceptedRuntimeManifestSuccess,
 } from './react-bundle-accepted-manifest-artifact-candidate.js';
@@ -143,6 +144,16 @@ function acceptedWithoutDependencies(): ReactBundleAcceptedRuntimeManifestSucces
       networkPolicies: ['none'],
     },
     dependencyEvidence: [],
+  };
+}
+
+function acceptedWithBoundaryManifest(
+  manifest: unknown,
+): ReactBundleAcceptedManifestArtifactCandidateSource {
+  const accepted = acceptedWithDependencies();
+  return {
+    ...accepted,
+    manifest,
   };
 }
 
@@ -421,19 +432,17 @@ void test('buildReactBundleAcceptedManifestArtifactCandidate does not leak non-o
 });
 
 void test('buildReactBundleAcceptedManifestArtifactCandidate rejects private metadata leaks in manifest payload', () => {
-  const accepted = acceptedWithDependencies({
-    manifest: {
-      entryUrl: ENTRY_URL,
-      runtimeDependencies: {
-        importMap: {
-          imports: {
-            [PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_IMPORT_SPECIFIER]:
-              PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_MODULE_URL,
-          },
+  const accepted = acceptedWithBoundaryManifest({
+    entryUrl: ENTRY_URL,
+    runtimeDependencies: {
+      importMap: {
+        imports: {
+          [PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_IMPORT_SPECIFIER]:
+            PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_MODULE_URL,
         },
       },
-      prepareEvidenceRef: 'sandbox-output:payload-leak',
-    } as unknown as ReactBundleRuntimeManifest,
+    },
+    prepareEvidenceRef: 'sandbox-output:payload-leak',
   });
 
   const result = buildReactBundleAcceptedManifestArtifactCandidate({
@@ -449,7 +458,7 @@ void test('buildReactBundleAcceptedManifestArtifactCandidate rejects malformed a
       ok: false,
       reasonCode: 'probe_policy_failed',
       message: 'not accepted',
-    } as unknown as ReactBundleAcceptedRuntimeManifestSuccess,
+    },
   });
 
   assertFailure(result, 'accepted_summary_invalid');
@@ -457,11 +466,11 @@ void test('buildReactBundleAcceptedManifestArtifactCandidate rejects malformed a
 
 void test('buildReactBundleAcceptedManifestArtifactCandidate rejects payloads that do not parse as protocol runtime manifests', () => {
   const result = buildReactBundleAcceptedManifestArtifactCandidate({
-    accepted: acceptedWithDependencies({
-      manifest: {
-        entryUrl: ENTRY_URL,
-        runtimeDependencies: 'invalid',
-      } as unknown as ReactBundleRuntimeManifest,
+    accepted: acceptedWithBoundaryManifest({
+      entryUrl: ENTRY_URL,
+      runtimeDependencies: {
+        importMap: 'invalid',
+      },
     }),
   });
 

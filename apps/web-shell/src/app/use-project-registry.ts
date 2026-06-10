@@ -6,7 +6,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from 'react';
-import type { ProjectId } from '@geulbat/protocol/ids';
+import { DEFAULT_PROJECT_ID, type ProjectId } from '@geulbat/protocol/ids';
 import type {
   ProjectListItem,
   ProjectListResponse,
@@ -23,7 +23,6 @@ import {
   getProjects,
   renameProject as renameProjectRequest,
 } from '../lib/api/projects.js';
-import { DEFAULT_PROJECT_ID } from '../lib/default-project-id.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import { reportVisibleAppError } from './error-reporting.js';
 

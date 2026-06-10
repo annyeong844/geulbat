@@ -8,12 +8,12 @@ import type {
 
 export function resolveArtifactPanePreviewSurfaceResult(
   model: ArtifactPanePreviewSurfaceModel,
-  resolveRuntimeArtifactPreview: RuntimeArtifactPreviewResolver,
+  resolveArtifactRuntimePreview: RuntimeArtifactPreviewResolver,
 ): ArtifactPanePreviewSurfaceResult {
   switch (model.kind) {
     case 'runtime':
       return toPanePreviewSurfaceResult(
-        resolveRuntimeArtifactPreview(
+        resolveArtifactRuntimePreview(
           model.renderer,
           model.payload,
           model.context,
