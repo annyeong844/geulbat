@@ -35,8 +35,6 @@ import type {
   ApprovalTarget,
 } from './loop-tool-runtime.js';
 import {
-  buildAgentToolExecutionContextBase,
-  buildToolCallExecutionRuntime,
   getToolRuntimeRunContext,
   getToolRuntimeRunState,
   getToolRuntimeSignal,
@@ -338,16 +336,3 @@ function buildApprovalGrantContext(
     permissionMode: approvalContext.permissionMode,
   };
 }
-
-export {
-  buildAgentToolExecutionContextBase,
-  buildToolCallExecutionRuntime,
-  executeResolvedFunctionCall,
-  getToolRuntimeRunContext,
-  getToolRuntimeRunState,
-  getToolRuntimeSignal,
-};
-export type {
-  AgentToolCallExecutionRuntime,
-  ApprovalTarget,
-} from './loop-tool-runtime.js';

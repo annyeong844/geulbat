@@ -5,6 +5,7 @@ import { AGENT_WAIT_APPROVAL_BLOCKED_REASON } from '@geulbat/protocol/run-events
 
 import { agentWaitTool } from './agent-wait.js';
 import { createDaemonContext } from '../../context.js';
+import { createChildRunRegistry } from '../../agent/runtime/child-run-registry.js';
 import { testRunId } from '../../../test-support/run-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import type { ThreadId } from '@geulbat/protocol/ids';
@@ -433,5 +434,60 @@ void test('agent_wait reports internal revision wait failures without reclassify
   } finally {
     daemonContext.childRuns.waitForRevisionChange =
       originalWaitForRevisionChange;
+  }
+});
+
+void test('agent_wait(all) over a fan-out larger than the retention budget returns every result (AC-1b)', async () => {
+  const { daemonContext, executionContext } = createWaitContext();
+  // Budget of 2 with a 3-child fan-out: without the wait lease, the oldest
+  // terminal record is evicted mid-wait and the join fails with unknown child run.
+  const boundedRegistry = createChildRunRegistry({
+    maxRetainedTerminalRuns: 2,
+    retentionTtlMs: 5 * 60 * 1000,
+  });
+  const ctx = {
+    ...executionContext,
+    agentSpawnRuntime: { ...daemonContext, childRuns: boundedRegistry },
+  };
+  const ids = [testRunId('fan-a'), testRunId('fan-b'), testRunId('fan-c')];
+  ids.forEach((childRunId, index) => {
+    boundedRegistry.registerChildRun({
+      childRunId,
+      childThreadId: testThreadId(10 + index),
+      parentRunId: testRunId('parent-run'),
+      ownerThreadId: ctx.threadId,
+      subagentType: 'worker',
+    });
+  });
+
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const waiting = agentWaitTool.execute({ child_run_ids: ids }, ctx);
+    // Let the wait acquire its lease and take its first poll while children run.
+    await delay(5);
+    for (const childRunId of ids) {
+      boundedRegistry.markChildTerminal({
+        childRunId,
+        terminalState: 'completed',
+        result: `${childRunId}-done`,
+      });
+      await delay(1);
+    }
+
+    const result = await waiting;
+    assert.equal(result.ok, true);
+    const payload = JSON.parse(result.output) as {
+      completed: Array<{ childRunId: string }>;
+      pending: string[];
+    };
+    assert.equal(payload.completed.length, 3);
+    assert.deepEqual(
+      payload.completed.map((entry) => entry.childRunId).sort(),
+      [...ids].sort(),
+    );
+    assert.deepEqual(payload.pending, []);
+  } finally {
+    console.warn = originalWarn;
   }
 });

@@ -104,6 +104,40 @@ void test('thread background notification queue notifies live subscribers on enq
   assert.deepEqual(seen, [childRunId]);
 });
 
+void test('thread background notification queue ignores duplicate delivery ids for a thread', () => {
+  const queue = createThreadBackgroundNotificationQueue();
+  const threadId = testThreadId(174010);
+  const seen: string[] = [];
+  const result: BackgroundChildResult = {
+    deliveryId: 'delivery-duplicate',
+    parentRunId: testRunId('parent-duplicate'),
+    childRunId: testRunId('child-duplicate'),
+    subagentType: 'explorer',
+    terminalState: 'completed',
+    result: 'duplicate',
+    completedAt: '2026-03-24T00:00:10.000Z',
+  };
+
+  const unsubscribe = queue.subscribeThreadBackgroundResults(
+    threadId,
+    (backgroundResult) => {
+      seen.push(backgroundResult.deliveryId);
+    },
+  );
+
+  queue.enqueueThreadBackgroundResult(threadId, result);
+  queue.enqueueThreadBackgroundResult(threadId, result);
+  unsubscribe();
+
+  assert.deepEqual(seen, ['delivery-duplicate']);
+  assert.deepEqual(
+    queue
+      .consumeThreadBackgroundResults(threadId)
+      .map((backgroundResult) => backgroundResult.deliveryId),
+    ['delivery-duplicate'],
+  );
+});
+
 void test('thread background notification queue isolates listener failures and continues delivery', () => {
   const queue = createThreadBackgroundNotificationQueue();
   const threadId = testThreadId(174002);

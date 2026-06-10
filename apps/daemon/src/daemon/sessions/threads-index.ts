@@ -14,6 +14,23 @@ interface LoadThreadIndexOptions {
   isKnownProjectId?: (projectId: string) => boolean;
 }
 
+type ThreadIndexEntryParseReason =
+  | 'entry_not_object'
+  | 'invalid_thread_id'
+  | 'invalid_project_id'
+  | 'unknown_project_id'
+  | 'invalid_title'
+  | 'invalid_last_updated'
+  | 'invalid_message_count'
+  | 'invalid_entry';
+
+interface SkippedThreadIndexEntryDiagnostic {
+  entryIndex: number;
+  reasonCode: ThreadIndexEntryParseReason;
+}
+
+const MAX_SKIPPED_ENTRY_DIAGNOSTICS = 20;
+
 export function createThreadIndexStore(
   options: {
     runMutationSerial?: <T>(
@@ -149,18 +166,27 @@ function parseThreadIndexEntries(
   }
 
   const entries: ThreadSummary[] = [];
-  let skippedEntryCount = 0;
-  for (const entry of value) {
+  const skippedEntries: SkippedThreadIndexEntryDiagnostic[] = [];
+  for (const [entryIndex, entry] of value.entries()) {
     try {
       entries.push(parseThreadSummaryEntry(entry, options));
-    } catch {
-      skippedEntryCount += 1;
+    } catch (error: unknown) {
+      skippedEntries.push({
+        entryIndex,
+        reasonCode: readThreadIndexEntryParseReason(error),
+      });
     }
   }
-  if (skippedEntryCount > 0) {
-    logger.warn(
-      `Skipped ${skippedEntryCount} malformed thread index entr${skippedEntryCount === 1 ? 'y' : 'ies'}.`,
-    );
+  if (skippedEntries.length > 0) {
+    logger
+      .withContext({
+        skippedEntryDiagnostics:
+          formatSkippedThreadIndexEntryDiagnostics(skippedEntries),
+        skippedEntryCount: skippedEntries.length,
+      })
+      .warn(
+        `Skipped ${skippedEntries.length} malformed thread index entr${skippedEntries.length === 1 ? 'y' : 'ies'}.`,
+      );
   }
   return entries;
 }
@@ -170,7 +196,7 @@ function parseThreadSummaryEntry(
   options?: LoadThreadIndexOptions,
 ): ThreadSummary {
   if (!isPlainRecord(value)) {
-    throw new Error('invalid thread index entry');
+    throw new ThreadIndexEntryParseError('entry_not_object');
   }
 
   const record = value;
@@ -193,7 +219,7 @@ function parseThreadId(value: unknown): ThreadSummary['threadId'] {
   if (typeof value === 'string' && isThreadId(value)) {
     return value;
   }
-  throw new Error('invalid thread index entry');
+  throw new ThreadIndexEntryParseError('invalid_thread_id');
 }
 
 function parseProjectId(
@@ -204,15 +230,16 @@ function parseProjectId(
     if (!options?.isKnownProjectId || options.isKnownProjectId(value)) {
       return value;
     }
+    throw new ThreadIndexEntryParseError('unknown_project_id');
   }
-  throw new Error('invalid thread index entry');
+  throw new ThreadIndexEntryParseError('invalid_project_id');
 }
 
 function parseRequiredString(value: unknown): string {
   if (typeof value === 'string' && value.trim() !== '') {
     return value;
   }
-  throw new Error('invalid thread index entry');
+  throw new ThreadIndexEntryParseError('invalid_last_updated');
 }
 
 function parseOptionalString(value: unknown): string | undefined {
@@ -222,12 +249,38 @@ function parseOptionalString(value: unknown): string | undefined {
   if (typeof value === 'string') {
     return value;
   }
-  throw new Error('invalid thread index entry');
+  throw new ThreadIndexEntryParseError('invalid_title');
 }
 
 function parseNonNegativeInteger(value: unknown): number {
   if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
     return value;
   }
-  throw new Error('invalid thread index entry');
+  throw new ThreadIndexEntryParseError('invalid_message_count');
+}
+
+class ThreadIndexEntryParseError extends Error {
+  constructor(readonly reasonCode: ThreadIndexEntryParseReason) {
+    super('invalid thread index entry');
+  }
+}
+
+function readThreadIndexEntryParseReason(
+  error: unknown,
+): ThreadIndexEntryParseReason {
+  return error instanceof ThreadIndexEntryParseError
+    ? error.reasonCode
+    : 'invalid_entry';
+}
+
+function formatSkippedThreadIndexEntryDiagnostics(
+  diagnostics: readonly SkippedThreadIndexEntryDiagnostic[],
+): string {
+  const formatted = diagnostics
+    .slice(0, MAX_SKIPPED_ENTRY_DIAGNOSTICS)
+    .map((diagnostic) => `${diagnostic.entryIndex}:${diagnostic.reasonCode}`);
+  const remainingCount = diagnostics.length - formatted.length;
+  return remainingCount > 0
+    ? `${formatted.join(',')},+${remainingCount}`
+    : formatted.join(',');
 }

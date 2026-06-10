@@ -31,6 +31,27 @@ export interface PersistenceBootstrapSuccessResponseMessage {
   state?: unknown;
 }
 
+export function isPersistenceBootstrapSuccessResponseMessage(
+  response: unknown,
+): response is PersistenceBootstrapSuccessResponseMessage {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    return false;
+  }
+  const record = response as Record<string, unknown>;
+  return (
+    record.ok === true &&
+    typeof record.kind === 'string' &&
+    (typeof record.version === 'string' ||
+      typeof record.version === 'number') &&
+    typeof record.requestId === 'string' &&
+    typeof record.scopeHandle === 'string' &&
+    typeof record.verb === 'string' &&
+    (record.revision === undefined ||
+      record.revision === null ||
+      typeof record.revision === 'string')
+  );
+}
+
 export interface PendingPersistenceRequest {
   resolve: (message: PersistenceBootstrapSuccessResponseMessage) => void;
   reject: (reason?: unknown) => void;

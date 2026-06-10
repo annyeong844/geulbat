@@ -51,8 +51,6 @@ interface ArtifactRuntimePersistenceBootstrapLifecycle {
   setStorageBootstrapReady(next: boolean): void;
 }
 
-export type { ArtifactRuntimePersistenceStorageFacadeStore } from './artifact-runtime-persistence-storage-facade-store.js';
-
 interface ArtifactRuntimePersistenceBootstrapServices {
   bridgeStore: ArtifactRuntimePersistenceBridgeStore;
   bootstrapLifecycle: ArtifactRuntimePersistenceBootstrapLifecycle;

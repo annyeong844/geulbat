@@ -65,10 +65,13 @@ void test('loadThreadIndex skips invalid entries and preserves valid entry order
       },
     ]);
     assert.equal(warnings.length, 1);
+    const warningLine = String(warnings[0]?.[0] ?? '');
+    assert.match(warningLine, /Skipped 3 malformed thread index entries/);
     assert.match(
-      String(warnings[0]?.[0] ?? ''),
-      /Skipped 3 malformed thread index entries/,
+      warningLine,
+      /skippedEntryDiagnostics="0:invalid_last_updated,1:invalid_thread_id,3:unknown_project_id"/,
     );
+    assert.doesNotMatch(warningLine, /not-a-thread-id|missing-project/u);
   } finally {
     console.warn = originalWarn;
   }

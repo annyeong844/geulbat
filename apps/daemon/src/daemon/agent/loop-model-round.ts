@@ -3,11 +3,16 @@ import {
   type CallModelInput,
   type HistoryItem,
   type FunctionCall,
+  type ProviderStructuredOutput,
 } from '../llm/index.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import type { ToolDefinition } from '../tools/types.js';
 import type { AgentEventEmitter } from './events.js';
-import { getErrorMessage } from '../utils/error.js';
+import {
+  getErrorCode,
+  getErrorMessage,
+  getErrorStringProperty,
+} from '../utils/error.js';
 import type { CallModelFn } from './loop-types.js';
 import type { AgentResult } from './agent-result.js';
 import type { StreamErrorCategory } from '../llm/provider/transport/stream-error.js';
@@ -32,6 +37,7 @@ interface ModelRoundData {
   assistantText: string;
   terminalResult: AgentResult;
   functionCalls: FunctionCall[];
+  structuredOutputs?: ProviderStructuredOutput[];
 }
 
 type ModelRoundFailureResolution =
@@ -120,12 +126,17 @@ export async function runModelRound(args: {
                 ok: true,
                 finalProse: chunkResult.finalText || chunkResult.assistantText,
               });
+        const structuredOutputs =
+          chunkResult.structuredOutputs.length > 0
+            ? chunkResult.structuredOutputs
+            : undefined;
         return {
           ok: true,
           value: {
             assistantText: chunkResult.assistantText,
             terminalResult,
             functionCalls: chunkResult.functionCalls,
+            ...(structuredOutputs !== undefined ? { structuredOutputs } : {}),
           },
         };
       }
@@ -145,9 +156,7 @@ export async function runModelRound(args: {
           ...(chunkResult.message !== undefined
             ? { message: chunkResult.message }
             : {}),
-          ...(chunkResult.kind === 'thrown_error'
-            ? { logTerminalFailure: true }
-            : {}),
+          logTerminalFailure: true,
         });
         if (failure.kind === 'retry') {
           await retrySleep(failure.delayMs);
@@ -183,10 +192,7 @@ function resolveModelRoundFailure(args: {
   }
 
   if (args.logTerminalFailure) {
-    logger.error('model round failed:', {
-      category: args.category,
-      cause: getErrorMessage(args.error),
-    });
+    logger.error('model round failed:', buildModelRoundFailureLogFields(args));
   }
 
   return {
@@ -196,6 +202,24 @@ function resolveModelRoundFailure(args: {
       error: args.error,
       ...(args.message !== undefined ? { message: args.message } : {}),
     }),
+  };
+}
+
+function buildModelRoundFailureLogFields(args: {
+  category: StreamErrorCategory;
+  error: unknown;
+}): {
+  category: StreamErrorCategory;
+  code?: string;
+  cause: string;
+} {
+  const code = getErrorCode(args.error);
+  return {
+    category: args.category,
+    ...(code !== undefined ? { code } : {}),
+    cause:
+      getErrorStringProperty(args.error, 'message') ??
+      getErrorMessage(args.error),
   };
 }
 

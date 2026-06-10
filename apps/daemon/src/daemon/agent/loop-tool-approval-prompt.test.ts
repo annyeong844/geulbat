@@ -7,10 +7,8 @@ import { tmpdir } from 'node:os';
 import type { AgentEvent } from './events.js';
 import { createAgentEvent } from './events.js';
 import type { AgentEventEmitter } from './events.js';
-import {
-  buildAgentToolExecutionContextBase,
-  resolveApprovalDecision,
-} from './loop-tool-approval.js';
+import { resolveApprovalDecision } from './loop-tool-approval.js';
+import { buildAgentToolExecutionContextBase } from './loop-tool-runtime.js';
 import { createApprovalGate } from './runtime/approval-gate.js';
 import { createRunState } from './runtime/run-state.js';
 import { readTranscriptEntries } from '../sessions/transcript-log.js';

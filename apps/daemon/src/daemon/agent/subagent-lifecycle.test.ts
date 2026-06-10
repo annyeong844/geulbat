@@ -8,6 +8,7 @@ import { testRunId } from '../../test-support/run-id.js';
 import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import type { AgentEvent } from '../runtime-contracts.js';
+import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
 import type {
   SubagentLaunchReservation,
   SubagentType,
@@ -26,8 +27,12 @@ function startTestBackgroundChildLifecycle(args: {
   launchReservation?: SubagentLaunchReservation;
   emitAgentEvent?: (event: AgentEvent) => void;
   finish?: () => void;
+  runtimeServices?: AgentRuntimeServices;
+  captureParentRunState?: (
+    parentRunState: ReturnType<typeof createRunState>,
+  ) => void;
 }) {
-  const runtimeServices = createDaemonContext();
+  const runtimeServices = args.runtimeServices ?? createDaemonContext();
   const projectId = testProjectId(args.testLabel);
   const ownerThreadId = testThreadId(args.ownerThreadId);
   const childThreadId = testThreadId(args.childThreadId);
@@ -50,6 +55,7 @@ function startTestBackgroundChildLifecycle(args: {
     }),
     parentRunId,
   });
+  args.captureParentRunState?.(parentRunState);
   let finishCount = 0;
   const emittedEvents: AgentEvent[] = [];
   const finish =
@@ -238,6 +244,97 @@ void test('beginBackgroundChildLifecycle has no timeout unless one is explicitly
     terminalReason: null,
     terminalResult: 'sub-agent completed',
   });
+});
+
+void test('beginBackgroundChildLifecycle cleans parent handles when daemon child registry registration fails', () => {
+  const runtimeServices = createDaemonContext();
+  runtimeServices.childRuns.registerChildRun = () => {
+    throw new Error('registry exploded');
+  };
+  let releaseCount = 0;
+  let finishCount = 0;
+  let capturedParentRunState: ReturnType<typeof createRunState> | undefined;
+
+  assert.throws(
+    () =>
+      startTestBackgroundChildLifecycle({
+        testLabel: 'subagent-lifecycle-registry-failure',
+        ownerThreadId: 71,
+        childThreadId: 72,
+        parentRunId: 'lifecycle-registry-failure-parent',
+        childRunId: 'lifecycle-registry-failure-child',
+        runtimeServices,
+        launchReservation: {
+          release() {
+            releaseCount += 1;
+          },
+        },
+        finish() {
+          finishCount += 1;
+        },
+        captureParentRunState(parentRunState) {
+          capturedParentRunState = parentRunState;
+        },
+      }),
+    /registry exploded/,
+  );
+
+  const childRunId = testRunId('lifecycle-registry-failure-child');
+
+  assert.equal(releaseCount, 1);
+  assert.equal(finishCount, 1);
+  assert.equal(capturedParentRunState?.childRunIds.has(childRunId), false);
+  assert.equal(
+    capturedParentRunState?.backgroundChildRunIds.has(childRunId),
+    false,
+  );
+  assert.equal(runtimeServices.childRuns.getChildRun(childRunId), undefined);
+});
+
+void test('beginBackgroundChildLifecycle cleans lifecycle state when spawn event emission fails', () => {
+  let releaseCount = 0;
+  let finishCount = 0;
+  let capturedParentRunState: ReturnType<typeof createRunState> | undefined;
+  const runtimeServices = createDaemonContext();
+
+  assert.throws(() => {
+    startTestBackgroundChildLifecycle({
+      testLabel: 'subagent-lifecycle-emit-failure',
+      ownerThreadId: 73,
+      childThreadId: 74,
+      parentRunId: 'lifecycle-emit-failure-parent',
+      childRunId: 'lifecycle-emit-failure-child',
+      runtimeServices,
+      launchReservation: {
+        release() {
+          releaseCount += 1;
+        },
+      },
+      finish() {
+        finishCount += 1;
+      },
+      captureParentRunState(parentRunState) {
+        capturedParentRunState = parentRunState;
+      },
+      emitAgentEvent() {
+        throw new Error('emit exploded');
+      },
+    });
+  }, /emit exploded/);
+
+  const childRunId = testRunId('lifecycle-emit-failure-child');
+  const childRun = runtimeServices.childRuns.getChildRun(childRunId);
+
+  assert.equal(releaseCount, 1);
+  assert.equal(finishCount, 1);
+  assert.equal(capturedParentRunState?.childRunIds.has(childRunId), false);
+  assert.equal(
+    capturedParentRunState?.backgroundChildRunIds.has(childRunId),
+    false,
+  );
+  assert.equal(childRun?.status, 'failed');
+  assert.equal(childRun?.reason, 'child_error');
+  assert.equal(childRun?.result, 'sub-agent launch failed');
 });
 
 void test('beginBackgroundChildLifecycle logs finish failures without blocking terminal publication', () => {

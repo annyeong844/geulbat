@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createSymlinkOrSkip } from '../../test-support/symlink-test.js';
-import { collectSandboxOutputRef } from './output-validation.js';
+import {
+  collectSandboxOutputRef,
+  isOpaqueSandboxOutputEvidenceRef,
+} from './output-validation.js';
 
 void test('collectSandboxOutputRef records files under the output directory', async () => {
   const root = await mkdtemp(join(tmpdir(), 'geulbat-sandbox-output-'));
@@ -71,5 +74,26 @@ void test('collectSandboxOutputRef enforces file count and byte budgets', async 
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('isOpaqueSandboxOutputEvidenceRef rejects path-like and malformed refs', () => {
+  assert.equal(
+    isOpaqueSandboxOutputEvidenceRef('sandbox-output:sandbox-evidence-1'),
+    true,
+  );
+
+  for (const value of [
+    'sandbox-output:',
+    'sandbox-output:with space',
+    'sandbox-output:with\nnewline',
+    'sandbox-output:../escape',
+    'sandbox-output:path/segment',
+    'sandbox-output:path\\segment',
+    'sandbox-output:.geulbat',
+    'file:evidence',
+    '.geulbat/sandbox-outputs/attempt/candidate.json',
+  ]) {
+    assert.equal(isOpaqueSandboxOutputEvidenceRef(value), false, value);
   }
 });

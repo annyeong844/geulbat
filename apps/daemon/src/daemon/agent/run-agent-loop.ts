@@ -11,7 +11,7 @@ import type { AgentInput } from './loop-types.js';
 import {
   buildAgentToolExecutionContextBase,
   buildToolCallExecutionRuntime,
-} from './loop-tool-approval.js';
+} from './loop-tool-runtime.js';
 import { assertRunId as assertValidRunId } from '@geulbat/protocol/ids';
 import { settleRunAfterResult } from './runtime/run-state.js';
 import {
@@ -27,6 +27,13 @@ import {
 import { finalizeAfterToolLimit, runModelRound } from './loop-model-round.js';
 import { processFunctionCalls } from './loop-tool-execution.js';
 import { isRootRunState } from '../runtime-contracts.js';
+import { runReactBundleStructuredOutputCaller } from './react-bundle-structured-output-caller.js';
+import {
+  PTC_FIXED_PROBE_STRUCTURED_OUTPUT_KIND,
+  runPtcFixedProbeStructuredOutputCaller,
+} from './ptc-fixed-probe-structured-output-caller.js';
+
+const STRUCTURED_REACT_BUNDLE_INGRESS_TIMEOUT_MS = 30_000;
 
 export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   const {
@@ -115,7 +122,46 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       settleRunAfterResult(runState, modelRound.result, signal);
       return modelRound.result;
     }
-    const { assistantText, terminalResult, functionCalls } = modelRound.value;
+    const {
+      assistantText,
+      terminalResult,
+      functionCalls,
+      structuredOutputs = [],
+    } = modelRound.value;
+
+    if (structuredOutputs.length > 0) {
+      const firstStructuredOutput = structuredOutputs[0];
+      const structuredResult =
+        firstStructuredOutput?.kind === PTC_FIXED_PROBE_STRUCTURED_OUTPUT_KIND
+          ? await runPtcFixedProbeStructuredOutputCaller({
+              runContext,
+              runtime: runtimeServices.ptcFixedProbe,
+              structuredOutputs,
+              functionCalls,
+              ...(signal !== undefined ? { signal } : {}),
+            })
+          : await runReactBundleStructuredOutputCaller({
+              workspaceRoot,
+              store: runtimeServices.sandboxAttempts,
+              structuredOutputs,
+              functionCalls,
+              timeoutMs: STRUCTURED_REACT_BUNDLE_INGRESS_TIMEOUT_MS,
+              ...(signal !== undefined ? { signal } : {}),
+            });
+
+      if (!structuredResult.ok) {
+        return emitAndSettleTerminalFailure(
+          emit,
+          'execution_failed',
+          structuredResult.message,
+          runState,
+          signal,
+        );
+      }
+
+      settleRunAfterResult(runState, structuredResult.result, signal);
+      return structuredResult.result;
+    }
 
     appendAssistantTextToHistory(history, assistantText, functionCalls);
 

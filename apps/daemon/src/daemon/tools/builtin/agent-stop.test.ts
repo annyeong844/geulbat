@@ -9,6 +9,7 @@ import { createAgentSpawnTool } from './agent-spawn.js';
 import { agentStopTool } from './agent-stop.js';
 import { createSubagentRunLauncher } from '../../agent/subagent-support.js';
 import { createDaemonContext } from '../../context.js';
+import { createChildRunRegistry } from '../../agent/runtime/child-run-registry.js';
 import { createRunState } from '../../agent/runtime/run-state.js';
 import { testProjectId } from '../../../test-support/project-id.js';
 import { testRunId } from '../../../test-support/run-id.js';
@@ -191,6 +192,58 @@ void test('agent_stop rejects unknown child handles as an outer tool failure', a
   assert.equal(stopped.ok, false);
   assert.equal(stopped.errorCode, 'invalid_args');
   assert.match(stopped.error ?? '', /unknown child run/);
+  assert.equal(stopped.output, '');
+});
+
+void test('agent_stop reports expired child handles separately from unknown ids', async () => {
+  const ownerThreadId = testThreadId(48);
+  const childRunId = testRunId('stop-collected-child');
+  const boundedRegistry = createChildRunRegistry({
+    retentionTtlMs: 5 * 60 * 1000,
+    maxRetainedTerminalRuns: 0,
+  });
+  const daemonContext = {
+    ...createDaemonContext(),
+    childRuns: boundedRegistry,
+  };
+
+  boundedRegistry.registerChildRun({
+    childRunId,
+    childThreadId: testThreadId(49),
+    parentRunId: testRunId('stop-collected-parent'),
+    ownerThreadId,
+    subagentType: 'explorer',
+  });
+
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    boundedRegistry.markChildTerminal({
+      childRunId,
+      terminalState: 'completed',
+      result: 'done',
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(boundedRegistry.getChildRun(childRunId), undefined);
+
+  const stopped = await agentStopTool.execute(
+    {
+      child_run_id: childRunId,
+    },
+    {
+      callId: 'call-stop-collected',
+      workspaceRoot: '/tmp/workspace',
+      threadId: ownerThreadId,
+      runId: testRunId('stop-collected-top'),
+      agentSpawnRuntime: daemonContext,
+    },
+  );
+
+  assert.equal(stopped.ok, false);
+  assert.equal(stopped.errorCode, 'conflict');
+  assert.match(stopped.error ?? '', /child run handle expired/);
   assert.equal(stopped.output, '');
 });
 

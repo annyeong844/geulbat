@@ -1,12 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import * as authFailureRateLimit from './auth-failure-rate-limit.js';
 import {
   getShellAuthFailureWindowCountForTests,
-  MAX_SHELL_AUTH_FAILURE_WINDOWS,
   recordShellAuthFailure,
   resetShellAuthFailureRateLimitForTests,
 } from './auth-failure-rate-limit.js';
+
+const MAX_SHELL_AUTH_FAILURE_WINDOWS = 1024;
+
+void test('auth failure rate limit exposes only operational helpers', () => {
+  assert.equal('SHELL_AUTH_FAILURE_LIMIT' in authFailureRateLimit, false);
+  assert.equal('MAX_SHELL_AUTH_FAILURE_WINDOWS' in authFailureRateLimit, false);
+});
 
 void test('recordShellAuthFailure prunes expired auth windows as new failures arrive', () => {
   resetShellAuthFailureRateLimitForTests();

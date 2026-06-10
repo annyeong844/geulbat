@@ -9,7 +9,7 @@ import { processFunctionCalls } from './loop-tool-execution.js';
 import {
   buildAgentToolExecutionContextBase,
   buildToolCallExecutionRuntime,
-} from './loop-tool-approval.js';
+} from './loop-tool-runtime.js';
 import { createDaemonContext } from '../context.js';
 import { DEFAULT_MAX_CONCURRENT_BACKGROUND_CHILDREN } from './subagent-concurrency.js';
 import { readFile } from '../files/read-file.js';

@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createAgentEvent, type AgentEvent } from './events.js';
+import { executeResolvedFunctionCall } from './loop-tool-execute-context.js';
 import {
   buildAgentToolExecutionContextBase,
   buildToolCallExecutionRuntime,
-  executeResolvedFunctionCall,
-} from './loop-tool-approval.js';
+} from './loop-tool-runtime.js';
 import { createRunState, markRunApprovalPending } from './runtime/run-state.js';
 import { createApprovalGrantStore } from '../tools/approval-grants.js';
 import { createToolRegistryStore } from '../tools/registry.js';

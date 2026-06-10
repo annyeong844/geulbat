@@ -83,3 +83,28 @@ void test('buildSystemPrompt includes Phase 4 recovery guidance', () => {
     /When using list_files for the workspace root, omit path or use "\."\. Never send path as an empty string\./,
   );
 });
+
+void test('buildSystemPrompt includes author voice for adult fiction co-writing', () => {
+  const prompt = buildSystemPrompt();
+
+  assert.match(prompt, /new-file creation path\.\n\nYou are a co-writer/);
+  assert.match(prompt, /co-writer for the author's Korean fiction workspace/);
+  assert.match(prompt, /intended for an adult readership/);
+  assert.match(
+    prompt,
+    /dark, violent, morally complex, or sexually explicit content for adult fiction/,
+  );
+  assert.match(
+    prompt,
+    /explicit version of a scene is the canonical version when requested/,
+  );
+  assert.match(
+    prompt,
+    /tone applies consistently across chapters, side stories, and revisions/,
+  );
+  assert.match(
+    prompt,
+    /name the exact reason and ask the author for direction/,
+  );
+  assert.match(prompt, /출력은 작가의 원고 톤을 따른다/);
+});

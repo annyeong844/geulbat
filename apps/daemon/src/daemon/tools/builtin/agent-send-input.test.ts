@@ -13,6 +13,7 @@ import {
 import { agentWaitTool } from './agent-wait.js';
 import { createSubagentRunLauncher } from '../../agent/subagent-support.js';
 import { createDaemonContext } from '../../context.js';
+import { createChildRunRegistry } from '../../agent/runtime/child-run-registry.js';
 import { createRunState } from '../../agent/runtime/run-state.js';
 import { readTranscriptEntries } from '../../sessions/transcript-log.js';
 import {
@@ -21,6 +22,7 @@ import {
   type RunId,
 } from '@geulbat/protocol/ids';
 import { testProjectId } from '../../../test-support/project-id.js';
+import { testRunId } from '../../../test-support/run-id.js';
 import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 
@@ -705,4 +707,69 @@ void test('agent_send_input rejects standalone worker continuation without appro
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
+});
+
+void test('agent_send_input reports expired child handles separately from unknown ids', async () => {
+  const ownerThreadId = testThreadId(36);
+  const projectId = testProjectId();
+  const childRunId = testRunId('send-input-collected-child');
+  const boundedRegistry = createChildRunRegistry({
+    retentionTtlMs: 5 * 60 * 1000,
+    maxRetainedTerminalRuns: 0,
+  });
+  const daemonContext = {
+    ...createDaemonContext(),
+    childRuns: boundedRegistry,
+  };
+
+  boundedRegistry.registerChildRun({
+    childRunId,
+    childThreadId: testThreadId(37),
+    parentRunId: testRunId('send-input-collected-parent'),
+    ownerThreadId,
+    subagentType: 'explorer',
+  });
+
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    boundedRegistry.markChildTerminal({
+      childRunId,
+      terminalState: 'completed',
+      result: 'done',
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(boundedRegistry.getChildRun(childRunId), undefined);
+
+  const parentRunId = testRunId('send-input-collected-top');
+  const result = await agentSendInputTool.execute(
+    {
+      child_run_id: childRunId,
+      task: 'continue after retention',
+    },
+    {
+      callId: 'call-send-input-collected',
+      workspaceRoot: '/tmp/workspace',
+      threadId: ownerThreadId,
+      runId: parentRunId,
+      projectId,
+      runState: createRunState({
+        runId: parentRunId,
+        runContext: makeRunWorkspaceContext({
+          threadId: ownerThreadId,
+          projectId,
+          workspaceRoot: '/tmp/workspace',
+        }),
+      }),
+      signal: new AbortController().signal,
+      runSignal: new AbortController().signal,
+      agentSpawnRuntime: daemonContext,
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'conflict');
+  assert.match(result.error ?? '', /child run handle expired/);
 });

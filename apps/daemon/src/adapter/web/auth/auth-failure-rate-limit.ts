@@ -1,6 +1,6 @@
 const SHELL_AUTH_FAILURE_WINDOW_MS = 60_000;
-export const SHELL_AUTH_FAILURE_LIMIT = 8;
-export const MAX_SHELL_AUTH_FAILURE_WINDOWS = 1024;
+const SHELL_AUTH_FAILURE_LIMIT = 8;
+const MAX_SHELL_AUTH_FAILURE_WINDOWS = 1024;
 
 interface AuthFailureWindow {
   count: number;

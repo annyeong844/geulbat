@@ -2,6 +2,8 @@ import { agentSendInputTool } from './agent-send-input.js';
 import { agentSpawnTool } from './agent-spawn.js';
 import { agentStopTool } from './agent-stop.js';
 import { agentWaitTool } from './agent-wait.js';
+import { browserNavigateTool } from './browser-navigate.js';
+import { executeCodeTool } from './execute-code.js';
 import { listFilesTool } from './list-files.js';
 import { manageFilesTool } from './manage-files.js';
 import { patchFileTool } from './patch-file.js';
@@ -36,6 +38,8 @@ function getCanonicalBuiltinTools(): readonly AnyTool[] {
     refreshMemoryIndexTool,
     searchMemoryIndexTool,
     webFetchTool,
+    browserNavigateTool,
+    executeCodeTool,
   ];
 }
 

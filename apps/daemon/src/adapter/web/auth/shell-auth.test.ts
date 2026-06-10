@@ -1,16 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { DEV_TOKEN_HEADER_NAME } from '@geulbat/protocol/shell-auth';
 
+import * as shellAuth from './shell-auth.js';
 import {
-  DEV_AUTH_COOKIE_NAME,
-  DEV_TOKEN_HEADER_NAME,
   INVALID_DEV_TOKEN_MESSAGE,
   SHELL_AUTH_ALLOWED_HEADERS,
-  hasShellAuthCookie,
   isAuthorizedShellHeaders,
   isAuthorizedShellWebSocketToken,
-  readShellAuthCookie,
-  readShellAuthHeader,
 } from './shell-auth.js';
 
 function withTokenEnv(token: string, fn: () => void): void {
@@ -27,47 +24,29 @@ function withTokenEnv(token: string, fn: () => void): void {
   }
 }
 
-void test('readShellAuthHeader reads the canonical daemon auth header name', () => {
-  assert.equal(
-    readShellAuthHeader({
-      'x-geulbat-dev-token': 'test-token-123456',
-    }),
-    'test-token-123456',
-  );
+void test('shell auth module keeps parser internals private', () => {
+  assert.equal('DEV_TOKEN_HEADER_NAME' in shellAuth, false);
+  assert.equal('DEV_AUTH_COOKIE_NAME' in shellAuth, false);
+  assert.equal('readShellAuthHeader' in shellAuth, false);
+  assert.equal('readShellAuthCookie' in shellAuth, false);
+  assert.equal('hasShellAuthCookie' in shellAuth, false);
 });
 
-void test('readShellAuthCookie reads the canonical daemon auth cookie name', () => {
-  assert.equal(
-    readShellAuthCookie({
-      cookie: `${DEV_AUTH_COOKIE_NAME}=test-token-123456; other=value`,
-    }),
-    'test-token-123456',
-  );
-});
-
-void test('hasShellAuthCookie reflects cookie presence without validating the token', () => {
-  assert.equal(
-    hasShellAuthCookie({
-      cookie: `${DEV_AUTH_COOKIE_NAME}=test-token-123456`,
-    }),
-    true,
-  );
-  assert.equal(hasShellAuthCookie({}), false);
-});
-
-void test('readShellAuthCookie reports malformed auth cookie values', () => {
+void test('shell auth reports malformed auth cookie values through the public seam', () => {
   const originalWarn = console.warn;
   const warnings: unknown[][] = [];
   console.warn = (...args: unknown[]) => {
     warnings.push(args);
   };
   try {
-    assert.equal(
-      readShellAuthCookie({
-        cookie: `${DEV_AUTH_COOKIE_NAME}=%`,
-      }),
-      undefined,
-    );
+    withTokenEnv('test-token-123456', () => {
+      assert.equal(
+        isAuthorizedShellHeaders({
+          cookie: 'geulbat_dev_auth=%',
+        }),
+        false,
+      );
+    });
   } finally {
     console.warn = originalWarn;
   }
@@ -78,7 +57,6 @@ void test('readShellAuthCookie reports malformed auth cookie values', () => {
 
 void test('shell auth seam shares the same header name and unauthorized message', () => {
   assert.equal(DEV_TOKEN_HEADER_NAME, 'X-Geulbat-Dev-Token');
-  assert.equal(DEV_AUTH_COOKIE_NAME, 'geulbat_dev_auth');
   assert.equal(
     INVALID_DEV_TOKEN_MESSAGE,
     'missing or invalid X-Geulbat-Dev-Token',

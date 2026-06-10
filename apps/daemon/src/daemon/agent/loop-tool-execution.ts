@@ -1,12 +1,12 @@
 import type { HistoryItem, FunctionCall } from '../llm/index.js';
 import type { StepResult } from './loop-shared.js';
+import { executeFunctionCall } from './loop-tool-approval.js';
 import {
-  executeFunctionCall,
   getToolRuntimeRunContext,
   getToolRuntimeRunState,
   getToolRuntimeSignal,
   type AgentToolCallExecutionRuntime,
-} from './loop-tool-approval.js';
+} from './loop-tool-runtime.js';
 import { emitAndSettleTerminalFailure } from './loop-shared.js';
 import {
   parseToolCallArguments,

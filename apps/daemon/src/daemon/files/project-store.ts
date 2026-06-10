@@ -1,17 +1,16 @@
-import { mkdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { ProjectId } from '@geulbat/protocol/ids';
 import type {
   ProjectListItem,
   ProjectMutationResponse,
 } from '@geulbat/protocol/projects';
-import {
-  getDefaultProjectDeleteConflictMessage,
-  getDefaultProjectRenameConflictMessage,
-} from '@geulbat/protocol/projects';
-import { hasErrorCode } from '../utils/error.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
 import { deriveProjectId } from './project-id-slug.js';
+import {
+  assertProjectCanBeMutated,
+  findProjectIndexOrThrow,
+  normalizeProjectLabel,
+} from './project-mutation-policy.js';
+import { ensureProjectRootDirectory } from './project-root-materialization.js';
 import {
   DEFAULT_PROJECT_ID,
   type ProjectRegistryStore,
@@ -82,31 +81,6 @@ export function createProjectStore(args: {
     );
   }
 
-  async function ensureProjectRootDirectory(
-    projectId: ProjectId,
-  ): Promise<void> {
-    const workspaceRoot =
-      projectRegistry.resolveProjectRoot(projectId) ??
-      join(projectRegistry.getProjectRegistryRoot(), projectId);
-
-    try {
-      const existing = await stat(workspaceRoot);
-      if (!existing.isDirectory()) {
-        throw Object.assign(
-          new Error(`project root already exists as a file: ${workspaceRoot}`),
-          { code: 'already_exists' },
-        );
-      }
-      return;
-    } catch (error: unknown) {
-      if (!hasErrorCode(error, 'ENOENT')) {
-        throw error;
-      }
-    }
-
-    await mkdir(workspaceRoot, { recursive: true });
-  }
-
   async function persistAndReplaceProjectRegistry(
     projects: readonly ProjectListItem[],
   ): Promise<ProjectMutationResponse> {
@@ -129,39 +103,6 @@ export function createProjectStore(args: {
     );
   }
 
-  function assertProjectCanBeMutated(
-    projectId: ProjectId,
-    action: 'rename' | 'delete',
-  ): void {
-    if (projectId === DEFAULT_PROJECT_ID) {
-      throw Object.assign(
-        new Error(
-          action === 'rename'
-            ? getDefaultProjectRenameConflictMessage()
-            : getDefaultProjectDeleteConflictMessage(),
-        ),
-        {
-          code: 'conflict',
-        },
-      );
-    }
-  }
-
-  function findProjectIndexOrThrow(
-    projects: readonly ProjectListItem[],
-    projectId: ProjectId,
-  ): number {
-    const projectIndex = projects.findIndex(
-      (project) => project.projectId === projectId,
-    );
-    if (projectIndex < 0) {
-      throw Object.assign(new Error(`unknown projectId: ${projectId}`), {
-        code: 'not_found',
-      });
-    }
-    return projectIndex;
-  }
-
   return {
     getProjectRegistryFilePath,
     bootstrapProjectRegistry: bootstrapController.bootstrapProjectRegistry,
@@ -176,7 +117,12 @@ export function createProjectStore(args: {
           new Set(currentProjects.map((project) => project.projectId)),
         );
 
-        await ensureProjectRootDirectory(nextProjectId);
+        await ensureProjectRootDirectory({
+          projectId: nextProjectId,
+          projectRegistryRoot: projectRegistry.getProjectRegistryRoot(),
+          resolveProjectRoot: (projectId) =>
+            projectRegistry.resolveProjectRoot(projectId),
+        });
 
         return persistAndReplaceProjectRegistry([
           ...currentProjects,
@@ -221,14 +167,4 @@ export function createProjectStore(args: {
       });
     },
   };
-}
-
-function normalizeProjectLabel(label: string): string {
-  const trimmed = label.trim();
-  if (trimmed.length === 0) {
-    throw Object.assign(new Error('label is required'), {
-      code: 'bad_request',
-    });
-  }
-  return trimmed;
 }

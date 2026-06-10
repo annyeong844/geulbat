@@ -153,10 +153,25 @@ void test('sandbox retry creates a new attempt and preserves prior terminal diag
   const store = createSandboxAttemptStore({
     now: () => '2026-05-17T00:00:00.000Z',
   });
+  const capability: SandboxAttemptCapabilityProjection = {
+    schemaVersion: 1,
+    capabilityId: 'react_bundle_dependency_metadata_probe',
+    capabilityClass: 'candidate_generation',
+    executionClass: 'docker_worker',
+    commitBehavior: 'not_applicable',
+    policies: {
+      backendPolicyId: 'react_bundle_dependency_metadata_probe_docker_v1',
+      networkPolicy: 'allowlisted_metadata_probe',
+      networkPolicyVersion: 1,
+      allowlistId: 'react_bundle_dependency_cdn_v1',
+      containerNetworkMode: 'none',
+    },
+  };
   const first = store.createAttempt({
     jobKind: 'sandbox_probe',
     adapterKind: 'deterministic_probe',
     owner: { runId: 'run-sandbox-retry' },
+    capability,
   });
 
   store.markRunning(first.attemptId, { rootPath: '/tmp/first' });
@@ -170,6 +185,12 @@ void test('sandbox retry creates a new attempt and preserves prior terminal diag
   assert.equal(second.jobId, first.jobId);
   assert.notEqual(second.attemptId, first.attemptId);
   assert.equal(second.previousAttemptId, first.attemptId);
+  assert.deepEqual(second.capability, capability);
+  second.capability!.policies.backendPolicyId = 'mutated';
+  assert.equal(
+    store.getAttempt(second.attemptId)?.capability?.policies.backendPolicyId,
+    'react_bundle_dependency_metadata_probe_docker_v1',
+  );
   assert.equal(store.getAttempt(first.attemptId)?.status, 'timed_out');
   assert.equal(
     store.getAttempt(first.attemptId)?.diagnostics,

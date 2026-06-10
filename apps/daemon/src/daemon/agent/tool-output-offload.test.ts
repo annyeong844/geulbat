@@ -111,22 +111,43 @@ void test('maybeOffloadToolResult fails visibly when snapshot write fails', asyn
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
   await writeFile(join(workspaceRoot, '.geulbat'), 'not a directory', 'utf8');
   const output = 'x'.repeat(4097);
+  const originalWarn = console.warn;
+  const warnings: unknown[][] = [];
 
-  const result = await maybeOffloadToolResult({
-    functionCall: searchFilesCall('call-write-failure'),
-    runContext: createRunWorkspaceContext({
-      projectId: testProjectId(),
-      threadId: testThreadId(94),
-      workspaceRoot,
-    }),
-    runId: 'run-write-failure',
-    toolResult: { ok: true, output },
-  });
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  let result: Awaited<ReturnType<typeof maybeOffloadToolResult>>;
+  try {
+    result = await maybeOffloadToolResult({
+      functionCall: searchFilesCall('call-write-failure'),
+      runContext: createRunWorkspaceContext({
+        projectId: testProjectId(),
+        threadId: testThreadId(94),
+        workspaceRoot,
+      }),
+      runId: 'run-write-failure',
+      toolResult: { ok: true, output },
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'internal');
   assert.equal(result.output, '');
   assert.match(result.error, /failed to offload large tool output/i);
+  assert.equal(warnings.length, 1);
+  assert.match(
+    String(warnings[0]?.[0]),
+    /failed to offload large tool output snapshot/,
+  );
+  assert.deepEqual(warnings[0]?.[1], {
+    callId: 'call-write-failure',
+    runId: 'run-write-failure',
+    threadId: testThreadId(94),
+    toolName: 'search_files',
+  });
 });
 
 void test('maybeOffloadToolResult offloads a large web_fetch result and preserves exact snapshot', async () => {

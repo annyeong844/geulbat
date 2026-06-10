@@ -103,13 +103,9 @@ function parseAgentWaitArgs(raw: unknown) {
 
 function buildWaitResult(args: {
   childRunIds: readonly RunId[];
-  snapshot: {
-    records: ChildRunSnapshot[];
-  };
+  recordsByChildRunId: ReadonlyMap<RunId, ChildRunSnapshot>;
 }): AgentWaitResult {
-  const byChildRunId = new Map(
-    args.snapshot.records.map((record) => [record.childRunId, record]),
-  );
+  const byChildRunId = args.recordsByChildRunId;
   const completed: AgentWaitResult['completed'] = [];
   const pending: RunId[] = [];
   const blocked: AgentWaitResult['blocked'] = [];
@@ -169,62 +165,99 @@ function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
         );
       }
 
+      const ownerThreadId = ctx.threadId;
       const waitMode = args.wait_mode ?? 'all';
       const childRunIds = [...new Set(args.child_run_ids)];
       const registry = ctx.agentSpawnRuntime.childRuns;
-      let revision = -1;
 
-      while (true) {
-        const snapshot = registry.getChildRuns(childRunIds);
-        revision = snapshot.revision;
-        const recordsByChildRunId = new Map(
-          snapshot.records.map((record) => [record.childRunId, record]),
-        );
-        for (const childRunId of childRunIds) {
-          const record = recordsByChildRunId.get(childRunId);
-          if (!record) {
+      // Owner-scoped lease pins these children's terminal records against
+      // budget/TTL collection until this wait hands each off, so a fan-out join
+      // never loses a result it is still waiting on (spec §7.2). Validation runs
+      // before any pin is installed.
+      const lease = registry.acquireWaitLease({ ownerThreadId, childRunIds });
+      if (!lease.ok) {
+        return toolError('invalid_args', lease.message);
+      }
+
+      // Terminal results observed during this wait are owned by the waiter so
+      // they survive registry eviction after handoff (spec §7.1). getChildRuns
+      // already returns cloned snapshots, so caching them is safe.
+      const terminalById = new Map<RunId, ChildRunSnapshot>();
+      try {
+        let revision = -1;
+        while (true) {
+          const snapshot = registry.getChildRuns(childRunIds);
+          revision = snapshot.revision;
+          const presentById = new Map(
+            snapshot.records.map((record) => [record.childRunId, record]),
+          );
+
+          for (const record of snapshot.records) {
+            // Ownership is checked before any cache/ack so a non-owned record is
+            // never cached or prematurely unpinned (spec §7.2.1).
+            if (record.ownerThreadId !== ownerThreadId) {
+              return toolError(
+                'invalid_args',
+                `child run does not belong to current owner thread: ${record.childRunId}`,
+              );
+            }
+            if (isAgentChildTerminalState(record.status)) {
+              terminalById.set(record.childRunId, record);
+              registry.ackWaiterHandoff(lease.leaseId, record.childRunId);
+            }
+          }
+
+          // `unknown` only for ids never observed as registered during this
+          // wait; an observed-then-evicted id is served from the cache (§8 #2).
+          const missingUncached = childRunIds.filter(
+            (childRunId) =>
+              !presentById.has(childRunId) && !terminalById.has(childRunId),
+          );
+          if (missingUncached.length > 0) {
             return toolError(
               'invalid_args',
-              `unknown child run: ${childRunId}`,
+              `unknown child run: ${missingUncached[0]}`,
             );
           }
-          if (record.ownerThreadId !== ctx.threadId) {
-            return toolError(
-              'invalid_args',
-              `child run does not belong to current owner thread: ${childRunId}`,
-            );
-          }
-        }
-        const result = buildWaitResult({
-          childRunIds,
-          snapshot,
-        });
 
-        if (waitMode === 'all') {
-          if (result.pending.length === 0 && result.blocked.length === 0) {
+          const recordsByChildRunId = new Map<RunId, ChildRunSnapshot>();
+          for (const childRunId of childRunIds) {
+            const record =
+              presentById.get(childRunId) ?? terminalById.get(childRunId);
+            if (record) {
+              recordsByChildRunId.set(childRunId, record);
+            }
+          }
+          const result = buildWaitResult({ childRunIds, recordsByChildRunId });
+
+          if (waitMode === 'all') {
+            if (result.pending.length === 0 && result.blocked.length === 0) {
+              return {
+                ok: true,
+                output: JSON.stringify(result),
+              };
+            }
+          } else if (result.completed.length > 0) {
             return {
               ok: true,
               output: JSON.stringify(result),
             };
           }
-        } else if (result.completed.length > 0) {
-          return {
-            ok: true,
-            output: JSON.stringify(result),
-          };
-        }
 
-        try {
-          await registry.waitForRevisionChange(revision, ctx.signal);
-        } catch (error: unknown) {
-          if (ctx.signal?.aborted) {
-            return toolError('aborted', 'agent_wait aborted');
+          try {
+            await registry.waitForRevisionChange(revision, ctx.signal);
+          } catch (error: unknown) {
+            if (ctx.signal?.aborted) {
+              return toolError('aborted', 'agent_wait aborted');
+            }
+            return toolError(
+              'execution_failed',
+              `agent_wait failed: ${getErrorMessage(error)}`,
+            );
           }
-          return toolError(
-            'execution_failed',
-            `agent_wait failed: ${getErrorMessage(error)}`,
-          );
         }
+      } finally {
+        registry.releaseWaitLease(lease.leaseId);
       }
     },
   });
