@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -90,6 +97,26 @@ void test('createProjectStore mutates only its injected registry and persisted f
             true,
           );
         },
+      );
+    },
+  );
+});
+
+void test('createProjectStore materializes the new project workspace directory before registry persistence', async () => {
+  await withProjectStore(
+    'geulbat-project-store-materialize-',
+    async (store, root) => {
+      await store.bootstrapProjectRegistry(root);
+
+      const snapshot = await store.createProject('Alpha Route');
+
+      const created = snapshot.projects.find(
+        (project) => project.label === 'Alpha Route',
+      );
+      assert.ok(created);
+      assert.equal(
+        (await stat(join(root, created.projectId))).isDirectory(),
+        true,
       );
     },
   );

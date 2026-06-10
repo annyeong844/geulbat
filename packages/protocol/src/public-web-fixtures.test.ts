@@ -10,7 +10,10 @@ import {
   PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_CHUNK_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_MODULE_URL,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_STYLESHEET_URL,
   PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_IMPORT_SPECIFIER,
   PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
   PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
   PUBLIC_WEB_REQUEST_IDENTITY_ECHO_PATH,
@@ -55,6 +58,21 @@ void test('public web fixture paths stay canonical and drift-resistant', () => {
   assert.equal(
     PUBLIC_WEB_REQUEST_IDENTITY_ECHO_PATH,
     '/public-web/request-identity.json',
+  );
+});
+
+void test('public react runtime-dependencies fixture exposes accepted manifest dependency constants', () => {
+  assert.equal(
+    PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_IMPORT_SPECIFIER,
+    'geulbat-runtime-dependency-fixture',
+  );
+  assert.equal(
+    PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_MODULE_URL,
+    'https://esm.sh/geulbat-runtime-dependency-fixture@1.0.0',
+  );
+  assert.equal(
+    PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_STYLESHEET_URL,
+    'https://cdn.jsdelivr.net/npm/geulbat-runtime-dependency-fixture@1.0.0/theme.css',
   );
 });
 

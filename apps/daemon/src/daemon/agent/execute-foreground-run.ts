@@ -4,7 +4,6 @@ import {
   replaceTranscriptEntries,
 } from '../sessions/transcript-log.js';
 import type { ThreadStatePersistenceFailureDiagnostic } from '@geulbat/protocol/run-events';
-import type { ThreadMessageMetadata } from '@geulbat/protocol/thread-metadata';
 import {
   commitThreadArtifactVersion,
   deleteThreadArtifact,
@@ -27,8 +26,8 @@ import type {
 import {
   buildThreadStatePersistenceFailureDiagnostic,
   persistSuccessfulForegroundOutput,
-  upsertCurrentThreadSummary,
 } from './foreground-thread-state-persistence.js';
+import { persistRequiredForegroundInput } from './foreground-input-persistence.js';
 
 const logger = createLogger('agent/execute-foreground-run');
 
@@ -36,19 +35,6 @@ interface ExecuteForegroundRunArgs {
   agentInput: AgentInput;
   transcriptPrompt: string;
   deps?: ExecuteForegroundRunDeps;
-}
-
-function buildUserTranscriptMetadata(args: {
-  prompt: string;
-  transcriptPrompt: string;
-}): ThreadMessageMetadata | undefined {
-  if (args.transcriptPrompt === args.prompt) {
-    return undefined;
-  }
-
-  return {
-    hiddenPrompt: args.prompt,
-  };
 }
 
 function resolveExecuteForegroundRunDeps(
@@ -68,65 +54,6 @@ function resolveExecuteForegroundRunDeps(
     now: deps?.now ?? (() => new Date().toISOString()),
     onPostRunPersistenceError,
   };
-}
-
-async function appendForegroundTranscriptEntry(args: {
-  workspaceRoot: string;
-  threadId: AgentInput['runContext']['threadId'];
-  role: 'user' | 'assistant';
-  content: string;
-  metadata?: ThreadMessageMetadata;
-  timestamp?: string;
-  deps: ResolvedExecuteForegroundRunDeps;
-}): Promise<void> {
-  const { deps, ...rest } = args;
-  const entry: Parameters<
-    ResolvedExecuteForegroundRunDeps['appendTranscriptEntry']
-  >[2] = {
-    role: rest.role,
-    content: rest.content,
-    timestamp: rest.timestamp ?? deps.now(),
-  };
-
-  if (rest.metadata !== undefined) {
-    entry.metadata = rest.metadata;
-  }
-
-  await deps.appendTranscriptEntry(rest.workspaceRoot, rest.threadId, entry);
-}
-
-async function persistRequiredForegroundInput(args: {
-  agentInput: AgentInput;
-  transcriptPrompt: string;
-  deps: ResolvedExecuteForegroundRunDeps;
-}): Promise<void> {
-  const { agentInput, transcriptPrompt, deps } = args;
-  const { runContext, prompt } = agentInput;
-  const userMetadata = buildUserTranscriptMetadata({
-    prompt,
-    transcriptPrompt,
-  });
-  const userEntry: Parameters<typeof appendForegroundTranscriptEntry>[0] = {
-    workspaceRoot: runContext.workspaceRoot,
-    threadId: runContext.threadId,
-    role: 'user',
-    content: transcriptPrompt,
-    deps,
-  };
-
-  if (userMetadata !== undefined) {
-    userEntry.metadata = userMetadata;
-  }
-
-  await appendForegroundTranscriptEntry(userEntry);
-
-  await upsertCurrentThreadSummary({
-    workspaceRoot: runContext.workspaceRoot,
-    threadId: runContext.threadId,
-    projectId: runContext.projectId,
-    transcriptPrompt,
-    deps,
-  });
 }
 
 export async function executeForegroundRun(

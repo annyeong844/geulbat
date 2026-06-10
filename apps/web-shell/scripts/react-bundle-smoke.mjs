@@ -9,12 +9,15 @@ import { chromium } from 'playwright';
 import {
   PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH,
   PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_MODULE_URL,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_STYLESHEET_URL,
   PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_IMPORT_SPECIFIER,
   PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
   PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
 } from '@geulbat/protocol/public-web-fixtures';
 
-import { buildJsArtifactRuntimeDocument } from '../src/features/assistant/artifacts/js/document.ts';
+import { buildJsArtifactRuntimeDocument } from '../src/features/artifacts/runtime-preview/js/document.ts';
 import { buildReactBundleArtifactRuntimePayload } from '../src/features/artifacts/runtime-preview/react-bundle/document.ts';
 import {
   ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
@@ -23,12 +26,14 @@ import {
   createArtifactRuntimeHostBootMessage,
   DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN,
 } from '../src/features/assistant/runtime-frame/artifact-runtime-host.ts';
+import { buildJsRuntimePersistenceBootstrap } from '../src/features/assistant/runtime-persistence/artifact-runtime-persistence-bootstrap.ts';
 import {
   ARTIFACT_RUNTIME_PERSISTENCE_VERBS,
   PERSISTENCE_BRIDGE_VERSION,
   PERSISTENCE_REQUEST_KIND,
   PERSISTENCE_RESPONSE_KIND,
 } from '../src/features/assistant/runtime-persistence/artifact-runtime-persistence-types.ts';
+import { validateReactBundleArtifactPayload } from '../src/features/artifacts/react-bundle/validator.ts';
 import {
   closeServer,
   resolveChromiumLaunchEnv,
@@ -45,18 +50,17 @@ const outputDir = path.join(repoRoot, 'output', 'playwright');
 const screenshotPath = path.join(outputDir, 'react-bundle-smoke-e2e.png');
 const daemonOrigin = DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN;
 const daemonHostUrl = new URL('/artifact-runtime/host', `${daemonOrigin}/`);
-const smokeFixture = resolveSmokeFixture(
-  process.env['GEULBAT_REACT_BUNDLE_SMOKE_FIXTURE'],
-);
-const reactBundleEntryUrl = new URL(
-  smokeFixture.entryPath,
-  `${daemonOrigin}/`,
-).toString();
 
 async function main() {
+  const smokeFixture = await resolveSmokeFixture({
+    name: process.env['GEULBAT_REACT_BUNDLE_SMOKE_FIXTURE'],
+    manifestFilePath: process.env['GEULBAT_REACT_BUNDLE_SMOKE_MANIFEST_FILE'],
+  });
+  const smokeManifest = smokeFixture.manifest(daemonOrigin);
+
   await fs.mkdir(outputDir, { recursive: true });
   console.log(
-    `react bundle smoke: fixture=${smokeFixture.name} entry=${reactBundleEntryUrl}`,
+    `react bundle smoke: fixture=${smokeFixture.name} entry=${smokeManifest.entryUrl}`,
   );
 
   const daemonLogs = [];
@@ -64,9 +68,9 @@ async function main() {
 
   try {
     await waitForDaemonReady(daemonHostUrl, daemonLogs);
-    const harness = await createSmokeHarnessServer();
+    const harness = await createSmokeHarnessServer(smokeFixture);
     try {
-      await runSmoke(harness.url);
+      await runSmoke(harness.url, smokeFixture, daemonOrigin);
     } finally {
       await closeServer(harness.server);
     }
@@ -75,7 +79,7 @@ async function main() {
   }
 }
 
-async function createSmokeHarnessServer() {
+async function createSmokeHarnessServer(smokeFixture) {
   const server = http.createServer((req, res) => {
     if (req.url !== '/') {
       res.statusCode = 404;
@@ -92,17 +96,15 @@ async function createSmokeHarnessServer() {
     runtimeFrameUrl.searchParams.set('parentOrigin', harnessOrigin);
     runtimeFrameUrl.searchParams.set('rev', 'react-bundle-smoke');
     const scopeHandle = `scope-${randomUUID()}`;
-    const runtimePayload = buildReactBundleArtifactRuntimePayload({
-      entryUrl: reactBundleEntryUrl,
-      ...(smokeFixture.runtimeDependencies
-        ? {
-            runtimeDependencies: smokeFixture.runtimeDependencies(daemonOrigin),
-          }
-        : {}),
-    });
-    const runtimeDocument = buildJsArtifactRuntimeDocument(runtimePayload, {
+    const manifest = smokeFixture.manifest(daemonOrigin);
+    const runtimePayload = buildReactBundleArtifactRuntimePayload(manifest);
+    const persistenceBootstrap = {
       scopeHandle,
       parentOrigin: harnessOrigin,
+    };
+    const runtimeDocument = buildJsArtifactRuntimeDocument(runtimePayload, {
+      ...persistenceBootstrap,
+      bootstrapSource: buildJsRuntimePersistenceBootstrap(persistenceBootstrap),
     });
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -301,7 +303,7 @@ function escapeInlineScriptJson(value) {
   return JSON.stringify(value).replace(/</g, '\\u003C');
 }
 
-async function runSmoke(harnessUrl) {
+async function runSmoke(harnessUrl, smokeFixture, daemonOrigin) {
   let browser;
   const launchEnv = await resolveChromiumLaunchEnv({ repoRoot });
   try {
@@ -323,6 +325,9 @@ async function runSmoke(harnessUrl) {
     page.on('pageerror', (error) => {
       browserLogs.push(`[pageerror] ${error.message}`);
     });
+    if (typeof smokeFixture.routeDependencies === 'function') {
+      await smokeFixture.routeDependencies(page, daemonOrigin);
+    }
     await page.goto(harnessUrl, { waitUntil: 'domcontentloaded' });
     try {
       await smokeFixture.assertMounted(page);
@@ -350,12 +355,37 @@ async function runSmoke(harnessUrl) {
   }
 }
 
-function resolveSmokeFixture(name) {
-  const fixtureName = name ?? 'hello-card';
+async function resolveSmokeFixture(options = {}) {
+  const fixtureName = options.name ?? 'hello-card';
+  if (options.manifestFilePath) {
+    if (!options.name) {
+      throw new Error(
+        'manifest_fixture_required: GEULBAT_REACT_BUNDLE_SMOKE_FIXTURE must be set when GEULBAT_REACT_BUNDLE_SMOKE_MANIFEST_FILE is used',
+      );
+    }
+    const assertionFixture = await resolveSmokeFixture({ name: fixtureName });
+    const manifest = await readSmokeManifestFile(options.manifestFilePath);
+    assertionFixture.validateManifest?.(manifest);
+    return {
+      ...assertionFixture,
+      name: `manifest-file:${fixtureName}`,
+      manifest() {
+        return manifest;
+      },
+    };
+  }
+
   if (fixtureName === 'counter') {
     return {
       name: 'counter',
-      entryPath: PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH,
+      manifest(origin) {
+        return {
+          entryUrl: new URL(
+            PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH,
+            `${origin}/`,
+          ).toString(),
+        };
+      },
       persistenceState: {
         'publicWebFixture.reactBundleCounter': {
           booted: true,
@@ -383,7 +413,14 @@ function resolveSmokeFixture(name) {
   if (fixtureName === 'hello-card') {
     return {
       name: 'hello-card',
-      entryPath: PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_ENTRY_PATH,
+      manifest(origin) {
+        return {
+          entryUrl: new URL(
+            PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_ENTRY_PATH,
+            `${origin}/`,
+          ).toString(),
+        };
+      },
       persistenceState: {
         'publicWebFixture.reactHelloCard': {
           booted: true,
@@ -412,47 +449,200 @@ function resolveSmokeFixture(name) {
   if (fixtureName === 'runtime-dependencies') {
     return {
       name: 'runtime-dependencies',
-      entryPath: PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+      manifest(origin) {
+        return {
+          entryUrl: new URL(
+            PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+            `${origin}/`,
+          ).toString(),
+          runtimeDependencies: {
+            importMap: {
+              imports: {
+                'geulbat-runtime-dependency-fixture': new URL(
+                  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
+                  `${origin}/`,
+                ).toString(),
+              },
+            },
+            stylesheets: [
+              new URL(
+                PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
+                `${origin}/`,
+              ).toString(),
+            ],
+          },
+        };
+      },
       persistenceState: {
         'publicWebFixture.reactRuntimeDependencies': {
           booted: true,
         },
       },
-      runtimeDependencies(origin) {
+      async assertMounted(page) {
+        await assertRuntimeDependencyFixtureMounted(page);
+      },
+    };
+  }
+
+  if (fixtureName === 'accepted-runtime-dependencies') {
+    return {
+      name: 'accepted-runtime-dependencies',
+      manifest(origin) {
         return {
-          importMap: {
-            imports: {
-              'geulbat-runtime-dependency-fixture': new URL(
-                PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
-                `${origin}/`,
-              ).toString(),
+          entryUrl: new URL(
+            PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+            `${origin}/`,
+          ).toString(),
+          runtimeDependencies: {
+            importMap: {
+              imports: {
+                [PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_IMPORT_SPECIFIER]:
+                  PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_MODULE_URL,
+              },
             },
+            stylesheets: [
+              PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_STYLESHEET_URL,
+            ],
           },
-          stylesheets: [
-            new URL(
-              PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
-              `${origin}/`,
-            ).toString(),
-          ],
         };
       },
+      validateManifest(manifest) {
+        assertAcceptedRuntimeDependenciesManifest(manifest);
+      },
+      async routeDependencies(page) {
+        await page.route('https://esm.sh/**', async (route) => {
+          if (
+            route.request().url() ===
+            PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_MODULE_URL
+          ) {
+            await fulfillFromDaemonFixture(
+              route,
+              PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
+              'text/javascript; charset=utf-8',
+            );
+            return;
+          }
+          failUnexpectedDependencyRoute(route);
+        });
+        await page.route('https://cdn.jsdelivr.net/**', async (route) => {
+          if (
+            route.request().url() ===
+            PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_STYLESHEET_URL
+          ) {
+            await fulfillFromDaemonFixture(
+              route,
+              PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_STYLESHEET_PATH,
+              'text/css; charset=utf-8',
+            );
+            return;
+          }
+          failUnexpectedDependencyRoute(route);
+        });
+      },
+      persistenceState: {
+        'publicWebFixture.reactRuntimeDependencies': {
+          booted: true,
+        },
+      },
       async assertMounted(page) {
-        const frame = page.frameLocator('#artifact-frame');
-        const card = frame.locator('#runtime-dependency-card');
-        const label = frame.locator('#runtime-dependency-label');
-
-        await card.waitFor({ state: 'visible', timeout: 15_000 });
-        assert.equal(await label.textContent(), 'runtime dependency loaded');
-        assert.equal(
-          await card.evaluate((element) => getComputedStyle(element).borderTopColor),
-          'rgb(70, 120, 50)',
-        );
+        await assertRuntimeDependencyFixtureMounted(page);
       },
     };
   }
 
   throw new Error(
-    `unsupported react bundle smoke fixture "${fixtureName}". Expected "hello-card", "counter", or "runtime-dependencies".`,
+    `unsupported react bundle smoke fixture "${fixtureName}". Expected "hello-card", "counter", "runtime-dependencies", or "accepted-runtime-dependencies".`,
+  );
+}
+
+async function readSmokeManifestFile(filePath) {
+  let rawManifest;
+  try {
+    rawManifest = await fs.readFile(filePath, 'utf8');
+  } catch (error) {
+    throw new Error(
+      `manifest_file_missing: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  try {
+    JSON.parse(rawManifest);
+  } catch (error) {
+    throw new Error(
+      `manifest_file_invalid_json: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  const validation = validateReactBundleArtifactPayload(rawManifest);
+  if (!validation.ok) {
+    throw new Error(`manifest_shape_invalid: ${validation.detail}`);
+  }
+
+  return validation.manifest;
+}
+
+async function fulfillFromDaemonFixture(route, fixturePath, contentType) {
+  const response = await fetch(new URL(fixturePath, `${daemonOrigin}/`));
+  if (!response.ok) {
+    throw new Error(
+      `runtime_dependency_route_unmatched: daemon fixture ${fixturePath} returned ${response.status}`,
+    );
+  }
+
+  await route.fulfill({
+    status: 200,
+    headers: {
+      'cache-control': 'no-store',
+      'content-type': contentType,
+    },
+    body: await response.text(),
+  });
+}
+
+function assertAcceptedRuntimeDependenciesManifest(manifest) {
+  const imports = manifest.runtimeDependencies?.importMap?.imports ?? {};
+  const stylesheets = manifest.runtimeDependencies?.stylesheets ?? [];
+  const expectedEntryUrl = new URL(
+    PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
+    `${daemonOrigin}/`,
+  ).toString();
+  const importEntries = Object.entries(imports);
+  if (
+    manifest.entryUrl !== expectedEntryUrl ||
+    importEntries.length !== 1 ||
+    imports[PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_IMPORT_SPECIFIER] !==
+      PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_MODULE_URL ||
+    stylesheets.length !== 1 ||
+    !stylesheets.includes(
+      PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_STYLESHEET_URL,
+    )
+  ) {
+    throw new Error(
+      'manifest_fixture_mismatch: accepted-runtime-dependencies fixture requires the expected runtime dependency URLs',
+    );
+  }
+}
+
+function failUnexpectedDependencyRoute(route) {
+  throw new Error(
+    `runtime_dependency_route_unmatched: unexpected runtime dependency request ${route.request().url()}`,
+  );
+}
+
+async function assertRuntimeDependencyFixtureMounted(page) {
+  const frame = page.frameLocator('#artifact-frame');
+  const card = frame.locator('#runtime-dependency-card');
+  const label = frame.locator('#runtime-dependency-label');
+
+  await card.waitFor({ state: 'visible', timeout: 15_000 });
+  assert.equal(await label.textContent(), 'runtime dependency loaded');
+  assert.equal(
+    await card.evaluate((element) => getComputedStyle(element).borderTopColor),
+    'rgb(70, 120, 50)',
   );
 }
 

@@ -146,6 +146,8 @@ void test('executeTool returns invalid_args when parseArgs rejects user input', 
 
 void test('executeTool treats parseArgs throws as implementation bugs instead of invalid_args', async () => {
   const store = createToolRegistryStore({ builtins: [] });
+  const originalWarn = console.warn;
+  const warnings: unknown[][] = [];
   store.registerTool(
     makeTool({
       name: 'parse_throw_executor_tool',
@@ -155,21 +157,37 @@ void test('executeTool treats parseArgs throws as implementation bugs instead of
     }),
   );
 
-  const result = await executeTool(
-    'parse_throw_executor_tool',
-    {},
-    {
-      callId: 'call_parse_throw',
-      workspaceRoot: '/tmp',
-    },
-    { toolRegistry: store },
-  );
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  let result: ExecuteResult;
+  try {
+    result = await executeTool(
+      'parse_throw_executor_tool',
+      {},
+      {
+        callId: 'call_parse_throw',
+        workspaceRoot: '/tmp',
+      },
+      { toolRegistry: store },
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
 
   assert.deepEqual(result, {
     ok: false,
     output: '',
     errorCode: 'execution_failed',
     error: 'tool "parse_throw_executor_tool" execution failed',
+  });
+  assert.equal(warnings.length, 1);
+  assert.match(String(warnings[0]?.[0]), /unexpected tool failure/);
+  assert.deepEqual(warnings[0]?.[1], {
+    tool: 'parse_throw_executor_tool',
+    callId: 'call_parse_throw',
+    errorCode: 'execution_failed',
+    cause: '/private/trace',
   });
 });
 
@@ -240,6 +258,8 @@ void test('executeTool fails closed when approval is required but not granted', 
 
 void test('executeTool sanitizes unknown internal tool errors', async () => {
   const store = createToolRegistryStore({ builtins: [] });
+  const originalWarn = console.warn;
+  const warnings: unknown[][] = [];
   store.registerTool(
     makeTool({
       name: 'throwing_tool_for_executor_test',
@@ -249,21 +269,37 @@ void test('executeTool sanitizes unknown internal tool errors', async () => {
     }),
   );
 
-  const result = await executeTool(
-    'throwing_tool_for_executor_test',
-    {},
-    {
-      callId: 'call_3',
-      workspaceRoot: '/tmp',
-    },
-    { toolRegistry: store },
-  );
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  let result: ExecuteResult;
+  try {
+    result = await executeTool(
+      'throwing_tool_for_executor_test',
+      {},
+      {
+        callId: 'call_3',
+        workspaceRoot: '/tmp',
+      },
+      { toolRegistry: store },
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
 
   assert.deepEqual(result, {
     ok: false,
     output: '',
     errorCode: 'execution_failed',
     error: 'tool "throwing_tool_for_executor_test" execution failed',
+  });
+  assert.equal(warnings.length, 1);
+  assert.match(String(warnings[0]?.[0]), /unexpected tool failure/);
+  assert.deepEqual(warnings[0]?.[1], {
+    tool: 'throwing_tool_for_executor_test',
+    callId: 'call_3',
+    errorCode: 'execution_failed',
+    cause: '/absolute/private/path leaked',
   });
 });
 

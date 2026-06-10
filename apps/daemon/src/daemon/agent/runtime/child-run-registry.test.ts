@@ -197,3 +197,152 @@ void test('child run registry evicts the oldest terminal record when the retenti
   assert.equal(registry.getChildRun(testRunId('child-c'))?.status, 'completed');
   assert.equal(warnings.length, 1);
 });
+
+function registerTerminalChild(
+  registry: ReturnType<typeof createChildRunRegistry>,
+  childName: string,
+  ownerThreadId: ThreadId,
+  threadSeed: number,
+): RunId {
+  const childRunId = testRunId(childName);
+  registry.registerChildRun({
+    childRunId,
+    childThreadId: testThreadId(threadSeed),
+    parentRunId: testRunId('parent-lease'),
+    ownerThreadId,
+    subagentType: 'worker',
+  });
+  registry.markChildTerminal({
+    childRunId,
+    terminalState: 'completed',
+    result: childName,
+  });
+  return childRunId;
+}
+
+void test('acquireWaitLease validates ownership before installing a pin', () => {
+  const owner = testThreadId(70);
+  const registry = createChildRunRegistry();
+  const a = registerTerminalChild(registry, 'val-a', owner, 71);
+
+  // unknown id -> reject
+  const unknown = registry.acquireWaitLease({
+    ownerThreadId: owner,
+    childRunIds: [testRunId('val-missing')],
+  });
+  assert.equal(unknown.ok, false);
+
+  // id owned by a different thread -> reject
+  const otherOwner = registry.acquireWaitLease({
+    ownerThreadId: testThreadId(99),
+    childRunIds: [a],
+  });
+  assert.equal(otherOwner.ok, false);
+
+  // valid -> accept
+  const okLease = registry.acquireWaitLease({
+    ownerThreadId: owner,
+    childRunIds: [a],
+  });
+  assert.equal(okLease.ok, true);
+});
+
+void test('leased terminal record is exempt from budget eviction (AC-1b)', () => {
+  const owner = testThreadId(30);
+  const registry = createChildRunRegistry({
+    retentionTtlMs: 5 * 60 * 1000,
+    maxRetainedTerminalRuns: 2,
+  });
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const a = registerTerminalChild(registry, 'pin-a', owner, 21);
+    const lease = registry.acquireWaitLease({
+      ownerThreadId: owner,
+      childRunIds: [a],
+    });
+    assert.equal(lease.ok, true);
+    // 3 terminal records, budget 2: oldest (pin-a) would normally be evicted,
+    // but it is pinned, so the next-oldest (pin-b) is evicted instead.
+    registerTerminalChild(registry, 'pin-b', owner, 22);
+    registerTerminalChild(registry, 'pin-c', owner, 23);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(registry.getChildRun(testRunId('pin-a'))?.status, 'completed');
+  assert.equal(registry.getChildRun(testRunId('pin-b')), undefined);
+  assert.equal(registry.getChildRun(testRunId('pin-c'))?.status, 'completed');
+});
+
+void test('TTL collection of a pinned record is deferred until the lease releases', async () => {
+  const owner = testThreadId(50);
+  const registry = createChildRunRegistry({ retentionTtlMs: 10 });
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const a = registerTerminalChild(registry, 'ttl-pin', owner, 51);
+    const lease = registry.acquireWaitLease({
+      ownerThreadId: owner,
+      childRunIds: [a],
+    });
+    assert.equal(lease.ok, true);
+    await delay(30); // TTL (10ms) fires while pinned -> must NOT collect
+    assert.equal(
+      registry.getChildRun(testRunId('ttl-pin'))?.status,
+      'completed',
+      'pinned record survives TTL',
+    );
+    if (lease.ok) {
+      registry.releaseWaitLease(lease.leaseId);
+    }
+    assert.equal(
+      registry.getChildRun(testRunId('ttl-pin')),
+      undefined,
+      'collected after release (deferred TTL)',
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+void test('record stays pinned until every active wait lease releases it (AC-multi-waiter)', async () => {
+  const owner = testThreadId(60);
+  const registry = createChildRunRegistry({ retentionTtlMs: 10 });
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const a = registerTerminalChild(registry, 'multi-a', owner, 61);
+    const lease1 = registry.acquireWaitLease({
+      ownerThreadId: owner,
+      childRunIds: [a],
+    });
+    const lease2 = registry.acquireWaitLease({
+      ownerThreadId: owner,
+      childRunIds: [a],
+    });
+    assert.equal(lease1.ok && lease2.ok, true);
+    await delay(30); // TTL fires while pinned by both leases
+    assert.equal(
+      registry.getChildRun(testRunId('multi-a'))?.status,
+      'completed',
+    );
+    if (lease1.ok) {
+      registry.releaseWaitLease(lease1.leaseId);
+    }
+    assert.equal(
+      registry.getChildRun(testRunId('multi-a'))?.status,
+      'completed',
+      'still pinned by lease2',
+    );
+    if (lease2.ok) {
+      registry.releaseWaitLease(lease2.leaseId);
+    }
+    assert.equal(
+      registry.getChildRun(testRunId('multi-a')),
+      undefined,
+      'collected after final lease release',
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+});

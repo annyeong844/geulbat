@@ -375,6 +375,11 @@ void test('handleClientMessage preserves requestId when run.cancel dispatch thro
   const socketState = getSocketState(socket);
   socketState.authenticated = true;
   socketState.activeRunIds.add(runId);
+  const errors: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
 
   const originalGetRunById = daemonContext.activeRuns.getRunById;
   daemonContext.activeRuns.getRunById = (() => {
@@ -399,7 +404,18 @@ void test('handleClientMessage preserves requestId when run.cancel dispatch thro
       code: 'internal',
       message: 'internal server error',
     });
+    const dispatchLog = errors.find((entry) =>
+      String(entry[0]).includes(
+        '[run-channel/dispatch] unexpected websocket message dispatch error:',
+      ),
+    );
+    assert.ok(dispatchLog);
+    const logLine = String(dispatchLog[0]);
+    assert.match(logLine, /messageType="run.cancel"/);
+    assert.match(logLine, /requestId="cancel-throw"/);
+    assert.match(logLine, /runId="run-cancel-dispatch-throw"/);
   } finally {
+    console.error = originalError;
     daemonContext.activeRuns.getRunById = originalGetRunById;
     cleanupSocketState(socket, daemonContext);
   }
@@ -418,6 +434,11 @@ void test('handleClientMessage preserves requestId when run.start setup throws u
   daemonContext.activeRuns.tryStartRun = (() => {
     throw new Error('boom');
   }) as typeof daemonContext.activeRuns.tryStartRun;
+  const errors: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
 
   try {
     await handleClientMessage(
@@ -452,7 +473,18 @@ void test('handleClientMessage preserves requestId when run.start setup throws u
       message: 'internal server error',
     });
     assert.equal(getSocketState(socket).runStartInFlightRequestId, null);
+    const dispatchLog = errors.find((entry) =>
+      String(entry[0]).includes(
+        '[run-channel/dispatch] unexpected run.start dispatch error:',
+      ),
+    );
+    assert.ok(dispatchLog);
+    const logLine = String(dispatchLog[0]);
+    assert.match(logLine, /messageType="run.start"/);
+    assert.match(logLine, /projectId="workspace"/);
+    assert.match(logLine, /requestId="start-throw"/);
   } finally {
+    console.error = originalError;
     daemonContext.activeRuns.tryStartRun = originalTryStartRun;
     cleanupSocketState(socket, daemonContext);
     restoreEnv('GEULBAT_DEV_TOKEN', previousDevToken);

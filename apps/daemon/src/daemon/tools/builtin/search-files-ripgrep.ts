@@ -72,6 +72,7 @@ export async function runRipgrep(
         '--glob',
         excludedGlob,
       ]),
+      '--',
       query,
       rgRootDir,
     ];

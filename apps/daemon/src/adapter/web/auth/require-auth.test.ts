@@ -2,10 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { NextFunction, Request, Response } from 'express';
 import { requireAuth } from './require-auth.js';
-import {
-  resetShellAuthFailureRateLimitForTests,
-  SHELL_AUTH_FAILURE_LIMIT,
-} from './auth-failure-rate-limit.js';
+import { resetShellAuthFailureRateLimitForTests } from './auth-failure-rate-limit.js';
+
+const SHELL_AUTH_FAILURE_LIMIT = 8;
 
 function withTokenEnv(token: string, fn: () => void): void {
   const previous = process.env['GEULBAT_DEV_TOKEN'];

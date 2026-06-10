@@ -16,7 +16,7 @@ import {
   type ArtifactRuntimePersistenceBridgeResponder,
   type ArtifactRuntimePersistenceClient,
   type ArtifactRuntimePersistenceErrorCode,
-  type ArtifactRuntimePersistenceRequestMessage,
+  type ArtifactRuntimePersistenceRequestEnvelopeMessage,
   type ArtifactRuntimePersistenceResponseMessage,
   PERSISTENCE_BRIDGE_VERSION,
   PERSISTENCE_RESPONSE_KIND,
@@ -36,21 +36,6 @@ const defaultPersistenceClient: ArtifactRuntimePersistenceClient = {
     return clearArtifactRuntimePersistenceState({ ...scope, expectedRevision });
   },
 };
-
-export function createArtifactRuntimePersistenceScopeKey(
-  scope: ArtifactRuntimePersistenceScopeRequest | null,
-): string | null {
-  if (!scope) {
-    return null;
-  }
-
-  return JSON.stringify([
-    scope.projectId,
-    scope.threadId,
-    scope.artifactId,
-    scope.persistenceEpoch,
-  ]);
-}
 
 export function readPersistenceErrorCode(
   error: unknown,
@@ -160,18 +145,9 @@ export function createArtifactRuntimePersistenceBridgeResponder(args: {
   };
 }
 
-export function createArtifactRuntimePersistenceScopeHandle(
-  scopeSeed: string,
-): string {
-  if (scopeSeed.length === 0) {
-    throw new Error('runtime persistence scopeSeed must be non-empty');
-  }
-  return `scope-${scopeSeed}`;
-}
-
 function readExpectedRevision(
   scopeHandle: string,
-  request: ArtifactRuntimePersistenceRequestMessage,
+  request: ArtifactRuntimePersistenceRequestEnvelopeMessage,
 ):
   | { ok: true; value: string | null }
   | {
@@ -190,12 +166,28 @@ function readExpectedRevision(
     };
   }
 
+  if (
+    request.expectedRevision !== undefined &&
+    request.expectedRevision !== null &&
+    typeof request.expectedRevision !== 'string'
+  ) {
+    return {
+      ok: false,
+      error: errorResponse(
+        scopeHandle,
+        request,
+        'persistence_blocked',
+        `${request.verb} expectedRevision must be a string or null`,
+      ),
+    };
+  }
+
   return { ok: true, value: request.expectedRevision ?? null };
 }
 
 function readSaveStateInput(
   scopeHandle: string,
-  request: ArtifactRuntimePersistenceRequestMessage,
+  request: ArtifactRuntimePersistenceRequestEnvelopeMessage,
 ):
   | { ok: true; expectedRevision: string | null; state: JsonValue | null }
   | { ok: false; error: ArtifactRuntimePersistenceResponseMessage } {
@@ -224,7 +216,7 @@ function readSaveStateInput(
 
 function successResponse(
   scopeHandle: string,
-  request: ArtifactRuntimePersistenceRequestMessage,
+  request: ArtifactRuntimePersistenceRequestEnvelopeMessage,
   payload: {
     revision: string | null;
     state?: JsonValue;
@@ -243,7 +235,7 @@ function successResponse(
 
 function errorResponse(
   scopeHandle: string,
-  request: ArtifactRuntimePersistenceRequestMessage,
+  request: ArtifactRuntimePersistenceRequestEnvelopeMessage,
   errorCode: ArtifactRuntimePersistenceErrorCode,
   message: string,
 ): ArtifactRuntimePersistenceResponseMessage {

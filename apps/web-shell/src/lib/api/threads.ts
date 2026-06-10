@@ -10,8 +10,8 @@ import {
   isConflictActiveRunError,
   type ConflictActiveRunError,
 } from '@geulbat/protocol/errors';
+import { DEFAULT_PROJECT_ID } from '@geulbat/protocol/ids';
 import { ApiFetchError, apiFetch } from './client.js';
-import { DEFAULT_PROJECT_ID } from '../default-project-id.js';
 
 export class ThreadDeleteConflictError extends Error {
   readonly conflict: ConflictActiveRunError;

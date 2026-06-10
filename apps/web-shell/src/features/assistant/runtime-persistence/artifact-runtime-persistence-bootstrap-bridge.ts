@@ -1,3 +1,4 @@
+import { isPersistenceBootstrapSuccessResponseMessage } from './artifact-runtime-persistence-bootstrap-types.js';
 import type {
   PendingPersistenceRequest,
   PersistenceBootstrapMessageEvent,
@@ -21,27 +22,6 @@ interface PersistenceResponseRouterArgs {
   clearPendingPersistenceRequest(
     requestId: string,
   ): PendingPersistenceRequest | null;
-}
-
-function isPersistenceBootstrapSuccessResponseMessage(
-  response: unknown,
-): response is PersistenceBootstrapSuccessResponseMessage {
-  if (!response || typeof response !== 'object' || Array.isArray(response)) {
-    return false;
-  }
-  const record = response as Record<string, unknown>;
-  return (
-    record.ok === true &&
-    typeof record.kind === 'string' &&
-    (typeof record.version === 'string' ||
-      typeof record.version === 'number') &&
-    typeof record.requestId === 'string' &&
-    typeof record.scopeHandle === 'string' &&
-    typeof record.verb === 'string' &&
-    (record.revision === undefined ||
-      record.revision === null ||
-      typeof record.revision === 'string')
-  );
 }
 
 function createPersistenceResponseRouter({

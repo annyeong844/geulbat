@@ -30,12 +30,17 @@ export const ARTIFACT_RUNTIME_PERSISTENCE_VERBS = {
 type ArtifactRuntimePersistenceVerb =
   (typeof ARTIFACT_RUNTIME_PERSISTENCE_VERBS)[keyof typeof ARTIFACT_RUNTIME_PERSISTENCE_VERBS];
 
-export interface ArtifactRuntimePersistenceRequestMessage {
+export interface ArtifactRuntimePersistenceRequestEnvelopeMessage {
   kind: typeof PERSISTENCE_REQUEST_KIND;
   version: typeof PERSISTENCE_BRIDGE_VERSION;
   requestId: string;
   scopeHandle: string;
   verb: ArtifactRuntimePersistenceVerb;
+  state?: unknown;
+  expectedRevision?: unknown;
+}
+
+export interface ArtifactRuntimePersistenceRequestMessage extends ArtifactRuntimePersistenceRequestEnvelopeMessage {
   state?: JsonValue | null;
   expectedRevision?: string | null;
 }
@@ -87,7 +92,7 @@ export interface ArtifactRuntimePersistenceBridgeResponder {
 
 export function isArtifactRuntimePersistenceRequestMessage(
   value: unknown,
-): value is ArtifactRuntimePersistenceRequestMessage {
+): value is ArtifactRuntimePersistenceRequestEnvelopeMessage {
   if (!isRecord(value)) {
     return false;
   }

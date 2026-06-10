@@ -3,13 +3,14 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import type { ReactBundleDependencyNetworkProbeCandidate } from './react-bundle-dependency-network-probe.js';
+import type { ReactBundleDependencyNetworkProbeCandidate } from './react-bundle-dependency-network-probe-candidate.js';
 import {
   buildDockerMetadataProbeRunArgs,
   checkDockerMetadataProbeBackendAvailable,
   runDockerCommand,
   runDockerMetadataProbeProcess,
   type DockerCommandInvocation,
+  type DockerMetadataProbeCommandInvocation,
 } from './react-bundle-dependency-docker-backend.js';
 
 const CANDIDATE: ReactBundleDependencyNetworkProbeCandidate = {
@@ -151,7 +152,7 @@ void test('checkDockerMetadataProbeBackendAvailable preserves cancellation statu
 void test('runDockerMetadataProbeProcess writes candidate input and accepts docker-written output', async () => {
   await withTempRoot(async (root) => {
     const outputDir = join(root, 'out');
-    const invocations: DockerCommandInvocation[] = [];
+    const invocations: DockerMetadataProbeCommandInvocation[] = [];
     const result = await runDockerMetadataProbeProcess({
       dockerPath: 'docker',
       imageRef: 'local/geulbat-metadata-probe:2026-05-22',
@@ -226,10 +227,26 @@ void test('runDockerCommand waits for timeout termination before returning', asy
       'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);',
     ],
     timeoutMs: 20,
-    writeOutput: async () => {},
   });
 
   assert.equal(result.kind, 'timeout');
+});
+
+void test('runDockerCommand caps stdout and stderr capture', async () => {
+  const result = await runDockerCommand({
+    executable: process.execPath,
+    args: [
+      '-e',
+      'process.stdout.write("o".repeat(80 * 1024)); process.stderr.write("e".repeat(80 * 1024));',
+    ],
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.kind, 'exit');
+  assert.equal(Buffer.byteLength(result.stdout, 'utf8') <= 66 * 1024, true);
+  assert.equal(Buffer.byteLength(result.stderr, 'utf8') <= 66 * 1024, true);
+  assert.match(result.stdout, /\[truncated\]/u);
+  assert.match(result.stderr, /\[truncated\]/u);
 });
 
 void test('runDockerCommand waits for cancellation termination before returning', async () => {
@@ -242,7 +259,6 @@ void test('runDockerCommand waits for cancellation termination before returning'
     ],
     timeoutMs: 5_000,
     signal: controller.signal,
-    writeOutput: async () => {},
   });
 
   setTimeout(() => controller.abort(), 20);
@@ -280,7 +296,6 @@ void test('runDockerCommand preserves Docker client environment without inheriti
         ].join(''),
       ],
       timeoutMs: 1000,
-      writeOutput: async () => {},
     });
 
     assert.equal(result.kind, 'exit');
@@ -326,7 +341,6 @@ void test('runDockerCommand rechecks abort after registering the listener', asyn
     ],
     timeoutMs: 50,
     signal,
-    writeOutput: async () => {},
   });
 
   assert.equal(result.kind, 'cancelled');

@@ -5,7 +5,7 @@ import type { RunTranscriptEntry } from '../../lib/run-transcript-entry.js';
 import { CommittedArtifactMessage } from './artifact-pane/index.js';
 import { assistantStyles } from './assistant-styles.js';
 import { RunTranscriptEntryBlock } from './assistant-transcript-entry-blocks.js';
-import { TranscriptTextMessage } from './assistant-transcript-content.js';
+import { TranscriptTextMessage } from './assistant-transcript-message.js';
 
 export function AssistantTranscriptLiveTail(props: {
   showStartingPlaceholder: boolean;

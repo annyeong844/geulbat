@@ -10,8 +10,8 @@ import {
   isConflictStaleWriteError,
   type ConflictStaleWriteError,
 } from '@geulbat/protocol/errors';
+import { DEFAULT_PROJECT_ID } from '@geulbat/protocol/ids';
 import { ApiFetchError, apiFetch } from './client.js';
-import { DEFAULT_PROJECT_ID } from '../default-project-id.js';
 
 export class FileSaveConflictError extends Error {
   readonly conflict: ConflictStaleWriteError;

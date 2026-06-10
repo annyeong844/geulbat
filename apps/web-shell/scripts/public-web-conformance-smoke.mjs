@@ -15,13 +15,14 @@ import {
   PUBLIC_WEB_WEBSOCKET_ECHO_PATH,
 } from '@geulbat/protocol/public-web-fixtures';
 
-import { buildHtmlArtifactRuntimePayload } from '../src/features/assistant/artifacts/html/document.ts';
-import { buildJsArtifactRuntimeDocument } from '../src/features/assistant/artifacts/js/document.ts';
+import { buildHtmlArtifactRuntimePayload } from '../src/features/artifacts/runtime-preview/html/document.ts';
+import { buildJsArtifactRuntimeDocument } from '../src/features/artifacts/runtime-preview/js/document.ts';
 import {
   ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
   ARTIFACT_RUNTIME_HOST_READY_ACTION,
   createArtifactRuntimeHostBootMessage,
 } from '../src/features/assistant/runtime-frame/artifact-runtime-host.ts';
+import { buildJsRuntimePersistenceBootstrap } from '../src/features/assistant/runtime-persistence/artifact-runtime-persistence-bootstrap.ts';
 import {
   ARTIFACT_RUNTIME_PERSISTENCE_VERBS,
   PERSISTENCE_BRIDGE_VERSION,
@@ -602,11 +603,17 @@ async function createConformanceHarnessServer(fixture, daemonOrigin) {
     runtimeFrameUrl.searchParams.set('rev', `public-web-${fixture.name}`);
 
     const scopeHandle = `scope-${randomUUID()}`;
+    const persistenceBootstrap = {
+      scopeHandle,
+      parentOrigin: harnessOrigin,
+    };
     const runtimeDocument = buildJsArtifactRuntimeDocument(
       fixture.buildRuntimePayload(),
       {
-        scopeHandle,
-        parentOrigin: harnessOrigin,
+        ...persistenceBootstrap,
+        bootstrapSource: buildJsRuntimePersistenceBootstrap(
+          persistenceBootstrap,
+        ),
       },
     );
 

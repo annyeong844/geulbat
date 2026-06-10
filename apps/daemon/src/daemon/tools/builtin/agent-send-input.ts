@@ -81,6 +81,20 @@ export function createAgentSendInputTool(
       const childRecord =
         agentSpawnRuntime.childRuns.getChildRun(childRunHandleId);
       if (!childRecord) {
+        const collectedRecord =
+          agentSpawnRuntime.childRuns.getCollectedChildRun(childRunHandleId);
+        if (collectedRecord) {
+          if (collectedRecord.ownerThreadId !== ownerThreadId) {
+            return toolError(
+              'invalid_args',
+              `child run does not belong to current owner thread: ${childRunId}`,
+            );
+          }
+          return toolError(
+            'conflict',
+            `child run handle expired: ${childRunId}`,
+          );
+        }
         return toolError('invalid_args', `unknown child run: ${childRunId}`);
       }
       if (childRecord.ownerThreadId !== ownerThreadId) {

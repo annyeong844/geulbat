@@ -10,11 +10,11 @@ import {
   type AgentEvent,
   type AgentEventEmitter,
 } from './events.js';
+import { executeFunctionCall } from './loop-tool-approval.js';
 import {
   buildAgentToolExecutionContextBase,
   buildToolCallExecutionRuntime,
-  executeFunctionCall,
-} from './loop-tool-approval.js';
+} from './loop-tool-runtime.js';
 import { createDaemonContext } from '../context.js';
 import type {
   AnyTool,

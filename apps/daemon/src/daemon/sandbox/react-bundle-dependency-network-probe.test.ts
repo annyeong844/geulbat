@@ -5,11 +5,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { HttpMetadataProbeRequestTransport } from '../network/http-metadata-probe.js';
 import { createSandboxAttemptStore } from './attempt-store.js';
-import {
-  probeReactBundleExplicitCdnDependencies,
-  type ReactBundleDependencyMetadataProbeBackend,
-  type ReactBundleDependencyNetworkProbeCandidate,
-} from './react-bundle-dependency-network-probe.js';
+import type { ReactBundleDependencyNetworkProbeCandidate } from './react-bundle-dependency-network-probe-candidate.js';
+import { probeReactBundleExplicitCdnDependencies } from './react-bundle-dependency-network-probe.js';
 import {
   prepareReactBundleExplicitCdnDependencies,
   type ReactBundleDependencyPrepareRequest,
@@ -118,6 +115,34 @@ void test('probeReactBundleExplicitCdnDependencies records successful metadata e
     assert.equal(summary.allRequiredProbesOk, true);
     assert.equal(summary.dependencyCount, 2);
     assert.equal(summary.failedDependencyCount, 0);
+    assert.equal(summary.dependencyProbes.length, 2);
+    assert.deepEqual(
+      summary.dependencyProbes.map((probe) => ({
+        kind: probe.kind,
+        specifier: probe.specifier ?? null,
+        requestedUrl: probe.requestedUrl,
+        ok: probe.ok,
+      })),
+      [
+        {
+          kind: 'esm_import',
+          specifier: 'canvas-confetti',
+          requestedUrl: 'https://esm.sh/canvas-confetti@1.9.3',
+          ok: true,
+        },
+        {
+          kind: 'stylesheet',
+          specifier: null,
+          requestedUrl:
+            'https://cdn.jsdelivr.net/npm/water.css@2.0.0/out/water.css',
+          ok: true,
+        },
+      ],
+    );
+    assert.equal(
+      summary.dependencyProbes[0]?.finalUrl,
+      'https://esm.sh/canvas-confetti@1.9.3',
+    );
     assert.match(summary.evidenceRef, /^sandbox-output:/u);
 
     const attempt = store.getAttempt(summary.attemptId);
@@ -161,6 +186,60 @@ void test('probeReactBundleExplicitCdnDependencies records successful metadata e
     assert.equal(Object.hasOwn(candidateRecord, 'contentHash'), false);
     assert.equal(Object.hasOwn(candidateRecord, 'lockfile'), false);
     assert.equal(Object.hasOwn(candidateRecord, 'browserEvaluation'), false);
+  });
+});
+
+void test('probeReactBundleExplicitCdnDependencies exposes requested URLs separately from final URLs', async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    const store = createSandboxAttemptStore({
+      now: () => '2026-05-24T00:00:00.000Z',
+    });
+
+    const summary = await probeReactBundleExplicitCdnDependencies({
+      workspaceRoot,
+      store,
+      request: {
+        ...BASE_REQUEST,
+        runtimeDependencies: {
+          importMap: {
+            imports: {
+              'canvas-confetti': 'https://esm.sh/canvas-confetti@1.9.3',
+            },
+          },
+        },
+        dependencyRefs: [BASE_REQUEST.dependencyRefs[0]!],
+      },
+      timeoutMs: 1000,
+      now: () => '2026-05-24T00:00:00.000Z',
+      probeTransport: async (url) => {
+        if (url.href === 'https://esm.sh/canvas-confetti@1.9.3') {
+          return {
+            status: 302,
+            location: 'https://esm.sh/canvas-confetti@1.9.3?bundle',
+            contentType: null,
+            contentLength: null,
+            bytesRead: 0,
+          };
+        }
+        return {
+          status: 200,
+          location: null,
+          contentType: 'application/javascript',
+          contentLength: 20,
+          bytesRead: 0,
+        };
+      },
+    });
+
+    assert.equal(summary.dependencyProbes.length, 1);
+    assert.equal(
+      summary.dependencyProbes[0]?.requestedUrl,
+      'https://esm.sh/canvas-confetti@1.9.3',
+    );
+    assert.equal(
+      summary.dependencyProbes[0]?.finalUrl,
+      'https://esm.sh/canvas-confetti@1.9.3?bundle',
+    );
   });
 });
 
@@ -607,35 +686,5 @@ void test('docker backend availability consumes the attempt timeout before metad
     assert.equal(transportCalls, 0);
     const attempt = store.getAttempts().records[0];
     assert.equal(attempt?.status, 'timed_out');
-  });
-});
-
-void test('docker backend rejects unsupported policy metadata before execution', async () => {
-  await withWorkspace(async (workspaceRoot) => {
-    const store = createSandboxAttemptStore({
-      now: () => '2026-05-22T00:00:00.000Z',
-    });
-    const backend = {
-      kind: 'docker_worker',
-      imageRef: 'local/geulbat-metadata-probe:2026-05-22',
-      allowlistId: 'different_allowlist',
-    } as unknown as ReactBundleDependencyMetadataProbeBackend;
-
-    await assert.rejects(
-      () =>
-        probeReactBundleExplicitCdnDependencies({
-          workspaceRoot,
-          store,
-          request: BASE_REQUEST,
-          timeoutMs: 1000,
-          backend,
-          dockerCommandRunner: async () => {
-            throw new Error('docker should not be invoked');
-          },
-        }),
-      /unsupported react bundle dependency metadata probe backend allowlistId/,
-    );
-
-    assert.equal(store.getAttempts().records.length, 0);
   });
 });

@@ -8,6 +8,7 @@ export {
   type HistoryItem,
   type FunctionCall,
   type CallResult,
+  type ProviderStructuredOutput,
   type WireToolDefinition,
   type WireRequestBody,
   type WireRequestBase,

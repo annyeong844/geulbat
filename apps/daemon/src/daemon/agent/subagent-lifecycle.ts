@@ -76,24 +76,7 @@ export function beginBackgroundChildLifecycle(args: {
     childAbortController: childRunState.abortController,
     background: true,
   });
-  launchReservation?.release();
-
-  runtimeServices.childRuns.registerChildRun({
-    childRunId,
-    childThreadId,
-    parentRunId,
-    ownerThreadId,
-    subagentType,
-  });
-  emitAgentEvent?.({
-    type: 'subagent_spawned',
-    payload: {
-      parentRunId,
-      childRunId,
-      childThreadId,
-      subagentType,
-    },
-  });
+  let childRegistryRegistered = false;
 
   const cleanupChildLifecycle = (): void => {
     if (timeout) {
@@ -107,6 +90,42 @@ export function beginBackgroundChildLifecycle(args: {
       finish();
     });
   };
+
+  try {
+    launchReservation?.release();
+
+    runtimeServices.childRuns.registerChildRun({
+      childRunId,
+      childThreadId,
+      parentRunId,
+      ownerThreadId,
+      subagentType,
+    });
+    childRegistryRegistered = true;
+
+    emitAgentEvent?.({
+      type: 'subagent_spawned',
+      payload: {
+        parentRunId,
+        childRunId,
+        childThreadId,
+        subagentType,
+      },
+    });
+  } catch (error: unknown) {
+    cleanupChildLifecycle();
+    if (childRegistryRegistered) {
+      runChildLifecycleStep('mark failed child launch', () => {
+        runtimeServices.childRuns.markChildTerminal({
+          childRunId,
+          terminalState: 'failed',
+          result: 'sub-agent launch failed',
+          reason: 'child_error',
+        });
+      });
+    }
+    throw error;
+  }
 
   return {
     childRunId,

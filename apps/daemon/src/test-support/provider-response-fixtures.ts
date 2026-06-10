@@ -3,6 +3,7 @@ import {
   type CallModelInput,
 } from '../daemon/llm/provider/client.js';
 import { parseResponseEvents } from '../daemon/llm/provider/transport/responses-parser.js';
+import type { ProviderStructuredOutput } from '../daemon/llm/index.js';
 import type { CallModelFn } from '../daemon/agent/loop-types.js';
 
 export type ProviderResponseEventFixture = Record<string, unknown>;
@@ -10,14 +11,20 @@ export type ProviderResponseEventFixture = Record<string, unknown>;
 export interface ProviderRoundFixture {
   events?: ProviderResponseEventFixture[];
   error?: Error;
+  structuredOutputs?: ProviderStructuredOutput[];
   inspectInput?: (input: CallModelInput) => void;
 }
 
 export function composeProviderRounds(
   ...rounds: ProviderRoundFixture[]
 ): ProviderRoundFixture {
+  const structuredOutputs = rounds.flatMap(
+    (round) => round.structuredOutputs ?? [],
+  );
+
   return {
     events: rounds.flatMap((round) => round.events ?? []),
+    ...(structuredOutputs.length > 0 ? { structuredOutputs } : {}),
     inspectInput(input) {
       for (const round of rounds) {
         round.inspectInput?.(input);
@@ -52,12 +59,29 @@ export function createScriptedProviderCallModel(
         if (fixture.error) {
           throw fixture.error;
         }
-        return parseResponseEvents(
+        const result = await parseResponseEvents(
           toAsyncEvents(fixture.events ?? []),
           onAssistantDelta,
         );
+        return {
+          ...result,
+          ...(fixture.structuredOutputs !== undefined
+            ? { structuredOutputs: fixture.structuredOutputs }
+            : {}),
+        };
       },
     });
+  };
+}
+
+export function providerStructuredOutputRound(
+  structuredOutputs: ProviderStructuredOutput | ProviderStructuredOutput[],
+): ProviderRoundFixture {
+  return {
+    events: [],
+    structuredOutputs: Array.isArray(structuredOutputs)
+      ? structuredOutputs
+      : [structuredOutputs],
   };
 }
 

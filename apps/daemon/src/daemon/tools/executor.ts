@@ -4,11 +4,12 @@
  */
 
 import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { createLogger } from '@geulbat/shared-utils/logger';
 import type { ToolResolver } from './tool-registry-model.js';
 import type { ToolExecutionContext, ExecuteResult } from './types.js';
 import { toolError } from './result.js';
 import { createMergedAbortSignal } from '../utils/abort.js';
-import { getErrorCode } from '../utils/error.js';
+import { getErrorCode, getErrorMessage } from '../utils/error.js';
 import { isErrorCode, type ErrorCode } from '../error-codes.js';
 
 const SAFE_TOOL_ERROR_CODES = new Set<ErrorCode>([
@@ -23,6 +24,7 @@ const SAFE_TOOL_ERROR_CODES = new Set<ErrorCode>([
   'unsupported_mode',
   'conflict_stale_write',
 ]);
+const logger = createLogger('tool-executor');
 
 function sanitizeExecutionErrorMessage(
   name: string,
@@ -52,6 +54,22 @@ function classifyToolExecutionFailure(
     errorCode,
     error: sanitizeExecutionErrorMessage(name, errorCode, err),
   };
+}
+
+function logUnexpectedToolFailure(args: {
+  name: string;
+  callId: string;
+  errorCode: ErrorCode;
+  err: unknown;
+}): void {
+  if (args.errorCode === 'execution_failed') {
+    logger.warn('unexpected tool failure:', {
+      tool: args.name,
+      callId: args.callId,
+      errorCode: args.errorCode,
+      cause: getErrorMessage(args.err),
+    });
+  }
 }
 
 function classifyAbortOutcome(args: {
@@ -123,6 +141,12 @@ export async function executeTool(
     parsedArgs = parsed.value;
   } catch (err: unknown) {
     const failure = classifyToolExecutionFailure(name, err);
+    logUnexpectedToolFailure({
+      name,
+      callId: ctx.callId,
+      errorCode: failure.errorCode,
+      err,
+    });
     return toolError(failure.errorCode, failure.error);
   }
 
@@ -209,6 +233,12 @@ export async function executeTool(
       });
     }
     const failure = classifyToolExecutionFailure(name, err);
+    logUnexpectedToolFailure({
+      name,
+      callId: ctx.callId,
+      errorCode: failure.errorCode,
+      err,
+    });
     return toolError(failure.errorCode, failure.error);
   } finally {
     if (abortHandler && combinedSignal) {

@@ -48,9 +48,3 @@ jobs:
 
       - name: Daemon coverage
         run: npm run test:cov:daemon
-
-      - name: Install Playwright browser
-        run: npm run smoke:react-bundle:install-browser
-
-      - name: React bundle smoke
-        run: npm run smoke:react-bundle

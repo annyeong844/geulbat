@@ -237,7 +237,7 @@ export function createSandboxAttemptStore(
       if (!previous) {
         throw new Error(`sandbox attempt not found: ${attemptId}`);
       }
-      if (!isTerminalStatus(previous.status)) {
+      if (!isSandboxAttemptTerminalStatus(previous.status)) {
         throw new Error(
           `cannot retry non-terminal sandbox attempt: ${attemptId}`,
         );
@@ -248,6 +248,9 @@ export function createSandboxAttemptStore(
         jobKind: previous.jobKind,
         adapterKind: previous.adapterKind,
         owner: previous.owner,
+        ...(previous.capability === null
+          ? {}
+          : { capability: previous.capability }),
       });
       records.set(snapshot.attemptId, snapshot);
       bumpRevision();
@@ -272,7 +275,7 @@ export function createSandboxAttemptStore(
     },
     markTerminal(attemptId, args) {
       const current = records.get(attemptId);
-      if (!current || isTerminalStatus(current.status)) {
+      if (!current || isSandboxAttemptTerminalStatus(current.status)) {
         return current ? clone(current) : undefined;
       }
       const timestamp = now();
@@ -307,7 +310,9 @@ export function createSandboxAttemptStore(
   };
 }
 
-function isTerminalStatus(status: SandboxAttemptStatus): boolean {
+export function isSandboxAttemptTerminalStatus(
+  status: SandboxAttemptStatus,
+): status is SandboxTerminalStatus {
   return (
     status === 'cancelled' ||
     status === 'succeeded' ||

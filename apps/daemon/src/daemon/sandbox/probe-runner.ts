@@ -7,7 +7,11 @@ import type {
   SandboxOutputRef,
   SandboxTerminalStatus,
 } from './attempt-store.js';
-import { createDisposableSandboxRoot } from './disposable-root.js';
+import { isSandboxAttemptTerminalStatus } from './attempt-store.js';
+import {
+  sandboxRootFailureDiagnostics,
+  withRunningSandboxAttemptRoot,
+} from './attempt-root.js';
 import { buildSandboxEnvironment } from './environment.js';
 import { importSandboxOutputEvidence } from './output-evidence-store.js';
 import { collectSandboxOutputRef } from './output-validation.js';
@@ -31,6 +35,10 @@ type ProbeProcessRunner = (
   args: ProbeProcessRunnerArgs,
 ) => Promise<ProbeProcessResult>;
 
+type MarkSandboxAttemptTerminalArgs = Parameters<
+  SandboxAttemptStore['markTerminal']
+>[1];
+
 const PROBE_OUTPUT_MAX_FILES = 16;
 const PROBE_OUTPUT_MAX_BYTES = 64 * 1024;
 
@@ -45,58 +53,108 @@ export async function runDeterministicSandboxProbe(args: {
     jobKind: 'sandbox_probe',
     adapterKind: 'deterministic_probe',
   });
-  let root: Awaited<ReturnType<typeof createDisposableSandboxRoot>> | null =
-    null;
 
   try {
-    root = await createDisposableSandboxRoot({
+    return await withRunningSandboxAttemptRoot({
       attemptId: attempt.attemptId,
-    });
-    args.store.markRunning(attempt.attemptId, { rootPath: root.rootPath });
+      store: args.store,
+      onRootFailure: (message) =>
+        markProbeTerminal({
+          attemptId: attempt.attemptId,
+          store: args.store,
+          terminal: {
+            status: 'failed',
+            diagnostics: sandboxRootFailureDiagnostics(message),
+          },
+        }),
+      run: async (root) => {
+        const env = buildSandboxEnvironment({
+          homeDir: root.homeDir,
+          tempDir: root.tempDir,
+          adapterEnv: { GEULBAT_SANDBOX_PROBE: '1' },
+        });
 
-    const env = buildSandboxEnvironment({
-      homeDir: root.homeDir,
-      tempDir: root.tempDir,
-      adapterEnv: { GEULBAT_SANDBOX_PROBE: '1' },
-    });
+        const processResult = await runProbeProcess({
+          cwd: root.rootPath,
+          outputDir: root.outputDir,
+          env,
+          timeoutMs: args.timeoutMs,
+          ...(args.processRunner ? { processRunner: args.processRunner } : {}),
+          ...(args.signal ? { signal: args.signal } : {}),
+        });
+        const status = classifyProbeResult(processResult);
+        let outputRef: SandboxOutputRef | null = null;
+        if (status === 'succeeded') {
+          const collectedOutput = await collectSandboxOutputRef(
+            root.outputDir,
+            {
+              maxFiles: PROBE_OUTPUT_MAX_FILES,
+              maxBytes: PROBE_OUTPUT_MAX_BYTES,
+            },
+          );
+          outputRef = await importSandboxOutputEvidence({
+            workspaceRoot: args.workspaceRoot,
+            attempt,
+            collectedOutput,
+          });
+        }
 
-    const processResult = await runProbeProcess({
-      cwd: root.rootPath,
-      outputDir: root.outputDir,
-      env,
-      timeoutMs: args.timeoutMs,
-      ...(args.processRunner ? { processRunner: args.processRunner } : {}),
-      ...(args.signal ? { signal: args.signal } : {}),
+        return markProbeTerminal({
+          attemptId: attempt.attemptId,
+          store: args.store,
+          terminal: {
+            status,
+            exitCode:
+              processResult.kind === 'exit' ? processResult.exitCode : null,
+            diagnostics: joinDiagnostics(
+              processResult.stdout,
+              processResult.stderr,
+            ),
+            outputRef,
+          },
+        });
+      },
     });
-    const status = classifyProbeResult(processResult);
-    let outputRef: SandboxOutputRef | null = null;
-    if (status === 'succeeded') {
-      const collectedOutput = await collectSandboxOutputRef(root.outputDir, {
-        maxFiles: PROBE_OUTPUT_MAX_FILES,
-        maxBytes: PROBE_OUTPUT_MAX_BYTES,
-      });
-      outputRef = await importSandboxOutputEvidence({
-        workspaceRoot: args.workspaceRoot,
-        attempt,
-        collectedOutput,
-      });
-    }
-
-    return args.store.markTerminal(attempt.attemptId, {
-      status,
-      exitCode: processResult.kind === 'exit' ? processResult.exitCode : null,
-      diagnostics: joinDiagnostics(processResult.stdout, processResult.stderr),
-      outputRef,
-    })!;
   } catch (error: unknown) {
+    if (error instanceof SandboxProbeTerminalUpdateError) {
+      throw error;
+    }
+    const current = args.store.getAttempt(attempt.attemptId);
+    if (
+      current !== undefined &&
+      isSandboxAttemptTerminalStatus(current.status)
+    ) {
+      throw error;
+    }
     const message = error instanceof Error ? error.message : String(error);
-    return args.store.markTerminal(attempt.attemptId, {
-      status: root === null ? 'failed' : 'crashed',
-      diagnostics: root === null ? `sandbox_root_failed: ${message}` : message,
-    })!;
-  } finally {
-    await root?.cleanup();
+    return markProbeTerminal({
+      attemptId: attempt.attemptId,
+      store: args.store,
+      terminal: {
+        status: 'crashed',
+        diagnostics: message,
+      },
+    });
   }
+}
+
+class SandboxProbeTerminalUpdateError extends Error {
+  constructor(attemptId: string) {
+    super(`sandbox probe terminal update failed for ${attemptId}`);
+    this.name = 'SandboxProbeTerminalUpdateError';
+  }
+}
+
+function markProbeTerminal(args: {
+  attemptId: string;
+  store: SandboxAttemptStore;
+  terminal: MarkSandboxAttemptTerminalArgs;
+}): SandboxAttemptSnapshot {
+  const snapshot = args.store.markTerminal(args.attemptId, args.terminal);
+  if (snapshot === undefined) {
+    throw new SandboxProbeTerminalUpdateError(args.attemptId);
+  }
+  return snapshot;
 }
 
 async function runProbeProcess(args: {

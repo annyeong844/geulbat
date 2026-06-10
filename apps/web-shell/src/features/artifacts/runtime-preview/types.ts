@@ -44,6 +44,7 @@ export interface ArtifactRendererDefinition {
   render: (
     payload: string,
     context: ArtifactRuntimePreviewContext,
+    renderRuntimeFrame: RenderArtifactRuntimeFrame,
   ) => ArtifactPreviewSurface;
 }
 

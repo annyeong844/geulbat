@@ -11,7 +11,7 @@ import {
 import {
   createArtifactRuntimePersistenceScopeHandle,
   createArtifactRuntimePersistenceScopeKey,
-} from '../runtime-persistence/artifact-runtime-persistence.js';
+} from '../runtime-persistence/artifact-runtime-persistence-scope.js';
 import { resolveArtifactRuntimeHostUrl } from './artifact-runtime-host.js';
 import {
   createArtifactRuntimeFrameRevision,

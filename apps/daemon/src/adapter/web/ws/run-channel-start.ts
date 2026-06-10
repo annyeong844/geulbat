@@ -106,6 +106,12 @@ export async function executeRunRequest({
   socketState.activeRunIds.add(runId);
   ensureThreadBackgroundSubscription(socket, threadId, runtimeContext);
   let seq = 0;
+  const runLogger = logger.withContext({
+    projectId: resolvedProjectId,
+    requestId,
+    runId,
+    threadId,
+  });
 
   try {
     await executeForegroundRun({
@@ -127,7 +133,9 @@ export async function executeRunRequest({
       transcriptPrompt,
     });
   } catch (err: unknown) {
-    logger.error('unexpected error:', getErrorMessage(err));
+    runLogger.error('unexpected error:', {
+      message: getErrorMessage(err),
+    });
     sendRunEvent(socket, runId, threadId, seq++, {
       type: 'error',
       payload: { code: 'internal', message: 'internal server error' },

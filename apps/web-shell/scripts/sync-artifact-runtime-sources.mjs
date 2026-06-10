@@ -12,11 +12,11 @@ const runtimeSources = [
   {
     assetPath: path.join(
       appRoot,
-      'src/features/assistant/artifacts/js/document.asset.html',
+      'src/features/artifacts/runtime-preview/js/document.asset.html',
     ),
     generatedPath: path.join(
       appRoot,
-      'src/features/assistant/artifacts/js/document-source.ts',
+      'src/features/artifacts/runtime-preview/js/document-source.ts',
     ),
     exportName: 'JS_ARTIFACT_RUNTIME_DOCUMENT_SOURCE',
   },

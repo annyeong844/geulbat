@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import { tryDecodeJson } from '@geulbat/protocol/runtime-utils';
 import type { RunRequest } from '@geulbat/protocol/run-contract';
+import type { RunChannelClientMessage } from '@geulbat/protocol/run-channel';
 
 import { closeUnauthorized, sendError } from './run-channel-socket.js';
 import type { RunChannelRuntimeContext } from './run-channel-runtime-context.js';
@@ -11,7 +12,7 @@ import { claimSocketRunStart } from './run-channel-start-gate.js';
 import { normalizeAllowedToolNames } from './run-request-tools.js';
 import { executeRunRequest } from './run-channel-start.js';
 import { readRunChannelClientMessage } from './validate-run-channel-message.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger, type LoggerContext } from '@geulbat/shared-utils/logger';
 import { getErrorMessage } from '../../../daemon/utils/error.js';
 
 const logger = createLogger('run-channel/dispatch');
@@ -69,11 +70,45 @@ export async function handleClientMessage(
 
     return assertNever(message);
   } catch (error: unknown) {
-    logger.error(
-      'unexpected websocket message dispatch error:',
-      getErrorMessage(error),
-    );
+    logger
+      .withContext(buildDispatchLogContext(message))
+      .error('unexpected websocket message dispatch error:', {
+        message: getErrorMessage(error),
+      });
     sendError(socket, requestId, 500, 'internal', 'internal server error');
+  }
+}
+
+function buildDispatchLogContext(
+  message: RunChannelClientMessage,
+): LoggerContext {
+  switch (message.type) {
+    case 'run.auth':
+      return {
+        messageType: message.type,
+        requestId: message.requestId,
+      };
+    case 'run.start':
+      return {
+        messageType: message.type,
+        projectId: message.request.projectId,
+        requestId: message.requestId,
+        threadId: message.request.threadId,
+      };
+    case 'run.cancel':
+      return {
+        messageType: message.type,
+        requestId: message.requestId,
+        runId: message.request.runId,
+      };
+    case 'run.approve':
+      return {
+        callId: message.request.callId,
+        messageType: message.type,
+        requestId: message.requestId,
+        runId: message.request.runId,
+        threadId: message.request.threadId,
+      };
   }
 }
 
@@ -107,10 +142,16 @@ async function dispatchRunStart(args: {
       runtimeContext,
     });
   } catch (error: unknown) {
-    logger.error(
-      'unexpected run.start dispatch error:',
-      getErrorMessage(error),
-    );
+    logger
+      .withContext({
+        messageType: 'run.start',
+        projectId: request.projectId,
+        requestId,
+        threadId: request.threadId,
+      })
+      .error('unexpected run.start dispatch error:', {
+        message: getErrorMessage(error),
+      });
     sendError(socket, requestId, 500, 'internal', 'internal server error');
   } finally {
     startClaim.release();

@@ -112,6 +112,14 @@ export default [
           ],
           mode: 'full',
         },
+        {
+          type: 'daemon-agent-sandbox-ingress',
+          pattern: [
+            'apps/daemon/src/daemon/agent/react-bundle-explicit-cdn-artifact-ingress.ts',
+            'apps/daemon/src/daemon/agent/react-bundle-structured-output-caller.ts',
+          ],
+          mode: 'full',
+        },
         { type: 'daemon-agent', pattern: ['apps/daemon/src/daemon/agent/**'] },
         { type: 'daemon-auth', pattern: ['apps/daemon/src/daemon/auth/**'] },
         {
@@ -135,6 +143,34 @@ export default [
         {
           type: 'daemon-sandbox',
           pattern: ['apps/daemon/src/daemon/sandbox/**'],
+        },
+        {
+          type: 'daemon-ptc-sandbox-ingress',
+          pattern: ['apps/daemon/src/daemon/ptc/lab-artifact-workspace.ts'],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-ptc-runtime-contract',
+          pattern: [
+            'apps/daemon/src/daemon/ptc/browser-navigate-runtime-contract.ts',
+            'apps/daemon/src/daemon/ptc/execute-code-runtime-contract.ts',
+            'apps/daemon/src/daemon/ptc/fixed-probe-runtime-contract.ts',
+            'apps/daemon/src/daemon/ptc/lab-session-batch-command-contract.ts',
+          ],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-ptc-runtime-ingress',
+          pattern: [
+            'apps/daemon/src/daemon/ptc/browser-navigate-runtime.ts',
+            'apps/daemon/src/daemon/ptc/fixed-probe-runtime.ts',
+            'apps/daemon/src/daemon/ptc/execute-code-runtime.ts',
+          ],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-ptc',
+          pattern: ['apps/daemon/src/daemon/ptc/**'],
         },
         {
           type: 'daemon-sessions',
@@ -403,13 +439,28 @@ export default [
               },
             },
             {
+              from: { type: 'daemon-agent-sandbox-ingress' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-agent-sandbox-ingress',
+                    'daemon-agent',
+                    'daemon-sandbox',
+                    'daemon-llm',
+                  ],
+                },
+              },
+            },
+            {
               from: { type: 'daemon-agent' },
               allow: {
                 to: {
                   type: [
                     'shared-utils',
                     'daemon-kernel',
+                    'daemon-agent-sandbox-ingress',
                     'daemon-composition',
+                    'daemon-ptc-runtime-contract',
                     'daemon-memory',
                     'daemon-tools',
                     'daemon-sessions',
@@ -519,6 +570,30 @@ export default [
               },
             },
             {
+              from: { type: 'daemon-ptc-sandbox-ingress' },
+              allow: {
+                to: {
+                  type: ['daemon-ptc', 'daemon-sandbox'],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-runtime-ingress' },
+              allow: {
+                to: {
+                  type: ['daemon-ptc', 'daemon-ptc-runtime-contract'],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc' },
+              allow: {
+                to: {
+                  type: ['daemon-ptc-runtime-contract'],
+                },
+              },
+            },
+            {
               from: { type: 'daemon-memory' },
               allow: {
                 to: {
@@ -556,6 +631,9 @@ export default [
                     'daemon-tools',
                     'daemon-llm',
                     'daemon-artifact-runtime-persistence',
+                    'daemon-ptc-runtime-contract',
+                    'daemon-ptc-runtime-ingress',
+                    'daemon-sandbox',
                     'daemon-sessions',
                     'daemon-files',
                     'daemon-utils',

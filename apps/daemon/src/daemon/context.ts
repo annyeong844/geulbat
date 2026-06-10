@@ -30,6 +30,7 @@ import {
   createProjectStore,
   type ProjectStore,
 } from './files/project-store.js';
+import { joinWorkspaceGeulbatPath } from './files/geulbat-internal-paths.js';
 import {
   createMemoryIndexStore,
   type MemoryIndexStore,
@@ -41,15 +42,31 @@ import {
 import {
   createResponsesWebSocketSessionStore,
   type ResponsesWebSocketSessionStore,
-} from './llm/provider/transport/responses-websocket-session.js';
+} from './llm/provider/transport/responses-websocket-cache.js';
 import {
   resolveProviderRequestOptions,
   type ProviderRequestOptions,
 } from './llm/provider/provider-options.js';
 import {
+  createPtcFixedEpochProbeRuntime,
+  type CreatePtcFixedEpochProbeRuntimeOptions,
+} from './ptc/fixed-probe-runtime.js';
+import {
+  createPtcExecuteCodeRuntime,
+  type CreatePtcExecuteCodeRuntimeOptions,
+} from './ptc/execute-code-runtime.js';
+import {
+  createPtcBrowserNavigateRuntime,
+  type CreatePtcBrowserNavigateRuntimeOptions,
+} from './ptc/browser-navigate-runtime.js';
+import {
   createActiveRunStore,
   type ActiveRunStore,
 } from './sessions/active-runs.js';
+import {
+  createSandboxAttemptStore,
+  type SandboxAttemptStore,
+} from './sandbox/attempt-store.js';
 import {
   createApprovalGrantStore,
   type ApprovalGrantStore,
@@ -68,6 +85,13 @@ import type { SubagentRunLauncher } from './daemon-runtime-contract.js';
 interface DaemonContextOptions {
   subagentConcurrencyPolicy?: SubagentConcurrencyPolicy | undefined;
   providerRequestOptions?: ProviderRequestOptions | undefined;
+  ptcFixedProbeRuntimeOptions?:
+    | CreatePtcFixedEpochProbeRuntimeOptions
+    | undefined;
+  ptcExecuteCodeRuntimeOptions?: CreatePtcExecuteCodeRuntimeOptions | undefined;
+  ptcBrowserNavigateRuntimeOptions?:
+    | CreatePtcBrowserNavigateRuntimeOptions
+    | undefined;
 }
 
 export interface DaemonContext {
@@ -85,6 +109,10 @@ export interface DaemonContext {
   projectStore: ProjectStore;
   memoryIndex: MemoryIndexStore;
   providerWebSocketSessions: ResponsesWebSocketSessionStore;
+  ptcBrowserNavigate: ReturnType<typeof createPtcBrowserNavigateRuntime>;
+  ptcExecuteCode: ReturnType<typeof createPtcExecuteCodeRuntime>;
+  ptcFixedProbe: ReturnType<typeof createPtcFixedEpochProbeRuntime>;
+  sandboxAttempts: SandboxAttemptStore;
   subagentAdmission: SubagentAdmissionController;
   subagentRuns: SubagentRunLauncher;
   toolRegistry: ToolRegistryStore;
@@ -122,6 +150,25 @@ export function createDaemonContext(
     projectStore: createProjectStore({ projectRegistry }),
     memoryIndex: createMemoryIndexStore(),
     providerWebSocketSessions: createResponsesWebSocketSessionStore(),
+    ptcBrowserNavigate: createPtcBrowserNavigateRuntime({
+      ...(options.ptcBrowserNavigateRuntimeOptions ?? {}),
+      runtimeRootForWorkspace:
+        options.ptcBrowserNavigateRuntimeOptions?.runtimeRootForWorkspace ??
+        resolvePtcBrowserNavigateRuntimeRoot,
+    }),
+    ptcExecuteCode: createPtcExecuteCodeRuntime({
+      ...(options.ptcExecuteCodeRuntimeOptions ?? {}),
+      runtimeRootForWorkspace:
+        options.ptcExecuteCodeRuntimeOptions?.runtimeRootForWorkspace ??
+        resolvePtcExecuteCodeRuntimeRoot,
+    }),
+    ptcFixedProbe: createPtcFixedEpochProbeRuntime({
+      ...(options.ptcFixedProbeRuntimeOptions ?? {}),
+      runtimeRootForWorkspace:
+        options.ptcFixedProbeRuntimeOptions?.runtimeRootForWorkspace ??
+        resolvePtcFixedProbeRuntimeRoot,
+    }),
+    sandboxAttempts: createSandboxAttemptStore(),
     subagentAdmission: createSubagentAdmissionController(
       subagentConcurrencyPolicy === undefined
         ? {}
@@ -130,6 +177,22 @@ export function createDaemonContext(
     subagentRuns: createSubagentRunLauncher(),
     toolRegistry: createBuiltinToolRegistryStore(),
   };
+}
+
+function resolvePtcFixedProbeRuntimeRoot(workspaceRoot: string): string {
+  return joinWorkspaceGeulbatPath(workspaceRoot, 'ptc', 'fixed-probe-runtime');
+}
+
+function resolvePtcExecuteCodeRuntimeRoot(workspaceRoot: string): string {
+  return joinWorkspaceGeulbatPath(workspaceRoot, 'ptc', 'execute-code-runtime');
+}
+
+function resolvePtcBrowserNavigateRuntimeRoot(workspaceRoot: string): string {
+  return joinWorkspaceGeulbatPath(
+    workspaceRoot,
+    'ptc',
+    'browser-navigate-runtime',
+  );
 }
 
 export function validateDaemonRuntimeKnobsFromEnv(): void {
