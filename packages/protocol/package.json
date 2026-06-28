@@ -19,6 +19,10 @@
       "types": "./dist/ids.d.ts",
       "import": "./dist/ids.js"
     },
+    "./input-refs": {
+      "types": "./dist/input-refs.d.ts",
+      "import": "./dist/input-refs.js"
+    },
     "./shell-auth": {
       "types": "./dist/shell-auth.d.ts",
       "import": "./dist/shell-auth.js"
@@ -34,6 +38,10 @@
     "./react-bundle-inline-compile": {
       "types": "./dist/react-bundle-inline-compile.d.ts",
       "import": "./dist/react-bundle-inline-compile.js"
+    },
+    "./react-bundle-runtime-url-policy": {
+      "types": "./dist/react-bundle-runtime-url-policy.d.ts",
+      "import": "./dist/react-bundle-runtime-url-policy.js"
     },
     "./run-contract": {
       "types": "./dist/run-contract.d.ts",

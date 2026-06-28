@@ -54,12 +54,14 @@ void test('bootstrap session store clears codeVerifier after terminal failure', 
   assert.equal(snapshot?.lastErrorCode, 'provider_auth_exchange_failed');
 });
 
-void test('sanitizeProviderAuthMessage normalizes whitespace and caps message length', () => {
-  const message = ` ${'provider auth failed '.repeat(20)} `;
+void test('sanitizeProviderAuthMessage normalizes whitespace without truncating diagnostics', () => {
+  const longDetail = 'x'.repeat(300);
+  const message = ` provider   auth\nfailed ${longDetail} `;
 
   const sanitized = sanitizeProviderAuthMessage(message);
 
-  assert.equal(sanitized.length, 240);
+  assert.equal(sanitized, `provider auth failed ${longDetail}`);
+  assert.ok(sanitized.length > 240);
   assert.doesNotMatch(sanitized, /\s{2,}/u);
 });
 

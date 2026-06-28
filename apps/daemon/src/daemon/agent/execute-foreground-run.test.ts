@@ -427,7 +427,7 @@ void test('executeForegroundRun surfaces malformed assistant transcript persiste
           );
           throw new Error('partial write');
         }
-        await appendTranscriptEntry(workspace, thread, entry);
+        return await appendTranscriptEntry(workspace, thread, entry);
       },
       onPostRunPersistenceError: (phase, error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -509,7 +509,7 @@ void test('executeForegroundRun treats post-run assistant persistence as best-ef
         if (entry.role === 'assistant') {
           throw new Error('disk full');
         }
-        await appendTranscriptEntry(workspace, thread, entry);
+        return await appendTranscriptEntry(workspace, thread, entry);
       },
       replaceTranscriptEntries: async () => {
         throw new Error('disk full');
@@ -585,7 +585,7 @@ void test('executeForegroundRun includes post-run persistence diagnostics withou
         if (entry.role === 'assistant') {
           throw new Error('disk full');
         }
-        await appendTranscriptEntry(workspace, thread, entry);
+        return await appendTranscriptEntry(workspace, thread, entry);
       },
       replaceTranscriptEntries: async () => {
         throw new Error('disk full');
@@ -658,7 +658,7 @@ void test('executeForegroundRun rolls back an artifact when assistant transcript
         if (entry.role === 'assistant') {
           throw new Error('disk full');
         }
-        await appendTranscriptEntry(workspace, thread, entry);
+        return await appendTranscriptEntry(workspace, thread, entry);
       },
       replaceTranscriptEntries: async () => {
         throw new Error('disk full');

@@ -37,6 +37,7 @@ function createPersistedThreadDetail() {
     snapshotVersion: '2026-04-16T00:00:00.000Z',
     messages: [
       {
+        entryId: 'entry-persisted',
         role: 'assistant' as const,
         content: 'persisted',
         timestamp: '2026-04-16T00:00:00.000Z',
@@ -127,6 +128,27 @@ void test('adaptRunSessionMessage keeps transport failure structured before shel
       code: 'internal',
       message: 'socket broke',
     },
+  );
+});
+
+void test('adaptRunSessionMessage ignores applied interject acknowledgement events', () => {
+  assert.equal(
+    adaptRunSessionMessage({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 2,
+        ts: new Date().toISOString(),
+        type: 'interject_applied',
+        payload: {
+          runId: RUN_ID,
+          count: 1,
+          receivedSeqs: [1],
+        },
+      },
+    }),
+    null,
   );
 });
 

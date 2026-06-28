@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-import type { ProviderAuthStartResponse } from '@geulbat/protocol/provider-auth';
+import type { ProviderAuthStartResponse } from '../contract.js';
 
 import {
   createPendingProviderAuthTimestamps,

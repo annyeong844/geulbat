@@ -4,11 +4,13 @@ import type { CancelRequest } from '@geulbat/protocol/cancel';
 
 import { sendError, sendMessage } from './run-channel-socket.js';
 import type { RunChannelControlContext } from './run-channel-runtime-context.js';
-import { socketOwnsRun } from './run-channel-socket-runtime.js';
+import { getSocketState, socketOwnsRun } from './run-channel-socket-runtime.js';
 import {
   readRunApproveRequest,
   readRunCancelRequest,
+  readRunInterjectRequest,
 } from './run-channel-control-request.js';
+import { isMidRunSteerEnabled } from '../../../daemon/agent/mid-run-steer-flag.js';
 
 export function handleRunCancel(
   socket: WebSocket,
@@ -60,10 +62,16 @@ export function handleRunApprove(
     return;
   }
   const { callId, runId, threadId, approved, grantScope } = parsedRequest;
-  if (
-    !socketOwnsRun(socket, runId) &&
-    !controlContext.approvalGate.hasPendingApproval(callId, runId, threadId)
-  ) {
+  const approvalSessionId = getSocketState(socket).approvalSessionId;
+  const canResolveApproval =
+    socketOwnsRun(socket, runId) ||
+    controlContext.approvalGate.hasPendingApprovalForSession(
+      callId,
+      runId,
+      threadId,
+      approvalSessionId,
+    );
+  if (!canResolveApproval) {
     sendError(
       socket,
       requestId,
@@ -111,4 +119,63 @@ export function handleRunApprove(
       );
       return;
   }
+}
+
+export function handleRunInterject(
+  socket: WebSocket,
+  requestId: string,
+  request: unknown,
+  controlContext: RunChannelControlContext,
+): void {
+  if (!isMidRunSteerEnabled()) {
+    sendError(
+      socket,
+      requestId,
+      503,
+      'bad_request',
+      'mid-run steer is not enabled',
+    );
+    return;
+  }
+
+  const parsedRequest = readRunInterjectRequest(request);
+  if (!parsedRequest.ok) {
+    sendError(socket, requestId, 400, 'invalid_args', parsedRequest.message);
+    return;
+  }
+
+  const { runId, text } = parsedRequest;
+  const run = controlContext.activeRuns.getRunById(runId);
+  if (!run || run.aborted) {
+    sendError(socket, requestId, 404, 'not_found', `no active run: ${runId}`);
+    return;
+  }
+
+  if (!socketOwnsRun(socket, runId)) {
+    sendError(
+      socket,
+      requestId,
+      403,
+      'access_denied',
+      `socket does not own run: ${runId}`,
+    );
+    return;
+  }
+
+  const appendResult = controlContext.activeRuns.appendPendingInterject(runId, {
+    text,
+  });
+  if (!appendResult.ok) {
+    sendError(socket, requestId, 404, 'not_found', `no active run: ${runId}`);
+    return;
+  }
+
+  sendMessage(socket, {
+    type: 'run.control',
+    requestId,
+    action: 'run.interject',
+    ok: true,
+    receivedSeq: appendResult.receivedSeq,
+    bufferDepth: appendResult.bufferDepth,
+  });
 }

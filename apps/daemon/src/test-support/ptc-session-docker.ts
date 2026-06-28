@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { access, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT } from '../daemon/ptc/lab-package-cache-contract.js';
-import { createPtcSessionDockerManager } from '../daemon/ptc/session-docker.js';
+import { PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT } from '../daemon/ptc/lab/packages/lab-package-cache-contract.js';
+import { createPtcSessionDockerManager } from '../daemon/ptc/lab/session/session-docker.js';
 import {
   PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
@@ -14,7 +14,7 @@ import {
   type PtcSessionDockerIdentity,
   type PtcSessionDockerManager,
   type PtcSessionDockerPolicy,
-} from '../daemon/ptc/session-docker-contract.js';
+} from '../daemon/ptc/lab/session/session-docker-contract.js';
 
 export const PTC_TEST_SESSION_DOCKER_CONTAINER_ID = 'container-ptc-test-1';
 export const PTC_TEST_WORKSPACE_REALPATH = '/real/workspace/project-a';
@@ -181,10 +181,10 @@ export function readPtcSessionDockerBindMountHostPath(
   const mountSpec = invocation.args.find(
     (item) =>
       item.startsWith('type=bind,src=') &&
-      item.endsWith(`,dst=${containerPath},rw`),
+      item.endsWith(`,dst=${containerPath}`),
   );
   assert.ok(mountSpec);
-  const hostPath = /^type=bind,src=([^,]+),dst=.+,rw$/u.exec(mountSpec)?.[1];
+  const hostPath = /^type=bind,src=([^,]+),dst=.+$/u.exec(mountSpec)?.[1];
   assert.ok(hostPath);
   return hostPath;
 }

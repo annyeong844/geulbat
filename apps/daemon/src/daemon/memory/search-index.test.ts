@@ -30,6 +30,96 @@ function createRecord(args: {
   };
 }
 
+void test('searchMemoryIndex returns every match when maxResults is omitted', async () => {
+  const records = Array.from({ length: 11 }, (_, index) =>
+    createRecord({
+      chunkId: `body-hit-${String(index).padStart(2, '0')}`,
+      title: `Body Hit ${String(index).padStart(2, '0')}`,
+      searchText: 'memory token',
+    }),
+  );
+
+  const result = await searchMemoryIndex(
+    '/tmp/workspace',
+    { query: 'memory' },
+    {
+      memoryIndex: {
+        computeCurrentSourceSnapshot: async () => ({
+          sourceIndexVersionToken: 'fresh-token',
+        }),
+        loadMemoryIndex: async () => ({ manifest, records }),
+      },
+    },
+  );
+
+  assert.equal(result.total, 11);
+  assert.equal(result.truncated, false);
+  assert.equal(result.results.length, 11);
+});
+
+void test('searchMemoryIndex honors explicit maxResults without a hidden cap', async () => {
+  const records = Array.from({ length: 52 }, (_, index) =>
+    createRecord({
+      chunkId: `body-hit-${String(index).padStart(2, '0')}`,
+      title: `Body Hit ${String(index).padStart(2, '0')}`,
+      searchText: 'memory token',
+    }),
+  );
+
+  const result = await searchMemoryIndex(
+    '/tmp/workspace',
+    { query: 'memory', maxResults: 51 },
+    {
+      memoryIndex: {
+        computeCurrentSourceSnapshot: async () => ({
+          sourceIndexVersionToken: 'fresh-token',
+        }),
+        loadMemoryIndex: async () => ({ manifest, records }),
+      },
+    },
+  );
+
+  assert.equal(result.total, 52);
+  assert.equal(result.truncated, true);
+  assert.equal(result.results.length, 51);
+});
+
+void test('searchMemoryIndex rejects fractional maxResults instead of flooring it', async () => {
+  await assert.rejects(
+    searchMemoryIndex(
+      '/tmp/workspace',
+      { query: 'memory', maxResults: 1.5 },
+      {
+        memoryIndex: {
+          computeCurrentSourceSnapshot: async () => ({
+            sourceIndexVersionToken: 'fresh-token',
+          }),
+          loadMemoryIndex: async () => ({ manifest, records: [] }),
+        },
+      },
+    ),
+    /maxResults must be a positive integer\./,
+  );
+});
+
+void test('searchMemoryIndex rejects blank pathPrefix instead of treating it as all paths', async () => {
+  await assert.rejects(
+    searchMemoryIndex(
+      '/tmp/workspace',
+      { query: 'memory', pathPrefix: '   ' },
+      {
+        memoryIndex: {
+          computeCurrentSourceSnapshot: async () => ({
+            sourceIndexVersionToken: 'fresh-token',
+          }),
+          loadMemoryIndex: async () => ({ manifest, records: [] }),
+        },
+      },
+    ),
+    /pathPrefix must not be empty\./,
+  );
+});
+
 void test('searchMemoryIndex lowercases each searched field at most once per record', async () => {
   const records = [
     createRecord({

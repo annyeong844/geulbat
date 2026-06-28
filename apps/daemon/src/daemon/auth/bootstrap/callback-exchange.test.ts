@@ -122,6 +122,34 @@ void test('exchangeAuthorizationCode rejects invalid response bodies from the OA
   );
 });
 
+void test('exchangeAuthorizationCode preserves long provider error bodies', async () => {
+  const detail = 'provider-exchange-detail '.repeat(20);
+
+  await assert.rejects(
+    () =>
+      exchangeAuthorizationCode('code', 'verifier', {
+        fetchImpl: async () =>
+          ({
+            ok: false,
+            status: 502,
+            text: async () => detail,
+          }) as Response,
+      }),
+    (error: unknown) => {
+      assert.equal(
+        extractProviderAuthErrorCode(error),
+        'provider_auth_exchange_failed',
+      );
+      assert.ok(error instanceof Error);
+      assert.equal(
+        error.message,
+        `Provider token exchange failed (502): ${detail}`,
+      );
+      return true;
+    },
+  );
+});
+
 void test('exchangeAuthorizationCode retries once after a transport failure before succeeding', async () => {
   let attempts = 0;
 

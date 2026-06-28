@@ -1,4 +1,3 @@
-import { Buffer } from 'node:buffer';
 import http from 'node:http';
 import https from 'node:https';
 import {
@@ -13,11 +12,6 @@ export const REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY =
   'allowlisted_metadata_probe';
 export const REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION = 1;
 
-const MAX_REDIRECTS = 5;
-const REQUEST_TIMEOUT_MS = 15_000;
-const TOTAL_TIMEOUT_MS = 30_000;
-const MAX_GET_BYTES = 1024;
-
 const ALLOWED_HOSTS = new Set(['esm.sh', 'cdn.jsdelivr.net', 'unpkg.com']);
 
 export type HttpMetadataProbeReasonCode =
@@ -29,8 +23,7 @@ export type HttpMetadataProbeReasonCode =
   | 'dns_blocked'
   | 'http_status'
   | 'timeout'
-  | 'network_error'
-  | 'response_too_large';
+  | 'network_error';
 
 // Production transports should throw this error so policy failures keep their
 // classified reasonCode. The generic Error fallback is only for injected tests
@@ -109,8 +102,7 @@ export type HttpMetadataProbeRequestTransport = (
     method: HttpMetadataProbeMethod;
     lookup?: HttpLookup;
     signal?: AbortSignal;
-    timeoutMs: number;
-    maxBytes: number;
+    timeoutMs?: number;
   },
 ) => Promise<HttpMetadataProbeTransportResponse>;
 
@@ -127,9 +119,11 @@ export async function probeHttpMetadata(args: {
   return probeWithRedirects({
     requestedUrl: args.url,
     currentUrl: args.url,
-    redirectsRemaining: MAX_REDIRECTS,
     redirectChain: [],
-    totalDeadlineMs: startedAtMs + (args.totalTimeoutMs ?? TOTAL_TIMEOUT_MS),
+    visitedRedirectUrls: new Set(),
+    ...(args.totalTimeoutMs !== undefined
+      ? { totalDeadlineMs: startedAtMs + args.totalTimeoutMs }
+      : {}),
     startedAtMs,
     now,
     transport: args.transport ?? requestHttpMetadata,
@@ -163,7 +157,7 @@ async function probeWithRedirects(
   }
 
   const headTimeoutMs = remainingTimeout(args);
-  if (headTimeoutMs <= 0) {
+  if (headTimeoutMs !== undefined && headTimeoutMs <= 0) {
     return failure(args, {
       finalUrl: parsed.url.href,
       reasonCode: 'timeout',
@@ -186,7 +180,7 @@ async function probeWithRedirects(
 
   if (headResponse.status === 405) {
     const getTimeoutMs = remainingTimeout(args);
-    if (getTimeoutMs <= 0) {
+    if (getTimeoutMs !== undefined && getTimeoutMs <= 0) {
       return failure(args, {
         finalUrl: parsed.url.href,
         reasonCode: 'timeout',
@@ -213,7 +207,7 @@ async function requestProbe(
   args: ProbeContext,
   url: URL,
   method: HttpMetadataProbeMethod,
-  remainingTimeoutMs: number,
+  remainingTimeoutMs: number | undefined,
 ): Promise<
   | { ok: true; response: HttpMetadataProbeTransportResponse }
   | { ok: false; result: HttpMetadataProbeResult }
@@ -223,8 +217,9 @@ async function requestProbe(
       method,
       ...(args.lookup ? { lookup: args.lookup } : {}),
       ...(args.signal ? { signal: args.signal } : {}),
-      timeoutMs: Math.min(REQUEST_TIMEOUT_MS, remainingTimeoutMs),
-      maxBytes: MAX_GET_BYTES,
+      ...(remainingTimeoutMs !== undefined
+        ? { timeoutMs: remainingTimeoutMs }
+        : {}),
     });
     return { ok: true, response };
   } catch (error: unknown) {
@@ -252,14 +247,6 @@ function followRedirect(
   status: number,
   location: string,
 ): Promise<HttpMetadataProbeResult> | HttpMetadataProbeResult {
-  if (args.redirectsRemaining <= 0) {
-    return failure(args, {
-      finalUrl: fromUrl.href,
-      reasonCode: 'unsafe_redirect',
-      message: 'dependency metadata probe redirect count exceeded.',
-    });
-  }
-
   let toUrl: URL;
   try {
     toUrl = new URL(location, fromUrl);
@@ -291,10 +278,20 @@ function followRedirect(
     });
   }
 
+  const visitedRedirectUrls = new Set(args.visitedRedirectUrls);
+  visitedRedirectUrls.add(fromUrl.href);
+  if (visitedRedirectUrls.has(toUrl.href)) {
+    return failure(args, {
+      finalUrl: toUrl.href,
+      reasonCode: 'unsafe_redirect',
+      message: 'dependency metadata probe redirect cycle detected.',
+    });
+  }
+
   return probeWithRedirects({
     ...args,
     currentUrl: toUrl.href,
-    redirectsRemaining: args.redirectsRemaining - 1,
+    visitedRedirectUrls,
     redirectChain: [
       ...args.redirectChain,
       { fromUrl: fromUrl.href, toUrl: toUrl.href, status },
@@ -363,8 +360,10 @@ function failure(
   };
 }
 
-function remainingTimeout(args: ProbeContext): number {
-  return args.totalDeadlineMs - args.now();
+function remainingTimeout(args: ProbeContext): number | undefined {
+  return args.totalDeadlineMs === undefined
+    ? undefined
+    : args.totalDeadlineMs - args.now();
 }
 
 function isAllowedProbeOrigin(url: URL): boolean {
@@ -409,8 +408,7 @@ export function requestHttpMetadata(
     method: HttpMetadataProbeMethod;
     lookup?: HttpLookup;
     signal?: AbortSignal;
-    timeoutMs: number;
-    maxBytes: number;
+    timeoutMs?: number;
   },
 ): Promise<HttpMetadataProbeTransportResponse> {
   if (options.signal?.aborted) {
@@ -436,7 +434,9 @@ export function requestHttpMetadata(
       url,
       {
         method: options.method,
-        timeout: options.timeoutMs,
+        ...(options.timeoutMs !== undefined
+          ? { timeout: options.timeoutMs }
+          : {}),
         headers: {
           accept: '*/*',
           'accept-encoding': 'identity',
@@ -462,35 +462,18 @@ export function requestHttpMetadata(
         },
       },
       (response) => {
-        let bytesRead = 0;
-        response.on('data', (chunk: Buffer) => {
-          if (options.method === 'HEAD') return;
-
-          bytesRead += chunk.byteLength;
-          if (bytesRead > options.maxBytes) {
-            request.destroy(
-              new HttpMetadataProbeRuntimeError(
-                'response_too_large',
-                'dependency metadata probe response byte budget exceeded',
-              ),
-            );
-          }
-        });
-        response.on('end', () => {
-          finish(
-            () =>
-              resolve({
-                status: response.statusCode ?? 0,
-                location: readHeader(response.headers.location),
-                contentType: readHeader(response.headers['content-type']),
-                contentLength: readContentLength(
-                  response.headers['content-length'],
-                ),
-                bytesRead,
-              }),
-            cleanup,
-          );
-        });
+        finish(() => {
+          resolve({
+            status: response.statusCode ?? 0,
+            location: readHeader(response.headers.location),
+            contentType: readHeader(response.headers['content-type']),
+            contentLength: readContentLength(
+              response.headers['content-length'],
+            ),
+            bytesRead: 0,
+          });
+          response.destroy();
+        }, cleanup);
         response.on('error', (error) => finish(() => reject(error), cleanup));
       },
     );
@@ -536,9 +519,9 @@ function readContentLength(
 interface ProbeContext {
   requestedUrl: string;
   currentUrl: string;
-  redirectsRemaining: number;
   redirectChain: HttpMetadataProbeRedirect[];
-  totalDeadlineMs: number;
+  visitedRedirectUrls: ReadonlySet<string>;
+  totalDeadlineMs?: number;
   startedAtMs: number;
   now: () => number;
   transport: HttpMetadataProbeRequestTransport;

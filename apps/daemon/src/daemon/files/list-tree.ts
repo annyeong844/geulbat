@@ -1,4 +1,4 @@
-import type { FileTreeNode } from '@geulbat/protocol/files';
+import type { FileTreeNode } from './contract.js';
 import { FileAccessError } from './file-domain-error.js';
 import {
   enumerateCanonicalChildren,
@@ -7,9 +7,6 @@ import {
 } from './file-platform.js';
 
 type TreeNode = FileTreeNode;
-
-const MAX_TREE_DEPTH = 15;
-const MAX_TREE_NODES = 10_000;
 
 interface ListTreeOptions {
   maxDepth?: number;
@@ -25,8 +22,6 @@ export async function listTree(
   options: ListTreeOptions = {},
 ): Promise<TreeNode[]> {
   const rootTarget = await resolveSourceDirectoryTarget(workspaceRoot, '.');
-  const maxDepth = options.maxDepth ?? MAX_TREE_DEPTH;
-  const maxNodes = options.maxNodes ?? MAX_TREE_NODES;
   if (!rootTarget.exists) {
     return [];
   }
@@ -35,8 +30,8 @@ export async function listTree(
     {
       depth: 0,
       count: { value: 0 },
-      maxDepth,
-      maxNodes,
+      maxDepth: options.maxDepth,
+      maxNodes: options.maxNodes,
     },
     new Set([rootTarget.canonicalAbsolutePath]),
   );
@@ -47,12 +42,12 @@ async function scanDir(
   limits: {
     depth: number;
     count: { value: number };
-    maxDepth: number;
-    maxNodes: number;
+    maxDepth: number | undefined;
+    maxNodes: number | undefined;
   },
   visitedRealDirs: ReadonlySet<string>,
 ): Promise<TreeNode[]> {
-  if (limits.depth > limits.maxDepth) {
+  if (limits.maxDepth !== undefined && limits.depth > limits.maxDepth) {
     throw FileAccessError.treeTooLarge(
       target.relativePath || '.',
       `max depth ${limits.maxDepth} exceeded`,
@@ -66,7 +61,7 @@ async function scanDir(
     if (entry.name.startsWith('.')) continue;
 
     limits.count.value += 1;
-    if (limits.count.value > limits.maxNodes) {
+    if (limits.maxNodes !== undefined && limits.count.value > limits.maxNodes) {
       throw FileAccessError.treeTooLarge(
         entry.relativePath,
         `max nodes ${limits.maxNodes} exceeded`,

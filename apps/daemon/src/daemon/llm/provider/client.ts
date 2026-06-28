@@ -197,13 +197,16 @@ export async function* callModelWithDependencies(
 
 // ── Internal: single attempt ──
 
+interface CallResponsesOnceOptions {
+  allowRefresh?: boolean;
+  onAssistantDeltaCommitted?: () => void;
+}
+
 async function callResponsesOnce(
   input: CallModelInput,
   channel: AsyncQueue<LLMChunk>,
   deps: CallModelDependencies,
-  options?: {
-    allowRefresh?: boolean;
-  },
+  options?: CallResponsesOnceOptions,
 ): Promise<{
   functionCalls: FunctionCall[];
   assistantText: string;
@@ -240,6 +243,9 @@ async function callResponsesOnce(
         text: delta.text,
         phase: delta.phase,
       });
+      if (delta.text.length > 0) {
+        options?.onAssistantDeltaCommitted?.();
+      }
     },
     ...(input.signal !== undefined ? { signal: input.signal } : {}),
   });
@@ -276,19 +282,33 @@ async function callResponsesWithRetryPolicy(
   let authRefreshAttempts = 0;
 
   for (;;) {
+    let assistantDeltaCommitted = false;
+    const attemptOptions: CallResponsesOnceOptions = {
+      onAssistantDeltaCommitted: () => {
+        assistantDeltaCommitted = true;
+      },
+    };
+    if (authRefreshAttempts > 0) {
+      attemptOptions.allowRefresh = false;
+    }
+
     try {
-      return await callResponsesOnce(
-        input,
-        channel,
-        deps,
-        authRefreshAttempts > 0 ? { allowRefresh: false } : undefined,
-      );
+      return await callResponsesOnce(input, channel, deps, attemptOptions);
     } catch (error: unknown) {
       const decision = decideProviderRetryPolicy({
         error,
         authRefreshAttempts,
       });
       if (decision.action === 'fail') {
+        throw error;
+      }
+      if (assistantDeltaCommitted) {
+        providerLogger.info(
+          'provider auth failed after streamed output; not retrying',
+          {
+            code: decision.code,
+          },
+        );
         throw error;
       }
 

@@ -6,11 +6,16 @@ import { tmpdir } from 'node:os';
 
 import type { FunctionCall } from '../llm/index.js';
 import { commitThreadArtifactVersion } from '../sessions/artifact-store.js';
-import { appendTranscriptEntry } from '../sessions/transcript-log.js';
+import {
+  appendTranscriptEntry,
+  readTranscriptEntries,
+} from '../sessions/transcript-log.js';
 import {
   appendAssistantTextToHistory,
   appendFunctionCallsToHistory,
+  appendInterjectToHistory,
   loadInitialHistory,
+  persistSingleInterjectToTranscript,
 } from './loop-history.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import { assertProjectId as assertValidProjectId } from '@geulbat/protocol/ids';
@@ -184,4 +189,48 @@ void test('appendFunctionCallsToHistory appends canonical function_call entries'
       arguments: '{"path":"draft.md"}',
     },
   ]);
+});
+
+void test('appendInterjectToHistory appends a drained steer as a user turn', () => {
+  const history: Array<{
+    kind: 'user';
+    text: string;
+  }> = [];
+
+  appendInterjectToHistory(history, {
+    receivedSeq: 1,
+    text: 'please account for this next',
+  });
+
+  assert.deepEqual(history, [
+    { kind: 'user', text: 'please account for this next' },
+  ]);
+});
+
+void test('persistSingleInterjectToTranscript writes one interject-tagged user entry', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-interject-history-'),
+  );
+  const threadId = testThreadId(44);
+
+  await persistSingleInterjectToTranscript(workspaceRoot, threadId, {
+    receivedSeq: 1,
+    text: 'please revise the next step',
+  });
+
+  const entries = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.equal(entries.length, 1);
+  assert.equal(typeof entries[0]?.entryId, 'string');
+  assert.notEqual(entries[0]?.entryId, '');
+  assert.deepEqual(entries[0], {
+    entryId: entries[0]?.entryId,
+    role: 'user',
+    content: 'please revise the next step',
+    timestamp: entries[0]?.timestamp,
+    metadata: {
+      source: 'interject',
+    },
+  });
+  assert.equal(typeof entries[0]?.timestamp, 'string');
+  assert.notEqual(entries[0]?.timestamp, '');
 });

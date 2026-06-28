@@ -231,6 +231,42 @@ void test('useProviderAuthState keeps the same status reference across identical
   hook.unmount();
 });
 
+void test('useProviderAuthState rejects invalid pending poll intervals without scheduling a poll', async () => {
+  restoreDocument = installShellAuthDocument();
+  let intervalScheduled = false;
+  restoreWindow = installProviderAuthWindow({
+    setInterval() {
+      intervalScheduled = true;
+      return 1;
+    },
+    clearInterval() {
+      return;
+    },
+  });
+  const fetchMock = installFetchSequence(() =>
+    jsonResponse({
+      state: 'pending',
+      ready: false,
+      authSessionId: 'auth-1',
+      expiresAt: 2_000,
+      pollAfterMs: 0.5,
+    }),
+  );
+  restoreFetch = fetchMock.restore;
+
+  const hook = await renderHook(useProviderAuthState, undefined);
+  await hook.flush();
+
+  assert.equal(fetchMock.calls.length, 1);
+  assert.equal(intervalScheduled, false);
+  assert.equal(hook.result.current.providerAuthStatus, null);
+  assert.match(
+    hook.result.current.providerAuthError ?? '',
+    /Unable to load provider auth status\./,
+  );
+  hook.unmount();
+});
+
 void test('useProviderAuthState observes ready status near expiry and surfaces refresh notices', async () => {
   restoreDocument = installShellAuthDocument();
   const timeoutCallbacks: Array<{

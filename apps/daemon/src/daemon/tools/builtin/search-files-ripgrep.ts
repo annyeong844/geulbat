@@ -11,8 +11,6 @@ import {
   parseRipgrepMatchLine,
 } from './search-files-ripgrep-result.js';
 
-const MAX_BUFFER_BYTES = 20_000_000; // 20MB
-
 let _rgPath: string | undefined;
 
 export async function resolveRipgrepPath(): Promise<string> {
@@ -57,7 +55,7 @@ export async function runRipgrep(
   rootDir: string,
   glob: string | null,
   workspaceRoot: string,
-  maxResults: number,
+  maxResults: number | undefined,
   signal?: AbortSignal,
 ): Promise<SearchFilesResult> {
   return new Promise((resolve, reject) => {
@@ -78,7 +76,6 @@ export async function runRipgrep(
     ];
 
     const results: SearchMatch[] = [];
-    let totalBytes = 0;
     let totalMatches = 0;
     let buffer = '';
     let stderr = '';
@@ -102,12 +99,6 @@ export async function runRipgrep(
 
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
-      totalBytes += Buffer.byteLength(chunk);
-      if (totalBytes > MAX_BUFFER_BYTES) {
-        killChild();
-        return;
-      }
-
       buffer += chunk;
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
@@ -122,11 +113,8 @@ export async function runRipgrep(
         }
 
         totalMatches += 1;
-        if (results.length < maxResults) {
+        if (maxResults === undefined || results.length < maxResults) {
           results.push(match);
-        }
-        if (results.length >= maxResults) {
-          killChild();
         }
       }
     });
@@ -142,8 +130,6 @@ export async function runRipgrep(
         exitCode,
         killed,
         stderr,
-        totalBytes,
-        maxBufferBytes: MAX_BUFFER_BYTES,
       });
       if (failure) {
         reject(failure);

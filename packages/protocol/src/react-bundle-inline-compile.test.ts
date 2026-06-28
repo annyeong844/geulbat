@@ -2,10 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  REACT_BUNDLE_INLINE_MAX_FILE_COUNT,
-  REACT_BUNDLE_INLINE_MAX_TOTAL_SOURCE_BYTES,
   decodeReactBundleInlineCompileRequest,
   decodeReactBundleInlineSourceInput,
+  isReactBundleInlineCompileInputRefResponse,
   isReactBundleInlineCompileResponse,
   isReactBundleRuntimeManifest,
 } from './react-bundle-inline-compile.js';
@@ -35,6 +34,46 @@ void test('decodeReactBundleInlineCompileRequest normalizes valid inline source 
       },
     },
   });
+});
+
+void test('decodeReactBundleInlineCompileRequest accepts streamed inline source refs', () => {
+  assert.deepEqual(
+    decodeReactBundleInlineCompileRequest({
+      renderer: 'react_bundle',
+      inputRef:
+        'react-bundle-inline-compile-input:00000000-0000-4000-8000-000000000001',
+    }),
+    {
+      ok: true,
+      value: {
+        renderer: 'react_bundle',
+        inputRef:
+          'react-bundle-inline-compile-input:00000000-0000-4000-8000-000000000001',
+      },
+    },
+  );
+});
+
+void test('decodeReactBundleInlineCompileRequest rejects ambiguous inline source transports', () => {
+  assert.deepEqual(
+    decodeReactBundleInlineCompileRequest({
+      renderer: 'react_bundle',
+      input: {
+        files: {
+          'src/App.jsx': 'export default function App() { return null; }',
+        },
+        entry: 'src/App.jsx',
+      },
+      inputRef:
+        'react-bundle-inline-compile-input:00000000-0000-4000-8000-000000000001',
+    }),
+    {
+      ok: false,
+      code: 'sanitize_rejected',
+      detail:
+        'react bundle inline compile request must contain exactly one of input or inputRef',
+    },
+  );
 });
 
 void test('decodeReactBundleInlineSourceInput rejects forbidden path forms', () => {
@@ -102,61 +141,21 @@ void test('decodeReactBundleInlineSourceInput rejects duplicate normalized paths
   );
 });
 
-void test('decodeReactBundleInlineSourceInput enforces file-count and byte quotas', () => {
-  const tooManyFiles = Object.fromEntries(
-    Array.from(
-      { length: REACT_BUNDLE_INLINE_MAX_FILE_COUNT + 1 },
-      (_, index) => [`src/file-${index + 1}.jsx`, 'export default null;'],
-    ),
+void test('decodeReactBundleInlineSourceInput accepts larger inline source graphs after path validation', () => {
+  const files = Object.fromEntries(
+    Array.from({ length: 40 }, (_, index) => [
+      `src/file-${index + 1}.jsx`,
+      'export default null;',
+    ]),
   );
+  files['src/App.jsx'] = '가'.repeat(90_000);
 
-  assert.deepEqual(
-    decodeReactBundleInlineSourceInput({
-      files: tooManyFiles,
-      entry: 'src/file-1.jsx',
-    }),
-    {
-      ok: false,
-      code: 'sanitize_rejected',
-      detail: `react bundle inline source exceeds max file count ${REACT_BUNDLE_INLINE_MAX_FILE_COUNT}`,
-    },
-  );
+  const result = decodeReactBundleInlineSourceInput({
+    files,
+    entry: 'src/App.jsx',
+  });
 
-  assert.deepEqual(
-    decodeReactBundleInlineSourceInput({
-      files: {
-        'src/App.jsx': 'x'.repeat(
-          REACT_BUNDLE_INLINE_MAX_TOTAL_SOURCE_BYTES + 1,
-        ),
-      },
-      entry: 'src/App.jsx',
-    }),
-    {
-      ok: false,
-      code: 'sanitize_rejected',
-      detail: `react bundle inline source exceeds max total source bytes ${REACT_BUNDLE_INLINE_MAX_TOTAL_SOURCE_BYTES}`,
-    },
-  );
-});
-
-void test('decodeReactBundleInlineSourceInput measures UTF-8 byte quotas without ambient TextEncoder globals', () => {
-  const multibyte = '가'.repeat(
-    Math.floor(REACT_BUNDLE_INLINE_MAX_TOTAL_SOURCE_BYTES / 3),
-  );
-
-  assert.deepEqual(
-    decodeReactBundleInlineSourceInput({
-      files: {
-        'src/App.jsx': `${multibyte}AB`,
-      },
-      entry: 'src/App.jsx',
-    }),
-    {
-      ok: false,
-      code: 'sanitize_rejected',
-      detail: `react bundle inline source exceeds max total source bytes ${REACT_BUNDLE_INLINE_MAX_TOTAL_SOURCE_BYTES}`,
-    },
-  );
+  assert.equal(result.ok, true);
 });
 
 void test('isReactBundleInlineCompileResponse accepts normalized success and failure responses', () => {
@@ -179,6 +178,28 @@ void test('isReactBundleInlineCompileResponse accepts normalized success and fai
         'react bundle inline source compile service is not implemented yet',
     }),
     true,
+  );
+});
+
+void test('isReactBundleInlineCompileInputRefResponse accepts streamed upload refs', () => {
+  assert.equal(
+    isReactBundleInlineCompileInputRefResponse({
+      ok: true,
+      inputRef:
+        'react-bundle-inline-compile-input:00000000-0000-4000-8000-000000000001',
+      byteLength: 42,
+    }),
+    true,
+  );
+
+  assert.equal(
+    isReactBundleInlineCompileInputRefResponse({
+      ok: true,
+      inputRef:
+        'react-bundle-inline-compile-input:00000000-0000-4000-8000-000000000001',
+      byteLength: '42',
+    }),
+    false,
   );
 });
 

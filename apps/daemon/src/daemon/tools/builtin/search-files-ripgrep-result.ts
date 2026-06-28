@@ -6,8 +6,6 @@ import {
   toWorkspaceRelativeSearchPath,
 } from './search-files-ripgrep-paths.js';
 
-const MAX_MATCH_LINE_TEXT_PREVIEW_LENGTH = 300;
-
 export function parseRipgrepMatchLine(
   line: string,
   args: {
@@ -48,9 +46,7 @@ export function parseRipgrepMatchLine(
       typeof event.data.line_number === 'number' ? event.data.line_number : 0,
     text:
       typeof linesInfo?.text === 'string'
-        ? linesInfo.text
-            .replace(/\n$/, '')
-            .slice(0, MAX_MATCH_LINE_TEXT_PREVIEW_LENGTH)
+        ? linesInfo.text.replace(/\n$/, '')
         : '',
   };
 }
@@ -59,26 +55,13 @@ export function buildRipgrepCloseError(args: {
   exitCode: number | null;
   killed: boolean;
   stderr: string;
-  totalBytes: number;
-  maxBufferBytes: number;
 }): Error | null {
-  const { exitCode, killed, stderr, totalBytes, maxBufferBytes } = args;
+  const { exitCode, killed, stderr } = args;
   if (exitCode !== null && exitCode >= 2 && !killed) {
     return Object.assign(
       new Error(`ripgrep error (exit ${exitCode}): ${stderr.slice(0, 200)}`),
       {
         code: 'execution_failed',
-      },
-    );
-  }
-
-  if (totalBytes > maxBufferBytes) {
-    return Object.assign(
-      new Error(
-        `Search results exceeded ${maxBufferBytes / 1_000_000}MB buffer limit.`,
-      ),
-      {
-        code: 'buffer_limit_exceeded',
       },
     );
   }
@@ -90,13 +73,13 @@ export function buildRipgrepResult(
   query: string,
   totalMatches: number,
   results: SearchMatch[],
-  maxResults: number,
+  maxResults: number | undefined,
 ): SearchFilesResult {
   return {
     backend: 'ripgrep',
     query,
     total: totalMatches,
-    truncated: results.length >= maxResults,
+    truncated: maxResults !== undefined && totalMatches > results.length,
     results,
   };
 }

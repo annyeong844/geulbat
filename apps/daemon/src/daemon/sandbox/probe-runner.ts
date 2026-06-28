@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import type { ProcessCommandResult } from '@geulbat/shared-utils/process-command';
 import type {
   SandboxAttemptSnapshot,
   SandboxAttemptStore,
@@ -16,11 +17,7 @@ import { buildSandboxEnvironment } from './environment.js';
 import { importSandboxOutputEvidence } from './output-evidence-store.js';
 import { collectSandboxOutputRef } from './output-validation.js';
 
-type ProbeProcessResult =
-  | { kind: 'exit'; exitCode: number; stdout: string; stderr: string }
-  | { kind: 'timeout'; stdout: string; stderr: string }
-  | { kind: 'cancelled'; stdout: string; stderr: string }
-  | { kind: 'crash'; stdout: string; stderr: string };
+type ProbeProcessResult = ProcessCommandResult;
 
 interface ProbeProcessRunnerArgs {
   cwd: string;
@@ -38,9 +35,6 @@ type ProbeProcessRunner = (
 type MarkSandboxAttemptTerminalArgs = Parameters<
   SandboxAttemptStore['markTerminal']
 >[1];
-
-const PROBE_OUTPUT_MAX_FILES = 16;
-const PROBE_OUTPUT_MAX_BYTES = 64 * 1024;
 
 export async function runDeterministicSandboxProbe(args: {
   workspaceRoot: string;
@@ -85,13 +79,7 @@ export async function runDeterministicSandboxProbe(args: {
         const status = classifyProbeResult(processResult);
         let outputRef: SandboxOutputRef | null = null;
         if (status === 'succeeded') {
-          const collectedOutput = await collectSandboxOutputRef(
-            root.outputDir,
-            {
-              maxFiles: PROBE_OUTPUT_MAX_FILES,
-              maxBytes: PROBE_OUTPUT_MAX_BYTES,
-            },
-          );
+          const collectedOutput = await collectSandboxOutputRef(root.outputDir);
           outputRef = await importSandboxOutputEvidence({
             workspaceRoot: args.workspaceRoot,
             attempt,
@@ -194,6 +182,8 @@ function classifyProbeResult(
       return 'timed_out';
     case 'cancelled':
       return 'cancelled';
+    case 'output_limit_exceeded':
+      return 'crashed';
     case 'crash':
       return 'crashed';
   }

@@ -3,12 +3,20 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type { RunRequest } from '@geulbat/protocol/run-contract';
+import { Readable } from 'node:stream';
+import type {
+  RunRequest,
+  RunStartRequest,
+} from '@geulbat/protocol/run-contract';
 import type { ThreadId } from '@geulbat/protocol/ids';
 
 import { bootstrapDaemonContext } from '../../../bootstrap-daemon-context.js';
 import { createDaemonContext } from '../../../daemon/context.js';
 import { startManagedRun } from '../../../daemon/agent/runtime/managed-run.js';
+import {
+  readRunPromptInputRef,
+  writeRunPromptInputRefFromStream,
+} from '../../../daemon/sessions/prompt-input-ref-store.js';
 import {
   cleanupSocketState,
   getSocketState,
@@ -188,6 +196,74 @@ void test('executeRunRequest reports conflict_active_run when the thread already
       code: 'conflict_active_run',
       message: `thread ${threadId} already has an active run`,
     });
+  } finally {
+    if (existingRun.ok) {
+      existingRun.finish();
+    }
+    cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('executeRunRequest deletes consumed prompt refs after active-run conflicts', async () => {
+  const daemonContext = createDaemonContext();
+  await bootstrapDaemonContext({
+    projectStore: daemonContext.projectStore,
+    repoRoot: process.cwd(),
+  });
+  const workspaceRoot =
+    daemonContext.projectRegistry.resolveProjectRoot(testProjectId());
+  assert.ok(workspaceRoot);
+  const written = await writeRunPromptInputRefFromStream({
+    workspaceRoot,
+    input: Readable.from(['stored prompt']),
+  });
+  const socket = createTestSocket();
+  const threadId = testThreadId(33);
+  const existingRun = startManagedRun(
+    {
+      runId: 'existing-run-start-ref-conflict',
+      runContext: {
+        threadId,
+        projectId: testProjectId(),
+        workspaceRoot,
+      },
+    },
+    { activeRuns: daemonContext.activeRuns },
+  );
+  assert.equal(existingRun.ok, true);
+
+  try {
+    await executeRunRequest({
+      socket,
+      requestId: 'run-start-ref-conflict',
+      request: {
+        promptRef: written.promptRef,
+        displayPrompt: 'visible prompt',
+        projectId: testProjectId(),
+        threadId,
+      } satisfies RunStartRequest,
+      allowedToolNames: undefined,
+      runtimeContext: daemonContext,
+    });
+
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.error',
+      requestId: 'run-start-ref-conflict',
+      status: 409,
+      code: 'conflict_active_run',
+      message: `thread ${threadId} already has an active run`,
+    });
+    assert.deepEqual(
+      await readRunPromptInputRef({
+        workspaceRoot,
+        promptRef: written.promptRef,
+      }),
+      {
+        ok: false,
+        code: 'not_found',
+        message: 'promptRef was not found.',
+      },
+    );
   } finally {
     if (existingRun.ok) {
       existingRun.finish();

@@ -12,9 +12,6 @@ import { createVersionToken } from '../files/version-token.js';
 import { decodeTextBuffer, isBinaryBuffer } from '../files/text-content.js';
 import { getErrorCode } from '../utils/error.js';
 
-const MAX_FILE_SIZE_BYTES = 1024 * 1024;
-const MAX_FILE_LINES = 20_000;
-
 const EXCLUDED_DIRECTORY_NAMES = new Set([
   'dist',
   'build',
@@ -168,10 +165,6 @@ async function loadSourceFile(
     throw error;
   }
 
-  if (fileStat.size > MAX_FILE_SIZE_BYTES) {
-    return null;
-  }
-
   const buf = await readFile(resolvedTarget.absolutePath);
   if (isBinaryBuffer(buf)) {
     return null;
@@ -179,9 +172,6 @@ async function loadSourceFile(
 
   const content = decodeTextBuffer(buf);
   const lines = splitLinesForMemory(content);
-  if (lines.length > MAX_FILE_LINES) {
-    return null;
-  }
 
   return {
     path: relativePath,

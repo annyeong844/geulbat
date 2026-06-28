@@ -3,9 +3,6 @@ import { resolveSourceDirectoryTarget } from '../files/file-platform.js';
 import type { MemoryIndexStore } from './build-index.js';
 import type { MemoryChunkRecord } from './types.js';
 
-const DEFAULT_MAX_RESULTS = 10;
-const MAX_MAX_RESULTS = 50;
-
 interface SearchMemoryIndexResult {
   ok: true;
   generationId: string;
@@ -96,10 +93,11 @@ export async function searchMemoryIndex(
     sourceIndexVersionToken: manifest.sourceIndexVersionToken,
     stale,
     total: matches.length,
-    truncated: matches.length > maxResults,
-    results: matches
-      .slice(0, maxResults)
-      .map(({ record }) => toSearchResult(record)),
+    truncated: maxResults !== undefined && matches.length > maxResults,
+    results: (maxResults === undefined
+      ? matches
+      : matches.slice(0, maxResults)
+    ).map(({ record }) => toSearchResult(record)),
   };
 }
 
@@ -107,8 +105,13 @@ async function normalizeOptionalPathPrefix(
   workspaceRoot: string,
   value: string | undefined,
 ): Promise<string | undefined> {
-  if (value == null || String(value).trim() === '') {
+  if (value == null) {
     return undefined;
+  }
+  if (String(value).trim() === '') {
+    throw Object.assign(new Error('pathPrefix must not be empty.'), {
+      code: 'invalid_args',
+    });
   }
   const normalizedTarget = await resolveSourceDirectoryTarget(
     workspaceRoot,
@@ -119,17 +122,17 @@ async function normalizeOptionalPathPrefix(
     : normalizedTarget.relativePath;
 }
 
-function normalizeMaxResults(value: number | undefined): number {
+function normalizeMaxResults(value: number | undefined): number | undefined {
   if (value == null) {
-    return DEFAULT_MAX_RESULTS;
+    return undefined;
   }
-  const numeric = Math.floor(Number(value));
-  if (!Number.isFinite(numeric) || numeric < 1) {
+  const numeric = Number(value);
+  if (!Number.isSafeInteger(numeric) || numeric < 1) {
     throw Object.assign(new Error('maxResults must be a positive integer.'), {
       code: 'invalid_args',
     });
   }
-  return Math.min(numeric, MAX_MAX_RESULTS);
+  return numeric;
 }
 
 function matchesPathPrefix(

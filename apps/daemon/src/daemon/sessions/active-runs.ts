@@ -1,15 +1,20 @@
 import {
-  assertRunId as assertValidRunId,
-  assertThreadId as assertValidThreadId,
   type RunId,
   type ThreadId,
-} from '@geulbat/protocol/ids';
+  assertSessionRunId as assertValidRunId,
+  assertSessionThreadId as assertValidThreadId,
+} from './contract.js';
 import type { RunWorkspaceContext } from '../run-workspace-context.js';
+import {
+  pushPendingInterject,
+  type RunInterjectBuffer,
+} from './active-run-interject-buffer.js';
 
 export interface ActiveRun extends RunWorkspaceContext {
   runId: RunId;
   ownerThreadId: ThreadId;
   abortController: AbortController;
+  interject: RunInterjectBuffer;
   startedAt: string;
   parentRunId?: RunId;
 }
@@ -55,6 +60,12 @@ export interface ActiveRunStore {
         aborted: boolean;
       })
     | undefined;
+  appendPendingInterject(
+    runId: RunId,
+    request: { text: string },
+  ):
+    | { ok: true; receivedSeq: number; bufferDepth: number }
+    | { ok: false; code: 'not_found' };
   abortRun(runId: RunId): boolean;
   abortTrackedRun(runId: RunId, reason?: unknown): boolean;
   abortThreadTree(ownerThreadId: string): boolean;
@@ -136,6 +147,17 @@ export function createActiveRunStore(): ActiveRunStore {
         }
       }
       return undefined;
+    },
+    appendPendingInterject(runId, request) {
+      const run = byRunId.get(runId);
+      if (!run || run.abortController.signal.aborted) {
+        return { ok: false, code: 'not_found' };
+      }
+      const { receivedSeq, bufferDepth } = pushPendingInterject(
+        run.interject,
+        request.text,
+      );
+      return { ok: true, receivedSeq, bufferDepth };
     },
     abortRun(runId) {
       const run = byRunId.get(runId);

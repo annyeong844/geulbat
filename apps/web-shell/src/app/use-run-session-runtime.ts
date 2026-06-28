@@ -10,7 +10,10 @@ import type {
   ApprovalRequired,
   PermissionMode,
 } from '@geulbat/protocol/run-approval';
-import type { RunRequest } from '@geulbat/protocol/run-contract';
+import type {
+  RunRequest,
+  RunStartRequest,
+} from '@geulbat/protocol/run-contract';
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 
 import { useRunSessionConnection } from './use-run-session-connection.js';
@@ -94,6 +97,7 @@ interface UseRunSessionRuntimeArgs {
   ) => Promise<ThreadDetailResponse | null>;
   applyThreadSnapshotForRunSettle?: (thread: ThreadDetailResponse) => boolean;
   createClient?: () => RunSessionControllerClient;
+  prepareStartRequest?: (request: RunRequest) => Promise<RunStartRequest>;
 }
 
 interface UseRunSessionRuntimeResult {
@@ -125,6 +129,7 @@ export function useRunSessionRuntime({
   openThreadForRunSettle,
   applyThreadSnapshotForRunSettle = () => true,
   createClient = () => new RunChannelClient(),
+  prepareStartRequest,
 }: UseRunSessionRuntimeArgs): UseRunSessionRuntimeResult {
   const [client] = useState(() => createClient());
   const projectTreeRefreshControllerRef = useRef(
@@ -174,6 +179,7 @@ export function useRunSessionRuntime({
       phase: state.phase,
       activeRunId: getActiveRunId(state),
     },
+    ...(prepareStartRequest ? { prepareStartRequest } : {}),
   });
 
   const handleRunStarted = useHandleRunStarted({

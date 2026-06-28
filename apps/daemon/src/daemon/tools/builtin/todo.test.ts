@@ -7,6 +7,33 @@ import test from 'node:test';
 import { todoTool } from './todo.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 
+function findTodoActionBranch(action: string) {
+  const parameters = todoTool.parameters;
+  assert.ok('oneOf' in parameters);
+  const branch = parameters.oneOf.find((candidate) => {
+    const actionProperty = candidate.properties.action as
+      | { const?: unknown }
+      | undefined;
+    return actionProperty?.const === action;
+  });
+  assert.ok(branch);
+  return branch;
+}
+
+void test('todo outward parameters publish action-specific required fields', () => {
+  const addBranch = findTodoActionBranch('add');
+  const updateBranch = findTodoActionBranch('update');
+  const completeBranch = findTodoActionBranch('complete');
+  const removeBranch = findTodoActionBranch('remove');
+  const listBranch = findTodoActionBranch('list');
+
+  assert.deepEqual(addBranch.required, ['action', 'text']);
+  assert.deepEqual(updateBranch.required, ['action', 'id']);
+  assert.deepEqual(completeBranch.required, ['action', 'id']);
+  assert.deepEqual(removeBranch.required, ['action', 'id']);
+  assert.deepEqual(listBranch.required, ['action']);
+});
+
 void test('todo persists task state per thread across separate executions', async () => {
   const threadId = testThreadId(1);
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-todo-'));
@@ -232,4 +259,40 @@ void test('todo rejects invalid action at the parser boundary', async () => {
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'invalid_args');
   assert.match(result.error ?? '', /action must be one of/);
+});
+
+void test('todo rejects action-specific missing fields before loading persisted state', async () => {
+  const threadId = testThreadId(9);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-todo-'));
+  const stateDir = join(workspaceRoot, '.geulbat', 'tool-state', 'todo');
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(join(stateDir, `${threadId}.json`), '{not json', 'utf8');
+
+  const missingText = await todoTool.execute(
+    { action: 'add' },
+    {
+      callId: 'call-add-missing-text',
+      workspaceRoot,
+      threadId,
+    },
+  );
+
+  assert.equal(missingText.ok, false);
+  assert.equal(missingText.errorCode, 'invalid_args');
+  assert.match(missingText.error ?? '', /text.*required for add/);
+
+  for (const action of ['update', 'complete', 'remove'] as const) {
+    const missingId = await todoTool.execute(
+      { action },
+      {
+        callId: `call-${action}-missing-id`,
+        workspaceRoot,
+        threadId,
+      },
+    );
+
+    assert.equal(missingId.ok, false);
+    assert.equal(missingId.errorCode, 'invalid_args');
+    assert.match(missingId.error ?? '', new RegExp(`id.*${action}`));
+  }
 });

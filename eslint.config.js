@@ -44,8 +44,17 @@ export default [
         },
       },
       'boundaries/elements': [
-        { type: 'shared-utils', pattern: ['packages/shared-utils/src/**'] },
-        { type: 'protocol', pattern: ['packages/protocol/src/**'] },
+        {
+          type: 'shared-utils',
+          pattern: [
+            'packages/shared-utils/src/**',
+            'packages/shared-utils/dist/**',
+          ],
+        },
+        {
+          type: 'protocol',
+          pattern: ['packages/protocol/src/**', 'packages/protocol/dist/**'],
+        },
         {
           type: 'web-shell-entry',
           pattern: ['apps/web-shell/src/*.ts', 'apps/web-shell/src/*.tsx'],
@@ -89,8 +98,10 @@ export default [
         {
           type: 'daemon-kernel',
           pattern: [
+            'apps/daemon/src/daemon/artifact-candidate.ts',
             'apps/daemon/src/daemon/error-codes.ts',
             'apps/daemon/src/daemon/port.ts',
+            'apps/daemon/src/daemon/runtime-json.ts',
             'apps/daemon/src/daemon/run-workspace-context.ts',
             'apps/daemon/src/daemon/runtime-contracts.ts',
             'apps/daemon/src/daemon/subagent-runtime-contracts.ts',
@@ -120,7 +131,17 @@ export default [
           ],
           mode: 'full',
         },
+        {
+          type: 'daemon-agent-contract',
+          pattern: ['apps/daemon/src/daemon/agent/contract.ts'],
+          mode: 'full',
+        },
         { type: 'daemon-agent', pattern: ['apps/daemon/src/daemon/agent/**'] },
+        {
+          type: 'daemon-auth-contract',
+          pattern: ['apps/daemon/src/daemon/auth/contract.ts'],
+          mode: 'full',
+        },
         { type: 'daemon-auth', pattern: ['apps/daemon/src/daemon/auth/**'] },
         {
           type: 'daemon-memory',
@@ -133,8 +154,21 @@ export default [
         { type: 'daemon-tools', pattern: ['apps/daemon/src/daemon/tools/**'] },
         { type: 'daemon-llm', pattern: ['apps/daemon/src/daemon/llm/**'] },
         {
+          type: 'daemon-artifact-runtime-persistence-contract',
+          pattern: [
+            'apps/daemon/src/daemon/artifact-runtime-persistence/contract.ts',
+          ],
+          mode: 'full',
+        },
+        {
           type: 'daemon-artifact-runtime-persistence',
           pattern: ['apps/daemon/src/daemon/artifact-runtime-persistence/**'],
+        },
+        {
+          type: 'daemon-react-bundle-dependency-admission',
+          pattern: [
+            'apps/daemon/src/daemon/react-bundle-dependency-admission/**',
+          ],
         },
         {
           type: 'daemon-react-bundle-inline',
@@ -146,35 +180,145 @@ export default [
         },
         {
           type: 'daemon-ptc-sandbox-ingress',
-          pattern: ['apps/daemon/src/daemon/ptc/lab-artifact-workspace.ts'],
+          pattern: [
+            'apps/daemon/src/daemon/ptc/lab/artifacts/lab-artifact-workspace.ts',
+          ],
           mode: 'full',
         },
         {
           type: 'daemon-ptc-runtime-contract',
           pattern: [
-            'apps/daemon/src/daemon/ptc/browser-navigate-runtime-contract.ts',
-            'apps/daemon/src/daemon/ptc/execute-code-runtime-contract.ts',
-            'apps/daemon/src/daemon/ptc/fixed-probe-runtime-contract.ts',
-            'apps/daemon/src/daemon/ptc/lab-session-batch-command-contract.ts',
+            'apps/daemon/src/daemon/ptc/runtime/browser/browser-navigate-runtime-contract.ts',
+            'apps/daemon/src/daemon/ptc/runtime/browser/browser-page-load-evidence-runtime-contract.ts',
+            'apps/daemon/src/daemon/ptc/runtime/browser/browser-text-evidence-runtime-contract.ts',
+            'apps/daemon/src/daemon/ptc/runtime/execute-code/execute-code-runtime-contract.ts',
+            'apps/daemon/src/daemon/ptc/runtime/probes/fixed-probe-runtime-contract.ts',
+            'apps/daemon/src/daemon/ptc/lab/shell/lab-session-batch-command-contract.ts',
           ],
           mode: 'full',
         },
         {
           type: 'daemon-ptc-runtime-ingress',
           pattern: [
-            'apps/daemon/src/daemon/ptc/browser-navigate-runtime.ts',
-            'apps/daemon/src/daemon/ptc/fixed-probe-runtime.ts',
-            'apps/daemon/src/daemon/ptc/execute-code-runtime.ts',
+            'apps/daemon/src/daemon/ptc/runtime/browser/browser-navigate-runtime.ts',
+            'apps/daemon/src/daemon/ptc/runtime/browser/browser-page-load-evidence-runtime.ts',
+            'apps/daemon/src/daemon/ptc/runtime/browser/browser-text-evidence-runtime.ts',
+            'apps/daemon/src/daemon/ptc/runtime/probes/fixed-probe-runtime.ts',
+            'apps/daemon/src/daemon/ptc/runtime/execute-code/execute-code-runtime.ts',
           ],
           mode: 'full',
+        },
+        {
+          type: 'daemon-ptc-runtime-ingress-helper',
+          pattern: [
+            'apps/daemon/src/daemon/ptc/runtime/browser/browser-workspace-runtime.ts',
+          ],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-ptc-runtime-common',
+          pattern: ['apps/daemon/src/daemon/ptc/runtime/runtime-workspace.ts'],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-ptc-lab-spine',
+          pattern: ['apps/daemon/src/daemon/ptc/shared/lab-spine.ts'],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-ptc-package-helpers',
+          pattern: [
+            'apps/daemon/src/daemon/ptc/shared/process-command.ts',
+            'apps/daemon/src/daemon/ptc/shared/record-shape.ts',
+            'apps/daemon/src/daemon/ptc/shared/stable-identity.ts',
+          ],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-ptc-shared',
+          pattern: ['apps/daemon/src/daemon/ptc/shared/**'],
+        },
+        {
+          type: 'daemon-ptc-callback',
+          pattern: ['apps/daemon/src/daemon/ptc/callback/**'],
+        },
+        {
+          type: 'daemon-ptc-lab-artifacts',
+          pattern: ['apps/daemon/src/daemon/ptc/lab/artifacts/**'],
+        },
+        {
+          type: 'daemon-ptc-lab-browser-core',
+          pattern: ['apps/daemon/src/daemon/ptc/lab/browser/core/**'],
+        },
+        {
+          type: 'daemon-ptc-lab-browser-page-load-evidence',
+          pattern: [
+            'apps/daemon/src/daemon/ptc/lab/browser/page-load-evidence/**',
+          ],
+        },
+        {
+          type: 'daemon-ptc-lab-browser-text-evidence',
+          pattern: ['apps/daemon/src/daemon/ptc/lab/browser/text-evidence/**'],
+        },
+        {
+          type: 'daemon-ptc-lab-browser-user-url-navigation',
+          pattern: [
+            'apps/daemon/src/daemon/ptc/lab/browser/user-url-navigation/**',
+          ],
+        },
+        {
+          type: 'daemon-ptc-lab-browser',
+          pattern: ['apps/daemon/src/daemon/ptc/lab/browser/**'],
+        },
+        {
+          type: 'daemon-ptc-lab-network',
+          pattern: ['apps/daemon/src/daemon/ptc/lab/network/**'],
+        },
+        {
+          type: 'daemon-ptc-lab-packages',
+          pattern: ['apps/daemon/src/daemon/ptc/lab/packages/**'],
+        },
+        {
+          type: 'daemon-ptc-lab-profile',
+          pattern: ['apps/daemon/src/daemon/ptc/lab/profile/**'],
+        },
+        {
+          type: 'daemon-ptc-lab-session',
+          pattern: ['apps/daemon/src/daemon/ptc/lab/session/**'],
+        },
+        {
+          type: 'daemon-ptc-lab-shell',
+          pattern: ['apps/daemon/src/daemon/ptc/lab/shell/**'],
+        },
+        {
+          type: 'daemon-ptc-runtime-browser',
+          pattern: ['apps/daemon/src/daemon/ptc/runtime/browser/**'],
+        },
+        {
+          type: 'daemon-ptc-runtime-execute-code',
+          pattern: ['apps/daemon/src/daemon/ptc/runtime/execute-code/**'],
+        },
+        {
+          type: 'daemon-ptc-runtime-probes',
+          pattern: ['apps/daemon/src/daemon/ptc/runtime/probes/**'],
         },
         {
           type: 'daemon-ptc',
           pattern: ['apps/daemon/src/daemon/ptc/**'],
         },
         {
+          type: 'daemon-sessions-contract',
+          pattern: ['apps/daemon/src/daemon/sessions/contract.ts'],
+          mode: 'full',
+        },
+        {
           type: 'daemon-sessions',
           pattern: ['apps/daemon/src/daemon/sessions/**'],
+        },
+        {
+          type: 'daemon-files-contract',
+          pattern: ['apps/daemon/src/daemon/files/contract.ts'],
+          mode: 'full',
         },
         { type: 'daemon-files', pattern: ['apps/daemon/src/daemon/files/**'] },
         { type: 'daemon-utils', pattern: ['apps/daemon/src/daemon/utils/**'] },
@@ -401,6 +545,7 @@ export default [
                     'adapter-web',
                     'daemon-kernel',
                     'daemon-composition',
+                    'daemon-agent-contract',
                     'daemon-agent',
                     'daemon-auth',
                     'daemon-memory',
@@ -408,9 +553,12 @@ export default [
                     'daemon-tools',
                     'daemon-llm',
                     'daemon-artifact-runtime-persistence',
+                    'daemon-react-bundle-dependency-admission',
                     'daemon-react-bundle-inline',
                     'daemon-sandbox',
+                    'daemon-sessions-contract',
                     'daemon-sessions',
+                    'daemon-files-contract',
                     'daemon-files',
                     'daemon-utils',
                     'daemon-entry',
@@ -445,6 +593,7 @@ export default [
                   type: [
                     'daemon-agent-sandbox-ingress',
                     'daemon-agent',
+                    'daemon-react-bundle-dependency-admission',
                     'daemon-sandbox',
                     'daemon-llm',
                   ],
@@ -458,6 +607,7 @@ export default [
                   type: [
                     'shared-utils',
                     'daemon-kernel',
+                    'daemon-agent-contract',
                     'daemon-agent-sandbox-ingress',
                     'daemon-composition',
                     'daemon-ptc-runtime-contract',
@@ -472,6 +622,14 @@ export default [
               },
             },
             {
+              from: { type: 'daemon-agent-contract' },
+              allow: {
+                to: {
+                  type: ['protocol'],
+                },
+              },
+            },
+            {
               from: { type: 'daemon-tools' },
               allow: {
                 to: {
@@ -480,6 +638,7 @@ export default [
                     'protocol',
                     'daemon-kernel',
                     'daemon-composition',
+                    'daemon-ptc-runtime-contract',
                     'daemon-files',
                     'daemon-memory',
                     'daemon-network',
@@ -515,10 +674,19 @@ export default [
                 to: {
                   type: [
                     'shared-utils',
+                    'daemon-artifact-runtime-persistence-contract',
                     'daemon-kernel',
                     'daemon-composition',
                     'daemon-utils',
                   ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-artifact-runtime-persistence-contract' },
+              allow: {
+                to: {
+                  type: ['protocol'],
                 },
               },
             },
@@ -528,6 +696,7 @@ export default [
                 to: {
                   type: [
                     'shared-utils',
+                    'daemon-files-contract',
                     'daemon-kernel',
                     'daemon-composition',
                     'daemon-utils',
@@ -541,9 +710,31 @@ export default [
                 to: {
                   type: [
                     'shared-utils',
+                    'daemon-auth-contract',
                     'daemon-kernel',
                     'daemon-composition',
                     'daemon-utils',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-auth-contract' },
+              allow: {
+                to: {
+                  type: ['protocol'],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-react-bundle-dependency-admission' },
+              allow: {
+                to: {
+                  type: [
+                    'protocol',
+                    'shared-utils',
+                    'daemon-network',
+                    'daemon-sandbox',
                   ],
                 },
               },
@@ -565,7 +756,12 @@ export default [
               from: { type: 'daemon-sandbox' },
               allow: {
                 to: {
-                  type: ['daemon-files', 'daemon-network', 'daemon-utils'],
+                  type: [
+                    'shared-utils',
+                    'daemon-files',
+                    'daemon-network',
+                    'daemon-utils',
+                  ],
                 },
               },
             },
@@ -573,7 +769,22 @@ export default [
               from: { type: 'daemon-ptc-sandbox-ingress' },
               allow: {
                 to: {
-                  type: ['daemon-ptc', 'daemon-sandbox'],
+                  type: [
+                    'daemon-ptc-lab-packages',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-spine',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-shared',
+                    'daemon-sandbox',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-runtime-contract' },
+              allow: {
+                to: {
+                  type: ['daemon-ptc-shared'],
                 },
               },
             },
@@ -581,7 +792,283 @@ export default [
               from: { type: 'daemon-ptc-runtime-ingress' },
               allow: {
                 to: {
-                  type: ['daemon-ptc', 'daemon-ptc-runtime-contract'],
+                  type: [
+                    'daemon-ptc-callback',
+                    'daemon-ptc-lab-browser-core',
+                    'daemon-ptc-lab-browser-page-load-evidence',
+                    'daemon-ptc-lab-browser-text-evidence',
+                    'daemon-ptc-lab-browser-user-url-navigation',
+                    'daemon-ptc-lab-spine',
+                    'daemon-ptc-lab-network',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-lab-shell',
+                    'daemon-ptc-runtime-contract',
+                    'daemon-ptc-runtime-common',
+                    'daemon-ptc-runtime-execute-code',
+                    'daemon-ptc-runtime-ingress-helper',
+                    'daemon-ptc-runtime-probes',
+                    'daemon-ptc-package-helpers',
+                    'daemon-ptc-shared',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-runtime-ingress-helper' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-runtime-common',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-package-helpers' },
+              allow: {
+                to: {
+                  type: ['protocol', 'shared-utils'],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-shared' },
+              allow: {
+                to: {
+                  type: ['protocol', 'shared-utils'],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-callback' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-callback',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-package-helpers',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-lab-artifacts' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-packages',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-shared',
+                    'daemon-sandbox',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-lab-browser' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-browser',
+                    'daemon-ptc-lab-network',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-lab-shell',
+                    'daemon-ptc-package-helpers',
+                    'daemon-ptc-shared',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-lab-browser-core' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-browser-core',
+                    'daemon-ptc-lab-network',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-package-helpers',
+                    'daemon-ptc-shared',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-lab-browser-page-load-evidence' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-browser-core',
+                    'daemon-ptc-lab-browser-page-load-evidence',
+                    'daemon-ptc-lab-spine',
+                    'daemon-ptc-lab-network',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-package-helpers',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-lab-browser-text-evidence' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-browser-core',
+                    'daemon-ptc-lab-browser-text-evidence',
+                    'daemon-ptc-lab-spine',
+                    'daemon-ptc-lab-network',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-package-helpers',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-lab-browser-user-url-navigation' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-browser-core',
+                    'daemon-ptc-lab-browser-user-url-navigation',
+                    'daemon-ptc-lab-spine',
+                    'daemon-ptc-lab-network',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-package-helpers',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-lab-network' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-spine',
+                    'daemon-ptc-lab-network',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-lab-shell',
+                    'daemon-ptc-package-helpers',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-lab-packages' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-network',
+                    'daemon-ptc-lab-packages',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-spine',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-package-helpers',
+                    'daemon-ptc-shared',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-lab-profile' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-browser-core',
+                    'daemon-ptc-lab-network',
+                    'daemon-ptc-lab-packages',
+                    'daemon-ptc-lab-spine',
+                    'daemon-ptc-lab-profile',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-lab-session' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-browser-core',
+                    'daemon-ptc-lab-network',
+                    'daemon-ptc-lab-packages',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-package-helpers',
+                    'daemon-ptc-shared',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-lab-shell' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-lab-spine',
+                    'daemon-ptc-lab-shell',
+                    'daemon-ptc-runtime-contract',
+                    'daemon-ptc-shared',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-runtime-browser' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-browser-core',
+                    'daemon-ptc-lab-browser-page-load-evidence',
+                    'daemon-ptc-lab-browser-text-evidence',
+                    'daemon-ptc-lab-browser-user-url-navigation',
+                    'daemon-ptc-lab-network',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-runtime-browser',
+                    'daemon-ptc-runtime-contract',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-runtime-execute-code' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-callback',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-lab-shell',
+                    'daemon-ptc-package-helpers',
+                    'daemon-ptc-runtime-contract',
+                    'daemon-ptc-runtime-execute-code',
+                    'daemon-ptc-shared',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-runtime-probes' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-callback',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-package-helpers',
+                    'daemon-ptc-runtime-contract',
+                    'daemon-ptc-runtime-probes',
+                    'daemon-ptc-shared',
+                  ],
                 },
               },
             },
@@ -589,7 +1076,10 @@ export default [
               from: { type: 'daemon-ptc' },
               allow: {
                 to: {
-                  type: ['daemon-ptc-runtime-contract'],
+                  type: [
+                    'daemon-ptc-runtime-contract',
+                    'daemon-ptc-package-helpers',
+                  ],
                 },
               },
             },
@@ -634,7 +1124,9 @@ export default [
                     'daemon-ptc-runtime-contract',
                     'daemon-ptc-runtime-ingress',
                     'daemon-sandbox',
+                    'daemon-sessions-contract',
                     'daemon-sessions',
+                    'daemon-files-contract',
                     'daemon-files',
                     'daemon-utils',
                   ],
@@ -651,11 +1143,28 @@ export default [
                 to: {
                   type: [
                     'shared-utils',
+                    'daemon-sessions-contract',
                     'daemon-kernel',
                     'daemon-composition',
                     'daemon-files',
                     'daemon-utils',
                   ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-sessions-contract' },
+              allow: {
+                to: {
+                  type: ['protocol'],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-files-contract' },
+              allow: {
+                to: {
+                  type: ['protocol'],
                 },
               },
             },

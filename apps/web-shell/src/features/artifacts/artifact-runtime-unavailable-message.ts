@@ -7,6 +7,9 @@ export function describeArtifactRuntimeUnavailableMessage(
     case 'sanitize_rejected':
       return '이 캔버스는 현재 웹쉘 경계를 넘는 링크나 리소스 때문에 바로 열 수 없습니다.';
     case 'policy_blocked':
+      if (surface.detail.includes('artifact_static_preview_resource_v1')) {
+        return '이 미리보기는 너무 커서 바로 렌더링하지 않았습니다. Raw 탭에서 원본을 확인해 주세요.';
+      }
       return '이 캔버스는 현재 웹쉘 경계를 넘는 동작 때문에 일부 기능을 실행하지 못했습니다.';
     case 'boot_failed':
       return describeArtifactBootFailureMessage(surface.detail);

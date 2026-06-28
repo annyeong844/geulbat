@@ -39,6 +39,7 @@ const manualTool = defineParsedTool({
   },
   strict: true,
   sideEffectLevel: 'write',
+  mayMutateWorkspaceFiles: true,
   timeoutMs: 1_000,
   requiresApproval: true,
   parseArgs(raw): ToolParseResult<{ path: string; replaceAll?: boolean }> {
@@ -89,6 +90,7 @@ const zodTool = defineZodTool({
   description: 'type-level zod seam test',
   argsSchema: zodArgsSchema,
   sideEffectLevel: 'read',
+  mayMutateWorkspaceFiles: false,
   timeoutMs: 1_000,
   requiresApproval: false,
   async executeParsed(args, _ctx) {

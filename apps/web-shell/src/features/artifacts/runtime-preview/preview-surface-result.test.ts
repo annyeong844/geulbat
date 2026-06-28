@@ -114,3 +114,24 @@ void test('resolveArtifactPanePreviewSurfaceResult delegates runtime models to t
     '이 캔버스는 현재 웹쉘 경계를 넘는 링크나 리소스 때문에 바로 열 수 없습니다.',
   );
 });
+
+void test('resolveArtifactPanePreviewSurfaceResult explains static preview resource fallback without blaming runtime policy', () => {
+  const unavailable = unavailableArtifactPreview(
+    'policy_blocked',
+    'artifact_static_preview_resource_v1: table preview was not rendered because table has too many cells. Raw/source content remains available.',
+  );
+
+  const result = resolveArtifactPanePreviewSurfaceResult(
+    {
+      kind: 'surface',
+      previewSurface: unavailable,
+    },
+    () => unavailableArtifactPreview('boot_failed', 'unexpected runtime'),
+  );
+
+  assert.equal(result.previewSurface, unavailable);
+  assert.equal(
+    result.runtimeUnavailableMessage,
+    '이 미리보기는 너무 커서 바로 렌더링하지 않았습니다. Raw 탭에서 원본을 확인해 주세요.',
+  );
+});

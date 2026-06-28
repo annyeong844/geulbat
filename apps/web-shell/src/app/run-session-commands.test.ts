@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
 import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
-import type { RunRequest } from '@geulbat/protocol/run-contract';
+import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 
 import { brandProjectId, brandThreadId } from '../lib/id-brand-helpers.js';
 import {
@@ -10,6 +10,7 @@ import {
   buildPromptRunRequest,
   buildRunStartRequest,
   cancelRunSession,
+  prepareRunStartRequest,
   resolveOptimisticRunPrompt,
   startRunRequestCommand,
   submitApprovalDecision,
@@ -22,7 +23,7 @@ const PROJECT_ID = brandProjectId('project-1');
 
 function createClientStub() {
   const calls: string[] = [];
-  const startRequests: unknown[] = [];
+  const startRequests: RunStartRequest[] = [];
   const approveRequests: unknown[] = [];
   const cancelRequests: unknown[] = [];
 
@@ -32,7 +33,7 @@ function createClientStub() {
     approveRequests,
     cancelRequests,
     client: {
-      async start(request: RunRequest) {
+      async start(request: RunStartRequest) {
         calls.push('start');
         startRequests.push(request);
         return 'request-start';
@@ -56,6 +57,18 @@ function createClientStub() {
       },
     },
   };
+}
+
+function installRunStartCommandFetch(
+  t: test.TestContext,
+  fetchImpl: typeof globalThis.fetch,
+): void {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchImpl;
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
 }
 
 void test('buildPromptRunRequest builds a prompt request from selected thread/file context', () => {
@@ -138,10 +151,75 @@ void test('resolveOptimisticRunPrompt prefers displayPrompt, then explicit optim
   );
 });
 
+void test('prepareRunStartRequest uploads prompt text and returns promptRef metadata', async (t) => {
+  const promptText = '<artifact_payload>\n# hello\n</artifact_payload>';
+  const seenRequests: Array<{
+    input: string | URL | Request;
+    init: RequestInit | undefined;
+  }> = [];
+  installRunStartCommandFetch(t, async (input, init) => {
+    seenRequests.push({ input, init });
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
+        byteLength: Buffer.byteLength(promptText),
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
+  });
+
+  const prepared = await prepareRunStartRequest({
+    prompt: promptText,
+    displayPrompt: 'Apply artifact to episodes/ch01.md',
+    projectId: PROJECT_ID,
+    threadId: THREAD_ID,
+    currentFile: 'episodes/ch01.md',
+    selection: { startLine: 1, endLine: 3, text: '# hello' },
+    allowedToolsHint: ['read_file', 'write_file', 'patch_file'],
+    permissionMode: 'basic',
+  });
+
+  assert.equal(seenRequests.length, 1);
+  assert.equal(
+    seenRequests[0]?.input,
+    '/api/run/prompt-inputs?projectId=project-1',
+  );
+  assert.equal(seenRequests[0]?.init?.method, 'POST');
+  assert.deepEqual(seenRequests[0]?.init?.headers, {
+    'Content-Type': 'text/plain;charset=UTF-8',
+  });
+  assert.equal(seenRequests[0]?.init?.body, promptText);
+  assert.equal('prompt' in prepared, false);
+  assert.deepEqual(prepared, {
+    projectId: PROJECT_ID,
+    displayPrompt: 'Apply artifact to episodes/ch01.md',
+    threadId: THREAD_ID,
+    currentFile: 'episodes/ch01.md',
+    selection: { startLine: 1, endLine: 3, text: '# hello' },
+    allowedToolsHint: ['read_file', 'write_file', 'patch_file'],
+    permissionMode: 'basic',
+    promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
+  });
+});
+
 void test('startRunRequestCommand dispatches run start and invokes transport', async () => {
   const { client, calls, startRequests } = createClientStub();
   const result = await startRunRequestCommand({
     client,
+    prepareStartRequest: async (request) => ({
+      projectId: request.projectId,
+      ...(request.displayPrompt !== undefined
+        ? { displayPrompt: request.displayPrompt }
+        : {}),
+      ...(request.currentFile !== undefined
+        ? { currentFile: request.currentFile }
+        : {}),
+      promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
+    }),
     request: {
       prompt: 'hidden prompt',
       displayPrompt: 'visible prompt',
@@ -152,11 +230,29 @@ void test('startRunRequestCommand dispatches run start and invokes transport', a
 
   assert.deepEqual(result, { kind: 'started', threadId: null });
   assert.deepEqual(calls, ['start']);
-  assert.equal(startRequests.length, 1);
+  assert.deepEqual(startRequests, [
+    {
+      projectId: PROJECT_ID,
+      displayPrompt: 'visible prompt',
+      currentFile: 'docs/a.md',
+      promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
+    },
+  ]);
 });
 
-void test('startRunRequestCommand returns a failure result when transport start fails', async () => {
+void test('startRunRequestCommand deletes prepared prompt refs when transport start fails', async (t) => {
   const { client } = createClientStub();
+  const cleanupRequests: Array<{
+    input: string | URL | Request;
+    init: RequestInit | undefined;
+  }> = [];
+  installRunStartCommandFetch(t, async (input, init) => {
+    cleanupRequests.push({ input, init });
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
 
   client.start = async () => {
     throw new Error('start transport down');
@@ -164,6 +260,10 @@ void test('startRunRequestCommand returns a failure result when transport start 
 
   const result = await startRunRequestCommand({
     client,
+    prepareStartRequest: async (request) => ({
+      projectId: request.projectId,
+      promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
+    }),
     request: {
       prompt: 'hidden prompt',
       projectId: PROJECT_ID,
@@ -173,6 +273,33 @@ void test('startRunRequestCommand returns a failure result when transport start 
   assert.deepEqual(result, {
     kind: 'failed',
     message: 'start transport down',
+  });
+  assert.equal(cleanupRequests.length, 1);
+  assert.equal(
+    cleanupRequests[0]?.input,
+    '/api/run/prompt-inputs?projectId=project-1&promptRef=run-prompt-input%3A11111111-1111-4111-8111-111111111111',
+  );
+  assert.equal(cleanupRequests[0]?.init?.method, 'DELETE');
+});
+
+void test('startRunRequestCommand returns a failure result when prompt ref preparation fails', async () => {
+  const { client, calls } = createClientStub();
+
+  const result = await startRunRequestCommand({
+    client,
+    prepareStartRequest: async () => {
+      throw new Error('prompt upload failed');
+    },
+    request: {
+      prompt: 'hidden prompt',
+      projectId: PROJECT_ID,
+    },
+  });
+
+  assert.deepEqual(calls, []);
+  assert.deepEqual(result, {
+    kind: 'failed',
+    message: 'prompt upload failed',
   });
 });
 

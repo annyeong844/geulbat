@@ -3,7 +3,11 @@ import type {
   SubagentLaunchReservation,
   SubagentType,
 } from '../subagent-runtime-contracts.js';
-import { isRunId, type RunId } from '@geulbat/protocol/ids';
+import {
+  isAgentRunId as isRunId,
+  type PermissionMode,
+  type RunId,
+} from './contract.js';
 import type { ToolRunState, AgentEvent } from '../runtime-contracts.js';
 import type { AgentResult } from './agent-result.js';
 import type { AgentInput } from './loop-types.js';
@@ -39,14 +43,25 @@ import {
   buildChildLaunchPayload,
   buildChildLaunchRejected,
 } from '../subagent-runtime-contracts.js';
-import type { PermissionMode } from '@geulbat/protocol/run-approval';
 
 const logger = createLogger('agent/subagent-support');
 
 const DEFAULT_CHILD_PERMISSION_MODE: PermissionMode = 'basic';
 
+const AGENT_ORCHESTRATION_TOOL_NAMES = [
+  'agent_spawn',
+  'agent_wait',
+  'agent_send_input',
+  'agent_stop',
+] as const;
+
 const SUBAGENT_TOOL_SETS = {
-  explorer: ['list_files', 'read_file', 'search_files'],
+  explorer: [
+    'list_files',
+    'read_file',
+    'search_files',
+    ...AGENT_ORCHESTRATION_TOOL_NAMES,
+  ],
   worker: [
     'list_files',
     'read_file',
@@ -54,6 +69,7 @@ const SUBAGENT_TOOL_SETS = {
     'write_file',
     'patch_file',
     'manage_files',
+    ...AGENT_ORCHESTRATION_TOOL_NAMES,
   ],
 } as const satisfies Record<SubagentType, readonly string[]>;
 

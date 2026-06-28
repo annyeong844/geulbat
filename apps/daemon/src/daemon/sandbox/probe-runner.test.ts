@@ -83,6 +83,46 @@ void test('runDeterministicSandboxProbe preserves successful output in daemon-ow
   }
 });
 
+void test('runDeterministicSandboxProbe preserves successful output without a hidden collection budget', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-sandbox-evidence-workspace-'),
+  );
+  try {
+    const store = createSandboxAttemptStore({
+      now: () => '2026-05-17T00:00:00.000Z',
+    });
+    const outputBody = 'x'.repeat(70 * 1024);
+
+    const result = await runDeterministicSandboxProbe({
+      workspaceRoot,
+      store,
+      timeoutMs: 1_000,
+      processRunner: async (args) => {
+        await Promise.all([
+          ...Array.from({ length: 18 }, (_, index) =>
+            args.writeOutput(`many/file-${index}.txt`, `file ${index}`),
+          ),
+          args.writeOutput('bulk/payload.txt', outputBody),
+        ]);
+        return { kind: 'exit', exitCode: 0, stdout: 'ok', stderr: '' };
+      },
+    });
+
+    assert.equal(result.status, 'succeeded');
+    const outputRef = result.outputRef;
+    if (outputRef === null || outputRef === undefined) {
+      assert.fail('expected sandbox output evidence');
+    }
+    assert.equal(outputRef.files.length, 19);
+    assert.equal(
+      await readFile(join(outputRef.rootPath, 'bulk', 'payload.txt'), 'utf8'),
+      outputBody,
+    );
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 void test('runDeterministicSandboxProbe classifies timeout cancellation crash and failed exit', async () => {
   for (const [kind, expectedStatus] of [
     ['timeout', 'timed_out'],

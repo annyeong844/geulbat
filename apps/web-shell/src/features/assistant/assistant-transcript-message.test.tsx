@@ -40,6 +40,7 @@ void test('TranscriptMessage keeps artifact-looking raw text plain without metad
   const markup = renderToStaticMarkup(
     <TranscriptMessage
       message={{
+        entryId: 'entry-raw-artifact-text',
         role: 'assistant',
         content: '{"artifactId":"art_ghost","version":1}',
         timestamp: '2026-04-29T00:00:00.000Z',
@@ -60,6 +61,7 @@ function createAssistantMessage(args: {
 }): ThreadMessage {
   const { content, artifact } = args;
   return {
+    entryId: `entry-${artifact.artifactId}-${artifact.version}`,
     role: 'assistant',
     content,
     timestamp: '2026-04-29T00:00:00.000Z',

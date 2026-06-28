@@ -4,7 +4,7 @@ import test from 'node:test';
 import { listFilesTool } from './builtin/list-files.js';
 import { writeFileTool } from './builtin/write-file.js';
 import { createToolRegistryStore } from './registry.js';
-import type { AnyTool } from './types.js';
+import { isToolObjectParameters, type AnyTool } from './types.js';
 
 function createTestTool(name: string): AnyTool {
   return {
@@ -18,6 +18,7 @@ function createTestTool(name: string): AnyTool {
     },
     strict: true,
     sideEffectLevel: 'none',
+    mayMutateWorkspaceFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     parseArgs() {
@@ -69,7 +70,10 @@ void test('createToolRegistryStore exposes the list_files definition with option
       strict: false,
     },
   ]);
-  assert.deepEqual(definitions[0]?.parameters.required, []);
+  const parameters = definitions[0]?.parameters;
+  assert.ok(parameters);
+  assert.ok(isToolObjectParameters(parameters));
+  assert.deepEqual(parameters.required, []);
 });
 
 void test('createToolRegistryStore keeps strict=true only for fully-required schemas', () => {
@@ -96,16 +100,76 @@ void test('createToolRegistryStore keeps strict=true only for fully-required sch
   assert.equal(definitions[0]?.strict, true);
 });
 
+void test('createToolRegistryStore does not publish strict=true for root oneOf schemas', () => {
+  const store = createToolRegistryStore({ builtins: [] });
+
+  store.registerTool({
+    ...createTestTool('branch_tool'),
+    parameters: {
+      oneOf: [
+        {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              const: 'create',
+            },
+          },
+          required: ['action'],
+          additionalProperties: false,
+        },
+      ],
+    },
+  });
+
+  const definitions = store.buildToolDefinitions({
+    names: ['branch_tool'],
+  });
+
+  assert.equal(definitions[0]?.strict, false);
+});
+
+void test('createToolRegistryStore does not publish strict=true for root anyOf schemas', () => {
+  const store = createToolRegistryStore({ builtins: [] });
+
+  store.registerTool({
+    ...createTestTool('branch_tool'),
+    parameters: {
+      anyOf: [
+        {
+          type: 'object',
+          properties: {
+            old_string: {
+              type: 'string',
+              const: '',
+            },
+          },
+          required: ['old_string'],
+          additionalProperties: false,
+        },
+      ],
+    },
+  });
+
+  const definitions = store.buildToolDefinitions({
+    names: ['branch_tool'],
+  });
+
+  assert.equal(definitions[0]?.strict, false);
+});
+
 void test('createToolRegistryStore returns tool snapshots instead of live builtin objects', () => {
   const store = createToolRegistryStore({ builtins: [writeFileTool] });
 
   const first = store.getTool('write_file');
   assert.ok(first);
   first.requiresApproval = false;
+  assert.ok(isToolObjectParameters(first.parameters));
   first.parameters.required.push('__mutated__');
 
   const again = store.getTool('write_file');
   assert.ok(again);
   assert.equal(again.requiresApproval, true);
+  assert.ok(isToolObjectParameters(again.parameters));
   assert.equal(again.parameters.required.includes('__mutated__'), false);
 });

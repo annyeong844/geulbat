@@ -12,12 +12,6 @@ export type StepResult<T> =
   | { ok: true; value: T }
   | { ok: false; result: AgentResult };
 
-export const MAX_TOOL_ROUNDS = 25;
-
-export function emitInternalError(emit: AgentEventEmitter): void {
-  emit('error', { code: 'internal', message: 'internal server error' });
-}
-
 export function emitTerminalFailure(
   emit: AgentEventEmitter,
   code: GenericApiErrorCode,

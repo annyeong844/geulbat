@@ -4,7 +4,7 @@ import {
   flushIncompleteAssistantItems,
 } from './responses-parser-events.js';
 import { nextResponseEvent } from './responses-parser-iterator.js';
-import { parseCanonicalArtifactEnvelopeText } from '@geulbat/protocol/artifacts';
+import { parseDaemonArtifactCandidateText } from '../../../artifact-candidate.js';
 import type { ProviderArtifactCandidate } from '../wire/types.js';
 import type {
   AssistantDelta,
@@ -89,5 +89,5 @@ function readProviderArtifactCandidate(
   if (!text.trim()) {
     return undefined;
   }
-  return parseCanonicalArtifactEnvelopeText(text) ?? undefined;
+  return parseDaemonArtifactCandidateText(text);
 }

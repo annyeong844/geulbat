@@ -3,12 +3,27 @@ import test from 'node:test';
 
 import { createArtifactRefKey } from '@geulbat/protocol/artifacts';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
-import type { ThreadMessage } from '@geulbat/protocol/threads';
+import type {
+  ThreadMessage,
+  ThreadMessageInput,
+} from '@geulbat/protocol/threads';
 
 import { buildHistoryFromTranscript } from './build-history-from-transcript.js';
 
+type TestTranscriptEntry = ThreadMessageInput;
+
+function createTranscript(entries: TestTranscriptEntry[]): ThreadMessage[] {
+  return entries.map((entry, index) => {
+    const entryId = `entry-${index + 1}`;
+    if (entry.role === 'compaction') {
+      return { ...entry, entryId };
+    }
+    return { ...entry, entryId };
+  });
+}
+
 void test('buildHistoryFromTranscript reconstructs structured history from transcript entries', () => {
-  const transcript: ThreadMessage[] = [
+  const transcript = createTranscript([
     {
       role: 'user',
       content: '안녕',
@@ -37,7 +52,7 @@ void test('buildHistoryFromTranscript reconstructs structured history from trans
       }),
       timestamp: '2026-03-23T00:00:03.000Z',
     },
-  ];
+  ]);
 
   assert.deepEqual(buildHistoryFromTranscript(transcript), [
     { kind: 'user', text: '안녕' },
@@ -58,7 +73,7 @@ void test('buildHistoryFromTranscript reconstructs structured history from trans
 });
 
 void test('buildHistoryFromTranscript preserves legacy tool_call ids for replay sanitization downstream', () => {
-  const transcript: ThreadMessage[] = [
+  const transcript = createTranscript([
     {
       role: 'tool_call',
       content: JSON.stringify({
@@ -68,7 +83,7 @@ void test('buildHistoryFromTranscript preserves legacy tool_call ids for replay 
       }),
       timestamp: '2026-03-23T00:00:02.000Z',
     },
-  ];
+  ]);
 
   assert.deepEqual(buildHistoryFromTranscript(transcript), [
     {
@@ -82,7 +97,7 @@ void test('buildHistoryFromTranscript preserves legacy tool_call ids for replay 
 });
 
 void test('buildHistoryFromTranscript ignores malformed tool transcript records without casts', () => {
-  const transcript: ThreadMessage[] = [
+  const transcript = createTranscript([
     {
       role: 'tool_call',
       content: JSON.stringify(['not', 'a', 'record']),
@@ -105,13 +120,13 @@ void test('buildHistoryFromTranscript ignores malformed tool transcript records 
       }),
       timestamp: '2026-03-23T00:00:04.000Z',
     },
-  ];
+  ]);
 
   assert.deepEqual(buildHistoryFromTranscript(transcript), []);
 });
 
 void test('buildHistoryFromTranscript preserves object tool_result output fallback', () => {
-  const transcript: ThreadMessage[] = [
+  const transcript = createTranscript([
     {
       role: 'tool_result',
       content: JSON.stringify({
@@ -122,7 +137,7 @@ void test('buildHistoryFromTranscript preserves object tool_result output fallba
       }),
       timestamp: '2026-03-23T00:00:03.000Z',
     },
-  ];
+  ]);
 
   assert.deepEqual(buildHistoryFromTranscript(transcript), [
     {
@@ -138,8 +153,61 @@ void test('buildHistoryFromTranscript preserves object tool_result output fallba
   ]);
 });
 
+void test('buildHistoryFromTranscript skips audit-only PTC callback records', () => {
+  const transcript = createTranscript([
+    {
+      role: 'tool_call',
+      content: JSON.stringify({
+        id: 'call_parent::nested-1',
+        callId: 'call_parent::nested-1',
+        tool: 'read_file',
+        args: { path: 'hello.txt' },
+        source: {
+          kind: 'ptc_callback',
+          parentToolCallId: 'call_parent',
+          runtimeToolCallId: 'runtime-1',
+          hostCallId: 'call_parent::nested-1',
+        },
+        historyMode: 'audit_only',
+      }),
+      timestamp: '2026-03-23T00:00:02.000Z',
+    },
+    {
+      role: 'tool_result',
+      content: JSON.stringify({
+        callId: 'call_parent::nested-1',
+        tool: 'read_file',
+        ok: true,
+        output: '{"content":"hello"}',
+        historyMode: 'audit_only',
+      }),
+      timestamp: '2026-03-23T00:00:03.000Z',
+    },
+  ]);
+
+  assert.deepEqual(buildHistoryFromTranscript(transcript), []);
+});
+
+void test('buildHistoryFromTranscript skips an audit-only tool_result when the call record is absent', () => {
+  const transcript = createTranscript([
+    {
+      role: 'tool_result',
+      content: JSON.stringify({
+        callId: 'call_parent::nested-1',
+        tool: 'read_file',
+        ok: true,
+        output: '{"content":"hello"}',
+        historyMode: 'audit_only',
+      }),
+      timestamp: '2026-03-23T00:00:03.000Z',
+    },
+  ]);
+
+  assert.deepEqual(buildHistoryFromTranscript(transcript), []);
+});
+
 void test('buildHistoryFromTranscript uses hiddenPrompt for user replay when transcript content is display-only', () => {
-  const transcript: ThreadMessage[] = [
+  const transcript = createTranscript([
     {
       role: 'user',
       content: 'Apply artifact to episodes/ch01.md',
@@ -149,7 +217,7 @@ void test('buildHistoryFromTranscript uses hiddenPrompt for user replay when tra
           'Apply this artifact preview to the current file.\n<artifact>\n# hello\n</artifact>',
       },
     },
-  ];
+  ]);
 
   assert.deepEqual(buildHistoryFromTranscript(transcript), [
     {
@@ -160,7 +228,7 @@ void test('buildHistoryFromTranscript uses hiddenPrompt for user replay when tra
 });
 
 void test('buildHistoryFromTranscript carries assistant artifact refs as object summaries, not legacy envelopes', () => {
-  const transcript: ThreadMessage[] = [
+  const transcript = createTranscript([
     {
       role: 'assistant',
       content: '',
@@ -171,7 +239,7 @@ void test('buildHistoryFromTranscript carries assistant artifact refs as object 
         activeArtifactRef: { artifactId: 'art_1', version: 1 },
       },
     },
-  ];
+  ]);
   const artifact: ThreadArtifactVersion = {
     artifactId: 'art_1',
     version: 1,

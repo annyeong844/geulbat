@@ -2,6 +2,7 @@ import {
   isArtifactCommittedEventPayload,
   isDoneEventPayload,
   isErrorEventPayload,
+  isInterjectAppliedEventPayload,
   isRunAckEventPayload,
   isSubagentApprovalRequiredEventPayload,
   isSubagentSpawnedEventPayload,
@@ -41,6 +42,7 @@ const agentEventPayloadGuards: {
   subagent_spawned: isSubagentSpawnedEventPayload,
   subagent_terminal: isSubagentTerminalEventPayload,
   subagent_approval_required: isSubagentApprovalRequiredEventPayload,
+  interject_applied: isInterjectAppliedEventPayload,
   approval_required: isProtocolApprovalRequired,
   error: isErrorEventPayload,
 };
@@ -84,6 +86,8 @@ export function mapAgentEventToRunEvent(
     case 'subagent_terminal':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'subagent_approval_required':
+      return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
+    case 'interject_applied':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'approval_required':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);

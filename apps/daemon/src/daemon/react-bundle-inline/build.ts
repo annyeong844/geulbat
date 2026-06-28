@@ -1,6 +1,5 @@
 import { build, type BuildResult } from 'esbuild';
 import {
-  REACT_BUNDLE_INLINE_COMPILE_TIMEOUT_MS,
   type ReactBundleInlineCompileFailureCode,
   type ReactBundleInlineCompileRequest,
 } from '@geulbat/protocol/react-bundle-inline-compile';
@@ -20,33 +19,29 @@ export async function buildReactBundleInlineOutputFiles(args: {
     }
 > {
   const { request } = args;
-  const timeout = createTimeoutPromise();
 
   try {
-    const outputFiles = await Promise.race([
-      build({
-        entryPoints: ['__geulbat_inline_entry_wrapper__'],
-        bundle: true,
-        splitting: true,
-        write: false,
-        format: 'esm',
-        platform: 'browser',
-        target: ['es2022'],
-        outdir: '/out',
-        entryNames: 'entry',
-        chunkNames: 'chunks/[name]-[hash]',
-        assetNames: 'assets/[name]-[hash]',
-        logLevel: 'silent',
-        jsx: 'automatic',
-        plugins: [
-          createReactBundleInlinePlugin({
-            files: request.input.files,
-            entry: request.input.entry,
-          }),
-        ],
-      }),
-      timeout.promise,
-    ]);
+    const outputFiles = await build({
+      entryPoints: ['__geulbat_inline_entry_wrapper__'],
+      bundle: true,
+      splitting: true,
+      write: false,
+      format: 'esm',
+      platform: 'browser',
+      target: ['es2022'],
+      outdir: '/out',
+      entryNames: 'entry',
+      chunkNames: 'chunks/[name]-[hash]',
+      assetNames: 'assets/[name]-[hash]',
+      logLevel: 'silent',
+      jsx: 'automatic',
+      plugins: [
+        createReactBundleInlinePlugin({
+          files: request.input.files,
+          entry: request.input.entry,
+        }),
+      ],
+    });
 
     return {
       ok: true,
@@ -54,37 +49,7 @@ export async function buildReactBundleInlineOutputFiles(args: {
     };
   } catch (error: unknown) {
     return classifyBuildError(error);
-  } finally {
-    timeout.dispose();
   }
-}
-
-function createTimeoutPromise(): {
-  promise: Promise<never>;
-  dispose: () => void;
-} {
-  let activeHandle: NodeJS.Timeout | null = null;
-  const promise = new Promise<never>((_, reject) => {
-    activeHandle = setTimeout(() => {
-      reject(
-        Object.assign(
-          new Error(
-            `react bundle inline compile timed out after ${REACT_BUNDLE_INLINE_COMPILE_TIMEOUT_MS}ms`,
-          ),
-          { code: 'boot_failed' satisfies ReactBundleInlineCompileFailureCode },
-        ),
-      );
-    }, REACT_BUNDLE_INLINE_COMPILE_TIMEOUT_MS);
-  });
-
-  return {
-    promise,
-    dispose() {
-      if (activeHandle) {
-        clearTimeout(activeHandle);
-      }
-    },
-  };
 }
 
 function classifyBuildError(error: unknown): {

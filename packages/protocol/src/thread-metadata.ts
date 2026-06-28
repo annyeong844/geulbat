@@ -7,6 +7,7 @@ export type ThreadMessagePhase = (typeof THREAD_MESSAGE_PHASES)[number];
 
 export interface UserThreadMessageMetadata {
   hiddenPrompt: string;
+  source?: never;
   phase?: never;
   sourceRunId?: never;
   sourceFile?: never;
@@ -18,6 +19,7 @@ export interface CommentaryThreadMessageMetadata {
   phase: 'commentary';
   sourceRunId?: string;
   sourceFile?: string;
+  source?: never;
   hiddenPrompt?: never;
   artifactRefs?: never;
   activeArtifactRef?: never;
@@ -29,13 +31,25 @@ export interface FinalAnswerThreadMessageMetadata {
   sourceFile?: string;
   artifactRefs?: ArtifactRef[];
   activeArtifactRef?: ArtifactRef;
+  source?: never;
   hiddenPrompt?: never;
+}
+
+export interface InterjectThreadMessageMetadata {
+  source: 'interject';
+  phase?: never;
+  hiddenPrompt?: never;
+  sourceRunId?: never;
+  sourceFile?: never;
+  artifactRefs?: never;
+  activeArtifactRef?: never;
 }
 
 export type ThreadMessageMetadata =
   | UserThreadMessageMetadata
   | CommentaryThreadMessageMetadata
-  | FinalAnswerThreadMessageMetadata;
+  | FinalAnswerThreadMessageMetadata
+  | InterjectThreadMessageMetadata;
 
 const USER_METADATA_KEYS = ['hiddenPrompt'] as const;
 const COMMENTARY_METADATA_KEYS = [
@@ -50,6 +64,7 @@ const FINAL_ANSWER_METADATA_KEYS = [
   'artifactRefs',
   'activeArtifactRef',
 ] as const;
+const INTERJECT_METADATA_KEYS = ['source'] as const;
 
 export function isThreadMessagePhase(
   value: unknown,
@@ -65,6 +80,10 @@ export function isThreadMessageMetadata(
 ): value is ThreadMessageMetadata {
   if (!isRecord(value)) {
     return false;
+  }
+
+  if (value.source === 'interject') {
+    return hasOnlyMetadataKeys(value, INTERJECT_METADATA_KEYS);
   }
 
   if (value.phase === undefined) {

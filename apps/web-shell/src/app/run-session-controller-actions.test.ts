@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { RunRequest } from '@geulbat/protocol/run-contract';
+import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 
 import { brandProjectId, brandThreadId } from '../lib/id-brand-helpers.js';
 import {
@@ -21,7 +21,7 @@ function createStartActionHarness() {
   const optimisticPrompts: string[] = [];
   const logFailures: Array<{ logContext: string; message: string }> = [];
   let clearCalls = 0;
-  const startedRequests: RunRequest[] = [];
+  const startedRequests: RunStartRequest[] = [];
 
   return {
     dispatched,
@@ -30,7 +30,7 @@ function createStartActionHarness() {
     startedRequests,
     clearCalls: () => clearCalls,
     client: {
-      async start(request: RunRequest) {
+      async start(request: RunStartRequest) {
         startedRequests.push(request);
         return 'started';
       },
@@ -67,6 +67,17 @@ void test('sendPromptAction runs the shared run-start pipeline for prompt reques
     promptInputs,
     appendOptimisticUserMessage: harness.appendOptimisticUserMessage,
     logCommandFailure: harness.logCommandFailure,
+    prepareStartRequest: async (request) => ({
+      projectId: request.projectId,
+      ...(request.threadId !== undefined ? { threadId: request.threadId } : {}),
+      ...(request.currentFile !== undefined
+        ? { currentFile: request.currentFile }
+        : {}),
+      ...(request.permissionMode !== undefined
+        ? { permissionMode: request.permissionMode }
+        : {}),
+      promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
+    }),
   });
 
   assert.equal(harness.clearCalls(), 1);
@@ -76,11 +87,11 @@ void test('sendPromptAction runs the shared run-start pipeline for prompt reques
   ]);
   assert.deepEqual(harness.startedRequests, [
     {
-      prompt: 'Write the summary',
       projectId: BRANDED_PROJECT_ID,
       threadId: THREAD_ID,
       currentFile: 'notes/today.md',
       permissionMode: 'basic',
+      promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
     },
   ]);
   assert.deepEqual(harness.logFailures, []);
@@ -88,7 +99,7 @@ void test('sendPromptAction runs the shared run-start pipeline for prompt reques
 
 void test('startRunAction reuses the shared run-start pipeline and surfaces failures consistently', async () => {
   const harness = createStartActionHarness();
-  harness.client.start = async (request: RunRequest) => {
+  harness.client.start = async (request: RunStartRequest) => {
     harness.startedRequests.push(request);
     throw new Error('transport offline');
   };
@@ -107,6 +118,17 @@ void test('startRunAction reuses the shared run-start pipeline and surfaces fail
     appendOptimisticUserMessage: harness.appendOptimisticUserMessage,
     optimisticPrompt: 'fallback prompt',
     logCommandFailure: harness.logCommandFailure,
+    prepareStartRequest: async (request) => ({
+      projectId: request.projectId,
+      ...(request.displayPrompt !== undefined
+        ? { displayPrompt: request.displayPrompt }
+        : {}),
+      ...(request.threadId !== undefined ? { threadId: request.threadId } : {}),
+      ...(request.permissionMode !== undefined
+        ? { permissionMode: request.permissionMode }
+        : {}),
+      promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
+    }),
   });
 
   assert.equal(harness.clearCalls(), 1);
@@ -117,11 +139,11 @@ void test('startRunAction reuses the shared run-start pipeline and surfaces fail
   ]);
   assert.deepEqual(harness.startedRequests, [
     {
-      prompt: 'hidden prompt',
       displayPrompt: 'visible prompt',
       projectId: BRANDED_PROJECT_ID,
       threadId: THREAD_ID,
       permissionMode: 'full_access',
+      promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
     },
   ]);
   assert.deepEqual(harness.logFailures, [

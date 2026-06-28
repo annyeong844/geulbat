@@ -40,6 +40,42 @@ void test('isApprovalRequired remains open to custom approvalClass strings', () 
   );
 });
 
+void test('isApprovalRequired accepts optional PTC callback source payloads', () => {
+  assert.equal(
+    isApprovalRequired({
+      callId: 'call-parent::nested-1',
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      toolName: 'write_file',
+      approvalClass: 'write_file',
+      permissionMode: 'basic',
+      argumentsPreview: { path: 'draft.md' },
+      sideEffectLevel: 'write',
+      source: {
+        kind: 'ptc_callback',
+        parentCallId: 'call-parent',
+        runtimeToolCallId: 'runtime-call-1',
+        cellId: 'ptc_cell_runtime_1',
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isApprovalRequired({
+      callId: 'call-parent::nested-1',
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      toolName: 'write_file',
+      approvalClass: 'write_file',
+      permissionMode: 'basic',
+      argumentsPreview: { path: 'draft.md' },
+      sideEffectLevel: 'write',
+      source: { kind: 'ptc_callback', parentCallId: 'call-parent' },
+    }),
+    false,
+  );
+});
+
 void test('approvalClass uses a centralized normalized token guard', () => {
   assert.equal(isApprovalClass('write_file'), true);
   assert.equal(

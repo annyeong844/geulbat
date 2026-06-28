@@ -11,9 +11,13 @@ import {
 
 import {
   authHeaders,
+  createRouteTestDaemonContext,
+  getWorkspaceRootFromContext,
   withAuthenticatedDaemonServer,
 } from './test-support/http-routes.js';
 import { GENERATED_ROOT_ENV } from './daemon/react-bundle-inline/generated-assets.js';
+import { DEFAULT_PROJECT_ID } from './daemon/files/project-registry-state.js';
+import { readReactBundleInlineCompileInputRefPath } from './daemon/react-bundle-inline/input-ref-store.js';
 
 function assertReactBundleInlineCompileResponse(
   body: unknown,
@@ -85,6 +89,111 @@ void test('react bundle inline compile route returns generated manifest and serv
         /export\s*\{\s*geulbat_inline_entry_wrapper_default as default\s*\};/,
       );
       assert.match(entrySource, /geulbat-inline-style-/);
+    });
+  });
+});
+
+void test('react bundle inline compile route accepts streamed input refs beyond the JSON body cap', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  await withGeneratedRootEnv(async () => {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const filler = 'x'.repeat(300 * 1024);
+        const inlineInput = {
+          files: {
+            'src/App.jsx': [
+              `/* ${filler} */`,
+              'export default function App() { return <div id="heart">heart</div>; }',
+            ].join('\n'),
+          },
+          entry: 'src/App.jsx',
+        };
+
+        const uploadRes = await fetch(
+          `http://127.0.0.1:${port}/api/react-bundle-inline-compile/inputs?projectId=${DEFAULT_PROJECT_ID}`,
+          {
+            method: 'POST',
+            headers: authHeaders({
+              'Content-Type': 'text/plain;charset=UTF-8',
+            }),
+            body: JSON.stringify(inlineInput),
+          },
+        );
+
+        assert.equal(uploadRes.status, 201);
+        const uploadBody = (await uploadRes.json()) as {
+          ok: boolean;
+          inputRef: string;
+          byteLength: number;
+        };
+        assert.equal(uploadBody.ok, true);
+        assert.match(
+          uploadBody.inputRef,
+          /^react-bundle-inline-compile-input:/u,
+        );
+        assert.ok(uploadBody.byteLength > 256 * 1024);
+
+        const compileRes = await fetch(
+          `http://127.0.0.1:${port}/api/react-bundle-inline-compile?projectId=${DEFAULT_PROJECT_ID}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeaders(),
+            },
+            body: JSON.stringify({
+              renderer: 'react_bundle',
+              inputRef: uploadBody.inputRef,
+            }),
+          },
+        );
+
+        assert.equal(compileRes.status, 200);
+        const compileBody = (await compileRes.json()) as unknown;
+        assertReactBundleInlineCompileResponse(compileBody);
+        assert.equal(compileBody.ok, true);
+
+        assert.deepEqual(
+          await readReactBundleInlineCompileInputRefPath({
+            workspaceRoot,
+            inputRef: uploadBody.inputRef,
+          }),
+          {
+            ok: false,
+            code: 'not_found',
+            message: 'inputRef was not found.',
+          },
+        );
+      },
+      { daemonContext },
+    );
+  });
+});
+
+void test('react bundle inline compile input upload rejects JSON content type', async () => {
+  await withAuthenticatedDaemonServer(async ({ port }) => {
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/react-bundle-inline-compile/inputs?projectId=${DEFAULT_PROJECT_ID}`,
+      {
+        method: 'POST',
+        headers: authHeaders({
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({
+          files: {
+            'src/App.jsx': 'export default function App() { return null; }',
+          },
+          entry: 'src/App.jsx',
+        }),
+      },
+    );
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), {
+      code: 'bad_request',
+      message:
+        'react bundle inline compile input upload must use a streaming content type',
     });
   });
 });

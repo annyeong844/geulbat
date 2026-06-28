@@ -22,7 +22,6 @@ import { buildReactBundleArtifactRuntimePayload } from '../src/features/artifact
 import {
   ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
   ARTIFACT_RUNTIME_HOST_READY_ACTION,
-  ARTIFACT_RUNTIME_HOST_BOOT_ACTION,
   createArtifactRuntimeHostBootMessage,
   DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN,
 } from '../src/features/assistant/runtime-frame/artifact-runtime-host.ts';

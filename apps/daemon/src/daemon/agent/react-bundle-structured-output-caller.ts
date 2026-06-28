@@ -7,6 +7,7 @@ import {
   type ReactBundleExplicitCdnArtifactIngressResult,
 } from './react-bundle-explicit-cdn-artifact-ingress.js';
 import type { AgentResult } from './agent-result.js';
+import type { ReactBundleStructuredOutputIngressPolicy } from './react-bundle-structured-output-ingress-policy.js';
 
 export type ReactBundleStructuredOutputCallerFailureReason =
   | 'structured_output_invalid'
@@ -42,7 +43,8 @@ export async function runReactBundleStructuredOutputCaller(args: {
   store: SandboxAttemptStore;
   structuredOutputs: ProviderStructuredOutput[];
   functionCalls: FunctionCall[];
-  timeoutMs: number;
+  ingressPolicy?: ReactBundleStructuredOutputIngressPolicy;
+  timeoutMs?: number;
   signal?: AbortSignal;
   now?: () => string;
   probeTransport?: Parameters<RunIngress>[0]['probeTransport'];
@@ -88,8 +90,11 @@ export async function runReactBundleStructuredOutputCaller(args: {
     workspaceRoot: args.workspaceRoot,
     store: args.store,
     request: request.value,
-    timeoutMs: args.timeoutMs,
   };
+  const timeoutMs = args.timeoutMs ?? args.ingressPolicy?.timeoutMs;
+  if (timeoutMs !== undefined) {
+    ingressArgs.timeoutMs = timeoutMs;
+  }
   if (args.signal !== undefined) {
     ingressArgs.signal = args.signal;
   }

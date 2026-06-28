@@ -5,12 +5,17 @@ import type { BackgroundNotificationQueue } from '../../../daemon/agent/runtime/
 import type { ActiveRunStore } from '../../../daemon/sessions/active-runs.js';
 
 type RunChannelActiveRuns = AgentRuntimeServices['activeRuns'] &
-  Pick<ActiveRunStore, 'abortThreadTree' | 'getRunById'>;
+  Pick<
+    ActiveRunStore,
+    'abortThreadTree' | 'appendPendingInterject' | 'getRunById'
+  >;
 
 type RunChannelApprovalGate = AgentRuntimeServices['approvalGate'] &
   Pick<
     ApprovalGate,
-    'clearApprovalSessionGrants' | 'hasPendingApproval' | 'resolveApproval'
+    | 'clearApprovalSessionRuntime'
+    | 'hasPendingApprovalForSession'
+    | 'resolveApproval'
   >;
 
 type RunChannelBackgroundNotifications =

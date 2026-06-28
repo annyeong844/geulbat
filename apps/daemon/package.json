@@ -25,6 +25,7 @@
     "test:clean": "node -e \"const fs=require('node:fs'); fs.rmSync('./dist-test', { recursive: true, force: true }); fs.rmSync('./tsconfig.test.tsbuildinfo', { force: true }); fs.rmSync('./coverage', { recursive: true, force: true });\"",
     "test:prepare:app": "npm run test:clean && tsc -p ./tsconfig.test.json && node ./scripts/sync-package-imports.mjs dist-test",
     "test:prepare": "npm run build:deps && npm run test:prepare:app",
+    "test:e2e:ptc-browser": "npm run test:prepare:app && node --test \"./dist-test/daemon/ptc/runtime/browser/*e2e.test.js\"",
     "test:app": "npm run test:prepare:app && node --test \"./dist-test/**/*.test.js\"",
     "test": "npm run test:prepare && node --test \"./dist-test/**/*.test.js\"",
     "test:cov": "npm run test:prepare && npx --yes node@24 ../../node_modules/c8/bin/c8.js --check-coverage --statements 91 --branches 82 --functions 90 --lines 91 --reporter=text-summary --reporter=lcov --reports-dir coverage/daemon --all --src src --exclude \"src/**/*.test.ts\" node --test \"./dist-test/**/*.test.js\"",

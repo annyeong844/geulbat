@@ -1,5 +1,5 @@
 // Shared target contracts for the public file-platform facade and its target resolvers.
-import type { ArtifactRuntimePersistenceScopeRequest } from '@geulbat/protocol/runtime-persistence';
+import type { ArtifactRuntimePersistenceScopeRequest } from './contract.js';
 
 export type FilePlatformMode = 'read' | 'mutate' | 'enumerate' | 'persist';
 type FilePlatformKind =

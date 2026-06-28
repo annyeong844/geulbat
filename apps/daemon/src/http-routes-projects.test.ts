@@ -16,6 +16,7 @@ import {
   getDefaultProjectRenameConflictMessage,
 } from '@geulbat/protocol/projects';
 
+import { createRunInterjectBuffer } from './daemon/sessions/active-run-interject-buffer.js';
 import { DEFAULT_PROJECT_ID } from './daemon/files/project-registry-state.js';
 import type { ProjectStore } from './daemon/files/project-store.js';
 import { hasErrorCode } from './daemon/utils/error.js';
@@ -332,6 +333,7 @@ void test('authenticated projects delete route rejects active-run projects', asy
       workspaceRoot: getWorkspaceRootFromContext(daemonContext, projectId),
       ownerThreadId: threadId,
       abortController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-28T00:00:00.000Z',
     }),
     { ok: true },

@@ -17,6 +17,7 @@ const THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000001');
 
 void test('artifact source ref helpers assemble transcript, streaming, and committed source refs', () => {
   const message: ThreadMessage = {
+    entryId: 'entry-transcript-artifact-source',
     role: 'assistant',
     content: '',
     timestamp: '2026-04-12T00:00:00.000Z',

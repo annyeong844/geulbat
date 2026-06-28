@@ -1,6 +1,6 @@
 import { mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ProjectId } from '@geulbat/protocol/ids';
+import type { ProjectId } from './contract.js';
 import { hasErrorCode } from '../utils/error.js';
 
 export async function ensureProjectRootDirectory(args: {

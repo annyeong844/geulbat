@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { isRecord, tryParseJson } from '@geulbat/protocol/runtime-utils';
+import { isRecord, tryParseJson } from '../runtime-json.js';
 import type { ErrorCode } from '../error-codes.js';
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
 import { getErrorCode } from '../utils/error.js';
@@ -22,6 +22,7 @@ export interface ToolOutputSnapshot {
   fullOutputChars: number;
   output: string;
   source?: {
+    path?: string;
     query?: string;
     url?: string;
     finalUrl?: string;

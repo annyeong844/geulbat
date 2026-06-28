@@ -10,6 +10,7 @@ import type { RunId, ThreadId } from '@geulbat/protocol/ids';
 export {
   SUBAGENT_TYPES,
   isAgentChildTerminalState,
+  isAgentLaunchToolRaw,
   isSubagentType,
 } from '@geulbat/protocol/run-events';
 export type {

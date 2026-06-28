@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
+import type { RunInterjectRequest } from '@geulbat/protocol/run-channel';
 
 import { testRunId } from '../../../test-support/run-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import {
   readRunApproveRequest,
   readRunCancelRequest,
+  readRunInterjectRequest,
 } from './run-channel-control-request.js';
 
 const RUN_ID = testRunId(1);
@@ -28,6 +30,16 @@ function approvalRequest(
     grantScope: 'once',
     ...overrides,
   } as unknown as ApprovalRequest;
+}
+
+function interjectRequest(
+  overrides: Partial<Record<keyof RunInterjectRequest, unknown>> = {},
+): Record<string, unknown> {
+  return {
+    runId: RUN_ID,
+    text: 'please adjust this run',
+    ...overrides,
+  };
 }
 
 void test('readRunCancelRequest rejects empty runId', () => {
@@ -80,6 +92,50 @@ void test('readRunApproveRequest accepts valid approval request', () => {
       threadId: THREAD_ID,
       approved: true,
       grantScope: 'session',
+    },
+  );
+});
+
+void test('readRunInterjectRequest rejects malformed request objects', () => {
+  assert.deepEqual(readRunInterjectRequest(null), {
+    ok: false,
+    message: 'request must be an object',
+  });
+  assert.deepEqual(readRunInterjectRequest([]), {
+    ok: false,
+    message: 'request must be an object',
+  });
+});
+
+void test('readRunInterjectRequest rejects missing required fields', () => {
+  assert.deepEqual(readRunInterjectRequest(interjectRequest({ runId: '' })), {
+    ok: false,
+    message: 'runId is required',
+  });
+  assert.deepEqual(
+    readRunInterjectRequest(interjectRequest({ runId: 'bad run id' })),
+    {
+      ok: false,
+      message: 'runId is required',
+    },
+  );
+  assert.deepEqual(readRunInterjectRequest(interjectRequest({ text: '' })), {
+    ok: false,
+    message: 'text is required',
+  });
+  assert.deepEqual(readRunInterjectRequest(interjectRequest({ text: '   ' })), {
+    ok: false,
+    message: 'text is required',
+  });
+});
+
+void test('readRunInterjectRequest accepts a valid request without trimming text', () => {
+  assert.deepEqual(
+    readRunInterjectRequest(interjectRequest({ text: '  keep this  ' })),
+    {
+      ok: true,
+      runId: RUN_ID,
+      text: '  keep this  ',
     },
   );
 });

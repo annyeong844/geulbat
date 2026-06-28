@@ -10,31 +10,67 @@ import {
 } from '../../files/text-content.js';
 import { defineZodTool } from '../zod-tool.js';
 
+const patchFilePathSchema = z
+  .string()
+  .min(1, 'path is required.')
+  .refine((value) => value.trim().length > 0, {
+    message: 'path must not be empty.',
+  })
+  .describe('The path to the file to patch, relative to the workspace root.');
+
+const patchFileNewStringSchema = z
+  .string()
+  .describe('The string to replace old_string with.');
+
+const patchFileVersionTokenSchema = z
+  .string()
+  .refine((value) => value.trim().length > 0, {
+    message: 'versionToken must not be empty.',
+  })
+  .optional()
+  .describe('Version token from a previous read, for conflict detection.');
+
 const patchFileArgsSchema = z.strictObject({
-  path: z
-    .string()
-    .min(1, 'path is required.')
-    .describe('The path to the file to patch, relative to the workspace root.'),
+  path: patchFilePathSchema,
   old_string: z
     .string()
     .describe(
       'The exact string to find in the file. Must match exactly one location. Empty string appends to end of file.',
     ),
-  new_string: z.string().describe('The string to replace old_string with.'),
-  versionToken: z
-    .string()
-    .optional()
-    .describe('Version token from a previous read, for conflict detection.'),
+  new_string: patchFileNewStringSchema,
+  versionToken: patchFileVersionTokenSchema,
 });
+
+const patchFileParametersSchema = z.union([
+  z.strictObject({
+    path: patchFilePathSchema,
+    old_string: z
+      .literal('')
+      .describe('Append mode marker. Empty old_string appends to the file.'),
+    new_string: patchFileNewStringSchema,
+    versionToken: patchFileVersionTokenSchema,
+  }),
+  z.strictObject({
+    path: patchFilePathSchema,
+    old_string: z
+      .string()
+      .min(1)
+      .describe(
+        'The exact non-empty string to find. Must match exactly one location.',
+      ),
+    new_string: patchFileNewStringSchema,
+    versionToken: patchFileVersionTokenSchema,
+  }),
+]);
 
 export const patchFileTool = defineZodTool({
   name: 'patch_file',
   description:
     'Apply a patch to an existing file. Performs a search-and-replace operation, replacing the old_string with new_string. The old_string must match exactly one location in the file.',
   argsSchema: patchFileArgsSchema,
+  parametersSchema: patchFileParametersSchema,
   sideEffectLevel: 'write',
   mayMutateWorkspaceFiles: true,
-  timeoutMs: 10_000,
   requiresApproval: true,
   async executeParsed(args, ctx) {
     const inputPath = args.path;

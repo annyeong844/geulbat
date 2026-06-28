@@ -1,4 +1,7 @@
-import { assertProjectId, type ProjectId } from '@geulbat/protocol/ids';
+import {
+  assertFileProjectId as assertProjectId,
+  type ProjectId,
+} from './contract.js';
 
 const PROJECT_ID_MAX_LENGTH = 128;
 const DEFAULT_PROJECT_ID_BASE = 'project';

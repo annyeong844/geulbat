@@ -96,7 +96,7 @@ void test('parseResponseEvents rejects missing phase at item.done instead of dow
   assert.deepEqual(deltas, []);
 });
 
-void test('parseResponseEvents caps oversized provider error messages', async () => {
+void test('parseResponseEvents preserves oversized provider error messages', async () => {
   const oversized = 'x'.repeat(700);
 
   await assert.rejects(
@@ -114,8 +114,7 @@ void test('parseResponseEvents caps oversized provider error messages', async ()
     ),
     (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.ok(error.message.endsWith('...(truncated)'));
-      assert.ok(error.message.length <= 515);
+      assert.equal(error.message, oversized);
       return true;
     },
   );

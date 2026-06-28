@@ -1,9 +1,9 @@
 import { resolve } from 'node:path';
 import {
-  DEFAULT_PROJECT_ID as PROTOCOL_DEFAULT_PROJECT_ID,
+  DEFAULT_FILE_PROJECT_ID,
   type ProjectId,
-} from '@geulbat/protocol/ids';
-import type { ProjectListItem } from '@geulbat/protocol/projects';
+  type ProjectListItem,
+} from './contract.js';
 import { readDefaultRepoRoot } from '../../repo-root.js';
 
 interface ProjectRegistryEntry extends ProjectListItem {
@@ -23,7 +23,7 @@ export interface ProjectRegistryStore {
 
 const SEED_PROJECTS: readonly ProjectListItem[] = [
   {
-    projectId: PROTOCOL_DEFAULT_PROJECT_ID,
+    projectId: DEFAULT_FILE_PROJECT_ID,
     label: 'Workspace',
   },
   {

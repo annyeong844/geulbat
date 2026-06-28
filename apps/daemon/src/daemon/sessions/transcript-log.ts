@@ -1,9 +1,14 @@
-import { tryParseJsonWithGuard } from '@geulbat/protocol/runtime-utils';
+import { randomUUID } from 'node:crypto';
+import { sha256StableJson } from '@geulbat/shared-utils/stable-json';
+import { isRecord, tryParseJson } from '../runtime-json.js';
 import { appendFile, mkdir, readFile, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { threadFilePath } from './paths.js';
-import { isThreadMessage } from '@geulbat/protocol/threads';
-import type { ThreadMessage } from '@geulbat/protocol/threads';
+import {
+  isSessionThreadMessage as isThreadMessage,
+  type ThreadMessage,
+  type ThreadMessageInput,
+} from './contract.js';
 import { hasErrorCode } from '../utils/error.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
@@ -24,6 +29,25 @@ export class TranscriptCorruptionError extends Error {
     this.name = 'TranscriptCorruptionError';
     this.threadId = threadId;
     this.lineNumber = lineNumber;
+  }
+}
+
+export class CompareAndAppendMismatchError extends Error {
+  readonly code = 'compare_and_append_mismatch';
+  readonly threadId: string;
+  readonly expectedLastEntryId: string;
+  readonly actualLastEntryId: string | null;
+
+  constructor(args: {
+    threadId: string;
+    expectedLastEntryId: string;
+    actualLastEntryId: string | null;
+  }) {
+    super(`transcript ${args.threadId} changed before append`);
+    this.name = 'CompareAndAppendMismatchError';
+    this.threadId = args.threadId;
+    this.expectedLastEntryId = args.expectedLastEntryId;
+    this.actualLastEntryId = args.actualLastEntryId;
   }
 }
 
@@ -63,23 +87,66 @@ function readCachedTranscriptEntryCacheEntry(
 export async function appendTranscriptEntry(
   workspaceRoot: string,
   threadId: string,
-  entry: TranscriptEntry,
-): Promise<void> {
+  entry: ThreadMessageInput,
+  options: { expectedLastEntryId?: string } = {},
+): Promise<TranscriptEntry> {
   const filePath = threadFilePath(workspaceRoot, threadId);
-  await runTranscriptAppendSerial(filePath, async () => {
+  return await runTranscriptAppendSerial(filePath, async () => {
     await mkdir(dirname(filePath), { recursive: true });
-    await appendFile(filePath, JSON.stringify(entry) + '\n', 'utf8');
     const cached = transcriptEntryCache.get(filePath);
+    const cacheMatchesFileBeforeAppend =
+      cached === undefined
+        ? false
+        : await transcriptCacheMatchesCurrentFile(filePath, cached);
+    if (options.expectedLastEntryId !== undefined) {
+      const currentEntries = await readTranscriptEntriesFromDisk(
+        filePath,
+        threadId,
+      );
+      const actualLastEntryId =
+        currentEntries.length === 0
+          ? null
+          : (currentEntries[currentEntries.length - 1]?.entryId ?? null);
+      if (actualLastEntryId !== options.expectedLastEntryId) {
+        throw new CompareAndAppendMismatchError({
+          threadId,
+          expectedLastEntryId: options.expectedLastEntryId,
+          actualLastEntryId,
+        });
+      }
+    }
+    const normalizedEntry = normalizeTranscriptEntryInput(entry);
+    await appendFile(filePath, JSON.stringify(normalizedEntry) + '\n', 'utf8');
     if (!cached) {
-      return;
+      return normalizedEntry;
+    }
+    if (!cacheMatchesFileBeforeAppend) {
+      transcriptEntryCache.delete(filePath);
+      return normalizedEntry;
     }
     const snapshot = await stat(filePath);
     setTranscriptEntryCacheEntry(filePath, {
-      entries: [...cached.entries, entry],
+      entries: [...cached.entries, normalizedEntry],
       mtimeMs: snapshot.mtimeMs,
       size: snapshot.size,
     });
+    return normalizedEntry;
   });
+}
+
+async function transcriptCacheMatchesCurrentFile(
+  filePath: string,
+  cached: TranscriptEntryCacheEntry,
+): Promise<boolean> {
+  try {
+    const snapshot = await stat(filePath);
+    return cached.mtimeMs === snapshot.mtimeMs && cached.size === snapshot.size;
+  } catch (err: unknown) {
+    if (hasErrorCode(err, 'ENOENT')) {
+      return false;
+    }
+    throw err;
+  }
 }
 
 export async function readTranscriptEntries(
@@ -107,8 +174,7 @@ export async function readTranscriptEntries(
     return [...cached.entries];
   }
 
-  const raw = await readFile(filePath, 'utf8');
-  const entries = parseTranscriptEntries(raw, threadId);
+  const entries = await readTranscriptEntriesFromDisk(filePath, threadId);
   setTranscriptEntryCacheEntry(filePath, {
     entries,
     mtimeMs: snapshot.mtimeMs,
@@ -120,18 +186,19 @@ export async function readTranscriptEntries(
 export async function replaceTranscriptEntries(
   workspaceRoot: string,
   threadId: string,
-  entries: readonly TranscriptEntry[],
+  entries: readonly ThreadMessageInput[],
 ): Promise<void> {
   const filePath = threadFilePath(workspaceRoot, threadId);
   await runTranscriptAppendSerial(filePath, async () => {
     await mkdir(dirname(filePath), { recursive: true });
+    const normalizedEntries = entries.map(normalizeTranscriptEntryInput);
     const body =
-      entries.map((entry) => JSON.stringify(entry)).join('\n') +
-      (entries.length > 0 ? '\n' : '');
+      normalizedEntries.map((entry) => JSON.stringify(entry)).join('\n') +
+      (normalizedEntries.length > 0 ? '\n' : '');
     await writeTextFileAtomically(filePath, body);
     const snapshot = await stat(filePath);
     setTranscriptEntryCacheEntry(filePath, {
-      entries: [...entries],
+      entries: [...normalizedEntries],
       mtimeMs: snapshot.mtimeMs,
       size: snapshot.size,
     });
@@ -153,13 +220,89 @@ function parseTranscriptEntries(
   const entries: TranscriptEntry[] = [];
   for (const [lineIndex, line] of raw.split('\n').entries()) {
     if (!line.trim()) continue;
-    const parsed = tryParseJsonWithGuard(line, isThreadMessage);
+    const parsed = tryParseJson(line);
     if (!parsed.ok) {
       throw new TranscriptCorruptionError(threadId, lineIndex + 1);
     }
-    entries.push(parsed.value);
+    const entry = normalizeTranscriptEntry(
+      parsed.value,
+      threadId,
+      lineIndex + 1,
+    );
+    if (!entry.ok) {
+      throw new TranscriptCorruptionError(threadId, lineIndex + 1);
+    }
+    entries.push(entry.value);
   }
   return entries;
+}
+
+async function readTranscriptEntriesFromDisk(
+  filePath: string,
+  threadId: string,
+): Promise<TranscriptEntry[]> {
+  let raw: string;
+  try {
+    raw = await readFile(filePath, 'utf8');
+  } catch (err: unknown) {
+    if (hasErrorCode(err, 'ENOENT')) {
+      return [];
+    }
+    throw err;
+  }
+  return parseTranscriptEntries(raw, threadId);
+}
+
+function normalizeTranscriptEntry(
+  value: unknown,
+  threadId: string,
+  lineNumber: number,
+): { ok: true; value: TranscriptEntry } | { ok: false } {
+  if (!isRecord(value)) {
+    return { ok: false };
+  }
+  const entryId =
+    typeof value.entryId === 'string' && value.entryId.trim() !== ''
+      ? value.entryId
+      : resolveEntryId(value, threadId, lineNumber);
+  const candidate = { ...value, entryId };
+  return isThreadMessage(candidate)
+    ? { ok: true, value: candidate }
+    : { ok: false };
+}
+
+function normalizeTranscriptEntryInput(
+  entry: ThreadMessageInput,
+): TranscriptEntry {
+  if (entry.role === 'compaction') {
+    return {
+      ...entry,
+      entryId: entry.entryId ?? randomUUID(),
+    };
+  }
+  return {
+    ...entry,
+    entryId: entry.entryId ?? randomUUID(),
+  };
+}
+
+export function resolveEntryId(
+  entry: Record<string, unknown>,
+  threadId: string,
+  lineNumber: number,
+): string {
+  const digest = sha256StableJson(canonicalizeLegacyEntryForId(entry)).slice(
+    0,
+    16,
+  );
+  return `${threadId}:${lineNumber}:${digest}`;
+}
+
+function canonicalizeLegacyEntryForId(
+  entry: Record<string, unknown>,
+): Record<string, unknown> {
+  const { entryId: _entryId, ...rest } = entry;
+  return rest;
 }
 
 export function isTranscriptCorruptionError(

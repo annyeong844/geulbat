@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { sha256Hex } from './sha256.js';
 
 export interface StableJsonOptions {
   omitUndefinedObjectKeys?: boolean;
@@ -31,7 +31,5 @@ export function sha256StableJson(
   value: unknown,
   options: StableJsonOptions = {},
 ): string {
-  return createHash('sha256')
-    .update(stableStringify(value, options), 'utf8')
-    .digest('hex');
+  return sha256Hex(stableStringify(value, options));
 }

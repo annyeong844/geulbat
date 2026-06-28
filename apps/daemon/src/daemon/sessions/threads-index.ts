@@ -1,6 +1,9 @@
-import { isPlainRecord } from '@geulbat/protocol/runtime-utils';
-import { isProjectId, isThreadId } from '@geulbat/protocol/ids';
-import type { ThreadSummary } from '@geulbat/protocol/threads';
+import { isPlainRecord } from '../runtime-json.js';
+import {
+  isSessionProjectId as isProjectId,
+  isSessionThreadId as isThreadId,
+  type ThreadSummary,
+} from './contract.js';
 import { readFile } from 'node:fs/promises';
 import { indexFilePath } from './paths.js';
 import { hasErrorCode } from '../utils/error.js';
@@ -28,8 +31,6 @@ interface SkippedThreadIndexEntryDiagnostic {
   entryIndex: number;
   reasonCode: ThreadIndexEntryParseReason;
 }
-
-const MAX_SKIPPED_ENTRY_DIAGNOSTICS = 20;
 
 export function createThreadIndexStore(
   options: {
@@ -134,13 +135,6 @@ export async function loadThreadIndex(
   options?: LoadThreadIndexOptions,
 ): Promise<ThreadSummary[]> {
   return defaultThreadIndexStore.loadThreadIndex(workspaceRoot, options);
-}
-
-export async function saveThreadIndex(
-  workspaceRoot: string,
-  entries: ThreadSummary[],
-): Promise<void> {
-  await defaultThreadIndexStore.saveThreadIndex(workspaceRoot, entries);
 }
 
 export async function upsertThreadSummary(
@@ -276,11 +270,7 @@ function readThreadIndexEntryParseReason(
 function formatSkippedThreadIndexEntryDiagnostics(
   diagnostics: readonly SkippedThreadIndexEntryDiagnostic[],
 ): string {
-  const formatted = diagnostics
-    .slice(0, MAX_SKIPPED_ENTRY_DIAGNOSTICS)
-    .map((diagnostic) => `${diagnostic.entryIndex}:${diagnostic.reasonCode}`);
-  const remainingCount = diagnostics.length - formatted.length;
-  return remainingCount > 0
-    ? `${formatted.join(',')},+${remainingCount}`
-    : formatted.join(',');
+  return diagnostics
+    .map((diagnostic) => `${diagnostic.entryIndex}:${diagnostic.reasonCode}`)
+    .join(',');
 }

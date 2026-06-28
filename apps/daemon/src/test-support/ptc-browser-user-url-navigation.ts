@@ -1,22 +1,20 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import {
-  PTC_LAB_BROWSER_USER_URL_NAVIGATION_RUNTIME_SCRIPT,
-  type PtcLabBrowserUserUrlNavigationChecks,
-} from '../daemon/ptc/lab-browser-user-url-navigation-contract.js';
+import type { PtcLabBrowserUserUrlNavigationChecks } from '../daemon/ptc/lab/browser/user-url-navigation/lab-browser-user-url-navigation-contract.js';
+import { PTC_LAB_BROWSER_USER_URL_NAVIGATION_RUNTIME_SCRIPT } from '../daemon/ptc/lab/browser/core/lab-browser-runtime-script.js';
 import {
   PTC_LAB_BROWSER_USER_URL_NAVIGATION_CAPABILITY,
   type PtcLabBrowserUserUrlNavigationRequest,
-} from '../daemon/ptc/lab-browser-url-navigation.js';
-import { createPtcLabBrowserUserUrlNavigationPolicy } from '../daemon/ptc/lab-browser-policy.js';
-import { PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT } from '../daemon/ptc/session-docker-contract.js';
+} from '../daemon/ptc/lab/browser/core/lab-browser-url-navigation.js';
+import { createPtcLabBrowserUserUrlNavigationPolicy } from '../daemon/ptc/lab/browser/core/lab-browser-policy.js';
+import { PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT } from '../daemon/ptc/lab/session/session-docker-contract.js';
 import {
   type PtcSessionDockerCommandInvocation,
   type PtcSessionDockerCommandResult,
   type PtcSessionDockerIdentity,
   type PtcSessionDockerPolicy,
-} from '../daemon/ptc/session-docker-contract.js';
+} from '../daemon/ptc/lab/session/session-docker-contract.js';
 import {
   PTC_TEST_SESSION_DOCKER_CONTAINER_ID,
   readPtcSessionDockerBindMountHostPath,

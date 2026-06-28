@@ -4,6 +4,7 @@ import type { RunId } from '@geulbat/protocol/ids';
 import { bootstrapDaemonContext } from '../../../bootstrap-daemon-context.js';
 import { createDaemonContext } from '../../../daemon/context.js';
 import { startManagedRun } from '../../../daemon/agent/runtime/managed-run.js';
+import { MID_RUN_STEER_ENABLED_ENV } from '../../../daemon/agent/mid-run-steer-flag.js';
 import {
   cleanupSocketState,
   getSocketState,
@@ -365,6 +366,121 @@ void test('handleClientMessage rejects a second same-socket run.start while anot
   } finally {
     cleanupSocketState(socket, daemonContext);
     restoreEnv('GEULBAT_DEV_TOKEN', previousDevToken);
+  }
+});
+
+void test('handleClientMessage preserves requestId when run.interject is not yet enabled', async () => {
+  const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
+  const previousMidRunSteer = process.env[MID_RUN_STEER_ENABLED_ENV];
+  process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
+  restoreEnv(MID_RUN_STEER_ENABLED_ENV, undefined);
+  const daemonContext = createDaemonContext();
+  const socket = createTestSocket();
+
+  try {
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'run.auth',
+        requestId: 'auth-interject-disabled',
+        token: TEST_DEV_TOKEN,
+      }),
+      daemonContext,
+    );
+
+    clearSentMessages(socket);
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'run.interject',
+        requestId: 'interject-disabled',
+        request: {
+          runId: 'run-interject-disabled',
+          text: 'please steer this run',
+        },
+      }),
+      daemonContext,
+    );
+
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.error',
+      requestId: 'interject-disabled',
+      status: 503,
+      code: 'bad_request',
+      message: 'mid-run steer is not enabled',
+    });
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+    restoreEnv('GEULBAT_DEV_TOKEN', previousDevToken);
+    restoreEnv(MID_RUN_STEER_ENABLED_ENV, previousMidRunSteer);
+  }
+});
+
+void test('handleClientMessage routes enabled run.interject to the active run buffer', async () => {
+  const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
+  const previousMidRunSteer = process.env[MID_RUN_STEER_ENABLED_ENV];
+  process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
+  process.env[MID_RUN_STEER_ENABLED_ENV] = '1';
+  const daemonContext = createDaemonContext();
+  const socket = createTestSocket();
+  const threadId = testThreadId(142);
+  const startedRun = startManagedRun(
+    {
+      runId: 'interject-dispatch-owned',
+      runContext: {
+        threadId,
+        projectId: testProjectId(),
+        workspaceRoot: process.cwd(),
+      },
+    },
+    { activeRuns: daemonContext.activeRuns },
+  );
+  if (!startedRun.ok) {
+    assert.fail(`expected run to start; active run: ${startedRun.activeRunId}`);
+  }
+
+  try {
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'run.auth',
+        requestId: 'auth-interject-enabled',
+        token: TEST_DEV_TOKEN,
+      }),
+      daemonContext,
+    );
+    getSocketState(socket).activeRunIds.add(startedRun.runId);
+
+    clearSentMessages(socket);
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'run.interject',
+        requestId: 'interject-enabled',
+        request: {
+          runId: startedRun.runId,
+          text: 'route this into the live run',
+        },
+      }),
+      daemonContext,
+    );
+
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.control',
+      requestId: 'interject-enabled',
+      action: 'run.interject',
+      ok: true,
+      receivedSeq: 1,
+      bufferDepth: 1,
+    });
+    assert.deepEqual(startedRun.runState.interject.items, [
+      { receivedSeq: 1, text: 'route this into the live run' },
+    ]);
+  } finally {
+    startedRun.finish();
+    cleanupSocketState(socket, daemonContext);
+    restoreEnv('GEULBAT_DEV_TOKEN', previousDevToken);
+    restoreEnv(MID_RUN_STEER_ENABLED_ENV, previousMidRunSteer);
   }
 });
 

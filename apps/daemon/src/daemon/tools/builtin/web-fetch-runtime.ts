@@ -2,12 +2,6 @@ import { Buffer } from 'node:buffer';
 import http from 'node:http';
 import https from 'node:https';
 import {
-  WEB_FETCH_MAX_REDIRECTS,
-  WEB_FETCH_MAX_RESPONSE_BYTES,
-  WEB_FETCH_REQUEST_TIMEOUT_MS,
-  WEB_FETCH_TOTAL_TIMEOUT_MS,
-} from './web-fetch-policy.js';
-import {
   guardedLookupPublicAddress,
   parseWebFetchHttpUrl,
 } from './web-fetch-url-guard.js';
@@ -42,26 +36,20 @@ export type WebFetchTransport = (
   options: {
     lookup?: WebFetchLookup;
     signal?: AbortSignal;
-    timeoutMs?: number;
   },
 ) => Promise<WebFetchHttpResponse>;
 
 export async function fetchWebUrl(args: {
   url: string;
   extractMode: WebFetchExtractMode;
-  maxChars: number;
   lookup?: WebFetchLookup;
   signal?: AbortSignal;
-  now?: () => number;
   requestWebFetchUrl?: WebFetchTransport;
 }): Promise<WebFetchOutput> {
-  const now = args.now ?? Date.now;
   return fetchWebUrlWithRedirects({
     ...args,
     originalUrl: args.url,
-    redirectsRemaining: WEB_FETCH_MAX_REDIRECTS,
-    totalDeadlineMs: now() + WEB_FETCH_TOTAL_TIMEOUT_MS,
-    now,
+    visitedUrls: new Set<string>(),
     requestWebFetchUrl: args.requestWebFetchUrl ?? requestWebFetchUrl,
   });
 }
@@ -70,24 +58,11 @@ async function fetchWebUrlWithRedirects(args: {
   originalUrl: string;
   url: string;
   extractMode: WebFetchExtractMode;
-  maxChars: number;
-  redirectsRemaining: number;
-  totalDeadlineMs: number;
-  now: () => number;
+  visitedUrls: ReadonlySet<string>;
   lookup?: WebFetchLookup;
   signal?: AbortSignal;
   requestWebFetchUrl: WebFetchTransport;
 }): Promise<WebFetchOutput> {
-  const remainingTimeoutMs = args.totalDeadlineMs - args.now();
-  if (remainingTimeoutMs <= 0) {
-    return webFetchFailure({
-      url: args.originalUrl,
-      finalUrl: args.url,
-      reasonCode: 'timeout',
-      message: 'web_fetch total timeout exceeded.',
-    });
-  }
-
   const parsed = parseWebFetchHttpUrl(args.url);
   if (!parsed.ok) {
     return webFetchFailure({
@@ -99,12 +74,22 @@ async function fetchWebUrlWithRedirects(args: {
     });
   }
 
+  if (args.visitedUrls.has(parsed.url.href)) {
+    return webFetchFailure({
+      url: args.originalUrl,
+      finalUrl: parsed.url.href,
+      reasonCode: 'redirect_loop_detected',
+      message: 'web_fetch redirect loop detected.',
+    });
+  }
+  const visitedUrls = new Set(args.visitedUrls);
+  visitedUrls.add(parsed.url.href);
+
   let response: WebFetchHttpResponse;
   try {
     response = await args.requestWebFetchUrl(parsed.url, {
       ...(args.lookup ? { lookup: args.lookup } : {}),
       ...(args.signal ? { signal: args.signal } : {}),
-      timeoutMs: Math.min(WEB_FETCH_REQUEST_TIMEOUT_MS, remainingTimeoutMs),
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -122,15 +107,6 @@ async function fetchWebUrlWithRedirects(args: {
   }
 
   if (isRedirectStatus(response.status) && response.location) {
-    if (args.redirectsRemaining <= 0) {
-      return webFetchFailure({
-        url: args.originalUrl,
-        finalUrl: parsed.url.href,
-        reasonCode: 'redirect_limit_exceeded',
-        message: 'web_fetch redirect count exceeded.',
-      });
-    }
-
     let nextUrl: string;
     try {
       nextUrl = new URL(response.location, parsed.url).href;
@@ -146,7 +122,7 @@ async function fetchWebUrlWithRedirects(args: {
     return fetchWebUrlWithRedirects({
       ...args,
       url: nextUrl,
-      redirectsRemaining: args.redirectsRemaining - 1,
+      visitedUrls,
     });
   }
 
@@ -165,8 +141,6 @@ async function fetchWebUrlWithRedirects(args: {
     response.contentType,
     args.extractMode,
   );
-  const content = text.slice(0, args.maxChars);
-  const truncated = text.length > args.maxChars;
   const success: WebFetchSuccess = {
     ok: true,
     url: args.originalUrl,
@@ -174,9 +148,7 @@ async function fetchWebUrlWithRedirects(args: {
     status: response.status,
     contentType: response.contentType,
     ...readHtmlTitle(rawText),
-    content,
-    truncated,
-    ...(truncated ? { truncationReason: 'max_chars' as const } : {}),
+    content: text,
     untrusted: true,
   };
   return success;
@@ -187,7 +159,6 @@ export function requestWebFetchUrl(
   options: {
     lookup?: WebFetchLookup;
     signal?: AbortSignal;
-    timeoutMs?: number;
   },
 ): Promise<WebFetchHttpResponse> {
   if (options.signal?.aborted) {
@@ -210,7 +181,6 @@ export function requestWebFetchUrl(
       url,
       {
         method: 'GET',
-        timeout: options.timeoutMs ?? WEB_FETCH_REQUEST_TIMEOUT_MS,
         headers: {
           accept:
             'text/html,text/plain,application/json,application/xml,application/xhtml+xml,application/rss+xml,application/atom+xml;q=0.9,*/*;q=0.1',
@@ -236,18 +206,7 @@ export function requestWebFetchUrl(
       },
       (response) => {
         const chunks: Buffer[] = [];
-        let totalBytes = 0;
         response.on('data', (chunk: Buffer) => {
-          totalBytes += chunk.byteLength;
-          if (totalBytes > WEB_FETCH_MAX_RESPONSE_BYTES) {
-            request.destroy(
-              new WebFetchRuntimeError(
-                'response_too_large',
-                'web_fetch response byte budget exceeded',
-              ),
-            );
-            return;
-          }
           chunks.push(chunk);
         });
         response.on('end', () => {
@@ -274,9 +233,6 @@ export function requestWebFetchUrl(
       options.signal?.removeEventListener('abort', abort);
     };
     options.signal?.addEventListener('abort', abort, { once: true });
-    request.on('timeout', () =>
-      request.destroy(new WebFetchRuntimeError('timeout', 'web_fetch timeout')),
-    );
     request.on('error', (error) => {
       finish(() => reject(error), cleanup);
     });

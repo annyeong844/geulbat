@@ -4,11 +4,15 @@ import type {
   ApprovalRequired,
   PermissionMode,
 } from '@geulbat/protocol/run-approval';
-import type { RunRequest } from '@geulbat/protocol/run-contract';
+import type {
+  RunRequest,
+  RunStartRequest,
+} from '@geulbat/protocol/run-contract';
 
 import {
   buildPromptRunRequest,
   buildRunStartRequest,
+  prepareRunStartRequest,
   type ApprovalDecisionClient as ApprovalDecisionCommandClient,
   type CancelRunSessionClient as CancelRunCommandClient,
   cancelRunSession,
@@ -34,6 +38,7 @@ interface RunSessionControllerActionsArgs {
   logCommandFailure: (logContext: string, message: string) => void;
   promptInputs: PromptActionInputs;
   cancelState: CancelActionState;
+  prepareStartRequest?: (request: RunRequest) => Promise<RunStartRequest>;
 }
 
 interface PromptActionInputs {
@@ -56,6 +61,7 @@ interface RunPromptActionArgs {
   promptInputs: PromptActionInputs;
   appendOptimisticUserMessage: (prompt: string) => void;
   logCommandFailure: (logContext: string, message: string) => void;
+  prepareStartRequest?: (request: RunRequest) => Promise<RunStartRequest>;
 }
 
 interface StartRunActionArgs {
@@ -67,6 +73,7 @@ interface StartRunActionArgs {
   appendOptimisticUserMessage: (prompt: string) => void;
   optimisticPrompt: string | undefined;
   logCommandFailure: (logContext: string, message: string) => void;
+  prepareStartRequest?: (request: RunRequest) => Promise<RunStartRequest>;
 }
 
 interface ApprovalActionArgs {
@@ -94,6 +101,7 @@ async function runStartActionPipeline(
   request: RunRequest,
   appendOptimisticUserMessage: (prompt: string) => void,
   logCommandFailure: (logContext: string, message: string) => void,
+  prepareStartRequest: (request: RunRequest) => Promise<RunStartRequest>,
   optimisticPrompt?: string,
 ): Promise<void> {
   clearSessionError();
@@ -104,6 +112,7 @@ async function runStartActionPipeline(
   const result = await startRunRequestCommand({
     client,
     request,
+    prepareStartRequest,
   });
   if (result.kind === 'failed') {
     logCommandFailure('stream error', result.message);
@@ -123,6 +132,7 @@ export async function sendPromptAction({
   promptInputs,
   appendOptimisticUserMessage,
   logCommandFailure,
+  prepareStartRequest = prepareRunStartRequest,
 }: RunPromptActionArgs): Promise<void> {
   await runStartActionPipeline(
     client,
@@ -137,6 +147,7 @@ export async function sendPromptAction({
     }),
     appendOptimisticUserMessage,
     logCommandFailure,
+    prepareStartRequest,
   );
 }
 
@@ -149,6 +160,7 @@ export async function startRunAction({
   appendOptimisticUserMessage,
   optimisticPrompt,
   logCommandFailure,
+  prepareStartRequest = prepareRunStartRequest,
 }: StartRunActionArgs): Promise<void> {
   await runStartActionPipeline(
     client,
@@ -160,6 +172,7 @@ export async function startRunAction({
     }),
     appendOptimisticUserMessage,
     logCommandFailure,
+    prepareStartRequest,
     optimisticPrompt,
   );
 }
@@ -239,6 +252,7 @@ export function useRunSessionControllerActions({
   logCommandFailure,
   promptInputs,
   cancelState,
+  prepareStartRequest = prepareRunStartRequest,
 }: RunSessionControllerActionsArgs) {
   const latestPromptInputsRef = useRef(promptInputs);
   const latestCancelStateRef = useRef(cancelState);
@@ -262,6 +276,7 @@ export function useRunSessionControllerActions({
         promptInputs: latestPromptInputsRef.current,
         appendOptimisticUserMessage,
         logCommandFailure,
+        prepareStartRequest,
       });
     },
     [
@@ -270,6 +285,7 @@ export function useRunSessionControllerActions({
       startClient,
       dispatch,
       logCommandFailure,
+      prepareStartRequest,
       projectId,
     ],
   );
@@ -285,6 +301,7 @@ export function useRunSessionControllerActions({
         appendOptimisticUserMessage,
         optimisticPrompt,
         logCommandFailure,
+        prepareStartRequest,
       });
     },
     [
@@ -293,6 +310,7 @@ export function useRunSessionControllerActions({
       startClient,
       dispatch,
       logCommandFailure,
+      prepareStartRequest,
     ],
   );
 

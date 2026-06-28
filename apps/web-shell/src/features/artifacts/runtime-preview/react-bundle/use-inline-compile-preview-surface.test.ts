@@ -53,12 +53,20 @@ function createRuntimeFrameRecorder() {
 }
 
 void test('useReactBundleInlineCompilePreviewSurface returns compile failures as unavailable previews', async () => {
-  const fetchMock = installFetchSequence(() =>
-    jsonResponse({
-      ok: false,
-      code: 'boot_failed',
-      detail: 'react bundle inline compile failed',
-    }),
+  const fetchMock = installFetchSequence(
+    () =>
+      jsonResponse({
+        ok: true,
+        inputRef:
+          'react-bundle-inline-compile-input:00000000-0000-4000-8000-000000000001',
+        byteLength: 64,
+      }),
+    () =>
+      jsonResponse({
+        ok: false,
+        code: 'boot_failed',
+        detail: 'react bundle inline compile failed',
+      }),
   );
   const runtimeFrame = createRuntimeFrameRecorder();
 
@@ -74,7 +82,15 @@ void test('useReactBundleInlineCompilePreviewSurface returns compile failures as
     await hook.flush();
     await hook.flush();
 
-    assert.equal(fetchMock.calls.length, 1);
+    assert.equal(fetchMock.calls.length, 2);
+    assert.match(
+      fetchMock.calls[0]?.url ?? '',
+      /^\/api\/react-bundle-inline-compile\/inputs\?projectId=workspace$/u,
+    );
+    assert.match(
+      fetchMock.calls[1]?.url ?? '',
+      /^\/api\/react-bundle-inline-compile\?projectId=workspace$/u,
+    );
     assert.equal(hook.result.current?.kind, 'unavailable');
     if (hook.result.current?.kind !== 'unavailable') {
       assert.fail('expected unavailable inline compile preview');
@@ -93,14 +109,22 @@ void test('useReactBundleInlineCompilePreviewSurface returns compile failures as
 });
 
 void test('useReactBundleInlineCompilePreviewSurface compiles inline react bundles once per artifact session', async () => {
-  const fetchMock = installFetchSequence(() =>
-    jsonResponse({
-      ok: true,
-      manifest: {
-        entryUrl:
-          'http://127.0.0.1:1455/public-generated/react-bundle-inline/hash/entry.js',
-      },
-    }),
+  const fetchMock = installFetchSequence(
+    () =>
+      jsonResponse({
+        ok: true,
+        inputRef:
+          'react-bundle-inline-compile-input:00000000-0000-4000-8000-000000000002',
+        byteLength: 64,
+      }),
+    () =>
+      jsonResponse({
+        ok: true,
+        manifest: {
+          entryUrl:
+            'http://127.0.0.1:1455/public-generated/react-bundle-inline/hash/entry.js',
+        },
+      }),
   );
   const runtimeFrame = createRuntimeFrameRecorder();
 
@@ -126,7 +150,7 @@ void test('useReactBundleInlineCompilePreviewSurface compiles inline react bundl
     await hook.flush();
     await hook.flush();
 
-    assert.equal(fetchMock.calls.length, 1);
+    assert.equal(fetchMock.calls.length, 2);
     assert.equal(hook.result.current?.kind, 'rendered');
     assert.equal(runtimeFrame.calls.length, 2);
     assert.equal(runtimeFrame.calls[0]?.renderer, 'react_bundle');

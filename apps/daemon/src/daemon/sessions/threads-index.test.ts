@@ -77,6 +77,44 @@ void test('loadThreadIndex skips invalid entries and preserves valid entry order
   }
 });
 
+void test('loadThreadIndex reports every skipped entry diagnostic without a hidden cap', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-thread-index-'));
+  await mkdir(join(workspaceRoot, '.geulbat', 'sessions'), { recursive: true });
+  const originalWarn = console.warn;
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  const malformedEntries = Array.from({ length: 25 }, (_, index) => ({
+    threadId: `not-a-thread-id-${index}`,
+    projectId: DEFAULT_PROJECT_ID,
+    title: 'skip me',
+    lastUpdated: '2026-04-04T00:00:00.000Z',
+    messageCount: 1,
+  }));
+  await writeFile(
+    join(workspaceRoot, '.geulbat', 'sessions', 'index.json'),
+    JSON.stringify(malformedEntries) + '\n',
+    'utf8',
+  );
+
+  try {
+    const entries = await loadThreadIndex(workspaceRoot, {
+      isKnownProjectId: (projectId) => projectId === DEFAULT_PROJECT_ID,
+    });
+    assert.deepEqual(entries, []);
+    assert.equal(warnings.length, 1);
+    const warningLine = String(warnings[0]?.[0] ?? '');
+    assert.match(warningLine, /Skipped 25 malformed thread index entries/);
+    assert.match(warningLine, /0:invalid_thread_id/);
+    assert.match(warningLine, /24:invalid_thread_id/);
+    assert.doesNotMatch(warningLine, /,\+\d+/u);
+    assert.doesNotMatch(warningLine, /not-a-thread-id/u);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 void test('upsertThreadSummary serializes concurrent mutations for the same workspace', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-thread-index-'));
   const releaseFirstMutation = createDeferred<void>();

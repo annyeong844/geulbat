@@ -1,8 +1,8 @@
-import type { ProjectId } from '@geulbat/protocol/ids';
 import type {
+  ProjectId,
   ProjectListItem,
   ProjectMutationResponse,
-} from '@geulbat/protocol/projects';
+} from './contract.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
 import { deriveProjectId } from './project-id-slug.js';
 import {

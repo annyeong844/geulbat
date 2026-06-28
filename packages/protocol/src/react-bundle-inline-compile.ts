@@ -1,9 +1,5 @@
 import { isPlainRecord, isString } from './runtime-utils.js';
 
-export const REACT_BUNDLE_INLINE_MAX_FILE_COUNT = 32;
-export const REACT_BUNDLE_INLINE_MAX_TOTAL_SOURCE_BYTES = 262144;
-export const REACT_BUNDLE_INLINE_MAX_COMPILED_OUTPUT_BYTES = 1048576;
-export const REACT_BUNDLE_INLINE_COMPILE_TIMEOUT_MS = 5000;
 export const PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX =
   '/public-generated/react-bundle-inline/';
 export const REACT_BUNDLE_RUNTIME_ABI_VERSION = 'react-bundle-runtime-v1';
@@ -46,6 +42,21 @@ export interface ReactBundleInlineCompileRequest {
   input: ReactBundleInlineSourceInput;
 }
 
+export interface ReactBundleInlineCompileInputRefRequest {
+  renderer: 'react_bundle';
+  inputRef: string;
+}
+
+export type ReactBundleInlineCompileRouteRequest =
+  | ReactBundleInlineCompileRequest
+  | ReactBundleInlineCompileInputRefRequest;
+
+export interface ReactBundleInlineCompileInputRefResponse {
+  ok: true;
+  inputRef: string;
+  byteLength: number;
+}
+
 export type ReactBundleInlineCompileResponse =
   | {
       ok: true;
@@ -84,6 +95,13 @@ export function isReactBundleArtifactInput(
 export function isReactBundleInlineCompileRequest(
   value: unknown,
 ): value is ReactBundleInlineCompileRequest {
+  const decoded = decodeReactBundleInlineCompileRequest(value);
+  return decoded.ok && 'input' in decoded.value;
+}
+
+export function isReactBundleInlineCompileRouteRequest(
+  value: unknown,
+): value is ReactBundleInlineCompileRouteRequest {
   return decodeReactBundleInlineCompileRequest(value).ok;
 }
 
@@ -101,8 +119,20 @@ export function isReactBundleInlineCompileResponse(
   );
 }
 
+export function isReactBundleInlineCompileInputRefResponse(
+  value: unknown,
+): value is ReactBundleInlineCompileInputRefResponse {
+  return (
+    isPlainRecord(value) &&
+    value.ok === true &&
+    isString(value.inputRef) &&
+    typeof value.byteLength === 'number' &&
+    Number.isFinite(value.byteLength)
+  );
+}
+
 export function decodeReactBundleInlineCompileRequest(value: unknown):
-  | { ok: true; value: ReactBundleInlineCompileRequest }
+  | { ok: true; value: ReactBundleInlineCompileRouteRequest }
   | {
       ok: false;
       code: 'sanitize_rejected';
@@ -115,6 +145,29 @@ export function decodeReactBundleInlineCompileRequest(value: unknown):
     return reject(
       'react bundle inline compile request renderer must be react_bundle',
     );
+  }
+
+  const hasInlineInput = value.input !== undefined;
+  const hasInputRef = value.inputRef !== undefined;
+  if (hasInlineInput === hasInputRef) {
+    return reject(
+      'react bundle inline compile request must contain exactly one of input or inputRef',
+    );
+  }
+
+  if (hasInputRef) {
+    if (!isString(value.inputRef) || value.inputRef.length === 0) {
+      return reject(
+        'react bundle inline compile request inputRef must be a non-empty string',
+      );
+    }
+    return {
+      ok: true,
+      value: {
+        renderer: 'react_bundle',
+        inputRef: value.inputRef,
+      },
+    };
   }
 
   const input = decodeReactBundleInlineSourceInput(value.input);
@@ -153,7 +206,6 @@ export function decodeReactBundleInlineSourceInput(value: unknown):
   }
 
   const normalizedFiles = new Map<string, string>();
-  let totalSourceBytes = 0;
 
   for (const [rawPath, rawSource] of Object.entries(files)) {
     if (!isString(rawSource)) {
@@ -173,17 +225,6 @@ export function decodeReactBundleInlineSourceInput(value: unknown):
     }
 
     normalizedFiles.set(normalizedPath.value, rawSource);
-    totalSourceBytes += measureUtf8Bytes(rawSource);
-    if (normalizedFiles.size > REACT_BUNDLE_INLINE_MAX_FILE_COUNT) {
-      return reject(
-        `react bundle inline source exceeds max file count ${REACT_BUNDLE_INLINE_MAX_FILE_COUNT}`,
-      );
-    }
-    if (totalSourceBytes > REACT_BUNDLE_INLINE_MAX_TOTAL_SOURCE_BYTES) {
-      return reject(
-        `react bundle inline source exceeds max total source bytes ${REACT_BUNDLE_INLINE_MAX_TOTAL_SOURCE_BYTES}`,
-      );
-    }
   }
 
   if (normalizedFiles.size === 0) {
@@ -336,32 +377,4 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 
 function isOptionalStringArray(value: unknown): value is string[] | undefined {
   return value === undefined || (Array.isArray(value) && value.every(isString));
-}
-
-function measureUtf8Bytes(value: string): number {
-  let total = 0;
-
-  for (let index = 0; index < value.length; index += 1) {
-    const codePoint = value.codePointAt(index);
-    if (codePoint === undefined) {
-      continue;
-    }
-    if (codePoint <= 0x7f) {
-      total += 1;
-      continue;
-    }
-    if (codePoint <= 0x7ff) {
-      total += 2;
-      continue;
-    }
-    if (codePoint <= 0xffff) {
-      total += 3;
-      continue;
-    }
-
-    total += 4;
-    index += 1;
-  }
-
-  return total;
 }

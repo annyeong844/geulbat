@@ -5,7 +5,6 @@ import type { RunId } from '@geulbat/protocol/ids';
 import {
   createThreadBackgroundNotificationQueue,
   type BackgroundNotificationQueue,
-  MAX_PENDING_BACKGROUND_THREADS,
 } from './background-notification-queue.js';
 import type { BackgroundChildResult } from '../../subagent-runtime-contracts.js';
 import { testRunId } from '../../../test-support/run-id.js';
@@ -209,69 +208,83 @@ void test('thread background notification queue replays pending results to late 
   assert.deepEqual(seen, ['delivery-replay']);
 });
 
-void test('thread background notification queue caps pending results per thread', () => {
+void test('thread background notification queue retains all pending results for a thread', () => {
   const queue = createThreadBackgroundNotificationQueue();
   const threadId = testThreadId(174003);
-  const warnings: unknown[][] = [];
-  const originalWarn = console.warn;
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args);
-  };
 
-  try {
-    for (let i = 1; i <= 25; i += 1) {
-      queue.enqueueThreadBackgroundResult(threadId, {
-        deliveryId: `delivery-${i}`,
-        parentRunId: testRunId('parent-cap'),
-        childRunId: testRunId(`child-${i}`),
-        subagentType: 'explorer',
-        terminalState: 'completed',
-        result: `result-${i}`,
-        completedAt: `2026-03-24T00:00:${String(i).padStart(2, '0')}.000Z`,
-      });
-    }
-  } finally {
-    console.warn = originalWarn;
+  for (let i = 1; i <= 25; i += 1) {
+    queue.enqueueThreadBackgroundResult(threadId, {
+      deliveryId: `delivery-${i}`,
+      parentRunId: testRunId('parent-retain-all'),
+      childRunId: testRunId(`child-${i}`),
+      subagentType: 'explorer',
+      terminalState: 'completed',
+      result: `result-${i}`,
+      completedAt: `2026-03-24T00:00:${String(i).padStart(2, '0')}.000Z`,
+    });
   }
 
   const results = queue.consumeThreadBackgroundResults(threadId);
-  assert.equal(results.length, 20);
-  assert.equal(results[0]?.childRunId, testRunId('child-6'));
+  assert.equal(results.length, 25);
+  assert.equal(results[0]?.childRunId, testRunId('child-1'));
   assert.equal(results.at(-1)?.childRunId, testRunId('child-25'));
-  assert.equal(warnings.length, 5);
 });
 
-void test('thread background notification queue evicts the oldest tracked thread when the thread cap is exceeded', () => {
+void test('thread background notification queue retains every pending thread until consumed', () => {
   const queue = createThreadBackgroundNotificationQueue();
-  const warnings: unknown[][] = [];
-  const originalWarn = console.warn;
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args);
-  };
 
-  try {
-    for (let i = 0; i <= MAX_PENDING_BACKGROUND_THREADS; i += 1) {
-      const threadId = testThreadId(i);
-      queue.enqueueThreadBackgroundResult(threadId, {
-        deliveryId: `delivery-${i}`,
-        parentRunId: testRunId(`parent-${i}`),
-        childRunId: testRunId(`child-${i}`),
-        subagentType: 'explorer',
-        terminalState: 'completed',
-        result: `result-${i}`,
-        completedAt: `2026-03-24T01:${String(i % 60).padStart(2, '0')}:00.000Z`,
-      });
-    }
-  } finally {
-    console.warn = originalWarn;
+  for (let i = 0; i < 130; i += 1) {
+    const threadId = testThreadId(i);
+    queue.enqueueThreadBackgroundResult(threadId, {
+      deliveryId: `delivery-${i}`,
+      parentRunId: testRunId(`parent-${i}`),
+      childRunId: testRunId(`child-${i}`),
+      subagentType: 'explorer',
+      terminalState: 'completed',
+      result: `result-${i}`,
+      completedAt: `2026-03-24T01:${String(i % 60).padStart(2, '0')}:00.000Z`,
+    });
   }
 
-  assert.deepEqual(queue.consumeThreadBackgroundResults(testThreadId(0)), []);
+  assert.equal(queue.consumeThreadBackgroundResults(testThreadId(0)).length, 1);
   assert.equal(
-    queue.consumeThreadBackgroundResults(
-      testThreadId(MAX_PENDING_BACKGROUND_THREADS),
-    ).length,
+    queue.consumeThreadBackgroundResults(testThreadId(129)).length,
     1,
   );
-  assert.equal(warnings.length, 1);
+});
+
+void test('thread background notification queue can clear one thread lifecycle without touching others', () => {
+  const queue = createThreadBackgroundNotificationQueue();
+  const firstThreadId = testThreadId(174020);
+  const secondThreadId = testThreadId(174021);
+
+  queue.enqueueThreadBackgroundResult(firstThreadId, {
+    deliveryId: 'delivery-clear-first',
+    parentRunId: testRunId('parent-clear-first'),
+    childRunId: testRunId('child-clear-first'),
+    subagentType: 'explorer',
+    terminalState: 'completed',
+    result: 'clear-first',
+    completedAt: '2026-03-24T02:00:00.000Z',
+  });
+  queue.enqueueThreadBackgroundResult(secondThreadId, {
+    deliveryId: 'delivery-keep-second',
+    parentRunId: testRunId('parent-keep-second'),
+    childRunId: testRunId('child-keep-second'),
+    subagentType: 'worker',
+    terminalState: 'failed',
+    reason: 'child_error',
+    result: 'keep-second',
+    completedAt: '2026-03-24T02:00:01.000Z',
+  });
+
+  queue.clearThreadBackgroundResults(firstThreadId);
+
+  assert.deepEqual(queue.consumeThreadBackgroundResults(firstThreadId), []);
+  assert.deepEqual(
+    queue
+      .consumeThreadBackgroundResults(secondThreadId)
+      .map((result) => result.deliveryId),
+    ['delivery-keep-second'],
+  );
 });

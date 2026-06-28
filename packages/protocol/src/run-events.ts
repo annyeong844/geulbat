@@ -9,6 +9,10 @@ import { isApprovalRequired, type ApprovalRequired } from './run-approval.js';
 import type { RunAck } from './run-contract.js';
 import { isBoolean, isNumber, isRecord, isString } from './runtime-utils.js';
 import {
+  isToolCallSourcePayload,
+  type ToolCallSourcePayload,
+} from './tool-call-source.js';
+import {
   isSideEffectLevel,
   SIDE_EFFECT_LEVELS,
   type SideEffectLevel,
@@ -24,6 +28,8 @@ import {
 
 export { SIDE_EFFECT_LEVELS, isSideEffectLevel };
 export type { SideEffectLevel };
+export { isToolCallSourcePayload };
+export type { ToolCallSourcePayload };
 
 export type RunEventType =
   | 'run_ack'
@@ -33,6 +39,7 @@ export type RunEventType =
   | 'subagent_spawned'
   | 'subagent_terminal'
   | 'subagent_approval_required'
+  | 'interject_applied'
   | 'approval_required'
   | 'final_answer_delta'
   | 'artifact_committed'
@@ -52,6 +59,7 @@ export interface ToolCallEventPayload {
   step: number;
   tool: string;
   args: Record<string, unknown>;
+  source?: ToolCallSourcePayload;
 }
 
 export const SUBAGENT_TYPES = ['explorer', 'worker'] as const;
@@ -69,11 +77,7 @@ export interface AgentLaunchRejectedToolRaw {
   ok: false;
   launchState: 'rejected';
   subagentType: SubagentType;
-  errorCode:
-    | 'too_many_child_runs'
-    | 'unsupported_nested_spawn'
-    | 'invalid_args'
-    | 'execution_failed';
+  errorCode: 'too_many_child_runs' | 'invalid_args' | 'execution_failed';
   error: string;
   effectiveMax?: number;
 }
@@ -159,6 +163,7 @@ interface ToolResultEventPayloadBase<TTool extends string> {
   tool: TTool;
   workspaceFilesMayHaveChanged: boolean;
   displayText: string;
+  source?: ToolCallSourcePayload;
 }
 
 export type KnownToolResultSuccessEventPayload<
@@ -248,6 +253,12 @@ export interface SubagentApprovalRequiredEventPayload {
   approval: ApprovalRequired;
 }
 
+export interface InterjectAppliedEventPayload {
+  runId: RunId;
+  count: number;
+  receivedSeqs: number[];
+}
+
 export type ArtifactCommittedEventPayload = ThreadArtifactVersion;
 
 export interface SharedRunEventPayloadMap {
@@ -258,6 +269,7 @@ export interface SharedRunEventPayloadMap {
   subagent_spawned: SubagentSpawnedEventPayload;
   subagent_terminal: SubagentTerminalEventPayload;
   subagent_approval_required: SubagentApprovalRequiredEventPayload;
+  interject_applied: InterjectAppliedEventPayload;
   approval_required: ApprovalRequired;
   final_answer_delta: TextDeltaEventPayload;
   artifact_committed: ArtifactCommittedEventPayload;
@@ -307,7 +319,8 @@ export function isToolCallEventPayload(
     isString(value.callId) &&
     isNumber(value.step) &&
     isString(value.tool) &&
-    isRecord(value.args)
+    isRecord(value.args) &&
+    (value.source === undefined || isToolCallSourcePayload(value.source))
   );
 }
 
@@ -320,7 +333,6 @@ function isAgentLaunchRejectionErrorCode(
 ): value is AgentLaunchRejectedToolRaw['errorCode'] {
   return (
     value === 'too_many_child_runs' ||
-    value === 'unsupported_nested_spawn' ||
     value === 'invalid_args' ||
     value === 'execution_failed'
   );
@@ -457,6 +469,7 @@ export function isToolResultEventPayload(
     !isBoolean(value.ok) ||
     !isBoolean(value.workspaceFilesMayHaveChanged) ||
     !isString(value.displayText) ||
+    (value.source !== undefined && !isToolCallSourcePayload(value.source)) ||
     !('raw' in value)
   ) {
     return false;
@@ -555,6 +568,20 @@ export function isSubagentApprovalRequiredEventPayload(
   );
 }
 
+export function isInterjectAppliedEventPayload(
+  value: unknown,
+): value is InterjectAppliedEventPayload {
+  return (
+    isRecord(value) &&
+    isString(value.runId) &&
+    isRunId(value.runId) &&
+    isPositiveInteger(value.count) &&
+    Array.isArray(value.receivedSeqs) &&
+    value.receivedSeqs.length === value.count &&
+    value.receivedSeqs.every(isPositiveInteger)
+  );
+}
+
 export function isArtifactCommittedEventPayload(
   value: unknown,
 ): value is ArtifactCommittedEventPayload {
@@ -596,6 +623,8 @@ export function isRunEvent(value: unknown): value is RunEvent {
       return isSubagentTerminalEventPayload(value.payload);
     case 'subagent_approval_required':
       return isSubagentApprovalRequiredEventPayload(value.payload);
+    case 'interject_applied':
+      return isInterjectAppliedEventPayload(value.payload);
     case 'approval_required':
       return isApprovalRequired(value.payload);
     case 'done':

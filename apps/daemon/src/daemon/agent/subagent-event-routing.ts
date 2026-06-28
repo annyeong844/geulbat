@@ -1,4 +1,4 @@
-import type { RunId } from '@geulbat/protocol/ids';
+import type { RunId } from './contract.js';
 
 import type { ChildRunRegistry } from './runtime/child-run-registry.js';
 import type { AgentEvent } from '../runtime-contracts.js';

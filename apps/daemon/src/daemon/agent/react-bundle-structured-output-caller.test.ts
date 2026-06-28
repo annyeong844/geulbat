@@ -12,7 +12,12 @@ import {
 import type { FunctionCall, ProviderStructuredOutput } from '../llm/index.js';
 import type { HttpMetadataProbeRequestTransport } from '../network/http-metadata-probe.js';
 import { createSandboxAttemptStore } from '../sandbox/attempt-store.js';
-import type { ReactBundleDependencyPrepareRequest } from '../sandbox/react-bundle-dependency-prepare.js';
+import type { ReactBundleDependencyPrepareRequest } from '../react-bundle-dependency-admission/react-bundle-dependency-prepare.js';
+import {
+  REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MAX_MS,
+  REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV,
+  resolveReactBundleStructuredOutputIngressPolicyFromEnv,
+} from './react-bundle-structured-output-ingress-policy.js';
 import {
   runReactBundleStructuredOutputCaller,
   type ReactBundleStructuredOutputCallerResult,
@@ -178,6 +183,125 @@ void test('runReactBundleStructuredOutputCaller accepts no-dependency payloads w
       ['react_bundle_dependency_prepare'],
     );
   });
+});
+
+void test('runReactBundleStructuredOutputCaller does not synthesize an ingress timeout', async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    let timeoutWasForwarded = false;
+
+    const result = await runReactBundleStructuredOutputCaller({
+      workspaceRoot,
+      store: createSandboxAttemptStore(),
+      structuredOutputs: [structuredOutput(NO_DEPENDENCY_REQUEST)],
+      functionCalls: [],
+      runIngress: async (args) => {
+        timeoutWasForwarded = 'timeoutMs' in args;
+        return {
+          ok: false,
+          reasonCode: 'prepare_failed',
+          message: 'synthetic prepare failure',
+        };
+      },
+    });
+
+    assertFailure(result, 'prepare_failed');
+    assert.equal(timeoutWasForwarded, false);
+  });
+});
+
+void test('runReactBundleStructuredOutputCaller forwards owner ingress policy timeout', async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    let forwardedTimeoutMs: number | undefined;
+
+    const result = await runReactBundleStructuredOutputCaller({
+      workspaceRoot,
+      store: createSandboxAttemptStore(),
+      structuredOutputs: [structuredOutput(DEPENDENCY_REQUEST)],
+      functionCalls: [],
+      ingressPolicy: { timeoutMs: 1234 },
+      runIngress: async (args) => {
+        forwardedTimeoutMs = args.timeoutMs;
+        return {
+          ok: false,
+          reasonCode: 'prepare_failed',
+          message: 'synthetic prepare failure',
+        };
+      },
+    });
+
+    assertFailure(result, 'prepare_failed');
+    assert.equal(forwardedTimeoutMs, 1234);
+  });
+});
+
+void test('runReactBundleStructuredOutputCaller lets direct timeout override owner ingress policy', async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    let forwardedTimeoutMs: number | undefined;
+
+    const result = await runReactBundleStructuredOutputCaller({
+      workspaceRoot,
+      store: createSandboxAttemptStore(),
+      structuredOutputs: [structuredOutput(DEPENDENCY_REQUEST)],
+      functionCalls: [],
+      ingressPolicy: { timeoutMs: 1234 },
+      timeoutMs: 5678,
+      runIngress: async (args) => {
+        forwardedTimeoutMs = args.timeoutMs;
+        return {
+          ok: false,
+          reasonCode: 'prepare_failed',
+          message: 'synthetic prepare failure',
+        };
+      },
+    });
+
+    assertFailure(result, 'prepare_failed');
+    assert.equal(forwardedTimeoutMs, 5678);
+  });
+});
+
+void test('resolveReactBundleStructuredOutputIngressPolicyFromEnv accepts positive integer timeout policy', () => {
+  assert.deepEqual(resolveReactBundleStructuredOutputIngressPolicyFromEnv({}), {
+    timeoutMs: 30_000,
+  });
+  assert.deepEqual(
+    resolveReactBundleStructuredOutputIngressPolicyFromEnv({
+      [REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV]: ' 1234 ',
+    }),
+    { timeoutMs: 1234 },
+  );
+  assert.deepEqual(
+    resolveReactBundleStructuredOutputIngressPolicyFromEnv({
+      [REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV]: String(
+        REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MAX_MS,
+      ),
+    }),
+    { timeoutMs: REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MAX_MS },
+  );
+});
+
+void test('resolveReactBundleStructuredOutputIngressPolicyFromEnv rejects invalid timeout policy values', () => {
+  for (const value of [
+    '',
+    ' ',
+    '0',
+    '-1',
+    '+1',
+    '1.5',
+    '1e3',
+    String(REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MAX_MS + 1),
+    '9007199254740992',
+  ]) {
+    assert.throws(
+      () =>
+        resolveReactBundleStructuredOutputIngressPolicyFromEnv({
+          [REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV]: value,
+        }),
+      new RegExp(
+        `invalid ${REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV}`,
+      ),
+    );
+  }
 });
 
 void test('runReactBundleStructuredOutputCaller rejects ambiguous structured outputs', async () => {

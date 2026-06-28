@@ -1,18 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { WEB_FETCH_TOTAL_TIMEOUT_MS } from './web-fetch-policy.js';
-import {
-  WebFetchRuntimeError,
-  fetchWebUrl,
-  requestWebFetchUrl,
-} from './web-fetch-runtime.js';
+import { fetchWebUrl, requestWebFetchUrl } from './web-fetch-runtime.js';
 
 void test('fetchWebUrl shapes successful text content and labels it untrusted', async () => {
   const result = await fetchWebUrl({
     url: 'https://example.com/',
     extractMode: 'text',
-    maxChars: 100,
     requestWebFetchUrl: async () => ({
       status: 200,
       location: null,
@@ -34,7 +28,6 @@ void test('fetchWebUrl rejects redirects to unsafe targets', async () => {
   const result = await fetchWebUrl({
     url: 'https://example.com/',
     extractMode: 'text',
-    maxChars: 100,
     requestWebFetchUrl: async () => ({
       status: 302,
       location: 'http://127.0.0.1/private',
@@ -51,7 +44,6 @@ void test('fetchWebUrl rejects protocol-relative redirects to unsafe hosts', asy
   const result = await fetchWebUrl({
     url: 'https://example.com/',
     extractMode: 'text',
-    maxChars: 100,
     requestWebFetchUrl: async () => ({
       status: 302,
       location: '//127.0.0.1/private',
@@ -68,7 +60,6 @@ void test('fetchWebUrl fails visibly for unsupported binary content type', async
   const result = await fetchWebUrl({
     url: 'https://example.com/image.png',
     extractMode: 'text',
-    maxChars: 100,
     requestWebFetchUrl: async () => ({
       status: 200,
       location: null,
@@ -81,11 +72,10 @@ void test('fetchWebUrl fails visibly for unsupported binary content type', async
   assert.equal(result.reasonCode, 'unsupported_content_type');
 });
 
-void test('fetchWebUrl truncates output by maxChars', async () => {
+void test('fetchWebUrl preserves successful text content without maxChars truncation', async () => {
   const result = await fetchWebUrl({
     url: 'https://example.com/text',
     extractMode: 'text',
-    maxChars: 3,
     requestWebFetchUrl: async () => ({
       status: 200,
       location: null,
@@ -95,16 +85,15 @@ void test('fetchWebUrl truncates output by maxChars', async () => {
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.content, 'abc');
-  assert.equal(result.truncated, true);
-  assert.equal(result.truncationReason, 'max_chars');
+  assert.equal(result.content, 'abcdef');
+  assert.ok(!('truncated' in result));
+  assert.ok(!('truncationReason' in result));
 });
 
 void test('fetchWebUrl treats non-2xx text responses as fetched responses with status', async () => {
   const result = await fetchWebUrl({
     url: 'https://example.com/missing',
     extractMode: 'text',
-    maxChars: 100,
     requestWebFetchUrl: async () => ({
       status: 404,
       location: null,
@@ -118,35 +107,37 @@ void test('fetchWebUrl treats non-2xx text responses as fetched responses with s
   assert.equal(result.content, 'missing page');
 });
 
-void test('fetchWebUrl preserves classified runtime failures from transport', async () => {
+void test('fetchWebUrl preserves large injected text content for output offload', async () => {
+  const content = 'x'.repeat(3 * 1024 * 1024);
   const result = await fetchWebUrl({
     url: 'https://example.com/large',
     extractMode: 'text',
-    maxChars: 100,
-    requestWebFetchUrl: async () => {
-      throw new WebFetchRuntimeError(
-        'response_too_large',
-        'web_fetch response byte budget exceeded',
-      );
-    },
+    requestWebFetchUrl: async () => ({
+      status: 200,
+      location: null,
+      contentType: 'text/plain; charset=utf-8',
+      body: Buffer.from(content),
+    }),
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.reasonCode, 'response_too_large');
+  assert.equal(result.ok, true);
+  assert.equal(result.content.length, content.length);
+  assert.equal(result.content, content);
 });
 
-void test('fetchWebUrl reports total timeout across redirects without waiting in real time', async () => {
-  let now = 0;
+void test('fetchWebUrl rejects redirect loops without a numeric redirect budget', async () => {
+  const fetchedUrls: string[] = [];
   const result = await fetchWebUrl({
     url: 'https://example.com/',
     extractMode: 'text',
-    maxChars: 100,
-    now: () => now,
-    requestWebFetchUrl: async () => {
-      now += WEB_FETCH_TOTAL_TIMEOUT_MS + 1;
+    requestWebFetchUrl: async (url) => {
+      fetchedUrls.push(url.href);
       return {
         status: 302,
-        location: 'https://example.com/next',
+        location:
+          url.pathname === '/'
+            ? 'https://example.com/next'
+            : 'https://example.com/',
         contentType: null,
         body: Buffer.alloc(0),
       };
@@ -154,7 +145,31 @@ void test('fetchWebUrl reports total timeout across redirects without waiting in
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.reasonCode, 'timeout');
+  assert.equal(result.reasonCode, 'redirect_loop_detected');
+  assert.deepEqual(fetchedUrls, [
+    'https://example.com/',
+    'https://example.com/next',
+  ]);
+});
+
+void test('fetchWebUrl does not pass hidden timeout policy to the transport', async () => {
+  let timeoutFieldWasPresent = true;
+  const result = await fetchWebUrl({
+    url: 'https://example.com/',
+    extractMode: 'text',
+    requestWebFetchUrl: async (_url, options) => {
+      timeoutFieldWasPresent = 'timeoutMs' in options;
+      return {
+        status: 200,
+        location: null,
+        contentType: 'text/plain; charset=utf-8',
+        body: Buffer.from('ok'),
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(timeoutFieldWasPresent, false);
 });
 
 void test('requestWebFetchUrl rejects already-aborted signals before DNS lookup', async () => {

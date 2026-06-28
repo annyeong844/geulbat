@@ -1,6 +1,6 @@
-import type { ParsedCanonicalArtifactEnvelope } from '@geulbat/protocol/artifacts';
+import type { DaemonArtifactCandidate } from '../../../artifact-candidate.js';
 
-export type ProviderArtifactCandidate = ParsedCanonicalArtifactEnvelope;
+export type ProviderArtifactCandidate = DaemonArtifactCandidate;
 
 export type HistoryItem =
   | { kind: 'user'; text: string }
@@ -51,16 +51,31 @@ export type ProviderUsageTelemetry =
 
 // ── Provider wire format types ──
 
+export interface WireToolObjectParameters {
+  type: 'object';
+  properties: Record<string, unknown>;
+  required: string[];
+  additionalProperties: false;
+}
+
+export interface WireToolOneOfParameters {
+  oneOf: WireToolObjectParameters[];
+}
+
+export interface WireToolAnyOfParameters {
+  anyOf: WireToolObjectParameters[];
+}
+
+export type WireToolParameters =
+  | WireToolObjectParameters
+  | WireToolOneOfParameters
+  | WireToolAnyOfParameters;
+
 export interface WireToolDefinition {
   type: 'function';
   name: string;
   description: string;
-  parameters: {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required: string[];
-    additionalProperties: false;
-  };
+  parameters: WireToolParameters;
   strict: boolean;
 }
 

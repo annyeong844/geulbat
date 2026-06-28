@@ -131,6 +131,63 @@ void test('clearApprovalSessionRuntime aborts pending waiters for the same sessi
   assert.equal(await wait, 'aborted');
   assert.equal(
     gate.resolveApproval('call-4', 'run-4', threadId, 'approved'),
+    'not_found',
+  );
+});
+
+void test('clearApprovalSessionRuntime clears resolved approvals for that session only', async () => {
+  const gate = createApprovalGate({
+    approvalGrants: createApprovalGrantStore(),
+  });
+  const threadId = testThreadId(7);
+  const firstWait = gate.waitForApproval(
+    'call-session-a',
+    'run-session-a',
+    threadId,
+    {
+      runId: 'run-session-a',
+      threadId,
+      sessionId: 'session-a',
+      approvalClass: toApprovalClass('write_file'),
+      sideEffectLevel: 'write',
+      permissionMode: 'basic',
+    },
+    AbortSignal.timeout(1_000),
+  );
+  const secondWait = gate.waitForApproval(
+    'call-session-b',
+    'run-session-b',
+    threadId,
+    {
+      runId: 'run-session-b',
+      threadId,
+      sessionId: 'session-b',
+      approvalClass: toApprovalClass('write_file'),
+      sideEffectLevel: 'write',
+      permissionMode: 'basic',
+    },
+    AbortSignal.timeout(1_000),
+  );
+
+  assert.equal(
+    gate.resolveApproval('call-session-a', 'run-session-a', threadId, 'denied'),
+    'resolved',
+  );
+  assert.equal(
+    gate.resolveApproval('call-session-b', 'run-session-b', threadId, 'denied'),
+    'resolved',
+  );
+  assert.equal(await firstWait, 'denied');
+  assert.equal(await secondWait, 'denied');
+
+  gate.clearApprovalSessionRuntime('session-a');
+
+  assert.equal(
+    gate.resolveApproval('call-session-a', 'run-session-a', threadId, 'denied'),
+    'not_found',
+  );
+  assert.equal(
+    gate.resolveApproval('call-session-b', 'run-session-b', threadId, 'denied'),
     'already_resolved',
   );
 });

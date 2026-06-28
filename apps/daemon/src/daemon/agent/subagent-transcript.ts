@@ -1,4 +1,4 @@
-import type { ThreadMessageMetadata } from '@geulbat/protocol/thread-metadata';
+import type { ThreadMessageMetadata } from './contract.js';
 
 import { appendTranscriptEntry } from '../sessions/transcript-log.js';
 

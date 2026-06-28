@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { isToolObjectParameters } from '../types.js';
 import { createWebFetchTool } from './web-fetch.js';
 
 void test('web_fetch exposes scalar URL schema and read-only metadata', () => {
@@ -12,7 +13,6 @@ void test('web_fetch exposes scalar URL schema and read-only metadata', () => {
       status: 200,
       contentType: 'text/plain',
       content: 'ok',
-      truncated: false,
       untrusted: true,
     }),
   });
@@ -22,10 +22,13 @@ void test('web_fetch exposes scalar URL schema and read-only metadata', () => {
   assert.equal(tool.requiresApproval, false);
   assert.equal(tool.mayMutateWorkspaceFiles, false);
   assert.equal(tool.parallelBatchKind, undefined);
-  assert.deepEqual(tool.parameters.required, ['url']);
-  assert.ok('url' in tool.parameters.properties);
-  assert.ok(!('urls' in tool.parameters.properties));
-  assert.ok(!('maxUrls' in tool.parameters.properties));
+  const parameters = tool.parameters;
+  assert.ok(isToolObjectParameters(parameters));
+  assert.deepEqual(parameters.required, ['url']);
+  assert.ok('url' in parameters.properties);
+  assert.ok(!('urls' in parameters.properties));
+  assert.ok(!('maxUrls' in parameters.properties));
+  assert.ok(!('maxChars' in parameters.properties));
 });
 
 void test('web_fetch forwards extractMode to the runtime owner', async () => {
@@ -40,7 +43,6 @@ void test('web_fetch forwards extractMode to the runtime owner', async () => {
         status: 200,
         contentType: 'text/plain',
         content: 'ok',
-        truncated: false,
         untrusted: true,
       };
     },
@@ -83,14 +85,14 @@ void test('web_fetch returns tool-level failure while preserving structured fetc
   });
 });
 
-void test('web_fetch rejects maxChars outside the owner budget during argument parsing', async () => {
+void test('web_fetch rejects maxChars instead of keeping a truncation control', async () => {
   const tool = createWebFetchTool();
   const result = await tool.execute(
-    { url: 'https://example.com/', maxChars: 0 },
+    { url: 'https://example.com/', maxChars: 3 },
     { callId: 'call-web-fetch', workspaceRoot: '/workspace' },
   );
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'invalid_args');
-  assert.match(result.error, /maxChars/);
+  assert.match(result.error, /unexpected keys: maxChars/u);
 });

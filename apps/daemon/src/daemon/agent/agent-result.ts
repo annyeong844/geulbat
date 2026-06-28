@@ -1,6 +1,6 @@
-import type { ProviderArtifactCandidate } from '../llm/provider/wire/types.js';
+import type { DaemonArtifactCandidate } from '../artifact-candidate.js';
 
-export type AgentArtifactCandidate = ProviderArtifactCandidate;
+export type AgentArtifactCandidate = DaemonArtifactCandidate;
 
 export interface AgentResult {
   ok: boolean;

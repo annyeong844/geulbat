@@ -6,7 +6,7 @@ import {
   PTC_FIXED_EPOCH_EXECUTION_PROBE_CAPABILITY_ID,
   PTC_FIXED_EPOCH_EXECUTION_PROBE_POLICY_ID,
   type PtcFixedEpochProbeRuntimeSummary,
-} from '../ptc/fixed-probe-runtime-contract.js';
+} from '../ptc/runtime/probes/fixed-probe-runtime-contract.js';
 import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
 import { testProjectId } from '../../test-support/project-id.js';
 import { testThreadId } from '../../test-support/thread-id.js';

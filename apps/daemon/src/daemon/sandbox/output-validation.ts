@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { sha256Hex } from '@geulbat/shared-utils/sha256';
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { isPathInsideWorkspaceBoundary } from '../files/normalize-path.js';
@@ -31,7 +31,7 @@ export function isOpaqueSandboxOutputEvidenceRef(value: string): boolean {
 
 export async function collectSandboxOutputRef(
   outputDir: string,
-  budget: SandboxOutputBudget,
+  budget?: SandboxOutputBudget,
 ): Promise<CollectedSandboxOutput> {
   const rootPath = await realpath(outputDir);
   const files: SandboxOutputFileRef[] = [];
@@ -73,18 +73,16 @@ export async function collectSandboxOutputRef(
       }
 
       totalBytes += fileStats.size;
-      if (totalBytes > budget.maxBytes) {
+      if (budget !== undefined && totalBytes > budget.maxBytes) {
         throw new Error('sandbox output byte budget exceeded');
       }
 
       files.push({
         relativePath: relative(rootPath, realFilePath).split(sep).join('/'),
         bytes: fileStats.size,
-        sha256: createHash('sha256')
-          .update(await readFile(realFilePath))
-          .digest('hex'),
+        sha256: sha256Hex(await readFile(realFilePath)),
       });
-      if (files.length > budget.maxFiles) {
+      if (budget !== undefined && files.length > budget.maxFiles) {
         throw new Error('too many sandbox output files');
       }
     }

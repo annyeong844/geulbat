@@ -1,5 +1,5 @@
 import { isProjectId, type ProjectId } from './ids.js';
-import { isBoolean, isNumber, isRecord, isString } from './runtime-utils.js';
+import { isNumber, isRecord, isString } from './runtime-utils.js';
 
 /**
  * Deterministic content version token for one normalized workspace-relative path.
@@ -20,7 +20,6 @@ export interface FileReadResponse {
   totalLines: number;
   startLine: number;
   endLine: number;
-  truncated: boolean;
 }
 
 export interface FileSaveRequest {
@@ -35,6 +34,12 @@ export interface FileSaveResponse {
   versionToken: FileVersionToken;
   totalLines: number;
   ok: true;
+}
+
+export interface FileBinaryInputRefResponse {
+  ok: true;
+  contentRef: string;
+  byteLength: number;
 }
 
 export interface FileTreeRequest {
@@ -87,8 +92,7 @@ export function isFileReadResponse(value: unknown): value is FileReadResponse {
     isString(value.versionToken) &&
     isNumber(value.totalLines) &&
     isNumber(value.startLine) &&
-    isNumber(value.endLine) &&
-    isBoolean(value.truncated)
+    isNumber(value.endLine)
   );
 }
 
@@ -99,5 +103,16 @@ export function isFileSaveResponse(value: unknown): value is FileSaveResponse {
     isString(value.versionToken) &&
     isNumber(value.totalLines) &&
     value.ok === true
+  );
+}
+
+export function isFileBinaryInputRefResponse(
+  value: unknown,
+): value is FileBinaryInputRefResponse {
+  return (
+    isRecord(value) &&
+    value.ok === true &&
+    isString(value.contentRef) &&
+    isNumber(value.byteLength)
   );
 }

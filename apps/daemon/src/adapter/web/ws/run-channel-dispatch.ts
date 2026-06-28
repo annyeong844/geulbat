@@ -1,12 +1,16 @@
 import WebSocket from 'ws';
 import { tryDecodeJson } from '@geulbat/protocol/runtime-utils';
-import type { RunRequest } from '@geulbat/protocol/run-contract';
+import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 import type { RunChannelClientMessage } from '@geulbat/protocol/run-channel';
 
 import { closeUnauthorized, sendError } from './run-channel-socket.js';
 import type { RunChannelRuntimeContext } from './run-channel-runtime-context.js';
 import { handleRunAuth } from './run-channel-auth.js';
-import { handleRunApprove, handleRunCancel } from './run-channel-control.js';
+import {
+  handleRunApprove,
+  handleRunCancel,
+  handleRunInterject,
+} from './run-channel-control.js';
 import { getSocketState } from './run-channel-socket-runtime.js';
 import { claimSocketRunStart } from './run-channel-start-gate.js';
 import { normalizeAllowedToolNames } from './run-request-tools.js';
@@ -66,6 +70,9 @@ export async function handleClientMessage(
       case 'run.approve':
         handleRunApprove(socket, requestId, message.request, runtimeContext);
         return;
+      case 'run.interject':
+        handleRunInterject(socket, requestId, message.request, runtimeContext);
+        return;
     }
 
     return assertNever(message);
@@ -109,13 +116,18 @@ function buildDispatchLogContext(
         runId: message.request.runId,
         threadId: message.request.threadId,
       };
+    case 'run.interject':
+      return {
+        messageType: message.type,
+        requestId: message.requestId,
+      };
   }
 }
 
 async function dispatchRunStart(args: {
   socket: WebSocket;
   requestId: string;
-  request: RunRequest;
+  request: RunStartRequest;
   runtimeContext: RunChannelRuntimeContext;
   socketState: ReturnType<typeof getSocketState>;
 }): Promise<void> {
