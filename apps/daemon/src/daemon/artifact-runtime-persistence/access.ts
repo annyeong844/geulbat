@@ -1,10 +1,9 @@
-import type { ArtifactRuntimePersistenceScopeRequest } from '@geulbat/protocol/runtime-persistence';
-
 import {
   resolveRuntimeStateTarget,
   type RuntimeStateTarget,
 } from '../runtime-persistence-file-access.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
+import type { ArtifactRuntimePersistenceScopeRequest } from './contract.js';
 
 const runPersistenceSerial = createKeyedSerialRunner();
 const runPersistenceWorkspaceSerial = createKeyedSerialRunner();

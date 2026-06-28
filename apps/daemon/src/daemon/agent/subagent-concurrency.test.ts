@@ -88,10 +88,8 @@ void test('reserveSubagentLaunchSlots rejects invalid requested child counts', (
   );
 });
 
-void test('reserveSubagentLaunchSlots allows unlimited background child capacity', () => {
-  const controller = createSubagentAdmissionController({
-    policy: { maxConcurrentChildren: null },
-  });
+void test('reserveSubagentLaunchSlots defaults to unlimited background child capacity', () => {
+  const controller = createSubagentAdmissionController();
   const runState = createTestRunState('subagent-concurrency-unlimited');
   for (let index = 0; index < 10; index += 1) {
     runState.backgroundChildRunIds.add(testRunId(`active-child-${index}`));

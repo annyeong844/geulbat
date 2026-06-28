@@ -5,7 +5,7 @@ import {
   type PtcFixedEpochProbeRuntimeFailureReason,
   type PtcFixedEpochProbeRuntimeResult,
   type PtcFixedEpochProbeRuntimeSummary,
-} from '../ptc/fixed-probe-runtime-contract.js';
+} from '../ptc/runtime/probes/fixed-probe-runtime-contract.js';
 import type { RunWorkspaceContext } from '../run-workspace-context.js';
 import { composeAgentResult, type AgentResult } from './agent-result.js';
 

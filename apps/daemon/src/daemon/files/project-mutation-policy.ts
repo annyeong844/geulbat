@@ -1,9 +1,9 @@
-import type { ProjectId } from '@geulbat/protocol/ids';
-import type { ProjectListItem } from '@geulbat/protocol/projects';
 import {
-  getDefaultProjectDeleteConflictMessage,
-  getDefaultProjectRenameConflictMessage,
-} from '@geulbat/protocol/projects';
+  getFilesDefaultProjectDeleteConflictMessage as getDefaultProjectDeleteConflictMessage,
+  getFilesDefaultProjectRenameConflictMessage as getDefaultProjectRenameConflictMessage,
+  type ProjectId,
+  type ProjectListItem,
+} from './contract.js';
 import { DEFAULT_PROJECT_ID } from './project-registry-state.js';
 
 export type ProjectMutationAction = 'rename' | 'delete';

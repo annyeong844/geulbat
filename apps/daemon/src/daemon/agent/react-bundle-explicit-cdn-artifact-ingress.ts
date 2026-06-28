@@ -3,13 +3,13 @@ import {
   buildReactBundleAcceptedManifestArtifactCandidate,
   type ReactBundleAcceptedManifestArtifactCandidateResult,
   type ReactBundleAcceptedRuntimeManifestSuccess,
-} from '../sandbox/react-bundle-accepted-manifest-artifact-candidate.js';
-import { acceptReactBundleRuntimeManifest } from '../sandbox/react-bundle-accepted-runtime-manifest.js';
-import { probeReactBundleExplicitCdnDependencies } from '../sandbox/react-bundle-dependency-network-probe.js';
+} from '../react-bundle-dependency-admission/react-bundle-accepted-manifest-artifact-candidate.js';
+import { acceptReactBundleRuntimeManifest } from '../react-bundle-dependency-admission/react-bundle-accepted-runtime-manifest.js';
+import { probeReactBundleExplicitCdnDependencies } from '../react-bundle-dependency-admission/react-bundle-dependency-network-probe.js';
 import {
   prepareReactBundleExplicitCdnDependencies,
   type ReactBundleDependencyPrepareRequest,
-} from '../sandbox/react-bundle-dependency-prepare.js';
+} from '../react-bundle-dependency-admission/react-bundle-dependency-prepare.js';
 import { composeAgentResult, type AgentResult } from './agent-result.js';
 
 type ReactBundleDependencyProbeArgs = Parameters<
@@ -22,6 +22,7 @@ export type ReactBundleExplicitCdnArtifactIngressRequest =
 export type ReactBundleExplicitCdnArtifactIngressFailureReason =
   | 'prepare_failed'
   | 'probe_failed'
+  | 'probe_timeout_policy_missing'
   | 'acceptance_failed'
   | 'artifact_candidate_failed';
 
@@ -55,7 +56,7 @@ export async function runReactBundleExplicitCdnArtifactIngress(args: {
   workspaceRoot: string;
   store: SandboxAttemptStore;
   request: ReactBundleExplicitCdnArtifactIngressRequest;
-  timeoutMs: number;
+  timeoutMs?: number;
   signal?: AbortSignal;
   now?: () => string;
   probeTransport?: ReactBundleDependencyProbeArgs['probeTransport'];
@@ -70,8 +71,8 @@ export async function runReactBundleExplicitCdnArtifactIngress(args: {
       workspaceRoot: args.workspaceRoot,
       store: args.store,
       request: args.request,
-      timeoutMs: args.timeoutMs,
       ...(args.signal ? { signal: args.signal } : {}),
+      ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
     });
   } catch (error: unknown) {
     return fail('prepare_failed', readErrorMessage(error));
@@ -83,15 +84,24 @@ export async function runReactBundleExplicitCdnArtifactIngress(args: {
     | undefined;
 
   if (dependencyCount > 0) {
+    if (args.timeoutMs === undefined) {
+      return fail(
+        'probe_timeout_policy_missing',
+        'react bundle dependency metadata probe requires explicit timeoutMs',
+        mergeFailureDiagnostics({
+          prepareEvidenceRef: prepare.evidenceRef,
+        }),
+      );
+    }
     try {
       probe = await probeReactBundleExplicitCdnDependencies({
         workspaceRoot: args.workspaceRoot,
         store: args.store,
         request: args.request,
-        timeoutMs: args.timeoutMs,
         ...(args.now ? { now: args.now } : {}),
         ...(args.signal ? { signal: args.signal } : {}),
         ...(args.probeTransport ? { probeTransport: args.probeTransport } : {}),
+        ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
       });
     } catch (error: unknown) {
       return fail(

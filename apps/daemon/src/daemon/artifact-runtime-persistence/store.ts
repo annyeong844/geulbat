@@ -5,11 +5,9 @@ import type {
   ArtifactRuntimePersistenceLoadResponse,
   ArtifactRuntimePersistenceSaveResponse,
   ArtifactRuntimePersistenceScopeRequest,
-} from '@geulbat/protocol/runtime-persistence';
+} from './contract.js';
 
 import { writeAtomically } from '../runtime-persistence-file-access.js';
-import { readRuntimePersistenceTotalBytes } from './disk-usage.js';
-import { assertRuntimePersistenceQuota } from './quota.js';
 import { classifyRuntimePersistenceError } from './errors.js';
 import {
   assertExpectedRuntimePersistenceRevision,
@@ -27,10 +25,6 @@ export {
   PersistenceQuotaExceededError,
   PersistenceUnavailableError,
 } from './errors.js';
-export {
-  MAX_RUNTIME_PERSISTENCE_FILE_BYTES,
-  MAX_RUNTIME_PERSISTENCE_TOTAL_BYTES,
-} from './quota.js';
 
 export async function loadArtifactRuntimePersistenceState(
   workspaceRoot: string,
@@ -58,17 +52,12 @@ export async function saveArtifactRuntimePersistenceState(
     workspaceRoot,
     access.filePath,
     async () => {
-      const current = await assertExpectedRuntimePersistenceRevision(
+      await assertExpectedRuntimePersistenceRevision(
         access.filePath,
         scope,
         expectedRevision,
       );
       const next = buildPersistedRuntimeState(scope, state);
-      assertRuntimePersistenceQuota(
-        next.byteLength,
-        current?.byteLength ?? 0,
-        await readRuntimePersistenceTotalBytes(access.target.storageRoot),
-      );
       try {
         await writeAtomically(access.target, next.serialized);
       } catch (error: unknown) {

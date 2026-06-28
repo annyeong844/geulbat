@@ -4,7 +4,7 @@ import { createDaemonContext } from '../../context.js';
 import {
   PTC_BROWSER_NAVIGATE_TOOL_NAME,
   type PtcBrowserNavigateRuntime,
-} from '../../daemon-runtime-contract.js';
+} from '../../ptc/runtime/browser/browser-navigate-runtime-contract.js';
 import {
   PTC_LAB_BROWSER_ARTIFACT_EXPORT_DISABLED_POLICY_ID,
   PTC_LAB_BROWSER_COOKIE_STORE_NONE_POLICY_ID,
@@ -17,18 +17,19 @@ import {
   PTC_LAB_BROWSER_RUNTIME_ENGINE_CHROMIUM_POLICY_ID,
   PTC_LAB_BROWSER_URL_ECHO_DIGEST_ONLY_POLICY_ID,
   PTC_LAB_BROWSER_USER_URL_NAVIGATION_POLICY_ID,
-} from '../../ptc/lab-browser-policy.js';
-import { PTC_LAB_OPEN_EGRESS_LOCAL_POLICY_ID } from '../../ptc/lab-network-policy.js';
+} from '../../ptc/lab/browser/core/lab-browser-policy-ids.js';
+import { PTC_LAB_OPEN_EGRESS_LOCAL_POLICY_ID } from '../../ptc/lab/network/lab-network-policy.js';
 import type {
   PtcLabBrowserUserUrlNavigationAttemptDigest,
   PtcLabBrowserUserUrlNavigationSummary,
-} from '../../ptc/lab-browser-user-url-navigation-contract.js';
+} from '../../ptc/lab/browser/user-url-navigation/lab-browser-user-url-navigation-contract.js';
 import {
   PTC_LAB_BROWSER_USER_URL_NAVIGATION_CAPABILITY,
   type PtcLabBrowserUserUrlTargetDigest,
-} from '../../ptc/lab-browser-url-navigation.js';
+} from '../../ptc/lab/browser/core/lab-browser-url-navigation.js';
 import { testProjectId } from '../../../test-support/project-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
+import { isToolObjectParameters } from '../types.js';
 import { browserNavigateTool } from './browser-navigate.js';
 
 void test('browser_navigate exposes scalar URL schema and approval-gated metadata', () => {
@@ -36,12 +37,14 @@ void test('browser_navigate exposes scalar URL schema and approval-gated metadat
   assert.equal(browserNavigateTool.sideEffectLevel, 'write');
   assert.equal(browserNavigateTool.requiresApproval, true);
   assert.equal(browserNavigateTool.mayMutateWorkspaceFiles, false);
-  assert.deepEqual(browserNavigateTool.parameters.required, ['url']);
-  assert.ok('url' in browserNavigateTool.parameters.properties);
-  assert.ok('timeoutMs' in browserNavigateTool.parameters.properties);
-  assert.ok(!('screenshot' in browserNavigateTool.parameters.properties));
-  assert.ok(!('dom' in browserNavigateTool.parameters.properties));
-  assert.ok(!('artifactExport' in browserNavigateTool.parameters.properties));
+  const parameters = browserNavigateTool.parameters;
+  assert.ok(isToolObjectParameters(parameters));
+  assert.deepEqual(parameters.required, ['url']);
+  assert.ok('url' in parameters.properties);
+  assert.ok('timeoutMs' in parameters.properties);
+  assert.ok(!('screenshot' in parameters.properties));
+  assert.ok(!('dom' in parameters.properties));
+  assert.ok(!('artifactExport' in parameters.properties));
 });
 
 void test('browser_navigate requires an agent runtime service before navigation', async () => {
@@ -125,7 +128,8 @@ void test('browser_navigate strips unsafe failure diagnostics from tool output',
         ok: false,
         kind: 'ptc_lab_browser_user_url_navigation_error',
         reasonCode: 'ptc_lab_browser_session_unavailable',
-        message: 'PTC lab browser user URL navigation session is unavailable',
+        message:
+          'session failed for https://example.com/private?access_token=secret in /tmp/geulbat-private/.geulbat/ptc/private',
         phase: 'session_acquisition',
         diagnostics: {
           sessionReasonCode: 'container_create_failed',
@@ -152,15 +156,16 @@ void test('browser_navigate strips unsafe failure diagnostics from tool output',
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'execution_failed');
+  assert.equal(result.error, 'PTC browser navigation session is unavailable.');
   assert.doesNotMatch(
-    result.output,
+    `${result.output}\n${result.error ?? ''}`,
     /example\.com|access_token|geulbat-private|private/u,
   );
   assert.deepEqual(JSON.parse(result.output), {
     kind: 'ptc_lab_browser_user_url_navigation_error',
     ok: false,
     reasonCode: 'ptc_lab_browser_session_unavailable',
-    message: 'PTC lab browser user URL navigation session is unavailable',
+    message: 'PTC browser navigation session is unavailable.',
     phase: 'session_acquisition',
     diagnostics: {
       sessionReasonCode: 'container_create_failed',

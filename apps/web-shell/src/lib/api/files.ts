@@ -1,7 +1,9 @@
 import {
+  isFileBinaryInputRefResponse,
   isFileReadResponse,
   isFileSaveResponse,
   isFileTreeResponse,
+  type FileBinaryInputRefResponse,
   type FileReadResponse,
   type FileSaveResponse,
   type FileTreeResponse,
@@ -11,7 +13,11 @@ import {
   type ConflictStaleWriteError,
 } from '@geulbat/protocol/errors';
 import { DEFAULT_PROJECT_ID } from '@geulbat/protocol/ids';
-import { ApiFetchError, apiFetch } from './client.js';
+import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { createLogger } from '@geulbat/shared-utils/logger';
+import { ApiFetchError, apiFetch, isApiOkResponse } from './client.js';
+
+const logger = createLogger('api/files');
 
 export class FileSaveConflictError extends Error {
   readonly conflict: ConflictStaleWriteError;
@@ -65,22 +71,27 @@ export async function saveBinaryFile(
   path: string,
   blob: Blob,
 ): Promise<FileSaveResponse> {
-  const contentBase64 = await encodeBlobBase64(blob);
+  const input = await uploadBinaryInputRef(projectId, blob);
   const mimeType = blob.type.trim();
-  return apiFetch(
-    '/api/files/save-binary',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        projectId,
-        path,
-        contentBase64,
-        mimeType,
-      }),
-    },
-    isFileSaveResponse,
-  );
+  try {
+    return await apiFetch(
+      '/api/files/save-binary',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          path,
+          contentRef: input.contentRef,
+          mimeType,
+        }),
+      },
+      isFileSaveResponse,
+    );
+  } catch (error: unknown) {
+    await cleanupBinaryInputRefAfterFailure(projectId, input.contentRef, error);
+    throw error;
+  }
 }
 
 export async function replaceBinaryFile(
@@ -92,23 +103,73 @@ export async function replaceBinaryFile(
   if (versionToken.trim().length === 0) {
     throw new Error('versionToken is required');
   }
-  const contentBase64 = await encodeBlobBase64(blob);
+  const input = await uploadBinaryInputRef(projectId, blob);
   const mimeType = blob.type.trim();
-  return apiFetchWithSaveConflict(
-    '/api/files/replace-binary',
+  try {
+    return await apiFetchWithSaveConflict(
+      '/api/files/replace-binary',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId,
+          path,
+          contentRef: input.contentRef,
+          versionToken,
+          mimeType,
+        }),
+      },
+      isFileSaveResponse,
+    );
+  } catch (error: unknown) {
+    await cleanupBinaryInputRefAfterFailure(projectId, input.contentRef, error);
+    throw error;
+  }
+}
+
+function uploadBinaryInputRef(
+  projectId: string,
+  blob: Blob,
+): Promise<FileBinaryInputRefResponse> {
+  const contentType = blob.type.trim() || 'application/octet-stream';
+  return apiFetch(
+    `/api/files/binary-inputs?projectId=${encodeURIComponent(projectId)}`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        projectId,
-        path,
-        contentBase64,
-        versionToken,
-        mimeType,
-      }),
+      headers: { 'Content-Type': contentType },
+      body: blob,
     },
-    isFileSaveResponse,
+    isFileBinaryInputRefResponse,
   );
+}
+
+function deleteBinaryInputRef(
+  projectId: string,
+  contentRef: string,
+): Promise<unknown> {
+  return apiFetch(
+    `/api/files/binary-inputs?projectId=${encodeURIComponent(projectId)}&contentRef=${encodeURIComponent(contentRef)}`,
+    {
+      method: 'DELETE',
+    },
+    isApiOkResponse,
+  );
+}
+
+async function cleanupBinaryInputRefAfterFailure(
+  projectId: string,
+  contentRef: string,
+  originalError: unknown,
+): Promise<void> {
+  try {
+    await deleteBinaryInputRef(projectId, contentRef);
+  } catch (cleanupError: unknown) {
+    logger.warn('failed to delete uploaded binary input ref after failure:', {
+      contentRef,
+      originalError: getErrorMessage(originalError),
+      cleanupError: getErrorMessage(cleanupError),
+    });
+  }
 }
 
 async function apiFetchWithSaveConflict(
@@ -128,15 +189,4 @@ async function apiFetchWithSaveConflict(
     }
     throw error;
   }
-}
-
-async function encodeBlobBase64(blob: Blob): Promise<string> {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  let binary = '';
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
 }

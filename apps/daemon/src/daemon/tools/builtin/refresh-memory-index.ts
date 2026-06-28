@@ -10,7 +10,7 @@ export const refreshMemoryIndexTool = defineZodTool({
     'Rebuild the derived memory index under .geulbat/index from current workspace source files. Does not modify user workspace documents.',
   argsSchema: refreshMemoryIndexArgsSchema,
   sideEffectLevel: 'write',
-  timeoutMs: 60_000,
+  mayMutateWorkspaceFiles: false,
   requiresApproval: true,
   async executeParsed(_args, ctx) {
     if (!ctx.memoryIndex) {

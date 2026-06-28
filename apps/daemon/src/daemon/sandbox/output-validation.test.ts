@@ -34,6 +34,24 @@ void test('collectSandboxOutputRef records files under the output directory', as
   }
 });
 
+void test('collectSandboxOutputRef records all files when no budget is provided', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'geulbat-sandbox-output-'));
+  try {
+    const outputDir = join(root, 'out');
+    await mkdir(outputDir, { recursive: true });
+    for (let index = 0; index < 12; index += 1) {
+      await writeFile(join(outputDir, `result-${index}.txt`), 'x', 'utf8');
+    }
+
+    const ref = await collectSandboxOutputRef(outputDir);
+
+    assert.equal(ref.totalBytes, 12);
+    assert.equal(ref.files.length, 12);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 void test('collectSandboxOutputRef rejects symlink escapes', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'geulbat-sandbox-output-'));
   const outside = await mkdtemp(join(tmpdir(), 'geulbat-sandbox-outside-'));

@@ -1,5 +1,4 @@
-import type { ThreadMessageMetadata } from '@geulbat/protocol/thread-metadata';
-import type { ThreadMessage } from '@geulbat/protocol/threads';
+import type { ThreadMessageInput, ThreadMessageMetadata } from './contract.js';
 
 import type { ResolvedExecuteForegroundRunDeps } from './execute-foreground-run-contracts.js';
 import { upsertCurrentThreadSummary } from './foreground-thread-state-persistence.js';
@@ -36,8 +35,8 @@ function buildForegroundUserTranscriptEntry(args: {
   prompt: string;
   transcriptPrompt: string;
   timestamp: string;
-}): ThreadMessage {
-  const entry: ThreadMessage = {
+}): ThreadMessageInput {
+  const entry: ThreadMessageInput = {
     role: 'user',
     content: args.transcriptPrompt,
     timestamp: args.timestamp,

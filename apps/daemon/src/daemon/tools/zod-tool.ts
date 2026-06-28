@@ -5,6 +5,7 @@ import type {
   RawExecutableTool,
   ToolExecutionContext,
   ExecuteResult,
+  ToolObjectParameters,
   ToolParameters,
 } from './types.js';
 import { defineParsedTool, failToolParse } from './parsed-tool.js';
@@ -16,8 +17,9 @@ interface ZodToolOptions<TSchema extends AnyZodObject> {
   name: string;
   description: string;
   argsSchema: TSchema;
+  parametersSchema?: z.ZodType;
   sideEffectLevel: SideEffectLevel;
-  mayMutateWorkspaceFiles?: boolean;
+  mayMutateWorkspaceFiles: boolean;
   parallelBatchKind?: ParallelToolBatchKind;
   timeoutMs?: number;
   requiresApproval: boolean;
@@ -33,10 +35,12 @@ export function defineZodTool<TSchema extends AnyZodObject>(
   return defineParsedTool({
     name: options.name,
     description: options.description,
-    parameters: zodSchemaToToolParameters(options.argsSchema),
+    parameters: zodSchemaToToolParameters(
+      options.parametersSchema ?? options.argsSchema,
+    ),
     strict: true,
     sideEffectLevel: options.sideEffectLevel,
-    mayMutateWorkspaceFiles: options.mayMutateWorkspaceFiles ?? false,
+    mayMutateWorkspaceFiles: options.mayMutateWorkspaceFiles,
     ...(options.parallelBatchKind
       ? { parallelBatchKind: options.parallelBatchKind }
       : {}),
@@ -57,28 +61,72 @@ export function defineZodTool<TSchema extends AnyZodObject>(
   });
 }
 
-export function zodSchemaToToolParameters(
-  schema: AnyZodObject,
-): ToolParameters {
+export function zodSchemaToToolParameters(schema: z.ZodType): ToolParameters {
   const jsonSchema = z.toJSONSchema(schema, { io: 'input' });
-  return normalizeRootObjectSchema(jsonSchema);
+  return normalizeRootSchema(jsonSchema);
 }
 
-function normalizeRootObjectSchema(value: unknown): ToolParameters {
+function normalizeRootSchema(value: unknown): ToolParameters {
   const record = asRecord(
     value,
-    'Tool schema must convert to an object schema.',
+    'Tool schema must convert to an object, oneOf, or anyOf schema.',
+  );
+  const hasRootOneOf = Array.isArray(record.oneOf);
+  const hasRootAnyOf = Array.isArray(record.anyOf);
+  if ((hasRootOneOf || hasRootAnyOf) && record.type === undefined) {
+    if (hasRootOneOf === hasRootAnyOf) {
+      throw new Error(
+        'Tool schema root must provide exactly one branch keyword.',
+      );
+    }
+    if (hasRootOneOf) {
+      return {
+        oneOf: normalizeRootBranchSchema(record.oneOf, 'oneOf'),
+      };
+    }
+    return {
+      anyOf: normalizeRootBranchSchema(record.anyOf, 'anyOf'),
+    };
+  }
+
+  return normalizeObjectParameters(record, 'root');
+}
+
+function normalizeRootBranchSchema(
+  value: unknown,
+  keyword: 'oneOf' | 'anyOf',
+): ToolObjectParameters[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Tool schema ${keyword} must be an array.`);
+  }
+  if (value.length === 0) {
+    throw new Error(`Tool schema ${keyword} must contain at least one branch.`);
+  }
+  return value.map((entry, index) =>
+    normalizeObjectParameters(entry, `${keyword} branch ${index}`),
+  );
+}
+
+function normalizeObjectParameters(
+  value: unknown,
+  scope: string,
+): ToolObjectParameters {
+  const record = asRecord(
+    value,
+    `Tool schema ${scope} must convert to an object schema.`,
   );
   if (record.type !== 'object') {
-    throw new Error('Tool schema root must have type "object".');
+    throw new Error(`Tool schema ${scope} must have type "object".`);
   }
   if (record.additionalProperties !== false) {
-    throw new Error('Tool schema root must set additionalProperties to false.');
+    throw new Error(
+      `Tool schema ${scope} must set additionalProperties to false.`,
+    );
   }
 
   const propertiesRecord = asRecord(
     record.properties,
-    'Tool schema root must provide properties.',
+    `Tool schema ${scope} must provide properties.`,
   );
 
   const properties: Record<string, unknown> = {};
@@ -135,11 +183,39 @@ function normalizeScalarPropertySchema(
   if (Array.isArray(record.enum)) {
     normalized.enum = record.enum;
   }
+  if (
+    typeof record.const === 'string' ||
+    typeof record.const === 'number' ||
+    typeof record.const === 'boolean'
+  ) {
+    normalized.const = record.const;
+  }
   if (typeof record.minimum === 'number') {
     normalized.minimum = record.minimum;
   }
   if (typeof record.maximum === 'number') {
     normalized.maximum = record.maximum;
+  }
+  if (typeof record.exclusiveMinimum === 'number') {
+    normalized.exclusiveMinimum = record.exclusiveMinimum;
+  }
+  if (typeof record.exclusiveMaximum === 'number') {
+    normalized.exclusiveMaximum = record.exclusiveMaximum;
+  }
+  if (typeof record.multipleOf === 'number') {
+    normalized.multipleOf = record.multipleOf;
+  }
+  if (typeof record.minLength === 'number') {
+    normalized.minLength = record.minLength;
+  }
+  if (typeof record.maxLength === 'number') {
+    normalized.maxLength = record.maxLength;
+  }
+  if (typeof record.pattern === 'string') {
+    normalized.pattern = record.pattern;
+  }
+  if (typeof record.format === 'string') {
+    normalized.format = record.format;
   }
 
   return normalized;

@@ -1,5 +1,8 @@
-import { isAgentChildTerminalState } from '@geulbat/protocol/run-events';
-import { assertRunId, type RunId } from '@geulbat/protocol/ids';
+import {
+  assertAgentRunId as assertRunId,
+  isAgentTerminalRunStatus as isAgentChildTerminalState,
+  type RunId,
+} from '../contract.js';
 import type { RunWorkspaceContext } from '../../run-workspace-context.js';
 import { createRunWorkspaceContext } from '../../run-workspace-context.js';
 import type { RunStatus, ToolRunState } from '../../runtime-contracts.js';
@@ -9,8 +12,14 @@ import {
 } from '../../runtime-contracts.js';
 import { hasVisibleAgentOutput } from '../agent-result.js';
 import type { AgentResult } from '../agent-result.js';
+import {
+  createRunInterjectBuffer,
+  type RunInterjectBuffer,
+} from '../../sessions/active-run-interject-buffer.js';
 
-export interface RunState extends RunWorkspaceContext, ToolRunState {}
+export interface RunState extends RunWorkspaceContext, ToolRunState {
+  interject: RunInterjectBuffer;
+}
 
 export function createRunState(params: {
   runId: string | RunId;
@@ -31,6 +40,7 @@ export function createRunState(params: {
     childRunIds: new Set<RunId>(),
     backgroundChildRunIds: new Set<RunId>(),
     backgroundChildLaunchReservationIds: new Set<string>(),
+    interject: createRunInterjectBuffer(),
     ...(parentRunId !== null ? { parentRunId } : {}),
   };
 }

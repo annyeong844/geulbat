@@ -60,7 +60,10 @@ export function useReactBundleInlineCompilePreviewSurface(args: {
     }
 
     let cancelled = false;
-    void compileReactBundleInlineSource(seed.input)
+    void compileReactBundleInlineSource(
+      seed.input,
+      sourceRef.projectId ?? undefined,
+    )
       .then((response) => {
         if (cancelled) {
           return;
@@ -95,7 +98,7 @@ export function useReactBundleInlineCompilePreviewSurface(args: {
     return () => {
       cancelled = true;
     };
-  }, [artifactSessionKey, seed]);
+  }, [artifactSessionKey, seed, sourceRef.projectId]);
 
   return useMemo(
     () =>

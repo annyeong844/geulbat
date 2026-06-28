@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { ErrorCode } from '@geulbat/protocol/errors';
+import type { ErrorCode } from '../contract.js';
 import { getErrorMessage } from '../../utils/error.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 

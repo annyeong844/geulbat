@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createBuiltinToolRegistryStore } from './builtin/catalog.js';
+import { isToolObjectParameters } from './types.js';
 
 void test('createBuiltinToolRegistryStore registers the canonical builtin tool set', () => {
   const registry = createBuiltinToolRegistryStore();
@@ -14,7 +15,9 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
     'agent_stop',
     'agent_wait',
     'browser_navigate',
-    'execute_code',
+    'browser_page_load_evidence',
+    'browser_text_evidence',
+    'exec',
     'list_files',
     'manage_files',
     'patch_file',
@@ -24,6 +27,7 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
     'search_files',
     'search_memory_index',
     'todo',
+    'wait',
     'web_fetch',
     'write_file',
   ]);
@@ -34,8 +38,11 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
   assert.ok(registry.getTool('agent_spawn'));
   assert.ok(registry.getTool('agent_stop'));
   assert.ok(registry.getTool('agent_wait'));
-  assert.ok(registry.getTool('execute_code'));
+  assert.ok(registry.getTool('exec'));
+  assert.equal(registry.getTool('execute_code'), undefined);
   assert.ok(registry.getTool('browser_navigate'));
+  assert.ok(registry.getTool('browser_page_load_evidence'));
+  assert.ok(registry.getTool('browser_text_evidence'));
   assert.ok(registry.getTool('list_files'));
   assert.ok(registry.getTool('search_files'));
   assert.ok(registry.getTool('write_file'));
@@ -45,6 +52,7 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
   assert.ok(registry.getTool('refresh_memory_index'));
   assert.ok(registry.getTool('search_memory_index'));
   assert.ok(registry.getTool('web_fetch'));
+  assert.ok(registry.getTool('wait'));
 });
 
 void test('getTool returns a snapshot instead of the live registry object', () => {
@@ -54,11 +62,13 @@ void test('getTool returns a snapshot instead of the live registry object', () =
   assert.ok(snapshot);
 
   snapshot.requiresApproval = false;
+  assert.ok(isToolObjectParameters(snapshot.parameters));
   snapshot.parameters.required.push('__mutated__');
 
   const again = registry.getTool('write_file');
   assert.ok(again);
   assert.equal(again.requiresApproval, true);
+  assert.ok(isToolObjectParameters(again.parameters));
   assert.equal(again.parameters.required.includes('__mutated__'), false);
 });
 

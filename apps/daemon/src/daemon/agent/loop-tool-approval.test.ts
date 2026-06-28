@@ -16,6 +16,12 @@ import {
   buildToolCallExecutionRuntime,
 } from './loop-tool-runtime.js';
 import { createDaemonContext } from '../context.js';
+import {
+  PTC_EXECUTE_CODE_POLICY_ID,
+  PTC_EXECUTE_CODE_TOOL_NAME,
+  type PtcExecuteCodeRuntime,
+} from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
+import { isRecord } from '../runtime-json.js';
 import type {
   AnyTool,
   ExecuteResult,
@@ -48,6 +54,7 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
   description: string;
   sideEffectLevel: AnyTool['sideEffectLevel'];
   requiresApproval: boolean;
+  mayMutateWorkspaceFiles?: boolean;
   parseArgs?: (raw: unknown) => ToolParseResult<TArgs>;
   executeParsed: (
     parsedArgs: TArgs,
@@ -67,6 +74,7 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
     },
     strict: true,
     sideEffectLevel: args.sideEffectLevel,
+    mayMutateWorkspaceFiles: args.mayMutateWorkspaceFiles ?? false,
     timeoutMs: 1_000,
     requiresApproval: args.requiresApproval,
     parseArgs: args.parseArgs ?? parseObjectArgs,
@@ -89,6 +97,7 @@ function makeExecutionRuntime(
     runId: string;
     approvalContext: ReturnType<typeof makeApprovalContext>;
     emit: ReturnType<typeof makeEmitter>;
+    agentSpawnRuntime?: ReturnType<typeof createDaemonContext>;
   },
 ) {
   return buildToolCallExecutionRuntime({
@@ -111,7 +120,7 @@ function makeExecutionRuntime(
       signal: undefined,
       runState: undefined,
       memoryIndex: undefined,
-      agentSpawnRuntime: undefined,
+      agentSpawnRuntime: args.agentSpawnRuntime,
     }),
   });
 }
@@ -291,6 +300,225 @@ void test('executeFunctionCall can auto-approve from an injected approval grant 
   });
   assert.equal(seenApprovalGranted, true);
   assert.deepEqual(events, []);
+});
+
+void test('executeFunctionCall injects an audit-only callback dispatcher for exec', async () => {
+  const nestedToolName = 'loop_tool_approval_ptc_callback_read_test_tool';
+  const daemonContext = createDaemonContext();
+  let nestedCtx: ToolExecutionContext | undefined;
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: nestedToolName,
+      description: 'PTC callback read test tool',
+      sideEffectLevel: 'read',
+      requiresApproval: false,
+      async executeParsed(_, ctx) {
+        nestedCtx = ctx;
+        return {
+          ok: true,
+          output: JSON.stringify({ content: 'nested-ok' }),
+        };
+      },
+    }),
+  );
+
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-ptc-'));
+  const threadId = testThreadId(82_2);
+  const events: AgentEvent[] = [];
+  const history: Parameters<typeof executeFunctionCall>[0]['history'] = [];
+  const ptcExecuteCode: PtcExecuteCodeRuntime = {
+    async executeCode(args) {
+      const handler = args.toolCallbackHandler;
+      const sdkHelp = args.sdkHelp;
+      assert.equal(typeof handler, 'function');
+      assert.ok(sdkHelp);
+      assert.equal(
+        sdkHelp.callbackTools.some((tool) => tool.name === nestedToolName),
+        true,
+      );
+      if (!handler) {
+        throw new Error('expected callback handler');
+      }
+      const callbackResult = await handler({
+        requestId: 'runtime-read-1',
+        toolName: nestedToolName,
+        args: { path: 'draft.md' },
+        signal: new AbortController().signal,
+        enterLongWait: () => true,
+      });
+      if (!callbackResult.ok) {
+        throw new Error(callbackResult.message);
+      }
+      assert.equal(callbackResult.ok, true);
+      if (
+        !isRecord(callbackResult.result) ||
+        typeof callbackResult.result.output !== 'string'
+      ) {
+        throw new Error('expected execute result output');
+      }
+      assert.deepEqual(JSON.parse(callbackResult.result.output), {
+        content: 'nested-ok',
+      });
+      return {
+        ok: true,
+        value: {
+          ok: true,
+          capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+          policyId: PTC_EXECUTE_CODE_POLICY_ID,
+          labPolicyId: 'ptc_lab_local_docker_batch_command_v1',
+          profile: 'lab',
+          executionClass: 'lab_execute_code',
+          executionSurface: 'node_via_lab_batch_command',
+          exitCode: 0,
+          stdout: 'callback-ok\n',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          effectiveTimeoutMs: 60_000,
+          durationMs: 1,
+          toolCallbacks: {
+            enabled: true,
+            observed: 1,
+          },
+          sessionLifecycle: {
+            mode: 'runtime_owned_reusable',
+            retainedAfterExecution: true,
+          },
+          callbackHelp: {
+            protocolVersion: 'ptc_execute_code_sdk_v1',
+            helpAvailable: true,
+            callbackToolCount: sdkHelp.callbackTools.length,
+          },
+        },
+      };
+    },
+    async waitForCell() {
+      return {
+        ok: true,
+        value: {
+          ok: true,
+          capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+          policyId: PTC_EXECUTE_CODE_POLICY_ID,
+          executionSurface: 'node_via_lab_detached_cell',
+          status: 'missing',
+          cellId: 'ptc_cell_unused',
+          remediation: 'start_a_new_exec',
+        },
+      };
+    },
+    async closeAll() {
+      return { ok: true };
+    },
+  };
+
+  const result = await executeFunctionCall({
+    functionCall: {
+      id: 'fc-execute-code',
+      callId: 'call-execute-code',
+      name: PTC_EXECUTE_CODE_TOOL_NAME,
+      arguments: JSON.stringify({ code: 'return 1' }),
+    },
+    round: 0,
+    toolArgs: { code: 'return 1' },
+    history,
+    runtime: makeExecutionRuntime(daemonContext, {
+      threadId,
+      projectId: testProjectId('project'),
+      workspaceRoot,
+      runId: 'run-ptc-callback',
+      approvalContext: makeApprovalContext(),
+      emit: makeEmitter(events),
+      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(history, []);
+  assert.equal(nestedCtx?.callId, 'call-execute-code::nested-1');
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['tool_call', 'tool_result'],
+  );
+  const [toolCall, toolResult] = events;
+  assert.equal(toolCall?.type, 'tool_call');
+  if (toolCall?.type === 'tool_call') {
+    assert.deepEqual(toolCall.payload.source, {
+      kind: 'ptc_callback',
+      parentCallId: 'call-execute-code',
+      runtimeToolCallId: 'runtime-read-1',
+    });
+  }
+  assert.equal(toolResult?.type, 'tool_result');
+  if (toolResult?.type === 'tool_result') {
+    assert.equal(toolResult.payload.callId, 'call-execute-code::nested-1');
+    assert.deepEqual(toolResult.payload.source, {
+      kind: 'ptc_callback',
+      parentCallId: 'call-execute-code',
+      runtimeToolCallId: 'runtime-read-1',
+    });
+  }
+});
+
+void test('executeFunctionCall rejects PTC callback write dispatch before approval or execution', async () => {
+  const toolName = 'loop_tool_approval_ptc_callback_write_test_tool';
+  const daemonContext = createDaemonContext();
+  let executionCount = 0;
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: toolName,
+      description: 'PTC callback write test tool',
+      sideEffectLevel: 'write',
+      requiresApproval: true,
+      async executeParsed() {
+        executionCount += 1;
+        return { ok: true, output: 'should-not-run' };
+      },
+    }),
+  );
+
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-ptc-write-'),
+  );
+  const threadId = testThreadId(82_3);
+  const events: AgentEvent[] = [];
+  const history: Parameters<typeof executeFunctionCall>[0]['history'] = [];
+
+  await assert.rejects(
+    () =>
+      executeFunctionCall({
+        functionCall: {
+          id: 'fc-ptc-callback-write',
+          callId: 'call-execute-code::nested-write',
+          name: toolName,
+          arguments: '{"path":"draft.md"}',
+        },
+        round: 0,
+        toolArgs: { path: 'draft.md' },
+        history,
+        runtime: makeExecutionRuntime(daemonContext, {
+          threadId,
+          projectId: testProjectId('project'),
+          workspaceRoot,
+          runId: 'run-ptc-callback-write',
+          approvalContext: makeApprovalContext(),
+          emit: makeEmitter(events),
+        }),
+        source: {
+          kind: 'ptc_callback',
+          parentToolCallId: 'call-execute-code',
+          runtimeToolCallId: 'runtime-write-1',
+          hostCallId: 'call-execute-code::nested-write',
+        },
+        denialMode: 'code_visible',
+      }),
+    /PTC callback dispatch currently supports only read-only no-approval tools/u,
+  );
+
+  assert.equal(executionCount, 0);
+  assert.deepEqual(events, []);
+  assert.deepEqual(history, []);
 });
 
 void test('executeFunctionCall resolves interactive approval against the owner run/thread target before execution', async () => {

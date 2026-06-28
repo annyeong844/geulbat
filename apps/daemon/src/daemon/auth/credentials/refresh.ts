@@ -7,7 +7,7 @@
  * client_id changes, only this file needs updating.
  */
 
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../runtime-json.js';
 import {
   getRequiredProviderAuthClientId,
   PROVIDER_AUTH_TOKEN_URL,
@@ -45,9 +45,7 @@ export async function refreshProviderToken(
       });
     }
     const text = await res.text().catch(() => '');
-    throw new Error(
-      `Provider token refresh failed (${res.status}): ${text.slice(0, 200)}`,
-    );
+    throw new Error(`Provider token refresh failed (${res.status}): ${text}`);
   }
 
   const data = parseRefreshResponse((await res.json()) as unknown);

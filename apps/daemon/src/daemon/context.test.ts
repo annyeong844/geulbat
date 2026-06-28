@@ -10,8 +10,20 @@ import {
   SUBAGENT_BACKGROUND_CAPACITY_ENV,
   resolveSubagentConcurrencyPolicyFromEnv,
 } from './agent/subagent-concurrency.js';
+import {
+  REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV,
+  resolveReactBundleStructuredOutputIngressPolicyFromEnv,
+} from './agent/react-bundle-structured-output-ingress-policy.js';
 import { createRunState } from './agent/runtime/run-state.js';
 import { createDaemonContext } from './context.js';
+import { resolveProviderRequestOptions } from './llm/provider/provider-options.js';
+import {
+  PTC_EXECUTE_CODE_CELL_ENABLED_ENV,
+  PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV,
+  PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV,
+  resolvePtcExecuteCodeCellRuntimeConfigFromEnv,
+} from './ptc/runtime/execute-code/execute-code-runtime.js';
+import { createRunInterjectBuffer } from './sessions/active-run-interject-buffer.js';
 import { createRunWorkspaceContext } from './run-workspace-context.js';
 import type { AnyTool } from './tools/types.js';
 import { testProjectId } from '../test-support/project-id.js';
@@ -30,6 +42,7 @@ function createTestTool(name: string): AnyTool {
     },
     strict: true,
     sideEffectLevel: 'none',
+    mayMutateWorkspaceFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     parseArgs() {
@@ -74,6 +87,7 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
       workspaceRoot: '/tmp/workspace',
       ownerThreadId: threadId,
       abortController: new AbortController(),
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-30T00:00:00.000Z',
     }),
     { ok: true },
@@ -178,6 +192,9 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
     second.providerWebSocketSessions,
   );
   assert.notEqual(first.fileStateCache, second.fileStateCache);
+  assert.notEqual(first.agentWorkflowRunner, second.agentWorkflowRunner);
+  assert.notEqual(first.agentWavePlanner, second.agentWavePlanner);
+  assert.notEqual(first.resourceBudgetProvider, second.resourceBudgetProvider);
 
   const firstRoot = await mkdtemp(join(tmpdir(), 'daemon-context-first-'));
   const secondRoot = await mkdtemp(join(tmpdir(), 'daemon-context-second-'));
@@ -214,6 +231,34 @@ void test('createDaemonContext owns a PTC fixed probe runtime service', () => {
   );
 });
 
+void test('createDaemonContext owns a resource budget observation service', () => {
+  const daemonContext = createDaemonContext();
+
+  const snapshot = daemonContext.resourceBudgetProvider.captureSnapshot({
+    runState: createSubagentCapacityRunState('context-resource-budget'),
+  });
+
+  assert.equal(typeof snapshot.snapshotId, 'string');
+  assert.equal(typeof snapshot.capturedAt, 'string');
+  assert.equal(
+    snapshot.subagents.activeBackgroundChildren.source,
+    'run_state_background_children',
+  );
+  assert.equal(snapshot.subagents.activeBackgroundChildren.ok, true);
+});
+
+void test('createDaemonContext owns an agent wave planner service', () => {
+  const daemonContext = createDaemonContext();
+
+  assert.equal(typeof daemonContext.agentWavePlanner.planNextWave, 'function');
+});
+
+void test('createDaemonContext owns an agent workflow runner service', () => {
+  const daemonContext = createDaemonContext();
+
+  assert.equal(typeof daemonContext.agentWorkflowRunner.runPhase, 'function');
+});
+
 void test('createDaemonContext owns a PTC execute_code runtime service', () => {
   const daemonContext = createDaemonContext();
 
@@ -226,6 +271,32 @@ void test('createDaemonContext owns a PTC browser navigation runtime service', (
 
   assert.equal(typeof daemonContext.ptcBrowserNavigate.navigate, 'function');
   assert.equal(typeof daemonContext.ptcBrowserNavigate.closeAll, 'function');
+});
+
+void test('createDaemonContext owns a PTC browser page-load evidence runtime service', () => {
+  const daemonContext = createDaemonContext();
+
+  assert.equal(
+    typeof daemonContext.ptcBrowserPageLoadEvidence.collectEvidence,
+    'function',
+  );
+  assert.equal(
+    typeof daemonContext.ptcBrowserPageLoadEvidence.closeAll,
+    'function',
+  );
+});
+
+void test('createDaemonContext owns a PTC browser text evidence runtime service', () => {
+  const daemonContext = createDaemonContext();
+
+  assert.equal(
+    typeof daemonContext.ptcBrowserTextEvidence.collectEvidence,
+    'function',
+  );
+  assert.equal(
+    typeof daemonContext.ptcBrowserTextEvidence.closeAll,
+    'function',
+  );
 });
 
 void test('createDaemonContext owns an isolated sandbox attempt store', () => {
@@ -243,22 +314,26 @@ void test('createDaemonContext owns an isolated sandbox attempt store', () => {
 });
 
 void test('createDaemonContext rejects invalid subagent concurrency policy', () => {
-  assert.throws(
-    () =>
-      createDaemonContext({
-        subagentConcurrencyPolicy: {
-          maxConcurrentChildren: 0,
-        },
-      }),
-    /invalid subagent maxConcurrentChildren/,
-  );
+  const invalidMaxConcurrentChildren = [0, 1.5, 9007199254740992];
+
+  for (const maxConcurrentChildren of invalidMaxConcurrentChildren) {
+    assert.throws(
+      () =>
+        createDaemonContext({
+          subagentConcurrencyPolicy: {
+            maxConcurrentChildren,
+          },
+        }),
+      /invalid subagent maxConcurrentChildren/,
+    );
+  }
 });
 
 void test('resolveSubagentConcurrencyPolicyFromEnv returns undefined when env is absent', () => {
   assert.equal(resolveSubagentConcurrencyPolicyFromEnv({}), undefined);
 });
 
-void test('resolveSubagentConcurrencyPolicyFromEnv accepts trimmed capacity bounds', () => {
+void test('resolveSubagentConcurrencyPolicyFromEnv accepts trimmed capacity values', () => {
   assert.deepEqual(
     resolveSubagentConcurrencyPolicyFromEnv({
       [SUBAGENT_BACKGROUND_CAPACITY_ENV]: ' 1 ',
@@ -267,9 +342,15 @@ void test('resolveSubagentConcurrencyPolicyFromEnv accepts trimmed capacity boun
   );
   assert.deepEqual(
     resolveSubagentConcurrencyPolicyFromEnv({
-      [SUBAGENT_BACKGROUND_CAPACITY_ENV]: '64',
+      [SUBAGENT_BACKGROUND_CAPACITY_ENV]: '128',
     }),
-    { maxConcurrentChildren: 64 },
+    { maxConcurrentChildren: 128 },
+  );
+  assert.deepEqual(
+    resolveSubagentConcurrencyPolicyFromEnv({
+      [SUBAGENT_BACKGROUND_CAPACITY_ENV]: 'unlimited',
+    }),
+    { maxConcurrentChildren: null },
   );
 });
 
@@ -284,7 +365,6 @@ void test('resolveSubagentConcurrencyPolicyFromEnv rejects invalid capacity valu
     '1e3',
     'NaN',
     'Infinity',
-    '65',
     '9007199254740992',
   ];
 
@@ -369,35 +449,311 @@ void test('createDaemonContext explicit undefined subagent policy suppresses env
   }
 });
 
+void test('createDaemonContext defaults to unlimited subagent background capacity', () => {
+  const daemonContext = createDaemonContext();
+  const runState = createSubagentCapacityRunState(
+    'context-default-unlimited-capacity',
+  );
+  for (let index = 0; index < 12; index += 1) {
+    runState.backgroundChildRunIds.add(testRunId(`child-${index}`));
+  }
+
+  const result = daemonContext.subagentAdmission.reserveSubagentLaunchSlots({
+    runState,
+    requestedChildren: 4,
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    result.reservation.release();
+  }
+});
+
+void test('resolvePtcExecuteCodeCellRuntimeConfigFromEnv returns undefined when env is absent', () => {
+  assert.equal(resolvePtcExecuteCodeCellRuntimeConfigFromEnv({}), undefined);
+});
+
+void test('resolvePtcExecuteCodeCellRuntimeConfigFromEnv accepts explicit cell settings', () => {
+  assert.deepEqual(
+    resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+      [PTC_EXECUTE_CODE_CELL_ENABLED_ENV]: ' true ',
+      [PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV]: ' 2500 ',
+      [PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV]: ' 600000 ',
+    }),
+    { enabled: true, initialYieldTimeMs: 2500, runningCellReapAfterMs: 600000 },
+  );
+  assert.deepEqual(
+    resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+      [PTC_EXECUTE_CODE_CELL_ENABLED_ENV]: 'false',
+    }),
+    { enabled: false },
+  );
+});
+
+void test('resolvePtcExecuteCodeCellRuntimeConfigFromEnv rejects invalid enabled values', () => {
+  for (const value of ['', ' ', 'TRUE', '1', 'yes', '0']) {
+    assert.throws(
+      () =>
+        resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+          [PTC_EXECUTE_CODE_CELL_ENABLED_ENV]: value,
+        }),
+      new RegExp(`invalid ${PTC_EXECUTE_CODE_CELL_ENABLED_ENV}`),
+    );
+  }
+});
+
+void test('resolvePtcExecuteCodeCellRuntimeConfigFromEnv rejects invalid yield values', () => {
+  for (const value of [
+    '',
+    ' ',
+    '0',
+    '-1',
+    '+1',
+    '1.5',
+    '1e3',
+    '9007199254740992',
+  ]) {
+    assert.throws(
+      () =>
+        resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+          [PTC_EXECUTE_CODE_CELL_ENABLED_ENV]: 'true',
+          [PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV]: value,
+          [PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV]: '600000',
+        }),
+      new RegExp(`invalid ${PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV}`),
+    );
+  }
+});
+
+void test('resolvePtcExecuteCodeCellRuntimeConfigFromEnv rejects invalid running reap values', () => {
+  for (const value of [
+    '',
+    ' ',
+    '0',
+    '-1',
+    '+1',
+    '1.5',
+    '1e3',
+    '9007199254740992',
+  ]) {
+    assert.throws(
+      () =>
+        resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+          [PTC_EXECUTE_CODE_CELL_ENABLED_ENV]: 'true',
+          [PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV]: '1000',
+          [PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV]: value,
+        }),
+      new RegExp(`invalid ${PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV}`),
+    );
+  }
+});
+
+void test('resolvePtcExecuteCodeCellRuntimeConfigFromEnv requires enabled true for cell config', () => {
+  assert.throws(
+    () =>
+      resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+        [PTC_EXECUTE_CODE_CELL_ENABLED_ENV]: 'true',
+      }),
+    new RegExp(
+      `${PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV} is required when ${PTC_EXECUTE_CODE_CELL_ENABLED_ENV}=true`,
+    ),
+  );
+  assert.throws(
+    () =>
+      resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+        [PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV]: '1000',
+      }),
+    new RegExp(
+      `PTC execute_code cell settings require ${PTC_EXECUTE_CODE_CELL_ENABLED_ENV}=true`,
+    ),
+  );
+  assert.throws(
+    () =>
+      resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+        [PTC_EXECUTE_CODE_CELL_ENABLED_ENV]: 'false',
+        [PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV]: '1000',
+      }),
+    new RegExp(
+      `PTC execute_code cell settings require ${PTC_EXECUTE_CODE_CELL_ENABLED_ENV}=true`,
+    ),
+  );
+  assert.throws(
+    () =>
+      resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+        [PTC_EXECUTE_CODE_CELL_ENABLED_ENV]: 'true',
+        [PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV]: '1000',
+      }),
+    new RegExp(
+      `${PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV} is required when ${PTC_EXECUTE_CODE_CELL_ENABLED_ENV}=true`,
+    ),
+  );
+  assert.throws(
+    () =>
+      resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+        [PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV]: '600000',
+      }),
+    new RegExp(
+      `PTC execute_code cell settings require ${PTC_EXECUTE_CODE_CELL_ENABLED_ENV}=true`,
+    ),
+  );
+});
+
+void test('createDaemonContext freezes PTC execute_code cell config from env', async () => {
+  const previousEnabled = process.env[PTC_EXECUTE_CODE_CELL_ENABLED_ENV];
+  const previousInitialYield =
+    process.env[PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV];
+  const previousRunningReap =
+    process.env[PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV];
+  process.env[PTC_EXECUTE_CODE_CELL_ENABLED_ENV] = 'true';
+  process.env[PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV] = '2500';
+  process.env[PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV] = '600000';
+
+  try {
+    const daemonContext = createDaemonContext();
+    process.env[PTC_EXECUTE_CODE_CELL_ENABLED_ENV] = 'false';
+    delete process.env[PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV];
+    delete process.env[PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV];
+
+    const wait = await daemonContext.ptcExecuteCode.waitForCell({
+      runContext: { threadId: testThreadId(50) },
+      request: { cellId: 'ptc_cell_context_env_freeze' },
+    });
+
+    assert.equal(wait.ok, true);
+    if (wait.ok) {
+      assert.equal(wait.value.status, 'missing');
+    }
+  } finally {
+    restoreEnv(PTC_EXECUTE_CODE_CELL_ENABLED_ENV, previousEnabled);
+    restoreEnv(
+      PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV,
+      previousInitialYield,
+    );
+    restoreEnv(PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV, previousRunningReap);
+  }
+});
+
+void test('createDaemonContext explicit disabled PTC cell option suppresses env config', async () => {
+  const previousEnabled = process.env[PTC_EXECUTE_CODE_CELL_ENABLED_ENV];
+  process.env[PTC_EXECUTE_CODE_CELL_ENABLED_ENV] = 'true';
+
+  try {
+    const daemonContext = createDaemonContext({
+      ptcExecuteCodeRuntimeOptions: { ptcCell: { enabled: false } },
+    });
+
+    assert.deepEqual(
+      await daemonContext.ptcExecuteCode.waitForCell({
+        runContext: { threadId: testThreadId(51) },
+        request: { cellId: 'ptc_cell_context_env_suppressed' },
+      }),
+      {
+        ok: false,
+        reasonCode: 'ptc_execute_code_cell_wait_unavailable',
+        message: 'PTC execute_code cell wait is not enabled',
+      },
+    );
+  } finally {
+    restoreEnv(PTC_EXECUTE_CODE_CELL_ENABLED_ENV, previousEnabled);
+  }
+});
+
 void test('createDaemonContext freezes provider request options from env', () => {
   const previousModel = process.env.GEULBAT_CODEX_MODEL;
   const previousReasoningEffort = process.env.GEULBAT_CODEX_REASONING_EFFORT;
   const previousTextVerbosity = process.env.GEULBAT_CODEX_TEXT_VERBOSITY;
+  const previousRetryRateLimited =
+    process.env.GEULBAT_CODEX_MODEL_ROUND_RETRY_RATE_LIMITED_MAX_RETRIES;
   process.env.GEULBAT_CODEX_MODEL = 'gpt-startup-freeze';
   process.env.GEULBAT_CODEX_REASONING_EFFORT = 'high';
   process.env.GEULBAT_CODEX_TEXT_VERBOSITY = 'low';
+  process.env.GEULBAT_CODEX_MODEL_ROUND_RETRY_RATE_LIMITED_MAX_RETRIES = '7';
 
   try {
     const daemonContext = createDaemonContext();
     process.env.GEULBAT_CODEX_MODEL = 'gpt-mutated-after-startup';
     process.env.GEULBAT_CODEX_REASONING_EFFORT = 'xhigh';
     process.env.GEULBAT_CODEX_TEXT_VERBOSITY = 'high';
+    process.env.GEULBAT_CODEX_MODEL_ROUND_RETRY_RATE_LIMITED_MAX_RETRIES = '0';
 
-    assert.deepEqual(daemonContext.providerRequestOptions, {
-      model: 'gpt-startup-freeze',
-      reasoning: { effort: 'high', summary: 'auto' },
-      text: { verbosity: 'low' },
-    });
+    assert.deepEqual(
+      daemonContext.providerRequestOptions,
+      resolveProviderRequestOptions({
+        GEULBAT_CODEX_MODEL: 'gpt-startup-freeze',
+        GEULBAT_CODEX_REASONING_EFFORT: 'high',
+        GEULBAT_CODEX_TEXT_VERBOSITY: 'low',
+        GEULBAT_CODEX_MODEL_ROUND_RETRY_RATE_LIMITED_MAX_RETRIES: '7',
+      }),
+    );
   } finally {
     restoreEnv('GEULBAT_CODEX_MODEL', previousModel);
     restoreEnv('GEULBAT_CODEX_REASONING_EFFORT', previousReasoningEffort);
     restoreEnv('GEULBAT_CODEX_TEXT_VERBOSITY', previousTextVerbosity);
+    restoreEnv(
+      'GEULBAT_CODEX_MODEL_ROUND_RETRY_RATE_LIMITED_MAX_RETRIES',
+      previousRetryRateLimited,
+    );
+  }
+});
+
+void test('createDaemonContext freezes structured output ingress policy from env', () => {
+  const previous =
+    process.env[REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV];
+  process.env[REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV] = '1234';
+
+  try {
+    const daemonContext = createDaemonContext();
+    process.env[REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV] = '5678';
+
+    assert.deepEqual(
+      daemonContext.reactBundleStructuredOutputIngressPolicy,
+      resolveReactBundleStructuredOutputIngressPolicyFromEnv({
+        [REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV]: '1234',
+      }),
+    );
+  } finally {
+    restoreEnv(REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV, previous);
+  }
+});
+
+void test('createDaemonContext explicit structured output ingress policy wins over env', () => {
+  const previous =
+    process.env[REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV];
+  process.env[REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV] = '1234';
+
+  try {
+    const daemonContext = createDaemonContext({
+      reactBundleStructuredOutputIngressPolicy: { timeoutMs: 4321 },
+    });
+
+    assert.deepEqual(daemonContext.reactBundleStructuredOutputIngressPolicy, {
+      timeoutMs: 4321,
+    });
+  } finally {
+    restoreEnv(REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV, previous);
+  }
+});
+
+void test('createDaemonContext rejects invalid structured output ingress policy env', () => {
+  const previous =
+    process.env[REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV];
+  process.env[REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV] = '0.5';
+
+  try {
+    assert.throws(
+      () => createDaemonContext(),
+      new RegExp(
+        `invalid ${REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV}`,
+      ),
+    );
+  } finally {
+    restoreEnv(REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV, previous);
   }
 });
 
 void test('createDaemonContext rejects invalid subagent background capacity env', () => {
   const previous = process.env[SUBAGENT_BACKGROUND_CAPACITY_ENV];
-  process.env[SUBAGENT_BACKGROUND_CAPACITY_ENV] = '65';
+  process.env[SUBAGENT_BACKGROUND_CAPACITY_ENV] = '1.5';
   try {
     assert.throws(
       () => createDaemonContext(),

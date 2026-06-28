@@ -36,6 +36,9 @@ type ManageFilesOperation = (typeof MANAGE_FILE_OPERATIONS)[number];
 const manageFilesPathSchema = z
   .string()
   .min(1, 'path is required.')
+  .refine((value) => value.trim().length > 0, {
+    message: 'path must not be empty.',
+  })
   .describe('The target path, relative to the workspace root.');
 
 const manageFilesDestinationDescription =
@@ -48,6 +51,9 @@ const manageFilesDestinationSchema = z
 const manageFilesRelocationDestinationSchema = z
   .string()
   .min(1, 'destination is required.')
+  .refine((value) => value.trim().length > 0, {
+    message: 'destination is required.',
+  })
   .describe(manageFilesDestinationDescription);
 
 const manageFilesArgsSchema = z.strictObject({
@@ -113,11 +119,10 @@ export const manageFilesTool = defineParsedTool({
   name: 'manage_files',
   description:
     'Manage files and directories in the workspace. Supports creating, renaming, moving, deleting files, and creating directories.',
-  parameters: zodSchemaToToolParameters(manageFilesArgsSchema),
+  parameters: zodSchemaToToolParameters(manageFilesBranchSchema),
   strict: true,
   sideEffectLevel: 'write',
   mayMutateWorkspaceFiles: true,
-  timeoutMs: 10_000,
   requiresApproval: true,
   parseArgs(raw) {
     const flatParsed = manageFilesArgsSchema.safeParse(raw);

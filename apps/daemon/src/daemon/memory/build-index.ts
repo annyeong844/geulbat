@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { isPlainRecord, tryDecodeJson } from '@geulbat/protocol/runtime-utils';
+import { isPlainRecord, tryDecodeJson } from '../runtime-json.js';
 
 import { createChunkRecords } from './chunk-file.js';
 import { buildSourceSnapshot, type SourceSnapshot } from './source-snapshot.js';
@@ -25,7 +25,6 @@ import { memoize } from '../utils/memoize.js';
 const MANIFEST_RELATIVE = GEULBAT_MEMORY_MANIFEST_PATH;
 const MEMORY_RELATIVE = GEULBAT_MEMORY_INDEX_RECORDS_PATH;
 const MEMORY_INDEX_PATH = 'memory/all-memory.jsonl';
-const MAX_TOTAL_CHUNKS = 10_000;
 
 interface MemoryIndexStoreDeps {
   buildSourceSnapshot?: (workspaceRoot: string) => Promise<SourceSnapshot>;
@@ -164,10 +163,7 @@ function collectManifestFilesAndRecords(sourceSnapshot: SourceSnapshot): {
   const records: MemoryChunkRecord[] = [];
 
   for (const file of sourceSnapshot.files) {
-    const fileRecords = createChunkRecords(
-      file,
-      MAX_TOTAL_CHUNKS - records.length,
-    );
+    const fileRecords = createChunkRecords(file);
     records.push(...fileRecords);
     manifestFiles.push({
       path: file.path,
@@ -176,10 +172,6 @@ function collectManifestFilesAndRecords(sourceSnapshot: SourceSnapshot): {
       chunkCount: fileRecords.length,
       updatedAt: file.updatedAt,
     });
-
-    if (records.length >= MAX_TOTAL_CHUNKS) {
-      break;
-    }
   }
 
   return { manifestFiles, records };

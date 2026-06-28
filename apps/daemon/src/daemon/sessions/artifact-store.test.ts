@@ -8,7 +8,9 @@ import { testProjectId } from '../../test-support/project-id.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import { artifactStoreFilePath } from './paths.js';
 import {
+  ArtifactStoreCorruptionError,
   commitThreadArtifactVersion,
+  isArtifactStoreCorruptionError,
   loadAllThreadArtifactVersions,
 } from './artifact-store.js';
 
@@ -240,4 +242,34 @@ void test('loadAllThreadArtifactVersions rejects unsupported artifact store sche
     () => loadAllThreadArtifactVersions(workspaceRoot, threadId),
     /Unsupported thread artifact store schema version: 99/,
   );
+});
+
+void test('loadAllThreadArtifactVersions rejects malformed artifact store JSON as typed corruption', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-artifact-'));
+  const threadId = testThreadId(506);
+  const storePath = artifactStoreFilePath(workspaceRoot, threadId);
+  const corruptedContents = '{"schemaVersion":1,"artifacts":[';
+  await mkdir(join(workspaceRoot, '.geulbat', 'sessions', threadId), {
+    recursive: true,
+  });
+  await writeFile(storePath, corruptedContents, 'utf8');
+
+  await assert.rejects(
+    () => loadAllThreadArtifactVersions(workspaceRoot, threadId),
+    (error: unknown) => {
+      assert.equal(error instanceof ArtifactStoreCorruptionError, true);
+      assert.equal(isArtifactStoreCorruptionError(error), true);
+      assert.equal(
+        (error as { code?: unknown }).code,
+        'artifact_store_corrupt',
+      );
+      assert.equal((error as { threadId?: unknown }).threadId, threadId);
+      assert.doesNotMatch(
+        String((error as { message?: unknown }).message ?? ''),
+        /schemaVersion|artifacts|\[/u,
+      );
+      return true;
+    },
+  );
+  assert.equal(await readFile(storePath, 'utf8'), corruptedContents);
 });

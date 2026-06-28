@@ -42,6 +42,32 @@ void test('write_file allows creating a new file without a versionToken', async 
   assert.equal(payload.path, 'new.txt');
 });
 
+void test('write_file rejects blank versionToken at the parser boundary', async () => {
+  const result = await writeFileTool.execute(
+    {
+      path: 'new.txt',
+      content: 'created\n',
+      versionToken: '   ',
+    },
+    { callId: 'call-write-blank-version-token', workspaceRoot: '/workspace' },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /versionToken must not be empty/);
+});
+
+void test('write_file rejects blank path at the parser boundary', async () => {
+  const result = await writeFileTool.execute(
+    { path: '   ', content: 'created\n' },
+    { callId: 'call-write-blank-path', workspaceRoot: '/workspace' },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /path.*empty/);
+});
+
 void test('write_file overwrites an existing file when a valid versionToken is provided', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-write-tool-'));
   const absolutePath = join(workspaceRoot, 'hello.txt');

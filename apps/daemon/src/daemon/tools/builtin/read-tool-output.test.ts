@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { testThreadId } from '../../../test-support/thread-id.js';
+import {
+  buildToolOutputRef,
+  buildToolOutputSnapshot,
+  writeToolOutputSnapshot,
+} from '../../files/tool-output-store.js';
 import { readToolOutputTool } from './read-tool-output.js';
 
 void test('read_tool_output rejects raw .geulbat paths instead of treating them as references', async () => {
@@ -22,6 +27,20 @@ void test('read_tool_output rejects raw .geulbat paths instead of treating them 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'invalid_args');
   assert.match(result.error ?? '', /tool-output reference/);
+});
+
+void test('read_tool_output rejects blank outputRef at the parser boundary', async () => {
+  const result = await readToolOutputTool.execute(
+    { outputRef: '   ' },
+    {
+      callId: 'call-read-tool-output-blank-ref',
+      workspaceRoot: '/workspace/project',
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /outputRef is required/);
 });
 
 void test('read_tool_output rejects output refs from another thread', async () => {
@@ -105,4 +124,97 @@ void test('read_tool_output rejects snapshots whose schema identity does not mat
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'internal');
   assert.match(result.error ?? '', /expected schema/);
+});
+
+void test('read_tool_output reads the full snapshot by default', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
+  const threadId = testThreadId(87);
+  const runId = 'run-full-output';
+  const callId = 'call-full-output';
+  const outputRef = buildToolOutputRef({ threadId, runId, callId });
+  const output = 'full-output-line\n'.repeat(2_000);
+  await writeToolOutputSnapshot({
+    workspaceRoot,
+    snapshot: buildToolOutputSnapshot({
+      outputRef,
+      projectId: 'project',
+      threadId,
+      runId,
+      callId,
+      toolName: 'web_fetch',
+      output,
+    }),
+  });
+
+  const result = await readToolOutputTool.execute(
+    { outputRef },
+    {
+      callId: 'call-read-tool-output-full',
+      workspaceRoot,
+      threadId,
+    },
+  );
+
+  assert.equal(result.ok, true);
+  const page = JSON.parse(result.output) as {
+    content?: string;
+    hasMore?: boolean;
+    limit?: number | null;
+    nextOffset?: number | null;
+    totalChars?: number;
+  };
+  assert.equal(page.content, output);
+  assert.equal(page.hasMore, false);
+  assert.equal(page.limit, null);
+  assert.equal(page.nextOffset, null);
+  assert.equal(page.totalChars, output.length);
+});
+
+void test('read_tool_output returns an explicit page when limit is provided', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
+  const threadId = testThreadId(88);
+  const runId = 'run-paged-output';
+  const callId = 'call-paged-output';
+  const outputRef = buildToolOutputRef({ threadId, runId, callId });
+  const output = '0123456789'.repeat(1_000);
+  await writeToolOutputSnapshot({
+    workspaceRoot,
+    snapshot: buildToolOutputSnapshot({
+      outputRef,
+      projectId: 'project',
+      threadId,
+      runId,
+      callId,
+      toolName: 'search_files',
+      output,
+    }),
+  });
+
+  const result = await readToolOutputTool.execute(
+    { outputRef, offset: 20, limit: 15 },
+    {
+      callId: 'call-read-tool-output-page',
+      workspaceRoot,
+      threadId,
+    },
+  );
+
+  assert.equal(result.ok, true);
+  const page = JSON.parse(result.output) as {
+    content?: string;
+    endOffset?: number;
+    hasMore?: boolean;
+    limit?: number | null;
+    nextOffset?: number | null;
+    offset?: number;
+    totalChars?: number;
+  };
+  assert.equal(page.content, output.slice(20, 35));
+  assert.equal(page.offset, 20);
+  assert.equal(page.limit, 15);
+  assert.equal(page.endOffset, 35);
+  assert.equal(page.hasMore, true);
+  assert.equal(page.nextOffset, 35);
+  assert.equal(page.totalChars, output.length);
+  assert.equal(Object.hasOwn(page, 'truncated'), false);
 });

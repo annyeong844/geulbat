@@ -1,7 +1,7 @@
-import type { RunRequest } from '@geulbat/protocol/run-contract';
+import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 
 export function normalizeAllowedToolNames(
-  request: RunRequest,
+  request: RunStartRequest,
 ): string[] | undefined {
   const hints = request.allowedToolsHint;
   if (!hints || hints.length === 0) {

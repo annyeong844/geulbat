@@ -12,15 +12,20 @@ const searchMemoryIndexArgsSchema = z.strictObject({
     ),
   pathPrefix: z
     .string()
+    .refine((value) => value.trim().length > 0, {
+      message: 'pathPrefix must not be empty.',
+    })
     .optional()
     .describe(
       'Optional normalized workspace-relative path prefix to constrain matches.',
     ),
   maxResults: z
     .number()
+    .int('maxResults must be a positive integer.')
+    .min(1, 'maxResults must be a positive integer.')
     .optional()
     .describe(
-      'Maximum number of results to return. Defaults to 10, capped at 50.',
+      'Optional maximum number of results to return. Omit it to return every match.',
     ),
 });
 
@@ -30,7 +35,7 @@ export const searchMemoryIndexTool = defineZodTool({
     'Search the derived memory index with a text query and return a structured shortlist. Results are hints only and not an authoritative source read.',
   argsSchema: searchMemoryIndexArgsSchema,
   sideEffectLevel: 'none',
-  timeoutMs: 30_000,
+  mayMutateWorkspaceFiles: false,
   requiresApproval: false,
   async executeParsed(args, ctx) {
     if (!ctx.memoryIndex) {

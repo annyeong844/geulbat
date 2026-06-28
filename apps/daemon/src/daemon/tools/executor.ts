@@ -16,6 +16,7 @@ const SAFE_TOOL_ERROR_CODES = new Set<ErrorCode>([
   'unknown_tool',
   'invalid_args',
   'invalid_path',
+  'not_found',
   'already_exists',
   'path_out_of_workspace',
   'access_denied',
@@ -31,14 +32,35 @@ function sanitizeExecutionErrorMessage(
   code: ErrorCode,
   err: unknown,
 ): string {
+  const message = readErrorMessage(err);
   if (
     SAFE_TOOL_ERROR_CODES.has(code) &&
-    err instanceof Error &&
-    err.message.trim() !== ''
+    message !== undefined &&
+    message.trim() !== ''
   ) {
-    return err.message;
+    return message;
   }
   return `tool "${name}" execution failed`;
+}
+
+function readErrorMessage(err: unknown): string | undefined {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return typeof err === 'string' ? err : undefined;
+}
+
+function sanitizeToolExecuteResult(
+  name: string,
+  result: ExecuteResult,
+): ExecuteResult {
+  if (result.ok) {
+    return result;
+  }
+  return toolError(
+    result.errorCode,
+    sanitizeExecutionErrorMessage(name, result.errorCode, result.error),
+  );
 }
 
 function classifyToolExecutionFailure(
@@ -222,7 +244,7 @@ export async function executeTool(
       );
     }
 
-    return result;
+    return sanitizeToolExecuteResult(name, result);
   } catch (err: unknown) {
     if (combinedSignal?.aborted) {
       return classifyAbortOutcome({

@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { joinWorkspaceGeulbatPath } from '../files/geulbat-internal-paths.js';
-import { assertThreadId as assertValidThreadId } from '@geulbat/protocol/ids';
+import { assertSessionThreadId as assertValidThreadId } from './contract.js';
 
 function sessionsDir(workspaceRoot: string): string {
   return joinWorkspaceGeulbatPath(workspaceRoot, 'sessions');

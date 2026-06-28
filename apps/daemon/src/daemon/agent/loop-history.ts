@@ -1,10 +1,12 @@
 import type { HistoryItem, FunctionCall } from '../llm/index.js';
+import { appendTranscriptEntry } from '../sessions/transcript-log.js';
 import {
   collectTranscriptArtifactRefs,
   loadThreadArtifactVersionsByRefs,
 } from '../sessions/artifact-store.js';
 import { readTranscriptEntries } from '../sessions/transcript-log.js';
-import { createArtifactRefKey } from '@geulbat/protocol/artifacts';
+import type { PendingInterject } from '../sessions/active-run-interject-buffer.js';
+import { createAgentArtifactRefKey as createArtifactRefKey } from './contract.js';
 import { buildHistoryFromTranscript } from './history/build-history-from-transcript.js';
 
 export async function loadInitialHistory(
@@ -72,4 +74,26 @@ export function appendFunctionCallsToHistory(
       arguments: functionCall.arguments,
     });
   }
+}
+
+export function appendInterjectToHistory(
+  history: HistoryItem[],
+  interject: PendingInterject,
+): void {
+  history.push({ kind: 'user', text: interject.text });
+}
+
+export async function persistSingleInterjectToTranscript(
+  workspaceRoot: string,
+  threadId: string,
+  interject: PendingInterject,
+): Promise<void> {
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: interject.text,
+    timestamp: new Date().toISOString(),
+    metadata: {
+      source: 'interject',
+    },
+  });
 }

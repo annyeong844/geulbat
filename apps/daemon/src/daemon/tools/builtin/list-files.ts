@@ -8,8 +8,6 @@ import {
 } from '../../files/file-platform.js';
 import { defineZodTool } from '../zod-tool.js';
 
-const MAX_ENTRIES = 500;
-
 interface EntryInfo {
   name: string;
   path: string;
@@ -20,6 +18,9 @@ const listFilesArgsSchema = z.strictObject({
   path: z
     .string()
     .min(1, 'path must not be empty.')
+    .refine((value) => value.trim().length > 0, {
+      message: 'path must not be empty.',
+    })
     .optional()
     .describe('The directory path to list, relative to the workspace root.'),
   recursive: z
@@ -34,7 +35,7 @@ export const listFilesTool = defineZodTool({
     'List files and directories at the specified path. Returns a listing of entries in the directory. Useful for exploring the workspace structure.',
   argsSchema: listFilesArgsSchema,
   sideEffectLevel: 'read',
-  timeoutMs: 10_000,
+  mayMutateWorkspaceFiles: false,
   requiresApproval: false,
   async executeParsed(args, ctx) {
     const inputPath = args.path ?? '.';
@@ -59,14 +60,10 @@ export const listFilesTool = defineZodTool({
       // Sort alphabetically by path
       entries.sort((a, b) => a.path.localeCompare(b.path));
 
-      const truncated = entries.length > MAX_ENTRIES;
-      const capped = entries.slice(0, MAX_ENTRIES);
-
       const output = {
         path: rootTarget.relativePath,
         total: entries.length,
-        truncated,
-        entries: capped,
+        entries,
       };
 
       return { ok: true, output: JSON.stringify(output) };
@@ -112,8 +109,6 @@ async function walkDirectory(
   target: SourceDirectoryTarget,
   results: EntryInfo[],
 ): Promise<void> {
-  if (results.length >= MAX_ENTRIES * 2) return; // early exit
-
   const dirEntries = await enumerateCanonicalChildren(target);
 
   for (const entry of dirEntries) {

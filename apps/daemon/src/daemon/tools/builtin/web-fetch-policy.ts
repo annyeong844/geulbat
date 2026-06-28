@@ -1,9 +1,0 @@
-export const WEB_FETCH_DEFAULT_MAX_CHARS = 12_000;
-export const WEB_FETCH_MAX_CHARS = 40_000;
-export const WEB_FETCH_MIN_CHARS = 1;
-
-export const WEB_FETCH_REQUEST_TIMEOUT_MS = 15_000;
-export const WEB_FETCH_TOTAL_TIMEOUT_MS = 30_000;
-export const WEB_FETCH_MAX_REDIRECTS = 5;
-
-export const WEB_FETCH_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;

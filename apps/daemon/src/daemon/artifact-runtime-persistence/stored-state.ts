@@ -3,8 +3,8 @@ import { readFile } from 'node:fs/promises';
 import type {
   JsonValue,
   ArtifactRuntimePersistenceScopeRequest,
-} from '@geulbat/protocol/runtime-persistence';
-import { tryDecodeJson } from '@geulbat/protocol/runtime-utils';
+} from './contract.js';
+import { tryDecodeJson } from '../runtime-json.js';
 
 import { isNotFoundError } from '../utils/error.js';
 import {

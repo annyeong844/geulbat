@@ -1,9 +1,6 @@
-import type { ErrorCode } from '@geulbat/protocol/errors';
-import type { ProviderAuthStatusState } from '@geulbat/protocol/provider-auth';
+import type { ErrorCode, ProviderAuthStatusState } from '../contract.js';
 
 import { PROVIDER_AUTH_PENDING_TTL_MS } from './config.js';
-
-const MAX_PROVIDER_AUTH_MESSAGE_LENGTH = 240;
 
 export interface PendingProviderAuthSession {
   authSessionId: string;
@@ -170,10 +167,7 @@ export function createProviderAuthBootstrapStore(): ProviderAuthBootstrapStore {
 }
 
 export function sanitizeProviderAuthMessage(message: string): string {
-  return message
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, MAX_PROVIDER_AUTH_MESSAGE_LENGTH);
+  return message.replace(/\s+/g, ' ').trim();
 }
 
 function cloneSession(

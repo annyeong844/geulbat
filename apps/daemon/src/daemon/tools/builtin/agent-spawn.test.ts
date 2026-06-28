@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { agentSpawnTool, createAgentSpawnTool } from './agent-spawn.js';
-import { DEFAULT_MAX_CONCURRENT_BACKGROUND_CHILDREN } from '../../agent/subagent-concurrency.js';
 import { createSubagentRunLauncher } from '../../agent/subagent-support.js';
 import { createDaemonContext } from '../../context.js';
 import { createRunState } from '../../agent/runtime/run-state.js';
@@ -16,6 +15,17 @@ import { testRunId } from '../../../test-support/run-id.js';
 import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { assertRunId } from '@geulbat/protocol/ids';
+import { isToolObjectParameters } from '../types.js';
+
+void test('agent_spawn outward parameters omit compatibility-only mode', () => {
+  const parameters = agentSpawnTool.parameters;
+  assert.ok(isToolObjectParameters(parameters));
+  assert.deepEqual(Object.keys(parameters.properties), [
+    'task',
+    'subagent_type',
+  ]);
+  assert.deepEqual(parameters.required, ['task', 'subagent_type']);
+});
 
 void test('agent_spawn requires run context', async () => {
   const result = await agentSpawnTool.execute(
@@ -88,18 +98,60 @@ void test('agent_spawn rejects invalid mode at the parser boundary', async () =>
   assert.match(result.error ?? '', /mode must be one of/);
 });
 
-void test('agent_spawn returns semantic rejection for nested child spawn in depth-1 mode', async () => {
+void test('agent_spawn rejects whitespace-only task at the parser boundary', async () => {
+  const result = await agentSpawnTool.execute(
+    {
+      task: '   ',
+      subagent_type: 'explorer',
+    },
+    {
+      callId: 'call-empty-task',
+      workspaceRoot: '/tmp/workspace',
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /task.*required/);
+});
+
+void test('agent_spawn allows child runs to launch nested helper agents', async () => {
   const childThreadId = testThreadId(1);
-  const parentThreadId = testThreadId(2);
-  const parentState = createRunState({
+  const projectId = testProjectId();
+  const daemonContext = createDaemonContext();
+  const childRunState = createRunState({
     runId: 'child-run',
     runContext: makeRunWorkspaceContext({
       threadId: childThreadId,
+      projectId,
+      workspaceRoot: '/tmp/workspace',
     }),
     parentRunId: 'top-run',
   });
+  let capturedAllowedToolNames: readonly string[] | undefined;
+  let markNestedStarted!: () => void;
+  const nestedStarted = new Promise<void>((resolve) => {
+    markNestedStarted = resolve;
+  });
+  let releaseNested!: () => void;
+  const nestedFinished = new Promise<void>((resolve) => {
+    releaseNested = resolve;
+  });
+  const testAgentSpawnTool = createAgentSpawnTool({
+    startBackgroundRun: createSubagentRunLauncher({
+      runAgentLoop: async (input) => {
+        capturedAllowedToolNames = input.allowedToolNames;
+        markNestedStarted();
+        await nestedFinished;
+        return {
+          ok: true,
+          finalProse: 'nested ok',
+        };
+      },
+    }).startBackgroundRun,
+  });
 
-  const result = await agentSpawnTool.execute(
+  const result = await testAgentSpawnTool.execute(
     {
       task: 'read files',
       subagent_type: 'explorer',
@@ -107,24 +159,49 @@ void test('agent_spawn returns semantic rejection for nested child spawn in dept
     {
       callId: 'call-2',
       workspaceRoot: '/tmp/workspace',
-      threadId: parentThreadId,
+      threadId: childThreadId,
       runId: 'child-run',
-      projectId: testProjectId(),
-      runState: parentState,
+      projectId,
+      runState: childRunState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
+      agentSpawnRuntime: daemonContext,
     },
   );
 
   assert.equal(result.ok, true);
   const payload = JSON.parse(result.output) as {
     ok: boolean;
+    childRunId: string;
     launchState: string;
-    errorCode: string;
   };
-  assert.equal(payload.ok, false);
-  assert.equal(payload.launchState, 'rejected');
-  assert.equal(payload.errorCode, 'unsupported_nested_spawn');
+  const nestedChildRunId = assertRunId(payload.childRunId);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.launchState, 'started');
+  assert.equal(childRunState.backgroundChildRunIds.has(nestedChildRunId), true);
+
+  await nestedStarted;
+  assert.ok(capturedAllowedToolNames?.includes('agent_spawn'));
+  assert.ok(capturedAllowedToolNames?.includes('agent_wait'));
+  assert.ok(capturedAllowedToolNames?.includes('agent_send_input'));
+  assert.ok(capturedAllowedToolNames?.includes('agent_stop'));
+
+  releaseNested();
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!childRunState.backgroundChildRunIds.has(nestedChildRunId)) {
+      break;
+    }
+    await delay(10);
+  }
+
+  assert.equal(
+    childRunState.backgroundChildRunIds.has(nestedChildRunId),
+    false,
+  );
+  assert.equal(
+    daemonContext.childRuns.getChildRun(nestedChildRunId)?.status,
+    'completed',
+  );
 });
 
 void test('agent_spawn rejects worker spawn when approval routing is unavailable', async () => {
@@ -744,7 +821,7 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
   }
 });
 
-void test('agent_spawn allows four concurrent worker children under the default cap', async () => {
+void test('agent_spawn allows four concurrent worker children under the default policy', async () => {
   const threadId = testThreadId(88);
   const projectId = testProjectId();
   const daemonContext = createDaemonContext();
@@ -846,7 +923,7 @@ void test('agent_spawn allows four concurrent worker children under the default 
   assert.equal(getBackgroundChildCount(), 0);
 });
 
-void test('agent_spawn rejects launch when the child cap is already full', async () => {
+void test('agent_spawn default policy admits launch with existing active children', async () => {
   const threadId = testThreadId(8);
   const projectId = testProjectId();
   const daemonContext = createDaemonContext();
@@ -858,15 +935,27 @@ void test('agent_spawn rejects launch when the child cap is already full', async
       workspaceRoot: '/tmp/workspace',
     }),
   });
-  for (
-    let index = 0;
-    index < DEFAULT_MAX_CONCURRENT_BACKGROUND_CHILDREN;
-    index += 1
-  ) {
+  for (let index = 0; index < 12; index += 1) {
     parentState.backgroundChildRunIds.add(testRunId(`child-${index}`));
   }
+  let launched = false;
+  const testAgentSpawnTool = createAgentSpawnTool({
+    startBackgroundRun: async () => {
+      launched = true;
+      return {
+        ok: true,
+        output: JSON.stringify({
+          ok: true,
+          childRunId: 'started-child',
+          childThreadId: 'started-thread',
+          subagentType: 'explorer',
+          launchState: 'started',
+        }),
+      };
+    },
+  });
 
-  const result = await agentSpawnTool.execute(
+  const result = await testAgentSpawnTool.execute(
     {
       task: 'inspect files',
       subagent_type: 'explorer',
@@ -888,16 +977,12 @@ void test('agent_spawn rejects launch when the child cap is already full', async
   const payload = JSON.parse(result.output) as {
     ok: boolean;
     launchState: string;
-    errorCode: string;
-    effectiveMax: number;
+    childRunId?: string;
   };
-  assert.equal(payload.ok, false);
-  assert.equal(payload.launchState, 'rejected');
-  assert.equal(payload.errorCode, 'too_many_child_runs');
-  assert.equal(
-    payload.effectiveMax,
-    DEFAULT_MAX_CONCURRENT_BACKGROUND_CHILDREN,
-  );
+  assert.equal(payload.ok, true);
+  assert.equal(payload.launchState, 'started');
+  assert.equal(typeof payload.childRunId, 'string');
+  assert.equal(launched, true);
 });
 
 void test('agent_spawn applies daemon-owned subagent concurrency policy', async () => {

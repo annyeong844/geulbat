@@ -81,6 +81,23 @@ void test('readRunChannelClientMessage accepts valid run.start payloads', () => 
   assert.equal(result.message.type, 'run.start');
 });
 
+void test('readRunChannelClientMessage accepts run.interject envelopes without request field validation', () => {
+  const result = readRunChannelClientMessage(
+    {
+      type: 'run.interject',
+      requestId: 'req-interject',
+      request: {},
+    },
+    createValidationArgs(),
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) {
+    return;
+  }
+  assert.equal(result.message.type, 'run.interject');
+});
+
 void test('readRunChannelClientMessage rejects unknown project ids after protocol shape validation', () => {
   assert.deepEqual(
     readRunChannelClientMessage(

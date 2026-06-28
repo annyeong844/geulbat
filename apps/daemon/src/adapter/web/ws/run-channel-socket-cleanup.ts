@@ -50,7 +50,7 @@ export function cleanupSocketRuntimeState(
   for (const runId of activeRunIds) {
     cleanupContext.activeRuns.abortTrackedRun(runId, 'socket_disconnect');
   }
-  cleanupContext.approvalGate.clearApprovalSessionGrants(approvalSessionId);
+  cleanupContext.approvalGate.clearApprovalSessionRuntime(approvalSessionId);
   for (const unsubscribe of threadUnsubscribes.values()) {
     unsubscribe();
   }

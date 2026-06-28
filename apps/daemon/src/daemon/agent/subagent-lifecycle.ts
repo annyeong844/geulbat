@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createLogger } from '@geulbat/shared-utils/logger';
-import type { RunId } from '@geulbat/protocol/ids';
+import type { RunId } from './contract.js';
 
 import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
 import type { RunWorkspaceContext } from '../run-workspace-context.js';

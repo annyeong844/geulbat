@@ -99,6 +99,7 @@ void test('readCommittedMessageArtifact ignores non-assistant messages and missi
   assert.equal(
     readCommittedMessageArtifact(
       {
+        entryId: 'entry-user-missing-ref',
         role: 'user',
         content: 'show me this',
         timestamp: '2026-04-29T00:00:00.000Z',
@@ -125,6 +126,7 @@ function createAssistantMessage(
   overrides: Partial<FinalAnswerThreadMessageMetadata> = {},
 ): ThreadMessage {
   return {
+    entryId: 'entry-assistant-artifact',
     role: 'assistant',
     content: 'artifact ready',
     timestamp: '2026-04-29T00:00:00.000Z',

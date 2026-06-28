@@ -52,6 +52,57 @@ void test('mapAgentEventToRunEvent throws on invalid internal payloads', () => {
   );
 });
 
+void test('mapAgentEventToRunEvent forwards PTC callback source on tool_call and tool_result', () => {
+  const source = {
+    kind: 'ptc_callback' as const,
+    parentCallId: 'call-parent',
+    runtimeToolCallId: 'runtime-call-1',
+    cellId: 'ptc_cell_runtime_1',
+  };
+  const callEvent = mapAgentEventToRunEvent(RUN_ID, THREAD_ID, 4, {
+    type: 'tool_call',
+    payload: {
+      callId: 'call-parent::nested-1',
+      step: 2,
+      tool: 'read_file',
+      args: { path: 'docs/a.md' },
+      source,
+    },
+  });
+  const resultEvent = mapAgentEventToRunEvent(RUN_ID, THREAD_ID, 5, {
+    type: 'tool_result',
+    payload: {
+      callId: 'call-parent::nested-1',
+      step: 2,
+      tool: 'read_file',
+      ok: true,
+      workspaceFilesMayHaveChanged: false,
+      displayText: 'ok',
+      raw: { path: 'docs/a.md' },
+      source,
+    },
+  });
+
+  assert.equal(callEvent.type, 'tool_call');
+  assert.deepEqual(callEvent.payload.source, source);
+  assert.equal(resultEvent.type, 'tool_result');
+  assert.deepEqual(resultEvent.payload.source, source);
+});
+
+void test('mapAgentEventToRunEvent maps applied interject events through the adapter owner', () => {
+  const applied = mapAgentEventToRunEvent(RUN_ID, THREAD_ID, 7, {
+    type: 'interject_applied',
+    payload: {
+      runId: RUN_ID,
+      count: 1,
+      receivedSeqs: [1],
+    },
+  });
+
+  assert.equal(applied.type, 'interject_applied');
+  assert.deepEqual(applied.payload.receivedSeqs, [1]);
+});
+
 void test('mapBackgroundSubagentTerminalToRunEvent maps valid payloads', () => {
   const event = mapBackgroundSubagentTerminalToRunEvent(
     CHILD_RUN_ID,

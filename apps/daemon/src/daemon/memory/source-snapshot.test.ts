@@ -30,3 +30,21 @@ void test('buildSourceSnapshot excludes reserved roots through filePlatform enum
     ['src/app.ts'],
   );
 });
+
+void test('buildSourceSnapshot includes large text files instead of silently skipping them', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-source-snap-'));
+  await mkdir(join(workspaceRoot, 'docs'), { recursive: true });
+  const content = Array.from(
+    { length: 20_050 },
+    (_, index) => `memory line ${index + 1}`,
+  ).join('\n');
+  await writeFile(join(workspaceRoot, 'docs', 'large.md'), `${content}\n`);
+
+  const snapshot = await buildSourceSnapshot(workspaceRoot);
+
+  assert.deepEqual(
+    snapshot.files.map((file) => file.path),
+    ['docs/large.md'],
+  );
+  assert.equal(snapshot.files[0]?.lines.length, 20_050);
+});

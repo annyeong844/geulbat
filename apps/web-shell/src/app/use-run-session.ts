@@ -1,3 +1,7 @@
+import type {
+  RunRequest,
+  RunStartRequest,
+} from '@geulbat/protocol/run-contract';
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 
 import { settleRunEffects } from './run-session-settle.js';
@@ -27,6 +31,7 @@ interface UseRunSessionArgs {
   ) => Promise<ThreadDetailResponse | null>;
   applyThreadSnapshotForRunSettle?: (thread: ThreadDetailResponse) => boolean;
   createClient?: () => RunSessionControllerClient;
+  prepareStartRequest?: (request: RunRequest) => Promise<RunStartRequest>;
 }
 
 export function useRunSession({
@@ -41,6 +46,7 @@ export function useRunSession({
   openThreadForRunSettle,
   applyThreadSnapshotForRunSettle = () => true,
   createClient,
+  prepareStartRequest,
 }: UseRunSessionArgs): RunSessionViewModel {
   const {
     state,
@@ -63,6 +69,7 @@ export function useRunSession({
     openThreadForRunSettle,
     applyThreadSnapshotForRunSettle,
     ...(createClient ? { createClient } : {}),
+    ...(prepareStartRequest ? { prepareStartRequest } : {}),
   });
 
   return createRunSessionViewModel({

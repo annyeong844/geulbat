@@ -159,6 +159,7 @@ export function adaptRunSessionMessage(
       return createSubagentActivityEffect(event);
     case 'subagent_terminal':
       return createSubagentActivityEffect(event);
+    case 'interject_applied':
     case 'done':
       return null;
     case 'error':

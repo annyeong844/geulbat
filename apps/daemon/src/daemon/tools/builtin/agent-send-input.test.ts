@@ -13,7 +13,6 @@ import {
 import { agentWaitTool } from './agent-wait.js';
 import { createSubagentRunLauncher } from '../../agent/subagent-support.js';
 import { createDaemonContext } from '../../context.js';
-import { createChildRunRegistry } from '../../agent/runtime/child-run-registry.js';
 import { createRunState } from '../../agent/runtime/run-state.js';
 import { readTranscriptEntries } from '../../sessions/transcript-log.js';
 import {
@@ -42,6 +41,38 @@ async function waitForChildStatus(args: {
   }
   throw new Error(`child ${args.childRunId} did not reach ${args.status}`);
 }
+
+void test('agent_send_input rejects malformed handles and blank tasks at the parser boundary', async () => {
+  const malformedHandle = await agentSendInputTool.execute(
+    {
+      child_run_id: 'run with spaces',
+      task: 'follow-up',
+    },
+    {
+      callId: 'call-send-input-malformed-handle',
+      workspaceRoot: '/tmp/workspace',
+    },
+  );
+
+  assert.equal(malformedHandle.ok, false);
+  assert.equal(malformedHandle.errorCode, 'invalid_args');
+  assert.match(malformedHandle.error ?? '', /child_run_id.*valid child run id/);
+
+  const blankTask = await agentSendInputTool.execute(
+    {
+      child_run_id: testRunId('send-input-parser-boundary-child'),
+      task: '   ',
+    },
+    {
+      callId: 'call-send-input-blank-task',
+      workspaceRoot: '/tmp/workspace',
+    },
+  );
+
+  assert.equal(blankTask.ok, false);
+  assert.equal(blankTask.errorCode, 'invalid_args');
+  assert.match(blankTask.error ?? '', /task.*required/);
+});
 
 void test('agent_send_input continues the same child thread across top-level runs', async () => {
   const workspaceRoot = await mkdtemp(
@@ -195,6 +226,131 @@ void test('agent_send_input continues the same child thread across top-level run
     };
     assert.equal(waitPayload.completed[0]?.childRunId, spawnPayload.childRunId);
     assert.equal(waitPayload.completed[0]?.result, 'second child answer');
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+void test('agent_send_input allows child runs to continue nested child handles', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-agent-send-input-nested-'),
+  );
+  const childThreadId = testThreadId(35);
+  const projectId = testProjectId();
+  const daemonContext = createDaemonContext();
+  const outputs = ['nested seed answer', 'nested follow-up answer'];
+
+  const startBackgroundRun = createSubagentRunLauncher({
+    runAgentLoop: async () => {
+      const next = outputs.shift();
+      assert.ok(next);
+      return {
+        ok: true,
+        finalProse: next,
+      };
+    },
+  }).startBackgroundRun;
+  const nestedSpawnTool = createAgentSpawnTool({
+    startBackgroundRun,
+  });
+  const nestedSendInputTool = createAgentSendInputTool({
+    startBackgroundRun,
+  });
+
+  try {
+    const childRunState = createRunState({
+      runId: 'child-parent-run',
+      runContext: makeRunWorkspaceContext({
+        threadId: childThreadId,
+        projectId,
+        workspaceRoot,
+      }),
+      parentRunId: 'top-run-parent',
+    });
+    const spawned = await nestedSpawnTool.execute(
+      {
+        task: 'nested seed',
+        subagent_type: 'explorer',
+      },
+      {
+        callId: 'call-nested-spawn',
+        workspaceRoot,
+        threadId: childThreadId,
+        runId: 'child-parent-run',
+        projectId,
+        runState: childRunState,
+        signal: new AbortController().signal,
+        runSignal: new AbortController().signal,
+        agentSpawnRuntime: daemonContext,
+      },
+    );
+
+    assert.equal(spawned.ok, true);
+    const spawnPayload = JSON.parse(spawned.output) as {
+      ok: boolean;
+      childRunId: string;
+      childThreadId: string;
+    };
+    const nestedChildRunId = assertValidRunId(spawnPayload.childRunId);
+    assert.equal(spawnPayload.ok, true);
+    await waitForChildStatus({
+      daemonContext,
+      childRunId: nestedChildRunId,
+      status: 'completed',
+    });
+
+    const continued = await nestedSendInputTool.execute(
+      {
+        child_run_id: spawnPayload.childRunId,
+        task: 'nested follow-up',
+      },
+      {
+        callId: 'call-nested-continue',
+        workspaceRoot,
+        threadId: childThreadId,
+        runId: 'child-parent-run-2',
+        projectId,
+        runState: createRunState({
+          runId: 'child-parent-run-2',
+          runContext: makeRunWorkspaceContext({
+            threadId: childThreadId,
+            projectId,
+            workspaceRoot,
+          }),
+          parentRunId: 'top-run-parent',
+        }),
+        signal: new AbortController().signal,
+        runSignal: new AbortController().signal,
+        agentSpawnRuntime: daemonContext,
+      },
+    );
+
+    assert.equal(continued.ok, true);
+    const continuePayload = JSON.parse(continued.output) as {
+      ok: boolean;
+      childRunId: string;
+      childThreadId: string;
+      launchState: string;
+    };
+    assert.deepEqual(continuePayload, {
+      ok: true,
+      childRunId: spawnPayload.childRunId,
+      childThreadId: spawnPayload.childThreadId,
+      subagentType: 'explorer',
+      launchState: 'started',
+    });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (outputs.length === 0) {
+        break;
+      }
+      await delay(10);
+    }
+    assert.equal(outputs.length, 0);
+    await waitForChildStatus({
+      daemonContext,
+      childRunId: nestedChildRunId,
+      status: 'completed',
+    });
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
@@ -709,48 +865,41 @@ void test('agent_send_input rejects standalone worker continuation without appro
   }
 });
 
-void test('agent_send_input reports expired child handles separately from unknown ids', async () => {
+void test('agent_send_input continues retained terminal child handles', async () => {
   const ownerThreadId = testThreadId(36);
   const projectId = testProjectId();
-  const childRunId = testRunId('send-input-collected-child');
-  const boundedRegistry = createChildRunRegistry({
-    retentionTtlMs: 5 * 60 * 1000,
-    maxRetainedTerminalRuns: 0,
-  });
-  const daemonContext = {
-    ...createDaemonContext(),
-    childRuns: boundedRegistry,
-  };
+  const childRunId = testRunId('send-input-terminal-child');
+  const daemonContext = createDaemonContext();
 
-  boundedRegistry.registerChildRun({
+  daemonContext.childRuns.registerChildRun({
     childRunId,
     childThreadId: testThreadId(37),
-    parentRunId: testRunId('send-input-collected-parent'),
+    parentRunId: testRunId('send-input-terminal-parent'),
     ownerThreadId,
     subagentType: 'explorer',
   });
+  daemonContext.childRuns.markChildTerminal({
+    childRunId,
+    terminalState: 'completed',
+    result: 'done',
+  });
 
-  const originalWarn = console.warn;
-  console.warn = () => {};
-  try {
-    boundedRegistry.markChildTerminal({
-      childRunId,
-      terminalState: 'completed',
-      result: 'done',
-    });
-  } finally {
-    console.warn = originalWarn;
-  }
-  assert.equal(boundedRegistry.getChildRun(childRunId), undefined);
+  let continuedTask: string | undefined;
+  const testAgentSendInputTool = createAgentSendInputTool({
+    startBackgroundRun: async (input) => {
+      continuedTask = input.task;
+      return { ok: true, output: 'continued' };
+    },
+  });
 
-  const parentRunId = testRunId('send-input-collected-top');
-  const result = await agentSendInputTool.execute(
+  const parentRunId = testRunId('send-input-terminal-top');
+  const result = await testAgentSendInputTool.execute(
     {
       child_run_id: childRunId,
-      task: 'continue after retention',
+      task: 'continue retained child',
     },
     {
-      callId: 'call-send-input-collected',
+      callId: 'call-send-input-terminal',
       workspaceRoot: '/tmp/workspace',
       threadId: ownerThreadId,
       runId: parentRunId,
@@ -769,7 +918,6 @@ void test('agent_send_input reports expired child handles separately from unknow
     },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'conflict');
-  assert.match(result.error ?? '', /child run handle expired/);
+  assert.equal(result.ok, true);
+  assert.equal(continuedTask, 'continue retained child');
 });

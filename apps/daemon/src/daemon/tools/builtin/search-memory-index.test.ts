@@ -63,6 +63,36 @@ void test('search_memory_index rejects unexpected keys instead of ignoring them'
   assert.match(result.error ?? '', /unexpected keys: extra\./);
 });
 
+void test('search_memory_index rejects non-positive or fractional maxResults at the parser boundary', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-memory-search-'));
+
+  for (const maxResults of [0, -1, 1.5]) {
+    const result = await searchMemoryIndexTool.execute(
+      { query: 'memory', maxResults },
+      createSearchMemoryIndexContext(workspaceRoot),
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'invalid_args');
+    assert.match(result.error ?? '', /maxResults.*positive integer/);
+  }
+});
+
+void test('search_memory_index rejects blank pathPrefix at the parser boundary', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-memory-search-'));
+
+  for (const pathPrefix of ['', '   ']) {
+    const result = await searchMemoryIndexTool.execute(
+      { query: 'memory', pathPrefix },
+      createSearchMemoryIndexContext(workspaceRoot),
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'invalid_args');
+    assert.match(result.error ?? '', /pathPrefix must not be empty\./);
+  }
+});
+
 void test('search_memory_index matches against searchText and returns freshness metadata', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-memory-search-'));
   await mkdir(join(workspaceRoot, 'docs'), { recursive: true });

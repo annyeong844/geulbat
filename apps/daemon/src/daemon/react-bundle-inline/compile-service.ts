@@ -1,8 +1,7 @@
-import {
-  REACT_BUNDLE_INLINE_MAX_COMPILED_OUTPUT_BYTES,
-  type ReactBundleInlineCompileFailureCode,
-  type ReactBundleInlineCompileRequest,
-  type ReactBundleRuntimeManifest,
+import type {
+  ReactBundleInlineCompileFailureCode,
+  ReactBundleInlineCompileRequest,
+  ReactBundleRuntimeManifest,
 } from '@geulbat/protocol/react-bundle-inline-compile';
 import { buildReactBundleInlineOutputFiles } from './build.js';
 import { createReactBundleInlineCacheKey } from './cache-key.js';
@@ -54,18 +53,6 @@ export async function compileReactBundleInlineSource(args: {
       ok: false,
       code: 'boot_failed',
       detail: 'react bundle inline compile did not emit output files',
-    };
-  }
-
-  const totalOutputBytes = buildResult.value.outputFiles.reduce(
-    (sum, outputFile) => sum + outputFile.contents.byteLength,
-    0,
-  );
-  if (totalOutputBytes > REACT_BUNDLE_INLINE_MAX_COMPILED_OUTPUT_BYTES) {
-    return {
-      ok: false,
-      code: 'sanitize_rejected',
-      detail: `react bundle inline compile output exceeds max compiled output bytes ${REACT_BUNDLE_INLINE_MAX_COMPILED_OUTPUT_BYTES}`,
     };
   }
 

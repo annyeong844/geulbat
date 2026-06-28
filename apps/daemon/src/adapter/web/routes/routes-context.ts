@@ -5,6 +5,7 @@ import type { ProviderAuthCallbackServerController } from '../../../daemon/auth/
 import type { ProviderAuthBootstrapStore } from '../../../daemon/auth/bootstrap/session-store.js';
 import type { ProviderAuthRuntimeStore } from '../../../daemon/auth/runtime-state.js';
 import type { ProjectStore } from '../../../daemon/files/project-store.js';
+import type { BackgroundNotificationQueue } from '../../../daemon/agent/runtime/background-notification-queue.js';
 
 export type ProjectRegistryLookup = ProjectScopeRegistry;
 
@@ -44,6 +45,10 @@ export interface ProjectRouteStore {
 
 export interface ThreadsRoutesContext {
   activeRuns: ActiveThreadRunLookup;
+  backgroundNotifications: Pick<
+    BackgroundNotificationQueue,
+    'clearThreadBackgroundResults'
+  >;
   projectRegistry: ProjectRegistryLookup;
 }
 

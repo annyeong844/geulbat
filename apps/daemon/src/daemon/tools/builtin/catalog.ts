@@ -2,6 +2,8 @@ import { agentSendInputTool } from './agent-send-input.js';
 import { agentSpawnTool } from './agent-spawn.js';
 import { agentStopTool } from './agent-stop.js';
 import { agentWaitTool } from './agent-wait.js';
+import { browserPageLoadEvidenceTool } from './browser-page-load-evidence.js';
+import { browserTextEvidenceTool } from './browser-text-evidence.js';
 import { browserNavigateTool } from './browser-navigate.js';
 import { executeCodeTool } from './execute-code.js';
 import { listFilesTool } from './list-files.js';
@@ -13,6 +15,7 @@ import { refreshMemoryIndexTool } from './refresh-memory-index.js';
 import { searchFilesTool } from './search-files.js';
 import { searchMemoryIndexTool } from './search-memory-index.js';
 import { todoTool } from './todo.js';
+import { waitTool } from './wait.js';
 import { webFetchTool } from './web-fetch.js';
 import { writeFileTool } from './write-file.js';
 import {
@@ -39,7 +42,10 @@ function getCanonicalBuiltinTools(): readonly AnyTool[] {
     searchMemoryIndexTool,
     webFetchTool,
     browserNavigateTool,
+    browserPageLoadEvidenceTool,
+    browserTextEvidenceTool,
     executeCodeTool,
+    waitTool,
   ];
 }
 

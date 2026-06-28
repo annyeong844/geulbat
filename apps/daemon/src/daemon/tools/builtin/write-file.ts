@@ -10,10 +10,16 @@ const writeFileArgsSchema = z.strictObject({
   path: z
     .string()
     .min(1, 'path is required.')
+    .refine((value) => value.trim().length > 0, {
+      message: 'path must not be empty.',
+    })
     .describe('The path to the file to write, relative to the workspace root.'),
   content: z.string().describe('The content to write to the file.'),
   versionToken: z
     .string()
+    .refine((value) => value.trim().length > 0, {
+      message: 'versionToken must not be empty.',
+    })
     .optional()
     .describe('Version token from a previous read, for conflict detection.'),
 });
@@ -25,7 +31,6 @@ export const writeFileTool = defineZodTool({
   argsSchema: writeFileArgsSchema,
   sideEffectLevel: 'write',
   mayMutateWorkspaceFiles: true,
-  timeoutMs: 10_000,
   requiresApproval: true,
   async executeParsed(args, ctx) {
     const inputPath = args.path;

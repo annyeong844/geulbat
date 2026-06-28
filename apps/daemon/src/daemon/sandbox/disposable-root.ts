@@ -2,6 +2,11 @@ import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+type CreateSandboxDirectory = (
+  path: string,
+  options: { recursive: true },
+) => Promise<unknown> | unknown;
+
 export interface DisposableSandboxRoot {
   rootPath: string;
   homeDir: string;
@@ -13,6 +18,7 @@ export interface DisposableSandboxRoot {
 export async function createDisposableSandboxRoot(options: {
   attemptId: string;
   parentDir?: string;
+  createDirectory?: CreateSandboxDirectory;
 }): Promise<DisposableSandboxRoot> {
   const rootPath = await mkdtemp(
     join(options.parentDir ?? tmpdir(), `${options.attemptId}-`),
@@ -20,9 +26,15 @@ export async function createDisposableSandboxRoot(options: {
   const homeDir = join(rootPath, 'home');
   const tempDir = join(rootPath, 'tmp');
   const outputDir = join(rootPath, 'out');
-  await mkdir(homeDir, { recursive: true });
-  await mkdir(tempDir, { recursive: true });
-  await mkdir(outputDir, { recursive: true });
+  const createDirectory = options.createDirectory ?? mkdir;
+  try {
+    await createDirectory(homeDir, { recursive: true });
+    await createDirectory(tempDir, { recursive: true });
+    await createDirectory(outputDir, { recursive: true });
+  } catch (error: unknown) {
+    await rm(rootPath, { recursive: true, force: true });
+    throw error;
+  }
 
   return {
     rootPath,

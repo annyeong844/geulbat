@@ -1,6 +1,9 @@
 import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
 import { isApprovalGrantScope } from '@geulbat/protocol/run-approval';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
+import { isRunId } from '@geulbat/protocol/ids';
+import type { RunInterjectRequest } from '@geulbat/protocol/run-channel';
+import { isRecord, isString } from '@geulbat/protocol/runtime-utils';
 
 export function readRunCancelRequest(
   request: CancelRequest,
@@ -47,4 +50,24 @@ export function readRunApproveRequest(request: ApprovalRequest):
     approved,
     grantScope,
   };
+}
+
+export function readRunInterjectRequest(request: unknown):
+  | {
+      ok: true;
+      runId: RunInterjectRequest['runId'];
+      text: RunInterjectRequest['text'];
+    }
+  | { ok: false; message: string } {
+  if (!isRecord(request)) {
+    return { ok: false, message: 'request must be an object' };
+  }
+  const { runId, text } = request;
+  if (!isString(runId) || !isRunId(runId)) {
+    return { ok: false, message: 'runId is required' };
+  }
+  if (!isString(text) || text.trim().length === 0) {
+    return { ok: false, message: 'text is required' };
+  }
+  return { ok: true, runId, text };
 }

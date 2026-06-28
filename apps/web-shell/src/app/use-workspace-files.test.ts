@@ -49,7 +49,6 @@ void test('useWorkspaceFiles records stale write conflicts during save', async (
         totalLines: 1,
         startLine: 1,
         endLine: 1,
-        truncated: false,
       }),
     () =>
       jsonResponse(
@@ -87,7 +86,6 @@ void test('useWorkspaceFiles force save reuses the conflict version token', asyn
         totalLines: 1,
         startLine: 1,
         endLine: 1,
-        truncated: false,
       }),
     () =>
       jsonResponse(

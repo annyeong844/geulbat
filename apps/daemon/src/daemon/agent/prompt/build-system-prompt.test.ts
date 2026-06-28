@@ -13,11 +13,32 @@ void test('buildSystemPrompt includes Phase 4 recovery guidance', () => {
     prompt,
     /use write_file without a versionToken only for the new-file creation path/,
   );
-  assert.match(prompt, /agent_spawn is depth-1 only/);
+  assert.match(
+    prompt,
+    /child agents may also spawn admitted helper agents when that is the right decomposition/,
+  );
   assert.match(
     prompt,
     /multiple independent subtasks, issue multiple agent_spawn calls in the same round instead of serializing them one by one; agent_spawn always launches in parallel/,
   );
+  assert.match(
+    prompt,
+    /broader inspection or verification workflows, make the phase and pending work visible/,
+  );
+  assert.match(
+    prompt,
+    /launch only the currently independent items as a same-round agent_spawn wave/,
+  );
+  assert.match(
+    prompt,
+    /Use agent_wait results as the progress source for those workflows/,
+  );
+  assert.match(prompt, /blocked children need explicit follow-up/);
+  assert.match(
+    prompt,
+    /Do not invent a private workflow tool, hidden queue, or fixed wave-size policy/,
+  );
+  assert.match(prompt, /visible backpressure/);
   assert.match(prompt, /call agent_wait explicitly/);
   assert.match(
     prompt,

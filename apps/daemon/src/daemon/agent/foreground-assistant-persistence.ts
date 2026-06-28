@@ -1,9 +1,9 @@
 import type {
   ArtifactRef,
   ThreadArtifactVersion,
-} from '@geulbat/protocol/artifacts';
-import type { ThreadMessage } from '@geulbat/protocol/threads';
-import type { ThreadMessageMetadata } from '@geulbat/protocol/thread-metadata';
+  ThreadMessage,
+  ThreadMessageMetadata,
+} from './contract.js';
 
 import type { AgentInput } from './loop-types.js';
 import type { AgentArtifactCandidate, AgentResult } from './agent-result.js';

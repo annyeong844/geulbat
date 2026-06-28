@@ -92,6 +92,31 @@ void test('bootstrapDaemonEntry validates subagent runtime knobs before importin
   assert.deepEqual(calls, ['loadEnv']);
 });
 
+void test('bootstrapDaemonEntry validates PTC cell runtime knobs before importing main', async () => {
+  const calls: string[] = [];
+  const previous = process.env['GEULBAT_PTC_CELL_ENABLED'];
+
+  try {
+    await assert.rejects(
+      () =>
+        bootstrapDaemonEntry({
+          loadEnv: () => {
+            calls.push('loadEnv');
+            process.env['GEULBAT_PTC_CELL_ENABLED'] = 'sometimes';
+          },
+          importMain: async () => {
+            calls.push('importMain');
+          },
+        }),
+      /invalid GEULBAT_PTC_CELL_ENABLED: sometimes/,
+    );
+  } finally {
+    restoreEnv('GEULBAT_PTC_CELL_ENABLED', previous);
+  }
+
+  assert.deepEqual(calls, ['loadEnv']);
+});
+
 void test('bootstrapDaemonEntry loads env before import-time websocket provider headers', async () => {
   const expectedHeader = 'responses_websockets=test-local-env';
   const bootstrapEntryUrl = new URL('./bootstrap-entry.js', import.meta.url);

@@ -1,11 +1,10 @@
 import { z } from 'zod';
-import { catchToolError, toolError } from '../result.js';
+import { catchToolError } from '../result.js';
 import { resolveSourceDirectoryTarget } from '../../files/file-platform.js';
 import { createGlobMatcher, filenameSearch } from './search-files-filename.js';
 import { resolveRipgrepPath, runRipgrep } from './search-files-ripgrep.js';
 import { defineZodTool } from '../zod-tool.js';
 
-const MAX_RESULTS = 100;
 const MAX_INCLUDE_GLOB_LENGTH = 256;
 
 const searchFilesArgsSchema = z.strictObject({
@@ -17,6 +16,10 @@ const searchFilesArgsSchema = z.strictObject({
     ),
   path: z
     .string()
+    .min(1, 'path must not be empty.')
+    .refine((value) => value.trim().length > 0, {
+      message: 'path must not be empty.',
+    })
     .optional()
     .describe(
       'The directory to search in, relative to the workspace root. Defaults to workspace root.',
@@ -33,12 +36,17 @@ const searchFilesArgsSchema = z.strictObject({
       MAX_INCLUDE_GLOB_LENGTH,
       `include glob is too long (max ${MAX_INCLUDE_GLOB_LENGTH} characters).`,
     )
+    .regex(/^(?!!).*$/u, 'include glob must not start with "!".')
     .optional()
     .describe('Glob pattern to filter which files to search (e.g. "*.ts").'),
   maxResults: z
     .number()
+    .int('maxResults must be a positive integer.')
+    .min(1, 'maxResults must be a positive integer.')
     .optional()
-    .describe('Maximum number of results to return. Defaults to 50.'),
+    .describe(
+      'Optional maximum number of result entries to return. Omit it to return all matches.',
+    ),
 });
 
 export const searchFilesTool = defineZodTool({
@@ -47,20 +55,14 @@ export const searchFilesTool = defineZodTool({
     'Search for files matching a pattern or search for text content within files. Returns matching file paths and optionally matching lines.',
   argsSchema: searchFilesArgsSchema,
   sideEffectLevel: 'read',
-  timeoutMs: 20_000,
+  mayMutateWorkspaceFiles: false,
   requiresApproval: false,
   async executeParsed(args, ctx) {
     const query = args.pattern;
-    const searchPath = args.path ? args.path : '.';
+    const searchPath = args.path ?? '.';
     const searchType = args.type ?? 'content';
     const glob = args.include ? args.include : null;
-    const maxResults = args.maxResults
-      ? Math.max(1, Math.floor(args.maxResults))
-      : MAX_RESULTS;
-
-    if (glob && glob.startsWith('!')) {
-      return toolError('invalid_args', 'include glob must not start with "!".');
-    }
+    const maxResults = args.maxResults;
 
     try {
       const rootTarget = await resolveSourceDirectoryTarget(

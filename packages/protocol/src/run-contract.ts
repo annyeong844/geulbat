@@ -14,6 +14,18 @@ export interface RunRequest {
   permissionMode?: PermissionMode;
 }
 
+export type RunPromptRefRequest = Omit<RunRequest, 'prompt'> & {
+  promptRef: string;
+};
+
+export type RunStartRequest = RunRequest | RunPromptRefRequest;
+
+export interface RunPromptInputRefResponse {
+  ok: true;
+  promptRef: string;
+  byteLength: number;
+}
+
 /** Payload for the first `run_ack` event in the websocket run channel. */
 export interface RunAck {
   runId: RunId;
@@ -38,7 +50,41 @@ export function isRunSelection(value: unknown): value is RunSelection {
 export function isRunRequest(value: unknown): value is RunRequest {
   return (
     isRecord(value) &&
+    value.promptRef === undefined &&
     isString(value.prompt) &&
+    isRunRequestBase(value)
+  );
+}
+
+export function isRunPromptRefRequest(
+  value: unknown,
+): value is RunPromptRefRequest {
+  return (
+    isRecord(value) &&
+    value.prompt === undefined &&
+    isString(value.promptRef) &&
+    value.promptRef.length > 0 &&
+    isRunRequestBase(value)
+  );
+}
+
+export function isRunStartRequest(value: unknown): value is RunStartRequest {
+  return isRunRequest(value) || isRunPromptRefRequest(value);
+}
+
+export function isRunPromptInputRefResponse(
+  value: unknown,
+): value is RunPromptInputRefResponse {
+  return (
+    isRecord(value) &&
+    value.ok === true &&
+    isString(value.promptRef) &&
+    isNumber(value.byteLength)
+  );
+}
+
+function isRunRequestBase(value: Record<string, unknown>): boolean {
+  return (
     (value.displayPrompt === undefined || isString(value.displayPrompt)) &&
     isString(value.projectId) &&
     isProjectId(value.projectId) &&

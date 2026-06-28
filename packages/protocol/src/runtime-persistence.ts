@@ -1,6 +1,11 @@
 import type { ArtifactId } from './artifacts.js';
 import type { ProjectId, ThreadId } from './ids.js';
-import { isPlainRecord, isRecord, isString } from './runtime-utils.js';
+import {
+  isNumber,
+  isPlainRecord,
+  isRecord,
+  isString,
+} from './runtime-utils.js';
 
 export type JsonValue =
   | null
@@ -66,13 +71,28 @@ export interface ArtifactRuntimePersistenceLoadResponse {
   revision: string | null;
 }
 
-export interface ArtifactRuntimePersistenceSaveRequest extends ArtifactRuntimePersistenceScopeRequest {
-  state: JsonValue | null;
-  expectedRevision: string | null;
-}
+export type ArtifactRuntimePersistenceSaveRequest =
+  ArtifactRuntimePersistenceScopeRequest & {
+    expectedRevision: string | null;
+  } & (
+      | {
+          state: JsonValue | null;
+          stateRef?: never;
+        }
+      | {
+          state?: never;
+          stateRef: string;
+        }
+    );
 
 export interface ArtifactRuntimePersistenceSaveResponse {
   revision: string;
+}
+
+export interface ArtifactRuntimePersistenceStateInputRefResponse {
+  ok: true;
+  stateRef: string;
+  byteLength: number;
 }
 
 export interface ArtifactRuntimePersistenceClearRequest extends ArtifactRuntimePersistenceScopeRequest {
@@ -97,6 +117,17 @@ export function isArtifactRuntimePersistenceSaveResponse(
   value: unknown,
 ): value is ArtifactRuntimePersistenceSaveResponse {
   return isRecord(value) && isString(value.revision);
+}
+
+export function isArtifactRuntimePersistenceStateInputRefResponse(
+  value: unknown,
+): value is ArtifactRuntimePersistenceStateInputRefResponse {
+  return (
+    isRecord(value) &&
+    value.ok === true &&
+    isString(value.stateRef) &&
+    isNumber(value.byteLength)
+  );
 }
 
 export function isArtifactRuntimePersistenceClearResponse(

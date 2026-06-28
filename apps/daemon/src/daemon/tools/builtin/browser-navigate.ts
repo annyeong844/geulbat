@@ -3,16 +3,18 @@ import {
   PTC_BROWSER_NAVIGATE_MAX_TIMEOUT_MS,
   PTC_BROWSER_NAVIGATE_MAX_URL_BYTES,
   PTC_BROWSER_NAVIGATE_TOOL_NAME,
-  PTC_BROWSER_NAVIGATE_TOOL_TIMEOUT_MS,
-  type PtcBrowserNavigateFailureReason,
-  type PtcBrowserNavigateRuntimeError,
   type PtcBrowserNavigateRuntimeResult,
   type PtcBrowserNavigateRuntimeSummary,
-} from '../../daemon-runtime-contract.js';
+} from '../../ptc/runtime/browser/browser-navigate-runtime-contract.js';
 import { createRunWorkspaceContext } from '../../run-workspace-context.js';
-import type { ErrorCode } from '../../error-codes.js';
 import { toolError } from '../result.js';
 import { defineZodTool } from '../zod-tool.js';
+import {
+  browserFailureReasonMessage,
+  browserFailureReasonToToolErrorCode,
+  pickBrowserNavigatePolicyOutputFields,
+  pickBrowserSafeDiagnosticFields,
+} from './browser-summary-output.js';
 
 const browserNavigateArgsSchema = z.strictObject({
   url: z
@@ -42,7 +44,6 @@ export const browserNavigateTool = defineZodTool({
   argsSchema: browserNavigateArgsSchema,
   sideEffectLevel: 'write',
   mayMutateWorkspaceFiles: false,
-  timeoutMs: PTC_BROWSER_NAVIGATE_TOOL_TIMEOUT_MS,
   requiresApproval: true,
   async executeParsed(args: BrowserNavigateArgs, ctx) {
     if (!ctx.threadId || !ctx.projectId) {
@@ -76,11 +77,15 @@ export const browserNavigateTool = defineZodTool({
         : { ...runtimeArgs, signal: ctx.signal },
     );
     if (!result.ok) {
+      const message = browserFailureReasonMessage({
+        reasonCode: result.reasonCode,
+        subject: 'navigation',
+      });
       return {
         ok: false,
         output: stringifyBrowserNavigateFailure(result),
-        errorCode: browserNavigateFailureToToolErrorCode(result.reasonCode),
-        error: result.message,
+        errorCode: browserFailureReasonToToolErrorCode(result.reasonCode),
+        error: message,
       };
     }
 
@@ -102,21 +107,7 @@ function stringifyBrowserNavigateSummary(
     targetDigest: summary.targetDigest,
     navigationAttemptDigest: summary.navigationAttemptDigest,
     sessionLifecycle: summary.sessionLifecycle,
-    browserPolicyId: summary.browserPolicyId,
-    browserMode: summary.browserMode,
-    browserEnginePolicyId: summary.browserEnginePolicyId,
-    browserNetworkPolicyId: summary.browserNetworkPolicyId,
-    browserUrlGrammarPolicyId: summary.browserUrlGrammarPolicyId,
-    browserRedirectPolicyId: summary.browserRedirectPolicyId,
-    browserEvidencePolicyId: summary.browserEvidencePolicyId,
-    browserUrlEchoPolicyId: summary.browserUrlEchoPolicyId,
-    browserPopupPolicyId: summary.browserPopupPolicyId,
-    browserPermissionPolicyId: summary.browserPermissionPolicyId,
-    browserProfilePolicyId: summary.browserProfilePolicyId,
-    browserCookieStorePolicyId: summary.browserCookieStorePolicyId,
-    browserDownloadPolicyId: summary.browserDownloadPolicyId,
-    browserArtifactExportPolicyId: summary.browserArtifactExportPolicyId,
-    artifactExported: summary.artifactExported,
+    ...pickBrowserNavigatePolicyOutputFields(summary),
     requestedUrlRedacted: summary.requestedUrlRedacted,
     finalUrlRedacted: summary.finalUrlRedacted,
     navigationOutcome: summary.navigationOutcome,
@@ -133,70 +124,14 @@ function stringifyBrowserNavigateFailure(
     kind: failure.kind,
     ok: failure.ok,
     reasonCode: failure.reasonCode,
-    message: failure.message,
+    message: browserFailureReasonMessage({
+      reasonCode: failure.reasonCode,
+      subject: 'navigation',
+    }),
     phase: failure.phase,
     targetDigest: failure.targetDigest,
     navigationAttemptDigest: failure.navigationAttemptDigest,
     sessionLifecycle: failure.sessionLifecycle,
-    diagnostics: sanitizeBrowserNavigateDiagnostics(failure.diagnostics),
+    diagnostics: pickBrowserSafeDiagnosticFields(failure.diagnostics),
   });
-}
-
-function sanitizeBrowserNavigateDiagnostics(
-  diagnostics: PtcBrowserNavigateRuntimeError['diagnostics'],
-): PtcBrowserNavigateRuntimeError['diagnostics'] {
-  if (diagnostics === undefined) {
-    return undefined;
-  }
-  const safe: Record<string, string | number | boolean> = {};
-  for (const key of [
-    'admissionReasonCode',
-    'unsupportedCategory',
-    'maxUrlBytes',
-    'sessionReasonCode',
-    'sessionTainted',
-    'sessionCloseFailed',
-    'commandResultKind',
-    'inputCleanupFailed',
-    'workspaceRootRealpathFailed',
-  ]) {
-    const value = diagnostics[key];
-    if (
-      typeof value === 'string' ||
-      typeof value === 'number' ||
-      typeof value === 'boolean'
-    ) {
-      safe[key] = value;
-    }
-  }
-  return Object.keys(safe).length > 0 ? safe : undefined;
-}
-
-function browserNavigateFailureToToolErrorCode(
-  reasonCode: PtcBrowserNavigateFailureReason,
-): ErrorCode {
-  switch (reasonCode) {
-    case 'ptc_lab_browser_policy_disabled':
-    case 'ptc_lab_browser_policy_mismatch':
-    case 'ptc_lab_browser_network_disabled':
-    case 'ptc_lab_browser_request_invalid':
-    case 'ptc_lab_browser_url_admission_failed':
-    case 'ptc_lab_browser_target_digest_mismatch':
-      return 'invalid_args';
-    case 'ptc_lab_browser_timeout':
-      return 'timeout';
-    case 'ptc_lab_browser_cancelled':
-      return 'aborted';
-    case 'ptc_lab_browser_session_unavailable':
-    case 'ptc_lab_browser_runtime_unavailable':
-    case 'ptc_lab_browser_navigation_failed':
-    case 'ptc_lab_browser_redirect_disallowed':
-    case 'ptc_lab_browser_download_disallowed':
-    case 'ptc_lab_browser_popup_disallowed':
-    case 'ptc_lab_browser_output_invalid':
-    case 'ptc_lab_browser_session_tainted':
-    case 'ptc_lab_browser_cleanup_failed':
-    case 'ptc_lab_browser_cleanup_uncertain':
-      return 'execution_failed';
-  }
 }

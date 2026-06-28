@@ -17,10 +17,7 @@ import {
   PersistenceConflictError,
   PersistenceQuotaExceededError,
 } from './errors.js';
-import { MAX_RUNTIME_PERSISTENCE_FILE_BYTES } from './quota.js';
-import { readRuntimePersistenceTotalBytes } from './disk-usage.js';
 import { readPersistedRuntimeState } from './stored-state.js';
-import { createSymlinkOrSkip } from '../../test-support/symlink-test.js';
 
 const PROJECT_ID = 'workspace' as ProjectId;
 const THREAD_ID = '00000000-0000-4000-8000-000000000001' as ThreadId;
@@ -83,26 +80,6 @@ void test('readPersistedRuntimeState classifies directory state paths as persist
   try {
     await assert.rejects(
       () => readPersistedRuntimeState(statePath, createScope('art_dir_js')),
-      (error: unknown) => {
-        assert.ok(error instanceof PersistenceBlockedError);
-        assert.equal(error.code, 'persistence_blocked');
-        assert.ok(error.cause instanceof Error);
-        return true;
-      },
-    );
-  } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
-  }
-});
-
-void test('runtime persistence total-byte scan classifies non-directory roots as persistence_blocked', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-runtime-state-'));
-  const storageRoot = join(workspaceRoot, 'runtime-persistence');
-  await writeFile(storageRoot, 'not a directory', 'utf8');
-
-  try {
-    await assert.rejects(
-      () => readRuntimePersistenceTotalBytes(storageRoot),
       (error: unknown) => {
         assert.ok(error instanceof PersistenceBlockedError);
         assert.equal(error.code, 'persistence_blocked');
@@ -239,105 +216,29 @@ void test('concurrent runtime persistence saves allow at most one winner per exp
   }
 });
 
-void test('runtime persistence save rejects states larger than the per-artifact quota', async () => {
+void test('runtime persistence save/load preserves large states without a hidden byte quota', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-runtime-state-'));
-  const scope = createScope('art_oversized_js');
-
-  try {
-    await assert.rejects(
-      () =>
-        saveArtifactRuntimePersistenceState(
-          workspaceRoot,
-          scope,
-          { text: 'x'.repeat(MAX_RUNTIME_PERSISTENCE_FILE_BYTES) },
-          null,
-        ),
-      (error: unknown) =>
-        error instanceof PersistenceQuotaExceededError &&
-        error.code === 'persistence_quota_exceeded' &&
-        error.message.includes('per-artifact quota'),
-    );
-  } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
-  }
-});
-
-void test('runtime persistence save rejects writes that exceed the total workspace quota', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-runtime-state-'));
-  const state = {
-    text: 'x'.repeat(MAX_RUNTIME_PERSISTENCE_FILE_BYTES - 4 * 1024),
-  };
-
-  try {
-    for (let index = 0; index < 4; index += 1) {
-      await saveArtifactRuntimePersistenceState(
-        workspaceRoot,
-        {
-          ...createScope(`art_quota_demo_${index}`),
-        },
-        state,
-        null,
-      );
-    }
-
-    await assert.rejects(
-      () =>
-        saveArtifactRuntimePersistenceState(
-          workspaceRoot,
-          {
-            ...createScope('art_quota_demo_overflow'),
-          },
-          state,
-          null,
-        ),
-      (error: unknown) =>
-        error instanceof PersistenceQuotaExceededError &&
-        error.code === 'persistence_quota_exceeded' &&
-        error.message.includes('total quota exceeded'),
-    );
-  } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
-  }
-});
-
-void test('runtime persistence total-byte scan skips repeated real directories under symlink aliases', async (t) => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-runtime-state-'));
+  const scope = createScope('art_large_js');
   const largeState = {
-    text: 'x'.repeat(MAX_RUNTIME_PERSISTENCE_FILE_BYTES - 8 * 1024),
+    // Regression fixture only: this is larger than the retired aggregate byte quota.
+    text: 'x'.repeat(300 * 1024),
   };
-  const persistenceRoot = join(
-    workspaceRoot,
-    '.geulbat',
-    'runtime-persistence',
-  );
 
   try {
-    for (let index = 0; index < 4; index += 1) {
-      await saveArtifactRuntimePersistenceState(
-        workspaceRoot,
-        {
-          ...createScope(`art_alias_demo_${index}`),
-        },
-        largeState,
-        null,
-      );
-    }
-
-    const aliasPath = join(persistenceRoot, 'alias-loop');
-    if (!(await createSymlinkOrSkip(t, persistenceRoot, aliasPath))) {
-      return;
-    }
-
-    await assert.doesNotReject(() =>
-      saveArtifactRuntimePersistenceState(
-        workspaceRoot,
-        {
-          ...createScope('art_alias_demo_final'),
-        },
-        { count: 5 },
-        null,
-      ),
+    const saved = await saveArtifactRuntimePersistenceState(
+      workspaceRoot,
+      scope,
+      largeState,
+      null,
     );
+    const loaded = await loadArtifactRuntimePersistenceState(
+      workspaceRoot,
+      scope,
+    );
+    assert.deepEqual(loaded, {
+      state: largeState,
+      revision: saved.revision,
+    });
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }

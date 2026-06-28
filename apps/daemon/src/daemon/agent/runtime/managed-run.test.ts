@@ -64,6 +64,44 @@ void test('getRunById returns a snapshot instead of the live active-run object',
   assert.equal(after?.ownerThreadId, threadId);
   assert.equal(after?.aborted, false);
   assert.equal('abortController' in (after ?? {}), false);
+  assert.equal('interject' in (after ?? {}), false);
+
+  started.finish();
+});
+
+void test('startManagedRun shares the interject buffer with the active run store', () => {
+  const activeRuns = createActiveRunStore();
+  const threadId = testThreadId(8);
+  const started = startManagedRun(
+    {
+      runContext: makeRunWorkspaceContext({
+        threadId,
+      }),
+    },
+    { activeRuns },
+  );
+
+  assert.equal(started.ok, true);
+  if (!started.ok) {
+    return;
+  }
+
+  assert.equal(started.activeRun.interject, started.runState.interject);
+  assert.deepEqual(
+    activeRuns.appendPendingInterject(started.runId, { text: 'note' }),
+    {
+      ok: true,
+      receivedSeq: 1,
+      bufferDepth: 1,
+    },
+  );
+  assert.deepEqual(started.runState.interject.items, [
+    { text: 'note', receivedSeq: 1 },
+  ]);
+  assert.equal(
+    'interject' in (activeRuns.getRunById(started.runId) ?? {}),
+    false,
+  );
 
   started.finish();
 });

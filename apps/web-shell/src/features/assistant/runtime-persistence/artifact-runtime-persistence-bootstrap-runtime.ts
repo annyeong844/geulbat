@@ -16,8 +16,10 @@ import type {
 import { createArtifactRuntimePersistenceValidation } from './artifact-runtime-persistence-validation.js';
 import {
   createLocalStorageFacade,
-  createLogicalDatabaseFacade,
   createSessionStorageFacade,
+} from './artifact-runtime-persistence-browser-storage-facades.js';
+import {
+  createLogicalDatabaseFacade,
   createStorageFacade,
 } from './artifact-runtime-persistence-storage-facades.js';
 import type { ArtifactRuntimePersistenceStorageFacadeStore } from './artifact-runtime-persistence-storage-facade-store.js';

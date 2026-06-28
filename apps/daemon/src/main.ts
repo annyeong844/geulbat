@@ -1,7 +1,11 @@
 import http from 'node:http';
 import type { WebSocketServer } from 'ws';
 import { createDaemon } from './create-daemon.js';
-import { closeDaemonServers } from './daemon-server-lifecycle.js';
+import {
+  closeDaemonRuntimeSessions,
+  closeDaemonServers,
+  listenDaemonHttpServer,
+} from './daemon-server-lifecycle.js';
 import { initProviderAuth } from './daemon/auth/init.js';
 import { attachPublicWebFixtureWebSocketServer } from './adapter/web/ws/public-web-fixtures.js';
 import { attachRunChannelServer } from './adapter/web/ws/run-channel.js';
@@ -44,11 +48,18 @@ async function main() {
       backgroundNotifications: daemonContext.backgroundNotifications,
       childRuns: daemonContext.childRuns,
       fileStateCache: daemonContext.fileStateCache,
+      agentWorkflowRunner: daemonContext.agentWorkflowRunner,
+      agentWavePlanner: daemonContext.agentWavePlanner,
       memoryIndex: daemonContext.memoryIndex,
       providerAuthRuntime: daemonContext.providerAuthRuntime,
       providerRequestOptions: daemonContext.providerRequestOptions,
       providerWebSocketSessions: daemonContext.providerWebSocketSessions,
+      reactBundleStructuredOutputIngressPolicy:
+        daemonContext.reactBundleStructuredOutputIngressPolicy,
+      resourceBudgetProvider: daemonContext.resourceBudgetProvider,
       projectRegistry: daemonContext.projectRegistry,
+      ptcBrowserPageLoadEvidence: daemonContext.ptcBrowserPageLoadEvidence,
+      ptcBrowserTextEvidence: daemonContext.ptcBrowserTextEvidence,
       ptcBrowserNavigate: daemonContext.ptcBrowserNavigate,
       ptcExecuteCode: daemonContext.ptcExecuteCode,
       ptcFixedProbe: daemonContext.ptcFixedProbe,
@@ -64,13 +75,22 @@ async function main() {
     daemonContext.providerAuthCallbackServer.bindLifecycle(server);
     registerProcessShutdown({
       admissionLock,
+      runtimeSessions: {
+        ptcBrowserPageLoadEvidence: daemonContext.ptcBrowserPageLoadEvidence,
+        ptcBrowserTextEvidence: daemonContext.ptcBrowserTextEvidence,
+        ptcBrowserNavigate: daemonContext.ptcBrowserNavigate,
+        ptcExecuteCode: daemonContext.ptcExecuteCode,
+      },
       server,
       webSocketServers: [publicWebSockets, runChannelSockets],
     });
 
-    server.listen(PORT, HOST, () => {
-      logger.info(`http://${HOST}:${PORT}`);
+    await listenDaemonHttpServer({
+      server,
+      port: PORT,
+      host: HOST,
     });
+    logger.info(`http://${HOST}:${PORT}`);
   } catch (error: unknown) {
     await admissionLock.release();
     throw error;
@@ -79,6 +99,9 @@ async function main() {
 
 function registerProcessShutdown(args: {
   admissionLock: WorkspaceAdmissionLock;
+  runtimeSessions: Parameters<
+    typeof closeDaemonRuntimeSessions
+  >[0]['runtimeSessions'];
   server: http.Server;
   webSocketServers: readonly WebSocketServer[];
 }): void {
@@ -96,6 +119,9 @@ function registerProcessShutdown(args: {
         await closeDaemonServers({
           server: args.server,
           webSocketServers: args.webSocketServers,
+        });
+        await closeDaemonRuntimeSessions({
+          runtimeSessions: args.runtimeSessions,
         });
         await args.admissionLock.release();
         process.exit(0);

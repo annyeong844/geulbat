@@ -3,12 +3,13 @@ import {
   createPtcLabLocalDockerPolicyProjection,
   type PtcLabAdmittedProfile,
   type PtcLabPolicyProjection,
-} from '../daemon/ptc/lab-profile.js';
-import { createPtcLabOpenEgressLocalPolicy } from '../daemon/ptc/lab-network-policy.js';
+} from '../daemon/ptc/lab/profile/lab-profile.js';
+import type { PtcLabPolicyId } from '../daemon/ptc/lab/profile/lab-profile-contract.js';
+import { createPtcLabOpenEgressLocalPolicy } from '../daemon/ptc/lab/network/lab-network-policy.js';
 import {
   PTC_SESSION_DOCKER_DEFAULT_POLICY,
   type PtcSessionDockerPolicy,
-} from '../daemon/ptc/session-docker-contract.js';
+} from '../daemon/ptc/lab/session/session-docker-contract.js';
 
 export type PtcBrowserTestLabNetworkMode = 'open' | 'disabled';
 
@@ -19,7 +20,7 @@ export interface PtcBrowserTestLab {
 }
 
 export interface CreatePtcBrowserTestLabArgs {
-  policyId: string;
+  policyId: PtcLabPolicyId;
   browser: PtcLabPolicyProjection['browser'];
   networkMode?: PtcBrowserTestLabNetworkMode;
   admissionErrorMessage: string;

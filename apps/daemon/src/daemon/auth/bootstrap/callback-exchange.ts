@@ -1,5 +1,5 @@
-import { isRecord } from '@geulbat/protocol/runtime-utils';
-import type { ErrorCode } from '@geulbat/protocol/errors';
+import { isRecord } from '../../runtime-json.js';
+import type { ErrorCode } from '../contract.js';
 
 import {
   PROVIDER_AUTH_EXCHANGE_TIMEOUT_MS,
@@ -62,7 +62,7 @@ export async function exchangeAuthorizationCode(
         const message = await res.text().catch(() => '');
         throw withProviderAuthCode(
           'provider_auth_exchange_failed',
-          `Provider token exchange failed (${res.status}): ${message.slice(0, 240)}`,
+          `Provider token exchange failed (${res.status}): ${message}`,
         );
       }
 

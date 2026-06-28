@@ -1,20 +1,18 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import {
-  PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_CAPABILITY,
-  type PtcLabBrowserPageLoadEvidenceChecks,
-} from '../daemon/ptc/lab-browser-page-load-evidence-contract.js';
-import { PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_RUNTIME_SCRIPT } from '../daemon/ptc/lab-browser-page-load-evidence-runtime-script.js';
-import { createPtcLabBrowserPageLoadEvidencePolicy } from '../daemon/ptc/lab-browser-policy.js';
-import type { PtcLabBrowserUserUrlNavigationRequest } from '../daemon/ptc/lab-browser-url-navigation.js';
-import { PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT } from '../daemon/ptc/session-docker-contract.js';
+import { PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_CAPABILITY } from '../daemon/ptc/lab/browser/page-load-evidence/lab-browser-page-load-evidence-contract.js';
+import { PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_RUNTIME_SCRIPT } from '../daemon/ptc/lab/browser/core/lab-browser-runtime-script.js';
+import { createPtcLabBrowserPageLoadEvidencePolicy } from '../daemon/ptc/lab/browser/core/lab-browser-policy.js';
+import type { PtcLabBrowserEvidenceChecks } from '../daemon/ptc/shared/browser-evidence-contract.js';
+import type { PtcLabBrowserUserUrlNavigationRequest } from '../daemon/ptc/lab/browser/core/lab-browser-url-navigation.js';
+import { PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT } from '../daemon/ptc/lab/session/session-docker-contract.js';
 import {
   type PtcSessionDockerCommandInvocation,
   type PtcSessionDockerCommandResult,
   type PtcSessionDockerIdentity,
   type PtcSessionDockerPolicy,
-} from '../daemon/ptc/session-docker-contract.js';
+} from '../daemon/ptc/lab/session/session-docker-contract.js';
 import {
   PTC_TEST_SESSION_DOCKER_CONTAINER_ID,
   readPtcSessionDockerBindMountHostPath,
@@ -39,7 +37,7 @@ export const PTC_BROWSER_PAGE_LOAD_EVIDENCE_TEST_IDENTITY: PtcSessionDockerIdent
   });
 
 export const PTC_BROWSER_PAGE_LOAD_EVIDENCE_TEST_SUCCESS_CHECKS: Omit<
-  PtcLabBrowserPageLoadEvidenceChecks,
+  PtcLabBrowserEvidenceChecks,
   'targetVerified'
 > = Object.freeze({
   engineAvailable: true,
@@ -49,8 +47,7 @@ export const PTC_BROWSER_PAGE_LOAD_EVIDENCE_TEST_SUCCESS_CHECKS: Omit<
   redirectPolicyEnforced: true,
   downloadPolicyEnforced: true,
   popupPolicyEnforced: true,
-  permissionPolicyEnforced: true,
-  evidenceSanitized: true,
+  evidenceCaptured: true,
   cleanupCompleted: true,
 });
 
@@ -58,13 +55,11 @@ export interface BrowserPageLoadEvidenceExecInput {
   targetUrl: string;
   timeoutMs: number;
   loadWaitState: 'domcontentloaded';
-  maxTitleChars: number;
 }
 
 export function createBrowserPageLoadEvidenceLab(
   args: {
     browserMaxNavigationMs?: number;
-    maxTitleChars?: number;
     networkMode?: 'open' | 'disabled';
   } = {},
 ): PtcBrowserTestLab {
@@ -72,9 +67,6 @@ export function createBrowserPageLoadEvidenceLab(
     policyId: 'ptc_lab_browser_page_load_evidence_test_policy_v1',
     browser: createPtcLabBrowserPageLoadEvidencePolicy({
       maxNavigationMs: args.browserMaxNavigationMs ?? 5_000,
-      ...(args.maxTitleChars === undefined
-        ? {}
-        : { maxTitleChars: args.maxTitleChars }),
     }),
     ...(args.networkMode === undefined
       ? {}
@@ -173,29 +165,22 @@ export function browserPageLoadEvidenceStdout(
   args:
     | {
         ok: true;
-        checks: Omit<PtcLabBrowserPageLoadEvidenceChecks, 'targetVerified'>;
+        checks: Omit<PtcLabBrowserEvidenceChecks, 'targetVerified'>;
         finalUrlDigest?: `sha256:${string}`;
         statusCode?: number;
-        title?: {
-          text: string;
-          charCount: number;
-          truncated: boolean;
-          maxChars: number;
-          redacted: boolean;
-        };
+        title?: string;
         redirectCount?: number;
         navigationDurationMs?: number;
       }
     | {
         ok: false;
-        checks: Omit<PtcLabBrowserPageLoadEvidenceChecks, 'targetVerified'>;
+        checks: Omit<PtcLabBrowserEvidenceChecks, 'targetVerified'>;
         errorCode:
           | 'browser_runtime_unavailable'
           | 'navigation_failed'
           | 'redirect_disallowed'
           | 'download_disallowed'
           | 'popup_disallowed'
-          | 'permission_disallowed'
           | 'evidence_unavailable'
           | 'evidence_output_invalid'
           | 'cleanup_failed'
@@ -226,13 +211,7 @@ export function browserPageLoadEvidenceStdout(
               code: args.statusCode,
               source: 'final_main_resource_response',
             },
-      title: args.title ?? {
-        text: 'Example Domain',
-        charCount: 14,
-        truncated: false,
-        maxChars: 160,
-        redacted: false,
-      },
+      title: args.title ?? 'Example Domain',
       redirectCount: args.redirectCount ?? 0,
       navigationDurationMs: args.navigationDurationMs ?? 37,
     },

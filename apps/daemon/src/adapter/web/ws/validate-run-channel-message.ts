@@ -3,6 +3,7 @@ import {
   isRunApproveMessage,
   isRunAuthMessage,
   isRunCancelMessage,
+  isRunInterjectEnvelope,
   isRunStartMessage,
 } from '@geulbat/protocol/run-channel';
 import {
@@ -27,6 +28,9 @@ export function readRunChannelClientMessage(
     return readClientMessageWithRequestId(value);
   }
   if (isRunApproveMessage(value)) {
+    return readClientMessageWithRequestId(value);
+  }
+  if (isRunInterjectEnvelope(value)) {
     return readClientMessageWithRequestId(value);
   }
   if (

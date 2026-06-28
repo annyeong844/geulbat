@@ -17,7 +17,7 @@ export async function filenameSearch(
   workspaceRoot: string,
   matchesPattern: SearchPathMatcher,
   matchesInclude: SearchPathMatcher,
-  maxResults: number,
+  maxResults: number | undefined,
   dependencies?: Partial<FilenameSearchDependencies>,
 ): Promise<SearchFilesResult> {
   const results: SearchMatch[] = [];
@@ -36,11 +36,12 @@ export async function filenameSearch(
     maxResults,
     resolvedDependencies,
   );
+  const truncated = maxResults !== undefined && counter.total > results.length;
   return {
     backend: 'js-filename',
     query: 'filename',
     total: counter.total,
-    truncated: results.length >= maxResults,
+    truncated,
     results,
   };
 }
@@ -106,11 +107,9 @@ async function walkAndCollectFilenames(
   matchesInclude: SearchPathMatcher,
   results: SearchMatch[],
   counter: { total: number },
-  maxResults: number,
+  maxResults: number | undefined,
   dependencies: FilenameSearchDependencies,
 ): Promise<void> {
-  if (results.length >= maxResults) return;
-
   let entries;
   try {
     entries = await dependencies.readdir(dir, { withFileTypes: true });
@@ -123,8 +122,6 @@ async function walkAndCollectFilenames(
   }
 
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (results.length >= maxResults) return;
-
     const fullPath = join(dir, entry.name);
     const relativePath = relative(root, fullPath).split(sep).join('/');
 
@@ -152,6 +149,8 @@ async function walkAndCollectFilenames(
     if (matchesPattern && !matchesPattern(relativePath)) continue;
 
     counter.total++;
-    results.push({ path: relativePath, line: 0, text: '' });
+    if (maxResults === undefined || results.length < maxResults) {
+      results.push({ path: relativePath, line: 0, text: '' });
+    }
   }
 }

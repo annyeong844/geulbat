@@ -2,7 +2,6 @@ export interface SandboxEnvironmentOptions {
   homeDir: string;
   tempDir: string;
   adapterEnv?: Readonly<Record<string, string>>;
-  inheritedEnv?: NodeJS.ProcessEnv;
 }
 
 export function buildSandboxEnvironment(

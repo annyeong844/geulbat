@@ -54,6 +54,7 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
     },
     strict: true,
     sideEffectLevel: args.sideEffectLevel,
+    mayMutateWorkspaceFiles: false,
     timeoutMs: 1_000,
     requiresApproval: args.requiresApproval,
     parseArgs: args.parseArgs ?? parseObjectArgs,

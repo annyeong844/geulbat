@@ -28,6 +28,26 @@ export {
 export type { ProjectId, RunId, ThreadId } from './ids.js';
 export { isProjectId, isRunId, isThreadId } from './ids.js';
 export type {
+  InputRefInventoryEntry,
+  InputRefInventoryResponse,
+  InputRefKind,
+  InputRefRecoveryAction,
+  InputRefRecoveryRequest,
+  InputRefRecoveryResponse,
+  InputRefState,
+} from './input-refs.js';
+export {
+  INPUT_REF_KINDS,
+  INPUT_REF_RECOVERY_ACTIONS,
+  INPUT_REF_STATES,
+  isInputRefInventoryEntry,
+  isInputRefInventoryResponse,
+  isInputRefKind,
+  isInputRefRecoveryAction,
+  isInputRefRecoveryResponse,
+  isInputRefState,
+} from './input-refs.js';
+export type {
   ArtifactId,
   ArtifactRecord,
   ArtifactRef,
@@ -56,6 +76,7 @@ export {
   parseCanonicalArtifactEnvelopeText,
 } from './artifacts.js';
 export type {
+  InterjectThreadMessageMetadata,
   ThreadMessageMetadata,
   ThreadMessagePhase,
 } from './thread-metadata.js';
@@ -80,30 +101,49 @@ export {
 } from './public-web-fixtures.js';
 export type {
   ReactBundleArtifactInput,
+  ReactBundleInlineCompileInputRefRequest,
+  ReactBundleInlineCompileInputRefResponse,
   ReactBundleInlineCompileFailureCode,
   ReactBundleInlineCompileRequest,
   ReactBundleInlineCompileResponse,
+  ReactBundleInlineCompileRouteRequest,
   ReactBundleInlineSourceInput,
   ReactBundleRuntimeDependencies,
   ReactBundleRuntimeImportMap,
   ReactBundleRuntimeManifest,
 } from './react-bundle-inline-compile.js';
 export {
-  REACT_BUNDLE_INLINE_COMPILE_TIMEOUT_MS,
-  REACT_BUNDLE_INLINE_MAX_COMPILED_OUTPUT_BYTES,
-  REACT_BUNDLE_INLINE_MAX_FILE_COUNT,
-  REACT_BUNDLE_INLINE_MAX_TOTAL_SOURCE_BYTES,
   decodeReactBundleInlineCompileRequest,
   decodeReactBundleInlineSourceInput,
   isReactBundleArtifactInput,
+  isReactBundleInlineCompileInputRefResponse,
   isReactBundleInlineCompileFailureCode,
   isReactBundleInlineCompileRequest,
+  isReactBundleInlineCompileRouteRequest,
   isReactBundleInlineCompileResponse,
   isReactBundleInlineSourceInput,
   isReactBundleRuntimeManifest,
 } from './react-bundle-inline-compile.js';
-export type { RunAck, RunRequest, RunSelection } from './run-contract.js';
-export { isRunRequest, isRunSelection } from './run-contract.js';
+export type {
+  ReactBundleRuntimeUrlPolicyFailureReason,
+  ReactBundleRuntimeUrlPolicyResult,
+} from './react-bundle-runtime-url-policy.js';
+export { validateReactBundleRuntimeUrlPolicy } from './react-bundle-runtime-url-policy.js';
+export type {
+  RunAck,
+  RunPromptInputRefResponse,
+  RunPromptRefRequest,
+  RunRequest,
+  RunSelection,
+  RunStartRequest,
+} from './run-contract.js';
+export {
+  isRunPromptInputRefResponse,
+  isRunPromptRefRequest,
+  isRunRequest,
+  isRunSelection,
+  isRunStartRequest,
+} from './run-contract.js';
 export type {
   ApprovalClass,
   ApprovalGrantScope,
@@ -131,6 +171,7 @@ export { SIDE_EFFECT_LEVELS, isSideEffectLevel } from './side-effect-level.js';
 export type { CancelRequest, CancelResponse } from './cancel.js';
 export { isCancelRequest, isCancelResponse } from './cancel.js';
 export type {
+  FileBinaryInputRefResponse,
   FileReadRequest,
   FileReadResponse,
   FileVersionToken,
@@ -141,6 +182,7 @@ export type {
   FileTreeResponse,
 } from './files.js';
 export {
+  isFileBinaryInputRefResponse,
   isFileReadResponse,
   isFileSaveResponse,
   isFileTreeNode,
@@ -161,16 +203,23 @@ export {
   isProjectListResponse,
 } from './projects.js';
 export type {
+  BudgetProfile,
+  CompactionThreadMessage,
+  CompactionEntryData,
+  FileOps,
+  NonCompactionThreadMessage,
   ThreadDetailDiagnostics,
   ThreadDeleteResponse,
   ThreadDetailResponse,
   ThreadListResponse,
   ThreadMessage,
+  ThreadMessageInput,
   ThreadMessageRole,
   ThreadSummary,
 } from './threads.js';
 export {
   THREAD_MESSAGE_ROLES,
+  isCompactionEntryData,
   isThreadDeleteResponse,
   isThreadDetailDiagnostics,
   isThreadDetailResponse,
@@ -191,6 +240,7 @@ export type {
   ArtifactCommittedEventPayload,
   DoneEventPayload,
   ErrorEventPayload,
+  InterjectAppliedEventPayload,
   RunAckEventPayload,
   RunEvent,
   RunEventEnvelope,
@@ -203,6 +253,7 @@ export type {
   TextDeltaEventPayload,
   SubagentType,
   ToolCallEventPayload,
+  ToolCallSourcePayload,
   KnownToolResultRaw,
   KnownToolResultRawTool,
   KnownToolResultSuccessEventPayload,
@@ -225,6 +276,7 @@ export {
   isAgentWaitToolRaw,
   isDoneEventPayload,
   isErrorEventPayload,
+  isInterjectAppliedEventPayload,
   isRunAckEventPayload,
   isRunEvent,
   SUBAGENT_TYPES,
@@ -232,6 +284,7 @@ export {
   isThreadStatePersistedEventPayload,
   isThreadStatePersistFailedEventPayload,
   isTextDeltaEventPayload,
+  isToolCallSourcePayload,
   isToolCallEventPayload,
   isToolResultEventPayload,
   isToolResultRaw,
@@ -270,21 +323,28 @@ export {
 } from './artifact-runtime-host.js';
 export type {
   RunApproveMessage,
+  RunApproveControlMessage,
   RunAuthMessage,
   RunAuthOkMessage,
   RunCancelMessage,
+  RunCancelControlMessage,
   RunChannelClientMessage,
   RunChannelServerMessage,
   RunControlMessage,
   RunErrorMessage,
   RunEventMessage,
+  RunInterjectControlMessage,
+  RunInterjectEnvelopeMessage,
+  RunInterjectRequest,
   RunStartMessage,
 } from './run-channel.js';
 export {
   isRunApproveMessage,
   isRunAuthMessage,
   isRunCancelMessage,
+  isRunChannelClientMessage,
   isRunChannelServerMessage,
+  isRunInterjectEnvelope,
   isRunStartMessage,
 } from './run-channel.js';
 export type {
@@ -297,6 +357,7 @@ export type {
   ArtifactRuntimePersistenceSaveRequest,
   ArtifactRuntimePersistenceSaveResponse,
   ArtifactRuntimePersistenceScopeRequest,
+  ArtifactRuntimePersistenceStateInputRefResponse,
 } from './runtime-persistence.js';
 export type { JsonParseResult } from './runtime-utils.js';
 export {
@@ -317,4 +378,5 @@ export {
   isArtifactRuntimePersistenceRenderer,
   isArtifactRuntimePersistenceLoadResponse,
   isArtifactRuntimePersistenceSaveResponse,
+  isArtifactRuntimePersistenceStateInputRefResponse,
 } from './runtime-persistence.js';
