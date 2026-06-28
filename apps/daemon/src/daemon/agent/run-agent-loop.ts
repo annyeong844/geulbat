@@ -6,25 +6,35 @@
 import { buildSystemPrompt } from './prompt/build-system-prompt.js';
 import { buildPromptContext } from './prompt/build-prompt-context.js';
 import { createAgentEvent, type AgentEventEmitter } from './events.js';
-import type { AgentResult } from './agent-result.js';
+import {
+  describeAgentResultForTextSurface,
+  type AgentResult,
+} from './agent-result.js';
 import type { AgentInput } from './loop-types.js';
+import type { HistoryItem } from '../llm/index.js';
 import {
   buildAgentToolExecutionContextBase,
   buildToolCallExecutionRuntime,
 } from './loop-tool-runtime.js';
-import { assertRunId as assertValidRunId } from '@geulbat/protocol/ids';
+import { assertAgentRunId as assertValidRunId } from './contract.js';
 import { settleRunAfterResult } from './runtime/run-state.js';
 import {
   appendAssistantTextToHistory,
   appendFunctionCallsToHistory,
+  appendInterjectToHistory,
   loadInitialHistory,
+  persistSingleInterjectToTranscript,
 } from './loop-history.js';
 import {
-  MAX_TOOL_ROUNDS,
+  dropPendingInterjectFront,
+  hasPendingInterject,
+  peekPendingInterject,
+} from '../sessions/active-run-interject-buffer.js';
+import {
   emitAndSettleTerminalFailure,
   formatBackgroundResultNote,
 } from './loop-shared.js';
-import { finalizeAfterToolLimit, runModelRound } from './loop-model-round.js';
+import { runModelRound } from './loop-model-round.js';
 import { processFunctionCalls } from './loop-tool-execution.js';
 import { isRootRunState } from '../runtime-contracts.js';
 import { runReactBundleStructuredOutputCaller } from './react-bundle-structured-output-caller.js';
@@ -32,8 +42,11 @@ import {
   PTC_FIXED_PROBE_STRUCTURED_OUTPUT_KIND,
   runPtcFixedProbeStructuredOutputCaller,
 } from './ptc-fixed-probe-structured-output-caller.js';
+import { isMidRunSteerEnabled } from './mid-run-steer-flag.js';
 
-const STRUCTURED_REACT_BUNDLE_INGRESS_TIMEOUT_MS = 30_000;
+type AgentLoopRoundOutcome =
+  | { kind: 'continue' }
+  | { kind: 'terminal'; result: AgentResult };
 
 export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   const {
@@ -84,8 +97,12 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   const pendingBackgroundSystemNote = formatBackgroundResultNote(
     pendingBackgroundResults,
   );
+  const midRunSteerEnabled = isMidRunSteerEnabled();
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+  const runRound = async (
+    round: number,
+    sawFirstModelRequest: boolean,
+  ): Promise<AgentLoopRoundOutcome> => {
     if (signal?.aborted) {
       const abortedResult = emitAndSettleTerminalFailure(
         emit,
@@ -95,7 +112,17 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         signal,
         'signal',
       );
-      return abortedResult;
+      return { kind: 'terminal', result: abortedResult };
+    }
+
+    if (midRunSteerEnabled && sawFirstModelRequest && runState !== undefined) {
+      await applyNextPendingInterject({
+        history,
+        workspaceRoot,
+        threadId,
+        runState,
+        emit,
+      });
     }
 
     const modelRoundArgs: Parameters<typeof runModelRound>[0] = {
@@ -120,7 +147,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     const modelRound = await runModelRound(modelRoundArgs);
     if (!modelRound.ok) {
       settleRunAfterResult(runState, modelRound.result, signal);
-      return modelRound.result;
+      return { kind: 'terminal', result: modelRound.result };
     }
     const {
       assistantText,
@@ -145,31 +172,54 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
               store: runtimeServices.sandboxAttempts,
               structuredOutputs,
               functionCalls,
-              timeoutMs: STRUCTURED_REACT_BUNDLE_INGRESS_TIMEOUT_MS,
+              ingressPolicy:
+                runtimeServices.reactBundleStructuredOutputIngressPolicy,
               ...(signal !== undefined ? { signal } : {}),
             });
 
       if (!structuredResult.ok) {
-        return emitAndSettleTerminalFailure(
+        const result = emitAndSettleTerminalFailure(
           emit,
           'execution_failed',
           structuredResult.message,
           runState,
           signal,
         );
+        return { kind: 'terminal', result };
+      }
+
+      if (
+        midRunSteerEnabled &&
+        runState !== undefined &&
+        hasPendingInterject(runState.interject)
+      ) {
+        appendAssistantTextToHistory(
+          history,
+          describeAgentResultForTextSurface(structuredResult.result),
+          [],
+        );
+        return { kind: 'continue' };
       }
 
       settleRunAfterResult(runState, structuredResult.result, signal);
-      return structuredResult.result;
+      return { kind: 'terminal', result: structuredResult.result };
     }
 
     appendAssistantTextToHistory(history, assistantText, functionCalls);
 
     // No tool calls → natural termination
     if (functionCalls.length === 0) {
+      if (
+        midRunSteerEnabled &&
+        runState !== undefined &&
+        hasPendingInterject(runState.interject)
+      ) {
+        return { kind: 'continue' };
+      }
+
       const result: AgentResult = terminalResult;
       settleRunAfterResult(runState, result);
-      return result;
+      return { kind: 'terminal', result };
     }
 
     appendFunctionCallsToHistory(history, functionCalls);
@@ -183,6 +233,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       selection,
       signal,
       runState,
+      ...(allowedToolNames !== undefined ? { allowedToolNames } : {}),
       fileStateCache: runtimeServices.fileStateCache,
       memoryIndex: resolvedMemoryIndex,
       agentSpawnRuntime: runtimeServices,
@@ -205,26 +256,45 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     });
     if (!toolProcessing.ok) {
       settleRunAfterResult(runState, toolProcessing.result, signal);
-      return toolProcessing.result;
+      return { kind: 'terminal', result: toolProcessing.result };
     }
+    return { kind: 'continue' };
+  };
+
+  let round = 0;
+  let sawFirstModelRequest = false;
+  while (true) {
+    const outcome = await runRound(round, sawFirstModelRequest);
+    if (outcome.kind === 'terminal') {
+      return outcome.result;
+    }
+    sawFirstModelRequest = true;
+    round += 1;
+  }
+}
+
+async function applyNextPendingInterject(args: {
+  history: HistoryItem[];
+  workspaceRoot: string;
+  threadId: string;
+  runState: NonNullable<AgentInput['runState']>;
+  emit: AgentEventEmitter;
+}): Promise<void> {
+  const interject = peekPendingInterject(args.runState.interject);
+  if (interject === undefined) {
+    return;
   }
 
-  const finalRoundArgs: Parameters<typeof finalizeAfterToolLimit>[0] = {
-    history,
-    systemPrompt,
-    threadId,
-    providerWebSocketSessions: webSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions,
-    emit,
-  };
-  if (signal !== undefined) {
-    finalRoundArgs.signal = signal;
-  }
-  if (callModelImpl !== undefined) {
-    finalRoundArgs.callModelImpl = callModelImpl;
-  }
-  const finalResult = await finalizeAfterToolLimit(finalRoundArgs);
-  settleRunAfterResult(runState, finalResult, signal);
-  return finalResult;
+  await persistSingleInterjectToTranscript(
+    args.workspaceRoot,
+    args.threadId,
+    interject,
+  );
+  dropPendingInterjectFront(args.runState.interject);
+  appendInterjectToHistory(args.history, interject);
+  args.emit('interject_applied', {
+    runId: args.runState.runId,
+    count: 1,
+    receivedSeqs: [interject.receivedSeq],
+  });
 }

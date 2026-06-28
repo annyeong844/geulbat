@@ -8,17 +8,19 @@ import {
   buildChildLaunchRejected,
   isAgentChildTerminalState,
 } from '../../subagent-runtime-contracts.js';
-import { isChildRunState } from '../../runtime-contracts.js';
 import type { SubagentRunLauncher } from '../types.js';
 import { runSubagentLaunchPipeline } from './subagent-launch-pipeline.js';
 
 const agentSendInputArgsSchema = z.strictObject({
   child_run_id: z
     .string()
+    .trim()
     .min(1, 'child_run_id is required.')
+    .refine(isRunId, 'child_run_id must be a valid child run id.')
     .describe('Stable child handle returned by agent_spawn.'),
   task: z
     .string()
+    .trim()
     .min(1, 'task is required.')
     .describe('Follow-up plain-text input for the same child thread.'),
 });
@@ -44,25 +46,16 @@ export function createAgentSendInputTool(
       'Continue a completed child run on the same child thread using the existing child handle.',
     argsSchema: agentSendInputArgsSchema,
     sideEffectLevel: 'none',
+    mayMutateWorkspaceFiles: false,
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     requiresApproval: false,
     async executeParsed(args, ctx) {
-      const task = args.task.trim();
-      const childRunId = args.child_run_id.trim();
-
-      if (!task) {
-        return toolError('invalid_args', 'task is required.');
-      }
+      const task = args.task;
+      const childRunId = args.child_run_id;
       if (!ctx.threadId || !ctx.projectId || !ctx.runId || !ctx.runState) {
         return toolError(
           'execution_failed',
           'run context is required for agent_send_input',
-        );
-      }
-      if (isChildRunState(ctx.runState)) {
-        return toolError(
-          'execution_failed',
-          'agent_send_input is depth-1 only',
         );
       }
       if (!ctx.agentSpawnRuntime) {
@@ -81,20 +74,6 @@ export function createAgentSendInputTool(
       const childRecord =
         agentSpawnRuntime.childRuns.getChildRun(childRunHandleId);
       if (!childRecord) {
-        const collectedRecord =
-          agentSpawnRuntime.childRuns.getCollectedChildRun(childRunHandleId);
-        if (collectedRecord) {
-          if (collectedRecord.ownerThreadId !== ownerThreadId) {
-            return toolError(
-              'invalid_args',
-              `child run does not belong to current owner thread: ${childRunId}`,
-            );
-          }
-          return toolError(
-            'conflict',
-            `child run handle expired: ${childRunId}`,
-          );
-        }
         return toolError('invalid_args', `unknown child run: ${childRunId}`);
       }
       if (childRecord.ownerThreadId !== ownerThreadId) {

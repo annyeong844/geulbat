@@ -9,7 +9,6 @@ import { createAgentSpawnTool } from './agent-spawn.js';
 import { agentStopTool } from './agent-stop.js';
 import { createSubagentRunLauncher } from '../../agent/subagent-support.js';
 import { createDaemonContext } from '../../context.js';
-import { createChildRunRegistry } from '../../agent/runtime/child-run-registry.js';
 import { createRunState } from '../../agent/runtime/run-state.js';
 import { testProjectId } from '../../../test-support/project-id.js';
 import { testRunId } from '../../../test-support/run-id.js';
@@ -195,56 +194,44 @@ void test('agent_stop rejects unknown child handles as an outer tool failure', a
   assert.equal(stopped.output, '');
 });
 
-void test('agent_stop reports expired child handles separately from unknown ids', async () => {
+void test('agent_stop keeps terminal child handles addressable', async () => {
   const ownerThreadId = testThreadId(48);
-  const childRunId = testRunId('stop-collected-child');
-  const boundedRegistry = createChildRunRegistry({
-    retentionTtlMs: 5 * 60 * 1000,
-    maxRetainedTerminalRuns: 0,
-  });
-  const daemonContext = {
-    ...createDaemonContext(),
-    childRuns: boundedRegistry,
-  };
+  const childRunId = testRunId('stop-terminal-child');
+  const daemonContext = createDaemonContext();
 
-  boundedRegistry.registerChildRun({
+  daemonContext.childRuns.registerChildRun({
     childRunId,
     childThreadId: testThreadId(49),
-    parentRunId: testRunId('stop-collected-parent'),
+    parentRunId: testRunId('stop-terminal-parent'),
     ownerThreadId,
     subagentType: 'explorer',
   });
-
-  const originalWarn = console.warn;
-  console.warn = () => {};
-  try {
-    boundedRegistry.markChildTerminal({
-      childRunId,
-      terminalState: 'completed',
-      result: 'done',
-    });
-  } finally {
-    console.warn = originalWarn;
-  }
-  assert.equal(boundedRegistry.getChildRun(childRunId), undefined);
+  daemonContext.childRuns.markChildTerminal({
+    childRunId,
+    terminalState: 'completed',
+    result: 'done',
+  });
 
   const stopped = await agentStopTool.execute(
     {
       child_run_id: childRunId,
     },
     {
-      callId: 'call-stop-collected',
+      callId: 'call-stop-terminal',
       workspaceRoot: '/tmp/workspace',
       threadId: ownerThreadId,
-      runId: testRunId('stop-collected-top'),
+      runId: testRunId('stop-terminal-top'),
       agentSpawnRuntime: daemonContext,
     },
   );
 
-  assert.equal(stopped.ok, false);
-  assert.equal(stopped.errorCode, 'conflict');
-  assert.match(stopped.error ?? '', /child run handle expired/);
-  assert.equal(stopped.output, '');
+  assert.equal(stopped.ok, true);
+  const payload = JSON.parse(stopped.output) as {
+    childRunId: string;
+    stopState: string;
+  };
+  assert.equal(payload.childRunId, childRunId);
+  assert.equal(payload.stopState, 'already_terminal');
 });
 
 void test('agent_stop rejects child handles owned by another thread as an outer tool failure', async () => {

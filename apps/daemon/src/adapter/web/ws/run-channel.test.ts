@@ -7,6 +7,7 @@ import {
   assertRunId as assertValidRunId,
   type ProjectId,
 } from '@geulbat/protocol/ids';
+import { createRunInterjectBuffer } from '../../../daemon/sessions/active-run-interject-buffer.js';
 import { createDaemonContext } from '../../../daemon/context.js';
 import { DEFAULT_PROJECT_ID } from '../../../daemon/files/project-registry-state.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
@@ -461,6 +462,7 @@ async function withOwnedRunChannel<T>(
         workspaceRoot: '/tmp/workspace',
         ownerThreadId: threadId,
         abortController,
+        interject: createRunInterjectBuffer(),
         startedAt: new Date().toISOString(),
       });
 

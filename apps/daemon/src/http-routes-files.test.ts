@@ -11,6 +11,7 @@ import {
 
 import { DEFAULT_PROJECT_ID } from './daemon/files/project-registry-state.js';
 import { createBinaryVersionToken } from './daemon/files/version-token.js';
+import { readFileBinaryInputRefPath } from './daemon/files/binary-input-ref-store.js';
 import {
   authHeaders,
   createRouteTestDaemonContext,
@@ -246,6 +247,138 @@ void test('authenticated files/save-binary route writes a create-only binary fil
   }
 });
 
+void test('authenticated files/save-binary route saves streamed binary input references beyond the JSON body cap', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const dirName = `route-save-binary-ref-${randomUUID()}`;
+  const relativePath = `${dirName}/large.bin`;
+  const absolutePath = join(workspaceRoot, dirName, 'large.bin');
+  const payload = Buffer.alloc(300 * 1024, 0xab);
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const uploadRes = await fetch(
+          `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+          {
+            method: 'POST',
+            headers: authHeaders({
+              'Content-Type': 'application/octet-stream',
+            }),
+            body: payload,
+          },
+        );
+
+        assert.equal(uploadRes.status, 201);
+        const uploadBody = (await uploadRes.json()) as {
+          ok: boolean;
+          contentRef: string;
+          byteLength: number;
+        };
+        assert.equal(uploadBody.ok, true);
+        assert.match(uploadBody.contentRef, /^file-binary-input:/u);
+        assert.equal(uploadBody.byteLength, payload.byteLength);
+
+        const saveRes = await fetch(
+          `http://127.0.0.1:${port}/api/files/save-binary`,
+          {
+            method: 'POST',
+            headers: authHeaders({
+              'Content-Type': 'application/json',
+            }),
+            body: JSON.stringify({
+              projectId: DEFAULT_PROJECT_ID,
+              path: relativePath,
+              contentRef: uploadBody.contentRef,
+              mimeType: 'application/octet-stream',
+            }),
+          },
+        );
+
+        assert.equal(saveRes.status, 200);
+        const saveBody = (await saveRes.json()) as {
+          path: string;
+          ok: boolean;
+        };
+        assert.equal(saveBody.ok, true);
+        assert.equal(saveBody.path, relativePath);
+        assert.deepEqual(await fsReadFile(absolutePath), payload);
+      },
+      { daemonContext },
+    );
+  } finally {
+    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+  }
+});
+
+void test('authenticated files/binary-inputs rejects JSON uploads before creating an empty ref', async () => {
+  await withAuthenticatedDaemonServer(async ({ port }) => {
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+      {
+        method: 'POST',
+        headers: authHeaders({
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({ content: 'not a binary stream' }),
+      },
+    );
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), {
+      code: 'bad_request',
+      message: 'binary input upload must use a streaming content type',
+    });
+  });
+});
+
+void test('authenticated files/binary-inputs deletes uploaded binary refs', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+
+  await withAuthenticatedDaemonServer(
+    async ({ port }) => {
+      const uploadRes = await fetch(
+        `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+        {
+          method: 'POST',
+          headers: authHeaders({
+            'Content-Type': 'application/octet-stream',
+          }),
+          body: Buffer.from([0x01, 0x02]),
+        },
+      );
+      assert.equal(uploadRes.status, 201);
+      const uploadBody = (await uploadRes.json()) as { contentRef: string };
+
+      const deleteRes = await fetch(
+        `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}&contentRef=${encodeURIComponent(
+          uploadBody.contentRef,
+        )}`,
+        {
+          method: 'DELETE',
+          headers: authHeaders(),
+        },
+      );
+
+      assert.equal(deleteRes.status, 200);
+      assert.deepEqual(await deleteRes.json(), { ok: true });
+      assert.deepEqual(
+        await readFileBinaryInputRefPath({
+          workspaceRoot,
+          contentRef: uploadBody.contentRef,
+        }),
+        {
+          ok: false,
+          code: 'not_found',
+          message: 'contentRef was not found.',
+        },
+      );
+    },
+    { daemonContext },
+  );
+});
+
 void test('authenticated files/save-binary route rejects overwrite attempts with already_exists', async () => {
   const daemonContext = createRouteTestDaemonContext();
   const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
@@ -288,6 +421,90 @@ void test('authenticated files/save-binary route rejects overwrite attempts with
   } finally {
     await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
   }
+});
+
+void test('authenticated files/save-binary route deletes consumed binary refs after save failures', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const dirName = `route-save-binary-ref-failure-${randomUUID()}`;
+  const relativePath = `${dirName}/asset.bin`;
+  const absolutePath = join(workspaceRoot, dirName, 'asset.bin');
+
+  await mkdir(dirname(absolutePath), { recursive: true });
+  await fsWriteFile(absolutePath, Buffer.from([0x01]));
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const uploadRes = await fetch(
+          `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+          {
+            method: 'POST',
+            headers: authHeaders({
+              'Content-Type': 'application/octet-stream',
+            }),
+            body: Buffer.from([0x02]),
+          },
+        );
+        assert.equal(uploadRes.status, 201);
+        const uploadBody = (await uploadRes.json()) as {
+          contentRef: string;
+        };
+
+        const saveRes = await fetch(
+          `http://127.0.0.1:${port}/api/files/save-binary`,
+          {
+            method: 'POST',
+            headers: authHeaders({
+              'Content-Type': 'application/json',
+            }),
+            body: JSON.stringify({
+              projectId: DEFAULT_PROJECT_ID,
+              path: relativePath,
+              contentRef: uploadBody.contentRef,
+            }),
+          },
+        );
+
+        assert.equal(saveRes.status, 409);
+        const resolved = await readFileBinaryInputRefPath({
+          workspaceRoot,
+          contentRef: uploadBody.contentRef,
+        });
+        assert.deepEqual(resolved, {
+          ok: false,
+          code: 'not_found',
+          message: 'contentRef was not found.',
+        });
+      },
+      { daemonContext },
+    );
+  } finally {
+    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+  }
+});
+
+void test('authenticated files/save-binary route requires exactly one binary content source', async () => {
+  await withAuthenticatedDaemonServer(async ({ port }) => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/files/save-binary`, {
+      method: 'POST',
+      headers: authHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify({
+        projectId: DEFAULT_PROJECT_ID,
+        path: 'ambiguous-binary.bin',
+        contentBase64: Buffer.from([0x00]).toString('base64'),
+        contentRef: 'file-binary-input:00000000-0000-0000-0000-000000000000',
+      }),
+    });
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), {
+      code: 'bad_request',
+      message: 'exactly one of contentBase64 or contentRef is required',
+    });
+  });
 });
 
 void test('authenticated files/replace-binary route overwrites an existing binary file', async () => {
@@ -337,6 +554,73 @@ void test('authenticated files/replace-binary route overwrites an existing binar
           await fsReadFile(absolutePath),
           Buffer.from([0x02, 0x03, 0x04]),
         );
+      },
+      { daemonContext },
+    );
+  } finally {
+    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+  }
+});
+
+void test('authenticated files/replace-binary route saves streamed binary input references', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const dirName = `route-replace-binary-ref-${randomUUID()}`;
+  const relativePath = `${dirName}/large.bin`;
+  const absolutePath = join(workspaceRoot, dirName, 'large.bin');
+  const initial = Buffer.from([0x10, 0x11]);
+  const payload = Buffer.alloc(300 * 1024, 0xcd);
+
+  await mkdir(dirname(absolutePath), { recursive: true });
+  await fsWriteFile(absolutePath, initial);
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const uploadRes = await fetch(
+          `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+          {
+            method: 'POST',
+            headers: authHeaders({
+              'Content-Type': 'application/octet-stream',
+            }),
+            body: payload,
+          },
+        );
+
+        assert.equal(uploadRes.status, 201);
+        const uploadBody = (await uploadRes.json()) as {
+          contentRef: string;
+          byteLength: number;
+        };
+        assert.match(uploadBody.contentRef, /^file-binary-input:/u);
+        assert.equal(uploadBody.byteLength, payload.byteLength);
+
+        const replaceRes = await fetch(
+          `http://127.0.0.1:${port}/api/files/replace-binary`,
+          {
+            method: 'POST',
+            headers: authHeaders({
+              'Content-Type': 'application/json',
+            }),
+            body: JSON.stringify({
+              projectId: DEFAULT_PROJECT_ID,
+              path: relativePath,
+              contentRef: uploadBody.contentRef,
+              versionToken: createBinaryVersionToken(initial),
+              mimeType: 'application/octet-stream',
+            }),
+          },
+        );
+
+        assert.equal(replaceRes.status, 200);
+        const replaceBody = (await replaceRes.json()) as {
+          path: string;
+          ok: boolean;
+        };
+        assert.equal(replaceBody.ok, true);
+        assert.equal(replaceBody.path, relativePath);
+        assert.deepEqual(await fsReadFile(absolutePath), payload);
       },
       { daemonContext },
     );

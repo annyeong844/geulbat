@@ -4,7 +4,7 @@ import type { CancelRequest } from '@geulbat/protocol/cancel';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
 import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
-import type { RunRequest } from '@geulbat/protocol/run-contract';
+import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 import type {
   ThreadDetailResponse,
   ThreadMessage,
@@ -70,12 +70,26 @@ function createRunSessionArgs(
     openFile: async () => {},
     appendOptimisticUserMessage: () => {},
     setSelectedThreadId: () => {},
+    prepareStartRequest: async (request) => ({
+      projectId: request.projectId,
+      ...(request.displayPrompt !== undefined
+        ? { displayPrompt: request.displayPrompt }
+        : {}),
+      ...(request.threadId !== undefined ? { threadId: request.threadId } : {}),
+      ...(request.currentFile !== undefined
+        ? { currentFile: request.currentFile }
+        : {}),
+      ...(request.permissionMode !== undefined
+        ? { permissionMode: request.permissionMode }
+        : {}),
+      promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
+    }),
     ...overrides,
   };
 }
 
 function createRunSessionClientHarness(overrides?: {
-  start?: (request: RunRequest) => Promise<string>;
+  start?: (request: RunStartRequest) => Promise<string>;
   approve?: (request: ApprovalRequest) => Promise<string>;
   cancel?: (request: CancelRequest) => Promise<string>;
   connect?: () => Promise<unknown>;
@@ -313,7 +327,7 @@ void test('useRunSession ignores stale persisted snapshots without settling the 
 
 void test('useRunSession starts prompts through a stale callback with the latest selection context', async () => {
   const startedRequests: Array<{
-    prompt: string;
+    promptRef: string;
     permissionMode?: string;
     currentFile?: string;
     threadId?: string;
@@ -321,8 +335,13 @@ void test('useRunSession starts prompts through a stale callback with the latest
   const optimisticPrompts: string[] = [];
   const harness = createRunSessionClientHarness({
     start: async (request) => {
+      assert.equal('prompt' in request, false);
+      assert.equal('promptRef' in request, true);
+      if (!('promptRef' in request)) {
+        throw new Error('expected prepared prompt ref request');
+      }
       startedRequests.push({
-        prompt: request.prompt,
+        promptRef: request.promptRef,
         ...(request.permissionMode !== undefined
           ? { permissionMode: request.permissionMode }
           : {}),
@@ -368,7 +387,7 @@ void test('useRunSession starts prompts through a stale callback with the latest
 
   assert.deepEqual(startedRequests, [
     {
-      prompt: 'Write the next scene',
+      promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
       permissionMode: 'full_access',
       currentFile: 'chapter-2.md',
       threadId: THREAD_ID_VALUE,
@@ -706,6 +725,7 @@ void test('useRunSession applies persisted thread snapshots immediately and runs
         payload: createPersistedThreadDetail({
           messages: [
             {
+              entryId: 'entry-still-visible',
               role: 'assistant',
               content: 'Still visible',
               timestamp: new Date().toISOString(),
@@ -794,6 +814,7 @@ void test('useRunSession keeps artifact-only output visible until run settle eff
         payload: createPersistedThreadDetail({
           messages: [
             {
+              entryId: 'entry-artifact-only',
               role: 'assistant',
               content: '',
               timestamp: new Date().toISOString(),

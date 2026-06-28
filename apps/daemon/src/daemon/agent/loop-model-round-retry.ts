@@ -7,35 +7,31 @@ import {
 import type { StreamErrorCategory } from '../llm/provider/transport/stream-error.js';
 import { getErrorCode } from '../utils/error.js';
 import { calculateRetryDelayMs } from '../utils/retry.js';
+import type { ProviderModelRoundRetryPolicy } from '../llm/provider/provider-options.js';
 import type { AgentResult } from './agent-result.js';
 import type { AgentEventEmitter } from './events.js';
 import { emitTerminalFailure } from './loop-shared.js';
 
 const logger = createLogger('agent/model-round');
-const MODEL_ROUND_RETRY_MAX_DELAY_MS = 4_000;
-const MODEL_ROUND_RETRY_JITTER_RATIO = 0.2;
-
-interface ModelRoundRetryPolicy {
-  maxRetries: number;
-  baseDelayMs: number;
-}
 
 export function decideModelRoundRetry(args: {
   category: StreamErrorCategory;
   attemptIndex: number;
   sawSemanticChunk: boolean;
+  policy: ProviderModelRoundRetryPolicy;
 }): { delayMs: number } | null {
   if (args.sawSemanticChunk) {
     return null;
   }
-  const policy = getModelRoundRetryPolicy(args.category);
-  if (!policy || args.attemptIndex >= policy.maxRetries) {
+  const rule = getModelRoundRetryRule(args.policy, args.category);
+  if (!rule || args.attemptIndex >= rule.maxRetries) {
     return null;
   }
 
   const delayMs = defaultModelRoundRetryDelayMs({
     category: args.category,
     attemptIndex: args.attemptIndex,
+    policy: args.policy,
   });
   logger.warn('retrying model round after retryable stream error', {
     attemptIndex: args.attemptIndex,
@@ -66,15 +62,17 @@ export function sleepForModelRoundRetry(delayMs: number): Promise<void> {
   });
 }
 
-function getModelRoundRetryPolicy(
+function getModelRoundRetryRule(
+  policy: ProviderModelRoundRetryPolicy,
   category: StreamErrorCategory,
-): ModelRoundRetryPolicy | null {
+): { maxRetries: number } | null {
   switch (category) {
     case 'llm_connection_lost':
-      return { maxRetries: 2, baseDelayMs: 1_000 };
+      return policy.llmConnectionLost;
     case 'llm_overloaded':
+      return policy.llmOverloaded;
     case 'llm_rate_limited':
-      return { maxRetries: 3, baseDelayMs: 1_000 };
+      return policy.llmRateLimited;
     case 'llm_idle_timeout':
     case 'llm_auth_expired':
     case 'llm_context_overflow':
@@ -90,16 +88,18 @@ function getModelRoundRetryPolicy(
 function defaultModelRoundRetryDelayMs(args: {
   category: StreamErrorCategory;
   attemptIndex: number;
+  policy: ProviderModelRoundRetryPolicy;
 }): number {
-  const policy = getModelRoundRetryPolicy(args.category);
-  if (!policy) {
+  const rule = getModelRoundRetryRule(args.policy, args.category);
+  if (!rule) {
     return 0;
   }
   return calculateRetryDelayMs({
     attemptIndex: args.attemptIndex,
-    baseDelayMs: policy.baseDelayMs,
-    maxDelayMs: MODEL_ROUND_RETRY_MAX_DELAY_MS,
-    jitterRatio: MODEL_ROUND_RETRY_JITTER_RATIO,
+    baseDelayMs: args.policy.delay.baseDelayMs,
+    multiplier: args.policy.delay.multiplier,
+    maxDelayMs: args.policy.delay.maxDelayMs,
+    jitterRatio: args.policy.delay.jitterRatio,
   });
 }
 

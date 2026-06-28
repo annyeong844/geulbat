@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { RunId } from '@geulbat/protocol/ids';
+import { toApprovalClass } from '@geulbat/protocol/run-approval';
 import WebSocket from 'ws';
 
 import { rejectUpgrade, sendMessage } from './run-channel-socket.js';
@@ -15,6 +16,7 @@ import {
   createTestSocket,
   readLastSentMessage,
 } from './run-channel-test-support.js';
+import { createRunInterjectBuffer } from '../../../daemon/sessions/active-run-interject-buffer.js';
 import { createDaemonContext } from '../../../daemon/context.js';
 import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
 import { testRunId } from '../../../test-support/run-id.js';
@@ -194,6 +196,7 @@ void test('cleanupSocketState clears subscriptions and aborts socket-owned runs'
     ...makeRunWorkspaceContext({ threadId }),
     ownerThreadId: threadId,
     abortController,
+    interject: createRunInterjectBuffer(),
     startedAt: '2026-03-30T00:00:00.000Z',
   });
   assert.equal(startResult.ok, true);
@@ -264,6 +267,7 @@ void test('cleanupSocketState aborts socket-owned runs without cancelling backgr
       ...makeRunWorkspaceContext({ threadId: ownerThreadId }),
       ownerThreadId,
       abortController: parentAbortController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-30T00:00:00.000Z',
     }),
     { ok: true },
@@ -274,6 +278,7 @@ void test('cleanupSocketState aborts socket-owned runs without cancelling backgr
       ...makeRunWorkspaceContext({ threadId: childThreadId }),
       ownerThreadId,
       abortController: childAbortController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-30T00:00:01.000Z',
       parentRunId,
     }),
@@ -311,6 +316,7 @@ void test('cleanupSocketState clears local runtime stores', () => {
     ...makeRunWorkspaceContext({ threadId }),
     ownerThreadId: threadId,
     abortController,
+    interject: createRunInterjectBuffer(),
     startedAt: '2026-03-30T00:00:00.000Z',
   });
   assert.equal(startResult.ok, true);
@@ -329,6 +335,41 @@ void test('cleanupSocketState clears local runtime stores', () => {
     daemonContext.activeRuns.finishRun(threadId, runId);
     cleanupSocketState(socket, daemonContext);
   }
+});
+
+void test('cleanupSocketState clears approval session runtime state', async () => {
+  const socket = createTestSocket();
+  const daemonContext = createDaemonContext();
+  const state = getSocketState(socket);
+  const threadId = testThreadId(125);
+  const wait = daemonContext.approvalGate.waitForApproval(
+    'call-socket-cleanup',
+    'run-socket-approval-cleanup',
+    threadId,
+    {
+      runId: 'run-socket-approval-cleanup',
+      threadId,
+      sessionId: state.approvalSessionId,
+      approvalClass: toApprovalClass('write_file'),
+      sideEffectLevel: 'write',
+      permissionMode: 'basic',
+    },
+    new AbortController().signal,
+  );
+
+  cleanupSocketState(socket, daemonContext);
+
+  assert.equal(await wait, 'aborted');
+  assert.equal(
+    daemonContext.approvalGate.resolveApproval(
+      'call-socket-cleanup',
+      'run-socket-approval-cleanup',
+      threadId,
+      'approved',
+    ),
+    'not_found',
+  );
+  cleanupSocketState(socket, daemonContext);
 });
 
 void test('rejectUpgrade writes an HTTP response and destroys the socket', () => {

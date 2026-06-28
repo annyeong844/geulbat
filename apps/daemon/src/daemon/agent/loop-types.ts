@@ -1,5 +1,4 @@
-import type { PermissionMode } from '@geulbat/protocol/run-approval';
-import type { ThreadId } from '@geulbat/protocol/ids';
+import type { PermissionMode, ThreadId } from './contract.js';
 import type { AgentEvent } from './events.js';
 import type { RunState } from './runtime/run-state.js';
 import type { CallModelInput, LLMChunk } from '../llm/index.js';

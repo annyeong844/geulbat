@@ -3,10 +3,8 @@ import type { ToolRunState } from '../runtime-contracts.js';
 import { countActiveBackgroundChildren } from './runtime/run-state.js';
 import type { SubagentLaunchReservation } from '../subagent-runtime-contracts.js';
 
-export const DEFAULT_MAX_CONCURRENT_BACKGROUND_CHILDREN = 8;
 export const SUBAGENT_BACKGROUND_CAPACITY_ENV =
   'GEULBAT_SUBAGENT_BACKGROUND_CAPACITY';
-const MAX_CONFIGURED_SUBAGENT_BACKGROUND_CAPACITY = 64;
 
 type SubagentConcurrencyEnv = Readonly<
   Partial<Record<typeof SUBAGENT_BACKGROUND_CAPACITY_ENV, string | undefined>>
@@ -70,6 +68,9 @@ export function resolveSubagentConcurrencyPolicyFromEnv(
   }
 
   const value = raw.trim();
+  if (value === 'unlimited') {
+    return { maxConcurrentChildren: null };
+  }
   if (!UNSIGNED_BASE_10_INTEGER_PATTERN.test(value)) {
     throwInvalidSubagentBackgroundCapacity(value);
   }
@@ -77,8 +78,7 @@ export function resolveSubagentConcurrencyPolicyFromEnv(
   const maxConcurrentChildren = Number(value);
   if (
     !Number.isSafeInteger(maxConcurrentChildren) ||
-    maxConcurrentChildren < 1 ||
-    maxConcurrentChildren > MAX_CONFIGURED_SUBAGENT_BACKGROUND_CAPACITY
+    maxConcurrentChildren < 1
   ) {
     throwInvalidSubagentBackgroundCapacity(value);
   }
@@ -102,11 +102,11 @@ function resolveMaxConcurrentChildren(
   const configuredMax =
     policy && 'maxConcurrentChildren' in policy
       ? policy.maxConcurrentChildren
-      : DEFAULT_MAX_CONCURRENT_BACKGROUND_CHILDREN;
+      : null;
   if (configuredMax === null) {
     return null;
   }
-  if (!Number.isInteger(configuredMax) || configuredMax < 1) {
+  if (!Number.isSafeInteger(configuredMax) || configuredMax < 1) {
     throw new Error(
       `invalid subagent maxConcurrentChildren: ${String(configuredMax)}`,
     );

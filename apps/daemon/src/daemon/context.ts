@@ -48,17 +48,22 @@ import {
   type ProviderRequestOptions,
 } from './llm/provider/provider-options.js';
 import {
+  resolveReactBundleStructuredOutputIngressPolicyFromEnv,
+  type ReactBundleStructuredOutputIngressPolicy,
+} from './agent/react-bundle-structured-output-ingress-policy.js';
+import {
   createPtcFixedEpochProbeRuntime,
   type CreatePtcFixedEpochProbeRuntimeOptions,
-} from './ptc/fixed-probe-runtime.js';
+} from './ptc/runtime/probes/fixed-probe-runtime.js';
 import {
   createPtcExecuteCodeRuntime,
+  resolvePtcExecuteCodeCallbackTransportPolicyFromEnv,
+  resolvePtcExecuteCodeCellRuntimeConfigFromEnv,
   type CreatePtcExecuteCodeRuntimeOptions,
-} from './ptc/execute-code-runtime.js';
-import {
-  createPtcBrowserNavigateRuntime,
-  type CreatePtcBrowserNavigateRuntimeOptions,
-} from './ptc/browser-navigate-runtime.js';
+} from './ptc/runtime/execute-code/execute-code-runtime.js';
+import { createPtcBrowserPageLoadEvidenceRuntime } from './ptc/runtime/browser/browser-page-load-evidence-runtime.js';
+import { createPtcBrowserTextEvidenceRuntime } from './ptc/runtime/browser/browser-text-evidence-runtime.js';
+import { createPtcBrowserNavigateRuntime } from './ptc/runtime/browser/browser-navigate-runtime.js';
 import {
   createActiveRunStore,
   type ActiveRunStore,
@@ -79,19 +84,57 @@ import {
   type SubagentConcurrencyPolicy,
   type SubagentAdmissionController,
 } from './agent/subagent-concurrency.js';
+import {
+  createResourceBudgetProvider,
+  type ResourceBudgetProvider,
+} from './agent/resource-budget-provider.js';
+import {
+  createAgentWavePlanner,
+  type AgentWavePlanner,
+} from './agent/agent-wave-planner.js';
+import {
+  createAgentWorkflowRunner,
+  type AgentWorkflowRunner,
+} from './agent/agent-workflow-runner.js';
 import { createSubagentRunLauncher } from './agent/subagent-support.js';
 import type { SubagentRunLauncher } from './daemon-runtime-contract.js';
+
+type PtcRuntimeRootResolver = (workspaceRoot: string) => string;
+
+type PtcBrowserRuntimeOptions = NonNullable<
+  Parameters<typeof createPtcBrowserNavigateRuntime>[0]
+>;
+
+const resolvePtcFixedProbeRuntimeRoot = createPtcRuntimeRootResolver(
+  'fixed-probe-runtime',
+);
+const resolvePtcExecuteCodeRuntimeRoot = createPtcRuntimeRootResolver(
+  'execute-code-runtime',
+);
+const resolvePtcBrowserNavigateRuntimeRoot = createPtcRuntimeRootResolver(
+  'browser-navigate-runtime',
+);
+const resolvePtcBrowserPageLoadEvidenceRuntimeRoot =
+  createPtcRuntimeRootResolver('browser-page-load-evidence-runtime');
+const resolvePtcBrowserTextEvidenceRuntimeRoot = createPtcRuntimeRootResolver(
+  'browser-text-evidence-runtime',
+);
 
 interface DaemonContextOptions {
   subagentConcurrencyPolicy?: SubagentConcurrencyPolicy | undefined;
   providerRequestOptions?: ProviderRequestOptions | undefined;
+  reactBundleStructuredOutputIngressPolicy?:
+    | ReactBundleStructuredOutputIngressPolicy
+    | undefined;
   ptcFixedProbeRuntimeOptions?:
     | CreatePtcFixedEpochProbeRuntimeOptions
     | undefined;
   ptcExecuteCodeRuntimeOptions?: CreatePtcExecuteCodeRuntimeOptions | undefined;
-  ptcBrowserNavigateRuntimeOptions?:
-    | CreatePtcBrowserNavigateRuntimeOptions
+  ptcBrowserPageLoadEvidenceRuntimeOptions?:
+    | PtcBrowserRuntimeOptions
     | undefined;
+  ptcBrowserTextEvidenceRuntimeOptions?: PtcBrowserRuntimeOptions | undefined;
+  ptcBrowserNavigateRuntimeOptions?: PtcBrowserRuntimeOptions | undefined;
 }
 
 export interface DaemonContext {
@@ -105,10 +148,20 @@ export interface DaemonContext {
   providerAuthCallbackServer: ProviderAuthCallbackServerController;
   providerAuthRuntime: ProviderAuthRuntimeStore;
   providerRequestOptions: ProviderRequestOptions;
+  reactBundleStructuredOutputIngressPolicy: ReactBundleStructuredOutputIngressPolicy;
   projectRegistry: ProjectRegistryStore;
   projectStore: ProjectStore;
+  agentWorkflowRunner: AgentWorkflowRunner;
+  agentWavePlanner: AgentWavePlanner;
   memoryIndex: MemoryIndexStore;
   providerWebSocketSessions: ResponsesWebSocketSessionStore;
+  resourceBudgetProvider: ResourceBudgetProvider;
+  ptcBrowserPageLoadEvidence: ReturnType<
+    typeof createPtcBrowserPageLoadEvidenceRuntime
+  >;
+  ptcBrowserTextEvidence: ReturnType<
+    typeof createPtcBrowserTextEvidenceRuntime
+  >;
   ptcBrowserNavigate: ReturnType<typeof createPtcBrowserNavigateRuntime>;
   ptcExecuteCode: ReturnType<typeof createPtcExecuteCodeRuntime>;
   ptcFixedProbe: ReturnType<typeof createPtcFixedEpochProbeRuntime>;
@@ -132,6 +185,18 @@ export function createDaemonContext(
   const providerAuthRuntime = createProviderAuthRuntimeStore();
   const providerRequestOptions =
     options.providerRequestOptions ?? resolveProviderRequestOptions();
+  const reactBundleStructuredOutputIngressPolicy =
+    options.reactBundleStructuredOutputIngressPolicy ??
+    resolveReactBundleStructuredOutputIngressPolicyFromEnv();
+  const ptcExecuteCodeRuntimeOptions =
+    options.ptcExecuteCodeRuntimeOptions ?? {};
+  const ptcFixedProbeRuntimeOptions = options.ptcFixedProbeRuntimeOptions ?? {};
+  const ptcExecuteCodeCellRuntimeConfig =
+    hasExplicitPtcExecuteCodeCellRuntimeConfig(options)
+      ? ptcExecuteCodeRuntimeOptions.ptcCell
+      : resolvePtcExecuteCodeCellRuntimeConfigFromEnv();
+  const agentWavePlanner = createAgentWavePlanner();
+  const resourceBudgetProvider = createResourceBudgetProvider();
   return {
     activeRuns: createActiveRunStore(),
     approvalGrants,
@@ -146,10 +211,30 @@ export function createDaemonContext(
     }),
     providerAuthRuntime,
     providerRequestOptions,
+    reactBundleStructuredOutputIngressPolicy,
     projectRegistry,
     projectStore: createProjectStore({ projectRegistry }),
+    agentWorkflowRunner: createAgentWorkflowRunner({
+      agentWavePlanner,
+      resourceBudgetProvider,
+    }),
+    agentWavePlanner,
     memoryIndex: createMemoryIndexStore(),
     providerWebSocketSessions: createResponsesWebSocketSessionStore(),
+    resourceBudgetProvider,
+    ptcBrowserPageLoadEvidence: createPtcBrowserPageLoadEvidenceRuntime({
+      ...(options.ptcBrowserPageLoadEvidenceRuntimeOptions ?? {}),
+      runtimeRootForWorkspace:
+        options.ptcBrowserPageLoadEvidenceRuntimeOptions
+          ?.runtimeRootForWorkspace ??
+        resolvePtcBrowserPageLoadEvidenceRuntimeRoot,
+    }),
+    ptcBrowserTextEvidence: createPtcBrowserTextEvidenceRuntime({
+      ...(options.ptcBrowserTextEvidenceRuntimeOptions ?? {}),
+      runtimeRootForWorkspace:
+        options.ptcBrowserTextEvidenceRuntimeOptions?.runtimeRootForWorkspace ??
+        resolvePtcBrowserTextEvidenceRuntimeRoot,
+    }),
     ptcBrowserNavigate: createPtcBrowserNavigateRuntime({
       ...(options.ptcBrowserNavigateRuntimeOptions ?? {}),
       runtimeRootForWorkspace:
@@ -157,15 +242,18 @@ export function createDaemonContext(
         resolvePtcBrowserNavigateRuntimeRoot,
     }),
     ptcExecuteCode: createPtcExecuteCodeRuntime({
-      ...(options.ptcExecuteCodeRuntimeOptions ?? {}),
+      ...ptcExecuteCodeRuntimeOptions,
+      ...(ptcExecuteCodeCellRuntimeConfig === undefined
+        ? {}
+        : { ptcCell: ptcExecuteCodeCellRuntimeConfig }),
       runtimeRootForWorkspace:
-        options.ptcExecuteCodeRuntimeOptions?.runtimeRootForWorkspace ??
+        ptcExecuteCodeRuntimeOptions.runtimeRootForWorkspace ??
         resolvePtcExecuteCodeRuntimeRoot,
     }),
     ptcFixedProbe: createPtcFixedEpochProbeRuntime({
-      ...(options.ptcFixedProbeRuntimeOptions ?? {}),
+      ...ptcFixedProbeRuntimeOptions,
       runtimeRootForWorkspace:
-        options.ptcFixedProbeRuntimeOptions?.runtimeRootForWorkspace ??
+        ptcFixedProbeRuntimeOptions.runtimeRootForWorkspace ??
         resolvePtcFixedProbeRuntimeRoot,
     }),
     sandboxAttempts: createSandboxAttemptStore(),
@@ -179,25 +267,19 @@ export function createDaemonContext(
   };
 }
 
-function resolvePtcFixedProbeRuntimeRoot(workspaceRoot: string): string {
-  return joinWorkspaceGeulbatPath(workspaceRoot, 'ptc', 'fixed-probe-runtime');
-}
-
-function resolvePtcExecuteCodeRuntimeRoot(workspaceRoot: string): string {
-  return joinWorkspaceGeulbatPath(workspaceRoot, 'ptc', 'execute-code-runtime');
-}
-
-function resolvePtcBrowserNavigateRuntimeRoot(workspaceRoot: string): string {
-  return joinWorkspaceGeulbatPath(
-    workspaceRoot,
-    'ptc',
-    'browser-navigate-runtime',
-  );
+function createPtcRuntimeRootResolver(
+  runtimeDirectoryName: string,
+): PtcRuntimeRootResolver {
+  return (workspaceRoot) =>
+    joinWorkspaceGeulbatPath(workspaceRoot, 'ptc', runtimeDirectoryName);
 }
 
 export function validateDaemonRuntimeKnobsFromEnv(): void {
   resolveSubagentConcurrencyPolicyFromEnv();
   resolveProviderRequestOptions();
+  resolveReactBundleStructuredOutputIngressPolicyFromEnv();
+  resolvePtcExecuteCodeCellRuntimeConfigFromEnv();
+  resolvePtcExecuteCodeCallbackTransportPolicyFromEnv();
 }
 
 function hasExplicitSubagentConcurrencyPolicy(
@@ -206,5 +288,17 @@ function hasExplicitSubagentConcurrencyPolicy(
   return Object.prototype.hasOwnProperty.call(
     options,
     'subagentConcurrencyPolicy',
+  );
+}
+
+function hasExplicitPtcExecuteCodeCellRuntimeConfig(
+  options: DaemonContextOptions,
+): boolean {
+  return (
+    options.ptcExecuteCodeRuntimeOptions !== undefined &&
+    Object.prototype.hasOwnProperty.call(
+      options.ptcExecuteCodeRuntimeOptions,
+      'ptcCell',
+    )
   );
 }

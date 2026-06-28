@@ -1,4 +1,4 @@
-import type { ErrorCode } from '@geulbat/protocol/errors';
+import type { ErrorCode } from '../contract.js';
 import { errorCodeToStatus } from '../../error-codes.js';
 
 import { deriveProviderAccountId } from './account-id.js';

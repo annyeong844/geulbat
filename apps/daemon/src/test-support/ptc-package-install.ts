@@ -1,24 +1,25 @@
-import { normalizePtcPackageCacheIdentity } from '../daemon/ptc/lab-package-cache.js';
+import { normalizePtcPackageCacheIdentity } from '../daemon/ptc/lab/packages/lab-package-cache.js';
 import {
   PTC_LAB_LIFECYCLE_SCRIPTS_DISABLED_POLICY_ID,
   PTC_LAB_NETWORK_INSTALL_DISABLED_POLICY_ID,
   PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_PACKAGE_CACHE_MOUNT_POLICY_ID,
-} from '../daemon/ptc/lab-package-cache-contract.js';
+} from '../daemon/ptc/lab/packages/lab-package-cache-contract.js';
 import {
   PTC_LAB_OPEN_EGRESS_LOCAL_POLICY_ID,
   createPtcLabOpenEgressLocalPolicy,
-} from '../daemon/ptc/lab-network-policy.js';
+} from '../daemon/ptc/lab/network/lab-network-policy.js';
 import {
   admitPtcExecutionProfile,
   createPtcLabLocalDockerPolicyProjection,
   type PtcLabAdmittedProfile,
   type PtcLabPolicyProjection,
-} from '../daemon/ptc/lab-profile.js';
+} from '../daemon/ptc/lab/profile/lab-profile.js';
+import type { PtcLabPolicyId } from '../daemon/ptc/lab/profile/lab-profile-contract.js';
 import type {
   PtcLabCacheOnlyPackageInstallSessionHandle,
   PtcLabNetworkPackageInstallSessionHandle,
-} from '../daemon/ptc/lab-package-install-contract.js';
+} from '../daemon/ptc/lab/packages/lab-package-install-contract.js';
 import { PTC_TEST_PRIVATE_GEULBAT_SECRET_PATH } from './ptc-private-path.js';
 
 export const PTC_PACKAGE_INSTALL_TEST_CACHE_TELEMETRY_POLICY_ID =
@@ -138,7 +139,7 @@ export function createNetworkPackageInstallLab(args?: {
 }
 
 export function createAdmittedNpmLabPolicy(args: {
-  policyId: string;
+  policyId: PtcLabPolicyId;
   telemetryPolicyId: string;
   network: PtcLabPolicyProjection['network'];
   lifecyclePolicy?: PtcLabPolicyProjection['packageManager']['lifecycleScripts'];

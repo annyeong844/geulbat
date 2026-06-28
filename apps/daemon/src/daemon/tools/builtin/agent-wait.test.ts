@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AGENT_WAIT_APPROVAL_BLOCKED_REASON } from '@geulbat/protocol/run-events';
 
+import { waitForAgentChildren } from '../agent-child-wait.js';
 import { agentWaitTool } from './agent-wait.js';
 import { createDaemonContext } from '../../context.js';
 import { createChildRunRegistry } from '../../agent/runtime/child-run-registry.js';
@@ -65,6 +66,7 @@ void test('agent_wait returns completed children immediately', async () => {
   ]);
   assert.deepEqual(payload.pending, []);
   assert.deepEqual(payload.blocked, []);
+  assert.equal(daemonContext.childRuns.getChildRun(childRunId), undefined);
 });
 
 void test('agent_wait wait_mode any returns once one child becomes terminal', async () => {
@@ -127,6 +129,83 @@ void test('agent_wait wait_mode any returns once one child becomes terminal', as
   assert.deepEqual(payload.blocked, [
     {
       childRunId: secondChildRunId,
+      blockedReason: AGENT_WAIT_APPROVAL_BLOCKED_REASON,
+    },
+  ]);
+  assert.equal(daemonContext.childRuns.getChildRun(firstChildRunId), undefined);
+  assert.equal(
+    daemonContext.childRuns.getChildRun(secondChildRunId)?.status,
+    'approval_pending',
+  );
+});
+
+void test('agent_wait wait_mode any returns blocked children when no listed child is pending', async () => {
+  const { daemonContext, executionContext } = createWaitContext();
+  const childRunId = testRunId('child-any-blocked');
+  daemonContext.childRuns.registerChildRun({
+    childRunId,
+    childThreadId: testThreadId(8),
+    parentRunId: testRunId('parent-run'),
+    ownerThreadId: executionContext.threadId,
+    subagentType: 'worker',
+  });
+  daemonContext.childRuns.markChildApprovalPending(childRunId);
+
+  const result = await agentWaitTool.execute(
+    {
+      child_run_ids: [childRunId],
+      wait_mode: 'any',
+    },
+    executionContext,
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    completed: unknown[];
+    pending: string[];
+    blocked: Array<{ childRunId: string; blockedReason: string }>;
+  };
+  assert.deepEqual(payload.completed, []);
+  assert.deepEqual(payload.pending, []);
+  assert.deepEqual(payload.blocked, [
+    {
+      childRunId,
+      blockedReason: AGENT_WAIT_APPROVAL_BLOCKED_REASON,
+    },
+  ]);
+});
+
+void test('agent_wait wait_mode all returns blocked children when no listed child is pending', async () => {
+  const { daemonContext, executionContext } = createWaitContext();
+  const childRunId = testRunId('child-blocked');
+  daemonContext.childRuns.registerChildRun({
+    childRunId,
+    childThreadId: testThreadId(7),
+    parentRunId: testRunId('parent-run'),
+    ownerThreadId: executionContext.threadId,
+    subagentType: 'worker',
+  });
+  daemonContext.childRuns.markChildApprovalPending(childRunId);
+
+  const result = await agentWaitTool.execute(
+    {
+      child_run_ids: [childRunId],
+      wait_mode: 'all',
+    },
+    executionContext,
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    completed: unknown[];
+    pending: string[];
+    blocked: Array<{ childRunId: string; blockedReason: string }>;
+  };
+  assert.deepEqual(payload.completed, []);
+  assert.deepEqual(payload.pending, []);
+  assert.deepEqual(payload.blocked, [
+    {
+      childRunId,
       blockedReason: AGENT_WAIT_APPROVAL_BLOCKED_REASON,
     },
   ]);
@@ -206,6 +285,42 @@ void test('agent_wait wait_mode all blocks until every child is terminal', async
       ok: false,
       reason: 'user_interrupt',
       result: 'child two cancelled',
+    },
+  ]);
+});
+
+void test('waitForAgentChildren exposes the same wait owner without a tool wrapper', async () => {
+  const registry = createChildRunRegistry();
+  const ownerThreadId = testThreadId(1);
+  const childRunId = testRunId('child-workflow-wait');
+  registry.registerChildRun({
+    childRunId,
+    childThreadId: testThreadId(8),
+    parentRunId: testRunId('parent-run'),
+    ownerThreadId,
+    subagentType: 'explorer',
+  });
+
+  const waiting = waitForAgentChildren({
+    registry,
+    ownerThreadId,
+    childRunIds: [childRunId],
+    waitMode: 'all',
+  });
+  registry.markChildTerminal({
+    childRunId,
+    terminalState: 'completed',
+    result: 'workflow child complete',
+  });
+
+  const outcome = await waiting;
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(outcome.ok ? outcome.result.completed : [], [
+    {
+      childRunId,
+      terminalState: 'completed',
+      ok: true,
+      result: 'workflow child complete',
     },
   ]);
 });
@@ -437,57 +552,49 @@ void test('agent_wait reports internal revision wait failures without reclassify
   }
 });
 
-void test('agent_wait(all) over a fan-out larger than the retention budget returns every result (AC-1b)', async () => {
+void test('agent_wait(all) over a broad fan-out returns every result', async () => {
   const { daemonContext, executionContext } = createWaitContext();
-  // Budget of 2 with a 3-child fan-out: without the wait lease, the oldest
-  // terminal record is evicted mid-wait and the join fails with unknown child run.
-  const boundedRegistry = createChildRunRegistry({
-    maxRetainedTerminalRuns: 2,
-    retentionTtlMs: 5 * 60 * 1000,
-  });
-  const ctx = {
-    ...executionContext,
-    agentSpawnRuntime: { ...daemonContext, childRuns: boundedRegistry },
-  };
-  const ids = [testRunId('fan-a'), testRunId('fan-b'), testRunId('fan-c')];
+  const ids = Array.from({ length: 20 }, (_, index) =>
+    testRunId(`fan-${index}`),
+  );
   ids.forEach((childRunId, index) => {
-    boundedRegistry.registerChildRun({
+    daemonContext.childRuns.registerChildRun({
       childRunId,
       childThreadId: testThreadId(10 + index),
       parentRunId: testRunId('parent-run'),
-      ownerThreadId: ctx.threadId,
+      ownerThreadId: executionContext.threadId,
       subagentType: 'worker',
     });
   });
 
-  const originalWarn = console.warn;
-  console.warn = () => {};
-  try {
-    const waiting = agentWaitTool.execute({ child_run_ids: ids }, ctx);
-    // Let the wait acquire its lease and take its first poll while children run.
-    await delay(5);
-    for (const childRunId of ids) {
-      boundedRegistry.markChildTerminal({
-        childRunId,
-        terminalState: 'completed',
-        result: `${childRunId}-done`,
-      });
-      await delay(1);
-    }
-
-    const result = await waiting;
-    assert.equal(result.ok, true);
-    const payload = JSON.parse(result.output) as {
-      completed: Array<{ childRunId: string }>;
-      pending: string[];
-    };
-    assert.equal(payload.completed.length, 3);
-    assert.deepEqual(
-      payload.completed.map((entry) => entry.childRunId).sort(),
-      [...ids].sort(),
-    );
-    assert.deepEqual(payload.pending, []);
-  } finally {
-    console.warn = originalWarn;
+  const waiting = agentWaitTool.execute(
+    { child_run_ids: ids },
+    executionContext,
+  );
+  await delay(5);
+  for (const childRunId of ids) {
+    daemonContext.childRuns.markChildTerminal({
+      childRunId,
+      terminalState: 'completed',
+      result: `${childRunId}-done`,
+    });
+    await delay(1);
   }
+
+  const result = await waiting;
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    completed: Array<{ childRunId: string }>;
+    pending: string[];
+  };
+  assert.equal(payload.completed.length, ids.length);
+  assert.deepEqual(
+    payload.completed.map((entry) => entry.childRunId).sort(),
+    [...ids].sort(),
+  );
+  assert.deepEqual(payload.pending, []);
+  assert.deepEqual(
+    ids.map((childRunId) => daemonContext.childRuns.getChildRun(childRunId)),
+    ids.map(() => undefined),
+  );
 });

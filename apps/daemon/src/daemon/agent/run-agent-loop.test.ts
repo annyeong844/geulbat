@@ -9,6 +9,7 @@ import type { AgentEvent } from './events.js';
 import { createThreadBackgroundNotificationQueue } from './runtime/background-notification-queue.js';
 import { createRunState } from './runtime/run-state.js';
 import { createDaemonContext } from '../context.js';
+import { pushPendingInterject } from '../sessions/active-run-interject-buffer.js';
 import { readTranscriptEntries } from '../sessions/transcript-log.js';
 import type {
   AnyTool,
@@ -17,19 +18,30 @@ import type {
   ToolParseResult,
 } from '../tools/types.js';
 import { createResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-cache.js';
+import type { PtcFixedEpochProbeRuntime } from '../daemon-runtime-contract.js';
+import {
+  PTC_BROWSER_PAGE_LOAD_EVIDENCE_TOOL_NAME,
+  type PtcBrowserPageLoadEvidenceRuntime,
+} from '../ptc/runtime/browser/browser-page-load-evidence-runtime-contract.js';
+import {
+  PTC_BROWSER_TEXT_EVIDENCE_TOOL_NAME,
+  type PtcBrowserTextEvidenceRuntime,
+} from '../ptc/runtime/browser/browser-text-evidence-runtime-contract.js';
 import {
   PTC_BROWSER_NAVIGATE_TOOL_NAME,
+  type PtcBrowserNavigateRuntime,
+} from '../ptc/runtime/browser/browser-navigate-runtime-contract.js';
+import {
   PTC_EXECUTE_CODE_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,
-  type PtcBrowserNavigateRuntime,
+  PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
   type PtcExecuteCodeRuntime,
-  type PtcFixedEpochProbeRuntime,
-} from '../daemon-runtime-contract.js';
+} from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
 import {
   PTC_FIXED_EPOCH_EXECUTION_PROBE_CAPABILITY_ID,
   PTC_FIXED_EPOCH_EXECUTION_PROBE_POLICY_ID,
   type PtcFixedEpochProbeRuntimeSummary,
-} from '../ptc/fixed-probe-runtime-contract.js';
+} from '../ptc/runtime/probes/fixed-probe-runtime-contract.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
 import {
   composeProviderRounds,
@@ -46,6 +58,7 @@ import {
   PTC_FIXED_PROBE_STRUCTURED_OUTPUT_KIND,
   PTC_FIXED_PROBE_STRUCTURED_OUTPUT_PROBE_ID,
 } from './ptc-fixed-probe-structured-output-caller.js';
+import { MID_RUN_STEER_ENABLED_ENV } from './mid-run-steer-flag.js';
 
 function registerOnce(
   daemonContext: ReturnType<typeof createDaemonContext>,
@@ -111,6 +124,7 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
     },
     strict: true,
     sideEffectLevel: args.sideEffectLevel,
+    mayMutateWorkspaceFiles: false,
     timeoutMs: 1_000,
     requiresApproval: args.requiresApproval,
     parseArgs: args.parseArgs ?? parseObjectArgs,
@@ -281,6 +295,191 @@ void test('runAgentLoop completes after approved tool execution and second-round
   assert.match(transcript[1]?.content ?? '', /tool ok/);
 });
 
+void test('runAgentLoop applies pending interject before the next steer-aware model round', async () => {
+  const previousFlag = process.env[MID_RUN_STEER_ENABLED_ENV];
+  process.env[MID_RUN_STEER_ENABLED_ENV] = '1';
+  try {
+    const threadId = testThreadId(1201);
+    const daemonContext = createDaemonContext();
+    const workspaceRoot = await mkdtemp(
+      join(tmpdir(), 'geulbat-loop-interject-run-'),
+    );
+    const events: AgentEvent[] = [];
+    const runContext = makeRunWorkspaceContext({
+      threadId,
+      projectId: testProjectId('project'),
+      workspaceRoot,
+    });
+    const runState = createRunState({
+      runId: 'run-loop-interject',
+      runContext,
+    });
+    let injected = false;
+    const callModelImpl = createScriptedProviderCallModel([
+      {
+        ...providerFinalAnswerRound('first answer'),
+        inspectInput(input) {
+          assert.equal(
+            input.history.some(
+              (item) => item.kind === 'user' && item.text === 'please revise',
+            ),
+            false,
+          );
+        },
+      },
+      {
+        ...providerFinalAnswerRound('second answer'),
+        inspectInput(input) {
+          const userTurns = input.history
+            .filter((item) => item.kind === 'user')
+            .map((item) => item.text);
+          assert.deepEqual(userTurns, ['please answer once', 'please revise']);
+          assert.equal(
+            input.history.some(
+              (item) =>
+                item.kind === 'assistant' &&
+                item.phase === 'final_answer' &&
+                item.text === 'first answer',
+            ),
+            true,
+          );
+        },
+      },
+    ]);
+
+    const result = await runAgentLoop({
+      runId: 'run-loop-interject',
+      runContext,
+      prompt: 'please answer once',
+      runState,
+      allowedToolNames: [],
+      runtimeServices: daemonContext,
+      approvalContext: makeApprovalContext({
+        sessionId: 'session-loop-interject',
+      }),
+      callModelImpl,
+      onEvent: (event) => {
+        events.push(event);
+        if (event.type === 'final_answer_delta' && !injected) {
+          injected = true;
+          pushPendingInterject(runState.interject, 'please revise');
+        }
+      },
+    });
+
+    assert.equal(injected, true);
+    assert.deepEqual(result, {
+      ok: true,
+      finalProse: 'second answer',
+    });
+    assert.equal(runState.status, 'completed');
+    assert.deepEqual(
+      events.map((event) => event.type),
+      [
+        'run_ack',
+        'final_answer_delta',
+        'interject_applied',
+        'final_answer_delta',
+      ],
+    );
+    const applied = events.find((event) => event.type === 'interject_applied');
+    assert.deepEqual(applied?.payload, {
+      runId: 'run-loop-interject',
+      count: 1,
+      receivedSeqs: [1],
+    });
+    const transcript = await readTranscriptEntries(workspaceRoot, threadId);
+    assert.deepEqual(
+      transcript.map((entry) => ({
+        role: entry.role,
+        content: entry.content,
+        source: entry.metadata?.source,
+      })),
+      [
+        {
+          role: 'user',
+          content: 'please revise',
+          source: 'interject',
+        },
+      ],
+    );
+  } finally {
+    if (previousFlag === undefined) {
+      delete process.env[MID_RUN_STEER_ENABLED_ENV];
+    } else {
+      process.env[MID_RUN_STEER_ENABLED_ENV] = previousFlag;
+    }
+  }
+});
+
+void test('runAgentLoop continues across tool rounds through the while loop', async () => {
+  const toolName = 'loop_integration_while_loop_tool';
+  const threadId = testThreadId(1203);
+  const daemonContext = createDaemonContext();
+  let executionCount = 0;
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: toolName,
+      description: 'while-loop regression test tool',
+      sideEffectLevel: 'read',
+      requiresApproval: false,
+      async executeParsed() {
+        executionCount += 1;
+        return { ok: true, output: 'tool ok' };
+      },
+    }),
+  );
+
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-while-rounds-'),
+  );
+  const runContext = makeRunWorkspaceContext({
+    threadId,
+    projectId: testProjectId('project'),
+    workspaceRoot,
+  });
+  const runState = createRunState({
+    runId: 'run-loop-while-rounds',
+    runContext,
+  });
+  const toolCallIds = ['call-a', 'call-b', 'call-c'];
+  const toolRounds = toolCallIds.map((callId, index) =>
+    providerToolRound({
+      toolName,
+      messageId: `msg-${index}`,
+      functionCallId: `fc-${index}`,
+      callId,
+    }),
+  );
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-while-rounds',
+    runContext,
+    prompt: 'keep using the tool before answering',
+    runState,
+    allowedToolNames: [toolName],
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-while-rounds',
+    }),
+    callModelImpl: createScriptedProviderCallModel([
+      ...toolRounds,
+      providerFinalAnswerRound('finished after tool rounds', {
+        itemId: 'msg-final',
+      }),
+    ]),
+    onEvent() {},
+  });
+
+  assert.equal(executionCount, toolCallIds.length);
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'finished after tool rounds',
+  });
+  assert.equal(runState.status, 'completed');
+});
+
 void test('runAgentLoop surfaces a legacy artifact candidate separately from final answer text', async () => {
   const threadId = testThreadId(201);
   const daemonContext = createDaemonContext();
@@ -385,6 +584,113 @@ void test('runAgentLoop routes structured react bundle output through typed ingr
   );
 });
 
+void test('runAgentLoop records structured output before applying a pending steer', async () => {
+  const previousFlag = process.env[MID_RUN_STEER_ENABLED_ENV];
+  process.env[MID_RUN_STEER_ENABLED_ENV] = '1';
+  try {
+    const threadId = testThreadId(1202);
+    const daemonContext = createDaemonContext();
+    const workspaceRoot = await mkdtemp(
+      join(tmpdir(), 'geulbat-loop-structured-interject-'),
+    );
+    const runContext = makeRunWorkspaceContext({
+      threadId,
+      projectId: testProjectId('project'),
+      workspaceRoot,
+    });
+    const runState = createRunState({
+      runId: 'run-loop-structured-interject',
+      runContext,
+    });
+    const events: AgentEvent[] = [];
+    let injected = false;
+
+    const result = await runAgentLoop({
+      runId: 'run-loop-structured-interject',
+      runContext,
+      prompt: 'create a structured react bundle artifact',
+      runState,
+      allowedToolNames: [],
+      runtimeServices: daemonContext,
+      approvalContext: makeApprovalContext({
+        sessionId: 'session-loop-structured-interject',
+      }),
+      callModelImpl: createScriptedProviderCallModel([
+        {
+          ...providerStructuredOutputRound(
+            structuredReactBundleOutput(STRUCTURED_NO_DEPENDENCY_REQUEST),
+          ),
+          inspectInput(input) {
+            assert.equal(input.history.length, 1);
+            if (!injected) {
+              injected = true;
+              pushPendingInterject(
+                runState.interject,
+                'please revise artifact',
+              );
+            }
+          },
+        },
+        {
+          ...providerFinalAnswerRound('revised artifact answer'),
+          inspectInput(input) {
+            assert.equal(
+              input.history.some(
+                (item) =>
+                  item.kind === 'assistant' &&
+                  item.phase === 'final_answer' &&
+                  item.text.includes('[artifact:react_bundle]'),
+              ),
+              true,
+            );
+            assert.equal(
+              input.history.some(
+                (item) =>
+                  item.kind === 'user' &&
+                  item.text === 'please revise artifact',
+              ),
+              true,
+            );
+          },
+        },
+      ]),
+      onEvent: (event) => events.push(event),
+    });
+
+    assert.equal(injected, true);
+    assert.deepEqual(result, {
+      ok: true,
+      finalProse: 'revised artifact answer',
+    });
+    assert.equal(runState.status, 'completed');
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['run_ack', 'interject_applied', 'final_answer_delta'],
+    );
+    const transcript = await readTranscriptEntries(workspaceRoot, threadId);
+    assert.deepEqual(
+      transcript.map((entry) => ({
+        role: entry.role,
+        content: entry.content,
+        source: entry.metadata?.source,
+      })),
+      [
+        {
+          role: 'user',
+          content: 'please revise artifact',
+          source: 'interject',
+        },
+      ],
+    );
+  } finally {
+    if (previousFlag === undefined) {
+      delete process.env[MID_RUN_STEER_ENABLED_ENV];
+    } else {
+      process.env[MID_RUN_STEER_ENABLED_ENV] = previousFlag;
+    }
+  }
+});
+
 void test('runAgentLoop routes structured PTC fixed probe output through daemon runtime', async () => {
   const threadId = testThreadId(302);
   const daemonContext = createDaemonContext();
@@ -460,7 +766,7 @@ void test('runAgentLoop routes structured PTC fixed probe output through daemon 
   assert.doesNotMatch(result.finalProse, /ptc-epoch-agent-loop/u);
 });
 
-void test('runAgentLoop exposes execute_code as a model-visible PTC tool', async () => {
+void test('runAgentLoop exposes exec and wait as model-visible PTC tools', async () => {
   const threadId = testThreadId(330);
   const daemonContext = createDaemonContext();
   const workspaceRoot = await mkdtemp(
@@ -477,12 +783,18 @@ void test('runAgentLoop exposes execute_code as a model-visible PTC tool', async
   });
   const events: AgentEvent[] = [];
   let observedCode = '';
-  let observedRunContext: typeof runContext | undefined;
+  let observedRunContext:
+    | Parameters<PtcExecuteCodeRuntime['executeCode']>[0]['runContext']
+    | undefined;
+  let observedCallbackToolNames: string[] | undefined;
   const ptcExecuteCode: PtcExecuteCodeRuntime = {
     async executeCode(args) {
       observedRunContext = args.runContext;
       observedCode = args.request.code;
       assert.equal(typeof args.toolCallbackHandler, 'function');
+      observedCallbackToolNames = (args.sdkHelp?.callbackTools ?? []).map(
+        (tool) => tool.name,
+      );
       return {
         ok: true,
         value: {
@@ -516,6 +828,20 @@ void test('runAgentLoop exposes execute_code as a model-visible PTC tool', async
         },
       };
     },
+    async waitForCell() {
+      return {
+        ok: true,
+        value: {
+          ok: true,
+          capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+          policyId: PTC_EXECUTE_CODE_POLICY_ID,
+          executionSurface: 'node_via_lab_detached_cell',
+          status: 'missing',
+          cellId: 'ptc_cell_unused',
+          remediation: 'start_a_new_exec',
+        },
+      };
+    },
     async closeAll() {
       return { ok: true };
     },
@@ -526,7 +852,10 @@ void test('runAgentLoop exposes execute_code as a model-visible PTC tool', async
     runContext,
     prompt: 'run code',
     runState,
-    allowedToolNames: ['execute_code'],
+    allowedToolNames: [
+      PTC_EXECUTE_CODE_TOOL_NAME,
+      PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
+    ],
     runtimeServices: { ...daemonContext, ptcExecuteCode },
     approvalContext: makeApprovalContext({
       sessionId: 'session-loop-execute-code-tool',
@@ -534,7 +863,7 @@ void test('runAgentLoop exposes execute_code as a model-visible PTC tool', async
     callModelImpl: createScriptedProviderCallModel([
       {
         ...providerToolRound({
-          toolName: 'execute_code',
+          toolName: PTC_EXECUTE_CODE_TOOL_NAME,
           argumentsJson: JSON.stringify({
             code: 'return 7',
             timeoutMs: 1000,
@@ -543,7 +872,7 @@ void test('runAgentLoop exposes execute_code as a model-visible PTC tool', async
         inspectInput(input) {
           assert.deepEqual(
             input.tools?.map((tool) => tool.name),
-            ['execute_code'],
+            [PTC_EXECUTE_CODE_TOOL_NAME, PTC_EXECUTE_CODE_WAIT_TOOL_NAME],
           );
         },
       },
@@ -556,6 +885,7 @@ void test('runAgentLoop exposes execute_code as a model-visible PTC tool', async
   assert.equal(result.finalProse, 'done');
   assert.deepEqual(observedRunContext, runContext);
   assert.equal(observedCode, 'return 7');
+  assert.deepEqual(observedCallbackToolNames, []);
   assert.equal(runState.status, 'completed');
   assert.deepEqual(
     events.map((event) => event.type),
@@ -631,6 +961,184 @@ void test('runAgentLoop exposes browser_navigate as an approval-gated model-visi
           assert.deepEqual(
             input.tools?.map((tool) => tool.name),
             [PTC_BROWSER_NAVIGATE_TOOL_NAME],
+          );
+        },
+      },
+      providerFinalAnswerRound('done'),
+    ]),
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.finalProse, 'done');
+  assert.deepEqual(observedRunContext, runContext);
+  assert.equal(observedUrl, 'https://example.com/');
+  assert.equal(runState.status, 'completed');
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      'run_ack',
+      'commentary_delta',
+      'tool_call',
+      'tool_result',
+      'final_answer_delta',
+    ],
+  );
+});
+
+void test('runAgentLoop exposes browser_page_load_evidence as an approval-gated model-visible PTC tool', async () => {
+  const threadId = testThreadId(332);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-browser-page-load-evidence-tool-'),
+  );
+  const runContext = makeRunWorkspaceContext({
+    threadId,
+    projectId: testProjectId('project'),
+    workspaceRoot,
+  });
+  const runState = createRunState({
+    runId: 'run-loop-browser-page-load-evidence-tool',
+    runContext,
+  });
+  const events: AgentEvent[] = [];
+  let observedUrl = '';
+  let observedRunContext:
+    | Parameters<
+        PtcBrowserPageLoadEvidenceRuntime['collectEvidence']
+      >[0]['runContext']
+    | undefined;
+  const ptcBrowserPageLoadEvidence: PtcBrowserPageLoadEvidenceRuntime = {
+    async collectEvidence(args) {
+      observedRunContext = args.runContext;
+      observedUrl = args.request.url;
+      return {
+        ok: false,
+        kind: 'ptc_lab_browser_page_load_evidence_error',
+        reasonCode: 'ptc_lab_browser_url_admission_failed',
+        message: 'PTC lab browser page-load evidence target admission failed',
+        phase: 'request_admission',
+        diagnostics: { admissionReasonCode: 'url_parse_failed' },
+      };
+    },
+    async closeAll() {
+      return { ok: true };
+    },
+  };
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-browser-page-load-evidence-tool',
+    runContext,
+    prompt: 'collect page-load evidence',
+    runState,
+    allowedToolNames: [PTC_BROWSER_PAGE_LOAD_EVIDENCE_TOOL_NAME],
+    runtimeServices: { ...daemonContext, ptcBrowserPageLoadEvidence },
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-browser-page-load-evidence-tool',
+      permissionMode: 'full_access',
+    }),
+    callModelImpl: createScriptedProviderCallModel([
+      {
+        ...providerToolRound({
+          toolName: PTC_BROWSER_PAGE_LOAD_EVIDENCE_TOOL_NAME,
+          argumentsJson: JSON.stringify({
+            url: 'https://example.com/',
+            timeoutMs: 1000,
+          }),
+        }),
+        inspectInput(input) {
+          assert.deepEqual(
+            input.tools?.map((tool) => tool.name),
+            [PTC_BROWSER_PAGE_LOAD_EVIDENCE_TOOL_NAME],
+          );
+        },
+      },
+      providerFinalAnswerRound('done'),
+    ]),
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.finalProse, 'done');
+  assert.deepEqual(observedRunContext, runContext);
+  assert.equal(observedUrl, 'https://example.com/');
+  assert.equal(runState.status, 'completed');
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      'run_ack',
+      'commentary_delta',
+      'tool_call',
+      'tool_result',
+      'final_answer_delta',
+    ],
+  );
+});
+
+void test('runAgentLoop exposes browser_text_evidence as an approval-gated model-visible PTC tool', async () => {
+  const threadId = testThreadId(333);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-browser-text-evidence-tool-'),
+  );
+  const runContext = makeRunWorkspaceContext({
+    threadId,
+    projectId: testProjectId('project'),
+    workspaceRoot,
+  });
+  const runState = createRunState({
+    runId: 'run-loop-browser-text-evidence-tool',
+    runContext,
+  });
+  const events: AgentEvent[] = [];
+  let observedUrl = '';
+  let observedRunContext:
+    | Parameters<
+        PtcBrowserTextEvidenceRuntime['collectEvidence']
+      >[0]['runContext']
+    | undefined;
+  const ptcBrowserTextEvidence: PtcBrowserTextEvidenceRuntime = {
+    async collectEvidence(args) {
+      observedRunContext = args.runContext;
+      observedUrl = args.request.url;
+      return {
+        ok: false,
+        kind: 'ptc_lab_browser_text_evidence_error',
+        reasonCode: 'ptc_lab_browser_url_admission_failed',
+        message: 'PTC lab browser text evidence target admission failed',
+        phase: 'request_admission',
+        diagnostics: { admissionReasonCode: 'url_parse_failed' },
+      };
+    },
+    async closeAll() {
+      return { ok: true };
+    },
+  };
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-browser-text-evidence-tool',
+    runContext,
+    prompt: 'collect text evidence',
+    runState,
+    allowedToolNames: [PTC_BROWSER_TEXT_EVIDENCE_TOOL_NAME],
+    runtimeServices: { ...daemonContext, ptcBrowserTextEvidence },
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-browser-text-evidence-tool',
+      permissionMode: 'full_access',
+    }),
+    callModelImpl: createScriptedProviderCallModel([
+      {
+        ...providerToolRound({
+          toolName: PTC_BROWSER_TEXT_EVIDENCE_TOOL_NAME,
+          argumentsJson: JSON.stringify({
+            url: 'https://example.com/',
+            timeoutMs: 1000,
+          }),
+        }),
+        inspectInput(input) {
+          assert.deepEqual(
+            input.tools?.map((tool) => tool.name),
+            [PTC_BROWSER_TEXT_EVIDENCE_TOOL_NAME],
           );
         },
       },

@@ -4,6 +4,7 @@ import test from 'node:test';
 import type {
   AgentWaitBlockedReason,
   ArtifactCommittedEventPayload,
+  InterjectAppliedEventPayload,
   KnownToolResultRaw,
   KnownToolResultRawTool,
   KnownToolResultSuccessEventPayload,
@@ -26,6 +27,7 @@ import {
   isArtifactCommittedEventPayload,
   isDoneEventPayload,
   isErrorEventPayload,
+  isInterjectAppliedEventPayload,
   isRunAckEventPayload,
   isRunEvent,
   isSubagentApprovalRequiredEventPayload,
@@ -34,6 +36,7 @@ import {
   isTextDeltaEventPayload,
   isThreadStatePersistFailedEventPayload,
   isThreadStatePersistedEventPayload,
+  isToolCallSourcePayload,
   isToolCallEventPayload,
   isToolResultEventPayload,
   isToolResultRaw,
@@ -92,6 +95,9 @@ type _ToolResultSuccessForUnownedToolUsesUnknownRaw = Expect<
 type _AgentWaitBlockedReasonKeepsApprovalPendingVocabulary = Expect<
   Equal<AgentWaitBlockedReason, 'approval_pending'>
 >;
+type _InterjectAppliedReceivedSeqsStayNumeric = Expect<
+  Equal<InterjectAppliedEventPayload['receivedSeqs'], number[]>
+>;
 
 void test('shared payload guards accept canonical shapes and reject malformed ones', () => {
   assert.equal(isAgentChildTerminalState('completed'), true);
@@ -133,6 +139,57 @@ void test('shared payload guards accept canonical shapes and reject malformed on
     }),
     false,
   );
+  assert.equal(isToolCallSourcePayload({ kind: 'agent_loop' }), true);
+  assert.equal(
+    isToolCallSourcePayload({
+      kind: 'ptc_callback',
+      parentCallId: 'call-parent',
+      runtimeToolCallId: 'runtime-call-1',
+      cellId: 'ptc_cell_runtime_1',
+    }),
+    true,
+  );
+  assert.equal(
+    isToolCallSourcePayload({
+      kind: 'ptc_callback',
+      parentCallId: 'call-parent',
+      runtimeToolCallId: 'runtime-call-1',
+      cellId: 123,
+    }),
+    false,
+  );
+  assert.equal(
+    isToolCallSourcePayload({
+      kind: 'ptc_callback',
+      parentCallId: 'call-parent',
+    }),
+    false,
+  );
+  assert.equal(
+    isToolCallEventPayload({
+      callId: 'call-parent::nested-1',
+      step: 1,
+      tool: 'read_file',
+      args: { path: 'docs/a.md' },
+      source: {
+        kind: 'ptc_callback',
+        parentCallId: 'call-parent',
+        runtimeToolCallId: 'runtime-call-1',
+        cellId: 'ptc_cell_runtime_1',
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isToolCallEventPayload({
+      callId: 'call-parent::nested-1',
+      step: 1,
+      tool: 'read_file',
+      args: { path: 'docs/a.md' },
+      source: { kind: 'ptc_callback', parentCallId: 'call-parent' },
+    }),
+    false,
+  );
 
   assert.equal(
     isToolResultEventPayload({
@@ -145,6 +202,37 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       raw: { path: 'docs/a.md' },
     }),
     true,
+  );
+  assert.equal(
+    isToolResultEventPayload({
+      callId: 'call-parent::nested-1',
+      step: 1,
+      tool: 'read_file',
+      ok: true,
+      workspaceFilesMayHaveChanged: false,
+      displayText: 'ok',
+      raw: { path: 'docs/a.md' },
+      source: {
+        kind: 'ptc_callback',
+        parentCallId: 'call-parent',
+        runtimeToolCallId: 'runtime-call-1',
+        cellId: 'ptc_cell_runtime_1',
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isToolResultEventPayload({
+      callId: 'call-parent::nested-1',
+      step: 1,
+      tool: 'read_file',
+      ok: true,
+      workspaceFilesMayHaveChanged: false,
+      displayText: 'ok',
+      raw: { path: 'docs/a.md' },
+      source: { kind: 'ptc_callback', parentCallId: 'call-parent' },
+    }),
+    false,
   );
   assert.equal(
     isSubagentSpawnedEventPayload({
@@ -185,6 +273,22 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       },
     }),
     true,
+  );
+  assert.equal(
+    isInterjectAppliedEventPayload({
+      runId: RUN_ID,
+      count: 2,
+      receivedSeqs: [1, 2],
+    }),
+    true,
+  );
+  assert.equal(
+    isInterjectAppliedEventPayload({
+      runId: RUN_ID,
+      count: 2,
+      receivedSeqs: [1],
+    }),
+    false,
   );
   assert.equal(
     isToolResultEventPayload({
@@ -270,8 +374,8 @@ void test('shared payload guards accept canonical shapes and reject malformed on
     ok: false,
     launchState: 'rejected',
     subagentType: 'worker',
-    errorCode: 'unsupported_nested_spawn',
-    error: 'agent_spawn is depth-1 only',
+    errorCode: 'invalid_args',
+    error: 'invalid child launch request',
   } satisfies ToolResultRawMap['agent_spawn'];
   assert.equal(
     isToolResultEventPayload({
@@ -586,6 +690,11 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
         sideEffectLevel: 'write',
       },
     },
+    interject_applied: {
+      runId: RUN_ID,
+      count: 2,
+      receivedSeqs: [1, 2],
+    },
     approval_required: {
       callId: 'call-1',
       runId: RUN_ID,
@@ -639,6 +748,7 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
     shared.artifact_committed;
   assert.equal(payloads.subagent_spawned.childThreadId, THREAD_ID);
   assert.equal(payloads.subagent_terminal.terminalState, 'failed');
+  assert.equal(payloads.interject_applied.count, 2);
   assert.equal(artifactCommitted.artifactId, 'art_1');
   assert.equal(
     isRunEvent({
@@ -656,6 +766,17 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
       runId: RUN_ID,
       threadId: THREAD_ID,
       seq: 4,
+      type: 'interject_applied',
+      ts: new Date().toISOString(),
+      payload: payloads.interject_applied,
+    }),
+    true,
+  );
+  assert.equal(
+    isRunEvent({
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      seq: 5,
       type: 'artifact_committed',
       ts: new Date().toISOString(),
       payload: artifactCommitted,
@@ -666,7 +787,7 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
     isRunEvent({
       runId: RUN_ID,
       threadId: THREAD_ID,
-      seq: 5,
+      seq: 6,
       type: 'thread_state_persisted',
       ts: new Date().toISOString(),
       payload: payloads.thread_state_persisted,
@@ -677,7 +798,7 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
     isRunEvent({
       runId: RUN_ID,
       threadId: THREAD_ID,
-      seq: 6,
+      seq: 7,
       type: 'thread_state_persist_failed',
       ts: new Date().toISOString(),
       payload: payloads.thread_state_persist_failed,

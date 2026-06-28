@@ -1,9 +1,11 @@
 import type { AnyTool } from './types.js';
 import type {
   ToolDefinition,
+  ToolObjectParameters,
   ToolParameters,
   ToolRegistryStore,
 } from './tool-registry-model.js';
+import { isToolObjectParameters } from './tool-registry-model.js';
 
 function cloneToolParameters(parameters: ToolParameters): ToolParameters {
   return JSON.parse(JSON.stringify(parameters)) as ToolParameters;
@@ -16,7 +18,7 @@ function cloneTool(tool: AnyTool): AnyTool {
     parameters: cloneToolParameters(tool.parameters),
     strict: tool.strict,
     sideEffectLevel: tool.sideEffectLevel,
-    mayMutateWorkspaceFiles: tool.mayMutateWorkspaceFiles ?? false,
+    mayMutateWorkspaceFiles: tool.mayMutateWorkspaceFiles,
     ...(tool.parallelBatchKind
       ? { parallelBatchKind: tool.parallelBatchKind }
       : {}),
@@ -28,11 +30,20 @@ function cloneTool(tool: AnyTool): AnyTool {
 }
 
 function isProviderStrictCompatible(tool: AnyTool): boolean {
-  const propertyNames = Object.keys(tool.parameters.properties);
+  if (!isToolObjectParameters(tool.parameters)) {
+    return false;
+  }
+  return isObjectSchemaStrictCompatible(tool.parameters);
+}
+
+function isObjectSchemaStrictCompatible(
+  parameters: ToolObjectParameters,
+): boolean {
+  const propertyNames = Object.keys(parameters.properties);
   if (propertyNames.length === 0) {
     return true;
   }
-  const required = new Set(tool.parameters.required);
+  const required = new Set(parameters.required);
   return propertyNames.every((name) => required.has(name));
 }
 
@@ -67,7 +78,7 @@ export function createToolRegistryStore(options?: {
       }
       return {
         sideEffectLevel: tool.sideEffectLevel,
-        mayMutateWorkspaceFiles: tool.mayMutateWorkspaceFiles ?? false,
+        mayMutateWorkspaceFiles: tool.mayMutateWorkspaceFiles,
         ...(tool.parallelBatchKind
           ? { parallelBatchKind: tool.parallelBatchKind }
           : {}),

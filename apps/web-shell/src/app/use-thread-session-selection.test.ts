@@ -15,6 +15,7 @@ void test('useThreadSessionSelection applies only newer snapshots for the same t
       snapshotVersion: '2026-04-16T00:00:01.000Z',
       messages: [
         {
+          entryId: 'entry-newer',
           role: 'assistant',
           content: 'newer',
           timestamp: '2026-04-16T00:00:01.000Z',
@@ -30,6 +31,7 @@ void test('useThreadSessionSelection applies only newer snapshots for the same t
       snapshotVersion: '2026-04-16T00:00:00.000Z',
       messages: [
         {
+          entryId: 'entry-older',
           role: 'assistant',
           content: 'older',
           timestamp: '2026-04-16T00:00:00.000Z',
@@ -43,6 +45,7 @@ void test('useThreadSessionSelection applies only newer snapshots for the same t
   assert.equal(hook.result.current.selectedThreadId, THREAD_ID);
   assert.deepEqual(hook.result.current.messages, [
     {
+      entryId: 'entry-newer',
       role: 'assistant',
       content: 'newer',
       timestamp: '2026-04-16T00:00:01.000Z',
@@ -60,6 +63,7 @@ void test('useThreadSessionSelection explicit selection can reselect an unchange
       snapshotVersion: '2026-04-16T00:00:01.000Z',
       messages: [
         {
+          entryId: 'entry-settled',
           role: 'assistant',
           content: 'settled',
           timestamp: '2026-04-16T00:00:01.000Z',
@@ -75,6 +79,7 @@ void test('useThreadSessionSelection explicit selection can reselect an unchange
       snapshotVersion: '2026-04-16T00:00:01.000Z',
       messages: [
         {
+          entryId: 'entry-explicit-open',
           role: 'assistant',
           content: 'explicit open',
           timestamp: '2026-04-16T00:00:01.000Z',
@@ -87,6 +92,7 @@ void test('useThreadSessionSelection explicit selection can reselect an unchange
   assert.equal(hook.result.current.selectedThreadId, THREAD_ID);
   assert.deepEqual(hook.result.current.messages, [
     {
+      entryId: 'entry-explicit-open',
       role: 'assistant',
       content: 'explicit open',
       timestamp: '2026-04-16T00:00:01.000Z',
@@ -104,6 +110,7 @@ void test('useThreadSessionSelection clears selected thread state for deleted th
       snapshotVersion: '2026-04-16T00:00:01.000Z',
       messages: [
         {
+          entryId: 'entry-persisted-answer',
           role: 'assistant',
           content: 'persisted answer',
           timestamp: '2026-04-16T00:00:01.000Z',

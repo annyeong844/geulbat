@@ -1,23 +1,22 @@
 import {
-  createArtifactRefKey,
-  isArtifactRecord,
-  isArtifactVersionRecord,
-  normalizeArtifactSourceRef,
-} from '@geulbat/protocol/artifacts';
-import type {
-  ArtifactId,
-  ArtifactRecord,
-  ArtifactRef,
-  ArtifactRenderer,
-  ArtifactRunId,
-  ArtifactSourceRef,
-  ArtifactVersionRecord,
-  ThreadArtifactVersion,
-} from '@geulbat/protocol/artifacts';
-import type { ProjectId, ThreadId } from '@geulbat/protocol/ids';
-import { readArtifactRefsFromMetadata } from '@geulbat/protocol/thread-metadata';
-import type { ThreadMessage } from '@geulbat/protocol/threads';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+  createSessionArtifactRefKey as createArtifactRefKey,
+  isSessionArtifactRecord as isArtifactRecord,
+  isSessionArtifactVersionRecord as isArtifactVersionRecord,
+  normalizeSessionArtifactSourceRef as normalizeArtifactSourceRef,
+  readSessionArtifactRefsFromMetadata as readArtifactRefsFromMetadata,
+  type ArtifactId,
+  type ArtifactRecord,
+  type ArtifactRef,
+  type ArtifactRenderer,
+  type ArtifactRunId,
+  type ArtifactSourceRef,
+  type ArtifactVersionRecord,
+  type ProjectId,
+  type ThreadArtifactVersion,
+  type ThreadId,
+  type ThreadMessage,
+} from './contract.js';
+import { isRecord, tryParseJson } from '../runtime-json.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -42,6 +41,17 @@ const EMPTY_STORE: ThreadArtifactStoreFile = {
   versions: [],
 };
 const runThreadArtifactMutationSerial = createKeyedSerialRunner();
+
+export class ArtifactStoreCorruptionError extends Error {
+  readonly code = 'artifact_store_corrupt';
+  readonly threadId: string;
+
+  constructor(threadId: string) {
+    super(`thread artifact store ${threadId} is corrupted`);
+    this.name = 'ArtifactStoreCorruptionError';
+    this.threadId = threadId;
+  }
+}
 
 interface CommitThreadArtifactVersionArgs {
   workspaceRoot: string;
@@ -233,8 +243,11 @@ async function loadThreadArtifactStore(
     throw error;
   }
 
-  const parsed: unknown = JSON.parse(raw);
-  return parseThreadArtifactStore(parsed);
+  const parsed = tryParseJson(raw);
+  if (!parsed.ok) {
+    throw new ArtifactStoreCorruptionError(threadId);
+  }
+  return parseThreadArtifactStore(parsed.value);
 }
 
 async function saveThreadArtifactStore(
@@ -328,6 +341,12 @@ function isPersistedArtifactRecord(
   value: ArtifactRecord | null,
 ): value is ArtifactRecord {
   return value !== null;
+}
+
+export function isArtifactStoreCorruptionError(
+  error: unknown,
+): error is ArtifactStoreCorruptionError {
+  return error instanceof ArtifactStoreCorruptionError;
 }
 
 function createContentHash(payload: string): string {

@@ -46,6 +46,7 @@ export function buildAgentToolExecutionContextBase(args: {
   selection: LineSelection | undefined;
   signal: AbortSignal | undefined;
   runState: RunState | undefined;
+  allowedToolNames?: readonly string[];
   fileStateCache?: AgentRuntimeServices['fileStateCache'];
   memoryIndex: AgentMemoryIndex | undefined;
   agentSpawnRuntime: AgentRuntimeServices | undefined;
@@ -58,6 +59,9 @@ export function buildAgentToolExecutionContextBase(args: {
     currentFile: args.currentFile,
     selection: args.selection,
     approvalSessionId: args.approvalContext.sessionId,
+    ...(args.allowedToolNames !== undefined
+      ? { allowedToolNames: args.allowedToolNames }
+      : {}),
     permissionMode: args.approvalContext.permissionMode,
     threadId: args.runContext.threadId,
     runId: args.runId,
@@ -123,6 +127,16 @@ export function getToolRuntimeSignal(
   runtime: ExecutionContextBaseOwner,
 ): AbortSignal | undefined {
   return runtime.executionContextBase?.signal ?? runtime.signal;
+}
+
+export function isToolOutputRecoveryAvailable(
+  runtime: ExecutionContextBaseOwner,
+): boolean {
+  const allowedToolNames = runtime.executionContextBase?.allowedToolNames;
+  return (
+    allowedToolNames === undefined ||
+    allowedToolNames.includes('read_tool_output')
+  );
 }
 
 export function getToolRuntimeWorkspaceRoot(

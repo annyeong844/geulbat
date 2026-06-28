@@ -14,9 +14,9 @@ import { createSandboxAttemptStore } from '../sandbox/attempt-store.js';
 import type {
   ReactBundleAcceptedManifestArtifactCandidateSource,
   ReactBundleAcceptedManifestArtifactCandidateResult,
-} from '../sandbox/react-bundle-accepted-manifest-artifact-candidate.js';
-import type { ReactBundleRuntimeManifestAcceptanceResult } from '../sandbox/react-bundle-accepted-runtime-manifest.js';
-import type { ReactBundleDependencyPrepareRequest } from '../sandbox/react-bundle-dependency-prepare.js';
+} from '../react-bundle-dependency-admission/react-bundle-accepted-manifest-artifact-candidate.js';
+import type { ReactBundleRuntimeManifestAcceptanceResult } from '../react-bundle-dependency-admission/react-bundle-accepted-runtime-manifest.js';
+import type { ReactBundleDependencyPrepareRequest } from '../react-bundle-dependency-admission/react-bundle-dependency-prepare.js';
 import {
   runReactBundleExplicitCdnArtifactIngress,
   type ReactBundleExplicitCdnArtifactIngressResult,
@@ -202,6 +202,37 @@ void test('runReactBundleExplicitCdnArtifactIngress accepts no-dependency reques
     assert.equal(result.result.finalProse, '');
     assert.equal(result.result.artifactCandidate?.renderer, 'react_bundle');
 
+    assert.deepEqual(
+      store.getAttempts().records.map((attempt) => attempt.jobKind),
+      ['react_bundle_dependency_prepare'],
+    );
+  });
+});
+
+void test('runReactBundleExplicitCdnArtifactIngress fails dependency probes without an explicit timeout policy', async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    const store = createSandboxAttemptStore({
+      now: () => '2026-05-25T00:00:00.000Z',
+    });
+    let probeCalled = false;
+
+    const result = await runReactBundleExplicitCdnArtifactIngress({
+      workspaceRoot,
+      store,
+      request: BASE_REQUEST,
+      now: () => '2026-05-25T12:00:00.000Z',
+      probeTransport: async () => {
+        probeCalled = true;
+        throw new Error('metadata probe should not start without policy');
+      },
+    });
+
+    assertFailure(result, 'probe_timeout_policy_missing');
+    assert.equal(probeCalled, false);
+    assert.equal(
+      result.diagnostics?.prepareEvidenceRef?.startsWith('sandbox-output:'),
+      true,
+    );
     assert.deepEqual(
       store.getAttempts().records.map((attempt) => attempt.jobKind),
       ['react_bundle_dependency_prepare'],

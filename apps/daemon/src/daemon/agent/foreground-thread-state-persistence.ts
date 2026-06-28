@@ -1,5 +1,7 @@
-import type { ThreadStatePersistenceFailureDiagnostic } from '@geulbat/protocol/run-events';
-import type { ThreadSummary } from '@geulbat/protocol/threads';
+import type {
+  ThreadStatePersistenceFailureDiagnostic,
+  ThreadSummary,
+} from './contract.js';
 
 import { loadThreadDetailSnapshot } from '../sessions/thread-detail.js';
 import { getErrorMessage } from '../utils/error.js';

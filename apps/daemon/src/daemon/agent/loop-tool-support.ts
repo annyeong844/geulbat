@@ -1,4 +1,4 @@
-import { isRecord, tryParseJson } from '@geulbat/protocol/runtime-utils';
+import { isRecord, tryParseJson } from '../runtime-json.js';
 import type { HistoryItem, FunctionCall } from '../llm/index.js';
 import { toolError } from '../tools/result.js';
 import type { ExecuteResult } from '../tools/types.js';
@@ -7,6 +7,7 @@ import type { AgentEventEmitter, ToolCallArgs } from './events.js';
 import type { ErrorCode } from '../error-codes.js';
 import type { RunWorkspaceContext } from '../run-workspace-context.js';
 import { maybeOffloadToolResult } from './tool-output-offload.js';
+import type { ToolCallSource } from './tool-call-source.js';
 
 type TranscriptContext = RunWorkspaceContext;
 
@@ -15,6 +16,8 @@ interface TranscriptToolCallRecord {
   callId: string;
   tool: string;
   args: ToolCallArgs;
+  source?: ToolCallSource;
+  historyMode?: ToolResultHistoryMode;
 }
 
 interface TranscriptToolResultRecord {
@@ -26,9 +29,9 @@ interface TranscriptToolResultRecord {
   output: string;
   errorCode?: ErrorCode;
   error?: string;
+  source?: ToolCallSource;
+  historyMode?: ToolResultHistoryMode;
 }
-
-const MAX_TOOL_RESULT_DISPLAY_TEXT_LENGTH = 300;
 
 export function parseToolCallArguments(
   argumentsJson: string,
@@ -64,9 +67,21 @@ function formatDisplayText(
   error?: string,
 ): string {
   if (!ok) return error ?? 'execution failed';
-  return output.length <= MAX_TOOL_RESULT_DISPLAY_TEXT_LENGTH
-    ? output
-    : output.slice(0, MAX_TOOL_RESULT_DISPLAY_TEXT_LENGTH) + '...(truncated)';
+  return output;
+}
+
+export type ToolResultHistoryMode = 'model_visible' | 'audit_only';
+
+function toPtcCallbackSourcePayload(source: ToolCallSource | undefined) {
+  if (source?.kind !== 'ptc_callback') {
+    return undefined;
+  }
+  return {
+    kind: 'ptc_callback' as const,
+    parentCallId: source.parentToolCallId,
+    runtimeToolCallId: source.runtimeToolCallId,
+    ...(source.cellId !== undefined ? { cellId: source.cellId } : {}),
+  };
 }
 
 async function appendToolCallTranscriptEntry(
@@ -95,26 +110,36 @@ async function emitAndPersistToolResult(args: {
   functionCall: FunctionCall;
   round: number;
   toolResult: ExecuteResult;
+  toolOutputRecoveryAvailable?: boolean;
   workspaceFilesMayHaveChanged: boolean;
   runContext: TranscriptContext;
   runId: string;
   history: HistoryItem[];
   emit: AgentEventEmitter;
+  source?: ToolCallSource;
+  historyMode?: ToolResultHistoryMode;
 }): Promise<void> {
   const {
     functionCall,
     round,
     toolResult,
+    toolOutputRecoveryAvailable,
     workspaceFilesMayHaveChanged,
     runContext,
     runId,
     history,
     emit,
+    source,
+    historyMode = 'model_visible',
   } = args;
+  const sourcePayload = toPtcCallbackSourcePayload(source);
   const recordedToolResult = await maybeOffloadToolResult({
     functionCall,
     runContext,
     runId,
+    ...(toolOutputRecoveryAvailable !== undefined
+      ? { toolOutputRecoveryAvailable }
+      : {}),
     toolResult,
   });
   const parsedResult = parseToolResultRaw(recordedToolResult.output);
@@ -132,6 +157,7 @@ async function emitAndPersistToolResult(args: {
       workspaceFilesMayHaveChanged,
       displayText,
       raw: parsedResult,
+      ...(sourcePayload ? { source: sourcePayload } : {}),
     });
   } else {
     const errorCode = recordedToolResult.errorCode ?? 'execution_failed';
@@ -147,13 +173,16 @@ async function emitAndPersistToolResult(args: {
       raw: parsedResult,
       errorCode,
       error,
+      ...(sourcePayload ? { source: sourcePayload } : {}),
     });
 
-    history.push({
-      kind: 'function_call_output',
-      callId: functionCall.callId,
-      output: buildFunctionCallOutput(recordedToolResult),
-    });
+    if (historyMode === 'model_visible') {
+      history.push({
+        kind: 'function_call_output',
+        callId: functionCall.callId,
+        output: buildFunctionCallOutput(recordedToolResult),
+      });
+    }
 
     await appendToolResultTranscriptEntry(runContext, {
       callId: functionCall.callId,
@@ -164,15 +193,19 @@ async function emitAndPersistToolResult(args: {
       output: recordedToolResult.output,
       errorCode,
       error,
+      ...(source ? { source } : {}),
+      ...(historyMode !== 'model_visible' ? { historyMode } : {}),
     });
     return;
   }
 
-  history.push({
-    kind: 'function_call_output',
-    callId: functionCall.callId,
-    output: buildFunctionCallOutput(recordedToolResult),
-  });
+  if (historyMode === 'model_visible') {
+    history.push({
+      kind: 'function_call_output',
+      callId: functionCall.callId,
+      output: buildFunctionCallOutput(recordedToolResult),
+    });
+  }
 
   await appendToolResultTranscriptEntry(runContext, {
     callId: functionCall.callId,
@@ -181,6 +214,8 @@ async function emitAndPersistToolResult(args: {
     workspaceFilesMayHaveChanged,
     displayText,
     output: recordedToolResult.output,
+    ...(source ? { source } : {}),
+    ...(historyMode !== 'model_visible' ? { historyMode } : {}),
   });
 }
 
@@ -190,13 +225,25 @@ export async function recordToolCall(args: {
   toolArgs: ToolCallArgs;
   runContext: TranscriptContext;
   emit: AgentEventEmitter;
+  source?: ToolCallSource;
+  historyMode?: ToolResultHistoryMode;
 }): Promise<void> {
-  const { functionCall, round, toolArgs, runContext, emit } = args;
+  const {
+    functionCall,
+    round,
+    toolArgs,
+    runContext,
+    emit,
+    source,
+    historyMode,
+  } = args;
+  const sourcePayload = toPtcCallbackSourcePayload(source);
   emit('tool_call', {
     callId: functionCall.callId,
     step: round,
     tool: functionCall.name,
     args: toolArgs,
+    ...(sourcePayload ? { source: sourcePayload } : {}),
   });
 
   await appendToolCallTranscriptEntry(runContext, {
@@ -204,6 +251,8 @@ export async function recordToolCall(args: {
     callId: functionCall.callId,
     tool: functionCall.name,
     args: toolArgs,
+    ...(source ? { source } : {}),
+    ...(historyMode && historyMode !== 'model_visible' ? { historyMode } : {}),
   });
 }
 
@@ -211,11 +260,14 @@ export async function recordToolResult(args: {
   functionCall: FunctionCall;
   round: number;
   toolResult: ExecuteResult;
+  toolOutputRecoveryAvailable?: boolean;
   workspaceFilesMayHaveChanged: boolean;
   runContext: TranscriptContext;
   runId: string;
   history: HistoryItem[];
   emit: AgentEventEmitter;
+  source?: ToolCallSource;
+  historyMode?: ToolResultHistoryMode;
 }): Promise<void> {
   await emitAndPersistToolResult(args);
 }
@@ -224,33 +276,54 @@ export async function recordInvalidToolArguments(args: {
   functionCall: FunctionCall;
   round: number;
   errorResult: ExecuteResult;
+  toolOutputRecoveryAvailable?: boolean;
   runContext: TranscriptContext;
   runId: string;
   history: HistoryItem[];
   emit: AgentEventEmitter;
+  source?: ToolCallSource;
+  historyMode?: ToolResultHistoryMode;
 }): Promise<void> {
-  const { functionCall, round, errorResult, runContext, runId, history, emit } =
-    args;
+  const {
+    functionCall,
+    round,
+    errorResult,
+    runContext,
+    runId,
+    history,
+    emit,
+    source,
+    historyMode,
+  } = args;
+  const sourcePayload = toPtcCallbackSourcePayload(source);
   emit('tool_call', {
     callId: functionCall.callId,
     step: round,
     tool: functionCall.name,
     args: {},
+    ...(sourcePayload ? { source: sourcePayload } : {}),
   });
   await appendToolCallTranscriptEntry(runContext, {
     id: functionCall.id,
     callId: functionCall.callId,
     tool: functionCall.name,
     args: {},
+    ...(source ? { source } : {}),
+    ...(historyMode && historyMode !== 'model_visible' ? { historyMode } : {}),
   });
   await emitAndPersistToolResult({
     functionCall,
     round,
     toolResult: errorResult,
+    ...(args.toolOutputRecoveryAvailable !== undefined
+      ? { toolOutputRecoveryAvailable: args.toolOutputRecoveryAvailable }
+      : {}),
     workspaceFilesMayHaveChanged: false,
     runContext,
     runId,
     history,
     emit,
+    ...(source ? { source } : {}),
+    ...(historyMode ? { historyMode } : {}),
   });
 }

@@ -23,8 +23,11 @@ void test('appendChildUserTranscriptEntry writes child prompt transcript entries
   });
 
   const entries = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.equal(typeof entries[0]?.entryId, 'string');
+  assert.notEqual(entries[0]?.entryId, '');
   assert.deepEqual(entries, [
     {
+      entryId: entries[0]?.entryId,
       role: 'user',
       content: 'inspect the parser boundary',
       timestamp: '2026-04-29T00:00:00.000Z',
@@ -45,8 +48,11 @@ void test('appendChildAssistantTranscriptEntry writes final-answer source run me
   });
 
   const entries = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.equal(typeof entries[0]?.entryId, 'string');
+  assert.notEqual(entries[0]?.entryId, '');
   assert.deepEqual(entries, [
     {
+      entryId: entries[0]?.entryId,
       role: 'assistant',
       content: 'child result',
       timestamp: '2026-04-29T00:00:01.000Z',

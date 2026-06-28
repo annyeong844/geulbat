@@ -9,7 +9,6 @@ import type {
   ResponsesParseState,
 } from './responses-parser-shared.js';
 
-const MAX_STREAM_ERROR_MESSAGE_CHARS = 500;
 const logger = createLogger('responses-parser');
 
 export function processResponseEvent(
@@ -136,9 +135,7 @@ export function processResponseEvent(
       const code = String(errorRecord?.code ?? event.code ?? '');
       const message = String(errorRecord?.message ?? event.message ?? '');
       const rawDetail = stringifyEventError(errorRecord ?? event);
-      const msg = truncateStreamErrorMessage(
-        message || code || rawDetail || 'API stream error',
-      );
+      const msg = message || code || rawDetail || 'API stream error';
       throw new Error(msg);
     }
 
@@ -194,13 +191,6 @@ function stringifyEventError(value: unknown): string {
   } catch {
     return '';
   }
-}
-
-function truncateStreamErrorMessage(text: string): string {
-  if (text.length <= MAX_STREAM_ERROR_MESSAGE_CHARS) {
-    return text;
-  }
-  return `${text.slice(0, MAX_STREAM_ERROR_MESSAGE_CHARS)}...(truncated)`;
 }
 
 export function finalizeAssistantHistoryItems(

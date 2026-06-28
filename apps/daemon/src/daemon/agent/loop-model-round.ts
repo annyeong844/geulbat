@@ -17,16 +17,8 @@ import type { CallModelFn } from './loop-types.js';
 import type { AgentResult } from './agent-result.js';
 import type { StreamErrorCategory } from '../llm/provider/transport/stream-error.js';
 import { composeAgentResult } from './agent-result.js';
-import {
-  emitInternalError,
-  emitTerminalFailure,
-  type StepResult,
-} from './loop-shared.js';
-import {
-  consumeFinalizationChunks,
-  consumeModelRoundChunks,
-  createFinalAnswerDeltaEmitter,
-} from './loop-model-round-chunks.js';
+import { emitTerminalFailure, type StepResult } from './loop-shared.js';
+import { consumeModelRoundChunks } from './loop-model-round-chunks.js';
 import {
   decideModelRoundRetry,
   emitClassifiedStreamError,
@@ -44,7 +36,6 @@ type ModelRoundFailureResolution =
   | { kind: 'retry'; delayMs: number }
   | { kind: 'terminal'; result: AgentResult };
 
-const FINALIZE_SUFFIX = `\n\n[Tool limit reached]\nNo more tool calls allowed. Summarize findings and provide a final answer.`;
 const logger = createLogger('agent/model-round');
 
 export async function runModelRound(args: {
@@ -153,6 +144,7 @@ export async function runModelRound(args: {
           error: chunkResult.error,
           attemptIndex,
           sawSemanticChunk: chunkResult.sawSemanticChunk,
+          retryPolicy: providerRequestOptions.modelRoundRetry,
           ...(chunkResult.message !== undefined
             ? { message: chunkResult.message }
             : {}),
@@ -179,6 +171,7 @@ function resolveModelRoundFailure(args: {
   error: unknown;
   attemptIndex: number;
   sawSemanticChunk: boolean;
+  retryPolicy: CallModelInput['providerRequestOptions']['modelRoundRetry'];
   message?: string;
   logTerminalFailure?: boolean;
 }): ModelRoundFailureResolution {
@@ -186,6 +179,7 @@ function resolveModelRoundFailure(args: {
     category: args.category,
     attemptIndex: args.attemptIndex,
     sawSemanticChunk: args.sawSemanticChunk,
+    policy: args.retryPolicy,
   });
   if (retry) {
     return { kind: 'retry', delayMs: retry.delayMs };
@@ -221,78 +215,4 @@ function buildModelRoundFailureLogFields(args: {
       getErrorStringProperty(args.error, 'message') ??
       getErrorMessage(args.error),
   };
-}
-
-export async function finalizeAfterToolLimit(args: {
-  history: HistoryItem[];
-  systemPrompt: string;
-  threadId: string;
-  providerWebSocketSessions: CallModelInput['providerWebSocketSessions'];
-  providerAuthRuntime: CallModelInput['providerAuthRuntime'];
-  providerRequestOptions: CallModelInput['providerRequestOptions'];
-  signal?: AbortSignal;
-  emit: AgentEventEmitter;
-  callModelImpl?: CallModelFn;
-}): Promise<AgentResult> {
-  const {
-    history,
-    systemPrompt,
-    threadId,
-    providerWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions,
-    signal,
-    emit,
-    callModelImpl,
-  } = args;
-  try {
-    const input: CallModelInput = {
-      history,
-      systemPrompt: systemPrompt + FINALIZE_SUFFIX,
-      tools: [],
-      providerSessionId: threadId,
-      providerWebSocketSessions,
-      providerAuthRuntime,
-      providerRequestOptions,
-    };
-    if (signal !== undefined) {
-      input.signal = signal;
-    }
-    const finalChunks = (callModelImpl ?? callModel)(input);
-
-    const finalAnswerDeltaEmitter = createFinalAnswerDeltaEmitter(emit);
-    const chunkResult = await consumeFinalizationChunks({
-      chunks: finalChunks,
-      finalAnswerDeltaEmitter,
-    });
-    if (chunkResult.kind === 'failure') {
-      throw chunkResult.error;
-    }
-
-    const { answer, finalText, artifactCandidate } = chunkResult;
-    const hasModelOutput = finalText.trim() !== '' || answer.trim() !== '';
-    const finalAnswer = finalText || answer || 'max tool rounds reached';
-    const result =
-      artifactCandidate !== undefined
-        ? composeAgentResult({
-            ok: false,
-            artifactCandidate,
-          })
-        : composeAgentResult({
-            ok: false,
-            finalProse: finalAnswer,
-          });
-    if (result.artifactCandidate !== undefined) {
-      finalAnswerDeltaEmitter.clear();
-    } else if (result.finalProse && hasModelOutput) {
-      finalAnswerDeltaEmitter.flushOrEmitFallback(result.finalProse);
-    } else {
-      finalAnswerDeltaEmitter.clear();
-    }
-    return result;
-  } catch (error: unknown) {
-    logger.error('finalize after tool limit failed:', getErrorMessage(error));
-    emitInternalError(emit);
-    return { ok: false, finalProse: '' };
-  }
 }

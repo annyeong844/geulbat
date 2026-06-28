@@ -65,6 +65,7 @@ void test('useThreadSessions clears the pending delete dialog after conflict', a
         snapshotVersion: '2026-03-30T00:00:00.000Z',
         messages: [
           {
+            entryId: 'entry-conflict-open',
             role: 'assistant',
             content: 'hello',
             timestamp: '2026-03-30T00:00:00.000Z',
@@ -124,6 +125,7 @@ void test('useThreadSessions clears selected thread state after confirmed delete
         snapshotVersion: '2026-03-30T00:00:00.000Z',
         messages: [
           {
+            entryId: 'entry-delete-open',
             role: 'assistant',
             content: 'hello',
             timestamp: '2026-03-30T00:00:00.000Z',
@@ -166,6 +168,7 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
         snapshotVersion: '2026-04-16T00:00:01.000Z',
         messages: [
           {
+            entryId: 'entry-first-thread',
             role: 'assistant',
             content: 'first thread',
             timestamp: '2026-04-16T00:00:01.000Z',
@@ -180,6 +183,7 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
         snapshotVersion: '2026-04-16T00:00:02.000Z',
         messages: [
           {
+            entryId: 'entry-second-thread',
             role: 'assistant',
             content: 'second thread',
             timestamp: '2026-04-16T00:00:02.000Z',
@@ -194,6 +198,7 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
         snapshotVersion: '2026-04-16T00:00:01.000Z',
         messages: [
           {
+            entryId: 'entry-first-thread-reopened',
             role: 'assistant',
             content: 'first thread reopened',
             timestamp: '2026-04-16T00:00:01.000Z',
@@ -213,6 +218,7 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
   assert.equal(hook.result.current.selectedThreadId, THREAD_ID);
   assert.deepEqual(hook.result.current.messages, [
     {
+      entryId: 'entry-first-thread-reopened',
       role: 'assistant',
       content: 'first thread reopened',
       timestamp: '2026-04-16T00:00:01.000Z',
@@ -231,6 +237,7 @@ void test('useThreadSessions can apply a persisted thread snapshot without refet
       snapshotVersion: '2026-04-16T00:00:00.000Z',
       messages: [
         {
+          entryId: 'entry-persisted-answer',
           role: 'assistant',
           content: 'persisted answer',
           timestamp: '2026-04-16T00:00:00.000Z',
@@ -243,6 +250,7 @@ void test('useThreadSessions can apply a persisted thread snapshot without refet
   assert.equal(hook.result.current.selectedThreadId, THREAD_ID);
   assert.deepEqual(hook.result.current.messages, [
     {
+      entryId: 'entry-persisted-answer',
       role: 'assistant',
       content: 'persisted answer',
       timestamp: '2026-04-16T00:00:00.000Z',
@@ -262,6 +270,7 @@ void test('useThreadSessions ignores stale persisted snapshots for the same thre
       snapshotVersion: '2026-04-16T00:00:01.000Z',
       messages: [
         {
+          entryId: 'entry-newer',
           role: 'assistant',
           content: 'newer',
           timestamp: '2026-04-16T00:00:01.000Z',
@@ -278,6 +287,7 @@ void test('useThreadSessions ignores stale persisted snapshots for the same thre
       snapshotVersion: '2026-04-16T00:00:00.000Z',
       messages: [
         {
+          entryId: 'entry-older',
           role: 'assistant',
           content: 'older',
           timestamp: '2026-04-16T00:00:00.000Z',
@@ -290,6 +300,7 @@ void test('useThreadSessions ignores stale persisted snapshots for the same thre
   assert.equal(appliedStaleSnapshot, false);
   assert.deepEqual(hook.result.current.messages, [
     {
+      entryId: 'entry-newer',
       role: 'assistant',
       content: 'newer',
       timestamp: '2026-04-16T00:00:01.000Z',
@@ -316,6 +327,7 @@ void test('useThreadSessions clears threadError when a persisted snapshot applie
       snapshotVersion: '2026-04-16T00:00:01.000Z',
       messages: [
         {
+          entryId: 'entry-persisted-answer-after-error',
           role: 'assistant',
           content: 'persisted answer',
           timestamp: '2026-04-16T00:00:01.000Z',

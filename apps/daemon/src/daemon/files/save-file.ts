@@ -1,5 +1,5 @@
 import { readFile as fsReadFile } from 'node:fs/promises';
-import type { FileSaveResponse } from '@geulbat/protocol/files';
+import type { FileSaveResponse } from './contract.js';
 import {
   resolveSourceMutationTarget,
   type SourceMutationTarget,

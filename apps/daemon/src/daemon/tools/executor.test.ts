@@ -19,6 +19,7 @@ function makeTool<TArgs extends object>(options: {
     ctx: ToolExecutionContext,
   ) => Promise<ExecuteResult>;
   sideEffectLevel?: AnyTool['sideEffectLevel'];
+  mayMutateWorkspaceFiles?: boolean;
   timeoutMs?: number;
   omitTimeout?: boolean;
   requiresApproval?: boolean;
@@ -34,6 +35,7 @@ function makeTool<TArgs extends object>(options: {
     },
     strict: true,
     sideEffectLevel: options.sideEffectLevel ?? 'none',
+    mayMutateWorkspaceFiles: options.mayMutateWorkspaceFiles ?? false,
     ...(options.omitTimeout ? {} : { timeoutMs: options.timeoutMs ?? 1_000 }),
     requiresApproval: options.requiresApproval ?? false,
     parseArgs: options.parseArgs ?? (() => ({ ok: true, value: {} as TArgs })),
@@ -109,6 +111,75 @@ void test('executeTool preserves tool-level failure results without wrapping the
     output: '',
     errorCode: 'conflict_stale_write',
     error: 'stale write',
+  });
+});
+
+void test('executeTool sanitizes unsafe tool-level failure result messages', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'unsafe_result_tool_for_executor_test',
+      async executeParsed() {
+        return {
+          ok: false,
+          output: '',
+          errorCode: 'execution_failed',
+          error:
+            "EACCES: permission denied, open '/tmp/private/workspace/file.txt'",
+        };
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'unsafe_result_tool_for_executor_test',
+    {},
+    {
+      callId: 'call_unsafe_result',
+      workspaceRoot: '/tmp/private/workspace',
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'execution_failed',
+    error: 'tool "unsafe_result_tool_for_executor_test" execution failed',
+  });
+});
+
+void test('executeTool preserves safe not_found tool-level failure messages', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'not_found_result_tool_for_executor_test',
+      async executeParsed() {
+        return {
+          ok: false,
+          output: '',
+          errorCode: 'not_found',
+          error: 'Task missing-id not found.',
+        };
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'not_found_result_tool_for_executor_test',
+    {},
+    {
+      callId: 'call_not_found_result',
+      workspaceRoot: '/tmp',
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'not_found',
+    error: 'Task missing-id not found.',
   });
 });
 

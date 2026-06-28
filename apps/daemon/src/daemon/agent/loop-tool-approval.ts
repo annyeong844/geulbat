@@ -2,9 +2,12 @@
 // - resolve approval target
 // - run preflight / auto-approve checks
 // - route prompt/wait handling when approval is required
-import type { SideEffectLevel } from '@geulbat/protocol/run-events';
 import { getErrorMessage } from '@geulbat/shared-utils/error';
 import { createLogger } from '@geulbat/shared-utils/logger';
+import {
+  assertAgentRunId as assertValidRunId,
+  type SideEffectLevel,
+} from './contract.js';
 import type { ExecuteResult } from '../tools/types.js';
 import type { FunctionCall, HistoryItem } from '../llm/index.js';
 import {
@@ -18,18 +21,22 @@ import type {
   ApprovalClass,
   ApprovalGrantContext,
 } from '../tools/approval-grants.js';
+import type { GenericApiErrorCode } from '../error-codes.js';
 import { toolError } from '../tools/result.js';
+import type { AgentResult } from './agent-result.js';
 import type { RunWorkspaceContext } from '../run-workspace-context.js';
+import { PTC_EXECUTE_CODE_TOOL_NAME } from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
 import { executeResolvedFunctionCall } from './loop-tool-execute-context.js';
+import { createCallbackToolDispatcher } from './callback-tool-dispatcher.js';
 import type { ToolCallArgs } from './events.js';
-import {
-  emitAndSettleTerminalFailure,
-  type StepResult,
-} from './loop-shared.js';
+import { emitAndSettleTerminalFailure } from './loop-shared.js';
 import { recordToolResult } from './loop-tool-support.js';
-import { assertRunId as assertValidRunId } from '@geulbat/protocol/ids';
 import type { ApprovalContext } from './loop-types.js';
-import { markRunApprovalPending, type RunState } from './runtime/run-state.js';
+import {
+  markRunApprovalPending,
+  type RunFailureOutcome,
+  type RunState,
+} from './runtime/run-state.js';
 import type {
   AgentToolCallExecutionRuntime,
   ApprovalTarget,
@@ -40,10 +47,28 @@ import {
   getToolRuntimeSignal,
   getToolRuntimeWorkspaceRoot,
 } from './loop-tool-runtime.js';
+import {
+  AGENT_LOOP_TOOL_CALL_SOURCE,
+  type ToolCallSource,
+} from './tool-call-source.js';
 
 const logger = createLogger('agent/tool-approval');
 
-type ApprovalDecisionResult = 'approved' | StepResult<ExecuteResult>;
+export interface DeferredFunctionCallTerminalFailure {
+  code: GenericApiErrorCode;
+  message: string;
+  outcome: RunFailureOutcome;
+  signal?: AbortSignal;
+}
+
+export type FunctionCallExecutionResult =
+  | { ok: true; value: ExecuteResult }
+  | ({
+      ok: false;
+      result: AgentResult;
+    } & { deferredTerminalFailure?: DeferredFunctionCallTerminalFailure });
+
+type ApprovalDecisionResult = 'approved' | FunctionCallExecutionResult;
 
 export async function executeFunctionCall(args: {
   functionCall: FunctionCall;
@@ -51,8 +76,30 @@ export async function executeFunctionCall(args: {
   toolArgs: ToolCallArgs;
   history: HistoryItem[];
   runtime: AgentToolCallExecutionRuntime;
-}): Promise<StepResult<ExecuteResult>> {
+  source?: ToolCallSource;
+  denialMode?: 'terminal' | 'code_visible';
+  deferTerminalFailure?: boolean;
+}): Promise<FunctionCallExecutionResult> {
   const { functionCall, round, toolArgs, history, runtime } = args;
+  const source = args.source ?? AGENT_LOOP_TOOL_CALL_SOURCE;
+  const denialMode = args.denialMode ?? 'terminal';
+  const isAgentLoopTerminal =
+    source.kind === 'agent_loop' && denialMode === 'terminal';
+  const isPtcCodeVisible =
+    source.kind === 'ptc_callback' && denialMode === 'code_visible';
+  if (!isAgentLoopTerminal && !isPtcCodeVisible) {
+    throw new Error('unsupported tool dispatch source/denialMode combination');
+  }
+  const callbackToolDispatcher =
+    isAgentLoopTerminal && functionCall.name === PTC_EXECUTE_CODE_TOOL_NAME
+      ? createCallbackToolDispatcher({
+          runtime,
+          history,
+          parentRound: round,
+          parentToolCallId: functionCall.callId,
+          dispatchFunctionCall: executeFunctionCall,
+        })
+      : undefined;
   const meta = runtime.toolRegistry.getToolMeta(functionCall.name);
   const runtimeSideEffectLevel =
     resolveRuntimeSideEffectLevel(functionCall.name, toolArgs, {
@@ -60,6 +107,17 @@ export async function executeFunctionCall(args: {
     }) ??
     meta?.sideEffectLevel ??
     'write';
+  if (isPtcCodeVisible) {
+    const isPhase1PtcReadOnly =
+      runtimeSideEffectLevel === 'read' &&
+      meta?.requiresApproval === false &&
+      meta?.mayMutateWorkspaceFiles === false;
+    if (!isPhase1PtcReadOnly) {
+      throw new Error(
+        'PTC callback dispatch currently supports only read-only no-approval tools',
+      );
+    }
+  }
   const approvalClass = resolveApprovalClass(functionCall.name, toolArgs);
   const approvalTarget = resolveApprovalTarget(
     runtime.approvalContext,
@@ -76,6 +134,11 @@ export async function executeFunctionCall(args: {
   });
 
   if (approvalState.needsApproval) {
+    if (denialMode === 'code_visible') {
+      throw new Error(
+        'code-visible approval is not supported for the current PTC tool surface',
+      );
+    }
     const decision = await resolveApprovalDecision({
       functionCall,
       round,
@@ -85,6 +148,7 @@ export async function executeFunctionCall(args: {
       toolArgs,
       history,
       runtime,
+      deferTerminalFailure: args.deferTerminalFailure === true,
     });
     if (decision !== 'approved') {
       return decision;
@@ -96,6 +160,7 @@ export async function executeFunctionCall(args: {
         toolArgs,
         approvalGranted: true,
         runtime,
+        ...(callbackToolDispatcher ? { callbackToolDispatcher } : {}),
       }),
     };
   }
@@ -107,6 +172,7 @@ export async function executeFunctionCall(args: {
       toolArgs,
       approvalGranted: approvalState.approvalGranted,
       runtime,
+      ...(callbackToolDispatcher ? { callbackToolDispatcher } : {}),
     }),
   };
 }
@@ -202,6 +268,7 @@ interface ResolveApprovalDecisionArgs {
     AgentToolCallExecutionRuntime,
     'approvalContext' | 'emit' | 'approvalGate' | 'executionContextBase'
   >;
+  deferTerminalFailure?: boolean;
 }
 
 export async function resolveApprovalDecision(
@@ -259,11 +326,17 @@ export async function resolveApprovalDecision(
       history,
       emit,
       runState,
+      args.deferTerminalFailure === true,
     );
   }
 
   if (decision === 'aborted') {
-    return buildAbortedApprovalResult(emit, runState, signal);
+    return buildAbortedApprovalResult(
+      emit,
+      runState,
+      signal,
+      args.deferTerminalFailure === true,
+    );
   }
 
   return 'approved';
@@ -277,7 +350,8 @@ async function buildDeniedApprovalResult(
   history: ResolveApprovalDecisionArgs['history'],
   emit: ResolveApprovalDecisionArgs['runtime']['emit'],
   runState?: RunState,
-): Promise<StepResult<ExecuteResult>> {
+  deferTerminalFailure = false,
+): Promise<FunctionCallExecutionResult> {
   const deniedError = `tool "${functionCall.name}" denied`;
   await recordToolResult({
     functionCall,
@@ -289,6 +363,17 @@ async function buildDeniedApprovalResult(
     history,
     emit,
   });
+  if (deferTerminalFailure) {
+    return {
+      ok: false,
+      result: { ok: false, finalProse: '' },
+      deferredTerminalFailure: {
+        code: 'approval_denied',
+        message: deniedError,
+        outcome: 'failed',
+      },
+    };
+  }
   return {
     ok: false,
     result: emitAndSettleTerminalFailure(
@@ -306,7 +391,20 @@ function buildAbortedApprovalResult(
   emit: ResolveApprovalDecisionArgs['runtime']['emit'],
   runState?: RunState,
   signal?: AbortSignal,
-): StepResult<ExecuteResult> {
+  deferTerminalFailure = false,
+): FunctionCallExecutionResult {
+  if (deferTerminalFailure) {
+    return {
+      ok: false,
+      result: { ok: false, finalProse: '' },
+      deferredTerminalFailure: {
+        code: 'aborted',
+        message: 'approval aborted',
+        outcome: 'cancelled',
+        ...(signal !== undefined ? { signal } : {}),
+      },
+    };
+  }
   return {
     ok: false,
     result: emitAndSettleTerminalFailure(

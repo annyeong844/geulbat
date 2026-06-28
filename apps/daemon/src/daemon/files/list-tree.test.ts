@@ -71,6 +71,38 @@ void test('listTree rejects trees that exceed the node cap', async () => {
   });
 });
 
+void test('listTree has no hidden default depth guard', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-tree-deep-'));
+
+  let current = workspaceRoot;
+  for (let depth = 0; depth <= 16; depth += 1) {
+    current = join(current, `level-${depth}`);
+    await mkdir(current, { recursive: true });
+  }
+  await writeFile(join(current, 'leaf.txt'), 'x\n', 'utf8');
+
+  const tree = await listTree(workspaceRoot);
+
+  let node = tree[0];
+  for (let depth = 0; depth <= 16; depth += 1) {
+    assert.equal(node?.name, `level-${depth}`);
+    node = node?.children?.[0];
+  }
+  assert.equal(node?.name, 'leaf.txt');
+});
+
+void test('listTree has no hidden default node cap', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-tree-wide-'));
+
+  for (let index = 0; index < 10_005; index += 1) {
+    await writeFile(join(workspaceRoot, `file-${index}.txt`), 'x\n', 'utf8');
+  }
+
+  const tree = await listTree(workspaceRoot);
+
+  assert.equal(tree.length, 10_005);
+});
+
 void test('listTree skips repeated real-directory branches created by symlink cycles', async (t) => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-tree-cycle-'));
   const docsDir = join(workspaceRoot, 'docs');

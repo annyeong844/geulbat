@@ -1,14 +1,39 @@
 import type { SideEffectLevel } from '@geulbat/protocol/run-events';
 import type { ErrorCode } from '../error-codes.js';
 
-export interface ToolParameters {
+export interface ToolObjectParameters {
   type: 'object';
   properties: Record<string, unknown>;
   required: string[];
   additionalProperties: false;
 }
 
-export type ParallelToolBatchKind = 'subagent_launch';
+export interface ToolOneOfParameters {
+  oneOf: ToolObjectParameters[];
+}
+
+export interface ToolAnyOfParameters {
+  anyOf: ToolObjectParameters[];
+}
+
+export type ToolParameters =
+  | ToolObjectParameters
+  | ToolOneOfParameters
+  | ToolAnyOfParameters;
+
+export function isToolObjectParameters(
+  parameters: ToolParameters,
+): parameters is ToolObjectParameters {
+  return !('oneOf' in parameters) && !('anyOf' in parameters);
+}
+
+export function isToolAnyOfParameters(
+  parameters: ToolParameters,
+): parameters is ToolAnyOfParameters {
+  return 'anyOf' in parameters;
+}
+
+export type ParallelToolBatchKind = 'subagent_launch' | 'ptc_cell';
 
 export interface ToolDefinition {
   type: 'function';
@@ -20,7 +45,7 @@ export interface ToolDefinition {
 
 export interface ToolMeta {
   sideEffectLevel: SideEffectLevel;
-  mayMutateWorkspaceFiles?: boolean;
+  mayMutateWorkspaceFiles: boolean;
   parallelBatchKind?: ParallelToolBatchKind;
   timeoutMs?: number;
   requiresApproval: boolean;

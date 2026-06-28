@@ -4,7 +4,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { callModelWithDependencies } from './client.js';
 import { createProviderAuthRuntimeStore } from '../../auth/runtime-state.js';
-import type { ProviderRequestOptions } from './provider-options.js';
+import {
+  resolveProviderRequestOptions,
+  type ProviderRequestOptions,
+} from './provider-options.js';
 import type { ResponsesWebSocketSessionStore } from './transport/responses-websocket-cache.js';
 
 const unusedProviderWebSocketSessions: Pick<
@@ -16,11 +19,8 @@ const unusedProviderWebSocketSessions: Pick<
   },
 };
 
-const defaultProviderRequestOptions: ProviderRequestOptions = {
-  model: 'gpt-5.5',
-  text: { verbosity: 'medium' },
-  reasoning: { effort: 'medium', summary: 'auto' },
-};
+const defaultProviderRequestOptions: ProviderRequestOptions =
+  resolveProviderRequestOptions({});
 
 void test('callModelWithDependencies uses frozen provider request options instead of live env', async () => {
   const runtimeStore = createProviderAuthRuntimeStore();
@@ -33,6 +33,7 @@ void test('callModelWithDependencies uses frozen provider request options instea
 
   try {
     const providerRequestOptions: ProviderRequestOptions = {
+      ...defaultProviderRequestOptions,
       model: 'gpt-frozen-startup',
       text: { verbosity: 'low' },
       reasoning: { effort: 'low', summary: 'auto' },
@@ -102,6 +103,7 @@ void test('callModelWithDependencies uses frozen provider request options instea
 void test('callModelWithDependencies builds provider body from daemon-local provider request options', async () => {
   const runtimeStore = createProviderAuthRuntimeStore();
   const providerRequestOptions: ProviderRequestOptions = {
+    ...defaultProviderRequestOptions,
     model: 'gpt-5.5',
     reasoning: { effort: 'xhigh', summary: 'auto' },
     text: { verbosity: 'high' },
@@ -626,6 +628,68 @@ void test('callModelWithDependencies forces one refresh and retries once after c
       type: 'done',
       assistantText: 'assistant answer',
       finalText: 'assistant answer',
+    },
+  ]);
+});
+
+void test('callModelWithDependencies does not retry auth failure after streamed text is committed', async () => {
+  const chunks = [];
+  const runtimeStore = createProviderAuthRuntimeStore();
+  let token = 'stale-token';
+  let streamCalls = 0;
+  let forcedRefreshCalls = 0;
+
+  for await (const chunk of callModelWithDependencies(
+    {
+      history: [],
+      systemPrompt: 'system',
+      providerSessionId: 'provider-session',
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime: runtimeStore,
+      providerRequestOptions: defaultProviderRequestOptions,
+    },
+    {
+      getProviderAuth: async () => ({
+        accessToken: token,
+        accountId: 'account',
+      }),
+      forceRefreshProviderAuth: async () => {
+        forcedRefreshCalls += 1;
+        token = 'fresh-token';
+        return {
+          accessToken: token,
+          accountId: 'account',
+        };
+      },
+      streamResponsesOverWebSocket: async ({ headers, onAssistantDelta }) => {
+        streamCalls += 1;
+        assert.equal(headers.get('Authorization'), 'Bearer stale-token');
+        onAssistantDelta?.({
+          itemId: 'item_1',
+          phase: 'final_answer',
+          text: 'ATTEMPT-1-PARTIAL ',
+        });
+        throw Object.assign(new Error('unauthorized'), {
+          status: 401,
+        });
+      },
+    },
+  )) {
+    chunks.push(chunk);
+  }
+
+  assert.equal(forcedRefreshCalls, 0);
+  assert.equal(streamCalls, 1);
+  assert.deepEqual(chunks, [
+    {
+      type: 'text_delta',
+      text: 'ATTEMPT-1-PARTIAL ',
+      phase: 'final_answer',
+    },
+    {
+      type: 'error',
+      code: 'llm_auth_failed',
+      message: 'provider authentication failed',
     },
   ]);
 });

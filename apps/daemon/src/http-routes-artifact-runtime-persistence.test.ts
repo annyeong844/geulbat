@@ -5,9 +5,10 @@ import { mkdir } from 'node:fs/promises';
 import express from 'express';
 
 import { createArtifactRuntimePersistenceRoutes } from './adapter/web/routes/artifact-runtime-persistence.js';
+import { readArtifactRuntimePersistenceStateInputRef } from './daemon/artifact-runtime-persistence/input-ref-store.js';
+import { createRunInterjectBuffer } from './daemon/sessions/active-run-interject-buffer.js';
 import type { DaemonContext } from './daemon/context.js';
 import { DEFAULT_PROJECT_ID } from './daemon/files/project-registry-state.js';
-import { MAX_RUNTIME_PERSISTENCE_FILE_BYTES } from './daemon/artifact-runtime-persistence/quota.js';
 import { assertThreadId as assertValidThreadId } from '@geulbat/protocol/ids';
 import {
   authHeaders,
@@ -120,8 +121,13 @@ void test('authenticated runtime persistence routes support load/save/clear with
   });
 });
 
-void test('authenticated runtime persistence save route returns 413 on quota exceed', async () => {
+void test('authenticated runtime persistence save route accepts states larger than the retired per-artifact quota', async () => {
   await withRuntimePersistenceServer(async ({ port }) => {
+    const largeState = {
+      // Regression fixture only: larger than the retired 64 KiB per-artifact quota,
+      // but below the current HTTP JSON transport body guard.
+      text: 'x'.repeat(96 * 1024),
+    };
     const res = await fetch(
       `http://127.0.0.1:${port}/api/artifact-runtime-persistence/save`,
       {
@@ -133,18 +139,253 @@ void test('authenticated runtime persistence save route returns 413 on quota exc
           ...createRuntimePersistenceScope({
             artifactId: 'art_route_oversized_js',
           }),
-          state: {
-            text: 'x'.repeat(MAX_RUNTIME_PERSISTENCE_FILE_BYTES),
-          },
+          state: largeState,
           expectedRevision: null,
         }),
       },
     );
 
-    assert.equal(res.status, 413);
-    const body = (await res.json()) as { code: string; message: string };
-    assert.equal(body.code, 'persistence_quota_exceeded');
-    assert.match(body.message, /per-artifact quota/);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { revision: string };
+    assert.equal(typeof body.revision, 'string');
+    assert.ok(body.revision.length > 0);
+  });
+});
+
+void test('authenticated runtime persistence save route accepts streamed state refs beyond the JSON body guard', async () => {
+  await withRuntimePersistenceServer(async ({ port }) => {
+    const longText = 'x'.repeat(300 * 1024);
+    const uploadRes = await fetch(
+      `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+      {
+        method: 'POST',
+        headers: authHeaders({
+          'Content-Type': 'application/octet-stream',
+        }),
+        body: JSON.stringify({ text: longText }),
+      },
+    );
+
+    assert.equal(uploadRes.status, 201);
+    const uploadBody = (await uploadRes.json()) as {
+      ok: true;
+      stateRef: string;
+      byteLength: number;
+    };
+    assert.equal(uploadBody.ok, true);
+    assert.match(uploadBody.stateRef, /^artifact-runtime-state-input:/u);
+    assert.ok(uploadBody.byteLength > longText.length);
+
+    const saveRes = await fetch(
+      `http://127.0.0.1:${port}/api/artifact-runtime-persistence/save`,
+      {
+        method: 'POST',
+        headers: authHeaders({
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({
+          ...createRuntimePersistenceScope({
+            artifactId: 'art_route_state_ref_js',
+          }),
+          stateRef: uploadBody.stateRef,
+          expectedRevision: null,
+        }),
+      },
+    );
+
+    assert.equal(saveRes.status, 200);
+    const saveBody = (await saveRes.json()) as { revision: string };
+    assert.equal(typeof saveBody.revision, 'string');
+    assert.ok(saveBody.revision.length > 0);
+
+    const loadRes = await fetch(
+      `http://127.0.0.1:${port}/api/artifact-runtime-persistence/load`,
+      {
+        method: 'POST',
+        headers: authHeaders({
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify(
+          createRuntimePersistenceScope({
+            artifactId: 'art_route_state_ref_js',
+          }),
+        ),
+      },
+    );
+
+    assert.equal(loadRes.status, 200);
+    const loadBody = (await loadRes.json()) as {
+      state: { text: string };
+      revision: string;
+    };
+    assert.equal(loadBody.revision, saveBody.revision);
+    assert.equal(loadBody.state.text.length, longText.length);
+    assert.equal(loadBody.state.text, longText);
+  });
+});
+
+void test('authenticated runtime persistence save route deletes consumed state refs after conflicts', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  await withRuntimePersistenceServer(
+    async ({ port }) => {
+      const scope = createRuntimePersistenceScope({
+        artifactId: 'art_route_state_ref_conflict_js',
+      });
+      const initialSaveRes = await fetch(
+        `http://127.0.0.1:${port}/api/artifact-runtime-persistence/save`,
+        {
+          method: 'POST',
+          headers: authHeaders({
+            'Content-Type': 'application/json',
+          }),
+          body: JSON.stringify({
+            ...scope,
+            state: { count: 1 },
+            expectedRevision: null,
+          }),
+        },
+      );
+      assert.equal(initialSaveRes.status, 200);
+
+      const uploadRes = await fetch(
+        `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+        {
+          method: 'POST',
+          headers: authHeaders({
+            'Content-Type': 'application/octet-stream',
+          }),
+          body: JSON.stringify({ count: 2 }),
+        },
+      );
+      assert.equal(uploadRes.status, 201);
+      const uploadBody = (await uploadRes.json()) as {
+        stateRef: string;
+      };
+
+      const conflictSaveRes = await fetch(
+        `http://127.0.0.1:${port}/api/artifact-runtime-persistence/save`,
+        {
+          method: 'POST',
+          headers: authHeaders({
+            'Content-Type': 'application/json',
+          }),
+          body: JSON.stringify({
+            ...scope,
+            stateRef: uploadBody.stateRef,
+            expectedRevision: null,
+          }),
+        },
+      );
+
+      assert.equal(conflictSaveRes.status, 409);
+      const resolved = await readArtifactRuntimePersistenceStateInputRef({
+        workspaceRoot,
+        stateRef: uploadBody.stateRef,
+      });
+      assert.deepEqual(resolved, {
+        ok: false,
+        code: 'not_found',
+        message: 'stateRef was not found.',
+      });
+    },
+    { daemonContext },
+  );
+});
+
+void test('authenticated runtime persistence state input uploads reject JSON requests', async () => {
+  await withRuntimePersistenceServer(async ({ port }) => {
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+      {
+        method: 'POST',
+        headers: authHeaders({
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({ count: 1 }),
+      },
+    );
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), {
+      code: 'bad_request',
+      message:
+        'runtime persistence state input upload must use a streaming content type',
+    });
+  });
+});
+
+void test('authenticated runtime persistence state input route deletes refs without parsing payloads', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+
+  await withRuntimePersistenceServer(
+    async ({ port }) => {
+      const uploadRes = await fetch(
+        `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+        {
+          method: 'POST',
+          headers: authHeaders({
+            'Content-Type': 'application/octet-stream',
+          }),
+          body: 'not-json',
+        },
+      );
+      assert.equal(uploadRes.status, 201);
+      const uploadBody = (await uploadRes.json()) as { stateRef: string };
+
+      const deleteRes = await fetch(
+        `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs?projectId=${DEFAULT_PROJECT_ID}&stateRef=${encodeURIComponent(
+          uploadBody.stateRef,
+        )}`,
+        {
+          method: 'DELETE',
+          headers: authHeaders(),
+        },
+      );
+
+      assert.equal(deleteRes.status, 200);
+      assert.deepEqual(await deleteRes.json(), { ok: true });
+      assert.deepEqual(
+        await readArtifactRuntimePersistenceStateInputRef({
+          workspaceRoot,
+          stateRef: uploadBody.stateRef,
+        }),
+        {
+          ok: false,
+          code: 'not_found',
+          message: 'stateRef was not found.',
+        },
+      );
+    },
+    { daemonContext },
+  );
+});
+
+void test('authenticated runtime persistence save route rejects invalid state refs', async () => {
+  await withRuntimePersistenceServer(async ({ port }) => {
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/artifact-runtime-persistence/save`,
+      {
+        method: 'POST',
+        headers: authHeaders({
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({
+          ...createRuntimePersistenceScope({
+            artifactId: 'art_route_invalid_state_ref_js',
+          }),
+          stateRef: 'not-a-runtime-state-ref',
+          expectedRevision: null,
+        }),
+      },
+    );
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), {
+      code: 'bad_request',
+      message: 'stateRef must be an artifact-runtime-state-input reference.',
+    });
   });
 });
 
@@ -185,6 +426,7 @@ void test('authenticated runtime persistence routes remain available during acti
       workspaceRoot: getWorkspaceRootFromContext(daemonContext),
       ownerThreadId: threadId,
       abortController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-29T00:00:00.000Z',
     }),
     { ok: true },
@@ -293,7 +535,7 @@ void test('authenticated runtime persistence save route requires state', async (
     assert.equal(res.status, 400);
     assert.deepEqual(await res.json(), {
       code: 'bad_request',
-      message: 'state is required',
+      message: 'state or stateRef is required',
     });
   });
 });

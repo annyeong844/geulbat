@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import {
-  assertRunId as assertValidRunId,
-  assertThreadId as assertValidThreadId,
+  assertAgentRunId as assertValidRunId,
+  assertAgentThreadId as assertValidThreadId,
   type RunId,
   type ThreadId,
-} from '@geulbat/protocol/ids';
+} from '../contract.js';
 
 import type { ActiveRun, ActiveRunStore } from '../../sessions/active-runs.js';
 import { createRunState, type RunState } from './run-state.js';
@@ -79,6 +79,7 @@ function startManagedRunInternal(
     ...runContext,
     ownerThreadId,
     abortController: runState.abortController,
+    interject: runState.interject,
     startedAt: runState.createdAt,
     ...(parentRunId !== undefined ? { parentRunId } : {}),
   };

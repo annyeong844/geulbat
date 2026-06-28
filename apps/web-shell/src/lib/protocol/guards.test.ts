@@ -120,7 +120,6 @@ void test('API response guards accept protocol-shaped payloads', () => {
         totalLines: 1,
         startLine: 1,
         endLine: 1,
-        truncated: false,
       },
     },
     {
@@ -157,6 +156,7 @@ void test('API response guards accept protocol-shaped payloads', () => {
         snapshotVersion: '2026-03-24T00:00:00.000Z',
         messages: [
           {
+            entryId: 'entry-thread-detail',
             role: 'assistant',
             content: 'hello',
             timestamp: '2026-03-24T00:00:00.000Z',
@@ -242,6 +242,7 @@ void test('protocol runtime helper guards stay available through the web-shell f
 
   assert.equal(
     isThreadMessage({
+      entryId: 'entry-valid',
       role: 'assistant',
       content: 'hello',
       timestamp: '2026-03-24T00:00:00.000Z',
@@ -273,6 +274,7 @@ void test('thread response guards reject malformed thread ids and message metada
       snapshotVersion: '2026-03-24T00:00:00.000Z',
       messages: [
         {
+          entryId: 'entry-bad-metadata',
           role: 'assistant',
           content: 'hello',
           timestamp: '2026-03-24T00:00:00.000Z',
@@ -285,6 +287,7 @@ void test('thread response guards reject malformed thread ids and message metada
 
   assert.equal(
     isThreadMessage({
+      entryId: 'entry-bad-message-metadata',
       role: 'assistant',
       content: 'hello',
       timestamp: '2026-03-24T00:00:00.000Z',
@@ -387,6 +390,11 @@ void test('isRunChannelServerMessage accepts all run.event payload variants', ()
       terminalState: 'completed',
       ok: true,
       result: 'done',
+    }),
+    makeRunEvent('interject_applied', {
+      runId: RUN_ID,
+      count: 1,
+      receivedSeqs: [1],
     }),
     makeRunEvent('thread_state_persisted', {
       threadId: THREAD_ID,

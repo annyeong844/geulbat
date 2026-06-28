@@ -1,7 +1,9 @@
-import { createArtifactRefKey } from '@geulbat/protocol/artifacts';
-import { tryParseJsonRecord } from '@geulbat/protocol/runtime-utils';
-import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
-import { readArtifactRefsFromMetadata } from '@geulbat/protocol/thread-metadata';
+import {
+  createAgentArtifactRefKey as createArtifactRefKey,
+  readAgentArtifactRefsFromMetadata as readArtifactRefsFromMetadata,
+  type ThreadArtifactVersion,
+} from '../contract.js';
+import { isRecord, tryParseJsonRecord } from '../../runtime-json.js';
 import type { HistoryItem } from '../../llm/index.js';
 import type { TranscriptEntry } from '../../sessions/transcript-log.js';
 
@@ -10,6 +12,7 @@ export function buildHistoryFromTranscript(
   artifactVersionsByRef: ReadonlyMap<string, ThreadArtifactVersion> = new Map(),
 ): HistoryItem[] {
   const history: HistoryItem[] = [];
+  const skippedToolCallIds = new Set<string>();
 
   for (const message of messages) {
     switch (message.role) {
@@ -27,6 +30,12 @@ export function buildHistoryFromTranscript(
         const parsedResult = tryParseJsonRecord(message.content);
         const parsed = parsedResult.ok ? parsedResult.value : null;
         const callId = readString(parsed?.callId);
+        if (isHistoryReplaySkipped(parsed)) {
+          if (callId) {
+            skippedToolCallIds.add(callId);
+          }
+          break;
+        }
         const toolName = readString(parsed?.tool);
         if (!callId || !toolName) break;
 
@@ -44,6 +53,9 @@ export function buildHistoryFromTranscript(
         const parsed = parsedResult.ok ? parsedResult.value : null;
         const callId = readString(parsed?.callId);
         if (!callId) break;
+        if (skippedToolCallIds.has(callId) || isHistoryReplaySkipped(parsed)) {
+          break;
+        }
 
         history.push({
           kind: 'function_call_output',
@@ -130,6 +142,19 @@ function buildArtifactCarryText(artifact: ThreadArtifactVersion): string {
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function isHistoryReplaySkipped(
+  parsed: Record<string, unknown> | null,
+): boolean {
+  if (!parsed) {
+    return false;
+  }
+  if (parsed.historyMode === 'audit_only') {
+    return true;
+  }
+  const source = parsed.source;
+  return isRecord(source) && source.kind === 'ptc_callback';
 }
 
 function stringifyJson(value: unknown): string {

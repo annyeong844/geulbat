@@ -66,7 +66,7 @@ export const agentStopTool = defineParsedTool<AgentStopArgs>({
   parameters: agentStopParameters,
   strict: true,
   sideEffectLevel: 'none',
-  timeoutMs: 30_000,
+  mayMutateWorkspaceFiles: false,
   requiresApproval: false,
   parseArgs: parseAgentStopArgs,
   async executeParsed(args, ctx) {
@@ -78,20 +78,6 @@ export const agentStopTool = defineParsedTool<AgentStopArgs>({
       args.child_run_id,
     );
     if (!childRecord) {
-      const collectedRecord =
-        ctx.agentSpawnRuntime.childRuns.getCollectedChildRun(args.child_run_id);
-      if (collectedRecord) {
-        if (collectedRecord.ownerThreadId !== ctx.threadId) {
-          return toolError(
-            'invalid_args',
-            `child run does not belong to current owner thread: ${args.child_run_id}`,
-          );
-        }
-        return toolError(
-          'conflict',
-          `child run handle expired: ${args.child_run_id}`,
-        );
-      }
       return toolError(
         'invalid_args',
         `unknown child run: ${args.child_run_id}`,

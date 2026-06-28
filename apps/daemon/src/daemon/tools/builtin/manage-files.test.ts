@@ -6,16 +6,27 @@ import { join } from 'node:path';
 import { createSymlinkOrSkip } from '../../../test-support/symlink-test.js';
 import { manageFilesTool } from './manage-files.js';
 
-void test('manage_files outward destination description explains branch truth', () => {
-  const destinationProperty = manageFilesTool.parameters.properties
-    .destination as {
-    description?: string;
-  };
+function findManageFilesOperationBranch(operation: string) {
+  const parameters = manageFilesTool.parameters;
+  assert.ok('oneOf' in parameters);
+  const branch = parameters.oneOf.find((candidate) => {
+    const operationProperty = candidate.properties.operation as
+      | { const?: unknown }
+      | undefined;
+    return operationProperty?.const === operation;
+  });
+  assert.ok(branch);
+  return branch;
+}
 
-  assert.match(
-    destinationProperty.description ?? '',
-    /Required for rename\/move and forbidden for create\/mkdir\/delete\./,
-  );
+void test('manage_files outward parameters publish branch destination requirements', () => {
+  const createBranch = findManageFilesOperationBranch('create');
+  const renameBranch = findManageFilesOperationBranch('rename');
+  const moveBranch = findManageFilesOperationBranch('move');
+
+  assert.equal('destination' in createBranch.properties, false);
+  assert.deepEqual(renameBranch.required, ['operation', 'path', 'destination']);
+  assert.deepEqual(moveBranch.required, ['operation', 'path', 'destination']);
 });
 
 void test('manage_files create rejects destination before execution', async () => {
@@ -69,12 +80,34 @@ void test('manage_files delete rejects destination before execution', async () =
   assert.equal(result.error, 'destination is not allowed for delete.');
 });
 
+void test('manage_files rejects blank path before execution', async () => {
+  const result = await manageFilesTool.execute(
+    { operation: 'create', path: '   ' },
+    { callId: 'call-manage-blank-path', workspaceRoot: '/workspace' },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /path.*empty/);
+});
+
 void test('manage_files rename requires destination before execution', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'from.txt' },
     { callId: 'call-rename-missing-destination', workspaceRoot },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.equal(result.error, 'destination is required for rename.');
+});
+
+void test('manage_files rename rejects blank destination before execution', async () => {
+  const result = await manageFilesTool.execute(
+    { operation: 'rename', path: 'from.txt', destination: '   ' },
+    { callId: 'call-rename-blank-destination', workspaceRoot: '/workspace' },
   );
 
   assert.equal(result.ok, false);

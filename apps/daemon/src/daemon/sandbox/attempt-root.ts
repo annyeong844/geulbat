@@ -21,6 +21,12 @@ export async function withRunningSandboxAttemptRoot<T>(args: {
     if (root === null) {
       return await args.onRootFailure(sandboxAttemptRootErrorMessage(error));
     }
+    if (args.store.getAttempt(args.attemptId)?.status === 'running') {
+      args.store.markTerminal(args.attemptId, {
+        status: 'failed',
+        diagnostics: 'sandbox_run_failed',
+      });
+    }
     throw error;
   } finally {
     await root?.cleanup();

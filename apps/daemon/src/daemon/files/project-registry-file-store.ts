@@ -1,11 +1,14 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { isProjectId, type ProjectId } from '@geulbat/protocol/ids';
-import type { ProjectListItem } from '@geulbat/protocol/projects';
-import { isPlainRecord } from '@geulbat/protocol/runtime-utils';
+import { isPlainRecord } from '../runtime-json.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
 import { hasErrorCode, getErrorMessage } from '../utils/error.js';
+import {
+  isFileProjectId as isProjectId,
+  type ProjectId,
+  type ProjectListItem,
+} from './contract.js';
 import { joinWorkspaceGeulbatPath } from './geulbat-internal-paths.js';
 import { DEFAULT_PROJECT_ID } from './project-registry-state.js';
 

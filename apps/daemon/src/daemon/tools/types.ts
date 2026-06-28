@@ -15,8 +15,14 @@ import type {
 
 export type { PermissionMode } from '@geulbat/protocol/run-approval';
 export type { SubagentRunLauncher } from '../daemon-runtime-contract.js';
+export {
+  isToolAnyOfParameters,
+  isToolObjectParameters,
+} from './tool-registry-model.js';
 export type {
   ParallelToolBatchKind,
+  ToolAnyOfParameters,
+  ToolObjectParameters,
   ToolDefinition,
   ToolMeta,
   ToolParameters,
@@ -45,6 +51,7 @@ interface ToolExecutionCoreContext {
 interface ToolExecutionRunContext {
   approvalGranted?: boolean;
   approvalSessionId?: string;
+  allowedToolNames?: readonly string[];
   permissionMode?: PermissionMode;
   threadId?: ThreadId;
   runId?: string;
@@ -57,6 +64,7 @@ interface ToolExecutionServices {
   fileStateCache?: FileStateCache;
   memoryIndex?: AgentMemoryIndex;
   agentSpawnRuntime?: AgentRuntimeServices;
+  callbackToolDispatcher?: CallbackToolDispatcher;
 }
 
 export type StandaloneToolExecutionContext = ToolExecutionCoreContext &
@@ -81,6 +89,7 @@ export type AgentToolExecutionContext = Omit<
     selection: ToolSelection | undefined;
     approvalGranted: boolean;
     approvalSessionId: string;
+    allowedToolNames?: readonly string[];
     permissionMode: PermissionMode;
     threadId: ThreadId;
     runId: string;
@@ -124,13 +133,23 @@ export type ExecuteResult =
   | { ok: true; output: string; errorCode?: undefined; error?: undefined }
   | { ok: false; output: string; errorCode: ErrorCode; error: string };
 
+export interface CallbackToolDispatcher {
+  dispatch(args: {
+    toolName: string;
+    args: Record<string, unknown>;
+    runtimeToolCallId: string;
+    cellId?: string;
+    signal: AbortSignal;
+  }): Promise<ExecuteResult>;
+}
+
 export interface ToolDescriptor {
   name: string;
   description: string;
   parameters: ToolParameters;
   strict: boolean;
   sideEffectLevel: SideEffectLevel;
-  mayMutateWorkspaceFiles?: boolean;
+  mayMutateWorkspaceFiles: boolean;
   parallelBatchKind?: ParallelToolBatchKind;
   timeoutMs?: number;
   requiresApproval: boolean;

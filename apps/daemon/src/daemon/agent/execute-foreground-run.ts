@@ -3,7 +3,7 @@ import {
   readTranscriptEntries,
   replaceTranscriptEntries,
 } from '../sessions/transcript-log.js';
-import type { ThreadStatePersistenceFailureDiagnostic } from '@geulbat/protocol/run-events';
+import type { ThreadStatePersistenceFailureDiagnostic } from './contract.js';
 import {
   commitThreadArtifactVersion,
   deleteThreadArtifact,

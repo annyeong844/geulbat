@@ -1,10 +1,5 @@
 // Runtime state targets derive opaque persistence files from renderer scope.
 import { createHash } from 'node:crypto';
-import type {
-  ArtifactRuntimePersistenceRenderer,
-  ArtifactRuntimePersistenceScopeRequest,
-} from '@geulbat/protocol/runtime-persistence';
-import { isArtifactRuntimePersistenceRenderer } from '@geulbat/protocol/runtime-persistence';
 
 import type { RuntimeStateTarget } from './file-platform-target-types.js';
 import {
@@ -15,7 +10,12 @@ import {
   buildGeulbatRelativePath,
   GEULBAT_RUNTIME_PERSISTENCE_ROOT,
 } from './geulbat-internal-paths.js';
-import { assertThreadId as assertValidThreadId } from '@geulbat/protocol/ids';
+import {
+  assertFileThreadId as assertValidThreadId,
+  isFileRuntimePersistenceRenderer as isArtifactRuntimePersistenceRenderer,
+  type ArtifactRuntimePersistenceRenderer,
+  type ArtifactRuntimePersistenceScopeRequest,
+} from './contract.js';
 
 export async function resolveRuntimeStateTarget(
   workspaceRoot: string,

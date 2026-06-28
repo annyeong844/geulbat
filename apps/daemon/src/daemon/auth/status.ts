@@ -1,5 +1,4 @@
-import type { ProviderAuthStatusResponse } from '@geulbat/protocol/provider-auth';
-import type { ErrorCode } from '@geulbat/protocol/errors';
+import type { ErrorCode, ProviderAuthStatusResponse } from './contract.js';
 
 import type {
   PendingProviderAuthSession,

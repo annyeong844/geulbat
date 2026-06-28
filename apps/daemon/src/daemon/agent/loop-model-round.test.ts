@@ -2,11 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createProviderAuthRuntimeStore } from '../auth/runtime-state.js';
-import type { ProviderRequestOptions } from '../llm/provider/provider-options.js';
+import {
+  resolveProviderRequestOptions,
+  type ProviderRequestOptions,
+} from '../llm/provider/provider-options.js';
 import type { ResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-cache.js';
 import type { AgentEvent, AgentEventEmitter } from './events.js';
 import { createAgentEvent } from './events.js';
-import { finalizeAfterToolLimit, runModelRound } from './loop-model-round.js';
+import { runModelRound } from './loop-model-round.js';
 import {
   composeProviderRounds,
   createScriptedProviderCallModel,
@@ -24,11 +27,8 @@ const unusedProviderWebSocketSessions: Pick<
   },
 };
 
-const defaultProviderRequestOptions: ProviderRequestOptions = {
-  model: 'gpt-5.5',
-  text: { verbosity: 'medium' },
-  reasoning: { effort: 'medium', summary: 'auto' },
-};
+const defaultProviderRequestOptions: ProviderRequestOptions =
+  resolveProviderRequestOptions({});
 
 function makeEmitter(events: AgentEvent[]): AgentEventEmitter {
   return (type, payload) => {
@@ -222,7 +222,7 @@ void test('runModelRound converts provider error chunks into terminal failure', 
 
 void test('runModelRound retries retryable stream errors before semantic output', async () => {
   const events: AgentEvent[] = [];
-  let slept = false;
+  const sleptDelays: number[] = [];
   const providerAuthRuntime = createProviderAuthRuntimeStore();
   let attempts = 0;
 
@@ -236,10 +236,23 @@ void test('runModelRound retries retryable stream errors before semantic output'
     threadId: testThreadId(59),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
+    providerRequestOptions: {
+      ...defaultProviderRequestOptions,
+      modelRoundRetry: {
+        llmConnectionLost: { maxRetries: 2 },
+        llmOverloaded: { maxRetries: 3 },
+        llmRateLimited: { maxRetries: 3 },
+        delay: {
+          baseDelayMs: 123,
+          multiplier: 2,
+          maxDelayMs: 999,
+          jitterRatio: 0,
+        },
+      },
+    },
     emit: makeEmitter(events),
-    retrySleep: async () => {
-      slept = true;
+    retrySleep: async (delayMs) => {
+      sleptDelays.push(delayMs);
     },
     callModelImpl: async function* () {
       attempts += 1;
@@ -268,9 +281,58 @@ void test('runModelRound retries retryable stream errors before semantic output'
     },
   });
   assert.equal(attempts, 2);
-  assert.equal(slept, true);
+  assert.deepEqual(sleptDelays, [123]);
   assert.deepEqual(events, [
     createAgentEvent('final_answer_delta', { text: 'done' }),
+  ]);
+});
+
+void test('runModelRound respects startup-frozen retry policy when a retryable category is disabled', async () => {
+  const events: AgentEvent[] = [];
+  const providerAuthRuntime = createProviderAuthRuntimeStore();
+  let attempts = 0;
+
+  const result = await runModelRound({
+    history: [],
+    systemPrompt: 'system',
+    promptContext: '',
+    pendingBackgroundSystemNote: '',
+    round: 1,
+    toolDefs: [],
+    threadId: testThreadId(63),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime,
+    providerRequestOptions: {
+      ...defaultProviderRequestOptions,
+      modelRoundRetry: {
+        ...defaultProviderRequestOptions.modelRoundRetry,
+        llmRateLimited: { maxRetries: 0 },
+      },
+    },
+    emit: makeEmitter(events),
+    retrySleep: async () => {
+      assert.fail('retry sleep should not run when policy disables retry');
+    },
+    callModelImpl: async function* () {
+      attempts += 1;
+      yield {
+        type: 'error',
+        code: 'llm_rate_limited',
+        message: 'provider rate limited',
+      };
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    result: { ok: false, finalProse: '' },
+  });
+  assert.equal(attempts, 1);
+  assert.deepEqual(events, [
+    createAgentEvent('error', {
+      code: 'llm_rate_limited',
+      message: 'provider rate limited',
+    }),
   ]);
 });
 
@@ -441,93 +503,46 @@ void test('runModelRound returns aborted terminal failure when the model throws 
   ]);
 });
 
-void test('finalizeAfterToolLimit returns fallback prose without emitting terminal events', async () => {
+void test('runModelRound returns aborted terminal failure when cancellation arrives between model chunks', async () => {
+  const controller = new AbortController();
   const events: AgentEvent[] = [];
   const providerAuthRuntime = createProviderAuthRuntimeStore();
 
-  const result = await finalizeAfterToolLimit({
+  const result = await runModelRound({
     history: [],
     systemPrompt: 'system',
+    promptContext: '',
+    pendingBackgroundSystemNote: '',
+    round: 0,
+    toolDefs: [],
     threadId: testThreadId(54),
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
     providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    callModelImpl: createScriptedProviderCallModel([{ events: [] }]),
-  });
-
-  assert.deepEqual(result, {
-    ok: false,
-    finalProse: 'max tool rounds reached',
-  });
-  assert.deepEqual(events, []);
-});
-
-void test('finalizeAfterToolLimit streams final answer deltas without a duplicate fallback emit', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-
-  const result = await finalizeAfterToolLimit({
-    history: [],
-    systemPrompt: 'system',
-    threadId: testThreadId(63),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
+    signal: controller.signal,
     emit: makeEmitter(events),
     callModelImpl: async function* () {
-      yield { type: 'text_delta', text: 'sum', phase: 'final_answer' };
-      yield { type: 'text_delta', text: 'mary', phase: 'final_answer' };
-      yield {
-        type: 'done',
-        assistantText: 'summary',
-        finalText: 'summary',
-      };
+      yield { type: 'text_delta', text: 'partial ' };
+      controller.abort();
+      yield { type: 'done', finalText: 'partial done' };
     },
   });
 
   assert.deepEqual(result, {
     ok: false,
-    finalProse: 'summary',
+    result: { ok: false, finalProse: '' },
   });
-  assert.deepEqual(events, [
-    createAgentEvent('final_answer_delta', { text: 'sum' }),
-    createAgentEvent('final_answer_delta', { text: 'mary' }),
-  ]);
-});
-
-void test('finalizeAfterToolLimit keeps raw artifact transport internal without emitting terminal events', async () => {
-  const events: AgentEvent[] = [];
-  const providerAuthRuntime = createProviderAuthRuntimeStore();
-  const answer = [
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"sha256:abc123"} -->',
-    '# Chapter 1',
-    '<!-- /GEULBAT_ARTIFACT -->',
-  ].join('\n');
-
-  const result = await finalizeAfterToolLimit({
-    history: [],
-    systemPrompt: 'system',
-    threadId: testThreadId(55),
-    providerWebSocketSessions: unusedProviderWebSocketSessions,
-    providerAuthRuntime,
-    providerRequestOptions: defaultProviderRequestOptions,
-    emit: makeEmitter(events),
-    callModelImpl: createScriptedProviderCallModel([
-      providerFinalAnswerRound(answer),
-    ]),
-  });
-
-  assert.deepEqual(result, {
-    ok: false,
-    finalProse: '',
-    artifactCandidate: {
-      renderer: 'markdown',
-      payload: '\n# Chapter 1\n',
-      digest: 'sha256:abc123',
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['commentary_delta', 'error'],
+  );
+  assert.deepEqual(events.at(-1), {
+    type: 'error',
+    payload: {
+      code: 'aborted',
+      message: 'run cancelled',
     },
   });
-  assert.deepEqual(events, []);
 });
 
 void test('runModelRound treats wrapped legacy envelope final text as plain prose', async () => {

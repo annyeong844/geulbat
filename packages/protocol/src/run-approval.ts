@@ -5,6 +5,10 @@ import {
   isSideEffectLevel,
   type SideEffectLevel,
 } from './side-effect-level.js';
+import {
+  isToolCallSourcePayload,
+  type ToolCallSourcePayload,
+} from './tool-call-source.js';
 
 export const PERMISSION_MODES = ['basic', 'full_access'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
@@ -100,6 +104,7 @@ export interface ApprovalRequired {
   permissionMode: PermissionMode;
   argumentsPreview: Record<string, unknown>;
   sideEffectLevel: SideEffectLevel;
+  source?: ToolCallSourcePayload;
 }
 
 export function isApprovalRequest(value: unknown): value is ApprovalRequest {
@@ -127,7 +132,8 @@ export function isApprovalRequired(value: unknown): value is ApprovalRequired {
     isApprovalClass(value.approvalClass) &&
     isPermissionMode(value.permissionMode) &&
     isRecord(value.argumentsPreview) &&
-    isSideEffectLevel(value.sideEffectLevel)
+    isSideEffectLevel(value.sideEffectLevel) &&
+    (value.source === undefined || isToolCallSourcePayload(value.source))
   );
 }
 

@@ -37,3 +37,46 @@ void test('list_files rejects an empty path instead of treating it as root', asy
   assert.equal(result.errorCode, 'invalid_args');
   assert.match(result.error ?? '', /path:/);
 });
+
+void test('list_files rejects blank path at the parser boundary', async () => {
+  const result = await listFilesTool.execute(
+    { path: '   ' },
+    { callId: 'call-list-blank-path', workspaceRoot: '/workspace/project' },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /path.*empty/);
+});
+
+void test('list_files returns entries beyond the old fixed cap', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-list-tool-'));
+  const fileCount = 520;
+  await Promise.all(
+    Array.from({ length: fileCount }, (_, index) =>
+      writeFile(
+        join(workspaceRoot, `entry-${String(index).padStart(3, '0')}.txt`),
+        'listed\n',
+        'utf8',
+      ),
+    ),
+  );
+
+  const result = await listFilesTool.execute(
+    {},
+    { callId: 'call-list-many', workspaceRoot },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    total: number;
+    entries: Array<{ path: string }>;
+  };
+  assert.equal(payload.total, fileCount);
+  assert.equal(payload.entries.length, fileCount);
+  assert.equal(
+    payload.entries.some((entry) => entry.path === 'entry-519.txt'),
+    true,
+  );
+  assert.equal(Object.hasOwn(payload, 'truncated'), false);
+});

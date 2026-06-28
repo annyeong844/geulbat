@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import type { ProjectId, ThreadId } from '@geulbat/protocol/ids';
 import { deleteThreadSession } from '../../../daemon/sessions/delete-thread.js';
+import { isArtifactStoreCorruptionError } from '../../../daemon/sessions/artifact-store.js';
 import { loadThreadIndex } from '../../../daemon/sessions/threads-index.js';
 import { loadThreadDetailSnapshot } from '../../../daemon/sessions/thread-detail.js';
 import { isTranscriptCorruptionError } from '../../../daemon/sessions/transcript-log.js';
@@ -21,19 +22,21 @@ import {
 export function createThreadsRoutes(args: {
   context: ThreadsRoutesContext;
 }): Router {
-  const { activeRuns, projectRegistry } = args.context;
+  const { activeRuns, backgroundNotifications, projectRegistry } = args.context;
   return createThreadsRoutesInternal({
     activeRuns,
+    backgroundNotifications,
     projectRegistry,
   });
 }
 
 function createThreadsRoutesInternal(args: {
   activeRuns: ActiveThreadRunLookup;
+  backgroundNotifications: ThreadsRoutesContext['backgroundNotifications'];
   projectRegistry: ProjectRegistryLookup;
 }): Router {
   const router = Router();
-  const { activeRuns, projectRegistry } = args;
+  const { activeRuns, backgroundNotifications, projectRegistry } = args;
 
   router.get('/api/threads', async (req, res) => {
     const projectScope = readProjectScopeOrSendError(
@@ -85,6 +88,10 @@ function createThreadsRoutesInternal(args: {
         sendApiError(res, 'internal', 'thread transcript is corrupted');
         return;
       }
+      if (isArtifactStoreCorruptionError(err)) {
+        sendApiError(res, 'internal', 'thread artifact store is corrupted');
+        return;
+      }
       sendUnexpectedApiError(res, 'threads/detail', err);
     }
   });
@@ -113,6 +120,7 @@ function createThreadsRoutesInternal(args: {
         sendApiError(res, 'not_found', `thread not found: ${threadId}`);
         return;
       }
+      backgroundNotifications.clearThreadBackgroundResults(threadId);
       res.json({ ok: true, threadId, projectId });
     } catch (err: unknown) {
       sendUnexpectedApiError(res, 'threads/delete', err);

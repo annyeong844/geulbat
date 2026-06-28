@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { sha256Hex } from '@geulbat/shared-utils/sha256';
 import { mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { joinWorkspaceGeulbatPath } from '../files/geulbat-internal-paths.js';
@@ -152,7 +153,7 @@ async function readValidatedSourceFile(args: {
   if (sourceBuffer.byteLength !== args.file.bytes) {
     throw new Error(`sandbox output changed before import: ${displayPath}`);
   }
-  const sha256 = createHash('sha256').update(sourceBuffer).digest('hex');
+  const sha256 = sha256Hex(sourceBuffer);
   if (sha256 !== args.file.sha256) {
     throw new Error(`sandbox output changed before import: ${displayPath}`);
   }
@@ -167,7 +168,7 @@ async function assertCopiedFileDigest(
   const targetBuffer = await readFile(targetPath);
   if (
     targetBuffer.byteLength !== file.bytes ||
-    createHash('sha256').update(targetBuffer).digest('hex') !== file.sha256
+    sha256Hex(targetBuffer) !== file.sha256
   ) {
     throw new Error(
       `sandbox output copy verification failed: ${file.relativePath}`,

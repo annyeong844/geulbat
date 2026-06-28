@@ -12,7 +12,9 @@ import {
 import { createProjectsRoutes } from './adapter/web/routes/projects.js';
 import { createFilesRoutes } from './adapter/web/routes/files.js';
 import { createArtifactRuntimePersistenceRoutes } from './adapter/web/routes/artifact-runtime-persistence.js';
+import { createRunInputRoutes } from './adapter/web/routes/run-inputs.js';
 import { createThreadsRoutes } from './adapter/web/routes/threads.js';
+import { createInputRefRoutes } from './adapter/web/routes/input-refs.js';
 import type {
   ProjectsRoutesContext,
   ProviderAuthRoutesContext,
@@ -77,7 +79,11 @@ export async function createDaemon(options: DaemonOptions = {}) {
   app.use('/api', requireAuth);
 
   // Mount route groups
-  app.use(createReactBundleInlineCompileRoutes());
+  app.use(
+    createReactBundleInlineCompileRoutes({
+      projectRegistry: daemonContext.projectRegistry,
+    }),
+  );
   const projectsRoutesContext = {
     activeRuns: daemonContext.activeRuns,
     projectStore: daemonContext.projectStore,
@@ -94,8 +100,19 @@ export async function createDaemon(options: DaemonOptions = {}) {
       projectRegistry: daemonContext.projectRegistry,
     }),
   );
+  app.use(
+    createRunInputRoutes({
+      projectRegistry: daemonContext.projectRegistry,
+    }),
+  );
+  app.use(
+    createInputRefRoutes({
+      projectRegistry: daemonContext.projectRegistry,
+    }),
+  );
   const threadsRoutesContext = {
     activeRuns: daemonContext.activeRuns,
+    backgroundNotifications: daemonContext.backgroundNotifications,
     projectRegistry: daemonContext.projectRegistry,
   } satisfies ThreadsRoutesContext;
   app.use(createThreadsRoutes({ context: threadsRoutesContext }));

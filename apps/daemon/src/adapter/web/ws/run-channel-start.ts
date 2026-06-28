@@ -1,10 +1,11 @@
 import WebSocket from 'ws';
-import type { RunRequest } from '@geulbat/protocol/run-contract';
+import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 
 import { executeForegroundRun } from '../../../daemon/agent/execute-foreground-run.js';
 import type { AgentEvent } from '../../../daemon/agent/events.js';
 import type { ApprovalContext } from '../../../daemon/agent/loop-types.js';
 import { startManagedRun } from '../../../daemon/agent/runtime/managed-run.js';
+import { deleteRunPromptInputRefPath } from '../../../daemon/sessions/prompt-input-ref-store.js';
 import { createRunWorkspaceContext } from '../../../daemon/run-workspace-context.js';
 import {
   assertRunId as assertValidRunId,
@@ -25,7 +26,7 @@ const logger = createLogger('run-channel/execute-run');
 interface ExecuteRunRequestArgs {
   socket: WebSocket;
   requestId: string;
-  request: RunRequest;
+  request: RunStartRequest;
   allowedToolNames: string[] | undefined;
   runtimeContext: RunChannelRuntimeContext;
 }
@@ -37,7 +38,7 @@ export async function executeRunRequest({
   allowedToolNames,
   runtimeContext,
 }: ExecuteRunRequestArgs): Promise<void> {
-  const normalizedRequest = readRunStartRequest(request, {
+  const normalizedRequest = await readRunStartRequest(request, {
     projectRegistry: runtimeContext.projectRegistry,
   });
   if (!normalizedRequest.ok) {
@@ -59,7 +60,17 @@ export async function executeRunRequest({
     selection,
     requestedThreadId,
     permissionMode,
+    promptRef,
   } = normalizedRequest.value;
+
+  const requestLogger = logger.withContext({
+    projectId: resolvedProjectId,
+    requestId,
+    requestedThreadId: requestedThreadId ?? null,
+  });
+  if (promptRef !== undefined) {
+    await deleteRunPromptInputRefAfterUse(promptRef, requestLogger);
+  }
 
   const socketState = getSocketState(socket);
   if (socketState.closed || socket.readyState !== WebSocket.OPEN) {
@@ -143,5 +154,19 @@ export async function executeRunRequest({
   } finally {
     startedRun.finish();
     socketState.activeRunIds.delete(runId);
+  }
+}
+
+async function deleteRunPromptInputRefAfterUse(
+  input: { promptRef: string; path: string },
+  runLogger: ReturnType<typeof logger.withContext>,
+): Promise<void> {
+  try {
+    await deleteRunPromptInputRefPath(input.path);
+  } catch (error: unknown) {
+    runLogger.warn('failed to delete consumed run prompt ref:', {
+      promptRef: input.promptRef,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }

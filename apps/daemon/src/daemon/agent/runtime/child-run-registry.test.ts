@@ -123,79 +123,100 @@ void test('child run registry does not bump revision when state does not change'
   );
 });
 
-void test('child run registry collects terminal records after retention TTL', async () => {
-  const registry = createChildRunRegistry({
-    retentionTtlMs: 10,
-  });
-  const warnings: unknown[][] = [];
-  const originalWarn = console.warn;
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args);
-  };
+void test('child run registry retains terminal records across elapsed time', async () => {
+  const registry = createChildRunRegistry();
+  const childRunId = testRunId('child-retained');
 
-  try {
-    const childRunId = testRunId('child-ttl');
+  registry.registerChildRun({
+    childRunId,
+    childThreadId: testThreadId(7),
+    parentRunId: testRunId('parent-retained'),
+    ownerThreadId: testThreadId(8),
+    subagentType: 'worker',
+  });
+  registry.markChildTerminal({
+    childRunId,
+    terminalState: 'completed',
+    result: 'ok',
+  });
+
+  await delay(30);
+
+  assert.equal(registry.getChildRun(childRunId)?.status, 'completed');
+  assert.equal(registry.getChildRun(childRunId)?.result, 'ok');
+});
+
+void test('child run registry retains every terminal record in a broad fan-out', () => {
+  const registry = createChildRunRegistry();
+  const ownerThreadId = testThreadId(30);
+  const childRunIds = Array.from({ length: 20 }, (_, index) =>
+    testRunId(`fanout-${index}`),
+  );
+
+  for (const [index, childRunId] of childRunIds.entries()) {
     registry.registerChildRun({
       childRunId,
-      childThreadId: testThreadId(7),
-      parentRunId: testRunId('parent-ttl'),
-      ownerThreadId: testThreadId(8),
+      childThreadId: testThreadId(20 + index),
+      parentRunId: testRunId('parent-fanout'),
+      ownerThreadId,
       subagentType: 'worker',
     });
     registry.markChildTerminal({
       childRunId,
       terminalState: 'completed',
-      result: 'ok',
+      result: childRunId,
     });
-
-    assert.equal(registry.getChildRun(childRunId)?.status, 'completed');
-    await delay(30);
-  } finally {
-    console.warn = originalWarn;
   }
-  assert.equal(registry.getChildRun(testRunId('child-ttl')), undefined);
-  assert.equal(warnings.length, 1);
+
+  assert.deepEqual(
+    childRunIds.map((childRunId) => registry.getChildRun(childRunId)?.status),
+    childRunIds.map(() => 'completed'),
+  );
 });
 
-void test('child run registry evicts the oldest terminal record when the retention budget is exceeded', () => {
-  const registry = createChildRunRegistry({
-    retentionTtlMs: 5 * 60 * 1000,
-    maxRetainedTerminalRuns: 2,
+void test('child run registry claims only terminal records owned by the caller', () => {
+  const registry = createChildRunRegistry();
+  const ownerThreadId = testThreadId(40);
+  const otherOwnerThreadId = testThreadId(41);
+  const terminalChildRunId = registerTerminalChild(
+    registry,
+    'claim-terminal',
+    ownerThreadId,
+    42,
+  );
+  const runningChildRunId = testRunId('claim-running');
+  const otherOwnerChildRunId = registerTerminalChild(
+    registry,
+    'claim-other-owner',
+    otherOwnerThreadId,
+    43,
+  );
+
+  registry.registerChildRun({
+    childRunId: runningChildRunId,
+    childThreadId: testThreadId(44),
+    parentRunId: testRunId('parent-running'),
+    ownerThreadId,
+    subagentType: 'worker',
   });
-  const warnings: unknown[][] = [];
-  const originalWarn = console.warn;
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args);
-  };
 
-  try {
-    const childRunIds = [
-      testRunId('child-a'),
-      testRunId('child-b'),
-      testRunId('child-c'),
-    ];
-    for (const [index, childRunId] of childRunIds.entries()) {
-      registry.registerChildRun({
-        childRunId,
-        childThreadId: testThreadId(20 + index),
-        parentRunId: testRunId('parent-budget'),
-        ownerThreadId: testThreadId(30),
-        subagentType: 'worker',
-      });
-      registry.markChildTerminal({
-        childRunId,
-        terminalState: 'completed',
-        result: childRunId,
-      });
-    }
-  } finally {
-    console.warn = originalWarn;
-  }
+  const claimed = registry.claimTerminalChildRuns({
+    ownerThreadId,
+    childRunIds: [
+      terminalChildRunId,
+      runningChildRunId,
+      otherOwnerChildRunId,
+      testRunId('claim-missing'),
+    ],
+  });
 
-  assert.equal(registry.getChildRun(testRunId('child-a')), undefined);
-  assert.equal(registry.getChildRun(testRunId('child-b'))?.status, 'completed');
-  assert.equal(registry.getChildRun(testRunId('child-c'))?.status, 'completed');
-  assert.equal(warnings.length, 1);
+  assert.equal(claimed, 1);
+  assert.equal(registry.getChildRun(terminalChildRunId), undefined);
+  assert.equal(registry.getChildRun(runningChildRunId)?.status, 'running');
+  assert.equal(
+    registry.getChildRun(otherOwnerChildRunId)?.ownerThreadId,
+    otherOwnerThreadId,
+  );
 });
 
 function registerTerminalChild(
@@ -208,7 +229,7 @@ function registerTerminalChild(
   registry.registerChildRun({
     childRunId,
     childThreadId: testThreadId(threadSeed),
-    parentRunId: testRunId('parent-lease'),
+    parentRunId: testRunId('parent-terminal'),
     ownerThreadId,
     subagentType: 'worker',
   });
@@ -220,129 +241,21 @@ function registerTerminalChild(
   return childRunId;
 }
 
-void test('acquireWaitLease validates ownership before installing a pin', () => {
+void test('registering an existing child id starts the next lifecycle', () => {
   const owner = testThreadId(70);
   const registry = createChildRunRegistry();
-  const a = registerTerminalChild(registry, 'val-a', owner, 71);
+  const childRunId = registerTerminalChild(registry, 'reuse-child', owner, 71);
 
-  // unknown id -> reject
-  const unknown = registry.acquireWaitLease({
+  registry.registerChildRun({
+    childRunId,
+    childThreadId: testThreadId(72),
+    parentRunId: testRunId('parent-reuse-next'),
     ownerThreadId: owner,
-    childRunIds: [testRunId('val-missing')],
+    subagentType: 'worker',
   });
-  assert.equal(unknown.ok, false);
 
-  // id owned by a different thread -> reject
-  const otherOwner = registry.acquireWaitLease({
-    ownerThreadId: testThreadId(99),
-    childRunIds: [a],
-  });
-  assert.equal(otherOwner.ok, false);
-
-  // valid -> accept
-  const okLease = registry.acquireWaitLease({
-    ownerThreadId: owner,
-    childRunIds: [a],
-  });
-  assert.equal(okLease.ok, true);
-});
-
-void test('leased terminal record is exempt from budget eviction (AC-1b)', () => {
-  const owner = testThreadId(30);
-  const registry = createChildRunRegistry({
-    retentionTtlMs: 5 * 60 * 1000,
-    maxRetainedTerminalRuns: 2,
-  });
-  const originalWarn = console.warn;
-  console.warn = () => {};
-  try {
-    const a = registerTerminalChild(registry, 'pin-a', owner, 21);
-    const lease = registry.acquireWaitLease({
-      ownerThreadId: owner,
-      childRunIds: [a],
-    });
-    assert.equal(lease.ok, true);
-    // 3 terminal records, budget 2: oldest (pin-a) would normally be evicted,
-    // but it is pinned, so the next-oldest (pin-b) is evicted instead.
-    registerTerminalChild(registry, 'pin-b', owner, 22);
-    registerTerminalChild(registry, 'pin-c', owner, 23);
-  } finally {
-    console.warn = originalWarn;
-  }
-  assert.equal(registry.getChildRun(testRunId('pin-a'))?.status, 'completed');
-  assert.equal(registry.getChildRun(testRunId('pin-b')), undefined);
-  assert.equal(registry.getChildRun(testRunId('pin-c'))?.status, 'completed');
-});
-
-void test('TTL collection of a pinned record is deferred until the lease releases', async () => {
-  const owner = testThreadId(50);
-  const registry = createChildRunRegistry({ retentionTtlMs: 10 });
-  const originalWarn = console.warn;
-  console.warn = () => {};
-  try {
-    const a = registerTerminalChild(registry, 'ttl-pin', owner, 51);
-    const lease = registry.acquireWaitLease({
-      ownerThreadId: owner,
-      childRunIds: [a],
-    });
-    assert.equal(lease.ok, true);
-    await delay(30); // TTL (10ms) fires while pinned -> must NOT collect
-    assert.equal(
-      registry.getChildRun(testRunId('ttl-pin'))?.status,
-      'completed',
-      'pinned record survives TTL',
-    );
-    if (lease.ok) {
-      registry.releaseWaitLease(lease.leaseId);
-    }
-    assert.equal(
-      registry.getChildRun(testRunId('ttl-pin')),
-      undefined,
-      'collected after release (deferred TTL)',
-    );
-  } finally {
-    console.warn = originalWarn;
-  }
-});
-
-void test('record stays pinned until every active wait lease releases it (AC-multi-waiter)', async () => {
-  const owner = testThreadId(60);
-  const registry = createChildRunRegistry({ retentionTtlMs: 10 });
-  const originalWarn = console.warn;
-  console.warn = () => {};
-  try {
-    const a = registerTerminalChild(registry, 'multi-a', owner, 61);
-    const lease1 = registry.acquireWaitLease({
-      ownerThreadId: owner,
-      childRunIds: [a],
-    });
-    const lease2 = registry.acquireWaitLease({
-      ownerThreadId: owner,
-      childRunIds: [a],
-    });
-    assert.equal(lease1.ok && lease2.ok, true);
-    await delay(30); // TTL fires while pinned by both leases
-    assert.equal(
-      registry.getChildRun(testRunId('multi-a'))?.status,
-      'completed',
-    );
-    if (lease1.ok) {
-      registry.releaseWaitLease(lease1.leaseId);
-    }
-    assert.equal(
-      registry.getChildRun(testRunId('multi-a'))?.status,
-      'completed',
-      'still pinned by lease2',
-    );
-    if (lease2.ok) {
-      registry.releaseWaitLease(lease2.leaseId);
-    }
-    assert.equal(
-      registry.getChildRun(testRunId('multi-a')),
-      undefined,
-      'collected after final lease release',
-    );
-  } finally {
-    console.warn = originalWarn;
-  }
+  const snapshot = registry.getChildRun(childRunId);
+  assert.equal(snapshot?.status, 'running');
+  assert.equal(snapshot?.result, null);
+  assert.equal(snapshot?.childThreadId, testThreadId(72));
 });

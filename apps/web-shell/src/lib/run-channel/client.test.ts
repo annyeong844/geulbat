@@ -85,6 +85,19 @@ class FakeSocket {
     });
   }
 
+  removeEventListener<K extends keyof FakeSocketEventMap>(
+    type: K,
+    listener: (event: FakeSocketEventMap[K]) => void,
+  ): void {
+    this.listeners[type] = this.listeners[type].filter(
+      (entry) => entry.listener !== (listener as (event: unknown) => void),
+    );
+  }
+
+  listenerCount(type: keyof FakeSocketEventMap): number {
+    return this.listeners[type].length;
+  }
+
   send(data: string): void {
     this.sent.push(data);
   }
@@ -232,13 +245,67 @@ void test('RunChannelClient reconnects after unexpected authenticated close', as
   await Promise.resolve();
 
   await harness.client.start({
-    prompt: 'hello',
     projectId: brandProjectId('workspace'),
+    promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
   });
   const startMessage = JSON.parse(
     reconnectSocket.sent[1] ?? 'null',
   ) as RunChannelClientMessage;
   assert.equal(startMessage.type, 'run.start');
+});
+
+void test('RunChannelClient detaches stale socket listeners after reconnect', async () => {
+  const harness = createClientHarness();
+  const staleSocket = await connectAuthenticatedClient(harness);
+
+  staleSocket.close();
+  harness.scheduler.runNext();
+  const liveSocket = getSocket(harness.sockets, 1);
+  liveSocket.emitOpen();
+  liveSocket.emitMessage({
+    type: 'run.auth.ok',
+    requestId: parseAuthRequestId(liveSocket),
+    ok: true,
+  });
+  await Promise.resolve();
+
+  assert.equal(staleSocket.listenerCount('message'), 0);
+  assert.equal(staleSocket.listenerCount('close'), 0);
+  const messageCount = harness.messages.length;
+  staleSocket.emitMessage({
+    type: 'run.error',
+    code: 'internal',
+    message: 'stale socket error',
+    status: 500,
+  });
+  assert.equal(harness.messages.length, messageCount);
+});
+
+void test('RunChannelClient sends supplied prompt refs without inline prompts', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+
+  await harness.client.start({
+    projectId: brandProjectId('workspace'),
+    promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
+  });
+
+  const startMessage = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(startMessage.type, 'run.start');
+  if (startMessage.type !== 'run.start') {
+    return;
+  }
+  assert.equal('promptRef' in startMessage.request, true);
+  if (!('promptRef' in startMessage.request)) {
+    return;
+  }
+  assert.equal(
+    startMessage.request.promptRef,
+    'run-prompt-input:11111111-1111-4111-8111-111111111111',
+  );
+  assert.equal('prompt' in startMessage.request, false);
 });
 
 void test('RunChannelClient close clears pending reconnect task', async () => {

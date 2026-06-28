@@ -1,4 +1,4 @@
-import { tryParseJsonRecord } from '@geulbat/protocol/runtime-utils';
+import { tryParseJsonRecord } from '../../../runtime-json.js';
 import type WebSocket from 'ws';
 
 import { getErrorMessage } from '../../../utils/error.js';

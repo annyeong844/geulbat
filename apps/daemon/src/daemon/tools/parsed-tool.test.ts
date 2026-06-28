@@ -24,6 +24,7 @@ void test('defineParsedTool raw execute returns invalid_args for parser failures
     parameters: emptyParameters,
     strict: true,
     sideEffectLevel: 'none',
+    mayMutateWorkspaceFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     parseArgs() {
@@ -54,6 +55,7 @@ void test('defineParsedTool raw execute does not mask parser throws', async () =
     parameters: emptyParameters,
     strict: true,
     sideEffectLevel: 'none',
+    mayMutateWorkspaceFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     parseArgs() {
@@ -81,6 +83,7 @@ void test('defineParsedTool raw execute does not mask executeParsed throws', asy
     parameters: emptyParameters,
     strict: true,
     sideEffectLevel: 'none',
+    mayMutateWorkspaceFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     parseArgs() {

@@ -1,6 +1,7 @@
 import { executeTool } from '../tools/executor.js';
 import {
   buildAgentToolExecutionContext,
+  type CallbackToolDispatcher,
   type ExecuteResult,
 } from '../tools/types.js';
 import { markRunRunning } from './runtime/run-state.js';
@@ -16,6 +17,7 @@ interface ExecuteResolvedFunctionCallArgs {
   toolArgs: ToolCallArgs;
   approvalGranted: boolean;
   runtime: AgentToolCallRuntimeBase;
+  callbackToolDispatcher?: CallbackToolDispatcher;
 }
 
 export async function executeResolvedFunctionCall(
@@ -35,6 +37,9 @@ export async function executeResolvedFunctionCall(
       callId: functionCall.callId,
       approvalGranted,
       runtime,
+      ...(args.callbackToolDispatcher
+        ? { callbackToolDispatcher: args.callbackToolDispatcher }
+        : {}),
     }),
     { toolRegistry: runtime.toolRegistry },
   );
@@ -44,13 +49,17 @@ interface BuildToolExecutionContextArgs {
   callId: string;
   approvalGranted: boolean;
   runtime: AgentToolCallRuntimeBase;
+  callbackToolDispatcher?: CallbackToolDispatcher;
 }
 
 function buildToolExecutionContext(args: BuildToolExecutionContextArgs) {
-  const { callId, approvalGranted, runtime } = args;
-  return buildAgentToolExecutionContext({
+  const { callId, approvalGranted, runtime, callbackToolDispatcher } = args;
+  const context = buildAgentToolExecutionContext({
     base: runtime.executionContextBase,
     callId,
     approvalGranted,
   });
+  return callbackToolDispatcher
+    ? { ...context, callbackToolDispatcher }
+    : context;
 }

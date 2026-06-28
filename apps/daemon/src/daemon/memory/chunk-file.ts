@@ -5,13 +5,11 @@ import type { SourceFileData } from './source-snapshot.js';
 
 const CHUNK_TARGET_LINES = 80;
 const EXCERPT_LIMIT = 160;
-const MAX_HEADING_TITLE_LENGTH = 120;
 
 export function createChunkRecords(
   sourceFile: SourceFileData,
-  remainingBudget: number,
 ): MemoryChunkRecord[] {
-  if (remainingBudget <= 0 || sourceFile.lines.length === 0) {
+  if (sourceFile.lines.length === 0) {
     return [];
   }
 
@@ -23,10 +21,6 @@ export function createChunkRecords(
     lineStartIndex < sourceFile.lines.length;
     lineStartIndex += CHUNK_TARGET_LINES
   ) {
-    if (records.length >= remainingBudget) {
-      break;
-    }
-
     const chunkLines = sourceFile.lines.slice(
       lineStartIndex,
       lineStartIndex + CHUNK_TARGET_LINES,
@@ -55,7 +49,7 @@ function deriveTitle(relativePath: string, lines: string[]): string {
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    return trimmed.replace(/^#+\s+/, '').slice(0, MAX_HEADING_TITLE_LENGTH);
+    return trimmed.replace(/^#+\s+/, '');
   }
   const fileName = basename(relativePath);
   const ext = extname(fileName);

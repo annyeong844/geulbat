@@ -27,7 +27,7 @@ export function defineParsedTool<TArgs extends object>(
     parameters: options.parameters,
     strict: options.strict,
     sideEffectLevel: options.sideEffectLevel,
-    mayMutateWorkspaceFiles: options.mayMutateWorkspaceFiles ?? false,
+    mayMutateWorkspaceFiles: options.mayMutateWorkspaceFiles,
     ...(options.parallelBatchKind
       ? { parallelBatchKind: options.parallelBatchKind }
       : {}),

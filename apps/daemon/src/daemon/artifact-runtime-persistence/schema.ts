@@ -1,14 +1,14 @@
-import type { ArtifactId } from '@geulbat/protocol/artifacts';
 import type {
+  ArtifactId,
   JsonValue,
   ArtifactRuntimePersistenceRenderer,
   ArtifactRuntimePersistenceScopeRequest,
-} from '@geulbat/protocol/runtime-persistence';
+} from './contract.js';
 import {
-  isJsonValue,
-  isArtifactRuntimePersistenceRenderer,
-} from '@geulbat/protocol/runtime-persistence';
-import { isPlainRecord } from '@geulbat/protocol/runtime-utils';
+  isRuntimePersistenceJsonValue,
+  isRuntimePersistenceRenderer,
+} from './contract.js';
+import { isPlainRecord } from '../runtime-json.js';
 
 export interface PersistedRuntimeStateSchema {
   version: 1;
@@ -58,12 +58,12 @@ export function parsePersistedRuntimeState(
     persistenceEpoch < 0 ||
     typeof revision !== 'string' ||
     typeof updatedAt !== 'string' ||
-    !isArtifactRuntimePersistenceRenderer(renderer)
+    !isRuntimePersistenceRenderer(renderer)
   ) {
     throw new Error('invalid runtime persistence payload');
   }
 
-  if (!isJsonValue(state)) {
+  if (!isRuntimePersistenceJsonValue(state)) {
     throw new Error('invalid runtime persistence state');
   }
 

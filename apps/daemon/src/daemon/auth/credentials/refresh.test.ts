@@ -178,6 +178,38 @@ void test('refreshProviderToken rejects invalid response bodies from the token e
   );
 });
 
+void test('refreshProviderToken preserves long provider error bodies', async () => {
+  const detail = 'provider-refresh-detail '.repeat(20);
+
+  await assert.rejects(
+    () =>
+      refreshProviderToken(
+        {
+          accessToken: 'access-token',
+          refreshToken: 'refresh-token',
+          accountId: 'account-1',
+          expiresAt: 0,
+        },
+        {
+          fetchImpl: async () =>
+            ({
+              ok: false,
+              status: 502,
+              text: async () => detail,
+            }) as Response,
+        },
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(
+        error.message,
+        `Provider token refresh failed (502): ${detail}`,
+      );
+      return true;
+    },
+  );
+});
+
 for (const status of [401, 403] as const) {
   void test(`refreshProviderToken maps ${status} responses to provider_auth_invalid`, async () => {
     await assert.rejects(

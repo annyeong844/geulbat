@@ -5,6 +5,10 @@ import { buildShellAuthHeaders } from '../auth/shell-auth.js';
 const BASE_URL = '';
 type Validator<T> = (value: unknown) => value is T;
 
+export interface ApiOkResponse {
+  ok: true;
+}
+
 export class ApiFetchError extends Error {
   readonly status: number;
   readonly bodyText: string;
@@ -46,4 +50,13 @@ export async function apiFetch<T>(
     throw new ApiShapeError(path);
   }
   return body;
+}
+
+export function isApiOkResponse(value: unknown): value is ApiOkResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { ok?: unknown }).ok === true
+  );
 }

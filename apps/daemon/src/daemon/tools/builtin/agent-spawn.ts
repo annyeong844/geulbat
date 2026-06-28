@@ -4,31 +4,37 @@ import { toolError } from '../result.js';
 import { defineZodTool } from '../zod-tool.js';
 import { isAgentToolExecutionContext } from '../types.js';
 import {
-  buildChildLaunchPayload,
-  buildChildLaunchRejected,
   SUBAGENT_TYPES,
   type SubagentType,
 } from '../../subagent-runtime-contracts.js';
-import { isChildRunState } from '../../runtime-contracts.js';
 import type { SubagentRunLauncher } from '../types.js';
 import { runSubagentLaunchPipeline } from './subagent-launch-pipeline.js';
 
 const SPAWN_MODES = ['blocking', 'background'] as const;
 
+const agentSpawnTaskSchema = z
+  .string()
+  .trim()
+  .min(1, 'task is required.')
+  .describe('Plain-text task prompt for the child agent.');
+const agentSpawnSubagentTypeSchema = z
+  .enum(SUBAGENT_TYPES)
+  .describe(
+    'Fixed child role. explorer is read-only; worker includes write/patch/manage_files.',
+  );
+
 const agentSpawnArgsSchema = z.strictObject({
-  task: z
-    .string()
-    .min(1, 'task is required.')
-    .describe('Plain-text task prompt for the child agent.'),
-  subagent_type: z
-    .enum(SUBAGENT_TYPES)
-    .describe(
-      'Fixed child role. explorer is read-only; worker includes write/patch/manage_files.',
-    ),
+  task: agentSpawnTaskSchema,
+  subagent_type: agentSpawnSubagentTypeSchema,
   mode: z
     .enum(SPAWN_MODES)
     .optional()
     .describe('Compatibility ingress only. Scheduling is always parallel.'),
+});
+
+const agentSpawnParametersSchema = z.strictObject({
+  task: agentSpawnTaskSchema,
+  subagent_type: agentSpawnSubagentTypeSchema,
 });
 
 function assertToolRunId(value: string): RunId {
@@ -49,19 +55,18 @@ export function createAgentSpawnTool(
   return defineZodTool({
     name: 'agent_spawn',
     description:
-      'Spawn a depth-1 helper agent. Sub-agents always launch in parallel and return a child handle immediately.',
+      'Spawn a helper agent. Sub-agents always launch in parallel and return a child handle immediately.',
     argsSchema: agentSpawnArgsSchema,
+    parametersSchema: agentSpawnParametersSchema,
     sideEffectLevel: 'none',
+    mayMutateWorkspaceFiles: false,
     parallelBatchKind: 'subagent_launch',
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     requiresApproval: false,
     async executeParsed(args, ctx) {
-      const task = args.task.trim();
+      const task = args.task;
       const subagentType: SubagentType = args.subagent_type;
 
-      if (!task) {
-        return toolError('invalid_args', 'task is required.');
-      }
       if (!ctx.threadId || !ctx.projectId || !ctx.runId || !ctx.runState) {
         return toolError(
           'execution_failed',
@@ -71,15 +76,6 @@ export function createAgentSpawnTool(
       const ownerThreadId = ctx.threadId;
       const projectId = ctx.projectId;
       const parentRunId = assertToolRunId(ctx.runId);
-      if (isChildRunState(ctx.runState)) {
-        return buildChildLaunchPayload(
-          buildChildLaunchRejected({
-            subagentType,
-            errorCode: 'unsupported_nested_spawn',
-            error: 'agent_spawn is depth-1 only',
-          }),
-        );
-      }
       const agentCtx = isAgentToolExecutionContext(ctx) ? ctx : undefined;
       if (subagentType === 'worker' && !agentCtx) {
         return toolError(

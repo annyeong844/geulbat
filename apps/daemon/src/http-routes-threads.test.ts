@@ -15,7 +15,7 @@ import type { ArtifactId } from '@geulbat/protocol/artifacts';
 import { DEFAULT_PROJECT_ID } from './daemon/files/project-registry-state.js';
 import {
   loadThreadIndex,
-  saveThreadIndex,
+  upsertThreadSummary,
 } from './daemon/sessions/threads-index.js';
 import {
   artifactStoreFilePath,
@@ -23,6 +23,7 @@ import {
   summaryFilePath,
   threadFilePath,
 } from './daemon/sessions/paths.js';
+import { createRunInterjectBuffer } from './daemon/sessions/active-run-interject-buffer.js';
 import { commitThreadArtifactVersion } from './daemon/sessions/artifact-store.js';
 import { hasErrorCode } from './daemon/utils/error.js';
 import { assertThreadId as assertValidThreadId } from '@geulbat/protocol/ids';
@@ -45,17 +46,13 @@ void test('authenticated threads routes return stored summaries and transcript d
   const transcriptSnapshot = await snapshotFile(transcriptPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
-  const existingEntries = await loadThreadIndex(workspaceRoot);
-  await saveThreadIndex(workspaceRoot, [
-    ...existingEntries.filter((entry) => entry.threadId !== threadId),
-    {
-      threadId,
-      projectId: DEFAULT_PROJECT_ID,
-      title: 'Route test thread',
-      lastUpdated: '2026-03-25T00:00:00.000Z',
-      messageCount: 2,
-    },
-  ]);
+  await upsertThreadSummary(workspaceRoot, {
+    threadId,
+    projectId: DEFAULT_PROJECT_ID,
+    title: 'Route test thread',
+    lastUpdated: '2026-03-25T00:00:00.000Z',
+    messageCount: 2,
+  });
   await mkdir(dirname(transcriptPath), { recursive: true });
   const committedArtifact = await commitThreadArtifactVersion({
     workspaceRoot,
@@ -187,17 +184,13 @@ void test('authenticated thread detail returns persisted artifacts even when tra
   const transcriptSnapshot = await snapshotFile(transcriptPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
-  const existingEntries = await loadThreadIndex(workspaceRoot);
-  await saveThreadIndex(workspaceRoot, [
-    ...existingEntries.filter((entry) => entry.threadId !== threadId),
-    {
-      threadId,
-      projectId: DEFAULT_PROJECT_ID,
-      title: 'Metadata-light artifact thread',
-      lastUpdated: '2026-03-25T00:05:00.000Z',
-      messageCount: 1,
-    },
-  ]);
+  await upsertThreadSummary(workspaceRoot, {
+    threadId,
+    projectId: DEFAULT_PROJECT_ID,
+    title: 'Metadata-light artifact thread',
+    lastUpdated: '2026-03-25T00:05:00.000Z',
+    messageCount: 1,
+  });
   await mkdir(dirname(transcriptPath), { recursive: true });
   const committedArtifact = await commitThreadArtifactVersion({
     workspaceRoot,
@@ -297,17 +290,13 @@ void test('authenticated thread detail surfaces missing transcript linkage diagn
   const transcriptSnapshot = await snapshotFile(transcriptPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
-  const existingEntries = await loadThreadIndex(workspaceRoot);
-  await saveThreadIndex(workspaceRoot, [
-    ...existingEntries.filter((entry) => entry.threadId !== threadId),
-    {
-      threadId,
-      projectId: DEFAULT_PROJECT_ID,
-      title: 'Missing linkage thread',
-      lastUpdated: '2026-03-25T00:07:00.000Z',
-      messageCount: 1,
-    },
-  ]);
+  await upsertThreadSummary(workspaceRoot, {
+    threadId,
+    projectId: DEFAULT_PROJECT_ID,
+    title: 'Missing linkage thread',
+    lastUpdated: '2026-03-25T00:07:00.000Z',
+    messageCount: 1,
+  });
   await mkdir(dirname(transcriptPath), { recursive: true });
   await fsWriteFile(
     transcriptPath,
@@ -406,6 +395,56 @@ void test('authenticated thread detail rejects corrupted transcript data', async
   }
 });
 
+void test('authenticated thread detail rejects corrupted artifact store data', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const threadId = assertValidThreadId(randomUUID());
+  const transcriptPath = threadFilePath(workspaceRoot, threadId);
+  const artifactPath = artifactStoreFilePath(workspaceRoot, threadId);
+  const transcriptSnapshot = await snapshotFile(transcriptPath);
+  const artifactSnapshot = await snapshotFile(artifactPath);
+
+  await mkdir(dirname(transcriptPath), { recursive: true });
+  await fsWriteFile(
+    transcriptPath,
+    [
+      JSON.stringify({
+        role: 'user',
+        content: 'visible before artifact corruption',
+        timestamp: '2026-03-25T00:09:00.000Z',
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await mkdir(dirname(artifactPath), { recursive: true });
+  await fsWriteFile(artifactPath, '{"schemaVersion":1,"artifacts":[', 'utf8');
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const detailRes = await fetch(
+          `http://127.0.0.1:${port}/api/threads/${threadId}?projectId=${DEFAULT_PROJECT_ID}`,
+          {
+            headers: authHeaders(),
+          },
+        );
+        assert.equal(detailRes.status, 500);
+        const detailBody = (await detailRes.json()) as Record<string, unknown>;
+        assert.deepEqual(detailBody, {
+          code: 'internal',
+          message: 'thread artifact store is corrupted',
+        });
+        assert.equal('artifacts' in detailBody, false);
+      },
+      { daemonContext },
+    );
+  } finally {
+    await restoreFileSnapshot(transcriptPath, transcriptSnapshot);
+    await restoreFileSnapshot(artifactPath, artifactSnapshot);
+  }
+});
+
 void test('authenticated thread detail falls back to filesystem snapshotVersion when thread index entry is absent', async () => {
   const daemonContext = createRouteTestDaemonContext();
   const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
@@ -493,17 +532,13 @@ void test('authenticated thread detail leaves legacy envelope transcript message
   const transcriptSnapshot = await snapshotFile(transcriptPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
-  const existingEntries = await loadThreadIndex(workspaceRoot);
-  await saveThreadIndex(workspaceRoot, [
-    ...existingEntries.filter((entry) => entry.threadId !== threadId),
-    {
-      threadId,
-      projectId: DEFAULT_PROJECT_ID,
-      title: 'Legacy envelope thread',
-      lastUpdated: '2026-03-25T00:10:00.000Z',
-      messageCount: 1,
-    },
-  ]);
+  await upsertThreadSummary(workspaceRoot, {
+    threadId,
+    projectId: DEFAULT_PROJECT_ID,
+    title: 'Legacy envelope thread',
+    lastUpdated: '2026-03-25T00:10:00.000Z',
+    messageCount: 1,
+  });
   await mkdir(dirname(transcriptPath), { recursive: true });
   await fsWriteFile(
     transcriptPath,
@@ -696,17 +731,13 @@ void test('authenticated thread delete route removes session artifacts', async (
   const summarySnapshot = await snapshotFile(summaryPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
-  const existingEntries = await loadThreadIndex(workspaceRoot);
-  await saveThreadIndex(workspaceRoot, [
-    ...existingEntries.filter((entry) => entry.threadId !== threadId),
-    {
-      threadId,
-      projectId: DEFAULT_PROJECT_ID,
-      title: 'Delete me',
-      lastUpdated: '2026-03-26T00:00:00.000Z',
-      messageCount: 1,
-    },
-  ]);
+  await upsertThreadSummary(workspaceRoot, {
+    threadId,
+    projectId: DEFAULT_PROJECT_ID,
+    title: 'Delete me',
+    lastUpdated: '2026-03-26T00:00:00.000Z',
+    messageCount: 1,
+  });
   await mkdir(dirname(transcriptPath), { recursive: true });
   await fsWriteFile(
     transcriptPath,
@@ -722,6 +753,18 @@ void test('authenticated thread delete route removes session artifacts', async (
     artifactPath,
     JSON.stringify({ artifacts: [], versions: [] }) + '\n',
     'utf8',
+  );
+  daemonContext.backgroundNotifications.enqueueThreadBackgroundResult(
+    threadId,
+    {
+      deliveryId: 'delivery-delete-thread',
+      parentRunId: testRunId('delete-thread-parent'),
+      childRunId: testRunId('delete-thread-child'),
+      subagentType: 'explorer',
+      terminalState: 'completed',
+      result: 'deleted thread background result',
+      completedAt: '2026-03-26T00:00:01.000Z',
+    },
   );
 
   try {
@@ -752,6 +795,12 @@ void test('authenticated thread delete route removes session artifacts', async (
           remainingEntries.some((entry) => entry.threadId === threadId),
           false,
         );
+        assert.deepEqual(
+          daemonContext.backgroundNotifications.consumeThreadBackgroundResults(
+            threadId,
+          ),
+          [],
+        );
       },
       { daemonContext },
     );
@@ -777,6 +826,7 @@ void test('authenticated thread delete route rejects active run threads', async 
       workspaceRoot: getWorkspaceRootFromContext(daemonContext),
       ownerThreadId: threadId,
       abortController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-26T00:00:00.000Z',
     }),
     { ok: true },

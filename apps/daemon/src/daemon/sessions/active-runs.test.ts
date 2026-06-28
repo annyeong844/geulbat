@@ -7,6 +7,7 @@ import {
   type ActiveRunStore,
   createActiveRunStore,
 } from './active-runs.js';
+import { createRunInterjectBuffer } from './active-run-interject-buffer.js';
 import { testProjectId } from '../../test-support/project-id.js';
 import { testRunId } from '../../test-support/run-id.js';
 import { testThreadId } from '../../test-support/thread-id.js';
@@ -54,6 +55,7 @@ void test('abortRun rejects direct child cancellation', () => {
       workspaceRoot: '/tmp/workspace',
       ownerThreadId: parentThreadId,
       abortController: parentController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-24T00:00:00.000Z',
     }),
     { ok: true },
@@ -67,6 +69,7 @@ void test('abortRun rejects direct child cancellation', () => {
       workspaceRoot: '/tmp/workspace',
       ownerThreadId: parentThreadId,
       abortController: childController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-24T00:00:00.000Z',
       parentRunId,
     }),
@@ -101,6 +104,7 @@ void test('abortTrackedRun can cancel a child run by stable child handle', () =>
       workspaceRoot: '/tmp/workspace',
       ownerThreadId: parentThreadId,
       abortController: parentController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-24T00:00:00.000Z',
     }),
     { ok: true },
@@ -113,6 +117,7 @@ void test('abortTrackedRun can cancel a child run by stable child handle', () =>
       workspaceRoot: '/tmp/workspace',
       ownerThreadId: parentThreadId,
       abortController: childController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-24T00:00:01.000Z',
       parentRunId,
     }),
@@ -144,6 +149,7 @@ void test('abortThreadTree aborts foreground and background runs owned by the sa
       workspaceRoot: '/tmp/workspace',
       ownerThreadId: parentThreadId,
       abortController: parentController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-24T00:00:00.000Z',
     }),
     { ok: true },
@@ -157,6 +163,7 @@ void test('abortThreadTree aborts foreground and background runs owned by the sa
       workspaceRoot: '/tmp/workspace',
       ownerThreadId: parentThreadId,
       abortController: childController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-24T00:00:01.000Z',
       parentRunId,
     }),
@@ -188,6 +195,7 @@ void test('abortThreadTree ignores finished runs and clears owner index on clean
       workspaceRoot: '/tmp/workspace',
       ownerThreadId: parentThreadId,
       abortController: parentController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-24T00:00:00.000Z',
     }),
     { ok: true },
@@ -201,6 +209,7 @@ void test('abortThreadTree ignores finished runs and clears owner index on clean
       workspaceRoot: '/tmp/workspace',
       ownerThreadId: parentThreadId,
       abortController: childController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-24T00:00:01.000Z',
       parentRunId,
     }),
@@ -231,6 +240,7 @@ void test('getRunById exposes aborted state without leaking the abort controller
       workspaceRoot: '/tmp/workspace',
       ownerThreadId: threadId,
       abortController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-24T00:00:00.000Z',
     }),
     { ok: true },
@@ -251,6 +261,84 @@ void test('getRunById exposes aborted state without leaking the abort controller
   store.finishRun(threadId, runId);
 });
 
+void test('appendPendingInterject pushes to the live run and reports seq and depth', () => {
+  const store = createActiveRunStore();
+  const threadId = testThreadId(9);
+  const runId = testRunId('append-interject');
+  const interject = createRunInterjectBuffer();
+
+  assert.deepEqual(
+    store.tryStartRun(threadId, {
+      runId,
+      threadId,
+      projectId: testProjectId(),
+      workspaceRoot: '/tmp/workspace',
+      ownerThreadId: threadId,
+      abortController: new AbortController(),
+      interject,
+      startedAt: '2026-03-24T00:00:00.000Z',
+    }),
+    { ok: true },
+  );
+
+  assert.deepEqual(store.appendPendingInterject(runId, { text: 'a' }), {
+    ok: true,
+    receivedSeq: 1,
+    bufferDepth: 1,
+  });
+  assert.deepEqual(store.appendPendingInterject(runId, { text: 'b' }), {
+    ok: true,
+    receivedSeq: 2,
+    bufferDepth: 2,
+  });
+  assert.deepEqual(
+    interject.items.map((item) => item.text),
+    ['a', 'b'],
+  );
+
+  const snapshot = store.getRunById(runId);
+  assert.ok(snapshot);
+  assert.equal('interject' in snapshot, false);
+
+  store.finishRun(threadId, runId);
+});
+
+void test('appendPendingInterject returns not_found for unknown or aborted runs', () => {
+  const store = createActiveRunStore();
+  const threadId = testThreadId(10);
+  const runId = testRunId('append-interject-aborted');
+  const abortController = new AbortController();
+
+  assert.deepEqual(
+    store.appendPendingInterject(testRunId('append-interject-missing'), {
+      text: 'a',
+    }),
+    { ok: false, code: 'not_found' },
+  );
+  assert.deepEqual(
+    store.tryStartRun(threadId, {
+      runId,
+      threadId,
+      projectId: testProjectId(),
+      workspaceRoot: '/tmp/workspace',
+      ownerThreadId: threadId,
+      abortController,
+      interject: createRunInterjectBuffer(),
+      startedAt: '2026-03-24T00:00:00.000Z',
+    }),
+    { ok: true },
+  );
+
+  abortController.abort();
+
+  assert.deepEqual(store.appendPendingInterject(runId, { text: 'a' }), {
+    ok: false,
+    code: 'not_found',
+  });
+
+  store.finishRun(threadId, runId);
+});
+
 void test('finishRun ignores missing run ids instead of deleting the current thread run', () => {
   const store = createActiveRunStore();
   const threadId = testThreadId(8);
@@ -266,6 +354,7 @@ void test('finishRun ignores missing run ids instead of deleting the current thr
       workspaceRoot: '/tmp/workspace',
       ownerThreadId: threadId,
       abortController,
+      interject: createRunInterjectBuffer(),
       startedAt: '2026-03-24T00:00:00.000Z',
     }),
     { ok: true },

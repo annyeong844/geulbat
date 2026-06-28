@@ -9,8 +9,37 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFile } from '../../files/read-file.js';
+import { isToolAnyOfParameters } from '../types.js';
 import { manageFilesTool } from './manage-files.js';
 import { patchFileTool } from './patch-file.js';
+
+void test('patch_file publishes append and replace modes in its parameters schema', () => {
+  const parameters = patchFileTool.parameters;
+
+  assert.ok(isToolAnyOfParameters(parameters));
+
+  const appendBranch = parameters.anyOf.find((branch) => {
+    const oldStringSchema = branch.properties.old_string as
+      | { const?: unknown }
+      | undefined;
+    return oldStringSchema?.const === '';
+  });
+  const replaceBranch = parameters.anyOf.find((branch) => {
+    const oldStringSchema = branch.properties.old_string as
+      | { minLength?: unknown }
+      | undefined;
+    return oldStringSchema?.minLength === 1;
+  });
+
+  assert.ok(appendBranch);
+  assert.ok(replaceBranch);
+  assert.deepEqual(appendBranch.required, ['path', 'old_string', 'new_string']);
+  assert.deepEqual(replaceBranch.required, [
+    'path',
+    'old_string',
+    'new_string',
+  ]);
+});
 
 void test('patch_file rejects patching an existing file without a versionToken', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-patch-tool-'));
@@ -42,6 +71,38 @@ void test('patch_file rejects unexpected keys instead of silently dropping them'
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'invalid_args');
   assert.match(result.error ?? '', /unexpected keys: extra\./);
+});
+
+void test('patch_file rejects blank versionToken at the parser boundary', async () => {
+  const result = await patchFileTool.execute(
+    {
+      path: 'hello.txt',
+      old_string: 'hello',
+      new_string: 'updated',
+      versionToken: '   ',
+    },
+    { callId: 'call-patch-blank-version-token', workspaceRoot: '/workspace' },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /versionToken must not be empty/);
+});
+
+void test('patch_file rejects blank path at the parser boundary', async () => {
+  const result = await patchFileTool.execute(
+    {
+      path: '   ',
+      old_string: 'hello',
+      new_string: 'updated',
+      versionToken: 'token',
+    },
+    { callId: 'call-patch-blank-path', workspaceRoot: '/workspace' },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /path.*empty/);
 });
 
 void test('patch_file replaces exactly one matching string', async () => {

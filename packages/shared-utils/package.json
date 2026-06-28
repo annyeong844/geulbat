@@ -19,6 +19,10 @@
       "types": "./dist/process-command.d.ts",
       "import": "./dist/process-command.js"
     },
+    "./sha256": {
+      "types": "./dist/sha256.d.ts",
+      "import": "./dist/sha256.js"
+    },
     "./stable-json": {
       "types": "./dist/stable-json.d.ts",
       "import": "./dist/stable-json.js"

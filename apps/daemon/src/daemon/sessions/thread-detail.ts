@@ -1,15 +1,14 @@
 import { stat } from 'node:fs/promises';
 
 import {
-  createArtifactRefKey,
+  createSessionArtifactRefKey as createArtifactRefKey,
+  readSessionActiveArtifactRefFromMetadata as readActiveArtifactRefFromMetadata,
+  readSessionArtifactRefsFromMetadata as readArtifactRefsFromMetadata,
+  type ProjectId,
   type ThreadArtifactVersion,
-} from '@geulbat/protocol/artifacts';
-import type { ProjectId, ThreadId } from '@geulbat/protocol/ids';
-import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
-import {
-  readActiveArtifactRefFromMetadata,
-  readArtifactRefsFromMetadata,
-} from '@geulbat/protocol/thread-metadata';
+  type ThreadDetailResponse,
+  type ThreadId,
+} from './contract.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 
 import { loadAllThreadArtifactVersions } from './artifact-store.js';

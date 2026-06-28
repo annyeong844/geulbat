@@ -1,16 +1,14 @@
 import type { ErrorCode } from '../../error-codes.js';
-import { WEB_FETCH_DEFAULT_MAX_CHARS } from './web-fetch-policy.js';
 
 export type WebFetchFailureReasonCode =
   | 'invalid_url'
   | 'unsafe_url'
   | 'unsafe_redirect'
-  | 'redirect_limit_exceeded'
+  | 'redirect_loop_detected'
   | 'timeout'
   | 'aborted'
   | 'network_error'
   | 'unsupported_content_type'
-  | 'response_too_large'
   | 'extraction_failed';
 
 export interface WebFetchSuccess {
@@ -21,8 +19,6 @@ export interface WebFetchSuccess {
   contentType: string | null;
   title?: string;
   content: string;
-  truncated: boolean;
-  truncationReason?: 'max_chars' | 'max_bytes';
   untrusted: true;
 }
 
@@ -37,10 +33,6 @@ export interface WebFetchFailure {
 
 export type WebFetchOutput = WebFetchSuccess | WebFetchFailure;
 
-export function resolveWebFetchMaxChars(value: number | undefined): number {
-  return value ?? WEB_FETCH_DEFAULT_MAX_CHARS;
-}
-
 export function webFetchFailureToolErrorCode(
   reasonCode: WebFetchFailureReasonCode,
 ): ErrorCode {
@@ -54,10 +46,8 @@ export function webFetchFailureToolErrorCode(
       return 'timeout';
     case 'aborted':
       return 'aborted';
-    case 'response_too_large':
-      return 'buffer_limit_exceeded';
     case 'network_error':
-    case 'redirect_limit_exceeded':
+    case 'redirect_loop_detected':
     case 'extraction_failed':
       return 'execution_failed';
   }

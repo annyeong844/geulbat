@@ -137,6 +137,8 @@ export function isProviderAuthStatusResponse(
         isString(value.authSessionId) &&
         isNumber(value.expiresAt) &&
         isNumber(value.pollAfterMs) &&
+        Number.isInteger(value.pollAfterMs) &&
+        value.pollAfterMs > 0 &&
         hasNoProviderAuthStatusError(value)
       );
     case 'ready':

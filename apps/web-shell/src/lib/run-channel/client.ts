@@ -5,7 +5,7 @@ import type {
   RunChannelClientMessage,
   RunChannelServerMessage,
 } from '@geulbat/protocol/run-channel';
-import type { RunRequest } from '@geulbat/protocol/run-contract';
+import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 import { tryParseJsonWithGuard } from '@geulbat/protocol/runtime-utils';
 import { buildRunChannelAuthMessage } from '../auth/shell-auth.js';
 import {
@@ -41,6 +41,10 @@ interface WebSocketLike {
     listener: SocketListener<K>,
     options?: { once?: boolean },
   ): void;
+  removeEventListener<K extends keyof SocketEventMap>(
+    type: K,
+    listener: SocketListener<K>,
+  ): void;
 }
 
 interface RunChannelClientOptions {
@@ -61,6 +65,7 @@ interface PendingSocketConnection {
   opened: boolean;
   authenticated: boolean;
   settled: boolean;
+  detachListeners: () => void;
   resolve: (socket: WebSocketLike) => void;
   reject: (error: Error) => void;
 }
@@ -142,24 +147,29 @@ export class RunChannelClient {
     this.connectionState = beginConnectionAttempt(this.connectionState);
     this.connectPromise = new Promise<WebSocketLike>((resolve, reject) => {
       const pending = this.createPendingSocketConnection(resolve, reject);
-
-      pending.socket.addEventListener(
-        'open',
-        () => this.handleSocketOpen(pending),
-        { once: true },
-      );
-
-      pending.socket.addEventListener('message', (event) => {
+      const handleOpen: SocketListener<'open'> = () =>
+        this.handleSocketOpen(pending);
+      const handleMessage: SocketListener<'message'> = (event) => {
         this.handleSocketMessage(pending, event);
-      });
-
-      pending.socket.addEventListener('close', () => {
+      };
+      const handleClose: SocketListener<'close'> = () => {
         this.handleSocketClose(pending);
-      });
-
-      pending.socket.addEventListener('error', () => {
+      };
+      const handleError: SocketListener<'error'> = () => {
         this.handleSocketError(pending);
-      });
+      };
+
+      pending.detachListeners = () => {
+        pending.socket.removeEventListener('open', handleOpen);
+        pending.socket.removeEventListener('message', handleMessage);
+        pending.socket.removeEventListener('close', handleClose);
+        pending.socket.removeEventListener('error', handleError);
+      };
+
+      pending.socket.addEventListener('open', handleOpen, { once: true });
+      pending.socket.addEventListener('message', handleMessage);
+      pending.socket.addEventListener('close', handleClose);
+      pending.socket.addEventListener('error', handleError);
     });
 
     try {
@@ -171,7 +181,7 @@ export class RunChannelClient {
     }
   }
 
-  async start(request: RunRequest): Promise<string> {
+  async start(request: RunStartRequest): Promise<string> {
     const requestId = createRequestId();
     await this.send({
       type: 'run.start',
@@ -230,6 +240,7 @@ export class RunChannelClient {
       opened: false,
       authenticated: false,
       settled: false,
+      detachListeners: () => undefined,
       resolve,
       reject,
     };
@@ -246,6 +257,10 @@ export class RunChannelClient {
     pending: PendingSocketConnection,
     event: { data: string },
   ): void {
+    if (pending.authenticated && this.socket !== pending.socket) {
+      return;
+    }
+
     const parsed = tryParseJsonWithGuard(
       String(event.data),
       isRunChannelServerMessage,
@@ -299,7 +314,14 @@ export class RunChannelClient {
   }
 
   private handleSocketClose(pending: PendingSocketConnection): void {
-    this.socket = null;
+    pending.detachListeners();
+    if (this.socket !== pending.socket && pending.authenticated) {
+      return;
+    }
+
+    if (this.socket === pending.socket) {
+      this.socket = null;
+    }
     this.connectPromise = null;
     if (!pending.authenticated) {
       this.rejectBeforeAuth(
@@ -325,6 +347,10 @@ export class RunChannelClient {
   }
 
   private handleSocketError(pending: PendingSocketConnection): void {
+    if (pending.authenticated && this.socket !== pending.socket) {
+      return;
+    }
+
     if (!pending.opened || !pending.authenticated) {
       this.rejectBeforeAuth(
         pending,
@@ -344,6 +370,7 @@ export class RunChannelClient {
     }
 
     pending.settled = true;
+    pending.detachListeners();
     this.connectPromise = null;
     const explicitClose = this.connectionState.closedExplicitly;
     this.connectionState = markConnectionClosed(

@@ -46,14 +46,6 @@ export class FileAccessError extends FileDomainError {
     );
   }
 
-  static tooLarge(path: string, byteLength: number): FileAccessError {
-    return new FileAccessError(
-      'buffer_limit_exceeded',
-      `file too large: ${path} (${byteLength} bytes)`,
-      path,
-    );
-  }
-
   static treeTooLarge(path: string, detail: string): FileAccessError {
     return new FileAccessError(
       'buffer_limit_exceeded',

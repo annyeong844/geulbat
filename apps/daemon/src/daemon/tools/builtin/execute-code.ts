@@ -1,13 +1,12 @@
 import { z } from 'zod';
 import {
-  PTC_EXECUTE_CODE_DEFAULT_TIMEOUT_MS,
-  PTC_EXECUTE_CODE_MAX_CODE_BYTES,
-  PTC_EXECUTE_CODE_MAX_TIMEOUT_MS,
+  PTC_EXECUTE_CODE_CELL_EXEC_MAX_YIELD_MS,
+  PTC_EXECUTE_CODE_CELL_EXEC_MIN_YIELD_MS,
   PTC_EXECUTE_CODE_TOOL_NAME,
   type PtcExecuteCodeRuntimeFailureReason,
   type PtcExecuteCodeRuntimeResult,
   type PtcExecuteCodeRuntimeSummary,
-} from '../../daemon-runtime-contract.js';
+} from '../../ptc/runtime/execute-code/execute-code-runtime-contract.js';
 import { createRunWorkspaceContext } from '../../run-workspace-context.js';
 import type { ErrorCode } from '../../error-codes.js';
 import { toolError } from '../result.js';
@@ -15,13 +14,13 @@ import { defineZodTool } from '../zod-tool.js';
 import {
   createPtcExecuteCodeToolCallbackHandler,
   createPtcExecuteCodeToolCallbackHelp,
+  createPtcExecuteCodeToolCallbackSurface,
 } from './execute-code-tool-callback.js';
 
 const executeCodeArgsSchema = z.strictObject({
   code: z
     .string()
     .min(1, 'code is required.')
-    .max(PTC_EXECUTE_CODE_MAX_CODE_BYTES)
     .describe(
       'JavaScript code to run inside the PTC lab Docker runtime. Use stdout or return a JSON-serializable value for compact results.',
     ),
@@ -29,10 +28,18 @@ const executeCodeArgsSchema = z.strictObject({
     .number()
     .int()
     .min(1)
-    .max(PTC_EXECUTE_CODE_MAX_TIMEOUT_MS)
     .optional()
     .describe(
-      `Execution timeout in milliseconds. Defaults to ${PTC_EXECUTE_CODE_DEFAULT_TIMEOUT_MS}.`,
+      'Optional execution timeout in milliseconds. Use the exact key timeoutMs; timeout_ms is not accepted. Omitted requests use the admitted PTC lab shell policy.',
+    ),
+  yield_time_ms: z
+    .number()
+    .int()
+    .min(PTC_EXECUTE_CODE_CELL_EXEC_MIN_YIELD_MS)
+    .max(PTC_EXECUTE_CODE_CELL_EXEC_MAX_YIELD_MS)
+    .optional()
+    .describe(
+      'Optional initial observation window in milliseconds for detached exec cells. Use the exact key yield_time_ms; yieldTimeMs is not accepted. If exec returns status "running", call wait with the returned cellId.',
     ),
 });
 
@@ -41,38 +48,43 @@ type ExecuteCodeArgs = z.output<typeof executeCodeArgsSchema>;
 export const executeCodeTool = defineZodTool({
   name: PTC_EXECUTE_CODE_TOOL_NAME,
   description:
-    'Run JavaScript code inside the PTC lab Docker runtime and return a compact stdout/stderr result. Code can call geulbat.callTool(name, args) for read-only daemon tools.',
+    'Run JavaScript code inside the PTC lab Docker runtime. Code can call geulbat.callTool(name, args) for read-only daemon tools. If the result has status "running" and a cellId, call wait with cell_id set to that cellId to observe completion or terminate the cell.',
   argsSchema: executeCodeArgsSchema,
   sideEffectLevel: 'none',
   mayMutateWorkspaceFiles: false,
-  timeoutMs: PTC_EXECUTE_CODE_MAX_TIMEOUT_MS,
+  parallelBatchKind: 'ptc_cell',
   requiresApproval: false,
   async executeParsed(args: ExecuteCodeArgs, ctx) {
     if (!ctx.threadId || !ctx.projectId) {
-      return toolError(
-        'execution_failed',
-        'run context is required for execute_code.',
-      );
+      return toolError('execution_failed', 'run context is required for exec.');
     }
     const runtime = ctx.agentSpawnRuntime?.ptcExecuteCode;
     if (!runtime) {
-      return toolError(
-        'execution_failed',
-        'PTC execute_code runtime is required.',
-      );
+      return toolError('execution_failed', 'PTC exec runtime is required.');
     }
 
-    const toolCallbackHandler = createPtcExecuteCodeToolCallbackHandler(ctx);
-    const sdkHelp = createPtcExecuteCodeToolCallbackHelp(ctx);
+    const callbackToolSurface = createPtcExecuteCodeToolCallbackSurface(ctx);
+    const toolCallbackHandler = createPtcExecuteCodeToolCallbackHandler(
+      ctx,
+      callbackToolSurface,
+    );
+    const sdkHelp = createPtcExecuteCodeToolCallbackHelp(
+      ctx,
+      callbackToolSurface,
+    );
     const runtimeArgs = {
       runContext: createRunWorkspaceContext({
         threadId: ctx.threadId,
         projectId: ctx.projectId,
         workspaceRoot: ctx.workspaceRoot,
       }),
+      invocationId: ctx.callId,
       request: {
         code: args.code,
         ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+        ...(args.yield_time_ms !== undefined
+          ? { yieldTimeMs: args.yield_time_ms }
+          : {}),
       },
       ...(sdkHelp ? { sdkHelp } : {}),
       ...(toolCallbackHandler ? { toolCallbackHandler } : {}),
@@ -101,6 +113,26 @@ export const executeCodeTool = defineZodTool({
 function stringifyExecuteCodeSummary(
   summary: PtcExecuteCodeRuntimeSummary,
 ): string {
+  if (summary.executionSurface === 'node_via_lab_detached_cell') {
+    return JSON.stringify({
+      kind: 'ptc_execute_code_cell_running',
+      capabilityId: summary.capabilityId,
+      policyId: summary.policyId,
+      labPolicyId: summary.labPolicyId,
+      profile: summary.profile,
+      executionClass: summary.executionClass,
+      executionSurface: summary.executionSurface,
+      status: summary.status,
+      cellId: summary.cellId,
+      stdout: summary.stdout,
+      stderr: summary.stderr,
+      effectiveTimeoutMs: summary.effectiveTimeoutMs,
+      durationMs: summary.durationMs,
+      toolCallbacks: summary.toolCallbacks,
+      sessionLifecycle: summary.sessionLifecycle,
+      callbackHelp: summary.callbackHelp,
+    });
+  }
   return JSON.stringify({
     kind: 'ptc_execute_code_result',
     capabilityId: summary.capabilityId,
@@ -112,8 +144,6 @@ function stringifyExecuteCodeSummary(
     exitCode: summary.exitCode,
     stdout: summary.stdout,
     stderr: summary.stderr,
-    stdoutTruncated: summary.stdoutTruncated,
-    stderrTruncated: summary.stderrTruncated,
     effectiveTimeoutMs: summary.effectiveTimeoutMs,
     durationMs: summary.durationMs,
     toolCallbacks: summary.toolCallbacks,
@@ -145,6 +175,9 @@ function sanitizeFailureDiagnostics(
     'bridgeReasonCode',
     'sessionReasonCode',
     'cleanupReasonCode',
+    'cellCloseStatus',
+    'cellCloseMissing',
+    'requestAborted',
     'taintHookFailed',
     'sessionCloseFailed',
     'callbackBridgeCloseFailed',
@@ -178,12 +211,14 @@ function executeCodeFailureToToolErrorCode(
       return 'timeout';
     case 'ptc_lab_command_cancelled':
       return 'aborted';
+    case 'ptc_execute_code_cell_busy':
+    case 'ptc_execute_code_cell_result_unclaimed':
     case 'ptc_lab_session_busy':
       return 'conflict';
     case 'ptc_lab_interpreter_unavailable':
     case 'ptc_lab_session_unavailable':
+    case 'ptc_lab_command_output_rejected':
     case 'ptc_lab_command_failed':
-    case 'ptc_lab_command_output_invalid':
     case 'ptc_execute_code_session_cleanup_failed':
       return 'execution_failed';
   }

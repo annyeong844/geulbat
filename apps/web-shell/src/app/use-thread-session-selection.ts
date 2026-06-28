@@ -32,11 +32,16 @@ function isSnapshotVersionNewer(
   return nextVersion.localeCompare(currentVersion) > 0;
 }
 
+function createOptimisticThreadMessageId(index: number): string {
+  return `optimistic:${Date.now().toString(36)}:${index.toString(36)}`;
+}
+
 export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [artifacts, setArtifacts] = useState<ThreadArtifactVersion[]>([]);
   const latestSnapshotVersionByThreadRef = useRef<Record<string, string>>({});
+  const optimisticMessageIndexRef = useRef(0);
 
   const selectThreadSnapshot = useCallback(
     (thread: ThreadSnapshotSelectionState) => {
@@ -65,9 +70,13 @@ export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
   );
 
   const appendOptimisticUserMessage = useCallback((prompt: string) => {
+    optimisticMessageIndexRef.current += 1;
     setMessages((prev) => [
       ...prev,
       {
+        entryId: createOptimisticThreadMessageId(
+          optimisticMessageIndexRef.current,
+        ),
         role: 'user',
         content: prompt,
         timestamp: new Date().toISOString(),

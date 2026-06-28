@@ -28,6 +28,7 @@ function makeTestTool(args: {
     },
     strict: true,
     sideEffectLevel: args.sideEffectLevel,
+    mayMutateWorkspaceFiles: false,
     timeoutMs: 1000,
     requiresApproval: args.requiresApproval,
     parseArgs() {

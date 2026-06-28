@@ -131,6 +131,16 @@ void test('buildReactBundleArtifactRuntimePayload installs runtime globals and i
   );
 });
 
+void test('buildReactBundleArtifactRuntimePayload rejects non-http executable entry schemes before import', () => {
+  assert.throws(
+    () =>
+      buildReactBundleArtifactRuntimePayload({
+        entryUrl: 'data:text/javascript,export default {}',
+      }),
+    /react bundle manifest entryUrl must use http or https/,
+  );
+});
+
 void test('buildReactBundleArtifactRuntimePayload injects runtime dependencies before entry import', () => {
   const document = buildReactBundleArtifactRuntimePayload({
     entryUrl: REACT_BUNDLE_ENTRY_URL,
