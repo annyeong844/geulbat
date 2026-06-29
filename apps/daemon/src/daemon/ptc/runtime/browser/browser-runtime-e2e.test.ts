@@ -61,11 +61,47 @@ import type {
 const TARGET_URL =
   'https://example.test/private/path?token=e2e-secret-token&api_key=e2e-api-key';
 const TARGET_SECRET_PATTERN = /example\.test|e2e-secret-token|e2e-api-key/u;
+const TEST_PROCESS_UID = 1000;
+const TEST_PROCESS_GID = 1000;
+
+const restoreTestProcessUserIds = installTestProcessUserIds();
+test.after(() => {
+  restoreTestProcessUserIds();
+});
 
 interface BrowserRuntimeExecInput {
   targetUrl: string;
   timeoutMs: number;
   loadWaitState: 'domcontentloaded';
+}
+
+function installTestProcessUserIds(): () => void {
+  const originalGetUid = Object.getOwnPropertyDescriptor(process, 'getuid');
+  const originalGetGid = Object.getOwnPropertyDescriptor(process, 'getgid');
+  Object.defineProperty(process, 'getuid', {
+    configurable: true,
+    value: () => TEST_PROCESS_UID,
+  });
+  Object.defineProperty(process, 'getgid', {
+    configurable: true,
+    value: () => TEST_PROCESS_GID,
+  });
+
+  return () => {
+    restoreProcessDescriptor('getuid', originalGetUid);
+    restoreProcessDescriptor('getgid', originalGetGid);
+  };
+}
+
+function restoreProcessDescriptor(
+  name: 'getuid' | 'getgid',
+  descriptor: PropertyDescriptor | undefined,
+): void {
+  if (descriptor === undefined) {
+    Reflect.deleteProperty(process, name);
+    return;
+  }
+  Object.defineProperty(process, name, descriptor);
 }
 
 interface BrowserRuntimeBoundaryFixtureArgs {
