@@ -34,6 +34,15 @@ const TEST_CALLBACK_TRANSPORT_POLICY = Object.freeze({
   callbackTimeoutMs: 30_000,
   maxResponseBytes: 8192,
 });
+const TEST_RUNNING_CELL_REAP_AFTER_MS = 600_000;
+
+function makeTestCellConfig(initialYieldTimeMs: number) {
+  return {
+    enabled: true,
+    initialYieldTimeMs,
+    runningCellReapAfterMs: TEST_RUNNING_CELL_REAP_AFTER_MS,
+  } as const;
+}
 
 void test('classifyPtcExecuteCodePlacementContinuity fails closed without an independence proof', () => {
   const unclassified = classifyPtcExecuteCodePlacementContinuity();
@@ -301,6 +310,184 @@ void test('createPtcExecuteCodeRuntime acquires placement before batch exec and 
     assert.equal(Object.hasOwn(result.value, 'selectedLane'), false);
     assert.deepEqual(events, [`acquire:${threadId}`, `release:${threadId}`]);
     assert.equal(observedWorkspaceRoot, await realpath(workspaceRoot));
+  } finally {
+    await runtime.closeAll();
+    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime releases placement after callback bridge setup failure', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-placement-bridge-fail-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-placement-bridge-fail-runtime-'),
+  );
+  const threadId = testThreadId(941_1);
+  const events: string[] = [];
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-execute-code-placement-bridge-fail',
+  });
+  const createPlacementCoordinator =
+    (): PtcExecuteCodePlacementCoordinator => ({
+      acquirePlacement(args) {
+        assert.equal(args.kind, 'batch_command');
+        assert.deepEqual(args.continuity, {
+          kind: 'defer_to_warm',
+          reason: 'unclassified',
+        });
+        assert.deepEqual(
+          args.callbackEffectPolicy,
+          createPtcExecuteCodeReadOnlyCallbackEffectPolicy({
+            callbackToolCount: 0,
+          }),
+        );
+        events.push(`acquire:${args.identity.threadId}`);
+        const observation =
+          createPtcExecuteCodeWarmSessionPlacementObservation(args);
+        return {
+          kind: 'warm_session',
+          executionKind: args.kind,
+          continuity: args.continuity,
+          observation,
+          preflight:
+            createPtcExecuteCodeWarmOnlyPlacementPreflightRecord(observation),
+          identity: args.identity,
+          sessionManager: args.sessionManager,
+          batchRunner: args.batchRunner,
+        };
+      },
+      releasePlacement(placement) {
+        events.push(`release:${placement.identity.threadId}`);
+      },
+    });
+  const runtime = createPtcExecuteCodeRuntime({
+    callbackTransportPolicy: TEST_CALLBACK_TRANSPORT_POLICY,
+    commandRunner: fixture.runner,
+    createEpochBridge: async () => ({
+      ok: false,
+      reasonCode: 'callback_channel_failed',
+      message: 'callback channel failed in placement release test',
+      diagnostics: { callbackTransportPolicyRequired: true },
+    }),
+    createPlacementCoordinator,
+    runtimeRootForWorkspace: () => runtimeRoot,
+  });
+
+  try {
+    const result = await runtime.executeCode({
+      runContext: makeRunWorkspaceContext({
+        threadId,
+        projectId: testProjectId('project'),
+        workspaceRoot,
+      }),
+      request: { code: 'console.log("bridge failure")' },
+      toolCallbackHandler: async () => ({
+        ok: true,
+        result: { ok: true, output: '' },
+      }),
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) {
+      return;
+    }
+    assert.equal(
+      result.reasonCode,
+      'ptc_execute_code_callback_bridge_unavailable',
+    );
+    assert.deepEqual(result.diagnostics, {
+      callbackTransportPolicyRequired: true,
+      bridgeReasonCode: 'callback_channel_failed',
+    });
+    assert.deepEqual(events, [`acquire:${threadId}`, `release:${threadId}`]);
+    assert.equal(
+      fixture.invocations.filter((invocation) => invocation.args[0] === 'exec')
+        .length,
+      0,
+    );
+  } finally {
+    await runtime.closeAll();
+    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime releases placement after detached cell startup failure', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-placement-cell-fail-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-placement-cell-fail-runtime-'),
+  );
+  const threadId = testThreadId(942);
+  const events: string[] = [];
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-execute-code-placement-cell-fail',
+  });
+  const createPlacementCoordinator =
+    (): PtcExecuteCodePlacementCoordinator => ({
+      acquirePlacement(args) {
+        assert.equal(args.kind, 'detached_cell');
+        assert.deepEqual(args.continuity, {
+          kind: 'defer_to_warm',
+          reason: 'unclassified',
+        });
+        events.push(`acquire:${args.identity.threadId}`);
+        const observation =
+          createPtcExecuteCodeWarmSessionPlacementObservation(args);
+        return {
+          kind: 'warm_session',
+          executionKind: args.kind,
+          cellId: args.cellId,
+          continuity: args.continuity,
+          observation,
+          preflight:
+            createPtcExecuteCodeWarmOnlyPlacementPreflightRecord(observation),
+          identity: args.identity,
+          sessionManager: args.sessionManager,
+          batchRunner: args.batchRunner,
+        };
+      },
+      releasePlacement(placement) {
+        events.push(`release:${placement.identity.threadId}`);
+      },
+    });
+  const runtime = createPtcExecuteCodeRuntime({
+    commandRunner: fixture.runner,
+    createPlacementCoordinator,
+    ptcCell: makeTestCellConfig(60_000),
+    runtimeRootForWorkspace: () => runtimeRoot,
+    startCellProcess: () => {
+      assert.deepEqual(events, [`acquire:${threadId}`]);
+      return {
+        ok: false,
+        reasonCode: 'spawn_failed',
+        message: 'spawn failed for placement release test',
+      };
+    },
+  });
+
+  try {
+    const result = await runtime.executeCode({
+      runContext: makeRunWorkspaceContext({
+        threadId,
+        projectId: testProjectId('project'),
+        workspaceRoot,
+      }),
+      request: { code: 'await new Promise(() => {})', timeoutMs: 60_000 },
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) {
+      return;
+    }
+    assert.equal(result.reasonCode, 'ptc_lab_command_failed');
+    assert.deepEqual(result.diagnostics, { spawnFailed: true });
+    assert.deepEqual(events, [`acquire:${threadId}`, `release:${threadId}`]);
   } finally {
     await runtime.closeAll();
     await rm(workspaceRoot, { recursive: true, force: true });
