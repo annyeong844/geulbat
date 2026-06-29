@@ -87,18 +87,21 @@ type TerminalCellLookupResult =
 type CloseCellResult =
   | {
       ok: true;
-      status:
-        | 'terminated'
-        | 'terminal_retained_kept'
-        | 'terminal_retained_dropped'
-        | 'terminal_expired_dropped'
-        | 'admission_released';
-      output?: DetachedProcessOutputSegment;
-      exit?: DetachedProcessExitInfo;
-      terminalResult?: PtcExecuteCodeCellRetainedResult;
-      bridgeClosed?: boolean;
-      sessionTainted?: boolean;
-      cleanupDiagnostics?: Record<string, string | number | boolean>;
+      status: 'terminated';
+      output: DetachedProcessOutputSegment;
+      exit: DetachedProcessExitInfo;
+      bridgeClosed: boolean;
+      sessionTainted: boolean;
+      cleanupDiagnostics?: CleanupDiagnostics;
+    }
+  | {
+      ok: true;
+      status: 'terminal_retained_kept' | 'terminal_retained_dropped';
+      terminalResult: PtcExecuteCodeCellRetainedResult;
+    }
+  | {
+      ok: true;
+      status: 'terminal_expired_dropped' | 'admission_released';
     }
   | { ok: false; reasonCode: 'cell_missing' };
 
@@ -569,15 +572,16 @@ export function createPtcExecuteCodeCellRegistry(
       }
       deleteTerminalRetainedCell(args);
       bumpRevision(args.threadId);
+      if (retained.state === 'terminal_expired') {
+        return {
+          ok: true,
+          status: 'terminal_expired_dropped',
+        };
+      }
       return {
         ok: true,
-        status:
-          retained.state === 'terminal_expired'
-            ? 'terminal_expired_dropped'
-            : 'terminal_retained_dropped',
-        ...(retained.state === 'terminal_retained'
-          ? { terminalResult: retained.result }
-          : {}),
+        status: 'terminal_retained_dropped',
+        terminalResult: retained.result,
       };
     }
 

@@ -44,6 +44,7 @@ import type {
   PtcExecuteCodeCellId,
   PtcExecuteCodeRuntimeResult,
 } from './execute-code-runtime-contract.js';
+import type { PtcExecuteCodeCallbackRuntime } from './execute-code-batch-runtime.js';
 import {
   classifyPtcExecuteCodePlacementContinuity,
   createPtcExecuteCodeReadOnlyCallbackEffectPolicy,
@@ -56,13 +57,6 @@ import {
 type CreatePtcExecuteCodeCellRegistry = typeof createPtcExecuteCodeCellRegistry;
 
 export type StartPtcExecuteCodeCellProcess = typeof startPtcDockerClientProcess;
-
-interface PtcExecuteCodeCallbackRuntime {
-  enabled: boolean;
-  callbackPolicy: PtcSessionEpochBridgeCallbackPolicy | undefined;
-  observedCount(): number;
-  callbackHandler: PtcEpochCallbackHandler;
-}
 
 interface PtcExecuteCodeValidatedRequest {
   code: string;
@@ -303,16 +297,24 @@ async function createCellCommandEnvelope(args: {
   runtimeArgs: RunExecuteCodeCellRuntimeAttemptArgs;
 }): Promise<PtcExecuteCodeCellStepResult<PtcExecuteCodeCellCommandEnvelope>> {
   const runtimeArgs = args.runtimeArgs;
-  const callbackRuntime: PtcExecuteCodeCallbackRuntime = {
-    enabled: runtimeArgs.callbackRuntime.enabled,
-    callbackPolicy: runtimeArgs.callbackRuntime.callbackPolicy,
-    observedCount: runtimeArgs.callbackRuntime.observedCount,
-    callbackHandler: (invocation) =>
-      runtimeArgs.callbackRuntime.callbackHandler({
-        ...invocation,
-        cellId: args.cellId,
-      }),
-  };
+  const callbackHandler: PtcEpochCallbackHandler = (invocation) =>
+    runtimeArgs.callbackRuntime.callbackHandler({
+      ...invocation,
+      cellId: args.cellId,
+    });
+  const callbackRuntime: PtcExecuteCodeCallbackRuntime = runtimeArgs
+    .callbackRuntime.enabled
+    ? {
+        enabled: true,
+        callbackPolicy: runtimeArgs.callbackRuntime.callbackPolicy,
+        observedCount: runtimeArgs.callbackRuntime.observedCount,
+        callbackHandler,
+      }
+    : {
+        enabled: false,
+        observedCount: runtimeArgs.callbackRuntime.observedCount,
+        callbackHandler,
+      };
   const bridgeResult = await runtimeArgs.maybeCreateCallbackBridge({
     callbackRuntime,
     identity: runtimeArgs.identity,
