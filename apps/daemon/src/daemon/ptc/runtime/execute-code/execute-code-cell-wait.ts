@@ -72,11 +72,7 @@ export async function waitForExecuteCodeCell(args: {
           }),
         };
       }
-      if (
-        closed.ok &&
-        closed.status === 'terminal_retained_dropped' &&
-        closed.terminalResult !== undefined
-      ) {
+      if (closed.ok && closed.status === 'terminal_retained_dropped') {
         return summarizeWaitRetainedCell({
           cellId,
           result: closed.terminalResult,

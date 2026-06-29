@@ -54,6 +54,20 @@ type ExecuteCodeBatchCommandResult = Awaited<
   >
 >;
 
+export type PtcExecuteCodeCallbackRuntime =
+  | {
+      enabled: true;
+      callbackPolicy: PtcSessionEpochBridgeCallbackPolicy;
+      observedCount(): number;
+      callbackHandler: PtcEpochCallbackHandler;
+    }
+  | {
+      enabled: false;
+      callbackPolicy?: undefined;
+      observedCount(): number;
+      callbackHandler: PtcEpochCallbackHandler;
+    };
+
 export async function runExecuteCodeRuntimeAttempt(args: {
   admission: PtcLabAdmittedProfile;
   callbackRuntime: ReturnType<typeof createExecuteCodeCallbackRuntime>;
@@ -322,12 +336,7 @@ export function summarizeExecution(
 export function createExecuteCodeCallbackRuntime(args: {
   callbackTransportPolicy: PtcSessionEpochBridgeCallbackPolicy | undefined;
   toolCallbackHandler: PtcExecuteCodeRuntimeToolCallbackHandler | undefined;
-}): {
-  enabled: boolean;
-  callbackPolicy: PtcSessionEpochBridgeCallbackPolicy | undefined;
-  observedCount(): number;
-  callbackHandler: PtcEpochCallbackHandler;
-} {
+}): PtcExecuteCodeCallbackRuntime {
   let observed = 0;
   const callbackHandler: PtcEpochCallbackHandler = async (invocation) => {
     if (args.toolCallbackHandler === undefined) {
@@ -354,10 +363,19 @@ export function createExecuteCodeCallbackRuntime(args: {
     });
   };
 
+  if (
+    args.toolCallbackHandler === undefined ||
+    args.callbackTransportPolicy === undefined
+  ) {
+    return {
+      enabled: false,
+      observedCount: () => observed,
+      callbackHandler,
+    };
+  }
+
   return {
-    enabled:
-      args.toolCallbackHandler !== undefined &&
-      args.callbackTransportPolicy !== undefined,
+    enabled: true,
     callbackPolicy: args.callbackTransportPolicy,
     observedCount: () => observed,
     callbackHandler,
@@ -379,10 +397,7 @@ export async function maybeCreateCallbackBridge(args: {
       diagnostics?: Record<string, string | number | boolean>;
     }
 > {
-  if (
-    !args.callbackRuntime.enabled ||
-    args.callbackRuntime.callbackPolicy === undefined
-  ) {
+  if (!args.callbackRuntime.enabled) {
     return { ok: true, value: {} };
   }
   const result = await (args.createEpochBridge ?? createPtcSessionEpochBridge)({

@@ -304,6 +304,9 @@ export function cellCloseDiagnostics(
   if (!result.ok) {
     return { cellCloseMissing: true };
   }
+  if (result.status !== 'terminated') {
+    return { cellCloseStatus: result.status };
+  }
   return {
     cellCloseStatus: result.status,
     ...(result.bridgeClosed === false
