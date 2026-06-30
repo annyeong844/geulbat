@@ -314,6 +314,59 @@ void test('acceptReactBundleRuntimeManifest rejects tampered invalid or privileg
   }
 });
 
+void test('acceptReactBundleRuntimeManifest rejects tampered dependency URLs before probing', async () => {
+  const prepare = await prepareOnly();
+
+  for (const url of [
+    'data:text/javascript,export default {}',
+    'file:///tmp/app.js',
+    'https://user:pass@example.com/dep.js',
+    'http://127.0.0.1/dep.js',
+    'https://example.com/.geulbat/sandbox-outputs/dep.js',
+  ]) {
+    const result = acceptReactBundleRuntimeManifest({
+      prepare: {
+        ...prepare,
+        manifest: {
+          ...prepare.manifest,
+          runtimeDependencies: {
+            importMap: {
+              imports: {
+                [PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_IMPORT_SPECIFIER]:
+                  url,
+              },
+            },
+          },
+        },
+        provenanceSummary: {
+          ...prepare.provenanceSummary,
+          dependencyCount: 1,
+          resolvedUrls: [url],
+          dependencyEvidence: [
+            {
+              kind: 'esm_import',
+              specifier:
+                PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_IMPORT_SPECIFIER,
+              packageName: 'geulbat-runtime-dependency-fixture',
+              version: '1.0.0',
+              url,
+              integrityStatus: 'missing_allowed',
+            },
+          ],
+        },
+      },
+      now: () => '2026-05-24T12:00:00.000Z',
+    });
+
+    assert.equal(result.ok, false, url);
+    assert.equal(
+      result.ok ? null : result.reasonCode,
+      'dependency_evidence_mismatch',
+      url,
+    );
+  }
+});
+
 void test('acceptReactBundleRuntimeManifest compares probe requested URLs instead of final URLs', async () => {
   const request: ReactBundleDependencyPrepareRequest = {
     ...BASE_REQUEST,

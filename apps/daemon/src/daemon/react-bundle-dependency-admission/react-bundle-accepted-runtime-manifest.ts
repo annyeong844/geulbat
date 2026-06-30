@@ -1,5 +1,6 @@
 import type { ReactBundleRuntimeManifest } from '@geulbat/protocol/react-bundle-inline-compile';
 import {
+  normalizeDependencyUrl,
   normalizeReactBundleEntryUrl,
   type ReactBundleDependencyPrepareSummary,
   type ReactBundleRuntimeDependencies,
@@ -576,7 +577,7 @@ function tryNormalizeUrl(
   url: string,
 ): { ok: true; url: string } | { ok: false } {
   try {
-    return { ok: true, url: new URL(url).toString() };
+    return { ok: true, url: normalizeDependencyUrl(url) };
   } catch {
     return { ok: false };
   }

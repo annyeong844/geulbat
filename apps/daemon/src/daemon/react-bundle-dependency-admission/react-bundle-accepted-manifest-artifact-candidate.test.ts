@@ -265,6 +265,33 @@ void test('buildReactBundleAcceptedManifestArtifactCandidate keeps evidence meta
   }
 });
 
+void test('buildReactBundleAcceptedManifestArtifactCandidate normalizes dependency URLs before handoff evidence comparison', () => {
+  const accepted = acceptedWithDependencies();
+  const result = buildReactBundleAcceptedManifestArtifactCandidate({
+    accepted: {
+      ...accepted,
+      manifest: {
+        entryUrl: accepted.manifest.entryUrl,
+        runtimeDependencies: {
+          importMap: {
+            imports: {
+              [PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_IMPORT_SPECIFIER]:
+                'https://ESM.SH/geulbat-runtime-dependency-fixture@1.0.0',
+            },
+          },
+          stylesheets: [
+            'https://CDN.JSDELIVR.NET/npm/geulbat-runtime-dependency-fixture@1.0.0/theme.css',
+            EXTRA_STYLESHEET_URL,
+          ],
+        },
+      },
+    },
+  });
+
+  assertOk(result);
+  assert.match(result.artifactCandidate.payload, /ESM\.SH/u);
+});
+
 void test('buildReactBundleAcceptedManifestArtifactCandidate allows ordinary manifest strings that resemble broad private markers', () => {
   const result = buildReactBundleAcceptedManifestArtifactCandidate({
     accepted: acceptedWithDependencies({
@@ -386,6 +413,43 @@ void test('buildReactBundleAcceptedManifestArtifactCandidate rejects no-dependen
         ...accepted.acceptance,
         probedDependencyCount: 1,
         networkPolicies: ['none', 'allowlisted_metadata_probe'],
+      },
+    },
+  });
+
+  assertFailure(result, 'dependency_policy_mismatch');
+});
+
+void test('buildReactBundleAcceptedManifestArtifactCandidate rejects no-dependency summaries with manifest dependencies', () => {
+  const accepted = acceptedWithoutDependencies();
+  const result = buildReactBundleAcceptedManifestArtifactCandidate({
+    accepted: {
+      ...accepted,
+      manifest: {
+        entryUrl: accepted.manifest.entryUrl,
+        runtimeDependencies:
+          acceptedWithDependencies().manifest.runtimeDependencies!,
+      },
+    },
+  });
+
+  assertFailure(result, 'dependency_policy_mismatch');
+});
+
+void test('buildReactBundleAcceptedManifestArtifactCandidate rejects manifests that do not match dependency evidence', () => {
+  const accepted = acceptedWithDependencies();
+  const result = buildReactBundleAcceptedManifestArtifactCandidate({
+    accepted: {
+      ...accepted,
+      manifest: {
+        entryUrl: accepted.manifest.entryUrl,
+        runtimeDependencies: {
+          importMap: accepted.manifest.runtimeDependencies!.importMap!,
+          stylesheets: [
+            PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_STYLESHEET_URL,
+            'https://cdn.jsdelivr.net/npm/geulbat-runtime-dependency-fixture@1.0.0/tampered.css',
+          ],
+        },
       },
     },
   });

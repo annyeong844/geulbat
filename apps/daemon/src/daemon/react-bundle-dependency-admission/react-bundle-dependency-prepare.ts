@@ -4,6 +4,7 @@ import {
   validateReactBundleRuntimeUrlPolicy,
   type ReactBundleRuntimeUrlPolicyFailureReason,
 } from '@geulbat/protocol/react-bundle-runtime-url-policy';
+import { isPlainRecord } from '@geulbat/protocol/runtime-utils';
 import type { ProcessCommandResult } from '@geulbat/shared-utils/process-command';
 import { sha256StableJson } from '@geulbat/shared-utils/stable-json';
 import type {
@@ -121,31 +122,19 @@ export function validateReactBundleDependencyPrepareRequest(
 ): ValidatedReactBundleDependencyPrepareRequest {
   assertNonEmptyString(request.entryUrl, 'entryUrl');
   const entryUrl = normalizeReactBundleEntryUrl(request.entryUrl);
-  assertObject(request.runtimeDependencies, 'runtimeDependencies');
+  const runtimeDependencies = normalizeRuntimeDependencies(
+    request.runtimeDependencies,
+  );
   if (!Array.isArray(request.dependencyRefs)) {
     throw new Error('dependencyRefs must be an array');
   }
 
-  const imports = request.runtimeDependencies.importMap?.imports ?? {};
-  const stylesheets = request.runtimeDependencies.stylesheets ?? [];
+  const imports = runtimeDependencies.importMap?.imports ?? {};
+  const stylesheets = runtimeDependencies.stylesheets ?? [];
   const normalizedRefs = request.dependencyRefs.map(normalizeDependencyRef);
 
   assertEsmImportConsistency(imports, normalizedRefs);
   assertStylesheetConsistency(stylesheets, normalizedRefs);
-
-  const runtimeDependencies: ReactBundleRuntimeDependencies = {};
-  if (request.runtimeDependencies.importMap) {
-    runtimeDependencies.importMap = {
-      imports: {
-        ...(request.runtimeDependencies.importMap.imports ?? {}),
-      },
-    };
-  }
-  if (request.runtimeDependencies.stylesheets) {
-    runtimeDependencies.stylesheets = [
-      ...request.runtimeDependencies.stylesheets,
-    ];
-  }
 
   return {
     entryUrl,
@@ -155,6 +144,76 @@ export function validateReactBundleDependencyPrepareRequest(
     lifecycleScripts: 'not_applicable',
     networkPolicy: 'none',
   };
+}
+
+function normalizeRuntimeDependencies(
+  value: unknown,
+): ReactBundleRuntimeDependencies {
+  assertPlainRecord(value, 'runtimeDependencies');
+  assertSupportedKeys(value, ['importMap', 'stylesheets'], (key) => {
+    throw new Error(`runtimeDependencies does not support ${key}`);
+  });
+
+  const importMap = normalizeRuntimeImportMap(value.importMap);
+  const stylesheets = normalizeRuntimeStylesheets(value.stylesheets);
+  const dependencies: ReactBundleRuntimeDependencies = {};
+  if (importMap && Object.keys(importMap.imports ?? {}).length > 0) {
+    dependencies.importMap = importMap;
+  }
+  if (stylesheets && stylesheets.length > 0) {
+    dependencies.stylesheets = stylesheets;
+  }
+  return dependencies;
+}
+
+function normalizeRuntimeImportMap(
+  value: unknown,
+): ReactBundleRuntimeDependencies['importMap'] | undefined {
+  if (value === undefined) return undefined;
+  assertPlainRecord(value, 'runtimeDependencies.importMap');
+  assertSupportedKeys(value, ['imports'], () => {
+    throw new Error('runtimeDependencies.importMap supports imports only');
+  });
+
+  if (value.imports === undefined) return undefined;
+  assertPlainRecord(value.imports, 'runtimeDependencies.importMap.imports');
+
+  const imports: Record<string, string> = {};
+  for (const [specifier, url] of Object.entries(value.imports)) {
+    if (specifier.trim().length === 0) {
+      throw new Error('runtime dependency import specifier must be non-empty');
+    }
+    if (/[\u0000-\u001f\u007f]/u.test(specifier)) {
+      throw new Error(
+        'runtime dependency import specifier must not contain control characters',
+      );
+    }
+    if (typeof url !== 'string') {
+      throw new Error(
+        'runtimeDependencies.importMap.imports values must be strings',
+      );
+    }
+    imports[specifier] = normalizeDependencyUrl(url);
+  }
+
+  return Object.keys(imports).length > 0 ? { imports } : undefined;
+}
+
+function normalizeRuntimeStylesheets(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error('runtimeDependencies.stylesheets must be an array');
+  }
+
+  const stylesheets = value.map((url) => {
+    if (typeof url !== 'string') {
+      throw new Error(
+        'runtimeDependencies.stylesheets entries must be strings',
+      );
+    }
+    return normalizeDependencyUrl(url);
+  });
+  return stylesheets.length > 0 ? stylesheets : undefined;
 }
 
 export async function prepareReactBundleExplicitCdnDependencies(args: {
@@ -602,7 +661,7 @@ function entryUrlPolicyFailureMessage(
   throw new Error(`unsupported entryUrl policy failure: ${reasonCode}`);
 }
 
-function normalizeDependencyUrl(url: string): string {
+export function normalizeDependencyUrl(url: string): string {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -646,9 +705,25 @@ function isUnsafeDependencyHostname(hostname: string): boolean {
   );
 }
 
-function assertObject(value: unknown, label: string): asserts value is object {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+function assertPlainRecord(
+  value: unknown,
+  label: string,
+): asserts value is Record<string, unknown> {
+  if (!isPlainRecord(value)) {
     throw new Error(`${label} must be an object`);
+  }
+}
+
+function assertSupportedKeys(
+  value: Record<string, unknown>,
+  supportedKeys: readonly string[],
+  fail: (key: string) => never,
+): void {
+  const unsupportedKey = Object.keys(value).find(
+    (key) => !supportedKeys.includes(key),
+  );
+  if (unsupportedKey) {
+    fail(unsupportedKey);
   }
 }
 
