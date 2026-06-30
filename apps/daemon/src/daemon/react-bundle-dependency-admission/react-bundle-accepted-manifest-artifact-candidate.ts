@@ -1,8 +1,12 @@
 import type { ParsedCanonicalArtifactEnvelope } from '@geulbat/protocol/artifacts';
-import { isReactBundleRuntimeManifest } from '@geulbat/protocol/react-bundle-inline-compile';
+import {
+  isReactBundleRuntimeManifest,
+  type ReactBundleRuntimeManifest,
+} from '@geulbat/protocol/react-bundle-inline-compile';
 import { sha256Digest } from '@geulbat/shared-utils/sha256';
 import { stableStringify } from '@geulbat/shared-utils/stable-json';
 import type { ReactBundleRuntimeManifestAcceptanceResult } from './react-bundle-accepted-runtime-manifest.js';
+import { normalizeDependencyUrl } from './react-bundle-dependency-prepare.js';
 import { isOpaqueSandboxOutputEvidenceRef } from '../sandbox/output-validation.js';
 
 export type ReactBundleAcceptedManifestArtifactCandidate =
@@ -121,9 +125,6 @@ export function buildReactBundleAcceptedManifestArtifactCandidate(args: {
     );
   }
 
-  const policyValidation = validateDependencyPolicy(accepted);
-  if (!policyValidation.ok) return policyValidation.failure;
-
   const payload = stableStringify(accepted.manifest, {
     omitUndefinedObjectKeys: true,
   });
@@ -152,6 +153,9 @@ export function buildReactBundleAcceptedManifestArtifactCandidate(args: {
     );
   }
 
+  const policyValidation = validateDependencyPolicy(accepted, parsed.value);
+  if (!policyValidation.ok) return policyValidation.failure;
+
   const artifactCandidate: ReactBundleAcceptedManifestArtifactCandidate = {
     renderer: 'react_bundle',
     payload,
@@ -178,15 +182,29 @@ export function buildReactBundleAcceptedManifestArtifactCandidate(args: {
 
 function validateDependencyPolicy(
   accepted: ReactBundleAcceptedRuntimeManifestBoundarySuccess,
+  manifest: ReactBundleRuntimeManifest,
 ):
   | { ok: true }
   | {
       ok: false;
       failure: ReactBundleAcceptedManifestArtifactCandidateResult;
     } {
+  const manifestKeys = collectManifestDependencyKeys(manifest);
+  const evidenceKeys = collectEvidenceDependencyKeys(accepted);
   const evidenceCount = accepted.dependencyEvidence.length;
+  if (!manifestKeys.ok || !evidenceKeys.ok) {
+    return {
+      ok: false,
+      failure: fail(
+        'dependency_policy_mismatch',
+        'react bundle dependency artifact handoff summary has inconsistent dependency URLs',
+        evidenceDiagnostics(accepted),
+      ),
+    };
+  }
   if (accepted.acceptance.dependencyPolicy === 'no_runtime_dependencies') {
     if (
+      manifestKeys.value.length !== 0 ||
       accepted.acceptance.dependencyCount !== 0 ||
       accepted.acceptance.probedDependencyCount !== 0 ||
       accepted.acceptance.unprobedDependencyCount !== 0 ||
@@ -207,7 +225,9 @@ function validateDependencyPolicy(
   }
 
   if (
+    !sameStringArray(manifestKeys.value, evidenceKeys.value) ||
     accepted.acceptance.dependencyCount <= 0 ||
+    manifestKeys.value.length !== accepted.acceptance.dependencyCount ||
     evidenceCount !== accepted.acceptance.dependencyCount ||
     accepted.acceptance.probedDependencyCount !==
       accepted.acceptance.dependencyCount ||
@@ -228,6 +248,63 @@ function validateDependencyPolicy(
     };
   }
   return { ok: true };
+}
+
+function collectManifestDependencyKeys(
+  manifest: ReactBundleRuntimeManifest,
+): { ok: true; value: string[] } | { ok: false } {
+  const keys: string[] = [];
+  try {
+    for (const [specifier, url] of Object.entries(
+      manifest.runtimeDependencies?.importMap?.imports ?? {},
+    )) {
+      keys.push(
+        dependencyKey('esm_import', normalizeDependencyUrl(url), specifier),
+      );
+    }
+    for (const url of manifest.runtimeDependencies?.stylesheets ?? []) {
+      keys.push(dependencyKey('stylesheet', normalizeDependencyUrl(url)));
+    }
+  } catch {
+    return { ok: false };
+  }
+  return { ok: true, value: keys.sort() };
+}
+
+function collectEvidenceDependencyKeys(
+  accepted: ReactBundleAcceptedRuntimeManifestBoundarySuccess,
+): { ok: true; value: string[] } | { ok: false } {
+  const keys: string[] = [];
+  try {
+    for (const evidence of accepted.dependencyEvidence) {
+      if (evidence.kind === 'esm_import') {
+        keys.push(
+          dependencyKey(
+            'esm_import',
+            normalizeDependencyUrl(evidence.url),
+            evidence.specifier,
+          ),
+        );
+      } else {
+        keys.push(
+          dependencyKey('stylesheet', normalizeDependencyUrl(evidence.url)),
+        );
+      }
+    }
+  } catch {
+    return { ok: false };
+  }
+  return { ok: true, value: keys.sort() };
+}
+
+function dependencyKey(
+  kind: 'esm_import' | 'stylesheet',
+  url: string,
+  specifier?: string,
+): string {
+  return kind === 'esm_import'
+    ? `${kind}:${specifier ?? ''}:${url}`
+    : `${kind}:${url}`;
 }
 
 function parsePayload(

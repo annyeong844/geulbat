@@ -93,6 +93,15 @@ async function withInvalidTmpdir<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+function requestWithRuntimeDependencies(
+  runtimeDependencies: unknown,
+): ReactBundleDependencyPrepareRequest {
+  return {
+    ...BASE_REQUEST,
+    runtimeDependencies,
+  } as ReactBundleDependencyPrepareRequest;
+}
+
 void test('validateReactBundleDependencyPrepareRequest accepts explicit CDN dependency input', () => {
   const validated = validateReactBundleDependencyPrepareRequest(BASE_REQUEST);
 
@@ -215,6 +224,74 @@ void test('validateReactBundleDependencyPrepareRequest rejects unsafe dependency
       url,
     );
   }
+});
+
+void test('validateReactBundleDependencyPrepareRequest rejects malformed runtime dependency structure', () => {
+  for (const [runtimeDependencies, expected] of [
+    [
+      { scripts: ['https://cdn.example.com/legacy.js'] },
+      /runtimeDependencies does not support scripts/,
+    ],
+    ['not-an-object', /runtimeDependencies must be an object/],
+    [
+      { importMap: 'not-an-object' },
+      /runtimeDependencies\.importMap must be an object/,
+    ],
+    [
+      { importMap: { imports: {}, scopes: { '/': {} } } },
+      /runtimeDependencies\.importMap supports imports only/,
+    ],
+    [
+      { importMap: { imports: '' } },
+      /runtimeDependencies\.importMap\.imports must be an object/,
+    ],
+    [
+      {
+        importMap: {
+          imports: {
+            [`bad${'\n'}specifier`]:
+              'https://esm.sh/geulbat-runtime-dependency-fixture@1.0.0',
+          },
+        },
+      },
+      /runtime dependency import specifier must not contain control characters/,
+    ],
+    [
+      { importMap: { imports: { 'canvas-confetti': 42 } } },
+      /runtimeDependencies\.importMap\.imports values must be strings/,
+    ],
+    [
+      { stylesheets: 'https://cdn.example.com/app.css' },
+      /runtimeDependencies\.stylesheets must be an array/,
+    ],
+    [
+      { stylesheets: ['https://cdn.example.com/app.css', 42] },
+      /runtimeDependencies\.stylesheets entries must be strings/,
+    ],
+  ] as const) {
+    assert.throws(
+      () =>
+        validateReactBundleDependencyPrepareRequest(
+          requestWithRuntimeDependencies(runtimeDependencies),
+        ),
+      expected,
+      JSON.stringify(runtimeDependencies),
+    );
+  }
+});
+
+void test('validateReactBundleDependencyPrepareRequest normalizes empty runtime dependency containers', () => {
+  const validated = validateReactBundleDependencyPrepareRequest({
+    entryUrl: 'https://fixtures.geulbat.local/no-deps.js',
+    runtimeDependencies: {
+      importMap: { imports: {} },
+      stylesheets: [],
+    },
+    dependencyRefs: [],
+  });
+
+  assert.deepEqual(validated.runtimeDependencies, {});
+  assert.equal(validated.dependencyRefs.length, 0);
 });
 
 void test('validateReactBundleDependencyPrepareRequest accepts entryUrl families allowed by web-shell policy', () => {
