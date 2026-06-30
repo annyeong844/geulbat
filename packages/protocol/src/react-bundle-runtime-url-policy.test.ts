@@ -6,7 +6,10 @@ import {
   PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH,
   PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
 } from './public-web-fixtures.js';
-import { validateReactBundleRuntimeUrlPolicy } from './react-bundle-runtime-url-policy.js';
+import {
+  isReactBundleShellOwnedPrivilegedUrl,
+  validateReactBundleRuntimeUrlPolicy,
+} from './react-bundle-runtime-url-policy.js';
 
 void test('validateReactBundleRuntimeUrlPolicy accepts personal web-shell entry URL families', () => {
   for (const entryUrl of [
@@ -67,4 +70,35 @@ void test('validateReactBundleRuntimeUrlPolicy rejects shell-owned privileged en
       entryUrl,
     );
   }
+});
+
+void test('isReactBundleShellOwnedPrivilegedUrl identifies only shell-owned privileged paths', () => {
+  assert.equal(
+    isReactBundleShellOwnedPrivilegedUrl(
+      new URL('http://127.0.0.1:3456/artifact-runtime/host'),
+    ),
+    true,
+  );
+  assert.equal(
+    isReactBundleShellOwnedPrivilegedUrl(
+      new URL(
+        `http://127.0.0.1:3456${PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH}`,
+      ),
+    ),
+    false,
+  );
+  assert.equal(
+    isReactBundleShellOwnedPrivilegedUrl(
+      new URL(
+        `http://127.0.0.1:3456${PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX}hash/entry.js`,
+      ),
+    ),
+    false,
+  );
+  assert.equal(
+    isReactBundleShellOwnedPrivilegedUrl(
+      new URL('data:text/javascript,export default {}'),
+    ),
+    false,
+  );
 });

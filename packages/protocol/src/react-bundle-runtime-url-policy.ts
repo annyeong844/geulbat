@@ -33,7 +33,7 @@ export function validateReactBundleRuntimeUrlPolicy(
     return { ok: false, reasonCode: 'unsupported_scheme' };
   }
 
-  if (isExplicitShellOwnedPrivilegedUrl(parsedUrl)) {
+  if (isReactBundleShellOwnedPrivilegedUrl(parsedUrl)) {
     return { ok: false, reasonCode: 'shell_owned_privileged' };
   }
 
@@ -43,7 +43,7 @@ export function validateReactBundleRuntimeUrlPolicy(
   };
 }
 
-function isExplicitShellOwnedPrivilegedUrl(parsedUrl: URL): boolean {
+export function isReactBundleShellOwnedPrivilegedUrl(parsedUrl: URL): boolean {
   return (
     isShellOwnedLoopbackOrigin(parsedUrl) &&
     !isPublicWebFixturePath(parsedUrl.pathname) &&

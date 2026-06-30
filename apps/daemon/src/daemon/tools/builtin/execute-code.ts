@@ -3,6 +3,7 @@ import {
   PTC_EXECUTE_CODE_CELL_EXEC_MAX_YIELD_MS,
   PTC_EXECUTE_CODE_CELL_EXEC_MIN_YIELD_MS,
   PTC_EXECUTE_CODE_TOOL_NAME,
+  type PtcExecuteCodePlacementResourceSnapshotRef,
   type PtcExecuteCodeRuntimeFailureReason,
   type PtcExecuteCodeRuntimeResult,
   type PtcExecuteCodeRuntimeSummary,
@@ -72,6 +73,23 @@ export const executeCodeTool = defineZodTool({
       ctx,
       callbackToolSurface,
     );
+    const resourceSnapshot =
+      ctx.resourceSnapshotRef !== undefined || ctx.runState === undefined
+        ? undefined
+        : ctx.agentSpawnRuntime?.resourceBudgetProvider.captureSnapshot({
+            runState: ctx.runState,
+          });
+    const placementResourceSnapshotId =
+      ctx.resourceSnapshotRef?.snapshotId ?? resourceSnapshot?.snapshotId;
+    const placementResourceSnapshotRef:
+      | PtcExecuteCodePlacementResourceSnapshotRef
+      | undefined =
+      placementResourceSnapshotId === undefined
+        ? undefined
+        : {
+            snapshotId: placementResourceSnapshotId,
+            source: 'agent_resource_budget_provider',
+          };
     const runtimeArgs = {
       runContext: createRunWorkspaceContext({
         threadId: ctx.threadId,
@@ -86,6 +104,9 @@ export const executeCodeTool = defineZodTool({
           ? { yieldTimeMs: args.yield_time_ms }
           : {}),
       },
+      ...(placementResourceSnapshotRef === undefined
+        ? {}
+        : { placementResourceSnapshotRef }),
       ...(sdkHelp ? { sdkHelp } : {}),
       ...(toolCallbackHandler ? { toolCallbackHandler } : {}),
     };

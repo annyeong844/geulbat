@@ -1,5 +1,6 @@
 import type { PermissionMode, ThreadId } from './contract.js';
 import type { AgentEvent } from './events.js';
+import type { AgentLoopObserver } from './observer/agent-loop-observer.js';
 import type { RunState } from './runtime/run-state.js';
 import type { CallModelInput, LLMChunk } from '../llm/index.js';
 import type { RunWorkspaceContext } from '../run-workspace-context.js';
@@ -34,5 +35,6 @@ export interface AgentInput {
   runtimeServices: AgentRuntimeServices;
   approvalContext: ApprovalContext;
   callModelImpl?: CallModelFn;
+  observer?: AgentLoopObserver;
   onEvent: (event: AgentEvent) => void;
 }

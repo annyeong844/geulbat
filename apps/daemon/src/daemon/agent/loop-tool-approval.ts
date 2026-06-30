@@ -8,7 +8,10 @@ import {
   assertAgentRunId as assertValidRunId,
   type SideEffectLevel,
 } from './contract.js';
-import type { ExecuteResult } from '../tools/types.js';
+import type {
+  ExecuteResult,
+  ToolExecutionResourceSnapshotRef,
+} from '../tools/types.js';
 import type { FunctionCall, HistoryItem } from '../llm/index.js';
 import {
   collectPreflight,
@@ -79,6 +82,7 @@ export async function executeFunctionCall(args: {
   source?: ToolCallSource;
   denialMode?: 'terminal' | 'code_visible';
   deferTerminalFailure?: boolean;
+  resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;
 }): Promise<FunctionCallExecutionResult> {
   const { functionCall, round, toolArgs, history, runtime } = args;
   const source = args.source ?? AGENT_LOOP_TOOL_CALL_SOURCE;
@@ -160,6 +164,9 @@ export async function executeFunctionCall(args: {
         toolArgs,
         approvalGranted: true,
         runtime,
+        ...(args.resourceSnapshotRef === undefined
+          ? {}
+          : { resourceSnapshotRef: args.resourceSnapshotRef }),
         ...(callbackToolDispatcher ? { callbackToolDispatcher } : {}),
       }),
     };
@@ -172,6 +179,9 @@ export async function executeFunctionCall(args: {
       toolArgs,
       approvalGranted: approvalState.approvalGranted,
       runtime,
+      ...(args.resourceSnapshotRef === undefined
+        ? {}
+        : { resourceSnapshotRef: args.resourceSnapshotRef }),
       ...(callbackToolDispatcher ? { callbackToolDispatcher } : {}),
     }),
   };

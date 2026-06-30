@@ -25,7 +25,10 @@ import {
   type SubagentType,
 } from '../subagent-runtime-contracts.js';
 import { PTC_EXECUTE_CODE_WAIT_TOOL_NAME } from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
-import type { ExecuteResult } from '../tools/types.js';
+import type {
+  ExecuteResult,
+  ToolExecutionResourceSnapshotRef,
+} from '../tools/types.js';
 import type { ToolMeta } from '../tools/tool-registry-model.js';
 import { toolError } from '../tools/result.js';
 
@@ -485,14 +488,22 @@ async function processSharedFunctionCallWindow({
     isPreparedSubagentLaunchCall,
   );
   const ptcCellCalls = preparedFunctionCalls.filter(isPreparedPtcCellCall);
+  let sharedResourceSnapshotRef: ToolExecutionResourceSnapshotRef | undefined;
   if (
     subagentLaunchCalls.length > 0 &&
     ptcCellCalls.length > 0 &&
     runState !== undefined
   ) {
-    runtime.executionContextBase.agentSpawnRuntime?.resourceBudgetProvider.captureSnapshot(
-      { runState },
-    );
+    const resourceSnapshot =
+      runtime.executionContextBase.agentSpawnRuntime?.resourceBudgetProvider.captureSnapshot(
+        { runState },
+      );
+    sharedResourceSnapshotRef =
+      resourceSnapshot === undefined
+        ? undefined
+        : {
+            snapshotId: resourceSnapshot.snapshotId,
+          };
   }
   const stagedExecutions: Array<
     Awaited<ReturnType<typeof executeFunctionCall>> | undefined
@@ -561,6 +572,10 @@ async function processSharedFunctionCallWindow({
           toolArgs: preparedFunctionCall.toolArgs,
           history,
           runtime,
+          ...(preparedFunctionCall.sharedKind === 'ptc_cell' &&
+          sharedResourceSnapshotRef !== undefined
+            ? { resourceSnapshotRef: sharedResourceSnapshotRef }
+            : {}),
         }),
       ),
     );

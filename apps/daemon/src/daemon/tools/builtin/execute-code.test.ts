@@ -5,11 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createDaemonContext } from '../../context.js';
+import { createRunState } from '../../agent/runtime/run-state.js';
 import {
   PTC_EXECUTE_CODE_FORBIDDEN_OLD_TOOL_NAME,
   PTC_EXECUTE_CODE_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,
   PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
+  type PtcExecuteCodePlacementResourceSnapshotRef,
   type PtcExecuteCodeRuntime,
 } from '../../ptc/runtime/execute-code/execute-code-runtime-contract.js';
 import { testProjectId } from '../../../test-support/project-id.js';
@@ -19,6 +21,7 @@ import { waitTool } from './wait.js';
 import {
   isToolObjectParameters,
   type CallbackToolDispatcher,
+  type ToolExecutionResourceSnapshotRef,
 } from '../types.js';
 import {
   createPtcExecuteCodeToolCallbackHandler,
@@ -129,12 +132,19 @@ void test('exec returns compact runtime output without session identifiers', asy
   const daemonContext = createDaemonContext();
   let observedCode = '';
   let observedYieldTimeMs = 0;
+  let observedPlacementResourceSnapshotId: string | undefined;
   let observedSdkToolNames: string[] = [];
   const ptcExecuteCode: PtcExecuteCodeRuntime = {
     async executeCode(args) {
       observedCode = args.request.code;
       observedYieldTimeMs = args.request.yieldTimeMs ?? 0;
       assert.equal(args.invocationId, 'call-execute-code-success');
+      assert.equal(
+        args.placementResourceSnapshotRef?.source,
+        'agent_resource_budget_provider',
+      );
+      observedPlacementResourceSnapshotId =
+        args.placementResourceSnapshotRef?.snapshotId;
       assert.equal(typeof args.toolCallbackHandler, 'function');
       observedSdkToolNames = (args.sdkHelp?.callbackTools ?? []).map(
         (tool) => tool.name,
@@ -175,14 +185,23 @@ void test('exec returns compact runtime output without session identifiers', asy
       return { ok: true };
     },
   };
+  const runState = createRunState({
+    runId: 'run-execute-code-success',
+    runContext: {
+      threadId: testThreadId(912),
+      projectId: testProjectId('project'),
+      workspaceRoot: '/workspace/project',
+    },
+  });
 
   const result = await executeCodeTool.execute(
     { code: 'return { answer: 42 }', yield_time_ms: 1_000 },
     {
       callId: 'call-execute-code-success',
       workspaceRoot: '/workspace/project',
-      threadId: testThreadId(912),
+      threadId: runState.threadId,
       projectId: testProjectId('project'),
+      runState,
       agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
       callbackToolDispatcher: makeUnexpectedCallbackToolDispatcher(),
     },
@@ -191,6 +210,8 @@ void test('exec returns compact runtime output without session identifiers', asy
   assert.equal(result.ok, true);
   assert.equal(observedCode, 'return { answer: 42 }');
   assert.equal(observedYieldTimeMs, 1_000);
+  assert.equal(typeof observedPlacementResourceSnapshotId, 'string');
+  assert.notEqual(observedPlacementResourceSnapshotId, '');
   assert.equal(observedSdkToolNames.includes('read_file'), true);
   assert.equal(observedSdkToolNames.includes('list_files'), true);
   assert.equal(observedSdkToolNames.includes('search_files'), true);
@@ -234,6 +255,65 @@ void test('exec returns compact runtime output without session identifiers', asy
   assert.equal(Object.hasOwn(output, 'sdk'), false);
   assert.equal(JSON.stringify(output).includes('container'), false);
   assert.equal(JSON.stringify(output).includes('labSessionId'), false);
+});
+
+void test('exec reuses a supplied resource snapshot ref before capturing a new one', async () => {
+  const daemonContext = createDaemonContext();
+  const suppliedResourceSnapshotRef = {
+    snapshotId: 'resource-snapshot-from-shared-window',
+  } satisfies ToolExecutionResourceSnapshotRef;
+  let captureCalled = false;
+  daemonContext.resourceBudgetProvider = {
+    captureSnapshot() {
+      captureCalled = true;
+      throw new Error('exec should reuse the supplied resource snapshot ref');
+    },
+  };
+  let observedResourceSnapshotRef:
+    | PtcExecuteCodePlacementResourceSnapshotRef
+    | undefined;
+  const ptcExecuteCode: PtcExecuteCodeRuntime = {
+    async executeCode(args) {
+      observedResourceSnapshotRef = args.placementResourceSnapshotRef;
+      return {
+        ok: false,
+        reasonCode: 'ptc_execute_code_invalid',
+        message: 'expected test failure after observing placement ref',
+      };
+    },
+    waitForCell: waitForUnusedCell,
+    async closeAll() {
+      return { ok: true };
+    },
+  };
+  const runState = createRunState({
+    runId: 'run-execute-code-shared-resource-snapshot',
+    runContext: {
+      threadId: testThreadId(912_1),
+      projectId: testProjectId('project'),
+      workspaceRoot: '/workspace/project',
+    },
+  });
+
+  const result = await executeCodeTool.execute(
+    { code: 'return 1' },
+    {
+      callId: 'call-execute-code-shared-resource-snapshot',
+      workspaceRoot: '/workspace/project',
+      threadId: runState.threadId,
+      projectId: testProjectId('project'),
+      runState,
+      resourceSnapshotRef: suppliedResourceSnapshotRef,
+      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(captureCalled, false);
+  assert.deepEqual(observedResourceSnapshotRef, {
+    snapshotId: suppliedResourceSnapshotRef.snapshotId,
+    source: 'agent_resource_budget_provider',
+  });
 });
 
 void test('exec callback handler dispatches admitted read-only tools and rejects mutating tools', async () => {

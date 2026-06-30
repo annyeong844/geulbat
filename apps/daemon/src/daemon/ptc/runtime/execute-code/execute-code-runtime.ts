@@ -413,6 +413,7 @@ export function createPtcExecuteCodeRuntime(
             placementCoordinator: workspaceRuntime.placementCoordinator,
             getPlacementContinuityProvenance:
               options.getPlacementContinuityProvenance,
+            placementResourceSnapshotRef: args.placementResourceSnapshotRef,
             ...definedPtcProps({
               onRunningCellSettled: runtimeArgs?.onRunningCellSettled,
             }),
@@ -499,6 +500,7 @@ export function createPtcExecuteCodeRuntime(
         placementCoordinator: workspaceRuntime.placementCoordinator,
         getPlacementContinuityProvenance:
           options.getPlacementContinuityProvenance,
+        placementResourceSnapshotRef: args.placementResourceSnapshotRef,
         request: request.value,
         sdkHelpBundle,
         sessionManager: workspaceRuntime.sessionManager,

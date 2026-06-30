@@ -57,7 +57,12 @@ interface ToolExecutionRunContext {
   runId?: string;
   projectId?: ProjectId;
   runState?: ToolRunState;
+  resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;
   emitAgentEvent?: (event: AgentEvent) => void;
+}
+
+export interface ToolExecutionResourceSnapshotRef {
+  snapshotId: string;
 }
 
 interface ToolExecutionServices {
@@ -95,6 +100,7 @@ export type AgentToolExecutionContext = Omit<
     runId: string;
     projectId: ProjectId;
     runState: ToolRunState | undefined;
+    resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;
     emitAgentEvent: (event: AgentEvent) => void;
     memoryIndex: AgentMemoryIndex | undefined;
     agentSpawnRuntime: AgentRuntimeServices | undefined;
@@ -113,6 +119,7 @@ export function buildAgentToolExecutionContext(args: {
   base: AgentToolExecutionContextBase;
   callId: string;
   approvalGranted: boolean;
+  resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;
 }): AgentToolExecutionContext {
   const { base, callId, approvalGranted } = args;
   return {
@@ -120,6 +127,9 @@ export function buildAgentToolExecutionContext(args: {
     kind: 'agent',
     callId,
     approvalGranted,
+    ...(args.resourceSnapshotRef === undefined
+      ? {}
+      : { resourceSnapshotRef: args.resourceSnapshotRef }),
   };
 }
 

@@ -15,6 +15,11 @@ export const PTC_EXECUTE_CODE_CELL_WAIT_MIN_YIELD_MS = 1_000;
 export const PTC_EXECUTE_CODE_CELL_WAIT_MAX_YIELD_MS = 300_000;
 export type PtcExecuteCodeCellId = `ptc_cell_${string}`;
 
+export interface PtcExecuteCodePlacementResourceSnapshotRef {
+  snapshotId: string;
+  source: 'agent_resource_budget_provider';
+}
+
 export interface PtcExecuteCodeRuntimeToolParameters {
   type: 'object';
   properties: Record<string, unknown>;
@@ -231,6 +236,7 @@ export interface PtcExecuteCodeRuntime {
     };
     invocationId?: string;
     request: PtcExecuteCodeRuntimeRequest;
+    placementResourceSnapshotRef?: PtcExecuteCodePlacementResourceSnapshotRef;
     sdkHelp?: PtcExecuteCodeRuntimeSdkHelp;
     toolCallbackHandler?: PtcExecuteCodeRuntimeToolCallbackHandler;
     signal?: AbortSignal;

@@ -128,7 +128,10 @@ export type {
   ReactBundleRuntimeUrlPolicyFailureReason,
   ReactBundleRuntimeUrlPolicyResult,
 } from './react-bundle-runtime-url-policy.js';
-export { validateReactBundleRuntimeUrlPolicy } from './react-bundle-runtime-url-policy.js';
+export {
+  isReactBundleShellOwnedPrivilegedUrl,
+  validateReactBundleRuntimeUrlPolicy,
+} from './react-bundle-runtime-url-policy.js';
 export type {
   RunAck,
   RunPromptInputRefResponse,

@@ -3,7 +3,10 @@ import type {
   PtcSessionDockerIdentity,
   PtcSessionDockerManager,
 } from '../../lab/session/session-docker-contract.js';
-import type { PtcExecuteCodeCellId } from './execute-code-runtime-contract.js';
+import type {
+  PtcExecuteCodeCellId,
+  PtcExecuteCodePlacementResourceSnapshotRef,
+} from './execute-code-runtime-contract.js';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -33,6 +36,7 @@ interface PtcExecuteCodePlacementObservationBase {
   burstEligible: boolean;
   selectedLane: 'warm_session';
   reason: PtcExecuteCodePlacementWarmDecision['reason'];
+  resourceSnapshotRef?: PtcExecuteCodePlacementResourceSnapshotRef;
 }
 
 export type PtcExecuteCodePlacementObservation =
@@ -50,6 +54,7 @@ export interface PtcExecuteCodePlacementPreflightRecord {
   burstEligible: boolean;
   selectedLane: 'warm_session';
   reason: PtcExecuteCodePlacementWarmDecision['reason'];
+  resourceSnapshotRef?: PtcExecuteCodePlacementResourceSnapshotRef;
 }
 
 export interface PtcExecuteCodePlacementCallbackEffectPolicy {
@@ -120,6 +125,7 @@ interface PtcExecuteCodePlacementRequestBase {
   callbackEffectPolicy: PtcExecuteCodePlacementCallbackEffectPolicy;
   sessionManager: PtcSessionDockerManager;
   batchRunner: PtcExecuteCodePlacementBatchRunner;
+  resourceSnapshotRef?: PtcExecuteCodePlacementResourceSnapshotRef;
   signal?: AbortSignal;
 }
 
@@ -177,6 +183,9 @@ export function createPtcExecuteCodeWarmSessionPlacementObservation(
     burstEligible: isPtcExecuteCodePlacementBurstEligible(args.continuity),
     selectedLane: warmDecision.selectedLane,
     reason: warmDecision.reason,
+    ...(args.resourceSnapshotRef === undefined
+      ? {}
+      : { resourceSnapshotRef: args.resourceSnapshotRef }),
   } as const;
   if (args.kind === 'detached_cell') {
     return {
@@ -216,6 +225,9 @@ export function createPtcExecuteCodeWarmOnlyPlacementPreflightRecord(
     burstEligible: input.burstEligible,
     selectedLane: warmDecision.selectedLane,
     reason: warmDecision.reason,
+    ...(input.resourceSnapshotRef === undefined
+      ? {}
+      : { resourceSnapshotRef: input.resourceSnapshotRef }),
   };
 }
 

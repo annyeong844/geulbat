@@ -140,6 +140,10 @@ void test('createPtcExecuteCodeWarmSessionPlacementCoordinator keeps warm sessio
   const callbackEffectPolicy = createPtcExecuteCodeReadOnlyCallbackEffectPolicy(
     { callbackToolCount: 2 },
   );
+  const resourceSnapshotRef = {
+    snapshotId: 'resource-snapshot-placement-test',
+    source: 'agent_resource_budget_provider',
+  } as const;
 
   const coordinator = createPtcExecuteCodeWarmSessionPlacementCoordinator();
   const placement = await coordinator.acquirePlacement({
@@ -149,6 +153,7 @@ void test('createPtcExecuteCodeWarmSessionPlacementCoordinator keeps warm sessio
     identity,
     sessionManager,
     batchRunner,
+    resourceSnapshotRef,
     signal,
   });
 
@@ -163,6 +168,7 @@ void test('createPtcExecuteCodeWarmSessionPlacementCoordinator keeps warm sessio
     burstEligible: false,
     selectedLane: 'warm_session',
     reason: 'independence_not_proven',
+    resourceSnapshotRef,
   });
   const batchWarmDecision =
     readPtcExecuteCodePlacementWarmDecision(batchObservation);
@@ -172,6 +178,7 @@ void test('createPtcExecuteCodeWarmSessionPlacementCoordinator keeps warm sessio
     burstEligible: false,
     selectedLane: 'warm_session',
     reason: 'independence_not_proven',
+    resourceSnapshotRef,
   });
   assert.equal('cellId' in placement, false);
   assert.equal(placement.identity, identity);
@@ -228,6 +235,10 @@ void test('createPtcExecuteCodeRuntime acquires placement before batch exec and 
   );
   const threadId = testThreadId(941);
   const signal = new AbortController().signal;
+  const resourceSnapshotRef = {
+    snapshotId: 'resource-snapshot-runtime-batch-test',
+    source: 'agent_resource_budget_provider',
+  } as const;
   const events: string[] = [];
   let observedWorkspaceRoot: string | undefined;
   const fixture = createPtcSessionDockerCommandFixture({
@@ -261,6 +272,7 @@ void test('createPtcExecuteCodeRuntime acquires placement before batch exec and 
             callbackToolCount: 0,
           }),
         );
+        assert.deepEqual(args.resourceSnapshotRef, resourceSnapshotRef);
         observedWorkspaceRoot = args.identity.workspaceRoot;
         events.push(`acquire:${args.identity.threadId}`);
         const observation =
@@ -296,6 +308,7 @@ void test('createPtcExecuteCodeRuntime acquires placement before batch exec and 
         workspaceRoot,
       }),
       request: { code: 'console.log("placement")' },
+      placementResourceSnapshotRef: resourceSnapshotRef,
       signal,
     });
 

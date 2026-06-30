@@ -5,7 +5,13 @@ import {
   readReactBundleArtifactInputPayload,
   validateReactBundleArtifactPayload,
 } from './validator.js';
-import { CDN_ENTRY_URL } from './validator-test-support.js';
+import {
+  CDN_ENTRY_URL,
+  LOCAL_FIXTURE_ENTRY_URL,
+  LOCAL_GENERATED_ENTRY_URL,
+  PRIVATE_ENTRY_URL,
+  REMOTE_HTTP_FIXTURE_ENTRY_URL,
+} from './validator-test-support.js';
 
 void test('validateReactBundleArtifactPayload accepts runtime dependencies', () => {
   const manifest = {
@@ -45,6 +51,42 @@ void test('readReactBundleArtifactInputPayload keeps runtime dependencies on the
     },
   };
 
+  assert.deepEqual(
+    readReactBundleArtifactInputPayload(JSON.stringify(manifest)),
+    {
+      ok: true,
+      kind: 'manifest',
+      manifest,
+    },
+  );
+});
+
+void test('validateReactBundleArtifactPayload accepts personal web-shell http runtime dependency URLs', () => {
+  const manifest = {
+    entryUrl: CDN_ENTRY_URL,
+    runtimeDependencies: {
+      importMap: {
+        imports: {
+          'local-fixture': LOCAL_FIXTURE_ENTRY_URL,
+          'local-generated': LOCAL_GENERATED_ENTRY_URL,
+          'private-lan': PRIVATE_ENTRY_URL,
+          'remote-http': REMOTE_HTTP_FIXTURE_ENTRY_URL,
+        },
+      },
+      stylesheets: [
+        'http://127.0.0.1:3456/public-web/react-bundle-counter/theme.css',
+        'https://192.168.0.1/public-web/react-bundle-counter/theme.css',
+      ],
+    },
+  };
+
+  assert.deepEqual(
+    validateReactBundleArtifactPayload(JSON.stringify(manifest)),
+    {
+      ok: true,
+      manifest,
+    },
+  );
   assert.deepEqual(
     readReactBundleArtifactInputPayload(JSON.stringify(manifest)),
     {
@@ -179,40 +221,40 @@ void test('validateReactBundleArtifactPayload applies shell-owned privileged URL
   );
 });
 
-void test('validateReactBundleArtifactPayload rejects non-http runtime dependency schemes', () => {
-  assert.deepEqual(
-    validateReactBundleArtifactPayload(
-      JSON.stringify({
-        entryUrl: CDN_ENTRY_URL,
-        runtimeDependencies: {
-          importMap: {
-            imports: {
-              local: 'data:text/javascript,export default {}',
-            },
-          },
+void test('validateReactBundleArtifactPayload accepts generated runtime dependency URL schemes', () => {
+  const manifest = {
+    entryUrl: CDN_ENTRY_URL,
+    runtimeDependencies: {
+      importMap: {
+        imports: {
+          blob: 'blob:https://fixtures.geulbat.local/react-bundle-module',
+          data: 'data:text/javascript,export default {}',
+          file: 'file:///tmp/geulbat-runtime-dependency.js',
+          javascript: 'javascript:globalThis.__geulbatDependency=1',
         },
-      }),
-    ),
-    {
-      ok: false,
-      code: 'policy_blocked',
-      detail: 'react bundle runtime dependency URL must use http or https',
+      },
+      stylesheets: [
+        'blob:https://fixtures.geulbat.local/react-bundle-style',
+        'data:text/css,.card%7Bcolor%3Ared%7D',
+        'file:///tmp/geulbat-runtime-dependency.css',
+        'javascript:globalThis.__geulbatStyle=1',
+      ],
     },
-  );
+  };
 
   assert.deepEqual(
-    validateReactBundleArtifactPayload(
-      JSON.stringify({
-        entryUrl: CDN_ENTRY_URL,
-        runtimeDependencies: {
-          stylesheets: ['file:///tmp/theme.css'],
-        },
-      }),
-    ),
+    validateReactBundleArtifactPayload(JSON.stringify(manifest)),
     {
-      ok: false,
-      code: 'policy_blocked',
-      detail: 'react bundle runtime dependency URL must use http or https',
+      ok: true,
+      manifest,
+    },
+  );
+  assert.deepEqual(
+    readReactBundleArtifactInputPayload(JSON.stringify(manifest)),
+    {
+      ok: true,
+      kind: 'manifest',
+      manifest,
     },
   );
 });

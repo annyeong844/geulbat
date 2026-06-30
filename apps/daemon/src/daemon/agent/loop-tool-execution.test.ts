@@ -2735,6 +2735,8 @@ void test('processFunctionCalls mixes explicit PTC cells with read and subagent 
   const allToolsStarted = createDeferred<void>();
   const startedTools: string[] = [];
   const events: string[] = [];
+  let sharedResourceSnapshotId: string | undefined;
+  const ptcResourceSnapshotIds: string[] = [];
   const originalResourceBudgetProvider = daemonContext.resourceBudgetProvider;
   const originalSubagentAdmission = daemonContext.subagentAdmission;
 
@@ -2742,7 +2744,9 @@ void test('processFunctionCalls mixes explicit PTC cells with read and subagent 
     captureSnapshot(args = {}) {
       events.push('resource-snapshot');
       assert.equal(args.runState, runState);
-      return originalResourceBudgetProvider.captureSnapshot(args);
+      const snapshot = originalResourceBudgetProvider.captureSnapshot(args);
+      sharedResourceSnapshotId = snapshot.snapshotId;
+      return snapshot;
     },
   };
   daemonContext.subagentAdmission = {
@@ -2800,7 +2804,10 @@ void test('processFunctionCalls mixes explicit PTC cells with read and subagent 
         sideEffectLevel: 'none',
         parallelBatchKind: 'ptc_cell',
         requiresApproval: false,
-        async executeParsed() {
+        async executeParsed(_args, ctx) {
+          ptcResourceSnapshotIds.push(
+            ctx.resourceSnapshotRef?.snapshotId ?? '',
+          );
           markStarted(name);
           await releaseSharedWindow.promise;
           return { ok: true, output: `${name} complete` };
@@ -2881,6 +2888,11 @@ void test('processFunctionCalls mixes explicit PTC cells with read and subagent 
     'read-before',
     'subagent',
   ]);
+  assert.equal(typeof sharedResourceSnapshotId, 'string');
+  assert.deepEqual(
+    ptcResourceSnapshotIds.sort(),
+    [sharedResourceSnapshotId, sharedResourceSnapshotId].sort(),
+  );
 
   releaseSharedWindow.resolve();
   const result = await processing;
@@ -2902,6 +2914,172 @@ void test('processFunctionCalls mixes explicit PTC cells with read and subagent 
       'tool_result',
       'tool_result',
     ],
+  );
+});
+
+void test('processFunctionCalls passes shared resource snapshot refs into public exec placement', async () => {
+  const threadId = testThreadId(162);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-public-exec-resource-window-'),
+  );
+  const runContext = makeRunWorkspaceContext({
+    threadId,
+    projectId: testProjectId('project'),
+    workspaceRoot,
+  });
+  const runState = createRunState({
+    runId: 'run-public-exec-resource-window',
+    runContext,
+  });
+  const history: HistoryItem[] = [];
+  const releaseSharedWindow = createDeferred<void>();
+  const allToolsStarted = createDeferred<void>();
+  const startedTools: string[] = [];
+  const events: string[] = [];
+  let sharedResourceSnapshotId: string | undefined;
+  let observedExecResourceSnapshotId: string | undefined;
+  const originalResourceBudgetProvider = daemonContext.resourceBudgetProvider;
+  const originalSubagentAdmission = daemonContext.subagentAdmission;
+
+  daemonContext.resourceBudgetProvider = {
+    captureSnapshot(args = {}) {
+      events.push('resource-snapshot');
+      assert.equal(args.runState, runState);
+      const snapshot = originalResourceBudgetProvider.captureSnapshot(args);
+      sharedResourceSnapshotId = snapshot.snapshotId;
+      return snapshot;
+    },
+  };
+  daemonContext.subagentAdmission = {
+    reserveSubagentLaunchSlots(args) {
+      events.push('subagent-admission');
+      return originalSubagentAdmission.reserveSubagentLaunchSlots(args);
+    },
+  };
+  daemonContext.ptcExecuteCode = {
+    async executeCode(args) {
+      observedExecResourceSnapshotId =
+        args.placementResourceSnapshotRef?.snapshotId;
+      startedTools.push('exec');
+      if (startedTools.length === 2) {
+        allToolsStarted.resolve();
+      }
+      await releaseSharedWindow.promise;
+      return {
+        ok: true,
+        value: {
+          ok: true,
+          capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+          policyId: PTC_EXECUTE_CODE_POLICY_ID,
+          labPolicyId: 'ptc_lab_local_docker_batch_command_v1',
+          profile: 'lab',
+          executionClass: 'lab_execute_code',
+          executionSurface: 'node_via_lab_batch_command',
+          exitCode: 0,
+          stdout: 'exec complete\n',
+          stderr: '',
+          effectiveTimeoutMs: 60_000,
+          durationMs: 1,
+          toolCallbacks: {
+            enabled: false,
+            observed: 0,
+          },
+          sessionLifecycle: {
+            mode: 'runtime_owned_reusable',
+            retainedAfterExecution: true,
+          },
+          callbackHelp: {
+            protocolVersion: 'ptc_execute_code_sdk_v1',
+            helpAvailable: true,
+            callbackToolCount: 0,
+          },
+        },
+      };
+    },
+    async waitForCell() {
+      assert.fail('public exec resource snapshot test must not call wait');
+    },
+    async closeAll() {
+      return { ok: true };
+    },
+  };
+
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: 'public_exec_resource_subagent',
+      description: 'subagent launch inside public exec shared window',
+      sideEffectLevel: 'none',
+      parallelBatchKind: 'subagent_launch',
+      requiresApproval: false,
+      async executeParsed() {
+        startedTools.push('subagent');
+        if (startedTools.length === 2) {
+          allToolsStarted.resolve();
+        }
+        await releaseSharedWindow.promise;
+        return {
+          ok: true,
+          output: JSON.stringify({
+            ok: true,
+            childRunId: 'child-public-exec-resource-window',
+          }),
+        };
+      },
+    }),
+  );
+
+  const processing = processFunctionCalls({
+    functionCalls: [
+      {
+        id: 'fc-public-exec-resource',
+        callId: 'call-public-exec-resource',
+        name: PTC_EXECUTE_CODE_TOOL_NAME,
+        arguments: '{"code":"console.log(1)"}',
+      },
+      {
+        id: 'fc-public-exec-resource-subagent',
+        callId: 'call-public-exec-resource-subagent',
+        name: 'public_exec_resource_subagent',
+        arguments: '{"task":"inspect public exec resource window"}',
+      },
+    ],
+    round: 0,
+    history,
+    runtime: makeExecutionRuntime(daemonContext, {
+      runContext,
+      runId: 'run-public-exec-resource-window',
+      approvalContext: makeApprovalContext({
+        sessionId: 'session-public-exec-resource-window',
+      }),
+      emit: () => {},
+      runState,
+    }),
+  });
+
+  await allToolsStarted.promise;
+  assert.deepEqual(events.slice(0, 2), [
+    'resource-snapshot',
+    'subagent-admission',
+  ]);
+  assert.equal(
+    events.filter((event) => event === 'resource-snapshot').length,
+    1,
+  );
+  assert.deepEqual([...startedTools].sort(), ['exec', 'subagent']);
+  assert.equal(typeof sharedResourceSnapshotId, 'string');
+  assert.equal(observedExecResourceSnapshotId, sharedResourceSnapshotId);
+
+  releaseSharedWindow.resolve();
+  const result = await processing;
+  assert.deepEqual(result, { ok: true, value: undefined });
+  assert.equal(history.length, 2);
+
+  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.deepEqual(
+    transcript.map((entry) => entry.role),
+    ['tool_call', 'tool_call', 'tool_result', 'tool_result'],
   );
 });
 

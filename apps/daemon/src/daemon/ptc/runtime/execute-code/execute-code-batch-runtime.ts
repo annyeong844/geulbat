@@ -36,6 +36,7 @@ import {
 import {
   PTC_EXECUTE_CODE_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,
+  type PtcExecuteCodePlacementResourceSnapshotRef,
   type PtcExecuteCodeRuntimeResult,
   type PtcExecuteCodeRuntimeToolCallbackHandler,
 } from './execute-code-runtime-contract.js';
@@ -79,6 +80,9 @@ export async function runExecuteCodeRuntimeAttempt(args: {
   getPlacementContinuityProvenance:
     | PtcExecuteCodePlacementContinuityProvenanceProvider
     | undefined;
+  placementResourceSnapshotRef:
+    | PtcExecuteCodePlacementResourceSnapshotRef
+    | undefined;
   request: ValidatedExecuteCodeRequest;
   sdkHelpBundle: ReturnType<typeof buildPtcExecuteCodeSdkHelpBundle>;
   signal: AbortSignal | undefined;
@@ -100,7 +104,10 @@ export async function runExecuteCodeRuntimeAttempt(args: {
     identity: args.identity,
     sessionManager: args.sessionManager,
     batchRunner: args.batchRunner,
-    ...definedPtcProps({ signal: args.signal }),
+    ...definedPtcProps({
+      resourceSnapshotRef: args.placementResourceSnapshotRef,
+      signal: args.signal,
+    }),
   });
   try {
     const bridgeResult = await maybeCreateCallbackBridge({

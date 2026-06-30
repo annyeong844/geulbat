@@ -13,6 +13,13 @@ import {
 import type { AgentInput } from './loop-types.js';
 import type { HistoryItem } from '../llm/index.js';
 import {
+  buildAgentLoopObserverRoundCompletedEvent,
+  buildAgentLoopObserverRoundStartedEvent,
+  buildAgentLoopObserverSnapshot,
+  recordAgentLoopObserverEvent,
+  recordAgentLoopObserverSnapshot,
+} from './observer/agent-loop-observer.js';
+import {
   buildAgentToolExecutionContextBase,
   buildToolCallExecutionRuntime,
 } from './loop-tool-runtime.js';
@@ -62,6 +69,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     runtimeServices,
     approvalContext,
     callModelImpl,
+    observer,
   } = input;
   const { threadId, projectId, workspaceRoot } = runContext;
 
@@ -98,6 +106,30 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     pendingBackgroundResults,
   );
   const midRunSteerEnabled = isMidRunSteerEnabled();
+  recordAgentLoopObserverSnapshot(
+    observer,
+    buildAgentLoopObserverSnapshot({
+      runId,
+      runContext,
+      approvalContext,
+      ...(allowedToolNames !== undefined ? { allowedToolNames } : {}),
+      toolDefs,
+      providerRequestOptions,
+      callModelImplProvided: callModelImpl !== undefined,
+      currentFileProvided: currentFile !== undefined,
+      selectionProvided: selection !== undefined,
+      signalProvided: signal !== undefined,
+      runStateKind:
+        runState === undefined
+          ? 'none'
+          : isRootRunState(runState)
+            ? 'root'
+            : 'child',
+      initialHistoryItemCount: history.length,
+      pendingBackgroundResultCount: pendingBackgroundResults.length,
+      midRunSteerEnabled,
+    }),
+  );
 
   const runRound = async (
     round: number,
@@ -264,7 +296,29 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   let round = 0;
   let sawFirstModelRequest = false;
   while (true) {
+    recordAgentLoopObserverEvent(
+      observer,
+      buildAgentLoopObserverRoundStartedEvent({
+        runId,
+        threadId,
+        round,
+        historyItemCount: history.length,
+        sawFirstModelRequest,
+      }),
+    );
     const outcome = await runRound(round, sawFirstModelRequest);
+    recordAgentLoopObserverEvent(
+      observer,
+      buildAgentLoopObserverRoundCompletedEvent({
+        runId,
+        threadId,
+        round,
+        outcome: outcome.kind,
+        ...(outcome.kind === 'terminal'
+          ? { terminalOk: outcome.result.ok }
+          : {}),
+      }),
+    );
     if (outcome.kind === 'terminal') {
       return outcome.result;
     }

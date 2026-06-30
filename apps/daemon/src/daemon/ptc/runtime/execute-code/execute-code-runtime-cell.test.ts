@@ -619,6 +619,10 @@ void test('createPtcExecuteCodeRuntime keeps cell placement until a yielded cell
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-placement-runtime-'),
   );
   const threadId = testThreadId(913_1);
+  const resourceSnapshotRef = {
+    snapshotId: 'resource-snapshot-runtime-cell-test',
+    source: 'agent_resource_budget_provider',
+  } as const;
   const registry = createPtcExecuteCodeCellRegistry({
     createCellId: () => 'ptc_cell_runtime_placement',
   });
@@ -643,6 +647,7 @@ void test('createPtcExecuteCodeRuntime keeps cell placement until a yielded cell
             callbackToolCount: 0,
           }),
         );
+        assert.deepEqual(args.resourceSnapshotRef, resourceSnapshotRef);
         events.push(`acquire:${args.identity.threadId}`);
         const observation =
           createPtcExecuteCodeWarmSessionPlacementObservation(args);
@@ -697,6 +702,7 @@ void test('createPtcExecuteCodeRuntime keeps cell placement until a yielded cell
         workspaceRoot,
       }),
       request: { code: 'await new Promise(() => {})', timeoutMs: 60_000 },
+      placementResourceSnapshotRef: resourceSnapshotRef,
     });
 
     assert.equal(result.ok, true);

@@ -3,6 +3,7 @@ import {
   buildAgentToolExecutionContext,
   type CallbackToolDispatcher,
   type ExecuteResult,
+  type ToolExecutionResourceSnapshotRef,
 } from '../tools/types.js';
 import { markRunRunning } from './runtime/run-state.js';
 import type { FunctionCall } from '../llm/index.js';
@@ -18,6 +19,7 @@ interface ExecuteResolvedFunctionCallArgs {
   approvalGranted: boolean;
   runtime: AgentToolCallRuntimeBase;
   callbackToolDispatcher?: CallbackToolDispatcher;
+  resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;
 }
 
 export async function executeResolvedFunctionCall(
@@ -37,6 +39,9 @@ export async function executeResolvedFunctionCall(
       callId: functionCall.callId,
       approvalGranted,
       runtime,
+      ...(args.resourceSnapshotRef === undefined
+        ? {}
+        : { resourceSnapshotRef: args.resourceSnapshotRef }),
       ...(args.callbackToolDispatcher
         ? { callbackToolDispatcher: args.callbackToolDispatcher }
         : {}),
@@ -50,14 +55,22 @@ interface BuildToolExecutionContextArgs {
   approvalGranted: boolean;
   runtime: AgentToolCallRuntimeBase;
   callbackToolDispatcher?: CallbackToolDispatcher;
+  resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;
 }
 
 function buildToolExecutionContext(args: BuildToolExecutionContextArgs) {
-  const { callId, approvalGranted, runtime, callbackToolDispatcher } = args;
+  const {
+    callId,
+    approvalGranted,
+    runtime,
+    callbackToolDispatcher,
+    resourceSnapshotRef,
+  } = args;
   const context = buildAgentToolExecutionContext({
     base: runtime.executionContextBase,
     callId,
     approvalGranted,
+    ...(resourceSnapshotRef === undefined ? {} : { resourceSnapshotRef }),
   });
   return callbackToolDispatcher
     ? { ...context, callbackToolDispatcher }

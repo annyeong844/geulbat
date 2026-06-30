@@ -1,4 +1,7 @@
-import { validateReactBundleRuntimeUrlPolicy } from '@geulbat/protocol/react-bundle-runtime-url-policy';
+import {
+  isReactBundleShellOwnedPrivilegedUrl,
+  validateReactBundleRuntimeUrlPolicy,
+} from '@geulbat/protocol/react-bundle-runtime-url-policy';
 
 import type {
   ArtifactPolicyOrBootFailure,
@@ -37,15 +40,30 @@ export function validateReactBundleEntryUrl(
 export function validateReactBundleDependencyUrl(
   rawUrl: string,
 ): ReactBundleUrlValidation {
-  return validateReactBundleRuntimeUrl(rawUrl, {
-    emptyDetail: 'react bundle runtime dependency URL must be non-empty',
-    malformedDetail:
+  const url = rawUrl.trim();
+  if (!url) {
+    return reject('react bundle runtime dependency URL must be non-empty');
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return reject(
       'react bundle runtime dependency URL must be an absolute URL',
-    unsupportedSchemeDetail:
-      'react bundle runtime dependency URL must use http or https',
-    privilegedDetail:
+    );
+  }
+
+  if (isReactBundleShellOwnedPrivilegedUrl(parsedUrl)) {
+    return rejectPolicy(
       'react bundle runtime dependency URL points at a shell-owned privileged path',
-  });
+    );
+  }
+
+  return {
+    ok: true,
+    url: parsedUrl.toString(),
+  };
 }
 
 function validateReactBundleRuntimeUrl(

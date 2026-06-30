@@ -67,13 +67,27 @@ export function renderReactBundleArtifactRuntimePreview(args: {
     onGeneratedBinaryExportSnapshotChange,
     renderRuntimeFrame,
   } = args;
+  const serializedManifest = JSON.stringify(manifest);
+  if (serializedManifest === undefined) {
+    return unavailableArtifactPreview(
+      'boot_failed',
+      'react bundle runtime manifest must be serializable',
+    );
+  }
+
+  const validation = validateReactBundleArtifactPayload(serializedManifest);
+  if (!validation.ok) {
+    return unavailableArtifactPreview(validation.code, validation.detail);
+  }
 
   return renderedArtifactPreview(
     renderRuntimeFrame({
       renderer: 'react_bundle',
       title: 'react bundle artifact preview',
       sandbox: 'allow-scripts allow-forms allow-same-origin',
-      runtimePayload: buildReactBundleArtifactRuntimePayload(manifest),
+      runtimePayload: buildReactBundleArtifactRuntimePayload(
+        validation.manifest,
+      ),
       sourceRef,
       ...(onGeneratedTextExportSnapshotChange !== undefined
         ? { onGeneratedTextExportSnapshotChange }

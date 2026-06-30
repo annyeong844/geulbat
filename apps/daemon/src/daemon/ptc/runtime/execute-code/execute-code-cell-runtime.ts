@@ -42,6 +42,7 @@ import {
 } from './execute-code-cell-summary.js';
 import type {
   PtcExecuteCodeCellId,
+  PtcExecuteCodePlacementResourceSnapshotRef,
   PtcExecuteCodeRuntimeResult,
 } from './execute-code-runtime-contract.js';
 import type { PtcExecuteCodeCallbackRuntime } from './execute-code-batch-runtime.js';
@@ -158,6 +159,9 @@ interface RunExecuteCodeCellRuntimeAttemptArgs {
   getPlacementContinuityProvenance:
     | PtcExecuteCodePlacementContinuityProvenanceProvider
     | undefined;
+  placementResourceSnapshotRef:
+    | PtcExecuteCodePlacementResourceSnapshotRef
+    | undefined;
   request: PtcExecuteCodeValidatedRequest;
   sdkHelpBundle: ReturnType<typeof buildPtcExecuteCodeSdkHelpBundle>;
   sessionManager: PtcSessionDockerManager;
@@ -225,6 +229,9 @@ export async function runExecuteCodeCellRuntimeAttempt(
       identity: args.identity,
       sessionManager: args.sessionManager,
       batchRunner: args.batchRunner,
+      ...(args.placementResourceSnapshotRef === undefined
+        ? {}
+        : { resourceSnapshotRef: args.placementResourceSnapshotRef }),
       ...(args.signal === undefined ? {} : { signal: args.signal }),
     });
   } catch (err: unknown) {
