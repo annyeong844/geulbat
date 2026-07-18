@@ -1,6 +1,7 @@
 {
   "name": "@geulbat/protocol",
   "version": "0.0.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "files": [
@@ -59,10 +60,6 @@
       "types": "./dist/files.d.ts",
       "import": "./dist/files.js"
     },
-    "./projects": {
-      "types": "./dist/projects.d.ts",
-      "import": "./dist/projects.js"
-    },
     "./threads": {
       "types": "./dist/threads.d.ts",
       "import": "./dist/threads.js"
@@ -78,6 +75,14 @@
     "./provider-auth": {
       "types": "./dist/provider-auth.d.ts",
       "import": "./dist/provider-auth.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp.d.ts",
+      "import": "./dist/mcp.js"
+    },
+    "./plugins": {
+      "types": "./dist/plugins.d.ts",
+      "import": "./dist/plugins.js"
     },
     "./artifact-runtime-host": {
       "types": "./dist/artifact-runtime-host.d.ts",
@@ -99,10 +104,12 @@
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "test": "node -e \"const fs=require('node:fs'); fs.rmSync('./dist-test', { recursive: true, force: true }); fs.rmSync('./tsconfig.test.tsbuildinfo', { force: true });\" && tsc -p ./tsconfig.test.json && node --test \"./dist-test/**/*.test.js\""
+    "test:files": "node ../../scripts/run-workspace-node-tests.mjs --workspace protocol --tsconfig ./tsconfig.test.json",
+    "test": "npm run test:files -- \"**/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "typescript": "^5.7.0"
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
   }
 }

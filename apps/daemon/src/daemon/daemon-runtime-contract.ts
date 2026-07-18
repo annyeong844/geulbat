@@ -1,4 +1,4 @@
-import type { ProjectId, RunId, ThreadId } from '@geulbat/protocol/ids';
+import type { RunId, ThreadId } from '@geulbat/protocol/ids';
 import type { ProviderAuthRuntimeStore } from './auth/runtime-state.js';
 import type { ProviderRequestOptions } from './llm/provider/provider-options.js';
 import type { ReactBundleStructuredOutputIngressPolicy } from './agent/react-bundle-structured-output-ingress-policy.js';
@@ -17,17 +17,35 @@ import type { ResourceBudgetProvider } from './agent/resource-budget-provider.js
 import type { SubagentAdmissionController } from './agent/subagent-concurrency.js';
 import type {
   BackgroundChildResult,
+  ProviderRunSelection,
+  ResolvedChildModelPin,
+  RunSubagentModelRouting,
   SubagentLaunchReservation,
   SubagentType,
 } from './subagent-runtime-contracts.js';
 import type { AgentEvent, ToolRunState } from './runtime-contracts.js';
 import type { PermissionMode } from '@geulbat/protocol/run-approval';
-import type { RunWorkspaceContext } from './run-workspace-context.js';
+import type { RunContext } from './run-context.js';
 import type { PtcFixedEpochProbeRuntimeResult } from './ptc/runtime/probes/fixed-probe-runtime-contract.js';
 import type { PtcBrowserPageLoadEvidenceRuntime } from './ptc/runtime/browser/browser-page-load-evidence-runtime-contract.js';
 import type { PtcBrowserTextEvidenceRuntime } from './ptc/runtime/browser/browser-text-evidence-runtime-contract.js';
 import type { PtcBrowserNavigateRuntime } from './ptc/runtime/browser/browser-navigate-runtime-contract.js';
-import type { PtcExecuteCodeRuntime } from './ptc/runtime/execute-code/execute-code-runtime-contract.js';
+import type {
+  PtcExecuteCodeRuntime,
+  PtcPackageInstallRuntime,
+} from './ptc/runtime/execute-code/execute-code-runtime-contract.js';
+import type {
+  ImageGenerationRuntime,
+  VideoGenerationRuntime,
+} from './media/contract.js';
+import type { ToolLibraryProjectionPort } from './tools/tool-library-projection-port.js';
+import type { PluginSkillRuntime } from './extensions/plugin-skill-runtime.js';
+
+export type {
+  ProviderRunSelection,
+  ResolvedChildModelPin,
+  RunSubagentModelRouting,
+};
 
 export type AgentMemoryIndex = Pick<
   MemoryIndexStore,
@@ -39,13 +57,15 @@ export interface StartSubagentBackgroundRunArgs {
   subagentType: SubagentType;
   parentRunId: RunId;
   ownerThreadId: ThreadId;
-  projectId: ProjectId;
-  workspaceRoot: string;
+  stateRoot: string;
+  workingDirectory: string;
   parentRunState: ToolRunState;
   runtimeServices: AgentRuntimeServices;
   launchReservation?: SubagentLaunchReservation;
   approvalSessionId?: string;
   permissionMode?: PermissionMode;
+  modelPin: ResolvedChildModelPin;
+  subagentModelRouting: RunSubagentModelRouting;
   emitAgentEvent?: (event: AgentEvent) => void;
   timeoutMs?: number;
   childRunId?: RunId;
@@ -53,7 +73,10 @@ export interface StartSubagentBackgroundRunArgs {
 }
 
 export interface SubagentRunLauncher {
-  startBackgroundRun(args: StartSubagentBackgroundRunArgs): Promise<{
+  startBackgroundRun(
+    this: void,
+    args: StartSubagentBackgroundRunArgs,
+  ): Promise<{
     ok: true;
     output: string;
   }>;
@@ -61,7 +84,7 @@ export interface SubagentRunLauncher {
 
 export interface PtcFixedEpochProbeRuntime {
   runFixedEpochProbe(args: {
-    runContext: RunWorkspaceContext;
+    runContext: RunContext;
     signal?: AbortSignal;
   }): Promise<PtcFixedEpochProbeRuntimeResult>;
 }
@@ -79,11 +102,19 @@ export interface AgentRuntimeServices {
       result: BackgroundChildResult,
     ): void;
     consumeThreadBackgroundResults(threadId: ThreadId): BackgroundChildResult[];
+    readThreadBackgroundResults(threadId: ThreadId): BackgroundChildResult[];
+    acknowledgeThreadBackgroundResults(
+      threadId: ThreadId,
+      deliveryIds: readonly string[],
+    ): void;
   };
   childRuns: ChildRunRegistry;
+  computerFileRoot?: string;
   fileStateCache: FileStateCache;
   agentWorkflowRunner: AgentWorkflowRunner;
   agentWavePlanner: AgentWavePlanner;
+  imageGeneration: ImageGenerationRuntime;
+  videoGeneration: VideoGenerationRuntime;
   memoryIndex: AgentMemoryIndex;
   providerAuthRuntime: ProviderAuthRuntimeStore;
   providerRequestOptions: ProviderRequestOptions;
@@ -94,9 +125,12 @@ export interface AgentRuntimeServices {
   ptcBrowserTextEvidence: PtcBrowserTextEvidenceRuntime;
   ptcBrowserNavigate: PtcBrowserNavigateRuntime;
   ptcExecuteCode: PtcExecuteCodeRuntime;
+  ptcPackageInstall: PtcPackageInstallRuntime;
   ptcFixedProbe: PtcFixedEpochProbeRuntime;
+  pluginSkills: PluginSkillRuntime;
   sandboxAttempts: SandboxAttemptStore;
   subagentAdmission: SubagentAdmissionController;
   subagentRuns: SubagentRunLauncher;
+  toolLibraryProjection: ToolLibraryProjectionPort;
   toolRegistry: ToolRuntimeRegistry;
 }

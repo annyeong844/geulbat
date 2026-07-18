@@ -1,6 +1,7 @@
 import { getErrorMessage } from '@geulbat/shared-utils/error';
 import type { FunctionCall, HistoryItem } from '../llm/index.js';
-import type { RunWorkspaceContext } from '../run-workspace-context.js';
+import type { RunContext } from '../run-context.js';
+import { resolveApprovalClass } from '../tools/approval-runtime-policy.js';
 import { toolError } from '../tools/result.js';
 import type { CallbackToolDispatcher, ExecuteResult } from '../tools/types.js';
 import { createMergedAbortSignal } from '../utils/abort.js';
@@ -35,10 +36,10 @@ export function createCallbackToolDispatcher(args: {
     dispatchFunctionCall,
   } = args;
   const base = runtime.executionContextBase;
-  const runContext: RunWorkspaceContext = {
-    workspaceRoot: base.workspaceRoot,
+  const runContext: RunContext = {
+    stateRoot: base.stateRoot,
+    workingDirectory: base.workingDirectory,
     threadId: base.threadId,
-    projectId: base.projectId,
   };
   const runId = base.runId;
   let nestedCallCounter = 0;
@@ -53,12 +54,17 @@ export function createCallbackToolDispatcher(args: {
     }) {
       nestedCallCounter += 1;
       const hostCallId = `${parentToolCallId}::nested-${nestedCallCounter}`;
+      const meta = runtime.toolRegistry.getToolMeta(toolName);
+      const mayMutateComputerFiles = meta?.mayMutateComputerFiles === true;
       const source: ToolCallSource = {
         kind: 'ptc_callback',
         parentToolCallId,
         runtimeToolCallId,
         hostCallId,
         ...(cellId !== undefined ? { cellId } : {}),
+        ...(mayMutateComputerFiles
+          ? { approvalClass: resolveApprovalClass(toolName, toolArgs) }
+          : {}),
       };
       const functionCall: FunctionCall = {
         id: hostCallId,
@@ -109,7 +115,7 @@ export function createCallbackToolDispatcher(args: {
             functionCall,
             round: parentRound,
             toolResult: toolError('execution_failed', getErrorMessage(error)),
-            workspaceFilesMayHaveChanged: false,
+            computerFilesMayHaveChanged: false,
             runContext,
             runId,
             history,
@@ -124,7 +130,8 @@ export function createCallbackToolDispatcher(args: {
           functionCall,
           round: parentRound,
           toolResult: result,
-          workspaceFilesMayHaveChanged: false,
+          computerFilesMayHaveChanged:
+            mayMutateComputerFiles && result.ok === true,
           runContext,
           runId,
           history,

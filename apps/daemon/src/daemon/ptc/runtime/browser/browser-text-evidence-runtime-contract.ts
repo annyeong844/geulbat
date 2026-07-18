@@ -56,10 +56,22 @@ export type PtcBrowserTextEvidenceRuntimeResult =
   | { ok: true; value: PtcBrowserTextEvidenceRuntimeSummary }
   | PtcBrowserTextEvidenceRuntimeError;
 
-export type PtcBrowserTextEvidenceRuntimeCleanupResult =
+type PtcBrowserTextEvidenceRuntimeCleanupResult =
   PtcBrowserRuntimeCleanupResult<'ptc_browser_text_evidence_session_cleanup_failed'>;
 
+type PtcBrowserTextEvidenceRuntimeWarmArgs = Omit<
+  PtcBrowserRuntimeOperationArgs<Record<never, never>>,
+  'request'
+>;
+
+type PtcBrowserTextEvidenceRuntimeWarmResult =
+  | { ok: true }
+  | PtcBrowserTextEvidenceRuntimeError;
+
 export interface PtcBrowserTextEvidenceRuntime {
+  warmState?(
+    args: PtcBrowserTextEvidenceRuntimeWarmArgs,
+  ): Promise<PtcBrowserTextEvidenceRuntimeWarmResult>;
   collectEvidence(
     args: PtcBrowserRuntimeOperationArgs<PtcBrowserRuntimeUrlRequest>,
   ): Promise<PtcBrowserTextEvidenceRuntimeResult>;

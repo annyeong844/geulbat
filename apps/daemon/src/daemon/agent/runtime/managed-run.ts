@@ -8,13 +8,10 @@ import {
 
 import type { ActiveRun, ActiveRunStore } from '../../sessions/active-runs.js';
 import { createRunState, type RunState } from './run-state.js';
-import {
-  createRunWorkspaceContext,
-  type RunWorkspaceContext,
-} from '../../run-workspace-context.js';
+import { createRunContext, type RunContext } from '../../run-context.js';
 
 interface StartManagedRunParams {
-  runContext: Omit<RunWorkspaceContext, 'threadId'> & {
+  runContext: Omit<RunContext, 'threadId'> & {
     threadId?: string | ThreadId;
   };
   runId?: string;
@@ -57,10 +54,10 @@ function startManagedRunInternal(
     params.parentRunId !== undefined
       ? assertValidRunId(params.parentRunId)
       : undefined;
-  const runContext = createRunWorkspaceContext({
+  const runContext = createRunContext({
     threadId: params.runContext.threadId ?? assertValidThreadId(randomUUID()),
-    projectId: params.runContext.projectId,
-    workspaceRoot: params.runContext.workspaceRoot,
+    stateRoot: params.runContext.stateRoot,
+    workingDirectory: params.runContext.workingDirectory,
   });
   const threadId = runContext.threadId;
   const ownerThreadId = assertValidThreadId(params.ownerThreadId ?? threadId);

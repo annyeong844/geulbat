@@ -82,7 +82,7 @@ type OperationCommitOutcomeStatus =
 type OperationCommitOutcomeReasonCode =
   | OperationRelocationPreconditionReasonCode
   | 'conflict_stale_write'
-  | 'outside_workspace'
+  | 'outside_file_authority'
   | 'approval_denied'
   | 'lease_conflict'
   | 'atomicity_unsupported'
@@ -137,7 +137,7 @@ export interface OperationManifestDraft {
   manifestRevision: string;
   manifestHash?: string;
   operationKind: OperationKind;
-  projectId: string;
+  authorityId: string;
   actor: OperationActor;
   targets: OperationTargetDraft[];
   approval: OperationApproval;
@@ -157,7 +157,7 @@ export interface OperationManifest extends Omit<
 
 interface ManifestHashSnapshot {
   operationKind: OperationKind;
-  projectId: string;
+  authorityId: string;
   targets: ManifestHashTarget[];
   approval: {
     required: boolean;
@@ -193,7 +193,7 @@ export function prepareOperationManifest(
     manifestRevision: draft.manifestRevision,
     manifestHash: hashManifestSnapshot(hashSnapshot),
     operationKind: draft.operationKind,
-    projectId: draft.projectId,
+    authorityId: draft.authorityId,
     actor: { ...draft.actor },
     targets,
     approval: { ...draft.approval },
@@ -375,7 +375,7 @@ function buildManifestHashSnapshot(
 ): ManifestHashSnapshot {
   return {
     operationKind: draft.operationKind,
-    projectId: draft.projectId,
+    authorityId: draft.authorityId,
     targets: targets.map((target) => ({
       role: target.role,
       ...(target.path !== undefined ? { path: target.path } : {}),

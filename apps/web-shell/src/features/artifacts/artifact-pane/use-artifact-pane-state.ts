@@ -18,7 +18,6 @@ import type { RenderArtifactRuntimeFrame } from '../runtime-preview/types.js';
 interface UseArtifactPaneStateResult {
   tab: ArtifactTab;
   canShowPreview: boolean;
-  showOpenSource: boolean;
   showApply: boolean;
   canApply: boolean;
   surfaceStateBadge: ArtifactSurfaceStateBadge | null;
@@ -88,7 +87,6 @@ export function useArtifactPaneState(args: {
   return {
     tab,
     canShowPreview: paneStateModel.canShowPreview,
-    showOpenSource: paneStateModel.showOpenSource,
     showApply: paneStateModel.showApply,
     canApply: paneStateModel.canApply,
     surfaceStateBadge: paneStateModel.surfaceStateBadge,

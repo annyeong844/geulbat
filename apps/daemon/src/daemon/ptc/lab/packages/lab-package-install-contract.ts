@@ -1,11 +1,11 @@
-import {
+import type {
   PTC_LAB_NETWORK_INSTALL_DISABLED_POLICY_ID,
-  type PtcLabPackageInstallMode,
+  PtcLabPackageInstallMode,
 } from './lab-package-cache-contract.js';
 import { ptcFailure } from '../../shared/lab-spine.js';
-import {
-  type PtcLabNetworkIdentitySnapshot,
-  type PtcLabNetworkTelemetrySummary,
+import type {
+  PtcLabNetworkIdentitySnapshot,
+  PtcLabNetworkTelemetrySummary,
 } from '../network/lab-network-policy.js';
 import type {
   PtcLabAdmittedProfile,
@@ -46,7 +46,7 @@ export interface PtcLabNpmExactPackage {
   version: string;
 }
 
-interface PtcLabNpmInstallRequest {
+export interface PtcLabNpmInstallRequest {
   manager: 'npm';
   installId: string;
   packages: PtcLabNpmExactPackage[];

@@ -19,6 +19,116 @@ const THREAD_ID_VALUE = '00000000-0000-4000-8000-000000000001';
 const OTHER_THREAD_ID_VALUE = '00000000-0000-4000-8000-000000000002';
 const THREAD_ID = brandThreadId(THREAD_ID_VALUE);
 
+void test('run usage updates land on the active run view and reset per run', () => {
+  const initial = createInitialRunSessionState();
+  const starting = reduceRunSessionState(initial, {
+    type: 'run_start_requested',
+    threadId: THREAD_ID_VALUE,
+  });
+  const running = reduceRunSessionState(starting, {
+    type: 'run_started',
+    threadId: THREAD_ID_VALUE,
+    runId: 'run-1',
+  });
+  const usage = { inputTokens: 9800, outputTokens: 252, cachedInputTokens: 0 };
+  const updated = reduceRunSessionState(running, {
+    type: 'run_usage_updated',
+    threadId: THREAD_ID_VALUE,
+    usage,
+  });
+
+  assert.equal(updated.activeRunView.usageTotals, usage);
+  assert.equal(
+    selectVisibleRunState({
+      selectedThreadId: THREAD_ID_VALUE,
+      state: updated,
+    }).usageTotals,
+    usage,
+  );
+
+  // 다른 스레드의 usage는 활성 런 뷰를 오염시키지 않는다
+  const mismatched = reduceRunSessionState(updated, {
+    type: 'run_usage_updated',
+    threadId: OTHER_THREAD_ID_VALUE,
+    usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+  });
+  assert.equal(mismatched.activeRunView.usageTotals, usage);
+
+  // 다음 런 시작 시 초기화
+  const nextRun = reduceRunSessionState(mismatched, {
+    type: 'run_start_requested',
+    threadId: THREAD_ID_VALUE,
+  });
+  assert.equal(nextRun.activeRunView.usageTotals, null);
+});
+
+void test('context usage snapshots persist per thread until the next exact measurement replaces them', () => {
+  const measured = {
+    state: 'measured' as const,
+    modelId: 'gpt-5.6-sol',
+    inputTokens: 122_400,
+    contextWindow: 272_000,
+    thresholdTokens: 244_800,
+  };
+  const running = reduceRunSessionState(
+    reduceRunSessionState(createInitialRunSessionState(), {
+      type: 'run_start_requested',
+      threadId: THREAD_ID_VALUE,
+    }),
+    { type: 'run_started', threadId: THREAD_ID_VALUE, runId: RUN_ID },
+  );
+  const measuredState = reduceRunSessionState(running, {
+    type: 'run_context_usage_updated',
+    threadId: THREAD_ID_VALUE,
+    contextUsage: measured,
+  });
+  const settled = reduceRunSessionState(measuredState, {
+    type: 'run_settled_success',
+  });
+  const withOtherThread = reduceRunSessionState(settled, {
+    type: 'run_context_usage_updated',
+    threadId: OTHER_THREAD_ID_VALUE,
+    contextUsage: {
+      state: 'compacted',
+      modelId: 'grok-4.5',
+      inputTokens: 425_000,
+      contextWindow: 500_000,
+      thresholdTokens: 425_000,
+    },
+  });
+
+  assert.equal(
+    selectVisibleRunState({
+      selectedThreadId: THREAD_ID_VALUE,
+      state: withOtherThread,
+    }).contextUsage,
+    measured,
+  );
+  assert.equal(
+    selectVisibleRunState({
+      selectedThreadId: OTHER_THREAD_ID_VALUE,
+      state: withOtherThread,
+    }).contextUsage?.state,
+    'compacted',
+  );
+
+  const nextRun = reduceRunSessionState(withOtherThread, {
+    type: 'run_start_requested',
+    threadId: THREAD_ID_VALUE,
+  });
+  assert.equal(
+    selectVisibleRunState({
+      selectedThreadId: THREAD_ID_VALUE,
+      state: nextRun,
+    }).contextUsage,
+    measured,
+  );
+  assert.equal(
+    nextRun.contextUsageByThread[OTHER_THREAD_ID_VALUE]?.modelId,
+    'grok-4.5',
+  );
+});
+
 void test('run session phase transitions move from idle to starting to running', () => {
   const initial = createInitialRunSessionState();
   const starting = reduceRunSessionState(initial, {
@@ -52,6 +162,73 @@ void test('run session error transition clears pending start and records stream 
   assert.equal(errored.pendingStartThreadId, null);
   assert.equal(errored.activeRunView.runId, null);
   assert.equal(errored.activeRunView.streamError, '[internal] failed');
+});
+
+void test('failed done closes the exact active run while preserving streamed output', () => {
+  const runningWithPartialAnswer = reduceRunSessionState(
+    reduceRunSessionState(
+      reduceRunSessionState(createInitialRunSessionState(), {
+        type: 'run_start_requested',
+        threadId: THREAD_ID_VALUE,
+      }),
+      {
+        type: 'run_started',
+        threadId: THREAD_ID_VALUE,
+        runId: RUN_ID,
+      },
+    ),
+    {
+      type: 'assistant_text_streamed',
+      threadId: THREAD_ID_VALUE,
+      target: 'answer',
+      text: 'partial answer',
+    },
+  );
+
+  const failed = reduceRunSessionState(runningWithPartialAnswer, {
+    type: 'run_terminal',
+    runId: RUN_ID,
+    threadId: THREAD_ID_VALUE,
+    ok: false,
+  });
+
+  assert.equal(failed.phase, 'error');
+  assert.equal(getActiveRunId(failed), null);
+  assert.equal(failed.activeRunView.finalAnswerText, 'partial answer');
+  assert.equal(
+    failed.activeRunView.streamError,
+    'Run ended before completing successfully. The streamed result is still shown.',
+  );
+});
+
+void test('done does not let a stale or successful terminal event bypass the canonical settle event', () => {
+  const running = reduceRunSessionState(
+    reduceRunSessionState(createInitialRunSessionState(), {
+      type: 'run_start_requested',
+      threadId: THREAD_ID_VALUE,
+    }),
+    {
+      type: 'run_started',
+      threadId: THREAD_ID_VALUE,
+      runId: RUN_ID,
+    },
+  );
+
+  const staleFailure = reduceRunSessionState(running, {
+    type: 'run_terminal',
+    runId: 'stale-run',
+    threadId: THREAD_ID_VALUE,
+    ok: false,
+  });
+  const successfulDone = reduceRunSessionState(running, {
+    type: 'run_terminal',
+    runId: RUN_ID,
+    threadId: THREAD_ID_VALUE,
+    ok: true,
+  });
+
+  assert.equal(staleFailure, running);
+  assert.equal(successfulDone, running);
 });
 
 void test('run session settle success returns to idle phase', () => {
@@ -510,6 +687,7 @@ void test('selectVisibleRunState only exposes run details for the selected threa
           },
         ],
       },
+      contextUsageByThread: {},
     },
   });
 
@@ -558,6 +736,7 @@ void test('selectVisibleRunState keeps an acknowledged new-thread run visible be
           },
         ],
       },
+      contextUsageByThread: {},
     },
   });
 
@@ -580,6 +759,34 @@ void test('selectVisibleRunState keeps an acknowledged new-thread run visible be
   ]);
 });
 
+void test('selectVisibleRunState surfaces a worker(child)-run approval on the owning parent session', () => {
+  const childThreadIdValue = '00000000-0000-4000-8000-000000000777';
+  const visible = selectVisibleRunState({
+    selectedThreadId: THREAD_ID_VALUE,
+    state: {
+      phase: 'running',
+      pendingStartThreadId: null,
+      activeRunView: {
+        ...createEmptyActiveRunView(THREAD_ID_VALUE),
+        runId: 'run-1',
+        // Approval payload carries the child run/thread identity, which is
+        // what run.approve must send back — visibility is keyed to the
+        // parent session that owns the run, not the payload threadId.
+        pendingApproval: makeApprovalRequiredFixture({
+          runId: brandRunId('run-child-1'),
+          threadId: brandThreadId(childThreadIdValue),
+        }),
+      },
+      sessionError: null,
+      backgroundNotificationsByThread: {},
+      contextUsageByThread: {},
+    },
+  });
+
+  assert.equal(visible.pendingApproval?.threadId, childThreadIdValue);
+  assert.equal(visible.pendingApproval?.runId, 'run-child-1');
+});
+
 void test('selectVisibleRunState keeps a settling run visible without reporting it as still running', () => {
   const visible = selectVisibleRunState({
     selectedThreadId: THREAD_ID_VALUE,
@@ -594,6 +801,7 @@ void test('selectVisibleRunState keeps a settling run visible without reporting 
       },
       sessionError: null,
       backgroundNotificationsByThread: {},
+      contextUsageByThread: {},
     },
   });
 
@@ -612,6 +820,7 @@ void test('selectVisibleRunState falls back to session-level error when no threa
       activeRunView: createEmptyActiveRunView(null),
       sessionError: '[internal] socket down',
       backgroundNotificationsByThread: {},
+      contextUsageByThread: {},
     },
   });
 
@@ -619,4 +828,144 @@ void test('selectVisibleRunState falls back to session-level error when no threa
   assert.equal(visible.visibleThreadId, OTHER_THREAD_ID_VALUE);
   assert.equal(visible.isRunning, false);
   assert.equal(visible.isSettling, false);
+});
+
+void test('steer flush request marks the queue and clears on apply or empty', () => {
+  const running = reduceRunSessionState(
+    reduceRunSessionState(createInitialRunSessionState(), {
+      type: 'run_start_requested',
+      threadId: THREAD_ID_VALUE,
+    }),
+    { type: 'run_started', threadId: THREAD_ID_VALUE, runId: 'run-1' },
+  );
+
+  // 큐가 비어 있으면 플러시 요청은 무시된다
+  const flushWithoutQueue = reduceRunSessionState(running, {
+    type: 'steer_flush_requested',
+  });
+  assert.equal(
+    flushWithoutQueue.activeRunView.pendingSteerFlushRequested,
+    false,
+  );
+
+  const queuedOne = reduceRunSessionState(running, {
+    type: 'steer_queued',
+    threadId: THREAD_ID_VALUE,
+    steer: { receivedSeq: 1, text: 'first steer' },
+  });
+  const queuedTwo = reduceRunSessionState(queuedOne, {
+    type: 'steer_queued',
+    threadId: THREAD_ID_VALUE,
+    steer: { receivedSeq: 2, text: 'second steer' },
+  });
+  const flushRequested = reduceRunSessionState(queuedTwo, {
+    type: 'steer_flush_requested',
+  });
+  assert.equal(flushRequested.activeRunView.pendingSteerFlushRequested, true);
+
+  // 소비 1건이면 플러시 플래그는 목적을 다해 내려간다
+  const applied = reduceRunSessionState(flushRequested, {
+    type: 'steer_applied',
+    threadId: THREAD_ID_VALUE,
+    receivedSeqs: [1],
+  });
+  assert.equal(applied.activeRunView.pendingSteerFlushRequested, false);
+  assert.deepEqual(
+    applied.activeRunView.pendingSteers.map((steer) => steer.receivedSeq),
+    [2],
+  );
+
+  // 취소로 큐가 완전히 비면 플래그도 내려간다
+  const flushAgain = reduceRunSessionState(applied, {
+    type: 'steer_flush_requested',
+  });
+  assert.equal(flushAgain.activeRunView.pendingSteerFlushRequested, true);
+  const emptied = reduceRunSessionState(flushAgain, {
+    type: 'steer_cancelled',
+    receivedSeq: 2,
+  });
+  assert.equal(emptied.activeRunView.pendingSteers.length, 0);
+  assert.equal(emptied.activeRunView.pendingSteerFlushRequested, false);
+});
+
+void test('tool_call_args_streamed accumulates into a live entry and the full tool_call closes it', () => {
+  const initial = createInitialRunSessionState();
+  const starting = reduceRunSessionState(initial, {
+    type: 'run_start_requested',
+    threadId: THREAD_ID_VALUE,
+  });
+  const running = reduceRunSessionState(starting, {
+    type: 'run_started',
+    threadId: THREAD_ID_VALUE,
+    runId: 'run-stream-1',
+  });
+
+  const first = reduceRunSessionState(running, {
+    type: 'tool_call_args_streamed',
+    threadId: THREAD_ID_VALUE,
+    callId: 'call_viz',
+    tool: 'visualize',
+    argsDelta: '{"code":"<svg',
+  });
+  const second = reduceRunSessionState(first, {
+    type: 'tool_call_args_streamed',
+    threadId: THREAD_ID_VALUE,
+    callId: 'call_viz',
+    tool: 'visualize',
+    argsDelta: '></svg>"}',
+  });
+
+  assert.deepEqual(second.activeRunView.streamingToolCall, {
+    callId: 'call_viz',
+    tool: 'visualize',
+    argsText: '{"code":"<svg></svg>"}',
+  });
+  // 스트리밍 중에는 라이브 꼬리 엔트리로 보인다
+  const visible = selectVisibleRunState({
+    selectedThreadId: THREAD_ID_VALUE,
+    state: second,
+  });
+  assert.deepEqual(visible.transcriptEntries.at(-1), {
+    kind: 'tool_activity',
+    tool: 'visualize',
+    state: 'running',
+    argsText: '{"code":"<svg></svg>"}',
+  });
+
+  // 다른 스레드의 델타는 무시
+  const mismatched = reduceRunSessionState(second, {
+    type: 'tool_call_args_streamed',
+    threadId: OTHER_THREAD_ID_VALUE,
+    callId: 'call_viz',
+    tool: 'visualize',
+    argsDelta: 'x',
+  });
+  assert.equal(
+    mismatched.activeRunView.streamingToolCall?.argsText,
+    '{"code":"<svg></svg>"}',
+  );
+
+  // 완성본 tool_call이 스트리밍을 닫고 일반 엔트리가 대체한다
+  const settled = reduceRunSessionState(mismatched, {
+    type: 'transcript_activity_added',
+    threadId: THREAD_ID_VALUE,
+    streamedToolCallId: 'call_viz',
+    entry: {
+      kind: 'tool_activity',
+      tool: 'visualize',
+      state: 'running',
+      args: { code: '<svg></svg>' },
+    },
+  });
+  assert.equal(settled.activeRunView.streamingToolCall, null);
+  const settledVisible = selectVisibleRunState({
+    selectedThreadId: THREAD_ID_VALUE,
+    state: settled,
+  });
+  assert.equal(
+    settledVisible.transcriptEntries.filter(
+      (entry) => entry.kind === 'tool_activity' && entry.tool === 'visualize',
+    ).length,
+    1,
+  );
 });

@@ -1,0 +1,54 @@
+{
+  "name": "@geulbat/tool-library",
+  "version": "0.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist/"
+  ],
+  "exports": {
+    "./projection-codec": {
+      "types": "./dist/projection-codec.d.ts",
+      "import": "./dist/projection-codec.js"
+    },
+    "./projection-descriptor": {
+      "types": "./dist/projection-descriptor.d.ts",
+      "import": "./dist/projection-descriptor.js"
+    },
+    "./projection-generator": {
+      "types": "./dist/projection-generator.d.ts",
+      "import": "./dist/projection-generator.js"
+    },
+    "./projection-manifest": {
+      "types": "./dist/projection-manifest.d.ts",
+      "import": "./dist/projection-manifest.js"
+    },
+    "./projection-modules": {
+      "types": "./dist/projection-modules.d.ts",
+      "import": "./dist/projection-modules.js"
+    },
+    "./projection-signature": {
+      "types": "./dist/projection-signature.d.ts",
+      "import": "./dist/projection-signature.js"
+    },
+    "./search-ranking": {
+      "types": "./dist/search-ranking.d.ts",
+      "import": "./dist/search-ranking.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test:files": "node ../../scripts/run-workspace-node-tests.mjs --workspace tool-library --tsconfig ./tsconfig.test.json",
+    "test": "npm run test:files -- \"**/*.test.js\""
+  },
+  "dependencies": {
+    "@geulbat/shared-utils": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}

@@ -66,6 +66,41 @@ void test('thread background notification queue retains results until the next t
   assert.equal(second.length, 0);
 });
 
+void test('thread background notification queue acknowledges only the persisted snapshot', () => {
+  const queue = createThreadBackgroundNotificationQueue();
+  const threadId = testThreadId(174011);
+  const makeResult = (deliveryId: string): BackgroundChildResult => ({
+    deliveryId,
+    parentRunId: testRunId(`parent-${deliveryId}`),
+    childRunId: testRunId(`child-${deliveryId}`),
+    subagentType: 'explorer',
+    terminalState: 'completed',
+    result: deliveryId,
+    completedAt: '2026-03-24T00:00:00.000Z',
+  });
+
+  queue.enqueueThreadBackgroundResult(threadId, makeResult('delivery-first'));
+  const persistedSnapshot = queue.readThreadBackgroundResults(threadId);
+  queue.enqueueThreadBackgroundResult(threadId, makeResult('delivery-later'));
+
+  assert.deepEqual(
+    queue
+      .readThreadBackgroundResults(threadId)
+      .map((result) => result.deliveryId),
+    ['delivery-first', 'delivery-later'],
+  );
+  queue.acknowledgeThreadBackgroundResults(
+    threadId,
+    persistedSnapshot.map((result) => result.deliveryId),
+  );
+  assert.deepEqual(
+    queue
+      .consumeThreadBackgroundResults(threadId)
+      .map((result) => result.deliveryId),
+    ['delivery-later'],
+  );
+});
+
 void test('thread background notification queue notifies live subscribers on enqueue', () => {
   const queue = createThreadBackgroundNotificationQueue();
   const threadId = testThreadId(174001);

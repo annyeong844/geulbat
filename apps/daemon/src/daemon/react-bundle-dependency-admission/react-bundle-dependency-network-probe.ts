@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { isPlainRecord } from '@geulbat/protocol/runtime-utils';
 import {
   sha256StableJson,
   stableStringify,
@@ -45,17 +46,16 @@ import {
 
 const IN_PROCESS_METADATA_PROBE_BACKEND_POLICY_ID =
   'react_bundle_dependency_metadata_probe_in_process_v1';
-export const DOCKER_METADATA_PROBE_BACKEND_POLICY_ID =
+const DOCKER_METADATA_PROBE_BACKEND_POLICY_ID =
   'react_bundle_dependency_metadata_probe_docker_v1';
-export const DOCKER_METADATA_PROBE_IMAGE_POLICY_ID =
+const DOCKER_METADATA_PROBE_IMAGE_POLICY_ID =
   'react_bundle_dependency_metadata_probe_image_v1';
-export const DOCKER_METADATA_PROBE_FILESYSTEM_POLICY_ID =
+const DOCKER_METADATA_PROBE_FILESYSTEM_POLICY_ID =
   'react_bundle_dependency_metadata_probe_fs_v1';
-export const DOCKER_METADATA_PROBE_ALLOWLIST_ID =
-  'react_bundle_dependency_cdn_v1';
-export const DOCKER_METADATA_PROBE_CONTAINER_NETWORK_MODE = 'none';
+const DOCKER_METADATA_PROBE_ALLOWLIST_ID = 'react_bundle_dependency_cdn_v1';
+const DOCKER_METADATA_PROBE_CONTAINER_NETWORK_MODE = 'none';
 
-export type ReactBundleDependencyMetadataProbeBackend =
+type ReactBundleDependencyMetadataProbeBackend =
   | {
       kind: 'in_process_adapter';
     }
@@ -65,7 +65,7 @@ export type ReactBundleDependencyMetadataProbeBackend =
       imageRef: string;
     };
 
-export type ReactBundleDependencyMetadataProbeBackendSummary =
+type ReactBundleDependencyMetadataProbeBackendSummary =
   | {
       kind: 'in_process_adapter';
       backendPolicyId: typeof IN_PROCESS_METADATA_PROBE_BACKEND_POLICY_ID;
@@ -589,6 +589,93 @@ async function importNetworkProbeOutput(args: {
   return summary;
 }
 
+function isHttpMetadataProbeResult(
+  value: unknown,
+): value is HttpMetadataProbeResult {
+  if (!isPlainRecord(value) || typeof value['requestedUrl'] !== 'string') {
+    return false;
+  }
+
+  const policy = value['policy'];
+  if (
+    !isPlainRecord(policy) ||
+    policy['name'] !== REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY ||
+    policy['version'] !== REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION ||
+    policy['allowlistId'] !== REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID
+  ) {
+    return false;
+  }
+
+  const redirectChain = value['redirectChain'];
+  if (
+    !Array.isArray(redirectChain) ||
+    !redirectChain.every(
+      (redirect: unknown) =>
+        isPlainRecord(redirect) &&
+        typeof redirect['fromUrl'] === 'string' &&
+        typeof redirect['toUrl'] === 'string' &&
+        typeof redirect['status'] === 'number',
+    )
+  ) {
+    return false;
+  }
+
+  const method = value['method'];
+  const validMethod = method === 'HEAD' || method === 'GET';
+  const timingBucket = value['timingBucket'];
+  const validTimingBucket =
+    timingBucket === 'lt_100ms' ||
+    timingBucket === 'lt_500ms' ||
+    timingBucket === 'lt_2s' ||
+    timingBucket === 'gte_2s';
+  const contentType = value['contentType'];
+  const contentLength = value['contentLength'];
+
+  if (value['ok'] === true) {
+    return (
+      typeof value['finalUrl'] === 'string' &&
+      validMethod &&
+      typeof value['status'] === 'number' &&
+      (contentType === null || typeof contentType === 'string') &&
+      (contentLength === null || typeof contentLength === 'number') &&
+      typeof value['bytesRead'] === 'number' &&
+      validTimingBucket
+    );
+  }
+  if (value['ok'] !== false) {
+    return false;
+  }
+
+  const reasonCode = value['reasonCode'];
+  const validReasonCode =
+    reasonCode === 'invalid_url' ||
+    reasonCode === 'unsupported_scheme' ||
+    reasonCode === 'disallowed_origin' ||
+    reasonCode === 'unsafe_url' ||
+    reasonCode === 'unsafe_redirect' ||
+    reasonCode === 'dns_blocked' ||
+    reasonCode === 'http_status' ||
+    reasonCode === 'timeout' ||
+    reasonCode === 'network_error';
+  return (
+    (value['finalUrl'] === undefined ||
+      typeof value['finalUrl'] === 'string') &&
+    (method === undefined || validMethod) &&
+    (value['status'] === undefined || typeof value['status'] === 'number') &&
+    (contentType === undefined ||
+      contentType === null ||
+      typeof contentType === 'string') &&
+    (contentLength === undefined ||
+      contentLength === null ||
+      typeof contentLength === 'number') &&
+    (value['bytesRead'] === undefined ||
+      typeof value['bytesRead'] === 'number') &&
+    (timingBucket === undefined || validTimingBucket) &&
+    validReasonCode &&
+    typeof value['message'] === 'string'
+  );
+}
+
 async function readAndValidateCandidate(args: {
   outputRef: SandboxOutputRef;
   request: ValidatedReactBundleDependencyPrepareRequest;
@@ -598,29 +685,37 @@ async function readAndValidateCandidate(args: {
     join(args.outputRef.rootPath, 'candidate.json'),
     'utf8',
   );
-  const candidate = JSON.parse(
-    candidateText,
-  ) as ReactBundleDependencyNetworkProbeCandidate;
-  if (candidate.schemaVersion !== 1) {
+  const candidate: unknown = JSON.parse(candidateText);
+  if (!isPlainRecord(candidate)) {
+    throw new Error('candidate must be an object');
+  }
+  if (candidate['schemaVersion'] !== 1) {
     throw new Error('candidate schemaVersion must be 1');
   }
-  if (candidate.adapterKind !== 'react_bundle_dependency_metadata_probe') {
+  if (candidate['adapterKind'] !== 'react_bundle_dependency_metadata_probe') {
     throw new Error('candidate adapterKind mismatch');
   }
-  if (candidate.inputHash !== args.request.inputHash) {
+  if (candidate['inputHash'] !== args.request.inputHash) {
     throw new Error('candidate input hash mismatch');
   }
-  if (candidate.networkPolicy !== REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY) {
+  if (candidate['networkPolicy'] !== REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY) {
     throw new Error('candidate networkPolicy mismatch');
   }
   if (
-    candidate.networkPolicyVersion !==
+    candidate['networkPolicyVersion'] !==
     REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION
   ) {
     throw new Error('candidate networkPolicyVersion mismatch');
   }
-  if (candidate.allowlistId !== REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID) {
+  if (candidate['allowlistId'] !== REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID) {
     throw new Error('candidate allowlistId mismatch');
+  }
+  if (candidate['probeMode'] !== 'metadata') {
+    throw new Error('candidate probeMode mismatch');
+  }
+  const generatedAt = candidate['generatedAt'];
+  if (typeof generatedAt !== 'string') {
+    throw new Error('candidate generatedAt must be a string');
   }
   if (
     args.expectedCandidateHash &&
@@ -628,34 +723,77 @@ async function readAndValidateCandidate(args: {
   ) {
     throw new Error('candidate content hash mismatch');
   }
-  if (
-    candidate.dependencyProbes.length !== args.request.dependencyRefs.length
-  ) {
+  const rawDependencyProbes = candidate['dependencyProbes'];
+  if (!Array.isArray(rawDependencyProbes)) {
+    throw new Error('candidate dependencyProbes must be an array');
+  }
+  const dependencyProbeValues: unknown[] = rawDependencyProbes;
+  if (dependencyProbeValues.length !== args.request.dependencyRefs.length) {
     throw new Error('candidate dependency probe count mismatch');
   }
+  const dependencyProbes: ReactBundleDependencyProbeResult[] = [];
   for (const [index, expected] of args.request.dependencyRefs.entries()) {
-    const actual = candidate.dependencyProbes[index];
-    if (!actual) {
+    const actual = dependencyProbeValues[index];
+    if (!isPlainRecord(actual)) {
       throw new Error('candidate dependency probe missing');
     }
-    if (actual.kind !== expected.kind) {
+    if (actual['kind'] !== expected.kind) {
       throw new Error('candidate dependency probe kind mismatch');
     }
-    if (actual.requestedUrl !== expected.url) {
+    if (actual['requestedUrl'] !== expected.url) {
       throw new Error('candidate dependency probe requestedUrl mismatch');
     }
-    if (expected.specifier && actual.specifier !== expected.specifier) {
+    if (actual['specifier'] !== expected.specifier) {
       throw new Error('candidate dependency probe specifier mismatch');
     }
+    if (actual['packageName'] !== expected.packageName) {
+      throw new Error('candidate dependency probe packageName mismatch');
+    }
+    if (actual['version'] !== expected.version) {
+      throw new Error('candidate dependency probe version mismatch');
+    }
+    if (!isHttpMetadataProbeResult(actual)) {
+      throw new Error(
+        `candidate dependency probe result mismatch at index ${index}`,
+      );
+    }
+    const validatedProbe: ReactBundleDependencyProbeResult = {
+      ...actual,
+      ...probeIdentity(expected),
+    };
+    dependencyProbes.push(validatedProbe);
   }
 
-  const expectedFailures = projectFailures(candidate.dependencyProbes);
-  if (
-    stableStringify(candidate.failures) !== stableStringify(expectedFailures)
-  ) {
+  const rawFailures = candidate['failures'];
+  if (!Array.isArray(rawFailures)) {
+    throw new Error('candidate failures must be an array');
+  }
+  const failureValues: unknown[] = rawFailures;
+  const failures: ReactBundleDependencyNetworkProbeCandidate['failures'] = [];
+  for (const failure of failureValues) {
+    if (!isReactBundleDependencyProbeFailure(failure)) {
+      throw new Error('candidate failure shape mismatch');
+    }
+    failures.push(failure);
+  }
+
+  const expectedFailures = projectFailures(dependencyProbes);
+  if (stableStringify(failures) !== stableStringify(expectedFailures)) {
     throw new Error('candidate failures projection mismatch');
   }
-  return candidate;
+  return {
+    ...candidate,
+    schemaVersion: 1,
+    adapterKind: 'react_bundle_dependency_metadata_probe',
+    inputHash: args.request.inputHash,
+    probeMode: 'metadata',
+    networkPolicy: REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY,
+    networkPolicyVersion: REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION,
+    allowlistId: REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID,
+    generatedAt,
+    dependencyProbes,
+    failures,
+  };
 }
 
 function toSummary(args: {
@@ -841,6 +979,17 @@ function projectFailures(
     reasonCode: probe.reasonCode,
     ...(probe.status !== undefined ? { status: probe.status } : {}),
   }));
+}
+
+function isReactBundleDependencyProbeFailure(
+  value: unknown,
+): value is ReactBundleDependencyNetworkProbeCandidate['failures'][number] {
+  return (
+    isPlainRecord(value) &&
+    typeof value['requestedUrl'] === 'string' &&
+    typeof value['reasonCode'] === 'string' &&
+    (value['status'] === undefined || typeof value['status'] === 'number')
+  );
 }
 
 function isFailedProbe(

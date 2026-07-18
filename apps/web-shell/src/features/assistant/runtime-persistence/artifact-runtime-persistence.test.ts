@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { ProjectId, ThreadId } from '@geulbat/protocol/ids';
+import type { ThreadId } from '@geulbat/protocol/ids';
 
 import { ApiFetchError } from '../../../lib/api/client.js';
 import {
@@ -9,13 +9,11 @@ import {
   readPersistenceErrorMessage,
 } from './artifact-runtime-persistence.js';
 
-const PROJECT_ID = 'workspace' as ProjectId;
 const THREAD_ID = '00000000-0000-4000-8000-000000000001' as ThreadId;
 const ARTIFACT_ID = 'art_demo_js';
 
 function createScope(overrides: Record<string, unknown> = {}) {
   return {
-    projectId: PROJECT_ID,
     threadId: THREAD_ID,
     renderer: 'js' as const,
     artifactId: ARTIFACT_ID,

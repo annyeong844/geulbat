@@ -8,24 +8,27 @@ import {
   type ProviderAuthBootstrapStore,
 } from './session-store.js';
 import {
-  PROVIDER_AUTH_AUTHORIZE_URL,
-  getRequiredProviderAuthClientId,
+  getProviderAuthBootstrapProfile,
   PROVIDER_AUTH_ORIGINATOR,
-  PROVIDER_AUTH_REDIRECT_URI,
-  PROVIDER_AUTH_SCOPE,
+  type ProviderAuthCallbackListenerConfig,
+  type ProviderAuthBootstrapProfile,
 } from './config.js';
+import type { ProviderAuthCredentialProviderId } from '../credentials/store.js';
 
 export const PROVIDER_AUTH_CALLBACK_UNAVAILABLE_MESSAGE =
   'Provider auth callback listener is unavailable.';
 
 export async function startProviderAuthLogin(options: {
   bootstrapStore: ProviderAuthBootstrapStore;
-  ensureCallbackServer: () => Promise<void>;
+  ensureCallbackServer: (
+    callbackListener: ProviderAuthCallbackListenerConfig,
+  ) => Promise<void>;
+  providerId?: ProviderAuthCredentialProviderId;
 }): Promise<ProviderAuthStartResponse> {
   const { bootstrapStore, ensureCallbackServer } = options;
-  const clientId = await getRequiredProviderAuthClientId();
+  const profile = await getProviderAuthBootstrapProfile(options.providerId);
   try {
-    await ensureCallbackServer();
+    await ensureCallbackServer(profile.callbackListener);
   } catch (cause: unknown) {
     const error = new Error(PROVIDER_AUTH_CALLBACK_UNAVAILABLE_MESSAGE);
     Object.assign(error, {
@@ -36,8 +39,8 @@ export async function startProviderAuthLogin(options: {
   }
 
   const existing = bootstrapStore.getPendingProviderAuthSession();
-  if (existing) {
-    return toStartResponse(existing, clientId);
+  if (existing?.providerId === profile.providerId) {
+    return toStartResponse(existing, profile);
   }
 
   const state = base64Url(crypto.randomBytes(16));
@@ -45,53 +48,65 @@ export async function startProviderAuthLogin(options: {
   const { createdAt, expiresAt } = createPendingProviderAuthTimestamps();
   const session = bootstrapStore.setPendingProviderAuthSession({
     authSessionId: crypto.randomUUID(),
+    providerId: profile.providerId,
     state,
     codeVerifier,
-    redirectUri: PROVIDER_AUTH_REDIRECT_URI,
+    redirectUri: profile.redirectUri,
     createdAt,
     expiresAt,
     status: 'pending',
   });
 
-  return toStartResponse(session, clientId);
+  return toStartResponse(session, profile);
 }
 
 function buildProviderAuthorizeUrl(
   session: Pick<
     PendingProviderAuthSession,
-    'redirectUri' | 'state' | 'codeVerifier'
+    'providerId' | 'redirectUri' | 'state' | 'codeVerifier'
   >,
-  clientId: string,
+  profile: ProviderAuthBootstrapProfile,
 ): string {
   const codeChallenge = base64Url(
     crypto.createHash('sha256').update(session.codeVerifier).digest(),
   );
 
-  const url = new URL(PROVIDER_AUTH_AUTHORIZE_URL);
-  url.search = new URLSearchParams({
+  const params = new URLSearchParams({
     response_type: 'code',
-    client_id: clientId,
+    client_id: profile.clientId,
     redirect_uri: session.redirectUri,
-    scope: PROVIDER_AUTH_SCOPE,
+    scope: profile.scope,
     state: session.state,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
-    id_token_add_organizations: 'true',
-    codex_cli_simplified_flow: 'true',
-    originator: PROVIDER_AUTH_ORIGINATOR,
-  }).toString();
+  });
+
+  switch (profile.providerId) {
+    case 'openai_codex_direct':
+      params.set('id_token_add_organizations', 'true');
+      params.set('codex_cli_simplified_flow', 'true');
+      params.set('originator', PROVIDER_AUTH_ORIGINATOR);
+      break;
+    case 'grok_oauth':
+      params.set('nonce', base64Url(crypto.randomBytes(16)));
+      break;
+  }
+
+  const url = new URL(profile.authorizeUrl);
+  url.search = params.toString();
 
   return url.toString();
 }
 
 function toStartResponse(
   session: PendingProviderAuthSession,
-  clientId: string,
+  profile: ProviderAuthBootstrapProfile,
 ): ProviderAuthStartResponse {
   return {
     authSessionId: session.authSessionId,
-    authorizeUrl: buildProviderAuthorizeUrl(session, clientId),
+    authorizeUrl: buildProviderAuthorizeUrl(session, profile),
     expiresAt: session.expiresAt,
+    providerId: profile.providerId,
   };
 }
 

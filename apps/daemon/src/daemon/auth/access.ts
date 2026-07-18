@@ -1,5 +1,9 @@
-import type { ProviderCredential } from './credentials/store.js';
-import { refreshProviderToken } from './credentials/refresh.js';
+import {
+  resolveProviderAuthCredentialProviderId,
+  type ProviderAuthCredentialProviderId,
+  type ProviderCredential,
+} from './credentials/store.js';
+import { refreshProviderCredential } from './credentials/refresh.js';
 import type { ProviderAuthRuntimeStore } from './runtime-state.js';
 import { PROVIDER_AUTH_REFRESH_MARGIN_MS } from './bootstrap/config.js';
 import type { ErrorCode } from '../error-codes.js';
@@ -17,6 +21,7 @@ const logger = createLogger('provider-auth');
  */
 export async function getProviderAuth(options: {
   allowRefresh?: boolean;
+  providerId?: ProviderAuthCredentialProviderId;
   refreshCredential?: (
     current: ProviderCredential,
   ) => Promise<ProviderCredential>;
@@ -24,19 +29,23 @@ export async function getProviderAuth(options: {
   runtimeStore: ProviderAuthRuntimeStore;
 }): Promise<{ accessToken: string; accountId: string }> {
   const { runtimeStore } = options;
-  if (!runtimeStore.hasHydratedProviderAuth()) {
-    await initProviderAuth({ runtimeStore });
+  const providerId = resolveProviderAuthCredentialProviderId(
+    options.providerId,
+  );
+  if (!runtimeStore.hasHydratedProviderAuth(providerId)) {
+    await initProviderAuth({ runtimeStore, providerId });
   }
-  let cached = runtimeStore.getCachedProviderCredential();
+  let cached = runtimeStore.getCachedProviderCredential(providerId);
   if (!cached) {
     throwProviderAuthFailure(
-      runtimeStore.getCachedProviderAuthLoadError() ?? {
+      runtimeStore.getCachedProviderAuthLoadError(providerId) ?? {
         code: 'provider_auth_session_not_found',
         message: 'No provider credentials available.',
       },
     );
   }
-  const existingRefreshError = runtimeStore.getCachedProviderAuthRefreshError();
+  const existingRefreshError =
+    runtimeStore.getCachedProviderAuthRefreshError(providerId);
   if (existingRefreshError && requiresProviderReconnect(existingRefreshError)) {
     throwProviderAuthFailure(existingRefreshError);
   }
@@ -48,6 +57,7 @@ export async function getProviderAuth(options: {
 
   if (shouldRefresh && allowRefresh) {
     await doRefresh({
+      providerId,
       runtimeStore,
       ...(options.refreshCredential !== undefined
         ? { refreshCredential: options.refreshCredential }
@@ -56,16 +66,17 @@ export async function getProviderAuth(options: {
         ? { persistCredential: options.persistCredential }
         : {}),
     });
-    cached = runtimeStore.getCachedProviderCredential();
+    cached = runtimeStore.getCachedProviderCredential(providerId);
     if (!cached) {
       throwProviderAuthFailure(
-        runtimeStore.getCachedProviderAuthLoadError() ?? {
+        runtimeStore.getCachedProviderAuthLoadError(providerId) ?? {
           code: 'provider_auth_session_not_found',
           message: 'No provider credentials available.',
         },
       );
     }
-    const refreshError = runtimeStore.getCachedProviderAuthRefreshError();
+    const refreshError =
+      runtimeStore.getCachedProviderAuthRefreshError(providerId);
     if (refreshError && requiresProviderReconnect(refreshError)) {
       throwProviderAuthFailure(refreshError);
     }
@@ -78,6 +89,7 @@ export async function getProviderAuth(options: {
 }
 
 export async function forceRefreshProviderAuth(options: {
+  providerId?: ProviderAuthCredentialProviderId;
   refreshCredential?: (
     current: ProviderCredential,
   ) => Promise<ProviderCredential>;
@@ -85,14 +97,17 @@ export async function forceRefreshProviderAuth(options: {
   runtimeStore: ProviderAuthRuntimeStore;
 }): Promise<{ accessToken: string; accountId: string }> {
   const { runtimeStore } = options;
-  if (!runtimeStore.hasHydratedProviderAuth()) {
-    await initProviderAuth({ runtimeStore });
+  const providerId = resolveProviderAuthCredentialProviderId(
+    options.providerId,
+  );
+  if (!runtimeStore.hasHydratedProviderAuth(providerId)) {
+    await initProviderAuth({ runtimeStore, providerId });
   }
 
-  const cached = runtimeStore.getCachedProviderCredential();
+  const cached = runtimeStore.getCachedProviderCredential(providerId);
   if (!cached) {
     throwProviderAuthFailure(
-      runtimeStore.getCachedProviderAuthLoadError() ?? {
+      runtimeStore.getCachedProviderAuthLoadError(providerId) ?? {
         code: 'provider_auth_session_not_found',
         message: 'No provider credentials available.',
       },
@@ -100,6 +115,7 @@ export async function forceRefreshProviderAuth(options: {
   }
 
   await doRefresh({
+    providerId,
     runtimeStore,
     ...(options.refreshCredential !== undefined
       ? { refreshCredential: options.refreshCredential }
@@ -109,12 +125,13 @@ export async function forceRefreshProviderAuth(options: {
       : {}),
   });
 
-  const refreshError = runtimeStore.getCachedProviderAuthRefreshError();
+  const refreshError =
+    runtimeStore.getCachedProviderAuthRefreshError(providerId);
   if (refreshError) {
     throwProviderAuthFailure(refreshError);
   }
 
-  const refreshed = runtimeStore.getCachedProviderCredential();
+  const refreshed = runtimeStore.getCachedProviderCredential(providerId);
   if (!refreshed) {
     throwProviderAuthFailure({
       code: 'provider_auth_session_not_found',
@@ -130,32 +147,38 @@ export async function forceRefreshProviderAuth(options: {
 
 /** Refresh mutex — concurrent callers await the same promise. */
 async function doRefresh(options: {
+  providerId: ProviderAuthCredentialProviderId;
   refreshCredential?: (
     current: ProviderCredential,
   ) => Promise<ProviderCredential>;
   persistCredential?: (credential: ProviderCredential) => Promise<void>;
   runtimeStore: ProviderAuthRuntimeStore;
 }): Promise<void> {
-  const { runtimeStore } = options;
-  const currentRefreshPromise = runtimeStore.getProviderAuthRefreshPromise();
+  const { providerId, runtimeStore } = options;
+  const currentRefreshPromise =
+    runtimeStore.getProviderAuthRefreshPromise(providerId);
   if (currentRefreshPromise) {
     await currentRefreshPromise;
     return;
   }
 
-  const refreshCredential = options?.refreshCredential ?? refreshProviderToken;
+  const refreshCredential =
+    options.refreshCredential ??
+    ((current: ProviderCredential) =>
+      refreshProviderCredential(providerId, current));
   const persistCredential =
     options?.persistCredential ??
-    ((credential) => runtimeStore.persistProviderCredential(credential));
+    ((credential) =>
+      runtimeStore.persistProviderCredential(credential, providerId));
   const refreshPromise = (async () => {
     try {
-      const current = runtimeStore.getCachedProviderCredential();
+      const current = runtimeStore.getCachedProviderCredential(providerId);
       if (!current) {
         return;
       }
       const refreshed = await refreshCredential(current);
       await persistCredential(refreshed);
-      runtimeStore.setCachedProviderAuthRefreshError(null);
+      runtimeStore.setCachedProviderAuthRefreshError(null, providerId);
       logger.info('Token refreshed');
     } catch (err: unknown) {
       const code =
@@ -164,20 +187,23 @@ async function doRefresh(options: {
         code === 'provider_auth_invalid'
           ? getErrorMessage(err)
           : `Provider token refresh failed. ${getErrorMessage(err)}`;
-      runtimeStore.setCachedProviderAuthRefreshError({
-        code,
-        message,
-      });
+      runtimeStore.setCachedProviderAuthRefreshError(
+        {
+          code,
+          message,
+        },
+        providerId,
+      );
       logger.error('Token refresh failed:', message);
       // Keep existing token — caller may still succeed; 401 handled upstream
     }
   })();
-  runtimeStore.setProviderAuthRefreshPromise(refreshPromise);
+  runtimeStore.setProviderAuthRefreshPromise(refreshPromise, providerId);
 
   try {
     await refreshPromise;
   } finally {
-    runtimeStore.setProviderAuthRefreshPromise(null);
+    runtimeStore.setProviderAuthRefreshPromise(null, providerId);
   }
 }
 

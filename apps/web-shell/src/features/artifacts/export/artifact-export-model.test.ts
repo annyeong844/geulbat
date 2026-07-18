@@ -36,7 +36,6 @@ void test('deriveArtifactExportModel derives generated text placeholders from ru
         raw: 'console.log("hello");',
       },
       actions: {
-        openSource: { visible: true, enabled: true, reason: null },
         apply: { visible: false, enabled: false, reason: null },
         export: { visible: false, enabled: false, reason: null },
       },
@@ -86,7 +85,6 @@ void test('deriveArtifactExportModel exposes runtime generated text exports for 
         }),
       },
       actions: {
-        openSource: { visible: true, enabled: true, reason: null },
         apply: { visible: false, enabled: false, reason: null },
         export: { visible: false, enabled: false, reason: null },
       },
@@ -125,7 +123,6 @@ void test('deriveArtifactExportModel uses binary overwrite hint for generated bi
         raw: 'console.log("hello");',
       },
       actions: {
-        openSource: { visible: true, enabled: true, reason: null },
         apply: { visible: false, enabled: false, reason: null },
         export: { visible: false, enabled: false, reason: null },
       },
@@ -164,7 +161,6 @@ void test('deriveArtifactExportModel keeps runtime exports hidden without full a
         raw: 'console.log("hello");',
       },
       actions: {
-        openSource: { visible: true, enabled: true, reason: null },
         apply: { visible: false, enabled: false, reason: null },
         export: { visible: false, enabled: false, reason: null },
       },
@@ -206,7 +202,6 @@ void test('deriveArtifactExportModel keeps generated binary export closed while 
         raw: 'console.log("hello");',
       },
       actions: {
-        openSource: { visible: true, enabled: true, reason: null },
         apply: { visible: false, enabled: false, reason: null },
         export: { visible: false, enabled: false, reason: null },
       },
@@ -244,7 +239,6 @@ void test('deriveArtifactExportModel rejects malformed generated text snapshots 
         raw: 'console.log("hello");',
       },
       actions: {
-        openSource: { visible: true, enabled: true, reason: null },
         apply: { visible: false, enabled: false, reason: null },
         export: { visible: false, enabled: false, reason: null },
       },

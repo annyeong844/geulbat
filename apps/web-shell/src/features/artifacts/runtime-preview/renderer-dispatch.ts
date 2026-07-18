@@ -1,7 +1,6 @@
 import { resolveHtmlArtifactRuntimePreview } from './html/preview.js';
 import { resolveJsArtifactRuntimePreview } from './js/preview.js';
-import { resolveReactBundleArtifactRuntimePreview } from './react-bundle/preview.js';
-import type { RuntimeArtifactPreviewRenderer } from '../artifact-renderer-capabilities.js';
+import type { DispatchedRuntimeArtifactPreviewRenderer } from '../artifact-renderer-capabilities.js';
 import type { ArtifactPreviewSurface } from '../artifact-types.js';
 import type {
   ArtifactRendererDefinition,
@@ -10,7 +9,7 @@ import type {
 } from './types.js';
 
 const runtimeArtifactRendererRegistry: Record<
-  RuntimeArtifactPreviewRenderer,
+  DispatchedRuntimeArtifactPreviewRenderer,
   ArtifactRendererDefinition
 > = {
   html5: {
@@ -46,32 +45,10 @@ const runtimeArtifactRendererRegistry: Record<
       });
     },
   },
-  react_bundle: {
-    render(payload, context, renderRuntimeFrame) {
-      return resolveReactBundleArtifactRuntimePreview({
-        payload,
-        digest: context.digest,
-        sourceRef: context.sourceRef,
-        ...(context.onGeneratedTextExportSnapshotChange !== undefined
-          ? {
-              onGeneratedTextExportSnapshotChange:
-                context.onGeneratedTextExportSnapshotChange,
-            }
-          : {}),
-        ...(context.onGeneratedBinaryExportSnapshotChange !== undefined
-          ? {
-              onGeneratedBinaryExportSnapshotChange:
-                context.onGeneratedBinaryExportSnapshotChange,
-            }
-          : {}),
-        renderRuntimeFrame,
-      });
-    },
-  },
 };
 
 export function resolveArtifactRuntimePreview(args: {
-  renderer: RuntimeArtifactPreviewRenderer;
+  renderer: DispatchedRuntimeArtifactPreviewRenderer;
   payload: string;
   context: ArtifactRuntimePreviewContext;
   renderRuntimeFrame: RenderArtifactRuntimeFrame;

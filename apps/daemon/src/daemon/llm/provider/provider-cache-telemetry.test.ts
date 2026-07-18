@@ -68,13 +68,21 @@ void test('normalizeProviderUsageTelemetry ignores absent or invalid usage inste
   );
 });
 
-void test('buildProviderCacheTelemetryLogFields reports absent usage without cache identifiers', () => {
+void test('buildProviderCacheTelemetryLogFields reports absent usage with redacted cache trace only', () => {
   assert.deepEqual(
     buildProviderCacheTelemetryLogFields(undefined, {
-      providerSessionId: 'provider-session',
-      promptCacheKey: 'prompt-cache-key',
+      promptCacheKeyHash: 'prompt-cache-key-hash',
+      stablePrefixFingerprint: 'stable-prefix-fingerprint',
+      prefixFingerprintVersion: 'prefix-v1',
+      cacheProjectionVersion: 'projection-v2',
     }),
-    { providerUsage: 'absent' },
+    {
+      providerUsage: 'absent',
+      promptCacheKeyHash: 'prompt-cache-key-hash',
+      stablePrefixFingerprint: 'stable-prefix-fingerprint',
+      prefixFingerprintVersion: 'prefix-v1',
+      cacheProjectionVersion: 'projection-v2',
+    },
   );
 });
 
@@ -87,14 +95,18 @@ void test('buildProviderCacheTelemetryLogFields reports cache hit ratio when usa
         cachedInputTokens: 80,
       },
       {
-        providerSessionId: 'provider-session',
-        promptCacheKey: 'prompt-cache-key',
+        promptCacheKeyHash: 'prompt-cache-key-hash',
+        stablePrefixFingerprint: 'stable-prefix-fingerprint',
+        prefixFingerprintVersion: 'prefix-v1',
+        cacheProjectionVersion: 'projection-v2',
       },
     ),
     {
       providerUsage: 'present',
-      providerSessionId: 'provider-session',
-      promptCacheKey: 'prompt-cache-key',
+      promptCacheKeyHash: 'prompt-cache-key-hash',
+      stablePrefixFingerprint: 'stable-prefix-fingerprint',
+      prefixFingerprintVersion: 'prefix-v1',
+      cacheProjectionVersion: 'projection-v2',
       inputTokens: 100,
       outputTokens: 25,
       cachedInputTokens: 80,

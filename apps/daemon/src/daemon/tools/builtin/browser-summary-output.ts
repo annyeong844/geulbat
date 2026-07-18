@@ -4,10 +4,11 @@ import type {
 } from '../../ptc/runtime/browser/browser-navigate-runtime-contract.js';
 import type {
   PtcBrowserPageLoadEvidenceFailureReason,
+  PtcBrowserPageLoadEvidenceRuntimeResult,
   PtcBrowserPageLoadEvidenceRuntimeSummary,
 } from '../../ptc/runtime/browser/browser-page-load-evidence-runtime-contract.js';
 import type {
-  PtcBrowserTextEvidenceFailureReason,
+  PtcBrowserTextEvidenceRuntimeResult,
   PtcBrowserTextEvidenceRuntimeSummary,
 } from '../../ptc/runtime/browser/browser-text-evidence-runtime-contract.js';
 
@@ -18,8 +19,7 @@ type BrowserEvidencePolicyOutputKey = Extract<
 
 type BrowserToolFailureReason =
   | PtcBrowserNavigateFailureReason
-  | PtcBrowserPageLoadEvidenceFailureReason
-  | PtcBrowserTextEvidenceFailureReason;
+  | PtcBrowserPageLoadEvidenceFailureReason;
 
 type BrowserToolFailureErrorCode =
   | 'aborted'
@@ -31,6 +31,18 @@ type BrowserToolFailureSubject =
   | 'navigation'
   | 'page-load evidence'
   | 'text evidence';
+
+type BrowserEvidenceFailureOutputArgs =
+  | {
+      failure: Extract<PtcBrowserPageLoadEvidenceRuntimeResult, { ok: false }>;
+      subject: 'page-load evidence';
+      attemptDigestField: 'pageLoadEvidenceAttemptDigest';
+    }
+  | {
+      failure: Extract<PtcBrowserTextEvidenceRuntimeResult, { ok: false }>;
+      subject: 'text evidence';
+      attemptDigestField: 'textEvidenceAttemptDigest';
+    };
 
 const BROWSER_INVALID_ARGS_FAILURE_REASONS = new Set<BrowserToolFailureReason>([
   'ptc_lab_browser_policy_disabled',
@@ -112,7 +124,7 @@ const BROWSER_SAFE_DIAGNOSTIC_KEYS = [
   'sessionCloseFailed',
   'commandResultKind',
   'inputCleanupFailed',
-  'workspaceRootRealpathFailed',
+  'stateRootRealpathFailed',
   'runtimeRootUnavailable',
 ] as const;
 
@@ -170,6 +182,32 @@ export function pickBrowserSafeDiagnosticFields(
     }
   }
   return Object.keys(safe).length > 0 ? safe : undefined;
+}
+
+export function stringifyBrowserEvidenceFailureOutput(
+  args: BrowserEvidenceFailureOutputArgs,
+): string {
+  const attemptDigest =
+    args.attemptDigestField === 'pageLoadEvidenceAttemptDigest'
+      ? args.failure.pageLoadEvidenceAttemptDigest
+      : args.failure.textEvidenceAttemptDigest;
+  const failure = args.failure;
+  return JSON.stringify({
+    kind: failure.kind,
+    ok: failure.ok,
+    reasonCode: failure.reasonCode,
+    message: browserFailureReasonMessage({
+      reasonCode: failure.reasonCode,
+      subject: args.subject,
+    }),
+    phase: failure.phase,
+    targetDigest: failure.targetDigest,
+    ...(attemptDigest === undefined
+      ? {}
+      : { [args.attemptDigestField]: attemptDigest }),
+    sessionLifecycle: failure.sessionLifecycle,
+    diagnostics: pickBrowserSafeDiagnosticFields(failure.diagnostics),
+  });
 }
 
 export function browserFailureReasonToToolErrorCode(

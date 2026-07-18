@@ -1,7 +1,7 @@
 import { isRecord, tryParseJson } from '../runtime-json.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import type { FunctionCall } from '../llm/index.js';
-import type { RunWorkspaceContext } from '../run-workspace-context.js';
+import type { RunContext } from '../run-context.js';
 import type { ExecuteResult } from '../tools/types.js';
 import {
   buildToolOutputRef,
@@ -9,16 +9,26 @@ import {
   type ToolOutputSnapshot,
   writeToolOutputSnapshot,
 } from '../files/tool-output-store.js';
+import {
+  PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_RUN_ID,
+  PTC_EXECUTE_CODE_POLICY_ID,
+  PTC_EXECUTE_CODE_TOOL_NAME,
+} from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
 
 const logger = createLogger('tool-output-offload');
 
 interface ToolOutputOffloadArgs {
   functionCall: FunctionCall;
-  runContext: RunWorkspaceContext;
+  runContext: RunContext;
   runId: string;
   toolOutputRecoveryAvailable?: boolean;
   toolResult: ExecuteResult;
 }
+
+type ToolOutputFileRoot = Extract<
+  NonNullable<ToolOutputSnapshot['source']>['root'],
+  string
+>;
 
 interface SearchFilesSlimOutput {
   ok: true;
@@ -29,6 +39,8 @@ interface SearchFilesSlimOutput {
   summary: string;
   fullOutputBytes: number;
   fullOutputChars: number;
+  root: ToolOutputFileRoot | null;
+  path: string | null;
 }
 
 interface SearchMemoryIndexSlimOutput {
@@ -44,10 +56,10 @@ interface SearchMemoryIndexSlimOutput {
   stale: boolean | null;
 }
 
-interface WebFetchSlimOutput {
+interface FetchUrlSlimOutput {
   ok: true;
   offloaded: true;
-  tool: 'web_fetch';
+  tool: 'fetch_url';
   callId: string;
   outputRef: string;
   summary: string;
@@ -69,8 +81,30 @@ interface ListFilesSlimOutput {
   summary: string;
   fullOutputBytes: number;
   fullOutputChars: number;
+  root: ToolOutputFileRoot | null;
   path: string | null;
   total: number | null;
+}
+
+interface RecoverableSlimOutput {
+  ok: true;
+  offloaded: true;
+  tool: 'exec' | 'wait' | 'exec_command';
+  callId: string;
+  outputRef: string;
+  summary: string;
+  fullOutputBytes: number;
+  fullOutputChars: number;
+  recoveryTool: 'read_tool_output';
+  kind?: string;
+  status?: string;
+  cellId?: string;
+  exitCode?: number | null;
+  remediation?: string;
+  outputLimitExceeded?: {
+    stream: string | null;
+    maxBufferedBytesPerStream: number | null;
+  } | null;
 }
 
 export async function maybeOffloadToolResult(
@@ -83,12 +117,23 @@ export async function maybeOffloadToolResult(
 
   const recoveryAvailable = args.toolOutputRecoveryAvailable ?? true;
   const wantsOffload = shouldOffloadToolOutput(functionCall.name);
-  const wantsRecoverableRef = shouldAttachRecoverableOutputRef(
+  const wantsRecoverableOffload = shouldOffloadRecoverableToolOutput(
     functionCall.name,
   );
   const shouldOffload = wantsOffload && recoveryAvailable;
-  const shouldAttachRecoverableRef = wantsRecoverableRef && recoveryAvailable;
-  if (!shouldOffload && !shouldAttachRecoverableRef) {
+  const shouldOffloadRecoverable = wantsRecoverableOffload && recoveryAvailable;
+  if (!shouldOffload && !shouldOffloadRecoverable) {
+    return toolResult;
+  }
+
+  const parsedOutput = tryParseJson(toolResult.output);
+  if (
+    hasExistingWaitRecoveryRef({
+      toolName: functionCall.name,
+      parsedOutput,
+      threadId: runContext.threadId,
+    })
+  ) {
     return toolResult;
   }
 
@@ -97,7 +142,6 @@ export async function maybeOffloadToolResult(
     runId,
     threadId: runContext.threadId,
   });
-  const parsedOutput = tryParseJson(toolResult.output);
   const parsedArguments = tryParseJson(functionCall.arguments);
   const source = readToolOutputSource(
     functionCall.name,
@@ -106,7 +150,6 @@ export async function maybeOffloadToolResult(
   );
   const snapshot = buildToolOutputSnapshot({
     outputRef,
-    projectId: runContext.projectId,
     threadId: runContext.threadId,
     runId,
     callId: functionCall.callId,
@@ -117,33 +160,32 @@ export async function maybeOffloadToolResult(
 
   try {
     await writeToolOutputSnapshot({
-      workspaceRoot: runContext.workspaceRoot,
+      stateRoot: runContext.stateRoot,
       snapshot,
     });
   } catch {
-    const action = shouldOffload ? 'offload' : 'record';
-    logger.warn(`failed to ${action} tool output snapshot:`, {
+    logger.warn('failed to offload tool output snapshot:', {
       callId: functionCall.callId,
       runId,
       threadId: runContext.threadId,
       toolName: functionCall.name,
     });
-    if (shouldAttachRecoverableRef && !shouldOffload) {
-      return toolResult;
+    if (shouldOffloadRecoverableToolOutput(functionCall.name)) {
+      return {
+        ok: true,
+        output: buildRecoverableInlineFallback(
+          toolResult.output,
+          functionCall.name,
+        ),
+      };
     }
     return {
       ok: false,
       output: '',
       errorCode: 'internal',
-      error: `failed to ${action} tool output snapshot; full output was not recorded.`,
+      error:
+        'failed to offload tool output snapshot; full output was not recorded.',
     };
-  }
-
-  if (shouldAttachRecoverableRef) {
-    return buildRecoverableInlineResult({
-      snapshot,
-      toolResult,
-    });
   }
 
   return {
@@ -152,37 +194,87 @@ export async function maybeOffloadToolResult(
   };
 }
 
+function buildRecoverableInlineFallback(
+  output: string,
+  tool: RecoverableSlimOutput['tool'],
+): string {
+  const parsed = tryParseJson(output);
+  const record = parsed.ok && isRecord(parsed.value) ? parsed.value : null;
+
+  return JSON.stringify({
+    ...(record ?? { output }),
+    offloaded: false,
+    tool,
+    outputSnapshot: {
+      ok: false,
+      errorCode: 'snapshot_write_failed',
+    },
+    recoveryTool: null,
+    summary:
+      'Durable output snapshot failed; the exact tool result is retained inline for this history entry.',
+  });
+}
+
 function shouldOffloadToolOutput(toolName: string): boolean {
   return (
     toolName === 'search_files' ||
     toolName === 'search_memory_index' ||
-    toolName === 'web_fetch' ||
+    toolName === 'fetch_url' ||
     toolName === 'list_files'
   );
 }
 
-function shouldAttachRecoverableOutputRef(toolName: string): boolean {
-  return toolName === 'exec' || toolName === 'wait';
+function shouldOffloadRecoverableToolOutput(
+  toolName: string,
+): toolName is RecoverableSlimOutput['tool'] {
+  return (
+    toolName === 'exec' || toolName === 'wait' || toolName === 'exec_command'
+  );
 }
 
-function buildRecoverableInlineResult(args: {
-  snapshot: ToolOutputSnapshot;
-  toolResult: ExecuteResult & { ok: true };
-}): ExecuteResult {
-  const parsed = tryParseJson(args.toolResult.output);
-  if (!parsed.ok || !isRecord(parsed.value)) {
-    return args.toolResult;
+function hasExistingWaitRecoveryRef(args: {
+  toolName: string;
+  parsedOutput: ReturnType<typeof tryParseJson>;
+  threadId: string;
+}): boolean {
+  if (
+    args.toolName !== 'wait' ||
+    !args.parsedOutput.ok ||
+    !isRecord(args.parsedOutput.value)
+  ) {
+    return false;
   }
-
-  return {
-    ok: true,
-    output: JSON.stringify({
-      ...parsed.value,
-      outputRef: args.snapshot.outputRef,
-      fullOutputBytes: args.snapshot.fullOutputBytes,
-      fullOutputChars: args.snapshot.fullOutputChars,
-    }),
-  };
+  const output = args.parsedOutput.value;
+  if (typeof output.cellId !== 'string') {
+    return false;
+  }
+  const expectedOutputRef = buildToolOutputRef({
+    threadId: args.threadId,
+    runId: PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_RUN_ID,
+    callId: output.cellId,
+  });
+  return (
+    output.kind === 'ptc_execute_code_cell_wait' &&
+    output.capabilityId === PTC_EXECUTE_CODE_TOOL_NAME &&
+    output.policyId === PTC_EXECUTE_CODE_POLICY_ID &&
+    output.executionSurface === 'node_via_lab_detached_cell' &&
+    (output.status === 'completed' ||
+      output.status === 'terminated' ||
+      output.status === 'completed_with_cleanup_failure' ||
+      output.status === 'terminated_with_cleanup_failure') &&
+    (output.exitCode === null ||
+      (typeof output.exitCode === 'number' &&
+        Number.isSafeInteger(output.exitCode))) &&
+    output.offloaded === true &&
+    output.recoveryTool === 'read_tool_output' &&
+    output.outputRef === expectedOutputRef &&
+    typeof output.fullOutputBytes === 'number' &&
+    Number.isSafeInteger(output.fullOutputBytes) &&
+    output.fullOutputBytes >= 0 &&
+    typeof output.fullOutputChars === 'number' &&
+    Number.isSafeInteger(output.fullOutputChars) &&
+    output.fullOutputChars >= 0
+  );
 }
 
 function readToolOutputSource(
@@ -197,20 +289,40 @@ function readToolOutputSource(
       ? parsedArguments.value
       : null;
   if (toolName === 'search_files') {
+    const source: ToolOutputSnapshot['source'] = {};
     const query =
-      readStringField(argumentsRecord, 'query') ??
+      readStringField(argumentsRecord, 'pattern') ??
       readStringField(outputRecord, 'query');
-    return query === undefined ? undefined : { query };
+    if (query !== undefined) {
+      source.query = query;
+    }
+    const root = readToolOutputFileRoot(outputRecord);
+    if (root !== undefined) {
+      source.root = root;
+    }
+    const path = readStringField(outputRecord, 'path');
+    if (path !== undefined) {
+      source.path = path;
+    }
+    return Object.keys(source).length > 0 ? source : undefined;
   }
   if (toolName === 'search_memory_index') {
     const query = readStringField(argumentsRecord, 'query');
     return query === undefined ? undefined : { query };
   }
   if (toolName === 'list_files') {
+    const source: ToolOutputSnapshot['source'] = {};
+    const root = readToolOutputFileRoot(outputRecord);
+    if (root !== undefined) {
+      source.root = root;
+    }
     const path = readStringField(outputRecord, 'path');
-    return path === undefined ? undefined : { path };
+    if (path !== undefined) {
+      source.path = path;
+    }
+    return Object.keys(source).length > 0 ? source : undefined;
   }
-  if (toolName === 'web_fetch') {
+  if (toolName === 'fetch_url') {
     const source: ToolOutputSnapshot['source'] = {};
     const url = readStringField(outputRecord, 'url');
     if (url !== undefined) {
@@ -233,15 +345,26 @@ function readStringField(
   return typeof value === 'string' ? value : undefined;
 }
 
+function readToolOutputFileRoot(
+  record: Record<string, unknown> | null,
+): ToolOutputFileRoot | undefined {
+  const value = record?.['root'];
+  return value === 'workspace' || value === 'computer' ? value : undefined;
+}
+
 function buildSlimOutput(
   snapshot: ToolOutputSnapshot,
 ):
   | SearchFilesSlimOutput
   | SearchMemoryIndexSlimOutput
-  | WebFetchSlimOutput
-  | ListFilesSlimOutput {
-  if (snapshot.toolName === 'web_fetch') {
-    return buildWebFetchSlimOutput(snapshot);
+  | FetchUrlSlimOutput
+  | ListFilesSlimOutput
+  | RecoverableSlimOutput {
+  if (shouldOffloadRecoverableToolOutput(snapshot.toolName)) {
+    return buildRecoverableSlimOutput(snapshot, snapshot.toolName);
+  }
+  if (snapshot.toolName === 'fetch_url') {
+    return buildFetchUrlSlimOutput(snapshot);
   }
   if (snapshot.toolName === 'list_files') {
     return buildListFilesSlimOutput(snapshot);
@@ -252,19 +375,108 @@ function buildSlimOutput(
   return buildSearchFilesSlimOutput(snapshot);
 }
 
+function buildRecoverableSlimOutput(
+  snapshot: ToolOutputSnapshot,
+  tool: RecoverableSlimOutput['tool'],
+): RecoverableSlimOutput {
+  const parsed = tryParseJson(snapshot.output);
+  const record = parsed.ok && isRecord(parsed.value) ? parsed.value : null;
+  const kind = readStringField(record, 'kind');
+  const status = readStringField(record, 'status');
+  const cellId = readStringField(record, 'cellId');
+  const remediation = readStringField(record, 'remediation');
+  const exitCode = readNullableNumberField(record, 'exitCode');
+  const outputLimitExceeded = readOutputLimitExceeded(record);
+
+  return {
+    ok: true,
+    offloaded: true,
+    tool,
+    callId: snapshot.callId,
+    outputRef: snapshot.outputRef,
+    summary: buildRecoverableSummary(tool, record),
+    fullOutputBytes: snapshot.fullOutputBytes,
+    fullOutputChars: snapshot.fullOutputChars,
+    recoveryTool: 'read_tool_output',
+    ...(kind === undefined ? {} : { kind }),
+    ...(status === undefined ? {} : { status }),
+    ...(cellId === undefined ? {} : { cellId }),
+    ...(exitCode === undefined ? {} : { exitCode }),
+    ...(remediation === undefined ? {} : { remediation }),
+    ...(outputLimitExceeded === undefined ? {} : { outputLimitExceeded }),
+  };
+}
+
+function readNullableNumberField(
+  record: Record<string, unknown> | null,
+  key: string,
+): number | null | undefined {
+  const value = record?.[key];
+  return value === null || typeof value === 'number' ? value : undefined;
+}
+
+function readOutputLimitExceeded(
+  record: Record<string, unknown> | null,
+): RecoverableSlimOutput['outputLimitExceeded'] | undefined {
+  const value = record?.['outputLimitExceeded'];
+  if (value === null) {
+    return null;
+  }
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return {
+    stream: readStringField(value, 'stream') ?? null,
+    maxBufferedBytesPerStream:
+      typeof value.maxBufferedBytesPerStream === 'number'
+        ? value.maxBufferedBytesPerStream
+        : null,
+  };
+}
+
+function buildRecoverableSummary(
+  tool: RecoverableSlimOutput['tool'],
+  record: Record<string, unknown> | null,
+): string {
+  const status = readStringField(record, 'status');
+  const cellId = readStringField(record, 'cellId');
+  const exitCode = readNullableNumberField(record, 'exitCode');
+  const exactRecovery =
+    'Exact output is available through read_tool_output with explicit offset and limit.';
+  if (tool === 'exec' && cellId !== undefined && status !== undefined) {
+    return `exec is ${status} in cell ${cellId}. ${exactRecovery}`;
+  }
+  if (tool === 'wait' && cellId !== undefined && status !== undefined) {
+    return `wait observed cell ${cellId} with status ${status}${formatExitCode(exitCode)}. ${exactRecovery}`;
+  }
+  if (tool === 'exec_command' && status !== undefined) {
+    return `exec_command finished with status ${status}${formatExitCode(exitCode)}. ${exactRecovery}`;
+  }
+  return `${tool} returned a durable output snapshot. ${exactRecovery}`;
+}
+
+function formatExitCode(exitCode: number | null | undefined): string {
+  return typeof exitCode === 'number'
+    ? ` and exit code ${String(exitCode)}`
+    : '';
+}
+
 function buildSearchFilesSlimOutput(
   snapshot: ToolOutputSnapshot,
 ): SearchFilesSlimOutput {
   const parsed = tryParseJson(snapshot.output);
+  const record = parsed.ok && isRecord(parsed.value) ? parsed.value : null;
   return {
     ok: true,
     offloaded: true,
     tool: 'search_files',
     callId: snapshot.callId,
     outputRef: snapshot.outputRef,
-    summary: buildSearchFilesSummary(parsed.ok ? parsed.value : null),
+    summary: buildSearchFilesSummary(record),
     fullOutputBytes: snapshot.fullOutputBytes,
     fullOutputChars: snapshot.fullOutputChars,
+    root: readToolOutputFileRoot(record) ?? null,
+    path: readStringField(record, 'path') ?? null,
   };
 }
 
@@ -287,9 +499,9 @@ function buildSearchMemoryIndexSlimOutput(
   };
 }
 
-function buildWebFetchSlimOutput(
+function buildFetchUrlSlimOutput(
   snapshot: ToolOutputSnapshot,
-): WebFetchSlimOutput {
+): FetchUrlSlimOutput {
   const parsed = tryParseJson(snapshot.output);
   const record = parsed.ok && isRecord(parsed.value) ? parsed.value : null;
   const finalUrl =
@@ -301,10 +513,10 @@ function buildWebFetchSlimOutput(
   return {
     ok: true,
     offloaded: true,
-    tool: 'web_fetch',
+    tool: 'fetch_url',
     callId: snapshot.callId,
     outputRef: snapshot.outputRef,
-    summary: buildWebFetchSummary(record),
+    summary: buildFetchUrlSummary(record),
     fullOutputBytes: snapshot.fullOutputBytes,
     fullOutputChars: snapshot.fullOutputChars,
     url,
@@ -332,6 +544,7 @@ function buildListFilesSlimOutput(
     summary: buildListFilesSummary(record),
     fullOutputBytes: snapshot.fullOutputBytes,
     fullOutputChars: snapshot.fullOutputChars,
+    root: readToolOutputFileRoot(record) ?? null,
     path: record && typeof record.path === 'string' ? record.path : null,
     total: record && typeof record.total === 'number' ? record.total : null,
   };
@@ -350,15 +563,15 @@ function buildListFilesSummary(record: Record<string, unknown> | null): string {
   return `list_files returned ${total} for ${path}. Full output was written to the tool output snapshot.`;
 }
 
-function buildWebFetchSummary(record: Record<string, unknown> | null): string {
+function buildFetchUrlSummary(record: Record<string, unknown> | null): string {
   if (!record) {
-    return 'web_fetch returned a large response. Full output was written to the tool output snapshot.';
+    return 'fetch_url returned a large response. Full output was written to the tool output snapshot.';
   }
   const finalUrl =
     typeof record.finalUrl === 'string' ? record.finalUrl : 'an unknown URL';
   const title =
     typeof record.title === 'string' ? ` titled "${record.title}"` : '';
-  return `web_fetch returned a large response from ${finalUrl}${title}. Full output was written to the tool output snapshot.`;
+  return `fetch_url returned a large response from ${finalUrl}${title}. Full output was written to the tool output snapshot.`;
 }
 
 function buildSearchMemoryIndexSummary(

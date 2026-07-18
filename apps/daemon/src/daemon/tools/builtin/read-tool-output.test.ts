@@ -10,16 +10,26 @@ import {
   buildToolOutputSnapshot,
   writeToolOutputSnapshot,
 } from '../../files/tool-output-store.js';
+import { isToolObjectParameters } from '../tool-registry-model.js';
 import { readToolOutputTool } from './read-tool-output.js';
 
+void test('read_tool_output provider schema requires an explicit page limit', () => {
+  const parameters = readToolOutputTool.parameters;
+  assert.equal(isToolObjectParameters(parameters), true);
+  if (!isToolObjectParameters(parameters)) {
+    assert.fail('expected object tool parameters');
+  }
+  assert.deepEqual(parameters.required, ['outputRef', 'limit']);
+});
+
 void test('read_tool_output rejects raw .geulbat paths instead of treating them as references', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
 
   const result = await readToolOutputTool.execute(
-    { outputRef: '.geulbat/tool-outputs/thread/run/call.json' },
+    { outputRef: '.geulbat/tool-outputs/thread/run/call.json', limit: 1 },
     {
       callId: 'call-read-tool-output-path',
-      workspaceRoot,
+      stateRoot,
       threadId: testThreadId(81),
     },
   );
@@ -31,10 +41,9 @@ void test('read_tool_output rejects raw .geulbat paths instead of treating them 
 
 void test('read_tool_output rejects blank outputRef at the parser boundary', async () => {
   const result = await readToolOutputTool.execute(
-    { outputRef: '   ' },
+    { outputRef: '   ', limit: 1 },
     {
       callId: 'call-read-tool-output-blank-ref',
-      workspaceRoot: '/workspace/project',
     },
   );
 
@@ -44,15 +53,18 @@ void test('read_tool_output rejects blank outputRef at the parser boundary', asy
 });
 
 void test('read_tool_output rejects output refs from another thread', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
   const currentThreadId = testThreadId(82);
   const otherThreadId = testThreadId(83);
 
   const result = await readToolOutputTool.execute(
-    { outputRef: `tool-output:${otherThreadId}/run-search/call-search` },
+    {
+      outputRef: `tool-output:${otherThreadId}/run-search/call-search`,
+      limit: 1,
+    },
     {
       callId: 'call-read-tool-output-cross-thread',
-      workspaceRoot,
+      stateRoot,
       threadId: currentThreadId,
     },
   );
@@ -63,14 +75,17 @@ void test('read_tool_output rejects output refs from another thread', async () =
 });
 
 void test('read_tool_output returns not_found for a missing snapshot in the current thread', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
   const currentThreadId = testThreadId(86);
 
   const result = await readToolOutputTool.execute(
-    { outputRef: `tool-output:${currentThreadId}/run-search/call-search` },
+    {
+      outputRef: `tool-output:${currentThreadId}/run-search/call-search`,
+      limit: 1,
+    },
     {
       callId: 'call-read-tool-output-missing-snapshot',
-      workspaceRoot,
+      stateRoot,
       threadId: currentThreadId,
     },
   );
@@ -81,12 +96,12 @@ void test('read_tool_output returns not_found for a missing snapshot in the curr
 });
 
 void test('read_tool_output rejects snapshots whose schema identity does not match the ref', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
   const currentThreadId = testThreadId(84);
   const otherThreadId = testThreadId(85);
   const outputRef = `tool-output:${currentThreadId}/run-search/call-search`;
   const snapshotDir = join(
-    workspaceRoot,
+    stateRoot,
     '.geulbat',
     'tool-outputs',
     currentThreadId,
@@ -96,9 +111,8 @@ void test('read_tool_output rejects snapshots whose schema identity does not mat
   await writeFile(
     join(snapshotDir, 'call-search.json'),
     JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       outputRef,
-      projectId: 'project',
       threadId: otherThreadId,
       runId: 'run-search',
       callId: 'call-search',
@@ -113,10 +127,10 @@ void test('read_tool_output rejects snapshots whose schema identity does not mat
   );
 
   const result = await readToolOutputTool.execute(
-    { outputRef },
+    { outputRef, limit: 1 },
     {
       callId: 'call-read-tool-output-mismatched-snapshot',
-      workspaceRoot,
+      stateRoot,
       threadId: currentThreadId,
     },
   );
@@ -126,22 +140,21 @@ void test('read_tool_output rejects snapshots whose schema identity does not mat
   assert.match(result.error ?? '', /expected schema/);
 });
 
-void test('read_tool_output reads the full snapshot by default', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
+void test('read_tool_output rejects an omitted page limit', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
   const threadId = testThreadId(87);
   const runId = 'run-full-output';
   const callId = 'call-full-output';
   const outputRef = buildToolOutputRef({ threadId, runId, callId });
   const output = 'full-output-line\n'.repeat(2_000);
   await writeToolOutputSnapshot({
-    workspaceRoot,
+    stateRoot,
     snapshot: buildToolOutputSnapshot({
       outputRef,
-      projectId: 'project',
       threadId,
       runId,
       callId,
-      toolName: 'web_fetch',
+      toolName: 'fetch_url',
       output,
     }),
   });
@@ -150,38 +163,27 @@ void test('read_tool_output reads the full snapshot by default', async () => {
     { outputRef },
     {
       callId: 'call-read-tool-output-full',
-      workspaceRoot,
+      stateRoot,
       threadId,
     },
   );
 
-  assert.equal(result.ok, true);
-  const page = JSON.parse(result.output) as {
-    content?: string;
-    hasMore?: boolean;
-    limit?: number | null;
-    nextOffset?: number | null;
-    totalChars?: number;
-  };
-  assert.equal(page.content, output);
-  assert.equal(page.hasMore, false);
-  assert.equal(page.limit, null);
-  assert.equal(page.nextOffset, null);
-  assert.equal(page.totalChars, output.length);
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /limit.*required/i);
 });
 
 void test('read_tool_output returns an explicit page when limit is provided', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
   const threadId = testThreadId(88);
   const runId = 'run-paged-output';
   const callId = 'call-paged-output';
   const outputRef = buildToolOutputRef({ threadId, runId, callId });
   const output = '0123456789'.repeat(1_000);
   await writeToolOutputSnapshot({
-    workspaceRoot,
+    stateRoot,
     snapshot: buildToolOutputSnapshot({
       outputRef,
-      projectId: 'project',
       threadId,
       runId,
       callId,
@@ -194,7 +196,7 @@ void test('read_tool_output returns an explicit page when limit is provided', as
     { outputRef, offset: 20, limit: 15 },
     {
       callId: 'call-read-tool-output-page',
-      workspaceRoot,
+      stateRoot,
       threadId,
     },
   );

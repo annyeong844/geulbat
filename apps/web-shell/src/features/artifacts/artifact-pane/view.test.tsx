@@ -12,9 +12,8 @@ void test('ArtifactPaneView renders artifact-owned pane shell', () => {
     label: 'Artifact',
     viewModel,
     paneState: {
-      tab: 'raw',
+      tab: 'source',
       canShowPreview: true,
-      showOpenSource: false,
       showApply: true,
       canApply: true,
       surfaceStateBadge: null,

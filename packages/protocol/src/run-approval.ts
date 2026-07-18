@@ -20,12 +20,7 @@ export function isPermissionMode(value: unknown): value is PermissionMode {
   );
 }
 
-export const APPROVAL_GRANT_SCOPES = [
-  'once',
-  'run',
-  'thread',
-  'session',
-] as const;
+export const APPROVAL_GRANT_SCOPES = ['once', 'run', 'session'] as const;
 export type ApprovalGrantScope = (typeof APPROVAL_GRANT_SCOPES)[number];
 
 export function isApprovalGrantScope(
@@ -39,7 +34,8 @@ export function isApprovalGrantScope(
 
 export const WELL_KNOWN_APPROVAL_CLASSES = [
   'write_file',
-  'patch_file',
+  'apply_patch',
+  'exec_command',
   'manage_files',
   'manage_files:create',
   'manage_files:rename',

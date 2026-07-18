@@ -1,10 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 
 import {
   exchangeAuthorizationCode,
   extractProviderAuthErrorCode,
 } from './callback-exchange.js';
+import {
+  GROK_OAUTH_CLIENT_ID,
+  GROK_OAUTH_REDIRECT_URI,
+  GROK_OAUTH_TOKEN_URL,
+} from './config.js';
 
 const TEST_PROVIDER_AUTH_CLIENT_ID = 'test-provider-auth-client-id';
 const TEST_INSTALLED_CONFIG_PATH = '/__geulbat_missing__/provider-auth.json';
@@ -122,6 +128,50 @@ void test('exchangeAuthorizationCode rejects invalid response bodies from the OA
   );
 });
 
+void test('exchangeAuthorizationCode posts Grok OAuth authorization codes to the xAI token endpoint', async () => {
+  const request: {
+    body?: URLSearchParams;
+    redirect?: string;
+    url?: string;
+  } = {};
+
+  const result = await exchangeAuthorizationCode('grok-code', 'grok-verifier', {
+    providerId: 'grok_oauth',
+    fetchImpl: async (url, init) => {
+      request.url = String(url);
+      request.body = init?.body as URLSearchParams;
+      if (init?.redirect !== undefined) {
+        request.redirect = init.redirect;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          access_token: 'grok-access-token',
+          refresh_token: 'grok-refresh-token',
+          expires_in: 90,
+        }),
+        text: async () => '',
+      } as Response;
+    },
+  });
+
+  assert.equal(request.url, GROK_OAUTH_TOKEN_URL);
+  assert.equal(request.body?.get('grant_type'), 'authorization_code');
+  assert.equal(request.body?.get('client_id'), GROK_OAUTH_CLIENT_ID);
+  assert.equal(request.body?.get('code'), 'grok-code');
+  assert.equal(request.body?.get('redirect_uri'), GROK_OAUTH_REDIRECT_URI);
+  assert.equal(request.body?.get('code_verifier'), 'grok-verifier');
+  assert.equal(request.redirect, 'error');
+  assert.equal(
+    request.body?.get('code_challenge'),
+    createPkceCodeChallenge('grok-verifier'),
+  );
+  assert.equal(request.body?.get('code_challenge_method'), 'S256');
+  assert.equal(result.access_token, 'grok-access-token');
+  assert.equal(result.refresh_token, 'grok-refresh-token');
+});
+
 void test('exchangeAuthorizationCode preserves long provider error bodies', async () => {
   const detail = 'provider-exchange-detail '.repeat(20);
 
@@ -206,3 +256,7 @@ void test('exchangeAuthorizationCode maps abort-driven fetch cancellation to pro
     },
   );
 });
+
+function createPkceCodeChallenge(codeVerifier: string): string {
+  return crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+}

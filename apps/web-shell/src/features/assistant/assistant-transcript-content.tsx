@@ -16,7 +16,7 @@ export function createStableOccurrenceKeys<T>(
 }
 
 export function getThreadMessageBaseKey(message: ThreadMessage): string {
-  return `message:${message.timestamp}:${message.role}:${message.content}`;
+  return `message:${message.entryId}`;
 }
 
 export function getRunTranscriptEntryBaseKey(
@@ -24,12 +24,14 @@ export function getRunTranscriptEntryBaseKey(
 ): string {
   switch (entry.kind) {
     case 'assistant_text':
-      return `assistant_text:${entry.text}`;
+      return 'assistant_text';
+    case 'user_text':
+      return 'user_text';
     case 'tool_activity':
-      return `tool_activity:${entry.tool}:${entry.state}`;
+      return `tool_activity:${entry.tool}`;
     case 'approval_request':
       return `approval:${entry.pendingApproval.callId}`;
     case 'subagent_activity':
-      return `subagent:${entry.childRunId}:${entry.state}:${entry.reason ?? ''}:${entry.result ?? ''}`;
+      return `subagent:${entry.childRunId}`;
   }
 }

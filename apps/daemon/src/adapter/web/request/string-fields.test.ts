@@ -47,7 +47,7 @@ void test('readBodyString still rejects non-string values', () => {
   }
 });
 
-void test('readRequiredBodyStrings returns all required body fields together', () => {
+void test('readRequiredBodyStrings makes every required body field readable', () => {
   const result = readRequiredBodyStrings(
     {
       projectId: 'project',
@@ -59,12 +59,10 @@ void test('readRequiredBodyStrings returns all required body fields together', (
   );
   assert.equal(result.ok, true);
   if (result.ok) {
-    assert.deepEqual(result.values, {
-      projectId: 'project',
-      path: 'notes/todo.md',
-      content: 'hello',
-      versionToken: 'token-1',
-    });
+    assert.equal(result.read('projectId'), 'project');
+    assert.equal(result.read('path'), 'notes/todo.md');
+    assert.equal(result.read('content'), 'hello');
+    assert.equal(result.read('versionToken'), 'token-1');
   }
 });
 

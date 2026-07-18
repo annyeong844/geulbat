@@ -8,11 +8,11 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ReactBundleDependencyNetworkProbeCandidate } from './react-bundle-dependency-network-probe-candidate.js';
 
-export type DockerCommandResult = DockerClientCommandResult;
+type DockerCommandResult = DockerClientCommandResult;
 
 export type DockerCommandInvocation = DockerClientCommandInvocation;
 
-export type DockerCommandRunner = DockerClientCommandRunner;
+type DockerCommandRunner = DockerClientCommandRunner;
 
 export { runDockerCommand };
 
@@ -24,7 +24,7 @@ export type DockerMetadataProbeCommandRunner = (
   invocation: DockerMetadataProbeCommandInvocation,
 ) => Promise<DockerCommandResult>;
 
-export const DOCKER_METADATA_PROBE_ENTRYPOINT = `
+const DOCKER_METADATA_PROBE_ENTRYPOINT = `
 const { readFileSync, writeFileSync } = require('node:fs');
 const candidate = JSON.parse(readFileSync('/geulbat/input/candidate.json', 'utf8'));
 writeFileSync(
@@ -73,8 +73,8 @@ export async function checkDockerMetadataProbeBackendAvailable(args: {
 }): Promise<DockerCommandResult> {
   const executable = args.dockerPath ?? 'docker';
   const runner = args.commandRunner ?? runDockerCommand;
-  const deadlineMs = Date.now() + args.timeoutMs;
-  const versionTimeoutMs = remainingDockerAvailabilityTimeoutMs(deadlineMs);
+  const availabilityStartedAtMs = Date.now();
+  const versionTimeoutMs = initialDockerAvailabilityTimeoutMs(args.timeoutMs);
   if (versionTimeoutMs === null) {
     return dockerAvailabilityTimedOutResult('docker --version');
   }
@@ -96,7 +96,10 @@ export async function checkDockerMetadataProbeBackendAvailable(args: {
     return versionResult;
   }
 
-  const imageTimeoutMs = remainingDockerAvailabilityTimeoutMs(deadlineMs);
+  const imageTimeoutMs = remainingDockerAvailabilityTimeoutMs({
+    timeoutMs: args.timeoutMs,
+    availabilityStartedAtMs,
+  });
   if (imageTimeoutMs === null) {
     return dockerAvailabilityTimedOutResult(
       `docker image inspect ${args.imageRef}`,
@@ -116,10 +119,16 @@ export async function checkDockerMetadataProbeBackendAvailable(args: {
   );
 }
 
-function remainingDockerAvailabilityTimeoutMs(
-  deadlineMs: number,
-): number | null {
-  const remainingMs = deadlineMs - Date.now();
+function initialDockerAvailabilityTimeoutMs(timeoutMs: number): number | null {
+  return timeoutMs > 0 ? timeoutMs : null;
+}
+
+function remainingDockerAvailabilityTimeoutMs(args: {
+  timeoutMs: number;
+  availabilityStartedAtMs: number;
+}): number | null {
+  const remainingMs =
+    args.timeoutMs - (Date.now() - args.availabilityStartedAtMs);
   return remainingMs > 0 ? remainingMs : null;
 }
 

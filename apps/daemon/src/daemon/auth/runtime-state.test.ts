@@ -20,6 +20,34 @@ void test('provider auth runtime credential cache returns snapshots', () => {
   assert.equal(second?.accessToken, 'access-token');
 });
 
+void test('provider auth runtime credential cache is isolated per provider', () => {
+  const runtimeStore = createProviderAuthRuntimeStore();
+  runtimeStore.setCachedProviderCredential({
+    accessToken: 'codex-token',
+    refreshToken: 'codex-refresh-token',
+    accountId: 'codex-account',
+    expiresAt: 123,
+  });
+  runtimeStore.setCachedProviderCredential(
+    {
+      accessToken: 'grok-token',
+      refreshToken: 'grok-refresh-token',
+      accountId: 'grok-account',
+      expiresAt: 456,
+    },
+    'grok_oauth',
+  );
+
+  assert.equal(
+    runtimeStore.getCachedProviderCredential()?.accessToken,
+    'codex-token',
+  );
+  assert.equal(
+    runtimeStore.getCachedProviderCredential('grok_oauth')?.accessToken,
+    'grok-token',
+  );
+});
+
 void test('provider auth runtime load error cache returns snapshots', () => {
   const runtimeStore = createProviderAuthRuntimeStore();
   runtimeStore.setCachedProviderAuthLoadError({
@@ -44,6 +72,29 @@ void test('provider auth runtime hydration flag is tracked independently from ca
 
   runtimeStore.clearProviderAuthRuntimeState();
   assert.equal(runtimeStore.hasHydratedProviderAuth(), false);
+});
+
+void test('provider auth runtime hydration and refresh state are isolated per provider', () => {
+  const runtimeStore = createProviderAuthRuntimeStore();
+  const refreshPromise = Promise.resolve();
+
+  runtimeStore.setHydratedProviderAuth(true);
+  runtimeStore.setHydratedProviderAuth(false, 'grok_oauth');
+  runtimeStore.setProviderAuthRefreshPromise(refreshPromise, 'grok_oauth');
+
+  assert.equal(runtimeStore.hasHydratedProviderAuth(), true);
+  assert.equal(runtimeStore.hasHydratedProviderAuth('grok_oauth'), false);
+  assert.equal(runtimeStore.getProviderAuthRefreshPromise(), null);
+  assert.equal(
+    runtimeStore.getProviderAuthRefreshPromise('grok_oauth'),
+    refreshPromise,
+  );
+
+  runtimeStore.clearProviderAuthRuntimeState('grok_oauth');
+
+  assert.equal(runtimeStore.hasHydratedProviderAuth(), true);
+  assert.equal(runtimeStore.hasHydratedProviderAuth('grok_oauth'), false);
+  assert.equal(runtimeStore.getProviderAuthRefreshPromise('grok_oauth'), null);
 });
 
 void test('createProviderAuthRuntimeStore isolates local caches across instances', () => {

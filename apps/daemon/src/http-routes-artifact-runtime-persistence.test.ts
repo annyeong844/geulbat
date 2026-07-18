@@ -8,12 +8,11 @@ import { createArtifactRuntimePersistenceRoutes } from './adapter/web/routes/art
 import { readArtifactRuntimePersistenceStateInputRef } from './daemon/artifact-runtime-persistence/input-ref-store.js';
 import { createRunInterjectBuffer } from './daemon/sessions/active-run-interject-buffer.js';
 import type { DaemonContext } from './daemon/context.js';
-import { DEFAULT_PROJECT_ID } from './daemon/files/project-registry-state.js';
 import { assertThreadId as assertValidThreadId } from '@geulbat/protocol/ids';
 import {
   authHeaders,
   createRouteTestDaemonContext,
-  getWorkspaceRootFromContext,
+  getHomeStateRootFromContext,
   withAuthenticatedDaemonServer,
 } from './test-support/http-routes.js';
 import { testRunId } from './test-support/run-id.js';
@@ -22,7 +21,6 @@ function createRuntimePersistenceScope(
   overrides: Record<string, unknown> = {},
 ) {
   return {
-    projectId: DEFAULT_PROJECT_ID,
     threadId: '00000000-0000-4000-8000-000000000001',
     renderer: 'js',
     artifactId: 'art_route_demo_js',
@@ -36,7 +34,7 @@ async function withRuntimePersistenceServer<T>(
   args?: { daemonContext?: DaemonContext },
 ): Promise<T> {
   const daemonContext = args?.daemonContext ?? createRouteTestDaemonContext();
-  await mkdir(getWorkspaceRootFromContext(daemonContext), { recursive: true });
+  await mkdir(getHomeStateRootFromContext(daemonContext), { recursive: true });
   return withAuthenticatedDaemonServer(run, { daemonContext });
 }
 
@@ -156,7 +154,7 @@ void test('authenticated runtime persistence save route accepts streamed state r
   await withRuntimePersistenceServer(async ({ port }) => {
     const longText = 'x'.repeat(300 * 1024);
     const uploadRes = await fetch(
-      `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+      `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs`,
       {
         method: 'POST',
         headers: authHeaders({
@@ -226,7 +224,7 @@ void test('authenticated runtime persistence save route accepts streamed state r
 
 void test('authenticated runtime persistence save route deletes consumed state refs after conflicts', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = getHomeStateRootFromContext(daemonContext);
   await withRuntimePersistenceServer(
     async ({ port }) => {
       const scope = createRuntimePersistenceScope({
@@ -249,7 +247,7 @@ void test('authenticated runtime persistence save route deletes consumed state r
       assert.equal(initialSaveRes.status, 200);
 
       const uploadRes = await fetch(
-        `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+        `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs`,
         {
           method: 'POST',
           headers: authHeaders({
@@ -280,7 +278,7 @@ void test('authenticated runtime persistence save route deletes consumed state r
 
       assert.equal(conflictSaveRes.status, 409);
       const resolved = await readArtifactRuntimePersistenceStateInputRef({
-        workspaceRoot,
+        workspaceRoot: stateRoot,
         stateRef: uploadBody.stateRef,
       });
       assert.deepEqual(resolved, {
@@ -296,7 +294,7 @@ void test('authenticated runtime persistence save route deletes consumed state r
 void test('authenticated runtime persistence state input uploads reject JSON requests', async () => {
   await withRuntimePersistenceServer(async ({ port }) => {
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+      `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs`,
       {
         method: 'POST',
         headers: authHeaders({
@@ -317,12 +315,12 @@ void test('authenticated runtime persistence state input uploads reject JSON req
 
 void test('authenticated runtime persistence state input route deletes refs without parsing payloads', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = getHomeStateRootFromContext(daemonContext);
 
   await withRuntimePersistenceServer(
     async ({ port }) => {
       const uploadRes = await fetch(
-        `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+        `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs`,
         {
           method: 'POST',
           headers: authHeaders({
@@ -335,7 +333,7 @@ void test('authenticated runtime persistence state input route deletes refs with
       const uploadBody = (await uploadRes.json()) as { stateRef: string };
 
       const deleteRes = await fetch(
-        `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs?projectId=${DEFAULT_PROJECT_ID}&stateRef=${encodeURIComponent(
+        `http://127.0.0.1:${port}/api/artifact-runtime-persistence/state-inputs?stateRef=${encodeURIComponent(
           uploadBody.stateRef,
         )}`,
         {
@@ -348,7 +346,7 @@ void test('authenticated runtime persistence state input route deletes refs with
       assert.deepEqual(await deleteRes.json(), { ok: true });
       assert.deepEqual(
         await readArtifactRuntimePersistenceStateInputRef({
-          workspaceRoot,
+          workspaceRoot: stateRoot,
           stateRef: uploadBody.stateRef,
         }),
         {
@@ -389,7 +387,7 @@ void test('authenticated runtime persistence save route rejects invalid state re
   });
 });
 
-void test('authenticated runtime persistence routes reject invalid project ids before persistence access', async () => {
+void test('authenticated runtime persistence routes reject retired project scope before persistence access', async () => {
   await withRuntimePersistenceServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}/api/artifact-runtime-persistence/load`,
@@ -407,7 +405,7 @@ void test('authenticated runtime persistence routes reject invalid project ids b
     assert.equal(res.status, 400);
     assert.deepEqual(await res.json(), {
       code: 'bad_request',
-      message: 'invalid projectId: ../workspace',
+      message: 'projectId is not supported',
     });
   });
 });
@@ -422,8 +420,8 @@ void test('authenticated runtime persistence routes remain available during acti
     daemonContext.activeRuns.tryStartRun(threadId, {
       runId,
       threadId,
-      projectId: DEFAULT_PROJECT_ID,
-      workspaceRoot: getWorkspaceRootFromContext(daemonContext),
+      stateRoot: daemonContext.homeStateRoot,
+      workingDirectory: 'stories',
       ownerThreadId: threadId,
       abortController,
       interject: createRunInterjectBuffer(),
@@ -540,32 +538,6 @@ void test('authenticated runtime persistence save route requires state', async (
   });
 });
 
-void test('authenticated runtime persistence routes preserve unknown project failure shape', async () => {
-  await withRuntimePersistenceServer(async ({ port }) => {
-    const res = await fetch(
-      `http://127.0.0.1:${port}/api/artifact-runtime-persistence/load`,
-      {
-        method: 'POST',
-        headers: authHeaders({
-          'Content-Type': 'application/json',
-        }),
-        body: JSON.stringify(
-          createRuntimePersistenceScope({
-            projectId: 'missing-project',
-            artifactId: 'art_route_missing_project_js',
-          }),
-        ),
-      },
-    );
-
-    assert.equal(res.status, 404);
-    assert.deepEqual(await res.json(), {
-      code: 'not_found',
-      message: 'unknown projectId: missing-project',
-    });
-  });
-});
-
 void test('runtime persistence save route blocks non-JSON-serializable state before store access', async () => {
   const daemonContext = createRouteTestDaemonContext();
   const app = express();
@@ -584,7 +556,7 @@ void test('runtime persistence save route blocks non-JSON-serializable state bef
   });
   app.use(
     createArtifactRuntimePersistenceRoutes({
-      projectRegistry: daemonContext.projectRegistry,
+      homeStateRoot: daemonContext.homeStateRoot,
     }),
   );
 

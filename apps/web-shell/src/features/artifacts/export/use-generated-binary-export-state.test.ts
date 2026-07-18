@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { FileSaveConflictError } from '../../../lib/api/files.js';
+import {
+  COMPUTER_FILE_API_SCOPE,
+  FileSaveConflictError,
+} from '../../../lib/api/files.js';
 import { renderHook } from '../../../test-support/hook-test.js';
 import {
   canOverwriteRememberedGeneratedBinaryExport,
@@ -11,7 +14,8 @@ import {
 void test('useGeneratedBinaryExportState remembers successful binary exports and disarms overwrite on path changes', async () => {
   const hook = await renderHook(useGeneratedBinaryExportState, {
     fileApi: {
-      async saveBinaryFile(_projectId, path) {
+      async saveBinaryFile(scope, path) {
+        assert.deepEqual(scope, COMPUTER_FILE_API_SCOPE);
         return {
           ok: true,
           path,
@@ -30,7 +34,6 @@ void test('useGeneratedBinaryExportState remembers successful binary exports and
   });
   await hook.run((current) =>
     current.submitGeneratedBinaryExport({
-      projectId: 'workspace',
       targetPath: 'exports/preview.png',
     }),
   );
@@ -61,7 +64,8 @@ void test('useGeneratedBinaryExportState remembers successful binary exports and
 void test('useGeneratedBinaryExportState clears remembered overwrite state after a conflict', async () => {
   const hook = await renderHook(useGeneratedBinaryExportState, {
     fileApi: {
-      async saveBinaryFile(_projectId, path) {
+      async saveBinaryFile(scope, path) {
+        assert.deepEqual(scope, COMPUTER_FILE_API_SCOPE);
         return {
           ok: true,
           path,
@@ -83,7 +87,6 @@ void test('useGeneratedBinaryExportState clears remembered overwrite state after
   });
   await hook.run((current) =>
     current.submitGeneratedBinaryExport({
-      projectId: 'workspace',
       targetPath: 'exports/preview.png',
     }),
   );
@@ -92,7 +95,6 @@ void test('useGeneratedBinaryExportState clears remembered overwrite state after
   });
   await hook.run((current) =>
     current.submitGeneratedBinaryExport({
-      projectId: 'workspace',
       targetPath: 'exports/preview.png',
     }),
   );

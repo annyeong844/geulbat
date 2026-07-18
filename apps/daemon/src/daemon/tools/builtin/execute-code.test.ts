@@ -14,8 +14,9 @@ import {
   type PtcExecuteCodePlacementResourceSnapshotRef,
   type PtcExecuteCodeRuntime,
 } from '../../ptc/runtime/execute-code/execute-code-runtime-contract.js';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
+import { testRunId } from '../../../test-support/run-id.js';
+import { TEST_CHILD_MODEL_REGISTRATION } from '../../../test-support/subagent-model-routing.js';
 import { executeCodeTool } from './execute-code.js';
 import { waitTool } from './wait.js';
 import {
@@ -27,6 +28,7 @@ import {
   createPtcExecuteCodeToolCallbackHandler,
   createPtcExecuteCodeToolCallbackHelp,
   createPtcExecuteCodeToolCallbackSurface,
+  resolvePtcExecuteCodeToolSdkProjection,
 } from './execute-code-tool-callback.js';
 import {
   isPtcExecuteCodeCallbackToolMetaAllowed,
@@ -61,30 +63,161 @@ void test('exec description teaches the running-cell wait handoff', () => {
   assert.match(executeCodeTool.description, /cell_id/u);
 });
 
+void test('exec surfaces capacity pressure as a queued cell handoff', async () => {
+  const daemonContext = createDaemonContext();
+  const ptcExecuteCode: PtcExecuteCodeRuntime = {
+    async executeCode(args) {
+      assert.equal(args.runContext.ownerKind, 'root_main');
+      assert.equal(args.placementContinuityProvenance, undefined);
+      return {
+        ok: true,
+        value: {
+          ok: true,
+          capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+          policyId: PTC_EXECUTE_CODE_POLICY_ID,
+          labPolicyId: 'ptc_lab_local_docker_batch_command_v1',
+          profile: 'lab',
+          executionClass: 'lab_execute_code',
+          executionSurface: 'node_via_lab_detached_cell',
+          status: 'queued',
+          cellId: 'ptc_cell_tool_queued',
+          stdout: '',
+          stderr: '',
+          effectiveTimeoutMs: 60_000,
+          durationMs: 0,
+          toolCallbacks: { enabled: true, observed: 0 },
+          sessionLifecycle: {
+            mode: 'runtime_owned_reusable',
+            retainedAfterExecution: true,
+          },
+          callbackHelp: {
+            protocolVersion: 'ptc_execute_code_sdk_v1',
+            helpAvailable: true,
+            callbackToolCount: args.sdkHelp?.callbackTools.length ?? 0,
+          },
+        },
+      };
+    },
+    waitForCell: waitForUnusedCell,
+    async closeAll() {
+      return { ok: true };
+    },
+  };
+  const runState = createRunState({
+    runId: 'run-execute-code-queued',
+    runContext: {
+      threadId: testThreadId(912_1),
+      stateRoot: '/workspace/home-state',
+      workingDirectory: 'project',
+    },
+  });
+
+  const result = await executeCodeTool.execute(
+    { code: 'return 1' },
+    {
+      callId: 'call-execute-code-queued',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
+      threadId: runState.threadId,
+      runState,
+      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+      callbackToolDispatcher: makeUnexpectedCallbackToolDispatcher(),
+    },
+  );
+
+  assert.equal(result.ok, true);
+  const output = JSON.parse(result.output) as Record<string, unknown>;
+  assert.equal(output.kind, 'ptc_execute_code_cell_queued');
+  assert.equal(output.status, 'queued');
+  assert.equal(output.cellId, 'ptc_cell_tool_queued');
+  assert.equal(output.stdout, '');
+  assert.equal(output.stderr, '');
+});
+
+void test('explorer child exec receives daemon-owned read-only independence provenance', async () => {
+  const daemonContext = createDaemonContext();
+  const childRunId = testRunId('execute-code-explorer-child');
+  const childThreadId = testThreadId(912_2);
+  daemonContext.childRuns.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    childRunId,
+    childThreadId,
+    parentRunId: testRunId('execute-code-explorer-parent'),
+    ownerThreadId: testThreadId(912_3),
+    subagentType: 'explorer',
+  });
+  const ptcExecuteCode: PtcExecuteCodeRuntime = {
+    async executeCode(args) {
+      assert.equal(args.runContext.ownerKind, 'child');
+      assert.deepEqual(args.placementContinuityProvenance, {
+        independenceProof: { reason: 'read_only_analysis' },
+      });
+      return {
+        ok: false,
+        reasonCode: 'ptc_lab_session_unavailable',
+        message: 'test completed after provenance capture',
+      };
+    },
+    waitForCell: waitForUnusedCell,
+    async closeAll() {
+      return { ok: true };
+    },
+  };
+
+  const result = await executeCodeTool.execute(
+    { code: 'return 1' },
+    {
+      kind: 'agent',
+      runOwnerKind: 'child',
+      runId: childRunId,
+      callId: 'call-execute-code-explorer-child',
+      signal: undefined,
+      runSignal: undefined,
+      currentFile: undefined,
+      selection: undefined,
+      approvalGranted: false,
+      approvalSessionId: 'approval-execute-code-explorer-child',
+      permissionMode: 'basic',
+      stateRoot: '/workspace/home-state',
+      workingDirectory: 'project',
+      threadId: childThreadId,
+      runState: undefined,
+      emitAgentEvent: () => undefined,
+      memoryIndex: undefined,
+      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+      callbackToolDispatcher: makeUnexpectedCallbackToolDispatcher(),
+    },
+  );
+
+  assert.equal(result.ok, false);
+});
+
 void test('public exec and wait expose explicit PTC cell scheduler metadata', () => {
   assert.equal(executeCodeTool.sideEffectLevel, 'none');
-  assert.equal(executeCodeTool.mayMutateWorkspaceFiles, false);
+  assert.equal(executeCodeTool.mayMutateComputerFiles, false);
   assert.equal(executeCodeTool.requiresApproval, false);
   assert.equal(executeCodeTool.parallelBatchKind, 'ptc_cell');
   assert.equal(waitTool.sideEffectLevel, 'none');
-  assert.equal(waitTool.mayMutateWorkspaceFiles, false);
+  assert.equal(waitTool.mayMutateComputerFiles, false);
   assert.equal(waitTool.requiresApproval, false);
   assert.equal(waitTool.parallelBatchKind, 'ptc_cell');
 });
 
-void test('exec exposes timeoutMs plus snake_case cell observation without aliases', async () => {
+void test('exec exposes timeoutMs plus yield-time_ms without aliases', async () => {
+  const rejectedSnakeCaseYieldKey = ['yield', 'time', 'ms'].join('_');
   const parameters = executeCodeTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(Object.keys(parameters.properties), [
     'code',
     'timeoutMs',
-    'yield_time_ms',
+    'yield-time_ms',
   ]);
   assert.deepEqual(parameters.required, ['code']);
   const timeoutProperty = parameters.properties.timeoutMs as {
     description?: string;
   };
-  const yieldTimeProperty = parameters.properties.yield_time_ms as {
+  const yieldTimeProperty = parameters.properties['yield-time_ms'] as {
     description?: string;
   };
   assert.match(
@@ -93,22 +226,30 @@ void test('exec exposes timeoutMs plus snake_case cell observation without alias
   );
   assert.match(
     yieldTimeProperty.description ?? '',
-    /yieldTimeMs is not accepted/u,
+    /exactly "yield-time_ms", with a hyphen/u,
   );
+  assert.match(yieldTimeProperty.description ?? '', /status "queued"/u);
 
   const result = await executeCodeTool.execute(
-    { code: 'return 1', timeout_ms: 1_000, yieldTimeMs: 1_000 },
+    {
+      code: 'return 1',
+      timeout_ms: 1_000,
+      yield_time_ms: 1_000,
+      yieldTimeMs: 1_000,
+    },
     {
       callId: 'call-execute-code-schema-aliases',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(910),
-      projectId: testProjectId('project'),
     },
   );
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'invalid_args');
   assert.match(result.error ?? '', /unexpected keys: timeout_ms/u);
+  assert.match(result.error ?? '', new RegExp(rejectedSnakeCaseYieldKey, 'u'));
   assert.match(result.error ?? '', /yieldTimeMs/u);
 });
 
@@ -117,9 +258,10 @@ void test('exec requires an agent runtime service before executing code', async 
     { code: 'console.log("hello")' },
     {
       callId: 'call-execute-code-no-runtime',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(911),
-      projectId: testProjectId('project'),
     },
   );
 
@@ -189,18 +331,19 @@ void test('exec returns compact runtime output without session identifiers', asy
     runId: 'run-execute-code-success',
     runContext: {
       threadId: testThreadId(912),
-      projectId: testProjectId('project'),
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+      workingDirectory: 'project',
     },
   });
 
   const result = await executeCodeTool.execute(
-    { code: 'return { answer: 42 }', yield_time_ms: 1_000 },
+    { code: 'return { answer: 42 }', 'yield-time_ms': 1_000 },
     {
       callId: 'call-execute-code-success',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: runState.threadId,
-      projectId: testProjectId('project'),
       runState,
       agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
       callbackToolDispatcher: makeUnexpectedCallbackToolDispatcher(),
@@ -215,7 +358,9 @@ void test('exec returns compact runtime output without session identifiers', asy
   assert.equal(observedSdkToolNames.includes('read_file'), true);
   assert.equal(observedSdkToolNames.includes('list_files'), true);
   assert.equal(observedSdkToolNames.includes('search_files'), true);
-  assert.equal(observedSdkToolNames.includes('web_fetch'), true);
+  assert.equal(observedSdkToolNames.includes('fetch_url'), true);
+  assert.equal(observedSdkToolNames.includes('search_memory_index'), true);
+  assert.equal(observedSdkToolNames.includes('web_fetch'), false);
   assert.equal(observedSdkToolNames.includes('browser_navigate'), false);
   assert.equal(
     observedSdkToolNames.includes('browser_page_load_evidence'),
@@ -290,8 +435,8 @@ void test('exec reuses a supplied resource snapshot ref before capturing a new o
     runId: 'run-execute-code-shared-resource-snapshot',
     runContext: {
       threadId: testThreadId(912_1),
-      projectId: testProjectId('project'),
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+      workingDirectory: 'project',
     },
   });
 
@@ -299,9 +444,10 @@ void test('exec reuses a supplied resource snapshot ref before capturing a new o
     { code: 'return 1' },
     {
       callId: 'call-execute-code-shared-resource-snapshot',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: runState.threadId,
-      projectId: testProjectId('project'),
       runState,
       resourceSnapshotRef: suppliedResourceSnapshotRef,
       agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
@@ -317,13 +463,12 @@ void test('exec reuses a supplied resource snapshot ref before capturing a new o
 });
 
 void test('exec callback handler dispatches admitted read-only tools and rejects mutating tools', async () => {
-  const workspaceRoot = await mkdtemp(
+  const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-execute-code-callback-tool-'),
   );
   const daemonContext = createDaemonContext();
   const threadId = testThreadId(915);
-  const projectId = testProjectId('project');
-  await writeFile(join(workspaceRoot, 'note.txt'), 'callback file\n');
+  await writeFile(join(computerFileRoot, 'note.txt'), 'callback file\n');
   const dispatched: Parameters<CallbackToolDispatcher['dispatch']>[0][] = [];
   const callbackToolDispatcher: CallbackToolDispatcher = {
     async dispatch(args) {
@@ -338,18 +483,20 @@ void test('exec callback handler dispatches admitted read-only tools and rejects
   try {
     const handler = createPtcExecuteCodeToolCallbackHandler({
       callId: 'outer-execute-code-call',
-      workspaceRoot,
+      computerFileRoot,
+      stateRoot: daemonContext.homeStateRoot,
+      workingDirectory: '',
       threadId,
-      projectId,
       agentSpawnRuntime: daemonContext,
       callbackToolDispatcher,
     });
     assert.ok(handler);
     const help = createPtcExecuteCodeToolCallbackHelp({
       callId: 'outer-execute-code-call',
-      workspaceRoot,
+      computerFileRoot,
+      stateRoot: daemonContext.homeStateRoot,
+      workingDirectory: '',
       threadId,
-      projectId,
       agentSpawnRuntime: daemonContext,
       callbackToolDispatcher,
     });
@@ -364,6 +511,8 @@ void test('exec callback handler dispatches admitted read-only tools and rejects
     );
     assert.equal(callbackToolNames.includes('browser_text_evidence'), false);
     assert.equal(callbackToolNames.includes('write_file'), false);
+    assert.equal(callbackToolNames.includes('skill_search'), false);
+    assert.equal(callbackToolNames.includes('tool_search'), false);
     assert.equal(callbackToolNames.includes(PTC_EXECUTE_CODE_TOOL_NAME), false);
     assert.equal(
       callbackToolNames.includes(PTC_EXECUTE_CODE_FORBIDDEN_OLD_TOOL_NAME),
@@ -439,26 +588,153 @@ void test('exec callback handler dispatches admitted read-only tools and rejects
         'PTC execute_code callback can only call read-only no-approval non-orchestration tools',
     });
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(computerFileRoot, { recursive: true, force: true });
   }
+});
+
+void test('exec resolves Home-owned SDK wrappers independently of cwd and rejects byte drift', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-execute-code-sdk-projection-'),
+  );
+  const workingDirectory = await mkdtemp(
+    join(tmpdir(), 'geulbat-execute-code-working-directory-'),
+  );
+  const daemonContext = createDaemonContext();
+  const threadId = testThreadId(9151);
+  const callbackToolDispatcher = makeUnexpectedCallbackToolDispatcher();
+
+  try {
+    const resolved =
+      await daemonContext.toolLibraryProjection.resolveProjection({
+        stateRoot,
+        threadId,
+      });
+    assert.equal(resolved.ok, true);
+    if (!resolved.ok) {
+      assert.fail('expected PTC SDK projection to resolve');
+    }
+    const ctx = {
+      callId: 'outer-execute-code-sdk-call',
+      workingDirectory,
+      stateRoot,
+      threadId,
+      agentSpawnRuntime: daemonContext,
+      callbackToolDispatcher,
+      toolLibraryProjectionIdentity: {
+        sdkVersion: resolved.pin.sdkVersion,
+        sdkProjectionHash: resolved.pin.sdkProjectionHash,
+        policyId: resolved.pin.policyId,
+      },
+    };
+    const sdk = await resolvePtcExecuteCodeToolSdkProjection(ctx);
+    assert.equal(sdk.ok, true);
+    if (!sdk.ok || sdk.projection === undefined) {
+      assert.fail('expected executable multi-tool SDK projection');
+    }
+    assert.equal(sdk.projection.importSpecifier, 'geulbat-sdk');
+    assert.equal(
+      sdk.projection.runtimeCompatibilityRange,
+      'ptc_execute_code_sdk_v1',
+    );
+    assert.deepEqual(
+      sdk.projection.modules.map((module) => ({
+        specifier: module.specifier,
+        exportName: module.exportName,
+      })),
+      [
+        {
+          specifier: 'geulbat-sdk/tools/fetch-url',
+          exportName: 'fetchUrl',
+        },
+        {
+          specifier: 'geulbat-sdk/files/listFiles',
+          exportName: 'listFiles',
+        },
+        {
+          specifier: 'geulbat-sdk/files/readFile',
+          exportName: 'readFile',
+        },
+        {
+          specifier: 'geulbat-sdk/files/searchFiles',
+          exportName: 'searchFiles',
+        },
+        {
+          specifier: 'geulbat-sdk/tools/search-memory-index',
+          exportName: 'searchMemoryIndex',
+        },
+      ],
+    );
+    const readFileModule = sdk.projection.modules.find(
+      (module) => module.exportName === 'readFile',
+    );
+    assert.equal(readFileModule?.modulePath, 'files/readFile.js');
+    assert.match(readFileModule?.sourceHash ?? '', /^sha256:[0-9a-f]{64}$/u);
+    assert.match(sdk.projection.manifestSourceHash, /^sha256:[0-9a-f]{64}$/u);
+    assert.equal(
+      sdk.projection.mount.hostRootPath,
+      resolved.mount.projectionRootPath,
+    );
+
+    const readFileTool = resolved.projection.tools.find(
+      (tool) => tool.publicName === 'read_file',
+    );
+    assert.ok(readFileTool);
+    await writeFile(
+      join(resolved.projection.rootPath, readFileTool.wrapperModule),
+      'export const tampered = true;\n',
+      'utf8',
+    );
+    assert.deepEqual(await resolvePtcExecuteCodeToolSdkProjection(ctx), {
+      ok: false,
+      message: 'The pinned PTC SDK projection could not be rehydrated',
+    });
+  } finally {
+    await Promise.all([
+      rm(stateRoot, { recursive: true, force: true }),
+      rm(workingDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+void test('exec fails closed when a pinned SDK projection lacks its runtime prerequisites', async () => {
+  const result = await resolvePtcExecuteCodeToolSdkProjection({
+    callId: 'outer-execute-code-sdk-runtime-unavailable',
+    stateRoot: '/workspace/home-state',
+
+    workingDirectory: 'project',
+    threadId: testThreadId(9152),
+    toolLibraryProjectionIdentity: {
+      sdkVersion: 'geulbat-tool-library-sdk-v1',
+      sdkProjectionHash:
+        'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      policyId: 'ptc-sdk-read-tools-v1',
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    message: 'The pinned PTC SDK projection runtime is unavailable',
+  });
 });
 
 void test('exec callback handler fails closed before long wait when dispatcher is unavailable', async () => {
   const daemonContext = createDaemonContext();
   const handler = createPtcExecuteCodeToolCallbackHandler({
     callId: 'outer-execute-code-call',
-    workspaceRoot: '/workspace/project',
+    stateRoot: '/workspace/home-state',
+
+    workingDirectory: 'project',
     threadId: testThreadId(919),
-    projectId: testProjectId('project'),
     agentSpawnRuntime: daemonContext,
   });
   assert.ok(handler);
   assert.equal(
     createPtcExecuteCodeToolCallbackHelp({
       callId: 'outer-execute-code-call',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(919),
-      projectId: testProjectId('project'),
       agentSpawnRuntime: daemonContext,
     }),
     undefined,
@@ -501,8 +777,16 @@ void test('exec callback handler enters long wait after admission and before slo
     },
     strict: true,
     sideEffectLevel: 'read',
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     requiresApproval: false,
+    exposure: {
+      directHot: false,
+      sdkVisible: true,
+      inCellCallable: true,
+      directOnly: false,
+      approvalRequired: false,
+      effectClass: 'readOnly',
+    },
     parseArgs: () => ({ ok: true, value: {} }),
     async executeParsed() {
       return { ok: true, output: 'slow-read-ok' };
@@ -510,9 +794,10 @@ void test('exec callback handler enters long wait after admission and before slo
   });
   const handler = createPtcExecuteCodeToolCallbackHandler({
     callId: 'outer-execute-code-call',
-    workspaceRoot: '/workspace/project',
+    stateRoot: '/workspace/home-state',
+
+    workingDirectory: 'project',
     threadId: testThreadId(918),
-    projectId: testProjectId('project'),
     agentSpawnRuntime: daemonContext,
     callbackToolDispatcher,
   });
@@ -539,9 +824,10 @@ void test('exec callback surface defaults to the read-only callable registry sna
   const daemonContext = createDaemonContext();
   const surface = createPtcExecuteCodeToolCallbackSurface({
     callId: 'outer-execute-code-call',
-    workspaceRoot: '/workspace/project',
+    stateRoot: '/workspace/home-state',
+
+    workingDirectory: 'project',
     threadId: testThreadId(916),
-    projectId: testProjectId('project'),
     agentSpawnRuntime: daemonContext,
   });
   assert.ok(surface);
@@ -631,10 +917,11 @@ void test('exec callback surface intersects run allowed tool names before help o
     { code: 'return 1' },
     {
       callId: 'call-execute-code-restricted-surface',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(917),
-      projectId: testProjectId('project'),
-      allowedToolNames: [PTC_EXECUTE_CODE_TOOL_NAME],
+      allowedRegistryNames: [PTC_EXECUTE_CODE_TOOL_NAME],
       agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
     },
   );
@@ -645,11 +932,27 @@ void test('exec callback surface intersects run allowed tool names before help o
 });
 
 void test('exec callback surface predicate fails closed for incomplete or contradictory metadata', () => {
+  const callableReadMeta = {
+    sideEffectLevel: 'read',
+    requiresApproval: false,
+    mayMutateComputerFiles: false,
+    exposure: {
+      directHot: false,
+      sdkVisible: true,
+      inCellCallable: true,
+      directOnly: false,
+      approvalRequired: false,
+      effectClass: 'readOnly',
+    },
+  } as const;
   assert.equal(
-    isPtcExecuteCodeCallbackToolMetaAllowed('read_file', {
-      sideEffectLevel: 'read',
-      requiresApproval: false,
-      mayMutateWorkspaceFiles: false,
+    isPtcExecuteCodeCallbackToolMetaAllowed('read_file', callableReadMeta),
+    true,
+  );
+  assert.equal(
+    isPtcExecuteCodeCallbackToolMetaAllowed('search_memory_index', {
+      ...callableReadMeta,
+      sideEffectLevel: 'none',
     }),
     true,
   );
@@ -662,66 +965,53 @@ void test('exec callback surface predicate fails closed for incomplete or contra
   );
   assert.equal(
     isPtcExecuteCodeCallbackToolMetaAllowed('read_file', {
-      sideEffectLevel: 'read',
+      ...callableReadMeta,
       requiresApproval: true,
-      mayMutateWorkspaceFiles: false,
     }),
     false,
   );
   assert.equal(
     isPtcExecuteCodeCallbackToolMetaAllowed('read_file', {
-      sideEffectLevel: 'read',
-      requiresApproval: false,
-      mayMutateWorkspaceFiles: true,
+      ...callableReadMeta,
+      mayMutateComputerFiles: true,
     }),
     false,
   );
   assert.equal(
-    isPtcExecuteCodeCallbackToolMetaAllowed('agent_wait', {
-      sideEffectLevel: 'read',
-      requiresApproval: false,
-      mayMutateWorkspaceFiles: false,
-    }),
+    isPtcExecuteCodeCallbackToolMetaAllowed('agent_wait', callableReadMeta),
     false,
   );
   assert.equal(
-    isPtcExecuteCodeCallbackToolMetaAllowed('agent_future_read', {
-      sideEffectLevel: 'read',
-      requiresApproval: false,
-      mayMutateWorkspaceFiles: false,
-    }),
+    isPtcExecuteCodeCallbackToolMetaAllowed(
+      'agent_future_read',
+      callableReadMeta,
+    ),
     false,
   );
   assert.equal(
-    isPtcExecuteCodeCallbackToolMetaAllowed(PTC_EXECUTE_CODE_TOOL_NAME, {
-      sideEffectLevel: 'read',
-      requiresApproval: false,
-      mayMutateWorkspaceFiles: false,
-    }),
+    isPtcExecuteCodeCallbackToolMetaAllowed(
+      PTC_EXECUTE_CODE_TOOL_NAME,
+      callableReadMeta,
+    ),
     false,
   );
   assert.equal(
     isPtcExecuteCodeCallbackToolMetaAllowed(
       PTC_EXECUTE_CODE_FORBIDDEN_OLD_TOOL_NAME,
-      {
-        sideEffectLevel: 'read',
-        requiresApproval: false,
-        mayMutateWorkspaceFiles: false,
-      },
+      callableReadMeta,
     ),
     false,
   );
   assert.equal(
-    isPtcExecuteCodeCallbackToolMetaAllowed(PTC_EXECUTE_CODE_WAIT_TOOL_NAME, {
-      sideEffectLevel: 'read',
-      requiresApproval: false,
-      mayMutateWorkspaceFiles: false,
-    }),
+    isPtcExecuteCodeCallbackToolMetaAllowed(
+      PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
+      callableReadMeta,
+    ),
     false,
   );
   const surface = resolvePtcExecuteCodeCallbackToolSurface({
     registry: createDaemonContext().toolRegistry,
-    allowedToolNames: [
+    allowedRegistryNames: [
       PTC_EXECUTE_CODE_TOOL_NAME,
       PTC_EXECUTE_CODE_FORBIDDEN_OLD_TOOL_NAME,
       PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
@@ -757,9 +1047,10 @@ void test('exec strips unstable failure diagnostics from tool output', async () 
     { code: 'console.log("nope")' },
     {
       callId: 'call-execute-code-failure',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(913),
-      projectId: testProjectId('project'),
       agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
     },
   );
@@ -775,6 +1066,115 @@ void test('exec strips unstable failure diagnostics from tool output', async () 
       sessionReasonCode: 'container_create_failed',
     },
   });
+});
+
+void test('exec projects opt-in store commit summaries and structured conflict remediation', async () => {
+  const daemonContext = createDaemonContext();
+  let invocationCount = 0;
+  const completedExecution = {
+    ok: true as const,
+    capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+    policyId: PTC_EXECUTE_CODE_POLICY_ID,
+    labPolicyId: 'ptc_lab_local_docker_batch_command_v1',
+    profile: 'lab' as const,
+    executionClass: 'lab_execute_code' as const,
+    executionSurface: 'node_via_lab_batch_command' as const,
+    exitCode: 0,
+    stdout: '',
+    stderr: '',
+    effectiveTimeoutMs: 60_000,
+    durationMs: 12,
+    toolCallbacks: { enabled: false, observed: 0 },
+    sessionLifecycle: {
+      mode: 'runtime_owned_reusable' as const,
+      retainedAfterExecution: true as const,
+    },
+    callbackHelp: {
+      protocolVersion: 'ptc_execute_code_sdk_v1' as const,
+      helpAvailable: true,
+      callbackToolCount: 0,
+    },
+  };
+  const ptcExecuteCode: PtcExecuteCodeRuntime = {
+    async executeCode() {
+      invocationCount += 1;
+      if (invocationCount === 1) {
+        return {
+          ok: true,
+          value: {
+            ...completedExecution,
+            store: {
+              committedKeys: ['note'],
+              revisions: { note: 2 },
+            },
+          },
+        };
+      }
+      return {
+        ok: false,
+        reasonCode: 'ptc_execute_code_store_commit_conflict',
+        message: 'The PTC store write set conflicts with a newer revision',
+        store: { discardedWrites: 1 },
+        storeError: {
+          errorCode: 'StoreCommitConflict',
+          message: 'The PTC store write set conflicts with a newer revision',
+          remediation:
+            'Call geulbat.store.get("note"), re-apply the change, then call geulbat.store.set again.',
+          details: {
+            conflicts: [
+              {
+                key: 'note',
+                baseRevision: 1,
+                currentRevision: 2,
+                lastWriterExecutionId: 'ptc_exec_winner',
+              },
+            ],
+          },
+        },
+        execution: completedExecution,
+      };
+    },
+    waitForCell: waitForUnusedCell,
+    async closeAll() {
+      return { ok: true };
+    },
+  };
+  const toolContext = {
+    stateRoot: '/workspace/home-state',
+
+    workingDirectory: 'project',
+    threadId: testThreadId(914),
+    agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+  };
+
+  const committed = await executeCodeTool.execute(
+    { code: "await geulbat.store.set('note', 2)" },
+    { ...toolContext, callId: 'call-execute-code-store-commit' },
+  );
+  assert.equal(committed.ok, true);
+  assert.deepEqual(
+    (JSON.parse(committed.output) as { store?: unknown }).store,
+    {
+      committedKeys: ['note'],
+      revisions: { note: 2 },
+    },
+  );
+
+  const conflict = await executeCodeTool.execute(
+    { code: "await geulbat.store.set('note', 3)" },
+    { ...toolContext, callId: 'call-execute-code-store-conflict' },
+  );
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.errorCode, 'conflict');
+  const conflictOutput = JSON.parse(conflict.output) as {
+    store?: unknown;
+    storeError?: { errorCode?: string; remediation?: string };
+    execution?: { exitCode?: number };
+  };
+  assert.deepEqual(conflictOutput.store, { discardedWrites: 1 });
+  assert.equal(conflictOutput.storeError?.errorCode, 'StoreCommitConflict');
+  assert.match(conflictOutput.storeError?.remediation ?? '', /store\.get/u);
+  assert.equal(conflictOutput.execution?.exitCode, 0);
 });
 
 function assertExecuteResult(value: unknown): {
@@ -814,9 +1214,10 @@ void test('exec rejects extra URL-shaped arguments before runtime invocation', a
     { code: 'console.log("hello")', url: 'https://example.test' },
     {
       callId: 'call-execute-code-extra-field',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(914),
-      projectId: testProjectId('project'),
       agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
     },
   );

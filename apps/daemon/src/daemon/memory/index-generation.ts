@@ -14,29 +14,29 @@ export function createGenerationId(): string {
 }
 
 export async function writeIndexGeneration(
-  workspaceRoot: string,
+  stateRoot: string,
   manifest: MemoryManifest,
   records: MemoryChunkRecord[],
 ): Promise<void> {
   const [indexRoot, stagingRoot, previousRoot, memoryDir] = await Promise.all([
-    resolveDerivedArtifactTarget(workspaceRoot, 'memory_index', 'index', {
+    resolveDerivedArtifactTarget(stateRoot, 'memory_index', 'index', {
       mode: 'mutate',
       allowMissingLeaf: true,
     }),
     resolveDerivedArtifactTarget(
-      workspaceRoot,
+      stateRoot,
       'memory_index',
       `.index-staging-${manifest.generationId}`,
       { mode: 'mutate', allowMissingLeaf: true },
     ),
     resolveDerivedArtifactTarget(
-      workspaceRoot,
+      stateRoot,
       'memory_index',
       `.index-previous-${manifest.generationId}`,
       { mode: 'mutate', allowMissingLeaf: true },
     ),
     resolveDerivedArtifactTarget(
-      workspaceRoot,
+      stateRoot,
       'memory_index',
       `.index-staging-${manifest.generationId}/memory`,
       { mode: 'mutate', allowMissingLeaf: true },
@@ -114,7 +114,9 @@ async function validateStagingGeneration(stagingRoot: string): Promise<void> {
 
   JSON.parse(manifestRaw);
   for (const line of memoryRaw.split('\n')) {
-    if (!line.trim()) continue;
+    if (!line.trim()) {
+      continue;
+    }
     JSON.parse(line);
   }
 }

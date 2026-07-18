@@ -6,7 +6,11 @@ export function resolveCodexWebSocketUrl(baseUrl: string): string {
       ? `${normalized}/responses`
       : `${normalized}/codex/responses`;
   const url = new URL(codexUrl);
-  if (url.protocol === 'https:') url.protocol = 'wss:';
-  if (url.protocol === 'http:') url.protocol = 'ws:';
+  if (url.protocol === 'https:') {
+    url.protocol = 'wss:';
+  }
+  if (url.protocol === 'http:') {
+    url.protocol = 'ws:';
+  }
   return url.toString();
 }

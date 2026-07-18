@@ -49,7 +49,9 @@ function createOkResponse(
   };
 }
 
-function createBridgeHarness(): {
+function createBridgeHarness(
+  options: { assertSharedStorageAvailable?: () => void } = {},
+): {
   bridge: ReturnType<typeof createArtifactRuntimePersistenceBridge>;
   requests: PersistenceBootstrapRequestMessage[];
   dispatchResponse(
@@ -93,7 +95,17 @@ function createBridgeHarness(): {
     createPersistenceError(code, message) {
       return new TestPersistenceError(code, message);
     },
-    assertSharedStorageAvailable() {},
+    stabilizePersistenceError(error) {
+      return error instanceof Error
+        ? error
+        : new TestPersistenceError(
+            'persistence_unavailable',
+            `stabilized persistence error: ${String(error)}`,
+          );
+    },
+    assertSharedStorageAvailable() {
+      options.assertSharedStorageAvailable?.();
+    },
     isPlainRecord(value): value is Record<string, unknown> {
       return !!value && typeof value === 'object' && !Array.isArray(value);
     },
@@ -111,6 +123,28 @@ function createBridgeHarness(): {
     },
   };
 }
+
+void test('persistence bridge stabilizes non-Error storage failures before rejecting', async () => {
+  const harness = createBridgeHarness({
+    assertSharedStorageAvailable() {
+      throw 'storage is blocked';
+    },
+  });
+
+  await assert.rejects(
+    harness.bridge.persistenceApi.loadState(),
+    (error: unknown) => {
+      assert.ok(error instanceof TestPersistenceError);
+      assert.equal(error.code, 'persistence_unavailable');
+      assert.equal(
+        error.message,
+        'stabilized persistence error: storage is blocked',
+      );
+      return true;
+    },
+  );
+  assert.equal(harness.requests.length, 0);
+});
 
 void test('persistence bridge response router ignores unexpected source and origin without clearing the pending request', async () => {
   const harness = createBridgeHarness();

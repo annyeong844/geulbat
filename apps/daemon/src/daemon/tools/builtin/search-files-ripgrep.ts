@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
-import { access } from 'node:fs/promises';
+import { access, readdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { getExcludedContentSearchGlobs } from '../../files/reserved-paths.js';
 import { getErrorMessage } from '../../utils/error.js';
 import type { SearchFilesResult, SearchMatch } from './search-files-shared.js';
@@ -13,18 +14,32 @@ import {
 
 let _rgPath: string | undefined;
 
-export async function resolveRipgrepPath(): Promise<string> {
-  if (_rgPath) return _rgPath;
+export async function resolveRipgrepPath(rootDir?: string): Promise<string> {
+  if (_rgPath && isRipgrepBinaryCompatibleWithRoot(_rgPath, rootDir)) {
+    return _rgPath;
+  }
   const probeFailures: string[] = [];
+  const require = createRequire(import.meta.url);
 
   try {
-    const require = createRequire(import.meta.url);
-    const rg = require('@vscode/ripgrep') as { rgPath: string };
+    const rg: unknown = require('@vscode/ripgrep');
+    if (
+      typeof rg !== 'object' ||
+      rg === null ||
+      !('rgPath' in rg) ||
+      typeof rg.rgPath !== 'string'
+    ) {
+      throw new TypeError('@vscode/ripgrep must export a string rgPath');
+    }
     const candidatePaths = rg.rgPath.endsWith('.exe')
       ? [rg.rgPath]
       : [rg.rgPath, `${rg.rgPath}.exe`];
 
     for (const candidatePath of candidatePaths) {
+      if (!isRipgrepBinaryCompatibleWithRoot(candidatePath, rootDir)) {
+        probeFailures.push(`${candidatePath}: incompatible with ${rootDir}`);
+        continue;
+      }
       try {
         await access(candidatePath);
         _rgPath = candidatePath;
@@ -39,14 +54,112 @@ export async function resolveRipgrepPath(): Promise<string> {
     );
   }
 
+  for (const candidatePath of await listBundledRipgrepSiblingCandidatePaths(
+    require,
+    probeFailures,
+  )) {
+    if (!isRipgrepBinaryCompatibleWithRoot(candidatePath, rootDir)) {
+      probeFailures.push(`${candidatePath}: incompatible with ${rootDir}`);
+      continue;
+    }
+    try {
+      await access(candidatePath);
+      _rgPath = candidatePath;
+      return candidatePath;
+    } catch (error: unknown) {
+      probeFailures.push(`${candidatePath}: ${getErrorMessage(error)}`);
+    }
+  }
+
+  for (const candidatePath of listSystemRipgrepCandidatePaths()) {
+    try {
+      await access(candidatePath);
+      _rgPath = candidatePath;
+      return candidatePath;
+    } catch (error: unknown) {
+      probeFailures.push(`${candidatePath}: ${getErrorMessage(error)}`);
+    }
+  }
+
   const failureDetail =
     probeFailures.length > 0 ? ` Last probe: ${probeFailures[0]}.` : '';
   throw Object.assign(
     new Error(
-      `search_files requires the bundled @vscode/ripgrep binary for content search. Run a normal npm ci with postinstall enabled.${failureDetail}`,
+      `search_files requires an accessible ripgrep binary for content search. Run a normal npm ci with postinstall enabled or install rg on PATH.${failureDetail}`,
     ),
     { code: 'execution_failed' },
   );
+}
+
+async function listBundledRipgrepSiblingCandidatePaths(
+  require: ReturnType<typeof createRequire>,
+  probeFailures: string[],
+): Promise<string[]> {
+  let scopeRoot: string;
+  try {
+    const ripgrepEntryPath = require.resolve('@vscode/ripgrep');
+    scopeRoot = dirname(dirname(dirname(ripgrepEntryPath)));
+  } catch (error: unknown) {
+    probeFailures.push(
+      `@vscode/ripgrep package root resolve failed: ${getErrorMessage(error)}`,
+    );
+    return [];
+  }
+
+  let packageDirectories: string[];
+  try {
+    const entries = await readdir(scopeRoot, { withFileTypes: true });
+    packageDirectories = entries
+      .filter(
+        (entry) => entry.isDirectory() && entry.name.startsWith('ripgrep-'),
+      )
+      .map((entry) => entry.name);
+  } catch (error: unknown) {
+    probeFailures.push(`@vscode scope scan failed: ${getErrorMessage(error)}`);
+    return [];
+  }
+
+  return packageDirectories
+    .sort((left, right) => left.localeCompare(right))
+    .flatMap((packageDirectory) => {
+      const packageRoot = join(scopeRoot, packageDirectory);
+      return [
+        join(packageRoot, 'bin', 'rg'),
+        join(packageRoot, 'bin', 'rg.exe'),
+      ];
+    });
+}
+
+function listSystemRipgrepCandidatePaths(): string[] {
+  return uniqueSorted(
+    (process.env.PATH ?? '')
+      .split(delimiter)
+      .filter((pathEntry) => pathEntry.length > 0 && isAbsolute(pathEntry))
+      .flatMap((pathEntry) => [
+        join(pathEntry, 'rg'),
+        join(pathEntry, 'rg.exe'),
+      ]),
+  );
+}
+
+export function isRipgrepBinaryCompatibleWithRoot(
+  rgPath: string,
+  rootDir: string | undefined,
+): boolean {
+  if (rootDir === undefined) {
+    return true;
+  }
+  const rootUsesNativeWindowsPath = /^[a-z]:[\\/]/iu.test(rootDir);
+  const rootUsesWslDriveMount = /^\/mnt\/[a-z](\/|$)/iu.test(rootDir);
+  const ripgrepIsWindowsExecutable = rgPath.toLowerCase().endsWith('.exe');
+  if (!ripgrepIsWindowsExecutable) {
+    return !rootUsesNativeWindowsPath;
+  }
+  return rootUsesNativeWindowsPath || rootUsesWslDriveMount;
+}
+
+function uniqueSorted(values: readonly string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
 export async function runRipgrep(
@@ -67,7 +180,7 @@ export async function runRipgrep(
       '1',
       ...(glob ? ['--glob', glob] : []),
       ...getExcludedContentSearchGlobs().flatMap((excludedGlob) => [
-        '--glob',
+        '--iglob',
         excludedGlob,
       ]),
       '--',

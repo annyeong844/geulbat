@@ -1,29 +1,43 @@
 import type { PermissionMode } from '@geulbat/protocol/run-approval';
-import type { ProjectId, ThreadId } from '@geulbat/protocol/ids';
+import type { ThreadId } from '@geulbat/protocol/ids';
 import type { SideEffectLevel } from '@geulbat/protocol/run-events';
+import type { ToolLibraryProjectionIdentity } from '@geulbat/tool-library/projection-codec';
 import type { ErrorCode } from '../error-codes.js';
 import type { AgentEvent, ToolRunState } from '../runtime-contracts.js';
 import type {
   AgentMemoryIndex,
   AgentRuntimeServices,
+  ProviderRunSelection,
+  RunSubagentModelRouting,
 } from '../daemon-runtime-contract.js';
 import type { FileStateCache } from '../utils/file-state-cache.js';
 import type {
   ParallelToolBatchKind,
+  ToolCatalogSearchMetadata,
+  ToolExposure,
   ToolParameters,
 } from './tool-registry-model.js';
 
 export type { PermissionMode } from '@geulbat/protocol/run-approval';
-export type { SubagentRunLauncher } from '../daemon-runtime-contract.js';
+export type {
+  ProviderRunSelection,
+  ResolvedChildModelPin,
+  RunSubagentModelRouting,
+  SubagentRunLauncher,
+} from '../daemon-runtime-contract.js';
 export {
   isToolAnyOfParameters,
   isToolObjectParameters,
 } from './tool-registry-model.js';
 export type {
   ParallelToolBatchKind,
+  HostToolEffect,
+  ToolCatalogSearchFamily,
+  ToolCatalogSearchMetadata,
   ToolAnyOfParameters,
   ToolObjectParameters,
   ToolDefinition,
+  ToolExposure,
   ToolMeta,
   ToolParameters,
 } from './tool-registry-model.js';
@@ -43,7 +57,7 @@ interface ToolExecutionCoreContext {
   // Tools that need to distinguish timeout from whole-run cancellation should
   // read this instead of assuming `signal` is the raw caller signal.
   runSignal?: AbortSignal;
-  workspaceRoot: string;
+  computerFileRoot?: string;
   currentFile?: string;
   selection?: ToolSelection;
 }
@@ -51,13 +65,20 @@ interface ToolExecutionCoreContext {
 interface ToolExecutionRunContext {
   approvalGranted?: boolean;
   approvalSessionId?: string;
-  allowedToolNames?: readonly string[];
+  allowedRegistryNames?: readonly string[];
   permissionMode?: PermissionMode;
   threadId?: ThreadId;
   runId?: string;
-  projectId?: ProjectId;
+  runOwnerKind?: 'root_main' | 'child';
+  stateRoot?: string;
+  workingDirectory?: string;
   runState?: ToolRunState;
   resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;
+  toolLibraryProjectionIdentity?: ToolLibraryProjectionIdentity;
+  // Exact provider identity of the run executing this tool. Child routing
+  // inherits it only when neither the user nor the model selects another model.
+  providerRunSelection?: ProviderRunSelection;
+  subagentModelRouting?: RunSubagentModelRouting;
   emitAgentEvent?: (event: AgentEvent) => void;
 }
 
@@ -94,13 +115,18 @@ export type AgentToolExecutionContext = Omit<
     selection: ToolSelection | undefined;
     approvalGranted: boolean;
     approvalSessionId: string;
-    allowedToolNames?: readonly string[];
+    allowedRegistryNames?: readonly string[];
     permissionMode: PermissionMode;
     threadId: ThreadId;
     runId: string;
-    projectId: ProjectId;
+    runOwnerKind: 'root_main' | 'child';
+    stateRoot: string;
+    workingDirectory: string;
     runState: ToolRunState | undefined;
     resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;
+    toolLibraryProjectionIdentity?: ToolLibraryProjectionIdentity;
+    providerRunSelection?: ProviderRunSelection;
+    subagentModelRouting?: RunSubagentModelRouting;
     emitAgentEvent: (event: AgentEvent) => void;
     memoryIndex: AgentMemoryIndex | undefined;
     agentSpawnRuntime: AgentRuntimeServices | undefined;
@@ -159,10 +185,17 @@ export interface ToolDescriptor {
   parameters: ToolParameters;
   strict: boolean;
   sideEffectLevel: SideEffectLevel;
-  mayMutateWorkspaceFiles: boolean;
+  mayMutateComputerFiles: boolean;
   parallelBatchKind?: ParallelToolBatchKind;
   timeoutMs?: number;
   requiresApproval: boolean;
+  // The registry supplies a conservative direct-only value when a local or
+  // test tool has not opted into the SDK/callback routing contract.
+  exposure?: ToolExposure;
+  // 도구 인자 스트리밍 opt-in — provider args 델타가 tool_call_delta로
+  // 클라이언트까지 흐른다 (visualize 실시간 렌더)
+  streamsArgsDelta?: boolean;
+  catalogSearchMetadata?: ToolCatalogSearchMetadata;
 }
 
 export interface ToolParseFailure {

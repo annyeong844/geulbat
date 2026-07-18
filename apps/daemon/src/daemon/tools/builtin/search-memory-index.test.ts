@@ -3,24 +3,32 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { createMemoryIndexStore } from '../../memory/build-index.js';
 import { refreshMemoryIndexTool } from './refresh-memory-index.js';
 import { searchMemoryIndexTool } from './search-memory-index.js';
 
-function createSearchMemoryIndexContext(workspaceRoot: string) {
+function createSearchMemoryIndexContext(
+  sourceRoot: string,
+  stateRoot = sourceRoot,
+) {
   return {
-    callId: `call-search-${workspaceRoot}`,
-    workspaceRoot,
+    callId: `call-search-${sourceRoot}`,
+    stateRoot,
+    computerFileRoot: sourceRoot,
+    workingDirectory: '',
     memoryIndex: createMemoryIndexStore(),
   };
 }
 
-function createRefreshMemoryIndexContext(workspaceRoot: string) {
+function createRefreshMemoryIndexContext(
+  sourceRoot: string,
+  stateRoot = sourceRoot,
+) {
   return {
-    callId: `call-search-refresh-${workspaceRoot}`,
-    workspaceRoot,
-    projectId: testProjectId(),
+    callId: `call-search-refresh-${sourceRoot}`,
+    stateRoot,
+    computerFileRoot: sourceRoot,
+    workingDirectory: '',
     memoryIndex: createMemoryIndexStore(),
   };
 }
@@ -94,25 +102,26 @@ void test('search_memory_index rejects blank pathPrefix at the parser boundary',
 });
 
 void test('search_memory_index matches against searchText and returns freshness metadata', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-memory-search-'));
-  await mkdir(join(workspaceRoot, 'docs'), { recursive: true });
+  const sourceRoot = await mkdtemp(join(tmpdir(), 'geulbat-memory-search-'));
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-home-state-'));
+  await mkdir(join(sourceRoot, 'docs'), { recursive: true });
 
   const filler = 'alpha '.repeat(40);
   await writeFile(
-    join(workspaceRoot, 'docs', 'sample.md'),
+    join(sourceRoot, 'docs', 'sample.md'),
     `# Sample\n${filler}\nvery-special-tail-token\n`,
     'utf8',
   );
 
   const refresh = await refreshMemoryIndexTool.execute(
     {},
-    createRefreshMemoryIndexContext(workspaceRoot),
+    createRefreshMemoryIndexContext(sourceRoot, stateRoot),
   );
   assert.equal(refresh.ok, true);
 
   const result = await searchMemoryIndexTool.execute(
     { query: 'very-special-tail-token', pathPrefix: 'docs', maxResults: 10 },
-    createSearchMemoryIndexContext(workspaceRoot),
+    createSearchMemoryIndexContext(sourceRoot, stateRoot),
   );
 
   assert.equal(result.ok, true);
@@ -136,7 +145,7 @@ void test('search_memory_index matches against searchText and returns freshness 
   assert.equal(payload.results[0]?.lineStart, 1);
 });
 
-void test('search_memory_index marks stale when workspace source snapshot changed', async () => {
+void test('search_memory_index marks stale when working-directory source snapshot changed', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-memory-search-'));
   await mkdir(join(workspaceRoot, 'docs'), { recursive: true });
   await writeFile(
@@ -200,10 +209,10 @@ void test('search_memory_index rejects malformed chunk records instead of trusti
   await writeFile(
     join(workspaceRoot, '.geulbat', 'index', 'manifest.json'),
     JSON.stringify({
-      version: 1,
+      version: 2,
       generationId: 'gen-1',
       generatedAt: new Date().toISOString(),
-      sourceProjectId: 'workspace',
+      sourceDirectory: workspaceRoot,
       sourceIndexVersionToken: 'abc',
       files: [],
     }) + '\n',
@@ -233,10 +242,10 @@ void test('search_memory_index can use an injected memory index store', async ()
     readTextFile: async (path) => {
       if (path.endsWith('manifest.json')) {
         return JSON.stringify({
-          version: 1,
+          version: 2,
           generationId: 'local-memory-generation',
           generatedAt: '2026-03-30T00:00:00.000Z',
-          sourceProjectId: 'workspace',
+          sourceDirectory: '/tmp/memory-local-source',
           sourceIndexVersionToken: 'fresh-token',
           files: [],
         });
@@ -260,7 +269,9 @@ void test('search_memory_index can use an injected memory index store', async ()
     { query: 'memory token' },
     {
       callId: 'call-search-local-store',
-      workspaceRoot: '/tmp/memory-local-store',
+      stateRoot: '/tmp/memory-local-home',
+      computerFileRoot: '/tmp',
+      workingDirectory: 'memory-local-source',
       memoryIndex,
     },
   );
@@ -281,10 +292,32 @@ void test('search_memory_index rejects missing memory index runtime', async () =
 
   const result = await searchMemoryIndexTool.execute(
     { query: 'memory' },
-    { callId: 'call-search-missing-runtime', workspaceRoot },
+    {
+      callId: 'call-search-missing-runtime',
+      stateRoot: workspaceRoot,
+      computerFileRoot: workspaceRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'execution_failed');
   assert.match(result.error ?? '', /memory index store is required/);
+});
+
+void test('search_memory_index fails closed when ComputerFileScope is unavailable', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-home-state-'));
+  const result = await searchMemoryIndexTool.execute(
+    { query: 'memory' },
+    {
+      callId: 'call-search-missing-computer-scope',
+      stateRoot,
+      workingDirectory: '',
+      memoryIndex: createMemoryIndexStore(),
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'access_denied');
+  assert.match(result.error ?? '', /Computer file scope is unavailable/);
 });

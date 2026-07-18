@@ -17,8 +17,7 @@ export function createArtifactRuntimePersistenceAuthorityIo(args: {
 }) {
   const { authorityState, validation } = args;
 
-  const hasOwn = (value: object, key: string) =>
-    Object.prototype.hasOwnProperty.call(value, key);
+  const hasOwn = (value: object, key: string) => Object.hasOwn(value, key);
 
   const loadCurrentAuthorityState = async (
     rawPersistenceApi: PersistenceRawApi,
@@ -26,8 +25,8 @@ export function createArtifactRuntimePersistenceAuthorityIo(args: {
     const result = await rawPersistenceApi.loadState();
     if (result.state === null) {
       return {
-        storageMap: Object.create(null) as PersistenceRecord,
-        databaseMap: Object.create(null) as PersistenceRecord,
+        storageMap: authorityState.cloneToNullPrototypeMap<unknown>({}),
+        databaseMap: authorityState.cloneToNullPrototypeMap<unknown>({}),
         revision: result.revision ?? null,
       };
     }
@@ -44,7 +43,7 @@ export function createArtifactRuntimePersistenceAuthorityIo(args: {
     ) {
       return {
         storageMap: authorityState.cloneToNullPrototypeMap(result.state),
-        databaseMap: Object.create(null) as PersistenceRecord,
+        databaseMap: authorityState.cloneToNullPrototypeMap<unknown>({}),
         revision: result.revision ?? null,
       };
     }

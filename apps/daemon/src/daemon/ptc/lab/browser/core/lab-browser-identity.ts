@@ -27,7 +27,15 @@ type PtcLabBrowserIdentityByMode<
 > = Extract<PtcLabBrowserIdentitySnapshot, { mode: Mode }>;
 
 type PtcLabBrowserIdentityLabelField<Identity extends object> = readonly [
-  Extract<keyof Identity, string>,
+  {
+    [Key in Extract<keyof Identity, string>]: Identity[Key] extends
+      | string
+      | number
+      | bigint
+      | boolean
+      ? Key
+      : never;
+  }[Extract<keyof Identity, string>],
   string,
 ];
 
@@ -282,55 +290,57 @@ export function buildPtcLabBrowserIdentityLabels(
     `geulbat.browserTelemetryPolicyId=${identity.browserTelemetryPolicyId}`,
   ];
 
-  return identity.enabled
-    ? [
-        ...labels,
-        `geulbat.browserNetworkPolicyId=${identity.networkPolicyId}`,
-        `geulbat.browserMaxTabs=${identity.maxTabs}`,
-        ...(identity.mode === 'user_url_navigation'
-          ? buildPtcLabBrowserNavigationIdentityLabels({
-              identity,
-              afterEvidenceLabels: [
-                `geulbat.browserUrlEchoPolicyId=${identity.urlEchoPolicyId}`,
-              ],
-            })
-          : []),
-        ...(identity.mode === 'page_load_evidence'
-          ? buildPtcLabBrowserNavigationIdentityLabels({
-              identity,
-              afterEngineLabels: buildPtcLabBrowserIdentityFieldLabels(
-                identity,
-                PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_AFTER_ENGINE_LABEL_FIELDS,
-              ),
-              afterRedirectLabels: buildPtcLabBrowserIdentityFieldLabels(
-                identity,
-                PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_AFTER_REDIRECT_LABEL_FIELDS,
-              ),
-              afterEvidenceLabels: buildPtcLabBrowserIdentityFieldLabels(
-                identity,
-                PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_AFTER_EVIDENCE_LABEL_FIELDS,
-              ),
-            })
-          : []),
-        ...(identity.mode === 'dom_text_evidence'
-          ? buildPtcLabBrowserNavigationIdentityLabels({
-              identity,
-              afterEngineLabels: buildPtcLabBrowserIdentityFieldLabels(
-                identity,
-                PTC_LAB_BROWSER_TEXT_EVIDENCE_AFTER_ENGINE_LABEL_FIELDS,
-              ),
-              afterRedirectLabels: buildPtcLabBrowserIdentityFieldLabels(
-                identity,
-                PTC_LAB_BROWSER_TEXT_EVIDENCE_AFTER_REDIRECT_LABEL_FIELDS,
-              ),
-              afterEvidenceLabels: buildPtcLabBrowserIdentityFieldLabels(
-                identity,
-                PTC_LAB_BROWSER_TEXT_EVIDENCE_AFTER_EVIDENCE_LABEL_FIELDS,
-              ),
-            })
-          : []),
-      ]
-    : labels;
+  if (!identity.enabled) {
+    return labels;
+  }
+
+  return [
+    ...labels,
+    `geulbat.browserNetworkPolicyId=${identity.networkPolicyId}`,
+    `geulbat.browserMaxTabs=${identity.maxTabs}`,
+    ...(identity.mode === 'user_url_navigation'
+      ? buildPtcLabBrowserNavigationIdentityLabels({
+          identity,
+          afterEvidenceLabels: [
+            `geulbat.browserUrlEchoPolicyId=${identity.urlEchoPolicyId}`,
+          ],
+        })
+      : []),
+    ...(identity.mode === 'page_load_evidence'
+      ? buildPtcLabBrowserNavigationIdentityLabels({
+          identity,
+          afterEngineLabels: buildPtcLabBrowserIdentityFieldLabels(
+            identity,
+            PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_AFTER_ENGINE_LABEL_FIELDS,
+          ),
+          afterRedirectLabels: buildPtcLabBrowserIdentityFieldLabels(
+            identity,
+            PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_AFTER_REDIRECT_LABEL_FIELDS,
+          ),
+          afterEvidenceLabels: buildPtcLabBrowserIdentityFieldLabels(
+            identity,
+            PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_AFTER_EVIDENCE_LABEL_FIELDS,
+          ),
+        })
+      : []),
+    ...(identity.mode === 'dom_text_evidence'
+      ? buildPtcLabBrowserNavigationIdentityLabels({
+          identity,
+          afterEngineLabels: buildPtcLabBrowserIdentityFieldLabels(
+            identity,
+            PTC_LAB_BROWSER_TEXT_EVIDENCE_AFTER_ENGINE_LABEL_FIELDS,
+          ),
+          afterRedirectLabels: buildPtcLabBrowserIdentityFieldLabels(
+            identity,
+            PTC_LAB_BROWSER_TEXT_EVIDENCE_AFTER_REDIRECT_LABEL_FIELDS,
+          ),
+          afterEvidenceLabels: buildPtcLabBrowserIdentityFieldLabels(
+            identity,
+            PTC_LAB_BROWSER_TEXT_EVIDENCE_AFTER_EVIDENCE_LABEL_FIELDS,
+          ),
+        })
+      : []),
+  ];
 }
 
 function buildPtcLabBrowserNavigationIdentityLabels(args: {
@@ -364,11 +374,11 @@ function buildPtcLabBrowserNavigationIdentityLabels(args: {
   ];
 }
 
-function buildPtcLabBrowserIdentityFieldLabels<
-  Source extends object,
-  Key extends Extract<keyof Source, string>,
->(identity: Source, fields: readonly (readonly [Key, string])[]): string[] {
+function buildPtcLabBrowserIdentityFieldLabels<Source extends object>(
+  identity: Source,
+  fields: readonly PtcLabBrowserIdentityLabelField<Source>[],
+): string[] {
   return fields.map(
-    ([key, labelName]) => `geulbat.${labelName}=${identity[key]}`,
+    ([key, labelName]) => `geulbat.${labelName}=${String(identity[key])}`,
   );
 }

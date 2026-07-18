@@ -38,6 +38,15 @@ void test('isAllowedProviderAuthorizeUrl accepts the canonical OpenAI authorize 
   );
 });
 
+void test('isAllowedProviderAuthorizeUrl accepts the canonical xAI authorize URL', () => {
+  assert.equal(
+    isAllowedProviderAuthorizeUrl(
+      'https://auth.x.ai/oauth2/authorize?response_type=code&client_id=test',
+    ),
+    true,
+  );
+});
+
 void test('isAllowedProviderAuthorizeUrl accepts loopback authorize URLs for local provider auth development', () => {
   assert.equal(
     isAllowedProviderAuthorizeUrl(
@@ -122,6 +131,7 @@ void test('useProviderAuthState treats already-connected start conflicts as stat
   restoreWindow = installProviderAuthWindow();
   const fetchMock = installFetchSequence(
     () => jsonResponse({ state: 'missing', ready: false }),
+    () => jsonResponse({ state: 'missing', ready: false }),
     () =>
       jsonResponse(
         {
@@ -155,12 +165,14 @@ void test('useProviderAuthState treats already-connected start conflicts as stat
 void test('useProviderAuthState skips startProviderAuth when the current status is already ready', async () => {
   restoreDocument = installShellAuthDocument();
   restoreWindow = installProviderAuthWindow();
-  const fetchMock = installFetchSequence(() =>
-    jsonResponse({
-      state: 'ready',
-      ready: true,
-      expiresAt: 2_000,
-    }),
+  const fetchMock = installFetchSequence(
+    () =>
+      jsonResponse({
+        state: 'ready',
+        ready: true,
+        expiresAt: 2_000,
+      }),
+    () => jsonResponse({ state: 'missing', ready: false }),
   );
   restoreFetch = fetchMock.restore;
 
@@ -168,7 +180,7 @@ void test('useProviderAuthState skips startProviderAuth when the current status 
   await hook.flush();
   await hook.run((current) => current.handleConnectProvider());
 
-  assert.equal(fetchMock.calls.length, 1);
+  assert.equal(fetchMock.calls.length, 2);
   assert.equal(hook.result.current.providerAuthError, null);
   assert.equal(
     hook.result.current.providerAuthNotice,
@@ -201,6 +213,7 @@ void test('useProviderAuthState keeps the same status reference across identical
         expiresAt: 2_000,
         pollAfterMs: 1000,
       }),
+    () => jsonResponse({ state: 'missing', ready: false }),
     () =>
       jsonResponse({
         state: 'pending',
@@ -209,6 +222,7 @@ void test('useProviderAuthState keeps the same status reference across identical
         expiresAt: 2_000,
         pollAfterMs: 1000,
       }),
+    () => jsonResponse({ state: 'missing', ready: false }),
   );
   restoreFetch = fetchMock.restore;
 
@@ -226,7 +240,7 @@ void test('useProviderAuthState keeps the same status reference across identical
     await Promise.resolve();
   });
 
-  assert.equal(fetchMock.calls.length, 2);
+  assert.equal(fetchMock.calls.length, 4);
   assert.equal(hook.result.current.providerAuthStatus, firstStatus);
   hook.unmount();
 });
@@ -243,21 +257,23 @@ void test('useProviderAuthState rejects invalid pending poll intervals without s
       return;
     },
   });
-  const fetchMock = installFetchSequence(() =>
-    jsonResponse({
-      state: 'pending',
-      ready: false,
-      authSessionId: 'auth-1',
-      expiresAt: 2_000,
-      pollAfterMs: 0.5,
-    }),
+  const fetchMock = installFetchSequence(
+    () =>
+      jsonResponse({
+        state: 'pending',
+        ready: false,
+        authSessionId: 'auth-1',
+        expiresAt: 2_000,
+        pollAfterMs: 0.5,
+      }),
+    () => jsonResponse({ state: 'missing', ready: false }),
   );
   restoreFetch = fetchMock.restore;
 
   const hook = await renderHook(useProviderAuthState, undefined);
   await hook.flush();
 
-  assert.equal(fetchMock.calls.length, 1);
+  assert.equal(fetchMock.calls.length, 2);
   assert.equal(intervalScheduled, false);
   assert.equal(hook.result.current.providerAuthStatus, null);
   assert.match(
@@ -293,12 +309,14 @@ void test('useProviderAuthState observes ready status near expiry and surfaces r
         ready: true,
         expiresAt: firstExpiry,
       }),
+    () => jsonResponse({ state: 'missing', ready: false }),
     () =>
       jsonResponse({
         state: 'ready',
         ready: true,
         expiresAt: firstExpiry + 60_000,
       }),
+    () => jsonResponse({ state: 'missing', ready: false }),
   );
   restoreFetch = fetchMock.restore;
 
@@ -315,11 +333,8 @@ void test('useProviderAuthState observes ready status near expiry and surfaces r
     await Promise.resolve();
   });
 
-  assert.equal(fetchMock.calls.length, 2);
-  assert.equal(
-    hook.result.current.providerAuthNotice,
-    'Provider auth refreshed.',
-  );
+  assert.equal(fetchMock.calls.length, 4);
+  assert.equal(hook.result.current.providerAuthNotice, 'Codex auth refreshed.');
   assert.equal(
     hook.result.current.providerAuthStatus?.expiresAt,
     firstExpiry + 60_000,

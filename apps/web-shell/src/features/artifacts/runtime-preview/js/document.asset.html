@@ -65,6 +65,7 @@
         const awaitStorageBeforePayload =
           __GEULBAT_AWAIT_STORAGE_BEFORE_PAYLOAD_JSON__;
         window.__GEULBAT_PARENT_ORIGIN__ = runtimeParentOrigin;
+        window.__GEULBAT_SCOPE_HANDLE__ = runtimeScopeHandle;
         const RUNTIME_HOST_MESSAGE_KIND = 'geulbat.artifact_runtime_host';
         let bootSettled = false;
         const POLICY_ERROR_NAME = 'GeulbatPolicyBlockedError';
@@ -121,15 +122,14 @@
         const postRuntimeResize = () => {
           const docEl = document.documentElement;
           const body = document.body;
+          // docEl/body의 client·scrollHeight는 뷰포트(현재 프레임 높이)와
+          // 결합돼 한 번 커진 프레임이 줄지 않는 래칫을 만든다 — 실제
+          // 콘텐츠 높이(rect, body 스크롤 범위)만 보고한다.
           const height = Math.max(
             Math.ceil(docEl?.getBoundingClientRect?.().height ?? 0),
             Math.ceil(body?.getBoundingClientRect?.().height ?? 0),
-            docEl?.scrollHeight ?? 0,
-            docEl?.offsetHeight ?? 0,
-            docEl?.clientHeight ?? 0,
             body?.scrollHeight ?? 0,
             body?.offsetHeight ?? 0,
-            body?.clientHeight ?? 0,
           );
           if (window.parent && window.parent !== window) {
             window.parent.postMessage(

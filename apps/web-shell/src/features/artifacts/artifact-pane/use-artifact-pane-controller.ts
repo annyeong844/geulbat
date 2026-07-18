@@ -15,14 +15,13 @@ export interface UseArtifactPaneControllerArgs {
   isRunning: boolean;
   isLiveStreamingArtifact: boolean;
   renderRuntimeFrame: RenderArtifactRuntimeFrame;
-  onOpenSource?: (path: string) => Promise<void> | void;
   onStartArtifactRun?: (request: RunRequest) => Promise<void> | void;
 }
 
 export function useArtifactPaneController(
   args: UseArtifactPaneControllerArgs,
 ): ArtifactPaneControllerProps {
-  const { label, viewModel, onOpenSource } = args;
+  const { label, viewModel } = args;
   const exportState = useArtifactExportState({
     viewModel,
     isRunning: args.isRunning,
@@ -43,6 +42,5 @@ export function useArtifactPaneController(
     viewModel,
     paneState,
     exportState,
-    ...(onOpenSource !== undefined ? { onOpenSource } : {}),
   });
 }

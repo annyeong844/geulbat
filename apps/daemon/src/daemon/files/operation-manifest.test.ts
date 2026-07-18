@@ -14,7 +14,7 @@ function baseDraft(): OperationManifestDraft {
     operationId: 'operation-1',
     manifestRevision: 'revision-1',
     operationKind: 'rename',
-    projectId: 'project-1',
+    authorityId: 'computer-file-scope',
     actor: { kind: 'assistant', runId: 'run-1' },
     targets: [
       {

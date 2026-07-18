@@ -23,6 +23,51 @@ void test('buildApprovalSummary renders built-in write_file approvals with conte
   });
 });
 
+void test('buildApprovalSummary renders built-in apply_patch approvals with target detail', () => {
+  const summary = buildApprovalSummary(
+    makeApprovalRequiredFixture({
+      toolName: 'apply_patch',
+      approvalClass: 'apply_patch',
+      argumentsPreview: {
+        patch: [
+          '*** Begin Patch',
+          '*** Update File: docs/a.md',
+          '@@',
+          '-old',
+          '+new',
+          '*** End Patch',
+        ].join('\n'),
+      },
+    }),
+  );
+
+  assert.deepEqual(summary, {
+    title: 'Apply patch to docs/a.md',
+    detail: 'Update file',
+  });
+});
+
+void test('buildApprovalSummary labels unsupported apply_patch delete previews explicitly', () => {
+  const summary = buildApprovalSummary(
+    makeApprovalRequiredFixture({
+      toolName: 'apply_patch',
+      approvalClass: 'apply_patch',
+      argumentsPreview: {
+        patch: [
+          '*** Begin Patch',
+          '*** Delete File: docs/a.md',
+          '*** End Patch',
+        ].join('\n'),
+      },
+    }),
+  );
+
+  assert.deepEqual(summary, {
+    title: 'Apply patch to docs/a.md',
+    detail: 'Unsupported delete patch',
+  });
+});
+
 void test('buildApprovalSummary falls back for custom approval classes', () => {
   const summary = buildApprovalSummary(
     makeApprovalRequiredFixture({
@@ -56,5 +101,22 @@ void test('buildApprovalSummary renders generic manage_files fallback for built-
   assert.deepEqual(summary, {
     title: 'Manage draft.md',
     detail: null,
+  });
+});
+
+void test('buildApprovalSummary renders exec_command approvals with command detail', () => {
+  const summary = buildApprovalSummary(
+    makeApprovalRequiredFixture({
+      toolName: 'exec_command',
+      approvalClass: 'exec_command',
+      argumentsPreview: {
+        cmd: 'npm run check -w apps/web-shell',
+      },
+    }),
+  );
+
+  assert.deepEqual(summary, {
+    title: 'Run shell command',
+    detail: 'npm run check -w apps/web-shell',
   });
 });

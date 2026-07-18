@@ -1,13 +1,31 @@
 import type {
   ArtifactCommittedEventPayload,
+  ContextUsageUpdatedEventPayload,
+  RunUsageTotals,
   ToolResultEventPayload,
 } from '@geulbat/protocol/run-events';
 import type { ApprovalRequired } from '@geulbat/protocol/run-approval';
 import type { ErrorCode } from '@geulbat/protocol/errors';
 import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
+import { ASK_USER_TOOL_NAME } from '../features/assistant/ask-user/ask-user-card-view.js';
+import { UPDATE_PLAN_TOOL_NAME } from '../features/assistant/run-plan/run-plan.js';
+import {
+  readVisualizeWidgetViewFromToolArgs,
+  VISUALIZE_TOOL_NAME,
+} from '../features/assistant/visualize/visualize-widget-view.js';
+import { markVisualizeStreamPlayed } from '../features/assistant/visualize/visualize-widget.js';
 import type { RunSessionStateAction } from './run-session-state-types.js';
 import { createSubagentActivityEffect } from './run-session-subagent-effect.js';
+
+// 실데이터 스트리밍이 실제로 흐른 도구 호출(첫 델타 시각) — 완성본 도착 시
+// 이 표식으로 visualize 재생 완료를 판단한다. 델타가 끝에 몰아서 온 경우
+// (긴 추론 뒤 폭주)는 사용자가 그려지는 과정을 못 봤으므로 완성 위젯이
+// 기존 점진 렌더를 재생한다.
+const streamedToolCallFirstDeltaAtMs = new Map<string, number>();
+// 이 시간 이상 스트리밍이 화면에 보였으면 과정을 본 것으로 친다 —
+// 완성 위젯의 점진 렌더 하한(600ms)보다 넉넉한 값.
+const VISUALIZE_STREAM_VISIBLE_MS = 1_500;
 
 export type RunSessionMessageEffect =
   | { kind: 'run_transport_error'; code: ErrorCode; message: string }
@@ -26,19 +44,47 @@ export type RunSessionMessageEffect =
   | {
       kind: 'transcript_activity_added';
       threadId: string;
+      streamedToolCallId?: string;
       entry:
-        | { kind: 'tool_activity'; tool: string; state: 'running' }
+        | {
+            kind: 'tool_activity';
+            tool: string;
+            state: 'running';
+            // 호출 인자가 곧 렌더 원본인 도구(visualize, update_plan)만
+            // 실어 온다
+            args?: Record<string, unknown>;
+          }
         | {
             kind: 'tool_activity';
             tool: string;
             state: 'completed' | 'failed';
           };
-      workspaceFilesMayHaveChanged: boolean;
+      computerFilesMayHaveChanged: boolean;
+    }
+  | {
+      kind: 'tool_call_args_streamed';
+      threadId: string;
+      callId: string;
+      tool: string;
+      argsDelta: string;
     }
   | {
       kind: 'approval_requested';
       threadId: string;
       pendingApproval: ApprovalRequired;
+    }
+  | { kind: 'steer_applied'; threadId: string; receivedSeqs: number[] }
+  | { kind: 'usage_updated'; threadId: string; usage: RunUsageTotals }
+  | {
+      kind: 'context_usage_updated';
+      threadId: string;
+      contextUsage: ContextUsageUpdatedEventPayload;
+    }
+  | {
+      kind: 'run_terminal';
+      runId: string;
+      threadId: string;
+      ok: boolean;
     }
   | ReturnType<typeof createSubagentActivityEffect>
   | { kind: 'settle_run_success'; thread: ThreadDetailResponse }
@@ -124,16 +170,54 @@ export function adaptRunSessionMessage(
         target: 'transcript',
         text: event.payload.text,
       };
-    case 'tool_call':
+    case 'tool_call': {
+      // 실데이터 스트리밍으로 충분히 오래 그려진 visualize만 완성본 위젯이
+      // 애니메이션을 반복하지 않도록 재생 완료로 표시한다.
+      {
+        const firstDeltaAtMs = streamedToolCallFirstDeltaAtMs.get(
+          event.payload.callId,
+        );
+        streamedToolCallFirstDeltaAtMs.delete(event.payload.callId);
+        if (
+          firstDeltaAtMs !== undefined &&
+          Date.now() - firstDeltaAtMs >= VISUALIZE_STREAM_VISIBLE_MS &&
+          event.payload.tool === VISUALIZE_TOOL_NAME
+        ) {
+          const playedView = readVisualizeWidgetViewFromToolArgs(
+            event.payload.args,
+          );
+          if (playedView !== null) {
+            markVisualizeStreamPlayed(playedView);
+          }
+        }
+      }
       return {
         kind: 'transcript_activity_added',
         threadId: event.threadId,
+        streamedToolCallId: event.payload.callId,
         entry: {
           kind: 'tool_activity',
           tool: event.payload.tool,
           state: 'running',
+          ...(event.payload.tool === VISUALIZE_TOOL_NAME ||
+          event.payload.tool === UPDATE_PLAN_TOOL_NAME ||
+          event.payload.tool === ASK_USER_TOOL_NAME
+            ? { args: event.payload.args }
+            : {}),
         },
-        workspaceFilesMayHaveChanged: false,
+        computerFilesMayHaveChanged: false,
+      };
+    }
+    case 'tool_call_delta':
+      if (!streamedToolCallFirstDeltaAtMs.has(event.payload.callId)) {
+        streamedToolCallFirstDeltaAtMs.set(event.payload.callId, Date.now());
+      }
+      return {
+        kind: 'tool_call_args_streamed',
+        threadId: event.threadId,
+        callId: event.payload.callId,
+        tool: event.payload.tool,
+        argsDelta: event.payload.argsDelta,
       };
     case 'tool_result':
       return {
@@ -144,8 +228,7 @@ export function adaptRunSessionMessage(
           tool: event.payload.tool,
           state: event.payload.ok ? 'completed' : 'failed',
         },
-        workspaceFilesMayHaveChanged:
-          event.payload.workspaceFilesMayHaveChanged,
+        computerFilesMayHaveChanged: event.payload.computerFilesMayHaveChanged,
       };
     case 'approval_required':
       return {
@@ -160,8 +243,30 @@ export function adaptRunSessionMessage(
     case 'subagent_terminal':
       return createSubagentActivityEffect(event);
     case 'interject_applied':
+      return {
+        kind: 'steer_applied',
+        threadId: event.threadId,
+        receivedSeqs: event.payload.receivedSeqs,
+      };
+    case 'usage_updated':
+      return {
+        kind: 'usage_updated',
+        threadId: event.threadId,
+        usage: event.payload,
+      };
+    case 'context_usage_updated':
+      return {
+        kind: 'context_usage_updated',
+        threadId: event.threadId,
+        contextUsage: event.payload,
+      };
     case 'done':
-      return null;
+      return {
+        kind: 'run_terminal',
+        runId: event.runId,
+        threadId: event.threadId,
+        ok: event.payload.ok,
+      };
     case 'error':
       return {
         kind: 'settle_run_error',
@@ -173,9 +278,9 @@ export function adaptRunSessionMessage(
 }
 
 export function shouldRefreshTreeAfterToolResult(
-  payload: Pick<ToolResultEventPayload, 'workspaceFilesMayHaveChanged'>,
+  payload: Pick<ToolResultEventPayload, 'computerFilesMayHaveChanged'>,
 ): boolean {
-  return payload.workspaceFilesMayHaveChanged;
+  return payload.computerFilesMayHaveChanged;
 }
 
 export async function handleRunSessionMessage({
@@ -247,6 +352,18 @@ async function applyRunSessionMessageEffect({
         type: 'transcript_activity_added',
         threadId: effect.threadId,
         entry: effect.entry,
+        ...(effect.streamedToolCallId !== undefined
+          ? { streamedToolCallId: effect.streamedToolCallId }
+          : {}),
+      });
+      return;
+    case 'tool_call_args_streamed':
+      dispatch({
+        type: 'tool_call_args_streamed',
+        threadId: effect.threadId,
+        callId: effect.callId,
+        tool: effect.tool,
+        argsDelta: effect.argsDelta,
       });
       return;
     case 'approval_requested':
@@ -254,6 +371,35 @@ async function applyRunSessionMessageEffect({
         type: 'approval_requested',
         threadId: effect.threadId,
         pendingApproval: effect.pendingApproval,
+      });
+      return;
+    case 'steer_applied':
+      dispatch({
+        type: 'steer_applied',
+        threadId: effect.threadId,
+        receivedSeqs: effect.receivedSeqs,
+      });
+      return;
+    case 'usage_updated':
+      dispatch({
+        type: 'run_usage_updated',
+        threadId: effect.threadId,
+        usage: effect.usage,
+      });
+      return;
+    case 'context_usage_updated':
+      dispatch({
+        type: 'run_context_usage_updated',
+        threadId: effect.threadId,
+        contextUsage: effect.contextUsage,
+      });
+      return;
+    case 'run_terminal':
+      dispatch({
+        type: 'run_terminal',
+        runId: effect.runId,
+        threadId: effect.threadId,
+        ok: effect.ok,
       });
       return;
     case 'subagent_activity_added':

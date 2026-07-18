@@ -2,12 +2,26 @@ import { Router, type Response } from 'express';
 import { listTree } from '../../../daemon/files/list-tree.js';
 import { readFile } from '../../../daemon/files/read-file.js';
 import {
+  createRawFileStream,
+  UnsatisfiableRangeError,
+} from '../../../daemon/files/read-raw-file.js';
+import {
   replaceBinaryFile,
   replaceBinaryFileFromPath,
   saveBinaryFile,
   saveBinaryFileFromPath,
 } from '../../../daemon/files/save-binary-file.js';
 import { saveFile } from '../../../daemon/files/save-file.js';
+import {
+  commitPreparedDeletion,
+  commitPreparedDirectoryCreation,
+  commitPreparedRelocation,
+  isFileAuthorityRootPath,
+  prepareMutatingFilePath,
+  prepareRelocationPaths,
+  FILE_AUTHORITY_ROOT_DELETE_ERROR,
+  FILE_AUTHORITY_ROOT_RELOCATE_ERROR,
+} from '../../../daemon/files/file-mutation-chain.js';
 import {
   claimFileBinaryInputRefPath,
   deleteFileBinaryInputRefPath,
@@ -20,57 +34,103 @@ import {
   readRequiredQueryString,
 } from '#web/request/string-fields.js';
 import {
-  readProjectWorkspaceScopeFromBody,
-  readProjectWorkspaceScopeFromQuery,
-} from '#web/request/project-scope.js';
-import {
   sendApiError,
   sendUnexpectedApiError,
 } from '#web/response/send-api-error.js';
 import { sendFilesRouteError } from '../protocol/map-errors.js';
 import { registerInputRefDeleteRoute } from './input-ref-routes.js';
-import type { ProjectScopedRoutesContext } from './routes-context.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
-import type { FileBinaryInputRefResponse } from '@geulbat/protocol/files';
+import type {
+  ComputerFileRoot,
+  ComputerFileScopeResponse,
+  FileBinaryInputRefResponse,
+} from '@geulbat/protocol/files';
+import { isRecord } from '@geulbat/protocol/runtime-utils';
+import type { ComputerFileScope } from '../../../daemon/files/computer-file-scope.js';
 
-type FilesRoutesProjectRegistry = ProjectScopedRoutesContext['projectRegistry'];
+type FilesRouteScopeArgs = {
+  computerFileScope?: ComputerFileScope;
+};
+type FileWorkspaceScope = {
+  root: ComputerFileRoot;
+  workspaceRoot: string;
+};
 const logger = createLogger('web/files');
 
-export function createFilesRoutes(args: {
-  projectRegistry: FilesRoutesProjectRegistry;
-}): Router {
+export function createFilesRoutes(args: FilesRouteScopeArgs): Router {
   const router = Router();
-  const { projectRegistry } = args;
 
-  registerFilesTreeRoute(router, projectRegistry);
-  registerFileReadRoute(router, projectRegistry);
-  registerTextFileSaveRoute(router, projectRegistry);
-  registerBinaryInputRefRoute(router, projectRegistry);
-  registerBinaryFileSaveRoute(router, projectRegistry);
-  registerBinaryFileReplaceRoute(router, projectRegistry);
+  router.get('/api/files/computer-scope', (_req, res) => {
+    const response: ComputerFileScopeResponse = args.computerFileScope
+      ? {
+          available: true,
+          ...(args.computerFileScope.browseStartPath === undefined
+            ? {}
+            : { browseStartPath: args.computerFileScope.browseStartPath }),
+          browseShortcuts: args.computerFileScope.browseShortcuts.map(
+            (shortcut) => ({ ...shortcut }),
+          ),
+        }
+      : { available: false };
+    res.status(200).json(response);
+  });
+
+  registerFilesTreeRoute(router, args);
+  registerFileReadRoute(router, args);
+  registerFileRawReadRoute(router, args);
+  registerTextFileSaveRoute(router, args);
+  registerFileManageRoute(router, args);
+  registerBinaryInputRefRoute(router, args);
+  registerBinaryFileSaveRoute(router, args);
+  registerBinaryFileReplaceRoute(router, args);
 
   return router;
 }
 
+// lazy 트리: 요청당 depth를 제한하고, 셸이 폴더 펼침 시 path로 하위를 다시
+// 요청한다. 넓은 boundary root(computer-session profile)에서도 응답이
+// 폭발하지 않도록 truncate 모드를 쓴다.
+const TREE_DEFAULT_DEPTH = 4;
+const TREE_MAX_DEPTH = 8;
+const TREE_MAX_NODES = 4000;
+
+function readTreeDepth(raw: unknown): number {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return TREE_DEFAULT_DEPTH;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return TREE_DEFAULT_DEPTH;
+  }
+  return Math.min(parsed, TREE_MAX_DEPTH);
+}
+
 function registerFilesTreeRoute(
   router: Router,
-  projectRegistry: FilesRoutesProjectRegistry,
+  scopeArgs: FilesRouteScopeArgs,
 ): void {
   router.get('/api/files/tree', async (req, res) => {
-    const request = readProjectScopeOrSendError(
+    const request = readFileWorkspaceScopeOrSendError(
       res,
-      readProjectWorkspaceScopeFromQuery(req.query['projectId'], {
-        projectRegistry,
-      }),
+      { root: req.query['root'], projectId: req.query['projectId'] },
+      scopeArgs,
     );
+    const subPath =
+      typeof req.query['path'] === 'string' ? req.query['path'] : undefined;
+    const depth = readTreeDepth(req.query['depth']);
     await respondWithRouteResult({
       res,
       request,
       logContext: 'files/tree',
       sendError: sendUnexpectedApiError,
-      run: async ({ projectId, workspaceRoot }) => ({
-        projectId,
-        tree: await listTree(workspaceRoot),
+      run: async (scope) => ({
+        root: scope.root,
+        tree: await listTree(scope.workspaceRoot, {
+          maxDepth: depth,
+          maxNodes: TREE_MAX_NODES,
+          depthLimitMode: 'truncate',
+          ...(subPath !== undefined ? { subPath } : {}),
+        }),
       }),
     });
   });
@@ -78,15 +138,17 @@ function registerFilesTreeRoute(
 
 function registerFileReadRoute(
   router: Router,
-  projectRegistry: FilesRoutesProjectRegistry,
+  scopeArgs: FilesRouteScopeArgs,
 ): void {
   router.get('/api/files/read', async (req, res) => {
-    const projectScope = readProjectScopeOrSendError(
+    const fileScope = readFileWorkspaceScopeOrSendError(
       res,
-      readProjectWorkspaceScopeFromQuery(req.query['projectId'], {
-        projectRegistry,
-      }),
+      { root: req.query['root'], projectId: req.query['projectId'] },
+      scopeArgs,
     );
+    if (!fileScope) {
+      return;
+    }
     const pathResult = readRequiredQueryString(req.query['path'], 'path');
     if (!pathResult.ok) {
       sendApiError(res, 'bad_request', pathResult.message);
@@ -94,35 +156,138 @@ function registerFileReadRoute(
     }
     await respondWithRouteResult({
       res,
-      request:
-        projectScope && pathResult.ok
-          ? {
-              workspaceRoot: projectScope.workspaceRoot,
-              path: pathResult.value,
-            }
-          : null,
+      request: pathResult.ok
+        ? { workspaceRoot: fileScope.workspaceRoot, path: pathResult.value }
+        : null,
       logContext: 'files/read',
       run: (request) => readFile(request.workspaceRoot, request.path),
     });
   });
 }
 
+const RAW_CONTENT_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  svg: 'image/svg+xml',
+  avif: 'image/avif',
+  pdf: 'application/pdf',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  m4a: 'audio/mp4',
+  flac: 'audio/flac',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  ogv: 'video/ogg',
+  mov: 'video/quicktime',
+};
+
+// 이미지/미디어 미리보기용 원본 바이트 — 텍스트 read와 같은 boundary
+// 검증을 거치고 바이너리 거부만 없다. 스트리밍이라 크기 상한이 없고,
+// HTTP Range를 지원해 <video>/<audio> 구간 탐색이 네이티브로 동작한다.
+function registerFileRawReadRoute(
+  router: Router,
+  scopeArgs: FilesRouteScopeArgs,
+): void {
+  router.get('/api/files/raw', async (req, res) => {
+    const fileScope = readFileWorkspaceScopeOrSendError(
+      res,
+      { root: req.query['root'], projectId: req.query['projectId'] },
+      scopeArgs,
+    );
+    if (!fileScope) {
+      return;
+    }
+    const pathResult = readRequiredQueryString(req.query['path'], 'path');
+    if (!pathResult.ok) {
+      sendApiError(res, 'bad_request', pathResult.message);
+      return;
+    }
+    const range = parseByteRangeHeader(req.headers.range);
+    try {
+      const result = await createRawFileStream(
+        fileScope.workspaceRoot,
+        pathResult.value,
+        range ?? undefined,
+      );
+      const extension = pathResult.value.split('.').pop()?.toLowerCase() ?? '';
+      res.setHeader(
+        'Content-Type',
+        RAW_CONTENT_TYPES[extension] ?? 'application/octet-stream',
+      );
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Length', result.end - result.start + 1);
+      if (range !== null) {
+        res.status(206);
+        res.setHeader(
+          'Content-Range',
+          `bytes ${result.start}-${result.end}/${result.totalSize}`,
+        );
+      }
+      result.stream.on('error', () => {
+        res.destroy();
+      });
+      result.stream.pipe(res);
+    } catch (err: unknown) {
+      if (range !== null && err instanceof UnsatisfiableRangeError) {
+        res.status(416).setHeader('Content-Range', `bytes */${err.totalSize}`);
+        res.end();
+        return;
+      }
+      sendFilesRouteError(res, 'files/raw', err);
+    }
+  });
+}
+
+// "bytes=start-end" | "bytes=start-" 만 지원 — 그 외 형식은 전체 응답으로
+// 폴백한다(suffix range, multi-range는 미디어 재생에 불필요)
+function parseByteRangeHeader(
+  header: string | undefined,
+): { start: number; end?: number } | null {
+  if (header === undefined) {
+    return null;
+  }
+  const match = /^bytes=(\d+)-(\d*)$/.exec(header.trim());
+  if (match === null || match[1] === undefined) {
+    return null;
+  }
+  const start = Number.parseInt(match[1], 10);
+  const end = match[2] === '' ? undefined : Number.parseInt(match[2]!, 10);
+  if (!Number.isFinite(start) || (end !== undefined && end < start)) {
+    return null;
+  }
+  return end === undefined ? { start } : { start, end };
+}
+
 function registerTextFileSaveRoute(
   router: Router,
-  projectRegistry: FilesRoutesProjectRegistry,
+  scopeArgs: FilesRouteScopeArgs,
 ): void {
   router.post('/api/files/save', async (req, res) => {
-    const body = req.body as Record<string, unknown> | undefined;
-    const requestFields = readProjectScopedBodyStringsOrSendError(
+    const body = isRecord(req.body) ? req.body : undefined;
+    const requestFields = readFileScopedBodyStringsOrSendError(
       res,
       body,
-      ['projectId', 'path', 'content'] as const,
-      {
-        projectRegistry,
-      },
+      ['path'] as const,
+      scopeArgs,
     );
+    // 빈 문자열 허용 — 새 파일 생성(create-only)은 빈 내용으로 시작한다
+    const contentResult =
+      requestFields === null ? null : readBodyString(body, 'content');
+    if (contentResult && !contentResult.ok) {
+      sendApiError(res, 'bad_request', contentResult.message);
+      return;
+    }
     const versionTokenResult =
-      requestFields === null ? null : readBodyString(body, 'versionToken');
+      requestFields === null || contentResult === null || !contentResult.ok
+        ? null
+        : readBodyString(body, 'versionToken');
     if (versionTokenResult && !versionTokenResult.ok) {
       sendApiError(res, 'bad_request', versionTokenResult.message);
       return;
@@ -130,11 +295,15 @@ function registerTextFileSaveRoute(
     await respondWithRouteResult({
       res,
       request:
-        requestFields && versionTokenResult !== null && versionTokenResult.ok
+        requestFields &&
+        contentResult !== null &&
+        contentResult.ok &&
+        versionTokenResult !== null &&
+        versionTokenResult.ok
           ? {
               workspaceRoot: requestFields.workspaceRoot,
-              path: requestFields.values.path,
-              content: requestFields.values.content,
+              path: requestFields.read('path'),
+              content: contentResult.value,
               versionToken: versionTokenResult.value,
             }
           : null,
@@ -150,19 +319,130 @@ function registerTextFileSaveRoute(
   });
 }
 
-function registerBinaryFileSaveRoute(
+const MANAGE_FILE_OPERATIONS = ['mkdir', 'delete', 'rename', 'move'] as const;
+type ManageFileOperation = (typeof MANAGE_FILE_OPERATIONS)[number];
+
+function isManageFileOperation(value: string): value is ManageFileOperation {
+  return (MANAGE_FILE_OPERATIONS as readonly string[]).includes(value);
+}
+
+/**
+ * User file ops shell input path (P7 spec §3.1.5) — agent의 manage_files
+ * tool과 같은 mutation chain(file-mutation-chain)을 공유한다. user direct
+ * gesture는 자체로 user-intent authorization이므로 approval 없이 커밋된다.
+ */
+function registerFileManageRoute(
   router: Router,
-  projectRegistry: FilesRoutesProjectRegistry,
+  scopeArgs: FilesRouteScopeArgs,
 ): void {
-  router.post('/api/files/save-binary', async (req, res) => {
-    const body = req.body as Record<string, unknown> | undefined;
-    const requestFields = readProjectScopedBodyStringsOrSendError(
+  router.post('/api/files/manage', async (req, res) => {
+    const body = isRecord(req.body) ? req.body : undefined;
+    const requestFields = readFileScopedBodyStringsOrSendError(
       res,
       body,
-      ['projectId', 'path'] as const,
-      {
-        projectRegistry,
+      ['operation', 'path'] as const,
+      scopeArgs,
+    );
+    if (requestFields === null) {
+      return;
+    }
+    const operation = requestFields.read('operation');
+    if (!isManageFileOperation(operation)) {
+      sendApiError(
+        res,
+        'bad_request',
+        'operation must be one of mkdir, delete, rename, move',
+      );
+      return;
+    }
+    let destination: string | undefined;
+    if (operation === 'rename' || operation === 'move') {
+      const destinationResult = readBodyString(body, 'destination');
+      if (!destinationResult.ok) {
+        sendApiError(res, 'bad_request', destinationResult.message);
+        return;
+      }
+      destination = destinationResult.value;
+    }
+    await respondWithRouteResult({
+      res,
+      request: {
+        workspaceRoot: requestFields.workspaceRoot,
+        operation,
+        path: requestFields.read('path'),
+        destination,
       },
+      logContext: 'files/manage',
+      run: (request) => runManagedFileOperation(request),
+    });
+  });
+}
+
+async function runManagedFileOperation(request: {
+  workspaceRoot: string;
+  operation: ManageFileOperation;
+  path: string;
+  destination: string | undefined;
+}): Promise<{
+  ok: true;
+  operation: string;
+  path: string;
+  destination?: string;
+}> {
+  const { workspaceRoot, operation, path, destination } = request;
+  switch (operation) {
+    case 'mkdir': {
+      const prepared = await prepareMutatingFilePath(workspaceRoot, path, {
+        allowMissingLeaf: true,
+      });
+      const result = await commitPreparedDirectoryCreation(prepared);
+      return { ok: true, operation, path: result.path };
+    }
+    case 'delete': {
+      const prepared = await prepareMutatingFilePath(workspaceRoot, path, {
+        allowMissingLeaf: true,
+      });
+      if (isFileAuthorityRootPath(prepared.resolvedPath.relativePath)) {
+        throw new Error(FILE_AUTHORITY_ROOT_DELETE_ERROR);
+      }
+      const result = await commitPreparedDeletion(prepared);
+      return { ok: true, operation, path: result.path };
+    }
+    case 'rename':
+    case 'move': {
+      if (destination === undefined) {
+        throw new Error(`destination is required for ${operation}.`);
+      }
+      const prepared = await prepareRelocationPaths(
+        workspaceRoot,
+        path,
+        destination,
+      );
+      if (isFileAuthorityRootPath(prepared.sourcePath.relativePath)) {
+        throw new Error(FILE_AUTHORITY_ROOT_RELOCATE_ERROR);
+      }
+      const result = await commitPreparedRelocation(prepared);
+      return {
+        ok: true,
+        operation,
+        path: result.from,
+        destination: result.to,
+      };
+    }
+  }
+}
+
+function registerBinaryFileSaveRoute(
+  router: Router,
+  scopeArgs: FilesRouteScopeArgs,
+): void {
+  router.post('/api/files/save-binary', async (req, res) => {
+    const body = isRecord(req.body) ? req.body : undefined;
+    const requestFields = readFileScopedBodyStringsOrSendError(
+      res,
+      body,
+      ['path'] as const,
+      scopeArgs,
     );
     const content =
       requestFields === null
@@ -178,7 +458,7 @@ function registerBinaryFileSaveRoute(
         requestFields && content
           ? {
               workspaceRoot: requestFields.workspaceRoot,
-              path: requestFields.values.path,
+              path: requestFields.read('path'),
               content,
             }
           : null,
@@ -195,17 +475,15 @@ function registerBinaryFileSaveRoute(
 
 function registerBinaryFileReplaceRoute(
   router: Router,
-  projectRegistry: FilesRoutesProjectRegistry,
+  scopeArgs: FilesRouteScopeArgs,
 ): void {
   router.post('/api/files/replace-binary', async (req, res) => {
-    const body = req.body as Record<string, unknown> | undefined;
-    const requestFields = readProjectScopedBodyStringsOrSendError(
+    const body = isRecord(req.body) ? req.body : undefined;
+    const requestFields = readFileScopedBodyStringsOrSendError(
       res,
       body,
-      ['projectId', 'path', 'versionToken'] as const,
-      {
-        projectRegistry,
-      },
+      ['path', 'versionToken'] as const,
+      scopeArgs,
     );
     const content =
       requestFields === null
@@ -221,9 +499,9 @@ function registerBinaryFileReplaceRoute(
         requestFields && content
           ? {
               workspaceRoot: requestFields.workspaceRoot,
-              path: requestFields.values.path,
+              path: requestFields.read('path'),
               content,
-              versionToken: requestFields.values.versionToken,
+              versionToken: requestFields.read('versionToken'),
             }
           : null,
       logContext: 'files/replace-binary',
@@ -240,7 +518,7 @@ function registerBinaryFileReplaceRoute(
 
 function registerBinaryInputRefRoute(
   router: Router,
-  projectRegistry: FilesRoutesProjectRegistry,
+  scopeArgs: FilesRouteScopeArgs,
 ): void {
   router.post('/api/files/binary-inputs', async (req, res) => {
     if (req.is('application/json')) {
@@ -252,19 +530,18 @@ function registerBinaryInputRefRoute(
       return;
     }
 
-    const projectScope = readProjectScopeOrSendError(
+    const fileScope = readFileWorkspaceScopeOrSendError(
       res,
-      readProjectWorkspaceScopeFromQuery(req.query['projectId'], {
-        projectRegistry,
-      }),
+      { root: req.query['root'], projectId: req.query['projectId'] },
+      scopeArgs,
     );
-    if (!projectScope) {
+    if (!fileScope) {
       return;
     }
 
     try {
       const result = await writeFileBinaryInputRefFromStream({
-        workspaceRoot: projectScope.workspaceRoot,
+        workspaceRoot: fileScope.workspaceRoot,
         input: req,
       });
       const response: FileBinaryInputRefResponse = {
@@ -280,7 +557,12 @@ function registerBinaryInputRefRoute(
   registerInputRefDeleteRoute({
     router,
     path: '/api/files/binary-inputs',
-    projectRegistry,
+    resolveWorkspaceRoot: (req, res) =>
+      readFileWorkspaceScopeOrSendError(
+        res,
+        { root: req.query['root'], projectId: req.query['projectId'] },
+        scopeArgs,
+      )?.workspaceRoot ?? null,
     refQueryName: 'contentRef',
     logContext: 'files/binary-inputs/delete',
     readRefPath: ({ workspaceRoot, ref }) =>
@@ -289,29 +571,30 @@ function registerBinaryInputRefRoute(
   });
 }
 
-function readProjectScopedBodyStringsOrSendError<const T extends string>(
+function readFileScopedBodyStringsOrSendError<const T extends string>(
   res: Response,
   body: Record<string, unknown> | undefined,
   names: readonly T[],
-  args: {
-    projectRegistry: FilesRoutesProjectRegistry;
-  },
-): { workspaceRoot: string; values: Record<T, string> } | null {
+  args: FilesRouteScopeArgs,
+): { workspaceRoot: string; read(name: T): string } | null {
+  const fileScope = readFileWorkspaceScopeOrSendError(
+    res,
+    { root: body?.['root'], projectId: body?.['projectId'] },
+    args,
+  );
+  if (!fileScope) {
+    return null;
+  }
   const bodyResult = readRequiredBodyStrings(body, names);
   if (!bodyResult.ok) {
     sendApiError(res, 'bad_request', bodyResult.message);
     return null;
   }
-  const projectScope = readProjectScopeOrSendError(
-    res,
-    readProjectWorkspaceScopeFromBody(body, args),
-  );
-  if (!projectScope) {
-    return null;
-  }
   return {
-    workspaceRoot: projectScope.workspaceRoot,
-    values: bodyResult.values,
+    workspaceRoot: fileScope.workspaceRoot,
+    read(name) {
+      return bodyResult.read(name);
+    },
   };
 }
 
@@ -330,14 +613,8 @@ async function readBinaryContentInputOrSendError(
     return null;
   }
 
-  const hasContentBase64 = Object.prototype.hasOwnProperty.call(
-    body ?? {},
-    'contentBase64',
-  );
-  const hasContentRef = Object.prototype.hasOwnProperty.call(
-    body ?? {},
-    'contentRef',
-  );
+  const hasContentBase64 = Object.hasOwn(body ?? {}, 'contentBase64');
+  const hasContentRef = Object.hasOwn(body ?? {}, 'contentRef');
   if (hasContentBase64 === hasContentRef) {
     sendApiError(
       res,
@@ -377,17 +654,24 @@ async function readBinaryContentInputOrSendError(
   return { kind: 'buffer', content };
 }
 
-function readProjectScopeOrSendError(
+function readFileWorkspaceScopeOrSendError(
   res: Response,
-  projectScope:
-    | ReturnType<typeof readProjectWorkspaceScopeFromBody>
-    | ReturnType<typeof readProjectWorkspaceScopeFromQuery>,
-): { projectId: string; workspaceRoot: string } | null {
-  if (!projectScope.ok) {
-    sendApiError(res, projectScope.code, projectScope.message);
+  selector: { root: unknown; projectId: unknown },
+  args: FilesRouteScopeArgs,
+): FileWorkspaceScope | null {
+  if (selector.projectId !== undefined) {
+    sendApiError(res, 'bad_request', 'projectId is not supported');
     return null;
   }
-  return projectScope;
+  if (selector.root !== 'computer') {
+    sendApiError(res, 'bad_request', 'root must be computer');
+    return null;
+  }
+  if (args.computerFileScope === undefined) {
+    sendApiError(res, 'not_found', 'computer file root is unavailable');
+    return null;
+  }
+  return { root: 'computer', workspaceRoot: args.computerFileScope.root };
 }
 
 function decodeBase64Body(value: string): Buffer | null {

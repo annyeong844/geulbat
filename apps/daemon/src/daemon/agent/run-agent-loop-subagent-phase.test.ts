@@ -17,9 +17,8 @@ import {
   providerToolRound,
   type ProviderRoundFixture,
 } from '../../test-support/provider-response-fixtures.js';
-import { testProjectId } from '../../test-support/project-id.js';
 import { testRunId } from '../../test-support/run-id.js';
-import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 
 function functionCallOutput(
@@ -80,8 +79,18 @@ async function runSubagentLoopScenario(args: {
   threadIdNumber: number;
   prompt: string;
   rounds: ProviderRoundFixture[];
+  providerModel?: NonNullable<
+    Parameters<typeof runAgentLoop>[0]['providerModel']
+  >;
+  reasoningEffort?: NonNullable<
+    Parameters<typeof runAgentLoop>[0]['reasoningEffort']
+  >;
 }): Promise<{
   childPrompts: string[];
+  childProviderSelections: Array<{
+    providerModel: Parameters<typeof runAgentLoop>[0]['providerModel'];
+    reasoningEffort: Parameters<typeof runAgentLoop>[0]['reasoningEffort'];
+  }>;
   finalProse: string;
 }> {
   const threadId = testThreadId(args.threadIdNumber);
@@ -89,23 +98,33 @@ async function runSubagentLoopScenario(args: {
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-loop-subagent-phase-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('subagent-phase'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: testRunId(`loop-subagent-phase-${args.threadIdNumber}`),
     runContext,
   });
   const childPrompts: string[] = [];
+  const childProviderSelections: Array<{
+    providerModel: Parameters<typeof runAgentLoop>[0]['providerModel'];
+    reasoningEffort: Parameters<typeof runAgentLoop>[0]['reasoningEffort'];
+  }> = [];
 
   daemonContext.subagentRuns = createSubagentRunLauncher({
     runAgentLoop: async (input) => {
       childPrompts.push(input.prompt);
+      childProviderSelections.push({
+        providerModel: input.providerModel,
+        reasoningEffort: input.reasoningEffort,
+      });
+      // Wait-result text stays task-scoped so parent assertions remain stable
+      // even when the model-facing child prompt includes shared context.
+      const task = extractTrailingTask(input.prompt);
       return {
         ok: true,
-        finalProse: `child complete: ${input.prompt}`,
+        finalProse: `child complete: ${task}`,
       };
     },
   });
@@ -115,7 +134,16 @@ async function runSubagentLoopScenario(args: {
     runContext,
     prompt: args.prompt,
     runState,
-    allowedToolNames: ['agent_spawn', 'agent_wait'],
+    ...(args.providerModel !== undefined
+      ? { providerModel: args.providerModel }
+      : {}),
+    ...(args.reasoningEffort !== undefined
+      ? { reasoningEffort: args.reasoningEffort }
+      : {}),
+    toolSurface: {
+      directRegistryNames: ['agent_spawn', 'agent_wait'],
+      allowedRegistryNames: ['agent_spawn', 'agent_wait'],
+    },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
       sessionId: `session-loop-subagent-phase-${args.threadIdNumber}`,
@@ -126,7 +154,11 @@ async function runSubagentLoopScenario(args: {
 
   assert.deepEqual(result.ok, true);
   assert.equal(runState.status, 'completed');
-  return { childPrompts, finalProse: result.finalProse };
+  return {
+    childPrompts,
+    childProviderSelections,
+    finalProse: result.finalProse,
+  };
 }
 
 void test('runAgentLoop records same-round agent_spawn handles for model follow-up', async () => {
@@ -169,9 +201,41 @@ void test('runAgentLoop records same-round agent_spawn handles for model follow-
 
   assert.equal(result.finalProse, 'handles recorded');
   assert.equal(new Set(seenChildRunIds).size, 2);
-  assert.deepEqual([...result.childPrompts].sort(), [
+  assertPromptsCarryTasks(result.childPrompts, [
     'Inspect subsystem A',
     'Inspect subsystem B',
+  ]);
+});
+
+void test('runAgentLoop threads parent provider selection into spawned children', async () => {
+  // The live incident: parent on grok, children silently on the daemon
+  // default provider. Keep this on the grok route.
+  const providerModel = {
+    providerId: 'grok_oauth',
+    model: 'grok-4.5',
+  } as const;
+  const result = await runSubagentLoopScenario({
+    threadIdNumber: 1304,
+    prompt: 'spawn an inspector on the parent provider',
+    providerModel,
+    reasoningEffort: 'high',
+    rounds: [
+      providerToolRound({
+        toolName: 'agent_spawn',
+        functionCallId: 'fc-inspect-provider',
+        callId: 'call-inspect-provider',
+        argumentsJson: JSON.stringify({
+          task: 'Inspect subsystem A',
+          subagent_type: 'explorer',
+        }),
+      }),
+      providerFinalAnswerRound('provider threaded'),
+    ],
+  });
+
+  assert.equal(result.finalProse, 'provider threaded');
+  assert.deepEqual(result.childProviderSelections, [
+    { providerModel, reasoningEffort: 'high' },
   ]);
 });
 
@@ -221,7 +285,7 @@ void test('runAgentLoop returns completed child output through agent_wait', asyn
   });
 
   assert.equal(result.finalProse, 'wait observed');
-  assert.deepEqual(result.childPrompts, ['Inspect subsystem A']);
+  assertPromptsCarryTasks(result.childPrompts, ['Inspect subsystem A']);
 });
 
 void test('runAgentLoop starts a dependent subagent only after wait output is visible', async () => {
@@ -293,8 +357,42 @@ void test('runAgentLoop starts a dependent subagent only after wait output is vi
   });
 
   assert.equal(result.finalProse, 'dependent phase started');
-  assert.deepEqual(result.childPrompts, [
+  assertPromptsCarryTasks(result.childPrompts, [
     'Inspect subsystem A',
     'Verify subsystem A finding',
   ]);
 });
+
+function extractTrailingTask(prompt: string): string {
+  const parts = prompt.split('\n\n');
+  const last = parts[parts.length - 1];
+  return last === undefined || last.length === 0 ? prompt : last;
+}
+
+function promptCarriesTask(prompt: string, task: string): boolean {
+  return (
+    prompt === task || prompt.endsWith(`\n\n${task}`) || prompt.endsWith(task)
+  );
+}
+
+function assertPromptsCarryTasks(
+  prompts: readonly string[],
+  tasks: readonly string[],
+): void {
+  assert.equal(
+    prompts.length,
+    tasks.length,
+    `expected ${tasks.length} child prompts, got ${prompts.length}`,
+  );
+  const remaining = [...prompts];
+  for (const task of tasks) {
+    const index = remaining.findIndex((prompt) =>
+      promptCarriesTask(prompt, task),
+    );
+    assert.ok(
+      index >= 0,
+      `expected a child prompt carrying task ${JSON.stringify(task)}, got ${JSON.stringify(prompts)}`,
+    );
+    remaining.splice(index, 1);
+  }
+}

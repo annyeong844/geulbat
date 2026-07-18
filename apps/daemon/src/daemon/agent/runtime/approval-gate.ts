@@ -1,8 +1,8 @@
 import { assertAgentThreadId as assertValidThreadId } from '../contract.js';
-import {
-  type ApprovalGrantContext,
-  type ApprovalGrantScope,
-  type ApprovalGrantStore,
+import type {
+  ApprovalGrantContext,
+  ApprovalGrantScope,
+  ApprovalGrantStore,
 } from '../../tools/approval-grants.js';
 
 type ApprovalDecision = 'approved' | 'denied' | 'aborted';
@@ -23,7 +23,15 @@ interface ResolvedApprovalEntry {
 export interface ApprovalGate {
   clearApprovalSessionGrants(sessionId: string): void;
   clearApprovalSessionRuntime(sessionId: string): void;
-  hasPendingApproval(callId: string, runId: string, threadId: string): boolean;
+  // Existence probe only — does a pending approval entry exist for this triple.
+  // NOT an authorization check: it ignores the caller's session. For any
+  // authorization decision use hasPendingApprovalForSession, which binds the
+  // pending entry to the caller's approval session.
+  hasPendingApprovalEntry(
+    callId: string,
+    runId: string,
+    threadId: string,
+  ): boolean;
   hasPendingApprovalForSession(
     callId: string,
     runId: string,
@@ -71,7 +79,7 @@ export function createApprovalGate(args: {
       }
       approvalGrants.clearApprovalSession(sessionId);
     },
-    hasPendingApproval(callId, runId, threadId) {
+    hasPendingApprovalEntry(callId, runId, threadId) {
       const validThreadId = assertValidThreadId(threadId);
       const entry = pendingApprovals.get(callId);
       return (

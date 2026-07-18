@@ -5,7 +5,7 @@ import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
 import { createArtifactsByRefMap } from '../artifacts/artifact-transcript-lookup.js';
-import { brandProjectId, brandThreadId } from '../../lib/id-brand-helpers.js';
+import { brandThreadId } from '../../lib/id-brand-helpers.js';
 import { TranscriptMessage } from './assistant-transcript-message.js';
 
 void test('TranscriptMessage preserves assistant prose beside a committed artifact ref', () => {
@@ -99,7 +99,7 @@ function createThreadArtifactVersion(args: {
     persistenceEpoch: 0,
     sourceRef: {
       kind: 'thread-file',
-      projectId: brandProjectId('workspace'),
+      workingDirectory: 'workspace',
       threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
       runId: 'run-1',
       filePath: 'notes/demo.md',

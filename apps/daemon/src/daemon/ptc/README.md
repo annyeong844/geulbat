@@ -24,9 +24,9 @@ inside the narrowest owner directory instead of adding more top-level
 - `lab/shell/` owns batch command execution and public session ids.
 - `lab/browser/` owns browser policy and evidence families. Keep feature files
   in the narrow family directory:
-  - `core/` for shared browser policy, session identity projection, request
+  - `core/` for common browser policy, session identity projection, request
     validation, URL grammar, output guards, fixed command execution, shared
-    browser runtime command execution/cleanup, navigation attempt identity, and
+    runtime command execution/cleanup, navigation attempt identity, and
     common result contracts.
   - `page-load-evidence/`, `text-evidence/`, and `user-url-navigation/` for the
     corresponding user-facing browser capabilities.

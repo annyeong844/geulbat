@@ -7,6 +7,7 @@ import {
   type ReactBundleRuntimeManifest,
 } from '@geulbat/protocol/react-bundle-inline-compile';
 import { writeFileAtomically } from '../utils/atomic-file.js';
+import { hasErrorCode } from '../utils/error.js';
 
 const GENERATED_ROOT_ENV = 'GEULBAT_REACT_BUNDLE_INLINE_GENERATED_ROOT';
 const DEFAULT_GENERATED_ROOT = path.join(
@@ -85,7 +86,7 @@ export async function readGeneratedReactBundleInlineAsset(
       body,
     };
   } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') {
+    if (hasErrorCode(error, 'ENOENT')) {
       return null;
     }
     throw error;
@@ -117,7 +118,7 @@ async function pathExists(targetPath: string): Promise<boolean> {
     await fs.access(targetPath);
     return true;
   } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') {
+    if (hasErrorCode(error, 'ENOENT')) {
       return false;
     }
     throw error;
@@ -186,7 +187,7 @@ function contentTypeForGeneratedAssetPath(relativeAssetPath: string): string {
   if (extension === '.json' || extension === '.map') {
     return 'application/json; charset=utf-8';
   }
-  return 'text/javascript; charset=utf-8';
+  return 'application/javascript; charset=utf-8';
 }
 
 function normalizeOutputFilePath(relativePath: string): string {

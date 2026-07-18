@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { isAbsolute, resolve, win32 } from 'node:path';
 import { isPlainRecord, tryDecodeJson } from '../runtime-json.js';
 
 import { createChunkRecords } from './chunk-file.js';
@@ -14,7 +15,10 @@ import type {
   MemoryManifest,
   MemoryManifestFile,
 } from './types.js';
-import { resolveDerivedArtifactTarget } from '../files/file-platform.js';
+import {
+  isPathInsideComputerFileScope,
+  resolveDerivedArtifactTarget,
+} from '../files/file-platform.js';
 import {
   GEULBAT_MEMORY_INDEX_RECORDS_PATH,
   GEULBAT_MEMORY_MANIFEST_PATH,
@@ -25,104 +29,166 @@ import { memoize } from '../utils/memoize.js';
 const MANIFEST_RELATIVE = GEULBAT_MEMORY_MANIFEST_PATH;
 const MEMORY_RELATIVE = GEULBAT_MEMORY_INDEX_RECORDS_PATH;
 const MEMORY_INDEX_PATH = 'memory/all-memory.jsonl';
+const WINDOWS_ABSOLUTE_PATH = /^(?:[a-zA-Z]:[\\/]|\\\\)/u;
 
 interface MemoryIndexStoreDeps {
-  buildSourceSnapshot?: (workspaceRoot: string) => Promise<SourceSnapshot>;
+  buildSourceSnapshot?: (sourceRoot: string) => Promise<SourceSnapshot>;
   createGenerationId?: () => string;
   writeIndexGeneration?: (
-    workspaceRoot: string,
+    stateRoot: string,
     manifest: MemoryManifest,
     records: MemoryChunkRecord[],
   ) => Promise<void>;
   readTextFile?: (path: string, encoding: 'utf8') => Promise<string>;
 }
 
+export interface MemoryIndexScope {
+  stateRoot: string;
+  sourceRoot: string;
+}
+
 export interface MemoryIndexStore {
-  refreshMemoryIndex(
-    workspaceRoot: string,
-    projectId?: string,
-  ): Promise<BuildMemoryIndexResult>;
+  refreshMemoryIndex(scope: MemoryIndexScope): Promise<BuildMemoryIndexResult>;
   computeCurrentSourceSnapshot(
-    workspaceRoot: string,
+    sourceRoot: string,
   ): Promise<{ sourceIndexVersionToken: string }>;
-  loadMemoryIndex(workspaceRoot: string): Promise<LoadedMemoryIndex>;
+  loadMemoryIndex(stateRoot: string): Promise<LoadedMemoryIndex>;
+}
+
+export function resolveMemoryIndexScope(args: {
+  stateRoot?: string;
+  computerFileRoot?: string;
+  workingDirectory?: string;
+}): MemoryIndexScope {
+  const stateRoot = resolveRequiredAbsoluteRoot(
+    args.stateRoot,
+    'memory index Home state storage is unavailable',
+    'execution_failed',
+  );
+  const computerFileRoot = resolveRequiredAbsoluteRoot(
+    args.computerFileRoot,
+    'memory index Computer file scope is unavailable',
+    'access_denied',
+  );
+  if (args.workingDirectory === undefined) {
+    throw createScopeError(
+      'memory index working directory is unavailable',
+      'access_denied',
+    );
+  }
+
+  const pathModule = WINDOWS_ABSOLUTE_PATH.test(computerFileRoot)
+    ? win32
+    : undefined;
+  const workingDirectoryIsAbsolute = pathModule
+    ? pathModule.isAbsolute(args.workingDirectory)
+    : isAbsolute(args.workingDirectory) ||
+      win32.isAbsolute(args.workingDirectory);
+  if (workingDirectoryIsAbsolute) {
+    throw createScopeError(
+      'memory index working directory must be relative to the Computer file scope',
+      'access_denied',
+    );
+  }
+
+  const sourceRoot = pathModule
+    ? pathModule.resolve(computerFileRoot, args.workingDirectory || '.')
+    : resolve(computerFileRoot, args.workingDirectory || '.');
+  if (!isPathInsideComputerFileScope(computerFileRoot, sourceRoot)) {
+    throw createScopeError(
+      'memory index working directory escapes the Computer file scope',
+      'access_denied',
+    );
+  }
+
+  return { stateRoot, sourceRoot };
 }
 
 export function createMemoryIndexStore(
   deps?: MemoryIndexStoreDeps,
 ): MemoryIndexStore {
-  const inFlightBuilds = new Map<string, Promise<BuildMemoryIndexResult>>();
+  const inFlightBuilds = new Map<
+    string,
+    { sourceRoot: string; promise: Promise<BuildMemoryIndexResult> }
+  >();
   const buildSourceSnapshotFn =
     deps?.buildSourceSnapshot ?? buildSourceSnapshot;
   const createGenerationIdFn = deps?.createGenerationId ?? createGenerationId;
   const writeIndexGenerationFn =
     deps?.writeIndexGeneration ?? writeIndexGeneration;
   const readTextFile = deps?.readTextFile ?? readFile;
-  const loadMemoryIndexFromCache = memoize((workspaceRoot: string) =>
-    loadMemoryIndexFromDisk(workspaceRoot, readTextFile),
+  const loadMemoryIndexFromCache = memoize((stateRoot: string) =>
+    loadMemoryIndexFromDisk(stateRoot, readTextFile),
   );
 
   return {
-    async refreshMemoryIndex(workspaceRoot, projectId = 'workspace') {
-      const existing = inFlightBuilds.get(workspaceRoot);
-      if (existing) {
-        return existing;
+    async refreshMemoryIndex(scope) {
+      while (true) {
+        const existing = inFlightBuilds.get(scope.stateRoot);
+        if (!existing) {
+          break;
+        }
+        if (existing.sourceRoot === scope.sourceRoot) {
+          return existing.promise;
+        }
+        await existing.promise;
       }
 
       const promise = buildMemoryIndex(
-        workspaceRoot,
-        projectId,
+        scope,
         buildSourceSnapshotFn,
         createGenerationIdFn,
         writeIndexGenerationFn,
-      )
-        .then((result) => {
-          loadMemoryIndexFromCache.cache.delete(workspaceRoot);
-          return result;
-        })
-        .finally(() => {
-          inFlightBuilds.delete(workspaceRoot);
-        });
-      inFlightBuilds.set(workspaceRoot, promise);
-      return promise;
+      ).then((result) => {
+        loadMemoryIndexFromCache.cache.delete(scope.stateRoot);
+        return result;
+      });
+      const entry = { sourceRoot: scope.sourceRoot, promise };
+      inFlightBuilds.set(scope.stateRoot, entry);
+      try {
+        return await promise;
+      } finally {
+        if (inFlightBuilds.get(scope.stateRoot) === entry) {
+          inFlightBuilds.delete(scope.stateRoot);
+        }
+      }
     },
-    async computeCurrentSourceSnapshot(workspaceRoot) {
-      const snapshot = await buildSourceSnapshotFn(workspaceRoot);
+    async computeCurrentSourceSnapshot(sourceRoot) {
+      const snapshot = await buildSourceSnapshotFn(sourceRoot);
       return { sourceIndexVersionToken: snapshot.sourceIndexVersionToken };
     },
-    async loadMemoryIndex(workspaceRoot) {
-      return loadMemoryIndexFromCache(workspaceRoot);
+    async loadMemoryIndex(stateRoot) {
+      return loadMemoryIndexFromCache(stateRoot);
     },
   };
 }
 
 async function buildMemoryIndex(
-  workspaceRoot: string,
-  projectId: string,
-  buildSourceSnapshotFn: (workspaceRoot: string) => Promise<SourceSnapshot>,
+  scope: MemoryIndexScope,
+  buildSourceSnapshotFn: (sourceRoot: string) => Promise<SourceSnapshot>,
   createGenerationIdFn: () => string,
   writeIndexGenerationFn: (
-    workspaceRoot: string,
+    stateRoot: string,
     manifest: MemoryManifest,
     records: MemoryChunkRecord[],
   ) => Promise<void>,
 ): Promise<BuildMemoryIndexResult> {
-  const sourceSnapshot = await buildSourceSnapshotFn(workspaceRoot);
+  const sourceSnapshot = await buildSourceSnapshotFn(scope.sourceRoot);
   const generatedAt = new Date().toISOString();
   const generationId = createGenerationIdFn();
   const { manifestFiles, records } =
     collectManifestFilesAndRecords(sourceSnapshot);
 
   const manifest: MemoryManifest = {
-    version: 1,
+    version: 2,
     generationId,
     generatedAt,
-    sourceProjectId: projectId,
+    sourceDirectory: scope.sourceRoot,
     sourceIndexVersionToken: sourceSnapshot.sourceIndexVersionToken,
     files: manifestFiles,
   };
 
-  await writeIndexGenerationFn(workspaceRoot, manifest, records);
+  await writeIndexGenerationFn(scope.stateRoot, manifest, records);
 
   return {
     generationId,
@@ -135,11 +201,11 @@ async function buildMemoryIndex(
 }
 
 async function loadMemoryIndexFromDisk(
-  workspaceRoot: string,
+  stateRoot: string,
   readTextFile: (path: string, encoding: 'utf8') => Promise<string>,
 ): Promise<LoadedMemoryIndex> {
   const { manifestRaw, memoryRaw } = await readMemoryIndexFiles(
-    workspaceRoot,
+    stateRoot,
     readTextFile,
   );
 
@@ -178,18 +244,18 @@ function collectManifestFilesAndRecords(sourceSnapshot: SourceSnapshot): {
 }
 
 async function readMemoryIndexFiles(
-  workspaceRoot: string,
+  stateRoot: string,
   readTextFile: (path: string, encoding: 'utf8') => Promise<string>,
 ): Promise<{ manifestRaw: string; memoryRaw: string }> {
   const [manifestTarget, memoryTarget] = await Promise.all([
     resolveDerivedArtifactTarget(
-      workspaceRoot,
+      stateRoot,
       'memory_index',
       'index/manifest.json',
       { mode: 'read', allowMissingLeaf: true },
     ),
     resolveDerivedArtifactTarget(
-      workspaceRoot,
+      stateRoot,
       'memory_index',
       'index/memory/all-memory.jsonl',
       { mode: 'read', allowMissingLeaf: true },
@@ -216,7 +282,9 @@ async function readMemoryIndexFiles(
 function parseMemoryChunkRecords(memoryRaw: string): MemoryChunkRecord[] {
   const records: MemoryChunkRecord[] = [];
   for (const line of memoryRaw.split('\n')) {
-    if (!line.trim()) continue;
+    if (!line.trim()) {
+      continue;
+    }
     const parsedRecord = tryDecodeJson(line, parseMemoryChunkRecord);
     if (!parsedRecord.ok) {
       throw Object.assign(new Error('invalid memory index jsonl'), {
@@ -234,13 +302,13 @@ function parseMemoryManifest(value: unknown): MemoryManifest {
   }
 
   const record = value;
-  if (record.version !== 1) {
+  if (record.version !== 2) {
     throw new Error('invalid memory manifest');
   }
   if (
     typeof record.generationId !== 'string' ||
     typeof record.generatedAt !== 'string' ||
-    typeof record.sourceProjectId !== 'string' ||
+    typeof record.sourceDirectory !== 'string' ||
     typeof record.sourceIndexVersionToken !== 'string' ||
     !Array.isArray(record.files)
   ) {
@@ -248,13 +316,37 @@ function parseMemoryManifest(value: unknown): MemoryManifest {
   }
 
   return {
-    version: 1,
+    version: 2,
     generationId: record.generationId,
     generatedAt: record.generatedAt,
-    sourceProjectId: record.sourceProjectId,
+    sourceDirectory: record.sourceDirectory,
     sourceIndexVersionToken: record.sourceIndexVersionToken,
     files: record.files.map(parseMemoryManifestFile),
   };
+}
+
+function resolveRequiredAbsoluteRoot(
+  value: string | undefined,
+  message: string,
+  code: 'access_denied' | 'execution_failed',
+): string {
+  if (!value?.trim()) {
+    throw createScopeError(message, code);
+  }
+  if (WINDOWS_ABSOLUTE_PATH.test(value)) {
+    return win32.resolve(value);
+  }
+  if (!isAbsolute(value)) {
+    throw createScopeError(message, code);
+  }
+  return resolve(value);
+}
+
+function createScopeError(
+  message: string,
+  code: 'access_denied' | 'execution_failed',
+): Error & { code: 'access_denied' | 'execution_failed' } {
+  return Object.assign(new Error(message), { code });
 }
 
 function parseMemoryManifestFile(value: unknown): MemoryManifestFile {

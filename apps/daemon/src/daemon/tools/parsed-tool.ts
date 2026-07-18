@@ -27,7 +27,7 @@ export function defineParsedTool<TArgs extends object>(
     parameters: options.parameters,
     strict: options.strict,
     sideEffectLevel: options.sideEffectLevel,
-    mayMutateWorkspaceFiles: options.mayMutateWorkspaceFiles,
+    mayMutateComputerFiles: options.mayMutateComputerFiles,
     ...(options.parallelBatchKind
       ? { parallelBatchKind: options.parallelBatchKind }
       : {}),
@@ -35,6 +35,10 @@ export function defineParsedTool<TArgs extends object>(
       ? { timeoutMs: options.timeoutMs }
       : {}),
     requiresApproval: options.requiresApproval,
+    ...(options.exposure ? { exposure: options.exposure } : {}),
+    ...(options.catalogSearchMetadata
+      ? { catalogSearchMetadata: options.catalogSearchMetadata }
+      : {}),
     parseArgs: options.parseArgs,
     executeParsed: options.executeParsed,
   };

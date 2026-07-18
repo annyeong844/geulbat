@@ -17,7 +17,6 @@ void test('resolveApproval requires matching runId and threadId', async () => {
     threadId,
     {
       runId: 'run-1',
-      threadId,
       sessionId: 'session-1',
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
@@ -54,7 +53,6 @@ void test('resolveApproval returns already_resolved after abort settles the wait
     threadId,
     {
       runId: 'run-2',
-      threadId,
       sessionId: 'session-2',
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
@@ -78,7 +76,6 @@ void test('resolveApproval registers reusable grants when scope exceeds once', a
   const threadId = testThreadId(4);
   const approvalContext = {
     runId: 'run-3',
-    threadId,
     sessionId: 'session-3',
     approvalClass: toApprovalClass('write_file'),
     sideEffectLevel: 'write' as const,
@@ -117,7 +114,6 @@ void test('clearApprovalSessionRuntime aborts pending waiters for the same sessi
     threadId,
     {
       runId: 'run-4',
-      threadId,
       sessionId: 'session-4',
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
@@ -146,7 +142,6 @@ void test('clearApprovalSessionRuntime clears resolved approvals for that sessio
     threadId,
     {
       runId: 'run-session-a',
-      threadId,
       sessionId: 'session-a',
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
@@ -160,7 +155,6 @@ void test('clearApprovalSessionRuntime clears resolved approvals for that sessio
     threadId,
     {
       runId: 'run-session-b',
-      threadId,
       sessionId: 'session-b',
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
@@ -198,7 +192,6 @@ void test('clearApprovalSessionGrants clears grants without aborting pending app
   const threadId = testThreadId(6);
   const approvalContext = {
     runId: 'run-5',
-    threadId,
     sessionId: 'session-5',
     approvalClass: toApprovalClass('write_file'),
     sideEffectLevel: 'write' as const,
@@ -215,7 +208,7 @@ void test('clearApprovalSessionGrants clears grants without aborting pending app
 
   assert.equal(approvalGrants.hasApprovalGrant(approvalContext), true);
   assert.equal(
-    gate.hasPendingApproval('call-5', approvalContext.runId, threadId),
+    gate.hasPendingApprovalEntry('call-5', approvalContext.runId, threadId),
     true,
   );
 
@@ -223,7 +216,7 @@ void test('clearApprovalSessionGrants clears grants without aborting pending app
 
   assert.equal(approvalGrants.hasApprovalGrant(approvalContext), false);
   assert.equal(
-    gate.hasPendingApproval('call-5', approvalContext.runId, threadId),
+    gate.hasPendingApprovalEntry('call-5', approvalContext.runId, threadId),
     true,
   );
   assert.equal(

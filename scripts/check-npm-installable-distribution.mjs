@@ -20,12 +20,20 @@ const REPO_ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');
 
 const PACKAGE_WORKSPACES = [
   {
+    manifestPath: 'packages/agent-loop/package.json',
+    name: '@geulbat/agent-loop',
+  },
+  {
     manifestPath: 'packages/shared-utils/package.json',
     name: '@geulbat/shared-utils',
   },
   {
     manifestPath: 'packages/protocol/package.json',
     name: '@geulbat/protocol',
+  },
+  {
+    manifestPath: 'packages/tool-library/package.json',
+    name: '@geulbat/tool-library',
   },
   {
     manifestPath: 'apps/daemon/package.json',
@@ -169,9 +177,13 @@ async function packWorkspacePackages(packDir, env) {
       '--pack-destination',
       packDir,
       '-w',
+      'packages/agent-loop',
+      '-w',
       'packages/shared-utils',
       '-w',
       'packages/protocol',
+      '-w',
+      'packages/tool-library',
       '-w',
       'apps/daemon',
     ],
@@ -223,12 +235,18 @@ async function installPackedPackages(args) {
       'install',
       '--ignore-scripts',
       '--package-lock=false',
+      readTarballPath(args.packedPackages, '@geulbat/agent-loop', args.packDir),
       readTarballPath(
         args.packedPackages,
         '@geulbat/shared-utils',
         args.packDir,
       ),
       readTarballPath(args.packedPackages, '@geulbat/protocol', args.packDir),
+      readTarballPath(
+        args.packedPackages,
+        '@geulbat/tool-library',
+        args.packDir,
+      ),
       readTarballPath(args.packedPackages, '@geulbat/daemon', args.packDir),
     ],
     {
@@ -260,6 +278,7 @@ async function validateInstalledRuntimeImports(args) {
     [
       '-e',
       [
+        "await import('@geulbat/agent-loop/kernel');",
         "await import('@geulbat/protocol/provider-auth');",
         "await import('@geulbat/shared-utils/logger');",
         "await import('./node_modules/@geulbat/daemon/dist/daemon/auth/bootstrap/config.js');",

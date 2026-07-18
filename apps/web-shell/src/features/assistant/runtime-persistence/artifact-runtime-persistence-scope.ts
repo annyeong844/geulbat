@@ -8,7 +8,6 @@ export function createArtifactRuntimePersistenceScopeKey(
   }
 
   return JSON.stringify([
-    scope.projectId,
     scope.threadId,
     scope.artifactId,
     scope.persistenceEpoch,

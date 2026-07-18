@@ -36,7 +36,7 @@ const PRIVATE_PATH = ['', 'home', 'geulbat-private', '.geulbat', 'secret'].join(
 
 const IDENTITY: PtcSessionDockerIdentity = Object.freeze({
   threadId: 'thread-open-egress-smoke',
-  workspaceRoot: '/workspace/project-a',
+  stateRoot: '/workspace/project-a',
   trustContextId: 'trust-local-v1',
 });
 
@@ -208,7 +208,7 @@ void test('runPtcLabOpenEgressSmoke runs fixed smoke command through the real se
 
       assert.deepEqual(
         invocations.map((invocation) => invocation.args[0]),
-        ['--version', 'image', 'create', 'start', 'inspect', 'exec'],
+        ['--version', 'image', 'network', 'create', 'start', 'inspect', 'exec'],
       );
       const createInvocation = invocations.find(
         (invocation) => invocation.args[0] === 'create',

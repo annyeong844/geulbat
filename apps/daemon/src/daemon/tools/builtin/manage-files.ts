@@ -5,10 +5,13 @@ import {
   commitPreparedDeletion,
   commitPreparedDirectoryCreation,
   commitPreparedRelocation,
+  isFileAuthorityRootPath,
   prepareMutatingFilePath,
   prepareRelocationPaths,
   persistPreparedFile,
-} from './file-mutation-chain.js';
+  FILE_AUTHORITY_ROOT_DELETE_ERROR,
+  FILE_AUTHORITY_ROOT_RELOCATE_ERROR,
+} from '../../files/file-mutation-chain.js';
 import {
   evaluateOperationManifestPreconditions,
   evaluateRelocationPreconditions,
@@ -17,6 +20,7 @@ import {
   type OperationActor,
   type OperationManifest,
 } from '../../files/operation-manifest.js';
+import { resolveComputerFileToolPath } from '../file-tool-root.js';
 import {
   formatZodToolParseError,
   zodSchemaToToolParameters,
@@ -39,10 +43,12 @@ const manageFilesPathSchema = z
   .refine((value) => value.trim().length > 0, {
     message: 'path must not be empty.',
   })
-  .describe('The target path, relative to the workspace root.');
+  .describe(
+    'The target path. Relative paths start from the current directory inside ComputerFileScope.',
+  );
 
 const manageFilesDestinationDescription =
-  'The destination path for rename/move operations, relative to the workspace root. Required for rename/move and forbidden for create/mkdir/delete.';
+  'The destination path for rename/move operations. Relative paths start from the current directory inside ComputerFileScope. Required for rename/move and forbidden for create/mkdir/delete.';
 
 const manageFilesDestinationSchema = z
   .string()
@@ -110,20 +116,41 @@ type ManageFilesRelocationArgs = Extract<
 interface ManageFilesExecutionContext {
   callId: string;
   fileStateCache?: FileStateCache;
-  projectId?: string;
+  root: 'computer';
   runId?: string;
-  workspaceRoot: string;
+  absoluteRoot: string;
 }
 
 export const manageFilesTool = defineParsedTool({
   name: 'manage_files',
   description:
-    'Manage files and directories in the workspace. Supports creating, renaming, moving, deleting files, and creating directories.',
+    'Manage files and directories admitted by ComputerFileScope. Supports creating, renaming, moving, deleting files, and creating directories.',
   parameters: zodSchemaToToolParameters(manageFilesBranchSchema),
   strict: true,
   sideEffectLevel: 'write',
-  mayMutateWorkspaceFiles: true,
+  mayMutateComputerFiles: true,
   requiresApproval: true,
+  exposure: {
+    directHot: true,
+    sdkVisible: false,
+    inCellCallable: false,
+    directOnly: true,
+    approvalRequired: true,
+    effectClass: 'computerWrite',
+  },
+  catalogSearchMetadata: {
+    family: 'file',
+    searchHints: [
+      'rename file',
+      'move file',
+      'delete file',
+      'copy file',
+      'manage files',
+    ],
+    tags: ['file', 'mutation', 'approval'],
+    whenToUse: 'Move, rename, copy, or delete computer files.',
+    notFor: 'Editing file contents or applying text patches.',
+  },
   parseArgs(raw) {
     const flatParsed = manageFilesArgsSchema.safeParse(raw);
     if (!flatParsed.success) {
@@ -140,31 +167,48 @@ export const manageFilesTool = defineParsedTool({
     );
   },
   async executeParsed(args, ctx) {
-    const executionContext: ManageFilesExecutionContext = ctx.fileStateCache
-      ? {
-          callId: ctx.callId,
-          fileStateCache: ctx.fileStateCache,
-          ...(ctx.projectId ? { projectId: ctx.projectId } : {}),
-          ...(ctx.runId ? { runId: ctx.runId } : {}),
-          workspaceRoot: ctx.workspaceRoot,
-        }
-      : {
-          callId: ctx.callId,
-          ...(ctx.projectId ? { projectId: ctx.projectId } : {}),
-          ...(ctx.runId ? { runId: ctx.runId } : {}),
-          workspaceRoot: ctx.workspaceRoot,
-        };
     try {
+      const sourcePath = resolveComputerFileToolPath(ctx, args.path);
+      const executionContext: ManageFilesExecutionContext = {
+        callId: ctx.callId,
+        absoluteRoot: sourcePath.absoluteRoot,
+        root: sourcePath.root,
+        ...(ctx.fileStateCache === undefined
+          ? {}
+          : { fileStateCache: ctx.fileStateCache }),
+        ...(ctx.runId === undefined ? {} : { runId: ctx.runId }),
+      };
       switch (args.operation) {
         case 'create':
-          return await createManagedPath(args, executionContext);
+          return await createManagedPath(
+            { ...args, path: sourcePath.path },
+            executionContext,
+          );
         case 'delete':
-          return await deleteManagedPath(args, executionContext);
+          return await deleteManagedPath(
+            { ...args, path: sourcePath.path },
+            executionContext,
+          );
         case 'mkdir':
-          return await mkdirManagedPath(args, executionContext);
+          return await mkdirManagedPath(
+            { ...args, path: sourcePath.path },
+            executionContext,
+          );
         case 'rename':
-        case 'move':
-          return await relocateManagedPath(args, executionContext);
+        case 'move': {
+          const destinationPath = resolveComputerFileToolPath(
+            ctx,
+            args.destination,
+          );
+          return await relocateManagedPath(
+            {
+              ...args,
+              path: sourcePath.path,
+              destination: destinationPath.path,
+            },
+            executionContext,
+          );
+        }
       }
     } catch (err: unknown) {
       return catchToolError(err);
@@ -202,7 +246,7 @@ async function createManagedPath(
 ) {
   const { path: inputPath } = args;
   const preparedPath = await prepareMutatingFilePath(
-    context.workspaceRoot,
+    context.absoluteRoot,
     inputPath,
     {
       allowMissingLeaf: true,
@@ -239,6 +283,7 @@ async function createManagedPath(
     context.fileStateCache ? { fileStateCache: context.fileStateCache } : {},
   );
   return buildManagedOperationSuccess({
+    root: context.root,
     operation: 'create',
     path: result.path,
   });
@@ -252,7 +297,7 @@ function prepareManageFilesCreateManifest(
     operationId: context.callId,
     manifestRevision: '1',
     operationKind: 'create_file',
-    projectId: context.projectId ?? 'standalone',
+    authorityId: context.root,
     actor: buildManageFilesActor(context),
     targets: [
       {
@@ -273,14 +318,14 @@ async function deleteManagedPath(
 ) {
   const { path: inputPath } = args;
   const preparedPath = await prepareMutatingFilePath(
-    context.workspaceRoot,
+    context.absoluteRoot,
     inputPath,
     {
       allowMissingLeaf: true,
     },
   );
-  if (preparedPath.resolvedPath.relativePath === '.') {
-    return toolError('invalid_args', 'cannot delete workspace root.');
+  if (isFileAuthorityRootPath(preparedPath.resolvedPath.relativePath)) {
+    return toolError('invalid_args', FILE_AUTHORITY_ROOT_DELETE_ERROR);
   }
   const manifest = prepareManageFilesDeleteManifest(preparedPath, context);
   const precondition = evaluateOperationManifestPreconditions(manifest, [
@@ -310,6 +355,7 @@ async function deleteManagedPath(
   );
 
   return buildManagedOperationSuccess({
+    root: context.root,
     operation: 'delete',
     path: result.path,
   });
@@ -323,7 +369,7 @@ function prepareManageFilesDeleteManifest(
     operationId: context.callId,
     manifestRevision: '1',
     operationKind: 'delete',
-    projectId: context.projectId ?? 'standalone',
+    authorityId: context.root,
     actor: buildManageFilesActor(context),
     targets: [
       {
@@ -344,7 +390,7 @@ async function mkdirManagedPath(
 ) {
   const { path: inputPath } = args;
   const preparedPath = await prepareMutatingFilePath(
-    context.workspaceRoot,
+    context.absoluteRoot,
     inputPath,
     {
       allowMissingLeaf: true,
@@ -377,6 +423,7 @@ async function mkdirManagedPath(
     context.fileStateCache ? { fileStateCache: context.fileStateCache } : {},
   );
   return buildManagedOperationSuccess({
+    root: context.root,
     operation: 'mkdir',
     path: result.path,
   });
@@ -390,7 +437,7 @@ function prepareManageFilesMkdirManifest(
     operationId: context.callId,
     manifestRevision: '1',
     operationKind: 'create_directory',
-    projectId: context.projectId ?? 'standalone',
+    authorityId: context.root,
     actor: buildManageFilesActor(context),
     targets: [
       {
@@ -411,13 +458,13 @@ async function relocateManagedPath(
 ) {
   const { operation, path: inputPath, destination } = args;
   const preparedPaths = await prepareRelocationPaths(
-    context.workspaceRoot,
+    context.absoluteRoot,
     inputPath,
     destination,
   );
   const { sourcePath, destinationPath, destinationExists } = preparedPaths;
-  if (sourcePath.relativePath === '.') {
-    return toolError('invalid_args', 'cannot relocate workspace root.');
+  if (isFileAuthorityRootPath(sourcePath.relativePath)) {
+    return toolError('invalid_args', FILE_AUTHORITY_ROOT_RELOCATE_ERROR);
   }
 
   const manifest = prepareManageFilesRelocationManifest(
@@ -469,6 +516,7 @@ async function relocateManagedPath(
     context.fileStateCache ? { fileStateCache: context.fileStateCache } : {},
   );
   return buildManagedOperationSuccess({
+    root: context.root,
     operation,
     from: result.from,
     to: result.to,
@@ -484,7 +532,7 @@ function prepareManageFilesRelocationManifest(
     operationId: context.callId,
     manifestRevision: '1',
     operationKind: operation,
-    projectId: context.projectId ?? 'standalone',
+    authorityId: context.root,
     actor: buildManageFilesActor(context),
     targets: [
       {

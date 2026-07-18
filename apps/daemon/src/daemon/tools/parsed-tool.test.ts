@@ -13,7 +13,6 @@ const emptyParameters: ToolParameters = {
 
 const context: ToolExecutionContext = {
   callId: 'call-parsed-tool-test',
-  workspaceRoot: '/tmp',
 };
 
 void test('defineParsedTool raw execute returns invalid_args for parser failures', async () => {
@@ -24,7 +23,7 @@ void test('defineParsedTool raw execute returns invalid_args for parser failures
     parameters: emptyParameters,
     strict: true,
     sideEffectLevel: 'none',
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     parseArgs() {
@@ -55,7 +54,7 @@ void test('defineParsedTool raw execute does not mask parser throws', async () =
     parameters: emptyParameters,
     strict: true,
     sideEffectLevel: 'none',
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     parseArgs() {
@@ -83,7 +82,7 @@ void test('defineParsedTool raw execute does not mask executeParsed throws', asy
     parameters: emptyParameters,
     strict: true,
     sideEffectLevel: 'none',
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     parseArgs() {

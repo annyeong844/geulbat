@@ -5,13 +5,35 @@ import {
   type ServerResponse,
 } from 'node:http';
 import test from 'node:test';
-import { PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_RUNTIME_SCRIPT } from './lab-browser-runtime-script.js';
-import { runPtcBrowserRuntimeScript } from '../../../../../test-support/ptc-browser-runtime-script.js';
+import {
+  PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_RUNTIME_SCRIPT,
+  PTC_LAB_BROWSER_TEXT_EVIDENCE_RUNTIME_SCRIPT,
+} from './lab-browser-runtime-script.js';
+import {
+  hasWorkspacePlaywrightChromium,
+  runPtcBrowserRuntimeScript,
+} from '../../../../../test-support/ptc-browser-runtime-script.js';
 
 interface PolicyEventServer {
   origin: string;
   close(): Promise<void>;
   requests: string[];
+}
+
+async function closePolicyEventServer(
+  server: ReturnType<typeof createServer>,
+): Promise<void> {
+  const closed = new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+  server.closeAllConnections();
+  await closed;
 }
 
 async function withPolicyEventServer<T>(
@@ -39,28 +61,12 @@ async function withPolicyEventServer<T>(
       origin: `http://127.0.0.1:${address.port}`,
       requests,
       close: async () => {
-        await new Promise<void>((resolve, reject) => {
-          server.close((error) => {
-            if (error) {
-              reject(error);
-              return;
-            }
-            resolve();
-          });
-        });
+        await closePolicyEventServer(server);
       },
     });
   } finally {
     if (server.listening) {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      });
+      await closePolicyEventServer(server);
     }
   }
 }
@@ -82,7 +88,78 @@ async function runPageLoadEvidenceRuntime(targetUrl: string) {
   });
 }
 
-void test('browser runtime script rejects popups that fire after domcontentloaded', async () => {
+async function runTextEvidenceRuntime(targetUrl: string) {
+  return await runPtcBrowserRuntimeScript({
+    script: PTC_LAB_BROWSER_TEXT_EVIDENCE_RUNTIME_SCRIPT,
+    input: {
+      targetUrl,
+      timeoutMs: 5_000,
+      loadWaitState: 'domcontentloaded',
+    },
+    useWorkspacePlaywright: true,
+    timeoutMs: 60_000,
+  });
+}
+
+void test('text evidence captures visible text after domcontentloaded without waiting for network idle', async (t) => {
+  if (!(await hasWorkspacePlaywrightChromium())) {
+    t.skip('workspace Playwright Chromium is not installed');
+    return;
+  }
+
+  await withPolicyEventServer(
+    (request, response) => {
+      if (request.url === '/hanging-image') {
+        response.writeHead(200, { 'content-type': 'image/png' });
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(
+        html(
+          `<main>Ready visible text</main><img alt="" src="/hanging-image">`,
+        ),
+      );
+    },
+    async (server) => {
+      const run = await runTextEvidenceRuntime(`${server.origin}/`);
+
+      assert.equal(run.exitCode, 0);
+      assert.equal(run.stderr, '');
+      const output = run.jsonLines[0] as Record<string, unknown>;
+      assert.deepEqual(run.jsonLines, [
+        {
+          capability: 'ptc_lab_browser_dom_text_evidence',
+          checks: {
+            engineAvailable: true,
+            contextCreated: true,
+            navigationStarted: true,
+            navigationSettled: true,
+            redirectPolicyEnforced: true,
+            downloadPolicyEnforced: true,
+            popupPolicyEnforced: true,
+            evidenceCaptured: true,
+            cleanupCompleted: true,
+          },
+          ok: true,
+          loadOutcome: 'loaded',
+          loadState: 'domcontentloaded',
+          finalUrlDigest: output.finalUrlDigest,
+          visibleText: 'Ready visible text',
+          redirectCount: 0,
+          navigationDurationMs: output.navigationDurationMs,
+        },
+      ]);
+      assert.equal(server.requests.includes('/hanging-image'), true);
+    },
+  );
+});
+
+void test('browser runtime script rejects popups that fire after domcontentloaded', async (t) => {
+  if (!(await hasWorkspacePlaywrightChromium())) {
+    t.skip('workspace Playwright Chromium is not installed');
+    return;
+  }
+
   await withPolicyEventServer(
     (request, response) => {
       if (request.url === '/popup') {
@@ -129,7 +206,12 @@ void test('browser runtime script rejects popups that fire after domcontentloade
   );
 });
 
-void test('browser runtime script rejects downloads that fire after domcontentloaded', async () => {
+void test('browser runtime script rejects downloads that fire after domcontentloaded', async (t) => {
+  if (!(await hasWorkspacePlaywrightChromium())) {
+    t.skip('workspace Playwright Chromium is not installed');
+    return;
+  }
+
   await withPolicyEventServer(
     (request, response) => {
       if (request.url === '/file.bin') {

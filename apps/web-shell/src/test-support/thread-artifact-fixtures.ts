@@ -1,9 +1,8 @@
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
-import { brandProjectId, brandThreadId } from '../lib/id-brand-helpers.js';
+import { brandThreadId } from '../lib/id-brand-helpers.js';
 
-const PROJECT_ID = brandProjectId('workspace');
 const THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000001');
 
 type CommittedArtifactSourceRef = NonNullable<
@@ -15,7 +14,7 @@ export function createCommittedArtifactSourceRef(
     filePath?: string | null;
   } = {},
 ): CommittedArtifactSourceRef {
-  const projectId = overrides.projectId ?? PROJECT_ID;
+  const workingDirectory = overrides.workingDirectory ?? 'workspace';
   const threadId = overrides.threadId ?? THREAD_ID;
   const runId = overrides.runId ?? 'run-1';
   const messageTimestamp =
@@ -26,7 +25,7 @@ export function createCommittedArtifactSourceRef(
   if (filePath === null) {
     return {
       kind: 'thread',
-      projectId,
+      workingDirectory,
       threadId,
       runId,
       filePath: null,
@@ -36,7 +35,7 @@ export function createCommittedArtifactSourceRef(
 
   return {
     kind: 'thread-file',
-    projectId,
+    workingDirectory,
     threadId,
     runId,
     filePath,

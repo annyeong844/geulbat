@@ -18,6 +18,7 @@ import { getErrorCode } from './error.js';
 const INPUT_REF_FILE_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const activeInputRefClaimPaths = new Set<string>();
+const pendingInputRefClaimQueues = new Map<string, Promise<void>>();
 
 type InputRefFileKind =
   | 'run_prompt'
@@ -32,6 +33,7 @@ export interface InputRefFileStoreConfig {
   refPrefix: string;
   directoryName: string;
   fileExtension: string;
+  resolveStorageRoot?: (workspaceRoot: string) => string;
   invalidPrefixMessage: string;
   invalidIdMessage: string;
   notFileMessage: string;
@@ -39,7 +41,7 @@ export interface InputRefFileStoreConfig {
   claimedMessage: string;
 }
 
-export interface InputRefFileWriteResult {
+interface InputRefFileWriteResult {
   ref: string;
   byteLength: number;
 }
@@ -52,7 +54,7 @@ export type InputRefFilePathResult =
       message: string;
     };
 
-export type InputRefFileClaimResult = InputRefFilePathResult;
+type InputRefFileClaimResult = InputRefFilePathResult;
 
 interface InputRefInventoryBase {
   ref: string;
@@ -62,7 +64,7 @@ interface InputRefInventoryBase {
   path: string;
 }
 
-export type InputRefFileInventoryEntry =
+type InputRefFileInventoryEntry =
   | (InputRefInventoryBase & { state: 'pending'; claimId?: never })
   | (InputRefInventoryBase & {
       state: 'claimed' | 'interrupted';
@@ -88,9 +90,12 @@ export async function writeInputRefFileFromStream(args: {
   const finalPath = buildInputRefFilePath(args.workspaceRoot, args.config, id);
   const tempPath = `${finalPath}.${process.pid}.${randomUUID()}.tmp`;
 
-  await mkdir(directory, { recursive: true });
+  await mkdir(directory, { recursive: true, mode: 0o700 });
   try {
-    await pipeline(args.input, createWriteStream(tempPath, { flags: 'wx' }));
+    await pipeline(
+      args.input,
+      createWriteStream(tempPath, { flags: 'wx', mode: 0o600 }),
+    );
     await rename(tempPath, finalPath);
   } catch (error: unknown) {
     await rm(tempPath, { force: true });
@@ -167,61 +172,88 @@ export async function claimInputRefFilePath(args: {
     args.config,
     parsed.id,
   );
-  const claimedPath = buildClaimedInputRefFilePath(
-    args.workspaceRoot,
-    args.config,
-    parsed.id,
-  );
-  try {
-    await rename(pendingPath, claimedPath);
-    activeInputRefClaimPaths.add(claimedPath);
-  } catch (error: unknown) {
-    if (getErrorCode(error) !== 'ENOENT') {
-      throw error;
-    }
-    if (
-      await hasClaimedInputRefFile(args.workspaceRoot, args.config, parsed.id)
-    ) {
+  return runSerializedInputRefClaim(pendingPath, async () => {
+    const claimedPath = buildClaimedInputRefFilePath(
+      args.workspaceRoot,
+      args.config,
+      parsed.id,
+    );
+    try {
+      await rename(pendingPath, claimedPath);
+      activeInputRefClaimPaths.add(claimedPath);
+    } catch (error: unknown) {
+      if (getErrorCode(error) !== 'ENOENT') {
+        throw error;
+      }
+      if (
+        await hasClaimedInputRefFile(args.workspaceRoot, args.config, parsed.id)
+      ) {
+        return {
+          ok: false,
+          code: 'conflict',
+          message: args.config.claimedMessage,
+        };
+      }
       return {
         ok: false,
-        code: 'conflict',
-        message: args.config.claimedMessage,
+        code: 'not_found',
+        message: args.config.notFoundMessage,
       };
     }
-    return {
-      ok: false,
-      code: 'not_found',
-      message: args.config.notFoundMessage,
-    };
-  }
+
+    try {
+      const entry = await stat(claimedPath);
+      if (entry.isFile()) {
+        return { ok: true, path: claimedPath };
+      }
+      await rename(claimedPath, pendingPath);
+      activeInputRefClaimPaths.delete(claimedPath);
+      return {
+        ok: false,
+        code: 'bad_request',
+        message: args.config.notFileMessage,
+      };
+    } catch (error: unknown) {
+      activeInputRefClaimPaths.delete(claimedPath);
+      let rollbackError: unknown;
+      try {
+        await rename(claimedPath, pendingPath);
+      } catch (caughtRollbackError: unknown) {
+        rollbackError = caughtRollbackError;
+      }
+      if (rollbackError !== undefined) {
+        throw new AggregateError(
+          [error, rollbackError],
+          'input ref claim inspection and rollback both failed',
+        );
+      }
+      throw error;
+    }
+  });
+}
+
+async function runSerializedInputRefClaim<T>(
+  pendingPath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = pendingInputRefClaimQueues.get(pendingPath);
+  let releaseCurrent!: () => void;
+  const currentGate = new Promise<void>((resolve) => {
+    releaseCurrent = resolve;
+  });
+  const current = (previous ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => currentGate);
+  pendingInputRefClaimQueues.set(pendingPath, current);
+  await previous?.catch(() => undefined);
 
   try {
-    const entry = await stat(claimedPath);
-    if (entry.isFile()) {
-      return { ok: true, path: claimedPath };
+    return await operation();
+  } finally {
+    releaseCurrent();
+    if (pendingInputRefClaimQueues.get(pendingPath) === current) {
+      pendingInputRefClaimQueues.delete(pendingPath);
     }
-    await rename(claimedPath, pendingPath);
-    activeInputRefClaimPaths.delete(claimedPath);
-    return {
-      ok: false,
-      code: 'bad_request',
-      message: args.config.notFileMessage,
-    };
-  } catch (error: unknown) {
-    activeInputRefClaimPaths.delete(claimedPath);
-    let rollbackError: unknown;
-    try {
-      await rename(claimedPath, pendingPath);
-    } catch (caughtRollbackError: unknown) {
-      rollbackError = caughtRollbackError;
-    }
-    if (rollbackError !== undefined) {
-      throw new AggregateError(
-        [error, rollbackError],
-        'input ref claim inspection and rollback both failed',
-      );
-    }
-    throw error;
   }
 }
 
@@ -467,7 +499,10 @@ function buildInputRefFileDirectory(
   workspaceRoot: string,
   config: InputRefFileStoreConfig,
 ): string {
-  return join(workspaceRoot, '.geulbat', config.directoryName);
+  const storageRoot =
+    config.resolveStorageRoot?.(workspaceRoot) ??
+    join(workspaceRoot, '.geulbat');
+  return join(storageRoot, config.directoryName);
 }
 
 function buildInputRefFilePath(

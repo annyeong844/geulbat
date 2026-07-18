@@ -1,5 +1,6 @@
 import { buildPtcPackageCacheRoot } from '../packages/lab-package-cache-root.js';
 import { PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT } from '../packages/lab-package-cache-contract.js';
+import { hashPtcStableJson } from '../../shared/stable-identity.js';
 import {
   buildPtcLabDockerNetworkIdentityArgs,
   buildPtcLabDockerNetworkIdentityLabels,
@@ -53,6 +54,12 @@ export function buildPtcSessionDockerCreateArgs(args: {
     `type=bind,src=${artifactRoot},dst=${PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT}`,
     '--mount',
     `type=bind,src=${packageCacheRoot.hostPath},dst=${PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT}`,
+    ...(args.reuseKey.sdkProjectionMount === undefined
+      ? []
+      : [
+          '--mount',
+          `type=bind,src=${args.reuseKey.sdkProjectionMount.hostRootPath},dst=${args.reuseKey.sdkProjectionMount.containerRootPath},readonly`,
+        ]),
     '--cpus',
     args.reuseKey.cpus,
     '--memory',
@@ -65,7 +72,12 @@ export function buildPtcSessionDockerCreateArgs(args: {
     'TMPDIR=/tmp',
     '-e',
     'XDG_CACHE_HOME=/geulbat/scratch/cache',
-    ...buildDockerLabelArgs(buildPtcSessionDockerLabels(args.reuseKey)),
+    ...buildDockerLabelArgs(
+      buildPtcSessionDockerLabels(
+        args.reuseKey,
+        buildPtcSessionDockerRuntimeScopeHash(args.runtimeRoot),
+      ),
+    ),
     args.reuseKey.imageRef,
     'node',
     '-e',
@@ -75,11 +87,16 @@ export function buildPtcSessionDockerCreateArgs(args: {
 
 function buildPtcSessionDockerLabels(
   reuseKey: PtcSessionDockerReuseKey,
+  runtimeScopeHash: string,
 ): string[] {
   return [
     'geulbat.kind=ptc-session',
     'geulbat.owner=daemon',
     `geulbat.identityHash=${reuseKey.identityHash}`,
+    `geulbat.runtimeScopeHash=${runtimeScopeHash}`,
+    ...(reuseKey.ephemeralBurstId === undefined
+      ? []
+      : ['geulbat.ephemeral=true']),
     `geulbat.launchPolicyId=${reuseKey.launchPolicyId}`,
     `geulbat.imagePolicyId=${reuseKey.imagePolicyId}`,
     `geulbat.hostUserPolicyId=${reuseKey.hostUser.hostUserPolicyId}`,
@@ -89,11 +106,23 @@ function buildPtcSessionDockerLabels(
     `geulbat.packageCacheMountPolicyId=${reuseKey.packageCacheMountPolicyId}`,
     `geulbat.packageCacheId=${reuseKey.packageCacheId}`,
     `geulbat.packageCacheIdentityHash=${reuseKey.packageCacheIdentityHash}`,
+    ...(reuseKey.sdkProjectionMount === undefined
+      ? []
+      : [
+          `geulbat.sdkProjectionMountPolicyId=${reuseKey.sdkProjectionMount.mountPolicyId}`,
+          `geulbat.sdkProjectionHash=${reuseKey.sdkProjectionMount.sdkProjectionHash}`,
+        ]),
     ...buildPtcLabBrowserIdentityLabels(reuseKey.browser),
     ...buildPtcLabDockerNetworkIdentityLabels(reuseKey.network),
     `geulbat.idleEntrypointVersion=${reuseKey.idleEntrypointVersion}`,
     'geulbat.managerVersion=ptc-session-docker-v1',
   ];
+}
+
+export function buildPtcSessionDockerRuntimeScopeHash(
+  runtimeRoot: string,
+): string {
+  return hashPtcStableJson({ runtimeRoot });
 }
 
 function buildDockerLabelArgs(labels: readonly string[]): string[] {

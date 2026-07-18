@@ -3,27 +3,27 @@ import assert from 'node:assert/strict';
 
 import {
   createRouteTestDaemonContext,
-  getWorkspaceRootFromContext,
+  getComputerFileRootFromContext,
+  getHomeStateRootFromContext,
   withAuthenticatedDaemonServer,
 } from './test-support/http-routes.js';
 
-void test('route test daemon contexts isolate project registry roots', async () => {
+void test('route test daemon contexts isolate Home and Computer roots', async () => {
   const first = createRouteTestDaemonContext();
   const second = createRouteTestDaemonContext();
-  const firstRegistryRoot = first.projectRegistry.getProjectRegistryRoot();
-  const secondRegistryRoot = second.projectRegistry.getProjectRegistryRoot();
+  const firstHomeStateRoot = getHomeStateRootFromContext(first);
+  const firstComputerFileRoot = getComputerFileRootFromContext(first);
 
-  assert.notEqual(firstRegistryRoot, secondRegistryRoot);
+  assert.notEqual(firstHomeStateRoot, getHomeStateRootFromContext(second));
   assert.notEqual(
-    getWorkspaceRootFromContext(first),
-    getWorkspaceRootFromContext(second),
+    firstComputerFileRoot,
+    getComputerFileRootFromContext(second),
   );
+  assert.notEqual(firstHomeStateRoot, firstComputerFileRoot);
 
   await withAuthenticatedDaemonServer(async () => {}, {
     daemonContext: first,
   });
-  assert.equal(
-    first.projectRegistry.getProjectRegistryRoot(),
-    firstRegistryRoot,
-  );
+  assert.equal(getHomeStateRootFromContext(first), firstHomeStateRoot);
+  assert.equal(getComputerFileRootFromContext(first), firstComputerFileRoot);
 });

@@ -1,11 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { DEFAULT_PROJECT_ID } from './daemon/files/project-registry-state.js';
 import {
   authHeaders,
   createRouteTestDaemonContext,
-  getWorkspaceRootFromContext,
   withAuthenticatedDaemonServer,
 } from './test-support/http-routes.js';
 import { readRunPromptInputRef } from './daemon/sessions/prompt-input-ref-store.js';
@@ -15,7 +13,7 @@ void test('authenticated run prompt input route stores streamed prompt refs', as
   await withAuthenticatedDaemonServer(
     async ({ port }) => {
       const res = await fetch(
-        `http://127.0.0.1:${port}/api/run/prompt-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+        `http://127.0.0.1:${port}/api/run/prompt-inputs`,
         {
           method: 'POST',
           headers: authHeaders({
@@ -36,7 +34,7 @@ void test('authenticated run prompt input route stores streamed prompt refs', as
       assert.ok(body.byteLength > 0);
 
       const resolved = await readRunPromptInputRef({
-        workspaceRoot: getWorkspaceRootFromContext(daemonContext),
+        workspaceRoot: daemonContext.homeStateRoot,
         promptRef: body.promptRef,
       });
       assert.equal(resolved.ok, true);
@@ -51,12 +49,11 @@ void test('authenticated run prompt input route stores streamed prompt refs', as
 
 void test('authenticated run prompt input route deletes uploaded prompt refs', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
 
   await withAuthenticatedDaemonServer(
     async ({ port }) => {
       const uploadRes = await fetch(
-        `http://127.0.0.1:${port}/api/run/prompt-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+        `http://127.0.0.1:${port}/api/run/prompt-inputs`,
         {
           method: 'POST',
           headers: authHeaders({
@@ -69,7 +66,7 @@ void test('authenticated run prompt input route deletes uploaded prompt refs', a
       const uploadBody = (await uploadRes.json()) as { promptRef: string };
 
       const deleteRes = await fetch(
-        `http://127.0.0.1:${port}/api/run/prompt-inputs?projectId=${DEFAULT_PROJECT_ID}&promptRef=${encodeURIComponent(
+        `http://127.0.0.1:${port}/api/run/prompt-inputs?promptRef=${encodeURIComponent(
           uploadBody.promptRef,
         )}`,
         {
@@ -82,7 +79,7 @@ void test('authenticated run prompt input route deletes uploaded prompt refs', a
       assert.deepEqual(await deleteRes.json(), { ok: true });
       assert.deepEqual(
         await readRunPromptInputRef({
-          workspaceRoot,
+          workspaceRoot: daemonContext.homeStateRoot,
           promptRef: uploadBody.promptRef,
         }),
         {
@@ -98,16 +95,13 @@ void test('authenticated run prompt input route deletes uploaded prompt refs', a
 
 void test('authenticated run prompt input route rejects JSON uploads', async () => {
   await withAuthenticatedDaemonServer(async ({ port }) => {
-    const res = await fetch(
-      `http://127.0.0.1:${port}/api/run/prompt-inputs?projectId=${DEFAULT_PROJECT_ID}`,
-      {
-        method: 'POST',
-        headers: authHeaders({
-          'Content-Type': 'application/json',
-        }),
-        body: JSON.stringify({ prompt: 'inline json body' }),
-      },
-    );
+    const res = await fetch(`http://127.0.0.1:${port}/api/run/prompt-inputs`, {
+      method: 'POST',
+      headers: authHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify({ prompt: 'inline json body' }),
+    });
 
     assert.equal(res.status, 400);
     assert.deepEqual(await res.json(), {

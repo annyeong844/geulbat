@@ -1,7 +1,7 @@
 import { createLogger, type Logger } from '@geulbat/shared-utils/logger';
 import { getErrorMessage } from './error.js';
 
-export interface ProcessFatalLoggingTarget {
+interface ProcessFatalLoggingTarget {
   on(
     event: 'uncaughtExceptionMonitor',
     listener: (error: unknown, origin: NodeJS.UncaughtExceptionOrigin) => void,

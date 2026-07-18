@@ -25,12 +25,23 @@ void test('manage_files outward parameters publish branch destination requiremen
   const moveBranch = findManageFilesOperationBranch('move');
 
   assert.equal('destination' in createBranch.properties, false);
+  assert.equal('root' in createBranch.properties, false);
+  assert.equal('root' in renameBranch.properties, false);
+  assert.equal('root' in moveBranch.properties, false);
   assert.deepEqual(renameBranch.required, ['operation', 'path', 'destination']);
   assert.deepEqual(moveBranch.required, ['operation', 'path', 'destination']);
+  assert.deepEqual(manageFilesTool.exposure, {
+    directHot: true,
+    sdkVisible: false,
+    inCellCallable: false,
+    directOnly: true,
+    approvalRequired: true,
+    effectClass: 'computerWrite',
+  });
 });
 
 void test('manage_files create rejects destination before execution', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     {
@@ -38,7 +49,7 @@ void test('manage_files create rejects destination before execution', async () =
       path: 'empty.txt',
       destination: 'other.txt',
     },
-    { callId: 'call-create-destination', workspaceRoot },
+    { callId: 'call-create-destination', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
@@ -47,7 +58,7 @@ void test('manage_files create rejects destination before execution', async () =
 });
 
 void test('manage_files mkdir rejects destination before execution', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     {
@@ -55,7 +66,7 @@ void test('manage_files mkdir rejects destination before execution', async () =>
       path: 'nested/child',
       destination: 'other-dir',
     },
-    { callId: 'call-mkdir-destination', workspaceRoot },
+    { callId: 'call-mkdir-destination', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
@@ -64,7 +75,7 @@ void test('manage_files mkdir rejects destination before execution', async () =>
 });
 
 void test('manage_files delete rejects destination before execution', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     {
@@ -72,7 +83,7 @@ void test('manage_files delete rejects destination before execution', async () =
       path: 'delete-me.txt',
       destination: 'other.txt',
     },
-    { callId: 'call-delete-destination', workspaceRoot },
+    { callId: 'call-delete-destination', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
@@ -83,7 +94,7 @@ void test('manage_files delete rejects destination before execution', async () =
 void test('manage_files rejects blank path before execution', async () => {
   const result = await manageFilesTool.execute(
     { operation: 'create', path: '   ' },
-    { callId: 'call-manage-blank-path', workspaceRoot: '/workspace' },
+    { callId: 'call-manage-blank-path', computerFileRoot: '/computer' },
   );
 
   assert.equal(result.ok, false);
@@ -92,11 +103,14 @@ void test('manage_files rejects blank path before execution', async () => {
 });
 
 void test('manage_files rename requires destination before execution', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'from.txt' },
-    { callId: 'call-rename-missing-destination', workspaceRoot },
+    {
+      callId: 'call-rename-missing-destination',
+      computerFileRoot: computerFileRoot,
+    },
   );
 
   assert.equal(result.ok, false);
@@ -107,7 +121,7 @@ void test('manage_files rename requires destination before execution', async () 
 void test('manage_files rename rejects blank destination before execution', async () => {
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'from.txt', destination: '   ' },
-    { callId: 'call-rename-blank-destination', workspaceRoot: '/workspace' },
+    { callId: 'call-rename-blank-destination', computerFileRoot: '/computer' },
   );
 
   assert.equal(result.ok, false);
@@ -116,11 +130,14 @@ void test('manage_files rename rejects blank destination before execution', asyn
 });
 
 void test('manage_files rename rejects empty destination before execution', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'from.txt', destination: '' },
-    { callId: 'call-rename-empty-destination', workspaceRoot },
+    {
+      callId: 'call-rename-empty-destination',
+      computerFileRoot: computerFileRoot,
+    },
   );
 
   assert.equal(result.ok, false);
@@ -129,11 +146,14 @@ void test('manage_files rename rejects empty destination before execution', asyn
 });
 
 void test('manage_files move requires destination before execution', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     { operation: 'move', path: 'src/note.txt' },
-    { callId: 'call-move-missing-destination', workspaceRoot },
+    {
+      callId: 'call-move-missing-destination',
+      computerFileRoot: computerFileRoot,
+    },
   );
 
   assert.equal(result.ok, false);
@@ -142,11 +162,14 @@ void test('manage_files move requires destination before execution', async () =>
 });
 
 void test('manage_files move rejects empty destination before execution', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     { operation: 'move', path: 'src/note.txt', destination: '' },
-    { callId: 'call-move-empty-destination', workspaceRoot },
+    {
+      callId: 'call-move-empty-destination',
+      computerFileRoot: computerFileRoot,
+    },
   );
 
   assert.equal(result.ok, false);
@@ -155,10 +178,10 @@ void test('manage_files move rejects empty destination before execution', async 
 });
 
 void test('manage_files delete rejects symlink paths', async (t) => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
   const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-outside-'));
   const outsideDir = join(outsideRoot, 'outside-dir');
-  const linkedDir = join(workspaceRoot, 'linked-dir');
+  const linkedDir = join(computerFileRoot, 'linked-dir');
 
   await mkdir(outsideDir, { recursive: true });
   if (!(await createSymlinkOrSkip(t, outsideDir, linkedDir))) {
@@ -167,36 +190,36 @@ void test('manage_files delete rejects symlink paths', async (t) => {
 
   const result = await manageFilesTool.execute(
     { operation: 'delete', path: 'linked-dir' },
-    { callId: 'call-1', workspaceRoot },
+    { callId: 'call-1', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'path_out_of_workspace');
+  assert.equal(result.errorCode, 'path_out_of_computer_scope');
 });
 
-void test('manage_files delete rejects the workspace root', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+void test('manage_files delete rejects the computer file root', async () => {
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     { operation: 'delete', path: '.' },
-    { callId: 'call-delete-root', workspaceRoot },
+    { callId: 'call-delete-root', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'invalid_args');
-  assert.match(result.error, /cannot delete workspace root/);
+  assert.equal(result.error, 'cannot delete computer file root.');
   const stats = await import('node:fs/promises').then((fs) =>
-    fs.stat(workspaceRoot),
+    fs.stat(computerFileRoot),
   );
   assert.equal(stats.isDirectory(), true);
 });
 
 void test('manage_files delete reports missing source through delete precondition', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     { operation: 'delete', path: 'missing.txt' },
-    { callId: 'call-delete-missing', workspaceRoot },
+    { callId: 'call-delete-missing', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
@@ -205,10 +228,10 @@ void test('manage_files delete reports missing source through delete preconditio
 });
 
 void test('manage_files create rejects writes through symlinked parent directories', async (t) => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
   const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-outside-'));
   const realDir = join(outsideRoot, 'real-dir');
-  const insideLinkDir = join(workspaceRoot, 'linked-dir');
+  const insideLinkDir = join(computerFileRoot, 'linked-dir');
 
   await mkdir(realDir, { recursive: true });
   if (!(await createSymlinkOrSkip(t, realDir, insideLinkDir))) {
@@ -217,20 +240,20 @@ void test('manage_files create rejects writes through symlinked parent directori
 
   const result = await manageFilesTool.execute(
     { operation: 'create', path: 'linked-dir/child.txt' },
-    { callId: 'call-create-symlink', workspaceRoot },
+    { callId: 'call-create-symlink', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'path_out_of_workspace');
+  assert.equal(result.errorCode, 'path_out_of_computer_scope');
 });
 
 void test('manage_files create returns already_exists when target file already exists', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-  await writeFile(join(workspaceRoot, 'hello.txt'), 'hello\n', 'utf8');
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  await writeFile(join(computerFileRoot, 'hello.txt'), 'hello\n', 'utf8');
 
   const result = await manageFilesTool.execute(
     { operation: 'create', path: 'hello.txt' },
-    { callId: 'call-2', workspaceRoot },
+    { callId: 'call-2', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
@@ -238,28 +261,28 @@ void test('manage_files create returns already_exists when target file already e
 });
 
 void test('manage_files create creates an empty file through the shared save chain', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     { operation: 'create', path: 'empty.txt' },
-    { callId: 'call-create-empty', workspaceRoot },
+    { callId: 'call-create-empty', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, true);
   const content = await import('node:fs/promises').then((fs) =>
-    fs.readFile(join(workspaceRoot, 'empty.txt'), 'utf8'),
+    fs.readFile(join(computerFileRoot, 'empty.txt'), 'utf8'),
   );
   assert.equal(content, '');
 });
 
 void test('manage_files delete removes an existing file through the shared delete helper', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-  const filePath = join(workspaceRoot, 'delete-me.txt');
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const filePath = join(computerFileRoot, 'delete-me.txt');
   await writeFile(filePath, 'delete\n', 'utf8');
 
   const result = await manageFilesTool.execute(
     { operation: 'delete', path: 'delete-me.txt' },
-    { callId: 'call-delete-file', workspaceRoot },
+    { callId: 'call-delete-file', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, true);
@@ -269,12 +292,12 @@ void test('manage_files delete removes an existing file through the shared delet
 });
 
 void test('manage_files mkdir creates nested directories through the shared mkdir helper', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-  const dirPath = join(workspaceRoot, 'nested', 'child');
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const dirPath = join(computerFileRoot, 'nested', 'child');
 
   const result = await manageFilesTool.execute(
     { operation: 'mkdir', path: 'nested/child' },
-    { callId: 'call-mkdir', workspaceRoot },
+    { callId: 'call-mkdir', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, true);
@@ -283,12 +306,12 @@ void test('manage_files mkdir creates nested directories through the shared mkdi
 });
 
 void test('manage_files mkdir returns already_exists when target is a file', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-  await writeFile(join(workspaceRoot, 'not-a-directory'), 'file\n', 'utf8');
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  await writeFile(join(computerFileRoot, 'not-a-directory'), 'file\n', 'utf8');
 
   const result = await manageFilesTool.execute(
     { operation: 'mkdir', path: 'not-a-directory' },
-    { callId: 'call-mkdir-file-conflict', workspaceRoot },
+    { callId: 'call-mkdir-file-conflict', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
@@ -296,13 +319,13 @@ void test('manage_files mkdir returns already_exists when target is a file', asy
 });
 
 void test('manage_files rename returns already_exists when destination exists', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-  await writeFile(join(workspaceRoot, 'from.txt'), 'from\n', 'utf8');
-  await writeFile(join(workspaceRoot, 'to.txt'), 'to\n', 'utf8');
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  await writeFile(join(computerFileRoot, 'from.txt'), 'from\n', 'utf8');
+  await writeFile(join(computerFileRoot, 'to.txt'), 'to\n', 'utf8');
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'from.txt', destination: 'to.txt' },
-    { callId: 'call-3', workspaceRoot },
+    { callId: 'call-3', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
@@ -310,12 +333,12 @@ void test('manage_files rename returns already_exists when destination exists', 
 });
 
 void test('manage_files rename rejects same canonical source and destination', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-  await writeFile(join(workspaceRoot, 'from.txt'), 'from\n', 'utf8');
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  await writeFile(join(computerFileRoot, 'from.txt'), 'from\n', 'utf8');
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'from.txt', destination: './from.txt' },
-    { callId: 'call-rename-same-target', workspaceRoot },
+    { callId: 'call-rename-same-target', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
@@ -326,75 +349,75 @@ void test('manage_files rename rejects same canonical source and destination', a
   );
 });
 
-void test('manage_files rename rejects the workspace root as source', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+void test('manage_files rename rejects the computer file root as source', async () => {
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: '.', destination: 'renamed-root' },
-    { callId: 'call-rename-root', workspaceRoot },
+    { callId: 'call-rename-root', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'invalid_args');
-  assert.match(result.error, /cannot relocate workspace root/);
+  assert.equal(result.error, 'cannot relocate computer file root.');
   const stats = await import('node:fs/promises').then((fs) =>
-    fs.stat(workspaceRoot),
+    fs.stat(computerFileRoot),
   );
   assert.equal(stats.isDirectory(), true);
 });
 
 void test('manage_files rename rejects moving a directory into its own descendant', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-  await mkdir(join(workspaceRoot, 'src'), { recursive: true });
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  await mkdir(join(computerFileRoot, 'src'), { recursive: true });
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'src', destination: 'src/child' },
-    { callId: 'call-rename-descendant', workspaceRoot },
+    { callId: 'call-rename-descendant', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'invalid_args');
   assert.match(result.error, /cannot relocate a directory into itself/);
   const sourceStats = await import('node:fs/promises').then((fs) =>
-    fs.stat(join(workspaceRoot, 'src')),
+    fs.stat(join(computerFileRoot, 'src')),
   );
   assert.equal(sourceStats.isDirectory(), true);
   await assert.rejects(() =>
     import('node:fs/promises').then((fs) =>
-      fs.stat(join(workspaceRoot, 'src', 'child')),
+      fs.stat(join(computerFileRoot, 'src', 'child')),
     ),
   );
 });
 
 void test('manage_files rename reports path-kind conflict when file destination is below source path', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-  await writeFile(join(workspaceRoot, 'src'), 'file\n', 'utf8');
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  await writeFile(join(computerFileRoot, 'src'), 'file\n', 'utf8');
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'src', destination: 'src/child' },
-    { callId: 'call-rename-file-child', workspaceRoot },
+    { callId: 'call-rename-file-child', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'already_exists');
-  assert.equal(await readFile(join(workspaceRoot, 'src'), 'utf8'), 'file\n');
+  assert.equal(await readFile(join(computerFileRoot, 'src'), 'utf8'), 'file\n');
   await assert.rejects(() =>
     import('node:fs/promises').then((fs) =>
-      fs.stat(join(workspaceRoot, 'src', 'child')),
+      fs.stat(join(computerFileRoot, 'src', 'child')),
     ),
   );
 });
 
 void test('manage_files move returns already_exists when destination exists', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-  await mkdir(join(workspaceRoot, 'src'), { recursive: true });
-  await mkdir(join(workspaceRoot, 'dst'), { recursive: true });
-  await writeFile(join(workspaceRoot, 'src', 'note.txt'), 'from\n', 'utf8');
-  await writeFile(join(workspaceRoot, 'dst', 'note.txt'), 'to\n', 'utf8');
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  await mkdir(join(computerFileRoot, 'src'), { recursive: true });
+  await mkdir(join(computerFileRoot, 'dst'), { recursive: true });
+  await writeFile(join(computerFileRoot, 'src', 'note.txt'), 'from\n', 'utf8');
+  await writeFile(join(computerFileRoot, 'dst', 'note.txt'), 'to\n', 'utf8');
 
   const result = await manageFilesTool.execute(
     { operation: 'move', path: 'src/note.txt', destination: 'dst/note.txt' },
-    { callId: 'call-4', workspaceRoot },
+    { callId: 'call-4', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, false);
@@ -402,39 +425,98 @@ void test('manage_files move returns already_exists when destination exists', as
 });
 
 void test('manage_files rename moves a file when the destination is free', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-  await writeFile(join(workspaceRoot, 'from.txt'), 'from\n', 'utf8');
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  await writeFile(join(computerFileRoot, 'from.txt'), 'from\n', 'utf8');
 
   const result = await manageFilesTool.execute(
     { operation: 'rename', path: 'from.txt', destination: 'to.txt' },
-    { callId: 'call-5', workspaceRoot },
+    { callId: 'call-5', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, true);
   await assert.rejects(() =>
     import('node:fs/promises').then((fs) =>
-      fs.stat(join(workspaceRoot, 'from.txt')),
+      fs.stat(join(computerFileRoot, 'from.txt')),
     ),
   );
   const renamed = await import('node:fs/promises').then((fs) =>
-    fs.readFile(join(workspaceRoot, 'to.txt'), 'utf8'),
+    fs.readFile(join(computerFileRoot, 'to.txt'), 'utf8'),
   );
   assert.equal(renamed, 'from\n');
 });
 
 void test('manage_files move relocates a file into a new directory when destination is free', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-  await mkdir(join(workspaceRoot, 'src'), { recursive: true });
-  await writeFile(join(workspaceRoot, 'src', 'note.txt'), 'from\n', 'utf8');
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  await mkdir(join(computerFileRoot, 'src'), { recursive: true });
+  await writeFile(join(computerFileRoot, 'src', 'note.txt'), 'from\n', 'utf8');
 
   const result = await manageFilesTool.execute(
     { operation: 'move', path: 'src/note.txt', destination: 'dst/note.txt' },
-    { callId: 'call-6', workspaceRoot },
+    { callId: 'call-6', computerFileRoot: computerFileRoot },
   );
 
   assert.equal(result.ok, true);
   const moved = await import('node:fs/promises').then((fs) =>
-    fs.readFile(join(workspaceRoot, 'dst', 'note.txt'), 'utf8'),
+    fs.readFile(join(computerFileRoot, 'dst', 'note.txt'), 'utf8'),
   );
   assert.equal(moved, 'from\n');
+});
+
+void test('manage_files creates, moves, and deletes within the explicit computer root', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-computer-manage-'),
+  );
+  const context = {
+    callId: 'call-computer-manage',
+    computerFileRoot,
+  };
+
+  const created = await manageFilesTool.execute(
+    { operation: 'create', path: 'from.txt' },
+    context,
+  );
+  assert.equal(created.ok, true);
+  assert.equal(JSON.parse(created.output).root, 'computer');
+
+  const moved = await manageFilesTool.execute(
+    {
+      operation: 'move',
+      path: 'from.txt',
+      destination: 'nested/to.txt',
+    },
+    { ...context, callId: 'call-computer-manage-move' },
+  );
+  assert.equal(moved.ok, true);
+  assert.equal(JSON.parse(moved.output).root, 'computer');
+  assert.equal(
+    await readFile(join(computerFileRoot, 'nested', 'to.txt'), 'utf8'),
+    '',
+  );
+
+  const deleted = await manageFilesTool.execute(
+    { operation: 'delete', path: 'nested/to.txt' },
+    { ...context, callId: 'call-computer-manage-delete' },
+  );
+  assert.equal(deleted.ok, true);
+  assert.equal(JSON.parse(deleted.output).root, 'computer');
+
+  const rootDelete = await manageFilesTool.execute(
+    { operation: 'delete', path: '.' },
+    { ...context, callId: 'call-computer-manage-delete-root' },
+  );
+  assert.equal(rootDelete.ok, false);
+  assert.equal(rootDelete.errorCode, 'invalid_args');
+  assert.equal(rootDelete.error, 'cannot delete computer file root.');
+
+  const rootMove = await manageFilesTool.execute(
+    {
+      operation: 'move',
+      path: '.',
+      destination: 'nested/root',
+    },
+    { ...context, callId: 'call-computer-manage-move-root' },
+  );
+  assert.equal(rootMove.ok, false);
+  assert.equal(rootMove.errorCode, 'invalid_args');
+  assert.equal(rootMove.error, 'cannot relocate computer file root.');
 });

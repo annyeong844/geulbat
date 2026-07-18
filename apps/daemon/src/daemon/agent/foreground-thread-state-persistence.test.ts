@@ -14,8 +14,10 @@ import {
 } from './foreground-thread-state-persistence.js';
 import type { AgentInput } from './loop-types.js';
 import {
+  commitThreadArtifactUpdateVersion,
   commitThreadArtifactVersion,
   deleteThreadArtifact,
+  deleteThreadArtifactUpdateVersion,
 } from '../sessions/artifact-store.js';
 import {
   appendTranscriptEntry,
@@ -27,8 +29,7 @@ import {
   upsertThreadSummary,
 } from '../sessions/threads-index.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
-import { testProjectId } from '../../test-support/project-id.js';
-import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 
 const FIXED_NOW = '2026-04-02T00:00:00.000Z';
@@ -41,7 +42,9 @@ function makeDeps(
   return {
     appendTranscriptEntry,
     commitThreadArtifactVersion,
+    commitThreadArtifactUpdateVersion,
     deleteThreadArtifact,
+    deleteThreadArtifactUpdateVersion,
     readTranscriptEntries,
     replaceTranscriptEntries,
     loadThreadIndex,
@@ -57,10 +60,9 @@ function makeAgentInput(args: {
   threadId: ReturnType<typeof testThreadId>;
   events: AgentEvent[];
 }): AgentInput {
-  const runContext = makeRunWorkspaceContext({
-    workspaceRoot: args.workspaceRoot,
+  const runContext = makeRunContext({
+    stateRoot: args.workspaceRoot,
     threadId: args.threadId,
-    projectId: testProjectId('foreground-thread-state'),
   });
   return {
     runId: 'run-foreground-thread-state',

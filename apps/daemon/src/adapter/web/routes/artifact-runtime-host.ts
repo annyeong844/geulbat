@@ -179,7 +179,7 @@ export function createArtifactRuntimeHostRoutes(args?: {
   });
 
   router.get(ARTIFACT_RUNTIME_SERVICE_WORKER_PROBE_PATH, (_req, res) => {
-    res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Content-Type-Options', 'nosniff');

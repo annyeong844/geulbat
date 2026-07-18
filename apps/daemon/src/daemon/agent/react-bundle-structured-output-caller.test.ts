@@ -354,6 +354,52 @@ void test('runReactBundleStructuredOutputCaller rejects malformed payloads witho
   });
 });
 
+void test('runReactBundleStructuredOutputCaller rejects malformed dependency ref fields before invoking ingress', async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    let ingressCalled = false;
+    const result = await runReactBundleStructuredOutputCaller({
+      workspaceRoot,
+      store: createSandboxAttemptStore(),
+      structuredOutputs: [
+        structuredOutput({
+          ...DEPENDENCY_REQUEST,
+          dependencyRefs: [
+            {
+              kind: 'esm_import',
+              specifier: 42,
+              packageName: 'geulbat-runtime-dependency-fixture',
+              version: '1.0.0',
+              provider: 'explicit_cdn',
+              url: PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_MODULE_URL,
+            },
+            {
+              kind: 'stylesheet',
+              packageName: 'geulbat-runtime-dependency-fixture',
+              version: '1.0.0',
+              provider: 'explicit_cdn',
+              url: PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_CDN_STYLESHEET_URL,
+            },
+          ],
+        }),
+      ],
+      functionCalls: [],
+      timeoutMs: 1000,
+      runIngress: async () => {
+        ingressCalled = true;
+        return {
+          ok: false,
+          reasonCode: 'prepare_failed',
+          message: 'malformed structured output reached ingress',
+        };
+      },
+    });
+
+    assertFailure(result, 'structured_output_invalid');
+    assert.match(result.message, /dependency specifier/u);
+    assert.equal(ingressCalled, false);
+  });
+});
+
 void test('runReactBundleStructuredOutputCaller redacts path-like diagnostics from ingress failures', async () => {
   await withWorkspace(async (workspaceRoot) => {
     const result = await runReactBundleStructuredOutputCaller({

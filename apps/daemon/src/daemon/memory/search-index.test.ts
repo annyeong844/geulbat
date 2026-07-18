@@ -5,12 +5,17 @@ import { searchMemoryIndex } from './search-index.js';
 import type { MemoryChunkRecord, MemoryManifest } from './types.js';
 
 const manifest: MemoryManifest = {
-  version: 1,
+  version: 2,
   generationId: 'memory-generation',
   generatedAt: '2026-05-09T00:00:00.000Z',
-  sourceProjectId: 'workspace',
+  sourceDirectory: '/tmp/memory-source',
   sourceIndexVersionToken: 'fresh-token',
   files: [],
+};
+
+const scope = {
+  stateRoot: '/tmp/private-home-state',
+  sourceRoot: '/tmp/memory-source',
 };
 
 function createRecord(args: {
@@ -40,7 +45,7 @@ void test('searchMemoryIndex returns every match when maxResults is omitted', as
   );
 
   const result = await searchMemoryIndex(
-    '/tmp/workspace',
+    scope,
     { query: 'memory' },
     {
       memoryIndex: {
@@ -67,7 +72,7 @@ void test('searchMemoryIndex honors explicit maxResults without a hidden cap', a
   );
 
   const result = await searchMemoryIndex(
-    '/tmp/workspace',
+    scope,
     { query: 'memory', maxResults: 51 },
     {
       memoryIndex: {
@@ -87,7 +92,7 @@ void test('searchMemoryIndex honors explicit maxResults without a hidden cap', a
 void test('searchMemoryIndex rejects fractional maxResults instead of flooring it', async () => {
   await assert.rejects(
     searchMemoryIndex(
-      '/tmp/workspace',
+      scope,
       { query: 'memory', maxResults: 1.5 },
       {
         memoryIndex: {
@@ -105,7 +110,7 @@ void test('searchMemoryIndex rejects fractional maxResults instead of flooring i
 void test('searchMemoryIndex rejects blank pathPrefix instead of treating it as all paths', async () => {
   await assert.rejects(
     searchMemoryIndex(
-      '/tmp/workspace',
+      scope,
       { query: 'memory', pathPrefix: '   ' },
       {
         memoryIndex: {
@@ -145,7 +150,7 @@ void test('searchMemoryIndex lowercases each searched field at most once per rec
 
   try {
     const result = await searchMemoryIndex(
-      '/tmp/workspace',
+      scope,
       { query: 'memory', maxResults: 10 },
       {
         memoryIndex: {
@@ -166,4 +171,22 @@ void test('searchMemoryIndex lowercases each searched field at most once per rec
   } finally {
     String.prototype.toLocaleLowerCase = originalToLocaleLowerCase;
   }
+});
+
+void test('searchMemoryIndex refuses an index built for another working directory', async () => {
+  await assert.rejects(
+    searchMemoryIndex(
+      { ...scope, sourceRoot: '/tmp/other-source' },
+      { query: 'memory' },
+      {
+        memoryIndex: {
+          computeCurrentSourceSnapshot: async () => ({
+            sourceIndexVersionToken: 'fresh-token',
+          }),
+          loadMemoryIndex: async () => ({ manifest, records: [] }),
+        },
+      },
+    ),
+    /not ready for the current working directory/,
+  );
 });

@@ -1,6 +1,5 @@
 import { isPlainRecord } from '../runtime-json.js';
 import {
-  isSessionProjectId as isProjectId,
   isSessionThreadId as isThreadId,
   type ThreadSummary,
 } from './contract.js';
@@ -13,15 +12,10 @@ import { createLogger } from '@geulbat/shared-utils/logger';
 
 const logger = createLogger('threads-index');
 
-interface LoadThreadIndexOptions {
-  isKnownProjectId?: (projectId: string) => boolean;
-}
-
 type ThreadIndexEntryParseReason =
   | 'entry_not_object'
   | 'invalid_thread_id'
-  | 'invalid_project_id'
-  | 'unknown_project_id'
+  | 'legacy_project_id'
   | 'invalid_title'
   | 'invalid_last_updated'
   | 'invalid_message_count'
@@ -40,10 +34,7 @@ export function createThreadIndexStore(
     ) => Promise<T>;
   } = {},
 ): {
-  loadThreadIndex(
-    workspaceRoot: string,
-    options?: LoadThreadIndexOptions,
-  ): Promise<ThreadSummary[]>;
+  loadThreadIndex(workspaceRoot: string): Promise<ThreadSummary[]>;
   saveThreadIndex(
     workspaceRoot: string,
     entries: ThreadSummary[],
@@ -62,15 +53,16 @@ export function createThreadIndexStore(
 
   async function loadThreadIndexForStore(
     workspaceRoot: string,
-    options?: LoadThreadIndexOptions,
   ): Promise<ThreadSummary[]> {
     const filePath = indexFilePath(workspaceRoot);
     try {
       const raw = await readFile(filePath, 'utf8');
       const data: unknown = JSON.parse(raw);
-      return parseThreadIndexEntries(data, options);
+      return parseThreadIndexEntries(data);
     } catch (err: unknown) {
-      if (hasErrorCode(err, 'ENOENT')) return [];
+      if (hasErrorCode(err, 'ENOENT')) {
+        return [];
+      }
       throw err;
     }
   }
@@ -132,9 +124,8 @@ const defaultThreadIndexStore = createThreadIndexStore();
 
 export async function loadThreadIndex(
   workspaceRoot: string,
-  options?: LoadThreadIndexOptions,
 ): Promise<ThreadSummary[]> {
-  return defaultThreadIndexStore.loadThreadIndex(workspaceRoot, options);
+  return defaultThreadIndexStore.loadThreadIndex(workspaceRoot);
 }
 
 export async function upsertThreadSummary(
@@ -151,10 +142,7 @@ export async function removeThreadSummary(
   return defaultThreadIndexStore.removeThreadSummary(workspaceRoot, threadId);
 }
 
-function parseThreadIndexEntries(
-  value: unknown,
-  options?: LoadThreadIndexOptions,
-): ThreadSummary[] {
+function parseThreadIndexEntries(value: unknown): ThreadSummary[] {
   if (!Array.isArray(value)) {
     throw new Error('invalid thread index');
   }
@@ -163,7 +151,7 @@ function parseThreadIndexEntries(
   const skippedEntries: SkippedThreadIndexEntryDiagnostic[] = [];
   for (const [entryIndex, entry] of value.entries()) {
     try {
-      entries.push(parseThreadSummaryEntry(entry, options));
+      entries.push(parseThreadSummaryEntry(entry));
     } catch (error: unknown) {
       skippedEntries.push({
         entryIndex,
@@ -185,24 +173,22 @@ function parseThreadIndexEntries(
   return entries;
 }
 
-function parseThreadSummaryEntry(
-  value: unknown,
-  options?: LoadThreadIndexOptions,
-): ThreadSummary {
+function parseThreadSummaryEntry(value: unknown): ThreadSummary {
   if (!isPlainRecord(value)) {
     throw new ThreadIndexEntryParseError('entry_not_object');
   }
 
   const record = value;
   const threadId = parseThreadId(record.threadId);
-  const projectId = parseProjectId(record.projectId, options);
+  if ('projectId' in record) {
+    throw new ThreadIndexEntryParseError('legacy_project_id');
+  }
   const title = parseOptionalString(record.title);
   const lastUpdated = parseRequiredString(record.lastUpdated);
   const messageCount = parseNonNegativeInteger(record.messageCount);
 
   return {
     threadId,
-    projectId,
     lastUpdated,
     messageCount,
     ...(title !== undefined ? { title } : {}),
@@ -214,19 +200,6 @@ function parseThreadId(value: unknown): ThreadSummary['threadId'] {
     return value;
   }
   throw new ThreadIndexEntryParseError('invalid_thread_id');
-}
-
-function parseProjectId(
-  value: unknown,
-  options?: LoadThreadIndexOptions,
-): ThreadSummary['projectId'] {
-  if (typeof value === 'string' && isProjectId(value)) {
-    if (!options?.isKnownProjectId || options.isKnownProjectId(value)) {
-      return value;
-    }
-    throw new ThreadIndexEntryParseError('unknown_project_id');
-  }
-  throw new ThreadIndexEntryParseError('invalid_project_id');
 }
 
 function parseRequiredString(value: unknown): string {

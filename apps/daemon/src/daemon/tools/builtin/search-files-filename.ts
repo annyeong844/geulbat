@@ -57,7 +57,7 @@ export function createGlobMatcher(pattern: string | null): SearchPathMatcher {
 
 function globPatternToRegexSource(pattern: string): string {
   let source = '';
-  for (let index = 0; index < pattern.length; ) {
+  for (let index = 0; index < pattern.length;) {
     const character = pattern[index];
     if (character === undefined) {
       break;
@@ -125,7 +125,9 @@ async function walkAndCollectFilenames(
     const fullPath = join(dir, entry.name);
     const relativePath = relative(root, fullPath).split(sep).join('/');
 
-    if (shouldExcludeWorkspaceEntry(relativePath, entry.name)) continue;
+    if (shouldExcludeWorkspaceEntry(relativePath, entry.name)) {
+      continue;
+    }
 
     if (entry.isDirectory() && !entry.isSymbolicLink()) {
       await walkAndCollectFilenames(
@@ -145,8 +147,12 @@ async function walkAndCollectFilenames(
       continue;
     }
 
-    if (matchesInclude && !matchesInclude(relativePath)) continue;
-    if (matchesPattern && !matchesPattern(relativePath)) continue;
+    if (matchesInclude && !matchesInclude(relativePath)) {
+      continue;
+    }
+    if (matchesPattern && !matchesPattern(relativePath)) {
+      continue;
+    }
 
     counter.total++;
     if (maxResults === undefined || results.length < maxResults) {

@@ -6,7 +6,6 @@ import { readPtcLabOpenBrowserPolicy } from '../../profile/lab-browser-policy-ad
 import type { PtcLabAdmittedProfile } from '../../profile/lab-profile.js';
 import type { PtcSessionDockerHandle } from '../../session/session-docker-contract.js';
 import {
-  type PtcLabBrowserTextEvidenceRequest,
   type PtcLabBrowserTextEvidenceResult,
   browserTextEvidenceFailure,
 } from './lab-browser-text-evidence-contract.js';
@@ -51,7 +50,7 @@ export function readBrowserTextEvidencePolicy(
 }
 
 export function validateBrowserTextEvidenceRequest(args: {
-  request: PtcLabBrowserTextEvidenceRequest | unknown;
+  request: unknown;
   maxTimeoutMs: number;
 }): PtcLabBrowserTextEvidenceResult<PtcLabBrowserValidatedTextEvidenceRequest> {
   const timeout = validateBrowserTextEvidenceTimeout({

@@ -19,6 +19,7 @@ import {
   PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_PROCESS_COUNT,
   PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_POLICY_ID,
   PTC_LAB_LOCAL_DOCKER_POLICY_ID,
+  PTC_LAB_OPEN_NETWORK_PACKAGE_INSTALL_POLICY_ID,
   PTC_SAFE_SUBSET_DEFAULT_POLICY_ID,
   type PtcLabPolicyId,
   type PtcProfileAdmissionPolicyId,
@@ -146,6 +147,16 @@ export function createPtcLabLocalDockerOpenEgressBrowserPolicyProjection(
   return {
     ...createPtcLabLocalDockerPolicyProjection(),
     policyId: args.policyId,
+    // 브라우저 evidence exec은 결과 JSON을 stdout으로 돌려받는다 —
+    // base의 0 상한을 물려받으면 첫 바이트부터 output_limit_exceeded로
+    // 죽는다 (셸 실행은 여전히 disabled)
+    shell: {
+      mode: 'disabled',
+      maxProcessCount: 0,
+      maxCommandMs: 0,
+      maxBufferedBytesPerStream:
+        PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_BUFFERED_BYTES_PER_STREAM,
+    },
     network: createPtcLabOpenEgressLocalPolicy({
       metricsCoverage: 'owner_outcome_only',
     }),
@@ -164,6 +175,48 @@ export function createPtcLabLocalDockerBatchCommandPolicyProjection(): PtcLabPol
       maxBufferedBytesPerStream:
         PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_BUFFERED_BYTES_PER_STREAM,
     },
+  };
+}
+
+interface CreatePtcLabOpenNetworkPackageInstallPolicyProjectionArgs {
+  maxInstallMs: number;
+  maxInstallOutputBytes: number;
+}
+
+// Operator-opt-in "package install + open-network exec" surface: batch-command
+// shell plus enabled npm (open_network, lifecycle scripts stay disabled) plus
+// explicit local open egress. Never the default projection.
+export function createPtcLabLocalDockerOpenNetworkPackageInstallPolicyProjection(
+  args: CreatePtcLabOpenNetworkPackageInstallPolicyProjectionArgs,
+): PtcLabPolicyProjection {
+  const batchCommand = createPtcLabLocalDockerBatchCommandPolicyProjection();
+  return {
+    ...batchCommand,
+    policyId: PTC_LAB_OPEN_NETWORK_PACKAGE_INSTALL_POLICY_ID,
+    // Installs run through the shared batch-command shell, so the shell budget
+    // must admit the operator's install knobs (slow installs are awaited).
+    shell: {
+      ...batchCommand.shell,
+      maxCommandMs: Math.max(
+        batchCommand.shell.maxCommandMs,
+        args.maxInstallMs,
+      ),
+      maxBufferedBytesPerStream: Math.max(
+        batchCommand.shell.maxBufferedBytesPerStream,
+        args.maxInstallOutputBytes,
+      ),
+    },
+    packageManager: {
+      ...createDefaultPtcLabPackageManagerPolicy(),
+      enabled: true,
+      managers: ['npm'],
+      installMode: 'open_network',
+      maxInstallMs: args.maxInstallMs,
+      maxInstallOutputBytes: args.maxInstallOutputBytes,
+    },
+    network: createPtcLabOpenEgressLocalPolicy({
+      metricsCoverage: 'owner_outcome_only',
+    }),
   };
 }
 

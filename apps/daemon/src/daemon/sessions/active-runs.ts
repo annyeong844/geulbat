@@ -4,13 +4,15 @@ import {
   assertSessionRunId as assertValidRunId,
   assertSessionThreadId as assertValidThreadId,
 } from './contract.js';
-import type { RunWorkspaceContext } from '../run-workspace-context.js';
+import type { RunContext } from '../run-context.js';
 import {
   pushPendingInterject,
+  removePendingInterjectBySeq,
+  requestInterjectFlush,
   type RunInterjectBuffer,
 } from './active-run-interject-buffer.js';
 
-export interface ActiveRun extends RunWorkspaceContext {
+export interface ActiveRun extends RunContext {
   runId: RunId;
   ownerThreadId: ThreadId;
   abortController: AbortController;
@@ -19,7 +21,7 @@ export interface ActiveRun extends RunWorkspaceContext {
   parentRunId?: RunId;
 }
 
-interface ActiveRunSnapshot extends RunWorkspaceContext {
+interface ActiveRunSnapshot extends Omit<RunContext, 'stateRoot'> {
   runId: RunId;
   ownerThreadId: ThreadId;
   startedAt: string;
@@ -33,39 +35,21 @@ export interface ActiveRunStore {
     run: ActiveRun,
   ): { ok: true } | { ok: false; activeRunId: RunId };
   finishRun(threadId: string | ThreadId, runId: RunId): void;
-  getRunById(runId: RunId):
-    | (RunWorkspaceContext & {
-        runId: RunId;
-        ownerThreadId: ThreadId;
-        startedAt: string;
-        parentRunId?: RunId;
-        aborted: boolean;
-      })
-    | undefined;
-  getRunByThreadId(threadId: string):
-    | (RunWorkspaceContext & {
-        runId: RunId;
-        ownerThreadId: ThreadId;
-        startedAt: string;
-        parentRunId?: RunId;
-        aborted: boolean;
-      })
-    | undefined;
-  getRunByProjectId(projectId: string):
-    | (RunWorkspaceContext & {
-        runId: RunId;
-        ownerThreadId: ThreadId;
-        startedAt: string;
-        parentRunId?: RunId;
-        aborted: boolean;
-      })
-    | undefined;
+  getRunById(runId: RunId): ActiveRunSnapshot | undefined;
+  getRunByThreadId(threadId: string): ActiveRunSnapshot | undefined;
   appendPendingInterject(
     runId: RunId,
     request: { text: string },
   ):
     | { ok: true; receivedSeq: number; bufferDepth: number }
     | { ok: false; code: 'not_found' };
+  cancelPendingInterject(
+    runId: RunId,
+    receivedSeq: number,
+  ): { ok: true; cancelled: boolean } | { ok: false; code: 'not_found' };
+  requestPendingInterjectFlush(
+    runId: RunId,
+  ): { ok: true; flushed: boolean } | { ok: false; code: 'not_found' };
   abortRun(runId: RunId): boolean;
   abortTrackedRun(runId: RunId, reason?: unknown): boolean;
   abortThreadTree(ownerThreadId: string): boolean;
@@ -75,8 +59,7 @@ function snapshotActiveRun(run: ActiveRun): ActiveRunSnapshot {
   return {
     runId: run.runId,
     threadId: run.threadId,
-    projectId: run.projectId,
-    workspaceRoot: run.workspaceRoot,
+    workingDirectory: run.workingDirectory,
     ownerThreadId: run.ownerThreadId,
     startedAt: run.startedAt,
     aborted: run.abortController.signal.aborted,
@@ -140,14 +123,6 @@ export function createActiveRunStore(): ActiveRunStore {
       const run = byThread.get(assertValidThreadId(threadId));
       return run ? snapshotActiveRun(run) : undefined;
     },
-    getRunByProjectId(projectId) {
-      for (const run of byRunId.values()) {
-        if (run.projectId === projectId) {
-          return snapshotActiveRun(run);
-        }
-      }
-      return undefined;
-    },
     appendPendingInterject(runId, request) {
       const run = byRunId.get(runId);
       if (!run || run.abortController.signal.aborted) {
@@ -159,16 +134,39 @@ export function createActiveRunStore(): ActiveRunStore {
       );
       return { ok: true, receivedSeq, bufferDepth };
     },
+    cancelPendingInterject(runId, receivedSeq) {
+      const run = byRunId.get(runId);
+      if (!run || run.abortController.signal.aborted) {
+        return { ok: false, code: 'not_found' };
+      }
+      return {
+        ok: true,
+        cancelled: removePendingInterjectBySeq(run.interject, receivedSeq),
+      };
+    },
+    requestPendingInterjectFlush(runId) {
+      const run = byRunId.get(runId);
+      if (!run || run.abortController.signal.aborted) {
+        return { ok: false, code: 'not_found' };
+      }
+      return { ok: true, flushed: requestInterjectFlush(run.interject) };
+    },
     abortRun(runId) {
       const run = byRunId.get(runId);
-      if (!run) return false;
-      if (run.parentRunId !== undefined) return false;
+      if (!run) {
+        return false;
+      }
+      if (run.parentRunId !== undefined) {
+        return false;
+      }
       run.abortController.abort();
       return true;
     },
     abortTrackedRun(runId, reason) {
       const run = byRunId.get(runId);
-      if (!run) return false;
+      if (!run) {
+        return false;
+      }
       run.abortController.abort(reason);
       return true;
     },

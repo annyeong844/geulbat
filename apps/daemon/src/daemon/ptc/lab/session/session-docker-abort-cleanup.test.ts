@@ -12,7 +12,7 @@ import type {
 
 const IDENTITY: PtcSessionDockerIdentity = {
   threadId: 'thread-ptc-abort-cleanup',
-  workspaceRoot: '/workspace/project-a',
+  stateRoot: '/workspace/project-a',
   trustContextId: 'local-default-v1',
 };
 
@@ -68,7 +68,7 @@ void test('PtcSessionDockerManager close cleanup removes containers even when ca
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const session = await manager.getOrCreate(IDENTITY);
@@ -124,7 +124,7 @@ void test('PtcSessionDockerManager startup failure cleanup removes created conta
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const result = await manager.getOrCreate(IDENTITY, {

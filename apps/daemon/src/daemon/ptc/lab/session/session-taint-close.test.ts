@@ -18,7 +18,7 @@ import type {
 
 const IDENTITY: PtcSessionDockerIdentity = Object.freeze({
   threadId: 'thread-tainted-close',
-  workspaceRoot: '/workspace/project-a',
+  stateRoot: '/workspace/project-a',
   trustContextId: 'trust-local-v1',
 });
 

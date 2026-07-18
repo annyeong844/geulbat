@@ -1,8 +1,8 @@
-import {
+import type {
   REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID,
   REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY,
   REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION,
-  type HttpMetadataProbeResult,
+  HttpMetadataProbeResult,
 } from '../network/http-metadata-probe.js';
 
 export type ReactBundleDependencyProbeIdentity = {

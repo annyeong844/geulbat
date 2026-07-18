@@ -7,18 +7,24 @@ import type {
 import type { CancelRequest } from '@geulbat/protocol/cancel';
 import {
   isRunPromptInputRefResponse,
+  type RunAttachmentInput,
+  type RunModelId,
+  type RunReasoningEffort,
   type RunRequest,
   type RunStartRequest,
+  type RunSubagentModelRouting,
 } from '@geulbat/protocol/run-contract';
 
 import { getErrorMessage } from '@geulbat/shared-utils/error';
 import { createLogger } from '@geulbat/shared-utils/logger';
-import {
-  brandProjectId,
-  brandRunId,
-  brandThreadId,
-} from '../lib/id-brand-helpers.js';
+import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
 import { apiFetch, isApiOkResponse } from '../lib/api/client.js';
+import { deleteRunAttachmentBlob } from '../lib/api/files.js';
+import { getImageGenerationModelPref } from '../features/assistant/image-model-prefs.js';
+import {
+  getVideoGenerationPref,
+  type VideoGenerationPref,
+} from '../features/assistant/video-generation-prefs.js';
 import type { RunSessionPhase } from './run-session-state-types.js';
 
 const logger = createLogger('run-session-commands');
@@ -59,15 +65,25 @@ interface CancelRunSessionArgs {
 
 interface BuildPromptRunRequestArgs {
   prompt: string;
-  projectId: string;
+  workingDirectory: string;
+  modelId: RunModelId;
   selectedThreadId: string | null;
-  selectedFile: string | null;
   permissionMode: PermissionMode;
+  reasoningEffort: RunReasoningEffort;
+  subagentModelRouting: RunSubagentModelRouting;
+  // 업로드된 사용자 첨부 — 모델에 이미지/파일 입력 블록으로 전달된다
+  attachments?: RunAttachmentInput[];
+  // 답변 재생성 — 마지막 사용자 턴을 덮어쓴다 (threadId 필수)
+  regenerate?: boolean;
+  // 아티팩트 프레임 발 턴 — user metadata.origin으로 각인돼 귀속 렌더된다
+  promptOrigin?: 'artifact_frame';
 }
 
 interface BuildRunStartRequestArgs {
   request: RunRequest;
+  modelId: RunModelId;
   permissionMode: PermissionMode;
+  subagentModelRouting: RunSubagentModelRouting;
 }
 
 interface BuildApprovalDecisionRequestArgs {
@@ -107,29 +123,96 @@ type CancelRunSessionResult =
     }
   | { kind: 'noop' };
 
+// 현재 컴퓨터 탐색기 폴더를 실행 cwd로 명시한다. 열려 있는 파일은 프롬프트
+// 컨텍스트에 주입하지 않으며 실행 cwd도 결정하지 않는다.
 export function buildPromptRunRequest({
   prompt,
-  projectId,
+  workingDirectory,
+  modelId,
   selectedThreadId,
-  selectedFile,
   permissionMode,
+  reasoningEffort,
+  subagentModelRouting,
+  attachments,
+  regenerate,
+  promptOrigin,
 }: BuildPromptRunRequestArgs): RunRequest {
+  const imageGenerationModel = getImageGenerationModelPref();
+  const videoGenerationPref = getVideoGenerationPref();
   return {
     prompt,
-    projectId: brandProjectId(projectId),
+    workingDirectory,
+    modelId,
     permissionMode,
+    reasoningEffort,
+    subagentModelRouting,
     ...(selectedThreadId ? { threadId: brandThreadId(selectedThreadId) } : {}),
-    ...(selectedFile ? { currentFile: selectedFile } : {}),
+    ...(attachments !== undefined && attachments.length > 0
+      ? { attachments }
+      : {}),
+    ...(regenerate === true ? { regenerate: true } : {}),
+    ...(promptOrigin !== undefined ? { promptOrigin } : {}),
+    // 기본 이미지 모델 선택 — 미연결이어도 그대로 싣는다(생략=조용한 타사
+    // 폴백이므로 금지, §4.2). 판정과 오류는 데몬이 낸다.
+    ...(imageGenerationModel !== null ? { imageGenerationModel } : {}),
+    // 동영상 설정도 동일 규범(video-generation-open §4.3)
+    ...(videoGenerationPref !== null
+      ? {
+          videoGenerationModel: videoGenerationPref.model,
+          ...buildVideoGenerationSettingsField(videoGenerationPref),
+        }
+      : {}),
   };
+}
+
+// pref의 상세 옵션(길이·화면비·해상도)을 RunRequest.videoGenerationSettings
+// 로 조립한다 — 아무것도 없으면 필드 자체를 만들지 않는다.
+function buildVideoGenerationSettingsField(
+  pref: VideoGenerationPref,
+): Pick<RunRequest, 'videoGenerationSettings'> | Record<string, never> {
+  const settings = {
+    ...(pref.durationSeconds !== undefined
+      ? { durationSeconds: pref.durationSeconds }
+      : {}),
+    ...(pref.aspectRatio !== undefined
+      ? { aspectRatio: pref.aspectRatio }
+      : {}),
+    ...(pref.resolution !== undefined ? { resolution: pref.resolution } : {}),
+  };
+  return Object.keys(settings).length > 0
+    ? { videoGenerationSettings: settings }
+    : {};
 }
 
 export function buildRunStartRequest({
   request,
+  modelId,
   permissionMode,
+  subagentModelRouting,
 }: BuildRunStartRequestArgs): RunRequest {
+  const imageGenerationModel =
+    request.imageGenerationModel ?? getImageGenerationModelPref();
+  const videoGenerationPref = getVideoGenerationPref();
+  const videoGenerationModel =
+    request.videoGenerationModel ?? videoGenerationPref?.model;
+  const videoGenerationSettings =
+    request.videoGenerationSettings ??
+    (videoGenerationPref !== null
+      ? buildVideoGenerationSettingsField(videoGenerationPref)
+          .videoGenerationSettings
+      : undefined);
   return {
     ...request,
+    modelId: request.modelId ?? modelId,
     permissionMode: request.permissionMode ?? permissionMode,
+    subagentModelRouting: request.subagentModelRouting ?? subagentModelRouting,
+    ...(imageGenerationModel !== null && imageGenerationModel !== undefined
+      ? { imageGenerationModel }
+      : {}),
+    ...(videoGenerationModel !== undefined ? { videoGenerationModel } : {}),
+    ...(videoGenerationSettings !== undefined
+      ? { videoGenerationSettings }
+      : {}),
   };
 }
 
@@ -137,7 +220,7 @@ export async function prepareRunStartRequest(
   request: RunRequest,
 ): Promise<RunStartRequest> {
   const promptInput = await apiFetch(
-    `/api/run/prompt-inputs?projectId=${encodeURIComponent(request.projectId)}`,
+    '/api/run/prompt-inputs',
     {
       method: 'POST',
       headers: {
@@ -148,38 +231,76 @@ export async function prepareRunStartRequest(
     isRunPromptInputRefResponse,
   );
   return {
-    projectId: request.projectId,
     ...(request.displayPrompt !== undefined
       ? { displayPrompt: request.displayPrompt }
       : {}),
     ...(request.threadId !== undefined ? { threadId: request.threadId } : {}),
+    ...(request.workingDirectory !== undefined
+      ? { workingDirectory: request.workingDirectory }
+      : {}),
+    ...(request.modelId !== undefined ? { modelId: request.modelId } : {}),
     ...(request.currentFile !== undefined
       ? { currentFile: request.currentFile }
       : {}),
     ...(request.selection !== undefined
       ? { selection: request.selection }
       : {}),
-    ...(request.allowedToolsHint !== undefined
-      ? { allowedToolsHint: request.allowedToolsHint }
+    ...(request.allowedPublicToolNames !== undefined
+      ? { allowedPublicToolNames: request.allowedPublicToolNames }
       : {}),
     ...(request.permissionMode !== undefined
       ? { permissionMode: request.permissionMode }
+      : {}),
+    ...(request.reasoningEffort !== undefined
+      ? { reasoningEffort: request.reasoningEffort }
+      : {}),
+    ...(request.subagentModelRouting !== undefined
+      ? { subagentModelRouting: request.subagentModelRouting }
+      : {}),
+    ...(request.attachments !== undefined
+      ? { attachments: request.attachments }
+      : {}),
+    ...(request.regenerate !== undefined
+      ? { regenerate: request.regenerate }
+      : {}),
+    ...(request.imageGenerationModel !== undefined
+      ? { imageGenerationModel: request.imageGenerationModel }
+      : {}),
+    // 동영상 모델·설정(video-generation-open §4.3) — 화이트리스트 누락 시
+    // prefs가 조용히 탈락하는 함정이 있어 S1에서 미리 등록해 둔다
+    ...(request.videoGenerationModel !== undefined
+      ? { videoGenerationModel: request.videoGenerationModel }
+      : {}),
+    ...(request.videoGenerationSettings !== undefined
+      ? { videoGenerationSettings: request.videoGenerationSettings }
       : {}),
     promptRef: promptInput.promptRef,
   };
 }
 
+// 전송이 실패하면 업로드해 둔 ref들(프롬프트·첨부 blob)은 소비될 길이
+// 없다 — 여기서 지워 데몬 디스크에 고아로 남지 않게 한다.
 async function cleanupRunStartRequest(request: RunStartRequest): Promise<void> {
-  if (!('promptRef' in request)) {
-    return;
+  const cleanups: Promise<unknown>[] = [];
+  if ('promptRef' in request) {
+    cleanups.push(
+      apiFetch(
+        `/api/run/prompt-inputs?promptRef=${encodeURIComponent(request.promptRef)}`,
+        { method: 'DELETE' },
+        isApiOkResponse,
+      ),
+    );
   }
-  await apiFetch(
-    `/api/run/prompt-inputs?projectId=${encodeURIComponent(
-      request.projectId,
-    )}&promptRef=${encodeURIComponent(request.promptRef)}`,
-    { method: 'DELETE' },
-    isApiOkResponse,
+  for (const attachment of request.attachments ?? []) {
+    cleanups.push(deleteRunAttachmentBlob(attachment.contentRef));
+  }
+  const results = await Promise.allSettled(cleanups);
+  const rejected = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
   );
+  if (rejected) {
+    throw rejected.reason;
+  }
 }
 
 export function resolveOptimisticRunPrompt(

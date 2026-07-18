@@ -6,6 +6,7 @@ import { once } from 'node:events';
 import WebSocket, { WebSocketServer } from 'ws';
 
 import {
+  closeDaemonForShutdown,
   closeDaemonRuntimeSessions,
   closeDaemonServers,
   listenDaemonHttpServer,
@@ -35,6 +36,122 @@ void test('closeDaemonServers terminates websocket clients before closing the ht
 
   assert.equal(server.listening, false);
   assert.equal(webSocketServer.clients.size, 0);
+});
+
+void test('closeDaemonForShutdown closes phases in order before releasing admission', async () => {
+  const server = createServer();
+  await listen(server);
+  let serverClosed = false;
+  let runtimeCloseCount = 0;
+  let admissionReleased = false;
+  server.once('close', () => {
+    serverClosed = true;
+  });
+  const closeRuntime = async () => {
+    assert.equal(serverClosed, true);
+    runtimeCloseCount += 1;
+    return { ok: true } as const;
+  };
+  const runtimeSessions: DaemonRuntimeSessionClosers = {
+    globalMcp: {
+      async close() {
+        await closeRuntime();
+      },
+    },
+    ptcBrowserPageLoadEvidence: { closeAll: closeRuntime },
+    ptcBrowserTextEvidence: { closeAll: closeRuntime },
+    ptcBrowserNavigate: { closeAll: closeRuntime },
+    ptcExecuteCode: { closeAll: closeRuntime },
+  };
+
+  await closeDaemonForShutdown({
+    admissionLock: {
+      async release() {
+        assert.equal(runtimeCloseCount, 5);
+        admissionReleased = true;
+      },
+    },
+    runtimeSessions,
+    server,
+    webSocketServers: [],
+  });
+
+  assert.equal(server.listening, false);
+  assert.equal(admissionReleased, true);
+});
+
+void test('closeDaemonForShutdown attempts every phase and aggregates failures', async () => {
+  const server = createServer();
+  const calls: string[] = [];
+  const runtimeSessions: DaemonRuntimeSessionClosers = {
+    globalMcp: {
+      async close() {
+        calls.push('mcp');
+      },
+    },
+    ptcBrowserPageLoadEvidence: {
+      async closeAll() {
+        calls.push('page-load');
+        return {
+          ok: false,
+          reasonCode: 'ptc_browser_page_load_session_cleanup_failed',
+          message: 'runtime cleanup failed',
+        };
+      },
+    },
+    ptcBrowserTextEvidence: {
+      async closeAll() {
+        calls.push('text');
+        return { ok: true };
+      },
+    },
+    ptcBrowserNavigate: {
+      async closeAll() {
+        calls.push('browser');
+        return { ok: true };
+      },
+    },
+    ptcExecuteCode: {
+      async closeAll() {
+        calls.push('execute');
+        return { ok: true };
+      },
+    },
+  };
+
+  await assert.rejects(
+    closeDaemonForShutdown({
+      admissionLock: {
+        async release() {
+          calls.push('admission-lock');
+          throw new Error('lock release failed');
+        },
+      },
+      runtimeSessions,
+      server,
+      webSocketServers: [],
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors.length, 3);
+      assert.match(error.message, /servers:/u);
+      assert.match(error.message, /runtimeSessions:/u);
+      assert.match(error.message, /admissionLock: lock release failed/u);
+      const admissionFailure: unknown = error.errors[2];
+      assert.ok(admissionFailure instanceof Error);
+      assert.ok(admissionFailure.cause instanceof Error);
+      assert.equal(admissionFailure.cause.message, 'lock release failed');
+      return true;
+    },
+  );
+  assert.deepEqual(calls, [
+    'mcp',
+    'page-load',
+    'text',
+    'browser',
+    'execute',
+    'admission-lock',
+  ]);
 });
 
 void test('listenDaemonHttpServer rejects async bind errors for startup cleanup paths', async () => {
@@ -71,10 +188,15 @@ void test('listenDaemonHttpServer rejects async bind errors for startup cleanup 
   }
 });
 
-void test('closeDaemonRuntimeSessions closes retained PTC runtimes during shutdown', async () => {
+void test('closeDaemonRuntimeSessions closes MCP and retained PTC runtimes during shutdown', async () => {
   const controller = new AbortController();
   const calls: string[] = [];
   const runtimeSessions: DaemonRuntimeSessionClosers = {
+    globalMcp: {
+      async close(args) {
+        calls.push(`mcp:${args?.signal === controller.signal}`);
+      },
+    },
     ptcBrowserPageLoadEvidence: {
       async closeAll(args) {
         calls.push(`page-load:${args?.signal === controller.signal}`);
@@ -107,6 +229,7 @@ void test('closeDaemonRuntimeSessions closes retained PTC runtimes during shutdo
   });
 
   assert.deepEqual(calls, [
+    'mcp:true',
     'page-load:true',
     'text:true',
     'browser:true',
@@ -117,6 +240,12 @@ void test('closeDaemonRuntimeSessions closes retained PTC runtimes during shutdo
 void test('closeDaemonRuntimeSessions surfaces cleanup failures after trying every runtime', async () => {
   const calls: string[] = [];
   const runtimeSessions: DaemonRuntimeSessionClosers = {
+    globalMcp: {
+      async close() {
+        calls.push('mcp');
+        throw new Error('mcp close unavailable');
+      },
+    },
     ptcBrowserPageLoadEvidence: {
       async closeAll() {
         calls.push('page-load');
@@ -153,9 +282,9 @@ void test('closeDaemonRuntimeSessions surfaces cleanup failures after trying eve
 
   await assert.rejects(
     closeDaemonRuntimeSessions({ runtimeSessions }),
-    /ptcBrowserTextEvidence:ptc_browser_text_evidence_session_cleanup_failed; ptcBrowserNavigate:ptc_browser_navigate_session_cleanup_failed; ptcExecuteCode:threw/u,
+    /globalMcp:threw; ptcBrowserTextEvidence:ptc_browser_text_evidence_session_cleanup_failed; ptcBrowserNavigate:ptc_browser_navigate_session_cleanup_failed; ptcExecuteCode:threw/u,
   );
-  assert.deepEqual(calls, ['page-load', 'text', 'browser', 'execute']);
+  assert.deepEqual(calls, ['mcp', 'page-load', 'text', 'browser', 'execute']);
 });
 
 function listen(server: ReturnType<typeof createServer>): Promise<void> {

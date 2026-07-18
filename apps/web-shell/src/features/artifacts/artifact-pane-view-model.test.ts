@@ -6,7 +6,7 @@ import {
   createCommittedArtifactPaneViewModel,
 } from './artifact-pane-view-model.js';
 import { createArtifactPaneViewModel } from '../../test-support/create-artifact-pane-view-model.js';
-import { brandProjectId, brandThreadId } from '../../lib/id-brand-helpers.js';
+import { brandThreadId } from '../../lib/id-brand-helpers.js';
 
 void test('createCommittedArtifactPaneViewModel owns committed artifact source identity assembly', () => {
   const viewModel = createCommittedArtifactPaneViewModel({
@@ -25,7 +25,7 @@ void test('createCommittedArtifactPaneViewModel owns committed artifact source i
     persistenceEpoch: 4,
     sourceRef: {
       kind: 'thread-file',
-      projectId: brandProjectId('workspace'),
+      workingDirectory: 'stories/sample',
       threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
       runId: 'run-1',
       filePath: 'notes/demo.md',
@@ -35,7 +35,7 @@ void test('createCommittedArtifactPaneViewModel owns committed artifact source i
 
   assert.deepEqual(viewModel.sourceRef, {
     kind: 'thread-file',
-    projectId: 'workspace',
+    workingDirectory: 'stories/sample',
     threadId: '00000000-0000-4000-8000-000000000001',
     runId: 'run-1',
     filePath: 'notes/demo.md',
@@ -46,11 +46,6 @@ void test('createCommittedArtifactPaneViewModel owns committed artifact source i
   });
   assert.equal(viewModel.parsed.renderer, 'markdown');
   assert.equal(viewModel.parsed.payload, '# committed');
-  assert.deepEqual(viewModel.actions.openSource, {
-    visible: true,
-    enabled: true,
-    reason: null,
-  });
 });
 
 void test('buildArtifactSessionKey prefers committed artifact identity over digest when available', () => {

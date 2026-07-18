@@ -4,7 +4,6 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { DEFAULT_PROJECT_ID } from '../files/project-registry-state.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import { createThreadIndexStore, loadThreadIndex } from './threads-index.js';
@@ -31,11 +30,10 @@ void test('loadThreadIndex skips invalid entries and preserves valid entry order
   await writeFile(
     join(workspaceRoot, '.geulbat', 'sessions', 'index.json'),
     JSON.stringify([
-      { threadId: testThreadId(1), projectId: DEFAULT_PROJECT_ID },
-      { threadId: 'not-a-thread-id', projectId: DEFAULT_PROJECT_ID },
+      { threadId: testThreadId(1) },
+      { threadId: 'not-a-thread-id' },
       {
         threadId: validThreadId,
-        projectId: DEFAULT_PROJECT_ID,
         title: 'kept',
         lastUpdated: '2026-04-04T00:00:00.000Z',
         messageCount: 2,
@@ -52,13 +50,10 @@ void test('loadThreadIndex skips invalid entries and preserves valid entry order
   );
 
   try {
-    const entries = await loadThreadIndex(workspaceRoot, {
-      isKnownProjectId: (projectId) => projectId === DEFAULT_PROJECT_ID,
-    });
+    const entries = await loadThreadIndex(workspaceRoot);
     assert.deepEqual(entries, [
       {
         threadId: validThreadId,
-        projectId: DEFAULT_PROJECT_ID,
         title: 'kept',
         lastUpdated: '2026-04-04T00:00:00.000Z',
         messageCount: 2,
@@ -69,7 +64,7 @@ void test('loadThreadIndex skips invalid entries and preserves valid entry order
     assert.match(warningLine, /Skipped 3 malformed thread index entries/);
     assert.match(
       warningLine,
-      /skippedEntryDiagnostics="0:invalid_last_updated,1:invalid_thread_id,3:unknown_project_id"/,
+      /skippedEntryDiagnostics="0:invalid_last_updated,1:invalid_thread_id,3:legacy_project_id"/,
     );
     assert.doesNotMatch(warningLine, /not-a-thread-id|missing-project/u);
   } finally {
@@ -87,7 +82,6 @@ void test('loadThreadIndex reports every skipped entry diagnostic without a hidd
   };
   const malformedEntries = Array.from({ length: 25 }, (_, index) => ({
     threadId: `not-a-thread-id-${index}`,
-    projectId: DEFAULT_PROJECT_ID,
     title: 'skip me',
     lastUpdated: '2026-04-04T00:00:00.000Z',
     messageCount: 1,
@@ -99,9 +93,7 @@ void test('loadThreadIndex reports every skipped entry diagnostic without a hidd
   );
 
   try {
-    const entries = await loadThreadIndex(workspaceRoot, {
-      isKnownProjectId: (projectId) => projectId === DEFAULT_PROJECT_ID,
-    });
+    const entries = await loadThreadIndex(workspaceRoot);
     assert.deepEqual(entries, []);
     assert.equal(warnings.length, 1);
     const warningLine = String(warnings[0]?.[0] ?? '');
@@ -133,7 +125,6 @@ void test('upsertThreadSummary serializes concurrent mutations for the same work
 
   const firstUpsert = store.upsertThreadSummary(workspaceRoot, {
     threadId: testThreadId(10),
-    projectId: DEFAULT_PROJECT_ID,
     title: 'first',
     lastUpdated: '2026-04-14T00:00:00.000Z',
     messageCount: 1,
@@ -142,7 +133,6 @@ void test('upsertThreadSummary serializes concurrent mutations for the same work
 
   const secondUpsert = store.upsertThreadSummary(workspaceRoot, {
     threadId: testThreadId(11),
-    projectId: DEFAULT_PROJECT_ID,
     title: 'second',
     lastUpdated: '2026-04-14T00:00:01.000Z',
     messageCount: 2,
@@ -158,14 +148,12 @@ void test('upsertThreadSummary serializes concurrent mutations for the same work
   assert.deepEqual(entries, [
     {
       threadId: testThreadId(10),
-      projectId: DEFAULT_PROJECT_ID,
       title: 'first',
       lastUpdated: '2026-04-14T00:00:00.000Z',
       messageCount: 1,
     },
     {
       threadId: testThreadId(11),
-      projectId: DEFAULT_PROJECT_ID,
       title: 'second',
       lastUpdated: '2026-04-14T00:00:01.000Z',
       messageCount: 2,

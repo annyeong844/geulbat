@@ -46,13 +46,25 @@ export function createAgentSendInputTool(
       'Continue a completed child run on the same child thread using the existing child handle.',
     argsSchema: agentSendInputArgsSchema,
     sideEffectLevel: 'none',
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     requiresApproval: false,
+    catalogSearchMetadata: {
+      family: 'agent',
+      searchHints: [
+        'send input to agent',
+        'message subagent',
+        'continue subagent',
+        'reply to agent',
+      ],
+      tags: ['agent', 'subagent', 'input'],
+      whenToUse: 'Send follow-up instructions to an existing subagent.',
+      notFor: 'Starting a new subagent or waiting for results.',
+    },
     async executeParsed(args, ctx) {
       const task = args.task;
       const childRunId = args.child_run_id;
-      if (!ctx.threadId || !ctx.projectId || !ctx.runId || !ctx.runState) {
+      if (!ctx.threadId || !ctx.stateRoot || !ctx.runId || !ctx.runState) {
         return toolError(
           'execution_failed',
           'run context is required for agent_send_input',
@@ -65,7 +77,7 @@ export function createAgentSendInputTool(
         );
       }
 
-      const projectId = ctx.projectId;
+      const stateRoot = ctx.stateRoot;
       const parentRunId = assertToolRunId(ctx.runId);
       const ownerThreadId = ctx.threadId;
       const agentSpawnRuntime = ctx.agentSpawnRuntime;
@@ -104,8 +116,9 @@ export function createAgentSendInputTool(
         subagentType,
         parentRunId,
         ownerThreadId,
-        projectId,
-        workspaceRoot: ctx.workspaceRoot,
+        stateRoot,
+        workingDirectory:
+          agentCtx?.workingDirectory ?? ctx.workingDirectory ?? '',
         childRunId: childRunHandleId,
         childThreadId: childRecord.childThreadId,
         parentRunState: ctx.runState,
@@ -118,6 +131,8 @@ export function createAgentSendInputTool(
           ? { approvalSessionId: ctx.approvalSessionId }
           : {}),
         ...(agentCtx ? { permissionMode: agentCtx.permissionMode } : {}),
+        modelPin: childRecord.modelPin,
+        subagentModelRouting: childRecord.subagentModelRouting,
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       });
     },

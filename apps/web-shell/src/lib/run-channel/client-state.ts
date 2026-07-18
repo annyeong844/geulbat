@@ -10,7 +10,7 @@ type RunChannelConnectionPhase =
 export interface RunChannelConnectionState {
   phase: RunChannelConnectionPhase;
   reconnectAttempts: number;
-  reconnectTask: unknown | null;
+  reconnectTask: number | null;
   closedExplicitly: boolean;
 }
 
@@ -79,7 +79,7 @@ export function canScheduleReconnect(
 
 export function markReconnectScheduled(
   state: RunChannelConnectionState,
-  task: unknown,
+  task: number,
 ): RunChannelConnectionState {
   return {
     ...state,

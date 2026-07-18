@@ -1,4 +1,16 @@
-type ProviderReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+import type { ProviderRunSelection } from '../../subagent-runtime-contracts.js';
+import {
+  DEFAULT_PROVIDER_ID,
+  resolveProviderRegistryEntry,
+  type ProviderId,
+} from './provider-registry.js';
+
+export type ProviderReasoningEffort =
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max';
 type ProviderTextVerbosity = 'low' | 'medium' | 'high';
 
 export interface ProviderModelRoundRetryPolicy {
@@ -14,13 +26,13 @@ export interface ProviderModelRoundRetryPolicy {
 }
 
 export interface ProviderRequestOptions {
+  providerId: ProviderId;
   model: string;
   text: { verbosity: ProviderTextVerbosity };
   reasoning: { effort: ProviderReasoningEffort; summary: 'auto' };
   modelRoundRetry: ProviderModelRoundRetryPolicy;
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-5.5';
 const DEFAULT_REASONING_EFFORT: ProviderReasoningEffort = 'medium';
 const DEFAULT_TEXT_VERBOSITY: ProviderTextVerbosity = 'medium';
 const DEFAULT_MODEL_ROUND_RETRY_POLICY: ProviderModelRoundRetryPolicy = {
@@ -35,12 +47,14 @@ const DEFAULT_MODEL_ROUND_RETRY_POLICY: ProviderModelRoundRetryPolicy = {
   },
 };
 
-const REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+const REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 const TEXT_VERBOSITIES = ['low', 'medium', 'high'] as const;
 
 type ProviderEnv = Partial<
   Record<
+    | 'GEULBAT_LLM_PROVIDER'
     | 'GEULBAT_CODEX_MODEL'
+    | 'GEULBAT_GROK_MODEL'
     | 'GEULBAT_CODEX_REASONING_EFFORT'
     | 'GEULBAT_CODEX_TEXT_VERBOSITY'
     | 'GEULBAT_CODEX_MODEL_ROUND_RETRY_CONNECTION_LOST_MAX_RETRIES'
@@ -79,8 +93,10 @@ function readEnumValue<TValue extends string>(
   if (value === undefined) {
     return fallback;
   }
-  if (values.includes(value as TValue)) {
-    return value as TValue;
+  for (const candidate of values) {
+    if (value === candidate) {
+      return candidate;
+    }
   }
   throw new Error(`invalid ${name}: ${value}`);
 }
@@ -183,11 +199,26 @@ function resolveModelRoundRetryPolicy(
   };
 }
 
+function readProviderId(env: ProviderEnv): ProviderId {
+  const value = readEnvValue(env, 'GEULBAT_LLM_PROVIDER');
+  if (value === undefined) {
+    return DEFAULT_PROVIDER_ID;
+  }
+  return resolveProviderRegistryEntry(value).id;
+}
+
+function readProviderModel(env: ProviderEnv, providerId: ProviderId): string {
+  const provider = resolveProviderRegistryEntry(providerId);
+  return readEnvValue(env, provider.modelEnvKey) ?? provider.defaultModel;
+}
+
 export function resolveProviderRequestOptions(
   env: ProviderEnv = process.env,
 ): ProviderRequestOptions {
+  const providerId = readProviderId(env);
   return {
-    model: readEnvValue(env, 'GEULBAT_CODEX_MODEL') ?? DEFAULT_CODEX_MODEL,
+    providerId,
+    model: readProviderModel(env, providerId),
     text: {
       verbosity: readEnumValue(
         env,
@@ -206,5 +237,33 @@ export function resolveProviderRequestOptions(
       summary: 'auto',
     },
     modelRoundRetry: resolveModelRoundRetryPolicy(env),
+  };
+}
+
+export function projectProviderRunSelection(
+  options: ProviderRequestOptions,
+): ProviderRunSelection {
+  return {
+    providerModel: { providerId: options.providerId, model: options.model },
+    reasoningEffort: options.reasoning.effort,
+  };
+}
+
+export function resolveProviderRequestOptionsForRun(
+  base: ProviderRequestOptions,
+  overrides: {
+    providerModel?: Pick<ProviderRequestOptions, 'providerId' | 'model'>;
+    reasoningEffort?: ProviderReasoningEffort;
+  },
+): ProviderRequestOptions {
+  return {
+    ...base,
+    ...(overrides.providerModel ?? {}),
+    reasoning: {
+      ...base.reasoning,
+      ...(overrides.reasoningEffort !== undefined
+        ? { effort: overrides.reasoningEffort }
+        : {}),
+    },
   };
 }

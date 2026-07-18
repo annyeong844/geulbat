@@ -22,7 +22,7 @@ export interface WebFetchSuccess {
   untrusted: true;
 }
 
-export interface WebFetchFailure {
+interface WebFetchFailure {
   ok: false;
   url: string;
   finalUrl?: string;

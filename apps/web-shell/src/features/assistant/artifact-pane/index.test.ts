@@ -12,7 +12,7 @@ function createResolvedSourceRef(
 ): ResolvedArtifactSourceRef {
   return {
     kind: null,
-    projectId: null,
+    workingDirectory: '',
     threadId: null,
     runId: null,
     filePath: null,

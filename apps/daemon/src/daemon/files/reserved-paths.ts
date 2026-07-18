@@ -20,19 +20,30 @@ const EXCLUDED_WORKSPACE_ENTRY_NAMES = new Set([
 
 const EXCLUDED_CONTENT_SEARCH_GLOBS = [
   '!.git/',
+  '!**/.git/**',
   GEULBAT_INTERNAL_EXCLUDE_GLOB,
+  `!**/${GEULBAT_INTERNAL_ROOT}/**`,
   '!node_modules/',
+  '!**/node_modules/**',
+  '!.env',
+  '!**/.env',
+  '!.env.*',
+  '!**/.env.*',
+  '!.envrc',
+  '!**/.envrc',
+  '!.npmrc',
+  '!**/.npmrc',
+  '!.yarnrc.yml',
+  '!**/.yarnrc.yml',
 ] as const;
 
 export function isReservedPath(relativePath: string): boolean {
-  const normalized = normalizeReservedPathToken(relativePath);
-  return (
-    RESERVED_PATHS.has(normalized) ||
-    normalized.startsWith(`${GEULBAT_INTERNAL_ROOT}/`) ||
-    normalized.startsWith('.git/') ||
-    normalized === '.env' ||
-    normalized.startsWith('.env.')
-  );
+  return relativePath
+    .split(/[\\/]+/u)
+    .map(normalizeReservedPathToken)
+    .some(
+      (segment) => RESERVED_PATHS.has(segment) || segment.startsWith('.env.'),
+    );
 }
 
 export function shouldExcludeWorkspaceEntry(

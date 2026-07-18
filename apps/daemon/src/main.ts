@@ -2,8 +2,7 @@ import http from 'node:http';
 import type { WebSocketServer } from 'ws';
 import { createDaemon } from './create-daemon.js';
 import {
-  closeDaemonRuntimeSessions,
-  closeDaemonServers,
+  closeDaemonForShutdown,
   listenDaemonHttpServer,
 } from './daemon-server-lifecycle.js';
 import { initProviderAuth } from './daemon/auth/init.js';
@@ -13,43 +12,61 @@ import type { RunChannelRuntimeContext } from './adapter/web/ws/run-channel-runt
 import { getConfiguredDevToken } from './adapter/web/auth/token.js';
 import { createDaemonContext } from './daemon/context.js';
 import { readDaemonPort } from './daemon/port.js';
-import { readDefaultRepoRoot } from './repo-root.js';
 import { getErrorMessage } from './daemon/utils/error.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import {
-  acquireWorkspaceAdmissionLock,
-  type WorkspaceAdmissionLock,
-} from './daemon/workspace-admission-lock.js';
+  acquireDaemonInstanceAdmissionLock,
+  type DaemonInstanceAdmissionLock,
+} from './daemon/daemon-instance-admission-lock.js';
 
 const PORT = readDaemonPort(process.env['PORT']);
 const HOST = process.env['HOST'] ?? '127.0.0.1';
-const REPO_ROOT = readDefaultRepoRoot();
 const logger = createLogger('daemon');
+const bootStartedAt = performance.now();
+
+function logBootPhase(phase: string): void {
+  logger.info(
+    `boot ${phase} +${Math.round(performance.now() - bootStartedAt)}ms`,
+  );
+}
 
 async function main() {
+  logBootPhase('start');
   getConfiguredDevToken();
-  const admissionLock = await acquireWorkspaceAdmissionLock({
-    workspaceRoot: REPO_ROOT,
-  });
+  logBootPhase('auth-token');
   const daemonContext = createDaemonContext();
+  logBootPhase('context');
+  const admissionLock = await acquireDaemonInstanceAdmissionLock({
+    stateRoot: daemonContext.homeStateRoot,
+  });
+  logBootPhase('admission-lock');
   try {
     await initProviderAuth({
       runtimeStore: daemonContext.providerAuthRuntime,
     });
-    const { app } = await createDaemon({
-      repoRoot: REPO_ROOT,
-      daemonContext,
-    });
+    logBootPhase('provider-auth');
+    const { app } = await createDaemon({ daemonContext });
+    logBootPhase('create-daemon');
     const server = http.createServer(app);
     const runChannelRuntimeContext = {
       activeRuns: daemonContext.activeRuns,
       approvalGrants: daemonContext.approvalGrants,
       approvalGate: daemonContext.approvalGate,
+      artifactFrameToolDispatch: daemonContext.artifactFrameToolDispatch,
       backgroundNotifications: daemonContext.backgroundNotifications,
+      ...(daemonContext.computerFileScope !== undefined
+        ? { computerFileScope: daemonContext.computerFileScope }
+        : {}),
+      ...(daemonContext.computerFileRoot !== undefined
+        ? { computerFileRoot: daemonContext.computerFileRoot }
+        : {}),
+      homeStateRoot: daemonContext.homeStateRoot,
       childRuns: daemonContext.childRuns,
       fileStateCache: daemonContext.fileStateCache,
       agentWorkflowRunner: daemonContext.agentWorkflowRunner,
       agentWavePlanner: daemonContext.agentWavePlanner,
+      imageGeneration: daemonContext.imageGeneration,
+      videoGeneration: daemonContext.videoGeneration,
       memoryIndex: daemonContext.memoryIndex,
       providerAuthRuntime: daemonContext.providerAuthRuntime,
       providerRequestOptions: daemonContext.providerRequestOptions,
@@ -57,15 +74,17 @@ async function main() {
       reactBundleStructuredOutputIngressPolicy:
         daemonContext.reactBundleStructuredOutputIngressPolicy,
       resourceBudgetProvider: daemonContext.resourceBudgetProvider,
-      projectRegistry: daemonContext.projectRegistry,
       ptcBrowserPageLoadEvidence: daemonContext.ptcBrowserPageLoadEvidence,
       ptcBrowserTextEvidence: daemonContext.ptcBrowserTextEvidence,
       ptcBrowserNavigate: daemonContext.ptcBrowserNavigate,
       ptcExecuteCode: daemonContext.ptcExecuteCode,
+      ptcPackageInstall: daemonContext.ptcPackageInstall,
       ptcFixedProbe: daemonContext.ptcFixedProbe,
+      pluginSkills: daemonContext.pluginSkills,
       sandboxAttempts: daemonContext.sandboxAttempts,
       subagentAdmission: daemonContext.subagentAdmission,
       subagentRuns: daemonContext.subagentRuns,
+      toolLibraryProjection: daemonContext.toolLibraryProjection,
       toolRegistry: daemonContext.toolRegistry,
     } satisfies RunChannelRuntimeContext;
     const publicWebSockets = attachPublicWebFixtureWebSocketServer(server);
@@ -76,6 +95,7 @@ async function main() {
     registerProcessShutdown({
       admissionLock,
       runtimeSessions: {
+        globalMcp: daemonContext.globalMcp,
         ptcBrowserPageLoadEvidence: daemonContext.ptcBrowserPageLoadEvidence,
         ptcBrowserTextEvidence: daemonContext.ptcBrowserTextEvidence,
         ptcBrowserNavigate: daemonContext.ptcBrowserNavigate,
@@ -90,6 +110,7 @@ async function main() {
       port: PORT,
       host: HOST,
     });
+    logBootPhase('listen');
     logger.info(`http://${HOST}:${PORT}`);
   } catch (error: unknown) {
     await admissionLock.release();
@@ -98,9 +119,9 @@ async function main() {
 }
 
 function registerProcessShutdown(args: {
-  admissionLock: WorkspaceAdmissionLock;
+  admissionLock: DaemonInstanceAdmissionLock;
   runtimeSessions: Parameters<
-    typeof closeDaemonRuntimeSessions
+    typeof closeDaemonForShutdown
   >[0]['runtimeSessions'];
   server: http.Server;
   webSocketServers: readonly WebSocketServer[];
@@ -116,14 +137,12 @@ function registerProcessShutdown(args: {
 
     void (async () => {
       try {
-        await closeDaemonServers({
+        await closeDaemonForShutdown({
+          admissionLock: args.admissionLock,
+          runtimeSessions: args.runtimeSessions,
           server: args.server,
           webSocketServers: args.webSocketServers,
         });
-        await closeDaemonRuntimeSessions({
-          runtimeSessions: args.runtimeSessions,
-        });
-        await args.admissionLock.release();
         process.exit(0);
       } catch (error: unknown) {
         logger.error('shutdown failed:', getErrorMessage(error));

@@ -8,6 +8,16 @@ export type RuntimeArtifactPreviewRenderer = Extract<
   'html5' | 'js' | 'react_bundle'
 >;
 
+export type HookManagedArtifactPreviewRenderer = Extract<
+  RuntimeArtifactPreviewRenderer,
+  'react_bundle'
+>;
+
+export type DispatchedRuntimeArtifactPreviewRenderer = Exclude<
+  RuntimeArtifactPreviewRenderer,
+  HookManagedArtifactPreviewRenderer
+>;
+
 const GENERATED_TEXT_EXPORT_RENDERERS: Partial<Record<ArtifactRenderer, true>> =
   {
     js: true,
@@ -37,7 +47,7 @@ const RUNTIME_PREVIEW_RENDERERS: Partial<Record<ArtifactRenderer, true>> = {
 };
 
 export function supportsGeneratedTextExportSnapshot(
-  renderer: ArtifactRenderer | string | null,
+  renderer: string | null,
 ): boolean {
   return (
     isArtifactRenderer(renderer) &&
@@ -46,7 +56,7 @@ export function supportsGeneratedTextExportSnapshot(
 }
 
 export function supportsGeneratedBinaryExportSnapshot(
-  renderer: ArtifactRenderer | string | null,
+  renderer: string | null,
 ): boolean {
   return (
     isArtifactRenderer(renderer) &&
@@ -55,7 +65,7 @@ export function supportsGeneratedBinaryExportSnapshot(
 }
 
 export function supportsRuntimeGeneratedExportSnapshots(
-  renderer: ArtifactRenderer | string | null,
+  renderer: string | null,
 ): boolean {
   return (
     supportsGeneratedTextExportSnapshot(renderer) ||
@@ -64,7 +74,7 @@ export function supportsRuntimeGeneratedExportSnapshots(
 }
 
 export function supportsStreamingArtifactPreview(
-  renderer: ArtifactRenderer | string | null,
+  renderer: string | null,
 ): boolean {
   return (
     isArtifactRenderer(renderer) &&
@@ -73,8 +83,8 @@ export function supportsStreamingArtifactPreview(
 }
 
 export function usesHookManagedArtifactPreview(
-  renderer: ArtifactRenderer | string | null,
-): boolean {
+  renderer: string | null,
+): renderer is HookManagedArtifactPreviewRenderer {
   return (
     isArtifactRenderer(renderer) &&
     HOOK_MANAGED_PREVIEW_RENDERERS[renderer] === true
@@ -82,9 +92,18 @@ export function usesHookManagedArtifactPreview(
 }
 
 export function isRuntimeArtifactPreviewRenderer(
-  renderer: ArtifactRenderer | string | null,
+  renderer: string | null,
 ): renderer is RuntimeArtifactPreviewRenderer {
   return (
     isArtifactRenderer(renderer) && RUNTIME_PREVIEW_RENDERERS[renderer] === true
+  );
+}
+
+export function isDispatchedRuntimeArtifactPreviewRenderer(
+  renderer: string | null,
+): renderer is DispatchedRuntimeArtifactPreviewRenderer {
+  return (
+    isRuntimeArtifactPreviewRenderer(renderer) &&
+    !usesHookManagedArtifactPreview(renderer)
   );
 }

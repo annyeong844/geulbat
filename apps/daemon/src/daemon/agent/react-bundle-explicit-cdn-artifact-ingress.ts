@@ -1,4 +1,5 @@
 import type { SandboxAttemptStore } from '../sandbox/attempt-store.js';
+import { isOpaqueSandboxOutputEvidenceRef } from '../sandbox/output-validation.js';
 import {
   buildReactBundleAcceptedManifestArtifactCandidate,
   type ReactBundleAcceptedManifestArtifactCandidateResult,
@@ -173,32 +174,17 @@ function mergeFailureDiagnostics(
   }
   if (
     diagnostics.prepareEvidenceRef !== undefined &&
-    isOpaqueEvidenceRef(diagnostics.prepareEvidenceRef)
+    isOpaqueSandboxOutputEvidenceRef(diagnostics.prepareEvidenceRef)
   ) {
     safe.prepareEvidenceRef = diagnostics.prepareEvidenceRef;
   }
   if (
     diagnostics.probeEvidenceRef !== undefined &&
-    isOpaqueEvidenceRef(diagnostics.probeEvidenceRef)
+    isOpaqueSandboxOutputEvidenceRef(diagnostics.probeEvidenceRef)
   ) {
     safe.probeEvidenceRef = diagnostics.probeEvidenceRef;
   }
   return Object.keys(safe).length > 0 ? safe : undefined;
-}
-
-function isOpaqueEvidenceRef(value: string): boolean {
-  const prefix = 'sandbox-output:';
-  if (!value.startsWith(prefix)) return false;
-  const suffix = value.slice(prefix.length);
-  if (suffix.length === 0) return false;
-  if (/[\s\u0000-\u001f\u007f]/u.test(value)) return false;
-  return (
-    !value.includes('/') &&
-    !value.includes('\\') &&
-    !value.includes('.geulbat') &&
-    !value.includes('..') &&
-    !value.startsWith('file:')
-  );
 }
 
 function fail(

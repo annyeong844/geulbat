@@ -1,8 +1,14 @@
 import type { ConflictStaleWriteError } from '@geulbat/protocol/errors';
 import type { FileTreeNode } from '@geulbat/protocol/files';
-import type { ProjectListItem } from '@geulbat/protocol/projects';
-import type { ProviderAuthStatusResponse } from '@geulbat/protocol/provider-auth';
+import type { ProviderAuthProviderId } from '@geulbat/protocol/provider-auth';
 import type { ThreadSummary } from '@geulbat/protocol/threads';
+import type {
+  ProviderAuthErrorByProvider,
+  ProviderAuthStatusByProvider,
+} from './use-provider-auth-state.js';
+
+import type { ManageFileOperation } from '../lib/api/files.js';
+import type { OpenFileTab } from './use-workspace-files.js';
 
 import type { createProjectWorkspaceRunSessionView } from './project-workspace-run-session-view.js';
 
@@ -11,30 +17,26 @@ type ProjectWorkspaceRunSessionView = ReturnType<
 >;
 
 interface ProjectWorkspaceLeftPanelView {
-  projectSelector: {
-    projects: ProjectListItem[];
-    selectedProjectId: string;
-    disabled: boolean;
-    uiError: string | null;
-    helperText: string | null;
-    onSelect: (projectId: string) => void;
-  };
-  projectRegistry: {
-    projects: ProjectListItem[];
-    defaultProjectId: string;
-    selectedProjectId: string;
-    disabled: boolean;
-    busy: boolean;
-    helperText: string | null;
-    onCreate: (label: string) => Promise<boolean>;
-    onRename: (projectId: string, label: string) => Promise<boolean>;
-    onDelete: (projectId: string) => Promise<boolean>;
-  };
   projectTree: {
     tree: FileTreeNode[];
     uiError: string | null;
+    selectedPath: string | null;
+    browseEnabled: boolean;
+    browsePath: string;
+    browseStartPath: string;
+    browseShortcuts: Array<{ label: string; path: string }>;
+    onNavigateUp: () => void;
+    onNavigateInto: (path: string) => void;
     onLoad: () => Promise<void>;
+    onLoadSubtree: (path: string) => Promise<void>;
     onSelect: (path: string) => Promise<void>;
+    onCreateFile: (path: string) => Promise<boolean>;
+    onManageEntry: (
+      operation: ManageFileOperation,
+      path: string,
+      destination?: string,
+    ) => Promise<boolean>;
+    onInsertIntoManuscript: (path: string) => Promise<void>;
   };
   threadList: {
     threads: ThreadSummary[];
@@ -44,6 +46,7 @@ interface ProjectWorkspaceLeftPanelView {
     onLoad: () => Promise<void>;
     onSelect: (threadId: string) => Promise<void>;
     onDeleteRequest: (threadId: string) => void;
+    onNewSession: () => void;
   };
   threadDeleteConfirm: {
     thread: ThreadSummary;
@@ -56,44 +59,63 @@ interface ProjectWorkspaceLeftPanelView {
 interface ProjectWorkspaceCenterPanelView {
   editor: {
     filePath: string | null;
+    extractedDocument: 'docx' | 'xlsx' | 'hwpx' | null;
+    binaryPreview: {
+      path: string;
+      kind: 'image' | 'audio' | 'video' | 'unsupported';
+      url?: string;
+      byteSize?: number;
+    } | null;
     content: string;
     isDirty: boolean;
     saving: boolean;
+    openingFile: boolean;
+    lastSavedAt: number | null;
     uiError: string | null;
     saveConflict: ConflictStaleWriteError | null;
+    openFiles: OpenFileTab[];
+    onSelectFileTab: (path: string) => void;
+    onCloseFileTab: (path: string) => void;
     onChange: (content: string) => void;
     onSave: () => Promise<void>;
     onConflictReload: () => Promise<void>;
-    onConflictForceSave: () => Promise<void>;
+    onConflictSaveAsCopy: () => Promise<void>;
+    onConflictInspect: () => Promise<string | null>;
   };
 }
 
 interface ProjectWorkspaceRightPanelView {
   providerAuthCard: {
-    status: ProviderAuthStatusResponse | null;
-    busy: boolean;
-    uiError: string | null;
-    onConnect: () => Promise<void> | void;
-    onDisconnect: () => Promise<void> | void;
+    statuses: ProviderAuthStatusByProvider;
+    busyProviderId: ProviderAuthProviderId | null;
+    uiErrors: ProviderAuthErrorByProvider;
+    onConnect: (providerId: ProviderAuthProviderId) => Promise<void> | void;
+    onDisconnect: (providerId: ProviderAuthProviderId) => Promise<void> | void;
   };
   assistant: ProjectWorkspaceRunSessionView['assistant'];
   approvalPanel: ProjectWorkspaceRunSessionView['approvalPanel'];
 }
 
 interface CreateProjectWorkspaceLeftPanelViewArgs {
-  projectId: string;
-  defaultProjectId: string;
-  projects: ProjectListItem[];
-  projectRegistryError: string | null;
-  projectRegistryBusy: boolean;
-  onSelectProject: (projectId: string) => void;
-  onCreateProject: (label: string) => Promise<boolean>;
-  onRenameProject: (projectId: string, label: string) => Promise<boolean>;
-  onDeleteProject: (projectId: string) => Promise<boolean>;
   tree: FileTreeNode[];
   treeError: string | null;
+  selectedFile: string | null;
+  browseEnabled: boolean;
+  browsePath: string;
+  browseStartPath: string;
+  browseShortcuts: Array<{ label: string; path: string }>;
+  navigateUp: () => void;
+  navigateInto: (path: string) => void;
   loadTree: () => Promise<void>;
+  loadSubtree: (path: string) => Promise<void>;
   openFile: (path: string) => Promise<void>;
+  createFile: (path: string) => Promise<boolean>;
+  manageEntry: (
+    operation: ManageFileOperation,
+    path: string,
+    destination?: string,
+  ) => Promise<boolean>;
+  insertFileIntoActiveBuffer: (path: string) => Promise<void>;
   threads: ThreadSummary[];
   selectedThreadId: string | null;
   deletingThreadId: string | null;
@@ -104,51 +126,65 @@ interface CreateProjectWorkspaceLeftPanelViewArgs {
   requestDeleteThread: (threadId: string) => void;
   confirmDeleteThread: () => Promise<void>;
   cancelDeleteThread: () => void;
-  runSessionView: Pick<
-    ProjectWorkspaceRunSessionView,
-    | 'isProjectSwitchBlocked'
-    | 'projectSelectorHelperText'
-    | 'projectRegistryHelperText'
-  >;
+  startNewSession: () => void;
 }
 
 interface CreateProjectWorkspaceCenterPanelViewArgs {
   selectedFile: string | null;
+  extractedDocument: 'docx' | 'xlsx' | 'hwpx' | null;
+  binaryPreview: {
+    path: string;
+    kind: 'image' | 'audio' | 'video' | 'unsupported';
+    url?: string;
+    byteSize?: number;
+  } | null;
   fileContent: string;
   isDirty: boolean;
   saving: boolean;
+  openingFile: boolean;
+  lastSavedAt: number | null;
   editorError: string | null;
   saveConflict: ConflictStaleWriteError | null;
+  openFiles: OpenFileTab[];
+  activateTab: (path: string) => void;
+  closeTab: (path: string) => void;
   handleContentChange: (content: string) => void;
   handleSave: () => Promise<void>;
   handleConflictReload: () => Promise<void>;
-  handleConflictForceSave: () => Promise<void>;
+  handleConflictSaveAsCopy: () => Promise<void>;
+  inspectCurrentFile: () => Promise<string | null>;
 }
 
 interface CreateProjectWorkspaceRightPanelViewArgs {
-  providerAuthStatus: ProviderAuthStatusResponse | null;
-  providerAuthBusy: boolean;
-  providerAuthError: string | null;
-  onConnectProvider: () => Promise<void> | void;
-  onDisconnectProvider: () => Promise<void> | void;
+  providerAuthStatuses: ProviderAuthStatusByProvider;
+  providerAuthBusyProviderId: ProviderAuthProviderId | null;
+  providerAuthErrors: ProviderAuthErrorByProvider;
+  onConnectProvider: (
+    providerId: ProviderAuthProviderId,
+  ) => Promise<void> | void;
+  onDisconnectProvider: (
+    providerId: ProviderAuthProviderId,
+  ) => Promise<void> | void;
   assistant: ProjectWorkspaceRunSessionView['assistant'];
   approvalPanel: ProjectWorkspaceRunSessionView['approvalPanel'];
 }
 
 export function createProjectWorkspaceLeftPanelView({
-  projectId,
-  defaultProjectId,
-  projects,
-  projectRegistryError,
-  projectRegistryBusy,
-  onSelectProject,
-  onCreateProject,
-  onRenameProject,
-  onDeleteProject,
   tree,
   treeError,
+  selectedFile,
+  browseEnabled,
+  browsePath,
+  browseStartPath,
+  browseShortcuts,
+  navigateUp,
+  navigateInto,
   loadTree,
+  loadSubtree,
   openFile,
+  createFile,
+  manageEntry,
+  insertFileIntoActiveBuffer,
   threads,
   selectedThreadId,
   deletingThreadId,
@@ -159,33 +195,25 @@ export function createProjectWorkspaceLeftPanelView({
   requestDeleteThread,
   confirmDeleteThread,
   cancelDeleteThread,
-  runSessionView,
+  startNewSession,
 }: CreateProjectWorkspaceLeftPanelViewArgs): ProjectWorkspaceLeftPanelView {
   return {
-    projectSelector: {
-      projects,
-      selectedProjectId: projectId,
-      disabled: runSessionView.isProjectSwitchBlocked,
-      uiError: projectRegistryError,
-      helperText: runSessionView.projectSelectorHelperText,
-      onSelect: onSelectProject,
-    },
-    projectRegistry: {
-      projects,
-      defaultProjectId,
-      selectedProjectId: projectId,
-      disabled: runSessionView.isProjectSwitchBlocked,
-      busy: projectRegistryBusy,
-      helperText: runSessionView.projectRegistryHelperText,
-      onCreate: onCreateProject,
-      onRename: onRenameProject,
-      onDelete: onDeleteProject,
-    },
     projectTree: {
       tree,
       uiError: treeError,
+      selectedPath: selectedFile,
+      browseEnabled,
+      browsePath,
+      browseStartPath,
+      browseShortcuts,
+      onNavigateUp: navigateUp,
+      onNavigateInto: navigateInto,
       onLoad: loadTree,
+      onLoadSubtree: loadSubtree,
       onSelect: openFile,
+      onCreateFile: createFile,
+      onManageEntry: manageEntry,
+      onInsertIntoManuscript: insertFileIntoActiveBuffer,
     },
     threadList: {
       threads,
@@ -195,6 +223,7 @@ export function createProjectWorkspaceLeftPanelView({
       onLoad: loadThreads,
       onSelect: openThread,
       onDeleteRequest: requestDeleteThread,
+      onNewSession: startNewSession,
     },
     threadDeleteConfirm: pendingDeleteThread
       ? {
@@ -209,36 +238,52 @@ export function createProjectWorkspaceLeftPanelView({
 
 export function createProjectWorkspaceCenterPanelView({
   selectedFile,
+  extractedDocument,
+  binaryPreview,
   fileContent,
   isDirty,
   saving,
+  openingFile,
+  lastSavedAt,
   editorError,
   saveConflict,
+  openFiles,
+  activateTab,
+  closeTab,
   handleContentChange,
   handleSave,
   handleConflictReload,
-  handleConflictForceSave,
+  handleConflictSaveAsCopy,
+  inspectCurrentFile,
 }: CreateProjectWorkspaceCenterPanelViewArgs): ProjectWorkspaceCenterPanelView {
   return {
     editor: {
       filePath: selectedFile,
+      extractedDocument,
+      binaryPreview,
       content: fileContent,
       isDirty,
       saving,
+      openingFile,
+      lastSavedAt,
       uiError: editorError,
       saveConflict,
+      openFiles,
+      onSelectFileTab: activateTab,
+      onCloseFileTab: closeTab,
       onChange: handleContentChange,
       onSave: handleSave,
       onConflictReload: handleConflictReload,
-      onConflictForceSave: handleConflictForceSave,
+      onConflictSaveAsCopy: handleConflictSaveAsCopy,
+      onConflictInspect: inspectCurrentFile,
     },
   };
 }
 
 export function createProjectWorkspaceRightPanelView({
-  providerAuthStatus,
-  providerAuthBusy,
-  providerAuthError,
+  providerAuthStatuses,
+  providerAuthBusyProviderId,
+  providerAuthErrors,
   onConnectProvider,
   onDisconnectProvider,
   assistant,
@@ -246,9 +291,9 @@ export function createProjectWorkspaceRightPanelView({
 }: CreateProjectWorkspaceRightPanelViewArgs): ProjectWorkspaceRightPanelView {
   return {
     providerAuthCard: {
-      status: providerAuthStatus,
-      busy: providerAuthBusy,
-      uiError: providerAuthError,
+      statuses: providerAuthStatuses,
+      busyProviderId: providerAuthBusyProviderId,
+      uiErrors: providerAuthErrors,
       onConnect: onConnectProvider,
       onDisconnect: onDisconnectProvider,
     },

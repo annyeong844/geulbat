@@ -3,13 +3,9 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
-import {
-  assertRunId as assertValidRunId,
-  type ProjectId,
-} from '@geulbat/protocol/ids';
+import { assertRunId as assertValidRunId } from '@geulbat/protocol/ids';
 import { createRunInterjectBuffer } from '../../../daemon/sessions/active-run-interject-buffer.js';
 import { createDaemonContext } from '../../../daemon/context.js';
-import { DEFAULT_PROJECT_ID } from '../../../daemon/files/project-registry-state.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { attachRunChannelServer } from './run-channel.js';
 import { getSocketState } from './run-channel-socket-runtime.js';
@@ -66,6 +62,59 @@ void test('run-channel enforces websocket origin policy', async (t) => {
   }
 });
 
+void test('run-channel decodes array-buffer and fragmented websocket messages', async (t) => {
+  for (const binaryType of ['arraybuffer', 'fragments'] as const) {
+    await t.test(binaryType, async () => {
+      await withRunChannelServer(
+        { devToken: TEST_DEV_TOKEN },
+        async ({ port, wss }) => {
+          const socket = await connectAuthenticatedSocket(
+            port,
+            `auth-initial-${binaryType}`,
+          );
+
+          try {
+            const serverSocket = Array.from(wss.clients)[0];
+            assert.ok(serverSocket);
+            serverSocket.binaryType = binaryType;
+
+            const requestId = `auth-duplicate-${binaryType}`;
+            const responsePromise = waitForError(socket);
+            const payload = JSON.stringify({
+              type: 'run.auth',
+              requestId,
+              token: TEST_DEV_TOKEN,
+            });
+
+            if (binaryType === 'arraybuffer') {
+              socket.send(Buffer.from(payload), { binary: true });
+            } else {
+              const splitAt = Math.floor(payload.length / 2);
+              socket.send(Buffer.from(payload.slice(0, splitAt)), {
+                binary: true,
+                fin: false,
+              });
+              socket.send(Buffer.from(payload.slice(splitAt)), {
+                binary: true,
+                fin: true,
+              });
+            }
+
+            assert.deepEqual(await responsePromise, {
+              requestId,
+              status: 409,
+              code: 'conflict',
+              message: 'socket already authenticated',
+            });
+          } finally {
+            socket.close();
+          }
+        },
+      );
+    });
+  }
+});
+
 void test('run-channel rejects non-authenticated run messages and closes the socket', async () => {
   const server = createServer();
   attachRunChannelServer(server, { runtimeContext: createDaemonContext() });
@@ -87,7 +136,7 @@ void test('run-channel rejects non-authenticated run messages and closes the soc
           JSON.stringify({
             type: 'run.start',
             requestId: 'req-no-auth',
-            request: { prompt: 'hello', projectId: 'workspace' },
+            request: { prompt: 'hello' },
           }),
         );
       });
@@ -114,46 +163,40 @@ void test('run-channel rejects non-authenticated run messages and closes the soc
   }
 });
 
-void test('run-channel preserves requestId when message dispatch rejects before validation completes', async () => {
+void test('run-channel preserves requestId when working-directory admission throws', async () => {
   const daemonContext = createDaemonContext();
-  const originalIsKnownProjectId =
-    daemonContext.projectRegistry.isKnownProjectId;
-  daemonContext.projectRegistry.isKnownProjectId = (
-    _projectId: string,
-  ): _projectId is ProjectId => {
-    throw new Error('project registry unavailable');
+  daemonContext.computerFileScope = {
+    root: '/definitely-missing-geulbat-computer-root',
+    browseStartPath: '',
+    browseShortcuts: [],
   };
 
-  try {
-    await withRunChannelServer(
-      { devToken: TEST_DEV_TOKEN, daemonContext },
-      async ({ port }) => {
-        const socket = await connectAuthenticatedSocket(
-          port,
-          'auth-dispatch-reject',
-        );
+  await withRunChannelServer(
+    { devToken: TEST_DEV_TOKEN, daemonContext },
+    async ({ port }) => {
+      const socket = await connectAuthenticatedSocket(
+        port,
+        'auth-dispatch-reject',
+      );
 
-        try {
-          const response = await sendAndWaitForError(socket, {
-            type: 'run.start',
-            requestId: 'start-registry-throw',
-            request: { prompt: 'hello', projectId: 'workspace' },
-          });
+      try {
+        const response = await sendAndWaitForError(socket, {
+          type: 'run.start',
+          requestId: 'start-working-directory-throw',
+          request: { prompt: 'hello' },
+        });
 
-          assert.deepEqual(response, {
-            requestId: 'start-registry-throw',
-            status: 500,
-            code: 'internal',
-            message: 'internal websocket error',
-          });
-        } finally {
-          socket.close();
-        }
-      },
-    );
-  } finally {
-    daemonContext.projectRegistry.isKnownProjectId = originalIsKnownProjectId;
-  }
+        assert.deepEqual(response, {
+          requestId: 'start-working-directory-throw',
+          status: 500,
+          code: 'internal',
+          message: 'internal server error',
+        });
+      } finally {
+        socket.close();
+      }
+    },
+  );
 });
 
 void test('run-channel rejects control messages from a socket that does not own the run', async (t) => {
@@ -458,8 +501,8 @@ async function withOwnedRunChannel<T>(
       activeRuns.tryStartRun(threadId, {
         runId,
         threadId,
-        projectId: DEFAULT_PROJECT_ID,
-        workspaceRoot: '/tmp/workspace',
+        stateRoot: daemonContext?.homeStateRoot ?? '/tmp/home-state',
+        workingDirectory: 'stories',
         ownerThreadId: threadId,
         abortController,
         interject: createRunInterjectBuffer(),
@@ -565,6 +608,17 @@ async function sendAndWaitForError(
   code: string;
   message: string;
 }> {
+  const response = waitForError(socket);
+  socket.send(JSON.stringify(message));
+  return response;
+}
+
+function waitForError(socket: WebSocket): Promise<{
+  requestId: string | undefined;
+  status: number | undefined;
+  code: string;
+  message: string;
+}> {
   return new Promise((resolve, reject) => {
     const onMessage = (raw: WebSocket.RawData) => {
       const parsed = JSON.parse(String(raw)) as {
@@ -586,7 +640,6 @@ async function sendAndWaitForError(
     };
     socket.on('message', onMessage);
     socket.once('error', reject);
-    socket.send(JSON.stringify(message));
   });
 }
 

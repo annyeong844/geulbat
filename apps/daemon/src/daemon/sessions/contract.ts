@@ -15,9 +15,7 @@ import {
 import {
   assertRunId as assertProtocolRunId,
   assertThreadId as assertProtocolThreadId,
-  isProjectId as isProtocolProjectId,
   isThreadId as isProtocolThreadId,
-  type ProjectId,
   type RunId,
   type ThreadId,
 } from '@geulbat/protocol/ids';
@@ -32,7 +30,6 @@ import {
   type ThreadMessageInput,
   type ThreadSummary,
 } from '@geulbat/protocol/threads';
-
 export type {
   ArtifactId,
   ArtifactRecord,
@@ -41,7 +38,6 @@ export type {
   ArtifactRunId,
   ArtifactSourceRef,
   ArtifactVersionRecord,
-  ProjectId,
   RunId,
   ThreadArtifactVersion,
   ThreadDetailResponse,
@@ -57,10 +53,6 @@ export function assertSessionRunId(runId: string): RunId {
 
 export function assertSessionThreadId(threadId: string): ThreadId {
   return assertProtocolThreadId(threadId);
-}
-
-export function isSessionProjectId(projectId: string): projectId is ProjectId {
-  return isProtocolProjectId(projectId);
 }
 
 export function isSessionThreadId(threadId: string): threadId is ThreadId {

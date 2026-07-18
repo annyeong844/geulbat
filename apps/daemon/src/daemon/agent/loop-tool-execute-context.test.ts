@@ -10,6 +10,7 @@ import {
 import { createRunState, markRunApprovalPending } from './runtime/run-state.js';
 import { createApprovalGrantStore } from '../tools/approval-grants.js';
 import { createToolRegistryStore } from '../tools/registry.js';
+import { createDaemonContext } from '../context.js';
 import type {
   AgentToolExecutionContext,
   AnyTool,
@@ -17,9 +18,10 @@ import type {
   ToolParseResult,
 } from '../tools/types.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
-import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
-import { testProjectId } from '../../test-support/project-id.js';
+import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
+import { testRunId } from '../../test-support/run-id.js';
+import { TEST_CHILD_MODEL_REGISTRATION } from '../../test-support/subagent-model-routing.js';
 
 function parseObjectArgs<TArgs extends object>(
   raw: unknown,
@@ -54,7 +56,7 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
     },
     strict: true,
     sideEffectLevel: args.sideEffectLevel,
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     timeoutMs: 1_000,
     requiresApproval: args.requiresApproval,
     parseArgs: args.parseArgs ?? parseObjectArgs,
@@ -89,10 +91,9 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
   );
 
   const threadId = testThreadId(71);
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot: '/tmp/execute-context-workspace',
+    stateRoot: '/tmp/execute-context-state',
   });
   const runState = createRunState({
     runId: 'run-execute-context',
@@ -107,6 +108,12 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
   };
   const toolArgs = {
     path: 'draft.md',
+  };
+  const toolLibraryProjectionIdentity = {
+    sdkVersion: 'sdk-v1',
+    sdkProjectionHash:
+      'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const,
+    policyId: 'ptc_sdk_read_file_slice_v1',
   };
 
   const result = await executeResolvedFunctionCall({
@@ -138,6 +145,8 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
         selection,
         signal: undefined,
         runState,
+        toolLibraryProjectionIdentity,
+        computerFileRoot: '/tmp/execute-context-computer',
         memoryIndex: undefined,
         agentSpawnRuntime: undefined,
         emit: (type, payload) => {
@@ -157,17 +166,62 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
   assert.equal(capturedContext.approvalGranted, true);
   assert.equal(capturedContext.approvalSessionId, 'session-execute-context');
   assert.equal(capturedContext.permissionMode, 'basic');
-  assert.equal(capturedContext.workspaceRoot, runContext.workspaceRoot);
+  assert.equal(capturedContext.stateRoot, runContext.stateRoot);
+  assert.equal(capturedContext.workingDirectory, runContext.workingDirectory);
+  assert.equal(
+    capturedContext.computerFileRoot,
+    '/tmp/execute-context-computer',
+  );
   assert.equal(capturedContext.threadId, threadId);
   assert.equal(capturedContext.runId, 'run-execute-context');
-  assert.equal(capturedContext.projectId, runContext.projectId);
+  assert.equal(capturedContext.runOwnerKind, 'root_main');
   assert.equal(capturedContext.currentFile, 'draft.md');
   assert.deepEqual(capturedContext.selection, selection);
   assert.equal(capturedContext.runState, runState);
+  assert.deepEqual(
+    capturedContext.toolLibraryProjectionIdentity,
+    toolLibraryProjectionIdentity,
+  );
   assert.equal(typeof capturedContext.emitAgentEvent, 'function');
   assert.deepEqual(events, [
     createAgentEvent('commentary_delta', { text: 'from-tool' }),
   ]);
+});
+
+void test('buildAgentToolExecutionContextBase projects registered child ownership', () => {
+  const daemonContext = createDaemonContext();
+  const childRunId = testRunId('execute-context-child');
+  const parentRunId = testRunId('execute-context-parent');
+  const ownerThreadId = testThreadId(72);
+  const childThreadId = testThreadId(73);
+  daemonContext.childRuns.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    childRunId,
+    childThreadId,
+    parentRunId,
+    ownerThreadId,
+    subagentType: 'explorer',
+  });
+
+  const context = buildAgentToolExecutionContextBase({
+    runId: childRunId,
+    runContext: makeRunContext({
+      threadId: childThreadId,
+      stateRoot: '/tmp/execute-context-child-state',
+    }),
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-execute-context-child',
+    }),
+    currentFile: undefined,
+    selection: undefined,
+    signal: undefined,
+    runState: undefined,
+    memoryIndex: undefined,
+    agentSpawnRuntime: daemonContext,
+    emit: () => {},
+  });
+
+  assert.equal(context.runOwnerKind, 'child');
 });
 
 void test('executeResolvedFunctionCall can use an injected registry for tools absent from the default store', async () => {
@@ -191,10 +245,9 @@ void test('executeResolvedFunctionCall can use an injected registry for tools ab
   );
 
   const threadId = testThreadId(72);
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot: '/tmp/execute-context-local-registry',
+    stateRoot: '/tmp/execute-context-local-registry-state',
   });
 
   const result = await executeResolvedFunctionCall({

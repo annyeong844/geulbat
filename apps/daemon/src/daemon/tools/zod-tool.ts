@@ -5,11 +5,13 @@ import type {
   RawExecutableTool,
   ToolExecutionContext,
   ExecuteResult,
+  ParallelToolBatchKind,
+  ToolCatalogSearchMetadata,
+  ToolExposure,
   ToolObjectParameters,
   ToolParameters,
 } from './types.js';
 import { defineParsedTool, failToolParse } from './parsed-tool.js';
-import type { ParallelToolBatchKind } from './types.js';
 
 type AnyZodObject = z.ZodObject<z.core.$ZodLooseShape>;
 
@@ -19,10 +21,13 @@ interface ZodToolOptions<TSchema extends AnyZodObject> {
   argsSchema: TSchema;
   parametersSchema?: z.ZodType;
   sideEffectLevel: SideEffectLevel;
-  mayMutateWorkspaceFiles: boolean;
+  mayMutateComputerFiles: boolean;
   parallelBatchKind?: ParallelToolBatchKind;
   timeoutMs?: number;
   requiresApproval: boolean;
+  exposure?: ToolExposure;
+  streamsArgsDelta?: boolean;
+  catalogSearchMetadata?: ToolCatalogSearchMetadata;
   executeParsed: (
     args: z.output<TSchema>,
     ctx: ToolExecutionContext,
@@ -40,7 +45,7 @@ export function defineZodTool<TSchema extends AnyZodObject>(
     ),
     strict: true,
     sideEffectLevel: options.sideEffectLevel,
-    mayMutateWorkspaceFiles: options.mayMutateWorkspaceFiles,
+    mayMutateComputerFiles: options.mayMutateComputerFiles,
     ...(options.parallelBatchKind
       ? { parallelBatchKind: options.parallelBatchKind }
       : {}),
@@ -48,6 +53,11 @@ export function defineZodTool<TSchema extends AnyZodObject>(
       ? { timeoutMs: options.timeoutMs }
       : {}),
     requiresApproval: options.requiresApproval,
+    ...(options.exposure ? { exposure: options.exposure } : {}),
+    ...(options.streamsArgsDelta === true ? { streamsArgsDelta: true } : {}),
+    ...(options.catalogSearchMetadata
+      ? { catalogSearchMetadata: options.catalogSearchMetadata }
+      : {}),
     parseArgs(raw) {
       const parsed = options.argsSchema.safeParse(raw);
       if (!parsed.success) {
@@ -131,7 +141,7 @@ function normalizeObjectParameters(
 
   const properties: Record<string, unknown> = {};
   for (const [key, propertySchema] of Object.entries(propertiesRecord)) {
-    properties[key] = normalizeScalarPropertySchema(propertySchema, key);
+    properties[key] = normalizePropertySchema(propertySchema, key);
   }
 
   const required = normalizeRequired(record.required);
@@ -144,29 +154,33 @@ function normalizeObjectParameters(
   };
 }
 
-function normalizeScalarPropertySchema(
+function normalizePropertySchema(
   value: unknown,
   key: string,
 ): Record<string, unknown> {
   const record = asRecord(
     value,
-    `Tool property "${key}" must convert to a scalar schema.`,
+    `Tool property "${key}" must convert to a supported schema.`,
   );
 
   if (
-    'properties' in record ||
-    'items' in record ||
     'anyOf' in record ||
     'allOf' in record ||
     'oneOf' in record ||
     '$ref' in record
   ) {
     throw new Error(
-      `Tool property "${key}" must stay within the scalar-only first-slice subset.`,
+      `Tool property "${key}" must stay within the supported object/array/scalar subset.`,
     );
   }
 
   const type = record.type;
+  if (type === 'object') {
+    return { ...normalizeObjectParameters(record, `property "${key}"`) };
+  }
+  if (type === 'array') {
+    return normalizeArrayPropertySchema(record, key);
+  }
   if (
     type !== 'string' &&
     type !== 'number' &&
@@ -221,13 +235,31 @@ function normalizeScalarPropertySchema(
   return normalized;
 }
 
+function normalizeArrayPropertySchema(
+  record: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> {
+  const items = normalizePropertySchema(record.items, `${key}[]`);
+  const normalized: Record<string, unknown> = { type: 'array', items };
+  if (typeof record.description === 'string') {
+    normalized.description = record.description;
+  }
+  if (typeof record.minItems === 'number') {
+    normalized.minItems = record.minItems;
+  }
+  if (typeof record.maxItems === 'number') {
+    normalized.maxItems = record.maxItems;
+  }
+  return normalized;
+}
+
 function normalizeRequired(value: unknown): string[] {
   if (value == null) {
     return [];
   }
   if (
     !Array.isArray(value) ||
-    value.some((entry) => typeof entry !== 'string')
+    !value.every((entry): entry is string => typeof entry === 'string')
   ) {
     throw new Error('Tool schema required must be a string array.');
   }

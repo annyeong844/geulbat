@@ -8,10 +8,8 @@ import {
   handleRunSessionMessage,
 } from './run-session-message-effects.js';
 import { createRunSessionStreamBatchController } from './run-session-stream-batch.js';
-import {
-  createProjectTreeRefreshController,
-  requestProjectTreeRefresh,
-} from './run-session-tree-refresh.js';
+import type { createProjectTreeRefreshController } from './run-session-tree-refresh.js';
+import { requestProjectTreeRefresh } from './run-session-tree-refresh.js';
 
 interface RunSessionConnectionClient extends Pick<
   RunChannelClient,
@@ -110,6 +108,10 @@ export function useRunSessionConnection({
         streamBatchController.queueStreamedTextEffect(effect);
         return;
       }
+      if (effect.kind === 'tool_call_args_streamed') {
+        streamBatchController.queueStreamedToolArgsEffect(effect);
+        return;
+      }
 
       streamBatchController.flushPendingStreamEffects();
       void handleRunSessionMessage({
@@ -119,7 +121,7 @@ export function useRunSessionConnection({
           void requestProjectTreeRefresh(
             latestArgs.projectTreeRefreshControllerRef.current,
             latestArgs.loadTree,
-          ).catch((err) => {
+          ).catch((err: unknown) => {
             latestArgs.reportSessionFailure('project tree refresh failed', err);
           });
         },
@@ -127,7 +129,7 @@ export function useRunSessionConnection({
         handleRunSettledSuccess: latestArgs.handleRunSettledSuccess,
         handleRunSettleSyncFailed: latestArgs.handleRunSettleSyncFailed,
         handleRunSettledError: latestArgs.handleRunSettledError,
-      }).catch((err) => {
+      }).catch((err: unknown) => {
         latestArgs.reportSessionFailure('run channel message failed', err);
       });
     });

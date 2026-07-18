@@ -173,11 +173,24 @@ export function ensureThreadBackgroundSubscription(
               deliveryId: result.deliveryId,
               parentRunId: result.parentRunId,
               childRunId: result.childRunId,
+              ...(result.childThreadId !== undefined
+                ? { childThreadId: result.childThreadId }
+                : {}),
               subagentType: result.subagentType,
               terminalState: result.terminalState,
               ok: result.terminalState === 'completed',
               ...(result.reason ? { reason: result.reason } : {}),
               result: result.result,
+              ...(result.elapsedMs !== undefined
+                ? { elapsedMs: result.elapsedMs }
+                : {}),
+              ...(result.usage !== undefined ? { usage: result.usage } : {}),
+              ...(result.modelId !== undefined
+                ? { modelId: result.modelId }
+                : {}),
+              ...(result.reasoningEffort !== undefined
+                ? { reasoningEffort: result.reasoningEffort }
+                : {}),
             },
           ),
         });

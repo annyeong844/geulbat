@@ -1,12 +1,18 @@
 import WebSocket from 'ws';
-import type { RunStartRequest } from '@geulbat/protocol/run-contract';
+import {
+  resolveImageGenerationModelDescriptor,
+  resolveRunModelDescriptor,
+  resolveVideoGenerationModelDescriptor,
+  VIDEO_GENERATION_MODEL_CATALOG,
+  type RunStartRequest,
+} from '@geulbat/protocol/run-contract';
 
 import { executeForegroundRun } from '../../../daemon/agent/execute-foreground-run.js';
 import type { AgentEvent } from '../../../daemon/agent/events.js';
 import type { ApprovalContext } from '../../../daemon/agent/loop-types.js';
 import { startManagedRun } from '../../../daemon/agent/runtime/managed-run.js';
 import { deleteRunPromptInputRefPath } from '../../../daemon/sessions/prompt-input-ref-store.js';
-import { createRunWorkspaceContext } from '../../../daemon/run-workspace-context.js';
+import { createRunContext } from '../../../daemon/run-context.js';
 import {
   assertRunId as assertValidRunId,
   assertThreadId as assertValidThreadId,
@@ -27,7 +33,7 @@ interface ExecuteRunRequestArgs {
   socket: WebSocket;
   requestId: string;
   request: RunStartRequest;
-  allowedToolNames: string[] | undefined;
+  allowedPublicToolNames: string[] | undefined;
   runtimeContext: RunChannelRuntimeContext;
 }
 
@@ -35,11 +41,14 @@ export async function executeRunRequest({
   socket,
   requestId,
   request,
-  allowedToolNames,
+  allowedPublicToolNames,
   runtimeContext,
 }: ExecuteRunRequestArgs): Promise<void> {
   const normalizedRequest = await readRunStartRequest(request, {
-    projectRegistry: runtimeContext.projectRegistry,
+    homeStateRoot: runtimeContext.homeStateRoot,
+    ...(runtimeContext.computerFileScope === undefined
+      ? {}
+      : { computerFileScope: runtimeContext.computerFileScope }),
   });
   if (!normalizedRequest.ok) {
     sendError(
@@ -54,23 +63,76 @@ export async function executeRunRequest({
   const {
     prompt,
     transcriptPrompt,
-    projectId: resolvedProjectId,
-    workspaceRoot,
+    workingDirectory,
+    modelId,
     currentFile,
     selection,
     requestedThreadId,
     permissionMode,
+    silentPrompt,
+    promptOrigin,
+    reasoningEffort,
+    subagentModelRouting,
+    attachments,
+    regenerate,
+    imageGenerationModel,
+    videoGenerationModel,
+    videoGenerationSettings,
     promptRef,
   } = normalizedRequest.value;
 
   const requestLogger = logger.withContext({
-    projectId: resolvedProjectId,
     requestId,
     requestedThreadId: requestedThreadId ?? null,
   });
   if (promptRef !== undefined) {
     await deleteRunPromptInputRefAfterUse(promptRef, requestLogger);
   }
+  const selectedModel =
+    modelId === undefined ? undefined : resolveRunModelDescriptor(modelId);
+  // 사용자의 기본 이미지 모델 — 이 run에만 적용되는 요청 스코프 기본값.
+  // 싱글턴 runtimeContext를 변경하지 않는다(동시 run 격리, §4.3).
+  const selectedImageModel =
+    imageGenerationModel === undefined
+      ? undefined
+      : resolveImageGenerationModelDescriptor(imageGenerationModel);
+  // 동영상도 동일 계약 — 모델·설정 선택을 요청 스코프 파생 런타임으로 주입
+  const selectedVideoModel =
+    videoGenerationModel === undefined
+      ? undefined
+      : resolveVideoGenerationModelDescriptor(videoGenerationModel);
+  const videoDefaults =
+    selectedVideoModel === undefined && videoGenerationSettings === undefined
+      ? undefined
+      : {
+          model: selectedVideoModel?.id ?? VIDEO_GENERATION_MODEL_CATALOG[0].id,
+          ...(videoGenerationSettings?.durationSeconds !== undefined
+            ? { durationSeconds: videoGenerationSettings.durationSeconds }
+            : {}),
+          ...(videoGenerationSettings?.aspectRatio !== undefined
+            ? { aspectRatio: videoGenerationSettings.aspectRatio }
+            : {}),
+          ...(videoGenerationSettings?.resolution !== undefined
+            ? { resolution: videoGenerationSettings.resolution }
+            : {}),
+        };
+  const runtimeServices = {
+    ...runtimeContext,
+    ...(selectedImageModel === undefined
+      ? {}
+      : {
+          imageGeneration: runtimeContext.imageGeneration.withRequestDefaults({
+            providerId: selectedImageModel.providerId,
+            model: selectedImageModel.id,
+          }),
+        }),
+    ...(videoDefaults === undefined
+      ? {}
+      : {
+          videoGeneration:
+            runtimeContext.videoGeneration.withRequestDefaults(videoDefaults),
+        }),
+  };
 
   const socketState = getSocketState(socket);
   if (socketState.closed || socket.readyState !== WebSocket.OPEN) {
@@ -80,8 +142,8 @@ export async function executeRunRequest({
   const abortController = new AbortController();
   const startParams = {
     runContext: {
-      projectId: resolvedProjectId,
-      workspaceRoot,
+      stateRoot: runtimeContext.homeStateRoot,
+      workingDirectory,
       ...(requestedThreadId !== undefined
         ? { threadId: requestedThreadId }
         : {}),
@@ -104,10 +166,10 @@ export async function executeRunRequest({
   const { runId: rawRunId, threadId: rawThreadId, runState } = startedRun;
   const runId = assertValidRunId(rawRunId);
   const threadId = assertValidThreadId(rawThreadId);
-  const runContext = createRunWorkspaceContext({
+  const runContext = createRunContext({
     threadId,
-    projectId: resolvedProjectId,
-    workspaceRoot,
+    stateRoot: runtimeContext.homeStateRoot,
+    workingDirectory,
   });
 
   const approvalContext = {
@@ -118,7 +180,6 @@ export async function executeRunRequest({
   ensureThreadBackgroundSubscription(socket, threadId, runtimeContext);
   let seq = 0;
   const runLogger = logger.withContext({
-    projectId: resolvedProjectId,
     requestId,
     runId,
     threadId,
@@ -126,6 +187,9 @@ export async function executeRunRequest({
 
   try {
     await executeForegroundRun({
+      regenerate,
+      silentPrompt,
+      ...(promptOrigin !== undefined ? { promptOrigin } : {}),
       agentInput: {
         runId,
         runContext,
@@ -133,10 +197,28 @@ export async function executeRunRequest({
         approvalContext,
         signal: abortController.signal,
         runState,
-        runtimeServices: runtimeContext,
+        runtimeServices,
+        ...(selectedModel !== undefined
+          ? {
+              providerModel: {
+                providerId: selectedModel.providerId,
+                model: selectedModel.id,
+              },
+            }
+          : {}),
         ...(currentFile !== undefined ? { currentFile } : {}),
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        ...(subagentModelRouting !== undefined ? { subagentModelRouting } : {}),
         ...(selection !== undefined ? { selection } : {}),
-        ...(allowedToolNames !== undefined ? { allowedToolNames } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
+        ...(allowedPublicToolNames !== undefined
+          ? {
+              toolSurface: {
+                directRegistryNames: allowedPublicToolNames,
+                allowedRegistryNames: allowedPublicToolNames,
+              },
+            }
+          : {}),
         onEvent: (agentEvent: AgentEvent) => {
           sendRunEvent(socket, runId, threadId, seq++, agentEvent);
         },

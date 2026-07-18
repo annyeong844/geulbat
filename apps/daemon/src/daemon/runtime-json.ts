@@ -4,11 +4,14 @@ import {
   tryDecodeJson as tryDecodeProtocolJson,
   tryParseJson as tryParseProtocolJson,
   tryParseJsonRecord as tryParseProtocolJsonRecord,
-  tryParseJsonWithGuard as tryParseProtocolJsonWithGuard,
   type JsonParseResult,
 } from '@geulbat/protocol/runtime-utils';
+import {
+  isJsonValue as isProtocolJsonValue,
+  type JsonValue,
+} from '@geulbat/protocol/runtime-persistence';
 
-export type { JsonParseResult };
+export type { JsonValue };
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return isProtocolRecord(value);
@@ -20,15 +23,12 @@ export function isPlainRecord(
   return isProtocolPlainRecord(value);
 }
 
-export function tryParseJson(text: string): JsonParseResult<unknown> {
-  return tryParseProtocolJson(text);
+export function isJsonValue(value: unknown): value is JsonValue {
+  return isProtocolJsonValue(value);
 }
 
-export function tryParseJsonWithGuard<T>(
-  text: string,
-  guard: (value: unknown) => value is T,
-): JsonParseResult<T> {
-  return tryParseProtocolJsonWithGuard(text, guard);
+export function tryParseJson(text: string): JsonParseResult<unknown> {
+  return tryParseProtocolJson(text);
 }
 
 export function tryDecodeJson<T>(

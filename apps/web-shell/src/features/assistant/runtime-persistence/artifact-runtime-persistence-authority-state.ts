@@ -1,3 +1,5 @@
+import { isRecord } from '@geulbat/protocol/runtime-utils';
+
 import type {
   PersistenceRecord,
   SessionStorageRecord,
@@ -21,32 +23,28 @@ export const STORAGE_NAMESPACE_KEY = '__geulbat_storage_namespace_v1__';
 export const DATABASE_NAMESPACE_KEY = '__geulbat_db_namespace_v1__';
 
 export function createArtifactRuntimePersistenceAuthorityState() {
-  let currentStorageMap: PersistenceRecord = Object.create(
-    null,
-  ) as PersistenceRecord;
-  let currentSessionStorageMap: SessionStorageRecord = Object.create(
-    null,
-  ) as SessionStorageRecord;
-  let currentDatabaseMap: PersistenceRecord = Object.create(
-    null,
-  ) as PersistenceRecord;
-  let committedStorageMap: PersistenceRecord = Object.create(
-    null,
-  ) as PersistenceRecord;
-  let committedDatabaseMap: PersistenceRecord = Object.create(
-    null,
-  ) as PersistenceRecord;
-  let currentStorageRevision: string | null = null;
+  const createNullPrototypeMap = <T>(): Record<string, T> => {
+    const next: Record<string, T> = {};
+    Object.setPrototypeOf(next, null);
+    return next;
+  };
 
   const cloneToNullPrototypeMap = <T>(
     record: Record<string, T>,
   ): Record<string, T> => {
-    const next = Object.create(null) as Record<string, T>;
-    for (const [key, value] of Object.entries(record) as Array<[string, T]>) {
+    const next = createNullPrototypeMap<T>();
+    for (const [key, value] of Object.entries(record)) {
       next[key] = value;
     }
     return next;
   };
+
+  let currentStorageMap: PersistenceRecord = createNullPrototypeMap();
+  let currentSessionStorageMap: SessionStorageRecord = createNullPrototypeMap();
+  let currentDatabaseMap: PersistenceRecord = createNullPrototypeMap();
+  let committedStorageMap: PersistenceRecord = createNullPrototypeMap();
+  let committedDatabaseMap: PersistenceRecord = createNullPrototypeMap();
+  let currentStorageRevision: string | null = null;
 
   const toPersistedStorageState = (record: PersistenceRecord) => {
     const next: PersistenceRecord = {};
@@ -56,18 +54,18 @@ export function createArtifactRuntimePersistenceAuthorityState() {
     return next;
   };
 
-  const cloneJsonValue = <T>(value: T): T => {
-    if (value === null || typeof value !== 'object') {
-      return value;
-    }
+  const cloneJsonValue = (value: unknown): unknown => {
     if (Array.isArray(value)) {
-      return value.map((entry) => cloneJsonValue(entry)) as T;
+      return value.map((entry: unknown) => cloneJsonValue(entry));
+    }
+    if (!isRecord(value)) {
+      return value;
     }
     const next: PersistenceRecord = {};
     for (const key of Object.keys(value)) {
-      next[key] = cloneJsonValue((value as PersistenceRecord)[key]);
+      next[key] = cloneJsonValue(value[key]);
     }
-    return next as T;
+    return next;
   };
 
   const listStorageKeys = () =>
@@ -173,10 +171,6 @@ export function createArtifactRuntimePersistenceAuthorityState() {
     refreshCurrentAuthorityState([]);
   };
 
-  const replaceCurrentSessionStorageMap = (next: SessionStorageRecord) => {
-    currentSessionStorageMap = next;
-  };
-
   return {
     STORAGE_NAMESPACE_KEY,
     DATABASE_NAMESPACE_KEY,
@@ -190,7 +184,6 @@ export function createArtifactRuntimePersistenceAuthorityState() {
     buildStateThroughMutation,
     createNextSessionStorageMap,
     replaceCommittedAuthorityState,
-    replaceCurrentSessionStorageMap,
     readCurrentStorageMap: () => currentStorageMap,
     readCurrentSessionStorageMap: () => currentSessionStorageMap,
     readCurrentDatabaseMap: () => currentDatabaseMap,

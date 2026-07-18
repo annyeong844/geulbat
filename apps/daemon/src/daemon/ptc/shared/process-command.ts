@@ -45,7 +45,7 @@ export type PtcDockerClientProcessInvocation = Omit<
   StartBoundedProcessCommandInvocation,
   'env'
 >;
-export type PtcDockerClientProcessResult = StartBoundedProcessCommandResult;
+type PtcDockerClientProcessResult = StartBoundedProcessCommandResult;
 
 export async function runPtcDockerClientCommand(
   invocation: PtcDockerClientCommandInvocation,

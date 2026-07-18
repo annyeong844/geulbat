@@ -1,7 +1,7 @@
 /**
  * daemon/auth/store — Provider credential file I/O
  *
- * Reads/writes OAuth credentials for the upstream provider (ChatGPT).
+ * Reads/writes OAuth credentials for upstream providers.
  * Storage location: ~/.geulbat/auth/provider.json  (user-scoped, NOT workspace)
  * Write strategy: temp file -> rename (atomic).
  */
@@ -18,6 +18,11 @@ import {
 } from '../../utils/error.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import { writeTextFileAtomically } from '../../utils/atomic-file.js';
+import {
+  DEFAULT_PROVIDER_AUTH_PROVIDER_ID,
+  PROVIDER_AUTH_PROVIDER_IDS,
+  type ProviderAuthProviderId,
+} from '../contract.js';
 
 // ─── paths ───
 
@@ -36,66 +41,63 @@ export interface ProviderCredential {
   expiresAt: number;
 }
 
+export const DEFAULT_PROVIDER_AUTH_CREDENTIAL_PROVIDER_ID =
+  DEFAULT_PROVIDER_AUTH_PROVIDER_ID;
+
+export type ProviderAuthCredentialProviderId = ProviderAuthProviderId;
+
+export function resolveProviderAuthCredentialProviderId(
+  providerId?: ProviderAuthCredentialProviderId,
+): ProviderAuthCredentialProviderId {
+  return providerId ?? DEFAULT_PROVIDER_AUTH_CREDENTIAL_PROVIDER_ID;
+}
+
+const PROVIDER_AUTH_CREDENTIAL_PROVIDER_IDS = PROVIDER_AUTH_PROVIDER_IDS;
+
+interface ProviderAuthCredentialSchema {
+  accessToken: string;
+  refreshToken: string;
+  accountId: string;
+  expiresAt: number;
+}
+
+type ProviderAuthCredentialsByProvider = Partial<
+  Record<ProviderAuthCredentialProviderId, ProviderAuthCredentialSchema>
+>;
+
 interface ProviderAuthFileSchema {
-  version: 1;
-  credential: {
-    accessToken: string;
-    refreshToken: string;
-    accountId: string;
-    expiresAt: number;
-  };
+  version: 2;
+  credentials: ProviderAuthCredentialsByProvider;
 }
 
 // ─── public ───
 
 /** Read provider credential from disk. Returns null only when the file is missing. */
-export async function readProviderAuthFile(): Promise<ProviderCredential | null> {
+export async function readProviderAuthFile(
+  providerId: ProviderAuthCredentialProviderId = DEFAULT_PROVIDER_AUTH_CREDENTIAL_PROVIDER_ID,
+): Promise<ProviderCredential | null> {
   const authFile = resolveProviderAuthFilePath();
-  let raw: string;
-  try {
-    raw = await fs.readFile(authFile, 'utf-8');
-  } catch (error: unknown) {
-    if (isNotFoundError(error)) {
-      return null;
-    }
-    throw createProviderAuthFileReadError(error);
+  const data = await readProviderAuthFileSchema(authFile);
+  if (!data) {
+    return null;
   }
 
-  let data: unknown;
-  try {
-    data = JSON.parse(raw);
-  } catch (error: unknown) {
-    throw createProviderAuthInvalidFileError(
-      `invalid provider auth file: ${getErrorMessage(error)}`,
-    );
-  }
-  if (!isProviderAuthFileSchema(data)) {
-    throw createProviderAuthInvalidFileError(
-      'invalid provider auth file schema',
-    );
-  }
-
-  return {
-    accessToken: data.credential.accessToken,
-    refreshToken: data.credential.refreshToken,
-    accountId: data.credential.accountId,
-    expiresAt: data.credential.expiresAt,
-  };
+  const credential = readCredentialForProvider(data, providerId);
+  return credential ? cloneProviderCredential(credential) : null;
 }
 
 /** Write provider credential to disk. Atomic: temp file -> rename. POSIX 0o600 best-effort. */
 export async function writeProviderAuthFile(
   credential: ProviderCredential,
+  providerId: ProviderAuthCredentialProviderId = DEFAULT_PROVIDER_AUTH_CREDENTIAL_PROVIDER_ID,
 ): Promise<void> {
   const authFile = resolveProviderAuthFilePath();
+  const credentials = await readProviderAuthCredentialMapForWrite(authFile);
+  credentials[providerId] = cloneProviderCredential(credential);
+
   const data: ProviderAuthFileSchema = {
-    version: 1,
-    credential: {
-      accessToken: credential.accessToken,
-      refreshToken: credential.refreshToken,
-      accountId: credential.accountId,
-      expiresAt: credential.expiresAt,
-    },
+    version: 2,
+    credentials,
   };
 
   const content = JSON.stringify(data, null, 2);
@@ -103,8 +105,34 @@ export async function writeProviderAuthFile(
   await hardenProviderAuthFilePermissions(authFile);
 }
 
-export async function deleteProviderAuthFile(): Promise<void> {
+export async function deleteProviderAuthFile(
+  providerId?: ProviderAuthCredentialProviderId,
+): Promise<void> {
   const authFile = resolveProviderAuthFilePath();
+  if (providerId !== undefined) {
+    const credentials = await readProviderAuthCredentialMapForWrite(authFile);
+    delete credentials[providerId];
+    if (Object.keys(credentials).length === 0) {
+      await unlinkProviderAuthFileIfPresent(authFile);
+      return;
+    }
+
+    const data: ProviderAuthFileSchema = {
+      version: 2,
+      credentials,
+    };
+    const content = JSON.stringify(data, null, 2);
+    await writeTextFileAtomically(authFile, content, { mode: 0o600 });
+    await hardenProviderAuthFilePermissions(authFile);
+    return;
+  }
+
+  await unlinkProviderAuthFileIfPresent(authFile);
+}
+
+async function unlinkProviderAuthFileIfPresent(
+  authFile: string,
+): Promise<void> {
   try {
     await fs.unlink(authFile);
   } catch (error: unknown) {
@@ -173,26 +201,139 @@ function resolveProviderAuthFilePath(): string {
   return overridden ? overridden : AUTH_FILE;
 }
 
-function isProviderAuthFileSchema(
-  value: unknown,
-): value is ProviderAuthFileSchema {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-  const credential = Reflect.get(value, 'credential');
-  if (!credential || typeof credential !== 'object') {
-    return false;
+async function readProviderAuthFileSchema(
+  authFile: string,
+): Promise<ProviderAuthFileSchema | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(authFile, 'utf-8');
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) {
+      return null;
+    }
+    throw createProviderAuthFileReadError(error);
   }
 
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error: unknown) {
+    throw createProviderAuthInvalidFileError(
+      `invalid provider auth file: ${getErrorMessage(error)}`,
+    );
+  }
+
+  const data = parseProviderAuthFileSchema(parsed);
+  if (!data) {
+    throw createProviderAuthInvalidFileError(
+      'invalid provider auth file schema',
+    );
+  }
+  return data;
+}
+
+async function readProviderAuthCredentialMapForWrite(
+  authFile: string,
+): Promise<ProviderAuthCredentialsByProvider> {
+  const data = await readProviderAuthFileSchema(authFile);
+  if (!data) {
+    return {};
+  }
+  return cloneProviderCredentialMap(data.credentials);
+}
+
+function parseProviderAuthFileSchema(
+  value: unknown,
+): ProviderAuthFileSchema | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const version = value.version;
+  if (version === 2) {
+    const credentials = value.credentials;
+    if (!isRecord(credentials)) {
+      return null;
+    }
+
+    const parsedCredentials: ProviderAuthCredentialsByProvider = {};
+    for (const providerId of PROVIDER_AUTH_CREDENTIAL_PROVIDER_IDS) {
+      const credential = credentials[providerId];
+      if (credential === undefined) {
+        continue;
+      }
+      if (!isProviderAuthCredentialSchema(credential)) {
+        return null;
+      }
+      parsedCredentials[providerId] = cloneProviderCredential(credential);
+    }
+
+    return {
+      version,
+      credentials: parsedCredentials,
+    };
+  }
+  if (
+    (version === undefined || version === 1) &&
+    isProviderAuthCredentialSchema(value)
+  ) {
+    return {
+      version: 2,
+      credentials: {
+        [DEFAULT_PROVIDER_AUTH_CREDENTIAL_PROVIDER_ID]:
+          cloneProviderCredential(value),
+      },
+    };
+  }
+  return null;
+}
+
+function readCredentialForProvider(
+  data: ProviderAuthFileSchema,
+  providerId: ProviderAuthCredentialProviderId,
+): ProviderCredential | null {
+  return data.credentials[providerId] ?? null;
+}
+
+function cloneProviderCredentialMap(
+  credentials: ProviderAuthCredentialsByProvider,
+): ProviderAuthCredentialsByProvider {
+  const cloned: ProviderAuthCredentialsByProvider = {};
+  for (const providerId of PROVIDER_AUTH_CREDENTIAL_PROVIDER_IDS) {
+    const credential = credentials[providerId];
+    if (credential !== undefined) {
+      cloned[providerId] = cloneProviderCredential(credential);
+    }
+  }
+  return cloned;
+}
+
+function cloneProviderCredential(
+  credential: ProviderCredential,
+): ProviderCredential {
+  return {
+    accessToken: credential.accessToken,
+    refreshToken: credential.refreshToken,
+    accountId: credential.accountId,
+    expiresAt: credential.expiresAt,
+  };
+}
+
+function isProviderAuthCredentialSchema(
+  value: unknown,
+): value is ProviderAuthCredentialSchema {
   return (
-    Reflect.get(value, 'version') === 1 &&
-    typeof Reflect.get(credential, 'accessToken') === 'string' &&
-    typeof Reflect.get(credential, 'refreshToken') === 'string' &&
-    typeof Reflect.get(credential, 'accountId') === 'string' &&
-    typeof Reflect.get(credential, 'expiresAt') === 'number' &&
-    Reflect.get(credential, 'accessToken') !== '' &&
-    Reflect.get(credential, 'accountId') !== ''
+    isRecord(value) &&
+    typeof value.accessToken === 'string' &&
+    typeof value.refreshToken === 'string' &&
+    typeof value.accountId === 'string' &&
+    typeof value.expiresAt === 'number' &&
+    value.accessToken !== '' &&
+    value.accountId !== ''
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function createProviderAuthInvalidFileError(message: string): Error {

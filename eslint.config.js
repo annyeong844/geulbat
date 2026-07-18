@@ -3,6 +3,9 @@ import tsparser from '@typescript-eslint/parser';
 import boundaries from 'eslint-plugin-boundaries';
 import reactHooks from 'eslint-plugin-react-hooks';
 
+const useExternalTypedLintAdapter =
+  process.env.GEULBAT_TYPED_LINT_ADAPTER === 'tsgolint';
+
 export default [
   {
     ignores: [
@@ -26,7 +29,7 @@ export default [
       parserOptions: {
         ecmaVersion: 'latest',
         jsDocParsingMode: 'none',
-        projectService: true,
+        projectService: !useExternalTypedLintAdapter,
         sourceType: 'module',
         tsconfigRootDir: import.meta.dirname,
       },
@@ -45,6 +48,13 @@ export default [
       },
       'boundaries/elements': [
         {
+          type: 'agent-loop',
+          pattern: [
+            'packages/agent-loop/src/**',
+            'packages/agent-loop/dist/**',
+          ],
+        },
+        {
           type: 'shared-utils',
           pattern: [
             'packages/shared-utils/src/**',
@@ -54,6 +64,13 @@ export default [
         {
           type: 'protocol',
           pattern: ['packages/protocol/src/**', 'packages/protocol/dist/**'],
+        },
+        {
+          type: 'tool-library',
+          pattern: [
+            'packages/tool-library/src/**',
+            'packages/tool-library/dist/**',
+          ],
         },
         {
           type: 'web-shell-entry',
@@ -75,8 +92,24 @@ export default [
           pattern: ['apps/web-shell/src/features/assistant/**'],
         },
         {
+          type: 'feature-browser-share',
+          pattern: ['apps/web-shell/src/features/browser-share/**'],
+        },
+        {
+          type: 'feature-browser-live-session',
+          pattern: ['apps/web-shell/src/features/browser-live-session/**'],
+        },
+        {
           type: 'feature-editor',
           pattern: ['apps/web-shell/src/features/editor/**'],
+        },
+        {
+          type: 'feature-mcp',
+          pattern: ['apps/web-shell/src/features/mcp/**'],
+        },
+        {
+          type: 'feature-plugins',
+          pattern: ['apps/web-shell/src/features/plugins/**'],
         },
         {
           type: 'feature-project-selector',
@@ -102,7 +135,7 @@ export default [
             'apps/daemon/src/daemon/error-codes.ts',
             'apps/daemon/src/daemon/port.ts',
             'apps/daemon/src/daemon/runtime-json.ts',
-            'apps/daemon/src/daemon/run-workspace-context.ts',
+            'apps/daemon/src/daemon/run-context.ts',
             'apps/daemon/src/daemon/runtime-contracts.ts',
             'apps/daemon/src/daemon/subagent-runtime-contracts.ts',
           ],
@@ -111,15 +144,16 @@ export default [
         {
           type: 'daemon-composition',
           pattern: [
-            'apps/daemon/src/bootstrap-daemon-context.ts',
             'apps/daemon/src/create-daemon.ts',
             'apps/daemon/src/daemon-server-lifecycle.ts',
-            'apps/daemon/src/repo-root.ts',
+            'apps/daemon/src/home-state-root.ts',
             'apps/daemon/src/daemon/context.ts',
+            'apps/daemon/src/daemon/ptc-execute-code-terminal-result-store.ts',
+            'apps/daemon/src/daemon/plugin-mcp-coordinator.ts',
             'apps/daemon/src/daemon/daemon-runtime-contract.ts',
             'apps/daemon/src/daemon/runtime-persistence-file-access.ts',
             'apps/daemon/src/daemon/runtime-services.ts',
-            'apps/daemon/src/daemon/workspace-admission-lock.ts',
+            'apps/daemon/src/daemon/daemon-instance-admission-lock.ts',
           ],
           mode: 'full',
         },
@@ -148,11 +182,25 @@ export default [
           pattern: ['apps/daemon/src/daemon/memory/**'],
         },
         {
+          type: 'daemon-mcp',
+          pattern: ['apps/daemon/src/daemon/mcp/**'],
+        },
+        {
+          type: 'daemon-extensions',
+          pattern: ['apps/daemon/src/daemon/extensions/**'],
+        },
+        {
           type: 'daemon-network',
           pattern: ['apps/daemon/src/daemon/network/**'],
         },
         { type: 'daemon-tools', pattern: ['apps/daemon/src/daemon/tools/**'] },
         { type: 'daemon-llm', pattern: ['apps/daemon/src/daemon/llm/**'] },
+        {
+          type: 'daemon-media-contract',
+          pattern: ['apps/daemon/src/daemon/media/contract.ts'],
+          mode: 'full',
+        },
+        { type: 'daemon-media', pattern: ['apps/daemon/src/daemon/media/**'] },
         {
           type: 'daemon-artifact-runtime-persistence-contract',
           pattern: [
@@ -200,6 +248,7 @@ export default [
         {
           type: 'daemon-ptc-runtime-ingress',
           pattern: [
+            'apps/daemon/src/daemon/ptc/runtime/browser/browser-live-session-runtime.ts',
             'apps/daemon/src/daemon/ptc/runtime/browser/browser-navigate-runtime.ts',
             'apps/daemon/src/daemon/ptc/runtime/browser/browser-page-load-evidence-runtime.ts',
             'apps/daemon/src/daemon/ptc/runtime/browser/browser-text-evidence-runtime.ts',
@@ -211,13 +260,14 @@ export default [
         {
           type: 'daemon-ptc-runtime-ingress-helper',
           pattern: [
-            'apps/daemon/src/daemon/ptc/runtime/browser/browser-workspace-runtime.ts',
+            'apps/daemon/src/daemon/ptc/runtime/browser/browser-state-runtime.ts',
+            'apps/daemon/src/daemon/ptc/runtime/browser/browser-live-session-media-endpoint.ts',
           ],
           mode: 'full',
         },
         {
           type: 'daemon-ptc-runtime-common',
-          pattern: ['apps/daemon/src/daemon/ptc/runtime/runtime-workspace.ts'],
+          pattern: ['apps/daemon/src/daemon/ptc/runtime/runtime-state.ts'],
           mode: 'full',
         },
         {
@@ -259,6 +309,10 @@ export default [
         {
           type: 'daemon-ptc-lab-browser-text-evidence',
           pattern: ['apps/daemon/src/daemon/ptc/lab/browser/text-evidence/**'],
+        },
+        {
+          type: 'daemon-ptc-lab-browser-live-session',
+          pattern: ['apps/daemon/src/daemon/ptc/lab/browser/live-session/**'],
         },
         {
           type: 'daemon-ptc-lab-browser-user-url-navigation',
@@ -350,15 +404,38 @@ export default [
       ],
     },
     rules: {
+      '@typescript-eslint/consistent-type-imports': [
+        'error',
+        {
+          disallowTypeAnnotations: false,
+          fixStyle: 'separate-type-imports',
+          prefer: 'type-imports',
+        },
+      ],
+      '@typescript-eslint/no-empty-object-type': [
+        'error',
+        { allowInterfaces: 'with-single-extends' },
+      ],
+      '@typescript-eslint/no-import-type-side-effects': 'error',
       '@typescript-eslint/no-unused-vars': [
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
       '@typescript-eslint/no-explicit-any': 'error',
-      '@typescript-eslint/no-floating-promises': 'error',
-      '@typescript-eslint/no-misused-promises': 'error',
+      '@typescript-eslint/no-floating-promises': useExternalTypedLintAdapter
+        ? 'off'
+        : 'error',
+      '@typescript-eslint/no-misused-promises': useExternalTypedLintAdapter
+        ? 'off'
+        : 'error',
+      curly: ['error', 'all'],
+      eqeqeq: ['error', 'always', { null: 'ignore' }],
+      'no-duplicate-imports': ['error', { allowSeparateTypeImports: true }],
+      'no-promise-executor-return': 'error',
+      'prefer-const': ['error', { ignoreReadBeforeAssign: true }],
+      'prefer-object-has-own': 'error',
       'react-hooks/rules-of-hooks': 'error',
-      'react-hooks/exhaustive-deps': 'warn',
+      'react-hooks/exhaustive-deps': 'error',
 
       'boundaries/no-unknown-files': 'error',
       'boundaries/dependencies': [
@@ -366,8 +443,13 @@ export default [
         {
           default: 'disallow',
           rules: [
+            { from: { type: 'agent-loop' }, allow: [] },
             { from: { type: 'shared-utils' }, allow: [] },
             { from: { type: 'protocol' }, allow: [] },
+            {
+              from: { type: 'tool-library' },
+              allow: { to: { type: ['shared-utils'] } },
+            },
             {
               from: { type: 'web-shell-test' },
               allow: {
@@ -381,7 +463,11 @@ export default [
                     'feature-approvals',
                     'feature-artifacts',
                     'feature-assistant',
+                    'feature-browser-live-session',
+                    'feature-browser-share',
                     'feature-editor',
+                    'feature-mcp',
+                    'feature-plugins',
                     'feature-project-selector',
                     'feature-project-tree',
                     'feature-provider-auth',
@@ -415,7 +501,11 @@ export default [
                     'feature-approvals',
                     'feature-artifacts',
                     'feature-assistant',
+                    'feature-browser-live-session',
+                    'feature-browser-share',
                     'feature-editor',
+                    'feature-mcp',
+                    'feature-plugins',
                     'feature-project-selector',
                     'feature-project-tree',
                     'feature-provider-auth',
@@ -471,6 +561,18 @@ export default [
               },
             },
             {
+              from: { type: 'feature-browser-share' },
+              allow: {
+                to: { type: ['protocol', 'shared-utils', 'web-shell-lib'] },
+              },
+            },
+            {
+              from: { type: 'feature-browser-live-session' },
+              allow: {
+                to: { type: ['protocol', 'shared-utils', 'web-shell-lib'] },
+              },
+            },
+            {
               from: { type: 'feature-editor' },
               allow: {
                 to: {
@@ -479,6 +581,32 @@ export default [
                     'shared-utils',
                     'web-shell-lib',
                     'feature-editor',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'feature-mcp' },
+              allow: {
+                to: {
+                  type: [
+                    'protocol',
+                    'shared-utils',
+                    'web-shell-lib',
+                    'feature-mcp',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'feature-plugins' },
+              allow: {
+                to: {
+                  type: [
+                    'protocol',
+                    'shared-utils',
+                    'web-shell-lib',
+                    'feature-plugins',
                   ],
                 },
               },
@@ -548,6 +676,8 @@ export default [
                     'daemon-agent-contract',
                     'daemon-agent',
                     'daemon-auth',
+                    'daemon-mcp',
+                    'daemon-extensions',
                     'daemon-memory',
                     'daemon-network',
                     'daemon-tools',
@@ -578,6 +708,8 @@ export default [
                     'daemon-auth',
                     'daemon-agent',
                     'daemon-artifact-runtime-persistence',
+                    'daemon-mcp',
+                    'daemon-extensions',
                     'daemon-react-bundle-inline',
                     'daemon-sessions',
                     'daemon-files',
@@ -605,6 +737,7 @@ export default [
               allow: {
                 to: {
                   type: [
+                    'agent-loop',
                     'shared-utils',
                     'daemon-kernel',
                     'daemon-agent-contract',
@@ -639,10 +772,12 @@ export default [
                     'daemon-kernel',
                     'daemon-composition',
                     'daemon-ptc-runtime-contract',
+                    'daemon-media-contract',
                     'daemon-files',
                     'daemon-memory',
                     'daemon-network',
                     'daemon-utils',
+                    'tool-library',
                   ],
                 },
               },
@@ -656,6 +791,32 @@ export default [
               },
             },
             {
+              from: { type: 'daemon-mcp' },
+              allow: {
+                to: {
+                  type: [
+                    'shared-utils',
+                    'protocol',
+                    'daemon-tools',
+                    'daemon-utils',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-extensions' },
+              allow: {
+                to: {
+                  type: [
+                    'protocol',
+                    'daemon-extensions',
+                    'daemon-files',
+                    'daemon-utils',
+                  ],
+                },
+              },
+            },
+            {
               from: { type: 'daemon-llm' },
               allow: {
                 to: {
@@ -665,6 +826,31 @@ export default [
                     'daemon-kernel',
                     'daemon-utils',
                   ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-media' },
+              allow: {
+                to: {
+                  type: [
+                    'shared-utils',
+                    'protocol',
+                    'daemon-media-contract',
+                    'daemon-kernel',
+                    'daemon-auth',
+                    'daemon-llm',
+                    'daemon-sessions',
+                    'daemon-utils',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-media-contract' },
+              allow: {
+                to: {
+                  type: ['protocol'],
                 },
               },
             },
@@ -795,6 +981,7 @@ export default [
                   type: [
                     'daemon-ptc-callback',
                     'daemon-ptc-lab-browser-core',
+                    'daemon-ptc-lab-browser-live-session',
                     'daemon-ptc-lab-browser-page-load-evidence',
                     'daemon-ptc-lab-browser-text-evidence',
                     'daemon-ptc-lab-browser-user-url-navigation',
@@ -931,6 +1118,21 @@ export default [
               },
             },
             {
+              from: { type: 'daemon-ptc-lab-browser-live-session' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-lab-browser-core',
+                    'daemon-ptc-lab-browser-live-session',
+                    'daemon-ptc-lab-profile',
+                    'daemon-ptc-lab-session',
+                    'daemon-ptc-package-helpers',
+                    'daemon-ptc-shared',
+                  ],
+                },
+              },
+            },
+            {
               from: { type: 'daemon-ptc-lab-browser-user-url-navigation' },
               allow: {
                 to: {
@@ -1046,6 +1248,9 @@ export default [
                 to: {
                   type: [
                     'daemon-ptc-callback',
+                    // package install workflow product lane promotes the
+                    // lab package smoke owners (validators/cache contract)
+                    'daemon-ptc-lab-packages',
                     'daemon-ptc-lab-profile',
                     'daemon-ptc-lab-session',
                     'daemon-ptc-lab-shell',
@@ -1120,6 +1325,10 @@ export default [
                     'daemon-memory',
                     'daemon-tools',
                     'daemon-llm',
+                    'daemon-media-contract',
+                    'daemon-media',
+                    'daemon-mcp',
+                    'daemon-extensions',
                     'daemon-artifact-runtime-persistence',
                     'daemon-ptc-runtime-contract',
                     'daemon-ptc-runtime-ingress',
@@ -1143,6 +1352,7 @@ export default [
                 to: {
                   type: [
                     'shared-utils',
+                    'protocol',
                     'daemon-sessions-contract',
                     'daemon-kernel',
                     'daemon-composition',
@@ -1397,11 +1607,6 @@ export default [
               message:
                 'Import app-level provider auth wiring through use-app-shell.js.',
             },
-            {
-              name: './use-project-registry.js',
-              message:
-                'Import app-level project registry wiring through use-app-shell.js.',
-            },
           ],
         },
       ],
@@ -1416,11 +1621,6 @@ export default [
           paths: [
             {
               name: './use-provider-auth-state.js',
-              message:
-                'Keep app-shell pure; hook wiring belongs in use-app-shell.js.',
-            },
-            {
-              name: './use-project-registry.js',
               message:
                 'Keep app-shell pure; hook wiring belongs in use-app-shell.js.',
             },
@@ -1721,29 +1921,32 @@ export default [
     },
   },
   {
+    files: ['apps/daemon/src/**/*.ts'],
+    rules: {
+      'no-console': 'error',
+    },
+  },
+  {
     files: [
-      'apps/web-shell/src/app/run-session-diagnostics.ts',
-      'apps/web-shell/src/app/use-project-registry.ts',
-      'apps/web-shell/src/app/run-session-controller-actions.ts',
-      'apps/web-shell/src/app/run-session-lifecycle.ts',
-      'apps/web-shell/src/app/run-session-settle.ts',
-      'apps/web-shell/src/app/use-thread-sessions.ts',
-      'apps/web-shell/src/app/use-provider-auth-state.ts',
-      'apps/web-shell/src/app/use-run-session-connection.ts',
-      'apps/web-shell/src/app/use-workspace-files.ts',
-      'apps/web-shell/src/features/approvals/Approvals.tsx',
-      'apps/web-shell/src/features/editor/Editor.tsx',
-      'apps/web-shell/src/features/project-tree/ProjectTree.tsx',
-      'apps/web-shell/src/features/assistant/AssistantTranscript.tsx',
-      'apps/web-shell/src/features/assistant/export/use-artifact-export-state.ts',
-      'apps/web-shell/src/features/assistant/export/use-generated-binary-export-state.ts',
-      'apps/web-shell/src/features/assistant/artifact-pane/use-pane-state.ts',
-      'apps/web-shell/src/features/assistant/runtime-frame/use-artifact-runtime-frame-state.ts',
-      'apps/web-shell/src/features/artifacts/use-artifact-streaming-preview-payload.ts',
-      'apps/web-shell/src/features/thread-list/ThreadList.tsx',
+      'packages/protocol/src/**/*.ts',
+      'packages/shared-utils/src/**/*.ts',
     ],
     rules: {
-      'react-hooks/exhaustive-deps': 'error',
+      'no-magic-numbers': 'off',
+      '@typescript-eslint/no-magic-numbers': [
+        'error',
+        {
+          ignore: [-1, 0, 1, 2],
+          ignoreArrayIndexes: true,
+          ignoreClassFieldInitialValues: true,
+          ignoreDefaultValues: true,
+          ignoreEnums: true,
+          ignoreNumericLiteralTypes: true,
+          ignoreReadonlyClassProperties: true,
+          ignoreTypeIndexes: true,
+        },
+      ],
+      '@typescript-eslint/no-non-null-assertion': 'error',
     },
   },
   {
@@ -1775,9 +1978,11 @@ export default [
       ],
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-magic-numbers': 'off',
       '@typescript-eslint/no-misused-promises': 'error',
+      'no-console': 'off',
       'react-hooks/rules-of-hooks': 'error',
-      'react-hooks/exhaustive-deps': 'warn',
+      'react-hooks/exhaustive-deps': 'error',
       'boundaries/dependencies': 'off',
     },
   },

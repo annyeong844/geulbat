@@ -5,16 +5,24 @@ export function normalizeTextContent(raw: string): string {
 }
 
 export function splitTextLines(text: string): string[] {
-  if (text === '') return [];
+  if (text === '') {
+    return [];
+  }
   const lines = text.split('\n');
-  if (lines[lines.length - 1] === '') lines.pop();
+  if (lines[lines.length - 1] === '') {
+    lines.pop();
+  }
   return lines;
 }
 
 export function countTextLines(text: string): number {
-  if (text === '') return 0;
+  if (text === '') {
+    return 0;
+  }
   const lines = text.split('\n');
-  if (lines[lines.length - 1] === '') return lines.length - 1;
+  if (lines[lines.length - 1] === '') {
+    return lines.length - 1;
+  }
   return lines.length;
 }
 

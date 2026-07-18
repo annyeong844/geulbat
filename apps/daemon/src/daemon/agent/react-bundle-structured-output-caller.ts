@@ -1,5 +1,7 @@
 import type { FunctionCall, ProviderStructuredOutput } from '../llm/index.js';
 import type { SandboxAttemptStore } from '../sandbox/attempt-store.js';
+import { isOpaqueSandboxOutputEvidenceRef } from '../sandbox/output-validation.js';
+import { decodeReactBundleDependencyPrepareRequest } from '../react-bundle-dependency-admission/react-bundle-dependency-prepare.js';
 import {
   runReactBundleExplicitCdnArtifactIngress,
   type ReactBundleExplicitCdnArtifactIngressFailureReason,
@@ -9,7 +11,7 @@ import {
 import type { AgentResult } from './agent-result.js';
 import type { ReactBundleStructuredOutputIngressPolicy } from './react-bundle-structured-output-ingress-policy.js';
 
-export type ReactBundleStructuredOutputCallerFailureReason =
+type ReactBundleStructuredOutputCallerFailureReason =
   | 'structured_output_invalid'
   | 'structured_output_ambiguous'
   | 'structured_output_with_tool_calls'
@@ -133,8 +135,8 @@ function readReactBundleExplicitCdnRequest(
     };
   }
 
-  const payload = asRecord(output.payload);
-  if (!payload) {
+  const payload = output.payload;
+  if (!isStructuredOutputRecord(payload)) {
     return {
       ok: false,
       message:
@@ -142,41 +144,18 @@ function readReactBundleExplicitCdnRequest(
     };
   }
 
-  if (typeof payload.entryUrl !== 'string') {
+  try {
+    return {
+      ok: true,
+      value: decodeReactBundleDependencyPrepareRequest(payload),
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     return {
       ok: false,
-      message:
-        'structured_output_invalid: react bundle structured payload requires entryUrl',
+      message: `structured_output_invalid: react bundle structured payload is invalid: ${message}`,
     };
   }
-
-  const runtimeDependencies = asRecord(payload.runtimeDependencies);
-  if (!runtimeDependencies) {
-    return {
-      ok: false,
-      message:
-        'structured_output_invalid: react bundle structured payload requires runtimeDependencies object',
-    };
-  }
-
-  if (!Array.isArray(payload.dependencyRefs)) {
-    return {
-      ok: false,
-      message:
-        'structured_output_invalid: react bundle structured payload requires dependencyRefs array',
-    };
-  }
-
-  return {
-    ok: true,
-    value: {
-      entryUrl: payload.entryUrl,
-      runtimeDependencies:
-        runtimeDependencies as ReactBundleExplicitCdnArtifactIngressRequest['runtimeDependencies'],
-      dependencyRefs:
-        payload.dependencyRefs as ReactBundleExplicitCdnArtifactIngressRequest['dependencyRefs'],
-    },
-  };
 }
 
 function sanitizeDiagnostics(
@@ -195,13 +174,13 @@ function sanitizeDiagnostics(
   }
   if (
     diagnostics.prepareEvidenceRef !== undefined &&
-    isOpaqueEvidenceRef(diagnostics.prepareEvidenceRef)
+    isOpaqueSandboxOutputEvidenceRef(diagnostics.prepareEvidenceRef)
   ) {
     safe.prepareEvidenceRef = diagnostics.prepareEvidenceRef;
   }
   if (
     diagnostics.probeEvidenceRef !== undefined &&
-    isOpaqueEvidenceRef(diagnostics.probeEvidenceRef)
+    isOpaqueSandboxOutputEvidenceRef(diagnostics.probeEvidenceRef)
   ) {
     safe.probeEvidenceRef = diagnostics.probeEvidenceRef;
   }
@@ -209,25 +188,10 @@ function sanitizeDiagnostics(
   return Object.keys(safe).length > 0 ? safe : undefined;
 }
 
-function isOpaqueEvidenceRef(value: string): boolean {
-  const prefix = 'sandbox-output:';
-  if (!value.startsWith(prefix)) return false;
-  const suffix = value.slice(prefix.length);
-  if (suffix.length === 0) return false;
-  if (/[\s\u0000-\u001f\u007f]/u.test(value)) return false;
-  return (
-    !value.includes('/') &&
-    !value.includes('\\') &&
-    !value.includes('.geulbat') &&
-    !value.includes('..') &&
-    !value.startsWith('file:')
-  );
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
+function isStructuredOutputRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function fail(

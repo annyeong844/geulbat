@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { FileSaveConflictError } from '../../../lib/api/files.js';
+import {
+  COMPUTER_FILE_API_SCOPE,
+  FileSaveConflictError,
+  type FileApiScope,
+} from '../../../lib/api/files.js';
 import { createArtifactPaneViewModel } from '../../../test-support/create-artifact-pane-view-model.js';
 import { renderHook } from '../../../test-support/hook-test.js';
 import { useArtifactExportState } from './use-artifact-export-state.js';
@@ -50,7 +54,6 @@ void test('useArtifactExportState derives generated text export placeholders fro
         raw: 'console.log("hello");',
       },
       actions: {
-        openSource: { visible: true, enabled: true, reason: null },
         apply: { visible: false, enabled: false, reason: null },
         export: { visible: false, enabled: false, reason: null },
       },
@@ -92,7 +95,6 @@ void test('useArtifactExportState keeps runtime export hidden when artifact sess
         raw: 'console.log("hello");',
       },
       actions: {
-        openSource: { visible: true, enabled: true, reason: null },
         apply: { visible: false, enabled: false, reason: null },
         export: { visible: false, enabled: false, reason: null },
       },
@@ -123,7 +125,8 @@ void test('useArtifactExportState keeps runtime export hidden when artifact sess
 });
 
 void test('useArtifactExportState remembers successful binary exports and only offers overwrite for the same path', async () => {
-  const saveCalls: Array<{ projectId: string; path: string; blob: Blob }> = [];
+  const saveCalls: Array<{ scope: FileApiScope; path: string; blob: Blob }> =
+    [];
   const hook = await renderHook(useArtifactExportState, {
     viewModel: createArtifactPaneViewModel({
       parsed: {
@@ -135,7 +138,6 @@ void test('useArtifactExportState remembers successful binary exports and only o
         raw: 'console.log("hello");',
       },
       actions: {
-        openSource: { visible: true, enabled: true, reason: null },
         apply: { visible: false, enabled: false, reason: null },
         export: { visible: false, enabled: false, reason: null },
       },
@@ -145,8 +147,8 @@ void test('useArtifactExportState remembers successful binary exports and only o
     }),
     isRunning: false,
     fileApi: {
-      async saveBinaryFile(projectId, path, blob) {
-        saveCalls.push({ projectId, path, blob });
+      async saveBinaryFile(scope, path, blob) {
+        saveCalls.push({ scope, path, blob });
         return {
           ok: true,
           path,
@@ -173,7 +175,7 @@ void test('useArtifactExportState remembers successful binary exports and only o
 
   assert.equal(saveCalls.length, 1);
   assert.deepEqual(saveCalls[0], {
-    projectId: 'workspace',
+    scope: COMPUTER_FILE_API_SCOPE,
     path: 'exports/preview.png',
     blob,
   });
@@ -206,7 +208,6 @@ void test('useArtifactExportState clears remembered binary overwrite state after
         raw: 'console.log("hello");',
       },
       actions: {
-        openSource: { visible: true, enabled: true, reason: null },
         apply: { visible: false, enabled: false, reason: null },
         export: { visible: false, enabled: false, reason: null },
       },
@@ -216,7 +217,7 @@ void test('useArtifactExportState clears remembered binary overwrite state after
     }),
     isRunning: false,
     fileApi: {
-      async saveBinaryFile(_projectId, path) {
+      async saveBinaryFile(_scope, path) {
         return {
           ok: true,
           path,
@@ -273,7 +274,6 @@ void test('useArtifactExportState resets export state when the artifact session 
       raw: 'console.log("hello");',
     },
     actions: {
-      openSource: { visible: true, enabled: true, reason: null },
       apply: { visible: false, enabled: false, reason: null },
       export: { visible: false, enabled: false, reason: null },
     },
@@ -349,7 +349,6 @@ void test('useArtifactExportState clears remembered binary overwrite state when 
         raw: 'console.log("hello");',
       },
       actions: {
-        openSource: { visible: true, enabled: true, reason: null },
         apply: { visible: false, enabled: false, reason: null },
         export: { visible: false, enabled: false, reason: null },
       },
@@ -359,7 +358,7 @@ void test('useArtifactExportState clears remembered binary overwrite state when 
     }),
     isRunning: false,
     fileApi: {
-      async saveBinaryFile(_projectId, path) {
+      async saveBinaryFile(_scope, path) {
         return {
           ok: true,
           path,

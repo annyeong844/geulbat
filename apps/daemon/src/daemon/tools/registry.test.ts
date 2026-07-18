@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { askUserTool } from './builtin/ask-user.js';
 import { listFilesTool } from './builtin/list-files.js';
 import { writeFileTool } from './builtin/write-file.js';
 import { createToolRegistryStore } from './registry.js';
@@ -18,7 +19,7 @@ function createTestTool(name: string): AnyTool {
     },
     strict: true,
     sideEffectLevel: 'none',
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     parseArgs() {
@@ -100,6 +101,14 @@ void test('createToolRegistryStore keeps strict=true only for fully-required sch
   assert.equal(definitions[0]?.strict, true);
 });
 
+void test('createToolRegistryStore does not publish strict=true for nested optional properties', () => {
+  const store = createToolRegistryStore({ builtins: [askUserTool] });
+
+  const definitions = store.buildToolDefinitions({ names: ['ask_user'] });
+
+  assert.equal(definitions[0]?.strict, false);
+});
+
 void test('createToolRegistryStore does not publish strict=true for root oneOf schemas', () => {
   const store = createToolRegistryStore({ builtins: [] });
 
@@ -172,4 +181,46 @@ void test('createToolRegistryStore returns tool snapshots instead of live builti
   assert.equal(again.requiresApproval, true);
   assert.ok(isToolObjectParameters(again.parameters));
   assert.equal(again.parameters.required.includes('__mutated__'), false);
+});
+
+void test('createToolRegistryStore preserves receiver-aware tool methods in snapshots', async () => {
+  let parseReceiver: unknown;
+  let executeReceiver: unknown;
+  const receiverAwareTool: AnyTool = {
+    ...createTestTool('receiver_aware_tool'),
+    parseArgs() {
+      parseReceiver = this;
+      return { ok: true, value: {} };
+    },
+    async executeParsed() {
+      executeReceiver = this;
+      return { ok: true, output: 'receiver-aware' };
+    },
+  };
+  const store = createToolRegistryStore({ builtins: [receiverAwareTool] });
+
+  const snapshot = store.getTool('receiver_aware_tool');
+  assert.ok(snapshot);
+  const parsed = snapshot.parseArgs({});
+  assert.equal(parsed.ok, true);
+  const executed = await snapshot.executeParsed(
+    {},
+    {
+      callId: 'call-registry-receiver-test',
+    },
+  );
+
+  assert.equal(executed.ok, true);
+  assert.equal(parseReceiver, receiverAwareTool);
+  assert.equal(executeReceiver, receiverAwareTool);
+});
+
+void test('createToolRegistryStore unregisters one dynamic tool without affecting siblings', () => {
+  const store = createToolRegistryStore({ builtins: [writeFileTool] });
+  store.registerTool(createTestTool('dynamic_tool'));
+
+  assert.equal(store.unregisterTool('dynamic_tool'), true);
+  assert.equal(store.unregisterTool('dynamic_tool'), false);
+  assert.equal(store.getTool('dynamic_tool'), undefined);
+  assert.ok(store.getTool('write_file'));
 });

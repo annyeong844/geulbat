@@ -48,7 +48,7 @@ import {
 
 const IDENTITY: PtcSessionDockerIdentity = {
   threadId: 'thread-ptc-1',
-  workspaceRoot: '/workspace/project-a',
+  stateRoot: '/workspace/project-a',
   trustContextId: 'local-default-v1',
 };
 
@@ -77,6 +77,7 @@ void test('session-docker create-args owner does not own reuse-key normalization
   assert.deepEqual(directSpecifiers, [
     '../packages/lab-package-cache-root.js',
     '../packages/lab-package-cache-contract.js',
+    '../../shared/stable-identity.js',
     '../network/lab-network-policy.js',
     '../browser/core/lab-browser-identity.js',
     './session-docker-contract.js',
@@ -84,7 +85,6 @@ void test('session-docker create-args owner does not own reuse-key normalization
     './session-docker-contract.js',
   ]);
   for (const forbiddenDirectSpecifier of [
-    '../../shared/stable-identity.js',
     './session-docker.js',
     './session-docker-command.js',
   ]) {
@@ -131,7 +131,7 @@ void test('buildPtcSessionDockerCreateArgs projects resource budget args from re
   const policy = createPtcSessionDockerLocalBatchCommandPolicy();
   const reuseKey = normalizePtcSessionDockerReuseKey({
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy,
   });
   const args = buildPtcSessionDockerCreateArgs({
@@ -155,7 +155,7 @@ void test('buildPtcSessionDockerCreateArgs uses ambient-zero args and callback r
     const reuseKey = normalizePtcSessionDockerReuseKey({
       hostUser: HOST_USER,
       identity: IDENTITY,
-      workspaceRootRealpath: '/real/workspace/project-a',
+      stateRootRealpath: '/real/workspace/project-a',
       policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
     });
     const args = buildPtcSessionDockerCreateArgs({
@@ -283,6 +283,47 @@ void test('buildPtcSessionDockerCreateArgs uses ambient-zero args and callback r
   });
 });
 
+void test('buildPtcSessionDockerCreateArgs labels only burst containers as ephemeral within one runtime scope', () => {
+  const warmKey = normalizePtcSessionDockerReuseKey({
+    identity: IDENTITY,
+    stateRootRealpath: '/real/workspace/project-a',
+    policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
+  });
+  const burstKey = normalizePtcSessionDockerReuseKey({
+    identity: { ...IDENTITY, ephemeralBurstId: 'ptc_burst_create_args' },
+    stateRootRealpath: '/real/workspace/project-a',
+    policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
+  });
+  const warmArgs = buildPtcSessionDockerCreateArgs({
+    reuseKey: warmKey,
+    runtimeRoot: '/runtime',
+  });
+  const burstArgs = buildPtcSessionDockerCreateArgs({
+    reuseKey: burstKey,
+    runtimeRoot: '/runtime',
+  });
+
+  assert.equal(warmArgs.includes('geulbat.ephemeral=true'), false);
+  assert.equal(burstArgs.includes('geulbat.ephemeral=true'), true);
+  const warmRuntimeScope = warmArgs.find((arg) =>
+    arg.startsWith('geulbat.runtimeScopeHash='),
+  );
+  const burstRuntimeScope = burstArgs.find((arg) =>
+    arg.startsWith('geulbat.runtimeScopeHash='),
+  );
+  assert.equal(warmRuntimeScope, burstRuntimeScope);
+  assert.equal(
+    burstArgs.includes(`geulbat.identityHash=${burstKey.identityHash}`),
+    true,
+  );
+  assert.equal(
+    burstArgs.includes(
+      `geulbat.packageCacheIdentityHash=${burstKey.packageCacheIdentityHash}`,
+    ),
+    true,
+  );
+});
+
 void test('buildPtcSessionDockerCreateArgs projects disabled and open network policy', () => {
   const disabledPolicy = {
     ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
@@ -294,12 +335,12 @@ void test('buildPtcSessionDockerCreateArgs projects disabled and open network po
   };
   const disabledKey = normalizePtcSessionDockerReuseKey({
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace',
+    stateRootRealpath: '/real/workspace',
     policy: disabledPolicy,
   });
   const openKey = normalizePtcSessionDockerReuseKey({
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace',
+    stateRootRealpath: '/real/workspace',
     policy: openPolicy,
   });
 
@@ -354,7 +395,7 @@ void test('buildPtcSessionDockerCreateArgs projects browser policy labels', () =
   };
   const reuseKey = normalizePtcSessionDockerReuseKey({
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace',
+    stateRootRealpath: '/real/workspace',
     policy,
   });
   const args = buildPtcSessionDockerCreateArgs({
@@ -399,12 +440,12 @@ void test('buildPtcSessionDockerCreateArgs projects browser capability policy id
   };
   const navigationKey = normalizePtcSessionDockerReuseKey({
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace',
+    stateRootRealpath: '/real/workspace',
     policy: navigationPolicy,
   });
   const pageLoadKey = normalizePtcSessionDockerReuseKey({
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace',
+    stateRootRealpath: '/real/workspace',
     policy: pageLoadPolicy,
   });
   const args = buildPtcSessionDockerCreateArgs({
@@ -450,4 +491,27 @@ void test('buildPtcSessionDockerCreateArgs projects browser capability policy id
     args.some((item) => /cookie=|profile=|https?:\/\//iu.test(item)),
     false,
   );
+});
+
+void test('buildPtcSessionDockerCreateArgs keeps browser evidence lanes without published ports', () => {
+  const evidencePolicy = {
+    ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
+    network: createPtcLabOpenEgressLocalPolicy(),
+    browser: createPtcLabBrowserPageLoadEvidencePolicy({
+      maxNavigationMs: 1200,
+    }),
+  };
+  const evidenceKey = normalizePtcSessionDockerReuseKey({
+    identity: IDENTITY,
+    stateRootRealpath: '/real/workspace',
+    policy: evidencePolicy,
+  });
+  const evidenceArgs = buildPtcSessionDockerCreateArgs({
+    reuseKey: evidenceKey,
+    runtimeRoot: '/runtime',
+  });
+
+  assert.equal(evidenceArgs.includes('-p'), false);
+  assert.equal(evidenceArgs.includes('--publish'), false);
+  assert.equal(evidenceArgs.includes('--expose'), false);
 });

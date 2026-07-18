@@ -45,6 +45,7 @@ void test('completeProviderAuthCallback marks provider query.error as session fa
 
   bootstrapStore.setPendingProviderAuthSession({
     authSessionId: 'auth-error',
+    providerId: 'openai_codex_direct',
     state: 'error-state',
     codeVerifier: 'verifier-error',
     redirectUri: 'http://localhost:1455/auth/callback',
@@ -87,6 +88,7 @@ void test('completeProviderAuthCallback expires matching sessions whose ttl alre
 
   bootstrapStore.setPendingProviderAuthSession({
     authSessionId: 'auth-expired',
+    providerId: 'openai_codex_direct',
     state: 'expired-state',
     codeVerifier: 'verifier-expired',
     redirectUri: 'http://localhost:1455/auth/callback',
@@ -123,6 +125,7 @@ void test('completeProviderAuthCallback rejects replayed callback sessions', asy
 
   bootstrapStore.setPendingProviderAuthSession({
     authSessionId: 'auth-consumed',
+    providerId: 'openai_codex_direct',
     state: 'consumed-state',
     codeVerifier: 'verifier-consumed',
     redirectUri: 'http://localhost:1455/auth/callback',
@@ -161,6 +164,7 @@ void test('completeProviderAuthCallback can use injected auth stores', async () 
 
   bootstrapStore.setPendingProviderAuthSession({
     authSessionId: 'auth-local',
+    providerId: 'openai_codex_direct',
     state: 'state-local',
     codeVerifier: 'verifier-local',
     redirectUri: 'http://localhost:1455/auth/callback',
@@ -194,3 +198,61 @@ void test('completeProviderAuthCallback can use injected auth stores', async () 
   assert.equal(bootstrapStore.getProviderAuthSessionSnapshot(), null);
   assert.equal(untouchedRuntimeStore.getCachedProviderCredential(), null);
 });
+
+void test('completeProviderAuthCallback persists Grok OAuth callback credentials to the Grok provider slot', async () => {
+  const { bootstrapStore, runtimeStore } = createProviderAuthTestStores();
+
+  bootstrapStore.setPendingProviderAuthSession({
+    authSessionId: 'auth-grok',
+    providerId: 'grok_oauth',
+    state: 'state-grok',
+    codeVerifier: 'verifier-grok',
+    redirectUri: 'http://localhost:1455/auth/callback',
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 60_000,
+    status: 'pending',
+  });
+
+  const result = await completeProviderAuthCallback(
+    {
+      code: 'code-grok',
+      state: 'state-grok',
+    },
+    {
+      bootstrapStore,
+      runtimeStore,
+      exchangeCode: async (_code, _codeVerifier, options) => {
+        assert.equal(options.providerId, 'grok_oauth');
+        return {
+          access_token: 'grok-access-token',
+          refresh_token: 'grok-refresh-token',
+          expires_in: 60,
+          id_token: makeJwt({ sub: 'xai-account-1' }),
+        };
+      },
+    },
+  );
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(runtimeStore.getCachedProviderCredential(), null);
+  const grokCredential = runtimeStore.getCachedProviderCredential('grok_oauth');
+  assert.equal(grokCredential?.accessToken, 'grok-access-token');
+  assert.equal(grokCredential?.refreshToken, 'grok-refresh-token');
+  assert.equal(grokCredential?.accountId, 'xai-account-1');
+  assert.ok((grokCredential?.expiresAt ?? 0) > Date.now());
+  assert.equal(bootstrapStore.getProviderAuthSessionSnapshot(), null);
+});
+
+function makeJwt(payload: object): string {
+  const header = base64Url(JSON.stringify({ alg: 'none', typ: 'JWT' }));
+  const body = base64Url(JSON.stringify(payload));
+  return `${header}.${body}.sig`;
+}
+
+function base64Url(text: string): string {
+  return Buffer.from(text, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}

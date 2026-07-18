@@ -4,7 +4,7 @@ import { join, relative, sep } from 'node:path';
 import { isPathInsideWorkspaceBoundary } from '../files/normalize-path.js';
 import type { SandboxOutputFileRef } from './attempt-store.js';
 
-export interface SandboxOutputBudget {
+interface SandboxOutputBudget {
   maxFiles: number;
   maxBytes: number;
 }
@@ -17,10 +17,16 @@ export interface CollectedSandboxOutput {
 
 export function isOpaqueSandboxOutputEvidenceRef(value: string): boolean {
   const prefix = 'sandbox-output:';
-  if (!value.startsWith(prefix)) return false;
+  if (!value.startsWith(prefix)) {
+    return false;
+  }
   const suffix = value.slice(prefix.length);
-  if (suffix.length === 0) return false;
-  if (/[\s\u0000-\u001f\u007f]/u.test(value)) return false;
+  if (suffix.length === 0) {
+    return false;
+  }
+  if (/[\s\u0000-\u001f\u007f]/u.test(value)) {
+    return false;
+  }
   return (
     !value.includes('/') &&
     !value.includes('\\') &&

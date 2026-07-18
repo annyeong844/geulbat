@@ -7,6 +7,11 @@ export type ToolCallSourcePayload =
       parentCallId: string;
       runtimeToolCallId: string;
       cellId?: string;
+    }
+  | {
+      kind: 'artifact_frame';
+      scopeHandle: string;
+      runtimeToolCallId: string;
     };
 
 export function isToolCallSourcePayload(
@@ -17,6 +22,9 @@ export function isToolCallSourcePayload(
   }
   if (value.kind === 'agent_loop') {
     return true;
+  }
+  if (value.kind === 'artifact_frame') {
+    return isString(value.scopeHandle) && isString(value.runtimeToolCallId);
   }
   return (
     value.kind === 'ptc_callback' &&

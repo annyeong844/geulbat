@@ -281,7 +281,7 @@ export function createPublicWebFixtureRoutes() {
 }
 
 function sendJavascriptFixture(res: Response, source: string): void {
-  res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');

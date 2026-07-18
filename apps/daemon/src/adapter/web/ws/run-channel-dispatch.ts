@@ -1,4 +1,4 @@
-import WebSocket from 'ws';
+import type WebSocket from 'ws';
 import { tryDecodeJson } from '@geulbat/protocol/runtime-utils';
 import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 import type { RunChannelClientMessage } from '@geulbat/protocol/run-channel';
@@ -10,10 +10,13 @@ import {
   handleRunApprove,
   handleRunCancel,
   handleRunInterject,
+  handleRunInterjectCancel,
+  handleRunInterjectFlush,
 } from './run-channel-control.js';
+import { handleRunTool } from './run-channel-tool.js';
 import { getSocketState } from './run-channel-socket-runtime.js';
 import { claimSocketRunStart } from './run-channel-start-gate.js';
-import { normalizeAllowedToolNames } from './run-request-tools.js';
+import { normalizeAllowedPublicToolNames } from './run-request-tools.js';
 import { executeRunRequest } from './run-channel-start.js';
 import { readRunChannelClientMessage } from './validate-run-channel-message.js';
 import { createLogger, type LoggerContext } from '@geulbat/shared-utils/logger';
@@ -31,9 +34,7 @@ export async function handleClientMessage(
     sendError(socket, undefined, 400, 'bad_request', 'invalid websocket JSON');
     return;
   }
-  const parsedMessage = readRunChannelClientMessage(decoded.value, {
-    projectRegistry: runtimeContext.projectRegistry,
-  });
+  const parsedMessage = readRunChannelClientMessage(decoded.value);
   if (!parsedMessage.ok) {
     sendError(socket, undefined, 400, 'bad_request', parsedMessage.message);
     return;
@@ -73,6 +74,25 @@ export async function handleClientMessage(
       case 'run.interject':
         handleRunInterject(socket, requestId, message.request, runtimeContext);
         return;
+      case 'run.interject.cancel':
+        handleRunInterjectCancel(
+          socket,
+          requestId,
+          message.request,
+          runtimeContext,
+        );
+        return;
+      case 'run.interject.flush':
+        handleRunInterjectFlush(
+          socket,
+          requestId,
+          message.request,
+          runtimeContext,
+        );
+        return;
+      case 'run.tool':
+        await handleRunTool(socket, requestId, message.request, runtimeContext);
+        return;
     }
 
     return assertNever(message);
@@ -98,7 +118,6 @@ function buildDispatchLogContext(
     case 'run.start':
       return {
         messageType: message.type,
-        projectId: message.request.projectId,
         requestId: message.requestId,
         threadId: message.request.threadId,
       };
@@ -121,6 +140,21 @@ function buildDispatchLogContext(
         messageType: message.type,
         requestId: message.requestId,
       };
+    case 'run.interject.cancel':
+      return {
+        messageType: message.type,
+        requestId: message.requestId,
+      };
+    case 'run.interject.flush':
+      return {
+        messageType: message.type,
+        requestId: message.requestId,
+      };
+    case 'run.tool':
+      return {
+        messageType: message.type,
+        requestId: message.requestId,
+      };
   }
 }
 
@@ -132,7 +166,7 @@ async function dispatchRunStart(args: {
   socketState: ReturnType<typeof getSocketState>;
 }): Promise<void> {
   const { socket, requestId, request, runtimeContext, socketState } = args;
-  const allowedToolNames = normalizeAllowedToolNames(request);
+  const allowedPublicToolNames = normalizeAllowedPublicToolNames(request);
   const startClaim = claimSocketRunStart(socketState, requestId);
   if (!startClaim.ok) {
     sendError(
@@ -150,14 +184,13 @@ async function dispatchRunStart(args: {
       socket,
       requestId,
       request,
-      allowedToolNames,
+      allowedPublicToolNames,
       runtimeContext,
     });
   } catch (error: unknown) {
     logger
       .withContext({
         messageType: 'run.start',
-        projectId: request.projectId,
         requestId,
         threadId: request.threadId,
       })

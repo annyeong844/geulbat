@@ -1,9 +1,11 @@
 import type { ErrorCode, ProviderAuthStatusState } from '../contract.js';
+import type { ProviderAuthCredentialProviderId } from '../credentials/store.js';
 
 import { PROVIDER_AUTH_PENDING_TTL_MS } from './config.js';
 
 export interface PendingProviderAuthSession {
   authSessionId: string;
+  providerId: ProviderAuthCredentialProviderId;
   state: string;
   codeVerifier: string;
   redirectUri: string;

@@ -30,10 +30,13 @@ import { buildAgentToolExecutionContextBase } from './loop-tool-runtime.js';
 import { buildToolCallExecutionRuntime } from './loop-tool-runtime.js';
 import { createRunState } from './runtime/run-state.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
-import { testProjectId } from '../../test-support/project-id.js';
 import { testRunId } from '../../test-support/run-id.js';
-import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
+import {
+  TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+  TEST_INHERITED_SOL_MODEL_PIN,
+} from '../../test-support/subagent-model-routing.js';
 
 const workItems: readonly AgentWaveWorkItem[] = [
   {
@@ -532,10 +535,9 @@ void test('admitAgentWorkflowSerialFloor uses subagent admission without consumi
   });
   const runState = createRunState({
     runId: testRunId('workflow-serial-floor-parent'),
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId: testThreadId(600),
-      projectId: testProjectId('workflow-serial-floor'),
-      workspaceRoot: '/tmp/workflow-serial-floor',
+      stateRoot: '/tmp/workflow-serial-floor-state',
     }),
   });
   const runtime = buildWorkflowToolRuntime({
@@ -571,10 +573,9 @@ void test('admitAgentWorkflowSerialFloor surfaces direct subagent admission reje
   });
   const runState = createRunState({
     runId: testRunId('workflow-serial-floor-rejected-parent'),
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId: testThreadId(601),
-      projectId: testProjectId('workflow-serial-floor-rejected'),
-      workspaceRoot: '/tmp/workflow-serial-floor-rejected',
+      stateRoot: '/tmp/workflow-serial-floor-rejected-state',
     }),
   });
   runState.backgroundChildRunIds.add(testRunId('already-running-child'));
@@ -598,14 +599,15 @@ void test('admitAgentWorkflowSerialFloor surfaces direct subagent admission reje
 });
 
 void test('runAgentWorkflowPhaseWithSubagents launches a wave through agent_spawn and collects child results', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createDaemonContext({
+    subagentConcurrencyPolicy: { maxConcurrentChildren: 2 },
+  });
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-workflow-'));
   const threadId = testThreadId(610);
   const runId = testRunId('workflow-parent');
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('workflow'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId,
@@ -614,6 +616,7 @@ void test('runAgentWorkflowPhaseWithSubagents launches a wave through agent_spaw
   const history: HistoryItem[] = [];
   const events: string[] = [];
   const releaseChildren = createDeferred<void>();
+  const firstChildStarted = createDeferred<void>();
   const allChildrenStarted = createDeferred<void>();
   const startedPrompts: string[] = [];
   const startedRunIds: RunId[] = [];
@@ -622,6 +625,9 @@ void test('runAgentWorkflowPhaseWithSubagents launches a wave through agent_spaw
     runAgentLoop: async (input) => {
       startedPrompts.push(input.prompt);
       startedRunIds.push(assertRunId(input.runId));
+      if (startedPrompts.length === 1) {
+        firstChildStarted.resolve();
+      }
       if (startedPrompts.length === 2) {
         allChildrenStarted.resolve();
       }
@@ -654,12 +660,25 @@ void test('runAgentWorkflowPhaseWithSubagents launches a wave through agent_spaw
     runtime,
   });
 
-  await allChildrenStarted.promise;
-  assert.deepEqual([...startedPrompts].sort(), [
-    'Inspect subsystem A',
-    'Inspect subsystem B',
-  ]);
-  releaseChildren.resolve();
+  try {
+    await awaitWorkflowBarrier(
+      firstChildStarted.promise,
+      running,
+      'workflow child launch',
+    );
+    await awaitWorkflowBarrier(
+      allChildrenStarted.promise,
+      running,
+      'workflow child fan-out',
+    );
+    assertPromptsCarryTasks(startedPrompts, [
+      'Inspect subsystem A',
+      'Inspect subsystem B',
+    ]);
+  } finally {
+    // Always release children so a failed assertion cannot leave them hanging.
+    releaseChildren.resolve();
+  }
 
   const result = await running;
   assert.equal(result.ok, true);
@@ -696,10 +715,9 @@ void test('runAgentWorkflowPhaseWithSubagents reports blocked child waits as inc
   );
   const threadId = testThreadId(612);
   const runId = testRunId('workflow-blocked-parent');
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('workflow-blocked'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId,
@@ -737,7 +755,11 @@ void test('runAgentWorkflowPhaseWithSubagents reports blocked child waits as inc
   });
 
   try {
-    await childStarted.promise;
+    await awaitWorkflowBarrier(
+      childStarted.promise,
+      running,
+      'blocked-child launch',
+    );
     if (childRunId === undefined) {
       assert.fail('expected workflow child run id');
     }
@@ -775,10 +797,9 @@ void test('runAgentWorkflowWithSubagents runs phases through agent_spawn and chi
   );
   const threadId = testThreadId(615);
   const runId = testRunId('workflow-multi-phase-parent');
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('workflow-multi-phase'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId,
@@ -793,7 +814,7 @@ void test('runAgentWorkflowWithSubagents runs phases through agent_spawn and chi
   daemonContext.subagentRuns = createSubagentRunLauncher({
     runAgentLoop: async (input) => {
       startedPrompts.push(input.prompt);
-      if (input.prompt === 'Inspect subsystem A') {
+      if (promptCarriesTask(input.prompt, 'Inspect subsystem A')) {
         firstChildStarted.resolve();
         await releaseFirstChild.promise;
       }
@@ -834,9 +855,17 @@ void test('runAgentWorkflowWithSubagents runs phases through agent_spawn and chi
     runtime,
   });
 
-  await firstChildStarted.promise;
-  assert.deepEqual(startedPrompts, ['Inspect subsystem A']);
-  releaseFirstChild.resolve();
+  try {
+    await awaitWorkflowBarrier(
+      firstChildStarted.promise,
+      running,
+      'multi-phase child launch',
+    );
+    assertPromptsCarryTasks(startedPrompts, ['Inspect subsystem A']);
+  } finally {
+    // Always release the first child so assertion failures cannot hang the suite.
+    releaseFirstChild.resolve();
+  }
 
   const result = await running;
   assert.equal(result.ok, true);
@@ -844,7 +873,7 @@ void test('runAgentWorkflowWithSubagents runs phases through agent_spawn and chi
     'inspection',
     'adversarial_verification',
   ]);
-  assert.deepEqual(startedPrompts, [
+  assertPromptsCarryTasks(startedPrompts, [
     'Inspect subsystem A',
     'Verify subsystem A finding',
   ]);
@@ -888,10 +917,9 @@ void test('AgentWorkflowRunner downshifts through the real subagent admission pa
   );
   const threadId = testThreadId(620);
   const runId = testRunId('workflow-downshift-parent');
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('workflow-downshift'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId,
@@ -961,7 +989,7 @@ void test('AgentWorkflowRunner downshifts through the real subagent admission pa
 
 function buildWorkflowToolRuntime(args: {
   daemonContext: ReturnType<typeof createDaemonContext>;
-  runContext: ReturnType<typeof makeRunWorkspaceContext>;
+  runContext: ReturnType<typeof makeRunContext>;
   runId: ReturnType<typeof testRunId>;
   runState: ReturnType<typeof createRunState>;
   emit: Parameters<typeof buildToolCallExecutionRuntime>[0]['emit'];
@@ -986,6 +1014,8 @@ function buildWorkflowToolRuntime(args: {
       runState: args.runState,
       memoryIndex: undefined,
       agentSpawnRuntime: args.daemonContext,
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      subagentModelRouting: TEST_AUTO_SUBAGENT_MODEL_ROUTING,
     }),
   });
 }
@@ -998,4 +1028,49 @@ function createDeferred<T>() {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+async function awaitWorkflowBarrier<T>(
+  barrier: Promise<void>,
+  workflow: Promise<T>,
+  label: string,
+): Promise<void> {
+  const outcome = await Promise.race([
+    barrier.then(() => 'barrier' as const),
+    workflow.then((result) => ({ kind: 'workflow' as const, result })),
+  ]);
+  if (outcome !== 'barrier') {
+    assert.fail(
+      `${label} settled before its child-start barrier: ${JSON.stringify(outcome.result)}`,
+    );
+  }
+}
+
+/** Child prompts now include shared prompt context around the raw task. */
+function promptCarriesTask(prompt: string, task: string): boolean {
+  return (
+    prompt === task || prompt.endsWith(`\n\n${task}`) || prompt.endsWith(task)
+  );
+}
+
+function assertPromptsCarryTasks(
+  prompts: readonly string[],
+  tasks: readonly string[],
+): void {
+  assert.equal(
+    prompts.length,
+    tasks.length,
+    `expected ${tasks.length} child prompts, got ${prompts.length}`,
+  );
+  const remaining = [...prompts];
+  for (const task of tasks) {
+    const index = remaining.findIndex((prompt) =>
+      promptCarriesTask(prompt, task),
+    );
+    assert.ok(
+      index >= 0,
+      `expected a child prompt carrying task ${JSON.stringify(task)}, got ${JSON.stringify(prompts)}`,
+    );
+    remaining.splice(index, 1);
+  }
 }

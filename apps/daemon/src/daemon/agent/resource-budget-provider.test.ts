@@ -1,10 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createRunWorkspaceContext } from '../run-workspace-context.js';
+import { createRunContext } from '../run-context.js';
 import { createRunState } from './runtime/run-state.js';
 import { createResourceBudgetProvider } from './resource-budget-provider.js';
-import { testProjectId } from '../../test-support/project-id.js';
 import { testRunId } from '../../test-support/run-id.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 
@@ -32,10 +31,9 @@ function createReader(
 function createTestRunState() {
   return createRunState({
     runId: 'resource-budget-run',
-    runContext: createRunWorkspaceContext({
+    runContext: createRunContext({
       threadId: testThreadId(61),
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
 }

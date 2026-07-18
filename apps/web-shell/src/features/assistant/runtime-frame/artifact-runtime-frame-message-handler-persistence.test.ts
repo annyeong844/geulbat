@@ -11,7 +11,7 @@ import {
   RUNTIME_DOCUMENT,
   RUNTIME_HOST_ORIGIN,
   SCOPE_HANDLE,
-} from './artifact-runtime-frame-message-handler-test-support.js';
+} from '../../../test-support/artifact-runtime-frame-message-handler.js';
 
 void test('handleArtifactRuntimeFrameMessageEvent delegates persistence messages and posts bridge responses', async () => {
   const frameWindow = new FakeFrameWindow();

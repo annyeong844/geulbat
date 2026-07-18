@@ -27,7 +27,6 @@ import {
   PTC_LAB_BROWSER_USER_URL_NAVIGATION_CAPABILITY,
   type PtcLabBrowserUserUrlTargetDigest,
 } from '../../ptc/lab/browser/core/lab-browser-url-navigation.js';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { isToolObjectParameters } from '../types.js';
 import { browserNavigateTool } from './browser-navigate.js';
@@ -36,7 +35,7 @@ void test('browser_navigate exposes scalar URL schema and approval-gated metadat
   assert.equal(browserNavigateTool.name, PTC_BROWSER_NAVIGATE_TOOL_NAME);
   assert.equal(browserNavigateTool.sideEffectLevel, 'write');
   assert.equal(browserNavigateTool.requiresApproval, true);
-  assert.equal(browserNavigateTool.mayMutateWorkspaceFiles, false);
+  assert.equal(browserNavigateTool.mayMutateComputerFiles, false);
   const parameters = browserNavigateTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(parameters.required, ['url']);
@@ -52,9 +51,10 @@ void test('browser_navigate requires an agent runtime service before navigation'
     { url: 'https://example.com/' },
     {
       callId: 'call-browser-navigate-no-runtime',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(930),
-      projectId: testProjectId('project'),
     },
   );
 
@@ -88,9 +88,10 @@ void test('browser_navigate returns digest-only runtime output without raw URL l
     },
     {
       callId: 'call-browser-navigate-success',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(931),
-      projectId: testProjectId('project'),
       agentSpawnRuntime: { ...daemonContext, ptcBrowserNavigate },
       approvalGranted: true,
     },
@@ -146,9 +147,10 @@ void test('browser_navigate strips unsafe failure diagnostics from tool output',
     { url: 'https://example.com/private?access_token=secret' },
     {
       callId: 'call-browser-navigate-failure',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(932),
-      projectId: testProjectId('project'),
       agentSpawnRuntime: { ...daemonContext, ptcBrowserNavigate },
       approvalGranted: true,
     },
@@ -178,9 +180,10 @@ void test('browser_navigate rejects later-owner browser action fields at the too
     { url: 'https://example.com/', screenshot: true },
     {
       callId: 'call-browser-navigate-screenshot',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(933),
-      projectId: testProjectId('project'),
     },
   );
 

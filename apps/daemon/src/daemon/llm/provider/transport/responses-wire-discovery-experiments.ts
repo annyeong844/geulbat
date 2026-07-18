@@ -2,16 +2,16 @@ export type OAuthWireDiscoveryExperimentId =
   | 'baseline_repeat'
   | 'text_subtree_observation';
 
-export type OAuthWireDiscoveryExperimentKind =
+type OAuthWireDiscoveryExperimentKind =
   | 'control'
   | 'observation_gate'
   | 'single_observed_subtree_mutation';
 
-export type OAuthWireDiscoveryLiveRunPolicy =
+type OAuthWireDiscoveryLiveRunPolicy =
   | 'explicit_operator_approval_required'
   | 'blocked_preflight_only';
 
-export type OAuthWireDiscoveryExperimentMutation =
+type OAuthWireDiscoveryExperimentMutation =
   | { kind: 'none' }
   | {
       kind: 'set_known_observed_subtree_field';
@@ -31,14 +31,14 @@ interface OAuthWireDiscoveryExperimentBase {
   liveRunPolicy: OAuthWireDiscoveryLiveRunPolicy;
 }
 
-export interface OAuthWireDiscoveryControlExperiment extends OAuthWireDiscoveryExperimentBase {
+interface OAuthWireDiscoveryControlExperiment extends OAuthWireDiscoveryExperimentBase {
   id: 'baseline_repeat';
   kind: 'control';
   mutation: { kind: 'none' };
   liveRunPolicy: 'explicit_operator_approval_required';
 }
 
-export interface OAuthWireDiscoveryObservationGateExperiment extends OAuthWireDiscoveryExperimentBase {
+interface OAuthWireDiscoveryObservationGateExperiment extends OAuthWireDiscoveryExperimentBase {
   id: 'text_subtree_observation';
   kind: 'observation_gate';
   mutation: { kind: 'none' };
@@ -51,11 +51,11 @@ export interface OAuthWireDiscoveryObservationGateExperiment extends OAuthWireDi
   blockedReason: string;
 }
 
-export type OAuthWireDiscoveryExperiment =
+type OAuthWireDiscoveryExperiment =
   | OAuthWireDiscoveryControlExperiment
   | OAuthWireDiscoveryObservationGateExperiment;
 
-export type OAuthWireDiscoveryExperimentResolveResult =
+type OAuthWireDiscoveryExperimentResolveResult =
   | { ok: true; experiment: OAuthWireDiscoveryExperiment }
   | {
       ok: false;
@@ -139,8 +139,8 @@ export function resolveOAuthWireDiscoveryExperiment(
     };
   }
 
-  const experiment = EXPERIMENTS.get(
-    experimentId as OAuthWireDiscoveryExperimentId,
+  const experiment = [...EXPERIMENTS.values()].find(
+    (candidate) => candidate.id === experimentId,
   );
   if (experiment === undefined) {
     return {

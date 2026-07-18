@@ -1,6 +1,6 @@
 import { basename, extname } from 'node:path';
 import { resolveSourceDirectoryTarget } from '../files/file-platform.js';
-import type { MemoryIndexStore } from './build-index.js';
+import type { MemoryIndexScope, MemoryIndexStore } from './build-index.js';
 import type { MemoryChunkRecord } from './types.js';
 
 interface SearchMemoryIndexResult {
@@ -23,7 +23,7 @@ interface SearchMemoryIndexResult {
 }
 
 export async function searchMemoryIndex(
-  workspaceRoot: string,
+  scope: MemoryIndexScope,
   args: {
     query: string;
     pathPrefix?: string;
@@ -44,17 +44,25 @@ export async function searchMemoryIndex(
   }
 
   const pathPrefix = await normalizeOptionalPathPrefix(
-    workspaceRoot,
+    scope.sourceRoot,
     args.pathPrefix,
   );
   const maxResults = normalizeMaxResults(args.maxResults);
   const loweredQuery = query.toLocaleLowerCase();
 
   const memoryIndex = options.memoryIndex;
-  const { manifest, records } =
-    await memoryIndex.loadMemoryIndex(workspaceRoot);
-  const snapshot =
-    await memoryIndex.computeCurrentSourceSnapshot(workspaceRoot);
+  const { manifest, records } = await memoryIndex.loadMemoryIndex(
+    scope.stateRoot,
+  );
+  if (manifest.sourceDirectory !== scope.sourceRoot) {
+    throw Object.assign(
+      new Error('memory index not ready for the current working directory'),
+      { code: 'index_not_ready' },
+    );
+  }
+  const snapshot = await memoryIndex.computeCurrentSourceSnapshot(
+    scope.sourceRoot,
+  );
   const stale =
     snapshot.sourceIndexVersionToken !== manifest.sourceIndexVersionToken;
 
@@ -102,7 +110,7 @@ export async function searchMemoryIndex(
 }
 
 async function normalizeOptionalPathPrefix(
-  workspaceRoot: string,
+  sourceRoot: string,
   value: string | undefined,
 ): Promise<string | undefined> {
   if (value == null) {
@@ -114,7 +122,7 @@ async function normalizeOptionalPathPrefix(
     });
   }
   const normalizedTarget = await resolveSourceDirectoryTarget(
-    workspaceRoot,
+    sourceRoot,
     String(value),
   );
   return normalizedTarget.relativePath === '.'

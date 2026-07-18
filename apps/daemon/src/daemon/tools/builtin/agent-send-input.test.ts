@@ -20,9 +20,9 @@ import {
   assertThreadId as assertValidThreadId,
   type RunId,
 } from '@geulbat/protocol/ids';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { testRunId } from '../../../test-support/run-id.js';
-import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../../test-support/run-context.js';
+import { TEST_INHERITED_SOL_MODEL_PIN } from '../../../test-support/subagent-model-routing.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 
 async function waitForChildStatus(args: {
@@ -50,7 +50,7 @@ void test('agent_send_input rejects malformed handles and blank tasks at the par
     },
     {
       callId: 'call-send-input-malformed-handle',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     },
   );
 
@@ -65,7 +65,7 @@ void test('agent_send_input rejects malformed handles and blank tasks at the par
     },
     {
       callId: 'call-send-input-blank-task',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     },
   );
 
@@ -75,11 +75,8 @@ void test('agent_send_input rejects malformed handles and blank tasks at the par
 });
 
 void test('agent_send_input continues the same child thread across top-level runs', async () => {
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-agent-send-input-'),
-  );
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-agent-send-input-'));
   const threadId = testThreadId(31);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const outputs = ['first child answer', 'second child answer'];
 
@@ -103,10 +100,9 @@ void test('agent_send_input continues the same child thread across top-level run
   try {
     const firstParentState = createRunState({
       runId: 'top-run-parent-1',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId,
-        projectId,
-        workspaceRoot,
+        stateRoot,
       }),
     });
     const spawned = await testAgentSpawnTool.execute(
@@ -116,13 +112,14 @@ void test('agent_send_input continues the same child thread across top-level run
       },
       {
         callId: 'call-spawn',
-        workspaceRoot,
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot,
         threadId,
         runId: 'top-run-parent-1',
-        projectId,
         runState: firstParentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
+        approvalSessionId: 'send-input-seed-session',
         agentSpawnRuntime: daemonContext,
       },
     );
@@ -143,10 +140,9 @@ void test('agent_send_input continues the same child thread across top-level run
 
     const secondParentState = createRunState({
       runId: 'top-run-parent-2',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId,
-        projectId,
-        workspaceRoot,
+        stateRoot,
       }),
     });
     const continued = await testAgentSendInputTool.execute(
@@ -156,13 +152,13 @@ void test('agent_send_input continues the same child thread across top-level run
       },
       {
         callId: 'call-continue',
-        workspaceRoot,
+        stateRoot,
         threadId,
         runId: 'top-run-parent-2',
-        projectId,
         runState: secondParentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
+        approvalSessionId: 'send-input-continue-session',
         agentSpawnRuntime: daemonContext,
       },
     );
@@ -173,6 +169,9 @@ void test('agent_send_input continues the same child thread across top-level run
       childRunId: string;
       childThreadId: string;
       launchState: string;
+      modelId: string;
+      reasoningEffort: string;
+      selectionSource: string;
     };
     assert.deepEqual(continuePayload, {
       ok: true,
@@ -180,6 +179,9 @@ void test('agent_send_input continues the same child thread across top-level run
       childThreadId: spawnPayload.childThreadId,
       subagentType: 'explorer',
       launchState: 'started',
+      modelId: 'gpt-5.6-sol',
+      reasoningEffort: 'medium',
+      selectionSource: 'inherited',
     });
 
     await waitForChildStatus({
@@ -189,7 +191,7 @@ void test('agent_send_input continues the same child thread across top-level run
     });
 
     const transcript = await readTranscriptEntries(
-      workspaceRoot,
+      stateRoot,
       spawnPayload.childThreadId,
     );
     assert.deepEqual(
@@ -213,7 +215,7 @@ void test('agent_send_input continues the same child thread across top-level run
       },
       {
         callId: 'call-wait-after-continuation',
-        workspaceRoot,
+        stateRoot,
         runId: 'top-run-parent-2',
         threadId,
         agentSpawnRuntime: daemonContext,
@@ -227,16 +229,15 @@ void test('agent_send_input continues the same child thread across top-level run
     assert.equal(waitPayload.completed[0]?.childRunId, spawnPayload.childRunId);
     assert.equal(waitPayload.completed[0]?.result, 'second child answer');
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
   }
 });
 
 void test('agent_send_input allows child runs to continue nested child handles', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-agent-send-input-nested-'),
   );
   const childThreadId = testThreadId(35);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const outputs = ['nested seed answer', 'nested follow-up answer'];
 
@@ -260,10 +261,9 @@ void test('agent_send_input allows child runs to continue nested child handles',
   try {
     const childRunState = createRunState({
       runId: 'child-parent-run',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: childThreadId,
-        projectId,
-        workspaceRoot,
+        stateRoot,
       }),
       parentRunId: 'top-run-parent',
     });
@@ -274,13 +274,14 @@ void test('agent_send_input allows child runs to continue nested child handles',
       },
       {
         callId: 'call-nested-spawn',
-        workspaceRoot,
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot,
         threadId: childThreadId,
         runId: 'child-parent-run',
-        projectId,
         runState: childRunState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
+        approvalSessionId: 'send-input-nested-seed-session',
         agentSpawnRuntime: daemonContext,
       },
     );
@@ -306,21 +307,20 @@ void test('agent_send_input allows child runs to continue nested child handles',
       },
       {
         callId: 'call-nested-continue',
-        workspaceRoot,
+        stateRoot,
         threadId: childThreadId,
         runId: 'child-parent-run-2',
-        projectId,
         runState: createRunState({
           runId: 'child-parent-run-2',
-          runContext: makeRunWorkspaceContext({
+          runContext: makeRunContext({
             threadId: childThreadId,
-            projectId,
-            workspaceRoot,
+            stateRoot,
           }),
           parentRunId: 'top-run-parent',
         }),
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
+        approvalSessionId: 'send-input-nested-continue-session',
         agentSpawnRuntime: daemonContext,
       },
     );
@@ -331,6 +331,9 @@ void test('agent_send_input allows child runs to continue nested child handles',
       childRunId: string;
       childThreadId: string;
       launchState: string;
+      modelId: string;
+      reasoningEffort: string;
+      selectionSource: string;
     };
     assert.deepEqual(continuePayload, {
       ok: true,
@@ -338,6 +341,9 @@ void test('agent_send_input allows child runs to continue nested child handles',
       childThreadId: spawnPayload.childThreadId,
       subagentType: 'explorer',
       launchState: 'started',
+      modelId: 'gpt-5.6-sol',
+      reasoningEffort: 'medium',
+      selectionSource: 'inherited',
     });
     for (let attempt = 0; attempt < 50; attempt += 1) {
       if (outputs.length === 0) {
@@ -352,16 +358,15 @@ void test('agent_send_input allows child runs to continue nested child handles',
       status: 'completed',
     });
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
   }
 });
 
 void test('agent_send_input rejects a child handle that is still running', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-agent-send-input-busy-'),
   );
   const threadId = testThreadId(32);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   let releaseChild!: () => void;
   const childBlocked = new Promise<void>((resolve) => {
@@ -383,10 +388,9 @@ void test('agent_send_input rejects a child handle that is still running', async
   try {
     const parentState = createRunState({
       runId: 'top-run-parent-busy',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId,
-        projectId,
-        workspaceRoot,
+        stateRoot,
       }),
     });
     const spawned = await testAgentSpawnTool.execute(
@@ -396,13 +400,14 @@ void test('agent_send_input rejects a child handle that is still running', async
       },
       {
         callId: 'call-spawn-busy',
-        workspaceRoot,
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot,
         threadId,
         runId: 'top-run-parent-busy',
-        projectId,
         runState: parentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
+        approvalSessionId: 'send-input-busy-seed-session',
         agentSpawnRuntime: daemonContext,
       },
     );
@@ -419,20 +424,19 @@ void test('agent_send_input rejects a child handle that is still running', async
       },
       {
         callId: 'call-continue-busy',
-        workspaceRoot,
+        stateRoot,
         threadId,
         runId: 'top-run-parent-busy-2',
-        projectId,
         runState: createRunState({
           runId: 'top-run-parent-busy-2',
-          runContext: makeRunWorkspaceContext({
+          runContext: makeRunContext({
             threadId,
-            projectId,
-            workspaceRoot,
+            stateRoot,
           }),
         }),
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
+        approvalSessionId: 'send-input-busy-continue-session',
         agentSpawnRuntime: daemonContext,
       },
     );
@@ -453,16 +457,15 @@ void test('agent_send_input rejects a child handle that is still running', async
       status: 'completed',
     });
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
   }
 });
 
 void test('agent_send_input forwards child approval events through the shared child runner path', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-agent-send-input-approval-'),
   );
   const threadId = testThreadId(33);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
 
   const testAgentSpawnTool = createAgentSpawnTool({
@@ -482,17 +485,18 @@ void test('agent_send_input forwards child approval events through the shared ch
       },
       {
         kind: 'agent',
+        runOwnerKind: 'root_main',
         callId: 'call-seed-child',
-        workspaceRoot,
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot,
+        workingDirectory: 'workspace',
         threadId,
         runId: 'top-run-seed',
-        projectId,
         runState: createRunState({
           runId: 'top-run-seed',
-          runContext: makeRunWorkspaceContext({
+          runContext: makeRunContext({
             threadId,
-            projectId,
-            workspaceRoot,
+            stateRoot,
           }),
         }),
         signal: new AbortController().signal,
@@ -560,17 +564,17 @@ void test('agent_send_input forwards child approval events through the shared ch
       },
       {
         kind: 'agent',
+        runOwnerKind: 'root_main',
         callId: 'call-continue-approval',
-        workspaceRoot,
+        stateRoot,
+        workingDirectory: 'workspace',
         threadId,
         runId: 'top-run-continue',
-        projectId,
         runState: createRunState({
           runId: 'top-run-continue',
-          runContext: makeRunWorkspaceContext({
+          runContext: makeRunContext({
             threadId,
-            projectId,
-            workspaceRoot,
+            stateRoot,
           }),
         }),
         signal: new AbortController().signal,
@@ -622,16 +626,15 @@ void test('agent_send_input forwards child approval events through the shared ch
       },
     });
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
   }
 });
 
 void test('agent_send_input lets continued worker inherit current parent permission mode', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-agent-send-input-permission-'),
   );
   const threadId = testThreadId(34);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
 
   const testAgentSpawnTool = createAgentSpawnTool({
@@ -651,17 +654,18 @@ void test('agent_send_input lets continued worker inherit current parent permiss
       },
       {
         kind: 'agent',
+        runOwnerKind: 'root_main',
         callId: 'call-seed-permission-child',
-        workspaceRoot,
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot,
+        workingDirectory: 'workspace',
         threadId,
         runId: 'top-run-seed-permission',
-        projectId,
         runState: createRunState({
           runId: 'top-run-seed-permission',
-          runContext: makeRunWorkspaceContext({
+          runContext: makeRunContext({
             threadId,
-            projectId,
-            workspaceRoot,
+            stateRoot,
           }),
         }),
         signal: new AbortController().signal,
@@ -715,17 +719,17 @@ void test('agent_send_input lets continued worker inherit current parent permiss
       },
       {
         kind: 'agent',
+        runOwnerKind: 'root_main',
         callId: 'call-continue-permission',
-        workspaceRoot,
+        stateRoot,
+        workingDirectory: 'workspace',
         threadId,
         runId: 'top-run-continue-permission',
-        projectId,
         runState: createRunState({
           runId: 'top-run-continue-permission',
-          runContext: makeRunWorkspaceContext({
+          runContext: makeRunContext({
             threadId,
-            projectId,
-            workspaceRoot,
+            stateRoot,
           }),
         }),
         signal: new AbortController().signal,
@@ -755,16 +759,15 @@ void test('agent_send_input lets continued worker inherit current parent permiss
       ownerThreadId: threadId,
     });
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
   }
 });
 
 void test('agent_send_input rejects standalone worker continuation without approval routing', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-agent-send-input-standalone-worker-'),
   );
   const threadId = testThreadId(35);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
 
   const testAgentSpawnTool = createAgentSpawnTool({
@@ -784,17 +787,18 @@ void test('agent_send_input rejects standalone worker continuation without appro
       },
       {
         kind: 'agent',
+        runOwnerKind: 'root_main',
         callId: 'call-seed-standalone-worker-child',
-        workspaceRoot,
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot,
+        workingDirectory: 'workspace',
         threadId,
         runId: 'top-run-seed-standalone-worker',
-        projectId,
         runState: createRunState({
           runId: 'top-run-seed-standalone-worker',
-          runContext: makeRunWorkspaceContext({
+          runContext: makeRunContext({
             threadId,
-            projectId,
-            workspaceRoot,
+            stateRoot,
           }),
         }),
         signal: new AbortController().signal,
@@ -836,16 +840,14 @@ void test('agent_send_input rejects standalone worker continuation without appro
       },
       {
         callId: 'call-continue-standalone-worker',
-        workspaceRoot,
+        stateRoot,
         threadId,
         runId: 'top-run-continue-standalone-worker',
-        projectId,
         runState: createRunState({
           runId: 'top-run-continue-standalone-worker',
-          runContext: makeRunWorkspaceContext({
+          runContext: makeRunContext({
             threadId,
-            projectId,
-            workspaceRoot,
+            stateRoot,
           }),
         }),
         signal: new AbortController().signal,
@@ -861,13 +863,12 @@ void test('agent_send_input rejects standalone worker continuation without appro
     assert.match(rejected.error, /approval event routing/);
     assert.equal(startCalled, false);
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
   }
 });
 
 void test('agent_send_input continues retained terminal child handles', async () => {
   const ownerThreadId = testThreadId(36);
-  const projectId = testProjectId();
   const childRunId = testRunId('send-input-terminal-child');
   const daemonContext = createDaemonContext();
 
@@ -877,6 +878,21 @@ void test('agent_send_input continues retained terminal child handles', async ()
     parentRunId: testRunId('send-input-terminal-parent'),
     ownerThreadId,
     subagentType: 'explorer',
+    modelPin: {
+      modelId: 'gpt-5.6-luna',
+      providerRunSelection: {
+        providerModel: {
+          providerId: 'openai_codex_direct',
+          model: 'gpt-5.6-luna',
+        },
+        reasoningEffort: 'xhigh',
+      },
+      selectionSource: 'user_fixed',
+    },
+    subagentModelRouting: {
+      mode: 'fixed',
+      choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
+    },
   });
   daemonContext.childRuns.markChildTerminal({
     childRunId,
@@ -888,6 +904,21 @@ void test('agent_send_input continues retained terminal child handles', async ()
   const testAgentSendInputTool = createAgentSendInputTool({
     startBackgroundRun: async (input) => {
       continuedTask = input.task;
+      assert.deepEqual(input.modelPin, {
+        modelId: 'gpt-5.6-luna',
+        providerRunSelection: {
+          providerModel: {
+            providerId: 'openai_codex_direct',
+            model: 'gpt-5.6-luna',
+          },
+          reasoningEffort: 'xhigh',
+        },
+        selectionSource: 'user_fixed',
+      });
+      assert.deepEqual(input.subagentModelRouting, {
+        mode: 'fixed',
+        choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
+      });
       return { ok: true, output: 'continued' };
     },
   });
@@ -900,20 +931,24 @@ void test('agent_send_input continues retained terminal child handles', async ()
     },
     {
       callId: 'call-send-input-terminal',
-      workspaceRoot: '/tmp/workspace',
+      providerRunSelection: {
+        providerModel: { providerId: 'grok_oauth', model: 'grok-4.5' },
+        reasoningEffort: 'high',
+      },
+      subagentModelRouting: { mode: 'auto' },
+      stateRoot: '/tmp/home-state',
       threadId: ownerThreadId,
       runId: parentRunId,
-      projectId,
       runState: createRunState({
         runId: parentRunId,
-        runContext: makeRunWorkspaceContext({
+        runContext: makeRunContext({
           threadId: ownerThreadId,
-          projectId,
-          workspaceRoot: '/tmp/workspace',
+          stateRoot: '/tmp/home-state',
         }),
       }),
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
+      approvalSessionId: 'send-input-terminal-session',
       agentSpawnRuntime: daemonContext,
     },
   );

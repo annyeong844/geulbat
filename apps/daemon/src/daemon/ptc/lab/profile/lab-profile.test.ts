@@ -9,9 +9,11 @@ import {
 import {
   admitPtcExecutionProfile,
   createPtcLabLocalDockerBatchCommandPolicyProjection,
+  createPtcLabLocalDockerOpenEgressBrowserPolicyProjection,
   createPtcLabLocalDockerPolicyProjection,
   describePtcLabWorkspaceReadEgressDecision,
 } from './lab-profile.js';
+import { createPtcLabBrowserTextEvidencePolicy } from '../browser/core/lab-browser-policy.js';
 import {
   PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_COMMAND_MS,
   PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_BUFFERED_BYTES_PER_STREAM,
@@ -223,4 +225,16 @@ void test('describePtcLabWorkspaceReadEgressDecision distinguishes disabled and 
     egressMode: 'open',
     combinedDecision: 'workspace_read_with_open_egress',
   });
+});
+
+void test('open egress browser projection keeps a positive exec output budget', () => {
+  const projection = createPtcLabLocalDockerOpenEgressBrowserPolicyProjection({
+    policyId: PTC_LAB_LOCAL_DOCKER_POLICY_ID,
+    browser: createPtcLabBrowserTextEvidencePolicy(),
+  });
+  // 셸 실행은 금지된 채로 유지하되, evidence exec의 stdout 결과를 받을
+  // 버퍼는 0이면 안 된다 — 0이면 모든 브라우저 evidence가
+  // output_limit_exceeded로 죽는다 (머지 유실 회귀 방지)
+  assert.equal(projection.shell.mode, 'disabled');
+  assert.ok(projection.shell.maxBufferedBytesPerStream > 0);
 });

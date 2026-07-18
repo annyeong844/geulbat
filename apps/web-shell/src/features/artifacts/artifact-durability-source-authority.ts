@@ -1,8 +1,8 @@
 import type { ArtifactRunId } from '@geulbat/protocol/artifacts';
-import type { ProjectId, ThreadId } from '@geulbat/protocol/ids';
+import type { ThreadId } from '@geulbat/protocol/ids';
 
 export interface ArtifactDurabilitySourceAuthority {
-  projectId: ProjectId;
+  workingDirectory: string;
   threadId: ThreadId;
   runId: ArtifactRunId;
   messageTimestamp: string;

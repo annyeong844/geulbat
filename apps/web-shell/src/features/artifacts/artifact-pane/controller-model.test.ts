@@ -8,48 +8,17 @@ import {
   type ArtifactPaneControllerPaneState,
 } from './controller-model.js';
 
-void test('buildArtifactPaneControllerProps exposes open source only with a file path and handler', () => {
-  const withoutHandler = buildArtifactPaneControllerProps({
-    label: 'Artifact',
-    viewModel: createArtifactPaneViewModel(),
-    paneState: createPaneState(),
-    exportState: createExportState(),
-  });
-
-  assert.equal(withoutHandler.headerProps.showOpenSource, false);
-  assert.equal(withoutHandler.headerProps.onOpenSource, undefined);
-
-  const openedPaths: string[] = [];
-  const withHandler = buildArtifactPaneControllerProps({
-    label: 'Artifact',
-    viewModel: createArtifactPaneViewModel(),
-    paneState: createPaneState(),
-    exportState: createExportState(),
-    onOpenSource: (path) => {
-      openedPaths.push(path);
-    },
-  });
-
-  assert.equal(withHandler.headerProps.showOpenSource, true);
-  void withHandler.headerProps.onOpenSource?.();
-  assert.deepEqual(openedPaths, ['notes/demo.md']);
-});
-
-void test('buildArtifactPaneControllerProps hides open source when source file path is missing', () => {
+void test('buildArtifactPaneControllerProps exposes a local direct-save target for completed artifacts', () => {
   const controller = buildArtifactPaneControllerProps({
     label: 'Artifact',
-    viewModel: createArtifactPaneViewModel({
-      sourceRef: {
-        filePath: null,
-      },
-    }),
+    viewModel: createArtifactPaneViewModel(),
     paneState: createPaneState(),
     exportState: createExportState(),
-    onOpenSource: () => {},
   });
 
-  assert.equal(controller.headerProps.showOpenSource, false);
-  assert.equal(controller.headerProps.onOpenSource, undefined);
+  assert.notEqual(controller.directSave, null);
+  assert.equal(controller.directSave?.defaultPath.includes('.'), true);
+  assert.equal(controller.directSave?.payload.trim().length !== 0, true);
 });
 
 void test('buildArtifactPaneControllerProps opens export panel from export state', () => {
@@ -84,7 +53,7 @@ void test('buildArtifactPaneControllerProps maps pane state into body props', ()
     label: 'Artifact',
     viewModel,
     paneState: createPaneState({
-      tab: 'raw',
+      tab: 'source',
       canShowPreview: false,
       runtimeUnavailableMessage: 'Canvas unavailable',
     }),
@@ -93,7 +62,7 @@ void test('buildArtifactPaneControllerProps maps pane state into body props', ()
 
   assert.equal(controller.exportPanelProps, null);
   assert.equal(controller.bodyProps.parsed, viewModel.parsed);
-  assert.equal(controller.bodyProps.tab, 'raw');
+  assert.equal(controller.bodyProps.tab, 'source');
   assert.equal(controller.bodyProps.canShowPreview, false);
   assert.equal(
     controller.bodyProps.runtimeUnavailableMessage,
@@ -107,7 +76,6 @@ function createPaneState(
   return {
     tab: 'show',
     canShowPreview: true,
-    showOpenSource: true,
     showApply: true,
     canApply: true,
     surfaceStateBadge: null,

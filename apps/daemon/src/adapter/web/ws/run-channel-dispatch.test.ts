@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { RunId } from '@geulbat/protocol/ids';
-import { bootstrapDaemonContext } from '../../../bootstrap-daemon-context.js';
 import { createDaemonContext } from '../../../daemon/context.js';
 import { startManagedRun } from '../../../daemon/agent/runtime/managed-run.js';
 import { MID_RUN_STEER_ENABLED_ENV } from '../../../daemon/agent/mid-run-steer-flag.js';
@@ -14,9 +13,8 @@ import {
   clearSentMessages,
   createTestSocket,
   readLastSentMessage,
-} from './run-channel-test-support.js';
+} from '../../../test-support/run-channel-test-support.js';
 import { handleClientMessage } from './run-channel-dispatch.js';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 
 const TEST_DEV_TOKEN = 'test-token-123456';
@@ -251,7 +249,6 @@ void test('handleClientMessage closes unauthenticated sockets for run messages',
         requestId: 'start-no-auth',
         request: {
           prompt: 'hello',
-          projectId: 'workspace',
         },
       }),
       daemonContext,
@@ -276,10 +273,6 @@ void test('handleClientMessage routes authenticated run.start validation errors 
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
   const daemonContext = createDaemonContext();
-  await bootstrapDaemonContext({
-    projectStore: daemonContext.projectStore,
-    repoRoot: process.cwd(),
-  });
   const socket = createTestSocket();
 
   try {
@@ -301,7 +294,6 @@ void test('handleClientMessage routes authenticated run.start validation errors 
         requestId: 'start-empty-prompt',
         request: {
           prompt: '   ',
-          projectId: 'workspace',
         },
       }),
       daemonContext,
@@ -324,10 +316,6 @@ void test('handleClientMessage rejects a second same-socket run.start while anot
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
   const daemonContext = createDaemonContext();
-  await bootstrapDaemonContext({
-    projectStore: daemonContext.projectStore,
-    repoRoot: process.cwd(),
-  });
   const socket = createTestSocket();
 
   try {
@@ -350,7 +338,6 @@ void test('handleClientMessage rejects a second same-socket run.start while anot
         requestId: 'start-second',
         request: {
           prompt: 'hello',
-          projectId: 'workspace',
         },
       }),
       daemonContext,
@@ -429,8 +416,8 @@ void test('handleClientMessage routes enabled run.interject to the active run bu
       runId: 'interject-dispatch-owned',
       runContext: {
         threadId,
-        projectId: testProjectId(),
-        workspaceRoot: process.cwd(),
+        stateRoot: daemonContext.homeStateRoot,
+        workingDirectory: '',
       },
     },
     { activeRuns: daemonContext.activeRuns },
@@ -541,10 +528,6 @@ void test('handleClientMessage preserves requestId when run.start setup throws u
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
   const daemonContext = createDaemonContext();
-  await bootstrapDaemonContext({
-    projectStore: daemonContext.projectStore,
-    repoRoot: process.cwd(),
-  });
   const socket = createTestSocket();
   const originalTryStartRun = daemonContext.activeRuns.tryStartRun;
   daemonContext.activeRuns.tryStartRun = (() => {
@@ -575,7 +558,6 @@ void test('handleClientMessage preserves requestId when run.start setup throws u
         requestId: 'start-throw',
         request: {
           prompt: 'hello',
-          projectId: 'workspace',
         },
       }),
       daemonContext,
@@ -597,7 +579,7 @@ void test('handleClientMessage preserves requestId when run.start setup throws u
     assert.ok(dispatchLog);
     const logLine = String(dispatchLog[0]);
     assert.match(logLine, /messageType="run.start"/);
-    assert.match(logLine, /projectId="workspace"/);
+    assert.doesNotMatch(logLine, /projectId=/u);
     assert.match(logLine, /requestId="start-throw"/);
   } finally {
     console.error = originalError;
@@ -611,10 +593,6 @@ void test('handleClientMessage can route run.start through an injected active-ru
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
   const daemonContext = createDaemonContext();
-  await bootstrapDaemonContext({
-    projectStore: daemonContext.projectStore,
-    repoRoot: process.cwd(),
-  });
   const socket = createTestSocket();
   const threadId = testThreadId(141);
   const existingRun = startManagedRun(
@@ -622,8 +600,8 @@ void test('handleClientMessage can route run.start through an injected active-ru
       runId: 'existing-run-dispatch-local',
       runContext: {
         threadId,
-        projectId: testProjectId(),
-        workspaceRoot: process.cwd(),
+        stateRoot: daemonContext.homeStateRoot,
+        workingDirectory: '',
       },
     },
     { activeRuns: daemonContext.activeRuns },
@@ -649,7 +627,6 @@ void test('handleClientMessage can route run.start through an injected active-ru
         requestId: 'start-local-conflict',
         request: {
           prompt: 'hello',
-          projectId: testProjectId(),
           threadId,
         },
       }),

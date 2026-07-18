@@ -1,12 +1,13 @@
+import crypto from 'node:crypto';
+
 import { isRecord } from '../../runtime-json.js';
 import type { ErrorCode } from '../contract.js';
 
 import {
   PROVIDER_AUTH_EXCHANGE_TIMEOUT_MS,
-  getRequiredProviderAuthClientId,
-  PROVIDER_AUTH_REDIRECT_URI,
-  PROVIDER_AUTH_TOKEN_URL,
+  getProviderAuthBootstrapProfile,
 } from './config.js';
+import type { ProviderAuthCredentialProviderId } from '../credentials/store.js';
 
 interface TokenExchangeResponse {
   access_token?: string;
@@ -29,9 +30,13 @@ class ProviderAuthExchangeError extends Error {
 export async function exchangeAuthorizationCode(
   code: string,
   codeVerifier: string,
-  options?: { fetchImpl?: typeof fetch; timeoutMs?: number },
+  options?: {
+    fetchImpl?: typeof fetch;
+    providerId?: ProviderAuthCredentialProviderId;
+    timeoutMs?: number;
+  },
 ): Promise<TokenExchangeResponse> {
-  const clientId = await getRequiredProviderAuthClientId();
+  const profile = await getProviderAuthBootstrapProfile(options?.providerId);
   let attempt = 0;
 
   while (true) {
@@ -41,18 +46,30 @@ export async function exchangeAuthorizationCode(
       () => controller.abort(),
       options?.timeoutMs ?? PROVIDER_AUTH_EXCHANGE_TIMEOUT_MS,
     );
+    const body = new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: profile.clientId,
+      code,
+      redirect_uri: profile.redirectUri,
+      code_verifier: codeVerifier,
+    });
+
+    if (profile.includePkceChallengeInTokenExchange) {
+      body.set('code_challenge', createPkceCodeChallenge(codeVerifier));
+      body.set('code_challenge_method', 'S256');
+    }
 
     try {
-      const res = await (options?.fetchImpl ?? fetch)(PROVIDER_AUTH_TOKEN_URL, {
+      const res = await (options?.fetchImpl ?? fetch)(profile.tokenUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          grant_type: 'authorization_code',
-          client_id: clientId,
-          code,
-          redirect_uri: PROVIDER_AUTH_REDIRECT_URI,
-          code_verifier: codeVerifier,
-        }),
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body,
+        ...(profile.tokenExchangeRedirectMode !== undefined
+          ? { redirect: profile.tokenExchangeRedirectMode }
+          : {}),
         signal: controller.signal,
       });
 
@@ -134,6 +151,10 @@ function parseTokenExchangeResponse(value: unknown): TokenExchangeResponse {
   };
 }
 
+function createPkceCodeChallenge(codeVerifier: string): string {
+  return crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+}
+
 export function extractProviderAuthErrorCode(err: unknown): ErrorCode {
   if (err instanceof ProviderAuthExchangeError) {
     return err.providerAuthCode;
@@ -145,8 +166,8 @@ function isTransportFailure(err: unknown): boolean {
   if (!(err instanceof Error)) {
     return false;
   }
-  const cause = err as Error & { cause?: { code?: string } };
-  const code = cause.cause?.code;
+  const cause = err.cause;
+  const code = isRecord(cause) ? cause.code : undefined;
   return (
     code === 'ECONNRESET' ||
     code === 'ECONNREFUSED' ||

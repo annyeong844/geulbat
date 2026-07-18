@@ -14,34 +14,63 @@ import {
 import {
   isAgentChildTerminalState as isProtocolAgentChildTerminalState,
   type AgentChildTerminalState,
+  type RunUsageTotals,
   type SideEffectLevel,
   type ThreadStatePersistenceFailureDiagnostic,
 } from '@geulbat/protocol/run-events';
 import type { PermissionMode } from '@geulbat/protocol/run-approval';
+import type { RunSubagentModelRouting } from '@geulbat/protocol/run-contract';
 import {
   readArtifactRefsFromMetadata as readProtocolArtifactRefsFromMetadata,
+  type ThreadMessageAttachment,
   type ThreadMessageMetadata,
 } from '@geulbat/protocol/thread-metadata';
-import type {
-  ThreadMessage,
-  ThreadMessageInput,
-  ThreadSummary,
+import {
+  isProviderNativeCompactionEntryData as isProtocolProviderNativeCompactionEntryData,
+  isProviderTransitionCompactionEntryData as isProtocolProviderTransitionCompactionEntryData,
+  type BudgetProfile,
+  type ProviderNativeCompactionEntryData,
+  type ProviderNativeCompactionOutputItem,
+  type ProviderTransitionCompactionEntryData,
+  type SummaryCompactionEntryData,
+  type ThreadMessage,
+  type ThreadMessageInput,
+  type ThreadSummary,
 } from '@geulbat/protocol/threads';
 
 export type {
-  AgentChildTerminalState,
   ArtifactRef,
+  BudgetProfile,
   PermissionMode,
+  ProviderNativeCompactionEntryData,
+  ProviderNativeCompactionOutputItem,
+  ProviderTransitionCompactionEntryData,
   RunId,
+  RunSubagentModelRouting,
+  RunUsageTotals,
   SideEffectLevel,
+  SummaryCompactionEntryData,
   ThreadArtifactVersion,
   ThreadId,
+  ThreadMessageAttachment,
   ThreadMessage,
   ThreadMessageInput,
   ThreadMessageMetadata,
   ThreadStatePersistenceFailureDiagnostic,
   ThreadSummary,
 };
+
+export function isAgentProviderNativeCompactionEntryData(
+  value: unknown,
+): value is ProviderNativeCompactionEntryData {
+  return isProtocolProviderNativeCompactionEntryData(value);
+}
+
+export function isAgentProviderTransitionCompactionEntryData(
+  value: unknown,
+): value is ProviderTransitionCompactionEntryData {
+  return isProtocolProviderTransitionCompactionEntryData(value);
+}
 
 export const AGENT_ARTIFACT_START_PREFIX = ARTIFACT_START_PREFIX;
 

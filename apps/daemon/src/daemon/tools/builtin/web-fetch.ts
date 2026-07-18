@@ -21,20 +21,36 @@ const webFetchArgsSchema = z.strictObject({
 
 type WebFetchArgs = z.output<typeof webFetchArgsSchema>;
 
-export function createWebFetchTool(
+export function createFetchUrlTool(
   deps: {
     fetchWebUrl?: typeof defaultFetchWebUrl;
   } = {},
 ) {
   const fetchWebUrl = deps.fetchWebUrl ?? defaultFetchWebUrl;
   return defineZodTool({
-    name: 'web_fetch',
+    name: 'fetch_url',
     description:
       'Fetch one public HTTP(S) URL as untrusted text. Does not search, browse with cookies, or fetch local/private network URLs.',
     argsSchema: webFetchArgsSchema,
     sideEffectLevel: 'read',
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     requiresApproval: false,
+    exposure: {
+      directHot: false,
+      sdkVisible: true,
+      inCellCallable: true,
+      directOnly: false,
+      approvalRequired: false,
+      effectClass: 'readOnly',
+    },
+    catalogSearchMetadata: {
+      family: 'network',
+      searchHints: ['open url', 'fetch url', 'curl url', 'read webpage'],
+      tags: ['network', 'url', 'read'],
+      whenToUse: 'Read one explicit public HTTP(S) URL.',
+      notFor:
+        'Query-based web search, browser automation, cookies, or private network URLs.',
+    },
     async executeParsed(args: WebFetchArgs, ctx) {
       const output = await fetchWebUrl({
         url: args.url,
@@ -57,4 +73,4 @@ export function createWebFetchTool(
   });
 }
 
-export const webFetchTool = createWebFetchTool();
+export const fetchUrlTool = createFetchUrlTool();

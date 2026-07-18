@@ -34,7 +34,7 @@ void test('public react bundle fixture entry route is unauthenticated and same-o
     );
     assert.equal(
       res.headers.get('content-type'),
-      'text/javascript; charset=utf-8',
+      'application/javascript; charset=utf-8',
     );
 
     const body = await res.text();
@@ -123,7 +123,7 @@ void test('public react runtime-dependencies bundle fixtures expose entry, modul
     assert.equal(entryRes.status, 200);
     assert.equal(
       entryRes.headers.get('content-type'),
-      'text/javascript; charset=utf-8',
+      'application/javascript; charset=utf-8',
     );
     assert.equal(
       entryRes.headers.get('cross-origin-resource-policy'),
@@ -140,7 +140,7 @@ void test('public react runtime-dependencies bundle fixtures expose entry, modul
     assert.equal(moduleRes.status, 200);
     assert.equal(
       moduleRes.headers.get('content-type'),
-      'text/javascript; charset=utf-8',
+      'application/javascript; charset=utf-8',
     );
     assert.match(await moduleRes.text(), /runtime dependency loaded/);
 
@@ -165,7 +165,7 @@ void test('public dom counter fixture route is unauthenticated and script-loadab
     assert.equal(res.status, 200);
     assert.equal(
       res.headers.get('content-type'),
-      'text/javascript; charset=utf-8',
+      'application/javascript; charset=utf-8',
     );
 
     const body = await res.text();

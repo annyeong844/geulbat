@@ -1,7 +1,6 @@
 import { definedPtcProps, isPtcRecord } from '../../shared/record-shape.js';
 import type { PtcLabAdmittedProfile } from '../../lab/profile/lab-profile.js';
 import {
-  PTC_LAB_BATCH_COMMAND_MAX_COMMAND_CHARS,
   adaptPtcSessionDockerCommandRunner,
   type PtcLabBatchCommandExecutionSummary,
 } from '../../lab/shell/lab-command-execution.js';
@@ -20,14 +19,17 @@ import type {
   PtcSessionDockerIdentity,
   PtcSessionDockerManager,
 } from '../../lab/session/session-docker-contract.js';
-import {
-  buildPtcExecuteCodeGeulbatFacadeSource,
+import type {
   buildPtcExecuteCodeSdkHelpBundle,
   PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION,
 } from './execute-code-sdk.js';
 import {
+  buildPtcExecuteCodeGeulbatFacadeSource,
+  buildPtcExecuteCodeReservedSdkRequireSource,
+} from './execute-code-sdk.js';
+import {
   classifyPtcExecuteCodePlacementContinuity,
-  createPtcExecuteCodeReadOnlyCallbackEffectPolicy,
+  createPtcExecuteCodeCallbackEffectPolicy,
   type PtcExecuteCodeExecutionPlacement,
   type PtcExecuteCodePlacementBatchRunner,
   type PtcExecuteCodePlacementCoordinator,
@@ -38,8 +40,11 @@ import {
   PTC_EXECUTE_CODE_TOOL_NAME,
   type PtcExecuteCodePlacementResourceSnapshotRef,
   type PtcExecuteCodeRuntimeResult,
+  type PtcExecuteCodeRuntimeSummary,
+  type PtcExecuteCodeStoreError,
   type PtcExecuteCodeRuntimeToolCallbackHandler,
 } from './execute-code-runtime-contract.js';
+import type { PtcExecuteCodeStoreExecution } from './execute-code-store.js';
 
 type CreatePtcSessionEpochBridge = typeof createPtcSessionEpochBridge;
 
@@ -58,14 +63,16 @@ type ExecuteCodeBatchCommandResult = Awaited<
 export type PtcExecuteCodeCallbackRuntime =
   | {
       enabled: true;
+      toolCallbacksEnabled: boolean;
       callbackPolicy: PtcSessionEpochBridgeCallbackPolicy;
-      observedCount(): number;
+      observedCount(this: void): number;
       callbackHandler: PtcEpochCallbackHandler;
     }
   | {
       enabled: false;
+      toolCallbacksEnabled: boolean;
       callbackPolicy?: undefined;
-      observedCount(): number;
+      observedCount(this: void): number;
       callbackHandler: PtcEpochCallbackHandler;
     };
 
@@ -76,6 +83,7 @@ export async function runExecuteCodeRuntimeAttempt(args: {
   createEpochBridge: CreatePtcSessionEpochBridge | undefined;
   dockerPath: string | undefined;
   identity: PtcSessionDockerIdentity;
+  ownerKind: 'root_main' | 'child';
   placementCoordinator: PtcExecuteCodePlacementCoordinator;
   getPlacementContinuityProvenance:
     | PtcExecuteCodePlacementContinuityProvenanceProvider
@@ -85,12 +93,15 @@ export async function runExecuteCodeRuntimeAttempt(args: {
     | undefined;
   request: ValidatedExecuteCodeRequest;
   sdkHelpBundle: ReturnType<typeof buildPtcExecuteCodeSdkHelpBundle>;
+  installedPackagesNodePath?: string;
   signal: AbortSignal | undefined;
   sessionManager: PtcSessionDockerManager;
   batchRunner: PtcExecuteCodePlacementBatchRunner;
+  storeExecution?: PtcExecuteCodeStoreExecution;
 }): Promise<PtcExecuteCodeRuntimeResult> {
-  const placement = await args.placementCoordinator.acquirePlacement({
+  const placementResult = await args.placementCoordinator.acquirePlacement({
     kind: 'batch_command',
+    ownerKind: args.ownerKind,
     continuity: classifyPtcExecuteCodePlacementContinuity(
       args.getPlacementContinuityProvenance?.({
         kind: 'batch_command',
@@ -98,8 +109,11 @@ export async function runExecuteCodeRuntimeAttempt(args: {
         request: args.request,
       }),
     ),
-    callbackEffectPolicy: createPtcExecuteCodeReadOnlyCallbackEffectPolicy({
+    callbackEffectPolicy: createPtcExecuteCodeCallbackEffectPolicy({
       callbackToolCount: args.sdkHelpBundle.callbacks.tools.length,
+      writeCallbackToolCount: args.sdkHelpBundle.callbacks.tools.filter(
+        (tool) => tool.requiresApproval === true,
+      ).length,
     }),
     identity: args.identity,
     sessionManager: args.sessionManager,
@@ -109,6 +123,24 @@ export async function runExecuteCodeRuntimeAttempt(args: {
       signal: args.signal,
     }),
   });
+  if (!placementResult.ok) {
+    return {
+      ...placementResult,
+      ...discardStoreExecution(args.storeExecution),
+    };
+  }
+  if ('queued' in placementResult) {
+    return {
+      ok: false,
+      reasonCode: 'ptc_lab_session_busy',
+      message: 'PTC batch execution cannot hold a hidden placement queue',
+      remediation:
+        'Enable the detached-cell exec lane so queued placement can be observed through wait.',
+      diagnostics: { placementQueued: true },
+      ...discardStoreExecution(args.storeExecution),
+    };
+  }
+  const placement = placementResult.value;
   try {
     const bridgeResult = await maybeCreateCallbackBridge({
       callbackRuntime: args.callbackRuntime,
@@ -128,11 +160,15 @@ export async function runExecuteCodeRuntimeAttempt(args: {
           bridgeReasonCode: bridgeResult.reasonCode,
           ...(cleanup.ok ? {} : { cleanupReasonCode: cleanup.reasonCode }),
         },
+        ...discardStoreExecution(args.storeExecution),
       };
     }
 
     const command = buildNodeExecuteCodeCommand(args.request.code, {
       sdkHelpBundle: args.sdkHelpBundle,
+      ...(args.installedPackagesNodePath === undefined
+        ? {}
+        : { installedPackagesNodePath: args.installedPackagesNodePath }),
       ...(bridgeResult.value.bridge === undefined
         ? {}
         : {
@@ -142,22 +178,6 @@ export async function runExecuteCodeRuntimeAttempt(args: {
             },
           }),
     });
-    if (
-      Buffer.byteLength(command, 'utf8') >
-      PTC_LAB_BATCH_COMMAND_MAX_COMMAND_CHARS
-    ) {
-      await bridgeResult.value.bridge?.close().catch(() => {});
-      const cleanup = await placement.sessionManager.close(placement.identity);
-      return {
-        ok: false,
-        reasonCode: 'ptc_execute_code_invalid',
-        message: 'PTC execute_code command envelope is too large',
-        ...(cleanup.ok
-          ? {}
-          : { diagnostics: { cleanupReasonCode: cleanup.reasonCode } }),
-      };
-    }
-
     const execution = await runExecuteCodeBatchCommand({
       admission: args.admission,
       command,
@@ -189,6 +209,7 @@ export async function runExecuteCodeRuntimeAttempt(args: {
             execution.diagnostics,
             cleanupDiagnostics,
           ),
+          ...discardStoreExecution(args.storeExecution),
         };
       }
       return {
@@ -196,29 +217,63 @@ export async function runExecuteCodeRuntimeAttempt(args: {
         reasonCode: 'ptc_execute_code_session_cleanup_failed',
         message: 'PTC execute_code session cleanup failed',
         diagnostics: cleanupDiagnostics,
+        ...discardStoreExecution(args.storeExecution),
       };
     }
 
     if (!execution.ok) {
-      return execution;
+      return {
+        ...execution,
+        ...discardStoreExecution(args.storeExecution),
+      };
+    }
+
+    const summaryArgs = {
+      toolCallbacksEnabled: args.callbackRuntime.toolCallbacksEnabled,
+      toolCallbackCount: args.callbackRuntime.observedCount(),
+      sdkProtocolVersion: args.sdkHelpBundle.protocolVersion,
+      sdkCallbackToolCount: args.sdkHelpBundle.callbacks.tools.length,
+      sensitiveMarkers:
+        bridgeResult.value.bridge === undefined
+          ? []
+          : [
+              bridgeResult.value.bridge.token,
+              bridgeResult.value.bridge.callbackSocketContainerPath,
+              bridgeResult.value.bridge.callbackSocketHostPath,
+            ],
+    };
+    if (execution.value.exitCode !== 0) {
+      return {
+        ok: true,
+        value: summarizeExecution(execution.value, {
+          ...summaryArgs,
+          ...discardStoreExecution(args.storeExecution),
+        }),
+      };
+    }
+
+    if (args.storeExecution !== undefined) {
+      const pendingWriteCount = args.storeExecution.pendingWriteCount();
+      const commit = await args.storeExecution.commit();
+      if (!commit.ok) {
+        return buildPtcExecuteCodeStoreCommitFailure(
+          commit.error,
+          summarizeExecution(execution.value, summaryArgs),
+          pendingWriteCount,
+        );
+      }
+      return {
+        ok: true,
+        value: summarizeExecution(execution.value, {
+          ...summaryArgs,
+          store: commit.value,
+        }),
+      };
     }
 
     return {
       ok: true,
-      value: summarizeExecution(execution.value, {
-        toolCallbacksEnabled: args.callbackRuntime.enabled,
-        toolCallbackCount: args.callbackRuntime.observedCount(),
-        sdkProtocolVersion: args.sdkHelpBundle.protocolVersion,
-        sdkCallbackToolCount: args.sdkHelpBundle.callbacks.tools.length,
-        sensitiveMarkers:
-          bridgeResult.value.bridge === undefined
-            ? []
-            : [
-                bridgeResult.value.bridge.token,
-                bridgeResult.value.bridge.callbackSocketContainerPath,
-                bridgeResult.value.bridge.callbackSocketHostPath,
-              ],
-      }),
+      value: summarizeExecution(execution.value, summaryArgs),
     };
   } finally {
     await args.placementCoordinator.releasePlacement(placement);
@@ -267,30 +322,41 @@ export function buildNodeExecuteCodeCommand(
   args: {
     callbackConfig?: { socketPath: string; token: string };
     sdkHelpBundle: ReturnType<typeof buildPtcExecuteCodeSdkHelpBundle>;
+    installedPackagesNodePath?: string;
   },
 ): string {
-  const encodedCode = Buffer.from(code, 'utf8').toString('base64');
   const runnerSource = [
+    'const __geulbatUserRun = async (console, require, process, geulbat) => {',
+    code,
+    '};',
     '(async () => {',
-    "const source = Buffer.from(process.env.GEULBAT_PTC_CODE_B64 ?? '', 'base64').toString('utf8');",
     buildPtcExecuteCodeGeulbatFacadeSource({
       ...(args.callbackConfig === undefined
         ? {}
         : { callbackConfig: args.callbackConfig }),
       helpBundle: args.sdkHelpBundle,
     }),
-    'const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;',
-    "const run = new AsyncFunction('console', 'require', 'process', 'geulbat', source);",
-    'const value = await run(console, require, process, geulbat);',
+    buildPtcExecuteCodeReservedSdkRequireSource(args.sdkHelpBundle),
+    'const value = await __geulbatUserRun(console, __geulbatReservedRequire, process, geulbat);',
     "if (value !== undefined) { const printable = typeof value === 'string' ? value : JSON.stringify(value); if (printable !== undefined) process.stdout.write(`${printable}\\n`); }",
     '})().catch((error) => { const message = error && error.stack ? error.stack : String(error); process.stderr.write(`${message}\\n`); process.exitCode = 1; });',
   ].join('\n');
+  const encodedRunner = Buffer.from(runnerSource, 'utf8').toString('base64');
+  const decodeRunner =
+    "process.stdout.write(Buffer.from(process.argv[1] ?? '', 'base64'))";
 
   return [
-    `GEULBAT_PTC_CODE_B64=${shellSingleQuote(encodedCode)}`,
+    `GEULBAT_PTC_RUNNER_B64=${shellSingleQuote(encodedRunner)};`,
+    ...(args.installedPackagesNodePath === undefined
+      ? []
+      : [`NODE_PATH=${shellSingleQuote(args.installedPackagesNodePath)}`]),
+    // CommonJS-only reachability contract: installed packages are visible to
+    // require() through NODE_PATH; ESM bare imports stay out of scope.
+    'exec',
     'node',
+    '--input-type=commonjs-typescript',
     '-e',
-    shellSingleQuote(runnerSource),
+    `"$(node -e ${shellSingleQuote(decodeRunner)} "$GEULBAT_PTC_RUNNER_B64")"`,
   ].join(' ');
 }
 
@@ -302,12 +368,18 @@ export function summarizeExecution(
     sdkProtocolVersion: typeof PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION;
     sdkCallbackToolCount: number;
     sensitiveMarkers: string[];
+    store?:
+      | { committedKeys: string[]; revisions: Record<string, number> }
+      | { discardedWrites: number };
     cleanupFailure?: {
       message: string;
       diagnostics: Record<string, string | number | boolean>;
     };
   },
-): Extract<PtcExecuteCodeRuntimeResult, { ok: true }>['value'] {
+): Extract<
+  PtcExecuteCodeRuntimeSummary,
+  { executionSurface: 'node_via_lab_batch_command' }
+> {
   return {
     ok: true,
     capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
@@ -334,6 +406,7 @@ export function summarizeExecution(
       helpAvailable: true,
       callbackToolCount: args.sdkCallbackToolCount,
     },
+    ...(args.store === undefined ? {} : { store: args.store }),
     ...(args.cleanupFailure !== undefined
       ? { cleanupFailure: args.cleanupFailure }
       : {}),
@@ -343,9 +416,23 @@ export function summarizeExecution(
 export function createExecuteCodeCallbackRuntime(args: {
   callbackTransportPolicy: PtcSessionEpochBridgeCallbackPolicy | undefined;
   toolCallbackHandler: PtcExecuteCodeRuntimeToolCallbackHandler | undefined;
+  storeCallbackHandler?: PtcEpochCallbackHandler;
 }): PtcExecuteCodeCallbackRuntime {
   let observed = 0;
   const callbackHandler: PtcEpochCallbackHandler = async (invocation) => {
+    if (invocation.kind === 'store_get' || invocation.kind === 'store_set') {
+      if (args.storeCallbackHandler === undefined) {
+        return {
+          ok: false,
+          errorCode: 'StoreDisabled',
+          message: 'PTC store is not enabled',
+          remediation:
+            'Use exec without geulbat.store or ask the operator to enable GEULBAT_PTC_STORE_ENABLED.',
+        };
+      }
+      return await args.storeCallbackHandler(invocation);
+    }
+
     if (args.toolCallbackHandler === undefined) {
       return {
         ok: false,
@@ -371,11 +458,13 @@ export function createExecuteCodeCallbackRuntime(args: {
   };
 
   if (
-    args.toolCallbackHandler === undefined ||
+    (args.toolCallbackHandler === undefined &&
+      args.storeCallbackHandler === undefined) ||
     args.callbackTransportPolicy === undefined
   ) {
     return {
       enabled: false,
+      toolCallbacksEnabled: false,
       observedCount: () => observed,
       callbackHandler,
     };
@@ -383,9 +472,71 @@ export function createExecuteCodeCallbackRuntime(args: {
 
   return {
     enabled: true,
+    toolCallbacksEnabled: args.toolCallbackHandler !== undefined,
     callbackPolicy: args.callbackTransportPolicy,
     observedCount: () => observed,
     callbackHandler,
+  };
+}
+
+export function createExecuteCodeStoreCallbackHandler(args: {
+  execution?:
+    | PtcExecuteCodeStoreExecution
+    | (() => PtcExecuteCodeStoreExecution | undefined);
+}): PtcEpochCallbackHandler {
+  return async (invocation) => {
+    if (invocation.signal.aborted) {
+      return {
+        ok: false,
+        errorCode: 'StoreExecutionFinalized',
+        message: 'The PTC store callback was cancelled before acknowledgement',
+        remediation: 'Start a new exec before calling geulbat.store again.',
+      };
+    }
+    const execution =
+      typeof args.execution === 'function' ? args.execution() : args.execution;
+    if (execution === undefined) {
+      return {
+        ok: false,
+        errorCode: 'StoreDisabled',
+        message: 'PTC store is not enabled',
+        remediation:
+          'Use exec without geulbat.store or ask the operator to enable GEULBAT_PTC_STORE_ENABLED.',
+      };
+    }
+    if (!isPtcRecord(invocation.args)) {
+      return {
+        ok: false,
+        errorCode: 'StoreOptionsInvalid',
+        message: 'PTC store callback arguments are invalid',
+        remediation:
+          'Call geulbat.store.get(key) or geulbat.store.set(key, value).',
+      };
+    }
+
+    const result =
+      invocation.kind === 'store_get'
+        ? execution.get(invocation.args.key)
+        : invocation.kind === 'store_set'
+          ? execution.set(
+              invocation.args.key,
+              invocation.args.value,
+              invocation.args.options,
+            )
+          : undefined;
+    if (result === undefined) {
+      return {
+        ok: false,
+        errorCode: 'StoreOptionsInvalid',
+        message: 'PTC store callback kind is invalid',
+        remediation:
+          'Call geulbat.store.get(key) or geulbat.store.set(key, value).',
+      };
+    }
+    if (!result.ok) {
+      return callbackStoreError(result.error);
+    }
+    return { ok: true, result: result.value };
   };
 }
 
@@ -498,5 +649,45 @@ function mergeDiagnostics(
   return {
     ...(left ?? {}),
     ...right,
+  };
+}
+
+function callbackStoreError(error: PtcExecuteCodeStoreError): {
+  ok: false;
+  errorCode: string;
+  message: string;
+  remediation: string;
+  details?: Record<string, unknown>;
+} {
+  return {
+    ok: false,
+    errorCode: error.errorCode,
+    message: error.message,
+    remediation: error.remediation,
+    ...(error.details === undefined ? {} : { details: error.details }),
+  };
+}
+
+function discardStoreExecution(
+  execution: PtcExecuteCodeStoreExecution | undefined,
+): { store?: { discardedWrites: number } } {
+  return execution === undefined ? {} : { store: execution.discard() };
+}
+
+export function buildPtcExecuteCodeStoreCommitFailure(
+  error: PtcExecuteCodeStoreError,
+  execution: ReturnType<typeof summarizeExecution>,
+  discardedWrites: number,
+): PtcExecuteCodeRuntimeResult {
+  return {
+    ok: false,
+    reasonCode:
+      error.errorCode === 'StoreCommitConflict'
+        ? 'ptc_execute_code_store_commit_conflict'
+        : 'ptc_execute_code_store_commit_failed',
+    message: error.message,
+    store: { discardedWrites },
+    storeError: error,
+    execution,
   };
 }

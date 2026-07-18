@@ -61,7 +61,7 @@ export type AgentWaveCapacityReasonCode =
   | 'admission_downshift'
   | 'telemetry_adjusted';
 
-export type AgentWaveFailureReasonCode =
+type AgentWaveFailureReasonCode =
   | 'capacity_unknown'
   | 'admission_rejected'
   | 'policy_required'
@@ -94,7 +94,7 @@ export interface AgentWavePlanner {
   planNextWave(input: AgentWavePlanningInput): AgentWaveDecision;
 }
 
-export type AgentWaveFunctionCallMaterialization =
+type AgentWaveFunctionCallMaterialization =
   | {
       readonly ok: true;
       readonly functionCalls: readonly FunctionCall[];

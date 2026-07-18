@@ -19,10 +19,7 @@ function installApiClientTestBootstrap(
 void test('apiFetch returns validated json responses', async (t) => {
   installApiClientTestBootstrap(t, async (_input, init) => {
     assert.equal(init?.credentials, 'same-origin');
-    assert.equal(
-      (init?.headers as Record<string, string>)[DEV_TOKEN_HEADER_NAME],
-      undefined,
-    );
+    assert.equal(new Headers(init?.headers).get(DEV_TOKEN_HEADER_NAME), null);
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -39,6 +36,37 @@ void test('apiFetch returns validated json responses', async (t) => {
   );
 
   assert.deepEqual(response, { ok: true });
+});
+
+void test('apiFetch preserves Headers objects and tuple-array headers', async (t) => {
+  const observedHeaders: Headers[] = [];
+  installApiClientTestBootstrap(t, async (_input, init) => {
+    observedHeaders.push(new Headers(init?.headers));
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+
+  await apiFetch(
+    '/api/test',
+    { headers: new Headers({ 'X-Headers-Object': 'preserved' }) },
+    (value): value is { ok: true } =>
+      typeof value === 'object' &&
+      value !== null &&
+      (value as { ok?: unknown }).ok === true,
+  );
+  await apiFetch(
+    '/api/test',
+    { headers: [['X-Tuple-Header', 'preserved']] },
+    (value): value is { ok: true } =>
+      typeof value === 'object' &&
+      value !== null &&
+      (value as { ok?: unknown }).ok === true,
+  );
+
+  assert.equal(observedHeaders[0]?.get('X-Headers-Object'), 'preserved');
+  assert.equal(observedHeaders[1]?.get('X-Tuple-Header'), 'preserved');
 });
 
 void test('apiFetch throws ApiShapeError when response validation fails', async (t) => {

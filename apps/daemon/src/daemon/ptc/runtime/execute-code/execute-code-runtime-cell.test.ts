@@ -1,23 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createPtcSessionDockerCommandFixture } from '../../../../test-support/ptc-session-docker.js';
-import { testProjectId } from '../../../../test-support/project-id.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
-import { makeRunWorkspaceContext } from '../../../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../../../test-support/run-context.js';
+import { readToolOutputSnapshot } from '../../../files/tool-output-store.js';
+import { createPtcExecuteCodeCellTerminalResultStore } from '../../../ptc-execute-code-terminal-result-store.js';
 import { createPtcExecuteCodeCellRegistry } from './execute-code-cell-registry.js';
 import {
-  createPtcExecuteCodeReadOnlyCallbackEffectPolicy,
-  createPtcExecuteCodeWarmOnlyPlacementPreflightRecord,
-  createPtcExecuteCodeWarmSessionPlacementObservation,
+  createPtcExecuteCodeCallbackEffectPolicy,
+  createPtcExecuteCodePlacementCoordinator,
   type PtcExecuteCodePlacementCoordinator,
 } from './execute-code-placement.js';
 import { waitForExecuteCodeCell } from './execute-code-cell-wait.js';
 import { PTC_EXECUTE_CODE_TOOL_NAME } from './execute-code-runtime-contract.js';
 import { createPtcExecuteCodeRuntime } from './execute-code-runtime.js';
+import { createPtcExecuteCodeStore } from './execute-code-store.js';
 import { createPtcSessionDockerLocalBatchCommandPolicy } from '../../lab/session/session-docker-contract.js';
 import { PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_BUFFERED_BYTES_PER_STREAM } from '../../lab/profile/lab-profile-contract.js';
 import type {
@@ -46,7 +47,7 @@ function makeTestCellConfig(initialYieldTimeMs: number) {
 }
 
 void test('createPtcExecuteCodeRuntime leaves the cell registry dormant when ptcCell is disabled', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-disabled-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -75,15 +76,14 @@ void test('createPtcExecuteCodeRuntime leaves the cell registry dormant when ptc
       throw new Error('cell registry must stay dormant');
     },
     ptcCell: { enabled: false },
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(910),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'console.log("cell disabled")' },
     });
@@ -102,7 +102,7 @@ void test('createPtcExecuteCodeRuntime leaves the cell registry dormant when ptc
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
@@ -129,7 +129,7 @@ void test('createPtcExecuteCodeRuntime reports cell wait unavailable while ptcCe
 });
 
 void test('createPtcExecuteCodeRuntime can complete through the enabled detached cell branch', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-complete-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -152,15 +152,14 @@ void test('createPtcExecuteCodeRuntime can complete through the enabled detached
       };
     },
     ptcCell: makeTestCellConfig(60_000),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(911),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       invocationId: 'call-ptc-cell-complete',
       request: { code: 'console.log("cell enabled")' },
@@ -190,10 +189,9 @@ void test('createPtcExecuteCodeRuntime can complete through the enabled detached
       0,
     );
     const retriedResult = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(911),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       invocationId: 'call-ptc-cell-complete',
       request: { code: 'console.log("cell enabled")' },
@@ -206,13 +204,13 @@ void test('createPtcExecuteCodeRuntime can complete through the enabled detached
     assert.equal(cellStarts.length, 2);
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
-void test('createPtcExecuteCodeRuntime tags cell callback invocations with the reserved cell id', async () => {
-  const workspaceRoot = await mkdtemp(
+void test('createPtcExecuteCodeRuntime commits detached-cell store callbacks before the next cell starts', async () => {
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-callback-source-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -223,10 +221,12 @@ void test('createPtcExecuteCodeRuntime tags cell callback invocations with the r
     containerId: 'container-agent-ptc-execute-code-cell-callback-source',
   });
   let observedCellId: string | undefined;
+  let callbackRound = 0;
   const runtime = createPtcExecuteCodeRuntime({
     callbackTransportPolicy: TEST_CALLBACK_TRANSPORT_POLICY,
     commandRunner: fixture.runner,
     createEpochBridge: async (bridgeArgs) => {
+      callbackRound += 1;
       const callbackResult = await bridgeArgs.callbackHandler({
         requestId: 'runtime-callback-read-1',
         kind: 'geulbat_tool_call',
@@ -235,6 +235,27 @@ void test('createPtcExecuteCodeRuntime tags cell callback invocations with the r
         enterLongWait: () => true,
       });
       assert.equal(callbackResult.ok, true);
+      if (callbackRound === 1) {
+        const storeSetResult = await bridgeArgs.callbackHandler({
+          requestId: 'runtime-callback-store-set-1',
+          kind: 'store_set',
+          args: { key: 'note', value: 'from detached cell' },
+          signal: new AbortController().signal,
+          enterLongWait: () => true,
+        });
+        assert.deepEqual(storeSetResult, { ok: true, result: undefined });
+      }
+      const storeCallbackResult = await bridgeArgs.callbackHandler({
+        requestId: `runtime-callback-store-get-${callbackRound}`,
+        kind: 'store_get',
+        args: { key: 'note' },
+        signal: new AbortController().signal,
+        enterLongWait: () => true,
+      });
+      assert.deepEqual(storeCallbackResult, {
+        ok: true,
+        result: 'from detached cell',
+      });
       const session = await bridgeArgs.sessionManager.getOrCreate(
         bridgeArgs.identity,
       );
@@ -265,15 +286,20 @@ void test('createPtcExecuteCodeRuntime tags cell callback invocations with the r
       }),
     }),
     ptcCell: makeTestCellConfig(60_000),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
+    store: {
+      enabled: true,
+      maxKeys: 32,
+      maxValueBytes: 4_096,
+      maxTotalBytes: 32_768,
+    },
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(911_1),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'console.log("cell callback")' },
       toolCallbackHandler: async (invocation) => {
@@ -284,15 +310,299 @@ void test('createPtcExecuteCodeRuntime tags cell callback invocations with the r
 
     assert.equal(result.ok, true);
     assert.equal(observedCellId?.startsWith('ptc_cell_'), true);
+    if (!result.ok) {
+      return;
+    }
+    assert.equal(result.value.executionSurface, 'node_via_lab_batch_command');
+    if (result.value.executionSurface !== 'node_via_lab_batch_command') {
+      return;
+    }
+    assert.deepEqual(result.value.store, {
+      committedKeys: ['note'],
+      revisions: { note: 1 },
+    });
+
+    const nextResult = await runtime.executeCode({
+      runContext: makeRunContext({
+        threadId: testThreadId(911_1),
+        stateRoot,
+      }),
+      request: { code: 'console.log("next cell")' },
+      toolCallbackHandler: async (invocation) => {
+        observedCellId = invocation.cellId;
+        return { ok: true, result: { ok: true, output: 'callback ok' } };
+      },
+    });
+    assert.equal(nextResult.ok, true);
+    if (!nextResult.ok) {
+      return;
+    }
+    assert.equal(
+      nextResult.value.executionSurface,
+      'node_via_lab_batch_command',
+    );
+    if (nextResult.value.executionSurface !== 'node_via_lab_batch_command') {
+      return;
+    }
+    assert.deepEqual(nextResult.value.store, {
+      committedKeys: [],
+      revisions: {},
+    });
+    assert.equal(callbackRound, 2);
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime commits a yielded detached-cell store write before wait returns', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-store-wait-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-store-wait-runtime-'),
+  );
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: () => 'ptc_cell_store_wait',
+  });
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-execute-code-cell-store-wait',
+  });
+  const exit = deferredExit();
+  const runtime = createPtcExecuteCodeRuntime({
+    callbackTransportPolicy: TEST_CALLBACK_TRANSPORT_POLICY,
+    commandRunner: fixture.runner,
+    createCellRegistry: () => registry,
+    createEpochBridge: async (bridgeArgs) => {
+      assert.deepEqual(
+        await bridgeArgs.callbackHandler({
+          requestId: 'runtime-store-wait-set',
+          kind: 'store_set',
+          args: { key: 'after-wait', value: 42 },
+          signal: new AbortController().signal,
+          enterLongWait: () => true,
+        }),
+        { ok: true, result: undefined },
+      );
+      const session = await bridgeArgs.sessionManager.getOrCreate(
+        bridgeArgs.identity,
+      );
+      assert.equal(session.ok, true);
+      if (!session.ok) {
+        throw new Error('expected session');
+      }
+      return {
+        ok: true,
+        value: {
+          containerId: session.value.containerId,
+          epochId: 'epoch-cell-store-wait',
+          token: 'token-cell-store-wait',
+          callbackSocketHostPath: join(
+            session.value.callbackRootHostPath,
+            'callback.sock',
+          ),
+          callbackSocketContainerPath: '/geulbat/callbacks/callback.sock',
+          session: session.value,
+          close: async () => {},
+        },
+      };
+    },
+    startCellProcess: () => ({
+      ok: true,
+      handle: makeExitGatedDetachedHandle({
+        output: makeDetachedSegment({ stdout: 'async cell completed\n' }),
+        exit: exit.promise,
+      }),
+    }),
+    ptcCell: makeTestCellConfig(1),
+    runtimeRootForState: () => runtimeRoot,
+    store: {
+      enabled: true,
+      maxKeys: 32,
+      maxValueBytes: 4_096,
+      maxTotalBytes: 32_768,
+    },
+  });
+
+  try {
+    const started = await runtime.executeCode({
+      runContext: makeRunContext({
+        threadId: testThreadId(911_2),
+        stateRoot,
+      }),
+      request: { code: 'await new Promise(() => {})' },
+    });
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+    assert.equal(started.value.executionSurface, 'node_via_lab_detached_cell');
+    exit.resolve({ kind: 'exit', exitCode: 0, processTerminated: true });
+
+    assert.deepEqual(
+      await runtime.waitForCell({
+        runContext: { threadId: testThreadId(911_2) },
+        request: { cellId: 'ptc_cell_store_wait' },
+      }),
+      {
+        ok: true,
+        value: {
+          ok: true,
+          capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+          policyId: 'ptc_lab_execute_code_batch_node_v1',
+          executionSurface: 'node_via_lab_detached_cell',
+          status: 'completed',
+          cellId: 'ptc_cell_store_wait',
+          exitCode: 0,
+          stdout: 'async cell completed\n',
+          stderr: '',
+          store: {
+            committedKeys: ['after-wait'],
+            revisions: { 'after-wait': 1 },
+          },
+        },
+      },
+    );
+  } finally {
+    await runtime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime reports a yielded detached-cell store conflict through wait', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-store-conflict-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-store-conflict-runtime-'),
+  );
+  const storeRoot = join(runtimeRoot, 'store');
+  const storeConfig = {
+    enabled: true,
+    maxKeys: 32,
+    maxValueBytes: 4_096,
+    maxTotalBytes: 32_768,
+  } as const;
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: () => 'ptc_cell_store_conflict',
+  });
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-execute-code-cell-store-conflict',
+  });
+  const exit = deferredExit();
+  const runtime = createPtcExecuteCodeRuntime({
+    callbackTransportPolicy: TEST_CALLBACK_TRANSPORT_POLICY,
+    commandRunner: fixture.runner,
+    createCellRegistry: () => registry,
+    createEpochBridge: async (bridgeArgs) => {
+      assert.deepEqual(
+        await bridgeArgs.callbackHandler({
+          requestId: 'runtime-store-conflict-set',
+          kind: 'store_set',
+          args: { key: 'shared', value: 'from cell' },
+          signal: new AbortController().signal,
+          enterLongWait: () => true,
+        }),
+        { ok: true, result: undefined },
+      );
+      const session = await bridgeArgs.sessionManager.getOrCreate(
+        bridgeArgs.identity,
+      );
+      assert.equal(session.ok, true);
+      if (!session.ok) {
+        throw new Error('expected session');
+      }
+      return {
+        ok: true,
+        value: {
+          containerId: session.value.containerId,
+          epochId: 'epoch-cell-store-conflict',
+          token: 'token-cell-store-conflict',
+          callbackSocketHostPath: join(
+            session.value.callbackRootHostPath,
+            'callback.sock',
+          ),
+          callbackSocketContainerPath: '/geulbat/callbacks/callback.sock',
+          session: session.value,
+          close: async () => {},
+        },
+      };
+    },
+    startCellProcess: () => ({
+      ok: true,
+      handle: makeExitGatedDetachedHandle({
+        output: makeDetachedSegment({ stdout: 'cell exited zero\n' }),
+        exit: exit.promise,
+      }),
+    }),
+    ptcCell: makeTestCellConfig(1),
+    runtimeRootForState: () => runtimeRoot,
+    store: storeConfig,
+    storeRootForState: () => storeRoot,
+  });
+
+  try {
+    const started = await runtime.executeCode({
+      runContext: makeRunContext({
+        threadId: testThreadId(911_3),
+        stateRoot,
+      }),
+      request: { code: 'await new Promise(() => {})' },
+    });
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+
+    const external = await createPtcExecuteCodeStore({
+      rootDir: storeRoot,
+      config: storeConfig,
+    }).beginExecution({
+      threadId: testThreadId(911_3),
+      executionId: 'external-writer',
+    });
+    assert.equal(external.ok, true);
+    if (!external.ok) {
+      return;
+    }
+    assert.equal(external.value.set('shared', 'from outside').ok, true);
+    assert.equal((await external.value.commit()).ok, true);
+
+    exit.resolve({ kind: 'exit', exitCode: 0, processTerminated: true });
+    const waited = await runtime.waitForCell({
+      runContext: { threadId: testThreadId(911_3) },
+      request: { cellId: 'ptc_cell_store_conflict' },
+    });
+    assert.equal(waited.ok, false);
+    if (waited.ok) {
+      return;
+    }
+    assert.equal(waited.reasonCode, 'ptc_execute_code_store_commit_conflict');
+    assert.deepEqual(waited.store, { discardedWrites: 1 });
+    assert.equal(waited.storeError?.errorCode, 'StoreCommitConflict');
+    assert.deepEqual(waited.storeError?.details, {
+      conflicts: [
+        {
+          key: 'shared',
+          baseRevision: 0,
+          currentRevision: 1,
+          lastWriterExecutionId: 'external-writer',
+        },
+      ],
+    });
+  } finally {
+    await runtime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime removes the initial abort listener after fast cell exit', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-exit-listener-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -313,15 +623,14 @@ void test('createPtcExecuteCodeRuntime removes the initial abort listener after 
       }),
     }),
     ptcCell: makeTestCellConfig(60_000),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(912_1),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'console.log("cell exits quickly")' },
       signal: controller.signal,
@@ -331,13 +640,13 @@ void test('createPtcExecuteCodeRuntime removes the initial abort listener after 
     assert.equal(abortListeners.listenerCount(), 0);
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime keeps only the owner abort listener after initial yield', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-yield-listener-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -350,8 +659,13 @@ void test('createPtcExecuteCodeRuntime keeps only the owner abort listener after
     containerId: 'container-agent-ptc-execute-code-cell-yield-listener',
   });
   const exit = deferredExit();
+  let registry: ReturnType<typeof createPtcExecuteCodeCellRegistry> | undefined;
   const runtime = createPtcExecuteCodeRuntime({
     commandRunner: fixture.runner,
+    createCellRegistry: (options) => {
+      registry = createPtcExecuteCodeCellRegistry(options);
+      return registry;
+    },
     startCellProcess: () => ({
       ok: true,
       handle: {
@@ -367,15 +681,14 @@ void test('createPtcExecuteCodeRuntime keeps only the owner abort listener after
       },
     }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(912_2),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})' },
       signal: controller.signal,
@@ -391,19 +704,30 @@ void test('createPtcExecuteCodeRuntime keeps only the owner abort listener after
     }
     assert.equal(result.value.status, 'running');
     assert.equal(abortListeners.listenerCount(), 1);
+    assert.notEqual(registry, undefined);
+    if (registry === undefined) {
+      return;
+    }
 
+    const runningRevision = registry.getThreadRevision({
+      threadId: testThreadId(912_2),
+    });
     exit.resolve({ kind: 'exit', exitCode: 0, processTerminated: true });
+    await registry.waitForThreadRevisionChange({
+      threadId: testThreadId(912_2),
+      afterRevision: runningRevision,
+    });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(abortListeners.listenerCount(), 0);
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime returns a running cell summary when the enabled detached branch yields first', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-running-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -432,15 +756,14 @@ void test('createPtcExecuteCodeRuntime returns a running cell summary when the e
       };
     },
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(913),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       invocationId: 'call-ptc-cell-running',
       request: { code: 'await new Promise(() => {})', timeoutMs: 60_000 },
@@ -455,10 +778,9 @@ void test('createPtcExecuteCodeRuntime returns a running cell summary when the e
     assert.equal(result.value.cellId, 'ptc_cell_runtime_running');
     assert.equal(result.value.stdout, 'partial\n');
     const retriedRunResult = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(913),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       invocationId: 'call-ptc-cell-running',
       request: { code: 'await new Promise(() => {})', timeoutMs: 60_000 },
@@ -486,10 +808,9 @@ void test('createPtcExecuteCodeRuntime returns a running cell summary when the e
       },
     });
     const retriedAfterForeignWait = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(913),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       invocationId: 'call-ptc-cell-running',
       request: { code: 'await new Promise(() => {})', timeoutMs: 60_000 },
@@ -536,10 +857,9 @@ void test('createPtcExecuteCodeRuntime returns a running cell summary when the e
       state: 'terminal_retained',
     });
     const retriedAfterSettle = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(913),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       invocationId: 'call-ptc-cell-running',
       request: { code: 'await new Promise(() => {})', timeoutMs: 60_000 },
@@ -550,10 +870,9 @@ void test('createPtcExecuteCodeRuntime returns a running cell summary when the e
       'ptc_execute_code_cell_result_unclaimed',
     );
     const unclaimedConflict = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(913),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'return 2' },
     });
@@ -606,19 +925,362 @@ void test('createPtcExecuteCodeRuntime returns a running cell summary when the e
     assert.equal(registry.readCellState({ threadId: testThreadId(913) }), null);
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime recovers a background terminal result after memory reap and runtime restart', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-durable-result-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-durable-result-runtime-'),
+  );
+  const threadId = testThreadId(913_01);
+  const exit = deferredExit();
+  let now = 10_000;
+  const scheduled: Array<{
+    callback: () => Promise<void> | void;
+    delayMs: number;
+  }> = [];
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-execute-code-cell-durable-result',
+  });
+  const cellTerminalResultStore = createPtcExecuteCodeCellTerminalResultStore();
+  let registry: ReturnType<typeof createPtcExecuteCodeCellRegistry> | undefined;
+  const runtime = createPtcExecuteCodeRuntime({
+    cellTerminalResultStore,
+    commandRunner: fixture.runner,
+    createCellRegistry: (options) => {
+      registry = createPtcExecuteCodeCellRegistry({
+        ...options,
+        createCellId: () => 'ptc_cell_runtime_durable_result',
+        now: () => now,
+        terminalResultMemoryRetentionMs: 10,
+        scheduleReapTimeout: (callback, delayMs) => {
+          const entry = { callback, delayMs };
+          scheduled.push(entry);
+          return () => {
+            const index = scheduled.indexOf(entry);
+            if (index >= 0) {
+              scheduled.splice(index, 1);
+            }
+          };
+        },
+      });
+      return registry;
+    },
+    startCellProcess: () => ({
+      ok: true,
+      handle: makeDetachedHandle({
+        output: makeDetachedSegment({ stdout: 'durable result\n' }),
+        exit: exit.promise,
+      }),
+    }),
+    ptcCell: makeTestCellConfig(1),
+    runtimeRootForState: () => runtimeRoot,
+  });
+  let restartedRuntime:
+    | ReturnType<typeof createPtcExecuteCodeRuntime>
+    | undefined;
+
+  try {
+    const started = await runtime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      request: { code: 'await background_work', timeoutMs: 60_000 },
+    });
+    assert.equal(started.ok, true);
+    if (
+      !started.ok ||
+      started.value.executionSurface !== 'node_via_lab_detached_cell'
+    ) {
+      return;
+    }
+    assert.equal(started.value.status, 'running');
+    assert.notEqual(registry, undefined);
+    if (registry === undefined) {
+      return;
+    }
+
+    const runningRevision = registry.getThreadRevision({ threadId });
+    exit.resolve({ kind: 'exit', exitCode: 0, processTerminated: true });
+    await registry.waitForThreadRevisionChange({
+      threadId,
+      afterRevision: runningRevision,
+    });
+    const retentionReap = scheduled.find((entry) => entry.delayMs === 10);
+    assert.notEqual(retentionReap, undefined);
+    if (retentionReap === undefined) {
+      return;
+    }
+    now = 10_010;
+    await retentionReap.callback();
+
+    const waited = await runtime.waitForCell({
+      runContext: { threadId, stateRoot },
+      request: { cellId: started.value.cellId },
+    });
+    assert.equal(waited.ok, true);
+    if (!waited.ok) {
+      return;
+    }
+    assert.equal(waited.value.status, 'completed');
+    const outputRef = Reflect.get(waited.value, 'outputRef');
+    assert.equal(typeof outputRef, 'string');
+    if (typeof outputRef !== 'string') {
+      return;
+    }
+    const snapshot = await readToolOutputSnapshot({
+      stateRoot,
+      threadId,
+      outputRef,
+    });
+    assert.equal(snapshot.ok, true);
+    if (!snapshot.ok) {
+      return;
+    }
+    assert.deepEqual(JSON.parse(snapshot.value.output), {
+      kind: 'ptc_execute_code_cell_wait',
+      capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+      policyId: 'ptc_lab_execute_code_batch_node_v1',
+      executionSurface: 'node_via_lab_detached_cell',
+      status: 'completed',
+      cellId: 'ptc_cell_runtime_durable_result',
+      exitCode: 0,
+      stdout: 'durable result\n',
+      stderr: '',
+    });
+
+    await runtime.closeAll();
+    restartedRuntime = createPtcExecuteCodeRuntime({
+      cellTerminalResultStore,
+      ptcCell: makeTestCellConfig(1),
+    });
+    const afterRestart = await restartedRuntime.waitForCell({
+      runContext: { threadId, stateRoot },
+      request: { cellId: started.value.cellId },
+    });
+    assert.deepEqual(afterRestart, waited);
+  } finally {
+    await restartedRuntime?.closeAll();
+    await runtime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime retains an unclaimed result when its durable handoff fails', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-handoff-failure-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-handoff-failure-runtime-'),
+  );
+  await writeFile(join(stateRoot, '.geulbat'), 'not a directory', 'utf8');
+  const threadId = testThreadId(913_02);
+  const exit = deferredExit();
+  let now = 20_000;
+  const scheduled: Array<{
+    callback: () => Promise<void> | void;
+    delayMs: number;
+  }> = [];
+  let registry: ReturnType<typeof createPtcExecuteCodeCellRegistry> | undefined;
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-execute-code-cell-handoff-failure',
+  });
+  const runtime = createPtcExecuteCodeRuntime({
+    cellTerminalResultStore: createPtcExecuteCodeCellTerminalResultStore(),
+    commandRunner: fixture.runner,
+    createCellRegistry: (options) => {
+      registry = createPtcExecuteCodeCellRegistry({
+        ...options,
+        createCellId: () => 'ptc_cell_runtime_handoff_failure',
+        now: () => now,
+        terminalResultMemoryRetentionMs: 10,
+        scheduleReapTimeout: (callback, delayMs) => {
+          const entry = { callback, delayMs };
+          scheduled.push(entry);
+          return () => {
+            const index = scheduled.indexOf(entry);
+            if (index >= 0) {
+              scheduled.splice(index, 1);
+            }
+          };
+        },
+      });
+      return registry;
+    },
+    startCellProcess: () => ({
+      ok: true,
+      handle: makeExitGatedDetachedHandle({
+        output: makeDetachedSegment({ stdout: 'retained after failure\n' }),
+        exit: exit.promise,
+      }),
+    }),
+    ptcCell: makeTestCellConfig(1),
+    runtimeRootForState: () => runtimeRoot,
+  });
+  const originalWarn = console.warn;
+  const warnings: unknown[][] = [];
+
+  try {
+    const started = await runtime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      request: { code: 'await background_work', timeoutMs: 60_000 },
+    });
+    assert.equal(started.ok, true);
+    if (
+      !started.ok ||
+      started.value.executionSurface !== 'node_via_lab_detached_cell'
+    ) {
+      return;
+    }
+    assert.equal(started.value.status, 'running');
+    assert.notEqual(registry, undefined);
+    if (registry === undefined) {
+      return;
+    }
+
+    const runningRevision = registry.getThreadRevision({ threadId });
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    exit.resolve({ kind: 'exit', exitCode: 0, processTerminated: true });
+    await registry.waitForThreadRevisionChange({
+      threadId,
+      afterRevision: runningRevision,
+    });
+    now = 20_010;
+
+    assert.equal(
+      scheduled.some((entry) => entry.delayMs === 10),
+      false,
+    );
+    assert.deepEqual(registry.readCellState({ threadId }), {
+      cellId: 'ptc_cell_runtime_handoff_failure',
+      state: 'terminal_retained',
+    });
+    const blocked = await runtime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      request: { code: 'return 2', timeoutMs: 60_000 },
+    });
+    assert.equal(blocked.ok, false);
+    assert.equal(
+      blocked.ok ? '' : blocked.reasonCode,
+      'ptc_execute_code_cell_result_unclaimed',
+    );
+
+    const waited = await runtime.waitForCell({
+      runContext: { threadId, stateRoot },
+      request: { cellId: started.value.cellId },
+    });
+    assert.equal(waited.ok, true);
+    if (!waited.ok || 'outputRef' in waited.value) {
+      return;
+    }
+    assert.equal(waited.value.status, 'completed');
+    if (waited.value.status !== 'completed') {
+      return;
+    }
+    assert.equal(waited.value.stdout, 'retained after failure\n');
+    assert.equal(warnings.length, 1);
+    assert.match(
+      String(warnings[0]?.[0]),
+      /failed to persist PTC execute_code terminal result/,
+    );
+  } finally {
+    console.warn = originalWarn;
+    await runtime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime releases admitting cell after placement conflict', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-placement-busy-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-placement-busy-runtime-'),
+  );
+  const threadId = testThreadId(913_1);
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: () => 'ptc_cell_runtime_placement_busy',
+  });
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-execute-code-cell-placement-busy',
+  });
+  const createPlacementCoordinator =
+    (): PtcExecuteCodePlacementCoordinator => ({
+      acquirePlacement() {
+        return {
+          ok: false,
+          reasonCode: 'ptc_lab_session_busy',
+          message: 'PTC warm session already has an active placement lease',
+          remediation:
+            'Wait for the active exec cell to settle before retrying.',
+          diagnostics: {
+            placementLane: 'warm_session',
+            activeExecutionKind: 'batch_command',
+          },
+        };
+      },
+      releasePlacement() {
+        assert.fail('failed placement acquisition must not release a lease');
+      },
+      beginShutdown() {},
+      finishShutdown() {},
+    });
+  const runtime = createPtcExecuteCodeRuntime({
+    commandRunner: fixture.runner,
+    createCellRegistry: () => registry,
+    createPlacementCoordinator,
+    ptcCell: makeTestCellConfig(1),
+    runtimeRootForState: () => runtimeRoot,
+    startCellProcess: () => {
+      assert.fail('placement conflict must stop before process start');
+    },
+  });
+
+  try {
+    const result = await runtime.executeCode({
+      runContext: makeRunContext({
+        threadId,
+        stateRoot,
+      }),
+      request: { code: 'console.log("must not run")' },
+    });
+
+    assert.deepEqual(result, {
+      ok: false,
+      reasonCode: 'ptc_lab_session_busy',
+      message: 'PTC warm session already has an active placement lease',
+      remediation: 'Wait for the active exec cell to settle before retrying.',
+      diagnostics: {
+        placementLane: 'warm_session',
+        activeExecutionKind: 'batch_command',
+      },
+    });
+    assert.equal(registry.readCellState({ threadId }), null);
+  } finally {
+    await runtime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime keeps cell placement until a yielded cell settles', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-placement-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-placement-runtime-'),
   );
-  const threadId = testThreadId(913_1);
+  const threadId = testThreadId(913_2);
   const resourceSnapshotRef = {
     snapshotId: 'resource-snapshot-runtime-cell-test',
     source: 'agent_resource_budget_provider',
@@ -632,9 +1294,10 @@ void test('createPtcExecuteCodeRuntime keeps cell placement until a yielded cell
     containerId: 'container-agent-ptc-execute-code-cell-placement',
   });
   const exit = deferredExit();
+  const placementOwner = createPtcExecuteCodePlacementCoordinator();
   const createPlacementCoordinator =
     (): PtcExecuteCodePlacementCoordinator => ({
-      acquirePlacement(args) {
+      async acquirePlacement(args) {
         assert.equal(args.kind, 'detached_cell');
         assert.equal(args.cellId, 'ptc_cell_runtime_placement');
         assert.deepEqual(args.continuity, {
@@ -643,29 +1306,23 @@ void test('createPtcExecuteCodeRuntime keeps cell placement until a yielded cell
         });
         assert.deepEqual(
           args.callbackEffectPolicy,
-          createPtcExecuteCodeReadOnlyCallbackEffectPolicy({
+          createPtcExecuteCodeCallbackEffectPolicy({
             callbackToolCount: 0,
           }),
         );
         assert.deepEqual(args.resourceSnapshotRef, resourceSnapshotRef);
         events.push(`acquire:${args.identity.threadId}`);
-        const observation =
-          createPtcExecuteCodeWarmSessionPlacementObservation(args);
-        return {
-          kind: 'warm_session',
-          executionKind: args.kind,
-          cellId: args.cellId,
-          continuity: args.continuity,
-          observation,
-          preflight:
-            createPtcExecuteCodeWarmOnlyPlacementPreflightRecord(observation),
-          identity: args.identity,
-          sessionManager: args.sessionManager,
-          batchRunner: args.batchRunner,
-        };
+        return await placementOwner.acquirePlacement(args);
       },
-      releasePlacement(placement) {
+      async releasePlacement(placement) {
+        await placementOwner.releasePlacement(placement);
         events.push(`release:${placement.identity.threadId}`);
+      },
+      beginShutdown() {
+        placementOwner.beginShutdown();
+      },
+      finishShutdown() {
+        placementOwner.finishShutdown();
       },
     });
   const runtime = createPtcExecuteCodeRuntime({
@@ -691,15 +1348,14 @@ void test('createPtcExecuteCodeRuntime keeps cell placement until a yielded cell
       };
     },
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId,
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})', timeoutMs: 60_000 },
       placementResourceSnapshotRef: resourceSnapshotRef,
@@ -734,13 +1390,13 @@ void test('createPtcExecuteCodeRuntime keeps cell placement until a yielded cell
     assert.deepEqual(events, [`acquire:${threadId}`, `release:${threadId}`]);
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime closes yielded cells when the owner signal aborts', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-owner-abort-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -775,15 +1431,14 @@ void test('createPtcExecuteCodeRuntime closes yielded cells when the owner signa
       },
     }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(950),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})' },
       signal: controller.signal,
@@ -816,13 +1471,13 @@ void test('createPtcExecuteCodeRuntime closes yielded cells when the owner signa
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime waitForCell without a yield window wakes when a running cell completes', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-wait-wake-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -847,15 +1502,14 @@ void test('createPtcExecuteCodeRuntime waitForCell without a yield window wakes 
       }),
     }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(938),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})' },
     });
@@ -896,13 +1550,13 @@ void test('createPtcExecuteCodeRuntime waitForCell without a yield window wakes 
     });
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime waitForCell without a yield window wakes on new running output', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-output-wake-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -922,15 +1576,14 @@ void test('createPtcExecuteCodeRuntime waitForCell without a yield window wakes 
     createCellRegistry: () => registry,
     startCellProcess: () => ({ ok: true, handle }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(938_1),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})' },
     });
@@ -972,13 +1625,13 @@ void test('createPtcExecuteCodeRuntime waitForCell without a yield window wakes 
     exit.resolve({ kind: 'exit', exitCode: 0, processTerminated: true });
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime waitForCell reports yielded cell output policy rejection', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-output-limit-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1001,15 +1654,14 @@ void test('createPtcExecuteCodeRuntime waitForCell reports yielded cell output p
     createCellRegistry: () => registry,
     startCellProcess: () => ({ ok: true, handle }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(938_4),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'process.stdout.write("x".repeat(99_999_999))' },
     });
@@ -1047,13 +1699,13 @@ void test('createPtcExecuteCodeRuntime waitForCell reports yielded cell output p
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime waitForCell reports yielded cell timeout', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-wait-timeout-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1076,15 +1728,14 @@ void test('createPtcExecuteCodeRuntime waitForCell reports yielded cell timeout'
     createCellRegistry: () => registry,
     startCellProcess: () => ({ ok: true, handle }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(938_5),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})', timeoutMs: 1_000 },
     });
@@ -1116,13 +1767,13 @@ void test('createPtcExecuteCodeRuntime waitForCell reports yielded cell timeout'
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime waitForCell ignores unrelated thread revisions', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-thread-wake-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1145,17 +1796,16 @@ void test('createPtcExecuteCodeRuntime waitForCell ignores unrelated thread revi
     createCellRegistry: () => registry,
     startCellProcess: () => ({ ok: true, handle }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
   const ownerThreadId = testThreadId(938_2);
   const unrelatedThreadId = testThreadId(938_3);
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: ownerThreadId,
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})' },
     });
@@ -1217,13 +1867,13 @@ void test('createPtcExecuteCodeRuntime waitForCell ignores unrelated thread revi
     exit.resolve({ kind: 'exit', exitCode: 0, processTerminated: true });
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime caps initial cell yield by request timeout', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-yield-cap-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1258,16 +1908,15 @@ void test('createPtcExecuteCodeRuntime caps initial cell yield by request timeou
       };
     },
     ptcCell: makeTestCellConfig(60_000),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await Promise.race([
       runtime.executeCode({
-        runContext: makeRunWorkspaceContext({
+        runContext: makeRunContext({
           threadId: testThreadId(931),
-          projectId: testProjectId('project'),
-          workspaceRoot,
+          stateRoot,
         }),
         request: { code: 'await new Promise(() => {})', timeoutMs: 1 },
       }),
@@ -1287,13 +1936,13 @@ void test('createPtcExecuteCodeRuntime caps initial cell yield by request timeou
   } finally {
     await runtime.closeAll();
     assert.equal(terminated, true);
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime reports an initial detached cell timeout', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-timeout-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1317,15 +1966,14 @@ void test('createPtcExecuteCodeRuntime reports an initial detached cell timeout'
       }),
     }),
     ptcCell: makeTestCellConfig(60_000),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(931_2),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})', timeoutMs: 1_000 },
     });
@@ -1335,13 +1983,13 @@ void test('createPtcExecuteCodeRuntime reports an initial detached cell timeout'
     assert.equal(result.ok ? '' : result.diagnostics?.cellExitKind, 'timeout');
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime rejects explicit cell yield beyond the execution timeout', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-yield-invalid-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1362,15 +2010,14 @@ void test('createPtcExecuteCodeRuntime rejects explicit cell yield beyond the ex
       };
     },
     ptcCell: makeTestCellConfig(60_000),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(931_1),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: {
         code: 'await new Promise(() => {})',
@@ -1391,13 +2038,13 @@ void test('createPtcExecuteCodeRuntime rejects explicit cell yield beyond the ex
     assert.equal(cellStarted, false);
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime aborts the initial cell wait and taints the session', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-abort-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1431,15 +2078,14 @@ void test('createPtcExecuteCodeRuntime aborts the initial cell wait and taints t
       };
     },
     ptcCell: makeTestCellConfig(60_000),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(932),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})', timeoutMs: 60_000 },
       signal: controller.signal,
@@ -1459,13 +2105,13 @@ void test('createPtcExecuteCodeRuntime aborts the initial cell wait and taints t
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime closes callback-created sessions after cell bridge setup fails', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-bridge-setup-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1494,15 +2140,14 @@ void test('createPtcExecuteCodeRuntime closes callback-created sessions after ce
       throw new Error('cell process must not start after bridge setup failure');
     },
     ptcCell: makeTestCellConfig(60_000),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(933),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'return 1' },
       toolCallbackHandler: async () => ({
@@ -1528,13 +2173,13 @@ void test('createPtcExecuteCodeRuntime closes callback-created sessions after ce
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime taint-closes the session when cell promotion is lost', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-promotion-lost-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1572,15 +2217,14 @@ void test('createPtcExecuteCodeRuntime taint-closes the session when cell promot
       },
     }),
     ptcCell: makeTestCellConfig(60_000),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(933_1),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})' },
     });
@@ -1603,13 +2247,13 @@ void test('createPtcExecuteCodeRuntime taint-closes the session when cell promot
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime sanitizes detached cell output before returning it', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-redaction-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1641,15 +2285,14 @@ void test('createPtcExecuteCodeRuntime sanitizes detached cell output before ret
       },
     }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(934),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})' },
     });
@@ -1665,7 +2308,7 @@ void test('createPtcExecuteCodeRuntime sanitizes detached cell output before ret
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
@@ -1741,8 +2384,61 @@ void test('waitForExecuteCodeCell preserves terminal output when terminate races
   assert.equal(registry.readCellState({ threadId }), null);
 });
 
+void test('execute_code cell registry discards store writes when model code exits nonzero', async () => {
+  const threadId = testThreadId(914_1);
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: () => 'ptc_cell_store_nonzero',
+  });
+  const admitted = registry.reserveAdmittingCell({ threadId });
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) {
+    return;
+  }
+  const finalizationStatuses: string[] = [];
+  registry.promoteAdmittedCell({
+    threadId,
+    cellId: admitted.cellId,
+    resources: {
+      effectiveTimeoutMs: 60_000,
+      handle: makeDetachedHandle({ output: makeDetachedSegment() }),
+      closeBridge: () => {},
+      taintSession: () => true,
+      finalizeStore: async (status) => {
+        finalizationStatuses.push(status);
+        return { store: { discardedWrites: 1 } };
+      },
+    },
+  });
+
+  assert.deepEqual(
+    await registry.recordTerminalCellResult({
+      threadId,
+      cellId: admitted.cellId,
+      result: {
+        status: 'completed',
+        output: makeDetachedSegment({ stderr: 'model code failed\n' }),
+        exit: { kind: 'exit', exitCode: 1, processTerminated: true },
+      },
+    }),
+    { ok: true, value: { bridgeClosed: true } },
+  );
+  assert.deepEqual(finalizationStatuses, ['terminated']);
+  assert.deepEqual(
+    registry.takeTerminalCellResult({ threadId, cellId: admitted.cellId }),
+    {
+      ok: true,
+      value: {
+        status: 'completed',
+        output: makeDetachedSegment({ stderr: 'model code failed\n' }),
+        exit: { kind: 'exit', exitCode: 1, processTerminated: true },
+        store: { discardedWrites: 1 },
+      },
+    },
+  );
+});
+
 void test('createPtcExecuteCodeRuntime waitForCell terminates a running cell through taint close', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-terminate-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1758,8 +2454,43 @@ void test('createPtcExecuteCodeRuntime waitForCell terminates a running cell thr
   const exit = deferredExit();
   let terminateCount = 0;
   const runtime = createPtcExecuteCodeRuntime({
+    callbackTransportPolicy: TEST_CALLBACK_TRANSPORT_POLICY,
     commandRunner: fixture.runner,
     createCellRegistry: () => registry,
+    createEpochBridge: async (bridgeArgs) => {
+      assert.deepEqual(
+        await bridgeArgs.callbackHandler({
+          requestId: 'runtime-terminate-store-set',
+          kind: 'store_set',
+          args: { key: 'discarded', value: true },
+          signal: new AbortController().signal,
+          enterLongWait: () => true,
+        }),
+        { ok: true, result: undefined },
+      );
+      const session = await bridgeArgs.sessionManager.getOrCreate(
+        bridgeArgs.identity,
+      );
+      assert.equal(session.ok, true);
+      if (!session.ok) {
+        throw new Error('expected session');
+      }
+      return {
+        ok: true,
+        value: {
+          containerId: session.value.containerId,
+          epochId: 'epoch-cell-terminate-store',
+          token: 'token-cell-terminate-store',
+          callbackSocketHostPath: join(
+            session.value.callbackRootHostPath,
+            'callback.sock',
+          ),
+          callbackSocketContainerPath: '/geulbat/callbacks/callback.sock',
+          session: session.value,
+          close: async () => {},
+        },
+      };
+    },
     startCellProcess: () => ({
       ok: true,
       handle: {
@@ -1780,15 +2511,20 @@ void test('createPtcExecuteCodeRuntime waitForCell terminates a running cell thr
       },
     }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
+    store: {
+      enabled: true,
+      maxKeys: 32,
+      maxValueBytes: 4_096,
+      maxTotalBytes: 32_768,
+    },
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(914),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})' },
     });
@@ -1815,6 +2551,7 @@ void test('createPtcExecuteCodeRuntime waitForCell terminates a running cell thr
         exitCode: null,
         stdout: 'before terminate\n',
         stderr: 'stopping\n',
+        store: { discardedWrites: 1 },
       },
     });
     assert.equal(terminateCount, 1);
@@ -1827,13 +2564,13 @@ void test('createPtcExecuteCodeRuntime waitForCell terminates a running cell thr
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime fails and taints the session when initial cell bridge close fails', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-bridge-close-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -1879,15 +2616,14 @@ void test('createPtcExecuteCodeRuntime fails and taints the session when initial
       }),
     }),
     ptcCell: makeTestCellConfig(60_000),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(935),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'return 1' },
       toolCallbackHandler: async () => ({
@@ -1920,13 +2656,13 @@ void test('createPtcExecuteCodeRuntime fails and taints the session when initial
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime reports yielded cell bridge cleanup failure through wait', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(
       tmpdir(),
       'geulbat-ptc-execute-code-cell-yield-bridge-close-workspace-',
@@ -1981,15 +2717,14 @@ void test('createPtcExecuteCodeRuntime reports yielded cell bridge cleanup failu
       }),
     }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(938),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'return 1' },
       toolCallbackHandler: async () => ({
@@ -2022,6 +2757,10 @@ void test('createPtcExecuteCodeRuntime reports yielded cell bridge cleanup failu
     if (waited.value.status !== 'completed_with_cleanup_failure') {
       return;
     }
+    assert.equal('outputRef' in waited.value, false);
+    if ('outputRef' in waited.value) {
+      return;
+    }
     assert.equal(waited.value.stdout, 'background complete\n');
     assert.deepEqual(waited.value.cleanupFailure, {
       message: 'PTC execute_code cell cleanup failed after terminal exit',
@@ -2045,13 +2784,13 @@ void test('createPtcExecuteCodeRuntime reports yielded cell bridge cleanup failu
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime taints yielded cells that later exit by signal', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-yield-signal-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -2076,15 +2815,14 @@ void test('createPtcExecuteCodeRuntime taints yielded cells that later exit by s
       }),
     }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(936),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})' },
     });
@@ -2106,13 +2844,13 @@ void test('createPtcExecuteCodeRuntime taints yielded cells that later exit by s
     );
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
 
 void test('createPtcExecuteCodeRuntime reports cleanup failure when cell taint close is not proven', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-taint-fail-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -2155,15 +2893,14 @@ void test('createPtcExecuteCodeRuntime reports cleanup failure when cell taint c
       },
     }),
     ptcCell: makeTestCellConfig(1),
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const first = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(937),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'await new Promise(() => {})' },
     });
@@ -2182,10 +2919,9 @@ void test('createPtcExecuteCodeRuntime reports cleanup failure when cell taint c
     assert.equal(registry.readCellState({ threadId: testThreadId(937) }), null);
 
     const retry = await runtime.executeCode({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(937),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
       request: { code: 'return 2' },
     });
@@ -2200,7 +2936,7 @@ void test('createPtcExecuteCodeRuntime reports cleanup failure when cell taint c
     assert.equal(registry.readCellState({ threadId: testThreadId(937) }), null);
   } finally {
     await runtime.closeAll();
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
@@ -2253,6 +2989,22 @@ void test('createPtcExecuteCodeRuntime closeAll shuts down the enabled cell regi
   assert.equal(terminateCount, 1);
   assert.deepEqual(taintReasons, ['shutdown']);
   assert.equal(registry.readCellState({ threadId: testThreadId(912) }), null);
+  assert.deepEqual(
+    await runtime.executeCode({
+      runContext: makeRunContext({
+        threadId: testThreadId(912),
+        stateRoot: '/workspace',
+      }),
+      request: { code: 'console.log("must not restart")' },
+    }),
+    {
+      ok: false,
+      reasonCode: 'ptc_lab_session_unavailable',
+      message: 'PTC execute_code runtime is shutting down',
+      diagnostics: { shutdownState: 'closed', shutdownEpoch: 1 },
+    },
+  );
+  assert.deepEqual(await runtime.closeAll(), { ok: true });
 });
 
 function makeDetachedSegment(

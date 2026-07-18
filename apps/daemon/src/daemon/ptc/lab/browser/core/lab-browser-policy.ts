@@ -150,7 +150,7 @@ type PtcLabBrowserTextEvidencePolicyFields =
   };
 
 function digestPtcLabBrowserPolicyFingerprint(
-  value: Record<string, string | number>,
+  value: Record<string, string | number | Record<string, string | number>>,
 ): PtcSha256Digest {
   return digestPtcStableJson(value);
 }

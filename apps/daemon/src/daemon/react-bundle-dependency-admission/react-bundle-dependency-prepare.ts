@@ -6,7 +6,10 @@ import {
 } from '@geulbat/protocol/react-bundle-runtime-url-policy';
 import { isPlainRecord } from '@geulbat/protocol/runtime-utils';
 import type { ProcessCommandResult } from '@geulbat/shared-utils/process-command';
-import { sha256StableJson } from '@geulbat/shared-utils/stable-json';
+import {
+  sha256StableJson,
+  stableStringify,
+} from '@geulbat/shared-utils/stable-json';
 import type {
   SandboxAttemptStore,
   SandboxOutputRef,
@@ -27,7 +30,7 @@ export interface ReactBundleRuntimeDependencies {
   stylesheets?: string[];
 }
 
-export type ReactBundleExplicitDependencyRef =
+type ReactBundleExplicitDependencyRef =
   | {
       kind: 'esm_import';
       specifier: string;
@@ -120,6 +123,27 @@ type DependencyPrepareProcessRunner = (
 export function validateReactBundleDependencyPrepareRequest(
   request: ReactBundleDependencyPrepareRequest,
 ): ValidatedReactBundleDependencyPrepareRequest {
+  const decoded = decodeReactBundleDependencyPrepareRequest(request);
+  const normalizedRefs =
+    decoded.dependencyRefs.map<ValidatedReactBundleDependencyRef>((ref) => ({
+      ...ref,
+      integrityStatus: ref.integrity ? 'provided' : 'missing_allowed',
+    }));
+
+  return {
+    entryUrl: decoded.entryUrl,
+    runtimeDependencies: decoded.runtimeDependencies,
+    dependencyRefs: normalizedRefs,
+    inputHash: sha256StableJson(decoded),
+    lifecycleScripts: 'not_applicable',
+    networkPolicy: 'none',
+  };
+}
+
+export function decodeReactBundleDependencyPrepareRequest(
+  request: unknown,
+): ReactBundleDependencyPrepareRequest {
+  assertPlainRecord(request, 'react bundle dependency request');
   assertNonEmptyString(request.entryUrl, 'entryUrl');
   const entryUrl = normalizeReactBundleEntryUrl(request.entryUrl);
   const runtimeDependencies = normalizeRuntimeDependencies(
@@ -129,20 +153,16 @@ export function validateReactBundleDependencyPrepareRequest(
     throw new Error('dependencyRefs must be an array');
   }
 
+  const dependencyRefs = request.dependencyRefs.map(normalizeDependencyRef);
   const imports = runtimeDependencies.importMap?.imports ?? {};
   const stylesheets = runtimeDependencies.stylesheets ?? [];
-  const normalizedRefs = request.dependencyRefs.map(normalizeDependencyRef);
-
-  assertEsmImportConsistency(imports, normalizedRefs);
-  assertStylesheetConsistency(stylesheets, normalizedRefs);
+  assertEsmImportConsistency(imports, dependencyRefs);
+  assertStylesheetConsistency(stylesheets, dependencyRefs);
 
   return {
     entryUrl,
     runtimeDependencies,
-    dependencyRefs: normalizedRefs,
-    inputHash: sha256StableJson({ ...request, entryUrl }),
-    lifecycleScripts: 'not_applicable',
-    networkPolicy: 'none',
+    dependencyRefs,
   };
 }
 
@@ -169,13 +189,17 @@ function normalizeRuntimeDependencies(
 function normalizeRuntimeImportMap(
   value: unknown,
 ): ReactBundleRuntimeDependencies['importMap'] | undefined {
-  if (value === undefined) return undefined;
+  if (value === undefined) {
+    return undefined;
+  }
   assertPlainRecord(value, 'runtimeDependencies.importMap');
   assertSupportedKeys(value, ['imports'], () => {
     throw new Error('runtimeDependencies.importMap supports imports only');
   });
 
-  if (value.imports === undefined) return undefined;
+  if (value.imports === undefined) {
+    return undefined;
+  }
   assertPlainRecord(value.imports, 'runtimeDependencies.importMap.imports');
 
   const imports: Record<string, string> = {};
@@ -200,7 +224,9 @@ function normalizeRuntimeImportMap(
 }
 
 function normalizeRuntimeStylesheets(value: unknown): string[] | undefined {
-  if (value === undefined) return undefined;
+  if (value === undefined) {
+    return undefined;
+  }
   if (!Array.isArray(value)) {
     throw new Error('runtimeDependencies.stylesheets must be an array');
   }
@@ -464,25 +490,80 @@ async function readAndValidateCandidate(args: {
     join(args.outputRef.rootPath, 'candidate.json'),
     'utf8',
   );
-  const candidate = JSON.parse(candidateText) as DependencyPrepareCandidate;
-  if (candidate.schemaVersion !== 1) {
+  const candidate: unknown = JSON.parse(candidateText);
+  if (!isPlainRecord(candidate)) {
+    throw new Error('candidate must be an object');
+  }
+  if (candidate['schemaVersion'] !== 1) {
     throw new Error('candidate schemaVersion must be 1');
   }
   if (
-    candidate.adapterKind !== 'react_bundle_explicit_cdn_dependency_prepare'
+    candidate['adapterKind'] !== 'react_bundle_explicit_cdn_dependency_prepare'
   ) {
     throw new Error('candidate adapterKind mismatch');
   }
-  if (candidate.provenance.inputHash !== args.request.inputHash) {
+  if (candidate['entryUrl'] !== args.request.entryUrl) {
+    throw new Error('candidate entryUrl mismatch');
+  }
+  if (
+    stableStringify(candidate['runtimeDependencies']) !==
+    stableStringify(args.request.runtimeDependencies)
+  ) {
+    throw new Error('candidate runtimeDependencies mismatch');
+  }
+
+  const provenance = candidate['provenance'];
+  if (!isPlainRecord(provenance)) {
+    throw new Error('candidate provenance must be an object');
+  }
+  if (provenance['inputHash'] !== args.request.inputHash) {
     throw new Error('candidate input hash mismatch');
   }
-  if (candidate.provenance.networkPolicy !== 'none') {
+  const generatedAt = provenance['generatedAt'];
+  if (typeof generatedAt !== 'string') {
+    throw new Error('candidate generatedAt must be a string');
+  }
+  if (provenance['provider'] !== 'explicit_cdn') {
+    throw new Error('candidate provider mismatch');
+  }
+  const expectedResolvedUrls = args.request.dependencyRefs.map(
+    (dependency) => dependency.url,
+  );
+  if (
+    stableStringify(provenance['resolvedUrls']) !==
+    stableStringify(expectedResolvedUrls)
+  ) {
+    throw new Error('candidate resolvedUrls mismatch');
+  }
+  if (
+    stableStringify(provenance['dependencyRefs']) !==
+    stableStringify(args.request.dependencyRefs)
+  ) {
+    throw new Error('candidate dependencyRefs mismatch');
+  }
+  if (provenance['networkPolicy'] !== 'none') {
     throw new Error('candidate networkPolicy must be none');
   }
-  if (candidate.provenance.lifecycleScripts !== 'not_applicable') {
+  if (provenance['lifecycleScripts'] !== 'not_applicable') {
     throw new Error('candidate lifecycleScripts must be not_applicable');
   }
-  return candidate;
+  return {
+    ...candidate,
+    schemaVersion: 1,
+    adapterKind: 'react_bundle_explicit_cdn_dependency_prepare',
+    entryUrl: args.request.entryUrl,
+    runtimeDependencies: args.request.runtimeDependencies,
+    provenance: {
+      ...provenance,
+      inputHash: args.request.inputHash,
+      generatedAt,
+      provider: 'explicit_cdn',
+      resolvedUrls: expectedResolvedUrls,
+      dependencyRefs: args.request.dependencyRefs,
+      lifecycleScripts: 'not_applicable',
+      networkPolicy: 'none',
+    },
+  };
 }
 
 function toSummary(args: {
@@ -527,12 +608,18 @@ function joinDiagnostics(stdout: string, stderr: string): string {
 }
 
 function normalizeDependencyRef(
-  ref: ReactBundleExplicitDependencyRef,
-): ValidatedReactBundleDependencyRef {
+  value: unknown,
+): ReactBundleExplicitDependencyRef {
+  assertPlainRecord(value, 'dependency ref');
+  const ref = value;
   if (ref.provider !== 'explicit_cdn') {
     throw new Error('dependency provider must be explicit_cdn');
   }
+  assertNonEmptyString(ref.url, 'dependency URL');
   normalizeDependencyUrl(ref.url);
+  if (ref.integrity !== undefined && typeof ref.integrity !== 'string') {
+    throw new Error('dependency integrity must be a string');
+  }
 
   if (ref.kind === 'esm_import') {
     assertNonEmptyString(ref.specifier, 'dependency specifier');
@@ -540,24 +627,39 @@ function normalizeDependencyRef(
     assertExactVersion(ref.version);
     assertUrlContainsVersion(ref.url, ref.version);
     return {
-      ...ref,
-      integrityStatus: ref.integrity ? 'provided' : 'missing_allowed',
+      kind: ref.kind,
+      specifier: ref.specifier,
+      packageName: ref.packageName,
+      version: ref.version,
+      provider: ref.provider,
+      url: ref.url,
+      ...(ref.integrity !== undefined ? { integrity: ref.integrity } : {}),
     };
   }
 
+  if (ref.kind !== 'stylesheet') {
+    throw new Error('dependency kind must be esm_import or stylesheet');
+  }
+  if (ref.packageName !== undefined && typeof ref.packageName !== 'string') {
+    throw new Error('dependency packageName must be a string');
+  }
   if (ref.version !== undefined) {
     assertExactVersion(ref.version);
     assertUrlContainsVersion(ref.url, ref.version);
   }
   return {
-    ...ref,
-    integrityStatus: ref.integrity ? 'provided' : 'missing_allowed',
+    kind: ref.kind,
+    ...(ref.packageName !== undefined ? { packageName: ref.packageName } : {}),
+    ...(ref.version !== undefined ? { version: ref.version } : {}),
+    provider: ref.provider,
+    url: ref.url,
+    ...(ref.integrity !== undefined ? { integrity: ref.integrity } : {}),
   };
 }
 
 function assertEsmImportConsistency(
   imports: Record<string, string>,
-  refs: readonly ValidatedReactBundleDependencyRef[],
+  refs: readonly ReactBundleExplicitDependencyRef[],
 ): void {
   for (const [specifier, url] of Object.entries(imports)) {
     normalizeDependencyUrl(url);
@@ -591,7 +693,7 @@ function assertEsmImportConsistency(
 
 function assertStylesheetConsistency(
   stylesheets: readonly string[],
-  refs: readonly ValidatedReactBundleDependencyRef[],
+  refs: readonly ReactBundleExplicitDependencyRef[],
 ): void {
   for (const stylesheet of stylesheets) {
     normalizeDependencyUrl(stylesheet);
@@ -617,7 +719,7 @@ function assertStylesheetConsistency(
   }
 }
 
-function assertExactVersion(version: string): void {
+function assertExactVersion(version: unknown): asserts version is string {
   assertNonEmptyString(version, 'dependency version');
   if (
     !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(version) ||
@@ -658,7 +760,10 @@ function entryUrlPolicyFailureMessage(
     case 'shell_owned_privileged':
       return 'entryUrl points at a shell-owned privileged path';
   }
-  throw new Error(`unsupported entryUrl policy failure: ${reasonCode}`);
+  const _exhaustive: never = reasonCode;
+  throw new Error(
+    `unsupported entryUrl policy failure: ${String(_exhaustive)}`,
+  );
 }
 
 export function normalizeDependencyUrl(url: string): string {

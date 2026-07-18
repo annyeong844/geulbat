@@ -1,3 +1,4 @@
+import { isRecord } from '../../../runtime-json.js';
 import type { HistoryItem } from '../wire/types.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import { normalizeProviderUsageTelemetry } from '../provider-cache-telemetry.js';
@@ -6,6 +7,7 @@ import type {
   AssistantPhase,
   AssistantPhaseIssue,
   CompletedAssistantItem,
+  FunctionCallArgsDelta,
   ResponsesParseState,
 } from './responses-parser-shared.js';
 
@@ -16,22 +18,27 @@ export function processResponseEvent(
   event: Record<string, unknown>,
   state: ResponsesParseState,
   onDelta?: (delta: AssistantDelta) => void,
+  onFunctionCallArgsDelta?: (delta: FunctionCallArgsDelta) => void,
 ): void {
   switch (type) {
     case 'response.output_item.added': {
       const item = asRecord(event.item);
-      if (item?.id) {
-        const itemId = String(item.id);
+      const itemId = readEventString(item?.id);
+      if (item && itemId) {
         const phase = normalizeAssistantPhase(item.phase);
         const phaseIssue = readAssistantPhaseIssue(item.phase);
         const invalidPhase = readInvalidAssistantPhase(item.phase);
+        const callId = readEventString(item.call_id);
+        const name = readEventString(item.name);
         state.itemsById.set(itemId, {
           id: itemId,
           text: '',
-          type: String(item.type ?? ''),
+          type: readEventString(item.type) ?? '',
           ...(phase !== undefined ? { phase } : {}),
           ...(phaseIssue !== undefined ? { phaseIssue } : {}),
           ...(invalidPhase !== undefined ? { invalidPhase } : {}),
+          ...(callId !== undefined ? { callId } : {}),
+          ...(name !== undefined ? { name } : {}),
         });
       }
       break;
@@ -39,7 +46,7 @@ export function processResponseEvent(
 
     case 'response.output_text.delta': {
       const delta = typeof event.delta === 'string' ? event.delta : '';
-      const itemId = String(event.item_id ?? '');
+      const itemId = readEventString(event.item_id) ?? '';
       const buf = state.itemsById.get(itemId);
 
       if (buf) {
@@ -53,17 +60,43 @@ export function processResponseEvent(
       break;
     }
 
+    // 스트리밍 function-call 인자 — 도구가 원하면(visualize 등) 델타를
+    // 위로 흘린다. 완성본은 여전히 output_item.done이 정본이다.
+    case 'response.function_call_arguments.delta': {
+      const delta = typeof event.delta === 'string' ? event.delta : '';
+      const itemId = readEventString(event.item_id) ?? '';
+      const buf = state.itemsById.get(itemId);
+      if (buf && buf.type === 'function_call' && delta && buf.name) {
+        onFunctionCallArgsDelta?.({
+          itemId,
+          callId: buf.callId ?? '',
+          name: buf.name,
+          argsDelta: delta,
+        });
+      }
+      break;
+    }
+
     case 'response.output_item.done': {
       const item = asRecord(event.item);
-      if (!item?.id) break;
-      const id = String(item.id);
+      const id = readEventString(item?.id);
+      if (!item || !id) {
+        break;
+      }
+
+      const outputIndex = readProviderOutputIndex(event);
+      state.providerOutputItems.push({
+        completionOrder: state.providerOutputItems.length,
+        item,
+        ...(outputIndex !== undefined ? { outputIndex } : {}),
+      });
 
       if (item.type === 'function_call') {
         const fc = {
           id,
-          callId: String(item.call_id ?? ''),
-          name: String(item.name ?? ''),
-          arguments: String(item.arguments ?? '{}'),
+          callId: readEventString(item.call_id) ?? '',
+          name: readEventString(item.name) ?? '',
+          arguments: readEventString(item.arguments) ?? '{}',
         };
         state.functionCalls.push(fc);
         state.completedItems.push({
@@ -131,9 +164,14 @@ export function processResponseEvent(
 
     case 'error':
     case 'response.failed': {
-      const errorRecord = asRecord(asRecord(event.response)?.error);
-      const code = String(errorRecord?.code ?? event.code ?? '');
-      const message = String(errorRecord?.message ?? event.message ?? '');
+      const errorRecord =
+        asRecord(asRecord(event.response)?.error) ?? asRecord(event.error);
+      const code =
+        readEventString(errorRecord?.code) ?? readEventString(event.code) ?? '';
+      const message =
+        readEventString(errorRecord?.message) ??
+        readEventString(event.message) ??
+        '';
       const rawDetail = stringifyEventError(errorRecord ?? event);
       const msg = message || code || rawDetail || 'API stream error';
       throw new Error(msg);
@@ -144,9 +182,7 @@ export function processResponseEvent(
   }
 }
 
-function readResponseUsage(
-  event: Record<string, unknown>,
-): unknown | undefined {
+function readResponseUsage(event: Record<string, unknown>): unknown {
   const response = asRecord(event.response);
   return response?.usage ?? event.usage;
 }
@@ -169,13 +205,30 @@ function isAssistantPhase(value: unknown): value is AssistantPhase {
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === 'object' && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : null;
+  return isRecord(v) ? v : null;
+}
+
+function readEventString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function readProviderOutputIndex(
+  event: Record<string, unknown>,
+): number | undefined {
+  const value = event.output_index;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error('provider output item has an invalid output_index');
+  }
+  return value;
 }
 
 function extractTextFromContent(content: unknown): string {
-  if (!Array.isArray(content)) return '';
+  if (!Array.isArray(content)) {
+    return '';
+  }
   return content
     .map((part: { type?: string; text?: string }) =>
       part?.type === 'output_text' ? (part.text ?? '') : '',
@@ -195,7 +248,7 @@ function stringifyEventError(value: unknown): string {
 
 export function finalizeAssistantHistoryItems(
   state: ResponsesParseState,
-): void {
+): HistoryItem[] {
   const finalizedItems: HistoryItem[] = [];
 
   for (const item of state.completedItems) {
@@ -207,6 +260,43 @@ export function finalizeAssistantHistoryItems(
   }
 
   state.completedItems = finalizedItems;
+  return finalizedItems;
+}
+
+export function finalizeProviderOutputHistoryItems(
+  state: ResponsesParseState,
+): HistoryItem[] {
+  const hasIndexedItems = state.providerOutputItems.some(
+    (item) => item.outputIndex !== undefined,
+  );
+  const allItemsAreIndexed = state.providerOutputItems.every(
+    (item) => item.outputIndex !== undefined,
+  );
+  if (hasIndexedItems && !allItemsAreIndexed) {
+    throw new Error('provider output item ordering is incomplete');
+  }
+
+  const orderedItems = [...state.providerOutputItems];
+  if (allItemsAreIndexed) {
+    const seenOutputIndexes = new Set<number>();
+    for (const item of orderedItems) {
+      const outputIndex = item.outputIndex;
+      if (outputIndex === undefined || seenOutputIndexes.has(outputIndex)) {
+        throw new Error('provider output item ordering is ambiguous');
+      }
+      seenOutputIndexes.add(outputIndex);
+    }
+    orderedItems.sort(
+      (left, right) =>
+        (left.outputIndex ?? left.completionOrder) -
+        (right.outputIndex ?? right.completionOrder),
+    );
+  }
+
+  return orderedItems.map(({ item }) => ({
+    kind: 'backend_item',
+    data: item,
+  }));
 }
 
 function toCompletedAssistantItem(
@@ -268,7 +358,10 @@ function readInvalidAssistantPhase(phase: unknown): string | undefined {
   if (phase === undefined || isAssistantPhase(phase)) {
     return undefined;
   }
-  return String(phase);
+  if (typeof phase === 'string') {
+    return phase;
+  }
+  return stringifyEventError(phase) || typeof phase;
 }
 
 function buildAssistantPhaseResolutionErrorMessage(

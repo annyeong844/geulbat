@@ -1,29 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createProjectRegistryStore } from '../../../daemon/files/project-registry-state.js';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { readRunChannelClientMessage } from './validate-run-channel-message.js';
 
-function createValidationArgs() {
-  const projectRegistry = createProjectRegistryStore({
-    root: '/tmp/run-channel-validate',
-  });
-  projectRegistry.replaceProjectRegistry([
-    { projectId: testProjectId('workspace'), label: 'Workspace' },
-  ]);
-  return { projectRegistry };
-}
-
 void test('readRunChannelClientMessage accepts valid run.auth payloads', () => {
-  const args = createValidationArgs();
-  const result = readRunChannelClientMessage(
-    {
-      type: 'run.auth',
-      requestId: 'req-auth',
-      token: 'geulbat-dev-token',
-    },
-    args,
-  );
+  const result = readRunChannelClientMessage({
+    type: 'run.auth',
+    requestId: 'req-auth',
+    token: 'geulbat-dev-token',
+  });
 
   assert.deepEqual(result, {
     ok: true,
@@ -36,43 +20,33 @@ void test('readRunChannelClientMessage accepts valid run.auth payloads', () => {
 });
 
 void test('readRunChannelClientMessage rejects empty objects', () => {
-  assert.equal(
-    readRunChannelClientMessage({}, createValidationArgs()).ok,
-    false,
-  );
+  assert.equal(readRunChannelClientMessage({}).ok, false);
 });
 
 void test('readRunChannelClientMessage rejects malformed run.start payloads', () => {
   assert.deepEqual(
-    readRunChannelClientMessage(
-      {
-        type: 'run.start',
-        requestId: 'req-1',
-        request: {},
-      },
-      createValidationArgs(),
-    ),
+    readRunChannelClientMessage({
+      type: 'run.start',
+      requestId: 'req-1',
+      request: {},
+    }),
     { ok: false, message: 'invalid websocket JSON' },
   );
 });
 
 void test('readRunChannelClientMessage accepts valid run.start payloads', () => {
-  const args = createValidationArgs();
-  const result = readRunChannelClientMessage(
-    {
-      type: 'run.start',
-      requestId: 'req-1',
-      request: {
-        prompt: 'hello',
-        displayPrompt: 'Apply artifact to episodes/ch01.md',
-        projectId: 'workspace',
-        selection: { startLine: 1, endLine: 2, text: 'x' },
-        allowedToolsHint: ['read_file'],
-        permissionMode: 'full_access',
-      },
+  const result = readRunChannelClientMessage({
+    type: 'run.start',
+    requestId: 'req-1',
+    request: {
+      prompt: 'hello',
+      displayPrompt: 'Apply artifact to episodes/ch01.md',
+      workingDirectory: 'Users/sample/Documents',
+      selection: { startLine: 1, endLine: 2, text: 'x' },
+      allowedPublicToolNames: ['read_file'],
+      permissionMode: 'full_access',
     },
-    args,
-  );
+  });
 
   assert.equal(result.ok, true);
   if (!result.ok) {
@@ -81,15 +55,25 @@ void test('readRunChannelClientMessage accepts valid run.start payloads', () => 
   assert.equal(result.message.type, 'run.start');
 });
 
-void test('readRunChannelClientMessage accepts run.interject envelopes without request field validation', () => {
-  const result = readRunChannelClientMessage(
-    {
-      type: 'run.interject',
-      requestId: 'req-interject',
-      request: {},
+void test('readRunChannelClientMessage rejects retired allowedToolsHint payloads', () => {
+  const result = readRunChannelClientMessage({
+    type: 'run.start',
+    requestId: 'req-1',
+    request: {
+      prompt: 'hello',
+      allowedToolsHint: ['read_file'],
     },
-    createValidationArgs(),
-  );
+  });
+
+  assert.deepEqual(result, { ok: false, message: 'invalid websocket JSON' });
+});
+
+void test('readRunChannelClientMessage accepts run.interject envelopes without request field validation', () => {
+  const result = readRunChannelClientMessage({
+    type: 'run.interject',
+    requestId: 'req-interject',
+    request: {},
+  });
 
   assert.equal(result.ok, true);
   if (!result.ok) {
@@ -98,105 +82,114 @@ void test('readRunChannelClientMessage accepts run.interject envelopes without r
   assert.equal(result.message.type, 'run.interject');
 });
 
-void test('readRunChannelClientMessage rejects unknown project ids after protocol shape validation', () => {
+void test('readRunChannelClientMessage rejects retired project ownership', () => {
   assert.deepEqual(
-    readRunChannelClientMessage(
-      {
-        type: 'run.start',
-        requestId: 'req-project',
-        request: {
-          prompt: 'hello',
-          projectId: 'unknown-project',
-        },
+    readRunChannelClientMessage({
+      type: 'run.start',
+      requestId: 'req-project',
+      request: {
+        prompt: 'hello',
+        projectId: 'workspace',
       },
-      createValidationArgs(),
-    ),
+    }),
     { ok: false, message: 'invalid websocket JSON' },
   );
 });
 
 void test('readRunChannelClientMessage rejects traversal-like threadIds', () => {
   assert.deepEqual(
-    readRunChannelClientMessage(
-      {
-        type: 'run.start',
-        requestId: 'req-2',
-        request: {
-          prompt: 'hello',
-          projectId: 'workspace',
-          threadId: '../../escape',
-        },
+    readRunChannelClientMessage({
+      type: 'run.start',
+      requestId: 'req-2',
+      request: {
+        prompt: 'hello',
+        threadId: '../../escape',
       },
-      createValidationArgs(),
-    ),
+    }),
     { ok: false, message: 'invalid websocket JSON' },
   );
 
   assert.deepEqual(
-    readRunChannelClientMessage(
-      {
-        type: 'run.approve',
-        requestId: 'req-3',
-        request: {
-          callId: 'call-1',
-          runId: 'run-1',
-          threadId: 'thread/child',
-          approved: true,
-          grantScope: 'once',
-        },
+    readRunChannelClientMessage({
+      type: 'run.approve',
+      requestId: 'req-3',
+      request: {
+        callId: 'call-1',
+        runId: 'run-1',
+        threadId: 'thread/child',
+        approved: true,
+        grantScope: 'once',
       },
-      createValidationArgs(),
-    ),
+    }),
     { ok: false, message: 'invalid websocket JSON' },
   );
 });
 
 void test('readRunChannelClientMessage rejects unknown permission modes and grant scopes', () => {
   assert.deepEqual(
-    readRunChannelClientMessage(
-      {
-        type: 'run.start',
-        requestId: 'req-4',
-        request: {
-          prompt: 'hello',
-          projectId: 'workspace',
-          permissionMode: 'god_mode',
-        },
+    readRunChannelClientMessage({
+      type: 'run.start',
+      requestId: 'req-4',
+      request: {
+        prompt: 'hello',
+        permissionMode: 'god_mode',
       },
-      createValidationArgs(),
-    ),
+    }),
     { ok: false, message: 'invalid websocket JSON' },
   );
 
   assert.deepEqual(
-    readRunChannelClientMessage(
-      {
-        type: 'run.approve',
-        requestId: 'req-5',
-        request: {
-          callId: 'call-1',
-          runId: 'run-1',
-          threadId: '00000000-0000-4000-8000-000000000001',
-          approved: true,
-          grantScope: 'forever',
-        },
+    readRunChannelClientMessage({
+      type: 'run.approve',
+      requestId: 'req-5',
+      request: {
+        callId: 'call-1',
+        runId: 'run-1',
+        threadId: '00000000-0000-4000-8000-000000000001',
+        approved: true,
+        grantScope: 'forever',
       },
-      createValidationArgs(),
-    ),
+    }),
     { ok: false, message: 'invalid websocket JSON' },
   );
 });
 
 void test('readRunChannelClientMessage rejects blank request ids centrally', () => {
   assert.deepEqual(
-    readRunChannelClientMessage(
-      {
-        type: 'run.auth',
-        requestId: '   ',
-        token: 'geulbat-dev-token',
-      },
-      createValidationArgs(),
-    ),
+    readRunChannelClientMessage({
+      type: 'run.auth',
+      requestId: '   ',
+      token: 'geulbat-dev-token',
+    }),
+    { ok: false, message: 'requestId is required' },
+  );
+});
+
+void test('readRunChannelClientMessage accepts run.tool envelopes without request field validation', () => {
+  const result = readRunChannelClientMessage({
+    type: 'run.tool',
+    requestId: 'req-tool',
+    request: {},
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) {
+    return;
+  }
+  assert.equal(result.message.type, 'run.tool');
+});
+
+void test('readRunChannelClientMessage rejects run.tool envelopes without requestId', () => {
+  assert.equal(
+    readRunChannelClientMessage({ type: 'run.tool', request: {} }).ok,
+    false,
+  );
+  assert.deepEqual(
+    readRunChannelClientMessage({
+      type: 'run.tool',
+      requestId: '   ',
+      request: {},
+    }),
     { ok: false, message: 'requestId is required' },
   );
 });

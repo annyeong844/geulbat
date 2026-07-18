@@ -1,9 +1,18 @@
 import type { DaemonArtifactCandidate } from '../../../artifact-candidate.js';
+import type { JsonValue } from '../../../runtime-json.js';
 
 export type ProviderArtifactCandidate = DaemonArtifactCandidate;
+export type ProviderNativeCompactionOutputItem = Record<string, JsonValue>;
+
+// 사용자 첨부의 모델 전달 형태 — 이미지는 input_image(data URL) 블록,
+// 텍스트 파일은 본문을 담은 input_text 블록으로 나간다.
+export type HistoryUserAttachment =
+  | { kind: 'image'; name: string; mimeType: string; dataBase64: string }
+  | { kind: 'pdf'; name: string; mimeType: string; dataBase64: string }
+  | { kind: 'text'; name: string; text: string };
 
 export type HistoryItem =
-  | { kind: 'user'; text: string }
+  | { kind: 'user'; text: string; attachments?: HistoryUserAttachment[] }
   | { kind: 'assistant'; phase: 'commentary' | 'final_answer'; text: string }
   | {
       kind: 'function_call';
@@ -13,6 +22,12 @@ export type HistoryItem =
       arguments: string;
     }
   | { kind: 'function_call_output'; callId: string; output: string }
+  | {
+      kind: 'provider_native_compaction';
+      providerId: string;
+      model: string;
+      output: ProviderNativeCompactionOutputItem[];
+    }
   | { kind: 'backend_item'; data: unknown };
 
 export interface FunctionCall {
@@ -51,22 +66,22 @@ export type ProviderUsageTelemetry =
 
 // ── Provider wire format types ──
 
-export interface WireToolObjectParameters {
+interface WireToolObjectParameters {
   type: 'object';
   properties: Record<string, unknown>;
   required: string[];
   additionalProperties: false;
 }
 
-export interface WireToolOneOfParameters {
+interface WireToolOneOfParameters {
   oneOf: WireToolObjectParameters[];
 }
 
-export interface WireToolAnyOfParameters {
+interface WireToolAnyOfParameters {
   anyOf: WireToolObjectParameters[];
 }
 
-export type WireToolParameters =
+type WireToolParameters =
   | WireToolObjectParameters
   | WireToolOneOfParameters
   | WireToolAnyOfParameters;

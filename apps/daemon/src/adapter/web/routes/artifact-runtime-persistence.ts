@@ -3,7 +3,12 @@ import {
   isJsonValue,
   isArtifactRuntimePersistenceRenderer,
 } from '@geulbat/protocol/runtime-persistence';
-import type { ArtifactRuntimePersistenceScopeRequest } from '@geulbat/protocol/runtime-persistence';
+import type {
+  ArtifactRuntimePersistenceScopeRequest,
+  ArtifactRuntimePersistenceStateInputRefResponse,
+  JsonValue,
+} from '@geulbat/protocol/runtime-persistence';
+import { isRecord } from '@geulbat/protocol/runtime-utils';
 import {
   clearArtifactRuntimePersistenceState,
   loadArtifactRuntimePersistenceState,
@@ -15,42 +20,28 @@ import {
   readArtifactRuntimePersistenceStateInputRefPath,
   writeArtifactRuntimePersistenceStateInputRefFromStream,
 } from '../../../daemon/artifact-runtime-persistence/input-ref-store.js';
-import {
-  assertProjectId as assertValidProjectId,
-  assertThreadId as assertValidThreadId,
-} from '@geulbat/protocol/ids';
+import { assertThreadId as assertValidThreadId } from '@geulbat/protocol/ids';
 import { readRequiredBodyStrings } from '#web/request/string-fields.js';
-import {
-  readProjectWorkspaceScopeFromBody,
-  readProjectWorkspaceScopeFromQuery,
-} from '#web/request/project-scope.js';
 import { sendArtifactRuntimePersistenceRouteError } from '../protocol/map-errors.js';
 import {
   sendApiError,
   sendUnexpectedApiError,
 } from '#web/response/send-api-error.js';
 import { registerInputRefDeleteRoute } from './input-ref-routes.js';
-import type { ProjectScopedRoutesContext } from './routes-context.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
-import type { JsonValue } from '@geulbat/protocol/runtime-persistence';
-import type { ArtifactRuntimePersistenceStateInputRefResponse } from '@geulbat/protocol/runtime-persistence';
-
 const logger = createLogger('web/artifact-runtime-persistence');
 
 export function createArtifactRuntimePersistenceRoutes(args: {
-  projectRegistry: ProjectScopedRoutesContext['projectRegistry'];
+  homeStateRoot: string;
 }): Router {
   const router = Router();
-  const { projectRegistry } = args;
 
   router.post('/api/artifact-runtime-persistence/load', async (req, res) => {
-    const body = req.body as Record<string, unknown> | undefined;
+    const body = isRecord(req.body) ? req.body : undefined;
     const request = readArtifactRuntimePersistenceBaseRequestOrSendError(
       res,
       body,
-      {
-        projectRegistry,
-      },
+      args,
     );
     if (!request) {
       return;
@@ -58,7 +49,7 @@ export function createArtifactRuntimePersistenceRoutes(args: {
 
     try {
       const result = await loadArtifactRuntimePersistenceState(
-        request.workspaceRoot,
+        request.stateRoot,
         request.scope,
       );
       res.json(result);
@@ -83,20 +74,10 @@ export function createArtifactRuntimePersistenceRoutes(args: {
         return;
       }
 
-      const projectScope = readProjectScopeOrSendError(
-        res,
-        readProjectWorkspaceScopeFromQuery(req.query['projectId'], {
-          projectRegistry,
-        }),
-      );
-      if (!projectScope) {
-        return;
-      }
-
       try {
         const result =
           await writeArtifactRuntimePersistenceStateInputRefFromStream({
-            workspaceRoot: projectScope.workspaceRoot,
+            workspaceRoot: args.homeStateRoot,
             input: req,
           });
         const response: ArtifactRuntimePersistenceStateInputRefResponse = {
@@ -117,7 +98,7 @@ export function createArtifactRuntimePersistenceRoutes(args: {
   registerInputRefDeleteRoute({
     router,
     path: '/api/artifact-runtime-persistence/state-inputs',
-    projectRegistry,
+    resolveWorkspaceRoot: () => args.homeStateRoot,
     refQueryName: 'stateRef',
     logContext: 'artifact-runtime-persistence/state-inputs/delete',
     readRefPath: ({ workspaceRoot, ref }) =>
@@ -129,13 +110,11 @@ export function createArtifactRuntimePersistenceRoutes(args: {
   });
 
   router.post('/api/artifact-runtime-persistence/save', async (req, res) => {
-    const body = req.body as Record<string, unknown> | undefined;
+    const body = isRecord(req.body) ? req.body : undefined;
     const request = readArtifactRuntimePersistenceBaseRequestOrSendError(
       res,
       body,
-      {
-        projectRegistry,
-      },
+      args,
     );
     if (!request) {
       return;
@@ -148,7 +127,7 @@ export function createArtifactRuntimePersistenceRoutes(args: {
     const stateInput = await readSaveStateInputOrSendError(
       res,
       body,
-      request.workspaceRoot,
+      request.stateRoot,
     );
     if (!stateInput) {
       return;
@@ -156,7 +135,7 @@ export function createArtifactRuntimePersistenceRoutes(args: {
 
     try {
       const result = await saveArtifactRuntimePersistenceState(
-        request.workspaceRoot,
+        request.stateRoot,
         request.scope,
         stateInput.state,
         expectedRevision.value,
@@ -178,13 +157,11 @@ export function createArtifactRuntimePersistenceRoutes(args: {
   });
 
   router.post('/api/artifact-runtime-persistence/clear', async (req, res) => {
-    const body = req.body as Record<string, unknown> | undefined;
+    const body = isRecord(req.body) ? req.body : undefined;
     const request = readArtifactRuntimePersistenceBaseRequestOrSendError(
       res,
       body,
-      {
-        projectRegistry,
-      },
+      args,
     );
     if (!request) {
       return;
@@ -197,7 +174,7 @@ export function createArtifactRuntimePersistenceRoutes(args: {
 
     try {
       const result = await clearArtifactRuntimePersistenceState(
-        request.workspaceRoot,
+        request.stateRoot,
         request.scope,
         expectedRevision.value,
       );
@@ -219,29 +196,22 @@ type ArtifactRuntimePersistenceSaveStateInput =
   | { kind: 'ref'; stateRef: string; path: string; state: JsonValue | null };
 
 interface ArtifactRuntimePersistenceLoadRequest {
-  workspaceRoot: string;
+  stateRoot: string;
   scope: ArtifactRuntimePersistenceScopeRequest;
 }
 
 function readArtifactRuntimePersistenceBaseRequestOrSendError(
   res: Response,
   body: Record<string, unknown> | undefined,
-  args: {
-    projectRegistry: ProjectScopedRoutesContext['projectRegistry'];
-  },
+  args: { homeStateRoot: string },
 ): ArtifactRuntimePersistenceLoadRequest | null {
   const scope = readArtifactRuntimePersistenceScope(body);
   if (!scope.ok) {
     sendApiError(res, 'bad_request', scope.message);
     return null;
   }
-  const projectScope = readProjectWorkspaceScopeFromBody(body, args);
-  if (!projectScope.ok) {
-    sendApiError(res, projectScope.code, projectScope.message);
-    return null;
-  }
   return {
-    workspaceRoot: projectScope.workspaceRoot,
+    stateRoot: args.homeStateRoot,
     scope: scope.value,
   };
 }
@@ -251,11 +221,8 @@ async function readSaveStateInputOrSendError(
   body: Record<string, unknown> | undefined,
   workspaceRoot: string,
 ): Promise<ArtifactRuntimePersistenceSaveStateInput | null> {
-  const hasState = Object.prototype.hasOwnProperty.call(body ?? {}, 'state');
-  const hasStateRef = Object.prototype.hasOwnProperty.call(
-    body ?? {},
-    'stateRef',
-  );
+  const hasState = Object.hasOwn(body ?? {}, 'state');
+  const hasStateRef = Object.hasOwn(body ?? {}, 'stateRef');
   if (!hasState && !hasStateRef) {
     sendApiError(res, 'bad_request', 'state or stateRef is required');
     return null;
@@ -298,17 +265,6 @@ async function readSaveStateInputOrSendError(
   return { kind: 'body', state: body?.['state'] ?? null };
 }
 
-function readProjectScopeOrSendError(
-  res: Response,
-  projectScope: ReturnType<typeof readProjectWorkspaceScopeFromQuery>,
-): { workspaceRoot: string } | null {
-  if (!projectScope.ok) {
-    sendApiError(res, projectScope.code, projectScope.message);
-    return null;
-  }
-  return { workspaceRoot: projectScope.workspaceRoot };
-}
-
 async function deleteStateInputRefAfterUse(
   input: Extract<ArtifactRuntimePersistenceSaveStateInput, { kind: 'ref' }>,
 ): Promise<void> {
@@ -330,8 +286,10 @@ function readArtifactRuntimePersistenceScope(
       value: ArtifactRuntimePersistenceScopeRequest;
     }
   | { ok: false; message: string } {
+  if (body && 'projectId' in body) {
+    return { ok: false, message: 'projectId is not supported' };
+  }
   const required = readRequiredBodyStrings(body, [
-    'projectId',
     'threadId',
     'renderer',
     'artifactId',
@@ -340,18 +298,14 @@ function readArtifactRuntimePersistenceScope(
     return required;
   }
 
-  const { projectId, threadId, renderer, artifactId } = required.values;
+  const threadId = required.read('threadId');
+  const renderer = required.read('renderer');
+  const artifactId = required.read('artifactId');
   const persistenceEpoch = readPersistenceEpoch(body?.['persistenceEpoch']);
   if (!persistenceEpoch.ok) {
     return { ok: false, message: persistenceEpoch.message };
   }
-  let validatedProjectId: ArtifactRuntimePersistenceScopeRequest['projectId'];
   let validatedThreadId: ArtifactRuntimePersistenceScopeRequest['threadId'];
-  try {
-    validatedProjectId = assertValidProjectId(projectId);
-  } catch {
-    return { ok: false, message: `invalid projectId: ${projectId}` };
-  }
   try {
     validatedThreadId = assertValidThreadId(threadId);
   } catch {
@@ -364,7 +318,6 @@ function readArtifactRuntimePersistenceScope(
   return {
     ok: true,
     value: {
-      projectId: validatedProjectId,
       threadId: validatedThreadId,
       renderer,
       artifactId,

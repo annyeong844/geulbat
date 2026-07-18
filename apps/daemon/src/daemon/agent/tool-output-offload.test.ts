@@ -5,16 +5,28 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import type { FunctionCall } from '../llm/index.js';
-import { createRunWorkspaceContext } from '../run-workspace-context.js';
-import { readToolOutputSnapshot } from '../files/tool-output-store.js';
-import { testProjectId } from '../../test-support/project-id.js';
+import { createRunContext } from '../run-context.js';
+import {
+  buildToolOutputRef,
+  buildToolOutputSnapshot,
+  readToolOutputSnapshot,
+  writeToolOutputSnapshot,
+} from '../files/tool-output-store.js';
 import { testThreadId } from '../../test-support/thread-id.js';
+import {
+  PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_RUN_ID,
+  PTC_EXECUTE_CODE_POLICY_ID,
+  PTC_EXECUTE_CODE_TOOL_NAME,
+} from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
 import { maybeOffloadToolResult } from './tool-output-offload.js';
 
 void test('maybeOffloadToolResult offloads search_files output without an inline threshold', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-state-'));
   const threadId = testThreadId(91);
   const output = JSON.stringify({
+    root: 'computer',
+    path: 'Users/sample/Downloads',
     query: 'small',
     total: 1,
     results: [{ path: 'src/app.ts', line: 1, text: 'small match' }],
@@ -22,10 +34,9 @@ void test('maybeOffloadToolResult offloads search_files output without an inline
 
   const result = await maybeOffloadToolResult({
     functionCall: searchFilesCall('call-small-search-output'),
-    runContext: createRunWorkspaceContext({
-      projectId: testProjectId(),
+    runContext: createRunContext({
       threadId,
-      workspaceRoot,
+      stateRoot,
     }),
     runId: 'run-small-search-output',
     toolResult: { ok: true, output },
@@ -35,14 +46,28 @@ void test('maybeOffloadToolResult offloads search_files output without an inline
   const slimOutput = JSON.parse(result.output);
   assert.equal(slimOutput.offloaded, true);
   assert.equal(slimOutput.fullOutputChars, output.length);
+  assert.equal(slimOutput.root, 'computer');
+  assert.equal(slimOutput.path, 'Users/sample/Downloads');
 
   const snapshot = await readToolOutputSnapshot({
-    workspaceRoot,
+    stateRoot,
     threadId,
     outputRef: slimOutput.outputRef,
   });
   assert.equal(snapshot.ok, true);
   assert.equal(snapshot.value.output, output);
+  assert.deepEqual(snapshot.value.source, {
+    root: 'computer',
+    path: 'Users/sample/Downloads',
+    query: 'small',
+  });
+  const workspaceSnapshot = await readToolOutputSnapshot({
+    stateRoot: workspaceRoot,
+    threadId,
+    outputRef: slimOutput.outputRef,
+  });
+  assert.equal(workspaceSnapshot.ok, false);
+  assert.equal(workspaceSnapshot.errorCode, 'not_found');
 });
 
 void test('maybeOffloadToolResult keeps tools outside the offload owner inline', async () => {
@@ -51,10 +76,9 @@ void test('maybeOffloadToolResult keeps tools outside the offload owner inline',
 
   const result = await maybeOffloadToolResult({
     functionCall: readFileCall('call-read-file-inline'),
-    runContext: createRunWorkspaceContext({
-      projectId: testProjectId(),
+    runContext: createRunContext({
       threadId: testThreadId(92),
-      workspaceRoot,
+      stateRoot: workspaceRoot,
     }),
     runId: 'run-read-file-inline',
     toolResult: { ok: true, output },
@@ -63,47 +87,97 @@ void test('maybeOffloadToolResult keeps tools outside the offload owner inline',
   assert.deepEqual(result, { ok: true, output });
 });
 
-void test('maybeOffloadToolResult adds a recoverable snapshot ref to exec without removing inline output', async () => {
+void test('maybeOffloadToolResult returns a cache-stable exec ref before model consumption', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
   const threadId = testThreadId(98);
   const output = JSON.stringify({
-    ok: true,
+    kind: 'ptc_execute_code_cell_running',
     status: 'running',
     cellId: 'cell-exec-recoverable',
-    stdout: 'inline stdout stays visible\n',
+    stdout: 'exact stdout stays in the durable snapshot\n',
     stderr: '',
   });
 
   const result = await maybeOffloadToolResult({
     functionCall: execCall('call-exec-recoverable-output'),
-    runContext: createRunWorkspaceContext({
-      projectId: testProjectId(),
+    runContext: createRunContext({
       threadId,
-      workspaceRoot,
+      stateRoot: workspaceRoot,
     }),
     runId: 'run-exec-recoverable-output',
     toolResult: { ok: true, output },
   });
 
   assert.equal(result.ok, true);
-  const inlineOutput = JSON.parse(result.output);
-  assert.equal(inlineOutput.stdout, 'inline stdout stays visible\n');
-  assert.equal(inlineOutput.stderr, '');
-  assert.equal(inlineOutput.status, 'running');
-  assert.equal(Object.hasOwn(inlineOutput, 'offloaded'), false);
-  assert.equal(inlineOutput.fullOutputChars, output.length);
+  const stableOutput = JSON.parse(result.output);
+  assert.equal(stableOutput.offloaded, true);
+  assert.equal(stableOutput.tool, 'exec');
+  assert.equal(stableOutput.kind, 'ptc_execute_code_cell_running');
+  assert.equal(stableOutput.status, 'running');
+  assert.equal(stableOutput.cellId, 'cell-exec-recoverable');
+  assert.equal(stableOutput.recoveryTool, 'read_tool_output');
+  assert.equal(stableOutput.fullOutputChars, output.length);
+  assert.equal(Object.hasOwn(stableOutput, 'stdout'), false);
+  assert.equal(Object.hasOwn(stableOutput, 'stderr'), false);
 
   const snapshot = await readToolOutputSnapshot({
-    workspaceRoot,
+    stateRoot: workspaceRoot,
     threadId,
-    outputRef: inlineOutput.outputRef,
+    outputRef: stableOutput.outputRef,
   });
   assert.equal(snapshot.ok, true);
   assert.equal(snapshot.value.toolName, 'exec');
   assert.equal(snapshot.value.output, output);
 });
 
-void test('maybeOffloadToolResult keeps exec output successful when recoverable snapshot recording fails', async () => {
+void test('maybeOffloadToolResult returns a cache-stable exec_command ref before model consumption', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
+  const threadId = testThreadId(102);
+  const output = JSON.stringify({
+    command: 'node -e "process.stdout.write(\'ok\')"',
+    cwd: workspaceRoot,
+    status: 'exit',
+    exitCode: 0,
+    stdout: 'ok',
+    stderr: '',
+    durationMs: 12,
+    timeoutMs: 1000,
+    maxOutputBytesPerStream: 8192,
+    outputLimitExceeded: null,
+  });
+
+  const result = await maybeOffloadToolResult({
+    functionCall: execCommandCall('call-exec-command-recoverable-output'),
+    runContext: createRunContext({
+      threadId,
+      stateRoot: workspaceRoot,
+    }),
+    runId: 'run-exec-command-recoverable-output',
+    toolResult: { ok: true, output },
+  });
+
+  assert.equal(result.ok, true);
+  const stableOutput = JSON.parse(result.output);
+  assert.equal(stableOutput.offloaded, true);
+  assert.equal(stableOutput.tool, 'exec_command');
+  assert.equal(stableOutput.status, 'exit');
+  assert.equal(stableOutput.exitCode, 0);
+  assert.equal(stableOutput.recoveryTool, 'read_tool_output');
+  assert.equal(stableOutput.fullOutputChars, output.length);
+  assert.equal(Object.hasOwn(stableOutput, 'stdout'), false);
+  assert.equal(Object.hasOwn(stableOutput, 'stderr'), false);
+
+  const snapshot = await readToolOutputSnapshot({
+    stateRoot: workspaceRoot,
+    threadId,
+    outputRef: stableOutput.outputRef,
+  });
+  assert.equal(snapshot.ok, true);
+  assert.equal(snapshot.value.toolName, 'exec_command');
+  assert.equal(snapshot.value.output, output);
+});
+
+void test('maybeOffloadToolResult keeps a recoverable exec inline when its snapshot cannot be recorded', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
   await writeFile(join(workspaceRoot, '.geulbat'), 'not a directory', 'utf8');
   const output = JSON.stringify({
@@ -123,10 +197,9 @@ void test('maybeOffloadToolResult keeps exec output successful when recoverable 
   try {
     result = await maybeOffloadToolResult({
       functionCall: execCall('call-exec-record-failure'),
-      runContext: createRunWorkspaceContext({
-        projectId: testProjectId(),
+      runContext: createRunContext({
         threadId: testThreadId(100),
-        workspaceRoot,
+        stateRoot: workspaceRoot,
       }),
       runId: 'run-exec-record-failure',
       toolResult: { ok: true, output },
@@ -135,19 +208,32 @@ void test('maybeOffloadToolResult keeps exec output successful when recoverable 
     console.warn = originalWarn;
   }
 
-  assert.deepEqual(result, { ok: true, output });
+  assert.equal(result.ok, true);
+  const fallback = JSON.parse(result.output);
+  assert.equal(fallback.offloaded, false);
+  assert.equal(fallback.tool, 'exec');
+  assert.equal(fallback.status, 'running');
+  assert.equal(fallback.cellId, 'cell-exec-inline-on-record-failure');
+  assert.equal(fallback.stdout, 'stdout still reaches the model\n');
+  assert.equal(fallback.stderr, '');
+  assert.deepEqual(fallback.outputSnapshot, {
+    ok: false,
+    errorCode: 'snapshot_write_failed',
+  });
+  assert.equal(fallback.recoveryTool, null);
+  assert.match(fallback.summary, /exact tool result is retained inline/);
   assert.equal(warnings.length, 1);
   assert.match(
     String(warnings[0]?.[0]),
-    /failed to record tool output snapshot/,
+    /failed to offload tool output snapshot/,
   );
 });
 
-void test('maybeOffloadToolResult adds a recoverable snapshot ref to wait without removing terminal output', async () => {
+void test('maybeOffloadToolResult returns a cache-stable wait ref before model consumption', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
   const threadId = testThreadId(99);
   const output = JSON.stringify({
-    ok: true,
+    kind: 'ptc_execute_code_cell_wait',
     status: 'completed',
     cellId: 'cell-wait-recoverable',
     exitCode: 0,
@@ -157,31 +243,111 @@ void test('maybeOffloadToolResult adds a recoverable snapshot ref to wait withou
 
   const result = await maybeOffloadToolResult({
     functionCall: waitCall('call-wait-recoverable-output'),
-    runContext: createRunWorkspaceContext({
-      projectId: testProjectId(),
+    runContext: createRunContext({
       threadId,
-      workspaceRoot,
+      stateRoot: workspaceRoot,
     }),
     runId: 'run-wait-recoverable-output',
     toolResult: { ok: true, output },
   });
 
   assert.equal(result.ok, true);
-  const inlineOutput = JSON.parse(result.output);
-  assert.equal(inlineOutput.stdout, 'terminal stdout stays visible\n');
-  assert.equal(inlineOutput.stderr, 'terminal stderr stays visible\n');
-  assert.equal(inlineOutput.status, 'completed');
-  assert.equal(Object.hasOwn(inlineOutput, 'offloaded'), false);
-  assert.equal(inlineOutput.fullOutputChars, output.length);
+  const stableOutput = JSON.parse(result.output);
+  assert.equal(stableOutput.offloaded, true);
+  assert.equal(stableOutput.tool, 'wait');
+  assert.equal(stableOutput.kind, 'ptc_execute_code_cell_wait');
+  assert.equal(stableOutput.status, 'completed');
+  assert.equal(stableOutput.cellId, 'cell-wait-recoverable');
+  assert.equal(stableOutput.exitCode, 0);
+  assert.equal(stableOutput.recoveryTool, 'read_tool_output');
+  assert.equal(stableOutput.fullOutputChars, output.length);
+  assert.equal(Object.hasOwn(stableOutput, 'stdout'), false);
+  assert.equal(Object.hasOwn(stableOutput, 'stderr'), false);
 
   const snapshot = await readToolOutputSnapshot({
-    workspaceRoot,
+    stateRoot: workspaceRoot,
     threadId,
-    outputRef: inlineOutput.outputRef,
+    outputRef: stableOutput.outputRef,
   });
   assert.equal(snapshot.ok, true);
   assert.equal(snapshot.value.toolName, 'wait');
   assert.equal(snapshot.value.output, output);
+});
+
+void test('maybeOffloadToolResult reuses an existing durable wait ref without wrapping it', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
+  const threadId = testThreadId(103);
+  const existingOutputRef = buildToolOutputRef({
+    threadId,
+    runId: PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_RUN_ID,
+    callId: 'ptc_cell_existing_durable_result',
+  });
+  const exactTerminalOutput = JSON.stringify({
+    kind: 'ptc_execute_code_cell_wait',
+    capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+    policyId: PTC_EXECUTE_CODE_POLICY_ID,
+    executionSurface: 'node_via_lab_detached_cell',
+    status: 'completed',
+    cellId: 'ptc_cell_existing_durable_result',
+    exitCode: 0,
+    stdout: 'exact durable terminal output\n',
+    stderr: '',
+  });
+  const existingSnapshot = buildToolOutputSnapshot({
+    outputRef: existingOutputRef,
+    threadId,
+    runId: PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_RUN_ID,
+    callId: 'ptc_cell_existing_durable_result',
+    toolName: 'wait',
+    output: exactTerminalOutput,
+  });
+  await writeToolOutputSnapshot({ stateRoot, snapshot: existingSnapshot });
+  const output = JSON.stringify({
+    kind: 'ptc_execute_code_cell_wait',
+    capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+    policyId: PTC_EXECUTE_CODE_POLICY_ID,
+    executionSurface: 'node_via_lab_detached_cell',
+    status: 'completed',
+    cellId: 'ptc_cell_existing_durable_result',
+    exitCode: 0,
+    offloaded: true,
+    outputRef: existingOutputRef,
+    fullOutputBytes: existingSnapshot.fullOutputBytes,
+    fullOutputChars: existingSnapshot.fullOutputChars,
+    recoveryTool: 'read_tool_output',
+    summary: 'Exact output is already durable.',
+  });
+
+  const result = await maybeOffloadToolResult({
+    functionCall: waitCall('call-existing-durable-wait-output'),
+    runContext: createRunContext({ threadId, stateRoot }),
+    runId: 'run-that-must-not-wrap-the-existing-ref',
+    toolResult: { ok: true, output },
+  });
+
+  assert.deepEqual(result, { ok: true, output });
+  const retainedSnapshot = await readToolOutputSnapshot({
+    stateRoot,
+    threadId,
+    outputRef: existingOutputRef,
+  });
+  assert.equal(retainedSnapshot.ok, true);
+  assert.equal(retainedSnapshot.value.output, exactTerminalOutput);
+
+  const wrapperSnapshot = await readToolOutputSnapshot({
+    stateRoot,
+    threadId,
+    outputRef: buildToolOutputRef({
+      threadId,
+      runId: 'run-that-must-not-wrap-the-existing-ref',
+      callId: 'call-existing-durable-wait-output',
+    }),
+  });
+  assert.deepEqual(wrapperSnapshot, {
+    ok: false,
+    errorCode: 'not_found',
+    message: 'tool output snapshot was not found.',
+  });
 });
 
 void test('maybeOffloadToolResult keeps memory search inline when output recovery is not available', async () => {
@@ -204,10 +370,9 @@ void test('maybeOffloadToolResult keeps memory search inline when output recover
 
   const result = await maybeOffloadToolResult({
     functionCall: searchMemoryIndexCall('call-memory-inline-no-recovery'),
-    runContext: createRunWorkspaceContext({
-      projectId: testProjectId(),
+    runContext: createRunContext({
       threadId: testThreadId(101),
-      workspaceRoot,
+      stateRoot: workspaceRoot,
     }),
     runId: 'run-memory-inline-no-recovery',
     toolOutputRecoveryAvailable: false,
@@ -242,10 +407,9 @@ void test('maybeOffloadToolResult offloads search_files without partial preview 
 
   const result = await maybeOffloadToolResult({
     functionCall: searchFilesCall('call-search-without-preview-text'),
-    runContext: createRunWorkspaceContext({
-      projectId: testProjectId(),
+    runContext: createRunContext({
       threadId,
-      workspaceRoot,
+      stateRoot: workspaceRoot,
     }),
     runId: 'run-search-without-preview-text',
     toolResult: { ok: true, output },
@@ -258,7 +422,7 @@ void test('maybeOffloadToolResult offloads search_files without partial preview 
   assert.doesNotMatch(result.output, /fallback fields still normalize/);
 
   const snapshot = await readToolOutputSnapshot({
-    workspaceRoot,
+    stateRoot: workspaceRoot,
     threadId,
     outputRef: slimOutput.outputRef,
   });
@@ -292,10 +456,9 @@ void test('maybeOffloadToolResult offloads search_memory_index without partial p
     functionCall: searchMemoryIndexCall('call-memory-index-offload', {
       query: 'memory provenance',
     }),
-    runContext: createRunWorkspaceContext({
-      projectId: testProjectId(),
+    runContext: createRunContext({
       threadId,
-      workspaceRoot,
+      stateRoot: workspaceRoot,
     }),
     runId: 'run-memory-index-offload',
     toolResult: { ok: true, output },
@@ -311,7 +474,7 @@ void test('maybeOffloadToolResult offloads search_memory_index without partial p
   assert.doesNotMatch(result.output, /memory excerpt 51/);
 
   const snapshot = await readToolOutputSnapshot({
-    workspaceRoot,
+    stateRoot: workspaceRoot,
     threadId,
     outputRef: slimOutput.outputRef,
   });
@@ -336,10 +499,9 @@ void test('maybeOffloadToolResult fails visibly when snapshot write fails', asyn
   try {
     result = await maybeOffloadToolResult({
       functionCall: searchFilesCall('call-write-failure'),
-      runContext: createRunWorkspaceContext({
-        projectId: testProjectId(),
+      runContext: createRunContext({
         threadId: testThreadId(94),
-        workspaceRoot,
+        stateRoot: workspaceRoot,
       }),
       runId: 'run-write-failure',
       toolResult: { ok: true, output },
@@ -365,7 +527,7 @@ void test('maybeOffloadToolResult fails visibly when snapshot write fails', asyn
   });
 });
 
-void test('maybeOffloadToolResult offloads a large web_fetch result and preserves exact snapshot', async () => {
+void test('maybeOffloadToolResult offloads a large fetch_url result and preserves exact snapshot', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
   const threadId = testThreadId(96);
   const output = JSON.stringify({
@@ -380,30 +542,29 @@ void test('maybeOffloadToolResult offloads a large web_fetch result and preserve
   });
 
   const result = await maybeOffloadToolResult({
-    functionCall: webFetchCall('call-web-fetch-offload'),
-    runContext: createRunWorkspaceContext({
-      projectId: testProjectId(),
+    functionCall: fetchUrlCall('call-fetch-url-offload'),
+    runContext: createRunContext({
       threadId,
-      workspaceRoot,
+      stateRoot: workspaceRoot,
     }),
-    runId: 'run-web-fetch-offload',
+    runId: 'run-fetch-url-offload',
     toolResult: { ok: true, output },
   });
 
   assert.equal(result.ok, true);
   const slimOutput = JSON.parse(result.output);
   assert.equal(slimOutput.offloaded, true);
-  assert.equal(slimOutput.tool, 'web_fetch');
+  assert.equal(slimOutput.tool, 'fetch_url');
   assert.equal(slimOutput.finalUrl, 'https://example.com/final');
   assert.equal(Object.hasOwn(slimOutput, 'preview'), false);
 
   const snapshot = await readToolOutputSnapshot({
-    workspaceRoot,
+    stateRoot: workspaceRoot,
     threadId,
     outputRef: slimOutput.outputRef,
   });
   assert.equal(snapshot.ok, true);
-  assert.equal(snapshot.value.toolName, 'web_fetch');
+  assert.equal(snapshot.value.toolName, 'fetch_url');
   assert.equal(snapshot.value.output, output);
   assert.deepEqual(snapshot.value.source, {
     url: 'https://example.com/',
@@ -415,7 +576,8 @@ void test('maybeOffloadToolResult offloads a large list_files result and preserv
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
   const threadId = testThreadId(97);
   const output = JSON.stringify({
-    path: '.',
+    root: 'computer',
+    path: 'Users/sample/Downloads',
     total: 400,
     entries: Array.from({ length: 400 }, (_, index) => ({
       name: `entry-${String(index).padStart(3, '0')}.txt`,
@@ -426,10 +588,9 @@ void test('maybeOffloadToolResult offloads a large list_files result and preserv
 
   const result = await maybeOffloadToolResult({
     functionCall: listFilesCall('call-list-files-offload'),
-    runContext: createRunWorkspaceContext({
-      projectId: testProjectId(),
+    runContext: createRunContext({
       threadId,
-      workspaceRoot,
+      stateRoot: workspaceRoot,
     }),
     runId: 'run-list-files-offload',
     toolResult: { ok: true, output },
@@ -439,19 +600,23 @@ void test('maybeOffloadToolResult offloads a large list_files result and preserv
   const slimOutput = JSON.parse(result.output);
   assert.equal(slimOutput.offloaded, true);
   assert.equal(slimOutput.tool, 'list_files');
-  assert.equal(slimOutput.path, '.');
+  assert.equal(slimOutput.root, 'computer');
+  assert.equal(slimOutput.path, 'Users/sample/Downloads');
   assert.equal(slimOutput.total, 400);
   assert.equal(Object.hasOwn(slimOutput, 'preview'), false);
 
   const snapshot = await readToolOutputSnapshot({
-    workspaceRoot,
+    stateRoot: workspaceRoot,
     threadId,
     outputRef: slimOutput.outputRef,
   });
   assert.equal(snapshot.ok, true);
   assert.equal(snapshot.value.toolName, 'list_files');
   assert.equal(snapshot.value.output, output);
-  assert.deepEqual(snapshot.value.source, { path: '.' });
+  assert.deepEqual(snapshot.value.source, {
+    root: 'computer',
+    path: 'Users/sample/Downloads',
+  });
 });
 
 function listFilesCall(callId: string): FunctionCall {
@@ -493,6 +658,15 @@ function execCall(callId: string): FunctionCall {
   };
 }
 
+function execCommandCall(callId: string): FunctionCall {
+  return {
+    id: `fc-${callId}`,
+    callId,
+    name: 'exec_command',
+    arguments: '{}',
+  };
+}
+
 function readFileCall(callId: string): FunctionCall {
   return {
     id: `fc-${callId}`,
@@ -511,11 +685,11 @@ function waitCall(callId: string): FunctionCall {
   };
 }
 
-function webFetchCall(callId: string): FunctionCall {
+function fetchUrlCall(callId: string): FunctionCall {
   return {
     id: `fc-${callId}`,
     callId,
-    name: 'web_fetch',
+    name: 'fetch_url',
     arguments: '{}',
   };
 }

@@ -8,35 +8,30 @@ import {
 
 void test('artifact runtime source identity and revision change when run/file/timestamp change', () => {
   const runtimePayload = 'window.__artifact = true;';
-  const persistenceScopeKey = JSON.stringify([
-    'project-1',
-    'thread-1',
-    'art_1',
-    0,
-  ]);
+  const persistenceScopeKey = JSON.stringify(['thread-1', 'art_1', 0]);
   const base = createArtifactRuntimeSourceIdentity({
-    projectId: 'project-1',
+    workingDirectory: 'stories/sample',
     threadId: 'thread-1',
     runId: 'run-1',
     filePath: 'drafts/chapter-1.md',
     messageTimestamp: '2026-04-04T00:00:00.000Z',
   });
   const changedRun = createArtifactRuntimeSourceIdentity({
-    projectId: 'project-1',
+    workingDirectory: 'stories/sample',
     threadId: 'thread-1',
     runId: 'run-2',
     filePath: 'drafts/chapter-1.md',
     messageTimestamp: '2026-04-04T00:00:00.000Z',
   });
   const changedFile = createArtifactRuntimeSourceIdentity({
-    projectId: 'project-1',
+    workingDirectory: 'stories/sample',
     threadId: 'thread-1',
     runId: 'run-1',
     filePath: 'drafts/chapter-2.md',
     messageTimestamp: '2026-04-04T00:00:00.000Z',
   });
   const changedTimestamp = createArtifactRuntimeSourceIdentity({
-    projectId: 'project-1',
+    workingDirectory: 'stories/sample',
     threadId: 'thread-1',
     runId: 'run-1',
     filePath: 'drafts/chapter-1.md',
@@ -47,7 +42,7 @@ void test('artifact runtime source identity and revision change when run/file/ti
   assert.notEqual(base, changedFile);
   assert.notEqual(base, changedTimestamp);
   const changedArtifactIdentity = createArtifactRuntimeSourceIdentity({
-    projectId: 'project-1',
+    workingDirectory: 'stories/sample',
     threadId: 'thread-1',
     runId: 'run-1',
     filePath: 'drafts/chapter-1.md',
@@ -90,12 +85,7 @@ void test('artifact runtime source identity and revision change when run/file/ti
       renderer: 'js',
       runtimePayload,
       sourceIdentity: base,
-      persistenceScopeKey: JSON.stringify([
-        'project-1',
-        'thread-1',
-        'art_1',
-        1,
-      ]),
+      persistenceScopeKey: JSON.stringify(['thread-1', 'art_1', 1]),
       parentOrigin: 'http://127.0.0.1:5173',
     }),
   );
@@ -106,13 +96,13 @@ void test('artifact runtime revision is stable for the same canonical inputs', (
     renderer: 'js',
     runtimePayload: 'window.__artifact = true;',
     sourceIdentity: createArtifactRuntimeSourceIdentity({
-      projectId: 'project-1',
+      workingDirectory: 'stories/sample',
       threadId: 'thread-1',
       runId: 'run-1',
       filePath: 'drafts/chapter-1.md',
       messageTimestamp: '2026-04-04T00:00:00.000Z',
     }),
-    persistenceScopeKey: JSON.stringify(['project-1', 'thread-1', 'art_1', 0]),
+    persistenceScopeKey: JSON.stringify(['thread-1', 'art_1', 0]),
     parentOrigin: 'http://127.0.0.1:5173',
   });
 
@@ -122,18 +112,13 @@ void test('artifact runtime revision is stable for the same canonical inputs', (
       renderer: 'js',
       runtimePayload: 'window.__artifact = true;',
       sourceIdentity: createArtifactRuntimeSourceIdentity({
-        projectId: 'project-1',
+        workingDirectory: 'stories/sample',
         threadId: 'thread-1',
         runId: 'run-1',
         filePath: 'drafts/chapter-1.md',
         messageTimestamp: '2026-04-04T00:00:00.000Z',
       }),
-      persistenceScopeKey: JSON.stringify([
-        'project-1',
-        'thread-1',
-        'art_1',
-        0,
-      ]),
+      persistenceScopeKey: JSON.stringify(['thread-1', 'art_1', 0]),
       parentOrigin: 'http://127.0.0.1:5173',
     }),
   );

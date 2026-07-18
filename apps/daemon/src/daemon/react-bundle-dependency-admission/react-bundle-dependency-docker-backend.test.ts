@@ -35,6 +35,15 @@ async function withTempRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
   }
 }
 
+function installIncrementingDateNow(startMs: number): () => void {
+  const originalNow = Date.now;
+  let now = startMs;
+  Date.now = () => now++;
+  return () => {
+    Date.now = originalNow;
+  };
+}
+
 void test('buildDockerMetadataProbeRunArgs uses daemon-owned mounts and network none', () => {
   const args = buildDockerMetadataProbeRunArgs({
     imageRef: 'local/geulbat-metadata-probe:2026-05-22',
@@ -141,34 +150,41 @@ void test('checkDockerMetadataProbeBackendAvailable does not clamp explicit time
   await withTempRoot(async () => {
     const timeoutMs = 20_000;
     const invocations: DockerCommandInvocation[] = [];
-    const result = await checkDockerMetadataProbeBackendAvailable({
-      dockerPath: 'docker',
-      imageRef: 'local/geulbat-metadata-probe:2026-05-22',
-      timeoutMs,
-      commandRunner: async (invocation) => {
-        invocations.push(invocation);
-        return {
-          kind: 'exit',
-          exitCode: 0,
-          stdout: 'ok',
-          stderr: '',
-        };
-      },
-    });
+    const restoreDateNow = installIncrementingDateNow(1_000_000);
+    try {
+      const result = await checkDockerMetadataProbeBackendAvailable({
+        dockerPath: 'docker',
+        imageRef: 'local/geulbat-metadata-probe:2026-05-22',
+        timeoutMs,
+        commandRunner: async (invocation) => {
+          invocations.push(invocation);
+          return {
+            kind: 'exit',
+            exitCode: 0,
+            stdout: 'ok',
+            stderr: '',
+          };
+        },
+      });
 
-    assert.equal(result.kind, 'exit');
-    assert.equal(result.exitCode, 0);
-    assert.equal(invocations.length, 2);
-    const versionInvocation = invocations[0];
-    const imageInvocation = invocations[1];
-    if (versionInvocation === undefined || imageInvocation === undefined) {
-      assert.fail('expected version and image inspect invocations');
+      assert.equal(result.kind, 'exit');
+      assert.equal(result.exitCode, 0);
+      assert.equal(invocations.length, 2);
+      const versionInvocation = invocations[0];
+      const imageInvocation = invocations[1];
+      if (versionInvocation === undefined || imageInvocation === undefined) {
+        assert.fail('expected version and image inspect invocations');
+      }
+      assert.equal(versionInvocation.timeoutMs, timeoutMs);
+      if (imageInvocation.timeoutMs === undefined) {
+        assert.fail(
+          'expected image inspect invocation to keep explicit timeout',
+        );
+      }
+      assert.equal(imageInvocation.timeoutMs, timeoutMs - 1);
+    } finally {
+      restoreDateNow();
     }
-    assert.equal(versionInvocation.timeoutMs, timeoutMs);
-    if (imageInvocation.timeoutMs === undefined) {
-      assert.fail('expected image inspect invocation to keep explicit timeout');
-    }
-    assert.equal(imageInvocation.timeoutMs > timeoutMs / 2, true);
   });
 });
 

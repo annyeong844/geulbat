@@ -1,17 +1,15 @@
-export type PtcFailureDiagnostics = Record<string, string | number | boolean>;
+type PtcFailureDiagnostics = Record<string, string | number | boolean>;
 
-export type PtcFailureResult<ReasonCode extends string> = {
+type PtcFailureResult<ReasonCode extends string> = {
   ok: false;
   reasonCode: ReasonCode;
   message: string;
   diagnostics?: PtcFailureDiagnostics;
 };
 
-export type PtcBoundedTimeoutAdmission =
-  | { ok: true; value: number }
-  | { ok: false };
+type PtcBoundedTimeoutAdmission = { ok: true; value: number } | { ok: false };
 
-export type PtcLabPolicyAdmission<LabPolicy> =
+type PtcLabPolicyAdmission<LabPolicy> =
   | { ok: true; value: LabPolicy }
   | { ok: false };
 

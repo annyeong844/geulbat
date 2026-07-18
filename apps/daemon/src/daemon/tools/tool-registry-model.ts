@@ -1,5 +1,6 @@
 import type { SideEffectLevel } from '@geulbat/protocol/run-events';
 import type { ErrorCode } from '../error-codes.js';
+import { isRecord, tryParseJson } from '../runtime-json.js';
 
 export interface ToolObjectParameters {
   type: 'object';
@@ -8,7 +9,7 @@ export interface ToolObjectParameters {
   additionalProperties: false;
 }
 
-export interface ToolOneOfParameters {
+interface ToolOneOfParameters {
   oneOf: ToolObjectParameters[];
 }
 
@@ -20,6 +21,53 @@ export type ToolParameters =
   | ToolObjectParameters
   | ToolOneOfParameters
   | ToolAnyOfParameters;
+
+function isClonedToolObjectParameters(
+  value: unknown,
+): value is ToolObjectParameters {
+  return (
+    isRecord(value) &&
+    value.type === 'object' &&
+    isRecord(value.properties) &&
+    Array.isArray(value.required) &&
+    value.required.every((entry) => typeof entry === 'string') &&
+    value.additionalProperties === false
+  );
+}
+
+function isClonedToolParameters(value: unknown): value is ToolParameters {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if ('oneOf' in value) {
+    return (
+      !('anyOf' in value) &&
+      Array.isArray(value.oneOf) &&
+      value.oneOf.every(isClonedToolObjectParameters)
+    );
+  }
+  if ('anyOf' in value) {
+    return (
+      Array.isArray(value.anyOf) &&
+      value.anyOf.every(isClonedToolObjectParameters)
+    );
+  }
+  return isClonedToolObjectParameters(value);
+}
+
+export function cloneToolParameters(
+  parameters: ToolParameters,
+): ToolParameters {
+  const serialized = JSON.stringify(parameters);
+  if (serialized === undefined) {
+    throw new TypeError('Tool parameters must be JSON-serializable');
+  }
+  const cloned = tryParseJson(serialized);
+  if (!cloned.ok || !isClonedToolParameters(cloned.value)) {
+    throw new TypeError('Tool parameters must match the registry schema');
+  }
+  return cloned.value;
+}
 
 export function isToolObjectParameters(
   parameters: ToolParameters,
@@ -35,6 +83,44 @@ export function isToolAnyOfParameters(
 
 export type ParallelToolBatchKind = 'subagent_launch' | 'ptc_cell';
 
+export type ToolCatalogSearchFamily =
+  | 'agent'
+  | 'browser'
+  | 'command'
+  | 'catalog'
+  | 'file'
+  | 'memory'
+  | 'network'
+  | 'planning'
+  | 'presentation'
+  | 'ptc'
+  | 'tool_output';
+
+export interface ToolCatalogSearchMetadata {
+  family: ToolCatalogSearchFamily;
+  searchHints: readonly string[];
+  tags: readonly string[];
+  whenToUse: string;
+  notFor: string;
+  summary?: string;
+}
+
+export type HostToolEffect =
+  | 'readOnly'
+  | 'idempotent'
+  | 'computerWrite'
+  | 'hostStateMutation'
+  | 'exclusive';
+
+export interface ToolExposure {
+  directHot: boolean;
+  sdkVisible: boolean;
+  inCellCallable: boolean;
+  directOnly: boolean;
+  approvalRequired: boolean;
+  effectClass: HostToolEffect;
+}
+
 export interface ToolDefinition {
   type: 'function';
   name: string;
@@ -45,17 +131,29 @@ export interface ToolDefinition {
 
 export interface ToolMeta {
   sideEffectLevel: SideEffectLevel;
-  mayMutateWorkspaceFiles: boolean;
+  mayMutateComputerFiles: boolean;
   parallelBatchKind?: ParallelToolBatchKind;
   timeoutMs?: number;
   requiresApproval: boolean;
+  exposure: ToolExposure;
+  // 도구 인자 스트리밍 opt-in — 켜면 provider args 델타가 tool_call_delta
+  // 이벤트로 클라이언트까지 흐른다 (visualize의 실시간 렌더용)
+  streamsArgsDelta?: boolean;
 }
 
-export interface RegisteredToolLike extends ToolMeta {
+export interface RegisteredToolLike {
   name: string;
   description: string;
   parameters: ToolParameters;
   strict: boolean;
+  sideEffectLevel: SideEffectLevel;
+  mayMutateComputerFiles: boolean;
+  parallelBatchKind?: ParallelToolBatchKind;
+  timeoutMs?: number;
+  requiresApproval: boolean;
+  exposure?: ToolExposure;
+  streamsArgsDelta?: boolean;
+  catalogSearchMetadata?: ToolCatalogSearchMetadata;
   parseArgs(
     raw: unknown,
   ): { ok: false; message: string } | { ok: true; value: object };
@@ -70,6 +168,7 @@ export interface RegisteredToolLike extends ToolMeta {
 
 export interface ToolRegistryStore {
   registerTool(tool: RegisteredToolLike): void;
+  unregisterTool(name: string): boolean;
   getTool(name: string): RegisteredToolLike | undefined;
   getToolMeta(name: string): ToolMeta | null;
   getAllRegisteredToolNames(): string[];

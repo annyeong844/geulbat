@@ -32,14 +32,15 @@ export function ThreadList({
 
   return (
     <section className="thread-list" style={styles.section}>
-      <h3>Threads</h3>
       {uiError ? (
         <div style={threadListAlertStyle} role="alert">
           {uiError}
         </div>
       ) : null}
       {threads.length === 0 ? (
-        <p style={styles.emptyState}>No threads</p>
+        <p style={styles.emptyState}>
+          아직 세션이 없습니다. + 버튼으로 새 세션을 시작하세요.
+        </p>
       ) : (
         <ul style={styles.list}>
           {threads.map((t) => (

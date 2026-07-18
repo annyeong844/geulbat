@@ -1,13 +1,14 @@
+import type { PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT } from '../packages/lab-package-cache-contract.js';
 import {
   PTC_LAB_LIFECYCLE_SCRIPTS_DISABLED_POLICY_ID,
   PTC_LAB_NETWORK_INSTALL_DISABLED_POLICY_ID,
   PTC_LAB_PACKAGE_CACHE_DEFAULT_ID,
-  PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_PACKAGE_CACHE_MOUNT_POLICY_ID,
   type PtcLabPackageManagerName,
 } from '../packages/lab-package-cache-contract.js';
 import {
   createPtcLabNetworkDisabledPolicy,
+  createPtcLabOpenEgressLocalPolicy,
   type PtcLabNetworkIdentitySnapshot,
   type PtcLabNetworkPolicy,
 } from '../network/lab-network-policy.js';
@@ -15,16 +16,28 @@ import {
   createPtcLabBrowserDisabledPolicy,
   type PtcLabBrowserPolicy,
 } from '../browser/core/lab-browser-policy.js';
-import { type PtcLabBrowserIdentitySnapshot } from '../browser/core/lab-browser-identity.js';
+import type { PtcLabBrowserIdentitySnapshot } from '../browser/core/lab-browser-identity.js';
 import {
   PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_POLICY_ID,
   PTC_LAB_LOCAL_DOCKER_POLICY_ID,
+  PTC_LAB_OPEN_NETWORK_PACKAGE_INSTALL_POLICY_ID,
   type PtcLabPolicyId,
 } from '../profile/lab-profile-contract.js';
 import type {
   PtcDockerClientCommandInvocation,
   PtcDockerClientCommandResult,
 } from '../../shared/process-command.js';
+import {
+  PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
+  PTC_SESSION_DOCKER_SDK_PROJECTION_MOUNT_POLICY_ID,
+  type PtcSessionDockerSdkProjectionMount,
+} from '../../shared/sdk-projection-mount-contract.js';
+
+export {
+  PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
+  PTC_SESSION_DOCKER_SDK_PROJECTION_MOUNT_POLICY_ID,
+  type PtcSessionDockerSdkProjectionMount,
+};
 
 export const PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT = '/geulbat/callbacks';
 export const PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT =
@@ -47,19 +60,21 @@ export const PTC_SESSION_DOCKER_LOCAL_BATCH_COMMAND_LAUNCH_POLICY_ID =
 type PtcSessionDockerLaunchPolicyId =
   | typeof PTC_SESSION_DOCKER_DEFAULT_LAUNCH_POLICY_ID
   | typeof PTC_SESSION_DOCKER_LOCAL_BATCH_COMMAND_LAUNCH_POLICY_ID;
-export type PtcSessionDockerArtifactWorkspaceMountPolicyId =
+type PtcSessionDockerArtifactWorkspaceMountPolicyId =
   typeof PTC_SESSION_DOCKER_ARTIFACT_WORKSPACE_MOUNT_POLICY_ID;
-export type PtcSessionDockerPackageCacheMountPolicyId =
+type PtcSessionDockerPackageCacheMountPolicyId =
   typeof PTC_SESSION_DOCKER_PACKAGE_CACHE_MOUNT_POLICY_ID;
-export type PtcSessionDockerLifecycleScriptsPolicyId =
+type PtcSessionDockerLifecycleScriptsPolicyId =
   typeof PTC_LAB_LIFECYCLE_SCRIPTS_DISABLED_POLICY_ID;
-export type PtcSessionDockerNetworkInstallPolicyId =
+type PtcSessionDockerNetworkInstallPolicyId =
   PtcLabNetworkPolicy['networkPolicyId'];
 
 export interface PtcSessionDockerIdentity {
   threadId: string;
-  workspaceRoot: string;
+  stateRoot: string;
   trustContextId: string;
+  ephemeralBurstId?: `ptc_burst_${string}`;
+  sdkProjectionMount?: PtcSessionDockerSdkProjectionMount;
 }
 
 export interface PtcSessionDockerHostUser {
@@ -91,10 +106,48 @@ export interface PtcSessionDockerPolicy {
   tmpTmpfs: string;
 }
 
+export interface PtcSessionDockerResourceRequirements {
+  cpuUnits: number;
+  memoryBytes: number;
+}
+
+export function resolvePtcSessionDockerResourceRequirements(
+  policy: PtcSessionDockerPolicy,
+): PtcSessionDockerResourceRequirements {
+  const cpuUnits = Number(policy.cpus);
+  if (!Number.isFinite(cpuUnits) || cpuUnits <= 0) {
+    throw new Error('PTC session Docker CPU limit is invalid');
+  }
+
+  const memoryMatch = /^(?<amount>[1-9]\d*)(?<unit>[bkmg])$/iu.exec(
+    policy.memory,
+  );
+  const amount = Number(memoryMatch?.groups?.amount);
+  const unit = memoryMatch?.groups?.unit?.toLowerCase();
+  const unitBytes =
+    unit === 'b'
+      ? 1
+      : unit === 'k'
+        ? 1_024
+        : unit === 'm'
+          ? 1_024 ** 2
+          : unit === 'g'
+            ? 1_024 ** 3
+            : undefined;
+  const memoryBytes = unitBytes === undefined ? Number.NaN : amount * unitBytes;
+  if (!Number.isSafeInteger(memoryBytes) || memoryBytes < 1) {
+    throw new Error('PTC session Docker memory limit is invalid');
+  }
+
+  return { cpuUnits, memoryBytes };
+}
+
 export interface PtcSessionDockerReuseKey {
   threadId: string;
-  workspaceRootRealpath: string;
+  stateRootRealpath: string;
   trustContextId: string;
+  ephemeralBurstId?: `ptc_burst_${string}`;
+  sdkProjectionMount?: PtcSessionDockerSdkProjectionMount;
   launchPolicyId: PtcSessionDockerLaunchPolicyId;
   imageRef: string;
   imagePolicyId: typeof PTC_SESSION_DOCKER_IMAGE_POLICY_ID;
@@ -131,6 +184,7 @@ export type PtcSessionDockerFailureReason =
   | 'container_remove_failed'
   | 'container_host_root_cleanup_failed'
   | 'container_start_cleanup_failed'
+  | 'ephemeral_startup_sweep_failed'
   | 'manager_closing';
 
 export type PtcSessionDockerResult<T> =
@@ -234,5 +288,25 @@ export function createPtcSessionDockerLocalBatchCommandPolicy(): PtcSessionDocke
     pidsLimit: '256',
     scratchTmpfs: '/geulbat/scratch:rw,noexec,nosuid,nodev,size=512m',
     tmpTmpfs: '/tmp:rw,nosuid,nodev,size=512m',
+  };
+}
+
+// Opt-in "package install + open-network exec" session policy: same batch
+// command surface, but the container joins the named local open bridge and
+// declares the npm family, so its reuse identity never matches
+// disabled-network batch-command sessions.
+export function createPtcSessionDockerOpenNetworkPackageInstallPolicy(args: {
+  tmpTmpfsSize: string;
+}): PtcSessionDockerPolicy {
+  const network = createPtcLabOpenEgressLocalPolicy({
+    metricsCoverage: 'owner_outcome_only',
+  });
+  return {
+    ...createPtcSessionDockerLocalBatchCommandPolicy(),
+    labPolicyId: PTC_LAB_OPEN_NETWORK_PACKAGE_INSTALL_POLICY_ID,
+    packageManagerFamilies: ['npm'],
+    networkInstallPolicyId: network.networkPolicyId,
+    network,
+    tmpTmpfs: `/tmp:rw,nosuid,nodev,size=${args.tmpTmpfsSize}`,
   };
 }

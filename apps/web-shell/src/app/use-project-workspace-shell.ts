@@ -10,53 +10,42 @@ import { useThreadSessions } from './use-thread-sessions.js';
 import { useWorkspaceFiles } from './use-workspace-files.js';
 
 export function useProjectWorkspaceShell({
-  projectId,
-  defaultProjectId,
-  projects,
-  projectRegistryError,
-  projectRegistryBusy,
-  onSelectProject,
-  onCreateProject,
-  onRenameProject,
-  onDeleteProject,
-  providerAuthStatus,
-  providerAuthBusy,
-  providerAuthError,
+  providerAuthStatuses,
+  providerAuthBusyProviderId,
+  providerAuthErrors,
   onConnectProvider,
   onDisconnectProvider,
 }: ProjectWorkspaceProps) {
-  const files = useWorkspaceFiles(projectId);
-  const threads = useThreadSessions(projectId);
+  const files = useWorkspaceFiles();
+  const threads = useThreadSessions();
   const runSession = useRunSession({
-    projectId,
+    workingDirectory: files.browsePath,
     selectedFile: files.selectedFile,
     selectedThreadId: threads.selectedThreadId,
     loadThreads: threads.loadThreads,
     loadTree: files.loadTree,
-    openFile: files.openFile,
+    openFile: files.openProjectFile,
     appendOptimisticUserMessage: threads.appendOptimisticUserMessage,
+    trimMessagesForRegenerate: threads.trimMessagesForRegenerate,
     setSelectedThreadId: threads.setSelectedThreadId,
     openThreadForRunSettle: threads.openThreadForRunSettle,
     applyThreadSnapshotForRunSettle: threads.applyThreadSnapshotForRunSettle,
   });
 
-  return createProjectWorkspaceShellView({
-    projectId,
-    defaultProjectId,
-    projects,
-    projectRegistryError,
-    projectRegistryBusy,
-    onSelectProject,
-    onCreateProject,
-    onRenameProject,
-    onDeleteProject,
-    providerAuthStatus,
-    providerAuthBusy,
-    providerAuthError,
+  const shellView = createProjectWorkspaceShellView({
+    providerAuthStatuses,
+    providerAuthBusyProviderId,
+    providerAuthErrors,
     onConnectProvider,
     onDisconnectProvider,
     files: createProjectWorkspaceFilesInput(files),
     threads: createProjectWorkspaceThreadsInput(threads),
     runSession: createProjectWorkspaceRunSessionInput(runSession),
   });
+
+  return {
+    ...shellView,
+    // draft → 버전 커밋 결과를 로컬 아티팩트 상태에 즉시 반영하는 핸들
+    upsertThreadArtifactVersion: threads.upsertThreadArtifactVersion,
+  };
 }

@@ -10,9 +10,9 @@ import { createSubagentRunLauncher } from '../../agent/subagent-support.js';
 import { createDaemonContext } from '../../context.js';
 import { createRunState } from '../../agent/runtime/run-state.js';
 import { threadFilePath } from '../../sessions/paths.js';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { testRunId } from '../../../test-support/run-id.js';
-import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../../test-support/run-context.js';
+import { TEST_INHERITED_SOL_MODEL_PIN } from '../../../test-support/subagent-model-routing.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { assertRunId } from '@geulbat/protocol/ids';
 import { isToolObjectParameters } from '../types.js';
@@ -23,6 +23,8 @@ void test('agent_spawn outward parameters omit compatibility-only mode', () => {
   assert.deepEqual(Object.keys(parameters.properties), [
     'task',
     'subagent_type',
+    'model_id',
+    'reasoning_effort',
   ]);
   assert.deepEqual(parameters.required, ['task', 'subagent_type']);
 });
@@ -35,7 +37,7 @@ void test('agent_spawn requires run context', async () => {
     },
     {
       callId: 'call-1',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
       signal: new AbortController().signal,
     },
   );
@@ -54,7 +56,7 @@ void test('agent_spawn rejects unexpected keys before execution', async () => {
     },
     {
       callId: 'call-extra',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     },
   );
 
@@ -71,7 +73,7 @@ void test('agent_spawn rejects invalid subagent_type at the parser boundary', as
     },
     {
       callId: 'call-invalid-subagent',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     },
   );
 
@@ -89,7 +91,7 @@ void test('agent_spawn rejects invalid mode at the parser boundary', async () =>
     },
     {
       callId: 'call-invalid-mode',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     },
   );
 
@@ -106,7 +108,7 @@ void test('agent_spawn rejects whitespace-only task at the parser boundary', asy
     },
     {
       callId: 'call-empty-task',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     },
   );
 
@@ -115,20 +117,166 @@ void test('agent_spawn rejects whitespace-only task at the parser boundary', asy
   assert.match(result.error ?? '', /task.*required/);
 });
 
+void test('agent_spawn rejects reasoning_effort without model_id', async () => {
+  const result = await agentSpawnTool.execute(
+    {
+      task: 'read files',
+      subagent_type: 'explorer',
+      reasoning_effort: 'high',
+    },
+    {
+      callId: 'call-effort-without-model',
+      stateRoot: '/tmp/home-state',
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /reasoning_effort requires model_id/);
+});
+
+void test('agent_spawn fixed routing rejects a conflicting model request', async () => {
+  const threadId = testThreadId(80);
+  const parentRunId = testRunId('fixed-model-conflict-parent');
+  const daemonContext = createDaemonContext();
+  let startCalled = false;
+  const testAgentSpawnTool = createAgentSpawnTool({
+    startBackgroundRun: async () => {
+      startCalled = true;
+      throw new Error('conflicting fixed routing must not start a child');
+    },
+  });
+
+  const result = await testAgentSpawnTool.execute(
+    {
+      task: 'read files',
+      subagent_type: 'explorer',
+      model_id: 'grok-4.5',
+    },
+    {
+      callId: 'call-fixed-model-conflict',
+      stateRoot: '/tmp/home-state',
+      threadId,
+      runId: parentRunId,
+      runState: createRunState({
+        runId: parentRunId,
+        runContext: makeRunContext({
+          threadId,
+          stateRoot: '/tmp/home-state',
+        }),
+      }),
+      signal: new AbortController().signal,
+      runSignal: new AbortController().signal,
+      agentSpawnRuntime: daemonContext,
+      approvalSessionId: 'fixed-routing-session',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      subagentModelRouting: {
+        mode: 'fixed',
+        choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
+      },
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /fixes all descendants to 'gpt-5\.6-luna'/);
+  assert.equal(startCalled, false);
+});
+
+void test('agent_spawn automatic routing selects Grok with its default effort', async () => {
+  const threadId = testThreadId(81);
+  const parentRunId = testRunId('auto-grok-parent');
+  const daemonContext = createDaemonContext();
+  const testAgentSpawnTool = createAgentSpawnTool({
+    startBackgroundRun: createSubagentRunLauncher({
+      runAgentLoop: async (input) => {
+        assert.deepEqual(input.providerModel, {
+          providerId: 'grok_oauth',
+          model: 'grok-4.5',
+        });
+        assert.equal(input.reasoningEffort, 'high');
+        assert.deepEqual(input.subagentModelRouting, { mode: 'auto' });
+        return { ok: true, finalProse: 'grok child done' };
+      },
+    }).startBackgroundRun,
+  });
+
+  const result = await testAgentSpawnTool.execute(
+    {
+      task: 'read files',
+      subagent_type: 'explorer',
+      model_id: 'grok-4.5',
+    },
+    {
+      callId: 'call-auto-grok-child',
+      stateRoot: '/tmp/home-state',
+      threadId,
+      runId: parentRunId,
+      runState: createRunState({
+        runId: parentRunId,
+        runContext: makeRunContext({
+          threadId,
+          stateRoot: '/tmp/home-state',
+        }),
+      }),
+      signal: new AbortController().signal,
+      runSignal: new AbortController().signal,
+      agentSpawnRuntime: daemonContext,
+      approvalSessionId: 'automatic-routing-session',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      subagentModelRouting: { mode: 'auto' },
+    },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    childRunId: string;
+    modelId: string;
+    reasoningEffort: string;
+    selectionSource: string;
+  };
+  assert.equal(payload.modelId, 'grok-4.5');
+  assert.equal(payload.reasoningEffort, 'high');
+  assert.equal(payload.selectionSource, 'model_selected');
+
+  const childRunId = assertRunId(payload.childRunId);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (
+      daemonContext.childRuns.getChildRun(childRunId)?.status === 'completed'
+    ) {
+      break;
+    }
+    await delay(10);
+  }
+  assert.equal(
+    daemonContext.childRuns.getChildRun(childRunId)?.status,
+    'completed',
+  );
+  assert.deepEqual(daemonContext.childRuns.getChildRun(childRunId)?.modelPin, {
+    modelId: 'grok-4.5',
+    providerRunSelection: {
+      providerModel: { providerId: 'grok_oauth', model: 'grok-4.5' },
+      reasoningEffort: 'high',
+    },
+    selectionSource: 'model_selected',
+  });
+});
+
 void test('agent_spawn allows child runs to launch nested helper agents', async () => {
   const childThreadId = testThreadId(1);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const childRunState = createRunState({
     runId: 'child-run',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId: childThreadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
     parentRunId: 'top-run',
   });
-  let capturedAllowedToolNames: readonly string[] | undefined;
+  let capturedDirectRegistryNames: readonly string[] | undefined;
+  let capturedAllowedRegistryNames: readonly string[] | undefined;
+  let capturedPromptProfile: string | undefined;
+  let capturedPrompt = '';
   let markNestedStarted!: () => void;
   const nestedStarted = new Promise<void>((resolve) => {
     markNestedStarted = resolve;
@@ -140,7 +288,10 @@ void test('agent_spawn allows child runs to launch nested helper agents', async 
   const testAgentSpawnTool = createAgentSpawnTool({
     startBackgroundRun: createSubagentRunLauncher({
       runAgentLoop: async (input) => {
-        capturedAllowedToolNames = input.allowedToolNames;
+        capturedDirectRegistryNames = input.toolSurface?.directRegistryNames;
+        capturedAllowedRegistryNames = input.toolSurface?.allowedRegistryNames;
+        capturedPromptProfile = input.promptProfile;
+        capturedPrompt = input.prompt;
         markNestedStarted();
         await nestedFinished;
         return {
@@ -158,14 +309,15 @@ void test('agent_spawn allows child runs to launch nested helper agents', async 
     },
     {
       callId: 'call-2',
-      workspaceRoot: '/tmp/workspace',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      stateRoot: '/tmp/home-state',
       threadId: childThreadId,
       runId: 'child-run',
-      projectId,
       runState: childRunState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
       agentSpawnRuntime: daemonContext,
+      approvalSessionId: 'nested-helper-session',
     },
   );
 
@@ -181,10 +333,42 @@ void test('agent_spawn allows child runs to launch nested helper agents', async 
   assert.equal(childRunState.backgroundChildRunIds.has(nestedChildRunId), true);
 
   await nestedStarted;
-  assert.ok(capturedAllowedToolNames?.includes('agent_spawn'));
-  assert.ok(capturedAllowedToolNames?.includes('agent_wait'));
-  assert.ok(capturedAllowedToolNames?.includes('agent_send_input'));
-  assert.ok(capturedAllowedToolNames?.includes('agent_stop'));
+  assert.deepEqual(capturedDirectRegistryNames, [
+    'list_files',
+    'read_file',
+    'read_tool_output',
+    'search_files',
+    'exec',
+    'wait',
+    'agent_spawn',
+    'agent_wait',
+    'agent_stop',
+  ]);
+  assert.deepEqual(capturedAllowedRegistryNames, [
+    'list_files',
+    'read_file',
+    'read_tool_output',
+    'search_files',
+    'exec',
+    'wait',
+    'agent_spawn',
+    'agent_wait',
+    'agent_stop',
+  ]);
+  assert.equal(capturedPromptProfile, 'explorer');
+  assert.ok(capturedAllowedRegistryNames?.includes('agent_spawn'));
+  assert.ok(capturedAllowedRegistryNames?.includes('agent_wait'));
+  assert.equal(
+    capturedPrompt,
+    [
+      '<file-context>',
+      'Current file: none',
+      'Selection: none',
+      '</file-context>',
+      '',
+      'read files',
+    ].join('\n'),
+  );
 
   releaseNested();
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -208,7 +392,7 @@ void test('agent_spawn rejects worker spawn when approval routing is unavailable
   const threadId = testThreadId(4);
   const parentState = createRunState({
     runId: 'top-run-2',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
     }),
   });
@@ -220,10 +404,9 @@ void test('agent_spawn rejects worker spawn when approval routing is unavailable
     },
     {
       callId: 'call-4',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
       threadId,
       runId: 'top-run-2',
-      projectId: testProjectId(),
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
@@ -235,16 +418,60 @@ void test('agent_spawn rejects worker spawn when approval routing is unavailable
   assert.match(result.error ?? '', /approval event routing/);
 });
 
+void test('agent_spawn fails closed when the connection approval session is unavailable', async () => {
+  const threadId = testThreadId(40);
+  const daemonContext = createDaemonContext();
+  const parentState = createRunState({
+    runId: 'top-run-no-approval-session',
+    runContext: makeRunContext({ threadId, stateRoot: '/tmp/home-state' }),
+  });
+  let childLoopCalled = false;
+  const testAgentSpawnTool = createAgentSpawnTool({
+    startBackgroundRun: createSubagentRunLauncher({
+      runAgentLoop: async () => {
+        childLoopCalled = true;
+        return { ok: true, finalProse: 'must not run' };
+      },
+    }).startBackgroundRun,
+  });
+
+  const result = await testAgentSpawnTool.execute(
+    { task: 'inspect files', subagent_type: 'explorer' },
+    {
+      callId: 'call-no-approval-session',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      stateRoot: '/tmp/home-state',
+      threadId,
+      runId: 'top-run-no-approval-session',
+      runState: parentState,
+      signal: new AbortController().signal,
+      runSignal: new AbortController().signal,
+      agentSpawnRuntime: daemonContext,
+    },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    ok: boolean;
+    launchState: string;
+    errorCode: string;
+    error: string;
+  };
+  assert.equal(payload.ok, false);
+  assert.equal(payload.launchState, 'rejected');
+  assert.equal(payload.errorCode, 'execution_failed');
+  assert.match(payload.error, /approval session is unavailable/u);
+  assert.equal(childLoopCalled, false);
+});
+
 void test('agent_spawn returns launch-only ack and tracks child state in the registry', async () => {
   const threadId = testThreadId(5);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
     runId: 'top-run-background',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
   let childStarted = false;
@@ -272,14 +499,15 @@ void test('agent_spawn returns launch-only ack and tracks child state in the reg
     },
     {
       callId: 'call-background',
-      workspaceRoot: '/tmp/workspace',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      stateRoot: '/tmp/home-state',
       threadId,
       runId: 'top-run-background',
-      projectId,
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
       agentSpawnRuntime: daemonContext,
+      approvalSessionId: 'background-launch-session',
     },
   );
 
@@ -325,14 +553,12 @@ void test('agent_spawn returns launch-only ack and tracks child state in the reg
 
 void test('agent_spawn logs child loop throws before publishing terminal failure', async () => {
   const threadId = testThreadId(20);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
     runId: 'top-run-child-throw',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
   const testAgentSpawnTool = createAgentSpawnTool({
@@ -356,14 +582,15 @@ void test('agent_spawn logs child loop throws before publishing terminal failure
       },
       {
         callId: 'call-child-loop-throw',
-        workspaceRoot: '/tmp/workspace',
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot: '/tmp/home-state',
         threadId,
         runId: 'top-run-child-throw',
-        projectId,
         runState: parentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
         agentSpawnRuntime: daemonContext,
+        approvalSessionId: 'throw-log-session',
       },
     );
 
@@ -409,14 +636,12 @@ void test('agent_spawn logs child loop throws before publishing terminal failure
 
 void test('agent_spawn uses child error event messages as terminal child results', async () => {
   const threadId = testThreadId(51);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
     runId: 'top-run-child-error-event',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
   const testAgentSpawnTool = createAgentSpawnTool({
@@ -448,14 +673,15 @@ void test('agent_spawn uses child error event messages as terminal child results
     },
     {
       callId: 'call-child-error-event',
-      workspaceRoot: '/tmp/workspace',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      stateRoot: '/tmp/home-state',
       threadId,
       runId: 'top-run-child-error-event',
-      projectId,
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
       agentSpawnRuntime: daemonContext,
+      approvalSessionId: 'child-error-event-session',
     },
   );
 
@@ -479,19 +705,17 @@ void test('agent_spawn uses child error event messages as terminal child results
 });
 
 void test('agent_spawn preserves child success when assistant transcript persistence fails', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-agent-spawn-transcript-'),
   );
   const threadId = testThreadId(52);
-  const projectId = testProjectId();
   const childResultText = 'child completed despite transcript failure';
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
     runId: 'top-run-transcript-failure',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
-      projectId,
-      workspaceRoot,
+      stateRoot,
     }),
   });
   const diagnostics: unknown[][] = [];
@@ -505,7 +729,7 @@ void test('agent_spawn preserves child success when assistant transcript persist
       startBackgroundRun: createSubagentRunLauncher({
         runAgentLoop: async (input) => {
           const transcriptPath = threadFilePath(
-            input.runContext.workspaceRoot,
+            input.runContext.stateRoot,
             input.runContext.threadId,
           );
           await rm(transcriptPath, { recursive: true, force: true });
@@ -522,14 +746,15 @@ void test('agent_spawn preserves child success when assistant transcript persist
       },
       {
         callId: 'call-transcript-persistence-failure',
-        workspaceRoot,
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot,
         threadId,
         runId: 'top-run-transcript-failure',
-        projectId,
         runState: parentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
         agentSpawnRuntime: daemonContext,
+        approvalSessionId: 'transcript-failure-session',
       },
     );
 
@@ -577,20 +802,18 @@ void test('agent_spawn preserves child success when assistant transcript persist
     );
   } finally {
     console.error = originalError;
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
   }
 });
 
 void test('agent_spawn catches async publish failures without leaking unhandled rejections', async () => {
   const threadId = testThreadId(6);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
     runId: 'top-run-notify',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
   const testAgentSpawnTool = createAgentSpawnTool({
@@ -621,14 +844,15 @@ void test('agent_spawn catches async publish failures without leaking unhandled 
       },
       {
         callId: 'call-notify',
-        workspaceRoot: '/tmp/workspace',
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot: '/tmp/home-state',
         threadId,
         runId: 'top-run-notify',
-        projectId,
         runState: parentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
         agentSpawnRuntime: daemonContext,
+        approvalSessionId: 'publish-failure-session',
       },
     );
 
@@ -656,14 +880,12 @@ void test('agent_spawn catches async publish failures without leaking unhandled 
 
 void test('agent_spawn keeps terminal notification independent from registry publish failure', async () => {
   const threadId = testThreadId(19);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
     runId: 'top-run-terminal-sink',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
   const testAgentSpawnTool = createAgentSpawnTool({
@@ -693,14 +915,15 @@ void test('agent_spawn keeps terminal notification independent from registry pub
       },
       {
         callId: 'call-terminal-sink',
-        workspaceRoot: '/tmp/workspace',
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot: '/tmp/home-state',
         threadId,
         runId: 'top-run-terminal-sink',
-        projectId,
         runState: parentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
         agentSpawnRuntime: daemonContext,
+        approvalSessionId: 'registry-publish-failure-session',
       },
     );
 
@@ -738,14 +961,12 @@ void test('agent_spawn keeps terminal notification independent from registry pub
 
 void test('agent_spawn lets child worker inherit parent permission mode while reusing the parent approval session', async () => {
   const threadId = testThreadId(7);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
     runId: 'top-run-worker',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
   let capturedApprovalContext:
@@ -756,6 +977,8 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
         ownerThreadId?: string;
       }
     | undefined;
+  let capturedDirectRegistryNames: readonly string[] | undefined;
+  let capturedAllowedRegistryNames: readonly string[] | undefined;
   let releaseChild!: () => void;
   const childStarted = new Promise<void>((resolve) => {
     releaseChild = resolve;
@@ -764,6 +987,8 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
     startBackgroundRun: createSubagentRunLauncher({
       runAgentLoop: async (input) => {
         capturedApprovalContext = input.approvalContext;
+        capturedDirectRegistryNames = input.toolSurface?.directRegistryNames;
+        capturedAllowedRegistryNames = input.toolSurface?.allowedRegistryNames;
         await childStarted;
         return {
           ok: true,
@@ -780,11 +1005,14 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
     },
     {
       kind: 'agent',
+      runOwnerKind: 'root_main',
       callId: 'call-worker-clamp',
-      workspaceRoot: '/tmp/workspace',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      stateRoot: '/tmp/home-state',
+
+      workingDirectory: 'workspace',
       threadId,
       runId: 'top-run-worker',
-      projectId,
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
@@ -812,6 +1040,21 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
     ownerRunId: 'top-run-worker',
     ownerThreadId: threadId,
   });
+  const expectedWorkerToolNames = [
+    'list_files',
+    'read_file',
+    'read_tool_output',
+    'search_files',
+    'write_file',
+    'apply_patch',
+    'manage_files',
+    'agent_spawn',
+    'agent_wait',
+    'agent_stop',
+  ];
+  assert.deepEqual(capturedDirectRegistryNames, expectedWorkerToolNames);
+  assert.deepEqual(capturedAllowedRegistryNames, expectedWorkerToolNames);
+  assert.equal(capturedDirectRegistryNames?.includes('exec_command'), false);
   releaseChild();
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (parentState.backgroundChildRunIds.size === 0) {
@@ -823,14 +1066,12 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
 
 void test('agent_spawn allows four concurrent worker children under the default policy', async () => {
   const threadId = testThreadId(88);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
     runId: 'top-run-four-workers',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
   let releaseChildren!: () => void;
@@ -860,11 +1101,15 @@ void test('agent_spawn allows four concurrent worker children under the default 
         },
         {
           kind: 'agent',
+          runOwnerKind: 'root_main',
           callId: `call-four-workers-${index + 1}`,
-          workspaceRoot: '/tmp/workspace',
+          providerRunSelection:
+            TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+          stateRoot: '/tmp/home-state',
+
+          workingDirectory: 'workspace',
           threadId,
           runId: 'top-run-four-workers',
-          projectId,
           runState: parentState,
           signal: new AbortController().signal,
           runSignal: new AbortController().signal,
@@ -925,14 +1170,12 @@ void test('agent_spawn allows four concurrent worker children under the default 
 
 void test('agent_spawn default policy admits launch with existing active children', async () => {
   const threadId = testThreadId(8);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
     runId: 'top-run-cap',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
   for (let index = 0; index < 12; index += 1) {
@@ -962,14 +1205,15 @@ void test('agent_spawn default policy admits launch with existing active childre
     },
     {
       callId: 'call-cap',
-      workspaceRoot: '/tmp/workspace',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      stateRoot: '/tmp/home-state',
       threadId,
       runId: 'top-run-cap',
-      projectId,
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
       agentSpawnRuntime: daemonContext,
+      approvalSessionId: 'default-policy-session',
     },
   );
 
@@ -987,7 +1231,6 @@ void test('agent_spawn default policy admits launch with existing active childre
 
 void test('agent_spawn applies daemon-owned subagent concurrency policy', async () => {
   const threadId = testThreadId(18);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext({
     subagentConcurrencyPolicy: {
       maxConcurrentChildren: 1,
@@ -995,10 +1238,9 @@ void test('agent_spawn applies daemon-owned subagent concurrency policy', async 
   });
   const parentState = createRunState({
     runId: 'top-run-policy-cap',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
   parentState.backgroundChildRunIds.add(testRunId('already-running-child'));
@@ -1010,14 +1252,15 @@ void test('agent_spawn applies daemon-owned subagent concurrency policy', async 
     },
     {
       callId: 'call-policy-cap',
-      workspaceRoot: '/tmp/workspace',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      stateRoot: '/tmp/home-state',
       threadId,
       runId: 'top-run-policy-cap',
-      projectId,
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
       agentSpawnRuntime: daemonContext,
+      approvalSessionId: 'policy-cap-session',
     },
   );
 
@@ -1036,14 +1279,12 @@ void test('agent_spawn applies daemon-owned subagent concurrency policy', async 
 
 void test('agent_spawn reports timeout separately from user_interrupt', async () => {
   const threadId = testThreadId(9);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
     runId: 'top-run-timeout',
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
 
@@ -1072,14 +1313,15 @@ void test('agent_spawn reports timeout separately from user_interrupt', async ()
     },
     {
       callId: 'call-timeout',
-      workspaceRoot: '/tmp/workspace',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      stateRoot: '/tmp/home-state',
       threadId,
       runId: 'top-run-timeout',
-      projectId,
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
       agentSpawnRuntime: daemonContext,
+      approvalSessionId: 'timeout-session',
     },
   );
 

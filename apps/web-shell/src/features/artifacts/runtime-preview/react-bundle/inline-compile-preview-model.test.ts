@@ -3,10 +3,7 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import {
-  brandProjectId,
-  brandThreadId,
-} from '../../../../lib/id-brand-helpers.js';
+import { brandThreadId } from '../../../../lib/id-brand-helpers.js';
 import type {
   GeneratedBinaryExportSnapshot,
   GeneratedTextExportSnapshot,
@@ -17,17 +14,26 @@ import {
   buildInitialReactBundleInlineCompileState,
   buildReactBundleInlineCompilePreviewSurface,
   resolveReactBundlePreviewSeed,
+  type ReactBundleRuntimePreviewLoadState,
 } from './inline-compile-preview-model.js';
+import * as reactBundlePreviewModule from './preview.js';
 
 const REACT_BUNDLE_ENTRY_URL =
   'https://fixtures.geulbat.local/react-bundle-entry.js';
+
+function readyRuntimePreview(): ReactBundleRuntimePreviewLoadState {
+  return {
+    kind: 'ready',
+    previewModule: reactBundlePreviewModule,
+  };
+}
 
 function createResolvedSourceRef(
   overrides: Partial<ResolvedArtifactSourceRef> = {},
 ): ResolvedArtifactSourceRef {
   return {
     kind: null,
-    projectId: null,
+    workingDirectory: '',
     threadId: null,
     runId: null,
     filePath: null,
@@ -41,7 +47,7 @@ function createResolvedSourceRef(
 
 function createSourceRef(): ResolvedArtifactSourceRef {
   return createResolvedSourceRef({
-    projectId: brandProjectId('workspace'),
+    workingDirectory: 'stories/sample',
     threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
   });
 }
@@ -65,6 +71,7 @@ void test('resolveReactBundlePreviewSeed keeps inline source pending until a com
   const preview = buildReactBundleInlineCompilePreviewSurface({
     seed,
     inlineCompileState: { kind: 'pending' },
+    runtimePreviewLoadState: { kind: 'loading' },
     sourceRef: createSourceRef(),
     renderRuntimeFrame() {
       assert.fail('pending inline source must not render a runtime frame');
@@ -84,6 +91,7 @@ void test('buildReactBundleInlineCompilePreviewSurface rejects invalid payloads 
   const preview = buildReactBundleInlineCompilePreviewSurface({
     seed,
     inlineCompileState: buildInitialReactBundleInlineCompileState(seed),
+    runtimePreviewLoadState: { kind: 'loading' },
     sourceRef: createSourceRef(),
     renderRuntimeFrame() {
       renderCallCount += 1;
@@ -94,6 +102,89 @@ void test('buildReactBundleInlineCompilePreviewSurface rejects invalid payloads 
   assert.equal(renderCallCount, 0);
   assert.equal(preview?.kind, 'unavailable');
   assert.equal(preview.code, 'boot_failed');
+});
+
+void test('buildReactBundleInlineCompilePreviewSurface keeps manifests pending while the runtime preview module loads', () => {
+  const seed = resolveReactBundlePreviewSeed({
+    enabled: true,
+    payload: JSON.stringify({ entryUrl: REACT_BUNDLE_ENTRY_URL }),
+  });
+  const preview = buildReactBundleInlineCompilePreviewSurface({
+    seed,
+    inlineCompileState: buildInitialReactBundleInlineCompileState(seed),
+    runtimePreviewLoadState: { kind: 'loading' },
+    sourceRef: createSourceRef(),
+    renderRuntimeFrame() {
+      assert.fail('loading runtime preview module must not render a frame');
+    },
+  });
+
+  assert.equal(preview?.kind, 'pending');
+  assert.equal(preview.detail, '리액트 번들을 준비하고 있습니다...');
+});
+
+void test('buildReactBundleInlineCompilePreviewSurface reports runtime preview module load failures', () => {
+  const seed = resolveReactBundlePreviewSeed({
+    enabled: true,
+    payload: JSON.stringify({ entryUrl: REACT_BUNDLE_ENTRY_URL }),
+  });
+  const preview = buildReactBundleInlineCompilePreviewSurface({
+    seed,
+    inlineCompileState: buildInitialReactBundleInlineCompileState(seed),
+    runtimePreviewLoadState: {
+      kind: 'failed',
+      detail: 'react bundle runtime preview chunk failed to load',
+    },
+    sourceRef: createSourceRef(),
+    renderRuntimeFrame() {
+      assert.fail('failed runtime preview module must not render a frame');
+    },
+  });
+
+  assert.equal(preview?.kind, 'unavailable');
+  if (preview?.kind !== 'unavailable') {
+    assert.fail('expected unavailable runtime preview');
+  }
+  assert.equal(preview.code, 'boot_failed');
+  assert.equal(
+    preview.detail,
+    'react bundle runtime preview chunk failed to load',
+  );
+});
+
+void test('buildReactBundleInlineCompilePreviewSurface keeps compile failures as the primary diagnostic', () => {
+  const seed = resolveReactBundlePreviewSeed({
+    enabled: true,
+    payload: JSON.stringify({
+      files: {
+        'src/App.jsx': 'export default function App() { return null; }',
+      },
+      entry: 'src/App.jsx',
+    }),
+  });
+  const preview = buildReactBundleInlineCompilePreviewSurface({
+    seed,
+    inlineCompileState: {
+      kind: 'failed',
+      code: 'sanitize_rejected',
+      detail: 'inline source was rejected',
+    },
+    runtimePreviewLoadState: {
+      kind: 'failed',
+      detail: 'runtime preview chunk failed to load',
+    },
+    sourceRef: createSourceRef(),
+    renderRuntimeFrame() {
+      assert.fail('failed inline compile must not render a frame');
+    },
+  });
+
+  assert.equal(preview?.kind, 'unavailable');
+  if (preview?.kind !== 'unavailable') {
+    assert.fail('expected unavailable inline compile preview');
+  }
+  assert.equal(preview.code, 'sanitize_rejected');
+  assert.equal(preview.detail, 'inline source was rejected');
 });
 
 void test('buildReactBundleInlineCompilePreviewSurface preserves generated export callbacks after compile', () => {
@@ -121,6 +212,7 @@ void test('buildReactBundleInlineCompilePreviewSurface preserves generated expor
         entryUrl: REACT_BUNDLE_ENTRY_URL,
       },
     },
+    runtimePreviewLoadState: readyRuntimePreview(),
     sourceRef: createSourceRef(),
     onGeneratedTextExportSnapshotChange,
     onGeneratedBinaryExportSnapshotChange,
@@ -178,6 +270,7 @@ void test('buildReactBundleInlineCompilePreviewSurface rejects compiled manifest
         },
       },
     },
+    runtimePreviewLoadState: readyRuntimePreview(),
     sourceRef: createSourceRef(),
     renderRuntimeFrame(args) {
       renderedFrameArgs.push(args);
@@ -226,6 +319,7 @@ void test('buildReactBundleInlineCompilePreviewSurface renders compiled manifest
       kind: 'compiled',
       manifest,
     },
+    runtimePreviewLoadState: readyRuntimePreview(),
     sourceRef: createSourceRef(),
     renderRuntimeFrame(args) {
       renderedFrameArgs.push(args);

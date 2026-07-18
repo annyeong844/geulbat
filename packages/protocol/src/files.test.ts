@@ -2,25 +2,56 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  isComputerFileScopeResponse,
   isFileBinaryInputRefResponse,
   isFileReadResponse,
   isFileSaveResponse,
   isFileTreeResponse,
 } from './files.js';
 
-void test('isFileTreeResponse requires a canonical project id', () => {
+void test('isComputerFileScopeResponse accepts sanitized browse metadata only', () => {
+  assert.equal(isComputerFileScopeResponse({ available: false }), true);
+  assert.equal(
+    isComputerFileScopeResponse({
+      available: true,
+      browseStartPath: 'Users/sample',
+      browseShortcuts: [{ label: '다운로드', path: 'Users/sample/Downloads' }],
+    }),
+    true,
+  );
+  assert.equal(
+    isComputerFileScopeResponse({
+      available: true,
+      root: '/mnt/c',
+      browseShortcuts: [],
+    }),
+    false,
+  );
+});
+
+void test('isFileTreeResponse rejects the retired project scope', () => {
   assert.equal(
     isFileTreeResponse({
       projectId: 'workspace',
       tree: [{ name: 'docs', path: 'docs', type: 'directory', children: [] }],
     }),
-    true,
+    false,
   );
+});
 
+void test('isFileTreeResponse accepts the project-free computer root', () => {
   assert.equal(
     isFileTreeResponse({
-      projectId: '../escape',
-      tree: [{ name: 'docs', path: 'docs', type: 'directory', children: [] }],
+      root: 'computer',
+      tree: [],
+    }),
+    true,
+  );
+  assert.equal(
+    isFileTreeResponse({
+      root: 'computer',
+      projectId: 'computer',
+      tree: [],
     }),
     false,
   );

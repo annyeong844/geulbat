@@ -1,6 +1,7 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isPtcRecord } from '../../shared/record-shape.js';
+import { isPtcSha256Hex } from '../../shared/sha256.js';
 import {
   applyPtcHostPathMode,
   ptcHostPathModeDiagnostics,
@@ -121,11 +122,36 @@ export async function removePtcSessionDockerHostRoot(args: {
   runtimeRoot: string;
   reuseKey: PtcSessionDockerReuseKey;
 }): Promise<PtcSessionDockerResult<void>> {
+  return await removePtcSessionDockerHostRootByIdentityHash({
+    runtimeRoot: args.runtimeRoot,
+    identityHash: args.reuseKey.identityHash,
+  });
+}
+
+export async function removePtcSessionDockerHostRootByIdentityHash(args: {
+  runtimeRoot: string;
+  identityHash: string;
+}): Promise<PtcSessionDockerResult<void>> {
+  if (!isPtcSha256Hex(args.identityHash)) {
+    return {
+      ok: false,
+      reasonCode: 'container_host_root_cleanup_failed',
+      message: 'failed to clean PTC session host root',
+      diagnostics: { cleanupFailed: true, identityHashInvalid: true },
+    };
+  }
   try {
-    await rm(buildPtcSessionDockerSessionRoot(args), {
-      recursive: true,
-      force: true,
-    });
+    await rm(
+      join(
+        args.runtimeRoot,
+        PTC_SESSION_DOCKER_HOST_SESSIONS_ROOT,
+        args.identityHash.slice(0, PTC_SESSION_DOCKER_HOST_IDENTITY_HASH_CHARS),
+      ),
+      {
+        recursive: true,
+        force: true,
+      },
+    );
     return { ok: true, value: undefined };
   } catch (error: unknown) {
     return {

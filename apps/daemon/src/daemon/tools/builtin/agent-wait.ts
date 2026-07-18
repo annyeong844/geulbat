@@ -28,7 +28,7 @@ const agentWaitParameters = {
     wait_mode: {
       type: 'string',
       description:
-        'all returns when every listed child is terminal or blocked. any returns after the first terminal child, or when every listed child is blocked.',
+        'snapshot returns the current completed, pending, and blocked state immediately and is the default. all waits for every listed child to become terminal. any returns after the first terminal child.',
       enum: [...AGENT_WAIT_MODES],
     },
   },
@@ -46,23 +46,24 @@ function parseAgentWaitArgs(raw: unknown) {
   if (
     !Array.isArray(childRunIds) ||
     childRunIds.length === 0 ||
-    childRunIds.some(
-      (value) => typeof value !== 'string' || value.trim().length === 0,
+    !childRunIds.every(
+      (value: unknown): value is string =>
+        typeof value === 'string' && value.trim().length > 0,
     )
   ) {
     return failToolParse('child_run_ids must be a non-empty string array.');
   }
 
   const normalizedChildRunIds = childRunIds.map((value) => value.trim());
-  if (normalizedChildRunIds.some((value) => !isRunId(value))) {
+  if (!normalizedChildRunIds.every(isRunId)) {
     return failToolParse('child_run_ids must contain valid run ids.');
   }
 
   const waitMode = parsed.value.wait_mode;
-  if (
-    waitMode !== undefined &&
-    !AGENT_WAIT_MODES.includes(waitMode as AgentWaitMode)
-  ) {
+  const normalizedWaitMode = AGENT_WAIT_MODES.find(
+    (candidate) => candidate === waitMode,
+  );
+  if (waitMode !== undefined && normalizedWaitMode === undefined) {
     return failToolParse(
       `wait_mode must be one of: ${AGENT_WAIT_MODES.join(', ')}.`,
     );
@@ -72,8 +73,8 @@ function parseAgentWaitArgs(raw: unknown) {
     ok: true as const,
     value: {
       child_run_ids: normalizedChildRunIds,
-      ...(waitMode !== undefined
-        ? { wait_mode: waitMode as AgentWaitMode }
+      ...(normalizedWaitMode !== undefined
+        ? { wait_mode: normalizedWaitMode }
         : {}),
     },
   };
@@ -85,13 +86,21 @@ function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
   return defineParsedTool<AgentWaitArgs>({
     name: 'agent_wait',
     description:
-      'Wait for one or more previously spawned child runs and return their current terminal results.',
+      'Inspect one or more previously spawned child runs immediately, or explicitly join them at a dependency barrier.',
     parameters: agentWaitParameters,
     strict: true,
     sideEffectLevel: 'read',
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     requiresApproval: false,
+    catalogSearchMetadata: {
+      family: 'agent',
+      searchHints: ['wait for agent', 'join subagents', 'collect agent result'],
+      tags: ['agent', 'subagent', 'wait'],
+      whenToUse:
+        'Check subagent progress without blocking, or explicitly join subagents when their results are required.',
+      notFor: 'Launching new work or sending new input.',
+    },
     parseArgs: parseAgentWaitArgs,
     async executeParsed(args, ctx) {
       if (!ctx.threadId || !ctx.agentSpawnRuntime) {
@@ -102,7 +111,7 @@ function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
       }
 
       const ownerThreadId = ctx.threadId;
-      const waitMode = args.wait_mode ?? 'all';
+      const waitMode = args.wait_mode ?? 'snapshot';
       const childRunIds = [...new Set(args.child_run_ids)];
       const registry = ctx.agentSpawnRuntime.childRuns;
       const outcome = await waitForAgentChildren({
@@ -110,6 +119,7 @@ function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
         ownerThreadId,
         childRunIds,
         waitMode,
+        blockedBehavior: 'wait',
         ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
       });
       if (!outcome.ok) {

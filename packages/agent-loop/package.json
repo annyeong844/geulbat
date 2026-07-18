@@ -1,0 +1,31 @@
+{
+  "name": "@geulbat/agent-loop",
+  "version": "0.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist/"
+  ],
+  "exports": {
+    "./context-compaction": {
+      "types": "./dist/context-compaction.d.ts",
+      "import": "./dist/context-compaction.js"
+    },
+    "./kernel": {
+      "types": "./dist/kernel.d.ts",
+      "import": "./dist/kernel.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test:files": "node ../../scripts/run-workspace-node-tests.mjs --workspace agent-loop --tsconfig ./tsconfig.test.json",
+    "test": "npm run test:files -- \"**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}

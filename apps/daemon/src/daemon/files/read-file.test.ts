@@ -148,3 +148,96 @@ void test('readFile not_found errors include the normalized path', async () => {
     },
   );
 });
+
+// ─── 오피스 추출 read 통합 ───────────────────────────────────────────
+
+import { deflateRawSync } from 'node:zlib';
+import { readFilePage as readFilePageForOffice } from './read-file.js';
+
+function buildOfficeFixtureZip(
+  files: Array<{ name: string; content: string }>,
+): Buffer {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+  for (const file of files) {
+    const nameBytes = Buffer.from(file.name, 'utf8');
+    const raw = Buffer.from(file.content, 'utf8');
+    const data = deflateRawSync(raw);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(raw.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(raw.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    localParts.push(local, nameBytes, data);
+    centralParts.push(central, nameBytes);
+    offset += local.length + nameBytes.length + data.length;
+  }
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(files.length, 8);
+  eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(centralSize, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localParts, ...centralParts, eocd]);
+}
+
+void test('readFile returns extracted office text flagged as extractedDocument', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-office-'));
+  const paragraphs = ['하나', '둘', '셋']
+    .map((line) => `<w:p><w:r><w:t>${line}</w:t></w:r></w:p>`)
+    .join('');
+  await writeFile(
+    join(workspaceRoot, '문서.docx'),
+    buildOfficeFixtureZip([
+      { name: 'word/document.xml', content: `<w:body>${paragraphs}</w:body>` },
+    ]),
+  );
+  const result = await readFile(workspaceRoot, '문서.docx');
+  assert.equal(result.extractedDocument, 'docx');
+  assert.equal(result.content, '하나\n둘\n셋');
+  assert.equal(result.totalLines, 3);
+});
+
+void test('readFilePage pages extracted office text by line coordinates', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-office-'));
+  const paragraphs = Array.from({ length: 5 }, (_, i) => i + 1)
+    .map((n) => `<w:p><w:r><w:t>줄${n}</w:t></w:r></w:p>`)
+    .join('');
+  await writeFile(
+    join(workspaceRoot, '문서.docx'),
+    buildOfficeFixtureZip([
+      { name: 'word/document.xml', content: `<w:body>${paragraphs}</w:body>` },
+    ]),
+  );
+  const page = await readFilePageForOffice(workspaceRoot, '문서.docx', {
+    offset: 2,
+    limit: 2,
+  });
+  assert.equal(page.content, '줄3\n줄4');
+  assert.equal(page.startLine, 3);
+  assert.equal(page.endLine, 4);
+  assert.equal(page.totalLines, 5);
+  assert.equal(page.extractedDocument, 'docx');
+});
+
+void test('missing office file surfaces as not_found', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-office-'));
+  await assert.rejects(
+    readFile(workspaceRoot, '없는문서.docx'),
+    (error: unknown) =>
+      error instanceof Error && /not found/i.test(error.message),
+  );
+});

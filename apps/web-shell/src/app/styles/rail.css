@@ -1,0 +1,490 @@
+/* ─────────────────────────────────────
+   LEFT — 탐색기 (§3.1)
+   ───────────────────────────────────── */
+.rail {
+  background: var(--surface-container-low);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* 스크롤은 .rail-scroll 소관 — 경로 토글이 중앙까지 뻗도록 여기서는
+     자르지 않는다 (.rail.collapsed의 hidden은 별도 규칙으로 유지) */
+  overflow: visible;
+}
+
+.rail-header {
+  display: flex;
+  align-items: center;
+  padding: 14px 20px 8px;
+}
+
+/* 글밭 브랜드 — 작지만 또렷한 세리프 워드마크 */
+.rail-brand {
+  font-family: var(--font-prose-serif);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--primary);
+}
+
+.rail-scroll {
+  flex: 1;
+  min-height: 0;
+  padding-bottom: 12px;
+  /* 스크롤 소유자는 .tree — 헤더/바로가기는 고정, 트리만 흐른다
+     (가상 스크롤 윈도우가 .tree scrollTop을 기준으로 계산됨) */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.rail-tools {
+  margin: 0 12px 8px;
+  border-radius: var(--radius-md);
+  background: var(--surface-container-low);
+}
+
+.rail-tools > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--on-surface-muted);
+  border-radius: var(--radius-md);
+  transition: background var(--transition-base);
+}
+.rail-tools > summary::-webkit-details-marker {
+  display: none;
+}
+.rail-tools > summary:hover {
+  background: var(--surface-container-high);
+}
+.rail-tools[open] > summary {
+  color: var(--on-surface-variant);
+}
+
+.rail-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 20px 4px;
+}
+
+.rail-section-label {
+  min-width: 0;
+  flex: 1;
+}
+
+.rail-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--on-surface-muted);
+}
+
+.rail-icon-button {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+.rail-icon-button:hover {
+  background: var(--surface-container);
+  color: var(--primary);
+}
+.rail-icon-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* transient shell feedback (file ops rejection / failure — §3.6.9) */
+.rail-toast {
+  margin: 6px 12px 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.rail-alert {
+  margin: 6px 12px 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: rgba(177, 74, 58, 0.1);
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.rail-bottom {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px 12px;
+  background: var(--surface-container-low);
+  flex-shrink: 0;
+}
+
+.rail-bottom-actions {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.rail-bottom-actions .settings-entry {
+  width: 100%;
+  flex: none;
+}
+
+.settings-entry {
+  display: flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-ui-label);
+}
+
+.settings-entry {
+  flex: 1;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  transition: background var(--transition-base);
+}
+
+.settings-entry:hover,
+.settings-entry.active {
+  background: var(--surface-container);
+  color: var(--primary);
+}
+
+.settings-entry-icon {
+  width: 18px;
+  color: var(--on-surface-muted);
+  font-size: 15px;
+  line-height: 1;
+  text-align: center;
+}
+
+@keyframes pulse-soft {
+  0% {
+    box-shadow: 0 0 0 0 rgba(83, 99, 77, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(83, 99, 77, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(83, 99, 77, 0);
+  }
+}
+
+@keyframes pulse-fast {
+  0% {
+    box-shadow: 0 0 0 0 rgba(168, 123, 58, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 5px rgba(168, 123, 58, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(168, 123, 58, 0);
+  }
+}
+
+/* file tree (§3.1.1 / §3.1.2) */
+.tree {
+  padding: 4px 0 8px;
+  -webkit-user-select: none;
+  user-select: none;
+  /* 가상 스크롤 — 트리 자체가 스크롤 영역, 행 높이는 고정 26px */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.tree:focus {
+  outline: none;
+}
+
+.tree-node {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 26px;
+  padding: 0 16px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-family: var(--font-ui-label);
+  font-size: 13px;
+  color: var(--on-surface-variant);
+  cursor: default;
+  position: relative;
+  transition: background var(--transition-base);
+}
+
+.tree-node.folder {
+  font-weight: 500;
+  color: var(--on-surface);
+}
+
+.tree-node:hover {
+  background: var(--surface-container-high);
+}
+
+/* active file — No-Line Rule 명시 예외: single-side accent (§3.1.1) */
+.tree-node.active {
+  background: var(--surface-container);
+  color: var(--primary);
+  font-weight: 500;
+  box-shadow: inset 2px 0 0 0 var(--primary);
+}
+
+/* multi-select selection visual (§3.1.2, selection visual only) */
+.tree-node.selected {
+  background: var(--surface-container);
+}
+
+.tree-node.truncated {
+  color: var(--on-surface-muted);
+  font-style: italic;
+  cursor: default;
+}
+
+.tree-node.focused {
+  outline: 1px solid rgba(83, 99, 77, 0.5);
+  outline-offset: -1px;
+}
+
+/* 트리 내 이동 drop target */
+.tree-node.drop-active {
+  background: var(--secondary-soft);
+  box-shadow: inset 0 0 0 1px var(--secondary);
+}
+
+.rail-section-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.rail-toast-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.rail-toast-actions button {
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-family: var(--font-ui-label);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.rail-toast-actions button + button {
+  background: transparent;
+  color: var(--warning-text);
+}
+
+.tree-disclosure {
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--on-surface-muted);
+  font-size: 9px;
+  transition: transform 200ms;
+  display: inline-block;
+}
+
+.tree-disclosure.expanded {
+  transform: rotate(90deg);
+}
+
+.tree-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--on-surface-muted);
+}
+
+.tree-node.folder .tree-icon {
+  color: var(--secondary);
+}
+
+.tree-node.canvas-eligible .tree-icon {
+  color: var(--tertiary);
+}
+
+.tree-node-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* right-click context menu (§3.1.2) */
+.context-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 180px;
+  padding: 6px;
+  background: var(--surface-container-lowest);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-floating);
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  font-family: var(--font-ui-label);
+  font-size: 12.5px;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.context-menu-item:hover:not(:disabled) {
+  background: var(--surface-container);
+  color: var(--primary);
+}
+
+.context-menu-item:disabled {
+  color: var(--on-surface-muted);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.context-menu-hint {
+  font-size: 10.5px;
+  color: var(--on-surface-muted);
+  font-weight: 400;
+}
+
+.context-menu-divider {
+  height: 1px;
+  margin: 5px 8px;
+  background: rgba(50, 34, 20, 0.08);
+}
+
+/* 탐색 위치 경로 (컴퓨터 전체 탐색 모드) */
+.rail-browse-path {
+  position: relative;
+  display: block;
+  margin-top: 2px;
+  max-width: 100%;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: default;
+  outline: none;
+  font-family: var(--font-ui-mono);
+  font-size: 10px;
+  color: var(--on-surface-muted);
+}
+
+/* 바로가기 (탐색기 사이드바 스타일) */
+.quick-access {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 8px 8px;
+}
+
+.quick-access-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--on-surface-variant);
+  font-family: var(--font-ui-label);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.quick-access-item:hover {
+  background: var(--surface-container);
+}
+
+.quick-access-item.active {
+  background: var(--secondary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.quick-access-icon {
+  width: 16px;
+  text-align: center;
+}
+
+.project-tree {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.rail-browse-path-short {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 전체 경로 토글 — 카드 없이 글자만, 옆으로 넓게 펼쳐진다 */
+.rail-browse-path-full {
+  display: none;
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  z-index: 70;
+  width: max-content;
+  max-width: min(520px, 70vw);
+  padding: 2px 0;
+  background: transparent;
+  color: var(--on-surface);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.rail-browse-path:hover .rail-browse-path-full,
+.rail-browse-path:focus-visible .rail-browse-path-full {
+  display: block;
+}

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH } from '@geulbat/protocol/public-web-fixtures';
+import { PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX } from '@geulbat/protocol/react-bundle-inline-compile';
 
 import {
   GEULBAT_REACT_RUNTIME_GLOBAL,
@@ -13,19 +14,19 @@ import {
 import { resolveReactBundleArtifactRuntimePreview } from './preview.js';
 import type { ResolvedArtifactSourceRef } from '../../artifact-types.js';
 import type { ArtifactRuntimeFrameRenderArgs } from '../types.js';
-import {
-  brandProjectId,
-  brandThreadId,
-} from '../../../../lib/id-brand-helpers.js';
+import { brandThreadId } from '../../../../lib/id-brand-helpers.js';
 
 const REACT_BUNDLE_ENTRY_URL = `https://fixtures.geulbat.local${PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH}`;
+const PUBLIC_CDN_REACT_ENTRY_URL = 'https://cdn.example.com/react-entry.js';
+const PRIVATE_LOCAL_REACT_ENTRY_URL = `https://192.168.0.1${PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH}`;
+const LOCAL_GENERATED_REACT_ENTRY_URL = `http://127.0.0.1:3456${PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX}cache-key/entry.js`;
 
 function createResolvedSourceRef(
   overrides: Partial<ResolvedArtifactSourceRef> = {},
 ): ResolvedArtifactSourceRef {
   return {
     kind: null,
-    projectId: null,
+    workingDirectory: '',
     threadId: null,
     runId: null,
     filePath: null,
@@ -43,7 +44,7 @@ function resolveRenderedReactBundlePreview(payload: string) {
     payload,
     digest: 'fixture-react-bundle',
     sourceRef: createResolvedSourceRef({
-      projectId: brandProjectId('workspace'),
+      workingDirectory: 'stories/sample',
       threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
     }),
     renderRuntimeFrame(args) {
@@ -70,7 +71,7 @@ function resolveRenderedReactBundlePreview(payload: string) {
   return renderToStaticMarkup(preview.node);
 }
 
-void test('resolveReactBundleArtifactRuntimePreview renders the common runtime iframe', () => {
+void test('resolveReactBundleArtifactRuntimePreview renders supported fixtures through the runtime frame', () => {
   const html = resolveRenderedReactBundlePreview(
     JSON.stringify({
       entryUrl: REACT_BUNDLE_ENTRY_URL,
@@ -84,6 +85,33 @@ void test('resolveReactBundleArtifactRuntimePreview renders the common runtime i
     html,
     /src="http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?[^"]*rev=/,
   );
+});
+
+void test('resolveReactBundleArtifactRuntimePreview keeps public CDN manifest entry URLs rendered', () => {
+  const html = resolveRenderedReactBundlePreview(
+    JSON.stringify({
+      entryUrl: PUBLIC_CDN_REACT_ENTRY_URL,
+    }),
+  );
+
+  assert.match(html, /<iframe/);
+  assert.doesNotMatch(html, /sanitize_rejected/);
+  assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
+});
+
+void test('resolveReactBundleArtifactRuntimePreview keeps personal-local manifest entry URLs rendered', () => {
+  for (const entryUrl of [
+    PRIVATE_LOCAL_REACT_ENTRY_URL,
+    LOCAL_GENERATED_REACT_ENTRY_URL,
+  ]) {
+    const html = resolveRenderedReactBundlePreview(
+      JSON.stringify({ entryUrl }),
+    );
+
+    assert.match(html, /<iframe/);
+    assert.doesNotMatch(html, /sanitize_rejected/);
+    assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
+  }
 });
 
 void test('buildReactBundleArtifactRuntimePayload installs runtime globals and imports manifest entry modules', () => {

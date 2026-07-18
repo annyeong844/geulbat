@@ -40,12 +40,62 @@ export interface RunInterjectRequest {
   text: string;
 }
 
+// 대기 중 스티어 취소 — 모델이 소비하기 전의 큐 항목을 receivedSeq로 지운다
+export interface RunInterjectCancelEnvelopeMessage {
+  type: 'run.interject.cancel';
+  requestId: string;
+  request: Record<string, unknown>;
+}
+
+export interface RunInterjectCancelRequest {
+  runId: CancelRequest['runId'];
+  receivedSeq: number;
+}
+
+// 대기 중 스티어 즉시 반영 — 현재 라운드의 남은 도구 호출을 건너뛰고
+// 다음 모델 호출 직전 소비 지점으로 최대한 빨리 도달하게 한다
+export interface RunInterjectFlushEnvelopeMessage {
+  type: 'run.interject.flush';
+  requestId: string;
+  request: Record<string, unknown>;
+}
+
+export interface RunInterjectFlushRequest {
+  runId: CancelRequest['runId'];
+}
+
+// 아티팩트 프레임 발 read-only 도구 호출 — 프레임은 데이터(toolName/args)만
+// 주고, 신뢰 컨텍스트(threadId, workingDirectory)는 부모(웹셸)가 자기 신뢰
+// 상태에서 주입한다. 서버는 PTC와 공유하는 read-only 게이트 통과분만 실행한다.
+export interface RunToolEnvelopeMessage {
+  type: 'run.tool';
+  requestId: string;
+  request: Record<string, unknown>;
+}
+
+export interface RunToolRequest {
+  threadId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  scopeHandle: string;
+  // 프레임이 만든 상관 id(af-N) — 결과를 프레임 pending 요청에 되돌릴 때 쓴다.
+  frameRequestId: string;
+  workingDirectory?: string;
+}
+
+export type RunToolResultPayload =
+  | { ok: true; output: string }
+  | { ok: false; errorCode: string; error: string };
+
 export type RunChannelClientMessage =
   | RunAuthMessage
   | RunStartMessage
   | RunCancelMessage
   | RunApproveMessage
-  | RunInterjectEnvelopeMessage;
+  | RunInterjectEnvelopeMessage
+  | RunInterjectCancelEnvelopeMessage
+  | RunInterjectFlushEnvelopeMessage
+  | RunToolEnvelopeMessage;
 
 export interface RunAuthOkMessage {
   type: 'run.auth.ok';
@@ -81,10 +131,39 @@ export interface RunInterjectControlMessage {
   bufferDepth: number;
 }
 
+export interface RunInterjectCancelControlMessage {
+  type: 'run.control';
+  requestId: string;
+  action: 'run.interject.cancel';
+  ok: true;
+  cancelled: boolean;
+}
+
+export interface RunInterjectFlushControlMessage {
+  type: 'run.control';
+  requestId: string;
+  action: 'run.interject.flush';
+  ok: true;
+  // 큐에 항목이 있어 플러시가 예약되면 true, 큐가 비어 무의미하면 false
+  flushed: boolean;
+}
+
+export interface RunToolControlMessage {
+  type: 'run.control';
+  requestId: string;
+  action: 'run.tool';
+  ok: true;
+  // 도구 결과 v1 — 스트리밍 없이 requestId 상관 단일 응답
+  result: RunToolResultPayload;
+}
+
 export type RunControlMessage =
   | RunCancelControlMessage
   | RunApproveControlMessage
-  | RunInterjectControlMessage;
+  | RunInterjectControlMessage
+  | RunInterjectCancelControlMessage
+  | RunInterjectFlushControlMessage
+  | RunToolControlMessage;
 
 export interface RunErrorMessage {
   type: 'run.error';
@@ -149,6 +228,53 @@ export function isRunInterjectEnvelope(
   );
 }
 
+export function isRunInterjectCancelEnvelope(
+  value: unknown,
+): value is RunInterjectCancelEnvelopeMessage {
+  return (
+    isRecord(value) &&
+    value.type === 'run.interject.cancel' &&
+    isString(value.requestId) &&
+    isRecord(value.request)
+  );
+}
+
+export function isRunInterjectFlushEnvelope(
+  value: unknown,
+): value is RunInterjectFlushEnvelopeMessage {
+  return (
+    isRecord(value) &&
+    value.type === 'run.interject.flush' &&
+    isString(value.requestId) &&
+    isRecord(value.request)
+  );
+}
+
+export function isRunToolEnvelope(
+  value: unknown,
+): value is RunToolEnvelopeMessage {
+  return (
+    isRecord(value) &&
+    value.type === 'run.tool' &&
+    isString(value.requestId) &&
+    isRecord(value.request)
+  );
+}
+
+export function isRunToolResultPayload(
+  value: unknown,
+): value is RunToolResultPayload {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.ok === true) {
+    return isString(value.output);
+  }
+  return (
+    value.ok === false && isString(value.errorCode) && isString(value.error)
+  );
+}
+
 export function isRunChannelClientMessage(
   value: unknown,
 ): value is RunChannelClientMessage {
@@ -157,7 +283,10 @@ export function isRunChannelClientMessage(
     isRunCancelMessage(value) ||
     isRunApproveMessage(value) ||
     isRunStartMessage(value) ||
-    isRunInterjectEnvelope(value)
+    isRunInterjectEnvelope(value) ||
+    isRunInterjectCancelEnvelope(value) ||
+    isRunInterjectFlushEnvelope(value) ||
+    isRunToolEnvelope(value)
   );
 }
 
@@ -165,6 +294,9 @@ const RUN_CONTROL_ACTIONS = new Set([
   'run.cancel',
   'run.approve',
   'run.interject',
+  'run.interject.cancel',
+  'run.interject.flush',
+  'run.tool',
 ]);
 
 export function isRunChannelServerMessage(
@@ -187,6 +319,12 @@ export function isRunChannelServerMessage(
         value.ok !== true
       ) {
         return false;
+      }
+      if (value.action === 'run.interject.cancel') {
+        return typeof value.cancelled === 'boolean';
+      }
+      if (value.action === 'run.tool') {
+        return isRunToolResultPayload(value.result);
       }
       if (value.action !== 'run.interject') {
         return true;

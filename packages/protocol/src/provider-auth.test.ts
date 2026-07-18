@@ -1,7 +1,40 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isProviderAuthStatusResponse } from './provider-auth.js';
+import {
+  DEFAULT_PROVIDER_AUTH_PROVIDER_ID,
+  isProviderAuthProviderId,
+  isProviderAuthStartResponse,
+  isProviderAuthStatusResponse,
+} from './provider-auth.js';
+
+void test('isProviderAuthProviderId accepts known provider auth ids only', () => {
+  assert.equal(DEFAULT_PROVIDER_AUTH_PROVIDER_ID, 'openai_codex_direct');
+  assert.equal(isProviderAuthProviderId('openai_codex_direct'), true);
+  assert.equal(isProviderAuthProviderId('grok_oauth'), true);
+  assert.equal(isProviderAuthProviderId('grok'), false);
+  assert.equal(isProviderAuthProviderId(undefined), false);
+});
+
+void test('isProviderAuthStartResponse requires a concrete provider id', () => {
+  assert.equal(
+    isProviderAuthStartResponse({
+      authSessionId: 'auth-1',
+      authorizeUrl: 'https://auth.example/authorize',
+      expiresAt: 123,
+      providerId: 'grok_oauth',
+    }),
+    true,
+  );
+  assert.equal(
+    isProviderAuthStartResponse({
+      authSessionId: 'auth-1',
+      authorizeUrl: 'https://auth.example/authorize',
+      expiresAt: 123,
+    }),
+    false,
+  );
+});
 
 void test('isProviderAuthStatusResponse accepts state-correlated provider auth shapes', () => {
   const validCases: unknown[] = [

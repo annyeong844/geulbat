@@ -17,12 +17,7 @@ export function resolveArtifactDurabilitySourceAuthorityFromResolved(args: {
   requireFilePath?: boolean;
 }): ArtifactDurabilitySourceAuthority | null {
   const sourceRef = args.sourceRef;
-  if (
-    !sourceRef?.projectId ||
-    !sourceRef.threadId ||
-    !sourceRef.runId ||
-    !sourceRef.messageTimestamp
-  ) {
+  if (!sourceRef?.threadId || !sourceRef.runId || !sourceRef.messageTimestamp) {
     return null;
   }
   if (args.requireFilePath && !sourceRef.filePath) {
@@ -30,7 +25,7 @@ export function resolveArtifactDurabilitySourceAuthorityFromResolved(args: {
   }
 
   return {
-    projectId: sourceRef.projectId,
+    workingDirectory: sourceRef.workingDirectory,
     threadId: sourceRef.threadId,
     runId: sourceRef.runId,
     messageTimestamp: sourceRef.messageTimestamp,
@@ -42,7 +37,7 @@ export function createArtifactDurabilitySourceAuthorityKey(
   authority: ArtifactDurabilitySourceAuthority,
 ): string {
   return JSON.stringify([
-    authority.projectId,
+    authority.workingDirectory,
     authority.threadId,
     authority.runId,
     authority.messageTimestamp,

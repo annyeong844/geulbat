@@ -2,22 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { createDaemon } from './create-daemon.js';
-import { ProjectRegistryCorruptionError } from './daemon/files/project-store.js';
+import { createRouteTestDaemonContext } from './test-support/http-routes.js';
 
 void test('createDaemon returns loopback CORS headers for allowed preflight origins', async () => {
-  const { app } = await createDaemon();
+  const { app } = await createIsolatedDaemon();
   const server = app.listen(0, '127.0.0.1');
 
   try {
     await onceListening(server);
     const port = (server.address() as AddressInfo).port;
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/files/tree?projectId=workspace`,
+      `http://127.0.0.1:${port}/api/files/tree?root=computer`,
       {
         method: 'OPTIONS',
         headers: {
@@ -36,20 +36,23 @@ void test('createDaemon returns loopback CORS headers for allowed preflight orig
       res.headers.get('content-security-policy') ?? '',
       /frame-ancestors 'none'/,
     );
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(res.headers.get('x-frame-options'), null);
   } finally {
     await closeServer(server);
   }
 });
 
 void test('createDaemon rejects non-loopback preflight origins', async () => {
-  const { app } = await createDaemon();
+  const { app } = await createIsolatedDaemon();
   const server = app.listen(0, '127.0.0.1');
 
   try {
     await onceListening(server);
     const port = (server.address() as AddressInfo).port;
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/files/tree?projectId=workspace`,
+      `http://127.0.0.1:${port}/api/files/tree?root=computer`,
       {
         method: 'OPTIONS',
         headers: {
@@ -68,14 +71,14 @@ void test('createDaemon rejects non-loopback preflight origins', async () => {
 });
 
 void test('createDaemon rejects preflight requests when Origin is missing', async () => {
-  const { app } = await createDaemon();
+  const { app } = await createIsolatedDaemon();
   const server = app.listen(0, '127.0.0.1');
 
   try {
     await onceListening(server);
     const port = (server.address() as AddressInfo).port;
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/files/tree?projectId=workspace`,
+      `http://127.0.0.1:${port}/api/files/tree?root=computer`,
       {
         method: 'OPTIONS',
         headers: {
@@ -95,14 +98,14 @@ void test('createDaemon rejects preflight requests when Origin is missing', asyn
 void test('createDaemon allows explicitly configured external preflight origins', async () => {
   const previous = process.env['GEULBAT_ALLOWED_ORIGINS'];
   process.env['GEULBAT_ALLOWED_ORIGINS'] = 'https://demo.trycloudflare.com';
-  const { app } = await createDaemon();
+  const { app } = await createIsolatedDaemon();
   const server = app.listen(0, '127.0.0.1');
 
   try {
     await onceListening(server);
     const port = (server.address() as AddressInfo).port;
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/files/tree?projectId=workspace`,
+      `http://127.0.0.1:${port}/api/files/tree?root=computer`,
       {
         method: 'OPTIONS',
         headers: {
@@ -126,16 +129,14 @@ void test('createDaemon allows explicitly configured external preflight origins'
 void test('createDaemon allows cookie-authenticated api requests when Origin is missing', async () => {
   const previousToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = 'geulbat-test-token-1234';
-  const repoRoot = await mkdtemp(join(tmpdir(), 'geulbat-daemon-cookie-'));
-  await mkdir(join(repoRoot, 'workspace'), { recursive: true });
-  const { app } = await createDaemon({ repoRoot });
+  const { app } = await createIsolatedDaemon();
   const server = app.listen(0, '127.0.0.1');
 
   try {
     await onceListening(server);
     const port = (server.address() as AddressInfo).port;
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/files/tree?projectId=workspace`,
+      `http://127.0.0.1:${port}/api/files/computer-scope`,
       {
         headers: {
           Cookie: 'geulbat_dev_auth=geulbat-test-token-1234',
@@ -146,13 +147,12 @@ void test('createDaemon allows cookie-authenticated api requests when Origin is 
     assert.equal(res.status, 200);
   } finally {
     await closeServer(server);
-    await rm(repoRoot, { recursive: true, force: true });
     restoreEnv('GEULBAT_DEV_TOKEN', previousToken);
   }
 });
 
 void test('createDaemon applies auth guard to react bundle inline compile route', async () => {
-  const { app } = await createDaemon();
+  const { app } = await createIsolatedDaemon();
   const server = app.listen(0, '127.0.0.1');
 
   try {
@@ -186,13 +186,38 @@ void test('createDaemon applies auth guard to react bundle inline compile route'
   }
 });
 
+void test('createDaemon does not mount shared browser routes', async () => {
+  const previousToken = process.env['GEULBAT_DEV_TOKEN'];
+  process.env['GEULBAT_DEV_TOKEN'] = 'geulbat-test-token-1234';
+  const { app } = await createIsolatedDaemon();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await onceListening(server);
+    const port = (server.address() as AddressInfo).port;
+    for (const path of ['/api/browser/share', '/api/browser/live-session']) {
+      const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+        method: 'POST',
+        headers: {
+          Cookie: 'geulbat_dev_auth=geulbat-test-token-1234',
+        },
+      });
+
+      assert.equal(res.status, 404);
+    }
+  } finally {
+    await closeServer(server);
+    restoreEnv('GEULBAT_DEV_TOKEN', previousToken);
+  }
+});
+
 void test('createDaemon rejects malformed GEULBAT_ALLOWED_ORIGINS config', async () => {
   const previous = process.env['GEULBAT_ALLOWED_ORIGINS'];
   process.env['GEULBAT_ALLOWED_ORIGINS'] =
     'https://demo.trycloudflare.com/path';
   try {
     await assert.rejects(
-      () => createDaemon(),
+      () => createIsolatedDaemon(),
       /GEULBAT_ALLOWED_ORIGINS entries must be bare origins/,
     );
   } finally {
@@ -200,39 +225,25 @@ void test('createDaemon rejects malformed GEULBAT_ALLOWED_ORIGINS config', async
   }
 });
 
-void test('createDaemon fails fast when project registry metadata is corrupted', async () => {
-  const repoRoot = await mkdtemp(join(tmpdir(), 'geulbat-daemon-corrupt-'));
-  await mkdir(join(repoRoot, '.geulbat'), { recursive: true });
-  await writeFile(
-    join(repoRoot, '.geulbat', 'projects.json'),
-    '{"version":1,"projects":[',
-    'utf8',
-  );
-
-  try {
-    await assert.rejects(
-      () => createDaemon({ repoRoot }),
-      (error: unknown) => error instanceof ProjectRegistryCorruptionError,
-    );
-  } finally {
-    await rm(repoRoot, { recursive: true, force: true });
-  }
-});
-
-void test('createDaemon resolves the default repo root independently of process cwd', async () => {
+void test('createDaemon resolves the configured Home state root independently of process cwd', async () => {
   const previousCwd = process.cwd();
   const previousToken = process.env['GEULBAT_DEV_TOKEN'];
+  const previousHomeStateRoot = process.env['GEULBAT_HOME_STATE_ROOT'];
   const tempCwd = await mkdtemp(join(tmpdir(), 'geulbat-daemon-cwd-'));
+  const expectedHomeStateRoot = join(tempCwd, 'home-state');
   process.env['GEULBAT_DEV_TOKEN'] = 'geulbat-test-token-1234';
-  process.chdir(tempCwd);
-  const { app } = await createDaemon();
-  const server = app.listen(0, '127.0.0.1');
+  process.env['GEULBAT_HOME_STATE_ROOT'] = expectedHomeStateRoot;
+  let server: Server | undefined;
 
   try {
+    process.chdir(tempCwd);
+    const { app, daemonContext } = await createDaemon();
+    assert.equal(daemonContext.homeStateRoot, expectedHomeStateRoot);
+    server = app.listen(0, '127.0.0.1');
     await onceListening(server);
     const port = (server.address() as AddressInfo).port;
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/files/tree?projectId=workspace`,
+      `http://127.0.0.1:${port}/api/files/computer-scope`,
       {
         headers: {
           Cookie: 'geulbat_dev_auth=geulbat-test-token-1234',
@@ -242,12 +253,19 @@ void test('createDaemon resolves the default repo root independently of process 
 
     assert.equal(res.status, 200);
   } finally {
-    await closeServer(server);
+    if (server !== undefined) {
+      await closeServer(server);
+    }
     process.chdir(previousCwd);
     restoreEnv('GEULBAT_DEV_TOKEN', previousToken);
+    restoreEnv('GEULBAT_HOME_STATE_ROOT', previousHomeStateRoot);
     await rm(tempCwd, { recursive: true, force: true });
   }
 });
+
+function createIsolatedDaemon() {
+  return createDaemon({ daemonContext: createRouteTestDaemonContext() });
+}
 
 function onceListening(server: Server): Promise<void> {
   if (server.listening) {

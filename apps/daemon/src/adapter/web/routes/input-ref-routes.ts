@@ -1,13 +1,11 @@
-import type { Router } from 'express';
+import type { Request, Response, Router } from 'express';
 
 import type { ErrorCode } from '../../../daemon/error-codes.js';
-import { readProjectWorkspaceScopeFromQuery } from '#web/request/project-scope.js';
 import { readRequiredQueryString } from '#web/request/string-fields.js';
 import {
   sendApiError,
   sendUnexpectedApiError,
 } from '#web/response/send-api-error.js';
-import type { ProjectScopedRoutesContext } from './routes-context.js';
 
 type InputRefRoutePathResult =
   | { ok: true; path: string }
@@ -20,9 +18,9 @@ type InputRefRoutePathResult =
 export function registerInputRefDeleteRoute(args: {
   router: Router;
   path: string;
-  projectRegistry: ProjectScopedRoutesContext['projectRegistry'];
   refQueryName: string;
   logContext: string;
+  resolveWorkspaceRoot: (request: Request, response: Response) => string | null;
   readRefPath: (args: {
     workspaceRoot: string;
     ref: string;
@@ -32,7 +30,7 @@ export function registerInputRefDeleteRoute(args: {
   const {
     router,
     path,
-    projectRegistry,
+    resolveWorkspaceRoot,
     refQueryName,
     logContext,
     readRefPath,
@@ -40,12 +38,8 @@ export function registerInputRefDeleteRoute(args: {
   } = args;
 
   router.delete(path, async (req, res) => {
-    const projectScope = readProjectWorkspaceScopeFromQuery(
-      req.query['projectId'],
-      { projectRegistry },
-    );
-    if (!projectScope.ok) {
-      sendApiError(res, projectScope.code, projectScope.message);
+    const workspaceRoot = resolveWorkspaceRoot(req, res);
+    if (workspaceRoot === null) {
       return;
     }
 
@@ -57,7 +51,7 @@ export function registerInputRefDeleteRoute(args: {
 
     try {
       const resolvedRef = await readRefPath({
-        workspaceRoot: projectScope.workspaceRoot,
+        workspaceRoot,
         ref: ref.value,
       });
       if (!resolvedRef.ok) {

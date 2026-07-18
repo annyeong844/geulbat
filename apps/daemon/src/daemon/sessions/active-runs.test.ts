@@ -8,7 +8,6 @@ import {
   createActiveRunStore,
 } from './active-runs.js';
 import { createRunInterjectBuffer } from './active-run-interject-buffer.js';
-import { testProjectId } from '../../test-support/project-id.js';
 import { testRunId } from '../../test-support/run-id.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 
@@ -51,8 +50,8 @@ void test('abortRun rejects direct child cancellation', () => {
     store.tryStartRun(parentThreadId, {
       runId: parentRunId,
       threadId: parentThreadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: parentThreadId,
       abortController: parentController,
       interject: createRunInterjectBuffer(),
@@ -65,8 +64,8 @@ void test('abortRun rejects direct child cancellation', () => {
     store.tryStartRun(childThreadId, {
       runId: childRunId,
       threadId: childThreadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: parentThreadId,
       abortController: childController,
       interject: createRunInterjectBuffer(),
@@ -100,8 +99,8 @@ void test('abortTrackedRun can cancel a child run by stable child handle', () =>
     store.tryStartRun(parentThreadId, {
       runId: parentRunId,
       threadId: parentThreadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: parentThreadId,
       abortController: parentController,
       interject: createRunInterjectBuffer(),
@@ -113,8 +112,8 @@ void test('abortTrackedRun can cancel a child run by stable child handle', () =>
     store.tryStartRun(childThreadId, {
       runId: childRunId,
       threadId: childThreadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: parentThreadId,
       abortController: childController,
       interject: createRunInterjectBuffer(),
@@ -145,8 +144,8 @@ void test('abortThreadTree aborts foreground and background runs owned by the sa
     store.tryStartRun(parentThreadId, {
       runId: parentRunId,
       threadId: parentThreadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: parentThreadId,
       abortController: parentController,
       interject: createRunInterjectBuffer(),
@@ -159,8 +158,8 @@ void test('abortThreadTree aborts foreground and background runs owned by the sa
     store.tryStartRun(childThreadId, {
       runId: childRunId,
       threadId: childThreadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: parentThreadId,
       abortController: childController,
       interject: createRunInterjectBuffer(),
@@ -191,8 +190,8 @@ void test('abortThreadTree ignores finished runs and clears owner index on clean
     store.tryStartRun(parentThreadId, {
       runId: parentRunId,
       threadId: parentThreadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: parentThreadId,
       abortController: parentController,
       interject: createRunInterjectBuffer(),
@@ -205,8 +204,8 @@ void test('abortThreadTree ignores finished runs and clears owner index on clean
     store.tryStartRun(childThreadId, {
       runId: childRunId,
       threadId: childThreadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: parentThreadId,
       abortController: childController,
       interject: createRunInterjectBuffer(),
@@ -236,8 +235,8 @@ void test('getRunById exposes aborted state without leaking the abort controller
     store.tryStartRun(threadId, {
       runId,
       threadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: threadId,
       abortController,
       interject: createRunInterjectBuffer(),
@@ -271,8 +270,8 @@ void test('appendPendingInterject pushes to the live run and reports seq and dep
     store.tryStartRun(threadId, {
       runId,
       threadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: threadId,
       abortController: new AbortController(),
       interject,
@@ -319,8 +318,8 @@ void test('appendPendingInterject returns not_found for unknown or aborted runs'
     store.tryStartRun(threadId, {
       runId,
       threadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: threadId,
       abortController,
       interject: createRunInterjectBuffer(),
@@ -350,8 +349,8 @@ void test('finishRun ignores missing run ids instead of deleting the current thr
     store.tryStartRun(threadId, {
       runId: currentRunId,
       threadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: threadId,
       abortController,
       interject: createRunInterjectBuffer(),
@@ -367,4 +366,44 @@ void test('finishRun ignores missing run ids instead of deleting the current thr
   assert.equal(activeRun.runId, currentRunId);
 
   store.finishRun(threadId, currentRunId);
+});
+
+void test('requestPendingInterjectFlush marks a queued live run and reports empty queues', () => {
+  const store = createActiveRunStore();
+  const threadId = testThreadId(31);
+  const runId = testRunId('flush-interject');
+  const interject = createRunInterjectBuffer();
+
+  assert.deepEqual(
+    store.tryStartRun(threadId, {
+      runId,
+      threadId,
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
+      ownerThreadId: threadId,
+      abortController: new AbortController(),
+      interject,
+      startedAt: '2026-03-24T00:00:00.000Z',
+    }),
+    { ok: true },
+  );
+
+  assert.deepEqual(store.requestPendingInterjectFlush(runId), {
+    ok: true,
+    flushed: false,
+  });
+
+  store.appendPendingInterject(runId, { text: 'a' });
+  assert.deepEqual(store.requestPendingInterjectFlush(runId), {
+    ok: true,
+    flushed: true,
+  });
+  assert.equal(interject.flushRequested, true);
+
+  assert.deepEqual(
+    store.requestPendingInterjectFlush(testRunId('flush-interject-missing')),
+    { ok: false, code: 'not_found' },
+  );
+
+  store.finishRun(threadId, runId);
 });

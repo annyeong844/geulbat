@@ -7,10 +7,10 @@ export interface MemoryManifestFile {
 }
 
 export interface MemoryManifest {
-  version: 1;
+  version: 2;
   generationId: string;
   generatedAt: string;
-  sourceProjectId: string;
+  sourceDirectory: string;
   sourceIndexVersionToken: string;
   files: MemoryManifestFile[];
 }

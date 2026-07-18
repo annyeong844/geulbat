@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import { DEV_TOKEN_HEADER_NAME } from '../auth/shell-auth.js';
 import { ApiFetchError } from './client.js';
 import {
+  COMPUTER_FILE_API_SCOPE,
   FileSaveConflictError,
+  getComputerFileScope,
   replaceBinaryFile,
   saveBinaryFile,
   saveFile,
@@ -22,13 +24,49 @@ function installApiTestBootstrap(
   });
 }
 
+void test('computer file APIs use root scope without a project id', async (t) => {
+  const calls: string[] = [];
+  installApiTestBootstrap(t, async (input, init) => {
+    calls.push(String(input));
+    if (String(input) === '/api/files/computer-scope') {
+      return new Response(
+        JSON.stringify({
+          available: true,
+          browseStartPath: 'Users/sample',
+          browseShortcuts: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    assert.equal(body.root, 'computer');
+    assert.equal(body.projectId, undefined);
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        path: body.path,
+        versionToken: 'computer-version',
+        totalLines: 1,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
+  const scope = await getComputerFileScope();
+  assert.equal(scope.available, true);
+  await saveFile(
+    COMPUTER_FILE_API_SCOPE,
+    'Users/sample/note.md',
+    'hello',
+    'v1',
+  );
+  assert.deepEqual(calls, ['/api/files/computer-scope', '/api/files/save']);
+});
+
 void test('saveFile maps stale write api conflict into FileSaveConflictError', async (t) => {
   installApiTestBootstrap(t, async (_input, init) => {
     assert.equal(init?.credentials, 'same-origin');
-    assert.equal(
-      (init?.headers as Record<string, string>)[DEV_TOKEN_HEADER_NAME],
-      undefined,
-    );
+    assert.equal(new Headers(init?.headers).get(DEV_TOKEN_HEADER_NAME), null);
     return new Response(
       JSON.stringify({
         code: 'conflict_stale_write',
@@ -44,7 +82,8 @@ void test('saveFile maps stale write api conflict into FileSaveConflictError', a
   });
 
   await assert.rejects(
-    () => saveFile('workspace', 'docs/sample.md', 'hello', 'token-1'),
+    () =>
+      saveFile(COMPUTER_FILE_API_SCOPE, 'docs/sample.md', 'hello', 'token-1'),
     (error: unknown) => {
       assert.ok(error instanceof FileSaveConflictError);
       assert.equal(error.conflict.path, 'docs/sample.md');
@@ -71,7 +110,8 @@ void test('saveFile preserves unrelated api fetch failures', async (t) => {
   );
 
   await assert.rejects(
-    () => saveFile('workspace', 'docs/sample.md', 'hello', 'token-1'),
+    () =>
+      saveFile(COMPUTER_FILE_API_SCOPE, 'docs/sample.md', 'hello', 'token-1'),
     (error: unknown) => error instanceof ApiFetchError,
   );
 });
@@ -81,16 +121,10 @@ void test('saveBinaryFile uploads blob bytes before posting a contentRef to the 
   installApiTestBootstrap(t, async (input, init) => {
     calls.push(String(input));
     assert.equal(init?.credentials, 'same-origin');
-    assert.equal(
-      (init?.headers as Record<string, string>)[DEV_TOKEN_HEADER_NAME],
-      undefined,
-    );
+    assert.equal(new Headers(init?.headers).get(DEV_TOKEN_HEADER_NAME), null);
 
     if (String(input).startsWith('/api/files/binary-inputs?')) {
-      assert.equal(
-        (init?.headers as Record<string, string>)['Content-Type'],
-        'image/png',
-      );
+      assert.equal(new Headers(init?.headers).get('content-type'), 'image/png');
       assert.ok(init?.body instanceof Blob);
       assert.deepEqual(
         new Uint8Array(await init.body.arrayBuffer()),
@@ -111,17 +145,17 @@ void test('saveBinaryFile uploads blob bytes before posting a contentRef to the 
 
     assert.equal(String(input), '/api/files/save-binary');
     assert.equal(
-      (init?.headers as Record<string, string>)['Content-Type'],
+      new Headers(init?.headers).get('content-type'),
       'application/json',
     );
     const body = JSON.parse(String(init?.body)) as {
-      projectId: string;
+      root: string;
       path: string;
       contentRef: string;
       contentBase64?: string;
       mimeType: string;
     };
-    assert.equal(body.projectId, 'workspace');
+    assert.equal(body.root, 'computer');
     assert.equal(body.path, 'exports/demo.png');
     assert.equal(body.mimeType, 'image/png');
     assert.equal(
@@ -144,7 +178,7 @@ void test('saveBinaryFile uploads blob bytes before posting a contentRef to the 
   });
 
   const response = await saveBinaryFile(
-    'workspace',
+    COMPUTER_FILE_API_SCOPE,
     'exports/demo.png',
     new Blob([new Uint8Array([0x00, 0x01, 0x02, 0xff])], {
       type: 'image/png',
@@ -154,7 +188,7 @@ void test('saveBinaryFile uploads blob bytes before posting a contentRef to the 
   assert.equal(response.ok, true);
   assert.equal(response.versionToken, 'binary-token');
   assert.deepEqual(calls, [
-    '/api/files/binary-inputs?projectId=workspace',
+    '/api/files/binary-inputs?root=computer',
     '/api/files/save-binary',
   ]);
 });
@@ -197,16 +231,16 @@ void test('saveBinaryFile deletes uploaded content refs when the save request fa
   await assert.rejects(
     () =>
       saveBinaryFile(
-        'workspace',
+        COMPUTER_FILE_API_SCOPE,
         'exports/demo.png',
         new Blob([new Uint8Array([0xff])], { type: 'image/png' }),
       ),
     (error: unknown) => error instanceof ApiFetchError,
   );
   assert.deepEqual(calls, [
-    '/api/files/binary-inputs?projectId=workspace',
+    '/api/files/binary-inputs?root=computer',
     '/api/files/save-binary',
-    '/api/files/binary-inputs?projectId=workspace&contentRef=file-binary-input%3A00000000-0000-0000-0000-000000000005',
+    '/api/files/binary-inputs?root=computer&contentRef=file-binary-input%3A00000000-0000-0000-0000-000000000005',
   ]);
 });
 
@@ -215,15 +249,9 @@ void test('replaceBinaryFile uploads blob bytes before posting versionToken and 
   installApiTestBootstrap(t, async (input, init) => {
     calls.push(String(input));
     assert.equal(init?.credentials, 'same-origin');
-    assert.equal(
-      (init?.headers as Record<string, string>)[DEV_TOKEN_HEADER_NAME],
-      undefined,
-    );
+    assert.equal(new Headers(init?.headers).get(DEV_TOKEN_HEADER_NAME), null);
     if (String(input).startsWith('/api/files/binary-inputs?')) {
-      assert.equal(
-        (init?.headers as Record<string, string>)['Content-Type'],
-        'image/png',
-      );
+      assert.equal(new Headers(init?.headers).get('content-type'), 'image/png');
       assert.ok(init?.body instanceof Blob);
       assert.deepEqual(
         new Uint8Array(await init.body.arrayBuffer()),
@@ -243,19 +271,19 @@ void test('replaceBinaryFile uploads blob bytes before posting versionToken and 
     }
 
     assert.equal(
-      (init?.headers as Record<string, string>)['Content-Type'],
+      new Headers(init?.headers).get('content-type'),
       'application/json',
     );
     assert.equal(String(input), '/api/files/replace-binary');
     const body = JSON.parse(String(init?.body)) as {
-      projectId: string;
+      root: string;
       path: string;
       contentRef: string;
       contentBase64?: string;
       mimeType: string;
       versionToken: string;
     };
-    assert.equal(body.projectId, 'workspace');
+    assert.equal(body.root, 'computer');
     assert.equal(body.path, 'exports/demo.png');
     assert.equal(body.mimeType, 'image/png');
     assert.equal(body.versionToken, 'token-1');
@@ -279,7 +307,7 @@ void test('replaceBinaryFile uploads blob bytes before posting versionToken and 
   });
 
   const response = await replaceBinaryFile(
-    'workspace',
+    COMPUTER_FILE_API_SCOPE,
     'exports/demo.png',
     new Blob([new Uint8Array([0x00, 0x01, 0x02, 0xff])], {
       type: 'image/png',
@@ -290,7 +318,7 @@ void test('replaceBinaryFile uploads blob bytes before posting versionToken and 
   assert.equal(response.ok, true);
   assert.equal(response.versionToken, 'binary-token-2');
   assert.deepEqual(calls, [
-    '/api/files/binary-inputs?projectId=workspace',
+    '/api/files/binary-inputs?root=computer',
     '/api/files/replace-binary',
   ]);
 });
@@ -336,7 +364,7 @@ void test('replaceBinaryFile maps stale write api conflict into FileSaveConflict
   await assert.rejects(
     () =>
       replaceBinaryFile(
-        'workspace',
+        COMPUTER_FILE_API_SCOPE,
         'exports/demo.png',
         new Blob([new Uint8Array([0xff])], {
           type: 'image/png',
@@ -351,9 +379,9 @@ void test('replaceBinaryFile maps stale write api conflict into FileSaveConflict
     },
   );
   assert.deepEqual(calls, [
-    '/api/files/binary-inputs?projectId=workspace',
+    '/api/files/binary-inputs?root=computer',
     '/api/files/replace-binary',
-    '/api/files/binary-inputs?projectId=workspace&contentRef=file-binary-input%3A00000000-0000-0000-0000-000000000003',
+    '/api/files/binary-inputs?root=computer&contentRef=file-binary-input%3A00000000-0000-0000-0000-000000000003',
   ]);
 });
 
@@ -361,7 +389,7 @@ void test('saveBinaryFile uses an octet-stream upload content type for untyped b
   installApiTestBootstrap(t, async (input, init) => {
     if (String(input).startsWith('/api/files/binary-inputs?')) {
       assert.equal(
-        (init?.headers as Record<string, string>)['Content-Type'],
+        new Headers(init?.headers).get('content-type'),
         'application/octet-stream',
       );
       return new Response(
@@ -392,7 +420,7 @@ void test('saveBinaryFile uses an octet-stream upload content type for untyped b
   });
 
   const response = await saveBinaryFile(
-    'workspace',
+    COMPUTER_FILE_API_SCOPE,
     'exports/demo.bin',
     new Blob([new Uint8Array([0xff])]),
   );

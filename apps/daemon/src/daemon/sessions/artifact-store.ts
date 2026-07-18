@@ -11,15 +11,17 @@ import {
   type ArtifactRunId,
   type ArtifactSourceRef,
   type ArtifactVersionRecord,
-  type ProjectId,
   type ThreadArtifactVersion,
   type ThreadId,
   type ThreadMessage,
 } from './contract.js';
+import { parseVideoArtifactPayload } from '@geulbat/protocol/artifacts';
+
 import { isRecord, tryParseJson } from '../runtime-json.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { copyThreadMediaFiles } from './media-file-store.js';
 import { artifactStoreFilePath } from './paths.js';
 import { hasErrorCode } from '../utils/error.js';
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
@@ -53,9 +55,8 @@ export class ArtifactStoreCorruptionError extends Error {
   }
 }
 
-interface CommitThreadArtifactVersionArgs {
+export interface CommitThreadArtifactVersionArgs {
   workspaceRoot: string;
-  projectId: ProjectId;
   threadId: ThreadId;
   runId: ArtifactRunId;
   renderer: ArtifactRenderer;
@@ -80,7 +81,6 @@ export async function commitThreadArtifactVersion(
       const artifactId: ArtifactId = `art_${randomUUID()}`;
       const artifact: ArtifactRecord = {
         artifactId,
-        projectId: args.projectId,
         threadId: args.threadId,
         renderer: args.renderer,
         title: args.title ?? null,
@@ -118,6 +118,147 @@ export async function commitThreadArtifactVersion(
   );
 }
 
+export interface CommitThreadArtifactUpdateVersionArgs {
+  workspaceRoot: string;
+  threadId: ThreadId;
+  artifactId: ArtifactId;
+  // 낙관적 동시성 소유자 (phase5 commit path spec §5.2) — latestVersion과
+  // 불일치하면 version_conflict로 거절되고 스토어는 변하지 않는다.
+  baseVersion: number;
+  payload: string;
+  createdByRunId: ArtifactRunId;
+  timestamp: string;
+  // 모델 발 update처럼 호출자가 렌더러를 선언하는 경우 — 아티팩트 레벨
+  // renderer와 다르면 identity가 갈라지므로 거절한다 (호출자는 새 아티팩트
+  // 생성으로 폴백).
+  expectedRenderer?: ArtifactRenderer;
+}
+
+export type CommitThreadArtifactUpdateVersionResult =
+  | {
+      ok: true;
+      artifact: ArtifactRecord;
+      version: ArtifactVersionRecord;
+      ref: ArtifactRef;
+    }
+  | { ok: false; reason: 'artifact_not_found' }
+  | { ok: false; reason: 'renderer_mismatch'; renderer: ArtifactRenderer }
+  | { ok: false; reason: 'version_conflict'; latestVersion: number };
+
+// 기존 아티팩트에 새 버전을 쌓는 update 경로 — commitThreadArtifactVersion
+// (항상 새 artifactId의 v1)과 달리 같은 artifactId의 latestVersion+1을
+// append한다. parentVersion은 계보, baseVersion은 낙관적 동시성 소유
+// (phase5 canvas/artifact object commit path spec §5.2). 실패 시 실패한
+// version row를 남기지 않는다(§5.3).
+export async function commitThreadArtifactUpdateVersion(
+  args: CommitThreadArtifactUpdateVersionArgs,
+): Promise<CommitThreadArtifactUpdateVersionResult> {
+  return mutateThreadArtifactStore(
+    args.workspaceRoot,
+    args.threadId,
+    async (store) => {
+      const artifact = store.artifacts.find(
+        (candidate) => candidate.artifactId === args.artifactId,
+      );
+      if (!artifact) {
+        return { ok: false, reason: 'artifact_not_found' };
+      }
+      if (
+        args.expectedRenderer !== undefined &&
+        args.expectedRenderer !== artifact.renderer
+      ) {
+        return {
+          ok: false,
+          reason: 'renderer_mismatch',
+          renderer: artifact.renderer,
+        };
+      }
+      if (artifact.latestVersion !== args.baseVersion) {
+        return {
+          ok: false,
+          reason: 'version_conflict',
+          latestVersion: artifact.latestVersion,
+        };
+      }
+
+      const nextVersionNumber = artifact.latestVersion + 1;
+      const nextArtifact: ArtifactRecord = {
+        ...artifact,
+        latestVersion: nextVersionNumber,
+        updatedAt: args.timestamp,
+      };
+      const version: ArtifactVersionRecord = {
+        artifactId: artifact.artifactId,
+        version: nextVersionNumber,
+        parentVersion: args.baseVersion,
+        baseVersion: args.baseVersion,
+        renderer: artifact.renderer,
+        payload: args.payload,
+        digest: null,
+        contentHash: createContentHash(args.payload),
+        createdAt: args.timestamp,
+        createdByRunId: args.createdByRunId,
+        previewValidation: { ok: true },
+      };
+
+      await saveThreadArtifactStore(args.workspaceRoot, args.threadId, {
+        artifacts: store.artifacts.map((candidate) =>
+          candidate.artifactId === artifact.artifactId
+            ? nextArtifact
+            : candidate,
+        ),
+        versions: [...store.versions, version],
+      });
+
+      return {
+        ok: true,
+        artifact: nextArtifact,
+        version,
+        ref: { artifactId: artifact.artifactId, version: nextVersionNumber },
+      };
+    },
+  );
+}
+
+// update 커밋 전용 롤백 — 전체 아티팩트 삭제(deleteThreadArtifact)와 달리
+// 방금 append된 버전 하나만 걷어내고 latestVersion을 되돌린다. 히스토리가
+// 있는 아티팩트를 트랜스크립트 실패 롤백이 통째로 지우면 안 된다.
+export async function deleteThreadArtifactUpdateVersion(args: {
+  workspaceRoot: string;
+  threadId: ThreadId;
+  artifactId: ArtifactId;
+  version: number;
+}): Promise<void> {
+  await mutateThreadArtifactStore(
+    args.workspaceRoot,
+    args.threadId,
+    async (store) => {
+      const artifact = store.artifacts.find(
+        (candidate) => candidate.artifactId === args.artifactId,
+      );
+      // 걷어낼 버전이 최신이 아니면(그 위로 또 쌓였으면) 히스토리 정합을
+      // 지키기 위해 아무것도 하지 않는다 — 롤백 실패는 호출자가 로깅한다.
+      if (!artifact || artifact.latestVersion !== args.version) {
+        return;
+      }
+      await saveThreadArtifactStore(args.workspaceRoot, args.threadId, {
+        artifacts: store.artifacts.map((candidate) =>
+          candidate.artifactId === args.artifactId
+            ? { ...candidate, latestVersion: args.version - 1 }
+            : candidate,
+        ),
+        versions: store.versions.filter(
+          (candidate) =>
+            !(
+              candidate.artifactId === args.artifactId &&
+              candidate.version === args.version
+            ),
+        ),
+      });
+    },
+  );
+}
+
 export async function deleteThreadArtifact(
   workspaceRoot: string,
   threadId: ThreadId,
@@ -134,6 +275,85 @@ export async function deleteThreadArtifact(
     };
     await saveThreadArtifactStore(workspaceRoot, threadId, nextStore);
   });
+}
+
+// 스레드 브랜치용 참조 보존 복사 — commitThreadArtifactVersion과 달리 새
+// artifactId를 발급하지 않는다(복사된 메시지 메타데이터의 ref가 그대로
+// 유효해야 한다). 대상 스토어는 새 스레드(빈 스토어)라는 전제.
+export async function copyThreadArtifactVersionsByRefs(args: {
+  workspaceRoot: string;
+  sourceThreadId: ThreadId;
+  targetThreadId: ThreadId;
+  refs: readonly ArtifactRef[];
+}): Promise<number> {
+  if (args.refs.length === 0) {
+    return 0;
+  }
+
+  const refKeys = new Set(args.refs.map(createArtifactRefKey));
+  const source = await loadThreadArtifactStore(
+    args.workspaceRoot,
+    args.sourceThreadId,
+  );
+  const copiedVersions = source.versions.filter((version) =>
+    refKeys.has(
+      createArtifactRefKey({
+        artifactId: version.artifactId,
+        version: version.version,
+      }),
+    ),
+  );
+  if (copiedVersions.length === 0) {
+    return 0;
+  }
+
+  // media 참조 매니페스트(video 등)는 payload만 복사하면 참조가 깨진다 —
+  // 가리키는 파일도 대상 스레드 media 디렉터리로 함께 복사한다(§4.6 수명).
+  const mediaRefs = copiedVersions
+    .map((version) =>
+      version.renderer === 'video'
+        ? parseVideoArtifactPayload(version.payload)?.source.mediaRef
+        : undefined,
+    )
+    .filter((mediaRef): mediaRef is string => mediaRef !== undefined);
+  await copyThreadMediaFiles({
+    workspaceRoot: args.workspaceRoot,
+    sourceThreadId: args.sourceThreadId,
+    targetThreadId: args.targetThreadId,
+    mediaRefs,
+  });
+
+  const latestCopiedVersionByArtifact = new Map<ArtifactId, number>();
+  for (const version of copiedVersions) {
+    const current = latestCopiedVersionByArtifact.get(version.artifactId) ?? 0;
+    latestCopiedVersionByArtifact.set(
+      version.artifactId,
+      Math.max(current, version.version),
+    );
+  }
+  const copiedArtifacts = source.artifacts
+    .filter((artifact) =>
+      latestCopiedVersionByArtifact.has(artifact.artifactId),
+    )
+    .map((artifact) => ({
+      ...artifact,
+      threadId: args.targetThreadId,
+      latestVersion:
+        latestCopiedVersionByArtifact.get(artifact.artifactId) ??
+        artifact.latestVersion,
+    }));
+
+  await mutateThreadArtifactStore(
+    args.workspaceRoot,
+    args.targetThreadId,
+    async (store) => {
+      await saveThreadArtifactStore(args.workspaceRoot, args.targetThreadId, {
+        artifacts: [...store.artifacts, ...copiedArtifacts],
+        versions: [...store.versions, ...copiedVersions],
+      });
+    },
+  );
+  return copiedVersions.length;
 }
 
 export async function loadThreadArtifactVersionsByRefs(
@@ -293,8 +513,12 @@ function parseThreadArtifactStore(value: unknown): ThreadArtifactStoreFile {
     record.schemaVersion !== undefined &&
     record.schemaVersion !== THREAD_ARTIFACT_STORE_SCHEMA_VERSION
   ) {
+    const schemaVersion =
+      typeof record.schemaVersion === 'string'
+        ? record.schemaVersion
+        : JSON.stringify(record.schemaVersion);
     throw new Error(
-      `Unsupported thread artifact store schema version: ${String(record.schemaVersion)}`,
+      `Unsupported thread artifact store schema version: ${schemaVersion ?? 'unknown'}`,
     );
   }
 

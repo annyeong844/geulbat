@@ -5,9 +5,9 @@ import {
 } from '../core/lab-browser-policy-fields.js';
 import type { PtcLabBrowserPolicy } from '../core/lab-browser-policy.js';
 import type { PtcLabBrowserRuntimeOwnerArgs } from '../core/lab-browser-runtime-execution.js';
-import {
-  type PtcLabBrowserUserUrlNavigationRequest,
-  type PtcLabBrowserUserUrlTargetDigest,
+import type {
+  PtcLabBrowserUserUrlNavigationRequest,
+  PtcLabBrowserUserUrlTargetDigest,
 } from '../core/lab-browser-url-navigation.js';
 import {
   buildPtcLabBrowserNavigationAttemptSharedDigestInput,

@@ -9,14 +9,14 @@ import {
   createPublicReactBundleInlineGeneratedAssetRoutes,
   createReactBundleInlineCompileRoutes,
 } from './adapter/web/routes/react-bundle-inline-compile.js';
-import { createProjectsRoutes } from './adapter/web/routes/projects.js';
 import { createFilesRoutes } from './adapter/web/routes/files.js';
 import { createArtifactRuntimePersistenceRoutes } from './adapter/web/routes/artifact-runtime-persistence.js';
 import { createRunInputRoutes } from './adapter/web/routes/run-inputs.js';
 import { createThreadsRoutes } from './adapter/web/routes/threads.js';
+import { createMcpRoutes } from './adapter/web/routes/mcp.js';
+import { createPluginRoutes } from './adapter/web/routes/plugins.js';
 import { createInputRefRoutes } from './adapter/web/routes/input-refs.js';
 import type {
-  ProjectsRoutesContext,
   ProviderAuthRoutesContext,
   ThreadsRoutesContext,
 } from './adapter/web/routes/routes-context.js';
@@ -30,10 +30,9 @@ import {
   readConfiguredAllowedOrigins,
 } from './adapter/web/origin-policy.js';
 import { createDaemonContext, type DaemonContext } from './daemon/context.js';
-import { bootstrapDaemonContext } from './bootstrap-daemon-context.js';
+import { prepareProviderTransitionCompaction } from './daemon/agent/memory/compaction-loop.js';
 
 interface DaemonOptions {
-  repoRoot?: string;
   daemonContext?: DaemonContext;
 }
 
@@ -41,14 +40,9 @@ const JSON_BODY_LIMIT = '256kb';
 
 export async function createDaemon(options: DaemonOptions = {}) {
   const daemonContext = options.daemonContext ?? createDaemonContext();
-  await bootstrapDaemonContext(
-    options.repoRoot
-      ? {
-          projectStore: daemonContext.projectStore,
-          repoRoot: options.repoRoot,
-        }
-      : { projectStore: daemonContext.projectStore },
-  );
+  const homeStateRoot = daemonContext.homeStateRoot;
+  await daemonContext.plugins.initialize();
+  await daemonContext.pluginMarketplaces.initialize();
   const app = express();
   const configuredAllowedOrigins = readConfiguredAllowedOrigins();
 
@@ -81,41 +75,61 @@ export async function createDaemon(options: DaemonOptions = {}) {
   // Mount route groups
   app.use(
     createReactBundleInlineCompileRoutes({
-      projectRegistry: daemonContext.projectRegistry,
+      homeStateRoot,
     }),
   );
-  const projectsRoutesContext = {
-    activeRuns: daemonContext.activeRuns,
-    projectStore: daemonContext.projectStore,
-    projectRegistry: daemonContext.projectRegistry,
-  } satisfies ProjectsRoutesContext;
-  app.use(createProjectsRoutes({ context: projectsRoutesContext }));
   app.use(
     createFilesRoutes({
-      projectRegistry: daemonContext.projectRegistry,
+      ...(daemonContext.computerFileScope === undefined
+        ? {}
+        : { computerFileScope: daemonContext.computerFileScope }),
     }),
   );
   app.use(
     createArtifactRuntimePersistenceRoutes({
-      projectRegistry: daemonContext.projectRegistry,
+      homeStateRoot,
     }),
   );
   app.use(
     createRunInputRoutes({
-      projectRegistry: daemonContext.projectRegistry,
+      homeStateRoot,
     }),
   );
   app.use(
     createInputRefRoutes({
-      projectRegistry: daemonContext.projectRegistry,
+      homeStateRoot,
+      ...(daemonContext.computerFileScope === undefined
+        ? {}
+        : { computerFileScope: daemonContext.computerFileScope }),
     }),
   );
   const threadsRoutesContext = {
+    homeStateRoot,
     activeRuns: daemonContext.activeRuns,
     backgroundNotifications: daemonContext.backgroundNotifications,
-    projectRegistry: daemonContext.projectRegistry,
+    providerTransitionCompaction: {
+      async prepare(args) {
+        return await prepareProviderTransitionCompaction({
+          ...args,
+          providerAuthRuntime: daemonContext.providerAuthRuntime,
+          providerWebSocketSessions: daemonContext.providerWebSocketSessions,
+          providerRequestOptions: daemonContext.providerRequestOptions,
+        });
+      },
+    },
   } satisfies ThreadsRoutesContext;
   app.use(createThreadsRoutes({ context: threadsRoutesContext }));
+  app.use(createMcpRoutes({ globalMcp: daemonContext.globalMcp }));
+  app.use(
+    createPluginRoutes({
+      plugins: daemonContext.plugins,
+      pluginSkills: daemonContext.pluginSkills,
+      marketplaces: daemonContext.pluginMarketplaces,
+      ...(daemonContext.computerFileScope === undefined
+        ? {}
+        : { computerFileScope: daemonContext.computerFileScope }),
+    }),
+  );
   app.use(createUnexpectedApiErrorMiddleware());
 
   return { app, daemonContext };
@@ -135,6 +149,8 @@ function createSecurityHeadersMiddleware(
 ): RequestHandler {
   return (req, res, next) => {
     res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
 
     const origin =
       typeof req.headers.origin === 'string' ? req.headers.origin : undefined;

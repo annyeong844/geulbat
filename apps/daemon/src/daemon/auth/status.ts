@@ -11,8 +11,14 @@ import {
   PROVIDER_AUTH_POLL_AFTER_MS,
   PROVIDER_AUTH_REFRESH_MARGIN_MS,
 } from './bootstrap/config.js';
-import type { ProviderCredential } from './credentials/store.js';
-import { deleteProviderAuthFile } from './credentials/store.js';
+import type {
+  ProviderAuthCredentialProviderId,
+  ProviderCredential,
+} from './credentials/store.js';
+import {
+  deleteProviderAuthFile,
+  resolveProviderAuthCredentialProviderId,
+} from './credentials/store.js';
 import type { ProviderAuthRuntimeStore } from './runtime-state.js';
 import {
   EXPIRED_PROVIDER_CREDENTIAL_MESSAGE,
@@ -24,25 +30,31 @@ import { initProviderAuth } from './init.js';
 
 /** Read-only status snapshot. Never triggers refresh or disk writes. */
 export async function getProviderAuthStatus(options: {
+  providerId?: ProviderAuthCredentialProviderId;
   readCredential?: () => Promise<ProviderCredential | null>;
   runtimeStore: ProviderAuthRuntimeStore;
 }): Promise<ProviderAuthStatus> {
   const { runtimeStore } = options;
-  if (!runtimeStore.hasHydratedProviderAuth()) {
+  const providerId = resolveProviderAuthCredentialProviderId(
+    options.providerId,
+  );
+  if (!runtimeStore.hasHydratedProviderAuth(providerId)) {
     await initProviderAuth({
+      providerId,
       runtimeStore,
       ...(options.readCredential !== undefined
         ? { readCredential: options.readCredential }
         : {}),
     });
   }
-  const cached = runtimeStore.getCachedProviderCredential();
+  const cached = runtimeStore.getCachedProviderCredential(providerId);
 
   if (!cached) {
     return {
       ready: false,
       source: 'missing',
-      refreshInFlight: runtimeStore.getProviderAuthRefreshPromise() !== null,
+      refreshInFlight:
+        runtimeStore.getProviderAuthRefreshPromise(providerId) !== null,
     };
   }
 
@@ -55,20 +67,26 @@ export async function getProviderAuthStatus(options: {
     refreshRecommended:
       expiresInMs !== undefined &&
       expiresInMs < PROVIDER_AUTH_REFRESH_MARGIN_MS,
-    refreshInFlight: runtimeStore.getProviderAuthRefreshPromise() !== null,
+    refreshInFlight:
+      runtimeStore.getProviderAuthRefreshPromise(providerId) !== null,
     ...(cached.expiresAt > 0 ? { expiresAt: cached.expiresAt } : {}),
     ...(expiresInMs !== undefined ? { expiresInMs } : {}),
   };
 }
 
 export async function getProviderBootstrapStatus(options: {
+  providerId?: ProviderAuthCredentialProviderId;
   readCredential?: () => Promise<ProviderCredential | null>;
   runtimeStore: ProviderAuthRuntimeStore;
   bootstrapStore: ProviderAuthBootstrapStore;
 }): Promise<ProviderAuthStatusResponse> {
   const { runtimeStore, bootstrapStore } = options;
-  if (!runtimeStore.hasHydratedProviderAuth()) {
+  const providerId = resolveProviderAuthCredentialProviderId(
+    options.providerId,
+  );
+  if (!runtimeStore.hasHydratedProviderAuth(providerId)) {
     await initProviderAuth({
+      providerId,
       runtimeStore,
       ...(options.readCredential !== undefined
         ? { readCredential: options.readCredential }
@@ -76,8 +94,10 @@ export async function getProviderBootstrapStatus(options: {
     });
   }
 
-  const cachedLoadError = runtimeStore.getCachedProviderAuthLoadError();
-  const cachedRefreshError = runtimeStore.getCachedProviderAuthRefreshError();
+  const cachedLoadError =
+    runtimeStore.getCachedProviderAuthLoadError(providerId);
+  const cachedRefreshError =
+    runtimeStore.getCachedProviderAuthRefreshError(providerId);
   if (cachedLoadError) {
     return {
       state: 'exchange_failed',
@@ -87,7 +107,7 @@ export async function getProviderBootstrapStatus(options: {
     };
   }
 
-  const cached = runtimeStore.getCachedProviderCredential();
+  const cached = runtimeStore.getCachedProviderCredential(providerId);
   if (
     cached &&
     cachedRefreshError &&
@@ -137,7 +157,7 @@ export async function getProviderBootstrapStatus(options: {
     };
   }
 
-  if (!(await isProviderAuthConfigured())) {
+  if (!(await isProviderAuthConfigured(providerId))) {
     return {
       state: 'exchange_failed',
       lastErrorCode: PROVIDER_AUTH_NOT_CONFIGURED_CODE,
@@ -159,6 +179,12 @@ export async function getProviderBootstrapStatus(options: {
   }
 
   const session = bootstrapStore.getProviderAuthSessionSnapshot();
+  if (session && session.providerId !== providerId) {
+    return {
+      state: 'missing',
+      ready: false,
+    };
+  }
   if (!session) {
     return {
       state: 'missing',
@@ -203,28 +229,40 @@ export async function getProviderBootstrapStatus(options: {
 
 export async function loadCurrentProviderCredential(options: {
   runtimeStore: ProviderAuthRuntimeStore;
+  providerId?: ProviderAuthCredentialProviderId;
   readCredential?: () => Promise<ProviderCredential | null>;
 }): Promise<ProviderCredential | null> {
   const { runtimeStore } = options;
-  if (!runtimeStore.hasHydratedProviderAuth()) {
+  const providerId = resolveProviderAuthCredentialProviderId(
+    options.providerId,
+  );
+  if (!runtimeStore.hasHydratedProviderAuth(providerId)) {
     await initProviderAuth({
+      providerId,
       runtimeStore,
       ...(options.readCredential !== undefined
         ? { readCredential: options.readCredential }
         : {}),
     });
   }
-  return runtimeStore.getCachedProviderCredential();
+  return runtimeStore.getCachedProviderCredential(providerId);
 }
 
 export async function logoutProviderAuth(options: {
   runtimeStore: ProviderAuthRuntimeStore;
   bootstrapStore: ProviderAuthBootstrapStore;
+  providerId?: ProviderAuthCredentialProviderId;
 }): Promise<void> {
   const { runtimeStore, bootstrapStore } = options;
-  await deleteProviderAuthFile();
-  runtimeStore.clearProviderAuthRuntimeState();
-  bootstrapStore.clearProviderAuthBootstrapState();
+  const providerId = resolveProviderAuthCredentialProviderId(
+    options.providerId,
+  );
+  await deleteProviderAuthFile(providerId);
+  runtimeStore.clearProviderAuthRuntimeState(providerId);
+  const session = bootstrapStore.getProviderAuthSessionSnapshot();
+  if (session?.providerId === providerId) {
+    bootstrapStore.clearProviderAuthBootstrapState();
+  }
 }
 
 function readTerminalProviderAuthSessionError(

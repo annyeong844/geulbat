@@ -29,22 +29,26 @@ export function ArtifactPaneBody({
       ) : null}
 
       {tab === 'show' && canShowPreview && previewSurface ? (
-        <div style={artifactPaneStyles.previewContainer}>
+        <div
+          className="artifact-preview-surface"
+          style={artifactPaneStyles.previewContainer}
+        >
           <ArtifactPreviewSurface
             surface={previewSurface}
             runtimeUnavailableMessage={runtimeUnavailableMessage}
           />
         </div>
       ) : (
-        <pre style={getArtifactBodyStyle(tab)}>
-          {tab === 'raw' ? parsed.raw : parsed.payload}
+        <pre style={getArtifactBodyStyle('source')}>
+          {parsed.payload.trim().length > 0 ? parsed.payload : parsed.raw}
         </pre>
       )}
     </>
   );
 }
 
-function ArtifactPreviewSurface(props: {
+// 에디터 아티팩트 표면(artifact-editor-surface)도 같은 preview 분기를 쓴다
+export function ArtifactPreviewSurface(props: {
   surface: ResolvedArtifactPreviewSurface;
   runtimeUnavailableMessage: string | null;
 }) {
@@ -60,9 +64,8 @@ function ArtifactPreviewSurface(props: {
   if (surface.kind === 'unavailable') {
     return (
       <div style={artifactPaneStyles.runtimeUnavailableBody}>
-        {runtimeUnavailableMessage ??
-          '이 캔버스를 열 수 없습니다. Raw 탭에서 원본을 확인해 주세요.'}{' '}
-        <strong>Raw</strong> 탭에서 원본을 확인할 수 있습니다.
+        {runtimeUnavailableMessage ?? '이 캔버스를 열 수 없습니다.'}{' '}
+        <strong>원문</strong> 탭에서 내용을 확인할 수 있습니다.
         {surface.detail.trim().length > 0 ? (
           <small style={artifactPaneStyles.runtimeUnavailableDetail}>
             {surface.detail}

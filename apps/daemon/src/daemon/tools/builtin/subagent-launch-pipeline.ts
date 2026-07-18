@@ -1,4 +1,4 @@
-import type { ProjectId, RunId, ThreadId } from '@geulbat/protocol/ids';
+import type { RunId, ThreadId } from '@geulbat/protocol/ids';
 import type { PermissionMode } from '@geulbat/protocol/run-approval';
 import type { AgentEvent, ToolRunState } from '../../runtime-contracts.js';
 import type { AgentRuntimeServices } from '../../daemon-runtime-contract.js';
@@ -7,21 +7,28 @@ import {
   buildChildLaunchRejected,
   type SubagentType,
 } from '../../subagent-runtime-contracts.js';
-import type { ExecuteResult, SubagentRunLauncher } from '../types.js';
+import type {
+  ExecuteResult,
+  ResolvedChildModelPin,
+  RunSubagentModelRouting,
+  SubagentRunLauncher,
+} from '../types.js';
 
 export async function runSubagentLaunchPipeline(args: {
   task: string;
   subagentType: SubagentType;
   parentRunId: RunId;
   ownerThreadId: ThreadId;
-  projectId: ProjectId;
-  workspaceRoot: string;
+  stateRoot: string;
+  workingDirectory: string;
   parentRunState: ToolRunState;
   runtimeServices: AgentRuntimeServices;
   startBackgroundRun?: SubagentRunLauncher['startBackgroundRun'];
   emitAgentEvent?: (event: AgentEvent) => void;
   approvalSessionId?: string;
   permissionMode?: PermissionMode;
+  modelPin: ResolvedChildModelPin;
+  subagentModelRouting: RunSubagentModelRouting;
   timeoutMs?: number;
   childRunId?: RunId;
   childThreadId?: ThreadId;
@@ -52,8 +59,8 @@ export async function runSubagentLaunchPipeline(args: {
       subagentType: args.subagentType,
       parentRunId: args.parentRunId,
       ownerThreadId: args.ownerThreadId,
-      projectId: args.projectId,
-      workspaceRoot: args.workspaceRoot,
+      stateRoot: args.stateRoot,
+      workingDirectory: args.workingDirectory,
       parentRunState: args.parentRunState,
       runtimeServices: args.runtimeServices,
       launchReservation: launchAdmission.reservation,
@@ -70,6 +77,8 @@ export async function runSubagentLaunchPipeline(args: {
       ...(args.permissionMode !== undefined
         ? { permissionMode: args.permissionMode }
         : {}),
+      modelPin: args.modelPin,
+      subagentModelRouting: args.subagentModelRouting,
       ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
     });
   } catch (error: unknown) {

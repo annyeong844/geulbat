@@ -41,6 +41,7 @@ export function ArtifactPaneExportPanel({
     >
       <input
         type="text"
+        name="artifact-export-target-path"
         value={value}
         placeholder={placeholder}
         disabled={!canOpenExport || isPending}
@@ -53,6 +54,7 @@ export function ArtifactPaneExportPanel({
         <label style={artifactPaneStyles.exportHint}>
           <input
             type="checkbox"
+            name="artifact-export-overwrite"
             checked={generatedBinaryOverwriteArmed}
             disabled={isPending}
             onChange={(event) => {

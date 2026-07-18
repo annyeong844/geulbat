@@ -50,9 +50,9 @@ void test('useArtifactPaneState coordinates pane tab and apply handoff', async (
   assert.equal(hook.result.current.canApply, true);
 
   await hook.run((state) => {
-    state.handleSelectTab('raw');
+    state.handleSelectTab('source');
   });
-  assert.equal(hook.result.current.tab, 'raw');
+  assert.equal(hook.result.current.tab, 'source');
 
   await hook.run((state) => {
     state.handleApply();

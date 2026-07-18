@@ -23,7 +23,9 @@ export function createMergedAbortSignal(
   };
 
   for (const signal of signals) {
-    if (!signal) continue;
+    if (!signal) {
+      continue;
+    }
     if (signal.aborted) {
       controller.abort(signal.reason);
       cleanup();

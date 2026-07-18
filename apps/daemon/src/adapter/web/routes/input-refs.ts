@@ -10,6 +10,7 @@ import { isRecord } from '@geulbat/protocol/runtime-utils';
 
 import { ARTIFACT_RUNTIME_STATE_INPUT_REF_STORE } from '../../../daemon/artifact-runtime-persistence/input-ref-store.js';
 import { FILE_BINARY_INPUT_REF_STORE } from '../../../daemon/files/binary-input-ref-store.js';
+import type { ComputerFileScope } from '../../../daemon/files/computer-file-scope.js';
 import { REACT_BUNDLE_INLINE_COMPILE_INPUT_REF_STORE } from '../../../daemon/react-bundle-inline/input-ref-store.js';
 import { RUN_PROMPT_INPUT_REF_STORE } from '../../../daemon/sessions/prompt-input-ref-store.js';
 import {
@@ -18,41 +19,30 @@ import {
   type InputRefFileRecoveryResult,
   type InputRefFileStoreConfig,
 } from '../../../daemon/utils/input-ref-file-store.js';
-import {
-  readProjectWorkspaceScopeFromBody,
-  readProjectWorkspaceScopeFromQuery,
-} from '#web/request/project-scope.js';
 import { readRequiredBodyStrings } from '#web/request/string-fields.js';
 import {
   sendApiError,
   sendUnexpectedApiError,
 } from '#web/response/send-api-error.js';
-import type { ProjectScopedRoutesContext } from './routes-context.js';
-
-const INPUT_REF_STORES = Object.freeze([
+const HOME_INPUT_REF_STORES = Object.freeze([
   RUN_PROMPT_INPUT_REF_STORE,
-  FILE_BINARY_INPUT_REF_STORE,
   ARTIFACT_RUNTIME_STATE_INPUT_REF_STORE,
   REACT_BUNDLE_INLINE_COMPILE_INPUT_REF_STORE,
 ]);
 
 export function createInputRefRoutes(args: {
-  projectRegistry: ProjectScopedRoutesContext['projectRegistry'];
+  homeStateRoot: string;
+  computerFileScope?: ComputerFileScope;
 }): Router {
   const router = Router();
-  const { projectRegistry } = args;
 
   router.get('/api/input-refs', async (req, res) => {
-    const projectScope = readProjectWorkspaceScopeFromQuery(
-      req.query['projectId'],
-      { projectRegistry },
-    );
-    if (!projectScope.ok) {
-      sendApiError(res, projectScope.code, projectScope.message);
+    if (req.query['projectId'] !== undefined) {
+      sendApiError(res, 'bad_request', 'projectId is not supported');
       return;
     }
     try {
-      res.json(await listProjectInputRefs(projectScope.workspaceRoot));
+      res.json(await listInputRefs(args));
     } catch (error: unknown) {
       sendUnexpectedApiError(res, 'input-refs/list', error);
     }
@@ -60,11 +50,8 @@ export function createInputRefRoutes(args: {
 
   router.post('/api/input-refs/recovery', async (req, res) => {
     const body = isRecord(req.body) ? req.body : undefined;
-    const projectScope = readProjectWorkspaceScopeFromBody(body, {
-      projectRegistry,
-    });
-    if (!projectScope.ok) {
-      sendApiError(res, projectScope.code, projectScope.message);
+    if (body && 'projectId' in body) {
+      sendApiError(res, 'bad_request', 'projectId is not supported');
       return;
     }
     const required = readRequiredBodyStrings(body, ['ref', 'action']);
@@ -72,7 +59,8 @@ export function createInputRefRoutes(args: {
       sendApiError(res, 'bad_request', required.message);
       return;
     }
-    if (!isInputRefRecoveryAction(required.values.action)) {
+    const action = required.read('action');
+    if (!isInputRefRecoveryAction(action)) {
       sendApiError(res, 'bad_request', 'action must be retry or release');
       return;
     }
@@ -83,10 +71,10 @@ export function createInputRefRoutes(args: {
     }
 
     try {
-      const result = await recoverProjectInputRef({
-        workspaceRoot: projectScope.workspaceRoot,
-        ref: required.values.ref,
-        action: required.values.action,
+      const result = await recoverInputRef({
+        ...args,
+        ref: required.read('ref'),
+        action,
         ...(rawClaimId !== undefined ? { claimId: rawClaimId } : {}),
       });
       if (!result.ok) {
@@ -106,12 +94,27 @@ export function createInputRefRoutes(args: {
   return router;
 }
 
-async function listProjectInputRefs(
-  workspaceRoot: string,
-): Promise<InputRefInventoryResponse> {
+async function listInputRefs(args: {
+  homeStateRoot: string;
+  computerFileScope?: ComputerFileScope;
+}): Promise<InputRefInventoryResponse> {
+  const storeOwners = [
+    ...HOME_INPUT_REF_STORES.map((config) => ({
+      config,
+      workspaceRoot: args.homeStateRoot,
+    })),
+    ...(args.computerFileScope === undefined
+      ? []
+      : [
+          {
+            config: FILE_BINARY_INPUT_REF_STORE,
+            workspaceRoot: args.computerFileScope.root,
+          },
+        ]),
+  ];
   const storedEntries = (
     await Promise.all(
-      INPUT_REF_STORES.map((config) =>
+      storeOwners.map(({ config, workspaceRoot }) =>
         listInputRefFiles({ workspaceRoot, config }),
       ),
     )
@@ -129,25 +132,51 @@ async function listProjectInputRefs(
   };
 }
 
-async function recoverProjectInputRef(args: {
-  workspaceRoot: string;
+async function recoverInputRef(args: {
+  homeStateRoot: string;
+  computerFileScope?: ComputerFileScope;
   ref: string;
   action: InputRefRecoveryAction;
   claimId?: string;
 }): Promise<InputRefFileRecoveryResult> {
-  const config = findInputRefStore(args.ref);
-  if (config === undefined) {
+  const storeOwner = resolveInputRefStoreOwner(args);
+  if (storeOwner === undefined) {
     return {
       ok: false,
       code: 'bad_request',
       message: 'ref must identify a supported input reference.',
     };
   }
-  return recoverInputRefFile({ ...args, config });
+  return recoverInputRefFile({
+    workspaceRoot: storeOwner.workspaceRoot,
+    config: storeOwner.config,
+    ref: args.ref,
+    action: args.action,
+    ...(args.claimId === undefined ? {} : { claimId: args.claimId }),
+  });
 }
 
-function findInputRefStore(ref: string): InputRefFileStoreConfig | undefined {
-  return INPUT_REF_STORES.find((config) => ref.startsWith(config.refPrefix));
+function resolveInputRefStoreOwner(args: {
+  homeStateRoot: string;
+  computerFileScope?: ComputerFileScope;
+  ref: string;
+}): { config: InputRefFileStoreConfig; workspaceRoot: string } | undefined {
+  const homeConfig = HOME_INPUT_REF_STORES.find((config) =>
+    args.ref.startsWith(config.refPrefix),
+  );
+  if (homeConfig !== undefined) {
+    return { config: homeConfig, workspaceRoot: args.homeStateRoot };
+  }
+  if (
+    args.computerFileScope !== undefined &&
+    args.ref.startsWith(FILE_BINARY_INPUT_REF_STORE.refPrefix)
+  ) {
+    return {
+      config: FILE_BINARY_INPUT_REF_STORE,
+      workspaceRoot: args.computerFileScope.root,
+    };
+  }
+  return undefined;
 }
 
 function toInputRefInventoryEntry(

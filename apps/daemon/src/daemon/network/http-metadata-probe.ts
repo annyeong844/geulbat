@@ -14,7 +14,7 @@ export const REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION = 1;
 
 const ALLOWED_HOSTS = new Set(['esm.sh', 'cdn.jsdelivr.net', 'unpkg.com']);
 
-export type HttpMetadataProbeReasonCode =
+type HttpMetadataProbeReasonCode =
   | 'invalid_url'
   | 'unsupported_scheme'
   | 'disallowed_origin'
@@ -38,15 +38,15 @@ export class HttpMetadataProbeRuntimeError extends Error {
   }
 }
 
-export type HttpMetadataProbeMethod = 'HEAD' | 'GET';
+type HttpMetadataProbeMethod = 'HEAD' | 'GET';
 
-export interface HttpMetadataProbePolicy {
+interface HttpMetadataProbePolicy {
   name: typeof REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY;
   version: typeof REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY_VERSION;
   allowlistId: typeof REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID;
 }
 
-export interface HttpMetadataProbeRedirect {
+interface HttpMetadataProbeRedirect {
   fromUrl: string;
   toUrl: string;
   status: number;
@@ -88,7 +88,7 @@ export type HttpMetadataProbeResult =
       policy: HttpMetadataProbePolicy;
     };
 
-export interface HttpMetadataProbeTransportResponse {
+interface HttpMetadataProbeTransportResponse {
   status: number;
   location: string | null;
   contentType: string | null;
@@ -166,7 +166,9 @@ async function probeWithRedirects(
   }
 
   const head = await requestProbe(args, parsed.url, 'HEAD', headTimeoutMs);
-  if (!head.ok) return head.result;
+  if (!head.ok) {
+    return head.result;
+  }
   const headResponse = head.response;
 
   if (isRedirectStatus(headResponse.status) && headResponse.location) {
@@ -188,7 +190,9 @@ async function probeWithRedirects(
       });
     }
     const get = await requestProbe(args, parsed.url, 'GET', getTimeoutMs);
-    if (!get.ok) return get.result;
+    if (!get.ok) {
+      return get.result;
+    }
     if (isRedirectStatus(get.response.status) && get.response.location) {
       return followRedirect(
         args,
@@ -388,9 +392,15 @@ function isRedirectStatus(status: number): boolean {
 }
 
 function timingBucket(elapsedMs: number): HttpMetadataProbeTimingBucket {
-  if (elapsedMs < 100) return 'lt_100ms';
-  if (elapsedMs < 500) return 'lt_500ms';
-  if (elapsedMs < 2000) return 'lt_2s';
+  if (elapsedMs < 100) {
+    return 'lt_100ms';
+  }
+  if (elapsedMs < 500) {
+    return 'lt_500ms';
+  }
+  if (elapsedMs < 2000) {
+    return 'lt_2s';
+  }
   return 'gte_2s';
 }
 
@@ -424,7 +434,9 @@ export function requestHttpMetadata(
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void, cleanup: () => void) => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
       cleanup();
       callback();
@@ -503,7 +515,9 @@ export function requestHttpMetadata(
 }
 
 function readHeader(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) return value[0] ?? null;
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
   return value ?? null;
 }
 
@@ -511,7 +525,9 @@ function readContentLength(
   value: string | string[] | undefined,
 ): number | null {
   const header = readHeader(value);
-  if (!header) return null;
+  if (!header) {
+    return null;
+  }
   const parsed = Number(header);
   return Number.isFinite(parsed) ? parsed : null;
 }

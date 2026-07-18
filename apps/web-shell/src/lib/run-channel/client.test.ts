@@ -6,7 +6,7 @@ import type {
   RunChannelServerMessage,
 } from '@geulbat/protocol/run-channel';
 
-import { brandProjectId } from '../id-brand-helpers.js';
+import { brandRunId } from '../id-brand-helpers.js';
 import {
   buildRunChannelUrl,
   getReconnectDelay,
@@ -113,7 +113,11 @@ class FakeSocket {
   }
 
   emitMessage(message: RunChannelServerMessage): void {
-    this.dispatch('message', { data: JSON.stringify(message) });
+    this.emitRawMessage(JSON.stringify(message));
+  }
+
+  emitRawMessage(data: string): void {
+    this.dispatch('message', { data });
   }
 
   emitError(): void {
@@ -245,7 +249,6 @@ void test('RunChannelClient reconnects after unexpected authenticated close', as
   await Promise.resolve();
 
   await harness.client.start({
-    projectId: brandProjectId('workspace'),
     promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
   });
   const startMessage = JSON.parse(
@@ -286,7 +289,6 @@ void test('RunChannelClient sends supplied prompt refs without inline prompts', 
   const socket = await connectAuthenticatedClient(harness);
 
   await harness.client.start({
-    projectId: brandProjectId('workspace'),
     promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
   });
 
@@ -306,6 +308,199 @@ void test('RunChannelClient sends supplied prompt refs without inline prompts', 
     'run-prompt-input:11111111-1111-4111-8111-111111111111',
   );
   assert.equal('prompt' in startMessage.request, false);
+});
+
+void test('RunChannelClient waits for run.interject acknowledgement', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+
+  const interjectPromise = harness.client.interject({
+    runId: brandRunId('run-1'),
+    text: 'steer',
+  });
+  await Promise.resolve();
+  const interjectMessage = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(interjectMessage.type, 'run.interject');
+  if (interjectMessage.type !== 'run.interject') {
+    return;
+  }
+
+  let settled = false;
+  void interjectPromise.then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  assert.equal(settled, false);
+
+  socket.emitMessage({
+    type: 'run.control',
+    requestId: interjectMessage.requestId,
+    action: 'run.interject',
+    ok: true,
+    receivedSeq: 1,
+    bufferDepth: 0,
+  });
+
+  assert.deepEqual(await interjectPromise, {
+    requestId: interjectMessage.requestId,
+    receivedSeq: 1,
+  });
+});
+
+void test('RunChannelClient rejects run.interject on matching run.error', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+
+  const interjectPromise = harness.client.interject({
+    runId: brandRunId('run-1'),
+    text: 'steer',
+  });
+  await Promise.resolve();
+  const interjectMessage = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(interjectMessage.type, 'run.interject');
+  if (interjectMessage.type !== 'run.interject') {
+    return;
+  }
+
+  socket.emitMessage({
+    type: 'run.error',
+    requestId: interjectMessage.requestId,
+    code: 'bad_request',
+    message: 'mid-run steer is not enabled',
+    status: 503,
+  });
+
+  await assert.rejects(interjectPromise, /mid-run steer is not enabled/);
+});
+
+void test('RunChannelClient waits for run.interject.flush acknowledgement', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+
+  const flushPromise = harness.client.flushInterject({
+    runId: brandRunId('run-1'),
+  });
+  await Promise.resolve();
+  const flushMessage = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(flushMessage.type, 'run.interject.flush');
+  if (flushMessage.type !== 'run.interject.flush') {
+    return;
+  }
+  assert.deepEqual(flushMessage.request, { runId: 'run-1' });
+
+  socket.emitMessage({
+    type: 'run.control',
+    requestId: flushMessage.requestId,
+    action: 'run.interject.flush',
+    ok: true,
+    flushed: true,
+  });
+
+  assert.deepEqual(await flushPromise, { flushed: true });
+});
+
+void test('RunChannelClient keeps control-scoped run.error out of the session stream', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+  const received: RunChannelServerMessage[] = [];
+  harness.client.subscribe((message) => {
+    received.push(message);
+  });
+
+  const interjectPromise = harness.client.interject({
+    runId: brandRunId('run-1'),
+    text: 'steer',
+  });
+  await Promise.resolve();
+  const interjectMessage = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(interjectMessage.type, 'run.interject');
+  if (interjectMessage.type !== 'run.interject') {
+    return;
+  }
+
+  socket.emitMessage({
+    type: 'run.error',
+    requestId: interjectMessage.requestId,
+    code: 'bad_request',
+    message: 'mid-run steer is not enabled',
+    status: 503,
+  });
+  await assert.rejects(interjectPromise, /mid-run steer is not enabled/);
+  // The awaiting caller owns this failure; the session stream must not see
+  // it (it would flip the run view into the error phase mid-run).
+  assert.equal(received.length, 0);
+
+  socket.emitMessage({
+    type: 'run.error',
+    code: 'internal',
+    message: 'transport broke',
+    status: 500,
+  });
+  assert.equal(received.length, 1);
+  assert.equal(received[0]?.type, 'run.error');
+});
+
+void test('RunChannelClient rejects malformed control responses without failing the active session', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+  const interjectPromise = harness.client.interject({
+    runId: brandRunId('run-1'),
+    text: 'steer',
+  });
+  await Promise.resolve();
+  const interjectMessage = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(interjectMessage.type, 'run.interject');
+  if (interjectMessage.type !== 'run.interject') {
+    return;
+  }
+
+  socket.emitRawMessage(
+    JSON.stringify({
+      type: 'run.control',
+      requestId: interjectMessage.requestId,
+      action: 'run.interject',
+      ok: true,
+      receivedSeq: 'invalid',
+      bufferDepth: 0,
+    }),
+  );
+
+  await assert.rejects(interjectPromise, /invalid websocket payload/);
+  assert.equal(socket.readyState, 1);
+  assert.equal(harness.messages.length, 0);
+  assert.equal(harness.scheduler.size, 0);
+});
+
+void test('RunChannelClient closes the socket on unmatched malformed server payloads', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+
+  socket.emitRawMessage(
+    JSON.stringify({
+      type: 'run.event',
+      event: null,
+    }),
+  );
+
+  assert.equal(socket.readyState, 3);
+  assert.equal(harness.messages.length, 1);
+  assert.deepEqual(harness.messages[0], {
+    type: 'run.error',
+    code: 'internal',
+    message: 'invalid websocket payload',
+    status: 500,
+  });
+  assert.equal(harness.scheduler.size, 1);
 });
 
 void test('RunChannelClient close clears pending reconnect task', async () => {

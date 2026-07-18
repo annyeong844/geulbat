@@ -15,7 +15,7 @@ import {
   isFileSaveResponse,
   isFileTreeResponse,
 } from '@geulbat/protocol/files';
-import { isProjectId, isThreadId } from '@geulbat/protocol/ids';
+import { isThreadId } from '@geulbat/protocol/ids';
 import {
   isProviderAuthLogoutResponse,
   isProviderAuthStartResponse,
@@ -32,16 +32,11 @@ import {
 } from '@geulbat/protocol/threads';
 
 import { makeApprovalRequiredFixture } from '../../test-support/protocol-fixtures.js';
-import {
-  brandProjectId,
-  brandRunId,
-  brandThreadId,
-} from '../id-brand-helpers.js';
+import { brandRunId, brandThreadId } from '../id-brand-helpers.js';
 
 const THREAD_ID_VALUE = '00000000-0000-4000-8000-000000000001';
 const THREAD_ID = brandThreadId(THREAD_ID_VALUE);
 const RUN_ID = brandRunId('run-1');
-const PROJECT_ID = brandProjectId('workspace');
 
 void test('isApprovalRequired accepts protocol-shaped approval payload', () => {
   assert.equal(
@@ -139,7 +134,6 @@ void test('API response guards accept protocol-shaped payloads', () => {
         threads: [
           {
             threadId: THREAD_ID_VALUE,
-            projectId: 'workspace',
             title: 'Smoke',
             lastUpdated: '2026-03-24T00:00:00.000Z',
             messageCount: 2,
@@ -152,7 +146,6 @@ void test('API response guards accept protocol-shaped payloads', () => {
       guard: isThreadDetailResponse,
       value: {
         threadId: THREAD_ID_VALUE,
-        projectId: 'workspace',
         snapshotVersion: '2026-03-24T00:00:00.000Z',
         messages: [
           {
@@ -171,7 +164,6 @@ void test('API response guards accept protocol-shaped payloads', () => {
       value: {
         ok: true,
         threadId: THREAD_ID_VALUE,
-        projectId: 'workspace',
       },
     },
     {
@@ -181,6 +173,7 @@ void test('API response guards accept protocol-shaped payloads', () => {
         authSessionId: 'auth-1',
         authorizeUrl: 'https://example.com',
         expiresAt: 123,
+        providerId: 'openai_codex_direct',
       },
     },
     {
@@ -237,7 +230,6 @@ void test('protocol runtime helper guards stay available through the web-shell f
     }),
     false,
   );
-  assert.equal(isProjectId(PROJECT_ID), true);
   assert.equal(isThreadId(THREAD_ID_VALUE), true);
 
   assert.equal(
@@ -258,7 +250,6 @@ void test('thread response guards reject malformed thread ids and message metada
       threads: [
         {
           threadId: 'thread-1',
-          projectId: 'workspace',
           lastUpdated: '2026-03-24T00:00:00.000Z',
           messageCount: 1,
         },
@@ -270,7 +261,6 @@ void test('thread response guards reject malformed thread ids and message metada
   assert.equal(
     isThreadDetailResponse({
       threadId: THREAD_ID_VALUE,
-      projectId: 'workspace',
       snapshotVersion: '2026-03-24T00:00:00.000Z',
       messages: [
         {
@@ -297,20 +287,17 @@ void test('thread response guards reject malformed thread ids and message metada
   );
 });
 
-void test('brand helpers reject malformed run and project ids', () => {
+void test('brand helpers reject malformed run ids', () => {
   assert.equal(brandRunId('run-1'), RUN_ID);
-  assert.equal(brandProjectId('workspace'), PROJECT_ID);
 
   assert.throws(() => brandRunId(''), /invalid runId/i);
   assert.throws(() => brandRunId('run with spaces'), /invalid runId/i);
-  assert.throws(() => brandProjectId('workspace/root'), /invalid projectId/i);
-  assert.throws(() => brandProjectId('workspace root'), /invalid projectId/i);
 });
 
 void test('isFileTreeResponse rejects malformed tree payload', () => {
   assert.equal(
     isFileTreeResponse({
-      projectId: 'workspace',
+      root: 'computer',
       tree: [
         {
           name: 'docs',
@@ -352,7 +339,7 @@ void test('isRunChannelServerMessage accepts all run.event payload variants', ()
       persistenceEpoch: 0,
       sourceRef: {
         kind: 'thread-file',
-        projectId: PROJECT_ID,
+        workingDirectory: 'workspace',
         threadId: THREAD_ID,
         runId: RUN_ID,
         filePath: 'episodes/ch01.md',
@@ -370,7 +357,7 @@ void test('isRunChannelServerMessage accepts all run.event payload variants', ()
       step: 0,
       tool: 'read_file',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'ok',
       raw: { path: 'hello.txt' },
     }),
@@ -398,7 +385,6 @@ void test('isRunChannelServerMessage accepts all run.event payload variants', ()
     }),
     makeRunEvent('thread_state_persisted', {
       threadId: THREAD_ID,
-      projectId: PROJECT_ID,
       snapshotVersion: '2026-04-10T00:00:00.000Z',
       messages: [],
       artifacts: [],

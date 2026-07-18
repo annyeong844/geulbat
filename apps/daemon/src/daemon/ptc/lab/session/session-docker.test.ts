@@ -35,6 +35,7 @@ import {
   createPtcSessionDockerManager,
   normalizePtcSessionDockerReuseKey,
 } from './session-docker.js';
+import { buildPtcSessionDockerRuntimeScopeHash } from './session-docker-create-args.js';
 import {
   buildPtcSessionDockerArtifactRoot,
   buildPtcSessionDockerCallbackRoot,
@@ -46,6 +47,7 @@ import {
   PTC_SESSION_DOCKER_DEFAULT_POLICY,
   PTC_SESSION_DOCKER_HOST_USER_POLICY_ID,
   PTC_SESSION_DOCKER_LOCAL_BATCH_COMMAND_LAUNCH_POLICY_ID,
+  resolvePtcSessionDockerResourceRequirements,
   type PtcSessionDockerCommandInvocation,
   type PtcSessionDockerCommandResult,
   type PtcSessionDockerHostUser,
@@ -53,9 +55,18 @@ import {
   type PtcSessionDockerReuseKey,
 } from './session-docker-contract.js';
 
+void test('Docker resource requirements are derived from the canonical session policy', () => {
+  assert.deepEqual(
+    resolvePtcSessionDockerResourceRequirements(
+      createPtcSessionDockerLocalBatchCommandPolicy(),
+    ),
+    { cpuUnits: 2, memoryBytes: 2 * 1_024 ** 3 },
+  );
+});
+
 const IDENTITY: PtcSessionDockerIdentity = {
   threadId: 'thread-ptc-1',
-  workspaceRoot: '/workspace/project-a',
+  stateRoot: '/workspace/project-a',
   trustContextId: 'local-default-v1',
 };
 
@@ -79,7 +90,10 @@ function packageCacheHostRootFor(args: {
     runtimeRoot: args.runtimeRoot,
     identity: {
       trustContextId: args.reuseKey.trustContextId,
-      workspaceRootRealpath: args.reuseKey.workspaceRootRealpath,
+      stateRootRealpath: args.reuseKey.stateRootRealpath,
+      ...(args.reuseKey.ephemeralBurstId === undefined
+        ? {}
+        : { ephemeralBurstId: args.reuseKey.ephemeralBurstId }),
       labPolicyId: args.reuseKey.labPolicyId,
       packageCacheId: args.reuseKey.packageCacheId,
       packageCacheMountPolicyId: args.reuseKey.packageCacheMountPolicyId,
@@ -216,12 +230,12 @@ void test('normalizePtcSessionDockerReuseKey includes canonical workspace and po
   const reuseKey = normalizePtcSessionDockerReuseKey({
     hostUser: HOST_USER,
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
   });
 
   assert.equal(reuseKey.threadId, 'thread-ptc-1');
-  assert.equal(reuseKey.workspaceRootRealpath, '/real/workspace/project-a');
+  assert.equal(reuseKey.stateRootRealpath, '/real/workspace/project-a');
   assert.equal(reuseKey.trustContextId, 'local-default-v1');
   assert.equal(reuseKey.launchPolicyId, 'ptc_session_docker_launch_v1');
   assert.equal(reuseKey.imageRef, 'local/geulbat-ptc-session:2026-05-31');
@@ -265,7 +279,7 @@ void test('normalizePtcSessionDockerReuseKey includes canonical workspace and po
   const changedNetworkPolicy = normalizePtcSessionDockerReuseKey({
     hostUser: HOST_USER,
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: {
       ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
       networkInstallPolicyId: PTC_LAB_OPEN_EGRESS_LOCAL_POLICY_ID,
@@ -282,7 +296,7 @@ void test('normalizePtcSessionDockerReuseKey includes canonical workspace and po
   const changedImageRef = normalizePtcSessionDockerReuseKey({
     hostUser: HOST_USER,
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: {
       ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
       imageRef: 'local/geulbat-ptc-session:2026-06-06',
@@ -293,7 +307,7 @@ void test('normalizePtcSessionDockerReuseKey includes canonical workspace and po
   const changedPackageCachePolicy = normalizePtcSessionDockerReuseKey({
     hostUser: HOST_USER,
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: {
       ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
       packageCacheId: 'ptc_lab_other_cache_v1',
@@ -311,7 +325,7 @@ void test('normalizePtcSessionDockerReuseKey includes canonical workspace and po
   const firstManagerOrder = normalizePtcSessionDockerReuseKey({
     hostUser: HOST_USER,
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: {
       ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
       packageManagerFamilies: ['pip', 'npm'],
@@ -320,7 +334,7 @@ void test('normalizePtcSessionDockerReuseKey includes canonical workspace and po
   const secondManagerOrder = normalizePtcSessionDockerReuseKey({
     hostUser: HOST_USER,
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: {
       ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
       packageManagerFamilies: ['npm', 'pip'],
@@ -336,7 +350,7 @@ void test('normalizePtcSessionDockerReuseKey includes canonical workspace and po
   const browserPolicy = normalizePtcSessionDockerReuseKey({
     hostUser: HOST_USER,
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: {
       ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
       browser: createPtcLabBrowserUserUrlNavigationPolicy({
@@ -360,7 +374,7 @@ void test('normalizePtcSessionDockerReuseKey includes canonical workspace and po
   const changedHostUser = normalizePtcSessionDockerReuseKey({
     hostUser: OTHER_HOST_USER,
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
   });
   assert.notEqual(changedHostUser.identityHash, reuseKey.identityHash);
@@ -374,12 +388,12 @@ void test('normalizePtcSessionDockerReuseKey separates resource budget drift fro
   const basePolicy = createPtcSessionDockerLocalBatchCommandPolicy();
   const baseKey = normalizePtcSessionDockerReuseKey({
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: basePolicy,
   });
   const changedResourceKey = normalizePtcSessionDockerReuseKey({
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: {
       ...basePolicy,
       memory: '4g',
@@ -413,10 +427,42 @@ void test('normalizePtcSessionDockerReuseKey separates resource budget drift fro
   );
 });
 
+void test('ephemeral burst identity isolates both session and package cache roots', () => {
+  const policy = createPtcSessionDockerLocalBatchCommandPolicy();
+  const warm = normalizePtcSessionDockerReuseKey({
+    identity: IDENTITY,
+    stateRootRealpath: '/real/workspace/project-a',
+    policy,
+  });
+  const firstBurst = normalizePtcSessionDockerReuseKey({
+    identity: { ...IDENTITY, ephemeralBurstId: 'ptc_burst_first' },
+    stateRootRealpath: '/real/workspace/project-a',
+    policy,
+  });
+  const secondBurst = normalizePtcSessionDockerReuseKey({
+    identity: { ...IDENTITY, ephemeralBurstId: 'ptc_burst_second' },
+    stateRootRealpath: '/real/workspace/project-a',
+    policy,
+  });
+
+  assert.equal(warm.ephemeralBurstId, undefined);
+  assert.equal(firstBurst.ephemeralBurstId, 'ptc_burst_first');
+  assert.notEqual(firstBurst.identityHash, warm.identityHash);
+  assert.notEqual(
+    firstBurst.packageCacheIdentityHash,
+    warm.packageCacheIdentityHash,
+  );
+  assert.notEqual(firstBurst.identityHash, secondBurst.identityHash);
+  assert.notEqual(
+    firstBurst.packageCacheIdentityHash,
+    secondBurst.packageCacheIdentityHash,
+  );
+});
+
 void test('normalizePtcSessionDockerReuseKey separates browser policy drift from cache identity', () => {
   const baseKey = normalizePtcSessionDockerReuseKey({
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: {
       ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
       browser: createPtcLabBrowserUserUrlNavigationPolicy({
@@ -426,7 +472,7 @@ void test('normalizePtcSessionDockerReuseKey separates browser policy drift from
   });
   const changedActionBudgetKey = normalizePtcSessionDockerReuseKey({
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: {
       ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
       browser: createPtcLabBrowserUserUrlNavigationPolicy({
@@ -436,7 +482,7 @@ void test('normalizePtcSessionDockerReuseKey separates browser policy drift from
   });
   const changedEvidenceBudgetKey = normalizePtcSessionDockerReuseKey({
     identity: IDENTITY,
-    workspaceRootRealpath: '/real/workspace/project-a',
+    stateRootRealpath: '/real/workspace/project-a',
     policy: {
       ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
       browser: createPtcLabBrowserPageLoadEvidencePolicy({
@@ -473,7 +519,7 @@ void test('PTC session Docker root builders keep callbacks and artifacts separat
   await withTempRuntimeRoot(async (runtimeRoot) => {
     const reuseKey = normalizePtcSessionDockerReuseKey({
       identity: IDENTITY,
-      workspaceRootRealpath: '/real/workspace/project-a',
+      stateRootRealpath: '/real/workspace/project-a',
       policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
     });
 
@@ -493,7 +539,7 @@ void test('PTC session Docker root builders keep callbacks and artifacts separat
       runtimeRoot,
       identity: {
         trustContextId: reuseKey.trustContextId,
-        workspaceRootRealpath: reuseKey.workspaceRootRealpath,
+        stateRootRealpath: reuseKey.stateRootRealpath,
         labPolicyId: reuseKey.labPolicyId,
         packageCacheId: reuseKey.packageCacheId,
         packageCacheMountPolicyId: reuseKey.packageCacheMountPolicyId,
@@ -603,7 +649,7 @@ void test('PtcSessionDockerManager creates, inspects, reuses, and closes one con
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const first = await manager.getOrCreate(IDENTITY);
@@ -637,6 +683,207 @@ void test('PtcSessionDockerManager creates, inspects, reuses, and closes one con
       invocations.every((invocation) => invocation.timeoutMs === undefined),
       true,
     );
+  });
+});
+
+void test('PtcSessionDockerManager removes burst-owned package cache on close', async () => {
+  await withTempRuntimeRoot(async (runtimeRoot) => {
+    const burstIdentity: PtcSessionDockerIdentity = {
+      ...IDENTITY,
+      ephemeralBurstId: 'ptc_burst_close_cleanup',
+    };
+    const runner = async (
+      invocation: PtcSessionDockerCommandInvocation,
+    ): Promise<PtcSessionDockerCommandResult> => {
+      switch (invocation.args[0]) {
+        case '--version':
+          return {
+            kind: 'exit',
+            exitCode: 0,
+            stdout: 'Docker version 27',
+            stderr: '',
+          };
+        case 'image':
+          return { kind: 'exit', exitCode: 0, stdout: '[]', stderr: '' };
+        case 'create':
+          return {
+            kind: 'exit',
+            exitCode: 0,
+            stdout: 'container-burst-close\n',
+            stderr: '',
+          };
+        case 'start':
+        case 'rm':
+          return { kind: 'exit', exitCode: 0, stdout: '', stderr: '' };
+        case 'inspect':
+          return {
+            kind: 'exit',
+            exitCode: 0,
+            stdout: JSON.stringify([
+              { Id: 'container-burst-close', State: { Running: true } },
+            ]),
+            stderr: '',
+          };
+        default:
+          throw new Error(
+            `unexpected docker args: ${invocation.args.join(' ')}`,
+          );
+      }
+    };
+    const manager = createPtcSessionDockerManager({
+      runtimeRoot,
+      commandRunner: runner,
+      realpathStateRoot: async () => '/real/workspace/project-a',
+    });
+
+    const session = await manager.getOrCreate(burstIdentity);
+    assert.equal(session.ok, true);
+    if (!session.ok) {
+      return;
+    }
+    await access(session.value.artifactRootHostPath);
+    await access(session.value.packageCacheRootHostPath);
+
+    assert.deepEqual(await manager.close(burstIdentity), {
+      ok: true,
+      value: undefined,
+    });
+    await assert.rejects(
+      () => access(session.value.artifactRootHostPath),
+      /ENOENT/u,
+    );
+    await assert.rejects(
+      () => access(session.value.packageCacheRootHostPath),
+      /ENOENT/u,
+    );
+  });
+});
+
+void test('PtcSessionDockerManager sweeps scoped ephemeral residue once before first use', async () => {
+  await withTempRuntimeRoot(async (runtimeRoot) => {
+    const staleKey = normalizePtcSessionDockerReuseKey({
+      identity: {
+        ...IDENTITY,
+        ephemeralBurstId: 'ptc_burst_startup_residue',
+      },
+      stateRootRealpath: '/real/workspace/project-a',
+      policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
+    });
+    const staleSessionRoot = buildPtcSessionDockerSessionRoot({
+      runtimeRoot,
+      reuseKey: staleKey,
+    });
+    const stalePackageCacheRoot = packageCacheHostRootFor({
+      runtimeRoot,
+      reuseKey: staleKey,
+    });
+    await mkdir(staleSessionRoot, { recursive: true });
+    await mkdir(stalePackageCacheRoot, { recursive: true });
+
+    const invocations: PtcSessionDockerCommandInvocation[] = [];
+    const runner = async (
+      invocation: PtcSessionDockerCommandInvocation,
+    ): Promise<PtcSessionDockerCommandResult> => {
+      invocations.push(invocation);
+      if (invocation.args[0] === 'ps') {
+        assert.equal(
+          invocation.args.includes('label=geulbat.ephemeral=true'),
+          true,
+        );
+        assert.equal(
+          invocation.args.includes(
+            `label=geulbat.runtimeScopeHash=${buildPtcSessionDockerRuntimeScopeHash(runtimeRoot)}`,
+          ),
+          true,
+        );
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: `stale-burst|${staleKey.identityHash}|${staleKey.packageCacheIdentityHash}\n`,
+          stderr: '',
+        };
+      }
+      if (invocation.args[0] === '--version') {
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: 'Docker version 27',
+          stderr: '',
+        };
+      }
+      if (invocation.args[0] === 'image') {
+        return { kind: 'exit', exitCode: 0, stdout: '[]', stderr: '' };
+      }
+      if (invocation.args[0] === 'create') {
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: 'container-after-sweep\n',
+          stderr: '',
+        };
+      }
+      if (invocation.args[0] === 'start' || invocation.args[0] === 'rm') {
+        return { kind: 'exit', exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (invocation.args[0] === 'inspect') {
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { Id: 'container-after-sweep', State: { Running: true } },
+          ]),
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected docker args: ${invocation.args.join(' ')}`);
+    };
+    const manager = createPtcSessionDockerManager({
+      runtimeRoot,
+      commandRunner: runner,
+      reapEphemeralOnFirstUse: true,
+      realpathStateRoot: async () => '/real/workspace/project-a',
+    });
+
+    const session = await manager.getOrCreate(IDENTITY);
+    assert.equal(session.ok, true);
+    await assert.rejects(() => access(staleSessionRoot), /ENOENT/u);
+    await assert.rejects(() => access(stalePackageCacheRoot), /ENOENT/u);
+    assert.equal(
+      invocations.filter((invocation) => invocation.args[0] === 'ps').length,
+      1,
+    );
+    const staleRemove = invocations.find(
+      (invocation) =>
+        invocation.args[0] === 'rm' && invocation.args.includes('stale-burst'),
+    );
+    assert.deepEqual(staleRemove?.args, ['rm', '-f', 'stale-burst']);
+    await manager.close(IDENTITY);
+  });
+});
+
+void test('PtcSessionDockerManager fails closed on invalid ephemeral sweep labels', async () => {
+  await withTempRuntimeRoot(async (runtimeRoot) => {
+    const manager = createPtcSessionDockerManager({
+      runtimeRoot,
+      reapEphemeralOnFirstUse: true,
+      realpathStateRoot: async () => '/real/workspace/project-a',
+      commandRunner: async (invocation) => {
+        assert.equal(invocation.args[0], 'ps');
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: 'forged-container|not-a-hash|also-not-a-hash\n',
+          stderr: '',
+        };
+      },
+    });
+
+    const result = await manager.getOrCreate(IDENTITY);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reasonCode, 'ephemeral_startup_sweep_failed');
+      assert.deepEqual(result.diagnostics, { ephemeralLabelInvalid: true });
+    }
   });
 });
 
@@ -685,7 +932,7 @@ void test('PtcSessionDockerManager preserves sanitized host-root cleanup diagnos
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const session = await manager.getOrCreate(IDENTITY);
@@ -764,7 +1011,7 @@ void test('PtcSessionDockerManager does not reuse a host root after cleanup fail
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const session = await manager.getOrCreate(IDENTITY);
@@ -867,7 +1114,7 @@ void test('PtcSessionDockerManager does not reuse a tracked session after contai
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const session = await manager.getOrCreate(IDENTITY);
@@ -961,7 +1208,7 @@ void test('PtcSessionDockerManager blocks replacement while tracked container re
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const session = await manager.getOrCreate(IDENTITY);
@@ -1006,7 +1253,7 @@ void test('PtcSessionDockerManager removes untracked stale session residue befor
   await withTempRuntimeRoot(async (runtimeRoot) => {
     const reuseKey = normalizePtcSessionDockerReuseKey({
       identity: IDENTITY,
-      workspaceRootRealpath: '/real/workspace/project-a',
+      stateRootRealpath: '/real/workspace/project-a',
       policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
     });
     const staleMarker = join(
@@ -1070,7 +1317,7 @@ void test('PtcSessionDockerManager removes untracked stale session residue befor
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const session = await manager.getOrCreate(IDENTITY);
@@ -1151,7 +1398,7 @@ void test('PtcSessionDockerManager single-flights concurrent getOrCreate calls',
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const first = manager.getOrCreate(IDENTITY);
@@ -1177,7 +1424,7 @@ void test('PtcSessionDockerManager removes created container when start fails', 
     const invocations: string[][] = [];
     const reuseKey = normalizePtcSessionDockerReuseKey({
       identity: IDENTITY,
-      workspaceRootRealpath: '/real/workspace/project-a',
+      stateRootRealpath: '/real/workspace/project-a',
       policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
     });
     const sessionRoot = buildPtcSessionDockerSessionRoot({
@@ -1224,7 +1471,7 @@ void test('PtcSessionDockerManager removes created container when start fails', 
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const result = await manager.getOrCreate(IDENTITY);
@@ -1242,7 +1489,7 @@ void test('PtcSessionDockerManager removes created container and host root when 
     const invocations: string[][] = [];
     const reuseKey = normalizePtcSessionDockerReuseKey({
       identity: IDENTITY,
-      workspaceRootRealpath: '/real/workspace/project-a',
+      stateRootRealpath: '/real/workspace/project-a',
       policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
     });
     const sessionRoot = buildPtcSessionDockerSessionRoot({
@@ -1292,7 +1539,7 @@ void test('PtcSessionDockerManager removes created container and host root when 
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const result = await manager.getOrCreate(IDENTITY);
@@ -1317,7 +1564,7 @@ void test('PtcSessionDockerManager removes created container and host root when 
   });
 });
 
-void test('PtcSessionDockerManager classifies missing open network bridge without creating networks', async () => {
+void test('PtcSessionDockerManager creates the open network bridge before launching an open-network session (slice 1b)', async () => {
   await withTempRuntimeRoot(async (runtimeRoot) => {
     const openPolicy = {
       ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
@@ -1327,7 +1574,7 @@ void test('PtcSessionDockerManager classifies missing open network bridge withou
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       policy: openPolicy,
-      realpathWorkspaceRoot: async () => '/real/workspace',
+      realpathStateRoot: async () => '/real/workspace',
       commandRunner: async (invocation) => {
         invocations.push(invocation);
         if (invocation.args[0] === '--version') {
@@ -1341,13 +1588,173 @@ void test('PtcSessionDockerManager classifies missing open network bridge withou
         if (invocation.args[0] === 'image') {
           return { kind: 'exit', exitCode: 0, stdout: '[]', stderr: '' };
         }
-        if (invocation.args[0] === 'create') {
+        if (
+          invocation.args[0] === 'network' &&
+          invocation.args[1] === 'inspect'
+        ) {
           return {
             kind: 'exit',
             exitCode: 1,
             stdout: '',
-            stderr:
-              'Error response from daemon: network geulbat-ptc-lab-open-v1 not found',
+            stderr: 'Error: No such network: geulbat-ptc-lab-open-v1',
+          };
+        }
+        if (
+          invocation.args[0] === 'network' &&
+          invocation.args[1] === 'create'
+        ) {
+          return { kind: 'exit', exitCode: 0, stdout: 'net-id\n', stderr: '' };
+        }
+        if (invocation.args[0] === 'create') {
+          return {
+            kind: 'exit',
+            exitCode: 0,
+            stdout: 'container-open-1\n',
+            stderr: '',
+          };
+        }
+        if (invocation.args[0] === 'start') {
+          return { kind: 'exit', exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (invocation.args[0] === 'inspect') {
+          return {
+            kind: 'exit',
+            exitCode: 0,
+            stdout: JSON.stringify([
+              { Id: 'container-open-1', State: { Running: true } },
+            ]),
+            stderr: '',
+          };
+        }
+        return { kind: 'exit', exitCode: 0, stdout: '', stderr: '' };
+      },
+    });
+
+    const result = await manager.getOrCreate(IDENTITY);
+
+    assert.equal(result.ok, true);
+    const order = invocations.map((invocation) => invocation.args.join(' '));
+    const networkCreateIndex = order.findIndex((line) =>
+      line.startsWith('network create'),
+    );
+    const containerCreateIndex = order.findIndex((line) =>
+      line.startsWith('create'),
+    );
+    assert.notEqual(networkCreateIndex, -1);
+    assert.notEqual(containerCreateIndex, -1);
+    assert.ok(networkCreateIndex < containerCreateIndex);
+    const networkCreateCall = invocations[networkCreateIndex];
+    assert.ok(networkCreateCall);
+    assert.equal(networkCreateCall.args.at(-1), 'geulbat-ptc-lab-open-v1');
+  });
+});
+
+void test('PtcSessionDockerManager adopts an existing open network bridge without recreating it', async () => {
+  await withTempRuntimeRoot(async (runtimeRoot) => {
+    const openPolicy = {
+      ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
+      network: createPtcLabOpenEgressLocalPolicy(),
+    };
+    const invocations: PtcSessionDockerCommandInvocation[] = [];
+    const manager = createPtcSessionDockerManager({
+      runtimeRoot,
+      policy: openPolicy,
+      realpathStateRoot: async () => '/real/workspace',
+      commandRunner: async (invocation) => {
+        invocations.push(invocation);
+        if (invocation.args[0] === '--version') {
+          return { kind: 'exit', exitCode: 0, stdout: 'v', stderr: '' };
+        }
+        if (invocation.args[0] === 'image') {
+          return { kind: 'exit', exitCode: 0, stdout: '[]', stderr: '' };
+        }
+        if (
+          invocation.args[0] === 'network' &&
+          invocation.args[1] === 'inspect'
+        ) {
+          return {
+            kind: 'exit',
+            exitCode: 0,
+            stdout: JSON.stringify([{ Name: 'geulbat-ptc-lab-open-v1' }]),
+            stderr: '',
+          };
+        }
+        if (invocation.args[0] === 'create') {
+          return {
+            kind: 'exit',
+            exitCode: 0,
+            stdout: 'container-open-2\n',
+            stderr: '',
+          };
+        }
+        if (invocation.args[0] === 'start') {
+          return { kind: 'exit', exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (invocation.args[0] === 'inspect') {
+          return {
+            kind: 'exit',
+            exitCode: 0,
+            stdout: JSON.stringify([
+              { Id: 'container-open-2', State: { Running: true } },
+            ]),
+            stderr: '',
+          };
+        }
+        return { kind: 'exit', exitCode: 0, stdout: '', stderr: '' };
+      },
+    });
+
+    const result = await manager.getOrCreate(IDENTITY);
+
+    assert.equal(result.ok, true);
+    assert.equal(
+      invocations.some((invocation) =>
+        invocation.args.join(' ').startsWith('network create'),
+      ),
+      false,
+    );
+  });
+});
+
+void test('PtcSessionDockerManager fails closed when the open network bridge cannot be ensured', async () => {
+  await withTempRuntimeRoot(async (runtimeRoot) => {
+    const openPolicy = {
+      ...PTC_SESSION_DOCKER_DEFAULT_POLICY,
+      network: createPtcLabOpenEgressLocalPolicy(),
+    };
+    const invocations: PtcSessionDockerCommandInvocation[] = [];
+    const manager = createPtcSessionDockerManager({
+      runtimeRoot,
+      policy: openPolicy,
+      realpathStateRoot: async () => '/real/workspace',
+      commandRunner: async (invocation) => {
+        invocations.push(invocation);
+        if (invocation.args[0] === '--version') {
+          return { kind: 'exit', exitCode: 0, stdout: 'v', stderr: '' };
+        }
+        if (invocation.args[0] === 'image') {
+          return { kind: 'exit', exitCode: 0, stdout: '[]', stderr: '' };
+        }
+        if (
+          invocation.args[0] === 'network' &&
+          invocation.args[1] === 'inspect'
+        ) {
+          return {
+            kind: 'exit',
+            exitCode: 1,
+            stdout: '',
+            stderr: 'Error: No such network',
+          };
+        }
+        if (
+          invocation.args[0] === 'network' &&
+          invocation.args[1] === 'create'
+        ) {
+          return {
+            kind: 'exit',
+            exitCode: 1,
+            stdout: '',
+            stderr: 'Error response from daemon: permission denied',
           };
         }
         return { kind: 'exit', exitCode: 0, stdout: '', stderr: '' };
@@ -1361,10 +1768,9 @@ void test('PtcSessionDockerManager classifies missing open network bridge withou
       result.ok ? '' : result.reasonCode,
       'network_backend_unavailable',
     );
+    // Ensure failed before any container was created.
     assert.equal(
-      invocations.some((invocation) =>
-        invocation.args.join(' ').includes('network create'),
-      ),
+      invocations.some((invocation) => invocation.args[0] === 'create'),
       false,
     );
   });
@@ -1423,7 +1829,7 @@ void test('PtcSessionDockerManager recreates a tracked container that no longer 
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const first = await manager.getOrCreate(IDENTITY);
@@ -1512,7 +1918,7 @@ void test('PtcSessionDockerManager close during startup removes the created cont
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const start = manager.getOrCreate(IDENTITY);
@@ -1582,7 +1988,7 @@ void test('PtcSessionDockerManager closeAll during startup removes the created c
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const start = manager.getOrCreate(IDENTITY);
@@ -1645,7 +2051,7 @@ void test('PtcSessionDockerManager getOrCreate works again after closeAll cleanu
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const first = await manager.getOrCreate(IDENTITY);
@@ -1724,7 +2130,7 @@ void test('PtcSessionDockerManager rejects getOrCreate requested during closeAll
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       commandRunner: runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const first = await manager.getOrCreate(IDENTITY);
@@ -1769,7 +2175,7 @@ void test('PtcSessionDockerManager diagnostics redact private path markers', asy
         }
         throw new Error(`unexpected docker args: ${invocation.args.join(' ')}`);
       },
-      realpathWorkspaceRoot: async () => '/real/workspace/project-a',
+      realpathStateRoot: async () => '/real/workspace/project-a',
     });
 
     const result = await manager.getOrCreate(IDENTITY);

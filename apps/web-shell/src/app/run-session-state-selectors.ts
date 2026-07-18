@@ -63,17 +63,25 @@ export function selectVisibleRunState({
     visibleThreadId,
     activeRunId: showRunState ? state.activeRunView.runId : null,
     transcriptEntries: showRunState
-      ? state.activeRunView.transcriptEntries
+      ? appendStreamingToolEntry(state.activeRunView)
       : [],
     finalAnswerText: showRunState ? state.activeRunView.finalAnswerText : '',
     activeArtifact: showRunState
       ? resolveActiveArtifact(state.activeRunView)
       : null,
-    pendingApproval:
-      showRunState &&
-      state.activeRunView.pendingApproval?.threadId === visibleThreadId
-        ? state.activeRunView.pendingApproval
-        : null,
+    // Approvals are keyed to the active run view, not the payload threadId:
+    // a worker(child)-run approval carries the child threadId but must still
+    // surface on the parent session that owns the run.
+    pendingApproval: showRunState ? state.activeRunView.pendingApproval : null,
+    pendingSteers: showRunState ? state.activeRunView.pendingSteers : [],
+    pendingSteerFlushRequested: showRunState
+      ? state.activeRunView.pendingSteerFlushRequested
+      : false,
+    usageTotals: showRunState ? state.activeRunView.usageTotals : null,
+    contextUsage:
+      visibleThreadId === null
+        ? null
+        : (state.contextUsageByThread[visibleThreadId] ?? null),
     streamError: showRunState
       ? (state.activeRunView.streamError ?? state.sessionError)
       : state.sessionError,
@@ -84,6 +92,26 @@ export function selectVisibleRunState({
     isRunning: showRunState && (isStarting || state.phase === 'running'),
     isSettling: showRunState && state.phase === 'settling',
   };
+}
+
+// 스트리밍 중인 도구 호출을 라이브 꼬리 엔트리로 노출한다 — 완성본
+// tool_call이 도착하면 스트리밍이 닫히고 일반 엔트리가 대체한다.
+function appendStreamingToolEntry(
+  activeRunView: ActiveRunViewState,
+): VisibleRunState['transcriptEntries'] {
+  const streaming = activeRunView.streamingToolCall;
+  if (streaming === null || streaming.argsText === '') {
+    return activeRunView.transcriptEntries;
+  }
+  return [
+    ...activeRunView.transcriptEntries,
+    {
+      kind: 'tool_activity',
+      tool: streaming.tool,
+      state: 'running',
+      argsText: streaming.argsText,
+    },
+  ];
 }
 
 function resolveActiveArtifact(

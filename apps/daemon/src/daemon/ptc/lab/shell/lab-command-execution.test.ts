@@ -150,6 +150,27 @@ void test('runPtcLabBatchCommandExecution builds docker exec argv and returns co
   assert.equal(invocations[0]?.maxBufferedBytesPerStream, 4096);
 });
 
+void test('runPtcLabBatchCommandExecution passes a command beyond the removed 32 KiB policy to the process boundary', async () => {
+  const { admission, session } = admittedLab({ shellMode: 'batch_command' });
+  const command = `printf accepted # ${'x'.repeat(40 * 1024)}`;
+  const invocations: Parameters<PtcLabBatchCommandRunner>[0][] = [];
+
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session,
+    request: { command },
+    runner: async (invocation) => {
+      invocations.push(invocation);
+      return { kind: 'exit', exitCode: 0, stdout: 'accepted', stderr: '' };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.ok ? result.value.stdout : '', 'accepted');
+  assert.equal(invocations.length, 1);
+  assert.equal(invocations[0]?.args[4], command);
+});
+
 void test('adaptPtcSessionDockerCommandRunner maps session Docker edge results into batch-command results', async () => {
   const cases: Array<{
     name: string;

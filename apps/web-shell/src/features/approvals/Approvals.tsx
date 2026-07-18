@@ -1,8 +1,10 @@
 import { useEffect, useId, useState } from 'react';
-import type {
-  ApprovalGrantScope,
-  ApprovalRequired,
-  PermissionMode,
+import {
+  isApprovalGrantScope,
+  isPermissionMode,
+  type ApprovalGrantScope,
+  type ApprovalRequired,
+  type PermissionMode,
 } from '@geulbat/protocol/run-approval';
 import { buildApprovalSummary } from '../../lib/approvals/approval-summary.js';
 import { approvalStyles, getApprovalBadgeStyle } from './approval-styles.js';
@@ -38,20 +40,10 @@ export function Approvals({
     setPendingAction(null);
   }, [pending?.callId, pending?.runId, pending?.threadId]);
 
+  // 대기 중인 승인이 없으면 아무것도 차지하지 않는다 — 권한 방식 선택은
+  // 입력창 footer가 owner다.
   if (!pending) {
-    return (
-      <section className="approvals" style={styles.compactTray}>
-        <div style={styles.compactHeader}>
-          <strong>Approval mode</strong>
-          <span style={styles.compactHint}>No pending approvals</span>
-        </div>
-        <PermissionModeSelector
-          permissionMode={permissionMode}
-          onPermissionModeChange={onPermissionModeChange}
-          compact
-        />
-      </section>
-    );
+    return null;
   }
 
   const activePending = pending;
@@ -114,16 +106,19 @@ export function Approvals({
       <label style={styles.field}>
         Approval Pass
         <select
+          name="approval-pass-scope"
           value={grantScope}
           disabled={controlsDisabled}
-          onChange={(event) =>
-            setGrantScope(event.target.value as ApprovalGrantScope)
-          }
+          onChange={(event) => {
+            const nextGrantScope = event.target.value;
+            if (isApprovalGrantScope(nextGrantScope)) {
+              setGrantScope(nextGrantScope);
+            }
+          }}
           style={styles.select}
         >
           <option value="once">Once</option>
           <option value="run">This run</option>
-          <option value="thread">This thread</option>
           <option value="session">This session</option>
         </select>
       </label>
@@ -175,11 +170,15 @@ function PermissionModeSelector(props: {
     <label style={compact ? styles.inlineField : styles.field}>
       Permission Mode
       <select
+        name="permission-mode"
         value={permissionMode}
         disabled={disabled}
-        onChange={(event) =>
-          void onPermissionModeChange(event.target.value as PermissionMode)
-        }
+        onChange={(event) => {
+          const nextPermissionMode = event.target.value;
+          if (isPermissionMode(nextPermissionMode)) {
+            void onPermissionModeChange(nextPermissionMode);
+          }
+        }}
         style={styles.select}
       >
         <option value="basic">Basic</option>

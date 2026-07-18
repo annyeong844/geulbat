@@ -1,3 +1,4 @@
+import type { LookupAddress } from 'node:dns';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
@@ -9,9 +10,9 @@ export interface DnsAddress {
 export type HttpLookup = (
   hostname: string,
   options: { all: true; verbatim: true },
-) => Promise<DnsAddress[]>;
+) => Promise<LookupAddress[]>;
 
-export type HttpUrlGuardReasonCode = 'invalid_url' | 'unsafe_url';
+type HttpUrlGuardReasonCode = 'invalid_url' | 'unsafe_url';
 
 export function parseHttpUrl(
   input: string,
@@ -76,7 +77,16 @@ export async function guardedLookupPublicAddress(
       `unsafe network address resolved for ${label}: ${unsafe.address}`,
     );
   }
-  return first;
+  if (first.family !== 4 && first.family !== 6) {
+    const label = options.label ?? 'HTTP URL';
+    throw new Error(
+      `unsupported network address family resolved for ${label}: ${first.family}`,
+    );
+  }
+  return {
+    address: first.address,
+    family: first.family,
+  };
 }
 
 export function isUnsafeHttpHostname(hostname: string): boolean {
@@ -91,8 +101,12 @@ export function isUnsafeHttpHostname(hostname: string): boolean {
 export function isUnsafeHttpAddress(address: string): boolean {
   const normalized = normalizeIpLiteralHost(address);
   const family = isIP(normalized);
-  if (family === 4) return isUnsafeIpv4(normalized);
-  if (family === 6) return isUnsafeIpv6(normalized);
+  if (family === 4) {
+    return isUnsafeIpv4(normalized);
+  }
+  if (family === 6) {
+    return isUnsafeIpv6(normalized);
+  }
   return true;
 }
 
@@ -108,17 +122,39 @@ function isUnsafeIpv4(address: string): boolean {
     return true;
   }
   const [a, b] = octets;
-  if (a === undefined || b === undefined) return true;
-  if (a === 0 || a === 10 || a === 127) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 192 && b === 0) return true;
-  if (a === 192 && b === 2) return true;
-  if (a === 198 && (b === 18 || b === 19 || b === 51)) return true;
-  if (a === 203 && b === 0) return true;
-  if (a >= 224) return true;
+  if (a === undefined || b === undefined) {
+    return true;
+  }
+  if (a === 0 || a === 10 || a === 127) {
+    return true;
+  }
+  if (a === 100 && b >= 64 && b <= 127) {
+    return true;
+  }
+  if (a === 169 && b === 254) {
+    return true;
+  }
+  if (a === 172 && b >= 16 && b <= 31) {
+    return true;
+  }
+  if (a === 192 && b === 168) {
+    return true;
+  }
+  if (a === 192 && b === 0) {
+    return true;
+  }
+  if (a === 192 && b === 2) {
+    return true;
+  }
+  if (a === 198 && (b === 18 || b === 19 || b === 51)) {
+    return true;
+  }
+  if (a === 203 && b === 0) {
+    return true;
+  }
+  if (a >= 224) {
+    return true;
+  }
   return false;
 }
 
@@ -145,14 +181,20 @@ function isUnsafeIpv6(address: string): boolean {
 
 function parseIpv4MappedAddress(address: string): string | null {
   const dottedMatch = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/u.exec(address);
-  if (dottedMatch?.[1]) return dottedMatch[1];
+  if (dottedMatch?.[1]) {
+    return dottedMatch[1];
+  }
 
   const hexMatch = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/u.exec(address);
-  if (!hexMatch?.[1] || !hexMatch[2]) return null;
+  if (!hexMatch?.[1] || !hexMatch[2]) {
+    return null;
+  }
 
   const high = Number.parseInt(hexMatch[1], 16);
   const low = Number.parseInt(hexMatch[2], 16);
-  if (high > 0xffff || low > 0xffff) return null;
+  if (high > 0xffff || low > 0xffff) {
+    return null;
+  }
 
   return [(high >> 8) & 0xff, high & 0xff, (low >> 8) & 0xff, low & 0xff].join(
     '.',
@@ -162,6 +204,6 @@ function parseIpv4MappedAddress(address: string): string | null {
 async function defaultLookup(
   hostname: string,
   options: { all: true; verbatim: true },
-): Promise<DnsAddress[]> {
-  return dnsLookup(hostname, options) as Promise<DnsAddress[]>;
+): Promise<LookupAddress[]> {
+  return dnsLookup(hostname, options);
 }

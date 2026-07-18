@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { DEV_TOKEN_HEADER_NAME } from '../auth/shell-auth.js';
-import { DEFAULT_PROJECT_ID, assertThreadId } from '@geulbat/protocol/ids';
+import { assertThreadId } from '@geulbat/protocol/ids';
 import { ApiFetchError } from './client.js';
 import { saveArtifactRuntimePersistenceState } from './artifact-runtime-persistence.js';
 
@@ -22,7 +22,6 @@ function installApiTestBootstrap(
 
 function createSaveRequest() {
   return {
-    projectId: DEFAULT_PROJECT_ID,
     threadId: TEST_THREAD_ID,
     renderer: 'js',
     artifactId: 'artifact',
@@ -37,18 +36,11 @@ void test('saveArtifactRuntimePersistenceState uploads state before posting a st
   installApiTestBootstrap(t, async (input, init) => {
     calls.push(String(input));
     assert.equal(init?.credentials, 'same-origin');
-    assert.equal(
-      (init?.headers as Record<string, string>)[DEV_TOKEN_HEADER_NAME],
-      undefined,
-    );
+    assert.equal(new Headers(init?.headers).get(DEV_TOKEN_HEADER_NAME), null);
 
-    if (
-      String(input).startsWith(
-        '/api/artifact-runtime-persistence/state-inputs?',
-      )
-    ) {
+    if (String(input) === '/api/artifact-runtime-persistence/state-inputs') {
       assert.equal(
-        (init?.headers as Record<string, string>)['Content-Type'],
+        new Headers(init?.headers).get('content-type'),
         'application/octet-stream',
       );
       assert.ok(init?.body instanceof Blob);
@@ -69,16 +61,15 @@ void test('saveArtifactRuntimePersistenceState uploads state before posting a st
 
     assert.equal(String(input), '/api/artifact-runtime-persistence/save');
     assert.equal(
-      (init?.headers as Record<string, string>)['Content-Type'],
+      new Headers(init?.headers).get('content-type'),
       'application/json',
     );
     const body = JSON.parse(String(init?.body)) as {
-      projectId: string;
       artifactId: string;
       state?: unknown;
       stateRef: string;
     };
-    assert.equal(body.projectId, 'workspace');
+    assert.equal('projectId' in body, false);
     assert.equal(body.artifactId, 'artifact');
     assert.equal(body.state, undefined);
     assert.equal(
@@ -96,7 +87,7 @@ void test('saveArtifactRuntimePersistenceState uploads state before posting a st
 
   assert.equal(response.revision, 'revision-1');
   assert.deepEqual(calls, [
-    '/api/artifact-runtime-persistence/state-inputs?projectId=workspace',
+    '/api/artifact-runtime-persistence/state-inputs',
     '/api/artifact-runtime-persistence/save',
   ]);
 });
@@ -105,11 +96,7 @@ void test('saveArtifactRuntimePersistenceState deletes uploaded state refs when 
   const calls: string[] = [];
   installApiTestBootstrap(t, async (input) => {
     calls.push(String(input));
-    if (
-      String(input).startsWith(
-        '/api/artifact-runtime-persistence/state-inputs?',
-      )
-    ) {
+    if (String(input) === '/api/artifact-runtime-persistence/state-inputs') {
       return new Response(
         JSON.stringify({
           ok: true,
@@ -146,9 +133,9 @@ void test('saveArtifactRuntimePersistenceState deletes uploaded state refs when 
     (error: unknown) => error instanceof ApiFetchError,
   );
   assert.deepEqual(calls, [
-    '/api/artifact-runtime-persistence/state-inputs?projectId=workspace',
+    '/api/artifact-runtime-persistence/state-inputs',
     '/api/artifact-runtime-persistence/save',
-    '/api/artifact-runtime-persistence/state-inputs?projectId=workspace&stateRef=artifact-runtime-state-input%3A00000000-0000-4000-8000-000000000003',
+    '/api/artifact-runtime-persistence/state-inputs?stateRef=artifact-runtime-state-input%3A00000000-0000-4000-8000-000000000003',
   ]);
 });
 
@@ -158,7 +145,7 @@ void test('saveArtifactRuntimePersistenceState preserves caller-provided stateRe
     calls.push(String(input));
     assert.equal(String(input), '/api/artifact-runtime-persistence/save');
     assert.equal(
-      (init?.headers as Record<string, string>)['Content-Type'],
+      new Headers(init?.headers).get('content-type'),
       'application/json',
     );
     const body = JSON.parse(String(init?.body)) as {
@@ -175,7 +162,6 @@ void test('saveArtifactRuntimePersistenceState preserves caller-provided stateRe
   });
 
   const response = await saveArtifactRuntimePersistenceState({
-    projectId: DEFAULT_PROJECT_ID,
     threadId: TEST_THREAD_ID,
     renderer: 'js',
     artifactId: 'artifact',

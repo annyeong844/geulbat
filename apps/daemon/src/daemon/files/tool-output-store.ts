@@ -1,17 +1,16 @@
 import { Buffer } from 'node:buffer';
-import { readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, rm, rmdir } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { isRecord, tryParseJson } from '../runtime-json.js';
 import type { ErrorCode } from '../error-codes.js';
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
 import { getErrorCode } from '../utils/error.js';
 
-const TOOL_OUTPUT_OFFLOAD_SCHEMA_VERSION = 1;
+const TOOL_OUTPUT_OFFLOAD_SCHEMA_VERSION = 2;
 
 export interface ToolOutputSnapshot {
   schemaVersion: typeof TOOL_OUTPUT_OFFLOAD_SCHEMA_VERSION;
   outputRef: string;
-  projectId: string;
   threadId: string;
   runId: string;
   callId: string;
@@ -22,6 +21,7 @@ export interface ToolOutputSnapshot {
   fullOutputChars: number;
   output: string;
   source?: {
+    root?: 'workspace' | 'computer';
     path?: string;
     query?: string;
     url?: string;
@@ -56,12 +56,12 @@ export function buildToolOutputRef(args: {
 }
 
 export async function writeToolOutputSnapshot(args: {
-  workspaceRoot: string;
+  stateRoot: string;
   snapshot: ToolOutputSnapshot;
 }): Promise<void> {
   await writeTextFileAtomically(
     buildToolOutputSnapshotPath({
-      workspaceRoot: args.workspaceRoot,
+      stateRoot: args.stateRoot,
       threadId: args.snapshot.threadId,
       runId: args.snapshot.runId,
       callId: args.snapshot.callId,
@@ -71,7 +71,7 @@ export async function writeToolOutputSnapshot(args: {
 }
 
 export async function deleteThreadToolOutputs(args: {
-  workspaceRoot: string;
+  stateRoot: string;
   threadId: string;
 }): Promise<boolean> {
   try {
@@ -88,8 +88,50 @@ export async function deleteThreadToolOutputs(args: {
   }
 }
 
+export async function pruneUnreferencedThreadToolOutputs(args: {
+  stateRoot: string;
+  threadId: string;
+  previousOutputRefs: ReadonlySet<string>;
+  retainedOutputRefs: ReadonlySet<string>;
+}): Promise<number> {
+  let deleted = 0;
+  for (const outputRef of args.previousOutputRefs) {
+    if (args.retainedOutputRefs.has(outputRef)) {
+      continue;
+    }
+    const parsedRef = parseToolOutputRef(outputRef);
+    if (!parsedRef.ok || parsedRef.value.threadId !== args.threadId) {
+      continue;
+    }
+    const snapshotPath = buildToolOutputSnapshotPath({
+      stateRoot: args.stateRoot,
+      threadId: parsedRef.value.threadId,
+      runId: parsedRef.value.runId,
+      callId: parsedRef.value.callId,
+    });
+    try {
+      await rm(snapshotPath, { force: false });
+      deleted += 1;
+    } catch (error: unknown) {
+      if (getErrorCode(error) !== 'ENOENT') {
+        throw error;
+      }
+      continue;
+    }
+    try {
+      await rmdir(dirname(snapshotPath));
+    } catch (error: unknown) {
+      const code = getErrorCode(error);
+      if (code !== 'ENOENT' && code !== 'ENOTEMPTY' && code !== 'EEXIST') {
+        throw error;
+      }
+    }
+  }
+  return deleted;
+}
+
 export async function readToolOutputSnapshot(args: {
-  workspaceRoot: string;
+  stateRoot: string;
   threadId: string;
   outputRef: string;
 }): Promise<ToolOutputSnapshotReadResult> {
@@ -106,7 +148,7 @@ export async function readToolOutputSnapshot(args: {
   }
 
   const snapshotPath = buildToolOutputSnapshotPath({
-    workspaceRoot: args.workspaceRoot,
+    stateRoot: args.stateRoot,
     threadId: parsedRef.value.threadId,
     runId: parsedRef.value.runId,
     callId: parsedRef.value.callId,
@@ -147,7 +189,6 @@ export async function readToolOutputSnapshot(args: {
 
 export function buildToolOutputSnapshot(args: {
   outputRef: string;
-  projectId: string;
   threadId: string;
   runId: string;
   callId: string;
@@ -159,7 +200,6 @@ export function buildToolOutputSnapshot(args: {
   return {
     schemaVersion: TOOL_OUTPUT_OFFLOAD_SCHEMA_VERSION,
     outputRef: args.outputRef,
-    projectId: args.projectId,
     threadId: args.threadId,
     runId: args.runId,
     callId: args.callId,
@@ -174,14 +214,14 @@ export function buildToolOutputSnapshot(args: {
 }
 
 function buildToolOutputSnapshotPath(args: {
-  workspaceRoot: string;
+  stateRoot: string;
   threadId: string;
   runId: string;
   callId: string;
 }): string {
   return join(
     buildThreadToolOutputDirectory({
-      workspaceRoot: args.workspaceRoot,
+      stateRoot: args.stateRoot,
       threadId: args.threadId,
     }),
     encodeRefPart(args.runId),
@@ -190,11 +230,11 @@ function buildToolOutputSnapshotPath(args: {
 }
 
 function buildThreadToolOutputDirectory(args: {
-  workspaceRoot: string;
+  stateRoot: string;
   threadId: string;
 }): string {
   return join(
-    args.workspaceRoot,
+    args.stateRoot,
     '.geulbat',
     'tool-outputs',
     encodeRefPart(args.threadId),
@@ -252,14 +292,15 @@ function isToolOutputSnapshot(
   outputRef: string,
   ref: ParsedToolOutputRef,
 ): value is ToolOutputSnapshot {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value)) {
+    return false;
+  }
   return (
     value.schemaVersion === TOOL_OUTPUT_OFFLOAD_SCHEMA_VERSION &&
     value.outputRef === outputRef &&
     value.threadId === ref.threadId &&
     value.runId === ref.runId &&
     value.callId === ref.callId &&
-    typeof value.projectId === 'string' &&
     typeof value.toolName === 'string' &&
     typeof value.createdAt === 'string' &&
     (value.contentType === 'json' || value.contentType === 'text') &&

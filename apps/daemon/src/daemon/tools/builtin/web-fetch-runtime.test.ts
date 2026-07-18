@@ -201,3 +201,22 @@ void test('requestWebFetchUrl applies guarded lookup before connecting', async (
     /unsafe network address/,
   );
 });
+
+void test('requestWebFetchUrl honors Node all-address lookup callbacks', async () => {
+  const controller = new AbortController();
+
+  await assert.rejects(
+    () =>
+      requestWebFetchUrl(new URL('http://example.test:9/'), {
+        signal: controller.signal,
+        lookup: async () => {
+          // The SSRF guard intentionally rejects localhost. Use a public
+          // address and abort before a transport can complete so this stays a
+          // Node lookup-contract test rather than an external HTTP fixture.
+          setImmediate(() => controller.abort());
+          return [{ address: '93.184.216.34', family: 4 }];
+        },
+      }),
+    /fetch_url aborted/u,
+  );
+});

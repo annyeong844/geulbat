@@ -1,5 +1,6 @@
 import {
   ERROR_CODES as PROTOCOL_ERROR_CODES,
+  isErrorCode as isProtocolErrorCode,
   isGenericApiErrorCode as isProtocolGenericApiErrorCode,
 } from '@geulbat/protocol/errors';
 import type {
@@ -14,10 +15,8 @@ export type GenericApiErrorCode = ProtocolGenericApiErrorCode;
 
 export const ERROR_CODES = PROTOCOL_ERROR_CODES;
 
-const ERROR_CODE_SET = new Set<ErrorCode>(ERROR_CODES);
-
 export function isErrorCode(value: unknown): value is ErrorCode {
-  return typeof value === 'string' && ERROR_CODE_SET.has(value as ErrorCode);
+  return isProtocolErrorCode(value);
 }
 
 export function isGenericApiErrorCode(
@@ -50,7 +49,7 @@ export function errorCodeToStatus(code: ErrorCode): number {
     case 'approval_required':
     case 'approval_denied':
     case 'approval_aborted':
-    case 'path_out_of_workspace':
+    case 'path_out_of_computer_scope':
     case 'access_denied':
     case 'persistence_blocked':
       return 403;
@@ -71,16 +70,19 @@ export function errorCodeToStatus(code: ErrorCode): number {
       return 409;
     case 'llm_rate_limited':
     case 'rate_limited':
+    case 'quota_exceeded':
       return 429;
     case 'llm_auth_failed':
     case 'provider_auth_exchange_failed':
     case 'provider_auth_account_id_missing':
     case 'provider_auth_refresh_failed':
+    case 'invalid_image_response':
       return 502;
     case 'index_not_ready':
     case 'provider_auth_not_configured':
     case 'provider_auth_callback_unavailable':
     case 'persistence_unavailable':
+    case 'image_provider_unavailable':
       return 503;
     case 'approval_timeout':
     case 'timeout':
@@ -90,6 +92,7 @@ export function errorCodeToStatus(code: ErrorCode): number {
       return 504;
     case 'provider_auth_write_failed':
     case 'execution_failed':
+    case 'artifact_commit_failed':
     case 'internal':
       return 500;
     case 'not_implemented':

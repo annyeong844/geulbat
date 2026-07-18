@@ -2,10 +2,9 @@ import {
   ARTIFACT_END_MARKER,
   ARTIFACT_START_PREFIX,
   isArtifactRenderer,
-  type ArtifactRenderer,
 } from '@geulbat/protocol/artifacts';
 import { isRecord, tryParseJson } from '@geulbat/protocol/runtime-utils';
-import { type ArtifactParseResult } from './artifact-types.js';
+import type { ArtifactParseResult } from './artifact-types.js';
 
 export function parseArtifactEnvelope(raw: string): ArtifactParseResult {
   const startIndex = raw.indexOf(ARTIFACT_START_PREFIX);
@@ -136,7 +135,7 @@ function parseHeader(
 function fallback(
   raw: string,
   payload: string,
-  renderer: ArtifactRenderer | string | null,
+  renderer: string | null,
   issue: string,
 ): ArtifactParseResult {
   return {

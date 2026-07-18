@@ -17,7 +17,7 @@ import {
   type RunState,
 } from './run-state.js';
 import { RUN_APPROVAL_PENDING_STATUS } from '../../runtime-contracts.js';
-import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../../test-support/run-context.js';
 import { testRunId } from '../../../test-support/run-id.js';
 
 type Equal<A, B> =
@@ -41,7 +41,7 @@ void test('registerChildRun cascades abort and deregisters child tracking', () =
   const childRunId = testRunId('child');
   const parent = createRunState({
     runId: 'parent',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   const child = new AbortController();
 
@@ -67,7 +67,7 @@ void test('registerChildRun keeps background children alive across parent abort'
   const childRunId = testRunId('child-background');
   const parent = createRunState({
     runId: 'parent',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   const child = new AbortController();
 
@@ -89,7 +89,7 @@ void test('registerChildRun keeps background children alive across parent abort'
 void test('nextSeq returns the incremented sequence number', () => {
   const runState = createRunState({
     runId: 'seq-run',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
 
   assert.equal(nextSeq(runState), 1);
@@ -100,7 +100,7 @@ void test('nextSeq returns the incremented sequence number', () => {
 void test('run status helpers follow the canonical lifecycle transitions', () => {
   const runState = createRunState({
     runId: 'run-1',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
 
   assert.equal(runState.status, 'running');
@@ -114,7 +114,7 @@ void test('run status helpers follow the canonical lifecycle transitions', () =>
 void test('run status helpers reject reopening a terminal run', () => {
   const runState = createRunState({
     runId: 'run-2',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
 
   completeRun(runState);
@@ -128,14 +128,14 @@ void test('run status helpers reject reopening a terminal run', () => {
 void test('failOrCancelRun follows the signal outcome', () => {
   const failedRun = createRunState({
     runId: 'run-3',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   failOrCancelRun(failedRun);
   assert.equal(failedRun.status, 'failed');
 
   const cancelledRun = createRunState({
     runId: 'run-4',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   const controller = new AbortController();
   controller.abort();
@@ -144,7 +144,7 @@ void test('failOrCancelRun follows the signal outcome', () => {
 
   const directCancelledRun = createRunState({
     runId: 'run-5',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   cancelRun(directCancelledRun);
   assert.equal(directCancelledRun.status, 'cancelled');
@@ -153,14 +153,14 @@ void test('failOrCancelRun follows the signal outcome', () => {
 void test('settleRunAfterResult completes successful and answered runs', () => {
   const successfulRun = createRunState({
     runId: 'run-6',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   settleRunAfterResult(successfulRun, { ok: true, finalProse: 'done' });
   assert.equal(successfulRun.status, 'completed');
 
   const answeredFailure = createRunState({
     runId: 'run-7',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   settleRunAfterResult(answeredFailure, {
     ok: false,
@@ -170,7 +170,7 @@ void test('settleRunAfterResult completes successful and answered runs', () => {
 
   const artifactOnlyRun = createRunState({
     runId: 'run-7-artifact',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   settleRunAfterResult(artifactOnlyRun, {
     ok: false,
@@ -187,14 +187,14 @@ void test('settleRunAfterResult completes successful and answered runs', () => {
 void test('settleRunAfterResult follows abort outcome for empty failures', () => {
   const failedRun = createRunState({
     runId: 'run-8',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   settleRunAfterResult(failedRun, { ok: false, finalProse: '' });
   assert.equal(failedRun.status, 'failed');
 
   const cancelledRun = createRunState({
     runId: 'run-9',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   const controller = new AbortController();
   controller.abort();
@@ -209,14 +209,14 @@ void test('settleRunAfterResult follows abort outcome for empty failures', () =>
 void test('settleRunAfterTerminalFailure supports explicit failed and cancelled outcomes', () => {
   const failedRun = createRunState({
     runId: 'run-10',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   settleRunAfterTerminalFailure(failedRun, undefined, 'failed');
   assert.equal(failedRun.status, 'failed');
 
   const cancelledRun = createRunState({
     runId: 'run-11',
-    runContext: makeRunWorkspaceContext(),
+    runContext: makeRunContext(),
   });
   settleRunAfterTerminalFailure(cancelledRun, undefined, 'cancelled');
   assert.equal(cancelledRun.status, 'cancelled');

@@ -78,7 +78,7 @@ interface PtcLabArtifactWorkspaceImportSummary {
 interface ImportPtcLabArtifactWorkspaceFileArgs {
   admission: PtcLabAdmittedProfile | undefined;
   session: PtcLabArtifactWorkspaceSessionHandle | undefined;
-  workspaceRoot: string;
+  stateRoot: string;
   attemptStore: SandboxAttemptStore;
   request: PtcLabArtifactWorkspaceImportRequest;
   owner?: SandboxAttemptOwner;
@@ -451,7 +451,7 @@ export async function importPtcLabArtifactWorkspaceFile(
 
   try {
     const outputRef = await importSandboxOutputEvidence({
-      workspaceRoot: args.workspaceRoot,
+      workspaceRoot: args.stateRoot,
       attempt,
       collectedOutput: snapshot.value.collectedOutput,
       ...(args.now ? { now: args.now } : {}),

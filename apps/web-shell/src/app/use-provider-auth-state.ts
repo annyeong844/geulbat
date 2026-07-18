@@ -6,7 +6,12 @@ import {
   type Dispatch,
   type SetStateAction,
 } from 'react';
-import type { ProviderAuthStatusResponse } from '@geulbat/protocol/provider-auth';
+import {
+  DEFAULT_PROVIDER_AUTH_PROVIDER_ID,
+  PROVIDER_AUTH_PROVIDER_IDS,
+  type ProviderAuthProviderId,
+  type ProviderAuthStatusResponse,
+} from '@geulbat/protocol/provider-auth';
 
 import {
   getProviderAuthStatus,
@@ -17,9 +22,20 @@ import { ApiFetchError } from '../lib/api/client.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import { reportVisibleAppError } from './error-reporting.js';
 
+export type ProviderAuthStatusByProvider = Record<
+  ProviderAuthProviderId,
+  ProviderAuthStatusResponse | null
+>;
+export type ProviderAuthErrorByProvider = Record<
+  ProviderAuthProviderId,
+  string | null
+>;
+
 const logger = createLogger('provider-auth');
 const PROVIDER_AUTH_OPENAI_HOST = 'auth.openai.com';
 const PROVIDER_AUTH_OPENAI_PATH = '/oauth/authorize';
+const PROVIDER_AUTH_XAI_HOST = 'auth.x.ai';
+const PROVIDER_AUTH_XAI_PATH = '/oauth2/authorize';
 const PROVIDER_AUTH_ALREADY_CONNECTED_NOTICE =
   'Provider account is already connected.';
 const PROVIDER_AUTH_POPUP_PREPARING_HTML =
@@ -35,35 +51,42 @@ interface ReportProviderAuthErrorArgs {
 }
 
 interface UseProviderAuthStatusPollingArgs {
-  providerAuthBusy: boolean;
-  setProviderAuthError: Dispatch<SetStateAction<string | null>>;
+  providerAuthBusyProviderId: ProviderAuthProviderId | null;
+  setProviderAuthErrors: Dispatch<SetStateAction<ProviderAuthErrorByProvider>>;
   setProviderAuthNotice: Dispatch<SetStateAction<string | null>>;
 }
 
 interface ProviderAuthStatusPolling {
-  providerAuthStatus: ProviderAuthStatusResponse | null;
-  loadProviderStatus: () => Promise<void>;
+  providerAuthStatuses: ProviderAuthStatusByProvider;
+  loadProviderStatus: (providerId?: ProviderAuthProviderId) => Promise<void>;
 }
 
 export function useProviderAuthState() {
-  const [providerAuthBusy, setProviderAuthBusy] = useState(false);
-  const [providerAuthError, setProviderAuthError] = useState<string | null>(
-    null,
-  );
+  const [providerAuthBusyProviderId, setProviderAuthBusyProviderId] =
+    useState<ProviderAuthProviderId | null>(null);
+  const [providerAuthErrors, setProviderAuthErrors] =
+    useState<ProviderAuthErrorByProvider>(() =>
+      createProviderRecord<string | null>(null),
+    );
   const [providerAuthNotice, setProviderAuthNotice] = useState<string | null>(
     null,
   );
-  const { providerAuthStatus, loadProviderStatus } =
+  const { providerAuthStatuses, loadProviderStatus } =
     useProviderAuthStatusPolling({
-      providerAuthBusy,
-      setProviderAuthError,
+      providerAuthBusyProviderId,
+      setProviderAuthErrors,
       setProviderAuthNotice,
     });
 
-  const showProviderAlreadyConnectedNotice = useCallback(() => {
-    setProviderAuthError(null);
-    setProviderAuthNotice(PROVIDER_AUTH_ALREADY_CONNECTED_NOTICE);
-  }, []);
+  const showProviderAlreadyConnectedNotice = useCallback(
+    (providerId: ProviderAuthProviderId) => {
+      setProviderAuthErrors((current) =>
+        withProviderValue(current, providerId, null),
+      );
+      setProviderAuthNotice(PROVIDER_AUTH_ALREADY_CONNECTED_NOTICE);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!providerAuthNotice) {
@@ -77,69 +100,94 @@ export function useProviderAuthState() {
     return () => window.clearTimeout(timer);
   }, [providerAuthNotice]);
 
-  const handleConnectProvider = useCallback(async () => {
-    if (providerAuthStatus?.state === 'ready') {
-      showProviderAlreadyConnectedNotice();
-      return;
-    }
-
-    setProviderAuthBusy(true);
-    setProviderAuthError(null);
-    const popup = openProviderAuthPopup(window);
-    try {
-      const result = await startProviderAuth();
-      const authorizeUrl = assertAllowedProviderAuthorizeUrl(
-        result.authorizeUrl,
-      );
-      navigateProviderAuthPopup(window, popup, authorizeUrl);
-      await loadProviderStatus();
-    } catch (err: unknown) {
-      popup?.close();
-      if (isProviderAuthAlreadyConnectedError(err)) {
-        showProviderAlreadyConnectedNotice();
-        await loadProviderStatus();
+  const handleConnectProvider = useCallback(
+    async (
+      providerId: ProviderAuthProviderId = DEFAULT_PROVIDER_AUTH_PROVIDER_ID,
+    ) => {
+      if (providerAuthStatuses[providerId]?.state === 'ready') {
+        showProviderAlreadyConnectedNotice(providerId);
         return;
       }
-      setProviderAuthError(
-        reportProviderAuthError({
-          logContext: 'provider auth start failed',
-          visiblePrefix: 'Failed to start provider login.',
-          error: err,
-        }),
-      );
-      await loadProviderStatus();
-    } finally {
-      setProviderAuthBusy(false);
-    }
-  }, [
-    loadProviderStatus,
-    providerAuthStatus?.state,
-    showProviderAlreadyConnectedNotice,
-  ]);
 
-  const handleDisconnectProvider = useCallback(async () => {
-    setProviderAuthBusy(true);
-    setProviderAuthError(null);
-    try {
-      await logoutProviderAuth();
-      await loadProviderStatus();
-    } catch (err: unknown) {
-      setProviderAuthError(
-        reportProviderAuthError({
-          logContext: 'provider auth logout failed',
-          visiblePrefix: 'Failed to disconnect provider.',
-          error: err,
-        }),
+      setProviderAuthBusyProviderId(providerId);
+      setProviderAuthErrors((current) =>
+        withProviderValue(current, providerId, null),
       );
-    } finally {
-      setProviderAuthBusy(false);
-    }
-  }, [loadProviderStatus]);
+      const popup = openProviderAuthPopup(window);
+      try {
+        const result = await startProviderAuth(providerId);
+        const authorizeUrl = assertAllowedProviderAuthorizeUrl(
+          result.authorizeUrl,
+        );
+        navigateProviderAuthPopup(window, popup, authorizeUrl);
+        await loadProviderStatus(providerId);
+      } catch (err: unknown) {
+        popup?.close();
+        if (isProviderAuthAlreadyConnectedError(err)) {
+          showProviderAlreadyConnectedNotice(providerId);
+          await loadProviderStatus(providerId);
+          return;
+        }
+        setProviderAuthErrors((current) =>
+          withProviderValue(
+            current,
+            providerId,
+            reportProviderAuthError({
+              logContext: 'provider auth start failed',
+              visiblePrefix: 'Failed to start provider login.',
+              error: err,
+            }),
+          ),
+        );
+        await loadProviderStatus(providerId);
+      } finally {
+        setProviderAuthBusyProviderId(null);
+      }
+    },
+    [
+      loadProviderStatus,
+      providerAuthStatuses,
+      showProviderAlreadyConnectedNotice,
+    ],
+  );
+
+  const handleDisconnectProvider = useCallback(
+    async (
+      providerId: ProviderAuthProviderId = DEFAULT_PROVIDER_AUTH_PROVIDER_ID,
+    ) => {
+      setProviderAuthBusyProviderId(providerId);
+      setProviderAuthErrors((current) =>
+        withProviderValue(current, providerId, null),
+      );
+      try {
+        await logoutProviderAuth(providerId);
+        await loadProviderStatus(providerId);
+      } catch (err: unknown) {
+        setProviderAuthErrors((current) =>
+          withProviderValue(
+            current,
+            providerId,
+            reportProviderAuthError({
+              logContext: 'provider auth logout failed',
+              visiblePrefix: 'Failed to disconnect provider.',
+              error: err,
+            }),
+          ),
+        );
+      } finally {
+        setProviderAuthBusyProviderId(null);
+      }
+    },
+    [loadProviderStatus],
+  );
 
   return {
-    providerAuthStatus,
-    providerAuthBusy,
-    providerAuthError,
+    providerAuthStatus: providerAuthStatuses[DEFAULT_PROVIDER_AUTH_PROVIDER_ID],
+    providerAuthStatuses,
+    providerAuthBusy: providerAuthBusyProviderId !== null,
+    providerAuthBusyProviderId,
+    providerAuthError: providerAuthErrors[DEFAULT_PROVIDER_AUTH_PROVIDER_ID],
+    providerAuthErrors,
     providerAuthNotice,
     handleConnectProvider,
     handleDisconnectProvider,
@@ -147,61 +195,100 @@ export function useProviderAuthState() {
 }
 
 function useProviderAuthStatusPolling({
-  providerAuthBusy,
-  setProviderAuthError,
+  providerAuthBusyProviderId,
+  setProviderAuthErrors,
   setProviderAuthNotice,
 }: UseProviderAuthStatusPollingArgs): ProviderAuthStatusPolling {
-  const [providerAuthStatus, setProviderAuthStatus] =
-    useState<ProviderAuthStatusResponse | null>(null);
-  const previousStatusRef = useRef<ProviderAuthStatusResponse | null>(null);
+  const [providerAuthStatuses, setProviderAuthStatuses] =
+    useState<ProviderAuthStatusByProvider>(() =>
+      createProviderRecord<ProviderAuthStatusResponse | null>(null),
+    );
+  const previousStatusesRef = useRef<ProviderAuthStatusByProvider>(
+    createProviderRecord<ProviderAuthStatusResponse | null>(null),
+  );
 
-  const loadProviderStatus = useCallback(async () => {
-    try {
-      const status = await getProviderAuthStatus();
-      setProviderAuthStatus((current) =>
-        isSameProviderAuthStatus(current, status) ? current : status,
-      );
-      setProviderAuthError(null);
-    } catch (err: unknown) {
-      setProviderAuthError(
-        reportProviderAuthError({
-          logContext: 'loadProviderStatus failed',
-          visiblePrefix: 'Unable to load provider auth status.',
-          error: err,
+  const loadProviderStatus = useCallback(
+    async (providerId?: ProviderAuthProviderId) => {
+      const providerIds =
+        providerId === undefined
+          ? PROVIDER_AUTH_PROVIDER_IDS
+          : ([providerId] as const);
+      await Promise.all(
+        providerIds.map(async (id) => {
+          try {
+            const status = await getProviderAuthStatus(id);
+            assertValidProviderAuthStatus(status);
+            setProviderAuthStatuses((current) =>
+              withProviderValue(
+                current,
+                id,
+                isSameProviderAuthStatus(current[id], status)
+                  ? current[id]
+                  : status,
+              ),
+            );
+            setProviderAuthErrors((current) =>
+              withProviderValue(current, id, null),
+            );
+          } catch (err: unknown) {
+            setProviderAuthErrors((current) =>
+              withProviderValue(
+                current,
+                id,
+                reportProviderAuthError({
+                  logContext: 'loadProviderStatus failed',
+                  visiblePrefix: 'Unable to load provider auth status.',
+                  error: err,
+                }),
+              ),
+            );
+          }
         }),
       );
-    }
-  }, [setProviderAuthError]);
+    },
+    [setProviderAuthErrors],
+  );
 
   useEffect(() => {
     void loadProviderStatus();
   }, [loadProviderStatus]);
 
   useEffect(() => {
-    if (providerAuthStatus?.state !== 'pending') {
+    const delayMs = getPendingStatusPollDelayMs(providerAuthStatuses);
+    if (delayMs === null) {
       return;
     }
 
     const timer = window.setInterval(() => {
       void loadProviderStatus();
-    }, providerAuthStatus.pollAfterMs ?? 1000);
+    }, delayMs);
 
     return () => window.clearInterval(timer);
-  }, [loadProviderStatus, providerAuthStatus]);
+  }, [loadProviderStatus, providerAuthStatuses]);
 
   useEffect(() => {
-    const previous = previousStatusRef.current;
-    if (didProviderCredentialRefresh(previous, providerAuthStatus)) {
-      setProviderAuthNotice('Provider auth refreshed.');
+    const previous = previousStatusesRef.current;
+    for (const providerId of PROVIDER_AUTH_PROVIDER_IDS) {
+      if (
+        didProviderCredentialRefresh(
+          previous[providerId],
+          providerAuthStatuses[providerId],
+        )
+      ) {
+        setProviderAuthNotice(
+          `${getProviderLabel(providerId)} auth refreshed.`,
+        );
+        break;
+      }
     }
-    previousStatusRef.current = providerAuthStatus;
-  }, [providerAuthStatus, setProviderAuthNotice]);
+    previousStatusesRef.current = providerAuthStatuses;
+  }, [providerAuthStatuses, setProviderAuthNotice]);
 
   useEffect(() => {
-    if (providerAuthBusy) {
+    if (providerAuthBusyProviderId !== null) {
       return;
     }
-    const delayMs = getProviderStatusObserveDelayMs(providerAuthStatus);
+    const delayMs = getProviderStatusesObserveDelayMs(providerAuthStatuses);
     if (delayMs === null) {
       return;
     }
@@ -211,10 +298,10 @@ function useProviderAuthStatusPolling({
     }, delayMs);
 
     return () => window.clearTimeout(timer);
-  }, [loadProviderStatus, providerAuthBusy, providerAuthStatus]);
+  }, [loadProviderStatus, providerAuthBusyProviderId, providerAuthStatuses]);
 
   return {
-    providerAuthStatus,
+    providerAuthStatuses,
     loadProviderStatus,
   };
 }
@@ -278,8 +365,10 @@ export function isAllowedProviderAuthorizeUrl(rawUrl: string): boolean {
 
     if (
       url.protocol === 'https:' &&
-      url.hostname === PROVIDER_AUTH_OPENAI_HOST &&
-      url.pathname === PROVIDER_AUTH_OPENAI_PATH
+      ((url.hostname === PROVIDER_AUTH_OPENAI_HOST &&
+        url.pathname === PROVIDER_AUTH_OPENAI_PATH) ||
+        (url.hostname === PROVIDER_AUTH_XAI_HOST &&
+          url.pathname === PROVIDER_AUTH_XAI_PATH))
     ) {
       return true;
     }
@@ -328,10 +417,10 @@ export function didProviderCredentialRefresh(
 
 function isSameProviderAuthStatus(
   current: ProviderAuthStatusResponse | null,
-  next: ProviderAuthStatusResponse,
+  next: ProviderAuthStatusResponse | null,
 ): boolean {
-  if (!current) {
-    return false;
+  if (!current || !next) {
+    return current === next;
   }
 
   return (
@@ -343,6 +432,17 @@ function isSameProviderAuthStatus(
     current.lastErrorMessage === next.lastErrorMessage &&
     current.pollAfterMs === next.pollAfterMs
   );
+}
+
+function assertValidProviderAuthStatus(
+  status: ProviderAuthStatusResponse,
+): void {
+  if (
+    status.state === 'pending' &&
+    (!Number.isInteger(status.pollAfterMs) || status.pollAfterMs <= 0)
+  ) {
+    throw new Error('provider auth status returned invalid pollAfterMs');
+  }
 }
 
 export function getProviderStatusObserveDelayMs(
@@ -363,4 +463,57 @@ export function getProviderStatusObserveDelayMs(
   }
 
   return observeAt - now;
+}
+
+function getPendingStatusPollDelayMs(
+  statuses: ProviderAuthStatusByProvider,
+): number | null {
+  const delays = PROVIDER_AUTH_PROVIDER_IDS.flatMap((providerId) => {
+    const status = statuses[providerId];
+    return status?.state === 'pending' ? [status.pollAfterMs ?? 1000] : [];
+  });
+  return minNumberOrNull(delays);
+}
+
+function getProviderStatusesObserveDelayMs(
+  statuses: ProviderAuthStatusByProvider,
+): number | null {
+  return minNumberOrNull(
+    PROVIDER_AUTH_PROVIDER_IDS.flatMap((providerId) => {
+      const delayMs = getProviderStatusObserveDelayMs(statuses[providerId]);
+      return delayMs === null ? [] : [delayMs];
+    }),
+  );
+}
+
+function minNumberOrNull(values: number[]): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+  return Math.min(...values);
+}
+
+function createProviderRecord<T>(value: T): Record<ProviderAuthProviderId, T> {
+  return {
+    openai_codex_direct: value,
+    grok_oauth: value,
+  };
+}
+
+function withProviderValue<T>(
+  record: Record<ProviderAuthProviderId, T>,
+  providerId: ProviderAuthProviderId,
+  value: T,
+): Record<ProviderAuthProviderId, T> {
+  if (Object.is(record[providerId], value)) {
+    return record;
+  }
+  return {
+    ...record,
+    [providerId]: value,
+  };
+}
+
+function getProviderLabel(providerId: ProviderAuthProviderId): string {
+  return providerId === 'grok_oauth' ? 'Grok' : 'Codex';
 }

@@ -23,22 +23,31 @@ export interface PersistenceRawApi {
 interface MutationQueueArgs {
   authorityState: ArtifactRuntimePersistenceAuthorityState;
   createPersistenceError(
+    this: void,
     code: string,
     message: string,
   ): GeulbatRuntimePersistenceError;
-  stabilizePersistenceError(error: unknown): GeulbatRuntimePersistenceError;
-  isPersistenceConflict(error: unknown): boolean;
-  assertSharedStorageAvailable(): void;
+  stabilizePersistenceError(
+    this: void,
+    error: unknown,
+  ): GeulbatRuntimePersistenceError;
+  isPersistenceConflict(this: void, error: unknown): boolean;
+  assertSharedStorageAvailable(this: void): void;
   loadCurrentAuthorityState(
+    this: void,
     rawPersistenceApi: PersistenceRawApi,
   ): Promise<PersistenceAuthoritySnapshot>;
   persistCurrentAuthorityState(
+    this: void,
     rawPersistenceApi: PersistenceRawApi,
     storageRecord: PersistenceRecord,
     databaseRecord: PersistenceRecord,
     revision: string | null,
   ): Promise<PersistenceBootstrapSuccessResponseMessage>;
-  markStorageUnavailable(error: unknown): GeulbatRuntimePersistenceError;
+  markStorageUnavailable(
+    this: void,
+    error: unknown,
+  ): GeulbatRuntimePersistenceError;
 }
 
 const STORAGE_RETRY_LIMIT = 3;
@@ -115,7 +124,7 @@ export function createArtifactRuntimePersistenceMutationQueue({
           authorityState.readCurrentStorageRevision(),
         ).then(
           (result) => ({ ok: true as const, result }),
-          (error) => ({ ok: false as const, error }),
+          (error: unknown) => ({ ok: false as const, error }),
         );
 
         if (persistResult.ok) {
@@ -148,7 +157,7 @@ export function createArtifactRuntimePersistenceMutationQueue({
         'persistence_unavailable',
         'runtime storage is unavailable',
       );
-    }).catch((error) => {
+    }).catch((error: unknown) => {
       throw markStorageUnavailable(error);
     });
   };

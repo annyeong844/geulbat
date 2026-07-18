@@ -1,10 +1,16 @@
+import { isThreadId, type ThreadId } from './ids.js';
 import {
-  isProjectId,
-  isThreadId,
-  type ProjectId,
-  type ThreadId,
-} from './ids.js';
+  isProviderAuthProviderId,
+  type ProviderAuthProviderId,
+} from './provider-auth.js';
+import {
+  isRunModelId,
+  isRunReasoningEffort,
+  type RunModelId,
+  type RunReasoningEffort,
+} from './run-contract.js';
 import { isRecord } from './runtime-utils.js';
+import { isJsonValue, type JsonValue } from './runtime-persistence.js';
 import {
   isThreadArtifactVersion,
   type ThreadArtifactVersion,
@@ -35,7 +41,6 @@ export function isThreadMessageRole(
 
 export interface ThreadSummary {
   threadId: ThreadId;
-  projectId: ProjectId;
   title?: string;
   lastUpdated: string;
   messageCount: number;
@@ -52,7 +57,6 @@ export interface ThreadDetailDiagnostics {
 
 export interface ThreadDetailResponse {
   threadId: ThreadId;
-  projectId: ProjectId;
   snapshotVersion: string;
   messages: ThreadMessage[];
   artifacts?: ThreadArtifactVersion[];
@@ -62,8 +66,35 @@ export interface ThreadDetailResponse {
 export interface ThreadDeleteResponse {
   ok: true;
   threadId: ThreadId;
-  projectId: ProjectId;
 }
+
+// POST /api/threads/:threadId/branch — 원 스레드 prefix를 복제한 새 스레드
+export interface ThreadBranchResponse {
+  ok: true;
+  threadId: ThreadId;
+  sourceThreadId: ThreadId;
+  copiedMessageCount: number;
+}
+
+export interface PrepareProviderTransitionRequest {
+  sourceModelId: RunModelId;
+  targetModelId: RunModelId;
+  reasoningEffort: RunReasoningEffort;
+}
+
+interface PrepareProviderTransitionResponseBase {
+  ok: true;
+  threadId: ThreadId;
+  sourceModelId: RunModelId;
+  targetModelId: RunModelId;
+}
+
+export type PrepareProviderTransitionResponse =
+  | (PrepareProviderTransitionResponseBase & { status: 'not_needed' })
+  | (PrepareProviderTransitionResponseBase & {
+      status: 'compacted';
+      compactionEntryId: string;
+    });
 
 export interface FileOps {
   readFiles: string[];
@@ -85,7 +116,7 @@ export interface BudgetProfile {
   compactionVersion: number;
 }
 
-export interface CompactionEntryData {
+export interface SummaryCompactionEntryData {
   summary: string;
   shortSummary: string;
   firstKeptEntryId: string;
@@ -93,6 +124,34 @@ export interface CompactionEntryData {
   budgetProfile: BudgetProfile;
   fileOps?: FileOps;
 }
+
+export type ProviderNativeCompactionOutputItem = Record<string, JsonValue>;
+
+export interface ProviderNativeCompactionEntryData {
+  kind: 'provider_native';
+  providerId: string;
+  model: string;
+  output: ProviderNativeCompactionOutputItem[];
+  tokensBefore: number;
+  contextWindow: number;
+  thresholdTokens: number;
+}
+
+export interface ProviderTransitionCompactionEntryData {
+  kind: 'provider_transition';
+  sourceProviderId: ProviderAuthProviderId;
+  sourceModel: string;
+  targetProviderId: ProviderAuthProviderId;
+  targetModel: string;
+  summary: string;
+  coveredThroughEntryId: string;
+  inputTokens?: number;
+}
+
+export type CompactionEntryData =
+  | SummaryCompactionEntryData
+  | ProviderNativeCompactionEntryData
+  | ProviderTransitionCompactionEntryData;
 
 interface ThreadMessageBase {
   entryId: string;
@@ -176,6 +235,12 @@ function isBudgetProfile(value: unknown): value is BudgetProfile {
 export function isCompactionEntryData(
   value: unknown,
 ): value is CompactionEntryData {
+  if (
+    isProviderNativeCompactionEntryData(value) ||
+    isProviderTransitionCompactionEntryData(value)
+  ) {
+    return true;
+  }
   return (
     isRecord(value) &&
     typeof value.summary === 'string' &&
@@ -184,6 +249,71 @@ export function isCompactionEntryData(
     isFiniteNumber(value.tokensBefore) &&
     isBudgetProfile(value.budgetProfile) &&
     (value.fileOps === undefined || isFileOps(value.fileOps))
+  );
+}
+
+export function isProviderTransitionCompactionEntryData(
+  value: unknown,
+): value is ProviderTransitionCompactionEntryData {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const inputTokens = value.inputTokens;
+  return (
+    value.kind === 'provider_transition' &&
+    isProviderAuthProviderId(value.sourceProviderId) &&
+    typeof value.sourceModel === 'string' &&
+    value.sourceModel.trim() !== '' &&
+    isProviderAuthProviderId(value.targetProviderId) &&
+    value.targetProviderId !== value.sourceProviderId &&
+    typeof value.targetModel === 'string' &&
+    value.targetModel.trim() !== '' &&
+    typeof value.summary === 'string' &&
+    value.summary.trim() !== '' &&
+    typeof value.coveredThroughEntryId === 'string' &&
+    value.coveredThroughEntryId.trim() !== '' &&
+    (inputTokens === undefined ||
+      (typeof inputTokens === 'number' &&
+        Number.isSafeInteger(inputTokens) &&
+        inputTokens >= 0))
+  );
+}
+
+export function isProviderNativeCompactionEntryData(
+  value: unknown,
+): value is ProviderNativeCompactionEntryData {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const tokensBefore = value.tokensBefore;
+  const contextWindow = value.contextWindow;
+  const thresholdTokens = value.thresholdTokens;
+  return (
+    value.kind === 'provider_native' &&
+    typeof value.providerId === 'string' &&
+    value.providerId.trim() !== '' &&
+    typeof value.model === 'string' &&
+    value.model.trim() !== '' &&
+    Array.isArray(value.output) &&
+    value.output.length > 0 &&
+    value.output.every((item) => isRecord(item) && isJsonValue(item)) &&
+    value.output.some(
+      (item) =>
+        (item['type'] === 'compaction' ||
+          item['type'] === 'compaction_summary') &&
+        typeof item['encrypted_content'] === 'string' &&
+        item['encrypted_content'].trim() !== '',
+    ) &&
+    typeof tokensBefore === 'number' &&
+    Number.isSafeInteger(tokensBefore) &&
+    tokensBefore >= 0 &&
+    typeof contextWindow === 'number' &&
+    Number.isSafeInteger(contextWindow) &&
+    contextWindow > 0 &&
+    typeof thresholdTokens === 'number' &&
+    Number.isSafeInteger(thresholdTokens) &&
+    thresholdTokens > 0 &&
+    thresholdTokens <= contextWindow
   );
 }
 
@@ -205,13 +335,45 @@ export function isThreadMessage(value: unknown): value is ThreadMessage {
   return value.compactionData === undefined;
 }
 
+export function isPrepareProviderTransitionRequest(
+  value: unknown,
+): value is PrepareProviderTransitionRequest {
+  return (
+    isRecord(value) &&
+    isRunModelId(value.sourceModelId) &&
+    isRunModelId(value.targetModelId) &&
+    isRunReasoningEffort(value.reasoningEffort)
+  );
+}
+
+export function isPrepareProviderTransitionResponse(
+  value: unknown,
+): value is PrepareProviderTransitionResponse {
+  if (
+    !isRecord(value) ||
+    value.ok !== true ||
+    typeof value.threadId !== 'string' ||
+    !isThreadId(value.threadId) ||
+    !isRunModelId(value.sourceModelId) ||
+    !isRunModelId(value.targetModelId)
+  ) {
+    return false;
+  }
+  if (value.status === 'not_needed') {
+    return value.compactionEntryId === undefined;
+  }
+  return (
+    value.status === 'compacted' &&
+    typeof value.compactionEntryId === 'string' &&
+    value.compactionEntryId.trim() !== ''
+  );
+}
+
 export function isThreadSummary(value: unknown): value is ThreadSummary {
   return (
     isRecord(value) &&
     typeof value.threadId === 'string' &&
     isThreadId(value.threadId) &&
-    typeof value.projectId === 'string' &&
-    isProjectId(value.projectId) &&
     (value.title === undefined || typeof value.title === 'string') &&
     typeof value.lastUpdated === 'string' &&
     typeof value.messageCount === 'number' &&
@@ -250,8 +412,6 @@ export function isThreadDetailResponse(
     isRecord(value) &&
     typeof value.threadId === 'string' &&
     isThreadId(value.threadId) &&
-    typeof value.projectId === 'string' &&
-    isProjectId(value.projectId) &&
     typeof value.snapshotVersion === 'string' &&
     value.snapshotVersion.trim() !== '' &&
     Array.isArray(value.messages) &&
@@ -271,8 +431,22 @@ export function isThreadDeleteResponse(
     isRecord(value) &&
     value.ok === true &&
     typeof value.threadId === 'string' &&
+    isThreadId(value.threadId)
+  );
+}
+
+export function isThreadBranchResponse(
+  value: unknown,
+): value is ThreadBranchResponse {
+  return (
+    isRecord(value) &&
+    value.ok === true &&
+    typeof value.threadId === 'string' &&
     isThreadId(value.threadId) &&
-    typeof value.projectId === 'string' &&
-    isProjectId(value.projectId)
+    typeof value.sourceThreadId === 'string' &&
+    isThreadId(value.sourceThreadId) &&
+    typeof value.copiedMessageCount === 'number' &&
+    Number.isSafeInteger(value.copiedMessageCount) &&
+    value.copiedMessageCount >= 0
   );
 }

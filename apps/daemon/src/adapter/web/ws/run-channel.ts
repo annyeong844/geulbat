@@ -1,5 +1,5 @@
 import type { Server } from 'node:http';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, type RawData } from 'ws';
 import { tryDecodeJson } from '@geulbat/protocol/runtime-utils';
 
 import { getErrorMessage } from '../../../daemon/utils/error.js';
@@ -64,7 +64,7 @@ export function attachRunChannelServer(
     });
 
     socket.on('message', (data) => {
-      const rawMessage = data.toString();
+      const rawMessage = decodeRunChannelMessage(data);
       const dispatch = handleClientMessage(
         socket,
         rawMessage,
@@ -119,6 +119,16 @@ export function attachRunChannelServer(
   });
 
   return wss;
+}
+
+function decodeRunChannelMessage(data: RawData): string {
+  if (Array.isArray(data)) {
+    return Buffer.concat(data).toString('utf8');
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data).toString('utf8');
+  }
+  return data.toString('utf8');
 }
 
 function readRequestIdFromRawMessage(rawMessage: string): string | undefined {

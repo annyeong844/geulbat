@@ -9,23 +9,80 @@ import {
   writeFile as fsWriteFile,
 } from 'node:fs/promises';
 
-import { DEFAULT_PROJECT_ID } from './daemon/files/project-registry-state.js';
+import { isComputerFileScopeResponse } from '@geulbat/protocol/files';
 import { createBinaryVersionToken } from './daemon/files/version-token.js';
 import { readFileBinaryInputRefPath } from './daemon/files/binary-input-ref-store.js';
 import {
   authHeaders,
   createRouteTestDaemonContext,
-  getSecondaryProjectIdFromContext,
-  getWorkspaceRootFromContext,
+  getComputerFileRootFromContext,
   withAuthenticatedDaemonServer,
 } from './test-support/http-routes.js';
 
+void test('authenticated computer file scope route omits the raw host root', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  await withAuthenticatedDaemonServer(
+    async ({ port }) => {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/files/computer-scope`,
+        { headers: authHeaders() },
+      );
+      assert.equal(response.status, 200);
+      const body: unknown = await response.json();
+      assert.equal(isComputerFileScopeResponse(body), true);
+      if (daemonContext.computerFileScope) {
+        assert.equal(
+          JSON.stringify(body).includes(daemonContext.computerFileScope.root),
+          false,
+        );
+      }
+    },
+    { daemonContext },
+  );
+});
+
+void test('authenticated file routes resolve root=computer without a project id', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
+  daemonContext.computerFileScope = {
+    root: computerFileRoot,
+    browseShortcuts: [],
+  };
+  const relativePath = `computer-root-${randomUUID()}.md`;
+  const absolutePath = join(computerFileRoot, relativePath);
+  await mkdir(computerFileRoot, { recursive: true });
+  await fsWriteFile(absolutePath, '# computer root\n', 'utf8');
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const response = await fetch(
+          `http://127.0.0.1:${port}/api/files/read?root=computer&path=${encodeURIComponent(relativePath)}`,
+          { headers: authHeaders() },
+        );
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as { content: string };
+        assert.equal(body.content, '# computer root\n');
+
+        const ambiguous = await fetch(
+          `http://127.0.0.1:${port}/api/files/tree?root=computer&projectId=workspace`,
+          { headers: authHeaders() },
+        );
+        assert.equal(ambiguous.status, 400);
+      },
+      { daemonContext },
+    );
+  } finally {
+    await rm(absolutePath, { force: true });
+  }
+});
+
 void test('authenticated files/read route returns file contents', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const dirName = `route-read-${randomUUID()}`;
   const relativePath = `${dirName}/note.md`;
-  const absolutePath = join(workspaceRoot, dirName, 'note.md');
+  const absolutePath = join(computerFileRoot, dirName, 'note.md');
 
   await mkdir(dirname(absolutePath), { recursive: true });
   await fsWriteFile(absolutePath, '# route read\n', 'utf8');
@@ -34,7 +91,7 @@ void test('authenticated files/read route returns file contents', async () => {
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const res = await fetch(
-          `http://127.0.0.1:${port}/api/files/read?projectId=${DEFAULT_PROJECT_ID}&path=${encodeURIComponent(relativePath)}`,
+          `http://127.0.0.1:${port}/api/files/read?root=computer&path=${encodeURIComponent(relativePath)}`,
           {
             headers: authHeaders(),
           },
@@ -54,19 +111,155 @@ void test('authenticated files/read route returns file contents', async () => {
       { daemonContext },
     );
   } finally {
-    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
   }
 });
 
-void test('authenticated files/tree route resolves secondary project roots', async () => {
+void test('authenticated files/raw route streams the complete body with explicit content guards', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const secondaryProjectId = getSecondaryProjectIdFromContext(daemonContext);
-  const secondaryRoot = getWorkspaceRootFromContext(
-    daemonContext,
-    secondaryProjectId,
-  );
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
+  const dirName = `route-raw-${randomUUID()}`;
+  const relativePath = `${dirName}/asset.png`;
+  const absolutePath = join(computerFileRoot, relativePath);
+  const payload = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+
+  await mkdir(dirname(absolutePath), { recursive: true });
+  await fsWriteFile(absolutePath, payload);
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const response = await fetch(
+          `http://127.0.0.1:${port}/api/files/raw?root=computer&path=${encodeURIComponent(relativePath)}`,
+          { headers: authHeaders() },
+        );
+
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get('content-type'), 'image/png');
+        assert.equal(response.headers.get('accept-ranges'), 'bytes');
+        assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+        assert.equal(
+          response.headers.get('content-length'),
+          String(payload.byteLength),
+        );
+        assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload);
+      },
+      { daemonContext },
+    );
+  } finally {
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
+  }
+});
+
+void test('authenticated files/raw route serves bounded and open-ended byte ranges', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
+  const dirName = `route-raw-range-${randomUUID()}`;
+  const relativePath = `${dirName}/asset.bin`;
+  const absolutePath = join(computerFileRoot, relativePath);
+  const payload = Buffer.from('0123456789', 'utf8');
+
+  await mkdir(dirname(absolutePath), { recursive: true });
+  await fsWriteFile(absolutePath, payload);
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const url = `http://127.0.0.1:${port}/api/files/raw?root=computer&path=${encodeURIComponent(relativePath)}`;
+        const bounded = await fetch(url, {
+          headers: authHeaders({ Range: 'bytes=2-5' }),
+        });
+        assert.equal(bounded.status, 206);
+        assert.equal(bounded.headers.get('content-range'), 'bytes 2-5/10');
+        assert.equal(bounded.headers.get('content-length'), '4');
+        assert.deepEqual(
+          Buffer.from(await bounded.arrayBuffer()),
+          Buffer.from('2345', 'utf8'),
+        );
+
+        const openEnded = await fetch(url, {
+          headers: authHeaders({ Range: 'bytes=6-' }),
+        });
+        assert.equal(openEnded.status, 206);
+        assert.equal(openEnded.headers.get('content-range'), 'bytes 6-9/10');
+        assert.equal(openEnded.headers.get('content-length'), '4');
+        assert.deepEqual(
+          Buffer.from(await openEnded.arrayBuffer()),
+          Buffer.from('6789', 'utf8'),
+        );
+      },
+      { daemonContext },
+    );
+  } finally {
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
+  }
+});
+
+void test('authenticated files/raw route ignores malformed and suffix range syntax', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
+  const dirName = `route-raw-range-fallback-${randomUUID()}`;
+  const relativePath = `${dirName}/asset.bin`;
+  const absolutePath = join(computerFileRoot, relativePath);
+  const payload = Buffer.from('0123456789', 'utf8');
+
+  await mkdir(dirname(absolutePath), { recursive: true });
+  await fsWriteFile(absolutePath, payload);
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const url = `http://127.0.0.1:${port}/api/files/raw?root=computer&path=${encodeURIComponent(relativePath)}`;
+        for (const range of ['bytes=-4', 'bytes=5-2']) {
+          const response = await fetch(url, {
+            headers: authHeaders({ Range: range }),
+          });
+          assert.equal(response.status, 200);
+          assert.equal(response.headers.get('content-range'), null);
+          assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload);
+        }
+      },
+      { daemonContext },
+    );
+  } finally {
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
+  }
+});
+
+void test('authenticated files/raw route reports unsatisfiable ranges', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
+  const dirName = `route-raw-unsatisfiable-${randomUUID()}`;
+  const relativePath = `${dirName}/asset.bin`;
+  const absolutePath = join(computerFileRoot, relativePath);
+
+  await mkdir(dirname(absolutePath), { recursive: true });
+  await fsWriteFile(absolutePath, Buffer.from('0123', 'utf8'));
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const response = await fetch(
+          `http://127.0.0.1:${port}/api/files/raw?root=computer&path=${encodeURIComponent(relativePath)}`,
+          { headers: authHeaders({ Range: 'bytes=10-' }) },
+        );
+
+        assert.equal(response.status, 416);
+        assert.equal(response.headers.get('content-range'), 'bytes */4');
+        assert.equal(await response.text(), '');
+      },
+      { daemonContext },
+    );
+  } finally {
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
+  }
+});
+
+void test('authenticated files/tree route reads the computer root', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const relativePath = `route-tree-${randomUUID()}.md`;
-  const absolutePath = join(secondaryRoot, relativePath);
+  const absolutePath = join(computerFileRoot, relativePath);
 
   await mkdir(dirname(absolutePath), { recursive: true });
   await fsWriteFile(absolutePath, '# route tree\n', 'utf8');
@@ -75,7 +268,7 @@ void test('authenticated files/tree route resolves secondary project roots', asy
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const res = await fetch(
-          `http://127.0.0.1:${port}/api/files/tree?projectId=${secondaryProjectId}`,
+          `http://127.0.0.1:${port}/api/files/tree?root=computer`,
           {
             headers: authHeaders(),
           },
@@ -83,10 +276,10 @@ void test('authenticated files/tree route resolves secondary project roots', asy
 
         assert.equal(res.status, 200);
         const body = (await res.json()) as {
-          projectId: string;
+          root: string;
           tree: Array<{ path: string; type: string }>;
         };
-        assert.equal(body.projectId, secondaryProjectId);
+        assert.equal(body.root, 'computer');
         assert.ok(body.tree.some((entry) => entry.path === relativePath));
       },
       { daemonContext },
@@ -98,9 +291,9 @@ void test('authenticated files/tree route resolves secondary project roots', asy
 
 void test('authenticated files/save route creates a new file and returns canonical metadata', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const relativePath = `route-save-create-${randomUUID()}.md`;
-  const absolutePath = join(workspaceRoot, relativePath);
+  const absolutePath = join(computerFileRoot, relativePath);
 
   try {
     await withAuthenticatedDaemonServer(
@@ -111,7 +304,7 @@ void test('authenticated files/save route creates a new file and returns canonic
             'Content-Type': 'application/json',
           }),
           body: JSON.stringify({
-            projectId: DEFAULT_PROJECT_ID,
+            root: 'computer',
             path: relativePath,
             content: '# route save\nsecond line\n',
             versionToken: '',
@@ -144,10 +337,10 @@ void test('authenticated files/save route creates a new file and returns canonic
 
 void test('authenticated files/save route surfaces stale_write conflicts', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const dirName = `route-save-${randomUUID()}`;
   const relativePath = `${dirName}/draft.md`;
-  const absolutePath = join(workspaceRoot, dirName, 'draft.md');
+  const absolutePath = join(computerFileRoot, dirName, 'draft.md');
 
   await mkdir(dirname(absolutePath), { recursive: true });
   await fsWriteFile(absolutePath, 'first\n', 'utf8');
@@ -156,7 +349,7 @@ void test('authenticated files/save route surfaces stale_write conflicts', async
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const readRes = await fetch(
-          `http://127.0.0.1:${port}/api/files/read?projectId=${DEFAULT_PROJECT_ID}&path=${encodeURIComponent(relativePath)}`,
+          `http://127.0.0.1:${port}/api/files/read?root=computer&path=${encodeURIComponent(relativePath)}`,
           {
             headers: authHeaders(),
           },
@@ -172,7 +365,7 @@ void test('authenticated files/save route surfaces stale_write conflicts', async
             'Content-Type': 'application/json',
           }),
           body: JSON.stringify({
-            projectId: DEFAULT_PROJECT_ID,
+            root: 'computer',
             path: relativePath,
             content: 'third\n',
             versionToken: readBody.versionToken,
@@ -193,16 +386,156 @@ void test('authenticated files/save route surfaces stale_write conflicts', async
       { daemonContext },
     );
   } finally {
-    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
+  }
+});
+
+void test('authenticated files/manage route performs a real mkdir, rename, and delete lifecycle', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
+  const dirName = `route-manage-${randomUUID()}`;
+  const createdPath = `${dirName}/created`;
+  const renamedPath = `${dirName}/renamed`;
+  const notePath = 'note.txt';
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const manage = (body: Record<string, unknown>) =>
+          fetch(`http://127.0.0.1:${port}/api/files/manage`, {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ root: 'computer', ...body }),
+          });
+
+        const mkdirResponse = await manage({
+          operation: 'mkdir',
+          path: createdPath,
+        });
+        assert.equal(mkdirResponse.status, 200);
+        assert.deepEqual(await mkdirResponse.json(), {
+          ok: true,
+          operation: 'mkdir',
+          path: createdPath,
+        });
+
+        await fsWriteFile(
+          join(computerFileRoot, createdPath, notePath),
+          'managed file\n',
+          'utf8',
+        );
+        const renameResponse = await manage({
+          operation: 'rename',
+          path: createdPath,
+          destination: renamedPath,
+        });
+        assert.equal(renameResponse.status, 200);
+        assert.deepEqual(await renameResponse.json(), {
+          ok: true,
+          operation: 'rename',
+          path: createdPath,
+          destination: renamedPath,
+        });
+        assert.equal(
+          await fsReadFile(
+            join(computerFileRoot, renamedPath, notePath),
+            'utf8',
+          ),
+          'managed file\n',
+        );
+
+        const deleteResponse = await manage({
+          operation: 'delete',
+          path: renamedPath,
+        });
+        assert.equal(deleteResponse.status, 200);
+        assert.deepEqual(await deleteResponse.json(), {
+          ok: true,
+          operation: 'delete',
+          path: renamedPath,
+        });
+        await assert.rejects(
+          fsReadFile(join(computerFileRoot, renamedPath, notePath), 'utf8'),
+        );
+      },
+      { daemonContext },
+    );
+  } finally {
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
+  }
+});
+
+void test('authenticated files/manage route rejects invalid operations and unsafe roots', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
+  const sentinelName = `route-manage-root-${randomUUID()}.txt`;
+  const sentinelPath = join(computerFileRoot, sentinelName);
+
+  await mkdir(computerFileRoot, { recursive: true });
+  await fsWriteFile(sentinelPath, 'keep root\n', 'utf8');
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const manage = (body: Record<string, unknown>) =>
+          fetch(`http://127.0.0.1:${port}/api/files/manage`, {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify(body),
+          });
+
+        const invalidOperation = await manage({
+          root: 'computer',
+          operation: 'copy',
+          path: sentinelName,
+        });
+        assert.equal(invalidOperation.status, 400);
+        assert.deepEqual(await invalidOperation.json(), {
+          code: 'bad_request',
+          message: 'operation must be one of mkdir, delete, rename, move',
+        });
+
+        const invalidScope = await manage({
+          root: 'workspace',
+          operation: 'delete',
+          path: sentinelName,
+        });
+        assert.equal(invalidScope.status, 400);
+        assert.deepEqual(await invalidScope.json(), {
+          code: 'bad_request',
+          message: 'root must be computer',
+        });
+
+        const deleteRoot = await manage({
+          root: 'computer',
+          operation: 'delete',
+          path: '.',
+        });
+        assert.equal(deleteRoot.ok, false);
+        assert.equal(await fsReadFile(sentinelPath, 'utf8'), 'keep root\n');
+
+        const relocateRoot = await manage({
+          root: 'computer',
+          operation: 'move',
+          path: '.',
+          destination: `relocated-${randomUUID()}`,
+        });
+        assert.equal(relocateRoot.ok, false);
+        assert.equal(await fsReadFile(sentinelPath, 'utf8'), 'keep root\n');
+      },
+      { daemonContext },
+    );
+  } finally {
+    await rm(computerFileRoot, { recursive: true, force: true });
   }
 });
 
 void test('authenticated files/save-binary route writes a create-only binary file', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const dirName = `route-save-binary-${randomUUID()}`;
   const relativePath = `${dirName}/asset.bin`;
-  const absolutePath = join(workspaceRoot, dirName, 'asset.bin');
+  const absolutePath = join(computerFileRoot, dirName, 'asset.bin');
 
   try {
     await withAuthenticatedDaemonServer(
@@ -215,7 +548,7 @@ void test('authenticated files/save-binary route writes a create-only binary fil
               'Content-Type': 'application/json',
             }),
             body: JSON.stringify({
-              projectId: DEFAULT_PROJECT_ID,
+              root: 'computer',
               path: relativePath,
               contentBase64: Buffer.from([0x00, 0x01, 0x02, 0xff]).toString(
                 'base64',
@@ -243,23 +576,23 @@ void test('authenticated files/save-binary route writes a create-only binary fil
       { daemonContext },
     );
   } finally {
-    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
   }
 });
 
 void test('authenticated files/save-binary route saves streamed binary input references beyond the JSON body cap', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const dirName = `route-save-binary-ref-${randomUUID()}`;
   const relativePath = `${dirName}/large.bin`;
-  const absolutePath = join(workspaceRoot, dirName, 'large.bin');
+  const absolutePath = join(computerFileRoot, dirName, 'large.bin');
   const payload = Buffer.alloc(300 * 1024, 0xab);
 
   try {
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const uploadRes = await fetch(
-          `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/files/binary-inputs?root=computer`,
           {
             method: 'POST',
             headers: authHeaders({
@@ -287,7 +620,7 @@ void test('authenticated files/save-binary route saves streamed binary input ref
               'Content-Type': 'application/json',
             }),
             body: JSON.stringify({
-              projectId: DEFAULT_PROJECT_ID,
+              root: 'computer',
               path: relativePath,
               contentRef: uploadBody.contentRef,
               mimeType: 'application/octet-stream',
@@ -307,14 +640,14 @@ void test('authenticated files/save-binary route saves streamed binary input ref
       { daemonContext },
     );
   } finally {
-    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
   }
 });
 
 void test('authenticated files/binary-inputs rejects JSON uploads before creating an empty ref', async () => {
   await withAuthenticatedDaemonServer(async ({ port }) => {
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+      `http://127.0.0.1:${port}/api/files/binary-inputs?root=computer`,
       {
         method: 'POST',
         headers: authHeaders({
@@ -334,12 +667,12 @@ void test('authenticated files/binary-inputs rejects JSON uploads before creatin
 
 void test('authenticated files/binary-inputs deletes uploaded binary refs', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
 
   await withAuthenticatedDaemonServer(
     async ({ port }) => {
       const uploadRes = await fetch(
-        `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+        `http://127.0.0.1:${port}/api/files/binary-inputs?root=computer`,
         {
           method: 'POST',
           headers: authHeaders({
@@ -352,7 +685,7 @@ void test('authenticated files/binary-inputs deletes uploaded binary refs', asyn
       const uploadBody = (await uploadRes.json()) as { contentRef: string };
 
       const deleteRes = await fetch(
-        `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}&contentRef=${encodeURIComponent(
+        `http://127.0.0.1:${port}/api/files/binary-inputs?root=computer&contentRef=${encodeURIComponent(
           uploadBody.contentRef,
         )}`,
         {
@@ -365,7 +698,7 @@ void test('authenticated files/binary-inputs deletes uploaded binary refs', asyn
       assert.deepEqual(await deleteRes.json(), { ok: true });
       assert.deepEqual(
         await readFileBinaryInputRefPath({
-          workspaceRoot,
+          workspaceRoot: computerFileRoot,
           contentRef: uploadBody.contentRef,
         }),
         {
@@ -381,10 +714,10 @@ void test('authenticated files/binary-inputs deletes uploaded binary refs', asyn
 
 void test('authenticated files/save-binary route rejects overwrite attempts with already_exists', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const dirName = `route-save-binary-conflict-${randomUUID()}`;
   const relativePath = `${dirName}/asset.bin`;
-  const absolutePath = join(workspaceRoot, dirName, 'asset.bin');
+  const absolutePath = join(computerFileRoot, dirName, 'asset.bin');
 
   await mkdir(dirname(absolutePath), { recursive: true });
   await fsWriteFile(absolutePath, Buffer.from([0x01]));
@@ -400,7 +733,7 @@ void test('authenticated files/save-binary route rejects overwrite attempts with
               'Content-Type': 'application/json',
             }),
             body: JSON.stringify({
-              projectId: DEFAULT_PROJECT_ID,
+              root: 'computer',
               path: relativePath,
               contentBase64: Buffer.from([0x02]).toString('base64'),
               mimeType: 'application/octet-stream',
@@ -419,16 +752,16 @@ void test('authenticated files/save-binary route rejects overwrite attempts with
       { daemonContext },
     );
   } finally {
-    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
   }
 });
 
 void test('authenticated files/save-binary route deletes consumed binary refs after save failures', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const dirName = `route-save-binary-ref-failure-${randomUUID()}`;
   const relativePath = `${dirName}/asset.bin`;
-  const absolutePath = join(workspaceRoot, dirName, 'asset.bin');
+  const absolutePath = join(computerFileRoot, dirName, 'asset.bin');
 
   await mkdir(dirname(absolutePath), { recursive: true });
   await fsWriteFile(absolutePath, Buffer.from([0x01]));
@@ -437,7 +770,7 @@ void test('authenticated files/save-binary route deletes consumed binary refs af
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const uploadRes = await fetch(
-          `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/files/binary-inputs?root=computer`,
           {
             method: 'POST',
             headers: authHeaders({
@@ -459,7 +792,7 @@ void test('authenticated files/save-binary route deletes consumed binary refs af
               'Content-Type': 'application/json',
             }),
             body: JSON.stringify({
-              projectId: DEFAULT_PROJECT_ID,
+              root: 'computer',
               path: relativePath,
               contentRef: uploadBody.contentRef,
             }),
@@ -468,7 +801,7 @@ void test('authenticated files/save-binary route deletes consumed binary refs af
 
         assert.equal(saveRes.status, 409);
         const resolved = await readFileBinaryInputRefPath({
-          workspaceRoot,
+          workspaceRoot: computerFileRoot,
           contentRef: uploadBody.contentRef,
         });
         assert.deepEqual(resolved, {
@@ -480,7 +813,7 @@ void test('authenticated files/save-binary route deletes consumed binary refs af
       { daemonContext },
     );
   } finally {
-    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
   }
 });
 
@@ -492,7 +825,7 @@ void test('authenticated files/save-binary route requires exactly one binary con
         'Content-Type': 'application/json',
       }),
       body: JSON.stringify({
-        projectId: DEFAULT_PROJECT_ID,
+        root: 'computer',
         path: 'ambiguous-binary.bin',
         contentBase64: Buffer.from([0x00]).toString('base64'),
         contentRef: 'file-binary-input:00000000-0000-0000-0000-000000000000',
@@ -509,10 +842,10 @@ void test('authenticated files/save-binary route requires exactly one binary con
 
 void test('authenticated files/replace-binary route overwrites an existing binary file', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const dirName = `route-replace-binary-${randomUUID()}`;
   const relativePath = `${dirName}/asset.bin`;
-  const absolutePath = join(workspaceRoot, dirName, 'asset.bin');
+  const absolutePath = join(computerFileRoot, dirName, 'asset.bin');
   const initial = Buffer.from([0x00, 0x01]);
 
   await mkdir(dirname(absolutePath), { recursive: true });
@@ -529,7 +862,7 @@ void test('authenticated files/replace-binary route overwrites an existing binar
               'Content-Type': 'application/json',
             }),
             body: JSON.stringify({
-              projectId: DEFAULT_PROJECT_ID,
+              root: 'computer',
               path: relativePath,
               contentBase64: Buffer.from([0x02, 0x03, 0x04]).toString('base64'),
               versionToken: createBinaryVersionToken(initial),
@@ -558,16 +891,16 @@ void test('authenticated files/replace-binary route overwrites an existing binar
       { daemonContext },
     );
   } finally {
-    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
   }
 });
 
 void test('authenticated files/replace-binary route saves streamed binary input references', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const dirName = `route-replace-binary-ref-${randomUUID()}`;
   const relativePath = `${dirName}/large.bin`;
-  const absolutePath = join(workspaceRoot, dirName, 'large.bin');
+  const absolutePath = join(computerFileRoot, dirName, 'large.bin');
   const initial = Buffer.from([0x10, 0x11]);
   const payload = Buffer.alloc(300 * 1024, 0xcd);
 
@@ -578,7 +911,7 @@ void test('authenticated files/replace-binary route saves streamed binary input 
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const uploadRes = await fetch(
-          `http://127.0.0.1:${port}/api/files/binary-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/files/binary-inputs?root=computer`,
           {
             method: 'POST',
             headers: authHeaders({
@@ -604,7 +937,7 @@ void test('authenticated files/replace-binary route saves streamed binary input 
               'Content-Type': 'application/json',
             }),
             body: JSON.stringify({
-              projectId: DEFAULT_PROJECT_ID,
+              root: 'computer',
               path: relativePath,
               contentRef: uploadBody.contentRef,
               versionToken: createBinaryVersionToken(initial),
@@ -625,16 +958,16 @@ void test('authenticated files/replace-binary route saves streamed binary input 
       { daemonContext },
     );
   } finally {
-    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
   }
 });
 
 void test('authenticated files/replace-binary route surfaces stale conflicts', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const dirName = `route-replace-binary-conflict-${randomUUID()}`;
   const relativePath = `${dirName}/asset.bin`;
-  const absolutePath = join(workspaceRoot, dirName, 'asset.bin');
+  const absolutePath = join(computerFileRoot, dirName, 'asset.bin');
 
   await mkdir(dirname(absolutePath), { recursive: true });
   await fsWriteFile(absolutePath, Buffer.from([0x00, 0x01]));
@@ -650,7 +983,7 @@ void test('authenticated files/replace-binary route surfaces stale conflicts', a
               'Content-Type': 'application/json',
             }),
             body: JSON.stringify({
-              projectId: DEFAULT_PROJECT_ID,
+              root: 'computer',
               path: relativePath,
               contentBase64: Buffer.from([0x02]).toString('base64'),
               versionToken: 'stale-token',
@@ -673,7 +1006,7 @@ void test('authenticated files/replace-binary route surfaces stale conflicts', a
       { daemonContext },
     );
   } finally {
-    await rm(join(workspaceRoot, dirName), { recursive: true, force: true });
+    await rm(join(computerFileRoot, dirName), { recursive: true, force: true });
   }
 });
 
@@ -685,7 +1018,7 @@ void test('authenticated files/save-binary route rejects invalid contentBase64 p
         'Content-Type': 'application/json',
       }),
       body: JSON.stringify({
-        projectId: DEFAULT_PROJECT_ID,
+        root: 'computer',
         path: 'invalid-base64.bin',
         contentBase64: 'not-base64',
       }),
@@ -707,7 +1040,7 @@ void test('authenticated files/save-binary route rejects non-string mimeType val
         'Content-Type': 'application/json',
       }),
       body: JSON.stringify({
-        projectId: DEFAULT_PROJECT_ID,
+        root: 'computer',
         path: 'invalid-mime.bin',
         contentBase64: Buffer.from([0x00]).toString('base64'),
         mimeType: 7,
@@ -732,7 +1065,7 @@ void test('authenticated files/replace-binary route requires versionToken', asyn
           'Content-Type': 'application/json',
         }),
         body: JSON.stringify({
-          projectId: DEFAULT_PROJECT_ID,
+          root: 'computer',
           path: 'missing-version.bin',
           contentBase64: Buffer.from([0x00]).toString('base64'),
         }),
@@ -747,7 +1080,7 @@ void test('authenticated files/replace-binary route requires versionToken', asyn
   });
 });
 
-void test('authenticated files/read route preserves unknown project failure shape', async () => {
+void test('authenticated files/read route rejects retired project scope', async () => {
   await withAuthenticatedDaemonServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}/api/files/read?projectId=missing-project&path=note.md`,
@@ -756,27 +1089,24 @@ void test('authenticated files/read route preserves unknown project failure shap
       },
     );
 
-    assert.equal(res.status, 404);
+    assert.equal(res.status, 400);
     assert.deepEqual(await res.json(), {
-      code: 'not_found',
-      message: 'unknown projectId: missing-project',
+      code: 'bad_request',
+      message: 'projectId is not supported',
     });
   });
 });
 
-void test('authenticated files/read route keeps the first validation error when project and path are both invalid', async () => {
+void test('authenticated files/read route requires the explicit computer root before path validation', async () => {
   await withAuthenticatedDaemonServer(async ({ port }) => {
-    const res = await fetch(
-      `http://127.0.0.1:${port}/api/files/read?projectId=missing-project&path=`,
-      {
-        headers: authHeaders(),
-      },
-    );
+    const res = await fetch(`http://127.0.0.1:${port}/api/files/read?path=`, {
+      headers: authHeaders(),
+    });
 
-    assert.equal(res.status, 404);
+    assert.equal(res.status, 400);
     assert.deepEqual(await res.json(), {
-      code: 'not_found',
-      message: 'unknown projectId: missing-project',
+      code: 'bad_request',
+      message: 'root must be computer',
     });
   });
 });

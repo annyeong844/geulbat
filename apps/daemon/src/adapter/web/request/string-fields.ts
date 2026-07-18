@@ -51,14 +51,23 @@ export function readBodyString(
 export function readRequiredBodyStrings<const T extends string>(
   body: Record<string, unknown> | undefined,
   names: readonly T[],
-): { ok: true; values: Record<T, string> } | InvalidStringField {
-  const values = {} as Record<T, string>;
+): { ok: true; read(name: T): string } | InvalidStringField {
+  const values = new Map<T, string>();
   for (const name of names) {
     const result = readRequiredBodyString(body, name);
     if (!result.ok) {
       return result;
     }
-    values[name] = result.value;
+    values.set(name, result.value);
   }
-  return { ok: true, values };
+  return {
+    ok: true,
+    read(name) {
+      const value = values.get(name);
+      if (value === undefined) {
+        throw new Error(`required body string was not validated: ${name}`);
+      }
+      return value;
+    },
+  };
 }

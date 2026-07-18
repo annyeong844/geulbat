@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  isDispatchedRuntimeArtifactPreviewRenderer,
   isRuntimeArtifactPreviewRenderer,
   supportsGeneratedBinaryExportSnapshot,
   supportsGeneratedTextExportSnapshot,
@@ -35,4 +36,15 @@ void test('artifact renderer runtime preview capabilities are owned by the artif
   assert.equal(isRuntimeArtifactPreviewRenderer('markdown'), false);
   assert.equal(isRuntimeArtifactPreviewRenderer('unknown'), false);
   assert.equal(isRuntimeArtifactPreviewRenderer(null), false);
+});
+
+void test('artifact renderer synchronous runtime dispatch excludes hook-managed previews', () => {
+  assert.equal(isDispatchedRuntimeArtifactPreviewRenderer('html5'), true);
+  assert.equal(isDispatchedRuntimeArtifactPreviewRenderer('js'), true);
+  assert.equal(
+    isDispatchedRuntimeArtifactPreviewRenderer('react_bundle'),
+    false,
+  );
+  assert.equal(isDispatchedRuntimeArtifactPreviewRenderer('unknown'), false);
+  assert.equal(isDispatchedRuntimeArtifactPreviewRenderer(null), false);
 });

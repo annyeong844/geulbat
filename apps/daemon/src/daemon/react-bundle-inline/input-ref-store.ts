@@ -25,7 +25,7 @@ export const REACT_BUNDLE_INLINE_COMPILE_INPUT_REF_STORE: InputRefFileStoreConfi
     claimedMessage: 'inputRef is already claimed by another operation.',
   });
 
-export interface ReactBundleInlineCompileInputRefWriteResult {
+interface ReactBundleInlineCompileInputRefWriteResult {
   inputRef: string;
   byteLength: number;
 }
@@ -35,7 +35,7 @@ type ReactBundleInlineCompileInputRefErrorCode =
   | 'conflict'
   | 'not_found';
 
-export type ReactBundleInlineCompileInputRefReadResult =
+type ReactBundleInlineCompileInputRefReadResult =
   | { ok: true; path: string; rawInput: string }
   | {
       ok: false;
@@ -43,7 +43,7 @@ export type ReactBundleInlineCompileInputRefReadResult =
       message: string;
     };
 
-export type ReactBundleInlineCompileInputRefPathResult = InputRefFilePathResult;
+type ReactBundleInlineCompileInputRefPathResult = InputRefFilePathResult;
 
 export async function writeReactBundleInlineCompileInputRefFromStream(args: {
   workspaceRoot: string;

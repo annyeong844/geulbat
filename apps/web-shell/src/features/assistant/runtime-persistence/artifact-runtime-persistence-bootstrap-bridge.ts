@@ -10,6 +10,7 @@ import type {
 
 interface BridgeStore {
   createPersistenceError(code: string, message: string): Error;
+  stabilizePersistenceError(error: unknown): Error;
   assertSharedStorageAvailable(): void;
   isPlainRecord(value: unknown): value is Record<string, unknown>;
 }
@@ -20,6 +21,7 @@ interface PersistenceResponseRouterArgs {
   store: BridgeStore;
   pendingPersistenceRequests: Map<string, PendingPersistenceRequest>;
   clearPendingPersistenceRequest(
+    this: void,
     requestId: string,
   ): PendingPersistenceRequest | null;
 }
@@ -232,24 +234,24 @@ export function createArtifactRuntimePersistenceBridge(
     loadState() {
       try {
         store.assertSharedStorageAvailable();
-      } catch (error) {
-        return Promise.reject(error);
+      } catch (error: unknown) {
+        return Promise.reject(store.stabilizePersistenceError(error));
       }
       return rawPersistenceApi.loadState();
     },
     saveState(state: unknown, expectedRevision: string | null) {
       try {
         store.assertSharedStorageAvailable();
-      } catch (error) {
-        return Promise.reject(error);
+      } catch (error: unknown) {
+        return Promise.reject(store.stabilizePersistenceError(error));
       }
       return rawPersistenceApi.saveState(state, expectedRevision);
     },
     clearState(expectedRevision: string | null) {
       try {
         store.assertSharedStorageAvailable();
-      } catch (error) {
-        return Promise.reject(error);
+      } catch (error: unknown) {
+        return Promise.reject(store.stabilizePersistenceError(error));
       }
       return rawPersistenceApi.clearState(expectedRevision);
     },

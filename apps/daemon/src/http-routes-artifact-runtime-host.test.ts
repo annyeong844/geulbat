@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createDaemon } from './create-daemon.js';
 import { withDaemonServer } from './test-support/http-routes.js';
 
 void test('artifact runtime host route is public and embeddable from loopback web-shell origins', async () => {
@@ -13,6 +12,8 @@ void test('artifact runtime host route is public and embeddable from loopback we
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
     assert.equal(res.headers.get('cache-control'), 'no-store');
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(res.headers.get('x-frame-options'), null);
     assert.match(
       res.headers.get('content-security-policy') ?? '',
       /frame-ancestors 'self' http:\/\/127\.0\.0\.1:\* http:\/\/localhost:\*/,
@@ -61,38 +62,29 @@ void test('artifact runtime host drops untrusted parentOrigin query values', asy
 void test('artifact runtime host frame ancestors include configured external browser origins', async () => {
   const previous = process.env['GEULBAT_ALLOWED_ORIGINS'];
   process.env['GEULBAT_ALLOWED_ORIGINS'] = 'https://demo.trycloudflare.com';
-  const { app } = await createDaemon();
-  const server = app.listen(0, '127.0.0.1');
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      server.once('listening', () => resolve());
-      server.once('error', reject);
+    await withDaemonServer(async ({ port }) => {
+      const res = await fetch(`http://127.0.0.1:${port}/artifact-runtime/host`);
+
+      assert.equal(res.status, 200);
+      assert.match(
+        res.headers.get('content-security-policy') ?? '',
+        /https:\/\/demo\.trycloudflare\.com/,
+      );
+      const body = await res.text();
+      assert.match(body, /const parentOrigin = null;/);
+
+      const configuredParentRes = await fetch(
+        `http://127.0.0.1:${port}/artifact-runtime/host?parentOrigin=${encodeURIComponent('https://demo.trycloudflare.com')}`,
+      );
+      const configuredParentBody = await configuredParentRes.text();
+      assert.match(
+        configuredParentBody,
+        /"https:\/\/demo\.trycloudflare\.com"/,
+      );
     });
-
-    const port = (server.address() as import('node:net').AddressInfo).port;
-    const res = await fetch(`http://127.0.0.1:${port}/artifact-runtime/host`);
-
-    assert.equal(res.status, 200);
-    assert.match(
-      res.headers.get('content-security-policy') ?? '',
-      /https:\/\/demo\.trycloudflare\.com/,
-    );
-    const body = await res.text();
-    assert.match(body, /const parentOrigin = null;/);
-
-    const configuredParentRes = await fetch(
-      `http://127.0.0.1:${port}/artifact-runtime/host?parentOrigin=${encodeURIComponent('https://demo.trycloudflare.com')}`,
-    );
-    const configuredParentBody = await configuredParentRes.text();
-    assert.match(configuredParentBody, /"https:\/\/demo\.trycloudflare\.com"/);
   } finally {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
     if (previous === undefined) {
       delete process.env['GEULBAT_ALLOWED_ORIGINS'];
     } else {
@@ -113,6 +105,10 @@ void test('artifact runtime service worker probe is public and same-origin regis
       '/artifact-runtime/',
     );
     assert.equal(res.headers.get('cache-control'), 'no-store');
+    assert.equal(
+      res.headers.get('content-type'),
+      'application/javascript; charset=utf-8',
+    );
 
     const body = await res.text();
     assert.match(body, /self\.skipWaiting\(\)/);

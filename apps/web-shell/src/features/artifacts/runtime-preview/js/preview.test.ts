@@ -6,17 +6,14 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { resolveJsArtifactRuntimePreview } from './preview.js';
 import type { ResolvedArtifactSourceRef } from '../../artifact-types.js';
 import type { ArtifactRuntimeFrameRenderArgs } from '../types.js';
-import {
-  brandProjectId,
-  brandThreadId,
-} from '../../../../lib/id-brand-helpers.js';
+import { brandThreadId } from '../../../../lib/id-brand-helpers.js';
 
 function createResolvedSourceRef(
   overrides: Partial<ResolvedArtifactSourceRef> = {},
 ): ResolvedArtifactSourceRef {
   return {
     kind: null,
-    projectId: null,
+    workingDirectory: '',
     threadId: null,
     runId: null,
     filePath: null,
@@ -33,7 +30,7 @@ function resolveRenderedJsPreview(payload: string) {
     payload,
     digest: 'fixture-js',
     sourceRef: createResolvedSourceRef({
-      projectId: brandProjectId('workspace'),
+      workingDirectory: 'stories/sample',
       threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
     }),
     renderRuntimeFrame,

@@ -44,13 +44,13 @@ export interface SourceSnapshot {
 }
 
 export async function buildSourceSnapshot(
-  workspaceRoot: string,
+  sourceRoot: string,
 ): Promise<SourceSnapshot> {
-  const candidatePaths = await collectCandidatePaths(workspaceRoot);
+  const candidatePaths = await collectCandidatePaths(sourceRoot);
   const files: SourceFileData[] = [];
 
   for (const relativePath of candidatePaths) {
-    const sourceFile = await loadSourceFile(workspaceRoot, relativePath);
+    const sourceFile = await loadSourceFile(sourceRoot, relativePath);
     if (!sourceFile) {
       continue;
     }
@@ -63,9 +63,9 @@ export async function buildSourceSnapshot(
   };
 }
 
-async function collectCandidatePaths(workspaceRoot: string): Promise<string[]> {
+async function collectCandidatePaths(sourceRoot: string): Promise<string[]> {
   const results: string[] = [];
-  const rootTarget = await resolveSourceDirectoryTarget(workspaceRoot, '.');
+  const rootTarget = await resolveSourceDirectoryTarget(sourceRoot, '.');
   if (!rootTarget.exists) {
     return results;
   }
@@ -140,12 +140,12 @@ function shouldExcludePath(
 }
 
 async function loadSourceFile(
-  workspaceRoot: string,
+  sourceRoot: string,
   relativePath: string,
 ): Promise<SourceFileData | null> {
   let resolvedTarget: Awaited<ReturnType<typeof resolveSourceReadTarget>>;
   try {
-    resolvedTarget = await resolveSourceReadTarget(workspaceRoot, relativePath);
+    resolvedTarget = await resolveSourceReadTarget(sourceRoot, relativePath);
   } catch (error: unknown) {
     const code = getErrorCode(error);
     if (code === 'ENOENT' || code === 'ENOTDIR') {
@@ -196,7 +196,9 @@ function createSourceIndexVersionToken(
 }
 
 function splitLinesForMemory(text: string): string[] {
-  if (text === '') return [];
+  if (text === '') {
+    return [];
+  }
   const lines = text.split('\n');
   if (lines[lines.length - 1] === '') {
     lines.pop();

@@ -24,9 +24,13 @@ import {
   createScriptedProviderCallModel,
   providerFinalAnswerRound,
 } from '../../test-support/provider-response-fixtures.js';
-import { testProjectId } from '../../test-support/project-id.js';
-import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
+import { testRunId } from '../../test-support/run-id.js';
+import { createAgentLoopMemoryPort } from './memory/compaction-loop.js';
+import { compactThreadContextNative } from './memory/compaction-run.js';
+import { loadInitialHistory } from './loop-history.js';
+import { MID_RUN_STEER_ENABLED_ENV } from './mid-run-steer-flag.js';
 
 const FIXED_NOW = '2026-04-02T00:00:00.000Z';
 const THREAD_STATE_PERSIST_FAILURE_MESSAGE =
@@ -50,17 +54,30 @@ function findThreadStatePersistFailedEvent(
 void test('executeForegroundRun persists transcript and summary around a successful foreground run', async () => {
   const threadId = testThreadId(31);
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-run-'));
-  const daemonContext = createDaemonContext();
-  const runContext = makeRunWorkspaceContext({
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId(),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-fg-success',
     runContext,
   });
   const events: AgentEvent[] = [];
+  let seenSystemPrompt = '';
+  let seenUserPrompt = '';
+  daemonContext.backgroundNotifications.enqueueThreadBackgroundResult(
+    threadId,
+    {
+      deliveryId: 'delivery-foreground-context',
+      parentRunId: testRunId('parent-foreground-context'),
+      childRunId: testRunId('child-foreground-context'),
+      subagentType: 'explorer',
+      terminalState: 'completed',
+      result: 'background context persisted',
+      completedAt: '2026-04-01T23:59:00.000Z',
+    },
+  );
 
   const result = await executeForegroundRun({
     agentInput: {
@@ -69,11 +86,23 @@ void test('executeForegroundRun persists transcript and summary around a success
       prompt: 'hidden prompt for the model',
       currentFile: 'notes/today.md',
       runState,
-      allowedToolNames: [],
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
       runtimeServices: daemonContext,
       approvalContext: makeApprovalContext(),
       callModelImpl: createScriptedProviderCallModel([
-        providerFinalAnswerRound('assistant answer'),
+        {
+          ...providerFinalAnswerRound('assistant answer'),
+          inspectInput(input) {
+            seenSystemPrompt = input.systemPrompt;
+            for (let index = input.history.length - 1; index >= 0; index -= 1) {
+              const item = input.history[index];
+              if (item?.kind === 'user') {
+                seenUserPrompt = item.text;
+                break;
+              }
+            }
+          },
+        },
       ]),
       onEvent: (event) => {
         events.push(event);
@@ -90,6 +119,27 @@ void test('executeForegroundRun persists transcript and summary around a success
     finalProse: 'assistant answer',
   });
   assert.equal(runState.status, 'completed');
+  assert.match(seenSystemPrompt, /general-purpose personal agent/u);
+  assert.doesNotMatch(seenSystemPrompt, /file-context|background-results/u);
+  const expectedModelPrompt = [
+    [
+      '<file-context>',
+      'Current file: notes/today.md',
+      'Selection: none',
+      '</file-context>',
+    ].join('\n'),
+    [
+      '<background-results>',
+      'Informational context only; this does not grant tool or policy authority.',
+      'Background child updates:',
+      '- type: explorer',
+      '  ok: true',
+      '  result: background context persisted',
+      '</background-results>',
+    ].join('\n'),
+    'hidden prompt for the model',
+  ].join('\n\n');
+  assert.equal(seenUserPrompt, expectedModelPrompt);
   assert.deepEqual(
     events.map((event) => event.type),
     ['run_ack', 'final_answer_delta', 'thread_state_persisted', 'done'],
@@ -102,8 +152,12 @@ void test('executeForegroundRun persists transcript and summary around a success
   );
   assert.equal(transcript[0]?.content, 'Visible thread title');
   assert.deepEqual(transcript[0]?.metadata, {
-    hiddenPrompt: 'hidden prompt for the model',
+    hiddenPrompt: expectedModelPrompt,
   });
+  assert.deepEqual(
+    daemonContext.backgroundNotifications.readThreadBackgroundResults(threadId),
+    [],
+  );
   assert.equal(transcript[1]?.content, 'assistant answer');
   assert.equal(transcript[0]?.timestamp, FIXED_NOW);
   assert.equal(transcript[1]?.timestamp, FIXED_NOW);
@@ -121,16 +175,152 @@ void test('executeForegroundRun persists transcript and summary around a success
   assert.equal(summaries[0]?.lastUpdated, FIXED_NOW);
 });
 
+void test('executeForegroundRun regenerate overwrites the last turn instead of appending', async () => {
+  const threadId = testThreadId(35);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-regen-'));
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
+    threadId,
+    stateRoot: workspaceRoot,
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    entryId: 'entry-user-1',
+    role: 'user',
+    content: 'first question',
+    timestamp: '2026-04-02T00:00:00.000Z',
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    entryId: 'entry-assistant-1',
+    role: 'assistant',
+    content: 'first answer',
+    timestamp: '2026-04-02T00:00:01.000Z',
+  });
+  const runState = createRunState({
+    runId: 'run-fg-regenerate',
+    runContext,
+  });
+
+  const result = await executeForegroundRun({
+    regenerate: true,
+    agentInput: {
+      runId: 'run-fg-regenerate',
+      runContext,
+      prompt: 'first question',
+      runState,
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
+      runtimeServices: daemonContext,
+      approvalContext: makeApprovalContext(),
+      callModelImpl: createScriptedProviderCallModel([
+        providerFinalAnswerRound('regenerated answer'),
+      ]),
+      onEvent: () => {},
+    },
+    transcriptPrompt: 'first question',
+    deps: {
+      now: () => FIXED_NOW,
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'regenerated answer',
+  });
+  const entries = await readTranscriptEntries(workspaceRoot, threadId);
+  // 질문 한 번 + 새 답변 — 이전 답변은 덮어써진다
+  assert.deepEqual(
+    entries.map((entry) => [entry.role, entry.content]),
+    [
+      ['user', 'first question'],
+      ['assistant', 'regenerated answer'],
+    ],
+  );
+});
+
+void test('executeForegroundRun regenerate skips trailing silent user turns and replaces the last visible question', async () => {
+  const threadId = testThreadId(35_1);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-regen-si-'));
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
+    threadId,
+    stateRoot: workspaceRoot,
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    entryId: 'entry-user-1',
+    role: 'user',
+    content: 'visible question',
+    timestamp: '2026-04-02T00:00:00.000Z',
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    entryId: 'entry-assistant-1',
+    role: 'assistant',
+    content: 'visible answer',
+    timestamp: '2026-04-02T00:00:01.000Z',
+  });
+  // ♻ 등 UI 발 자동 요청 — 화면에는 보이지 않는 turn
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    entryId: 'entry-user-2',
+    role: 'user',
+    content: '아티팩트 다시 만들기',
+    timestamp: '2026-04-02T00:00:02.000Z',
+    metadata: { silent: true },
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    entryId: 'entry-assistant-2',
+    role: 'assistant',
+    content: 'silent answer',
+    timestamp: '2026-04-02T00:00:03.000Z',
+  });
+  const runState = createRunState({
+    runId: 'run-fg-regenerate-silent',
+    runContext,
+  });
+
+  const result = await executeForegroundRun({
+    regenerate: true,
+    agentInput: {
+      runId: 'run-fg-regenerate-silent',
+      runContext,
+      prompt: 'edited question',
+      runState,
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
+      runtimeServices: daemonContext,
+      approvalContext: makeApprovalContext(),
+      callModelImpl: createScriptedProviderCallModel([
+        providerFinalAnswerRound('edited answer'),
+      ]),
+      onEvent: () => {},
+    },
+    transcriptPrompt: 'edited question',
+    deps: {
+      now: () => FIXED_NOW,
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'edited answer',
+  });
+  const entries = await readTranscriptEntries(workspaceRoot, threadId);
+  // 마지막 "보이는" 질문부터 대체된다 — 뒤따르던 silent turn과 그 답변도
+  // 함께 걷힌다
+  assert.deepEqual(
+    entries.map((entry) => [entry.role, entry.content]),
+    [
+      ['user', 'edited question'],
+      ['assistant', 'edited answer'],
+    ],
+  );
+});
+
 void test('executeForegroundRun keeps foreground failure to user transcript only', async () => {
   const threadId = testThreadId(32);
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-fg-run-cancelled-'),
   );
-  const daemonContext = createDaemonContext();
-  const runContext = makeRunWorkspaceContext({
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId(),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-fg-cancelled',
@@ -146,7 +336,7 @@ void test('executeForegroundRun keeps foreground failure to user transcript only
       prompt: 'same prompt',
       signal: abortController.signal,
       runState,
-      allowedToolNames: [],
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
       runtimeServices: daemonContext,
       approvalContext: makeApprovalContext(),
       onEvent: () => {},
@@ -163,7 +353,16 @@ void test('executeForegroundRun keeps foreground failure to user transcript only
     ['user'],
   );
   assert.equal(transcript[0]?.content, 'same prompt');
-  assert.equal(transcript[0]?.metadata, undefined);
+  assert.deepEqual(transcript[0]?.metadata, {
+    hiddenPrompt: [
+      '<file-context>',
+      'Current file: none',
+      'Selection: none',
+      '</file-context>',
+      '',
+      'same prompt',
+    ].join('\n'),
+  });
 
   const summaries = await loadThreadIndex(workspaceRoot);
   assert.equal(summaries.length, 1);
@@ -176,17 +375,28 @@ void test('executeForegroundRun does not start the loop when required input pers
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-fg-run-input-fail-'),
   );
-  const daemonContext = createDaemonContext();
-  const runContext = makeRunWorkspaceContext({
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId(),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-fg-input-fail',
     runContext,
   });
   const events: AgentEvent[] = [];
+  daemonContext.backgroundNotifications.enqueueThreadBackgroundResult(
+    threadId,
+    {
+      deliveryId: 'delivery-persistence-failure',
+      parentRunId: testRunId('parent-persistence-failure'),
+      childRunId: testRunId('child-persistence-failure'),
+      subagentType: 'explorer',
+      terminalState: 'completed',
+      result: 'must remain queued',
+      completedAt: '2026-04-02T00:00:00.000Z',
+    },
+  );
 
   await assert.rejects(
     executeForegroundRun({
@@ -195,7 +405,7 @@ void test('executeForegroundRun does not start the loop when required input pers
         runContext,
         prompt: 'model prompt',
         runState,
-        allowedToolNames: [],
+        toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
         runtimeServices: daemonContext,
         approvalContext: makeApprovalContext(),
         callModelImpl: createScriptedProviderCallModel([
@@ -216,6 +426,12 @@ void test('executeForegroundRun does not start the loop when required input pers
   );
 
   assert.deepEqual(events, []);
+  assert.deepEqual(
+    daemonContext.backgroundNotifications
+      .readThreadBackgroundResults(threadId)
+      .map((result) => result.deliveryId),
+    ['delivery-persistence-failure'],
+  );
   assert.deepEqual(await loadThreadIndex(workspaceRoot), []);
 });
 
@@ -224,11 +440,10 @@ void test('executeForegroundRun commits canonical envelope artifacts and stores 
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-fg-run-artifact-'),
   );
-  const daemonContext = createDaemonContext();
-  const runContext = makeRunWorkspaceContext({
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId(),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-fg-artifact',
@@ -245,7 +460,7 @@ void test('executeForegroundRun commits canonical envelope artifacts and stores 
       prompt: 'hidden prompt for artifact',
       currentFile: 'episodes/ch01.md',
       runState,
-      allowedToolNames: [],
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
       runtimeServices: daemonContext,
       approvalContext: makeApprovalContext(),
       callModelImpl: createScriptedProviderCallModel([
@@ -319,11 +534,10 @@ void test('executeForegroundRun persists wrapped legacy envelope final text as p
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-fg-run-legacy-prose-'),
   );
-  const daemonContext = createDaemonContext();
-  const runContext = makeRunWorkspaceContext({
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId(),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-fg-legacy-prose',
@@ -345,7 +559,7 @@ void test('executeForegroundRun persists wrapped legacy envelope final text as p
       prompt: 'hidden prompt for legacy prose',
       currentFile: 'episodes/ch02.md',
       runState,
-      allowedToolNames: [],
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
       runtimeServices: daemonContext,
       approvalContext: makeApprovalContext(),
       callModelImpl: createScriptedProviderCallModel([
@@ -385,11 +599,10 @@ void test('executeForegroundRun surfaces malformed assistant transcript persiste
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-fg-run-persist-recover-'),
   );
-  const daemonContext = createDaemonContext();
-  const runContext = makeRunWorkspaceContext({
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId(),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-fg-persist-recover',
@@ -405,7 +618,7 @@ void test('executeForegroundRun surfaces malformed assistant transcript persiste
       runContext,
       prompt: 'hidden prompt',
       runState,
-      allowedToolNames: [],
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
       runtimeServices: daemonContext,
       approvalContext: makeApprovalContext(),
       callModelImpl: createScriptedProviderCallModel([
@@ -474,11 +687,10 @@ void test('executeForegroundRun treats post-run assistant persistence as best-ef
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-fg-run-persist-warning-'),
   );
-  const daemonContext = createDaemonContext();
-  const runContext = makeRunWorkspaceContext({
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId(),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-fg-best-effort',
@@ -493,7 +705,7 @@ void test('executeForegroundRun treats post-run assistant persistence as best-ef
       runContext,
       prompt: 'hidden prompt',
       runState,
-      allowedToolNames: [],
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
       runtimeServices: daemonContext,
       approvalContext: makeApprovalContext(),
       callModelImpl: createScriptedProviderCallModel([
@@ -551,11 +763,10 @@ void test('executeForegroundRun includes post-run persistence diagnostics withou
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-fg-run-persist-diagnostics-'),
   );
-  const daemonContext = createDaemonContext();
-  const runContext = makeRunWorkspaceContext({
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId(),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-fg-persist-diagnostics',
@@ -569,7 +780,7 @@ void test('executeForegroundRun includes post-run persistence diagnostics withou
       runContext,
       prompt: 'hidden prompt',
       runState,
-      allowedToolNames: [],
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
       runtimeServices: daemonContext,
       approvalContext: makeApprovalContext(),
       callModelImpl: createScriptedProviderCallModel([
@@ -621,11 +832,10 @@ void test('executeForegroundRun rolls back an artifact when assistant transcript
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-fg-run-artifact-rollback-'),
   );
-  const daemonContext = createDaemonContext();
-  const runContext = makeRunWorkspaceContext({
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId(),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-fg-artifact-rollback',
@@ -642,7 +852,7 @@ void test('executeForegroundRun rolls back an artifact when assistant transcript
       runContext,
       prompt: 'hidden prompt',
       runState,
-      allowedToolNames: [],
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
       runtimeServices: daemonContext,
       approvalContext: makeApprovalContext(),
       callModelImpl: createScriptedProviderCallModel([
@@ -702,14 +912,109 @@ void test('executeForegroundRun rolls back an artifact when assistant transcript
   assert.equal(artifacts.length, 0);
 });
 
+void test('executeForegroundRun persists provider-native checkpoint before the new assistant tail and rebuilds it after restart', async () => {
+  const previousFlag = process.env[MID_RUN_STEER_ENABLED_ENV];
+  process.env[MID_RUN_STEER_ENABLED_ENV] = '1';
+  try {
+    const threadId = testThreadId(35);
+    const workspaceRoot = await mkdtemp(
+      join(tmpdir(), 'geulbat-fg-native-compaction-'),
+    );
+    const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+    const runContext = makeRunContext({
+      threadId,
+      stateRoot: workspaceRoot,
+    });
+    const finalRound = providerFinalAnswerRound('assistant tail');
+    const memoryPort = createAgentLoopMemoryPort({
+      resolvePolicy: async () => ({
+        providerId: 'openai_codex_direct',
+        model: daemonContext.providerRequestOptions.model,
+        contextWindow: 100,
+        thresholdTokens: 90,
+        supportsParallelToolCalls: true,
+      }),
+      compactHistory: async (input) => {
+        assert.equal(input.history.at(-1)?.kind, 'user');
+        return {
+          output: [
+            {
+              type: 'compaction',
+              encrypted_content: 'opaque-checkpoint',
+            },
+          ],
+        };
+      },
+      compactThread: compactThreadContextNative,
+    });
+
+    const result = await executeForegroundRun({
+      agentInput: {
+        runId: 'run-fg-native-compaction',
+        runContext,
+        prompt: 'compact this thread',
+        runtimeServices: daemonContext,
+        approvalContext: makeApprovalContext(),
+        memoryPort,
+        callModelImpl: createScriptedProviderCallModel([
+          {
+            ...finalRound,
+            events: [
+              ...(finalRound.events ?? []),
+              {
+                type: 'response.completed',
+                response: {
+                  usage: {
+                    input_tokens: 90,
+                    output_tokens: 4,
+                  },
+                },
+              },
+            ],
+          },
+        ]),
+        onEvent: () => undefined,
+      },
+      transcriptPrompt: 'compact this thread',
+      deps: { now: () => FIXED_NOW },
+    });
+
+    assert.deepEqual(result, { ok: true, finalProse: 'assistant tail' });
+    const transcript = await readTranscriptEntries(workspaceRoot, threadId);
+    assert.deepEqual(
+      transcript.map((entry) => entry.role),
+      ['user', 'compaction', 'assistant'],
+    );
+    const restartedHistory = await loadInitialHistory(
+      workspaceRoot,
+      threadId,
+      'next prompt',
+    );
+    assert.equal(restartedHistory[0]?.kind, 'provider_native_compaction');
+    assert.deepEqual(restartedHistory.slice(1), [
+      {
+        kind: 'assistant',
+        phase: 'final_answer',
+        text: 'assistant tail',
+      },
+      { kind: 'user', text: 'next prompt' },
+    ]);
+  } finally {
+    if (previousFlag === undefined) {
+      delete process.env[MID_RUN_STEER_ENABLED_ENV];
+    } else {
+      process.env[MID_RUN_STEER_ENABLED_ENV] = previousFlag;
+    }
+  }
+});
+
 void test('executeForegroundRun logs run lifecycle with run and thread identity', async () => {
   const threadId = testThreadId(34);
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-run-logs-'));
-  const daemonContext = createDaemonContext();
-  const runContext = makeRunWorkspaceContext({
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId(),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-fg-logs',
@@ -728,7 +1033,7 @@ void test('executeForegroundRun logs run lifecycle with run and thread identity'
         runContext,
         prompt: 'prompt',
         runState,
-        allowedToolNames: [],
+        toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
         runtimeServices: daemonContext,
         approvalContext: makeApprovalContext(),
         callModelImpl: createScriptedProviderCallModel([
@@ -755,7 +1060,7 @@ void test('executeForegroundRun logs run lifecycle with run and thread identity'
     String(agentLogs[0]?.[0] ?? ''),
     /info \[agent\/execute-foreground-run\] run started/,
   );
-  assert.match(String(agentLogs[0]?.[0] ?? ''), /projectId="/);
+  assert.doesNotMatch(String(agentLogs[0]?.[0] ?? ''), /projectId=/);
   assert.match(String(agentLogs[0]?.[0] ?? ''), /runId="run-fg-logs"/);
   assert.match(
     String(agentLogs[0]?.[0] ?? ''),

@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MISSING_PROVIDER_AUTH_CLIENT_ID_MESSAGE } from './daemon/auth/bootstrap/config.js';
+import {
+  GROK_OAUTH_REDIRECT_URI,
+  MISSING_PROVIDER_AUTH_CLIENT_ID_MESSAGE,
+  type ProviderAuthCallbackListenerConfig,
+} from './daemon/auth/bootstrap/config.js';
 import {
   authHeaders,
   createRouteTestDaemonContext,
@@ -99,6 +103,41 @@ void test('provider-auth start route validates launcher over authenticated HTTP'
   }
 });
 
+void test('provider-auth start route rejects unsupported provider ids', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
+  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const res = await fetch(
+          `http://127.0.0.1:${port}/api/provider-auth/start`,
+          {
+            method: 'POST',
+            headers: authHeaders({
+              'Content-Type': 'application/json',
+            }),
+            body: JSON.stringify({
+              launcher: 'web-shell',
+              providerId: 'grok',
+            }),
+          },
+        );
+
+        assert.equal(res.status, 400);
+        const body = (await res.json()) as { code: string; message: string };
+        assert.equal(body.code, 'bad_request');
+        assert.match(body.message, /providerId is not supported/);
+      },
+      { daemonContext },
+    );
+  } finally {
+    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
+    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+  }
+});
+
 void test('provider-auth start route returns conflict only when provider status is ready', async () => {
   const daemonContext = createRouteTestDaemonContext();
   daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
@@ -132,6 +171,67 @@ void test('provider-auth start route returns conflict only when provider status 
       { daemonContext },
     );
   } finally {
+    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
+    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+  }
+});
+
+void test('provider-auth start route can start Grok OAuth while Codex direct is already connected', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
+  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.providerAuthRuntime.setCachedProviderCredential({
+    accessToken: 'codex-access-token',
+    refreshToken: 'codex-refresh-token',
+    accountId: 'codex-account-1',
+    expiresAt: Date.now() + 60_000,
+  });
+  daemonContext.providerAuthRuntime.setHydratedProviderAuth(true);
+  daemonContext.providerAuthRuntime.setHydratedProviderAuth(true, 'grok_oauth');
+  const previousEnsureListening =
+    daemonContext.providerAuthCallbackServer.ensureListening;
+  let callbackListener: ProviderAuthCallbackListenerConfig | null = null;
+  daemonContext.providerAuthCallbackServer.ensureListening = async (
+    listener,
+  ) => {
+    callbackListener = listener ?? null;
+  };
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const res = await fetch(
+          `http://127.0.0.1:${port}/api/provider-auth/start`,
+          {
+            method: 'POST',
+            headers: authHeaders({
+              'Content-Type': 'application/json',
+            }),
+            body: JSON.stringify({
+              launcher: 'web-shell',
+              providerId: 'grok_oauth',
+            }),
+          },
+        );
+
+        assert.equal(res.status, 200);
+        const body = (await res.json()) as {
+          authSessionId: string;
+          authorizeUrl: string;
+          expiresAt: number;
+          providerId: string;
+        };
+        assert.equal(body.providerId, 'grok_oauth');
+        assert.ok(body.authSessionId.length > 0);
+        assert.match(body.authorizeUrl, /^https:\/\/auth\.x\.ai\//);
+        assert.equal(typeof body.expiresAt, 'number');
+        assert.equal(callbackListener?.redirectUri, GROK_OAUTH_REDIRECT_URI);
+      },
+      { daemonContext },
+    );
+  } finally {
+    daemonContext.providerAuthCallbackServer.ensureListening =
+      previousEnsureListening;
     daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
     daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
   }

@@ -5,8 +5,13 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
+  GROK_OAUTH_CLIENT_ID,
+  GROK_OAUTH_REDIRECT_URI,
+  GROK_OAUTH_SCOPE,
   MISSING_PROVIDER_AUTH_CLIENT_ID_MESSAGE,
   PROVIDER_AUTH_NOT_CONFIGURED_CODE,
+  PROVIDER_AUTH_REDIRECT_URI,
+  type ProviderAuthCallbackListenerConfig,
 } from './config.js';
 import { getErrorCode } from '../../utils/error.js';
 import { createProviderAuthBootstrapStore } from './session-store.js';
@@ -52,28 +57,32 @@ test.after(() => {
 void test('startProviderAuthLogin returns the current pending session', async () => {
   const bootstrapStore = createProviderAuthBootstrapStore();
   let ensureCalls = 0;
+  const callbackListeners: ProviderAuthCallbackListenerConfig[] = [];
 
   const first = await startProviderAuthLogin({
     bootstrapStore,
-    ensureCallbackServer: async () => {
+    ensureCallbackServer: async (listener) => {
       ensureCalls += 1;
+      callbackListeners.push(listener);
     },
   });
   const second = await startProviderAuthLogin({
     bootstrapStore,
-    ensureCallbackServer: async () => {
+    ensureCallbackServer: async (listener) => {
       ensureCalls += 1;
+      callbackListeners.push(listener);
     },
   });
 
   assert.equal(second.authSessionId, first.authSessionId);
+  assert.equal(first.providerId, 'openai_codex_direct');
 
   const url = new URL(first.authorizeUrl);
   assert.equal(url.searchParams.get('response_type'), 'code');
   assert.equal(url.searchParams.get('client_id')?.length ? true : false, true);
   assert.equal(
     url.searchParams.get('redirect_uri'),
-    'http://localhost:1455/auth/callback',
+    PROVIDER_AUTH_REDIRECT_URI,
   );
   assert.equal(
     url.searchParams.get('scope'),
@@ -89,6 +98,64 @@ void test('startProviderAuthLogin returns the current pending session', async ()
   assert.equal(url.searchParams.get('codex_cli_simplified_flow'), 'true');
   assert.equal(url.searchParams.get('originator'), 'pi');
   assert.equal(ensureCalls, 2);
+  assert.equal(
+    callbackListeners.at(-1)?.redirectUri,
+    PROVIDER_AUTH_REDIRECT_URI,
+  );
+});
+
+void test('startProviderAuthLogin builds a Grok OAuth authorize URL behind an explicit provider id', async () => {
+  const bootstrapStore = createProviderAuthBootstrapStore();
+  const callbackListeners: ProviderAuthCallbackListenerConfig[] = [];
+
+  const response = await startProviderAuthLogin({
+    providerId: 'grok_oauth',
+    bootstrapStore,
+    ensureCallbackServer: async (listener) => {
+      callbackListeners.push(listener);
+    },
+  });
+
+  assert.equal(response.providerId, 'grok_oauth');
+  assert.equal(
+    bootstrapStore.getPendingProviderAuthSession()?.providerId,
+    'grok_oauth',
+  );
+
+  const url = new URL(response.authorizeUrl);
+  assert.equal(url.origin, 'https://auth.x.ai');
+  assert.equal(url.pathname, '/oauth2/authorize');
+  assert.equal(url.searchParams.get('response_type'), 'code');
+  assert.equal(url.searchParams.get('client_id'), GROK_OAUTH_CLIENT_ID);
+  assert.equal(url.searchParams.get('redirect_uri'), GROK_OAUTH_REDIRECT_URI);
+  assert.equal(url.searchParams.get('scope'), GROK_OAUTH_SCOPE);
+  assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
+  assert.equal(url.searchParams.get('nonce')?.length ? true : false, true);
+  assert.equal(url.searchParams.get('id_token_add_organizations'), null);
+  assert.equal(url.searchParams.get('codex_cli_simplified_flow'), null);
+  assert.equal(url.searchParams.get('originator'), null);
+  assert.equal(callbackListeners.at(-1)?.redirectUri, GROK_OAUTH_REDIRECT_URI);
+});
+
+void test('startProviderAuthLogin only reuses pending sessions for the same provider', async () => {
+  const bootstrapStore = createProviderAuthBootstrapStore();
+
+  const codex = await startProviderAuthLogin({
+    bootstrapStore,
+    ensureCallbackServer: async () => {},
+  });
+  const grok = await startProviderAuthLogin({
+    providerId: 'grok_oauth',
+    bootstrapStore,
+    ensureCallbackServer: async () => {},
+  });
+
+  assert.notEqual(grok.authSessionId, codex.authSessionId);
+  assert.equal(grok.providerId, 'grok_oauth');
+  assert.equal(
+    bootstrapStore.getPendingProviderAuthSession()?.authSessionId,
+    grok.authSessionId,
+  );
 });
 
 void test('startProviderAuthLogin can use an injected bootstrap store', async () => {

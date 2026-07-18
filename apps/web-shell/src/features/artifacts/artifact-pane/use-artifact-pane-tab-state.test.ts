@@ -13,21 +13,21 @@ void test('useArtifactPaneTabState keeps selection until the artifact session ch
   assert.equal(hook.result.current.tab, 'show');
 
   await hook.run((state) => {
-    state.handleSelectTab('raw');
+    state.handleSelectTab('source');
   });
-  assert.equal(hook.result.current.tab, 'raw');
+  assert.equal(hook.result.current.tab, 'source');
 
   await hook.rerender({
     artifactSessionKey: 'artifact-a',
     defaultTab: 'show',
   });
-  assert.equal(hook.result.current.tab, 'raw');
+  assert.equal(hook.result.current.tab, 'source');
 
   await hook.rerender({
     artifactSessionKey: 'artifact-b',
-    defaultTab: 'write',
+    defaultTab: 'source',
   });
-  assert.equal(hook.result.current.tab, 'write');
+  assert.equal(hook.result.current.tab, 'source');
 
   hook.unmount();
 });

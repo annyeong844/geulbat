@@ -10,7 +10,6 @@ export type { ApprovalClass } from '@geulbat/protocol/run-approval';
 
 export interface ApprovalGrantContext {
   runId: string;
-  threadId: string;
   sessionId: string;
   approvalClass: ApprovalClass;
   sideEffectLevel: SideEffectLevel;
@@ -19,7 +18,6 @@ export interface ApprovalGrantContext {
 
 interface ApprovalGrantBucket {
   run: Set<string>;
-  thread: Set<string>;
   session: Set<string>;
 }
 
@@ -50,7 +48,6 @@ export function createApprovalGrantStore(): ApprovalGrantStore {
 
     const next: ApprovalGrantBucket = {
       run: new Set<string>(),
-      thread: new Set<string>(),
       session: new Set<string>(),
     };
     approvalGrantsBySession.set(sessionId, next);
@@ -76,14 +73,6 @@ export function createApprovalGrantStore(): ApprovalGrantStore {
             ),
           );
           return;
-        case 'thread':
-          store.thread.add(
-            buildScopedApprovalKey(
-              approvalGrantContext.threadId,
-              approvalGrantContext.approvalClass,
-            ),
-          );
-          return;
         case 'session':
           store.session.add(approvalGrantContext.approvalClass);
           return;
@@ -96,17 +85,6 @@ export function createApprovalGrantStore(): ApprovalGrantStore {
       }
 
       if (store.session.has(approvalGrantContext.approvalClass)) {
-        return true;
-      }
-
-      if (
-        store.thread.has(
-          buildScopedApprovalKey(
-            approvalGrantContext.threadId,
-            approvalGrantContext.approvalClass,
-          ),
-        )
-      ) {
         return true;
       }
 

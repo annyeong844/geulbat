@@ -2,13 +2,17 @@ import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { RunRequest } from '@geulbat/protocol/run-contract';
 
 import type { RunTranscriptEntry } from '../../lib/run-transcript-entry.js';
+import { ArtifactReferenceChip } from './artifact-pane/artifact-reference-chip.js';
 import { CommittedArtifactMessage } from './artifact-pane/index.js';
+import {
+  canRenderInlineImageArtifact,
+  InlineImageArtifactMessage,
+} from './artifact-pane/inline-image-artifact.js';
 import { assistantStyles } from './assistant-styles.js';
 import { RunTranscriptEntryBlock } from './assistant-transcript-entry-blocks.js';
 import { TranscriptTextMessage } from './assistant-transcript-message.js';
 
 export function AssistantTranscriptLiveTail(props: {
-  showStartingPlaceholder: boolean;
   finalAnswerText: string;
   activeArtifact: ThreadArtifactVersion | null;
   streamError: string | null;
@@ -19,12 +23,15 @@ export function AssistantTranscriptLiveTail(props: {
   backgroundNotificationKeys: string[];
   hasUnreadStreamContent: boolean;
   isRunning: boolean;
-  onOpenSource?: (path: string) => Promise<void> | void;
   onStartArtifactRun?: (request: RunRequest) => Promise<void> | void;
   onJumpToLatest: () => void;
+  onOpenChildSession?: Parameters<
+    typeof RunTranscriptEntryBlock
+  >[0]['onOpenChildSession'];
+  // 존재하면 스트리밍 아티팩트도 인라인 대신 참조 칩 + 중앙 패널로 흐른다
+  onOpenArtifact?: (artifact: ThreadArtifactVersion) => void;
 }) {
   const {
-    showStartingPlaceholder,
     finalAnswerText,
     activeArtifact,
     streamError,
@@ -32,36 +39,50 @@ export function AssistantTranscriptLiveTail(props: {
     backgroundNotificationKeys,
     hasUnreadStreamContent,
     isRunning,
-    onOpenSource,
     onStartArtifactRun,
     onJumpToLatest,
+    onOpenChildSession,
+    onOpenArtifact,
   } = props;
 
   return (
     <>
-      {showStartingPlaceholder ? (
-        <div style={assistantStyles.startingBlock}>
-          <div style={assistantStyles.messageRole}>assistant (starting...)</div>
-          <pre style={assistantStyles.messageText}>Thinking...</pre>
-        </div>
-      ) : null}
-
       {finalAnswerText ? (
-        <TranscriptTextMessage role="assistant" content={finalAnswerText} />
-      ) : null}
-
-      {activeArtifact ? (
-        <CommittedArtifactMessage
-          label="assistant"
-          artifact={activeArtifact}
-          isRunning={isRunning}
-          {...(onOpenSource !== undefined ? { onOpenSource } : {})}
-          {...(onStartArtifactRun !== undefined ? { onStartArtifactRun } : {})}
+        <TranscriptTextMessage
+          messageRole="assistant"
+          content={finalAnswerText}
         />
       ) : null}
 
+      {activeArtifact ? (
+        canRenderInlineImageArtifact(activeArtifact) ? (
+          <div className="transcript-message from-assistant">
+            <InlineImageArtifactMessage artifact={activeArtifact} />
+          </div>
+        ) : onOpenArtifact !== undefined ? (
+          <div className="transcript-message from-assistant">
+            <ArtifactReferenceChip
+              artifact={activeArtifact}
+              isStreaming={isRunning}
+              onOpen={onOpenArtifact}
+            />
+          </div>
+        ) : (
+          <CommittedArtifactMessage
+            label="assistant"
+            artifact={activeArtifact}
+            isRunning={isRunning}
+            {...(onStartArtifactRun !== undefined
+              ? { onStartArtifactRun }
+              : {})}
+          />
+        )
+      ) : null}
+
       {streamError ? (
-        <div style={assistantStyles.errorBanner}>{streamError}</div>
+        <div style={assistantStyles.errorBanner} role="alert">
+          응답 생성 실패. {streamError}
+        </div>
       ) : null}
 
       {backgroundNotifications.map((entry, index) => (
@@ -70,9 +91,13 @@ export function AssistantTranscriptLiveTail(props: {
             backgroundNotificationKeys[index] ??
             `background-${entry.childRunId}`
           }
-          style={assistantStyles.backgroundNotification}
         >
-          <RunTranscriptEntryBlock entry={entry} />
+          <RunTranscriptEntryBlock
+            entry={entry}
+            {...(onOpenChildSession !== undefined
+              ? { onOpenChildSession }
+              : {})}
+          />
         </div>
       ))}
 

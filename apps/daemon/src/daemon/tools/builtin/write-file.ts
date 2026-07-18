@@ -3,7 +3,8 @@ import { catchToolError, toolError } from '../result.js';
 import {
   prepareMutatingFilePath,
   persistPreparedFile,
-} from './file-mutation-chain.js';
+} from '../../files/file-mutation-chain.js';
+import { resolveComputerFileToolPath } from '../file-tool-root.js';
 import { defineZodTool } from '../zod-tool.js';
 
 const writeFileArgsSchema = z.strictObject({
@@ -13,7 +14,9 @@ const writeFileArgsSchema = z.strictObject({
     .refine((value) => value.trim().length > 0, {
       message: 'path must not be empty.',
     })
-    .describe('The path to the file to write, relative to the workspace root.'),
+    .describe(
+      'The path to write. Relative paths start from the current directory inside ComputerFileScope.',
+    ),
   content: z.string().describe('The content to write to the file.'),
   versionToken: z
     .string()
@@ -30,8 +33,15 @@ export const writeFileTool = defineZodTool({
     'Write content to a file at the specified path. Creates the file if it does not exist, or overwrites it if it does. Parent directories are created as needed.',
   argsSchema: writeFileArgsSchema,
   sideEffectLevel: 'write',
-  mayMutateWorkspaceFiles: true,
+  mayMutateComputerFiles: true,
   requiresApproval: true,
+  catalogSearchMetadata: {
+    family: 'file',
+    searchHints: ['write file', 'create file', 'save file'],
+    tags: ['file', 'mutation', 'approval'],
+    whenToUse: 'Create a new file or write full file content.',
+    notFor: 'Small exact replacements in existing files.',
+  },
   async executeParsed(args, ctx) {
     const inputPath = args.path;
     const content = args.content;
@@ -39,9 +49,10 @@ export const writeFileTool = defineZodTool({
     const hasNonEmptyVersionToken = versionToken.trim().length > 0;
 
     try {
+      const filePath = resolveComputerFileToolPath(ctx, inputPath);
       const preparedFile = await prepareMutatingFilePath(
-        ctx.workspaceRoot,
-        inputPath,
+        filePath.absoluteRoot,
+        filePath.path,
         { allowMissingLeaf: true },
       );
       const { exists } = preparedFile;
@@ -62,6 +73,7 @@ export const writeFileTool = defineZodTool({
       );
 
       const output = {
+        root: filePath.root,
         path: result.path,
         ok: true,
         versionToken: result.versionToken,

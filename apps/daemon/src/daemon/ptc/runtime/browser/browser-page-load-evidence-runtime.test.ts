@@ -19,11 +19,11 @@ import {
 } from '../../../../test-support/ptc-browser-page-load-evidence.js';
 import {
   PTC_TEST_SESSION_DOCKER_CONTAINER_ID,
+  PTC_TEST_SESSION_DOCKER_HOST_USER,
   createPtcSessionDockerCommandFixture,
   readPtcSessionDockerBindMountHostPath,
 } from '../../../../test-support/ptc-session-docker.js';
-import { makeRunWorkspaceContext } from '../../../../test-support/run-workspace-context.js';
-import { testProjectId } from '../../../../test-support/project-id.js';
+import { makeRunContext } from '../../../../test-support/run-context.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { createPtcBrowserPageLoadEvidenceRuntime } from './browser-page-load-evidence-runtime.js';
 
@@ -110,9 +110,10 @@ void test('createPtcBrowserPageLoadEvidenceRuntime wires page-load evidence poli
   try {
     const runtime = createPtcBrowserPageLoadEvidenceRuntime({
       commandRunner: fixture.runner,
-      realpathWorkspaceRoot: async () =>
+      hostUser: PTC_TEST_SESSION_DOCKER_HOST_USER,
+      realpathStateRoot: async () =>
         '/real/workspace/browser-page-load-evidence',
-      runtimeRootForWorkspace: () => runtimeRoot,
+      runtimeRootForState: () => runtimeRoot,
       now: (() => {
         let value = 100;
         return () => {
@@ -123,10 +124,9 @@ void test('createPtcBrowserPageLoadEvidenceRuntime wires page-load evidence poli
     });
 
     const result = await runtime.collectEvidence({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(950),
-        projectId: testProjectId('project'),
-        workspaceRoot: '/workspace/project',
+        stateRoot: '/workspace/project',
       }),
       request: {
         url: 'https://example.com/private?access_token=secret#id_token=secret',

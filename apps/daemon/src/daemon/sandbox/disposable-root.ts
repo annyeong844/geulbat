@@ -5,7 +5,7 @@ import { join } from 'node:path';
 type CreateSandboxDirectory = (
   path: string,
   options: { recursive: true },
-) => Promise<unknown> | unknown;
+) => unknown;
 
 export interface DisposableSandboxRoot {
   rootPath: string;

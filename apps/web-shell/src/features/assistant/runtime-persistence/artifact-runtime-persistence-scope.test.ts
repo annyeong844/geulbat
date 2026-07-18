@@ -1,19 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { ProjectId, ThreadId } from '@geulbat/protocol/ids';
+import type { ThreadId } from '@geulbat/protocol/ids';
 
 import {
   createArtifactRuntimePersistenceScopeHandle,
   createArtifactRuntimePersistenceScopeKey,
 } from './artifact-runtime-persistence-scope.js';
 
-const PROJECT_ID = 'workspace' as ProjectId;
 const THREAD_ID = '00000000-0000-4000-8000-000000000001' as ThreadId;
 const ARTIFACT_ID = 'art_demo_js';
 
 function createScope(overrides: Record<string, unknown> = {}) {
   return {
-    projectId: PROJECT_ID,
     threadId: THREAD_ID,
     renderer: 'js' as const,
     artifactId: ARTIFACT_ID,
@@ -26,7 +24,7 @@ void test('createArtifactRuntimePersistenceScopeKey returns the canonical host-o
   assert.equal(createArtifactRuntimePersistenceScopeKey(null), null);
   assert.equal(
     createArtifactRuntimePersistenceScopeKey(createScope()),
-    JSON.stringify([PROJECT_ID, THREAD_ID, ARTIFACT_ID, 0]),
+    JSON.stringify([THREAD_ID, ARTIFACT_ID, 0]),
   );
 });
 

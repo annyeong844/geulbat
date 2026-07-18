@@ -31,7 +31,7 @@ import {
 const IDENTITY: PtcSessionDockerIdentity = Object.freeze({
   threadId: 'thread-browser-runtime-command',
   trustContextId: 'trust-local-v1',
-  workspaceRoot: '/workspace/project-a',
+  stateRoot: '/workspace/project-a',
 });
 
 const ATTEMPT_DIGEST = `sha256:${'a'.repeat(64)}` as PtcSha256Digest;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { assertProjectId, assertThreadId } from '@geulbat/protocol/ids';
+import { assertThreadId } from '@geulbat/protocol/ids';
 import { z } from 'zod';
 import { defineParsedTool } from './parsed-tool.js';
 import { createToolRegistryStore } from './registry.js';
@@ -39,7 +39,7 @@ const manualTool = defineParsedTool({
   },
   strict: true,
   sideEffectLevel: 'write',
-  mayMutateWorkspaceFiles: true,
+  mayMutateComputerFiles: true,
   timeoutMs: 1_000,
   requiresApproval: true,
   parseArgs(raw): ToolParseResult<{ path: string; replaceAll?: boolean }> {
@@ -90,7 +90,7 @@ const zodTool = defineZodTool({
   description: 'type-level zod seam test',
   argsSchema: zodArgsSchema,
   sideEffectLevel: 'read',
-  mayMutateWorkspaceFiles: false,
+  mayMutateComputerFiles: false,
   timeoutMs: 1_000,
   requiresApproval: false,
   async executeParsed(args, _ctx) {
@@ -104,7 +104,6 @@ const zodTool = defineZodTool({
 const _erasedTool: AnyTool = zodTool;
 const registry = createToolRegistryStore({ builtins: [zodTool] });
 const THREAD_ID = assertThreadId('00000000-0000-4000-8000-000000000001');
-const PROJECT_ID = assertProjectId('workspace');
 
 type ManualExecuteArgs = Parameters<typeof manualTool.executeParsed>[0];
 type ManualParseInput = Parameters<typeof manualTool.parseArgs>[0];
@@ -138,8 +137,17 @@ type _AgentContextKeepsSelectionPresentAsUndefinedableField = Expect<
     { startLine: number; endLine: number; text: string } | undefined
   >
 >;
-type _StandaloneContextStillRequiresWorkspaceRoot = Expect<
-  Equal<StandaloneToolExecutionContext['workspaceRoot'], string>
+type _StandaloneContextAllowsOptionalHomeStateRoot = Expect<
+  Equal<StandaloneToolExecutionContext['stateRoot'], string | undefined>
+>;
+type _StandaloneContextAllowsOptionalWorkingDirectory = Expect<
+  Equal<StandaloneToolExecutionContext['workingDirectory'], string | undefined>
+>;
+type _AgentContextRequiresHomeStateRoot = Expect<
+  Equal<AgentToolExecutionContext['stateRoot'], string>
+>;
+type _AgentContextRequiresWorkingDirectory = Expect<
+  Equal<AgentToolExecutionContext['workingDirectory'], string>
 >;
 type _StandaloneContextUsesExplicitKind = Expect<
   Equal<StandaloneToolExecutionContext['kind'], 'standalone' | undefined>
@@ -150,7 +158,36 @@ type _AgentContextUsesExplicitKind = Expect<
 type _StandaloneContextStillAllowsOptionalApprovalSession = Expect<
   Equal<StandaloneToolExecutionContext['approvalSessionId'], string | undefined>
 >;
-
+type _StandaloneContextAllowsOptionalComputerFileRoot = Expect<
+  Equal<StandaloneToolExecutionContext['computerFileRoot'], string | undefined>
+>;
+type _AgentContextAllowsOptionalComputerFileRoot = Expect<
+  Equal<AgentToolExecutionContext['computerFileRoot'], string | undefined>
+>;
+type _StandaloneContextExcludesProjectIdentity = Expect<
+  Equal<
+    'projectId' extends keyof StandaloneToolExecutionContext ? true : false,
+    false
+  >
+>;
+type _AgentContextExcludesProjectIdentity = Expect<
+  Equal<
+    'projectId' extends keyof AgentToolExecutionContext ? true : false,
+    false
+  >
+>;
+type _StandaloneContextExcludesWorkspaceRoot = Expect<
+  Equal<
+    'workspaceRoot' extends keyof StandaloneToolExecutionContext ? true : false,
+    false
+  >
+>;
+type _AgentContextExcludesWorkspaceRoot = Expect<
+  Equal<
+    'workspaceRoot' extends keyof AgentToolExecutionContext ? true : false,
+    false
+  >
+>;
 function collectArgs(_ctx: ToolExecutionContext): void {
   // compile-only anchor so ToolExecutionContext stays in this file's seam.
 }
@@ -161,12 +198,10 @@ void test('tool generic args boundary type contracts compile', async () => {
   if (parsed.ok) {
     const result = await manualTool.executeParsed(parsed.value, {
       callId: 'call-type-boundary',
-      workspaceRoot: '/tmp/type-boundary',
     });
     assert.equal(result.ok, true);
     collectArgs({
       callId: 'call-type-boundary',
-      workspaceRoot: '/tmp/type-boundary',
     });
   }
 
@@ -178,29 +213,32 @@ void test('agent tool execution context guard uses explicit context kind', () =>
   const standaloneContext: StandaloneToolExecutionContext = {
     kind: 'standalone',
     callId: 'call-standalone',
-    workspaceRoot: '/tmp/type-boundary',
+    stateRoot: '/tmp/home-state',
+    workingDirectory: '/tmp/type-boundary',
+    computerFileRoot: '/tmp/computer-session',
     approvalGranted: true,
     approvalSessionId: 'approval-session',
     permissionMode: 'basic',
     threadId: THREAD_ID,
     runId: 'run-1',
-    projectId: PROJECT_ID,
     emitAgentEvent: () => undefined,
   };
 
   const agentContext = buildAgentToolExecutionContext({
     base: {
       kind: 'agent',
+      runOwnerKind: 'root_main',
       signal: undefined,
       runSignal: undefined,
-      workspaceRoot: '/tmp/type-boundary',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: '/tmp/type-boundary',
+      computerFileRoot: '/tmp/computer-session',
       currentFile: undefined,
       selection: undefined,
       approvalSessionId: 'approval-session',
       permissionMode: 'basic',
       threadId: THREAD_ID,
       runId: 'run-1',
-      projectId: PROJECT_ID,
       runState: undefined,
       emitAgentEvent: () => undefined,
       memoryIndex: undefined,
@@ -212,4 +250,5 @@ void test('agent tool execution context guard uses explicit context kind', () =>
 
   assert.equal(isAgentToolExecutionContext(standaloneContext), false);
   assert.equal(isAgentToolExecutionContext(agentContext), true);
+  assert.equal(agentContext.computerFileRoot, '/tmp/computer-session');
 });

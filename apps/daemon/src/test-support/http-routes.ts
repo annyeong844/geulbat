@@ -5,26 +5,25 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ProjectId } from '@geulbat/protocol/ids';
 import { DEV_TOKEN_HEADER_NAME } from '@geulbat/protocol/shell-auth';
 
 import { createDaemon } from '../create-daemon.js';
 import { createDaemonContext, type DaemonContext } from '../daemon/context.js';
-import { DEFAULT_PROJECT_ID } from '../daemon/files/project-registry-state.js';
-import type {
-  ProjectRegistryContext,
-  ProjectStoreContext,
-} from '../adapter/web/routes/routes-context.js';
 import { ensureTestProviderAuthFilePath } from './provider-auth.js';
 
 const DEV_TOKEN = 'geulbat-test-token-1234';
 ensureTestProviderAuthFilePath();
 
 export function createRouteTestDaemonContext(): DaemonContext {
-  const daemonContext = createDaemonContext();
-  daemonContext.projectRegistry.configureProjectRegistryRoot(
-    createRouteTestRepoRoot(),
-  );
+  const testRoot = createRouteTestRoot();
+  const homeStateRoot = join(testRoot, 'home');
+  const computerFileRoot = join(testRoot, 'computer');
+  const daemonContext = createDaemonContext({ homeStateRoot });
+  daemonContext.computerFileScope = {
+    root: computerFileRoot,
+    browseShortcuts: [],
+  };
+  daemonContext.computerFileRoot = computerFileRoot;
   return daemonContext;
 }
 
@@ -37,24 +36,20 @@ export function authHeaders(
   };
 }
 
-export function getWorkspaceRootFromContext(
-  daemonContext: ProjectRegistryContext,
-  projectId = DEFAULT_PROJECT_ID,
+export function getHomeStateRootFromContext(
+  daemonContext: Pick<DaemonContext, 'homeStateRoot'>,
 ): string {
-  const workspaceRoot =
-    daemonContext.projectRegistry.resolveProjectRoot(projectId);
-  assert.ok(workspaceRoot, 'workspace project root must resolve');
-  return workspaceRoot;
+  return daemonContext.homeStateRoot;
 }
 
-export function getSecondaryProjectIdFromContext(
-  daemonContext: ProjectStoreContext,
-): ProjectId {
-  const secondaryProject = daemonContext.projectStore
-    .snapshotProjectRegistry()
-    .projects.find((project) => project.projectId !== DEFAULT_PROJECT_ID);
-  assert.ok(secondaryProject, 'secondary project must exist');
-  return secondaryProject.projectId;
+export function getComputerFileRootFromContext(
+  daemonContext: Pick<DaemonContext, 'computerFileRoot'>,
+): string {
+  assert.ok(
+    daemonContext.computerFileRoot,
+    'computer file root must be configured',
+  );
+  return daemonContext.computerFileRoot;
 }
 
 export async function withAuthenticatedDaemonServer<T>(
@@ -74,11 +69,8 @@ export async function withDaemonServer<T>(
   args?: { daemonContext?: DaemonContext },
 ): Promise<T> {
   const daemonContext = args?.daemonContext ?? createRouteTestDaemonContext();
-  const { app } = await createDaemon({
-    repoRoot: daemonContext.projectRegistry.getProjectRegistryRoot(),
-    daemonContext,
-  });
-  await ensureRouteTestProjectRoots(daemonContext);
+  await ensureRouteTestRoots(daemonContext);
+  const { app } = await createDaemon({ daemonContext });
   const server = app.listen(0, '127.0.0.1');
 
   try {
@@ -101,18 +93,17 @@ function setDevToken(): () => void {
   return () => restoreEnv('GEULBAT_DEV_TOKEN', previous);
 }
 
-function createRouteTestRepoRoot(): string {
+function createRouteTestRoot(): string {
   return join(tmpdir(), `geulbat-route-test-${randomUUID()}`);
 }
 
-async function ensureRouteTestProjectRoots(
-  daemonContext: Pick<DaemonContext, 'projectRegistry'>,
+async function ensureRouteTestRoots(
+  daemonContext: Pick<DaemonContext, 'computerFileRoot' | 'homeStateRoot'>,
 ): Promise<void> {
-  await Promise.all(
-    daemonContext.projectRegistry
-      .getProjectRegistryEntries()
-      .map((entry) => mkdir(entry.workspaceRoot, { recursive: true })),
-  );
+  await Promise.all([
+    mkdir(daemonContext.homeStateRoot, { recursive: true }),
+    mkdir(getComputerFileRootFromContext(daemonContext), { recursive: true }),
+  ]);
 }
 
 async function listenPort(server: Server): Promise<number> {

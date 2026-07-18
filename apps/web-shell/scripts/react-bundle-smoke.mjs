@@ -517,7 +517,7 @@ async function resolveSmokeFixture(options = {}) {
             await fulfillFromDaemonFixture(
               route,
               PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_MODULE_PATH,
-              'text/javascript; charset=utf-8',
+              'application/javascript; charset=utf-8',
             );
             return;
           }

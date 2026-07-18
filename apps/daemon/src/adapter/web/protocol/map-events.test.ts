@@ -24,7 +24,7 @@ void test('mapAgentEventToRunEvent maps valid tool_result payloads', () => {
       step: 2,
       tool: 'read_file',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'ok',
       raw: { path: 'docs/a.md' },
     },
@@ -37,7 +37,7 @@ void test('mapAgentEventToRunEvent maps valid tool_result payloads', () => {
   assert.equal(event.payload.callId, 'call-1');
   assert.equal(event.payload.tool, 'read_file');
   assert.equal(event.payload.ok, true);
-  assert.equal(event.payload.workspaceFilesMayHaveChanged, false);
+  assert.equal(event.payload.computerFilesMayHaveChanged, false);
 });
 
 void test('mapAgentEventToRunEvent throws on invalid internal payloads', () => {
@@ -76,7 +76,7 @@ void test('mapAgentEventToRunEvent forwards PTC callback source on tool_call and
       step: 2,
       tool: 'read_file',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'ok',
       raw: { path: 'docs/a.md' },
       source,
@@ -101,6 +101,23 @@ void test('mapAgentEventToRunEvent maps applied interject events through the ada
 
   assert.equal(applied.type, 'interject_applied');
   assert.deepEqual(applied.payload.receivedSeqs, [1]);
+});
+
+void test('mapAgentEventToRunEvent maps exact context usage snapshots', () => {
+  const event = mapAgentEventToRunEvent(RUN_ID, THREAD_ID, 8, {
+    type: 'context_usage_updated',
+    payload: {
+      state: 'measured',
+      modelId: 'gpt-5.6-sol',
+      inputTokens: 122_400,
+      contextWindow: 272_000,
+      thresholdTokens: 244_800,
+    },
+  });
+
+  assert.equal(event.type, 'context_usage_updated');
+  assert.equal(event.payload.inputTokens, 122_400);
+  assert.equal(event.payload.thresholdTokens, 244_800);
 });
 
 void test('mapBackgroundSubagentTerminalToRunEvent maps valid payloads', () => {

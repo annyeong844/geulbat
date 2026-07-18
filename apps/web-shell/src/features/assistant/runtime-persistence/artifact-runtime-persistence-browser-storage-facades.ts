@@ -20,10 +20,7 @@ export function createLocalStorageFacade({
       store.assertSharedStorageAvailable();
       const normalizedKey = store.normalizeStorageKey(key);
       const currentStorageMap = store.readCurrentStorageMap();
-      return Object.prototype.hasOwnProperty.call(
-        currentStorageMap,
-        normalizedKey,
-      )
+      return Object.hasOwn(currentStorageMap, normalizedKey)
         ? String(currentStorageMap[normalizedKey])
         : null;
     },
@@ -45,9 +42,7 @@ export function createLocalStorageFacade({
       store.assertSharedStorageAvailable();
       const normalizedKey = store.normalizeStorageKey(key);
       const currentStorageMap = store.readCurrentStorageMap();
-      if (
-        !Object.prototype.hasOwnProperty.call(currentStorageMap, normalizedKey)
-      ) {
+      if (!Object.hasOwn(currentStorageMap, normalizedKey)) {
         return;
       }
       void store
@@ -100,10 +95,7 @@ export function createSessionStorageFacade({
       store.assertStorageBootstrapReady();
       const normalizedKey = store.normalizeStorageKey(key);
       const currentSessionStorageMap = store.readCurrentSessionStorageMap();
-      return Object.prototype.hasOwnProperty.call(
-        currentSessionStorageMap,
-        normalizedKey,
-      )
+      return Object.hasOwn(currentSessionStorageMap, normalizedKey)
         ? String(currentSessionStorageMap[normalizedKey])
         : null;
     },
@@ -118,12 +110,7 @@ export function createSessionStorageFacade({
       store.assertStorageBootstrapReady();
       const normalizedKey = store.normalizeStorageKey(key);
       const currentSessionStorageMap = store.readCurrentSessionStorageMap();
-      if (
-        !Object.prototype.hasOwnProperty.call(
-          currentSessionStorageMap,
-          normalizedKey,
-        )
-      ) {
+      if (!Object.hasOwn(currentSessionStorageMap, normalizedKey)) {
         return;
       }
       store.createNextSessionStorageMap((map) => {
@@ -135,9 +122,7 @@ export function createSessionStorageFacade({
       if (Object.keys(store.readCurrentSessionStorageMap()).length === 0) {
         return;
       }
-      const next = Object.create(null) as Record<string, string>;
-      clearRecord(next);
-      store.replaceCurrentSessionStorageMap(next);
+      store.createNextSessionStorageMap(clearRecord);
     },
     key(index: unknown) {
       store.assertStorageBootstrapReady();

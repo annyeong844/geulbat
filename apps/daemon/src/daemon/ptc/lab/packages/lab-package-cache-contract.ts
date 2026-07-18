@@ -50,7 +50,8 @@ export interface PtcLabPackageManagerPolicy {
 
 export interface PtcPackageCacheIdentityInput {
   trustContextId: string;
-  workspaceRootRealpath: string;
+  stateRootRealpath: string;
+  ephemeralBurstId?: `ptc_burst_${string}`;
   labPolicyId: string;
   packageCacheId: string;
   packageCacheMountPolicyId: string;
@@ -61,7 +62,8 @@ export interface PtcPackageCacheIdentityInput {
 
 interface PtcPackageCacheIdentityFieldSource {
   trustContextId: string;
-  workspaceRootRealpath: string;
+  stateRootRealpath: string;
+  ephemeralBurstId?: `ptc_burst_${string}`;
   labPolicyId: string;
   packageCacheId: string;
   packageCacheMountPolicyId: string;
@@ -128,7 +130,10 @@ export function pickPtcPackageCacheIdentityInput(
 ): PtcPackageCacheIdentityInput {
   return {
     trustContextId: source.trustContextId,
-    workspaceRootRealpath: source.workspaceRootRealpath,
+    stateRootRealpath: source.stateRootRealpath,
+    ...(source.ephemeralBurstId === undefined
+      ? {}
+      : { ephemeralBurstId: source.ephemeralBurstId }),
     labPolicyId: source.labPolicyId,
     packageCacheId: source.packageCacheId,
     packageCacheMountPolicyId: source.packageCacheMountPolicyId,

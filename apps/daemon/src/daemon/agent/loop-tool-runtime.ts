@@ -1,5 +1,5 @@
 import type { AgentToolExecutionContextBase } from '../tools/types.js';
-import type { RunWorkspaceContext } from '../run-workspace-context.js';
+import type { RunContext } from '../run-context.js';
 import type { ToolExecutionRegistry } from '../tools/tool-registry-model.js';
 import type {
   AgentMemoryIndex,
@@ -9,10 +9,18 @@ import type { ApprovalGate } from './runtime/approval-gate.js';
 import type { RunState } from './runtime/run-state.js';
 import type { AgentEventEmitter } from './events.js';
 import type { ApprovalContext, LineSelection } from './loop-types.js';
+import { isAgentRunId } from './contract.js';
 
 export type ApprovalTarget = {
   runId: string;
-  threadId: RunWorkspaceContext['threadId'];
+  threadId: RunContext['threadId'];
+};
+
+type AgentLoopToolExecutionContextBase = Omit<
+  AgentToolExecutionContextBase,
+  'runState'
+> & {
+  runState: RunState | undefined;
 };
 
 export type AgentToolCallRuntimeBase = {
@@ -20,7 +28,7 @@ export type AgentToolCallRuntimeBase = {
   emit: AgentEventEmitter;
   toolRegistry: ToolExecutionRegistry;
   approvalGrants: AgentRuntimeServices['approvalGrants'];
-  executionContextBase: AgentToolExecutionContextBase;
+  executionContextBase: AgentLoopToolExecutionContextBase;
 };
 
 export interface AgentToolCallExecutionRuntime extends AgentToolCallRuntimeBase {
@@ -28,17 +36,16 @@ export interface AgentToolCallExecutionRuntime extends AgentToolCallRuntimeBase 
 }
 
 type ExecutionContextBaseOwner = {
-  executionContextBase?: AgentToolExecutionContextBase;
-  runContext?: RunWorkspaceContext;
+  executionContextBase?: AgentLoopToolExecutionContextBase;
+  runContext?: RunContext;
   runState?: RunState;
   signal?: AbortSignal;
   runId?: string;
-  workspaceRoot?: string;
-  threadId?: RunWorkspaceContext['threadId'];
+  threadId?: RunContext['threadId'];
 };
 
 export function buildAgentToolExecutionContextBase(args: {
-  runContext: RunWorkspaceContext;
+  runContext: RunContext;
   runId: string;
   approvalContext: ApprovalContext;
   emit: AgentEventEmitter;
@@ -46,26 +53,48 @@ export function buildAgentToolExecutionContextBase(args: {
   selection: LineSelection | undefined;
   signal: AbortSignal | undefined;
   runState: RunState | undefined;
-  allowedToolNames?: readonly string[];
+  allowedRegistryNames?: readonly string[];
+  toolLibraryProjectionIdentity?: AgentToolExecutionContextBase['toolLibraryProjectionIdentity'];
+  providerRunSelection?: AgentToolExecutionContextBase['providerRunSelection'];
+  subagentModelRouting?: AgentToolExecutionContextBase['subagentModelRouting'];
+  computerFileRoot?: string;
   fileStateCache?: AgentRuntimeServices['fileStateCache'];
   memoryIndex: AgentMemoryIndex | undefined;
   agentSpawnRuntime: AgentRuntimeServices | undefined;
-}): AgentToolExecutionContextBase {
+}): AgentLoopToolExecutionContextBase {
+  const runOwnerKind =
+    isAgentRunId(args.runId) &&
+    args.agentSpawnRuntime?.childRuns.getChildRun(args.runId) !== undefined
+      ? 'child'
+      : 'root_main';
   return {
     kind: 'agent',
     signal: args.signal,
     runSignal: args.signal,
-    workspaceRoot: args.runContext.workspaceRoot,
+    stateRoot: args.runContext.stateRoot,
+    workingDirectory: args.runContext.workingDirectory,
+    ...(args.computerFileRoot === undefined
+      ? {}
+      : { computerFileRoot: args.computerFileRoot }),
     currentFile: args.currentFile,
     selection: args.selection,
     approvalSessionId: args.approvalContext.sessionId,
-    ...(args.allowedToolNames !== undefined
-      ? { allowedToolNames: args.allowedToolNames }
+    ...(args.allowedRegistryNames !== undefined
+      ? { allowedRegistryNames: args.allowedRegistryNames }
       : {}),
+    ...(args.toolLibraryProjectionIdentity === undefined
+      ? {}
+      : { toolLibraryProjectionIdentity: args.toolLibraryProjectionIdentity }),
+    ...(args.providerRunSelection === undefined
+      ? {}
+      : { providerRunSelection: args.providerRunSelection }),
+    ...(args.subagentModelRouting === undefined
+      ? {}
+      : { subagentModelRouting: args.subagentModelRouting }),
     permissionMode: args.approvalContext.permissionMode,
     threadId: args.runContext.threadId,
     runId: args.runId,
-    projectId: args.runContext.projectId,
+    runOwnerKind,
     runState: args.runState,
     emitAgentEvent: (event) => args.emit(event.type, event.payload),
     ...(args.fileStateCache ? { fileStateCache: args.fileStateCache } : {}),
@@ -80,7 +109,7 @@ export function buildToolCallExecutionRuntime(args: {
   toolRegistry: ToolExecutionRegistry;
   approvalGate: Pick<ApprovalGate, 'waitForApproval'>;
   approvalGrants: AgentRuntimeServices['approvalGrants'];
-  executionContextBase: AgentToolExecutionContextBase;
+  executionContextBase: AgentLoopToolExecutionContextBase;
 }): AgentToolCallExecutionRuntime {
   return {
     approvalContext: args.approvalContext,
@@ -94,17 +123,17 @@ export function buildToolCallExecutionRuntime(args: {
 
 function buildRunContextFromExecutionBase(
   executionContextBase: AgentToolExecutionContextBase,
-): RunWorkspaceContext {
+): RunContext {
   return {
-    workspaceRoot: executionContextBase.workspaceRoot,
+    stateRoot: executionContextBase.stateRoot,
+    workingDirectory: executionContextBase.workingDirectory,
     threadId: executionContextBase.threadId,
-    projectId: executionContextBase.projectId,
   };
 }
 
 export function getToolRuntimeRunContext(
   runtime: ExecutionContextBaseOwner,
-): RunWorkspaceContext {
+): RunContext {
   if (runtime.executionContextBase) {
     return buildRunContextFromExecutionBase(runtime.executionContextBase);
   }
@@ -117,10 +146,7 @@ export function getToolRuntimeRunContext(
 export function getToolRuntimeRunState(
   runtime: ExecutionContextBaseOwner,
 ): RunState | undefined {
-  return (
-    (runtime.executionContextBase?.runState as RunState | undefined) ??
-    runtime.runState
-  );
+  return runtime.executionContextBase?.runState ?? runtime.runState;
 }
 
 export function getToolRuntimeSignal(
@@ -132,22 +158,10 @@ export function getToolRuntimeSignal(
 export function isToolOutputRecoveryAvailable(
   runtime: ExecutionContextBaseOwner,
 ): boolean {
-  const allowedToolNames = runtime.executionContextBase?.allowedToolNames;
+  const allowedRegistryNames =
+    runtime.executionContextBase?.allowedRegistryNames;
   return (
-    allowedToolNames === undefined ||
-    allowedToolNames.includes('read_tool_output')
+    allowedRegistryNames === undefined ||
+    allowedRegistryNames.includes('read_tool_output')
   );
-}
-
-export function getToolRuntimeWorkspaceRoot(
-  runtime: ExecutionContextBaseOwner,
-): string {
-  const workspaceRoot =
-    runtime.executionContextBase?.workspaceRoot ??
-    runtime.runContext?.workspaceRoot ??
-    runtime.workspaceRoot;
-  if (!workspaceRoot) {
-    throw new Error('tool runtime workspaceRoot is required');
-  }
-  return workspaceRoot;
 }

@@ -12,11 +12,10 @@ import {
 import {
   authHeaders,
   createRouteTestDaemonContext,
-  getWorkspaceRootFromContext,
+  getHomeStateRootFromContext,
   withAuthenticatedDaemonServer,
 } from './test-support/http-routes.js';
 import { GENERATED_ROOT_ENV } from './daemon/react-bundle-inline/generated-assets.js';
-import { DEFAULT_PROJECT_ID } from './daemon/files/project-registry-state.js';
 import { readReactBundleInlineCompileInputRefPath } from './daemon/react-bundle-inline/input-ref-store.js';
 
 function assertReactBundleInlineCompileResponse(
@@ -81,7 +80,7 @@ void test('react bundle inline compile route returns generated manifest and serv
       assert.equal(entryRes.status, 200);
       assert.equal(
         entryRes.headers.get('content-type'),
-        'text/javascript; charset=utf-8',
+        'application/javascript; charset=utf-8',
       );
       const entrySource = await entryRes.text();
       assert.match(
@@ -95,7 +94,7 @@ void test('react bundle inline compile route returns generated manifest and serv
 
 void test('react bundle inline compile route accepts streamed input refs beyond the JSON body cap', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = getHomeStateRootFromContext(daemonContext);
   await withGeneratedRootEnv(async () => {
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
@@ -111,7 +110,7 @@ void test('react bundle inline compile route accepts streamed input refs beyond 
         };
 
         const uploadRes = await fetch(
-          `http://127.0.0.1:${port}/api/react-bundle-inline-compile/inputs?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/react-bundle-inline-compile/inputs?projectId=workspace`,
           {
             method: 'POST',
             headers: authHeaders({
@@ -135,7 +134,7 @@ void test('react bundle inline compile route accepts streamed input refs beyond 
         assert.ok(uploadBody.byteLength > 256 * 1024);
 
         const compileRes = await fetch(
-          `http://127.0.0.1:${port}/api/react-bundle-inline-compile?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/react-bundle-inline-compile?projectId=workspace`,
           {
             method: 'POST',
             headers: {
@@ -156,7 +155,7 @@ void test('react bundle inline compile route accepts streamed input refs beyond 
 
         assert.deepEqual(
           await readReactBundleInlineCompileInputRefPath({
-            workspaceRoot,
+            workspaceRoot: stateRoot,
             inputRef: uploadBody.inputRef,
           }),
           {
@@ -174,7 +173,7 @@ void test('react bundle inline compile route accepts streamed input refs beyond 
 void test('react bundle inline compile input upload rejects JSON content type', async () => {
   await withAuthenticatedDaemonServer(async ({ port }) => {
     const res = await fetch(
-      `http://127.0.0.1:${port}/api/react-bundle-inline-compile/inputs?projectId=${DEFAULT_PROJECT_ID}`,
+      `http://127.0.0.1:${port}/api/react-bundle-inline-compile/inputs?projectId=workspace`,
       {
         method: 'POST',
         headers: authHeaders({

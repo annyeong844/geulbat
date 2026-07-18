@@ -9,7 +9,6 @@ import {
   isInputRefRecoveryResponse,
 } from '@geulbat/protocol/input-refs';
 
-import { DEFAULT_PROJECT_ID } from './daemon/files/project-registry-state.js';
 import { writeFileBinaryInputRefFromStream } from './daemon/files/binary-input-ref-store.js';
 import { writeArtifactRuntimePersistenceStateInputRefFromStream } from './daemon/artifact-runtime-persistence/input-ref-store.js';
 import { writeReactBundleInlineCompileInputRefFromStream } from './daemon/react-bundle-inline/input-ref-store.js';
@@ -21,18 +20,17 @@ import {
 import {
   authHeaders,
   createRouteTestDaemonContext,
-  getWorkspaceRootFromContext,
   withAuthenticatedDaemonServer,
 } from './test-support/http-routes.js';
 
 void test('input ref inventory exposes pending and active claimed states', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const workspaceRoot = daemonContext.homeStateRoot;
 
   await withAuthenticatedDaemonServer(
     async ({ port }) => {
       const uploadedResponse = await fetch(
-        `http://127.0.0.1:${port}/api/run/prompt-inputs?projectId=${DEFAULT_PROJECT_ID}`,
+        `http://127.0.0.1:${port}/api/run/prompt-inputs`,
         {
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'text/plain;charset=UTF-8' }),
@@ -44,7 +42,7 @@ void test('input ref inventory exposes pending and active claimed states', async
       };
 
       const pendingResponse = await fetch(
-        `http://127.0.0.1:${port}/api/input-refs?projectId=${DEFAULT_PROJECT_ID}`,
+        `http://127.0.0.1:${port}/api/input-refs`,
         { headers: authHeaders() },
       );
       const pending = await pendingResponse.json();
@@ -66,7 +64,7 @@ void test('input ref inventory exposes pending and active claimed states', async
       }
       try {
         const claimedResponse = await fetch(
-          `http://127.0.0.1:${port}/api/input-refs?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/input-refs`,
           { headers: authHeaders() },
         );
         const claimedInventory = await claimedResponse.json();
@@ -84,7 +82,6 @@ void test('input ref inventory exposes pending and active claimed states', async
             method: 'POST',
             headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
-              projectId: DEFAULT_PROJECT_ID,
               ref: uploaded.promptRef,
               action: 'release',
               claimId: entry?.claimId,
@@ -106,7 +103,7 @@ void test('input ref inventory exposes pending and active claimed states', async
 
 void test('input ref recovery retries and releases a persisted interrupted claim', async (t) => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const workspaceRoot = daemonContext.homeStateRoot;
   const directory = join(workspaceRoot, '.geulbat', 'run-prompt-inputs');
   t.after(() => rm(directory, { recursive: true, force: true }));
   const id = randomUUID();
@@ -122,7 +119,7 @@ void test('input ref recovery retries and releases a persisted interrupted claim
   await withAuthenticatedDaemonServer(
     async ({ port }) => {
       const inventoryResponse = await fetch(
-        `http://127.0.0.1:${port}/api/input-refs?projectId=${DEFAULT_PROJECT_ID}`,
+        `http://127.0.0.1:${port}/api/input-refs`,
         { headers: authHeaders() },
       );
       const inventory = await inventoryResponse.json();
@@ -139,7 +136,6 @@ void test('input ref recovery retries and releases a persisted interrupted claim
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
-            projectId: DEFAULT_PROJECT_ID,
             ref: promptRef,
             action: 'retry',
             claimId: 'not-a-claim-id',
@@ -158,7 +154,6 @@ void test('input ref recovery retries and releases a persisted interrupted claim
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
-            projectId: DEFAULT_PROJECT_ID,
             ref: promptRef,
             action: 'retry',
             claimId,
@@ -175,7 +170,6 @@ void test('input ref recovery retries and releases a persisted interrupted claim
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
-            projectId: DEFAULT_PROJECT_ID,
             ref: promptRef,
             action: 'release',
           }),
@@ -186,7 +180,7 @@ void test('input ref recovery retries and releases a persisted interrupted claim
       assert.deepEqual(released, { ok: true, disposition: 'released' });
 
       const emptyResponse = await fetch(
-        `http://127.0.0.1:${port}/api/input-refs?projectId=${DEFAULT_PROJECT_ID}`,
+        `http://127.0.0.1:${port}/api/input-refs`,
         { headers: authHeaders() },
       );
       const empty = await emptyResponse.json();
@@ -203,22 +197,24 @@ void test('input ref recovery retries and releases a persisted interrupted claim
 
 void test('input ref inventory aggregates every current streamed input family', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const homeStateRoot = daemonContext.homeStateRoot;
+  const computerRoot = daemonContext.computerFileScope?.root;
+  assert.ok(computerRoot, 'computer file root must resolve');
   const [prompt, binary, state, inlineCompile] = await Promise.all([
     writeRunPromptInputRefFromStream({
-      workspaceRoot,
+      workspaceRoot: homeStateRoot,
       input: Readable.from(['prompt']),
     }),
     writeFileBinaryInputRefFromStream({
-      workspaceRoot,
+      workspaceRoot: computerRoot,
       input: Readable.from([Buffer.from([0, 1, 2])]),
     }),
     writeArtifactRuntimePersistenceStateInputRefFromStream({
-      workspaceRoot,
+      workspaceRoot: homeStateRoot,
       input: Readable.from(['{"saved":true}']),
     }),
     writeReactBundleInlineCompileInputRefFromStream({
-      workspaceRoot,
+      workspaceRoot: homeStateRoot,
       input: Readable.from(['{"files":[]}']),
     }),
   ]);
@@ -231,10 +227,9 @@ void test('input ref inventory aggregates every current streamed input family', 
 
   await withAuthenticatedDaemonServer(
     async ({ port }) => {
-      const response = await fetch(
-        `http://127.0.0.1:${port}/api/input-refs?projectId=${DEFAULT_PROJECT_ID}`,
-        { headers: authHeaders() },
-      );
+      const response = await fetch(`http://127.0.0.1:${port}/api/input-refs`, {
+        headers: authHeaders(),
+      });
       const inventory = await response.json();
       assert.equal(isInputRefInventoryResponse(inventory), true);
       if (!isInputRefInventoryResponse(inventory)) {
@@ -261,7 +256,6 @@ void test('input ref inventory aggregates every current streamed input family', 
             method: 'POST',
             headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
-              projectId: DEFAULT_PROJECT_ID,
               ref,
               action: 'release',
             }),
@@ -272,4 +266,36 @@ void test('input ref inventory aggregates every current streamed input family', 
     },
     { daemonContext },
   );
+});
+
+void test('input ref management rejects legacy project scope', async () => {
+  await withAuthenticatedDaemonServer(async ({ port }) => {
+    const inventoryResponse = await fetch(
+      `http://127.0.0.1:${port}/api/input-refs?projectId=workspace`,
+      { headers: authHeaders() },
+    );
+    assert.equal(inventoryResponse.status, 400);
+    assert.deepEqual(await inventoryResponse.json(), {
+      code: 'bad_request',
+      message: 'projectId is not supported',
+    });
+
+    const recoveryResponse = await fetch(
+      `http://127.0.0.1:${port}/api/input-refs/recovery`,
+      {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          projectId: 'workspace',
+          ref: 'run-prompt-input:legacy',
+          action: 'release',
+        }),
+      },
+    );
+    assert.equal(recoveryResponse.status, 400);
+    assert.deepEqual(await recoveryResponse.json(), {
+      code: 'bad_request',
+      message: 'projectId is not supported',
+    });
+  });
 });

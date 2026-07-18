@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { refreshProviderToken } from './refresh.js';
+import {
+  GROK_OAUTH_TOKEN_ENDPOINT,
+  buildGrokOAuthRefreshTokenRequest,
+  parseGrokOAuthRefreshTokenResponse,
+  refreshGrokOAuthProviderCredential,
+  refreshProviderCredential,
+  refreshProviderToken,
+} from './refresh.js';
 
 const TEST_PROVIDER_AUTH_CLIENT_ID = 'test-provider-auth-client-id';
 const TEST_INSTALLED_CONFIG_PATH = '/__geulbat_missing__/provider-auth.json';
@@ -245,4 +252,220 @@ for (const status of [401, 403] as const) {
       },
     );
   });
+}
+
+void test('buildGrokOAuthRefreshTokenRequest projects explicit client credentials into OAuth form body', () => {
+  const request = buildGrokOAuthRefreshTokenRequest({
+    tokenEndpoint: 'https://auth.example.test/oauth2/token',
+    clientId: 'client-id',
+    refreshToken: 'refresh-token',
+  });
+
+  assert.equal(request.url, 'https://auth.example.test/oauth2/token');
+  assert.equal(request.init.method, 'POST');
+  assert.equal(
+    request.init.headers.get('content-type'),
+    'application/x-www-form-urlencoded',
+  );
+  assert.equal(request.init.body.get('grant_type'), 'refresh_token');
+  assert.equal(request.init.body.get('client_id'), 'client-id');
+  assert.equal(request.init.body.get('refresh_token'), 'refresh-token');
+});
+
+void test('buildGrokOAuthRefreshTokenRequest uses the Grok OAuth token endpoint by default', () => {
+  const request = buildGrokOAuthRefreshTokenRequest({
+    clientId: 'client-id',
+    refreshToken: 'refresh-token',
+  });
+
+  assert.equal(request.url, GROK_OAUTH_TOKEN_ENDPOINT);
+});
+
+void test('buildGrokOAuthRefreshTokenRequest rejects missing boundary credentials', () => {
+  assert.throws(
+    () =>
+      buildGrokOAuthRefreshTokenRequest({
+        clientId: '  ',
+        refreshToken: 'refresh-token',
+      }),
+    /clientId is required/u,
+  );
+  assert.throws(
+    () =>
+      buildGrokOAuthRefreshTokenRequest({
+        clientId: 'client-id',
+        refreshToken: '  ',
+      }),
+    /refreshToken is required/u,
+  );
+});
+
+void test('parseGrokOAuthRefreshTokenResponse maps OAuth snake-case fields to internal token response shape', () => {
+  assert.deepEqual(
+    parseGrokOAuthRefreshTokenResponse({
+      access_token: 'new-access',
+      refresh_token: 'new-refresh',
+      expires_in: 90,
+    }),
+    {
+      accessToken: 'new-access',
+      refreshToken: 'new-refresh',
+      expiresIn: 90,
+    },
+  );
+});
+
+void test('parseGrokOAuthRefreshTokenResponse rejects invalid response shapes', () => {
+  assert.throws(
+    () => parseGrokOAuthRefreshTokenResponse(null),
+    /invalid response body/u,
+  );
+  assert.throws(
+    () => parseGrokOAuthRefreshTokenResponse({ access_token: 123 }),
+    /invalid response body/u,
+  );
+  assert.throws(
+    () => parseGrokOAuthRefreshTokenResponse({ expires_in: -1 }),
+    /invalid response body/u,
+  );
+});
+
+void test('refreshGrokOAuthProviderCredential rotates access and refresh tokens with provider expiry when present', async () => {
+  const observed: { url?: string; body?: URLSearchParams } = {};
+  const fetchImpl: typeof fetch = async (input, init) => {
+    observed.url = String(input);
+    assert.ok(init?.body instanceof URLSearchParams);
+    observed.body = init.body;
+
+    return new Response(
+      JSON.stringify({
+        access_token: 'new-access',
+        refresh_token: 'new-refresh',
+        expires_in: 90,
+      }),
+      { status: 200 },
+    );
+  };
+
+  const refreshed = await refreshGrokOAuthProviderCredential(
+    {
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      accountId: 'grok-account',
+      expiresAt: 1,
+    },
+    { fetchImpl, nowMs: () => 1_000_000 },
+  );
+
+  assert.equal(observed.url, GROK_OAUTH_TOKEN_ENDPOINT);
+  assert.equal(observed.body?.get('refresh_token'), 'old-refresh');
+  assert.deepEqual(refreshed, {
+    accessToken: 'new-access',
+    refreshToken: 'new-refresh',
+    accountId: 'grok-account',
+    expiresAt: 1_090_000,
+  });
+});
+
+void test('refreshGrokOAuthProviderCredential keeps the existing refresh token and records unknown expiry as zero', async () => {
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify({ access_token: 'new-access' }), {
+      status: 200,
+    });
+
+  const refreshed = await refreshGrokOAuthProviderCredential(
+    {
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      accountId: 'grok-account',
+      expiresAt: 1,
+    },
+    { fetchImpl },
+  );
+
+  assert.deepEqual(refreshed, {
+    accessToken: 'new-access',
+    refreshToken: 'old-refresh',
+    accountId: 'grok-account',
+    expiresAt: 0,
+  });
+});
+
+void test('refreshGrokOAuthProviderCredential classifies invalid OAuth credentials without hiding the provider status', async () => {
+  const fetchImpl: typeof fetch = async () =>
+    new Response('invalid refresh token', { status: 401 });
+
+  await assert.rejects(
+    () =>
+      refreshGrokOAuthProviderCredential(
+        {
+          accessToken: 'old-access',
+          refreshToken: 'old-refresh',
+          accountId: 'grok-account',
+          expiresAt: 0,
+        },
+        { fetchImpl },
+      ),
+    (error: unknown) => {
+      assert.equal(errorProperty(error, 'code'), 'provider_auth_invalid');
+      assert.equal(errorProperty(error, 'status'), 401);
+      return true;
+    },
+  );
+});
+
+void test('refreshGrokOAuthProviderCredential rejects missing access_token in successful responses', async () => {
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify({ refresh_token: 'new-refresh' }), {
+      status: 200,
+    });
+
+  await assert.rejects(
+    () =>
+      refreshGrokOAuthProviderCredential(
+        {
+          accessToken: 'old-access',
+          refreshToken: 'old-refresh',
+          accountId: 'grok-account',
+          expiresAt: 0,
+        },
+        { fetchImpl },
+      ),
+    /missing access_token/u,
+  );
+});
+
+void test('refreshProviderCredential routes Grok OAuth credentials through the Grok refresh owner', async () => {
+  const observed: { url?: string } = {};
+  const refreshed = await refreshProviderCredential(
+    'grok_oauth',
+    {
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      accountId: 'grok-account',
+      expiresAt: 0,
+    },
+    {
+      fetchImpl: async (input) => {
+        observed.url = String(input);
+        return new Response(JSON.stringify({ access_token: 'new-access' }), {
+          status: 200,
+        });
+      },
+    },
+  );
+
+  assert.equal(observed.url, GROK_OAUTH_TOKEN_ENDPOINT);
+  assert.equal(refreshed.accessToken, 'new-access');
+  assert.equal(refreshed.accountId, 'grok-account');
+});
+
+function errorProperty(error: unknown, key: string): unknown {
+  if (
+    error === null ||
+    (typeof error !== 'object' && typeof error !== 'function')
+  ) {
+    return undefined;
+  }
+  return Reflect.get(error, key);
 }

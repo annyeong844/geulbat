@@ -13,7 +13,6 @@ void test('Assistant renders transport-level stream errors as a visible banner',
       finalAnswerText=""
       streamError="[internal] run channel websocket connection failed"
       isRunning={false}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}

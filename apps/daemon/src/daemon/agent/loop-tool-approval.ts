@@ -6,6 +6,7 @@ import { getErrorMessage } from '@geulbat/shared-utils/error';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import {
   assertAgentRunId as assertValidRunId,
+  isAgentTerminalRunStatus,
   type SideEffectLevel,
 } from './contract.js';
 import type {
@@ -27,8 +28,15 @@ import type {
 import type { GenericApiErrorCode } from '../error-codes.js';
 import { toolError } from '../tools/result.js';
 import type { AgentResult } from './agent-result.js';
-import type { RunWorkspaceContext } from '../run-workspace-context.js';
-import { PTC_EXECUTE_CODE_TOOL_NAME } from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
+import type { RunContext } from '../run-context.js';
+import {
+  PTC_EXECUTE_CODE_TOOL_NAME,
+  resolvePtcExecuteCodeWriteCallbackConfigFromEnv,
+} from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
+import {
+  isPtcExecuteCodeWriteCallbackToolMetaAllowed,
+  isRuntimeSourcedReadOnlyToolAllowed,
+} from '../tools/builtin/ptc-callback-tool-surface.js';
 import { executeResolvedFunctionCall } from './loop-tool-execute-context.js';
 import { createCallbackToolDispatcher } from './callback-tool-dispatcher.js';
 import type { ToolCallArgs } from './events.js';
@@ -48,7 +56,6 @@ import {
   getToolRuntimeRunContext,
   getToolRuntimeRunState,
   getToolRuntimeSignal,
-  getToolRuntimeWorkspaceRoot,
 } from './loop-tool-runtime.js';
 import {
   AGENT_LOOP_TOOL_CALL_SOURCE,
@@ -64,7 +71,7 @@ export interface DeferredFunctionCallTerminalFailure {
   signal?: AbortSignal;
 }
 
-export type FunctionCallExecutionResult =
+type FunctionCallExecutionResult =
   | { ok: true; value: ExecuteResult }
   | ({
       ok: false;
@@ -80,7 +87,7 @@ export async function executeFunctionCall(args: {
   history: HistoryItem[];
   runtime: AgentToolCallExecutionRuntime;
   source?: ToolCallSource;
-  denialMode?: 'terminal' | 'code_visible';
+  denialMode?: 'terminal' | 'code_visible' | 'data_only';
   deferTerminalFailure?: boolean;
   resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;
 }): Promise<FunctionCallExecutionResult> {
@@ -91,7 +98,11 @@ export async function executeFunctionCall(args: {
     source.kind === 'agent_loop' && denialMode === 'terminal';
   const isPtcCodeVisible =
     source.kind === 'ptc_callback' && denialMode === 'code_visible';
-  if (!isAgentLoopTerminal && !isPtcCodeVisible) {
+  // 프레임발 호출은 코드가 사용자에게 보이지 않으므로 code_visible과 의미가
+  // 다르다 — 거부는 데이터 응답으로만 돌아간다 (back-channel 설계 §8).
+  const isArtifactFrameDataOnly =
+    source.kind === 'artifact_frame' && denialMode === 'data_only';
+  if (!isAgentLoopTerminal && !isPtcCodeVisible && !isArtifactFrameDataOnly) {
     throw new Error('unsupported tool dispatch source/denialMode combination');
   }
   const callbackToolDispatcher =
@@ -111,14 +122,41 @@ export async function executeFunctionCall(args: {
     }) ??
     meta?.sideEffectLevel ??
     'write';
-  if (isPtcCodeVisible) {
-    const isPhase1PtcReadOnly =
-      runtimeSideEffectLevel === 'read' &&
-      meta?.requiresApproval === false &&
-      meta?.mayMutateWorkspaceFiles === false;
-    if (!isPhase1PtcReadOnly) {
+  if (isPtcCodeVisible || isArtifactFrameDataOnly) {
+    // PTC 콜백과 아티팩트 프레임은 같은 runtime-소스 surface를 공유한다
+    // (포크 금지): read-only 게이트 통과분 + write-callback이 켜져 있으면
+    // 같은 write allowlist. 승인 필요 판정은 아래 approvalState가 그대로
+    // 중재한다 — 프레임/콜백 직통이 승인을 우회하지 않는다.
+    const isAdmittedReadCallback = isRuntimeSourcedReadOnlyToolAllowed(
+      functionCall.name,
+      meta ?? {},
+      runtimeSideEffectLevel,
+    );
+    const writeCallbackConfig =
+      resolvePtcExecuteCodeWriteCallbackConfigFromEnv();
+    const isAdmittedWriteCallback =
+      writeCallbackConfig.enabled &&
+      runtimeSideEffectLevel === 'write' &&
+      isPtcExecuteCodeWriteCallbackToolMetaAllowed(
+        functionCall.name,
+        meta ?? {},
+      );
+    if (!isAdmittedReadCallback && !isAdmittedWriteCallback) {
+      if (isArtifactFrameDataOnly) {
+        // 프레임에는 코드 가시 채널이 없다 — 거부를 데이터 응답으로 돌려
+        // UI가 프롬프트(티어 B)로 강등하게 한다.
+        return {
+          ok: true,
+          value: toolError(
+            'approval_required',
+            `tool "${functionCall.name}" is outside the artifact frame callback surface`,
+          ),
+        };
+      }
       throw new Error(
-        'PTC callback dispatch currently supports only read-only no-approval tools',
+        writeCallbackConfig.enabled
+          ? 'PTC callback dispatch rejected a tool outside the admitted callback surface'
+          : 'PTC callback dispatch currently supports only read-only no-approval tools',
       );
     }
   }
@@ -135,13 +173,84 @@ export async function executeFunctionCall(args: {
     approvalClass,
     sideEffectLevel: runtimeSideEffectLevel,
     runtime,
+    // Q5=(a): class-only grants accumulated from direct tool approvals are
+    // not eligible evidence for PTC nested writes; full_access remains the
+    // only auto-approval path for runtime-sourced (ptc_callback /
+    // artifact_frame) dispatch.
+    ...(isPtcCodeVisible || isArtifactFrameDataOnly
+      ? { grantEligibility: 'full_access_only' }
+      : {}),
   });
 
   if (approvalState.needsApproval) {
+    if (denialMode === 'data_only') {
+      // 프레임에는 승인 프롬프트를 중계할 채널이 없다 — 대기 없이 거부하고
+      // UI가 프롬프트 경로(티어 B)로 승인 중재를 넘긴다.
+      return {
+        ok: true,
+        value: toolError(
+          'approval_required',
+          `tool "${functionCall.name}" requires user approval; artifact frame calls cannot resolve approvals`,
+        ),
+      };
+    }
     if (denialMode === 'code_visible') {
-      throw new Error(
-        'code-visible approval is not supported for the current PTC tool surface',
-      );
+      // A detached-cell callback can outlive its parent run. Once the run
+      // has settled there is no channel left that can resolve the prompt
+      // (the approve control route 404s on inactive runs and the web-shell
+      // hides the card at idle), so waiting would only block the cell until
+      // bridge teardown. Fall back to the no-wait code-visible rejection.
+      const runState = getToolRuntimeRunState(runtime);
+      if (runState !== undefined && isAgentTerminalRunStatus(runState.status)) {
+        return {
+          ok: true,
+          value: toolError(
+            'approval_required',
+            `tool "${functionCall.name}" requires user approval, but the parent run has already settled; interactive approval is unavailable for post-run callbacks`,
+          ),
+        };
+      }
+      // W2 interactive approval loop for PTC write callbacks: the canonical
+      // approval_required event and gate wait are reused, but denial and
+      // abort come back as code-visible results so the run continues. Run
+      // status is intentionally left untouched — the outer exec tool (or a
+      // detached cell) is genuinely still running while its callback waits,
+      // and a background cell callback must not block run completion.
+      const decision = await waitForPtcCallbackApprovalDecision({
+        functionCall,
+        approvalTarget,
+        approvalClass,
+        runtimeSideEffectLevel,
+        toolArgs,
+        runtime,
+      });
+      if (decision === 'denied') {
+        return {
+          ok: true,
+          value: toolError(
+            'approval_denied',
+            `tool "${functionCall.name}" denied`,
+          ),
+        };
+      }
+      if (decision === 'aborted') {
+        return {
+          ok: true,
+          value: toolError('aborted', 'approval aborted'),
+        };
+      }
+      return {
+        ok: true,
+        value: await executeResolvedFunctionCall({
+          functionCall,
+          toolArgs,
+          approvalGranted: true,
+          runtime,
+          ...(args.resourceSnapshotRef === undefined
+            ? {}
+            : { resourceSnapshotRef: args.resourceSnapshotRef }),
+        }),
+      };
     }
     const decision = await resolveApprovalDecision({
       functionCall,
@@ -190,7 +299,7 @@ export async function executeFunctionCall(args: {
 function resolveApprovalTarget(
   approvalContext: AgentToolCallExecutionRuntime['approvalContext'],
   runId: string,
-  threadId: RunWorkspaceContext['threadId'],
+  threadId: RunContext['threadId'],
 ): ApprovalTarget {
   return {
     runId: approvalContext.ownerRunId ?? runId,
@@ -204,6 +313,10 @@ interface ResolveToolApprovalStateArgs {
   toolArgs: ToolCallArgs;
   approvalClass?: ApprovalClass;
   sideEffectLevel?: SideEffectLevel | null;
+  // 'full_access_only' is a fail-closed eligibility restriction, not a new
+  // grant policy: stored class-only grants are ignored as auto-approval
+  // evidence while the canonical full_access rule stays intact.
+  grantEligibility?: 'all' | 'full_access_only';
   runtime: Pick<
     AgentToolCallExecutionRuntime,
     | 'approvalContext'
@@ -231,16 +344,19 @@ export async function resolveToolApprovalState(
 
   const approvalClass =
     args.approvalClass ?? resolveApprovalClass(toolName, toolArgs);
+  const approvalGrants =
+    args.grantEligibility === 'full_access_only'
+      ? { hasApprovalGrant: () => false }
+      : runtime.approvalGrants;
   const autoApproved = shouldAutoApprove(
     {
       runId: approvalTarget.runId,
-      threadId: approvalTarget.threadId,
       sessionId: runtime.approvalContext.sessionId,
       approvalClass,
       sideEffectLevel,
       permissionMode: runtime.approvalContext.permissionMode,
     },
-    { approvalGrants: runtime.approvalGrants },
+    { approvalGrants },
   );
   if (autoApproved) {
     return { needsApproval: false, approvalGranted: true };
@@ -248,7 +364,7 @@ export async function resolveToolApprovalState(
 
   try {
     const preflight = await collectPreflight(
-      getToolRuntimeWorkspaceRoot(runtime),
+      runtime.executionContextBase,
       toolArgs,
     );
     return {
@@ -264,6 +380,63 @@ export async function resolveToolApprovalState(
     });
     return { needsApproval: true, approvalGranted: false };
   }
+}
+
+interface WaitForPtcCallbackApprovalDecisionArgs {
+  functionCall: FunctionCall;
+  approvalTarget: ApprovalTarget;
+  approvalClass: ApprovalClass;
+  runtimeSideEffectLevel: NonNullable<SideEffectLevel>;
+  toolArgs: ToolCallArgs;
+  runtime: Pick<
+    AgentToolCallExecutionRuntime,
+    'approvalContext' | 'emit' | 'approvalGate' | 'executionContextBase'
+  >;
+}
+
+// W2 wait branch for ptc_callback sources: same approval_required event and
+// gate as the terminal flow, but no run-state transition and no terminal
+// result builders — the caller maps denied/aborted to code-visible results.
+// The wait is bounded by the merged run/callback signal, so exec timeout or
+// bridge teardown resolves it as 'aborted' and the gate keeps no pending
+// entry behind.
+async function waitForPtcCallbackApprovalDecision(
+  args: WaitForPtcCallbackApprovalDecisionArgs,
+): Promise<'approved' | 'denied' | 'aborted'> {
+  const {
+    functionCall,
+    approvalTarget,
+    approvalClass,
+    runtimeSideEffectLevel,
+    toolArgs,
+    runtime,
+  } = args;
+  const { approvalContext, emit, approvalGate } = runtime;
+  const signal = getToolRuntimeSignal(runtime);
+
+  emit('approval_required', {
+    callId: functionCall.callId,
+    runId: assertValidRunId(approvalTarget.runId),
+    threadId: approvalTarget.threadId,
+    toolName: functionCall.name,
+    approvalClass,
+    permissionMode: approvalContext.permissionMode,
+    argumentsPreview: toolArgs,
+    sideEffectLevel: runtimeSideEffectLevel,
+  });
+
+  return await approvalGate.waitForApproval(
+    functionCall.callId,
+    approvalTarget.runId,
+    approvalTarget.threadId,
+    buildApprovalGrantContext(
+      approvalContext,
+      approvalTarget.runId,
+      approvalClass,
+      runtimeSideEffectLevel,
+    ),
+    signal,
+  );
 }
 
 interface ResolveApprovalDecisionArgs {
@@ -320,7 +493,6 @@ export async function resolveApprovalDecision(
     buildApprovalGrantContext(
       approvalContext,
       approvalTarget.runId,
-      approvalTarget.threadId,
       approvalClass,
       runtimeSideEffectLevel,
     ),
@@ -355,7 +527,7 @@ export async function resolveApprovalDecision(
 async function buildDeniedApprovalResult(
   functionCall: ResolveApprovalDecisionArgs['functionCall'],
   round: number,
-  runContext: RunWorkspaceContext,
+  runContext: RunContext,
   runId: string,
   history: ResolveApprovalDecisionArgs['history'],
   emit: ResolveApprovalDecisionArgs['runtime']['emit'],
@@ -367,7 +539,7 @@ async function buildDeniedApprovalResult(
     functionCall,
     round,
     toolResult: toolError('approval_denied', deniedError),
-    workspaceFilesMayHaveChanged: false,
+    computerFilesMayHaveChanged: false,
     runContext,
     runId,
     history,
@@ -431,13 +603,11 @@ function buildAbortedApprovalResult(
 function buildApprovalGrantContext(
   approvalContext: ApprovalContext,
   runId: string,
-  threadId: RunWorkspaceContext['threadId'],
   approvalClass: ApprovalClass,
   sideEffectLevel: SideEffectLevel,
 ): ApprovalGrantContext {
   return {
     runId,
-    threadId,
     sessionId: approvalContext.sessionId,
     approvalClass,
     sideEffectLevel,

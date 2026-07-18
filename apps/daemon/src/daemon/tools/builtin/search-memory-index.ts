@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { catchToolError, toolError } from '../result.js';
+import { resolveMemoryIndexScope } from '../../memory/build-index.js';
 import { searchMemoryIndex } from '../../memory/search-index.js';
 import { defineZodTool } from '../zod-tool.js';
 
@@ -17,7 +18,7 @@ const searchMemoryIndexArgsSchema = z.strictObject({
     })
     .optional()
     .describe(
-      'Optional normalized workspace-relative path prefix to constrain matches.',
+      'Optional path prefix relative to the indexed working directory.',
     ),
   maxResults: z
     .number()
@@ -35,15 +36,44 @@ export const searchMemoryIndexTool = defineZodTool({
     'Search the derived memory index with a text query and return a structured shortlist. Results are hints only and not an authoritative source read.',
   argsSchema: searchMemoryIndexArgsSchema,
   sideEffectLevel: 'none',
-  mayMutateWorkspaceFiles: false,
+  mayMutateComputerFiles: false,
   requiresApproval: false,
+  exposure: {
+    directHot: false,
+    sdkVisible: true,
+    inCellCallable: true,
+    directOnly: false,
+    approvalRequired: false,
+    effectClass: 'readOnly',
+  },
+  catalogSearchMetadata: {
+    family: 'memory',
+    searchHints: [
+      'search memory',
+      'memory search',
+      'find memory',
+      'look up previous context',
+    ],
+    tags: ['memory', 'index', 'search'],
+    whenToUse: 'Search indexed long-range memory or prior context hints.',
+    notFor: 'Reading current Computer files before mutation.',
+  },
   async executeParsed(args, ctx) {
     if (!ctx.memoryIndex) {
       return toolError('execution_failed', 'memory index store is required');
     }
     try {
+      const scope = resolveMemoryIndexScope({
+        ...(ctx.stateRoot === undefined ? {} : { stateRoot: ctx.stateRoot }),
+        ...(ctx.computerFileRoot === undefined
+          ? {}
+          : { computerFileRoot: ctx.computerFileRoot }),
+        ...(ctx.workingDirectory === undefined
+          ? {}
+          : { workingDirectory: ctx.workingDirectory }),
+      });
       const payload = await searchMemoryIndex(
-        ctx.workspaceRoot,
+        scope,
         {
           query: args.query,
           ...(args.pathPrefix !== undefined

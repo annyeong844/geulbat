@@ -14,7 +14,7 @@ export interface ArtifactRuntimePersistenceStorageFacadeStore {
   assertStorageBootstrapReady(): void;
   assertSharedStorageAvailable(): void;
   ensureStorageReady(window: PersistenceBootstrapWindow): Promise<void>;
-  cloneJsonValue<T>(value: T): T;
+  cloneJsonValue(value: unknown): unknown;
   listStorageKeys(): string[];
   listSessionStorageKeys(): string[];
   listDatabaseKeys(): string[];
@@ -36,7 +36,6 @@ export interface ArtifactRuntimePersistenceStorageFacadeStore {
   createNextSessionStorageMap(
     mutate: (map: SessionStorageRecord) => void,
   ): SessionStorageRecord;
-  replaceCurrentSessionStorageMap(next: SessionStorageRecord): void;
   readCurrentStorageMap(): PersistenceRecord;
   readCurrentSessionStorageMap(): SessionStorageRecord;
   readCurrentDatabaseMap(): PersistenceRecord;

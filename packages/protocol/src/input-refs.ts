@@ -34,7 +34,6 @@ export interface InputRefInventoryResponse {
 }
 
 export interface InputRefRecoveryRequest {
-  projectId: string;
   ref: string;
   action: InputRefRecoveryAction;
   claimId?: string;

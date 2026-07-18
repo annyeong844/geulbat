@@ -10,9 +10,9 @@ import { agentStopTool } from './agent-stop.js';
 import { createSubagentRunLauncher } from '../../agent/subagent-support.js';
 import { createDaemonContext } from '../../context.js';
 import { createRunState } from '../../agent/runtime/run-state.js';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { testRunId } from '../../../test-support/run-id.js';
-import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../../test-support/run-context.js';
+import { TEST_CHILD_MODEL_REGISTRATION } from '../../../test-support/subagent-model-routing.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { assertRunId, type RunId } from '@geulbat/protocol/ids';
 
@@ -42,9 +42,8 @@ async function waitForChildTerminal(args: {
 }
 
 void test('agent_stop cancels a running child with explicit_stop reason', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-agent-stop-'));
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-agent-stop-'));
   const threadId = testThreadId(41);
-  const projectId = testProjectId();
   const daemonContext = createDaemonContext();
 
   const testAgentSpawnTool = createAgentSpawnTool({
@@ -70,10 +69,9 @@ void test('agent_stop cancels a running child with explicit_stop reason', async 
   try {
     const parentState = createRunState({
       runId: 'top-run-stop',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId,
-        projectId,
-        workspaceRoot,
+        stateRoot,
       }),
     });
     const spawned = await testAgentSpawnTool.execute(
@@ -83,13 +81,15 @@ void test('agent_stop cancels a running child with explicit_stop reason', async 
       },
       {
         callId: 'call-spawn-stop',
-        workspaceRoot,
+        providerRunSelection:
+          TEST_CHILD_MODEL_REGISTRATION.modelPin.providerRunSelection,
+        stateRoot,
         threadId,
         runId: 'top-run-stop',
-        projectId,
         runState: parentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
+        approvalSessionId: 'agent-stop-session',
         agentSpawnRuntime: daemonContext,
       },
     );
@@ -106,7 +106,7 @@ void test('agent_stop cancels a running child with explicit_stop reason', async 
       },
       {
         callId: 'call-stop-child',
-        workspaceRoot,
+        stateRoot,
         threadId,
         runId: 'top-run-stop-2',
         agentSpawnRuntime: daemonContext,
@@ -128,7 +128,7 @@ void test('agent_stop cancels a running child with explicit_stop reason', async 
     assert.equal(terminal.status, 'cancelled');
     assert.equal(terminal.reason, 'explicit_stop');
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
   }
 });
 
@@ -137,6 +137,7 @@ void test('agent_stop returns already_terminal for a completed child', async () 
   const ownerThreadId = testThreadId(43);
   const childRunId = testRunId('child-terminal');
   daemonContext.childRuns.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
     childRunId,
     childThreadId: testThreadId(47),
     parentRunId: testRunId('parent-run'),
@@ -155,7 +156,7 @@ void test('agent_stop returns already_terminal for a completed child', async () 
     },
     {
       callId: 'call-stop-terminal',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
       threadId: ownerThreadId,
       runId: 'parent-run-2',
       agentSpawnRuntime: daemonContext,
@@ -181,7 +182,7 @@ void test('agent_stop rejects unknown child handles as an outer tool failure', a
     },
     {
       callId: 'call-stop-missing',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
       threadId: ownerThreadId,
       runId: 'parent-run',
       agentSpawnRuntime: daemonContext,
@@ -200,6 +201,7 @@ void test('agent_stop keeps terminal child handles addressable', async () => {
   const daemonContext = createDaemonContext();
 
   daemonContext.childRuns.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
     childRunId,
     childThreadId: testThreadId(49),
     parentRunId: testRunId('stop-terminal-parent'),
@@ -218,7 +220,7 @@ void test('agent_stop keeps terminal child handles addressable', async () => {
     },
     {
       callId: 'call-stop-terminal',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
       threadId: ownerThreadId,
       runId: testRunId('stop-terminal-top'),
       agentSpawnRuntime: daemonContext,
@@ -238,6 +240,7 @@ void test('agent_stop rejects child handles owned by another thread as an outer 
   const daemonContext = createDaemonContext();
   const childRunId = testRunId('foreign-child');
   daemonContext.childRuns.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
     childRunId,
     childThreadId: testThreadId(47),
     parentRunId: testRunId('foreign-parent'),
@@ -251,7 +254,7 @@ void test('agent_stop rejects child handles owned by another thread as an outer 
     },
     {
       callId: 'call-stop-foreign',
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
       threadId: testThreadId(46),
       runId: 'parent-run',
       agentSpawnRuntime: daemonContext,

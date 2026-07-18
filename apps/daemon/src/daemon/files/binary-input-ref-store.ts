@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import {
   claimInputRefFilePath,
@@ -14,6 +17,7 @@ export const FILE_BINARY_INPUT_REF_STORE: InputRefFileStoreConfig =
     refPrefix: 'file-binary-input:',
     directoryName: 'file-binary-inputs',
     fileExtension: '.bin',
+    resolveStorageRoot: resolveFileBinaryInputRefScopeRoot,
     invalidPrefixMessage: 'contentRef must be a file-binary-input reference.',
     invalidIdMessage: 'contentRef is not a valid file-binary-input reference.',
     notFileMessage: 'contentRef does not point to a binary input file.',
@@ -21,12 +25,28 @@ export const FILE_BINARY_INPUT_REF_STORE: InputRefFileStoreConfig =
     claimedMessage: 'contentRef is already claimed by another operation.',
   });
 
-export interface FileBinaryInputRefWriteResult {
+const FILE_BINARY_INPUT_REF_ROOT_ENV = 'GEULBAT_FILE_BINARY_INPUT_REF_ROOT';
+
+function resolveFileBinaryInputRefStorageRoot(): string {
+  const configuredRoot = process.env[FILE_BINARY_INPUT_REF_ROOT_ENV]?.trim();
+  return configuredRoot
+    ? resolve(configuredRoot)
+    : join(homedir(), '.geulbat', 'input-refs', 'file-binary');
+}
+
+function resolveFileBinaryInputRefScopeRoot(workspaceRoot: string): string {
+  const scopeHash = createHash('sha256')
+    .update(resolve(workspaceRoot), 'utf8')
+    .digest('hex');
+  return join(resolveFileBinaryInputRefStorageRoot(), `scope-${scopeHash}`);
+}
+
+interface FileBinaryInputRefWriteResult {
   contentRef: string;
   byteLength: number;
 }
 
-export type FileBinaryInputRefPathResult = InputRefFilePathResult;
+type FileBinaryInputRefPathResult = InputRefFilePathResult;
 
 export async function writeFileBinaryInputRefFromStream(args: {
   workspaceRoot: string;

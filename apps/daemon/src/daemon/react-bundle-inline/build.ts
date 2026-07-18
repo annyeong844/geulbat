@@ -1,5 +1,6 @@
 import { build, type BuildResult } from 'esbuild';
 import {
+  isReactBundleInlineCompileFailureCode,
   type ReactBundleInlineCompileFailureCode,
   type ReactBundleInlineCompileRequest,
 } from '@geulbat/protocol/react-bundle-inline-compile';
@@ -82,11 +83,13 @@ function classifyBuildError(error: unknown): {
     /^\[(sanitize_rejected|policy_blocked|boot_failed|runtime_crashed)\]\s*(.+)$/s.exec(
       errorMessage,
     );
-  if (prefixedMatch?.[1] && prefixedMatch[2]) {
+  const prefixedCode = prefixedMatch?.[1];
+  const prefixedDetail = prefixedMatch?.[2];
+  if (isReactBundleInlineCompileFailureCode(prefixedCode) && prefixedDetail) {
     return {
       ok: false,
-      code: prefixedMatch[1] as ReactBundleInlineCompileFailureCode,
-      detail: prefixedMatch[2],
+      code: prefixedCode,
+      detail: prefixedDetail,
     };
   }
 
@@ -101,7 +104,7 @@ function extractEsbuildErrorText(error: unknown): string {
   if (typeof error === 'object' && error && 'errors' in error) {
     const errors = error.errors;
     if (Array.isArray(errors) && errors.length > 0) {
-      const firstError = errors[0];
+      const firstError: unknown = errors[0];
       if (
         typeof firstError === 'object' &&
         firstError &&

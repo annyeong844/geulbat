@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { sha256StableJson } from '@geulbat/shared-utils/stable-json';
+import { createLogger } from '@geulbat/shared-utils/logger';
 import { isRecord, tryParseJson } from '../runtime-json.js';
 import { appendFile, mkdir, readFile, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -12,14 +13,16 @@ import {
 import { hasErrorCode } from '../utils/error.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
+import { pruneUnreferencedThreadToolOutputs } from '../files/tool-output-store.js';
 
 export type TranscriptEntry = ThreadMessage;
+const logger = createLogger('transcript-log');
 const runTranscriptAppendSerial = createKeyedSerialRunner();
 const transcriptEntryCache = new Map<string, TranscriptEntryCacheEntry>();
 const MAX_TRANSCRIPT_ENTRY_CACHE_ENTRIES = 128;
 let transcriptEntryParseCountForTests = 0;
 
-export class TranscriptCorruptionError extends Error {
+class TranscriptCorruptionError extends Error {
   readonly code = 'transcript_corrupt';
   readonly threadId: string;
   readonly lineNumber: number;
@@ -191,6 +194,12 @@ export async function replaceTranscriptEntries(
   const filePath = threadFilePath(workspaceRoot, threadId);
   await runTranscriptAppendSerial(filePath, async () => {
     await mkdir(dirname(filePath), { recursive: true });
+    const cached = transcriptEntryCache.get(filePath);
+    const previousEntries =
+      cached !== undefined &&
+      (await transcriptCacheMatchesCurrentFile(filePath, cached))
+        ? cached.entries
+        : await readTranscriptEntriesFromDisk(filePath, threadId);
     const normalizedEntries = entries.map(normalizeTranscriptEntryInput);
     const body =
       normalizedEntries.map((entry) => JSON.stringify(entry)).join('\n') +
@@ -202,7 +211,48 @@ export async function replaceTranscriptEntries(
       mtimeMs: snapshot.mtimeMs,
       size: snapshot.size,
     });
+    try {
+      await pruneUnreferencedThreadToolOutputs({
+        stateRoot: workspaceRoot,
+        threadId,
+        previousOutputRefs: collectTranscriptToolOutputRefs(previousEntries),
+        retainedOutputRefs: collectTranscriptToolOutputRefs(normalizedEntries),
+      });
+    } catch (error: unknown) {
+      logger.warn('failed to prune unreferenced thread tool outputs:', {
+        threadId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
+}
+
+function collectTranscriptToolOutputRefs(
+  entries: readonly TranscriptEntry[],
+): Set<string> {
+  const outputRefs = new Set<string>();
+  for (const entry of entries) {
+    if (entry.role !== 'tool_result') {
+      continue;
+    }
+    const content = tryParseJson(entry.content);
+    if (!content.ok || !isRecord(content.value)) {
+      continue;
+    }
+    const rawOutput = content.value.output;
+    const output =
+      typeof rawOutput === 'string'
+        ? tryParseJson(rawOutput)
+        : { ok: true, value: rawOutput };
+    if (!output.ok || !isRecord(output.value)) {
+      continue;
+    }
+    const outputRef = output.value.outputRef;
+    if (typeof outputRef === 'string' && outputRef.startsWith('tool-output:')) {
+      outputRefs.add(outputRef);
+    }
+  }
+  return outputRefs;
 }
 
 export function clearTranscriptEntryCacheForThread(
@@ -219,7 +269,9 @@ function parseTranscriptEntries(
   transcriptEntryParseCountForTests += 1;
   const entries: TranscriptEntry[] = [];
   for (const [lineIndex, line] of raw.split('\n').entries()) {
-    if (!line.trim()) continue;
+    if (!line.trim()) {
+      continue;
+    }
     const parsed = tryParseJson(line);
     if (!parsed.ok) {
       throw new TranscriptCorruptionError(threadId, lineIndex + 1);
@@ -286,7 +338,7 @@ function normalizeTranscriptEntryInput(
   };
 }
 
-export function resolveEntryId(
+function resolveEntryId(
   entry: Record<string, unknown>,
   threadId: string,
   lineNumber: number,

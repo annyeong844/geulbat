@@ -3,7 +3,16 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 
 import { buildResponseCreatePayload } from './responses-wire-input.js';
-import { streamResponsesOverWebSocket } from './responses-websocket.js';
+import {
+  resolveResponsesStreamIdleTimeoutMs,
+  streamResponsesOverWebSocket,
+} from './responses-websocket.js';
+import type { ResponsesWebSocketReusePolicy } from './responses-websocket-cache.js';
+
+const TEST_REUSE_POLICY = {
+  idleRetentionMs: 30,
+  maxConnectionLifetimeMs: 60,
+} as const satisfies ResponsesWebSocketReusePolicy;
 
 const baseBody = {
   model: 'test-model',
@@ -13,6 +22,31 @@ const baseBody = {
   text: { verbosity: 'medium' },
   reasoning: { effort: 'medium', summary: 'auto' },
 } as const;
+
+void test('resolveResponsesStreamIdleTimeoutMs preserves the normative 60-second default', () => {
+  assert.equal(resolveResponsesStreamIdleTimeoutMs({}), 60_000);
+});
+
+void test('resolveResponsesStreamIdleTimeoutMs accepts an explicit positive operator value', () => {
+  assert.equal(
+    resolveResponsesStreamIdleTimeoutMs({
+      GEULBAT_LLM_STREAM_IDLE_TIMEOUT_MS: '300000',
+    }),
+    300_000,
+  );
+});
+
+void test('resolveResponsesStreamIdleTimeoutMs rejects malformed operator values', () => {
+  for (const value of ['0', '-1', '1.5', 'not-a-number']) {
+    assert.throws(
+      () =>
+        resolveResponsesStreamIdleTimeoutMs({
+          GEULBAT_LLM_STREAM_IDLE_TIMEOUT_MS: value,
+        }),
+      /GEULBAT_LLM_STREAM_IDLE_TIMEOUT_MS must be a positive safe integer/u,
+    );
+  }
+});
 
 void test('buildResponseCreatePayload sends full context on first turn', () => {
   const payload = buildResponseCreatePayload(baseBody, [
@@ -94,10 +128,45 @@ void test('buildResponseCreatePayload keeps full context for later user turns', 
   ]);
 });
 
+void test('streamResponsesOverWebSocket rejects incompatible native history before acquiring a socket', async () => {
+  let acquireCalls = 0;
+  await assert.rejects(
+    streamResponsesOverWebSocket({
+      body: baseBody,
+      headers: new Headers(),
+      history: [
+        {
+          kind: 'provider_native_compaction',
+          providerId: 'openai_codex_direct',
+          model: 'different-model',
+          output: [
+            {
+              type: 'compaction',
+              encrypted_content: 'opaque-checkpoint',
+            },
+          ],
+        },
+      ],
+      providerSessionId: 'provider-session',
+      webSocketReusePolicy: TEST_REUSE_POLICY,
+      providerWebSocketSessions: {
+        async acquireWebSocket() {
+          acquireCalls += 1;
+          throw new Error('socket must not be acquired');
+        },
+      },
+    }),
+    /provider-native compaction history is incompatible/u,
+  );
+  assert.equal(acquireCalls, 0);
+});
+
 void test('streamResponsesOverWebSocket can emit sanitized discovery snapshots without changing parse behavior', async () => {
   const sentPayloads: string[] = [];
   const discoveryRequests: unknown[] = [];
   const discoveryEvents: unknown[] = [];
+  let acquiredHeaders: Headers | undefined;
+  let acquiredReusePolicy: ResponsesWebSocketReusePolicy | undefined;
   const socket = new EventEmitter() as EventEmitter & {
     readyState: number;
     send(payload: string): void;
@@ -125,10 +194,19 @@ void test('streamResponsesOverWebSocket can emit sanitized discovery snapshots w
     }),
     history: [{ kind: 'user', text: 'private user text' }],
     providerSessionId: 'session-secret',
+    webSocketReusePolicy: TEST_REUSE_POLICY,
     providerWebSocketSessions: {
-      async acquireWebSocket() {
+      async acquireWebSocket(
+        _url,
+        headers,
+        _providerSessionId,
+        webSocketReusePolicy,
+      ) {
+        acquiredHeaders = headers;
+        acquiredReusePolicy = webSocketReusePolicy;
         return {
           socket,
+          reused: false,
           entry: { socket, busy: true, idleTimer: undefined },
           release() {},
         };
@@ -191,6 +269,11 @@ void test('streamResponsesOverWebSocket can emit sanitized discovery snapshots w
   const result = await runPromise;
 
   assert.equal(result.finalText, 'hello');
+  assert.equal(
+    acquiredHeaders?.get('OpenAI-Beta'),
+    'responses_websockets=2026-02-06',
+  );
+  assert.deepEqual(acquiredReusePolicy, TEST_REUSE_POLICY);
   assert.equal(sentPayloads.length, 1);
   assert.equal(discoveryRequests.length, 1);
   assert.equal(discoveryEvents.length, 4);
@@ -201,6 +284,124 @@ void test('streamResponsesOverWebSocket can emit sanitized discovery snapshots w
   );
   assert.match(discoveryJson, /\[redacted:provider-id\]/u);
   assert.match(discoveryJson, /\[redacted:provider-text\]/u);
+});
+
+void test('streamResponsesOverWebSocket reconnects a stale reused socket before dispatch without losing conversation context', async () => {
+  const sentPayloads: string[] = [];
+  const releases: boolean[] = [];
+  let acquireCalls = 0;
+  let staleSendCalls = 0;
+  const staleSocket = new EventEmitter() as EventEmitter & {
+    readyState: number;
+    send(payload: string): void;
+    close(code?: number, reason?: string): void;
+  };
+  staleSocket.readyState = 3;
+  staleSocket.send = () => {
+    staleSendCalls += 1;
+    throw new Error('stale socket must be replaced before dispatch');
+  };
+  staleSocket.close = () => {};
+
+  const freshSocket = new EventEmitter() as EventEmitter & {
+    readyState: number;
+    send(payload: string): void;
+    close(code?: number, reason?: string): void;
+  };
+  freshSocket.readyState = 1;
+  freshSocket.send = (payload: string) => {
+    sentPayloads.push(payload);
+  };
+  freshSocket.close = () => {};
+
+  const history = [
+    { kind: 'user', text: '첫 질문' },
+    { kind: 'assistant', phase: 'final_answer', text: '첫 답변' },
+    { kind: 'user', text: '잠시 쉬었다가 이어서 묻는 질문' },
+  ] as const;
+  const runPromise = streamResponsesOverWebSocket({
+    body: baseBody,
+    headers: new Headers(),
+    history: [...history],
+    providerSessionId: 'provider-session',
+    webSocketReusePolicy: TEST_REUSE_POLICY,
+    providerWebSocketSessions: {
+      async acquireWebSocket() {
+        acquireCalls += 1;
+        return acquireCalls === 1
+          ? {
+              socket: staleSocket,
+              reused: true,
+              release({ keep } = {}) {
+                releases.push(keep === true);
+              },
+            }
+          : {
+              socket: freshSocket,
+              reused: false,
+              release({ keep } = {}) {
+                releases.push(keep === true);
+              },
+            };
+      },
+    },
+  });
+
+  await setImmediatePromise();
+  freshSocket.emit(
+    'message',
+    Buffer.from(
+      JSON.stringify({
+        type: 'response.output_item.added',
+        item: { id: 'item-1', type: 'message', phase: 'final_answer' },
+      }),
+    ),
+  );
+  freshSocket.emit(
+    'message',
+    Buffer.from(
+      JSON.stringify({
+        type: 'response.output_text.delta',
+        item_id: 'item-1',
+        delta: '이어진 답변',
+      }),
+    ),
+  );
+  freshSocket.emit(
+    'message',
+    Buffer.from(
+      JSON.stringify({
+        type: 'response.output_item.done',
+        item: {
+          id: 'item-1',
+          type: 'message',
+          phase: 'final_answer',
+          content: [{ type: 'output_text', text: '이어진 답변' }],
+        },
+      }),
+    ),
+  );
+  freshSocket.emit(
+    'message',
+    Buffer.from(
+      JSON.stringify({
+        type: 'response.completed',
+        response: { usage: { input_tokens: 1 } },
+      }),
+    ),
+  );
+
+  const result = await runPromise;
+
+  assert.equal(result.finalText, '이어진 답변');
+  assert.equal(acquireCalls, 2);
+  assert.equal(staleSendCalls, 0);
+  assert.deepEqual(releases, [false, true]);
+  assert.equal(sentPayloads.length, 1);
+  assert.deepEqual(
+    JSON.parse(sentPayloads[0] ?? '{}'),
+    buildResponseCreatePayload(baseBody, [...history]),
+  );
 });
 
 function setImmediatePromise(): Promise<void> {

@@ -1,5 +1,5 @@
 import type { ArtifactId } from './artifacts.js';
-import type { ProjectId, ThreadId } from './ids.js';
+import type { ThreadId } from './ids.js';
 import {
   isNumber,
   isPlainRecord,
@@ -56,7 +56,6 @@ export function isArtifactRuntimePersistenceRenderer(
 }
 
 export interface ArtifactRuntimePersistenceScopeRequest {
-  projectId: ProjectId;
   threadId: ThreadId;
   renderer: ArtifactRuntimePersistenceRenderer;
   artifactId: ArtifactId;

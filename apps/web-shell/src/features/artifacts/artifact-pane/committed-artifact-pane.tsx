@@ -9,26 +9,19 @@ import {
 } from './use-artifact-pane-controller.js';
 import { ArtifactPaneView } from './view.js';
 
-export interface CommittedArtifactPaneProps {
+interface CommittedArtifactPaneProps {
   label: string;
   artifact: ThreadArtifactVersion;
   isRunning: boolean;
   renderRuntimeFrame: RenderArtifactRuntimeFrame;
-  onOpenSource?: (path: string) => Promise<void> | void;
   onStartArtifactRun?: (request: RunRequest) => Promise<void> | void;
 }
 
 type ArtifactPaneProps = Omit<UseArtifactPaneControllerArgs, 'viewModel'>;
 
 export function CommittedArtifactPane(props: CommittedArtifactPaneProps) {
-  const {
-    label,
-    artifact,
-    isRunning,
-    renderRuntimeFrame,
-    onOpenSource,
-    onStartArtifactRun,
-  } = props;
+  const { label, artifact, isRunning, renderRuntimeFrame, onStartArtifactRun } =
+    props;
   const viewModel = createCommittedArtifactPaneViewModel(artifact);
 
   return (
@@ -38,7 +31,6 @@ export function CommittedArtifactPane(props: CommittedArtifactPaneProps) {
       isRunning={isRunning}
       isLiveStreamingArtifact={false}
       renderRuntimeFrame={renderRuntimeFrame}
-      {...(onOpenSource !== undefined ? { onOpenSource } : {})}
       {...(onStartArtifactRun !== undefined ? { onStartArtifactRun } : {})}
     />
   );

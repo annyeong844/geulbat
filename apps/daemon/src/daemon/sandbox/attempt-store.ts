@@ -1,6 +1,6 @@
 import { createSignal } from '../utils/signal.js';
 
-export type SandboxAttemptStatus =
+type SandboxAttemptStatus =
   | 'queued'
   | 'running'
   | 'cancelling'
@@ -17,27 +17,26 @@ export type SandboxTerminalStatus = Exclude<
 >;
 
 export interface SandboxAttemptOwner {
-  projectId?: string;
   threadId?: string;
   runId?: string;
 }
 
-export type SandboxAttemptCapabilityClass =
+type SandboxAttemptCapabilityClass =
   | 'candidate_generation'
   | 'read_only'
   | 'workspace_mutating';
 
-export type SandboxAttemptExecutionClass =
+type SandboxAttemptExecutionClass =
   | 'in_process_adapter'
   | 'docker_worker'
   | 'sandbox_job';
 
-export type SandboxAttemptCommitBehavior =
+type SandboxAttemptCommitBehavior =
   | 'not_applicable'
   | 'candidate_only'
   | 'requires_commit_gate';
 
-export type SandboxAttemptPolicyValue = string | number | boolean;
+type SandboxAttemptPolicyValue = string | number | boolean;
 
 export interface SandboxAttemptCapabilityProjection {
   schemaVersion: 1;

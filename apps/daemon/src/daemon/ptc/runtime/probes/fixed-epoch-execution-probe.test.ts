@@ -34,7 +34,7 @@ const unixTest = process.platform === 'win32' ? test.skip : test;
 const UNIX_SOCKET_TEMP_ROOT = process.platform === 'win32' ? tmpdir() : '/tmp';
 const IDENTITY: PtcSessionDockerIdentity = Object.freeze({
   threadId: 'thread-fixed-probe',
-  workspaceRoot: '/workspace/project-a',
+  stateRoot: '/workspace/project-a',
   trustContextId: 'trust-local-v1',
 });
 const TEST_CALLBACK_TRANSPORT_POLICY = Object.freeze({

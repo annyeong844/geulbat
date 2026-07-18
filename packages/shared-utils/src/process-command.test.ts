@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { mkdtemp, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import {
   buildAllowlistedProcessEnv,
@@ -75,6 +78,21 @@ void test('runBoundedProcessCommand runs without a timeout when timeoutMs is omi
   assert.equal(result.kind, 'exit');
   assert.equal(result.kind === 'exit' ? result.exitCode : -1, 0);
   assert.equal(result.stdout, 'done');
+});
+
+void test('runBoundedProcessCommand executes in the requested cwd', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'geulbat-process-cwd-'));
+  const result = await runBoundedProcessCommand({
+    executable: process.execPath,
+    args: ['-e', 'process.stdout.write(process.cwd())'],
+    cwd,
+    timeoutMs: 1000,
+    env: { PATH: process.env.PATH ?? '' },
+  });
+
+  assert.equal(result.kind, 'exit');
+  assert.equal(result.kind === 'exit' ? result.exitCode : -1, 0);
+  assert.equal(await realpath(result.stdout), await realpath(cwd));
 });
 
 void test('runBoundedProcessCommand preserves large stdout and stderr', async () => {

@@ -1,33 +1,54 @@
 import type { ProviderRequestOptions } from '../../llm/provider/provider-options.js';
-import type { RunWorkspaceContext } from '../../run-workspace-context.js';
+import type { RunContext } from '../../run-context.js';
+import type { ToolLibraryProjectionPort } from '../../tools/tool-library-projection-port.js';
 import type { ToolDefinition } from '../../tools/tool-registry-model.js';
 import type { PermissionMode, ThreadId } from '../contract.js';
+import type { AgentToolSurface } from '../loop-types.js';
 
-export type AgentLoopObserverRunStateKind = 'none' | 'root' | 'child';
+type AgentLoopObserverRunStateKind = 'none' | 'root' | 'child';
 
-export type AgentLoopObserverToolAdmission =
+type AgentLoopObserverToolAdmission =
   | { kind: 'registry_default' }
-  | { kind: 'allow_list'; names: string[] };
+  | {
+      kind: 'restricted';
+      directRegistryNames: string[];
+      allowedRegistryNames: string[];
+    };
+
+interface AgentLoopObserverToolLibraryProjectionSummary {
+  sdkVersion: string;
+  sdkProjectionHash: `sha256:${string}`;
+  policyId: string;
+}
 
 export interface AgentLoopObserverSnapshot {
-  schemaVersion: 1;
+  schemaVersion: 4;
   runId: string;
   threadId: string;
-  projectId: string;
   input: {
     currentFileProvided: boolean;
     selectionProvided: boolean;
     signalProvided: boolean;
     runStateKind: AgentLoopObserverRunStateKind;
     callModelPort: 'default_provider' | 'injected';
+    promptPort: 'default_prompt_port' | 'injected';
+    historyPort: 'default_history_port' | 'injected';
+    lifecyclePort: 'default_lifecycle_port' | 'injected';
+    memoryPort: 'default_memory_port' | 'injected';
+    modelRoundPort: 'default_model_round_port' | 'injected';
+    structuredOutputPort: 'default_structured_output_port' | 'injected';
+    toolDefinitionPort: 'default_tool_definition_port' | 'injected';
+    toolRuntimePort: 'default_tool_runtime_port' | 'injected';
+    toolLibraryProjectionPort:
+      | 'default_tool_library_projection_port'
+      | 'injected';
   };
   approval: {
     permissionMode: PermissionMode;
     ownerKind: 'foreground' | 'delegated';
   };
   promptPorts: {
-    systemPrompt: 'buildSystemPrompt';
-    promptContext: 'buildPromptContext';
+    prompt: 'AgentLoopPromptPort';
   };
   history: {
     initialItemCount: number;
@@ -50,32 +71,51 @@ export interface AgentLoopObserverSnapshot {
       count: number;
       names: string[];
     };
+    toolLibraryProjection?: AgentLoopObserverToolLibraryProjectionSummary;
   };
   loopPorts: {
-    modelRound: 'runModelRound';
+    prompt: 'AgentLoopPromptPort';
+    history: 'AgentLoopHistoryPort';
+    lifecycle: 'AgentLoopLifecyclePort';
+    memory: 'AgentLoopMemoryPort';
+    modelRound: 'ModelRoundPort';
+    structuredOutputs: 'AgentLoopStructuredOutputPort';
+    toolDefinitions: 'AgentLoopToolDefinitionPort';
+    toolRuntime: 'AgentLoopToolRuntimePort';
+    toolLibraryProjection: 'AgentLoopToolLibraryProjectionPort';
     toolExecution: 'processFunctionCalls';
-    structuredOutputs: [
+    structuredOutputImplementations: [
       'ptc_fixed_probe_structured_output',
       'react_bundle_structured_output',
     ];
   };
 }
 
-export interface BuildAgentLoopObserverSnapshotArgs {
+interface BuildAgentLoopObserverSnapshotArgs {
   runId: string;
-  runContext: Pick<RunWorkspaceContext, 'projectId' | 'threadId'>;
+  runContext: Pick<RunContext, 'threadId'>;
   approvalContext: {
     permissionMode: PermissionMode;
     ownerRunId?: string;
     ownerThreadId?: ThreadId;
   };
-  allowedToolNames?: readonly string[];
+  toolSurface?: AgentToolSurface;
+  toolLibraryProjection?: AgentLoopObserverToolLibraryProjectionSummary;
   toolDefs: readonly Pick<ToolDefinition, 'name'>[];
   providerRequestOptions: ProviderRequestOptions;
   callModelImplProvided: boolean;
   currentFileProvided: boolean;
   selectionProvided: boolean;
   signalProvided: boolean;
+  promptPortProvided: boolean;
+  historyPortProvided: boolean;
+  lifecyclePortProvided: boolean;
+  memoryPortProvided: boolean;
+  modelRoundPortProvided: boolean;
+  structuredOutputPortProvided: boolean;
+  toolDefinitionPortProvided: boolean;
+  toolRuntimePortProvided: boolean;
+  toolLibraryProjectionPortProvided: boolean;
   runStateKind: AgentLoopObserverRunStateKind;
   initialHistoryItemCount: number;
   pendingBackgroundResultCount: number;
@@ -102,9 +142,7 @@ export type AgentLoopObserverEvent =
       terminalOk?: boolean;
     };
 
-export type AgentLoopObserverDeliveryOperation =
-  | 'record_snapshot'
-  | 'record_event';
+type AgentLoopObserverDeliveryOperation = 'record_snapshot' | 'record_event';
 
 export interface AgentLoopObserverDiagnostic {
   schemaVersion: 1;
@@ -119,6 +157,36 @@ export interface AgentLoopObserver {
   recordDiagnostic?(
     diagnostic: AgentLoopObserverDiagnostic,
   ): void | Promise<void>;
+}
+
+type AgentLoopObserverToolLibraryProjectionRehydrationResult =
+  | Awaited<ReturnType<ToolLibraryProjectionPort['rehydrateProjectionMount']>>
+  | {
+      ok: false;
+      reason: 'projection_identity_missing';
+      message: string;
+    };
+
+export async function rehydrateToolLibraryProjectionFromObserverSnapshot(args: {
+  snapshot: Pick<AgentLoopObserverSnapshot, 'threadId' | 'toolSurface'>;
+  stateRoot: string;
+  projectionPort: Pick<ToolLibraryProjectionPort, 'rehydrateProjectionMount'>;
+}): Promise<AgentLoopObserverToolLibraryProjectionRehydrationResult> {
+  const expectedIdentity = args.snapshot.toolSurface.toolLibraryProjection;
+  if (expectedIdentity === undefined) {
+    return {
+      ok: false,
+      reason: 'projection_identity_missing',
+      message:
+        'Agent loop observer snapshot has no tool library projection identity',
+    };
+  }
+
+  return await args.projectionPort.rehydrateProjectionMount({
+    stateRoot: args.stateRoot,
+    threadId: args.snapshot.threadId,
+    expectedIdentity,
+  });
 }
 
 export function recordAgentLoopObserverSnapshot(
@@ -148,10 +216,9 @@ export function buildAgentLoopObserverSnapshot(
   const toolNames = args.toolDefs.map((toolDef) => toolDef.name);
   const retryPolicy = args.providerRequestOptions.modelRoundRetry;
   return {
-    schemaVersion: 1,
+    schemaVersion: 4,
     runId: args.runId,
     threadId: args.runContext.threadId,
-    projectId: args.runContext.projectId,
     input: {
       currentFileProvided: args.currentFileProvided,
       selectionProvided: args.selectionProvided,
@@ -160,6 +227,29 @@ export function buildAgentLoopObserverSnapshot(
       callModelPort: args.callModelImplProvided
         ? 'injected'
         : 'default_provider',
+      promptPort: args.promptPortProvided ? 'injected' : 'default_prompt_port',
+      historyPort: args.historyPortProvided
+        ? 'injected'
+        : 'default_history_port',
+      lifecyclePort: args.lifecyclePortProvided
+        ? 'injected'
+        : 'default_lifecycle_port',
+      memoryPort: args.memoryPortProvided ? 'injected' : 'default_memory_port',
+      modelRoundPort: args.modelRoundPortProvided
+        ? 'injected'
+        : 'default_model_round_port',
+      structuredOutputPort: args.structuredOutputPortProvided
+        ? 'injected'
+        : 'default_structured_output_port',
+      toolDefinitionPort: args.toolDefinitionPortProvided
+        ? 'injected'
+        : 'default_tool_definition_port',
+      toolRuntimePort: args.toolRuntimePortProvided
+        ? 'injected'
+        : 'default_tool_runtime_port',
+      toolLibraryProjectionPort: args.toolLibraryProjectionPortProvided
+        ? 'injected'
+        : 'default_tool_library_projection_port',
     },
     approval: {
       permissionMode: args.approvalContext.permissionMode,
@@ -170,8 +260,7 @@ export function buildAgentLoopObserverSnapshot(
           : 'foreground',
     },
     promptPorts: {
-      systemPrompt: 'buildSystemPrompt',
-      promptContext: 'buildPromptContext',
+      prompt: 'AgentLoopPromptPort',
     },
     history: {
       initialItemCount: args.initialHistoryItemCount,
@@ -190,18 +279,33 @@ export function buildAgentLoopObserverSnapshot(
     },
     toolSurface: {
       admission:
-        args.allowedToolNames === undefined
+        args.toolSurface === undefined
           ? { kind: 'registry_default' }
-          : { kind: 'allow_list', names: [...args.allowedToolNames] },
+          : {
+              kind: 'restricted',
+              directRegistryNames: [...args.toolSurface.directRegistryNames],
+              allowedRegistryNames: [...args.toolSurface.allowedRegistryNames],
+            },
       definitions: {
         count: toolNames.length,
         names: toolNames,
       },
+      ...(args.toolLibraryProjection === undefined
+        ? {}
+        : { toolLibraryProjection: args.toolLibraryProjection }),
     },
     loopPorts: {
-      modelRound: 'runModelRound',
+      prompt: 'AgentLoopPromptPort',
+      history: 'AgentLoopHistoryPort',
+      lifecycle: 'AgentLoopLifecyclePort',
+      memory: 'AgentLoopMemoryPort',
+      modelRound: 'ModelRoundPort',
+      structuredOutputs: 'AgentLoopStructuredOutputPort',
+      toolDefinitions: 'AgentLoopToolDefinitionPort',
+      toolRuntime: 'AgentLoopToolRuntimePort',
+      toolLibraryProjection: 'AgentLoopToolLibraryProjectionPort',
       toolExecution: 'processFunctionCalls',
-      structuredOutputs: [
+      structuredOutputImplementations: [
         'ptc_fixed_probe_structured_output',
         'react_bundle_structured_output',
       ],

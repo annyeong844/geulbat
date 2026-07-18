@@ -3,13 +3,12 @@ import {
   isRunApproveMessage,
   isRunAuthMessage,
   isRunCancelMessage,
+  isRunInterjectCancelEnvelope,
   isRunInterjectEnvelope,
+  isRunInterjectFlushEnvelope,
   isRunStartMessage,
+  isRunToolEnvelope,
 } from '@geulbat/protocol/run-channel';
-import {
-  readProjectWorkspaceScope,
-  type ProjectScopeRegistry,
-} from '#web/request/project-scope.js';
 
 type RunChannelClientMessageReadResult =
   | { ok: true; message: RunChannelClientMessage }
@@ -17,9 +16,6 @@ type RunChannelClientMessageReadResult =
 
 export function readRunChannelClientMessage(
   value: unknown,
-  args: {
-    projectRegistry: ProjectScopeRegistry;
-  },
 ): RunChannelClientMessageReadResult {
   if (isRunAuthMessage(value)) {
     return readClientMessageWithRequestId(value);
@@ -33,12 +29,16 @@ export function readRunChannelClientMessage(
   if (isRunInterjectEnvelope(value)) {
     return readClientMessageWithRequestId(value);
   }
-  if (
-    isRunStartMessage(value) &&
-    readProjectWorkspaceScope(value.request.projectId, {
-      projectRegistry: args.projectRegistry,
-    }).ok
-  ) {
+  if (isRunInterjectCancelEnvelope(value)) {
+    return readClientMessageWithRequestId(value);
+  }
+  if (isRunInterjectFlushEnvelope(value)) {
+    return readClientMessageWithRequestId(value);
+  }
+  if (isRunToolEnvelope(value)) {
+    return readClientMessageWithRequestId(value);
+  }
+  if (isRunStartMessage(value)) {
     return readClientMessageWithRequestId(value);
   }
   return { ok: false, message: 'invalid websocket JSON' };

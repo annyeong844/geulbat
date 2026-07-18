@@ -1,11 +1,18 @@
 import { z } from 'zod';
-import { catchToolError } from '../result.js';
+import { catchToolError, toolError } from '../result.js';
 import { shouldExcludeWorkspaceEntry } from '../../files/reserved-paths.js';
 import {
   enumerateCanonicalChildren,
   resolveSourceDirectoryTarget,
   type SourceDirectoryTarget,
 } from '../../files/file-platform.js';
+import { resolveComputerFileToolPath } from '../file-tool-root.js';
+import { resolvePluginSkillDirectoryBrowsePath } from '../plugin-skill-browse.js';
+import {
+  resolveToolLibraryProjectionBrowsePath,
+  TOOL_LIBRARY_MODEL_FACING_ROOT,
+  type ToolLibraryProjectionBrowsePathResult,
+} from '../tool-library-projection-browse.js';
 import { defineZodTool } from '../zod-tool.js';
 
 interface EntryInfo {
@@ -22,7 +29,9 @@ const listFilesArgsSchema = z.strictObject({
       message: 'path must not be empty.',
     })
     .optional()
-    .describe('The directory path to list, relative to the workspace root.'),
+    .describe(
+      'A directory resolved from the current directory inside ComputerFileScope, a verified read-only geulbat-sdk directory, or an opaque geulbat-skill ref returned by skill_search.',
+    ),
   recursive: z
     .boolean()
     .optional()
@@ -32,19 +41,99 @@ const listFilesArgsSchema = z.strictObject({
 export const listFilesTool = defineZodTool({
   name: 'list_files',
   description:
-    'List files and directories at the specified path. Returns a listing of entries in the directory. Useful for exploring the workspace structure.',
+    'List a directory admitted by ComputerFileScope, the verified read-only geulbat-sdk tree, or an enabled bundled/installed plugin skill tree. Relative paths start from the current directory.',
   argsSchema: listFilesArgsSchema,
   sideEffectLevel: 'read',
-  mayMutateWorkspaceFiles: false,
+  mayMutateComputerFiles: false,
   requiresApproval: false,
+  exposure: {
+    directHot: true,
+    sdkVisible: true,
+    inCellCallable: true,
+    directOnly: false,
+    approvalRequired: false,
+    effectClass: 'readOnly',
+  },
+  catalogSearchMetadata: {
+    family: 'file',
+    searchHints: ['ls folder', 'list directory', 'show files', 'tree'],
+    tags: ['file', 'directory', 'computer'],
+    whenToUse:
+      'Explore a filesystem, geulbat-sdk, or bundled/installed plugin skill directory.',
+    notFor: 'Reading file contents or text search.',
+  },
   async executeParsed(args, ctx) {
     const inputPath = args.path ?? '.';
     const recursive = args.recursive ?? false;
 
     try {
-      const rootTarget = await resolveSourceDirectoryTarget(
-        ctx.workspaceRoot,
+      const pluginSkillPath = await resolvePluginSkillDirectoryBrowsePath({
+        ctx,
         inputPath,
+        recursive,
+      });
+      if (pluginSkillPath.kind === 'failure') {
+        return toolError('not_found', pluginSkillPath.message);
+      }
+      if (pluginSkillPath.kind === 'plugin_skill_directory') {
+        const directory = pluginSkillPath.directory;
+        const sourcePlugin = directory.skill.sourcePlugin;
+        return {
+          ok: true,
+          output: JSON.stringify({
+            path: directory.logicalPath,
+            total: directory.entries.length,
+            entries: directory.entries,
+            source: 'plugin_skill',
+            readOnly: true,
+            skillRef: directory.skill.skillRef,
+            skillName: directory.skill.name,
+            instructionsRef: directory.skill.instructionsRef,
+            allowImplicitInvocation: directory.skill.allowImplicitInvocation,
+            pluginInstallationId: sourcePlugin.installationId,
+            pluginName: sourcePlugin.name,
+            pluginVersion: sourcePlugin.version,
+            pluginContentDigest: sourcePlugin.contentDigest,
+          }),
+        };
+      }
+      const projectionPath = await resolveToolLibraryProjectionBrowsePath({
+        ctx,
+        inputPath,
+      });
+      if (projectionPath.kind === 'failure') {
+        return toolError('not_found', projectionPath.message);
+      }
+      if (projectionPath.kind === 'projection_path') {
+        const projectionEntries = listProjectionDirectory(
+          projectionPath,
+          recursive,
+        );
+        if (projectionEntries === null) {
+          return toolError(
+            'not_found',
+            'The requested tool library directory is not projected',
+          );
+        }
+        return {
+          ok: true,
+          output: JSON.stringify({
+            path: projectionPath.logicalPath,
+            total: projectionEntries.length,
+            entries: projectionEntries,
+            source: 'tool_library_projection',
+            readOnly: true,
+            sdkVersion: projectionPath.identity.sdkVersion,
+            sdkProjectionHash: projectionPath.identity.sdkProjectionHash,
+            policyId: projectionPath.identity.policyId,
+            computerFileShadowIgnored: projectionPath.computerFileShadowIgnored,
+          }),
+        };
+      }
+      const filePath = resolveComputerFileToolPath(ctx, inputPath);
+      const rootTarget = await resolveSourceDirectoryTarget(
+        filePath.absoluteRoot,
+        filePath.path,
       );
 
       const entries: EntryInfo[] = [];
@@ -61,6 +150,7 @@ export const listFilesTool = defineZodTool({
       entries.sort((a, b) => a.path.localeCompare(b.path));
 
       const output = {
+        root: filePath.root,
         path: rootTarget.relativePath,
         total: entries.length,
         entries,
@@ -72,6 +162,58 @@ export const listFilesTool = defineZodTool({
     }
   },
 });
+
+function listProjectionDirectory(
+  projectionPath: Extract<
+    ToolLibraryProjectionBrowsePathResult,
+    { kind: 'projection_path' }
+  >,
+  recursive: boolean,
+): EntryInfo[] | null {
+  if (projectionPath.file !== undefined) {
+    return null;
+  }
+  const prefix =
+    projectionPath.relativePath.length === 0
+      ? ''
+      : `${projectionPath.relativePath}/`;
+  const matchingFiles = projectionPath.files.filter((file) =>
+    file.path.startsWith(prefix),
+  );
+  if (matchingFiles.length === 0 && prefix.length > 0) {
+    return null;
+  }
+
+  const entriesByPath = new Map<string, EntryInfo>();
+  for (const file of matchingFiles) {
+    const remainder = file.path.slice(prefix.length);
+    const segments = remainder.split('/');
+    const visibleSegments = recursive ? segments : segments.slice(0, 1);
+    for (let index = 0; index < visibleSegments.length; index += 1) {
+      const relativeEntryPath = [
+        ...(projectionPath.relativePath.length === 0
+          ? []
+          : projectionPath.relativePath.split('/')),
+        ...visibleSegments.slice(0, index + 1),
+      ].join('/');
+      const isFile = recursive
+        ? index === segments.length - 1
+        : segments.length === 1;
+      const logicalPath = `${TOOL_LIBRARY_MODEL_FACING_ROOT}/${relativeEntryPath}`;
+      entriesByPath.set(logicalPath, {
+        name: visibleSegments[index] ?? '',
+        path: logicalPath,
+        type: isFile ? 'file' : 'directory',
+      });
+      if (!recursive) {
+        break;
+      }
+    }
+  }
+  return [...entriesByPath.values()].sort((left, right) =>
+    left.path.localeCompare(right.path),
+  );
+}
 
 /** List a single directory (non-recursive) */
 async function listSingleDir(

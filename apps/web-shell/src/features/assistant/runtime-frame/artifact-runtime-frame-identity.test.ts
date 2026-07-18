@@ -1,10 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-  brandProjectId,
-  brandThreadId,
-} from '../../../lib/id-brand-helpers.js';
+import { brandThreadId } from '../../../lib/id-brand-helpers.js';
 import {
   createArtifactRuntimeFrameIdentity,
   resolveArtifactRuntimeParentOrigin,
@@ -17,7 +14,7 @@ void test('createArtifactRuntimeFrameIdentity derives host url, revision, and pe
     locationOrigin: 'http://127.0.0.1:5173',
     sourceRef: {
       kind: 'thread-file',
-      projectId: brandProjectId('workspace'),
+      workingDirectory: 'stories/sample',
       threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
       runId: 'run-1',
       filePath: 'artifacts/demo.js',
@@ -40,7 +37,6 @@ void test('createArtifactRuntimeFrameIdentity derives host url, revision, and pe
   assert.match(identity.runtimeFrameRevision, /^rev2-/);
   assert.equal(identity.scopeHandle, `scope-${identity.runtimeFrameRevision}`);
   assert.deepEqual(identity.scope, {
-    projectId: brandProjectId('workspace'),
     threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
     renderer: 'js',
     artifactId: 'artifact-1',
@@ -54,7 +50,7 @@ void test('createArtifactRuntimeFrameIdentity keeps persistence scope unavailabl
     runtimePayload: 'export default function App() { return null; }',
     sourceRef: {
       kind: null,
-      projectId: null,
+      workingDirectory: '',
       threadId: null,
       runId: null,
       filePath: null,

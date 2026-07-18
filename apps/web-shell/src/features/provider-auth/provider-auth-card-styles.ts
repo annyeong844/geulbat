@@ -1,32 +1,48 @@
 import type { CSSProperties } from 'react';
 
+// 우측 어시스턴트 provider 연결 카드 — Modern Heritage 토큰만 참조
 export const providerAuthCardStyles = {
   section: {
-    border: '1px solid #e0e0e0',
     borderRadius: 8,
     padding: 12,
-    background: '#fafafa',
+    background: 'var(--surface-container-lowest)',
+    boxShadow: 'var(--elev-card)',
   },
   description: {
     fontSize: 13,
-    color: '#555',
+    color: 'var(--on-surface-variant)',
     lineHeight: 1.5,
-    marginBottom: 8,
+    margin: '4px 0 8px',
+  },
+  providerList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+  },
+  providerRow: {
+    paddingTop: 10,
+    borderTop: '1px solid var(--outline-variant)',
+  },
+  providerHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    fontSize: 13,
+  },
+  statusLabel: {
+    fontSize: 11,
+    color: 'var(--on-surface-muted)',
+    textTransform: 'uppercase',
   },
   alert: {
     marginBottom: 10,
     padding: '8px 10px',
-    borderRadius: 6,
-    background: '#fff4e5',
-    border: '1px solid #f6c26b',
-    color: '#8a4b00',
+    borderRadius: 8,
+    background: 'var(--warning-bg)',
+    color: 'var(--warning-text)',
     fontSize: 12,
     lineHeight: 1.45,
-  },
-  statusRow: {
-    fontSize: 12,
-    color: '#777',
-    marginBottom: 10,
   },
   actionRow: {
     display: 'flex',
@@ -36,17 +52,19 @@ export const providerAuthCardStyles = {
 } satisfies Record<string, CSSProperties>;
 
 export function getProviderAuthButtonStyle(
-  background: string,
+  variant: 'primary' | 'danger',
   disabled: boolean,
 ): CSSProperties {
   return {
-    padding: '6px 12px',
-    fontSize: 13,
+    padding: '6px 14px',
+    fontSize: 12.5,
+    fontWeight: 600,
+    fontFamily: 'var(--font-ui-label)',
     cursor: disabled ? 'default' : 'pointer',
-    background,
-    color: '#fff',
+    background: variant === 'danger' ? 'transparent' : 'var(--primary)',
+    color: variant === 'danger' ? 'var(--error)' : 'var(--on-primary)',
     border: 'none',
-    borderRadius: 4,
+    borderRadius: 999,
     opacity: disabled ? 0.5 : 1,
   };
 }

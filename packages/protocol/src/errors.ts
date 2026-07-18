@@ -3,7 +3,7 @@
  * NOT runtime Error classes. These go directly on the wire.
  */
 
-import { isProjectId, isRunId, isThreadId } from './ids.js';
+import { isRunId, isThreadId } from './ids.js';
 import { isRecord, isString } from './runtime-utils.js';
 
 export type ErrorCode =
@@ -45,7 +45,7 @@ export type ErrorCode =
   | 'rate_limited'
   | 'invalid_path'
   | 'already_exists'
-  | 'path_out_of_workspace'
+  | 'path_out_of_computer_scope'
   | 'access_denied'
   | 'binary_file'
   | 'buffer_limit_exceeded'
@@ -53,7 +53,14 @@ export type ErrorCode =
   | 'execution_failed'
   | 'not_found'
   | 'unauthorized'
-  | 'internal';
+  | 'internal'
+  // 이미지 생성 실패 분류(image-generation-open §4.4) — 사용자가 고른 이미지
+  // 모델/프로바이더가 사용 불가(미연결·비활성·검증 미통과)면 자동 폴백 없이
+  // 이 코드로 명시적으로 실패한다.
+  | 'image_provider_unavailable'
+  | 'quota_exceeded'
+  | 'invalid_image_response'
+  | 'artifact_commit_failed';
 
 export const ERROR_CODES = [
   'persistence_unsupported',
@@ -94,7 +101,7 @@ export const ERROR_CODES = [
   'rate_limited',
   'invalid_path',
   'already_exists',
-  'path_out_of_workspace',
+  'path_out_of_computer_scope',
   'access_denied',
   'binary_file',
   'buffer_limit_exceeded',
@@ -103,6 +110,10 @@ export const ERROR_CODES = [
   'not_found',
   'unauthorized',
   'internal',
+  'image_provider_unavailable',
+  'quota_exceeded',
+  'invalid_image_response',
+  'artifact_commit_failed',
 ] as const satisfies ReadonlyArray<ErrorCode>;
 
 export type GenericApiErrorCode = Exclude<
@@ -137,7 +148,6 @@ export interface ConflictActiveRunError {
   message: string;
   threadId: string;
   activeRunId: string;
-  projectId?: string;
 }
 
 export interface NotFoundPathError {
@@ -172,10 +182,10 @@ export type ApiError =
   | InvalidPathError
   | AlreadyExistsError;
 
-const ERROR_CODE_SET = new Set<ErrorCode>(ERROR_CODES);
+const ERROR_CODE_SET: ReadonlySet<string> = new Set(ERROR_CODES);
 
 export function isErrorCode(value: unknown): value is ErrorCode {
-  return typeof value === 'string' && ERROR_CODE_SET.has(value as ErrorCode);
+  return typeof value === 'string' && ERROR_CODE_SET.has(value);
 }
 
 export function isGenericApiErrorCode(
@@ -266,9 +276,7 @@ export function isConflictActiveRunError(
     isString(value.threadId) &&
     isThreadId(value.threadId) &&
     isString(value.activeRunId) &&
-    isRunId(value.activeRunId) &&
-    (value.projectId === undefined ||
-      (isString(value.projectId) && isProjectId(value.projectId)))
+    isRunId(value.activeRunId)
   );
 }
 

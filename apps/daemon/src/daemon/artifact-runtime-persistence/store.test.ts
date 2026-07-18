@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ArtifactId } from '@geulbat/protocol/artifacts';
-import type { ProjectId, ThreadId } from '@geulbat/protocol/ids';
+import type { ThreadId } from '@geulbat/protocol/ids';
 
 import {
   clearArtifactRuntimePersistenceState,
@@ -19,7 +19,6 @@ import {
 } from './errors.js';
 import { readPersistedRuntimeState } from './stored-state.js';
 
-const PROJECT_ID = 'workspace' as ProjectId;
 const THREAD_ID = '00000000-0000-4000-8000-000000000001' as ThreadId;
 
 function createScope(
@@ -27,7 +26,6 @@ function createScope(
   overrides: Record<string, unknown> = {},
 ) {
   return {
-    projectId: PROJECT_ID,
     threadId: THREAD_ID,
     renderer: 'js' as const,
     artifactId,

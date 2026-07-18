@@ -19,7 +19,7 @@ export function extractWebSocketError(event: unknown): Error {
 export function extractWebSocketCloseError(event: unknown): Error {
   if (event && typeof event === 'object') {
     const code = getErrorNumberProperty(event, 'code');
-    const reason =
+    const reason: unknown =
       getErrorStringProperty(event, 'reason') ?? Reflect.get(event, 'reason');
     const codeText = typeof code === 'number' ? ` ${code}` : '';
     const reasonText =

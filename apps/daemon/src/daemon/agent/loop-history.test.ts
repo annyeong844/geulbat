@@ -14,11 +14,11 @@ import {
   appendAssistantTextToHistory,
   appendFunctionCallsToHistory,
   appendInterjectToHistory,
+  createAgentLoopHistoryPort,
   loadInitialHistory,
   persistSingleInterjectToTranscript,
 } from './loop-history.js';
 import { testThreadId } from '../../test-support/thread-id.js';
-import { assertProjectId as assertValidProjectId } from '@geulbat/protocol/ids';
 
 void test('loadInitialHistory reuses a matching trailing user prompt from transcript', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-history-'));
@@ -38,6 +38,29 @@ void test('loadInitialHistory reuses a matching trailing user prompt from transc
     threadId,
     'canonical prompt',
   );
+
+  assert.deepEqual(history, [{ kind: 'user', text: 'canonical prompt' }]);
+});
+
+void test('createAgentLoopHistoryPort delegates to the current transcript-backed history loader', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-history-'));
+  const threadId = testThreadId(44);
+  const port = createAgentLoopHistoryPort();
+
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: 'visible prompt',
+    timestamp: '2026-03-30T00:00:00.000Z',
+    metadata: {
+      hiddenPrompt: 'canonical prompt',
+    },
+  });
+
+  const history = await port.loadInitialHistory({
+    workspaceRoot,
+    threadId,
+    prompt: 'canonical prompt',
+  });
 
   assert.deepEqual(history, [{ kind: 'user', text: 'canonical prompt' }]);
 });
@@ -70,10 +93,8 @@ void test('loadInitialHistory appends the current prompt when transcript tail do
 void test('loadInitialHistory rehydrates assistant artifact refs from the artifact store', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-history-'));
   const threadId = testThreadId(43);
-  const projectId = assertValidProjectId('proj-test');
   const committed = await commitThreadArtifactVersion({
     workspaceRoot,
-    projectId,
     threadId,
     runId: 'run_43',
     renderer: 'markdown',

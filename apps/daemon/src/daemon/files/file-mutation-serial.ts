@@ -6,10 +6,19 @@ export async function runSourceMutationSerial<T>(
   canonicalAbsolutePaths: string | readonly string[],
   operation: () => Promise<T>,
 ): Promise<T> {
-  const keys = Array.isArray(canonicalAbsolutePaths)
-    ? canonicalAbsolutePaths
-    : [canonicalAbsolutePaths];
-  const uniqueSortedKeys = [...new Set(keys)].sort();
+  const keys: readonly string[] =
+    typeof canonicalAbsolutePaths === 'string'
+      ? [canonicalAbsolutePaths]
+      : canonicalAbsolutePaths;
+  const uniqueSortedKeys = [...new Set(keys)].sort((left, right) => {
+    if (left < right) {
+      return -1;
+    }
+    if (left > right) {
+      return 1;
+    }
+    return 0;
+  });
 
   function runAt(index: number): Promise<T> {
     const key = uniqueSortedKeys[index];

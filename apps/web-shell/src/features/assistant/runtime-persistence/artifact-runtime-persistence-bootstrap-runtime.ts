@@ -40,6 +40,7 @@ interface ArtifactRuntimePersistenceBridgeStore {
     code: string,
     message: string,
   ): GeulbatRuntimePersistenceError;
+  stabilizePersistenceError(error: unknown): GeulbatRuntimePersistenceError;
   assertSharedStorageAvailable(): void;
   isPlainRecord(value: unknown): value is Record<string, unknown>;
 }
@@ -84,7 +85,15 @@ function createArtifactRuntimePersistenceStore(): ArtifactRuntimePersistenceBoot
     );
     if (!sharedStorageAuthorityError) {
       sharedStorageAuthorityError = stabilized;
+      // scope가 의도적으로 없는 프레임(visualize 위젯 등)은 설계된 상태다 —
+      // 콘솔에 아무것도 남기지 않는다. 저장 API를 실제로 부르는 아티팩트
+      // 코드에는 여전히 정확한 에러가 반환된다. 그 외 강등은 진짜 이상
+      // 신호이므로 error 레벨을 유지한다.
+      const scopeUnavailableByDesign = stabilized.message.includes(
+        'scope is unavailable for this artifact',
+      );
       if (
+        !scopeUnavailableByDesign &&
         typeof console !== 'undefined' &&
         console &&
         typeof console.error === 'function'
@@ -132,6 +141,7 @@ function createArtifactRuntimePersistenceStore(): ArtifactRuntimePersistenceBoot
   return {
     bridgeStore: {
       createPersistenceError: validation.createPersistenceError,
+      stabilizePersistenceError: validation.stabilizePersistenceError,
       assertSharedStorageAvailable,
       isPlainRecord: validation.isPlainRecord,
     },
@@ -164,8 +174,6 @@ function createArtifactRuntimePersistenceStore(): ArtifactRuntimePersistenceBoot
       normalizeStorageIndex: validation.normalizeStorageIndex,
       schedulePersistedMutation: mutationQueue.schedulePersistedMutation,
       createNextSessionStorageMap: authorityState.createNextSessionStorageMap,
-      replaceCurrentSessionStorageMap:
-        authorityState.replaceCurrentSessionStorageMap,
       readCurrentStorageMap: authorityState.readCurrentStorageMap,
       readCurrentSessionStorageMap: authorityState.readCurrentSessionStorageMap,
       readCurrentDatabaseMap: authorityState.readCurrentDatabaseMap,

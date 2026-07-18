@@ -13,14 +13,14 @@ import {
 } from './web-fetch-result.js';
 import type { WebFetchLookup } from './web-fetch-url-guard.js';
 
-export interface WebFetchHttpResponse {
+interface WebFetchHttpResponse {
   status: number;
   location: string | null;
   contentType: string | null;
   body: Buffer;
 }
 
-export class WebFetchRuntimeError extends Error {
+class WebFetchRuntimeError extends Error {
   constructor(
     readonly reasonCode: WebFetchFailureReasonCode,
     message: string,
@@ -29,9 +29,9 @@ export class WebFetchRuntimeError extends Error {
   }
 }
 
-export type WebFetchExtractMode = 'text' | 'markdown';
+type WebFetchExtractMode = 'text' | 'markdown';
 
-export type WebFetchTransport = (
+type WebFetchTransport = (
   url: URL,
   options: {
     lookup?: WebFetchLookup;
@@ -79,7 +79,7 @@ async function fetchWebUrlWithRedirects(args: {
       url: args.originalUrl,
       finalUrl: parsed.url.href,
       reasonCode: 'redirect_loop_detected',
-      message: 'web_fetch redirect loop detected.',
+      message: 'fetch_url redirect loop detected.',
     });
   }
   const visitedUrls = new Set(args.visitedUrls);
@@ -115,7 +115,7 @@ async function fetchWebUrlWithRedirects(args: {
         url: args.originalUrl,
         finalUrl: parsed.url.href,
         reasonCode: 'unsafe_redirect',
-        message: 'web_fetch redirect target is not a valid URL.',
+        message: 'fetch_url redirect target is not a valid URL.',
       });
     }
 
@@ -131,7 +131,7 @@ async function fetchWebUrlWithRedirects(args: {
       url: args.originalUrl,
       finalUrl: parsed.url.href,
       reasonCode: 'unsupported_content_type',
-      message: `web_fetch does not support content type: ${response.contentType ?? 'unknown'}.`,
+      message: `fetch_url does not support content type: ${response.contentType ?? 'unknown'}.`,
     });
   }
 
@@ -163,7 +163,7 @@ export function requestWebFetchUrl(
 ): Promise<WebFetchHttpResponse> {
   if (options.signal?.aborted) {
     return Promise.reject(
-      new WebFetchRuntimeError('aborted', 'web_fetch aborted'),
+      new WebFetchRuntimeError('aborted', 'fetch_url aborted'),
     );
   }
 
@@ -171,7 +171,9 @@ export function requestWebFetchUrl(
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void, cleanup: () => void) => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
       cleanup();
       callback();
@@ -185,22 +187,28 @@ export function requestWebFetchUrl(
           accept:
             'text/html,text/plain,application/json,application/xml,application/xhtml+xml,application/rss+xml,application/atom+xml;q=0.9,*/*;q=0.1',
           'accept-encoding': 'identity',
-          'user-agent': 'geulbat-web-fetch/1',
+          'user-agent': 'geulbat-fetch-url/1',
         },
-        lookup(hostname, _lookupOptions, callback) {
+        lookup(hostname, lookupOptions, callback) {
           void guardedLookupPublicAddress(
             hostname,
             options.lookup ? { lookup: options.lookup } : {},
           )
             .then((record) => {
+              if (lookupOptions.all) {
+                callback(null, [record]);
+                return;
+              }
               callback(null, record.address, record.family);
             })
             .catch((error: unknown) => {
-              callback(
-                error instanceof Error ? error : new Error(String(error)),
-                '',
-                4,
-              );
+              const lookupError =
+                error instanceof Error ? error : new Error(String(error));
+              if (lookupOptions.all) {
+                callback(lookupError, []);
+                return;
+              }
+              callback(lookupError, '', 4);
             });
         },
       },
@@ -228,7 +236,7 @@ export function requestWebFetchUrl(
     );
 
     const abort = () =>
-      request.destroy(new WebFetchRuntimeError('aborted', 'web_fetch aborted'));
+      request.destroy(new WebFetchRuntimeError('aborted', 'fetch_url aborted'));
     const cleanup = () => {
       options.signal?.removeEventListener('abort', abort);
     };
@@ -251,7 +259,9 @@ function isRedirectStatus(status: number): boolean {
 }
 
 function isSupportedTextContentType(value: string | null): boolean {
-  if (value === null) return false;
+  if (value === null) {
+    return false;
+  }
   const mediaType = value.split(';', 1)[0]?.trim().toLocaleLowerCase();
   return (
     mediaType === 'application/json' ||
@@ -286,7 +296,9 @@ function extractResponseText(
 }
 
 function readHeader(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) return value[0] ?? null;
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
   return value ?? null;
 }
 

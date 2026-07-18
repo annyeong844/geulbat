@@ -17,8 +17,8 @@ import {
 import { definedPtcProps } from '../../shared/record-shape.js';
 import {
   resolvePtcRuntimeRoot,
-  resolvePtcWorkspaceRootRealpath,
-} from '../runtime-workspace.js';
+  resolvePtcStateRootRealpath,
+} from '../runtime-state.js';
 
 const PTC_AGENT_LOOP_FIXED_PROBE_TRUST_CONTEXT_ID =
   'ptc_agent_loop_fixed_probe_v1' as const;
@@ -32,7 +32,7 @@ type FixedProbeResult =
 interface FixedProbeRuntimeRunArgs {
   runContext: {
     threadId: string;
-    workspaceRoot: string;
+    stateRoot: string;
   };
   signal?: AbortSignal;
 }
@@ -43,8 +43,8 @@ export interface CreatePtcFixedEpochProbeRuntimeOptions {
   createSessionManager?: CreatePtcSessionDockerManager;
   runProbe?: RunPtcFixedEpochExecutionProbe;
   callbackTransportPolicy?: PtcSessionEpochBridgeCallbackPolicy;
-  realpathWorkspaceRoot?: (workspaceRoot: string) => Promise<string>;
-  runtimeRootForWorkspace?: (workspaceRoot: string) => string;
+  realpathStateRoot?: (stateRoot: string) => Promise<string>;
+  runtimeRootForState?: (stateRoot: string) => string;
   timeoutMs?: number;
   trustContextId?: string;
 }
@@ -62,16 +62,16 @@ export function createPtcFixedEpochProbeRuntime(
       args: FixedProbeRuntimeRunArgs,
     ): Promise<FixedProbeRuntimeResult> {
       const runtimeRoot = resolvePtcRuntimeRoot({
-        workspaceRoot: args.runContext.workspaceRoot,
-        runtimeRootForWorkspace: options.runtimeRootForWorkspace,
+        stateRoot: args.runContext.stateRoot,
+        runtimeRootForState: options.runtimeRootForState,
         runtimeLabel: 'fixed epoch probe',
       });
       const createSessionManager =
         options.createSessionManager ?? createPtcSessionDockerManager;
       const managerArgs: Parameters<CreatePtcSessionDockerManager>[0] = {
         runtimeRoot,
-        realpathWorkspaceRoot:
-          options.realpathWorkspaceRoot ?? resolvePtcWorkspaceRootRealpath,
+        realpathStateRoot:
+          options.realpathStateRoot ?? resolvePtcStateRootRealpath,
         ...definedPtcProps({
           dockerPath: options.dockerPath,
           commandRunner: options.commandRunner,
@@ -81,7 +81,7 @@ export function createPtcFixedEpochProbeRuntime(
       const probeArgs: RunPtcFixedEpochExecutionProbeArgs = {
         identity: {
           threadId: args.runContext.threadId,
-          workspaceRoot: args.runContext.workspaceRoot,
+          stateRoot: args.runContext.stateRoot,
           trustContextId:
             options.trustContextId ??
             PTC_AGENT_LOOP_FIXED_PROBE_TRUST_CONTEXT_ID,
@@ -126,10 +126,7 @@ export function createPtcFixedEpochProbeRuntime(
 function hasExplicitPtcFixedProbeCallbackTransportPolicy(
   options: CreatePtcFixedEpochProbeRuntimeOptions,
 ): boolean {
-  return Object.prototype.hasOwnProperty.call(
-    options,
-    'callbackTransportPolicy',
-  );
+  return Object.hasOwn(options, 'callbackTransportPolicy');
 }
 
 function mergeDiagnostics(

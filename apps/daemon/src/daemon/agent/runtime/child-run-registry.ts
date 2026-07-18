@@ -18,6 +18,8 @@ export interface ChildRunRegistry {
     parentRunId: RunId;
     ownerThreadId: ThreadId;
     subagentType: SubagentType;
+    modelPin: ChildRunSnapshot['modelPin'];
+    subagentModelRouting: ChildRunSnapshot['subagentModelRouting'];
   }): void;
   markChildApprovalPending(childRunId: RunId): void;
   markChildRunning(childRunId: RunId): void;
@@ -54,7 +56,25 @@ interface ChildRunRevisionTracker {
 }
 
 function cloneSnapshot(snapshot: ChildRunSnapshot): ChildRunSnapshot {
-  return { ...snapshot };
+  return {
+    ...snapshot,
+    modelPin: {
+      ...snapshot.modelPin,
+      providerRunSelection: {
+        providerModel: {
+          ...snapshot.modelPin.providerRunSelection.providerModel,
+        },
+        reasoningEffort: snapshot.modelPin.providerRunSelection.reasoningEffort,
+      },
+    },
+    subagentModelRouting:
+      snapshot.subagentModelRouting.mode === 'auto'
+        ? { mode: 'auto' }
+        : {
+            mode: 'fixed',
+            choice: { ...snapshot.subagentModelRouting.choice },
+          },
+  };
 }
 
 function isTerminalStatus(
@@ -150,18 +170,21 @@ export function createChildRunRegistry(): ChildRunRegistry {
   return {
     registerChildRun(args) {
       const now = new Date().toISOString();
-      records.set(args.childRunId, {
+      const snapshot: ChildRunSnapshot = {
         childRunId: args.childRunId,
         childThreadId: args.childThreadId,
         parentRunId: args.parentRunId,
         ownerThreadId: args.ownerThreadId,
         subagentType: args.subagentType,
+        modelPin: args.modelPin,
+        subagentModelRouting: args.subagentModelRouting,
         status: 'running',
         result: null,
         completedAt: null,
         reason: null,
         updatedAt: now,
-      });
+      };
+      records.set(args.childRunId, cloneSnapshot(snapshot));
       revisionTracker.bumpRevision();
     },
     markChildApprovalPending(childRunId) {

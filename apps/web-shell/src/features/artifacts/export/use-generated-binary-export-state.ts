@@ -4,6 +4,7 @@ import type { FileSaveResponse } from '@geulbat/protocol/files';
 
 import type { GeneratedBinaryExportSnapshot } from '../artifact-types.js';
 import {
+  COMPUTER_FILE_API_SCOPE,
   FileSaveConflictError,
   replaceBinaryFile,
   saveBinaryFile,
@@ -57,7 +58,6 @@ interface UseGeneratedBinaryExportStateResult {
   handleBinaryExportTargetPathChange: (nextValue: string) => void;
   handleToggleOverwrite: (checked: boolean) => void;
   submitGeneratedBinaryExport: (args: {
-    projectId?: string | null;
     targetPath: string;
     onSuccess?: () => void;
   }) => Promise<void>;
@@ -141,13 +141,8 @@ export function useGeneratedBinaryExportState(args: {
   }, []);
 
   const submitGeneratedBinaryExport = useCallback(
-    async (submitArgs: {
-      projectId?: string | null;
-      targetPath: string;
-      onSuccess?: () => void;
-    }) => {
+    async (submitArgs: { targetPath: string; onSuccess?: () => void }) => {
       const frozenSnapshot = generatedBinaryExportSnapshotRef.current;
-      const projectId = submitArgs.projectId;
       const targetPath = submitArgs.targetPath.trim();
       const frozenRememberedTarget = rememberedGeneratedBinaryExportTarget;
       const shouldReplace =
@@ -156,7 +151,7 @@ export function useGeneratedBinaryExportState(args: {
           rememberedTarget: frozenRememberedTarget,
           targetPath,
         });
-      if (!frozenSnapshot || !projectId || !targetPath) {
+      if (!frozenSnapshot || !targetPath) {
         return;
       }
 
@@ -165,13 +160,13 @@ export function useGeneratedBinaryExportState(args: {
       try {
         const response = shouldReplace
           ? await replaceBinaryFileImpl(
-              projectId,
+              COMPUTER_FILE_API_SCOPE,
               targetPath,
               frozenSnapshot.blob,
               frozenRememberedTarget!.versionToken,
             )
           : await saveBinaryFileImpl(
-              projectId,
+              COMPUTER_FILE_API_SCOPE,
               targetPath,
               frozenSnapshot.blob,
             );

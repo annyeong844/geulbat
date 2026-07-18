@@ -29,6 +29,7 @@ export async function resolveCanonicalReadPath(
     workspaceRoot,
     requestedAbsolutePath,
   );
+  normalizeSourceRelativePath(workspaceCanonicalRoot, canonicalAbsolutePath);
 
   return {
     workspaceCanonicalRoot,
@@ -57,6 +58,7 @@ export async function resolveCanonicalDirectoryPath(
       workspaceRoot,
       requestedAbsolutePath,
     );
+    normalizeSourceRelativePath(workspaceCanonicalRoot, canonicalAbsolutePath);
   } catch (error: unknown) {
     const code = getErrorCode(error);
     if (code === 'ENOENT' || code === 'ENOTDIR') {

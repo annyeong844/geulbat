@@ -1,16 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { brandProjectId, brandThreadId } from '../lib/id-brand-helpers.js';
+import { brandThreadId } from '../lib/id-brand-helpers.js';
 import { createProjectWorkspaceThreadsInput } from './project-workspace-threads-input.js';
 
-const PROJECT_ID = brandProjectId('workspace');
 const THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000001');
 
 function createThreadsSourceStub() {
   const thread = {
     threadId: THREAD_ID,
-    projectId: PROJECT_ID,
     title: 'Thread',
     lastUpdated: '2026-04-11T10:00:00.000Z',
     messageCount: 1,
@@ -31,6 +29,11 @@ function createThreadsSourceStub() {
     confirmDeleteThread: async () => {},
     setSelectedThreadId: () => {},
     appendOptimisticUserMessage: () => {},
+    startNewSession: () => {},
+    branchThreadFromEntry: async () => {},
+    branchThreadBeforeEntry: async () => null,
+    branchNotice: null,
+    dismissBranchNotice: () => {},
     openThreadForRunSettle: async () => null,
     applyThreadSnapshotForRunSettle: () => true,
   };
@@ -57,4 +60,8 @@ void test('createProjectWorkspaceThreadsInput preserves the thread surface used 
     input.appendOptimisticUserMessage,
     threads.appendOptimisticUserMessage,
   );
+  assert.equal(input.branchThreadFromEntry, threads.branchThreadFromEntry);
+  assert.equal(input.branchThreadBeforeEntry, threads.branchThreadBeforeEntry);
+  assert.equal(input.branchNotice, threads.branchNotice);
+  assert.equal(input.dismissBranchNotice, threads.dismissBranchNotice);
 });

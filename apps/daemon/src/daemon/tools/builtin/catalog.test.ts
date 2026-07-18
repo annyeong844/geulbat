@@ -19,6 +19,12 @@ void test('builtin registry leaves PTC exec cell tools without outer watchdog ti
   assertToolHasNoWatchdogTimeout(registry, 'wait');
 });
 
+void test('builtin registry leaves exec_command without outer watchdog timeout', () => {
+  const registry = createBuiltinToolRegistryStore();
+
+  assertToolHasNoWatchdogTimeout(registry, 'exec_command');
+});
+
 void test('builtin registry leaves tool output reads without watchdog timeout', () => {
   const registry = createBuiltinToolRegistryStore();
 
@@ -47,14 +53,14 @@ void test('builtin registry leaves file mutation tools without watchdog timeout'
   const registry = createBuiltinToolRegistryStore();
 
   assertToolHasNoWatchdogTimeout(registry, 'write_file');
-  assertToolHasNoWatchdogTimeout(registry, 'patch_file');
+  assertToolHasNoWatchdogTimeout(registry, 'apply_patch');
   assertToolHasNoWatchdogTimeout(registry, 'manage_files');
 });
 
-void test('builtin registry leaves todo without watchdog timeout', () => {
+void test('builtin registry leaves update_plan without watchdog timeout', () => {
   const registry = createBuiltinToolRegistryStore();
 
-  assertToolHasNoWatchdogTimeout(registry, 'todo');
+  assertToolHasNoWatchdogTimeout(registry, 'update_plan');
 });
 
 void test('builtin registry leaves memory index tools without watchdog timeout', () => {
@@ -62,6 +68,13 @@ void test('builtin registry leaves memory index tools without watchdog timeout',
 
   assertToolHasNoWatchdogTimeout(registry, 'search_memory_index');
   assertToolHasNoWatchdogTimeout(registry, 'refresh_memory_index');
+});
+
+void test('builtin registry leaves tool catalog search without watchdog timeout', () => {
+  const registry = createBuiltinToolRegistryStore();
+
+  assertToolHasNoWatchdogTimeout(registry, 'tool_search');
+  assertToolHasNoWatchdogTimeout(registry, 'skill_search');
 });
 
 void test('builtin registry leaves browser PTC tools without outer watchdog timeout', () => {
@@ -72,10 +85,10 @@ void test('builtin registry leaves browser PTC tools without outer watchdog time
   assertToolHasNoWatchdogTimeout(registry, 'browser_text_evidence');
 });
 
-void test('builtin registry leaves web fetch without outer watchdog timeout', () => {
+void test('builtin registry leaves fetch_url without outer watchdog timeout', () => {
   const registry = createBuiltinToolRegistryStore();
 
-  assertToolHasNoWatchdogTimeout(registry, 'web_fetch');
+  assertToolHasNoWatchdogTimeout(registry, 'fetch_url');
 });
 
 function assertToolHasNoWatchdogTimeout(

@@ -1,9 +1,9 @@
 import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 
-export function normalizeAllowedToolNames(
+export function normalizeAllowedPublicToolNames(
   request: RunStartRequest,
 ): string[] | undefined {
-  const hints = request.allowedToolsHint;
+  const hints = request.allowedPublicToolNames;
   if (!hints || hints.length === 0) {
     return undefined;
   }

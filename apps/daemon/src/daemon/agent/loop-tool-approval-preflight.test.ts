@@ -6,19 +6,20 @@ import { tmpdir } from 'node:os';
 
 import { resolveToolApprovalState } from './loop-tool-approval.js';
 import { buildAgentToolExecutionContextBase } from './loop-tool-runtime.js';
+import { collectPreflight } from '../tools/approval-runtime-policy.js';
 import { createApprovalGrantStore } from '../tools/approval-grants.js';
 import { createBuiltinToolRegistryStore } from '../tools/builtin/catalog.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
-import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
-import { testProjectId } from '../../test-support/project-id.js';
+import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 
 function makePreflightRuntime(args: {
   runId: string;
-  runContext: ReturnType<typeof makeRunWorkspaceContext>;
+  runContext: ReturnType<typeof makeRunContext>;
   approvalContext: ReturnType<typeof makeApprovalContext>;
   approvalGrants: ReturnType<typeof createApprovalGrantStore>;
   toolRegistry: ReturnType<typeof createBuiltinToolRegistryStore>;
+  computerFileRoot?: string;
 }) {
   return {
     approvalContext: args.approvalContext,
@@ -33,6 +34,9 @@ function makePreflightRuntime(args: {
       selection: undefined,
       signal: undefined,
       runState: undefined,
+      ...(args.computerFileRoot === undefined
+        ? {}
+        : { computerFileRoot: args.computerFileRoot }),
       memoryIndex: undefined,
       agentSpawnRuntime: undefined,
     }),
@@ -54,10 +58,9 @@ void test('resolveToolApprovalState skips approval for read-only tools', async (
     },
     runtime: makePreflightRuntime({
       runId: 'run-read-only',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(61),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot: workspaceRoot,
       }),
       approvalContext: makeApprovalContext(),
       approvalGrants: createApprovalGrantStore(),
@@ -87,10 +90,9 @@ void test('resolveToolApprovalState auto-approves write tools in full_access mod
     },
     runtime: makePreflightRuntime({
       runId: 'run-full-access',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(62),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot: workspaceRoot,
       }),
       approvalContext: makeApprovalContext({
         permissionMode: 'full_access',
@@ -106,8 +108,61 @@ void test('resolveToolApprovalState auto-approves write tools in full_access mod
   });
 });
 
+void test('resolveToolApprovalState auto-approves computer writes in full_access mode', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-approval-'));
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-computer-approval-'),
+  );
+  const toolRegistry = createBuiltinToolRegistryStore();
+
+  const result = await resolveToolApprovalState({
+    approvalTarget: {
+      runId: 'run-full-access-computer',
+      threadId: testThreadId(65),
+    },
+    toolName: 'write_file',
+    toolArgs: {
+      root: 'computer',
+      path: 'draft.md',
+    },
+    runtime: makePreflightRuntime({
+      runId: 'run-full-access-computer',
+      runContext: makeRunContext({
+        threadId: testThreadId(65),
+        stateRoot: workspaceRoot,
+      }),
+      approvalContext: makeApprovalContext({
+        permissionMode: 'full_access',
+      }),
+      approvalGrants: createApprovalGrantStore(),
+      toolRegistry,
+      computerFileRoot,
+    }),
+  });
+
+  assert.deepEqual(result, {
+    needsApproval: false,
+    approvalGranted: true,
+  });
+});
+
+void test('collectPreflight resolves explicit computer paths against the computer root', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-computer-approval-'),
+  );
+  const computerPath = join(computerFileRoot, 'draft.md');
+
+  await assert.doesNotReject(
+    collectPreflight({ computerFileRoot }, { path: computerPath }),
+  );
+  await assert.rejects(collectPreflight({}, { path: computerPath }));
+});
+
 void test('resolveToolApprovalState fails closed when preflight throws', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-approval-'));
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-computer-approval-'),
+  );
   const toolRegistry = createBuiltinToolRegistryStore();
 
   const result = await resolveToolApprovalState({
@@ -122,14 +177,14 @@ void test('resolveToolApprovalState fails closed when preflight throws', async (
     },
     runtime: makePreflightRuntime({
       runId: 'run-preflight-failure',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(63),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot: workspaceRoot,
       }),
       approvalContext: makeApprovalContext(),
       approvalGrants: createApprovalGrantStore(),
       toolRegistry,
+      computerFileRoot,
     }),
   });
 
@@ -154,10 +209,9 @@ void test('resolveToolApprovalState fails closed for unregistered tools', async 
     },
     runtime: makePreflightRuntime({
       runId: 'run-unregistered-tool',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(64),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot: workspaceRoot,
       }),
       approvalContext: makeApprovalContext(),
       approvalGrants: createApprovalGrantStore(),

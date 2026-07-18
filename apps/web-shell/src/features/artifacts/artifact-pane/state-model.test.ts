@@ -14,7 +14,6 @@ void test('buildArtifactPaneStateModel defaults completed previews to the show t
   assert.equal(model.defaultTab, 'show');
   assert.equal(model.canShowPreview, true);
   assert.equal(model.supportsStreamingPreview, false);
-  assert.equal(model.showOpenSource, true);
   assert.equal(model.showApply, true);
   assert.equal(model.canApply, true);
   assert.equal(model.surfaceStateBadge, null);
@@ -67,7 +66,7 @@ void test('buildArtifactPaneStateModel keeps unsupported streaming previews on t
     hasStartArtifactRunHandler: true,
   });
 
-  assert.equal(model.defaultTab, 'write');
+  assert.equal(model.defaultTab, 'source');
   assert.equal(model.canShowPreview, false);
   assert.equal(model.supportsStreamingPreview, false);
   assert.deepEqual(model.surfaceStateBadge, {
@@ -93,7 +92,7 @@ void test('buildArtifactPaneStateModel sends fallback artifacts to raw with a wa
     hasStartArtifactRunHandler: true,
   });
 
-  assert.equal(model.defaultTab, 'raw');
+  assert.equal(model.defaultTab, 'source');
   assert.equal(model.canShowPreview, false);
   assert.deepEqual(model.surfaceStateBadge, {
     label: '미리보기 제한',
@@ -112,7 +111,6 @@ void test('buildArtifactPaneStateModel disables source and apply actions when co
     hasStartArtifactRunHandler: false,
   });
 
-  assert.equal(model.showOpenSource, false);
   assert.equal(model.showApply, true);
   assert.equal(model.canApply, false);
   assert.equal(model.applyDraft, null);

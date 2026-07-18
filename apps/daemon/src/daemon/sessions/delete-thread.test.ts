@@ -5,6 +5,10 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { deleteThreadSession } from './delete-thread.js';
+import {
+  statThreadMediaFile,
+  writeThreadMediaFile,
+} from './media-file-store.js';
 import { indexFilePath, summaryFilePath, threadFilePath } from './paths.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import {
@@ -28,8 +32,19 @@ void test('deleteThreadSession removes transcript, summary, and thread index ent
     'run-delete',
     'call-delete.json',
   );
+  const attachmentPath = join(
+    workspaceRoot,
+    '.geulbat',
+    'sessions',
+    `${threadId}.attachments`,
+    '00000000-0000-4000-8000-000000000001.bin',
+  );
 
   await mkdir(join(workspaceRoot, '.geulbat', 'sessions'), { recursive: true });
+  await mkdir(
+    join(workspaceRoot, '.geulbat', 'sessions', `${threadId}.attachments`),
+    { recursive: true },
+  );
   await mkdir(
     join(workspaceRoot, '.geulbat', 'tool-outputs', threadId, 'run-delete'),
     {
@@ -41,7 +56,6 @@ void test('deleteThreadSession removes transcript, summary, and thread index ent
     JSON.stringify([
       {
         threadId,
-        projectId: 'workspace',
         title: 'Delete me',
         lastUpdated: '2026-03-26T00:00:00.000Z',
         messageCount: 1,
@@ -60,6 +74,7 @@ void test('deleteThreadSession removes transcript, summary, and thread index ent
   );
   await writeFile(summaryPath, '# Summary\n', 'utf8');
   await writeFile(toolOutputPath, '{"output":"large result"}\n', 'utf8');
+  await writeFile(attachmentPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   await readTranscriptEntries(workspaceRoot, threadId);
   assert.equal(hasTranscriptEntryCacheForTests(workspaceRoot, threadId), true);
 
@@ -67,6 +82,7 @@ void test('deleteThreadSession removes transcript, summary, and thread index ent
   await assert.rejects(() => readFile(transcriptPath, 'utf8'));
   await assert.rejects(() => readFile(summaryPath, 'utf8'));
   await assert.rejects(() => readFile(toolOutputPath, 'utf8'));
+  await assert.rejects(() => readFile(attachmentPath));
   assert.equal(await readFile(indexPath, 'utf8'), '[]\n');
   assert.equal(hasTranscriptEntryCacheForTests(workspaceRoot, threadId), false);
 });
@@ -103,5 +119,38 @@ void test('deleteThreadSession returns false when no session artifacts exist', a
   assert.equal(
     await deleteThreadSession(workspaceRoot, testThreadId(2)),
     false,
+  );
+});
+
+void test('deleteThreadSession removes the thread media directory', async () => {
+  resetTranscriptEntryCacheForTests();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-delete-thread-media-'),
+  );
+  const threadId = testThreadId(4);
+
+  const written = await writeThreadMediaFile({
+    workspaceRoot,
+    threadId,
+    extension: 'mp4',
+    bytes: new TextEncoder().encode('media-to-delete'),
+    maxBytes: 1024,
+  });
+  assert.ok(
+    await statThreadMediaFile({
+      workspaceRoot,
+      threadId,
+      mediaRef: written.mediaRef,
+    }),
+  );
+
+  assert.equal(await deleteThreadSession(workspaceRoot, threadId), true);
+  assert.equal(
+    await statThreadMediaFile({
+      workspaceRoot,
+      threadId,
+      mediaRef: written.mediaRef,
+    }),
+    null,
   );
 });

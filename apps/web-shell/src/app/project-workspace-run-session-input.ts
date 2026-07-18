@@ -1,5 +1,5 @@
 import type { RunSessionViewModel } from './run-session-view-model.js';
-import { createProjectWorkspaceRunSessionView } from './project-workspace-run-session-view.js';
+import type { createProjectWorkspaceRunSessionView } from './project-workspace-run-session-view.js';
 
 export function createProjectWorkspaceRunSessionInput(
   runSession: RunSessionViewModel,
@@ -13,10 +13,26 @@ export function createProjectWorkspaceRunSessionInput(
     activeArtifact: runSession.activeArtifact,
     pendingApproval: runSession.pendingApproval,
     permissionMode: runSession.permissionMode,
+    modelId: runSession.modelId,
+    reasoningEffort: runSession.reasoningEffort,
+    subagentModelRouting: runSession.subagentModelRouting,
     streamError: runSession.streamError,
     backgroundNotifications: runSession.backgroundNotifications,
+    usageTotals: runSession.usageTotals,
+    contextUsage: runSession.contextUsage,
     setPermissionMode: runSession.setPermissionMode,
+    setModelId: runSession.setModelId,
+    prepareProviderTransition: runSession.prepareProviderTransition,
+    setReasoningEffort: runSession.setReasoningEffort,
+    setSubagentModelRouting: runSession.setSubagentModelRouting,
     sendPrompt: runSession.sendPrompt,
+    sendWidgetPrompt: runSession.sendWidgetPrompt,
+    requestWidgetTool: runSession.requestWidgetTool,
+    regeneratePrompt: runSession.regeneratePrompt,
+    cancelSteer: runSession.cancelSteer,
+    flushSteers: runSession.flushSteers,
+    pendingSteers: runSession.pendingSteers,
+    pendingSteerFlushRequested: runSession.pendingSteerFlushRequested,
     startRunRequest: runSession.startRunRequest,
     handleApprove: runSession.handleApprove,
     handleDeny: runSession.handleDeny,

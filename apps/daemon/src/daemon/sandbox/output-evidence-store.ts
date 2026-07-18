@@ -113,9 +113,7 @@ export async function importSandboxOutputEvidence(args: {
   }
 }
 
-export function buildSandboxOutputEvidenceRef(args: {
-  evidenceId: string;
-}): string {
+function buildSandboxOutputEvidenceRef(args: { evidenceId: string }): string {
   return `sandbox-output:${encodeURIComponent(args.evidenceId)}`;
 }
 

@@ -5,6 +5,7 @@ import {
   isRunChannelClientMessage,
   isRunChannelServerMessage,
   isRunInterjectEnvelope,
+  isRunInterjectFlushEnvelope,
 } from './run-channel.js';
 
 void test('isRunInterjectEnvelope accepts a well-formed envelope without inspecting request fields', () => {
@@ -142,5 +143,53 @@ void test('run.error rejects legacy interject-only no_active_run code', () => {
       status: 404,
     }),
     false,
+  );
+});
+
+void test('isRunInterjectFlushEnvelope accepts a well-formed envelope and rejects malformed ones', () => {
+  assert.equal(
+    isRunInterjectFlushEnvelope({
+      type: 'run.interject.flush',
+      requestId: 'req-1',
+      request: { runId: 'run_1' },
+    }),
+    true,
+  );
+  assert.equal(
+    isRunInterjectFlushEnvelope({ type: 'run.interject.flush', request: {} }),
+    false,
+  );
+  assert.equal(
+    isRunInterjectFlushEnvelope({
+      type: 'run.interject.flush',
+      requestId: 'req-1',
+      request: 1,
+    }),
+    false,
+  );
+  assert.equal(isRunInterjectFlushEnvelope({ type: 'run.interject' }), false);
+});
+
+void test('isRunChannelClientMessage accepts a run.interject.flush envelope', () => {
+  assert.equal(
+    isRunChannelClientMessage({
+      type: 'run.interject.flush',
+      requestId: 'req-1',
+      request: { runId: 'run_1' },
+    }),
+    true,
+  );
+});
+
+void test('run.control interject flush ack passes as a server message', () => {
+  assert.equal(
+    isRunChannelServerMessage({
+      type: 'run.control',
+      requestId: 'req-1',
+      action: 'run.interject.flush',
+      ok: true,
+      flushed: true,
+    }),
+    true,
   );
 });

@@ -160,7 +160,7 @@ void unixTest(
           kind: 'read_file',
           args: { path: 'chapter.md' },
           threadId: 'thread-forged',
-          workspaceRoot: '/forged',
+          stateRoot: '/forged',
           approvalScope: 'forged',
         });
 

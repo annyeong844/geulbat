@@ -8,6 +8,12 @@ import type {
 } from '../../artifacts/artifact-types.js';
 import { createArtifactRuntimeFrameDocument } from './artifact-runtime-frame-document.js';
 import { createArtifactRuntimeFrameIdentity } from './artifact-runtime-frame-identity.js';
+import type {
+  ArtifactRuntimeAgentInterjectIntent,
+  ArtifactRuntimeAgentPromptIntent,
+  ArtifactRuntimeAgentToolIntent,
+} from './artifact-runtime-frame-message-handler.js';
+import type { RunToolResultPayload } from '@geulbat/protocol/run-channel';
 import { useArtifactRuntimeFrameMessaging } from './use-artifact-runtime-frame-messaging.js';
 import { useArtifactRuntimeFrameBootState } from './use-artifact-runtime-frame-boot-state.js';
 
@@ -17,12 +23,20 @@ export function useArtifactRuntimeFrameState(args: {
   sourceRef: ResolvedArtifactSourceRef;
   runtimePayload: string;
   readyTimeoutMs: number;
+  minFrameHeight?: number;
   onGeneratedTextExportSnapshotChange?: (
     snapshot: GeneratedTextExportSnapshot | null,
   ) => void;
   onGeneratedBinaryExportSnapshotChange?: (
     snapshot: GeneratedBinaryExportSnapshot | null,
   ) => void;
+  onAgentPromptRequest?: (intent: ArtifactRuntimeAgentPromptIntent) => void;
+  onAgentInterjectRequest?: (
+    intent: ArtifactRuntimeAgentInterjectIntent,
+  ) => void;
+  onAgentToolRequest?: (
+    intent: ArtifactRuntimeAgentToolIntent,
+  ) => Promise<RunToolResultPayload>;
 }) {
   const {
     iframeRef,
@@ -30,12 +44,16 @@ export function useArtifactRuntimeFrameState(args: {
     sourceRef,
     runtimePayload,
     readyTimeoutMs,
+    minFrameHeight,
     onGeneratedTextExportSnapshotChange,
     onGeneratedBinaryExportSnapshotChange,
+    onAgentPromptRequest,
+    onAgentInterjectRequest,
+    onAgentToolRequest,
   } = args;
   const {
     kind,
-    projectId,
+    workingDirectory,
     threadId,
     runId,
     filePath,
@@ -55,7 +73,7 @@ export function useArtifactRuntimeFrameState(args: {
         runtimePayload,
         sourceRef: {
           kind,
-          projectId,
+          workingDirectory,
           threadId,
           runId,
           filePath,
@@ -75,7 +93,7 @@ export function useArtifactRuntimeFrameState(args: {
       kind,
       messageTimestamp,
       persistenceEpoch,
-      projectId,
+      workingDirectory,
       renderer,
       runId,
       runtimeLocationOrigin,
@@ -105,6 +123,7 @@ export function useArtifactRuntimeFrameState(args: {
     useArtifactRuntimeFrameBootState({
       runtimeFrameRevision,
       readyTimeoutMs,
+      ...(minFrameHeight !== undefined ? { minFrameHeight } : {}),
       ...(onGeneratedBinaryExportSnapshotChange !== undefined
         ? { onGeneratedBinaryExportSnapshotChange }
         : {}),
@@ -119,6 +138,7 @@ export function useArtifactRuntimeFrameState(args: {
     runtimeHostOrigin,
     scope,
     scopeHandle,
+    ...(minFrameHeight !== undefined ? { minFrameHeight } : {}),
     markHostReady,
     setFrameHeight,
     ...(onGeneratedBinaryExportSnapshotChange !== undefined
@@ -127,6 +147,11 @@ export function useArtifactRuntimeFrameState(args: {
     ...(onGeneratedTextExportSnapshotChange !== undefined
       ? { onGeneratedTextExportSnapshotChange }
       : {}),
+    ...(onAgentPromptRequest !== undefined ? { onAgentPromptRequest } : {}),
+    ...(onAgentInterjectRequest !== undefined
+      ? { onAgentInterjectRequest }
+      : {}),
+    ...(onAgentToolRequest !== undefined ? { onAgentToolRequest } : {}),
   });
 
   return {

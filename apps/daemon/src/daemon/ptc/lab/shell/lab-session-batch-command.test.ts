@@ -29,7 +29,7 @@ const PRIVATE_TEST_PATH = '/tmp/geulbat-private/.geulbat/private';
 
 const IDENTITY: PtcSessionDockerIdentity = Object.freeze({
   threadId: 'thread-lab-command',
-  workspaceRoot: '/workspace/project-a',
+  stateRoot: '/workspace/project-a',
   trustContextId: 'trust-local-v1',
 });
 
@@ -74,7 +74,7 @@ async function withSessionManager<T>(
       | PtcSessionDockerCommandResult
       | undefined
       | Promise<PtcSessionDockerCommandResult | undefined>;
-    realpathWorkspaceRoot?: (workspaceRoot: string) => Promise<string>;
+    realpathStateRoot?: (stateRoot: string) => Promise<string>;
   },
   fn: (fixture: PtcSessionDockerManagerFixture) => Promise<T>,
 ): Promise<T> {
@@ -226,7 +226,7 @@ void test('runPtcLabSessionBatchCommand maps thrown session acquisition without 
   await withSessionManager(
     {
       policy: dockerPolicy,
-      realpathWorkspaceRoot: async () => {
+      realpathStateRoot: async () => {
         throw new Error(PRIVATE_TEST_PATH);
       },
     },
@@ -427,7 +427,7 @@ void test('runPtcLabSessionBatchCommand preserves cancellation reason when taint
   await withSessionManager(
     {
       policy: dockerPolicy,
-      realpathWorkspaceRoot: async () => {
+      realpathStateRoot: async () => {
         realpathCalls += 1;
         if (realpathCalls > 1) {
           throw new Error(PRIVATE_TEST_PATH);

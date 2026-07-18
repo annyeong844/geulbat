@@ -53,6 +53,48 @@ void test('thread message metadata accepts user hidden-prompt metadata', () => {
   assert.equal(readActiveArtifactRefFromMetadata(metadata), null);
 });
 
+void test('thread message metadata accepts user attachment records', () => {
+  const metadata: ThreadMessageMetadata = {
+    attachments: [
+      {
+        attachmentId: 'a2c3f1de-0000-4000-8000-000000000001',
+        name: '증상.png',
+        mimeType: 'image/png',
+        kind: 'image',
+        byteLength: 1024,
+      },
+    ],
+  };
+
+  assert.equal(isThreadMessageMetadata(metadata), true);
+
+  // hiddenPrompt와 attachments가 함께 있어도 유효
+  assert.equal(
+    isThreadMessageMetadata({
+      hiddenPrompt: 'canonical prompt',
+      attachments: metadata.attachments,
+    }),
+    true,
+  );
+
+  // 빈 배열·잘못된 kind는 거부
+  assert.equal(isThreadMessageMetadata({ attachments: [] }), false);
+  assert.equal(
+    isThreadMessageMetadata({
+      attachments: [
+        {
+          attachmentId: 'id',
+          name: 'x',
+          mimeType: 'image/png',
+          kind: 'video',
+          byteLength: 1,
+        },
+      ],
+    }),
+    false,
+  );
+});
+
 void test('thread message metadata accepts interject source metadata', () => {
   const metadata: ThreadMessageMetadata = {
     source: 'interject',
@@ -93,6 +135,24 @@ void test('thread message metadata accepts final-answer artifact refs', () => {
     artifactId: 'art_1',
     version: 1,
   });
+});
+
+void test('thread message metadata accepts artifact_frame origin on user turns only', () => {
+  assert.equal(isThreadMessageMetadata({ origin: 'artifact_frame' }), true);
+  assert.equal(
+    isThreadMessageMetadata({ silent: true, origin: 'artifact_frame' }),
+    true,
+  );
+  // 미지의 origin 값과 user 외 변형의 origin은 거부한다
+  assert.equal(isThreadMessageMetadata({ origin: 'other_surface' }), false);
+  assert.equal(
+    isThreadMessageMetadata({ phase: 'commentary', origin: 'artifact_frame' }),
+    false,
+  );
+  assert.equal(
+    isThreadMessageMetadata({ source: 'interject', origin: 'artifact_frame' }),
+    false,
+  );
 });
 
 void test('thread message metadata rejects invalid known-key payloads', () => {

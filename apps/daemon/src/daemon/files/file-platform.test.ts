@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ProjectId, ThreadId } from '@geulbat/protocol/ids';
+import type { ThreadId } from '@geulbat/protocol/ids';
 
 import {
   enumerateCanonicalChildren,
@@ -17,7 +17,6 @@ import { FileAccessError } from './file-domain-error.js';
 import { PathEscapeError } from './normalize-path.js';
 import { createSymlinkOrSkip } from '../../test-support/symlink-test.js';
 
-const PROJECT_ID = 'workspace' as ProjectId;
 const THREAD_ID = '00000000-0000-4000-8000-000000000001' as ThreadId;
 
 void test('resolveSourceReadTarget follows workspace-internal symlink reads', async (t) => {
@@ -105,6 +104,29 @@ void test('resolveSourceMutationTarget rejects reserved source paths and symlink
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
     await rm(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+void test('resolveSourceMutationTarget rejects internal symlink aliases to reserved targets', async (t) => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-file-platform-'));
+  const reservedFile = join(workspaceRoot, '.env');
+  const linkedFile = join(workspaceRoot, 'settings.txt');
+
+  try {
+    await writeFile(reservedFile, 'SECRET=kept\n', 'utf8');
+    if (!(await createSymlinkOrSkip(t, reservedFile, linkedFile))) {
+      return;
+    }
+
+    await assert.rejects(
+      () =>
+        resolveSourceMutationTarget(workspaceRoot, 'settings.txt', {
+          allowMissingLeaf: true,
+        }),
+      (error: unknown) => error instanceof PathEscapeError,
+    );
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
   }
 });
 
@@ -235,7 +257,6 @@ void test('resolveRuntimeStateTarget derives opaque artifact-scoped storage path
 
   try {
     const target = await resolveRuntimeStateTarget(workspaceRoot, {
-      projectId: PROJECT_ID,
       threadId: THREAD_ID,
       renderer: 'js',
       artifactId: 'art_demo_js',

@@ -4,7 +4,6 @@ import {
   createSessionArtifactRefKey as createArtifactRefKey,
   readSessionActiveArtifactRefFromMetadata as readActiveArtifactRefFromMetadata,
   readSessionArtifactRefsFromMetadata as readArtifactRefsFromMetadata,
-  type ProjectId,
   type ThreadArtifactVersion,
   type ThreadDetailResponse,
   type ThreadId,
@@ -26,7 +25,6 @@ interface ThreadDetailDiagnostics {
 
 export async function loadThreadDetailSnapshot(args: {
   workspaceRoot: string;
-  projectId: ProjectId;
   threadId: ThreadId;
 }): Promise<ThreadDetailResponse> {
   const messages = await readTranscriptEntries(
@@ -43,7 +41,6 @@ export async function loadThreadDetailSnapshot(args: {
 
   return {
     threadId: args.threadId,
-    projectId: args.projectId,
     snapshotVersion,
     messages,
     artifacts,
@@ -53,14 +50,10 @@ export async function loadThreadDetailSnapshot(args: {
 
 async function resolveThreadSnapshotVersion(args: {
   workspaceRoot: string;
-  projectId: ProjectId;
   threadId: ThreadId;
 }): Promise<string> {
   const entries = await loadThreadIndex(args.workspaceRoot);
-  const summary = entries.find(
-    (entry) =>
-      entry.threadId === args.threadId && entry.projectId === args.projectId,
-  );
+  const summary = entries.find((entry) => entry.threadId === args.threadId);
   if (summary) {
     return summary.lastUpdated;
   }

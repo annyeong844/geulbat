@@ -11,7 +11,6 @@ import {
 } from './lab-browser-page-load-evidence-contract.js';
 import {
   normalizePtcLabBrowserUserUrlNavigationTarget,
-  type PtcLabBrowserUserUrlNavigationRequest,
   type PtcLabBrowserValidatedUrlRequest,
 } from '../core/lab-browser-url-navigation.js';
 
@@ -51,7 +50,7 @@ export function readBrowserPageLoadEvidencePolicy(
 }
 
 export function validateBrowserPageLoadEvidenceRequest(args: {
-  request: PtcLabBrowserUserUrlNavigationRequest | unknown;
+  request: unknown;
   maxTimeoutMs: number;
 }): PtcLabBrowserPageLoadEvidenceResult<PtcLabBrowserValidatedPageLoadEvidenceRequest> {
   const timeout = validateBrowserPageLoadEvidenceTimeout({

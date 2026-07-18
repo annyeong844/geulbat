@@ -4,13 +4,12 @@ import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { FinalAnswerThreadMessageMetadata } from '@geulbat/protocol/thread-metadata';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
-import { brandProjectId, brandThreadId } from '../../lib/id-brand-helpers.js';
+import { brandThreadId } from '../../lib/id-brand-helpers.js';
 import {
   createArtifactsByRefMap,
   readCommittedMessageArtifact,
 } from './artifact-transcript-lookup.js';
 
-const PROJECT_ID = brandProjectId('workspace');
 const THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000001');
 
 void test('createArtifactsByRefMap indexes committed artifacts by id and version', () => {
@@ -156,7 +155,7 @@ function createThreadArtifactVersion(
     persistenceEpoch: 0,
     sourceRef: {
       kind: 'thread-file',
-      projectId: PROJECT_ID,
+      workingDirectory: 'stories/sample',
       threadId: THREAD_ID,
       runId: 'run-1',
       filePath: 'notes/demo.md',

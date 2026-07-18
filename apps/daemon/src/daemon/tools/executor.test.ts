@@ -19,7 +19,7 @@ function makeTool<TArgs extends object>(options: {
     ctx: ToolExecutionContext,
   ) => Promise<ExecuteResult>;
   sideEffectLevel?: AnyTool['sideEffectLevel'];
-  mayMutateWorkspaceFiles?: boolean;
+  mayMutateComputerFiles?: boolean;
   timeoutMs?: number;
   omitTimeout?: boolean;
   requiresApproval?: boolean;
@@ -35,7 +35,7 @@ function makeTool<TArgs extends object>(options: {
     },
     strict: true,
     sideEffectLevel: options.sideEffectLevel ?? 'none',
-    mayMutateWorkspaceFiles: options.mayMutateWorkspaceFiles ?? false,
+    mayMutateComputerFiles: options.mayMutateComputerFiles ?? false,
     ...(options.omitTimeout ? {} : { timeoutMs: options.timeoutMs ?? 1_000 }),
     requiresApproval: options.requiresApproval ?? false,
     parseArgs: options.parseArgs ?? (() => ({ ok: true, value: {} as TArgs })),
@@ -69,7 +69,6 @@ void test('executeTool supports tools without a watchdog timeout', async () => {
     {},
     {
       callId: 'call_no_timeout',
-      workspaceRoot: '/tmp',
     },
     { toolRegistry: store },
   );
@@ -101,7 +100,6 @@ void test('executeTool preserves tool-level failure results without wrapping the
     {},
     {
       callId: 'call_1',
-      workspaceRoot: '/tmp',
     },
     { toolRegistry: store },
   );
@@ -112,6 +110,42 @@ void test('executeTool preserves tool-level failure results without wrapping the
     errorCode: 'conflict_stale_write',
     error: 'stale write',
   });
+});
+
+void test('executeTool preserves curated image-generation failure messages', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'image_failure_tool_for_executor_test',
+      async executeParsed() {
+        return {
+          ok: false,
+          output:
+            '{"ok":false,"error":"provider_auth/provider_not_connected: image provider grok_oauth is not connected"}',
+          errorCode: 'image_provider_unavailable',
+          error:
+            'provider_auth/provider_not_connected: image provider grok_oauth is not connected',
+        };
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'image_failure_tool_for_executor_test',
+    {},
+    {
+      callId: 'call_image_failure',
+    },
+    { toolRegistry: store },
+  );
+
+  // §4.4: 분류 코드는 안전 목록이라 큐레이션 메시지가 삼켜지지 않는다
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'image_provider_unavailable');
+  assert.equal(
+    result.error,
+    'provider_auth/provider_not_connected: image provider grok_oauth is not connected',
+  );
 });
 
 void test('executeTool sanitizes unsafe tool-level failure result messages', async () => {
@@ -136,7 +170,6 @@ void test('executeTool sanitizes unsafe tool-level failure result messages', asy
     {},
     {
       callId: 'call_unsafe_result',
-      workspaceRoot: '/tmp/private/workspace',
     },
     { toolRegistry: store },
   );
@@ -170,7 +203,6 @@ void test('executeTool preserves safe not_found tool-level failure messages', as
     {},
     {
       callId: 'call_not_found_result',
-      workspaceRoot: '/tmp',
     },
     { toolRegistry: store },
   );
@@ -202,7 +234,6 @@ void test('executeTool returns invalid_args when parseArgs rejects user input', 
     {},
     {
       callId: 'call_parse_failure',
-      workspaceRoot: '/tmp',
     },
     { toolRegistry: store },
   );
@@ -238,7 +269,6 @@ void test('executeTool treats parseArgs throws as implementation bugs instead of
       {},
       {
         callId: 'call_parse_throw',
-        workspaceRoot: '/tmp',
       },
       { toolRegistry: store },
     );
@@ -280,7 +310,6 @@ void test('executeTool preserves safe app error codes thrown from parseArgs', as
     {},
     {
       callId: 'call_parse_throw_invalid_args',
-      workspaceRoot: '/tmp',
     },
     { toolRegistry: store },
   );
@@ -314,7 +343,6 @@ void test('executeTool fails closed when approval is required but not granted', 
     {},
     {
       callId: 'call_2',
-      workspaceRoot: '/tmp',
     },
     { toolRegistry: store },
   );
@@ -350,7 +378,6 @@ void test('executeTool sanitizes unknown internal tool errors', async () => {
       {},
       {
         callId: 'call_3',
-        workspaceRoot: '/tmp',
       },
       { toolRegistry: store },
     );
@@ -390,7 +417,6 @@ void test('executeTool rejects invalid runtime result shapes from tools', async 
     {},
     {
       callId: 'call_4',
-      workspaceRoot: '/tmp',
     },
     { toolRegistry: store },
   );
@@ -423,7 +449,6 @@ void test('executeTool can resolve tools from an injected registry without touch
     {},
     {
       callId: 'call_5',
-      workspaceRoot: '/tmp',
     },
     { toolRegistry: store },
   );
@@ -456,7 +481,6 @@ void test('executeTool preserves the raw runSignal while wrapping signal with th
     {},
     {
       callId: 'call_signal_contract',
-      workspaceRoot: '/tmp',
       signal: controller.signal,
       runSignal: controller.signal,
     },
@@ -498,7 +522,6 @@ void test('executeTool timeout aborts the per-tool signal without mutating the r
     {},
     {
       callId: 'call_timeout_signal_contract',
-      workspaceRoot: '/tmp',
       signal: controller.signal,
       runSignal: controller.signal,
     },
@@ -539,7 +562,6 @@ void test('executeTool classifies caller aborts before tool completion as client
     {},
     {
       callId: 'call_caller_abort_pending',
-      workspaceRoot: '/tmp',
       signal: controller.signal,
     },
     { toolRegistry: store },
@@ -575,7 +597,6 @@ void test('executeTool classifies thrown-after-caller-abort as client disconnect
     {},
     {
       callId: 'call_caller_abort_throw',
-      workspaceRoot: '/tmp',
       signal: controller.signal,
     },
     { toolRegistry: store },

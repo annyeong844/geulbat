@@ -5,6 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { testThreadId } from '../../test-support/thread-id.js';
 import {
+  buildToolOutputRef,
+  buildToolOutputSnapshot,
+  readToolOutputSnapshot,
+  writeToolOutputSnapshot,
+} from '../files/tool-output-store.js';
+import {
   appendTranscriptEntry,
   CompareAndAppendMismatchError,
   getTranscriptEntryCacheLimitForTests,
@@ -487,6 +493,80 @@ void test('replaceTranscriptEntries rewrites the transcript and refreshes the wa
     1,
     'cache should stay warm after replaceTranscriptEntries',
   );
+});
+
+void test('replaceTranscriptEntries prunes snapshots whose output refs leave the authoritative transcript', async () => {
+  resetTranscriptEntryCacheForTests();
+  const threadId = testThreadId(9);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-transcript-'));
+  const retainedOutputRef = buildToolOutputRef({
+    threadId,
+    runId: 'run-retained',
+    callId: 'call-retained',
+  });
+  const removedOutputRef = buildToolOutputRef({
+    threadId,
+    runId: 'run-removed',
+    callId: 'call-removed',
+  });
+  for (const [outputRef, runId, callId] of [
+    [retainedOutputRef, 'run-retained', 'call-retained'],
+    [removedOutputRef, 'run-removed', 'call-removed'],
+  ] as const) {
+    await writeToolOutputSnapshot({
+      stateRoot: workspaceRoot,
+      snapshot: buildToolOutputSnapshot({
+        outputRef,
+        threadId,
+        runId,
+        callId,
+        toolName: 'exec_command',
+        output: JSON.stringify({ stdout: `${callId} output` }),
+      }),
+    });
+    await appendTranscriptEntry(workspaceRoot, threadId, {
+      role: 'tool_result',
+      content: JSON.stringify({
+        callId,
+        tool: 'exec_command',
+        ok: true,
+        output: JSON.stringify({
+          offloaded: true,
+          outputRef,
+          recoveryTool: 'read_tool_output',
+        }),
+      }),
+      timestamp: '2026-03-31T00:00:00.000Z',
+    });
+  }
+
+  const currentEntries = await readTranscriptEntries(workspaceRoot, threadId);
+  await replaceTranscriptEntries(
+    workspaceRoot,
+    threadId,
+    currentEntries.filter((entry) => !entry.content.includes(removedOutputRef)),
+  );
+
+  assert.equal(
+    (
+      await readToolOutputSnapshot({
+        stateRoot: workspaceRoot,
+        threadId,
+        outputRef: retainedOutputRef,
+      })
+    ).ok,
+    true,
+  );
+  const removed = await readToolOutputSnapshot({
+    stateRoot: workspaceRoot,
+    threadId,
+    outputRef: removedOutputRef,
+  });
+  assert.equal(removed.ok, false);
+  if (removed.ok) {
+    throw new Error('expected removed snapshot to be pruned');
+  }
+  assert.equal(removed.errorCode, 'not_found');
 });
 
 void test('readTranscriptEntries bounds the transcript cache and evicts the least recently used thread', async () => {

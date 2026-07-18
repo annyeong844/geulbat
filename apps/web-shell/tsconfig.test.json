@@ -5,7 +5,8 @@
     "noEmit": false,
     "outDir": "dist-test",
     "rootDir": "src",
-    "tsBuildInfoFile": "tsconfig.test.tsbuildinfo"
+    "tsBuildInfoFile": "tsconfig.test.tsbuildinfo",
+    "types": ["node"]
   },
   "references": [
     { "path": "../../packages/shared-utils" },

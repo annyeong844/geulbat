@@ -12,7 +12,6 @@ import {
 } from 'node:fs/promises';
 import type { ArtifactId } from '@geulbat/protocol/artifacts';
 
-import { DEFAULT_PROJECT_ID } from './daemon/files/project-registry-state.js';
 import {
   loadThreadIndex,
   upsertThreadSummary,
@@ -27,36 +26,34 @@ import { createRunInterjectBuffer } from './daemon/sessions/active-run-interject
 import { commitThreadArtifactVersion } from './daemon/sessions/artifact-store.js';
 import { hasErrorCode } from './daemon/utils/error.js';
 import { assertThreadId as assertValidThreadId } from '@geulbat/protocol/ids';
+import { isThreadBranchResponse } from '@geulbat/protocol/threads';
 import {
   authHeaders,
   createRouteTestDaemonContext,
-  getWorkspaceRootFromContext,
   withAuthenticatedDaemonServer,
 } from './test-support/http-routes.js';
 import { testRunId } from './test-support/run-id.js';
 
 void test('authenticated threads routes return stored summaries and transcript detail', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = daemonContext.homeStateRoot;
   const threadId = assertValidThreadId(randomUUID());
-  const indexPath = indexFilePath(workspaceRoot);
-  const transcriptPath = threadFilePath(workspaceRoot, threadId);
-  const artifactPath = artifactStoreFilePath(workspaceRoot, threadId);
+  const indexPath = indexFilePath(stateRoot);
+  const transcriptPath = threadFilePath(stateRoot, threadId);
+  const artifactPath = artifactStoreFilePath(stateRoot, threadId);
   const indexSnapshot = await snapshotFile(indexPath);
   const transcriptSnapshot = await snapshotFile(transcriptPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
-  await upsertThreadSummary(workspaceRoot, {
+  await upsertThreadSummary(stateRoot, {
     threadId,
-    projectId: DEFAULT_PROJECT_ID,
     title: 'Route test thread',
     lastUpdated: '2026-03-25T00:00:00.000Z',
     messageCount: 2,
   });
   await mkdir(dirname(transcriptPath), { recursive: true });
   const committedArtifact = await commitThreadArtifactVersion({
-    workspaceRoot,
-    projectId: DEFAULT_PROJECT_ID,
+    workspaceRoot: stateRoot,
     threadId,
     runId: 'run_route_test',
     renderer: 'markdown',
@@ -64,7 +61,7 @@ void test('authenticated threads routes return stored summaries and transcript d
     digest: '요약',
     sourceRef: {
       kind: 'thread-file',
-      projectId: DEFAULT_PROJECT_ID,
+      workingDirectory: 'stories',
       threadId,
       runId: 'run_route_test',
       filePath: 'episodes/ch01.md',
@@ -98,12 +95,9 @@ void test('authenticated threads routes return stored summaries and transcript d
   try {
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
-        const listRes = await fetch(
-          `http://127.0.0.1:${port}/api/threads?projectId=${DEFAULT_PROJECT_ID}`,
-          {
-            headers: authHeaders(),
-          },
-        );
+        const listRes = await fetch(`http://127.0.0.1:${port}/api/threads`, {
+          headers: authHeaders(),
+        });
         assert.equal(listRes.status, 200);
         const listBody = (await listRes.json()) as {
           threads: Array<{
@@ -120,9 +114,13 @@ void test('authenticated threads routes return stored summaries and transcript d
               thread.messageCount === 2,
           ),
         );
+        assert.equal(
+          listBody.threads.some((thread) => 'projectId' in thread),
+          false,
+        );
 
         const detailRes = await fetch(
-          `http://127.0.0.1:${port}/api/threads/${threadId}?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/threads/${threadId}`,
           {
             headers: authHeaders(),
           },
@@ -130,7 +128,6 @@ void test('authenticated threads routes return stored summaries and transcript d
         assert.equal(detailRes.status, 200);
         const detailBody = (await detailRes.json()) as {
           threadId: string;
-          projectId: string;
           snapshotVersion: string;
           diagnostics?: {
             unlinkedPersistedArtifactCount: number;
@@ -145,7 +142,7 @@ void test('authenticated threads routes return stored summaries and transcript d
           }>;
         };
         assert.equal(detailBody.threadId, threadId);
-        assert.equal(detailBody.projectId, DEFAULT_PROJECT_ID);
+        assert.equal('projectId' in detailBody, false);
         assert.equal(detailBody.snapshotVersion, '2026-03-25T00:00:00.000Z');
         assert.equal(detailBody.diagnostics, undefined);
         assert.deepEqual(
@@ -175,26 +172,24 @@ void test('authenticated threads routes return stored summaries and transcript d
 
 void test('authenticated thread detail returns persisted artifacts even when transcript metadata omits refs', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = daemonContext.homeStateRoot;
   const threadId = assertValidThreadId(randomUUID());
-  const indexPath = indexFilePath(workspaceRoot);
-  const transcriptPath = threadFilePath(workspaceRoot, threadId);
-  const artifactPath = artifactStoreFilePath(workspaceRoot, threadId);
+  const indexPath = indexFilePath(stateRoot);
+  const transcriptPath = threadFilePath(stateRoot, threadId);
+  const artifactPath = artifactStoreFilePath(stateRoot, threadId);
   const indexSnapshot = await snapshotFile(indexPath);
   const transcriptSnapshot = await snapshotFile(transcriptPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
-  await upsertThreadSummary(workspaceRoot, {
+  await upsertThreadSummary(stateRoot, {
     threadId,
-    projectId: DEFAULT_PROJECT_ID,
     title: 'Metadata-light artifact thread',
     lastUpdated: '2026-03-25T00:05:00.000Z',
     messageCount: 1,
   });
   await mkdir(dirname(transcriptPath), { recursive: true });
   const committedArtifact = await commitThreadArtifactVersion({
-    workspaceRoot,
-    projectId: DEFAULT_PROJECT_ID,
+    workspaceRoot: stateRoot,
     threadId,
     runId: 'run_route_test_metadata_light',
     renderer: 'markdown',
@@ -202,7 +197,7 @@ void test('authenticated thread detail returns persisted artifacts even when tra
     digest: 'metadata-light',
     sourceRef: {
       kind: 'thread-file',
-      projectId: DEFAULT_PROJECT_ID,
+      workingDirectory: 'stories',
       threadId,
       runId: 'run_route_test_metadata_light',
       filePath: 'episodes/ch01.md',
@@ -231,7 +226,7 @@ void test('authenticated thread detail returns persisted artifacts even when tra
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const detailRes = await fetch(
-          `http://127.0.0.1:${port}/api/threads/${threadId}?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/threads/${threadId}`,
           {
             headers: authHeaders(),
           },
@@ -239,7 +234,6 @@ void test('authenticated thread detail returns persisted artifacts even when tra
         assert.equal(detailRes.status, 200);
         const detailBody = (await detailRes.json()) as {
           threadId: string;
-          projectId: string;
           snapshotVersion: string;
           diagnostics?: {
             unlinkedPersistedArtifactCount: number;
@@ -254,7 +248,6 @@ void test('authenticated thread detail returns persisted artifacts even when tra
           }>;
         };
         assert.equal(detailBody.threadId, threadId);
-        assert.equal(detailBody.projectId, DEFAULT_PROJECT_ID);
         assert.equal(detailBody.snapshotVersion, '2026-03-25T00:05:00.000Z');
         assert.equal(detailBody.messages.length, 1);
         assert.equal(detailBody.artifacts.length, 1);
@@ -281,18 +274,17 @@ void test('authenticated thread detail returns persisted artifacts even when tra
 
 void test('authenticated thread detail surfaces missing transcript linkage diagnostics', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = daemonContext.homeStateRoot;
   const threadId = assertValidThreadId(randomUUID());
-  const indexPath = indexFilePath(workspaceRoot);
-  const transcriptPath = threadFilePath(workspaceRoot, threadId);
-  const artifactPath = artifactStoreFilePath(workspaceRoot, threadId);
+  const indexPath = indexFilePath(stateRoot);
+  const transcriptPath = threadFilePath(stateRoot, threadId);
+  const artifactPath = artifactStoreFilePath(stateRoot, threadId);
   const indexSnapshot = await snapshotFile(indexPath);
   const transcriptSnapshot = await snapshotFile(transcriptPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
-  await upsertThreadSummary(workspaceRoot, {
+  await upsertThreadSummary(stateRoot, {
     threadId,
-    projectId: DEFAULT_PROJECT_ID,
     title: 'Missing linkage thread',
     lastUpdated: '2026-03-25T00:07:00.000Z',
     messageCount: 1,
@@ -321,7 +313,7 @@ void test('authenticated thread detail surfaces missing transcript linkage diagn
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const detailRes = await fetch(
-          `http://127.0.0.1:${port}/api/threads/${threadId}?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/threads/${threadId}`,
           {
             headers: authHeaders(),
           },
@@ -351,9 +343,9 @@ void test('authenticated thread detail surfaces missing transcript linkage diagn
 
 void test('authenticated thread detail rejects corrupted transcript data', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = daemonContext.homeStateRoot;
   const threadId = assertValidThreadId(randomUUID());
-  const transcriptPath = threadFilePath(workspaceRoot, threadId);
+  const transcriptPath = threadFilePath(stateRoot, threadId);
   const transcriptSnapshot = await snapshotFile(transcriptPath);
 
   await mkdir(dirname(transcriptPath), { recursive: true });
@@ -375,7 +367,7 @@ void test('authenticated thread detail rejects corrupted transcript data', async
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const detailRes = await fetch(
-          `http://127.0.0.1:${port}/api/threads/${threadId}?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/threads/${threadId}`,
           {
             headers: authHeaders(),
           },
@@ -397,10 +389,10 @@ void test('authenticated thread detail rejects corrupted transcript data', async
 
 void test('authenticated thread detail rejects corrupted artifact store data', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = daemonContext.homeStateRoot;
   const threadId = assertValidThreadId(randomUUID());
-  const transcriptPath = threadFilePath(workspaceRoot, threadId);
-  const artifactPath = artifactStoreFilePath(workspaceRoot, threadId);
+  const transcriptPath = threadFilePath(stateRoot, threadId);
+  const artifactPath = artifactStoreFilePath(stateRoot, threadId);
   const transcriptSnapshot = await snapshotFile(transcriptPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
@@ -424,7 +416,7 @@ void test('authenticated thread detail rejects corrupted artifact store data', a
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const detailRes = await fetch(
-          `http://127.0.0.1:${port}/api/threads/${threadId}?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/threads/${threadId}`,
           {
             headers: authHeaders(),
           },
@@ -447,17 +439,16 @@ void test('authenticated thread detail rejects corrupted artifact store data', a
 
 void test('authenticated thread detail falls back to filesystem snapshotVersion when thread index entry is absent', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = daemonContext.homeStateRoot;
   const threadId = assertValidThreadId(randomUUID());
-  const transcriptPath = threadFilePath(workspaceRoot, threadId);
-  const artifactPath = artifactStoreFilePath(workspaceRoot, threadId);
+  const transcriptPath = threadFilePath(stateRoot, threadId);
+  const artifactPath = artifactStoreFilePath(stateRoot, threadId);
   const transcriptSnapshot = await snapshotFile(transcriptPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
   await mkdir(dirname(transcriptPath), { recursive: true });
   const committedArtifact = await commitThreadArtifactVersion({
-    workspaceRoot,
-    projectId: DEFAULT_PROJECT_ID,
+    workspaceRoot: stateRoot,
     threadId,
     runId: 'run_route_test_snapshot_fallback',
     renderer: 'markdown',
@@ -465,7 +456,7 @@ void test('authenticated thread detail falls back to filesystem snapshotVersion 
     digest: 'snapshot-fallback',
     sourceRef: {
       kind: 'thread-file',
-      projectId: DEFAULT_PROJECT_ID,
+      workingDirectory: 'stories',
       threadId,
       runId: 'run_route_test_snapshot_fallback',
       filePath: 'episodes/ch03.md',
@@ -500,7 +491,7 @@ void test('authenticated thread detail falls back to filesystem snapshotVersion 
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const detailRes = await fetch(
-          `http://127.0.0.1:${port}/api/threads/${threadId}?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/threads/${threadId}`,
           {
             headers: authHeaders(),
           },
@@ -523,18 +514,17 @@ void test('authenticated thread detail falls back to filesystem snapshotVersion 
 
 void test('authenticated thread detail leaves legacy envelope transcript messages untouched', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = daemonContext.homeStateRoot;
   const threadId = assertValidThreadId(randomUUID());
-  const indexPath = indexFilePath(workspaceRoot);
-  const transcriptPath = threadFilePath(workspaceRoot, threadId);
-  const artifactPath = artifactStoreFilePath(workspaceRoot, threadId);
+  const indexPath = indexFilePath(stateRoot);
+  const transcriptPath = threadFilePath(stateRoot, threadId);
+  const artifactPath = artifactStoreFilePath(stateRoot, threadId);
   const indexSnapshot = await snapshotFile(indexPath);
   const transcriptSnapshot = await snapshotFile(transcriptPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
-  await upsertThreadSummary(workspaceRoot, {
+  await upsertThreadSummary(stateRoot, {
     threadId,
-    projectId: DEFAULT_PROJECT_ID,
     title: 'Legacy envelope thread',
     lastUpdated: '2026-03-25T00:10:00.000Z',
     messageCount: 1,
@@ -563,7 +553,7 @@ void test('authenticated thread detail leaves legacy envelope transcript message
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const detailRes = await fetch(
-          `http://127.0.0.1:${port}/api/threads/${threadId}?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/threads/${threadId}`,
           {
             headers: authHeaders(),
           },
@@ -571,7 +561,6 @@ void test('authenticated thread detail leaves legacy envelope transcript message
         assert.equal(detailRes.status, 200);
         const detailBody = (await detailRes.json()) as {
           threadId: string;
-          projectId: string;
           snapshotVersion: string;
           messages: Array<{
             role: string;
@@ -590,7 +579,6 @@ void test('authenticated thread detail leaves legacy envelope transcript message
           }>;
         };
         assert.equal(detailBody.threadId, threadId);
-        assert.equal(detailBody.projectId, DEFAULT_PROJECT_ID);
         assert.equal(detailBody.snapshotVersion, '2026-03-25T00:10:00.000Z');
         assert.equal(detailBody.messages.length, 1);
         assert.equal(detailBody.artifacts.length, 0);
@@ -652,9 +640,9 @@ void test('authenticated thread detail leaves legacy envelope transcript message
 
 void test('authenticated threads routes tolerate corrupted index entries and return valid summaries', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = daemonContext.homeStateRoot;
   const threadId = assertValidThreadId(randomUUID());
-  const indexPath = indexFilePath(workspaceRoot);
+  const indexPath = indexFilePath(stateRoot);
   const indexSnapshot = await snapshotFile(indexPath);
 
   await mkdir(dirname(indexPath), { recursive: true });
@@ -663,14 +651,12 @@ void test('authenticated threads routes tolerate corrupted index entries and ret
     JSON.stringify([
       {
         threadId,
-        projectId: DEFAULT_PROJECT_ID,
         title: 'Still visible',
         lastUpdated: '2026-03-25T00:00:00.000Z',
         messageCount: 2,
       },
       {
         threadId: 'broken-thread-id',
-        projectId: DEFAULT_PROJECT_ID,
         title: 'Broken entry',
       },
       {
@@ -687,12 +673,9 @@ void test('authenticated threads routes tolerate corrupted index entries and ret
   try {
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
-        const listRes = await fetch(
-          `http://127.0.0.1:${port}/api/threads?projectId=${DEFAULT_PROJECT_ID}`,
-          {
-            headers: authHeaders(),
-          },
-        );
+        const listRes = await fetch(`http://127.0.0.1:${port}/api/threads`, {
+          headers: authHeaders(),
+        });
         assert.equal(listRes.status, 200);
         const listBody = (await listRes.json()) as {
           threads: Array<{
@@ -704,7 +687,6 @@ void test('authenticated threads routes tolerate corrupted index entries and ret
         assert.deepEqual(listBody.threads, [
           {
             threadId,
-            projectId: DEFAULT_PROJECT_ID,
             title: 'Still visible',
             lastUpdated: '2026-03-25T00:00:00.000Z',
             messageCount: 2,
@@ -720,20 +702,19 @@ void test('authenticated threads routes tolerate corrupted index entries and ret
 
 void test('authenticated thread delete route removes session artifacts', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const workspaceRoot = getWorkspaceRootFromContext(daemonContext);
+  const stateRoot = daemonContext.homeStateRoot;
   const threadId = assertValidThreadId(randomUUID());
-  const indexPath = indexFilePath(workspaceRoot);
-  const transcriptPath = threadFilePath(workspaceRoot, threadId);
-  const summaryPath = summaryFilePath(workspaceRoot, threadId);
-  const artifactPath = artifactStoreFilePath(workspaceRoot, threadId);
+  const indexPath = indexFilePath(stateRoot);
+  const transcriptPath = threadFilePath(stateRoot, threadId);
+  const summaryPath = summaryFilePath(stateRoot, threadId);
+  const artifactPath = artifactStoreFilePath(stateRoot, threadId);
   const indexSnapshot = await snapshotFile(indexPath);
   const transcriptSnapshot = await snapshotFile(transcriptPath);
   const summarySnapshot = await snapshotFile(summaryPath);
   const artifactSnapshot = await snapshotFile(artifactPath);
 
-  await upsertThreadSummary(workspaceRoot, {
+  await upsertThreadSummary(stateRoot, {
     threadId,
-    projectId: DEFAULT_PROJECT_ID,
     title: 'Delete me',
     lastUpdated: '2026-03-26T00:00:00.000Z',
     messageCount: 1,
@@ -771,7 +752,7 @@ void test('authenticated thread delete route removes session artifacts', async (
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const res = await fetch(
-          `http://127.0.0.1:${port}/api/threads/${threadId}?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/threads/${threadId}`,
           {
             method: 'DELETE',
             headers: authHeaders(),
@@ -782,15 +763,14 @@ void test('authenticated thread delete route removes session artifacts', async (
         const body = (await res.json()) as {
           ok: boolean;
           threadId: string;
-          projectId: string;
         };
         assert.equal(body.ok, true);
         assert.equal(body.threadId, threadId);
-        assert.equal(body.projectId, DEFAULT_PROJECT_ID);
+        assert.equal('projectId' in body, false);
         assert.equal(await fileExists(transcriptPath), false);
         assert.equal(await fileExists(summaryPath), false);
         assert.equal(await fileExists(artifactPath), false);
-        const remainingEntries = await loadThreadIndex(workspaceRoot);
+        const remainingEntries = await loadThreadIndex(stateRoot);
         assert.equal(
           remainingEntries.some((entry) => entry.threadId === threadId),
           false,
@@ -822,8 +802,8 @@ void test('authenticated thread delete route rejects active run threads', async 
     daemonContext.activeRuns.tryStartRun(threadId, {
       runId,
       threadId,
-      projectId: DEFAULT_PROJECT_ID,
-      workspaceRoot: getWorkspaceRootFromContext(daemonContext),
+      stateRoot: daemonContext.homeStateRoot,
+      workingDirectory: 'stories',
       ownerThreadId: threadId,
       abortController,
       interject: createRunInterjectBuffer(),
@@ -836,7 +816,7 @@ void test('authenticated thread delete route rejects active run threads', async 
     await withAuthenticatedDaemonServer(
       async ({ port }) => {
         const res = await fetch(
-          `http://127.0.0.1:${port}/api/threads/${threadId}?projectId=${DEFAULT_PROJECT_ID}`,
+          `http://127.0.0.1:${port}/api/threads/${threadId}`,
           {
             method: 'DELETE',
             headers: authHeaders(),
@@ -857,6 +837,115 @@ void test('authenticated thread delete route rejects active run threads', async 
     );
   } finally {
     daemonContext.activeRuns.finishRun(threadId, runId);
+  }
+});
+
+void test('authenticated thread branch clones a transcript prefix into a new thread', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const stateRoot = daemonContext.homeStateRoot;
+  const threadId = assertValidThreadId(randomUUID());
+  const indexPath = indexFilePath(stateRoot);
+  const transcriptPath = threadFilePath(stateRoot, threadId);
+  const indexSnapshot = await snapshotFile(indexPath);
+  const transcriptSnapshot = await snapshotFile(transcriptPath);
+  let branchedThreadId: string | null = null;
+
+  await mkdir(dirname(transcriptPath), { recursive: true });
+  await fsWriteFile(
+    transcriptPath,
+    [
+      JSON.stringify({
+        entryId: 'entry-user-1',
+        role: 'user',
+        content: 'first question',
+        timestamp: '2026-07-12T00:00:00.000Z',
+      }),
+      JSON.stringify({
+        entryId: 'entry-assistant-1',
+        role: 'assistant',
+        content: 'first answer',
+        timestamp: '2026-07-12T00:00:01.000Z',
+      }),
+      JSON.stringify({
+        entryId: 'entry-user-2',
+        role: 'user',
+        content: 'second question',
+        timestamp: '2026-07-12T00:00:02.000Z',
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const branchRes = await fetch(
+          `http://127.0.0.1:${port}/api/threads/${threadId}/branch`,
+          {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ upToEntryId: 'entry-assistant-1' }),
+          },
+        );
+        assert.equal(branchRes.status, 200);
+        const branchBody: unknown = await branchRes.json();
+        assert.equal(isThreadBranchResponse(branchBody), true);
+        if (!isThreadBranchResponse(branchBody)) {
+          return;
+        }
+        branchedThreadId = branchBody.threadId;
+        assert.equal(branchBody.sourceThreadId, threadId);
+        assert.equal('projectId' in branchBody, false);
+        assert.equal(branchBody.copiedMessageCount, 2);
+        assert.notEqual(branchBody.threadId, threadId);
+
+        const detailRes = await fetch(
+          `http://127.0.0.1:${port}/api/threads/${branchBody.threadId}`,
+          { headers: authHeaders() },
+        );
+        assert.equal(detailRes.status, 200);
+        const detailBody = (await detailRes.json()) as {
+          messages: Array<{ role: string; content: string }>;
+        };
+        assert.deepEqual(
+          detailBody.messages.map((message) => message.content),
+          ['first question', 'first answer'],
+        );
+
+        const missingCutRes = await fetch(
+          `http://127.0.0.1:${port}/api/threads/${threadId}/branch`,
+          {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ upToEntryId: 'entry-missing' }),
+          },
+        );
+        assert.equal(missingCutRes.status, 404);
+
+        const invalidBodyRes = await fetch(
+          `http://127.0.0.1:${port}/api/threads/${threadId}/branch`,
+          {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ upToEntryId: 42 }),
+          },
+        );
+        assert.equal(invalidBodyRes.status, 400);
+      },
+      { daemonContext },
+    );
+  } finally {
+    await restoreFileSnapshot(indexPath, indexSnapshot);
+    await restoreFileSnapshot(transcriptPath, transcriptSnapshot);
+    if (branchedThreadId !== null) {
+      await rm(threadFilePath(stateRoot, branchedThreadId), {
+        force: true,
+      });
+      await rm(artifactStoreFilePath(stateRoot, branchedThreadId), {
+        force: true,
+      });
+    }
   }
 });
 

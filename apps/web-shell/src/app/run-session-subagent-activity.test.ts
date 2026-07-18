@@ -18,6 +18,7 @@ function createState(
     activeRunView: createEmptyActiveRunView(),
     sessionError: null,
     backgroundNotificationsByThread: {},
+    contextUsageByThread: {},
     ...overrides,
   };
 }

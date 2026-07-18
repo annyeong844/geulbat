@@ -6,7 +6,8 @@ import {
   type PtcFixedEpochProbeRuntimeResult,
   type PtcFixedEpochProbeRuntimeSummary,
 } from '../ptc/runtime/probes/fixed-probe-runtime-contract.js';
-import type { RunWorkspaceContext } from '../run-workspace-context.js';
+import type { RunContext } from '../run-context.js';
+import { isRecord } from '../runtime-json.js';
 import { composeAgentResult, type AgentResult } from './agent-result.js';
 
 export const PTC_FIXED_PROBE_STRUCTURED_OUTPUT_KIND =
@@ -14,13 +15,13 @@ export const PTC_FIXED_PROBE_STRUCTURED_OUTPUT_KIND =
 export const PTC_FIXED_PROBE_STRUCTURED_OUTPUT_PROBE_ID =
   'ptc-fixed-epoch-execution-probe-1' as const;
 
-export type PtcFixedProbeStructuredOutputCallerFailureReason =
+type PtcFixedProbeStructuredOutputCallerFailureReason =
   | 'structured_output_invalid'
   | 'structured_output_ambiguous'
   | 'structured_output_with_tool_calls'
   | PtcFixedEpochProbeRuntimeFailureReason;
 
-export type PtcFixedProbeStructuredOutputCallerResult =
+type PtcFixedProbeStructuredOutputCallerResult =
   | {
       ok: true;
       result: AgentResult;
@@ -45,7 +46,7 @@ interface PtcFixedProbeStructuredOutputCallerFailureDiagnostics {
 }
 
 export async function runPtcFixedProbeStructuredOutputCaller(args: {
-  runContext: RunWorkspaceContext;
+  runContext: RunContext;
   runtime: PtcFixedEpochProbeRuntime;
   structuredOutputs: ProviderStructuredOutput[];
   functionCalls: FunctionCall[];
@@ -250,9 +251,7 @@ function readBooleanDiagnostic(
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
+  return isRecord(value) ? value : null;
 }
 
 function fail(

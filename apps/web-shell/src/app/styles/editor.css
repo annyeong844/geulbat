@@ -1,0 +1,921 @@
+/* ─────────────────────────────────────
+   CENTER — 원고 (§3.2)
+   ───────────────────────────────────── */
+.manuscript {
+  background: var(--cream);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* VSCode식 열린 파일 탭 (중앙 상단) */
+.file-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 8px 16px 0;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.file-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-family: var(--font-ui-label);
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-base);
+}
+
+.file-tab-select {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 4px 6px 14px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+}
+
+.file-tab:hover {
+  background: var(--surface-container);
+}
+
+.file-tab.active {
+  background: var(--surface-container-lowest);
+  color: var(--primary);
+  font-weight: 500;
+  box-shadow: var(--elev-card);
+}
+
+.file-tab-close {
+  border: none;
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-size: 10px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.file-tab-close:hover {
+  background: var(--surface-container-high);
+  color: var(--primary);
+}
+
+.manuscript-header {
+  padding: 18px 48px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--on-surface-muted);
+  letter-spacing: 0.02em;
+}
+
+.breadcrumb-sep {
+  opacity: 0.4;
+}
+
+.manuscript-meta-row {
+  margin-top: 14px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.manuscript-title {
+  font-family: var(--font-prose-serif);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manuscript-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  flex-shrink: 0;
+}
+
+.meta-divider {
+  opacity: 0.4;
+}
+
+/* save state 동적 표시 (§3.2.2 / §3.6.4) */
+.save-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.save-state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--secondary);
+}
+
+.save-state.saving .save-state-dot {
+  animation: pulse-fast 1s ease-out infinite;
+}
+
+.save-state.failed {
+  color: var(--error);
+}
+.save-state.failed .save-state-dot {
+  background: var(--error);
+}
+
+.save-state button {
+  border: none;
+  background: transparent;
+  color: var(--error);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+  font-family: var(--font-ui-label);
+  padding: 0;
+}
+
+/* mode tabs — [원고] / [캔버스 ✕] surface (§3.4) */
+.mode-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.mode-tab-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mode-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  border: none;
+  border-radius: var(--radius-full);
+  font-family: var(--font-ui-label);
+  font-size: 13px;
+  font-weight: 500;
+  background: transparent;
+  color: var(--on-surface-muted);
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.mode-tab.active {
+  background: var(--secondary-soft);
+  color: var(--on-secondary-fixed-variant);
+}
+
+.mode-tab-close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+/* view preference toggles (Sepia — §3.2.2, typography mode — §3.5.2) */
+.manuscript-prefs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pref-toggle {
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-family: var(--font-ui-label);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.pref-toggle:hover {
+  background: var(--surface-container);
+  color: var(--primary);
+}
+
+.pref-toggle.active {
+  background: var(--secondary-soft);
+  color: var(--on-secondary-fixed-variant);
+}
+
+.manuscript-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 48px 48px;
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.manuscript-sheet {
+  background: var(--surface-container-lowest);
+  border-radius: var(--radius-lg);
+  width: 100%;
+  /* 원고도 숨 쉴 폭 — 좁은 672px 상한이 답답해 보인다는 피드백 반영 */
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 48px 56px 64px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  box-shadow:
+    0 1px 1px rgba(50, 34, 20, 0.02),
+    0 2px 8px rgba(50, 34, 20, 0.04),
+    0 16px 48px rgba(50, 34, 20, 0.06);
+  transition: background var(--transition-slow);
+}
+
+.manuscript-sheet::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+  background-image: var(--noise);
+  background-size: 200px 200px;
+  opacity: 0.018;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
+/* drop target affordance — P8 handler 미존재: disabled 분기 (§3.2.4) */
+.manuscript-sheet.drop-rejected {
+  box-shadow:
+    inset 0 0 0 1px var(--on-surface-muted),
+    0 2px 8px rgba(50, 34, 20, 0.04);
+  cursor: not-allowed;
+}
+
+.manuscript-textarea {
+  flex: 1;
+  width: 100%;
+  min-height: 320px;
+  border: none;
+  outline: none;
+  background: transparent;
+  resize: none;
+  color: var(--primary);
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  position: relative;
+  z-index: 1;
+}
+
+/* 작품 모드 typography (§3.5.2 / §3.5.3) */
+.prose-rich {
+  font-family: var(--font-prose-serif);
+  font-size: 18px;
+  line-height: 1.7;
+  font-weight: 400;
+}
+
+/* 코드 보기 모드 — 코드 확장자 파일 자동 적용 + 수동 토글 */
+.prose-code {
+  font-family: var(--font-ui-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  font-weight: 400;
+  word-break: normal;
+  white-space: pre;
+  overflow-x: auto;
+  tab-size: 2;
+}
+
+.manuscript-sheet.code {
+  max-width: 920px;
+  padding: 28px 32px 40px;
+}
+
+.manuscript-readonly-note {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  font-size: 12px;
+  line-height: 1.5;
+  position: relative;
+  z-index: 1;
+}
+
+/* loading skeleton (§3.6.2) */
+.manuscript-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  position: relative;
+  z-index: 1;
+}
+
+.skeleton-line {
+  height: 14px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--surface-container-low) 25%,
+    var(--secondary-soft) 50%,
+    var(--surface-container-low) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* empty state (§3.6.1) */
+.manuscript-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  color: var(--on-surface-muted);
+}
+
+.manuscript-empty-title {
+  font-family: var(--font-prose-serif);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--on-surface-variant);
+}
+
+.manuscript-empty-hint {
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 320px;
+}
+
+.manuscript-empty-icon {
+  font-size: 40px;
+  opacity: 0.55;
+}
+
+/* versionToken conflict — plain-editor-safe 3 actions (§3.6.5 / §10.20) */
+.conflict-card {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  position: relative;
+  z-index: 1;
+}
+
+.conflict-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.conflict-actions button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: var(--radius-full);
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity var(--transition-base);
+}
+
+.conflict-actions .btn-filled {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+.conflict-actions .btn-filled:hover {
+  opacity: 0.85;
+}
+
+.conflict-actions .btn-ghost {
+  background: transparent;
+  color: var(--warning-text);
+}
+.conflict-actions .btn-ghost:hover {
+  background: rgba(90, 74, 31, 0.08);
+}
+
+.conflict-preview {
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.6);
+  font-family: var(--font-ui-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.editor-alert {
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(177, 74, 58, 0.1);
+  color: var(--error);
+  font-size: 12.5px;
+  line-height: 1.5;
+  position: relative;
+  z-index: 1;
+}
+
+/* format toolbar — 원고 상단 중앙, 시트 밖. visual surface only, P8이 semantics owner (§3.2.1) */
+.format-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 6px;
+  background: var(--surface-container-lowest);
+  border-radius: var(--radius-full);
+  box-shadow: var(--elev-card);
+  margin-top: 10px;
+  align-self: center;
+}
+
+.format-btn {
+  height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-full);
+  color: var(--on-surface-variant);
+  font-family: var(--font-prose-serif);
+  font-size: 15px;
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.format-btn:hover:not(:disabled) {
+  background: var(--surface-container);
+  color: var(--primary);
+}
+
+.format-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 글자 색 버튼 — 가 + 색 bar (HWP 패턴) */
+.color-format-glyph {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  line-height: 1;
+}
+
+.color-format-bar {
+  width: 14px;
+  height: 2.5px;
+  background: #b14a3a;
+  border-radius: 1px;
+}
+
+/* 글자 크기 stepper — 가 + 숫자 */
+.font-size-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 4px;
+}
+
+.font-size-input {
+  width: 40px;
+  border: none;
+  outline: none;
+  background: var(--surface-container);
+  border-radius: var(--radius-sm);
+  padding: 3px 5px;
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  color: var(--on-surface);
+  text-align: right;
+  font-feature-settings: 'tnum';
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.font-size-input::-webkit-inner-spin-button,
+.font-size-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+}
+
+.font-size-unit {
+  font-family: var(--font-ui-label);
+  font-size: 10px;
+  color: var(--on-surface-muted);
+}
+
+.font-size-arrows {
+  display: flex;
+  flex-direction: column;
+}
+
+.font-size-arrows .format-btn {
+  height: 13px;
+  min-width: 16px;
+  padding: 0 2px;
+  font-size: 7px;
+  font-family: var(--font-ui-label);
+}
+
+.format-divider {
+  width: 1px;
+  height: 14px;
+  background: rgba(50, 34, 20, 0.1);
+  margin: 0 4px;
+}
+
+/* 리치 편집 영역 (contentEditable) */
+.manuscript-editable {
+  flex: 1;
+  width: 100%;
+  min-height: 320px;
+  outline: none;
+  color: var(--primary);
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  position: relative;
+  z-index: 1;
+}
+
+.manuscript-editable:empty::before {
+  content: attr(data-placeholder);
+  color: var(--on-surface-muted);
+  pointer-events: none;
+}
+
+/* 바이너리/이미지 미리보기 */
+.binary-preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  overflow: auto;
+}
+
+.binary-preview-name {
+  font-family: var(--font-ui-label);
+  font-size: 12.5px;
+  color: var(--on-surface-muted);
+}
+
+.binary-preview-image {
+  object-fit: contain;
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-card);
+}
+
+/* 툴바 드롭다운 (글자 크기 프리셋 / 색 팔레트) */
+.font-size-control,
+.color-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.menu-caret {
+  min-width: 14px;
+  padding: 0 2px;
+  font-size: 9px;
+}
+
+.toolbar-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  background: var(--surface-container-lowest);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-floating);
+  padding: 6px;
+}
+
+.font-size-menu {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow-y: auto;
+  min-width: 84px;
+}
+
+.toolbar-menu-item {
+  border: none;
+  background: transparent;
+  padding: 5px 12px;
+  text-align: left;
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  color: var(--on-surface-variant);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-feature-settings: 'tnum';
+}
+
+.toolbar-menu-item:hover {
+  background: var(--surface-container);
+}
+
+.toolbar-menu-item.active {
+  background: var(--secondary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.color-palette {
+  display: grid;
+  grid-template-columns: repeat(5, 22px);
+  gap: 4px;
+}
+
+.palette-swatch {
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.palette-swatch:hover {
+  transform: scale(1.12);
+}
+
+.palette-swatch.active {
+  outline: 2px solid var(--tertiary);
+  outline-offset: 1px;
+}
+
+/* 정렬 아이콘 — 가로 bar 3개 */
+.align-glyph {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5px;
+  width: 14px;
+}
+
+.align-glyph .align-bar {
+  height: 1.5px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
+.align-glyph .align-bar.long {
+  width: 100%;
+}
+
+.align-glyph .align-bar.short {
+  width: 60%;
+}
+
+.align-glyph.left .align-bar.short {
+  align-self: flex-start;
+}
+
+.align-glyph.center .align-bar.short {
+  align-self: center;
+}
+
+.align-glyph.right .align-bar.short {
+  align-self: flex-end;
+}
+
+.align-glyph.justify .align-bar.short {
+  width: 100%;
+}
+
+.line-spacing-input {
+  width: 44px;
+}
+
+/* 미리보기 뷰어 — 줌/미디어 */
+.binary-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  max-width: 920px;
+}
+
+.binary-preview-info {
+  color: var(--on-surface-muted);
+  font-feature-settings: 'tnum';
+}
+
+.binary-preview-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  background: var(--surface-container-lowest);
+  border-radius: var(--radius-full);
+  box-shadow: var(--elev-card);
+}
+
+.binary-preview-zoom-value {
+  min-width: 44px;
+  text-align: center;
+  font-family: var(--font-ui-label);
+  font-size: 11.5px;
+  color: var(--on-surface-variant);
+  font-feature-settings: 'tnum';
+}
+
+.binary-preview-audio {
+  width: 100%;
+  max-width: 560px;
+  margin-top: 24px;
+}
+
+/* 뷰어 스테이지 — 콘텐츠가 크면 좌측 잘림 없이 스크롤, 작으면 가운데 */
+.binary-preview-stage {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow: auto;
+}
+
+.binary-preview-stage-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  padding: 4px;
+  box-sizing: border-box;
+}
+
+.binary-preview-image.fit,
+.binary-preview-video.fit {
+  /* 스테이지(inner.fit이 100%×100%) 기준 — 뷰포트 기준이면 헤더/패딩만큼
+     넘쳐 fit인데도 스크롤이 생긴다 */
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.binary-preview-video.fit {
+  /* 작은 비디오도 패널을 채운다 — 없으면 맞춤이 1:1과 같아진다 */
+  width: 100%;
+}
+
+.binary-preview-video {
+  border-radius: var(--radius-md);
+  background: #000;
+  box-shadow: var(--elev-card);
+}
+
+/* 헤더가 좁아도 툴바가 세로로 깨지지 않게 */
+.binary-preview-header {
+  flex-wrap: nowrap;
+}
+
+.binary-preview-header .binary-preview-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.binary-preview-zoom {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.binary-preview-stage-inner.fit {
+  width: 100%;
+  height: 100%;
+}
+
+/* ─────────────────────────────────────
+   줄 번호 코드 영역 — 코드 뷰어(파일)와 아티팩트 원문(</> 모드) 공유.
+   줄마다 밑줄이 그어져 가독성을 돕고, 밑줄/번호는 스크롤을 따라간다.
+   ───────────────────────────────────── */
+.code-area {
+  --code-line-height: 22px;
+  display: flex;
+  flex: 1;
+  min-height: 320px;
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
+}
+
+.code-area-gutter {
+  flex: none;
+  overflow: hidden;
+  padding-right: 10px;
+  border-right: 1px solid var(--surface-container);
+  margin-right: 12px;
+  color: var(--on-surface-muted);
+  font-family: var(--font-prose-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-align: right;
+  user-select: none;
+  min-width: 34px;
+}
+
+.code-area-line-number {
+  display: block;
+  height: var(--code-line-height);
+  line-height: var(--code-line-height);
+}
+
+.code-area-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--primary);
+  font-family: var(--font-prose-mono, ui-monospace, monospace);
+  font-size: 13px;
+  line-height: var(--code-line-height);
+  white-space: pre;
+  overflow: auto;
+  padding: 0 12px 24px 0;
+  /* 줄 밑줄 — 콘텐츠와 함께 스크롤되는 반복 그라디언트 */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--code-line-height) - 1px),
+    var(--surface-container) calc(var(--code-line-height) - 1px),
+    var(--surface-container) var(--code-line-height)
+  );
+  background-attachment: local;
+}

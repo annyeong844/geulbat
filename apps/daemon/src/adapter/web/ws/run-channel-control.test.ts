@@ -9,20 +9,25 @@ import {
   clearSentMessages,
   createTestSocket,
   readLastSentMessage,
-} from './run-channel-test-support.js';
+} from '../../../test-support/run-channel-test-support.js';
 import {
   handleRunApprove,
   handleRunCancel,
   handleRunInterject,
+  handleRunInterjectFlush,
 } from './run-channel-control.js';
 import {
   cleanupSocketState,
   getSocketState,
 } from './run-channel-socket-runtime.js';
-import { createRunInterjectBuffer } from '../../../daemon/sessions/active-run-interject-buffer.js';
+import {
+  createRunInterjectBuffer,
+  isInterjectFlushRequested,
+  pushPendingInterject,
+} from '../../../daemon/sessions/active-run-interject-buffer.js';
 import { createDaemonContext } from '../../../daemon/context.js';
 import { MID_RUN_STEER_ENABLED_ENV } from '../../../daemon/agent/mid-run-steer-flag.js';
-import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../../test-support/run-context.js';
 import { testRunId } from '../../../test-support/run-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 
@@ -61,7 +66,7 @@ void test('handleRunCancel aborts an owned active run and sends run.control', ()
 
   const startResult = daemonContext.activeRuns.tryStartRun(threadId, {
     runId,
-    ...makeRunWorkspaceContext({ threadId }),
+    ...makeRunContext({ threadId }),
     ownerThreadId: threadId,
     abortController,
     interject: createRunInterjectBuffer(),
@@ -104,7 +109,7 @@ void test('handleRunCancel aborts the owned run thread tree, including child run
   assert.deepEqual(
     daemonContext.activeRuns.tryStartRun(ownerThreadId, {
       runId: parentRunId,
-      ...makeRunWorkspaceContext({ threadId: ownerThreadId }),
+      ...makeRunContext({ threadId: ownerThreadId }),
       ownerThreadId,
       abortController: parentAbortController,
       interject: createRunInterjectBuffer(),
@@ -115,7 +120,7 @@ void test('handleRunCancel aborts the owned run thread tree, including child run
   assert.deepEqual(
     daemonContext.activeRuns.tryStartRun(childThreadId, {
       runId: childRunId,
-      ...makeRunWorkspaceContext({ threadId: childThreadId }),
+      ...makeRunContext({ threadId: childThreadId }),
       ownerThreadId,
       abortController: childAbortController,
       interject: createRunInterjectBuffer(),
@@ -186,7 +191,7 @@ void test('handleRunCancel can use an injected active-run store', () => {
 
   const startResult = daemonContext.activeRuns.tryStartRun(threadId, {
     runId,
-    ...makeRunWorkspaceContext({ threadId }),
+    ...makeRunContext({ threadId }),
     ownerThreadId: threadId,
     abortController,
     interject: createRunInterjectBuffer(),
@@ -312,7 +317,7 @@ void test('handleRunInterject reports access_denied when socket does not own an 
   const runId = testRunId('interject-unowned');
   const startResult = daemonContext.activeRuns.tryStartRun(threadId, {
     runId,
-    ...makeRunWorkspaceContext({ threadId }),
+    ...makeRunContext({ threadId }),
     ownerThreadId: threadId,
     abortController: new AbortController(),
     interject: createRunInterjectBuffer(),
@@ -354,7 +359,7 @@ void test('handleRunInterject appends to an owned active-run buffer', () => {
   const interject = createRunInterjectBuffer();
   const startResult = daemonContext.activeRuns.tryStartRun(threadId, {
     runId,
-    ...makeRunWorkspaceContext({ threadId }),
+    ...makeRunContext({ threadId }),
     ownerThreadId: threadId,
     abortController: new AbortController(),
     interject,
@@ -402,7 +407,7 @@ void test('handleRunInterject reports not_found for aborted active runs', () => 
   const interject = createRunInterjectBuffer();
   const startResult = daemonContext.activeRuns.tryStartRun(threadId, {
     runId,
-    ...makeRunWorkspaceContext({ threadId }),
+    ...makeRunContext({ threadId }),
     ownerThreadId: threadId,
     abortController,
     interject,
@@ -438,6 +443,160 @@ void test('handleRunInterject reports not_found for aborted active runs', () => 
   }
 });
 
+void test('handleRunInterjectFlush reports disabled while mid-run steer is gated off', () => {
+  const restoreMidRunSteer = setMidRunSteerForTest(undefined);
+  const socket = createTestSocket();
+  const daemonContext = createDaemonContext();
+
+  try {
+    handleRunInterjectFlush(
+      socket,
+      'flush-disabled',
+      { runId: testRunId('flush-disabled') },
+      daemonContext,
+    );
+
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.error',
+      requestId: 'flush-disabled',
+      status: 503,
+      code: 'bad_request',
+      message: 'mid-run steer is not enabled',
+    });
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+    restoreMidRunSteer();
+  }
+});
+
+void test('handleRunInterjectFlush reports not_found for missing runs', () => {
+  const restoreMidRunSteer = setMidRunSteerForTest('1');
+  const socket = createTestSocket();
+  const daemonContext = createDaemonContext();
+  const runId = testRunId('flush-missing');
+
+  try {
+    handleRunInterjectFlush(socket, 'flush-missing', { runId }, daemonContext);
+
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.error',
+      requestId: 'flush-missing',
+      status: 404,
+      code: 'not_found',
+      message: `no active run: ${runId}`,
+    });
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+    restoreMidRunSteer();
+  }
+});
+
+void test('handleRunInterjectFlush reports access_denied when socket does not own the run', () => {
+  const restoreMidRunSteer = setMidRunSteerForTest('1');
+  const socket = createTestSocket();
+  const daemonContext = createDaemonContext();
+  const threadId = testThreadId(133);
+  const runId = testRunId('flush-unowned');
+  const startResult = daemonContext.activeRuns.tryStartRun(threadId, {
+    runId,
+    ...makeRunContext({ threadId }),
+    ownerThreadId: threadId,
+    abortController: new AbortController(),
+    interject: createRunInterjectBuffer(),
+    startedAt: '2026-03-30T00:00:00.000Z',
+  });
+  assert.equal(startResult.ok, true);
+
+  try {
+    handleRunInterjectFlush(socket, 'flush-unowned', { runId }, daemonContext);
+
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.error',
+      requestId: 'flush-unowned',
+      status: 403,
+      code: 'access_denied',
+      message: `socket does not own run: ${runId}`,
+    });
+  } finally {
+    daemonContext.activeRuns.finishRun(threadId, runId);
+    cleanupSocketState(socket, daemonContext);
+    restoreMidRunSteer();
+  }
+});
+
+void test('handleRunInterjectFlush marks an owned queued buffer and acks flushed=true', () => {
+  const restoreMidRunSteer = setMidRunSteerForTest('1');
+  const socket = createTestSocket();
+  const daemonContext = createDaemonContext();
+  const threadId = testThreadId(134);
+  const runId = testRunId('flush-owned');
+  const interject = createRunInterjectBuffer();
+  pushPendingInterject(interject, 'queued steer');
+  const startResult = daemonContext.activeRuns.tryStartRun(threadId, {
+    runId,
+    ...makeRunContext({ threadId }),
+    ownerThreadId: threadId,
+    abortController: new AbortController(),
+    interject,
+    startedAt: '2026-03-30T00:00:00.000Z',
+  });
+  assert.equal(startResult.ok, true);
+  getSocketState(socket).activeRunIds.add(runId);
+
+  try {
+    handleRunInterjectFlush(socket, 'flush-owned', { runId }, daemonContext);
+
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.control',
+      requestId: 'flush-owned',
+      action: 'run.interject.flush',
+      ok: true,
+      flushed: true,
+    });
+    assert.equal(isInterjectFlushRequested(interject), true);
+  } finally {
+    daemonContext.activeRuns.finishRun(threadId, runId);
+    cleanupSocketState(socket, daemonContext);
+    restoreMidRunSteer();
+  }
+});
+
+void test('handleRunInterjectFlush acks flushed=false when the queue is empty', () => {
+  const restoreMidRunSteer = setMidRunSteerForTest('1');
+  const socket = createTestSocket();
+  const daemonContext = createDaemonContext();
+  const threadId = testThreadId(135);
+  const runId = testRunId('flush-empty');
+  const interject = createRunInterjectBuffer();
+  const startResult = daemonContext.activeRuns.tryStartRun(threadId, {
+    runId,
+    ...makeRunContext({ threadId }),
+    ownerThreadId: threadId,
+    abortController: new AbortController(),
+    interject,
+    startedAt: '2026-03-30T00:00:00.000Z',
+  });
+  assert.equal(startResult.ok, true);
+  getSocketState(socket).activeRunIds.add(runId);
+
+  try {
+    handleRunInterjectFlush(socket, 'flush-empty', { runId }, daemonContext);
+
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.control',
+      requestId: 'flush-empty',
+      action: 'run.interject.flush',
+      ok: true,
+      flushed: false,
+    });
+    assert.equal(isInterjectFlushRequested(interject), false);
+  } finally {
+    daemonContext.activeRuns.finishRun(threadId, runId);
+    cleanupSocketState(socket, daemonContext);
+    restoreMidRunSteer();
+  }
+});
+
 void test('handleRunApprove resolves pending approvals and sends run.control', async () => {
   const socket = createTestSocket();
   const daemonContext = createDaemonContext();
@@ -452,7 +611,6 @@ void test('handleRunApprove resolves pending approvals and sends run.control', a
     threadId,
     {
       runId,
-      threadId,
       sessionId: 'session-approve-resolve',
       approvalClass: 'write_file',
       sideEffectLevel: 'write',
@@ -501,7 +659,6 @@ void test('handleRunApprove resolves pending background approvals after parent r
     threadId,
     {
       runId,
-      threadId,
       sessionId: approvalSessionId,
       approvalClass: 'write_file',
       sideEffectLevel: 'write',
@@ -563,7 +720,6 @@ void test('handleRunApprove rejects a pending approval when the socket does not 
     threadId,
     {
       runId,
-      threadId,
       sessionId: 'session-approve-non-owner',
       approvalClass: 'write_file',
       sideEffectLevel: 'write',
@@ -628,7 +784,7 @@ void test('handleRunApprove rejects invalid grant scopes', () => {
       requestId: 'approve-invalid-scope',
       status: 400,
       code: 'bad_request',
-      message: 'grantScope is required',
+      message: 'grantScope must be once, run, or session',
     });
   } finally {
     cleanupSocketState(socket, daemonContext);
@@ -657,7 +813,6 @@ void test('handleRunApprove reports conflict when the approval was already resol
     threadId,
     {
       runId,
-      threadId,
       sessionId: 'session-approve-conflict',
       approvalClass: 'write_file',
       sideEffectLevel: 'write',
@@ -699,7 +854,6 @@ void test('handleRunApprove can use an injected approval gate', async () => {
     threadId,
     {
       runId,
-      threadId,
       sessionId: 'session-approve-local',
       approvalClass: 'write_file',
       sideEffectLevel: 'write',

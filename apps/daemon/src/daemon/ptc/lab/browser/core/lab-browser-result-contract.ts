@@ -51,7 +51,7 @@ export type PtcLabBrowserPhasedFailure<
 > = PtcLabBrowserFailure<ReasonCode> & {
   kind: Kind;
   phase: Phase;
-} & Extras;
+} & Omit<Extras, 'kind' | 'ok' | 'reasonCode' | 'message' | 'phase'>;
 
 export type PtcLabBrowserEvidenceAdapterFailureCode =
   | 'browser_runtime_unavailable'
@@ -534,12 +534,15 @@ export function createPtcLabBrowserPhasedFailure<
   phase: Phase;
   extras?: Extras;
 }): PtcLabBrowserPhasedFailure<Kind, ReasonCode, Phase, Extras> {
-  return {
-    ...args.extras,
+  const failure = {
     kind: args.kind,
     ok: false,
     reasonCode: args.reasonCode,
     message: args.message,
     phase: args.phase,
-  } as PtcLabBrowserPhasedFailure<Kind, ReasonCode, Phase, Extras>;
+  } satisfies PtcLabBrowserFailure<ReasonCode> & {
+    kind: Kind;
+    phase: Phase;
+  };
+  return Object.assign({}, args.extras, failure);
 }

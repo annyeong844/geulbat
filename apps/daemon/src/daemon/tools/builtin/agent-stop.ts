@@ -66,8 +66,15 @@ export const agentStopTool = defineParsedTool<AgentStopArgs>({
   parameters: agentStopParameters,
   strict: true,
   sideEffectLevel: 'none',
-  mayMutateWorkspaceFiles: false,
+  mayMutateComputerFiles: false,
   requiresApproval: false,
+  catalogSearchMetadata: {
+    family: 'agent',
+    searchHints: ['stop agent', 'cancel subagent', 'terminate agent'],
+    tags: ['agent', 'subagent', 'cancel'],
+    whenToUse: 'Stop an existing subagent run.',
+    notFor: 'Waiting for a subagent to finish normally.',
+  },
   parseArgs: parseAgentStopArgs,
   async executeParsed(args, ctx) {
     if (!ctx.threadId || !ctx.runId || !ctx.agentSpawnRuntime) {

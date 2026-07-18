@@ -10,9 +10,24 @@ import {
   createPtcExecuteCodeCellRegistry,
   PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS,
 } from './execute-code-cell-registry.js';
-import type { PtcExecuteCodeCellId } from './execute-code-runtime-contract.js';
+import type {
+  PtcExecuteCodeCellDurableOutput,
+  PtcExecuteCodeCellId,
+} from './execute-code-runtime-contract.js';
 
 const THREAD_ID = 'thread-ptc-cell-registry';
+
+function makeDurableOutput(
+  cellId: PtcExecuteCodeCellId,
+): PtcExecuteCodeCellDurableOutput {
+  return {
+    outputRef: `tool-output://ptc-test/${cellId}`,
+    fullOutputBytes: 1,
+    fullOutputChars: 1,
+    status: 'completed',
+    exitCode: 0,
+  };
+}
 
 void test('execute_code cell registry uses admitting sentinel to block duplicate admission', () => {
   const registry = createPtcExecuteCodeCellRegistry({
@@ -138,6 +153,61 @@ void test('execute_code cell registry blocks new admission until retained termin
   assert.deepEqual(registry.readCellState({ threadId: THREAD_ID }), {
     cellId: 'ptc_cell_complete_2',
     state: 'admitting',
+  });
+});
+
+void test('execute_code cell registry blocks admission while durable terminal handoff is in flight', async () => {
+  let markPersistenceStarted!: () => void;
+  let releasePersistence!: () => void;
+  const persistenceStarted = new Promise<void>((resolve) => {
+    markPersistenceStarted = resolve;
+  });
+  const persistenceReleased = new Promise<void>((resolve) => {
+    releasePersistence = resolve;
+  });
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: makeCellIdFactory('ptc_cell_persistence_in_flight'),
+    persistTerminalResult: async ({ cellId }) => {
+      markPersistenceStarted();
+      await persistenceReleased;
+      return makeDurableOutput(cellId);
+    },
+  });
+  const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) {
+    return;
+  }
+  registry.promoteAdmittedCell({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    resources: {
+      effectiveTimeoutMs: 60_000,
+      handle: makeHandle({ output: makeSegment() }),
+      closeBridge: () => {},
+      taintSession: () => true,
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
+    },
+  });
+
+  const recording = registry.recordTerminalCellResult({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    result: makeTerminalResult({ stdout: 'handoff in flight\n' }),
+  });
+  await persistenceStarted;
+
+  assert.deepEqual(registry.reserveAdmittingCell({ threadId: THREAD_ID }), {
+    ok: false,
+    reasonCode: 'cell_result_unclaimed',
+    cellId: admitted.cellId,
+    state: 'terminal_retained',
+  });
+
+  releasePersistence();
+  assert.deepEqual(await recording, {
+    ok: true,
+    value: { bridgeClosed: true },
   });
 });
 
@@ -316,7 +386,8 @@ void test('execute_code cell registry expires retained terminal output without r
   const registry = createPtcExecuteCodeCellRegistry({
     createCellId: makeCellIdFactory('ptc_cell_expire'),
     now: () => now,
-    terminalResultRetentionMs: 50,
+    terminalResultMemoryRetentionMs: 50,
+    persistTerminalResult: async ({ cellId }) => makeDurableOutput(cellId),
   });
   const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
   assert.equal(admitted.ok, true);
@@ -333,6 +404,7 @@ void test('execute_code cell registry expires retained terminal output without r
       taintSession: () => {
         throw new Error('natural completion must not taint session');
       },
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
     },
   });
 
@@ -377,12 +449,12 @@ void test('execute_code cell registry expires retained terminal output without r
   });
 });
 
-void test('execute_code cell registry prunes expired retained output during admission lookup', async () => {
-  let now = 4_000;
+void test('execute_code cell registry keeps unclaimed terminal output when no durable handoff exists', async () => {
+  let now = 3_500;
   const registry = createPtcExecuteCodeCellRegistry({
-    createCellId: makeCellIdFactory('ptc_cell_expire_admission'),
+    createCellId: makeCellIdFactory('ptc_cell_no_durable_handoff'),
     now: () => now,
-    terminalResultRetentionMs: 25,
+    terminalResultMemoryRetentionMs: 10,
   });
   const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
   assert.equal(admitted.ok, true);
@@ -399,6 +471,52 @@ void test('execute_code cell registry prunes expired retained output during admi
       taintSession: () => {
         throw new Error('natural completion must not taint session');
       },
+    },
+  });
+
+  const terminalResult = makeTerminalResult({
+    stdout: 'must remain claimable\n',
+  });
+  await registry.recordTerminalCellResult({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    result: terminalResult,
+  });
+
+  now = 3_510;
+  assert.deepEqual(
+    registry.takeTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    { ok: true, value: terminalResult },
+  );
+});
+
+void test('execute_code cell registry prunes expired retained output during admission lookup', async () => {
+  let now = 4_000;
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: makeCellIdFactory('ptc_cell_expire_admission'),
+    now: () => now,
+    terminalResultMemoryRetentionMs: 25,
+    persistTerminalResult: async ({ cellId }) => makeDurableOutput(cellId),
+  });
+  const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) {
+    return;
+  }
+  registry.promoteAdmittedCell({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    resources: {
+      effectiveTimeoutMs: 60_000,
+      handle: makeHandle({ output: makeSegment() }),
+      closeBridge: () => {},
+      taintSession: () => {
+        throw new Error('natural completion must not taint session');
+      },
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
     },
   });
 
@@ -424,7 +542,8 @@ void test('execute_code cell registry prunes expired retained output during stat
   const registry = createPtcExecuteCodeCellRegistry({
     createCellId: makeCellIdFactory('ptc_cell_expire_state'),
     now: () => now,
-    terminalResultRetentionMs: 10,
+    terminalResultMemoryRetentionMs: 10,
+    persistTerminalResult: async ({ cellId }) => makeDurableOutput(cellId),
   });
   const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
   assert.equal(admitted.ok, true);
@@ -441,6 +560,7 @@ void test('execute_code cell registry prunes expired retained output during stat
       taintSession: () => {
         throw new Error('natural completion must not taint session');
       },
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
     },
   });
 
@@ -484,6 +604,11 @@ void test('execute_code cell registry retains cleanup failure when completion br
         });
       },
       taintSession: () => true,
+      finalizePlacement: async () => ({
+        ok: false,
+        message: 'placement cleanup also failed',
+        diagnostics: { placementLane: 'warm' },
+      }),
     },
   });
 
@@ -515,6 +640,8 @@ void test('execute_code cell registry retains cleanup failure when completion br
         callbackBridgeCloseFailed: true,
         callbackBridgeCloseErrorName: 'Error',
         callbackBridgeCloseErrorCode: 'ECONNRESET',
+        placementReleaseFailed: true,
+        placementLane: 'warm',
       },
       terminalResult,
     },
@@ -859,10 +986,9 @@ void test('execute_code cell registry reaps running cells through explicit owner
     runningCellReapAfterMs: 25,
     scheduleReapTimeout: (callback, delayMs) => {
       scheduled = { callback, delayMs, timer: timerHandle };
-      return timerHandle;
-    },
-    clearReapTimeout: (timer) => {
-      clearedTimers.push(timer);
+      return () => {
+        clearedTimers.push(timerHandle);
+      };
     },
   });
   const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
@@ -1001,19 +1127,17 @@ void test('execute_code cell registry reaps retained terminal output on schedule
   const registry = createPtcExecuteCodeCellRegistry({
     createCellId: makeCellIdFactory('ptc_cell_reap'),
     now: () => now,
-    terminalResultRetentionMs: 50,
+    terminalResultMemoryRetentionMs: 50,
+    persistTerminalResult: async ({ cellId }) => makeDurableOutput(cellId),
     scheduleReapTimeout: (callback, delayMs) => {
       const entry = { callback, delayMs };
       scheduled.push(entry);
-      return entry;
-    },
-    clearReapTimeout: (timer) => {
-      const index = scheduled.indexOf(
-        timer as { callback: () => Promise<void> | void; delayMs: number },
-      );
-      if (index >= 0) {
-        scheduled.splice(index, 1);
-      }
+      return () => {
+        const index = scheduled.indexOf(entry);
+        if (index >= 0) {
+          scheduled.splice(index, 1);
+        }
+      };
     },
   });
 
@@ -1032,6 +1156,7 @@ void test('execute_code cell registry reaps retained terminal output on schedule
       taintSession: () => {
         throw new Error('natural completion must not taint session');
       },
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
     },
   });
   await registry.recordTerminalCellResult({
@@ -1062,6 +1187,669 @@ void test('execute_code cell registry reaps retained terminal output on schedule
   );
   // Coupled per-thread revision metadata is pruned by the reap as well.
   assert.equal(registry.getThreadRevision({ threadId: THREAD_ID }), 0);
+});
+
+void test('execute_code cell registry tracks concurrent same-thread cells by exact cell id', () => {
+  const registry = createPtcExecuteCodeCellRegistry({
+    allowConcurrentCells: true,
+    createCellId: makeCellIdFactory('ptc_cell_concurrent'),
+  });
+  const first = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  const second = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.deepEqual(first, {
+    ok: true,
+    cellId: 'ptc_cell_concurrent_1',
+  });
+  assert.deepEqual(second, {
+    ok: true,
+    cellId: 'ptc_cell_concurrent_2',
+  });
+  if (!first.ok || !second.ok) {
+    return;
+  }
+
+  assert.deepEqual(
+    registry.readCellState({ threadId: THREAD_ID, cellId: first.cellId }),
+    { cellId: first.cellId, state: 'admitting' },
+  );
+  assert.deepEqual(
+    registry.readCellState({ threadId: THREAD_ID, cellId: second.cellId }),
+    { cellId: second.cellId, state: 'admitting' },
+  );
+  registry.releaseAdmittingCell({
+    threadId: THREAD_ID,
+    cellId: first.cellId,
+  });
+  assert.equal(
+    registry.readCellState({ threadId: THREAD_ID, cellId: first.cellId }),
+    null,
+  );
+  assert.deepEqual(
+    registry.readCellState({ threadId: THREAD_ID, cellId: second.cellId }),
+    { cellId: second.cellId, state: 'admitting' },
+  );
+});
+
+void test('execute_code cell registry keeps a failed durable handoff cell-scoped during concurrent admission', async () => {
+  const registry = createPtcExecuteCodeCellRegistry({
+    allowConcurrentCells: true,
+    createCellId: makeCellIdFactory('ptc_cell_concurrent_handoff_failure'),
+    persistTerminalResult: async () => {
+      throw new Error('simulated durable handoff failure');
+    },
+  });
+  const first = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.deepEqual(first, {
+    ok: true,
+    cellId: 'ptc_cell_concurrent_handoff_failure_1',
+  });
+  if (!first.ok) {
+    return;
+  }
+  registry.promoteAdmittedCell({
+    threadId: THREAD_ID,
+    cellId: first.cellId,
+    resources: {
+      effectiveTimeoutMs: 60_000,
+      handle: makeHandle({ output: makeSegment() }),
+      closeBridge: () => {},
+      taintSession: () => {
+        throw new Error('natural completion must not taint session');
+      },
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
+    },
+  });
+
+  const terminalResult = makeTerminalResult({
+    stdout: 'retained after failed durable handoff\n',
+  });
+  await assert.rejects(
+    registry.recordTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: first.cellId,
+      result: terminalResult,
+    }),
+    /simulated durable handoff failure/,
+  );
+  assert.deepEqual(
+    registry.readCellState({ threadId: THREAD_ID, cellId: first.cellId }),
+    { cellId: first.cellId, state: 'terminal_retained' },
+  );
+
+  const second = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.deepEqual(second, {
+    ok: true,
+    cellId: 'ptc_cell_concurrent_handoff_failure_2',
+  });
+  if (!second.ok) {
+    return;
+  }
+  assert.deepEqual(
+    registry.readCellState({ threadId: THREAD_ID, cellId: second.cellId }),
+    { cellId: second.cellId, state: 'admitting' },
+  );
+  assert.deepEqual(
+    registry.takeTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: first.cellId,
+    }),
+    { ok: true, value: terminalResult },
+  );
+  assert.deepEqual(
+    registry.readCellState({ threadId: THREAD_ID, cellId: second.cellId }),
+    { cellId: second.cellId, state: 'admitting' },
+  );
+});
+
+void test('execute_code queued cell cancellation owns no running resource and finalizes only its store', async () => {
+  const settle = createDeferred<void>();
+  let cancelCount = 0;
+  let finalizedCount = 0;
+  const registry = createPtcExecuteCodeCellRegistry({
+    allowConcurrentCells: true,
+    createCellId: makeCellIdFactory('ptc_cell_queued'),
+  });
+  const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) {
+    return;
+  }
+  assert.deepEqual(
+    registry.markAdmittedCellQueued({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
+      cancelAcquire: () => {
+        cancelCount += 1;
+        settle.resolve();
+      },
+      settlePromise: settle.promise,
+      finalizeStore: async () => {
+        finalizedCount += 1;
+        return { store: { discardedWrites: 2 } };
+      },
+    }),
+    { ok: true, value: { state: 'queued' } },
+  );
+  assert.deepEqual(
+    registry.readCellState({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    { cellId: admitted.cellId, state: 'queued' },
+  );
+
+  assert.deepEqual(
+    await registry.closeCell({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      reason: 'terminate',
+    }),
+    {
+      ok: true,
+      status: 'queued_cancelled',
+      store: { discardedWrites: 2 },
+    },
+  );
+  assert.equal(cancelCount, 1);
+  assert.equal(finalizedCount, 1);
+  assert.equal(
+    registry.readCellState({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    null,
+  );
+});
+
+void test('execute_code cell retains placement cleanup failure before exposing terminal output', async () => {
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: makeCellIdFactory('ptc_cell_placement_cleanup'),
+  });
+  const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) {
+    return;
+  }
+  registry.promoteAdmittedCell({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    resources: {
+      effectiveTimeoutMs: 60_000,
+      handle: makeHandle({ output: makeSegment({ stdout: 'done\n' }) }),
+      closeBridge: () => {},
+      taintSession: () => true,
+      finalizePlacement: async () => ({
+        ok: false,
+        message: 'cold cleanup failed',
+        diagnostics: { placementLane: 'cold_burst' },
+      }),
+    },
+  });
+
+  const terminalResult = makeTerminalResult({ stdout: 'done\n' });
+  assert.deepEqual(
+    await registry.recordTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      result: terminalResult,
+    }),
+    { ok: true, value: { bridgeClosed: true } },
+  );
+  assert.deepEqual(
+    registry.takeTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    {
+      ok: true,
+      value: {
+        status: 'cleanup_failed',
+        message: 'cold cleanup failed',
+        diagnostics: {
+          placementReleaseFailed: true,
+          placementLane: 'cold_burst',
+        },
+        terminalResult,
+      },
+    },
+  );
+});
+
+void test('execute_code cell registry rejects invalid reap and retention configuration', () => {
+  for (const terminalResultMemoryRetentionMs of [0, -1, 1.5]) {
+    assert.throws(
+      () =>
+        createPtcExecuteCodeCellRegistry({
+          terminalResultMemoryRetentionMs,
+        }),
+      /terminal result memory retention is invalid/u,
+    );
+  }
+  for (const runningCellReapAfterMs of [0, -1, 1.5]) {
+    assert.throws(
+      () => createPtcExecuteCodeCellRegistry({ runningCellReapAfterMs }),
+      /running cell reap policy is invalid/u,
+    );
+  }
+});
+
+void test('execute_code cell registry wakes and aborts global and thread revision waiters', async () => {
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: makeCellIdFactory('ptc_cell_wait_revision'),
+  });
+
+  assert.equal(registry.getRevision(), 0);
+  const globalChange = registry.waitForRevisionChange(0);
+  const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.equal(admitted.ok, true);
+  assert.equal(await globalChange, 1);
+  assert.equal(await registry.waitForRevisionChange(0), 1);
+
+  const globalAbortController = new AbortController();
+  const globalAbort = registry.waitForRevisionChange(
+    registry.getRevision(),
+    globalAbortController.signal,
+  );
+  globalAbortController.abort();
+  await assert.rejects(globalAbort, /cell wait aborted/u);
+
+  const preAbortedGlobalController = new AbortController();
+  preAbortedGlobalController.abort();
+  await assert.rejects(
+    registry.waitForRevisionChange(
+      registry.getRevision(),
+      preAbortedGlobalController.signal,
+    ),
+    /cell wait aborted/u,
+  );
+
+  const otherThreadId = `${THREAD_ID}-other`;
+  const threadChange = registry.waitForThreadRevisionChange({
+    threadId: otherThreadId,
+    afterRevision: 0,
+  });
+  registry.reserveAdmittingCell({ threadId: otherThreadId });
+  assert.equal(await threadChange, 1);
+  assert.equal(
+    await registry.waitForThreadRevisionChange({
+      threadId: otherThreadId,
+      afterRevision: 0,
+    }),
+    1,
+  );
+
+  const threadAbortController = new AbortController();
+  const threadAbort = registry.waitForThreadRevisionChange({
+    threadId: `${THREAD_ID}-idle`,
+    afterRevision: 0,
+    abortSignal: threadAbortController.signal,
+  });
+  threadAbortController.abort();
+  await assert.rejects(threadAbort, /cell thread wait aborted/u);
+
+  const preAbortedThreadController = new AbortController();
+  preAbortedThreadController.abort();
+  await assert.rejects(
+    registry.waitForThreadRevisionChange({
+      threadId: `${THREAD_ID}-pre-aborted`,
+      afterRevision: 0,
+      abortSignal: preAbortedThreadController.signal,
+    }),
+    /cell thread wait aborted/u,
+  );
+});
+
+void test('execute_code cell registry exposes running metadata and aborts fallback output waits', async () => {
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: makeCellIdFactory('ptc_cell_running_metadata'),
+  });
+  const missing = {
+    threadId: THREAD_ID,
+    cellId: 'ptc_cell_missing' as PtcExecuteCodeCellId,
+  };
+  assert.deepEqual(registry.drainRunningCellOutput(missing), {
+    ok: false,
+    reasonCode: 'cell_missing',
+  });
+  assert.deepEqual(registry.readRunningCellOutputRevision(missing), {
+    ok: false,
+    reasonCode: 'cell_missing',
+  });
+  assert.deepEqual(registry.readRunningCellEffectiveTimeoutMs(missing), {
+    ok: false,
+    reasonCode: 'cell_missing',
+  });
+  assert.deepEqual(
+    registry.markRunningCellTerminalResultPersistence({
+      ...missing,
+      stateRoot: '/tmp/geulbat-ptc-missing-state',
+    }),
+    { ok: false, reasonCode: 'cell_missing' },
+  );
+  assert.deepEqual(
+    await registry.recordTerminalCellResult({
+      ...missing,
+      result: makeTerminalResult({ stdout: 'missing\n' }),
+    }),
+    { ok: false, reasonCode: 'cell_missing' },
+  );
+  assert.equal(
+    await registry.waitForRunningCellOutputChange({
+      ...missing,
+      afterOutputRevision: 4,
+    }),
+    5,
+  );
+
+  const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) {
+    return;
+  }
+  assert.deepEqual(
+    await registry.recordTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      result: makeTerminalResult({ stdout: 'not-running\n' }),
+    }),
+    { ok: false, reasonCode: 'cell_missing' },
+  );
+  const output = makeSegment({ stdout: 'incremental output\n' });
+  registry.promoteAdmittedCell({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    resources: {
+      effectiveTimeoutMs: 12_345,
+      handle: makeHandle({ output }),
+      closeBridge: () => {},
+      taintSession: () => true,
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
+    },
+  });
+  assert.deepEqual(
+    registry.markAdmittedCellQueued({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
+      cancelAcquire: () => {},
+      settlePromise: Promise.resolve(),
+    }),
+    { ok: false, reasonCode: 'cell_missing' },
+  );
+  assert.deepEqual(
+    registry.promoteAdmittedCell({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      resources: {
+        effectiveTimeoutMs: 60_000,
+        handle: makeHandle({ output: makeSegment() }),
+        closeBridge: () => {},
+        taintSession: () => true,
+      },
+    }),
+    { ok: false, reasonCode: 'cell_missing' },
+  );
+  assert.deepEqual(
+    await registry.recordCellStartFailure({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      failure: {
+        ok: false,
+        reasonCode: 'ptc_execute_code_lab_admission_failed',
+        message: 'running cells cannot become start failures',
+      },
+    }),
+    { ok: false, reasonCode: 'cell_missing' },
+  );
+
+  assert.deepEqual(
+    registry.drainRunningCellOutput({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    { ok: true, value: output },
+  );
+  assert.deepEqual(
+    registry.readRunningCellOutputRevision({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    { ok: true, value: { outputRevision: 0 } },
+  );
+  assert.deepEqual(
+    registry.readRunningCellEffectiveTimeoutMs({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    { ok: true, value: { effectiveTimeoutMs: 12_345 } },
+  );
+  assert.deepEqual(
+    registry.releaseAdmittingCell({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    { ok: true, value: { released: false } },
+  );
+  assert.deepEqual(
+    registry.markRunningCellTerminalResultPersistence({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      stateRoot: '/tmp/geulbat-ptc-test-state-2',
+    }),
+    { ok: true, value: { marked: true } },
+  );
+
+  const outputAbortController = new AbortController();
+  const outputAbort = registry.waitForRunningCellOutputChange({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    afterOutputRevision: 0,
+    abortSignal: outputAbortController.signal,
+  });
+  outputAbortController.abort();
+  await assert.rejects(outputAbort, /cell output wait aborted/u);
+
+  const preAbortedOutputController = new AbortController();
+  preAbortedOutputController.abort();
+  await assert.rejects(
+    registry.waitForRunningCellOutputChange({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      afterOutputRevision: 0,
+      abortSignal: preAbortedOutputController.signal,
+    }),
+    /cell output wait aborted/u,
+  );
+
+  const terminalResult = makeTerminalResult({ stdout: 'finished\n' });
+  assert.deepEqual(
+    await registry.recordCellCleanupFailure({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      message: 'cleanup owner failed',
+      diagnostics: { cleanupOwner: 'session' },
+      terminalResult,
+    }),
+    { ok: true, value: { retained: true } },
+  );
+  assert.deepEqual(
+    await registry.recordCellCleanupFailure({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      message: 'cleanup retry failed',
+      diagnostics: { cleanupAttempt: 2 },
+    }),
+    { ok: true, value: { retained: true } },
+  );
+  assert.deepEqual(
+    registry.takeTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    {
+      ok: true,
+      value: {
+        status: 'cleanup_failed',
+        message: 'cleanup retry failed',
+        diagnostics: { cleanupAttempt: 2 },
+        terminalResult,
+      },
+    },
+  );
+});
+
+void test('execute_code cell registry retains queued start failure with durable store evidence', async () => {
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: makeCellIdFactory('ptc_cell_start_failure'),
+    persistTerminalResult: async ({ cellId }) => makeDurableOutput(cellId),
+  });
+  const missingFailure = {
+    ok: false as const,
+    reasonCode: 'ptc_execute_code_lab_admission_failed' as const,
+    message: 'lab admission failed',
+  };
+  assert.deepEqual(
+    await registry.recordCellStartFailure({
+      threadId: THREAD_ID,
+      cellId: 'ptc_cell_missing' as PtcExecuteCodeCellId,
+      failure: missingFailure,
+    }),
+    { ok: false, reasonCode: 'cell_missing' },
+  );
+
+  const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) {
+    return;
+  }
+  registry.markAdmittedCellQueued({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
+    cancelAcquire: () => {},
+    settlePromise: Promise.resolve(),
+    finalizeStore: async () => ({ store: { discardedWrites: 3 } }),
+  });
+  assert.deepEqual(
+    await registry.recordCellStartFailure({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      failure: missingFailure,
+    }),
+    { ok: true, value: { retained: true } },
+  );
+  const expectedFailure = {
+    ...missingFailure,
+    store: { discardedWrites: 3 },
+  };
+  assert.deepEqual(
+    registry.readTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    {
+      ok: true,
+      value: { status: 'start_failed', failure: expectedFailure },
+    },
+  );
+  assert.deepEqual(
+    registry.readTerminalCellDurableOutput({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    makeDurableOutput(admitted.cellId),
+  );
+  assert.deepEqual(
+    await registry.recordCellStartFailure({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+      failure: missingFailure,
+    }),
+    { ok: true, value: { retained: true } },
+  );
+});
+
+void test('execute_code orphan reaping retains sanitized cleanup diagnostics', async () => {
+  const cancelledTimers: string[] = [];
+  const bridgeError = Object.assign(new Error('bridge close failed'), {
+    name: 'BridgeFailure',
+    code: 7,
+  });
+  const placementError = Object.assign(new Error('placement close failed'), {
+    name: 'invalid name',
+    code: 'E_PLACE',
+  });
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: makeCellIdFactory('ptc_cell_orphan_cleanup'),
+    runningCellReapAfterMs: 25,
+    scheduleReapTimeout: () => () => {
+      cancelledTimers.push('cancelled');
+    },
+  });
+  const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) {
+    return;
+  }
+  registry.promoteAdmittedCell({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    resources: {
+      effectiveTimeoutMs: 60_000,
+      handle: makeHandle({
+        output: makeSegment({ stderr: 'partial error\n' }),
+      }),
+      closeBridge: () => {
+        throw bridgeError;
+      },
+      taintSession: () => {
+        throw { code: 'unsafe code' };
+      },
+      finalizePlacement: () => {
+        throw placementError;
+      },
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
+    },
+  });
+
+  const closed = await registry.closeCell({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    reason: 'orphan_reap',
+  });
+  assert.equal(closed.ok, true);
+  assert.equal(closed.status, 'terminated');
+  assert.deepEqual(cancelledTimers, ['cancelled']);
+  assert.deepEqual(
+    registry.takeTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    {
+      ok: true,
+      value: {
+        status: 'cleanup_failed',
+        message: 'PTC execute_code cell orphan reaper cleanup failed',
+        diagnostics: {
+          callbackBridgeCloseFailed: true,
+          callbackBridgeCloseErrorName: 'BridgeFailure',
+          callbackBridgeCloseErrorCode: 7,
+          sessionCloseFailed: true,
+          sessionTainted: true,
+          sessionTaintErrorName: 'NonErrorThrown',
+          placementReleaseFailed: true,
+          placementReleaseErrorName: 'Error',
+          placementReleaseErrorCode: 'E_PLACE',
+        },
+        terminalResult: {
+          status: 'terminated',
+          output: makeSegment({ stderr: 'partial error\n' }),
+          exit: { kind: 'exit', exitCode: 0, processTerminated: true },
+        },
+      },
+    },
+  );
 });
 
 function makeCellIdFactory(prefix: string): () => PtcExecuteCodeCellId {

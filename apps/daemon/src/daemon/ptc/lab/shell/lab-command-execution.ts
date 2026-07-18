@@ -24,8 +24,6 @@ import type {
 } from '../session/session-docker-contract.js';
 import type { PtcLabBatchCommandFailureReason } from './lab-session-batch-command-contract.js';
 
-export const PTC_LAB_BATCH_COMMAND_MAX_COMMAND_CHARS = 32 * 1024;
-
 export type PtcLabBatchCommandExecutionResult<T> =
   | { ok: true; value: T }
   | {
@@ -222,8 +220,7 @@ function validateCommandRequest(
 }> {
   if (
     typeof request.command !== 'string' ||
-    request.command.trim().length === 0 ||
-    request.command.length > PTC_LAB_BATCH_COMMAND_MAX_COMMAND_CHARS
+    request.command.trim().length === 0
   ) {
     return failure(
       'ptc_lab_command_invalid',

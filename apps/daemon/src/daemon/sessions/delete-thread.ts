@@ -1,10 +1,12 @@
 import { rm } from 'node:fs/promises';
 
+import { deleteThreadMediaDir } from './media-file-store.js';
 import {
   artifactStoreFilePath,
   summaryFilePath,
   threadFilePath,
 } from './paths.js';
+import { deleteThreadRunAttachments } from './run-attachment-store.js';
 import { removeThreadSummary } from './threads-index.js';
 import { clearTranscriptEntryCacheForThread } from './transcript-log.js';
 import { deleteThreadToolOutputs } from '../files/tool-output-store.js';
@@ -19,7 +21,9 @@ export async function deleteThreadSession(
     deleteThreadArtifactFile(threadFilePath(workspaceRoot, threadId)),
     deleteThreadArtifactFile(summaryFilePath(workspaceRoot, threadId)),
     deleteThreadArtifactFile(artifactStoreFilePath(workspaceRoot, threadId)),
-    deleteThreadToolOutputs({ workspaceRoot, threadId }),
+    deleteThreadToolOutputs({ stateRoot: workspaceRoot, threadId }),
+    deleteThreadRunAttachments({ workspaceRoot, threadId }),
+    deleteThreadMediaDir(workspaceRoot, threadId),
   ]);
 
   clearTranscriptEntryCacheForThread(workspaceRoot, threadId);

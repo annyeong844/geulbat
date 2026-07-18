@@ -6,7 +6,13 @@ import {
 } from './errors.js';
 import { isRunId, isThreadId, type RunId, type ThreadId } from './ids.js';
 import { isApprovalRequired, type ApprovalRequired } from './run-approval.js';
-import type { RunAck } from './run-contract.js';
+import {
+  isRunReasoningEffort,
+  isSubagentModelSelectionSource,
+  type RunAck,
+  type RunReasoningEffort,
+  type SubagentModelSelectionSource,
+} from './run-contract.js';
 import { isBoolean, isNumber, isRecord, isString } from './runtime-utils.js';
 import {
   isToolCallSourcePayload,
@@ -35,12 +41,15 @@ export type RunEventType =
   | 'run_ack'
   | 'commentary_delta'
   | 'tool_call'
+  | 'tool_call_delta'
   | 'tool_result'
   | 'subagent_spawned'
   | 'subagent_terminal'
   | 'subagent_approval_required'
   | 'interject_applied'
   | 'approval_required'
+  | 'usage_updated'
+  | 'context_usage_updated'
   | 'final_answer_delta'
   | 'artifact_committed'
   | 'thread_state_persisted'
@@ -62,6 +71,15 @@ export interface ToolCallEventPayload {
   source?: ToolCallSourcePayload;
 }
 
+// 스트리밍 도구 인자 델타 — streamsArgsDelta를 켠 도구(visualize 등)만
+// 방출된다. argsDelta는 arguments JSON 텍스트의 이어붙일 조각이다.
+export interface ToolCallDeltaEventPayload {
+  callId: string;
+  step: number;
+  tool: string;
+  argsDelta: string;
+}
+
 export const SUBAGENT_TYPES = ['explorer', 'worker'] as const;
 export type SubagentType = (typeof SUBAGENT_TYPES)[number];
 
@@ -71,6 +89,9 @@ export interface AgentLaunchAckToolRaw {
   childThreadId: string;
   subagentType: SubagentType;
   launchState: 'started';
+  modelId?: string;
+  reasoningEffort?: RunReasoningEffort;
+  selectionSource?: SubagentModelSelectionSource;
 }
 
 export interface AgentLaunchRejectedToolRaw {
@@ -161,7 +182,7 @@ interface ToolResultEventPayloadBase<TTool extends string> {
   callId: string;
   step: number;
   tool: TTool;
-  workspaceFilesMayHaveChanged: boolean;
+  computerFilesMayHaveChanged: boolean;
   displayText: string;
   source?: ToolCallSourcePayload;
 }
@@ -233,17 +254,44 @@ export interface SubagentSpawnedEventPayload {
   childRunId: RunId;
   childThreadId: ThreadId;
   subagentType: SubagentType;
+  modelId?: string;
+  reasoningEffort?: RunReasoningEffort;
+  selectionSource?: SubagentModelSelectionSource;
+}
+
+// Aggregated provider token usage for one run (all counters, zero-filled).
+export interface RunUsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+}
+
+export interface ContextUsageUpdatedEventPayload {
+  state: 'measured' | 'compacted';
+  modelId: string;
+  inputTokens: number;
+  contextWindow: number;
+  thresholdTokens: number;
 }
 
 export interface SubagentTerminalEventPayload {
   deliveryId: string;
   parentRunId: RunId;
   childRunId: RunId;
+  // Present on lifecycle-produced events; lets the shell open the child
+  // session transcript from the terminal card.
+  childThreadId?: ThreadId;
   subagentType: SubagentType;
   terminalState: AgentChildTerminalState;
   ok: boolean;
   reason?: AgentChildTerminalReason;
   result: string;
+  // Drill-down telemetry: wall-clock lifetime and token usage of the child run.
+  elapsedMs?: number;
+  usage?: RunUsageTotals;
+  // 차일드 런이 실제로 호출한 공개 모델 정체 — 세션 뷰어 헤더에 표시
+  modelId?: string;
+  reasoningEffort?: RunReasoningEffort;
 }
 
 export interface SubagentApprovalRequiredEventPayload {
@@ -265,12 +313,17 @@ export interface SharedRunEventPayloadMap {
   run_ack: RunAckEventPayload;
   commentary_delta: TextDeltaEventPayload;
   tool_call: ToolCallEventPayload;
+  tool_call_delta: ToolCallDeltaEventPayload;
   tool_result: ToolResultEventPayload;
   subagent_spawned: SubagentSpawnedEventPayload;
   subagent_terminal: SubagentTerminalEventPayload;
   subagent_approval_required: SubagentApprovalRequiredEventPayload;
   interject_applied: InterjectAppliedEventPayload;
   approval_required: ApprovalRequired;
+  // 모델 라운드마다 갱신되는 런 누적 토큰 사용량 — 상태줄 라이브 표시용
+  usage_updated: RunUsageTotals;
+  // 정확한 모델 입력 사용량과 실제 컴팩션 임계값 — 컨텍스트 고리 표시용
+  context_usage_updated: ContextUsageUpdatedEventPayload;
   final_answer_delta: TextDeltaEventPayload;
   artifact_committed: ArtifactCommittedEventPayload;
   thread_state_persisted: ThreadStatePersistedEventPayload;
@@ -324,6 +377,18 @@ export function isToolCallEventPayload(
   );
 }
 
+export function isToolCallDeltaEventPayload(
+  value: unknown,
+): value is ToolCallDeltaEventPayload {
+  return (
+    isRecord(value) &&
+    isString(value.callId) &&
+    isNumber(value.step) &&
+    isString(value.tool) &&
+    isString(value.argsDelta)
+  );
+}
+
 export function isSubagentType(value: unknown): value is SubagentType {
   return SUBAGENT_TYPES.some((subagentType) => subagentType === value);
 }
@@ -354,7 +419,12 @@ export function isAgentLaunchToolRaw(
       value.launchState === 'started' &&
       isString(value.childRunId) &&
       isString(value.childThreadId) &&
-      isSubagentType(value.subagentType)
+      isSubagentType(value.subagentType) &&
+      (value.modelId === undefined || isString(value.modelId)) &&
+      (value.reasoningEffort === undefined ||
+        isRunReasoningEffort(value.reasoningEffort)) &&
+      (value.selectionSource === undefined ||
+        isSubagentModelSelectionSource(value.selectionSource))
     );
   }
 
@@ -467,7 +537,8 @@ export function isToolResultEventPayload(
     !isNumber(value.step) ||
     !isString(value.tool) ||
     !isBoolean(value.ok) ||
-    !isBoolean(value.workspaceFilesMayHaveChanged) ||
+    !isBoolean(value.computerFilesMayHaveChanged) ||
+    'workspaceFilesMayHaveChanged' in value ||
     !isString(value.displayText) ||
     (value.source !== undefined && !isToolCallSourcePayload(value.source)) ||
     !('raw' in value)
@@ -532,8 +603,45 @@ export function isSubagentSpawnedEventPayload(
     isRunId(value.childRunId) &&
     isString(value.childThreadId) &&
     isThreadId(value.childThreadId) &&
-    isSubagentType(value.subagentType)
+    isSubagentType(value.subagentType) &&
+    (value.modelId === undefined || isString(value.modelId)) &&
+    (value.reasoningEffort === undefined ||
+      isRunReasoningEffort(value.reasoningEffort)) &&
+    (value.selectionSource === undefined ||
+      isSubagentModelSelectionSource(value.selectionSource))
   );
+}
+
+export function isRunUsageTotals(value: unknown): value is RunUsageTotals {
+  return (
+    isRecord(value) &&
+    isNumber(value.inputTokens) &&
+    isNumber(value.outputTokens) &&
+    isNumber(value.cachedInputTokens)
+  );
+}
+
+export function isContextUsageUpdatedEventPayload(
+  value: unknown,
+): value is ContextUsageUpdatedEventPayload {
+  return (
+    isRecord(value) &&
+    (value.state === 'measured' || value.state === 'compacted') &&
+    isString(value.modelId) &&
+    value.modelId.trim().length > 0 &&
+    isNonNegativeSafeInteger(value.inputTokens) &&
+    isPositiveSafeInteger(value.contextWindow) &&
+    isPositiveSafeInteger(value.thresholdTokens) &&
+    value.thresholdTokens <= value.contextWindow
+  );
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return isNonNegativeSafeInteger(value) && value > 0;
 }
 
 export function isSubagentTerminalEventPayload(
@@ -550,7 +658,14 @@ export function isSubagentTerminalEventPayload(
     isAgentChildTerminalState(value.terminalState) &&
     isBoolean(value.ok) &&
     isString(value.result) &&
-    (value.reason === undefined || isAgentChildTerminalReason(value.reason))
+    (value.reason === undefined || isAgentChildTerminalReason(value.reason)) &&
+    (value.childThreadId === undefined ||
+      (isString(value.childThreadId) && isThreadId(value.childThreadId))) &&
+    (value.elapsedMs === undefined || isNumber(value.elapsedMs)) &&
+    (value.usage === undefined || isRunUsageTotals(value.usage)) &&
+    (value.modelId === undefined || isString(value.modelId)) &&
+    (value.reasoningEffort === undefined ||
+      isRunReasoningEffort(value.reasoningEffort))
   );
 }
 
@@ -615,6 +730,8 @@ export function isRunEvent(value: unknown): value is RunEvent {
       return isThreadStatePersistFailedEventPayload(value.payload);
     case 'tool_call':
       return isToolCallEventPayload(value.payload);
+    case 'tool_call_delta':
+      return isToolCallDeltaEventPayload(value.payload);
     case 'tool_result':
       return isToolResultEventPayload(value.payload);
     case 'subagent_spawned':
@@ -627,6 +744,10 @@ export function isRunEvent(value: unknown): value is RunEvent {
       return isInterjectAppliedEventPayload(value.payload);
     case 'approval_required':
       return isApprovalRequired(value.payload);
+    case 'usage_updated':
+      return isRunUsageTotals(value.payload);
+    case 'context_usage_updated':
+      return isContextUsageUpdatedEventPayload(value.payload);
     case 'done':
       return isDoneEventPayload(value.payload);
     case 'error':

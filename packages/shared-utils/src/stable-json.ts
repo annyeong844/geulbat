@@ -12,16 +12,17 @@ export function stableStringify(
     return `[${value.map((item) => stableStringify(item, options)).join(',')}]`;
   }
   if (typeof value === 'object' && value !== null) {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
+    return `{${Object.keys(value)
       .filter(
-        (key) => !options.omitUndefinedObjectKeys || record[key] !== undefined,
+        (key) =>
+          !options.omitUndefinedObjectKeys ||
+          Reflect.get(value, key) !== undefined,
       )
       .sort()
-      .map(
-        (key) =>
-          `${JSON.stringify(key)}:${stableStringify(record[key], options)}`,
-      )
+      .map((key) => {
+        const propertyValue: unknown = Reflect.get(value, key);
+        return `${JSON.stringify(key)}:${stableStringify(propertyValue, options)}`;
+      })
       .join(',')}}`;
   }
   return JSON.stringify(value) ?? 'null';

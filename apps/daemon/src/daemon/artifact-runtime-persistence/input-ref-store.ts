@@ -29,12 +29,12 @@ export const ARTIFACT_RUNTIME_STATE_INPUT_REF_STORE: InputRefFileStoreConfig =
     claimedMessage: 'stateRef is already claimed by another operation.',
   });
 
-export interface ArtifactRuntimePersistenceStateInputRefWriteResult {
+interface ArtifactRuntimePersistenceStateInputRefWriteResult {
   stateRef: string;
   byteLength: number;
 }
 
-export type ArtifactRuntimePersistenceStateInputRefReadResult =
+type ArtifactRuntimePersistenceStateInputRefReadResult =
   | { ok: true; path: string; state: JsonValue | null }
   | {
       ok: false;
@@ -45,8 +45,7 @@ export type ArtifactRuntimePersistenceStateInputRefReadResult =
       message: string;
     };
 
-export type ArtifactRuntimePersistenceStateInputRefPathResult =
-  InputRefFilePathResult;
+type ArtifactRuntimePersistenceStateInputRefPathResult = InputRefFilePathResult;
 
 export async function writeArtifactRuntimePersistenceStateInputRefFromStream(args: {
   workspaceRoot: string;

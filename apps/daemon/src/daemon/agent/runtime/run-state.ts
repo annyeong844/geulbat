@@ -3,8 +3,8 @@ import {
   isAgentTerminalRunStatus as isAgentChildTerminalState,
   type RunId,
 } from '../contract.js';
-import type { RunWorkspaceContext } from '../../run-workspace-context.js';
-import { createRunWorkspaceContext } from '../../run-workspace-context.js';
+import type { RunContext } from '../../run-context.js';
+import { createRunContext } from '../../run-context.js';
 import type { RunStatus, ToolRunState } from '../../runtime-contracts.js';
 import {
   RUN_APPROVAL_PENDING_STATUS,
@@ -16,17 +16,22 @@ import {
   createRunInterjectBuffer,
   type RunInterjectBuffer,
 } from '../../sessions/active-run-interject-buffer.js';
+import {
+  createRunUsageTotals,
+  type RunUsageTotals,
+} from './run-usage-totals.js';
 
-export interface RunState extends RunWorkspaceContext, ToolRunState {
+export interface RunState extends RunContext, ToolRunState {
   interject: RunInterjectBuffer;
+  usageTotals: RunUsageTotals;
 }
 
 export function createRunState(params: {
   runId: string | RunId;
-  runContext: RunWorkspaceContext;
+  runContext: RunContext;
   parentRunId?: string | RunId;
 }): RunState {
-  const runContext = createRunWorkspaceContext(params.runContext);
+  const runContext = createRunContext(params.runContext);
   const runId = assertRunId(params.runId);
   const parentRunId =
     params.parentRunId !== undefined ? assertRunId(params.parentRunId) : null;
@@ -41,6 +46,7 @@ export function createRunState(params: {
     backgroundChildRunIds: new Set<RunId>(),
     backgroundChildLaunchReservationIds: new Set<string>(),
     interject: createRunInterjectBuffer(),
+    usageTotals: createRunUsageTotals(),
     ...(parentRunId !== null ? { parentRunId } : {}),
   };
 }

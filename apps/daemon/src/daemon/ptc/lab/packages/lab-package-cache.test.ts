@@ -33,7 +33,7 @@ async function withTempRuntimeRoot<T>(
 
 const BASE_IDENTITY: PtcPackageCacheIdentityInput = {
   trustContextId: 'local-default-v1',
-  workspaceRootRealpath: '/real/workspace/project-a',
+  stateRootRealpath: '/real/workspace/project-a',
   labPolicyId: 'ptc_lab_local_docker_policy_v1',
   packageCacheId: 'ptc_lab_package_cache_local_v1',
   packageCacheMountPolicyId: PTC_SESSION_DOCKER_PACKAGE_CACHE_MOUNT_POLICY_ID,

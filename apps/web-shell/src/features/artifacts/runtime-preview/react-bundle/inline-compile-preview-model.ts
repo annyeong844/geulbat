@@ -14,9 +14,10 @@ import {
 } from '../../artifact-types.js';
 import { readReactBundleArtifactInputPayload } from '../../react-bundle/validator.js';
 import type { RenderArtifactRuntimeFrame } from '../types.js';
-import { renderReactBundleArtifactRuntimePreview } from './preview.js';
 
-export type ReactBundlePreviewSeed =
+export type ReactBundlePreviewModule = typeof import('./preview.js');
+
+type ReactBundlePreviewSeed =
   | {
       kind: 'disabled';
     }
@@ -48,6 +49,19 @@ export type ReactBundleInlineCompileState =
   | ({
       kind: 'failed';
     } & ArtifactRuntimeIssue);
+
+export type ReactBundleRuntimePreviewLoadState =
+  | {
+      kind: 'idle' | 'loading';
+    }
+  | {
+      kind: 'ready';
+      previewModule: ReactBundlePreviewModule;
+    }
+  | {
+      kind: 'failed';
+      detail: string;
+    };
 
 export function resolveReactBundlePreviewSeed(args: {
   enabled: boolean;
@@ -89,6 +103,7 @@ export function buildInitialReactBundleInlineCompileState(
 export function buildReactBundleInlineCompilePreviewSurface(args: {
   seed: ReactBundlePreviewSeed;
   inlineCompileState: ReactBundleInlineCompileState;
+  runtimePreviewLoadState: ReactBundleRuntimePreviewLoadState;
   sourceRef: ResolvedArtifactSourceRef;
   renderRuntimeFrame: RenderArtifactRuntimeFrame;
   onGeneratedTextExportSnapshotChange?: (
@@ -101,6 +116,7 @@ export function buildReactBundleInlineCompilePreviewSurface(args: {
   const {
     seed,
     inlineCompileState,
+    runtimePreviewLoadState,
     sourceRef,
     renderRuntimeFrame,
     onGeneratedTextExportSnapshotChange,
@@ -115,40 +131,41 @@ export function buildReactBundleInlineCompilePreviewSurface(args: {
     return unavailableArtifactPreview(seed.code, seed.detail);
   }
 
+  let manifest: ReactBundleRuntimeManifest;
   if (seed.kind === 'manifest') {
-    return renderReactBundleArtifactRuntimePreview({
-      manifest: seed.manifest,
-      sourceRef,
-      ...(onGeneratedTextExportSnapshotChange !== undefined
-        ? { onGeneratedTextExportSnapshotChange }
-        : {}),
-      ...(onGeneratedBinaryExportSnapshotChange !== undefined
-        ? { onGeneratedBinaryExportSnapshotChange }
-        : {}),
-      renderRuntimeFrame,
-    });
-  }
-
-  if (inlineCompileState.kind === 'compiled') {
-    return renderReactBundleArtifactRuntimePreview({
-      manifest: inlineCompileState.manifest,
-      sourceRef,
-      ...(onGeneratedTextExportSnapshotChange !== undefined
-        ? { onGeneratedTextExportSnapshotChange }
-        : {}),
-      ...(onGeneratedBinaryExportSnapshotChange !== undefined
-        ? { onGeneratedBinaryExportSnapshotChange }
-        : {}),
-      renderRuntimeFrame,
-    });
-  }
-
-  if (inlineCompileState.kind === 'failed') {
+    manifest = seed.manifest;
+  } else if (inlineCompileState.kind === 'compiled') {
+    manifest = inlineCompileState.manifest;
+  } else if (inlineCompileState.kind === 'failed') {
     return unavailableArtifactPreview(
       inlineCompileState.code,
       inlineCompileState.detail,
     );
+  } else {
+    return pendingArtifactPreview('리액트 번들을 준비하고 있습니다...');
   }
 
-  return pendingArtifactPreview('리액트 번들을 준비하고 있습니다...');
+  if (runtimePreviewLoadState.kind === 'failed') {
+    return unavailableArtifactPreview(
+      'boot_failed',
+      runtimePreviewLoadState.detail,
+    );
+  }
+  if (runtimePreviewLoadState.kind !== 'ready') {
+    return pendingArtifactPreview('리액트 번들을 준비하고 있습니다...');
+  }
+
+  return runtimePreviewLoadState.previewModule.renderReactBundleArtifactRuntimePreview(
+    {
+      manifest,
+      sourceRef,
+      ...(onGeneratedTextExportSnapshotChange !== undefined
+        ? { onGeneratedTextExportSnapshotChange }
+        : {}),
+      ...(onGeneratedBinaryExportSnapshotChange !== undefined
+        ? { onGeneratedBinaryExportSnapshotChange }
+        : {}),
+      renderRuntimeFrame,
+    },
+  );
 }

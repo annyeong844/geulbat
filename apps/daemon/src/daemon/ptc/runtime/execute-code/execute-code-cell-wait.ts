@@ -4,8 +4,10 @@ import {
   cellCloseDiagnostics,
   isProvenTerminatedCellCleanup,
   summarizeWaitClosedCell,
+  summarizeWaitDurableCell,
   summarizeWaitExpiredCell,
   summarizeWaitMissingCell,
+  summarizeWaitQueuedCell,
   summarizeWaitRetainedCell,
   summarizeWaitRunningCell,
   validateCellId,
@@ -13,6 +15,7 @@ import {
 import {
   PTC_EXECUTE_CODE_CELL_WAIT_MAX_YIELD_MS,
   PTC_EXECUTE_CODE_CELL_WAIT_MIN_YIELD_MS,
+  type PtcExecuteCodeCellDurableOutput,
   type PtcExecuteCodeCellId,
   type PtcExecuteCodeRuntimeWaitResult,
 } from './execute-code-runtime-contract.js';
@@ -24,6 +27,13 @@ export async function waitForExecuteCodeCell(args: {
   runContext: {
     threadId: string;
   };
+  readDurableOutput?: (args: {
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+  }) => Promise<
+    | { ok: true; value: PtcExecuteCodeCellDurableOutput | undefined }
+    | { ok: false; message: string }
+  >;
   request: {
     cellId: string;
     terminate?: boolean;
@@ -39,15 +49,40 @@ export async function waitForExecuteCodeCell(args: {
   const waitStartedAtMs = Date.now();
 
   for (;;) {
+    const retainedDurableOutput =
+      args.cellRegistry.readTerminalCellDurableOutput({
+        threadId: args.runContext.threadId,
+        cellId,
+      });
     const completed = args.cellRegistry.takeTerminalCellResult({
       threadId: args.runContext.threadId,
       cellId,
     });
     if (completed.ok) {
+      if (
+        retainedDurableOutput !== undefined &&
+        args.readDurableOutput !== undefined
+      ) {
+        return {
+          ok: true,
+          value: summarizeWaitDurableCell({
+            cellId,
+            durableOutput: retainedDurableOutput,
+          }),
+        };
+      }
       return summarizeWaitRetainedCell({ cellId, result: completed.value });
     }
     if (completed.reasonCode === 'cell_expired') {
-      return { ok: true, value: summarizeWaitExpiredCell(cellId) };
+      return await recoverDurableTerminalResult({
+        cellId,
+        fallback: 'expired',
+        readDurableOutput: args.readDurableOutput,
+        threadId: args.runContext.threadId,
+        ...(retainedDurableOutput === undefined
+          ? {}
+          : { retainedDurableOutput }),
+      });
     }
 
     if (args.request.terminate === true) {
@@ -61,6 +96,7 @@ export async function waitForExecuteCodeCell(args: {
           return cellCleanupFailure({
             message: 'PTC execute_code cell cleanup failed',
             diagnostics: cellCloseDiagnostics(closed),
+            ...(closed.store === undefined ? {} : { store: closed.store }),
           });
         }
         return {
@@ -69,6 +105,7 @@ export async function waitForExecuteCodeCell(args: {
             cellId,
             output: closed.output,
             exit: closed.exit,
+            ...(closed.store === undefined ? {} : { store: closed.store }),
           }),
         };
       }
@@ -79,16 +116,73 @@ export async function waitForExecuteCodeCell(args: {
         });
       }
       if (closed.ok && closed.status === 'terminal_expired_dropped') {
-        return { ok: true, value: summarizeWaitExpiredCell(cellId) };
+        return await recoverDurableTerminalResult({
+          cellId,
+          fallback: 'expired',
+          readDurableOutput: args.readDurableOutput,
+          threadId: args.runContext.threadId,
+        });
       }
-      return { ok: true, value: summarizeWaitMissingCell(cellId) };
+      if (closed.ok && closed.status === 'queued_cancelled') {
+        return {
+          ok: true,
+          value: summarizeWaitClosedCell({
+            cellId,
+            output: undefined,
+            exit: undefined,
+            ...(closed.store === undefined ? {} : { store: closed.store }),
+          }),
+        };
+      }
+      return await recoverDurableTerminalResult({
+        cellId,
+        fallback: 'missing',
+        readDurableOutput: args.readDurableOutput,
+        threadId: args.runContext.threadId,
+      });
     }
 
-    const state = args.cellRegistry.readCellState({
+    const observedThreadRevision = args.cellRegistry.getThreadRevision({
       threadId: args.runContext.threadId,
     });
-    if (state?.cellId !== cellId || state.state !== 'running') {
-      return { ok: true, value: summarizeWaitMissingCell(cellId) };
+    const state = args.cellRegistry.readCellState({
+      threadId: args.runContext.threadId,
+      cellId,
+    });
+    if (state?.state === 'queued') {
+      const yieldTimeMs = getRemainingYieldTimeMs({
+        requestedYieldTimeMs: request.value.yieldTimeMs,
+        waitStartedAtMs,
+      });
+      if (yieldTimeMs === 0) {
+        return { ok: true, value: summarizeWaitQueuedCell(cellId) };
+      }
+      const wait = await waitForQueuedCellObservationWindow({
+        afterThreadRevision: observedThreadRevision,
+        cellRegistry: args.cellRegistry,
+        signal: args.signal,
+        threadId: args.runContext.threadId,
+        ...(yieldTimeMs === undefined ? {} : { yieldTimeMs }),
+      });
+      if (wait.kind === 'abort') {
+        return {
+          ok: false,
+          reasonCode: 'ptc_execute_code_cell_wait_cancelled',
+          message: 'PTC execute_code cell wait was cancelled',
+        };
+      }
+      if (wait.kind === 'timeout') {
+        return { ok: true, value: summarizeWaitQueuedCell(cellId) };
+      }
+      continue;
+    }
+    if (state?.state !== 'running') {
+      return await recoverDurableTerminalResult({
+        cellId,
+        fallback: state?.state === 'terminal_expired' ? 'expired' : 'missing',
+        readDurableOutput: args.readDurableOutput,
+        threadId: args.runContext.threadId,
+      });
     }
 
     const effectiveTimeout =
@@ -97,7 +191,12 @@ export async function waitForExecuteCodeCell(args: {
         cellId,
       });
     if (!effectiveTimeout.ok) {
-      return { ok: true, value: summarizeWaitMissingCell(cellId) };
+      return await recoverDurableTerminalResult({
+        cellId,
+        fallback: 'missing',
+        readDurableOutput: args.readDurableOutput,
+        threadId: args.runContext.threadId,
+      });
     }
     if (
       request.value.yieldTimeMs !== undefined &&
@@ -116,7 +215,12 @@ export async function waitForExecuteCodeCell(args: {
       cellId,
     });
     if (!outputRevision.ok) {
-      return { ok: true, value: summarizeWaitMissingCell(cellId) };
+      return await recoverDurableTerminalResult({
+        cellId,
+        fallback: 'missing',
+        readDurableOutput: args.readDurableOutput,
+        threadId: args.runContext.threadId,
+      });
     }
 
     const output = args.cellRegistry.drainRunningCellOutput({
@@ -163,6 +267,110 @@ export async function waitForExecuteCodeCell(args: {
       };
     }
   }
+}
+
+async function recoverDurableTerminalResult(args: {
+  cellId: PtcExecuteCodeCellId;
+  fallback: 'expired' | 'missing';
+  readDurableOutput:
+    | ((args: {
+        threadId: string;
+        cellId: PtcExecuteCodeCellId;
+      }) => Promise<
+        | { ok: true; value: PtcExecuteCodeCellDurableOutput | undefined }
+        | { ok: false; message: string }
+      >)
+    | undefined;
+  retainedDurableOutput?: PtcExecuteCodeCellDurableOutput;
+  threadId: string;
+}): Promise<PtcExecuteCodeRuntimeWaitResult> {
+  if (args.readDurableOutput === undefined) {
+    return {
+      ok: true,
+      value:
+        args.fallback === 'expired'
+          ? summarizeWaitExpiredCell(args.cellId)
+          : summarizeWaitMissingCell(args.cellId),
+    };
+  }
+  const durableOutput =
+    args.retainedDurableOutput === undefined
+      ? await args.readDurableOutput({
+          threadId: args.threadId,
+          cellId: args.cellId,
+        })
+      : { ok: true as const, value: args.retainedDurableOutput };
+  if (durableOutput?.ok === false) {
+    return {
+      ok: false,
+      reasonCode: 'ptc_execute_code_cell_wait_unavailable',
+      message: durableOutput.message,
+    };
+  }
+  if (durableOutput?.value !== undefined) {
+    return {
+      ok: true,
+      value: summarizeWaitDurableCell({
+        cellId: args.cellId,
+        durableOutput: durableOutput.value,
+      }),
+    };
+  }
+  return {
+    ok: true,
+    value:
+      args.fallback === 'expired'
+        ? summarizeWaitExpiredCell(args.cellId)
+        : summarizeWaitMissingCell(args.cellId),
+  };
+}
+
+async function waitForQueuedCellObservationWindow(args: {
+  afterThreadRevision: number;
+  cellRegistry: ReturnType<CreatePtcExecuteCodeCellRegistry>;
+  signal: AbortSignal | undefined;
+  threadId: string;
+  yieldTimeMs?: number;
+}): Promise<{ kind: 'change' | 'timeout' | 'abort' }> {
+  if (args.signal?.aborted === true) {
+    return { kind: 'abort' };
+  }
+
+  const waitAbort = new AbortController();
+  return await new Promise((resolve) => {
+    let settled = false;
+    const timer =
+      args.yieldTimeMs === undefined
+        ? undefined
+        : setTimeout(() => finish({ kind: 'timeout' }), args.yieldTimeMs);
+    timer?.unref?.();
+
+    const finish = (result: { kind: 'change' | 'timeout' | 'abort' }) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      waitAbort.abort();
+      args.signal?.removeEventListener('abort', onAbort);
+      resolve(result);
+    };
+    const onAbort = () => finish({ kind: 'abort' });
+
+    args.signal?.addEventListener('abort', onAbort, { once: true });
+    void args.cellRegistry
+      .waitForThreadRevisionChange({
+        threadId: args.threadId,
+        afterRevision: args.afterThreadRevision,
+        abortSignal: waitAbort.signal,
+      })
+      .then(
+        () => finish({ kind: 'change' }),
+        () => undefined,
+      );
+  });
 }
 
 function validateCellWaitRequest(request: {

@@ -22,7 +22,6 @@ import {
   PTC_LAB_BROWSER_URL_GRAMMAR_HTTP_HTTPS_NO_CREDENTIALS_POLICY_ID,
 } from '../../ptc/lab/browser/core/lab-browser-policy-ids.js';
 import { PTC_LAB_OPEN_EGRESS_LOCAL_POLICY_ID } from '../../ptc/lab/network/lab-network-policy.js';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { isToolObjectParameters } from '../types.js';
 import { browserPageLoadEvidenceTool } from './browser-page-load-evidence.js';
@@ -34,7 +33,7 @@ void test('browser_page_load_evidence exposes scalar URL schema and approval-gat
   );
   assert.equal(browserPageLoadEvidenceTool.sideEffectLevel, 'write');
   assert.equal(browserPageLoadEvidenceTool.requiresApproval, true);
-  assert.equal(browserPageLoadEvidenceTool.mayMutateWorkspaceFiles, false);
+  assert.equal(browserPageLoadEvidenceTool.mayMutateComputerFiles, false);
   const parameters = browserPageLoadEvidenceTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(parameters.required, ['url']);
@@ -50,9 +49,10 @@ void test('browser_page_load_evidence requires an agent runtime service before l
     { url: 'https://example.com/' },
     {
       callId: 'call-browser-page-load-evidence-no-runtime',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(951),
-      projectId: testProjectId('project'),
     },
   );
 
@@ -86,9 +86,10 @@ void test('browser_page_load_evidence returns page-load evidence without raw URL
     },
     {
       callId: 'call-browser-page-load-evidence-success',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(952),
-      projectId: testProjectId('project'),
       agentSpawnRuntime: { ...daemonContext, ptcBrowserPageLoadEvidence },
       approvalGranted: true,
     },
@@ -151,9 +152,10 @@ void test('browser_page_load_evidence strips unsafe failure diagnostics from too
     { url: 'https://example.com/private?access_token=secret' },
     {
       callId: 'call-browser-page-load-evidence-failure',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(953),
-      projectId: testProjectId('project'),
       agentSpawnRuntime: { ...daemonContext, ptcBrowserPageLoadEvidence },
       approvalGranted: true,
     },
@@ -186,9 +188,10 @@ void test('browser_page_load_evidence rejects later-owner browser action fields 
     { url: 'https://example.com/', screenshot: true },
     {
       callId: 'call-browser-page-load-evidence-screenshot',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(954),
-      projectId: testProjectId('project'),
     },
   );
 

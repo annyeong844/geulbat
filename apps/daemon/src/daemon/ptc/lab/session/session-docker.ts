@@ -1,7 +1,11 @@
 import { access } from 'node:fs/promises';
 import { hashPtcStableJson } from '../../shared/stable-identity.js';
 import { isPtcRecord } from '../../shared/record-shape.js';
-import { normalizePtcPackageCacheIdentity } from '../packages/lab-package-cache.js';
+import { isPtcSha256Hex } from '../../shared/sha256.js';
+import {
+  cleanupPtcPackageCacheRootByHash,
+  normalizePtcPackageCacheIdentity,
+} from '../packages/lab-package-cache.js';
 import {
   pickPtcPackageCacheIdentityInput,
   PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT,
@@ -10,7 +14,11 @@ import { toPtcLabNetworkIdentitySnapshot } from '../network/lab-network-policy.j
 import { toPtcLabBrowserIdentitySnapshot } from '../browser/core/lab-browser-identity.js';
 import { sanitizePtcPrivateMarkers } from '../../shared/output-redaction.js';
 import { runPtcSessionDockerCommand } from './session-docker-command.js';
-import { buildPtcSessionDockerCreateArgs } from './session-docker-create-args.js';
+import {
+  buildPtcSessionDockerCreateArgs,
+  buildPtcSessionDockerRuntimeScopeHash,
+} from './session-docker-create-args.js';
+import { ensurePtcOpenNetworkBridge } from './session-docker-open-network-bridge.js';
 import {
   PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
@@ -22,6 +30,7 @@ import {
   preparePtcSessionDockerHostDirs,
   ptcSessionDockerHostRootPrepareDiagnostics,
   removePtcSessionDockerHostRoot,
+  removePtcSessionDockerHostRootByIdentityHash,
 } from './session-docker-host-roots.js';
 import type {
   PtcSessionDockerCommandResult,
@@ -55,14 +64,17 @@ interface PtcSessionDockerTrackedState {
 
 export function normalizePtcSessionDockerReuseKey(args: {
   identity: PtcSessionDockerIdentity;
-  workspaceRootRealpath: string;
+  stateRootRealpath: string;
   policy: PtcSessionDockerPolicy;
   hostUser?: PtcSessionDockerHostUser;
 }): PtcSessionDockerReuseKey {
   const packageCacheIdentity = normalizePtcPackageCacheIdentity(
     pickPtcPackageCacheIdentityInput({
       trustContextId: args.identity.trustContextId,
-      workspaceRootRealpath: args.workspaceRootRealpath,
+      stateRootRealpath: args.stateRootRealpath,
+      ...(args.identity.ephemeralBurstId === undefined
+        ? {}
+        : { ephemeralBurstId: args.identity.ephemeralBurstId }),
       labPolicyId: args.policy.labPolicyId,
       packageCacheId: args.policy.packageCacheId,
       packageCacheMountPolicyId: args.policy.packageCacheMountPolicyId,
@@ -73,8 +85,14 @@ export function normalizePtcSessionDockerReuseKey(args: {
   );
   const base: Omit<PtcSessionDockerReuseKey, 'identityHash'> = {
     threadId: args.identity.threadId,
-    workspaceRootRealpath: args.workspaceRootRealpath,
+    stateRootRealpath: args.stateRootRealpath,
     trustContextId: args.identity.trustContextId,
+    ...(args.identity.ephemeralBurstId === undefined
+      ? {}
+      : { ephemeralBurstId: args.identity.ephemeralBurstId }),
+    ...(args.identity.sdkProjectionMount === undefined
+      ? {}
+      : { sdkProjectionMount: { ...args.identity.sdkProjectionMount } }),
     launchPolicyId: args.policy.launchPolicyId,
     imageRef: args.policy.imageRef,
     imagePolicyId: args.policy.imagePolicyId,
@@ -99,7 +117,13 @@ export function normalizePtcSessionDockerReuseKey(args: {
     tmpTmpfs: args.policy.tmpTmpfs,
     packageCacheIdentityHash: packageCacheIdentity.cacheIdentityHash,
   };
-  const identityHash = hashPtcStableJson(base);
+  const identityHash = hashPtcStableJson({
+    ...base,
+    // A burst id owns one isolated, single-use container. Standby claim may
+    // transfer that unopened slot to another thread, so the slot id replaces
+    // the requesting thread only for ephemeral Docker reuse identity.
+    threadId: base.ephemeralBurstId ?? base.threadId,
+  });
   return { ...base, identityHash };
 }
 
@@ -129,9 +153,11 @@ export function createPtcSessionDockerManager(args: {
   runtimeRoot: string;
   dockerPath?: string;
   policy?: PtcSessionDockerPolicy;
+  hostUser?: PtcSessionDockerHostUser;
   commandRunner?: PtcSessionDockerCommandRunner;
-  realpathWorkspaceRoot(workspaceRoot: string): Promise<string>;
+  realpathStateRoot(stateRoot: string): Promise<string>;
   timeoutMs?: number;
+  reapEphemeralOnFirstUse?: boolean;
 }): PtcSessionDockerManager {
   const executable = args.dockerPath ?? 'docker';
   const policy = args.policy ?? PTC_SESSION_DOCKER_DEFAULT_POLICY;
@@ -139,15 +165,28 @@ export function createPtcSessionDockerManager(args: {
   const taintedSessionIdentityHashes = new Set<string>();
   const operationQueues = new Map<string, Promise<void>>();
   let closingAll = false;
+  let ephemeralStartupSweep: Promise<PtcSessionDockerResult<void>> | undefined;
+
+  function ensureEphemeralStartupSweep(): Promise<
+    PtcSessionDockerResult<void>
+  > {
+    if (args.reapEphemeralOnFirstUse !== true) {
+      return Promise.resolve({ ok: true, value: undefined });
+    }
+    ephemeralStartupSweep ??= reapEphemeralPtcSessionResidue({
+      runtimeRoot: args.runtimeRoot,
+      runDocker,
+    });
+    return ephemeralStartupSweep;
+  }
 
   async function buildKey(
     identity: PtcSessionDockerIdentity,
   ): Promise<PtcSessionDockerReuseKey> {
     return normalizePtcSessionDockerReuseKey({
       identity,
-      workspaceRootRealpath: await args.realpathWorkspaceRoot(
-        identity.workspaceRoot,
-      ),
+      ...(args.hostUser === undefined ? {} : { hostUser: args.hostUser }),
+      stateRootRealpath: await args.realpathStateRoot(identity.stateRoot),
       policy,
     });
   }
@@ -192,6 +231,10 @@ export function createPtcSessionDockerManager(args: {
 
   return {
     async getOrCreate(identity, options) {
+      const startupSweep = await ensureEphemeralStartupSweep();
+      if (!startupSweep.ok) {
+        return startupSweep;
+      }
       const reuseKey = await buildKey(identity);
       const requestedDuringCloseAll = closingAll;
       return await serializeForKey(reuseKey.identityHash, async () => {
@@ -243,7 +286,7 @@ export function createPtcSessionDockerManager(args: {
           }
         }
         if (taintedSessionIdentityHashes.has(reuseKey.identityHash)) {
-          const cleanup = await removePtcSessionDockerHostRoot({
+          const cleanup = await removePtcSessionDockerOwnedHostRoots({
             runtimeRoot: trackedState.runtimeRoot,
             reuseKey,
           });
@@ -341,6 +384,22 @@ async function startSessionContainer(request: {
   });
   if (!available.ok) {
     return available;
+  }
+
+  // Slice 1b: daemon-owned inspect/create/adopt of the named open egress bridge
+  // for any open-network session launch (package install and browser lanes),
+  // replacing the operator-provisioned manual prerequisite. Adoption of an
+  // existing bridge is behavior-preserving; a missing bridge is now created
+  // instead of failing closed.
+  if (policy.network.mode === 'open') {
+    const bridge = await ensurePtcOpenNetworkBridge({
+      networkName: policy.network.dockerNetworkName,
+      runDocker,
+      ...(signal ? { signal } : {}),
+    });
+    if (!bridge.ok) {
+      return bridge;
+    }
   }
 
   const staleResidue = await cleanupUntrackedPtcSessionResidue({
@@ -541,10 +600,149 @@ async function cleanupUntrackedPtcSessionResidue(request: {
     }
   }
 
-  return await removePtcSessionDockerHostRoot({
+  return await removePtcSessionDockerOwnedHostRoots({
     runtimeRoot: request.runtimeRoot,
     reuseKey: request.reuseKey,
   });
+}
+
+async function reapEphemeralPtcSessionResidue(request: {
+  runtimeRoot: string;
+  runDocker: PtcSessionDockerCommandExecutor;
+}): Promise<PtcSessionDockerResult<void>> {
+  const runtimeScopeHash = buildPtcSessionDockerRuntimeScopeHash(
+    request.runtimeRoot,
+  );
+  const listed = await request.runDocker([
+    'ps',
+    '-a',
+    '--filter',
+    'label=geulbat.kind=ptc-session',
+    '--filter',
+    'label=geulbat.owner=daemon',
+    '--filter',
+    'label=geulbat.ephemeral=true',
+    '--filter',
+    `label=geulbat.runtimeScopeHash=${runtimeScopeHash}`,
+    '--format',
+    '{{.ID}}|{{.Label "geulbat.identityHash"}}|{{.Label "geulbat.packageCacheIdentityHash"}}',
+  ]);
+  if (!isSuccessfulExit(listed)) {
+    return failure(
+      'ephemeral_startup_sweep_failed',
+      'failed to inspect ephemeral PTC session containers',
+      listed,
+    );
+  }
+
+  const records = listed.stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map(parseEphemeralPtcSessionResidueRecord);
+  if (records.some((record) => record === undefined)) {
+    return failureDiagnostics(
+      'ephemeral_startup_sweep_failed',
+      'ephemeral PTC session labels are invalid',
+      { ephemeralLabelInvalid: true },
+    );
+  }
+  const validRecords = records.filter(
+    (record): record is NonNullable<typeof record> => record !== undefined,
+  );
+  if (validRecords.length === 0) {
+    return { ok: true, value: undefined };
+  }
+
+  const removed = await request.runDocker([
+    'rm',
+    '-f',
+    ...validRecords.map((record) => record.containerId),
+  ]);
+  if (!isSuccessfulExit(removed)) {
+    return failure(
+      'ephemeral_startup_sweep_failed',
+      'failed to remove ephemeral PTC session containers',
+      removed,
+    );
+  }
+
+  for (const record of validRecords) {
+    const sessionRoot = await removePtcSessionDockerHostRootByIdentityHash({
+      runtimeRoot: request.runtimeRoot,
+      identityHash: record.identityHash,
+    });
+    if (!sessionRoot.ok) {
+      return failureDiagnostics(
+        'ephemeral_startup_sweep_failed',
+        'failed to clean ephemeral PTC session host root',
+        { ephemeralSessionRootCleanupFailed: true },
+      );
+    }
+    const packageCache = await cleanupPtcPackageCacheRootByHash({
+      runtimeRoot: request.runtimeRoot,
+      cacheIdentityHash: record.packageCacheIdentityHash,
+    });
+    if (!packageCache.ok) {
+      return failureDiagnostics(
+        'ephemeral_startup_sweep_failed',
+        'failed to clean ephemeral PTC package cache root',
+        {
+          ephemeralPackageCacheCleanupFailed: true,
+          packageCacheReasonCode: packageCache.reasonCode,
+        },
+      );
+    }
+  }
+  return { ok: true, value: undefined };
+}
+
+function parseEphemeralPtcSessionResidueRecord(line: string):
+  | {
+      containerId: string;
+      identityHash: string;
+      packageCacheIdentityHash: string;
+    }
+  | undefined {
+  const [containerId, identityHash, packageCacheIdentityHash, extra] =
+    line.split('|');
+  if (
+    extra !== undefined ||
+    containerId === undefined ||
+    !/^[A-Za-z0-9_.:-]+$/u.test(containerId) ||
+    identityHash === undefined ||
+    !isPtcSha256Hex(identityHash) ||
+    packageCacheIdentityHash === undefined ||
+    !isPtcSha256Hex(packageCacheIdentityHash)
+  ) {
+    return undefined;
+  }
+  return { containerId, identityHash, packageCacheIdentityHash };
+}
+
+async function removePtcSessionDockerOwnedHostRoots(args: {
+  runtimeRoot: string;
+  reuseKey: PtcSessionDockerReuseKey;
+}): Promise<PtcSessionDockerResult<void>> {
+  const sessionRoot = await removePtcSessionDockerHostRoot(args);
+  if (!sessionRoot.ok || args.reuseKey.ephemeralBurstId === undefined) {
+    return sessionRoot;
+  }
+  const packageCache = await cleanupPtcPackageCacheRootByHash({
+    runtimeRoot: args.runtimeRoot,
+    cacheIdentityHash: args.reuseKey.packageCacheIdentityHash,
+  });
+  if (!packageCache.ok) {
+    return failureDiagnostics(
+      'container_host_root_cleanup_failed',
+      'failed to clean ephemeral PTC package cache root',
+      {
+        packageCacheCleanupFailed: true,
+        packageCacheReasonCode: packageCache.reasonCode,
+      },
+    );
+  }
+  return sessionRoot;
 }
 
 async function ptcSessionDockerSessionRootMayExist(args: {
@@ -582,7 +780,7 @@ async function cleanupPreparedSessionFailure(request: {
     }
   }
 
-  const hostRoot = await removePtcSessionDockerHostRoot({
+  const hostRoot = await removePtcSessionDockerOwnedHostRoots({
     runtimeRoot: request.runtimeRoot,
     reuseKey: request.reuseKey,
   });
@@ -621,7 +819,7 @@ async function removeTrackedSessionContainerAndHostRoot(request: {
     );
   }
   request.trackedState.sessions.delete(request.handle.reuseKey.identityHash);
-  const hostRoot = await removePtcSessionDockerHostRoot({
+  const hostRoot = await removePtcSessionDockerOwnedHostRoots({
     runtimeRoot: request.trackedState.runtimeRoot,
     reuseKey: request.handle.reuseKey,
   });
@@ -647,6 +845,18 @@ async function closeTrackedSessionContainer(request: {
     request.reuseKey.identityHash,
   );
   if (!existing) {
+    if (request.reuseKey.ephemeralBurstId !== undefined) {
+      const cleanup = await removePtcSessionDockerOwnedHostRoots({
+        runtimeRoot: request.trackedState.runtimeRoot,
+        reuseKey: request.reuseKey,
+      });
+      if (cleanup.ok) {
+        request.trackedState.taintedSessionIdentityHashes.delete(
+          request.reuseKey.identityHash,
+        );
+      }
+      return cleanup;
+    }
     return { ok: true, value: undefined };
   }
   return await removeTrackedSessionContainerAndHostRoot({
@@ -707,16 +917,14 @@ function inspectRunningReport(
         diagnostics: { dockerInspectFailureKind: 'not_array' },
       };
     }
-    const first = parsed[0] as
-      | { Id?: unknown; State?: { Running?: unknown } }
-      | undefined;
-    if (first?.Id !== containerId) {
+    const first: unknown = parsed[0];
+    if (!isPtcRecord(first) || first.Id !== containerId) {
       return {
         running: false,
         diagnostics: { dockerInspectFailureKind: 'container_id_mismatch' },
       };
     }
-    if (first.State?.Running !== true) {
+    if (!isPtcRecord(first.State) || first.State.Running !== true) {
       return {
         running: false,
         diagnostics: { dockerInspectFailureKind: 'not_running' },

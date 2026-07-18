@@ -25,7 +25,7 @@ import type {
 
 const IDENTITY: PtcSessionDockerIdentity = Object.freeze({
   threadId: 'thread-ptc-bridge',
-  workspaceRoot: '/workspace/project-a',
+  stateRoot: '/workspace/project-a',
   trustContextId: 'trust-local-v1',
 });
 const TEST_CALLBACK_TRANSPORT_POLICY = Object.freeze({

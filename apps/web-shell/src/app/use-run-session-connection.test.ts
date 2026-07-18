@@ -1,11 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-  brandProjectId,
-  brandRunId,
-  brandThreadId,
-} from '../lib/id-brand-helpers.js';
+import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
 import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
 import {
   adaptRunSessionMessage,
@@ -23,7 +19,6 @@ import { renderHook } from '../test-support/hook-test.js';
 
 const RUN_ID = brandRunId('run-1');
 const CHILD_RUN_ID = brandRunId('run-child-1');
-const PROJECT_ID = brandProjectId('workspace');
 const THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000001');
 
 type RunSessionConnectionClient = Parameters<
@@ -33,7 +28,6 @@ type RunSessionConnectionClient = Parameters<
 function createPersistedThreadDetail() {
   return {
     threadId: THREAD_ID,
-    projectId: PROJECT_ID,
     snapshotVersion: '2026-04-16T00:00:00.000Z',
     messages: [
       {
@@ -131,8 +125,125 @@ void test('adaptRunSessionMessage keeps transport failure structured before shel
   );
 });
 
-void test('adaptRunSessionMessage ignores applied interject acknowledgement events', () => {
-  assert.equal(
+void test('adaptRunSessionMessage preserves a failed done event as terminal run evidence', () => {
+  assert.deepEqual(
+    adaptRunSessionMessage({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 4,
+        ts: new Date().toISOString(),
+        type: 'done',
+        payload: {
+          answer: 'partial answer',
+          ok: false,
+        },
+      },
+    }),
+    {
+      kind: 'run_terminal',
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      ok: false,
+    },
+  );
+});
+
+void test('handleRunSessionMessage dispatches failed done evidence to run state', async () => {
+  const actions: RunSessionStateAction[] = [];
+
+  await handleRunSessionMessage({
+    message: {
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 4,
+        ts: new Date().toISOString(),
+        type: 'done',
+        payload: {
+          answer: 'partial answer',
+          ok: false,
+        },
+      },
+    },
+    dispatch: (action) => {
+      actions.push(action);
+    },
+    requestProjectTreeRefresh: () => {},
+    handleRunStarted: () => {},
+    handleRunSettledSuccess: async () => {},
+    handleRunSettleSyncFailed: async () => {},
+    handleRunSettledError: async () => {},
+  });
+
+  assert.deepEqual(actions, [
+    {
+      type: 'run_terminal',
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      ok: false,
+    },
+  ]);
+});
+
+void test('adaptRunSessionMessage maps usage_updated events to usage effects', () => {
+  assert.deepEqual(
+    adaptRunSessionMessage({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 3,
+        ts: new Date().toISOString(),
+        type: 'usage_updated',
+        payload: {
+          inputTokens: 9800,
+          outputTokens: 252,
+          cachedInputTokens: 4000,
+        },
+      },
+    }),
+    {
+      kind: 'usage_updated',
+      threadId: THREAD_ID,
+      usage: { inputTokens: 9800, outputTokens: 252, cachedInputTokens: 4000 },
+    },
+  );
+});
+
+void test('adaptRunSessionMessage maps context usage snapshots without estimating them', () => {
+  const contextUsage = {
+    state: 'measured' as const,
+    modelId: 'gpt-5.6-sol',
+    inputTokens: 122_400,
+    contextWindow: 272_000,
+    thresholdTokens: 244_800,
+  };
+
+  assert.deepEqual(
+    adaptRunSessionMessage({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 4,
+        ts: '2026-07-17T00:00:00.000Z',
+        type: 'context_usage_updated',
+        payload: contextUsage,
+      },
+    }),
+    {
+      kind: 'context_usage_updated',
+      threadId: THREAD_ID,
+      contextUsage,
+    },
+  );
+});
+
+void test('adaptRunSessionMessage promotes applied interjects to steer_applied effects', () => {
+  assert.deepEqual(
     adaptRunSessionMessage({
       type: 'run.event',
       event: {
@@ -148,7 +259,11 @@ void test('adaptRunSessionMessage ignores applied interject acknowledgement even
         },
       },
     }),
-    null,
+    {
+      kind: 'steer_applied',
+      threadId: THREAD_ID,
+      receivedSeqs: [1],
+    },
   );
 });
 
@@ -210,7 +325,7 @@ void test('handleRunSessionMessage marks tree refresh when daemon reports worksp
           ok: false,
           errorCode: 'internal',
           error: 'write failed',
-          workspaceFilesMayHaveChanged: true,
+          computerFilesMayHaveChanged: true,
           displayText: 'ok',
           raw: {},
         },
@@ -270,7 +385,7 @@ void test('handleRunSessionMessage dispatches committed artifacts into live run 
           persistenceEpoch: 0,
           sourceRef: {
             kind: 'thread-file',
-            projectId: PROJECT_ID,
+            workingDirectory: 'workspace',
             threadId: THREAD_ID,
             runId: RUN_ID,
             filePath: 'episodes/ch01.md',
@@ -309,7 +424,7 @@ void test('handleRunSessionMessage dispatches committed artifacts into live run 
         persistenceEpoch: 0,
         sourceRef: {
           kind: 'thread-file',
-          projectId: PROJECT_ID,
+          workingDirectory: 'workspace',
           threadId: THREAD_ID,
           runId: RUN_ID,
           filePath: 'episodes/ch01.md',
@@ -485,7 +600,7 @@ void test('useRunSessionConnection reports project tree refresh failures', async
           step: 1,
           tool: 'write_file',
           ok: true,
-          workspaceFilesMayHaveChanged: true,
+          computerFilesMayHaveChanged: true,
           displayText: 'wrote file',
           raw: {},
         },
@@ -706,6 +821,7 @@ void test('handleRunSessionMessage dispatches semantic subagent activity entries
       entry: {
         kind: 'subagent_activity',
         childRunId: CHILD_RUN_ID,
+        childThreadId: THREAD_ID,
         subagentType: 'worker',
         state: 'spawned',
       },
@@ -713,13 +829,13 @@ void test('handleRunSessionMessage dispatches semantic subagent activity entries
   ]);
   assert.equal(
     shouldRefreshTreeAfterToolResult({
-      workspaceFilesMayHaveChanged: true,
+      computerFilesMayHaveChanged: true,
     }),
     true,
   );
   assert.equal(
     shouldRefreshTreeAfterToolResult({
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
     }),
     false,
   );

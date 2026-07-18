@@ -3,7 +3,7 @@ import {
   PTC_EXECUTE_CODE_CELL_WAIT_MAX_YIELD_MS,
   PTC_EXECUTE_CODE_CELL_WAIT_MIN_YIELD_MS,
   PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
-  type PtcExecuteCodeRuntimeCellWaitSummary,
+  stringifyPtcExecuteCodeWaitSummary,
   type PtcExecuteCodeRuntimeWaitFailureReason,
   type PtcExecuteCodeRuntimeWaitResult,
 } from '../../ptc/runtime/execute-code/execute-code-runtime-contract.js';
@@ -20,13 +20,13 @@ const waitArgsSchema = z.strictObject({
     })
     .max(256)
     .describe(
-      'PTC exec cell id returned as cellId when exec reports status "running". Use the exact key cell_id; cellId is not accepted.',
+      'PTC exec cell id returned as cellId when exec reports status "queued" or status "running". Use the exact key cell_id; cellId is not accepted.',
     ),
   terminate: z
     .boolean()
     .optional()
     .describe('Terminate a still-running cell before returning its output.'),
-  yield_time_ms: z
+  'yield-time_ms': z
     .number()
     .int()
     .min(PTC_EXECUTE_CODE_CELL_WAIT_MIN_YIELD_MS)
@@ -42,14 +42,22 @@ type WaitArgs = z.output<typeof waitArgsSchema>;
 export const waitTool = defineZodTool({
   name: PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
   description:
-    'Use after exec returns status "running" with a cellId. Pass that value as cell_id to observe completion, read retained output, or terminate the running PTC exec cell.',
+    'Use after exec returns status "queued" or status "running" with a cellId. Pass that value as cell_id to observe admission or completion, read retained output, or cancel/terminate the PTC exec cell.',
   argsSchema: waitArgsSchema,
   sideEffectLevel: 'none',
-  mayMutateWorkspaceFiles: false,
+  mayMutateComputerFiles: false,
   parallelBatchKind: 'ptc_cell',
   requiresApproval: false,
+  catalogSearchMetadata: {
+    family: 'ptc',
+    searchHints: ['wait cell', 'wait for output', 'cell output', 'poll exec'],
+    tags: ['ptc', 'cell', 'wait'],
+    whenToUse:
+      'Wait for output or completion from a previously yielded PTC cell.',
+    notFor: 'Waiting for subagents or starting a new code cell.',
+  },
   async executeParsed(args: WaitArgs, ctx) {
-    if (!ctx.threadId) {
+    if (!ctx.threadId || !ctx.stateRoot) {
       return toolError('execution_failed', 'thread context is required.');
     }
     const runtime = ctx.agentSpawnRuntime?.ptcExecuteCode;
@@ -58,12 +66,12 @@ export const waitTool = defineZodTool({
     }
 
     const result = await runtime.waitForCell({
-      runContext: { threadId: ctx.threadId },
+      runContext: { threadId: ctx.threadId, stateRoot: ctx.stateRoot },
       request: {
         cellId: args.cell_id,
         ...(args.terminate !== undefined ? { terminate: args.terminate } : {}),
-        ...(args.yield_time_ms !== undefined
-          ? { yieldTimeMs: args.yield_time_ms }
+        ...(args['yield-time_ms'] !== undefined
+          ? { yieldTimeMs: args['yield-time_ms'] }
           : {}),
       },
       ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
@@ -79,38 +87,10 @@ export const waitTool = defineZodTool({
 
     return {
       ok: true,
-      output: stringifyWaitSummary(result.value),
+      output: stringifyPtcExecuteCodeWaitSummary(result.value),
     };
   },
 });
-
-function stringifyWaitSummary(
-  summary: PtcExecuteCodeRuntimeCellWaitSummary,
-): string {
-  if (summary.status === 'missing' || summary.status === 'expired') {
-    return JSON.stringify({
-      kind: 'ptc_execute_code_cell_wait',
-      capabilityId: summary.capabilityId,
-      policyId: summary.policyId,
-      executionSurface: summary.executionSurface,
-      status: summary.status,
-      cellId: summary.cellId,
-      remediation: summary.remediation,
-    });
-  }
-
-  return JSON.stringify({
-    kind: 'ptc_execute_code_cell_wait',
-    capabilityId: summary.capabilityId,
-    policyId: summary.policyId,
-    executionSurface: summary.executionSurface,
-    status: summary.status,
-    cellId: summary.cellId,
-    ...('exitCode' in summary ? { exitCode: summary.exitCode } : {}),
-    stdout: summary.stdout,
-    stderr: summary.stderr,
-  });
-}
 
 function stringifyWaitFailure(
   failure: Extract<PtcExecuteCodeRuntimeWaitResult, { ok: false }>,
@@ -119,6 +99,10 @@ function stringifyWaitFailure(
     kind: 'ptc_execute_code_cell_wait_error',
     reasonCode: failure.reasonCode,
     message: failure.message,
+    ...(failure.store === undefined ? {} : { store: failure.store }),
+    ...(failure.storeError === undefined
+      ? {}
+      : { storeError: failure.storeError }),
   });
 }
 
@@ -132,9 +116,7 @@ function waitFailureToToolErrorCode(
       return 'aborted';
     case 'ptc_lab_command_timeout':
       return 'timeout';
-    case 'ptc_execute_code_cell_wait_unavailable':
-    case 'ptc_lab_command_output_rejected':
-    case 'ptc_execute_code_session_cleanup_failed':
+    default:
       return 'execution_failed';
   }
 }

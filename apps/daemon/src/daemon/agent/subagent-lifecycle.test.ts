@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { createDaemonContext } from '../context.js';
-import { testProjectId } from '../../test-support/project-id.js';
 import { testRunId } from '../../test-support/run-id.js';
-import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../test-support/run-context.js';
+import { TEST_CHILD_MODEL_REGISTRATION } from '../../test-support/subagent-model-routing.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import type { AgentEvent } from '../runtime-contracts.js';
 import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
@@ -33,25 +33,22 @@ function startTestBackgroundChildLifecycle(args: {
   ) => void;
 }) {
   const runtimeServices = args.runtimeServices ?? createDaemonContext();
-  const projectId = testProjectId(args.testLabel);
   const ownerThreadId = testThreadId(args.ownerThreadId);
   const childThreadId = testThreadId(args.childThreadId);
   const parentRunId = testRunId(args.parentRunId);
   const childRunId = testRunId(args.childRunId);
   const parentRunState = createRunState({
     runId: parentRunId,
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId: ownerThreadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
   });
   const childRunState = createRunState({
     runId: childRunId,
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId: childThreadId,
-      projectId,
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
     }),
     parentRunId,
   });
@@ -82,6 +79,7 @@ function startTestBackgroundChildLifecycle(args: {
     parentRunState,
     runtimeServices,
     launchReservation: args.launchReservation,
+    ...TEST_CHILD_MODEL_REGISTRATION,
     emitAgentEvent,
     ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
   });
@@ -175,6 +173,9 @@ void test('beginBackgroundChildLifecycle registers child run and terminal public
         childRunId,
         childThreadId,
         subagentType: 'explorer',
+        modelId: 'gpt-5.6-sol',
+        reasoningEffort: 'medium',
+        selectionSource: 'inherited',
       },
     },
   ]);
@@ -200,6 +201,53 @@ void test('beginBackgroundChildLifecycle registers child run and terminal public
   assert.equal(backgroundResult?.childRunId, childRunId);
   assert.equal(backgroundResult?.terminalState, 'completed');
   assert.equal(backgroundResult?.result, 'child done');
+  // No model rounds ran, so no usage rides on the terminal record.
+  assert.equal(backgroundResult?.usage, undefined);
+  assert.equal(typeof backgroundResult?.elapsedMs, 'number');
+});
+
+void test('publishTerminalOutcome carries the child run usage totals for drill-down', () => {
+  const {
+    runtimeServices,
+    ownerThreadId,
+    childThreadId,
+    childRunState,
+    lifecycle,
+  } = startTestBackgroundChildLifecycle({
+    testLabel: 'subagent-lifecycle-usage',
+    ownerThreadId: 67,
+    childThreadId: 68,
+    parentRunId: 'lifecycle-usage-parent',
+    childRunId: 'lifecycle-usage-child',
+    subagentType: 'explorer',
+  });
+
+  childRunState.usageTotals.inputTokens += 120;
+  childRunState.usageTotals.outputTokens += 30;
+  childRunState.usageTotals.cachedInputTokens += 100;
+
+  lifecycle.publishTerminalOutcome({
+    terminalState: 'completed',
+    terminalReason: null,
+    terminalResult: 'child done',
+  });
+
+  const [backgroundResult] =
+    runtimeServices.backgroundNotifications.consumeThreadBackgroundResults(
+      ownerThreadId,
+    );
+  assert.deepEqual(backgroundResult?.usage, {
+    inputTokens: 120,
+    outputTokens: 30,
+    cachedInputTokens: 100,
+  });
+  assert.equal(typeof backgroundResult?.elapsedMs, 'number');
+  assert.ok((backgroundResult?.elapsedMs ?? -1) >= 0);
+  // 드릴다운은 차일드 스레드 identity가 있어야 열린다
+  assert.equal(backgroundResult?.childThreadId, childThreadId);
+  // 세션 뷰어 헤더가 모델·사고 강도를 보여줄 수 있도록 pin을 나른다
+  assert.equal(backgroundResult?.modelId, 'gpt-5.6-sol');
+  assert.equal(backgroundResult?.reasoningEffort, 'medium');
 });
 
 void test('beginBackgroundChildLifecycle forwards timeout aborts to the child run', async () => {

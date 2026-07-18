@@ -15,13 +15,12 @@ import { readTranscriptEntries } from '../sessions/transcript-log.js';
 import { assertRunId as assertValidRunId } from '@geulbat/protocol/ids';
 import { createApprovalGrantStore } from '../tools/approval-grants.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
-import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
-import { testProjectId } from '../../test-support/project-id.js';
+import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 
 function makeApprovalDecisionRuntime(args: {
   runId: string;
-  runContext: ReturnType<typeof makeRunWorkspaceContext>;
+  runContext: ReturnType<typeof makeRunContext>;
   runState: ReturnType<typeof createRunState>;
   approvalContext: ReturnType<typeof makeApprovalContext>;
   approvalGate: ReturnType<typeof createApprovalGate>;
@@ -50,10 +49,9 @@ function makeApprovalDecisionRuntime(args: {
 void test('resolveApprovalDecision persists denial as tool_result before terminal failure', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-approval-'));
   const threadId = testThreadId(64);
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-approval-denied',
@@ -139,10 +137,9 @@ void test('resolveApprovalDecision persists denial as tool_result before termina
 void test('resolveApprovalDecision marks the run cancelled when approval is aborted', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-approval-'));
   const threadId = testThreadId(65);
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-approval-aborted',
@@ -224,10 +221,9 @@ void test('resolveApprovalDecision marks the run cancelled when approval is abor
 void test('resolveApprovalDecision can use an injected approval gate without relying on the default runtime gate', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-approval-'));
   const threadId = testThreadId(66);
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-approval-local-gate',

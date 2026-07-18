@@ -1,5 +1,6 @@
 import {
   finalizeAssistantHistoryItems,
+  finalizeProviderOutputHistoryItems,
   processResponseEvent,
   flushIncompleteAssistantItems,
 } from './responses-parser-events.js';
@@ -8,6 +9,7 @@ import { parseDaemonArtifactCandidateText } from '../../../artifact-candidate.js
 import type { ProviderArtifactCandidate } from '../wire/types.js';
 import type {
   AssistantDelta,
+  FunctionCallArgsDelta,
   ResponsesParseResult,
   ResponsesParseState,
 } from './responses-parser-shared.js';
@@ -16,13 +18,19 @@ export type { ResponsesParseResult } from './responses-parser-shared.js';
 export async function parseResponseEvents(
   events: AsyncIterable<Record<string, unknown>>,
   onAssistantDelta?: (delta: AssistantDelta) => void,
-  options?: { signal?: AbortSignal; idleTimeoutMs?: number },
+  options?: {
+    signal?: AbortSignal;
+    idleTimeoutMs?: number;
+    historyProjection?: 'normalized' | 'provider_output';
+    onFunctionCallArgsDelta?: (delta: FunctionCallArgsDelta) => void;
+  },
 ): Promise<ResponsesParseResult> {
   const iterator = events[Symbol.asyncIterator]();
 
   const state: ResponsesParseState = {
     itemsById: new Map(),
     completedItems: [],
+    providerOutputItems: [],
     functionCalls: [],
   };
   let assistantText = '';
@@ -31,14 +39,18 @@ export async function parseResponseEvents(
 
   try {
     while (true) {
-      const { done, value } = await nextResponseEvent(iterator, options);
-      if (done) break;
+      const result = await nextResponseEvent(iterator, options);
+      if (result.done) {
+        break;
+      }
+      const value = result.value;
 
       processResponseEvent(
-        String(value.type ?? ''),
+        typeof value.type === 'string' ? value.type : '',
         value,
         state,
         onAssistantDelta,
+        options?.onFunctionCallArgsDelta,
       );
     }
   } catch (error: unknown) {
@@ -57,9 +69,13 @@ export async function parseResponseEvents(
   }
 
   flushIncompleteAssistantItems(state);
-  finalizeAssistantHistoryItems(state);
+  const completedItems = finalizeAssistantHistoryItems(state);
+  const itemsToAppend =
+    options?.historyProjection === 'provider_output'
+      ? finalizeProviderOutputHistoryItems(state)
+      : completedItems;
 
-  for (const item of state.completedItems) {
+  for (const item of completedItems) {
     if (item.kind === 'assistant') {
       assistantText += item.text;
       if (item.phase === 'final_answer') {
@@ -71,8 +87,7 @@ export async function parseResponseEvents(
   const artifactCandidate = readProviderArtifactCandidate(finalText);
 
   return {
-    itemsToAppend:
-      state.completedItems as ResponsesParseResult['itemsToAppend'],
+    itemsToAppend,
     functionCalls: state.functionCalls,
     assistantText,
     finalText,

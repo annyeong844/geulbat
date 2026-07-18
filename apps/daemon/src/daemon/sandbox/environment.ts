@@ -1,4 +1,4 @@
-export interface SandboxEnvironmentOptions {
+interface SandboxEnvironmentOptions {
   homeDir: string;
   tempDir: string;
   adapterEnv?: Readonly<Record<string, string>>;

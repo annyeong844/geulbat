@@ -8,14 +8,14 @@ import {
 import type { ToolRunState } from '../runtime-contracts.js';
 import { countActiveBackgroundChildren } from './runtime/run-state.js';
 
-export type ResourceBudgetObservationSource =
+type ResourceBudgetObservationSource =
   | 'node_os_available_parallelism'
   | 'node_os_memory'
   | 'node_process_available_memory'
   | 'node_process_constrained_memory'
   | 'run_state_background_children';
 
-export type ResourceBudgetMeasurement<TValue> =
+type ResourceBudgetMeasurement<TValue> =
   | {
       ok: true;
       value: TValue;
@@ -30,7 +30,7 @@ export type ResourceBudgetMeasurement<TValue> =
       message: string;
     };
 
-export type ResourceBudgetMemoryPrecedence =
+type ResourceBudgetMemoryPrecedence =
   | 'daemon_cgroup_limit'
   | 'host_os_context_only'
   | 'unavailable';
@@ -60,11 +60,11 @@ export interface ResourceBudgetProvider {
 interface ResourceBudgetObservationReader {
   createSnapshotId(): string;
   now(): string;
-  readAvailableParallelism(): number | undefined;
-  readHostTotalMemoryBytes(): number | undefined;
-  readHostFreeMemoryBytes(): number | undefined;
-  readDaemonConstrainedMemoryBytes(): number | undefined;
-  readDaemonAvailableMemoryBytes(): number | undefined;
+  readAvailableParallelism(this: void): number | undefined;
+  readHostTotalMemoryBytes(this: void): number | undefined;
+  readHostFreeMemoryBytes(this: void): number | undefined;
+  readDaemonConstrainedMemoryBytes(this: void): number | undefined;
+  readDaemonAvailableMemoryBytes(this: void): number | undefined;
 }
 
 export function createResourceBudgetProvider(

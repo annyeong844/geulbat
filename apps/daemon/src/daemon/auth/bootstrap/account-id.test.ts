@@ -33,6 +33,15 @@ void test('extractAccountIdFromJwt reads OpenAI namespaced claim', () => {
   assert.equal(extractAccountIdFromJwt(token), 'acct_123');
 });
 
+void test('extractAccountIdFromJwt reads OIDC subject claims for xAI tokens', () => {
+  const token = makeJwt({
+    sub: 'xai-subject-123',
+    email: 'sample@example.test',
+  });
+
+  assert.equal(extractAccountIdFromJwt(token), 'xai-subject-123');
+});
+
 void test('extractAccountIdFromJwt treats malformed jwt payloads as probe misses', () => {
   const warnings: unknown[][] = [];
   const originalWarn = console.warn;
@@ -42,16 +51,17 @@ void test('extractAccountIdFromJwt treats malformed jwt payloads as probe misses
 
   try {
     assert.equal(extractAccountIdFromJwt('header.invalid-json.sig'), null);
+    assert.equal(extractAccountIdFromJwt(makeJwt([])), null);
   } finally {
     console.warn = originalWarn;
   }
 
-  const diagnostic = warnings.find(([line]) =>
+  const diagnostics = warnings.filter(([line]) =>
     String(line).includes('provider account id jwt decode failed'),
   );
-  assert.ok(diagnostic);
+  assert.equal(diagnostics.length, 2);
   assert.match(
-    String(diagnostic[0]),
+    String(diagnostics[0]?.[0]),
     /warn \[provider-auth\] provider account id jwt decode failed:/,
   );
 });

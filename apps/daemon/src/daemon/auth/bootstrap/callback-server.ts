@@ -6,10 +6,8 @@ import {
 } from 'node:http';
 
 import {
-  PROVIDER_AUTH_LOOPBACK_BIND_HOST,
-  PROVIDER_AUTH_REDIRECT_HOST,
-  PROVIDER_AUTH_REDIRECT_PATH,
-  PROVIDER_AUTH_REDIRECT_PORT,
+  PROVIDER_AUTH_CALLBACK_LISTENER,
+  type ProviderAuthCallbackListenerConfig,
 } from './config.js';
 import {
   completeProviderAuthCallback,
@@ -17,8 +15,8 @@ import {
   type ProviderAuthCallbackQuery,
   type ProviderAuthCallbackResult,
 } from './callback.js';
-import { type ProviderAuthBootstrapStore } from './session-store.js';
-import { type ProviderAuthRuntimeStore } from '../runtime-state.js';
+import type { ProviderAuthBootstrapStore } from './session-store.js';
+import type { ProviderAuthRuntimeStore } from '../runtime-state.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 
 const logger = createLogger('provider-auth');
@@ -32,9 +30,21 @@ type ProviderAuthCallbackCompleter = (
 ) => Promise<ProviderAuthCallbackResult>;
 
 export interface ProviderAuthCallbackServerController {
-  ensureListening(): Promise<void>;
+  ensureListening(
+    callbackListener?: ProviderAuthCallbackListenerConfig,
+  ): Promise<void>;
   close(): Promise<void>;
   bindLifecycle(server: Pick<Server, 'once'>): void;
+}
+
+interface ProviderAuthCallbackServerState {
+  callbackPaths: Set<string>;
+  listener: Pick<
+    ProviderAuthCallbackListenerConfig,
+    'bindHost' | 'redirectHost' | 'port'
+  >;
+  server: Server | null;
+  listenPromise: Promise<void> | null;
 }
 
 export function createProviderAuthCallbackServerController(options: {
@@ -43,34 +53,41 @@ export function createProviderAuthCallbackServerController(options: {
   completeCallback?: ProviderAuthCallbackCompleter;
   createHttpServer?: typeof createServer;
 }): ProviderAuthCallbackServerController {
-  const requestHandler = createProviderAuthCallbackRequestHandler(options);
   const createHttpServer = options.createHttpServer ?? createServer;
-  let callbackServer: Server | null = null;
-  let listenPromise: Promise<void> | null = null;
+  const serverStates = new Map<string, ProviderAuthCallbackServerState>();
 
   return {
-    async ensureListening() {
-      if (callbackServer?.listening) {
+    async ensureListening(callbackListener = PROVIDER_AUTH_CALLBACK_LISTENER) {
+      const state = getOrCreateCallbackServerState({
+        callbackListener,
+        createHttpServer,
+        options,
+        serverStates,
+      });
+      state.callbackPaths.add(callbackListener.path);
+
+      if (state.server?.listening) {
         return;
       }
 
-      if (listenPromise) {
-        await listenPromise;
+      if (state.listenPromise) {
+        await state.listenPromise;
         return;
       }
 
-      listenPromise = new Promise<void>((resolve, reject) => {
+      state.listenPromise = new Promise<void>((resolve, reject) => {
+        const requestHandler = stateRequestHandler(state, options);
         const server = createHttpServer((req, res) => {
           void requestHandler(req, res);
         });
 
         const onError = (err: Error & { code?: string }) => {
           server.removeListener('listening', onListening);
-          callbackServer = null;
+          state.server = null;
           reject(
             new Error(
               `Failed to bind provider auth callback listener on ` +
-                `http://${PROVIDER_AUTH_LOOPBACK_BIND_HOST}:${PROVIDER_AUTH_REDIRECT_PORT}${PROVIDER_AUTH_REDIRECT_PATH}` +
+                `http://${state.listener.bindHost}:${state.listener.port}` +
                 (err.code ? ` (${err.code})` : ''),
             ),
           );
@@ -78,42 +95,44 @@ export function createProviderAuthCallbackServerController(options: {
 
         const onListening = () => {
           server.removeListener('error', onError);
-          callbackServer = server;
+          state.server = server;
           resolve();
         };
 
         server.once('error', onError);
         server.once('listening', onListening);
-        server.listen(
-          PROVIDER_AUTH_REDIRECT_PORT,
-          PROVIDER_AUTH_LOOPBACK_BIND_HOST,
-        );
+        server.listen(state.listener.port, state.listener.bindHost);
       });
 
       try {
-        await listenPromise;
+        await state.listenPromise;
       } finally {
-        listenPromise = null;
+        state.listenPromise = null;
       }
     },
 
     async close() {
-      if (!callbackServer) {
-        return;
-      }
+      const states = [...serverStates.values()];
+      serverStates.clear();
 
-      const server = callbackServer;
-      callbackServer = null;
+      for (const state of states) {
+        if (!state.server) {
+          continue;
+        }
 
-      await new Promise<void>((resolve, reject) => {
-        server.close((err) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          resolve();
+        const server = state.server;
+        state.server = null;
+
+        await new Promise<void>((resolve, reject) => {
+          server.close((err) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            resolve();
+          });
         });
-      });
+      }
     },
 
     bindLifecycle(server) {
@@ -126,20 +145,70 @@ export function createProviderAuthCallbackServerController(options: {
   };
 }
 
+function getOrCreateCallbackServerState(args: {
+  callbackListener: ProviderAuthCallbackListenerConfig;
+  createHttpServer: typeof createServer;
+  options: Parameters<typeof createProviderAuthCallbackServerController>[0];
+  serverStates: Map<string, ProviderAuthCallbackServerState>;
+}): ProviderAuthCallbackServerState {
+  const { callbackListener, serverStates } = args;
+  const key = `${callbackListener.bindHost}:${callbackListener.port}`;
+  const existing = serverStates.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const state: ProviderAuthCallbackServerState = {
+    callbackPaths: new Set(),
+    listener: {
+      bindHost: callbackListener.bindHost,
+      redirectHost: callbackListener.redirectHost,
+      port: callbackListener.port,
+    },
+    server: null,
+    listenPromise: null,
+  };
+  serverStates.set(key, state);
+  return state;
+}
+
+function stateRequestHandler(
+  state: ProviderAuthCallbackServerState,
+  options: Parameters<typeof createProviderAuthCallbackServerController>[0],
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  return createProviderAuthCallbackRequestHandler({
+    ...options,
+    callbackPaths: state.callbackPaths,
+    redirectHost: state.listener.redirectHost,
+    port: state.listener.port,
+  });
+}
+
 export function createProviderAuthCallbackRequestHandler(options: {
   bootstrapStore: ProviderAuthBootstrapStore;
   runtimeStore: ProviderAuthRuntimeStore;
   completeCallback?: ProviderAuthCallbackCompleter;
+  callbackPaths?: ReadonlySet<string>;
+  redirectHost?: string;
+  port?: number;
 }): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { bootstrapStore, runtimeStore } = options;
   const completeCallback =
     options.completeCallback ?? completeProviderAuthCallback;
+  const callbackPaths =
+    options.callbackPaths ?? new Set([PROVIDER_AUTH_CALLBACK_LISTENER.path]);
+  const redirectHost =
+    options.redirectHost ?? PROVIDER_AUTH_CALLBACK_LISTENER.redirectHost;
+  const port = options.port ?? PROVIDER_AUTH_CALLBACK_LISTENER.port;
 
   return async (req, res) =>
     handleProviderAuthCallbackRequest(req, res, {
       bootstrapStore,
       runtimeStore,
       completeCallback,
+      callbackPaths,
+      redirectHost,
+      port,
     });
 }
 
@@ -150,6 +219,9 @@ async function handleProviderAuthCallbackRequest(
     bootstrapStore: ProviderAuthBootstrapStore;
     runtimeStore: ProviderAuthRuntimeStore;
     completeCallback: ProviderAuthCallbackCompleter;
+    callbackPaths: ReadonlySet<string>;
+    redirectHost: string;
+    port: number;
   },
 ): Promise<void> {
   if (req.method !== 'GET') {
@@ -162,10 +234,10 @@ async function handleProviderAuthCallbackRequest(
   try {
     const url = new URL(
       req.url ?? '/',
-      `http://${PROVIDER_AUTH_REDIRECT_HOST}:${PROVIDER_AUTH_REDIRECT_PORT}`,
+      `http://${options.redirectHost}:${options.port}`,
     );
 
-    if (url.pathname !== PROVIDER_AUTH_REDIRECT_PATH) {
+    if (!options.callbackPaths.has(url.pathname)) {
       res.statusCode = 404;
       res.end('Not Found');
       return;

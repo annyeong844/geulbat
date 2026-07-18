@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 
 import {
   artifactPaneStyles,
@@ -17,11 +17,13 @@ export interface ArtifactPaneHeaderProps {
   showExport: boolean;
   exportExpanded: boolean;
   canOpenExport: boolean;
-  showOpenSource: boolean;
+  expanded?: boolean;
+  onToggleExpand?: () => void;
+  savePending?: boolean;
+  onSaveToFile?: () => Promise<void> | void;
   onSelectTab: (tab: ArtifactTab) => Promise<void> | void;
   onApply: () => Promise<void> | void;
   onToggleExport: () => Promise<void> | void;
-  onOpenSource?: () => Promise<void> | void;
 }
 
 export function ArtifactPaneHeader({
@@ -34,11 +36,13 @@ export function ArtifactPaneHeader({
   showExport,
   exportExpanded,
   canOpenExport,
-  showOpenSource,
+  expanded = false,
+  onToggleExpand,
+  savePending = false,
+  onSaveToFile,
   onSelectTab,
   onApply,
   onToggleExport,
-  onOpenSource,
 }: ArtifactPaneHeaderProps) {
   return (
     <div style={artifactPaneStyles.headerRow}>
@@ -54,27 +58,21 @@ export function ArtifactPaneHeader({
       </div>
       <div style={artifactPaneStyles.buttonRow}>
         <ArtifactTabButton
-          active={tab === 'write'}
-          onClick={() => onSelectTab('write')}
-        >
-          Write
-        </ArtifactTabButton>
-        <ArtifactTabButton
           active={tab === 'show'}
           disabled={!canShowPreview}
           onClick={() => onSelectTab('show')}
         >
-          Show
+          보기
         </ArtifactTabButton>
         <ArtifactTabButton
-          active={tab === 'raw'}
-          onClick={() => onSelectTab('raw')}
+          active={tab === 'source'}
+          onClick={() => onSelectTab('source')}
         >
-          Raw
+          원문
         </ArtifactTabButton>
         {showApply ? (
           <ArtifactTabButton disabled={!canApply} onClick={onApply}>
-            Apply
+            적용
           </ArtifactTabButton>
         ) : null}
         {showExport ? (
@@ -83,14 +81,17 @@ export function ArtifactPaneHeader({
             disabled={!canOpenExport}
             onClick={onToggleExport}
           >
-            Export
+            내보내기
           </ArtifactTabButton>
         ) : null}
-        {showOpenSource ? (
-          <ArtifactTabButton
-            {...(onOpenSource !== undefined ? { onClick: onOpenSource } : {})}
-          >
-            원본 열기
+        {onSaveToFile ? (
+          <ArtifactTabButton disabled={savePending} onClick={onSaveToFile}>
+            {savePending ? '저장 중…' : '저장'}
+          </ArtifactTabButton>
+        ) : null}
+        {onToggleExpand ? (
+          <ArtifactTabButton active={expanded} onClick={onToggleExpand}>
+            {expanded ? '✕ 닫기' : '⛶ 확대'}
           </ArtifactTabButton>
         ) : null}
       </div>

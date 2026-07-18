@@ -1,17 +1,8 @@
 import { createLogger } from '@geulbat/shared-utils/logger';
+import { isRecord } from '../../runtime-json.js';
 import { getErrorMessage } from '../../utils/error.js';
 
 const logger = createLogger('provider-auth');
-
-interface JwtPayloadAuthSection {
-  chatgpt_account_id?: unknown;
-}
-
-interface JwtPayloadRecord {
-  'https://api.openai.com/auth'?: JwtPayloadAuthSection;
-  chatgpt_account_id?: unknown;
-  account_id?: unknown;
-}
 
 interface ProviderIdentityInput {
   accountId?: string;
@@ -53,11 +44,15 @@ export function extractAccountIdFromJwt(
   }
 
   try {
-    const payload = JSON.parse(
-      decodeBase64Url(payloadPart),
-    ) as JwtPayloadRecord;
-    const namespaced =
-      payload['https://api.openai.com/auth']?.chatgpt_account_id;
+    const payload: unknown = JSON.parse(decodeBase64Url(payloadPart));
+    if (!isRecord(payload)) {
+      throw new TypeError('Provider account id JWT payload must be an object.');
+    }
+
+    const authSection = payload['https://api.openai.com/auth'];
+    const namespaced = isRecord(authSection)
+      ? authSection.chatgpt_account_id
+      : undefined;
     if (typeof namespaced === 'string' && namespaced.trim()) {
       return namespaced.trim();
     }
@@ -69,6 +64,9 @@ export function extractAccountIdFromJwt(
     }
     if (typeof payload.account_id === 'string' && payload.account_id.trim()) {
       return payload.account_id.trim();
+    }
+    if (typeof payload.sub === 'string' && payload.sub.trim()) {
+      return payload.sub.trim();
     }
     return null;
   } catch (error: unknown) {

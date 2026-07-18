@@ -19,6 +19,8 @@ void test('appendChildUserTranscriptEntry writes child prompt transcript entries
     workspaceRoot,
     threadId,
     prompt: 'inspect the parser boundary',
+    modelPrompt:
+      '<workspace-context>\nProject: project\nCurrent file: none\nSelection: none\n</workspace-context>\n\ninspect the parser boundary',
     timestamp: '2026-04-29T00:00:00.000Z',
   });
 
@@ -31,6 +33,10 @@ void test('appendChildUserTranscriptEntry writes child prompt transcript entries
       role: 'user',
       content: 'inspect the parser boundary',
       timestamp: '2026-04-29T00:00:00.000Z',
+      metadata: {
+        hiddenPrompt:
+          '<workspace-context>\nProject: project\nCurrent file: none\nSelection: none\n</workspace-context>\n\ninspect the parser boundary',
+      },
     },
   ]);
 });

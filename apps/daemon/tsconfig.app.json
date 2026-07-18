@@ -9,7 +9,9 @@
   },
   "references": [
     { "path": "../../packages/shared-utils" },
-    { "path": "../../packages/protocol" }
+    { "path": "../../packages/protocol" },
+    { "path": "../../packages/agent-loop" },
+    { "path": "../../packages/tool-library" }
   ],
   "include": ["src/**/*"],
   "exclude": ["src/**/*.test.ts", "src/test-support/**"]

@@ -74,3 +74,36 @@ void test('guardedLookupPublicAddress rejects any unsafe resolved address', asyn
     /unsafe network address resolved/,
   );
 });
+
+void test('guardedLookupPublicAddress requests all records in resolver order', async () => {
+  const result = await guardedLookupPublicAddress('esm.sh', {
+    lookup: async (hostname, options) => {
+      assert.equal(hostname, 'esm.sh');
+      assert.deepEqual(options, { all: true, verbatim: true });
+      return [{ address: '93.184.216.34', family: 4 }];
+    },
+  });
+
+  assert.deepEqual(result, { address: '93.184.216.34', family: 4 });
+});
+
+void test('guardedLookupPublicAddress rejects an empty DNS response', async () => {
+  await assert.rejects(
+    () =>
+      guardedLookupPublicAddress('esm.sh', {
+        lookup: async () => [],
+      }),
+    /hostname did not resolve to an address/,
+  );
+});
+
+void test('guardedLookupPublicAddress rejects an unsupported selected address family', async () => {
+  await assert.rejects(
+    () =>
+      guardedLookupPublicAddress('esm.sh', {
+        label: 'dependency probe',
+        lookup: async () => [{ address: '93.184.216.34', family: 0 }],
+      }),
+    /unsupported network address family resolved for dependency probe: 0/,
+  );
+});

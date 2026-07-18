@@ -6,19 +6,15 @@ import {
   writeRunPromptInputRefFromStream,
   readRunPromptInputRefPath,
 } from '../../../daemon/sessions/prompt-input-ref-store.js';
-import { readProjectWorkspaceScopeFromQuery } from '#web/request/project-scope.js';
 import {
   sendApiError,
   sendUnexpectedApiError,
 } from '#web/response/send-api-error.js';
 import { registerInputRefDeleteRoute } from './input-ref-routes.js';
-import type { ProjectScopedRoutesContext } from './routes-context.js';
 
-export function createRunInputRoutes(args: {
-  projectRegistry: ProjectScopedRoutesContext['projectRegistry'];
-}): Router {
+export function createRunInputRoutes(args: { homeStateRoot: string }): Router {
   const router = Router();
-  const { projectRegistry } = args;
+  const { homeStateRoot } = args;
 
   router.post('/api/run/prompt-inputs', async (req, res) => {
     if (req.is('application/json')) {
@@ -30,18 +26,9 @@ export function createRunInputRoutes(args: {
       return;
     }
 
-    const projectScope = readProjectWorkspaceScopeFromQuery(
-      req.query['projectId'],
-      { projectRegistry },
-    );
-    if (!projectScope.ok) {
-      sendApiError(res, projectScope.code, projectScope.message);
-      return;
-    }
-
     try {
       const result = await writeRunPromptInputRefFromStream({
-        workspaceRoot: projectScope.workspaceRoot,
+        workspaceRoot: homeStateRoot,
         input: req,
       });
       const response: RunPromptInputRefResponse = {
@@ -57,7 +44,7 @@ export function createRunInputRoutes(args: {
   registerInputRefDeleteRoute({
     router,
     path: '/api/run/prompt-inputs',
-    projectRegistry,
+    resolveWorkspaceRoot: () => homeStateRoot,
     refQueryName: 'promptRef',
     logContext: 'run/prompt-inputs/delete',
     readRefPath: ({ workspaceRoot, ref }) =>

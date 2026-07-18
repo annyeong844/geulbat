@@ -11,11 +11,11 @@ import type {
 } from '../subagent-runtime-contracts.js';
 import { isAgentChildTerminalState } from '../subagent-runtime-contracts.js';
 
-export const AGENT_WAIT_MODES = ['all', 'any'] as const;
+export const AGENT_WAIT_MODES = ['snapshot', 'all', 'any'] as const;
 
 export type AgentWaitMode = (typeof AGENT_WAIT_MODES)[number];
 
-export interface AgentWaitResult {
+interface AgentWaitResult {
   ok: true;
   completed: Array<{
     childRunId: RunId;
@@ -31,7 +31,7 @@ export interface AgentWaitResult {
   }>;
 }
 
-export type AgentChildWaitOutcome =
+type AgentChildWaitOutcome =
   | {
       ok: true;
       result: AgentWaitResult;
@@ -42,7 +42,7 @@ export type AgentChildWaitOutcome =
       message: string;
     };
 
-export interface AgentChildWaitRegistry {
+interface AgentChildWaitRegistry {
   getChildRuns(childRunIds: readonly RunId[]): {
     revision: number;
     records: ChildRunSnapshot[];
@@ -101,6 +101,7 @@ export async function waitForAgentChildren(args: {
   ownerThreadId: ThreadId;
   childRunIds: readonly RunId[];
   waitMode: AgentWaitMode;
+  blockedBehavior: 'wait' | 'return';
   signal?: AbortSignal;
 }): Promise<AgentChildWaitOutcome> {
   let revision = -1;
@@ -136,12 +137,21 @@ export async function waitForAgentChildren(args: {
       childRunIds: args.childRunIds,
       recordsByChildRunId,
     });
+    if (args.waitMode === 'snapshot') {
+      return { ok: true, result };
+    }
+    const allTerminal =
+      result.pending.length === 0 && result.blocked.length === 0;
+    const shouldReturnBlocked =
+      args.blockedBehavior === 'return' &&
+      result.pending.length === 0 &&
+      result.blocked.length > 0;
 
     if (args.waitMode === 'all') {
-      if (result.pending.length === 0) {
+      if (allTerminal || shouldReturnBlocked) {
         return { ok: true, result };
       }
-    } else if (result.completed.length > 0 || result.pending.length === 0) {
+    } else if (result.completed.length > 0 || shouldReturnBlocked) {
       return { ok: true, result };
     }
 

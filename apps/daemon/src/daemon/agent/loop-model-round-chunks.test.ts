@@ -90,3 +90,95 @@ void test('consumeModelRoundChunks reports retry-disabling semantic output for s
     true,
   );
 });
+
+void test('consumeModelRoundChunks carries an opaque provider history batch only from done', async () => {
+  const events: AgentEvent[] = [];
+  const itemsToAppend = [
+    {
+      kind: 'backend_item' as const,
+      data: {
+        id: 'rs_1',
+        type: 'reasoning',
+        encrypted_content: 'opaque-reasoning',
+      },
+    },
+  ];
+
+  const result = await consumeModelRoundChunks({
+    chunks: chunks([
+      { type: 'text_delta', phase: 'commentary', text: 'checking' },
+      {
+        type: 'done',
+        assistantText: 'checking',
+        finalText: '',
+        itemsToAppend,
+      },
+    ]),
+    signal: undefined,
+    emit: makeEmitter(events),
+    attemptIndex: 0,
+    now: () => 1_000,
+  });
+
+  assert.equal(result.kind, 'success');
+  assert.deepEqual(
+    result.kind === 'success' ? result.itemsToAppend : undefined,
+    itemsToAppend,
+  );
+});
+
+void test('consumeModelRoundChunks emits tool_call_delta only for opted-in tools', async () => {
+  const events: AgentEvent[] = [];
+
+  const result = await consumeModelRoundChunks({
+    chunks: chunks([
+      {
+        type: 'tool_call_delta',
+        itemId: 'fc_1',
+        callId: 'call_viz',
+        toolName: 'visualize',
+        argsDelta: '{"code":"<svg',
+      },
+      {
+        type: 'tool_call_delta',
+        itemId: 'fc_2',
+        callId: 'call_patch',
+        toolName: 'apply_patch',
+        argsDelta: '{"path":"a"',
+      },
+      {
+        type: 'tool_call',
+        id: 'fc_1',
+        callId: 'call_viz',
+        toolName: 'visualize',
+        argumentsJson: '{"code":"<svg></svg>"}',
+      },
+      { type: 'done' },
+    ]),
+    signal: undefined,
+    emit: makeEmitter(events),
+    attemptIndex: 0,
+    now: () => 0,
+    round: 3,
+    streamArgsToolNames: new Set(['visualize']),
+  });
+
+  assert.equal(result.kind, 'success');
+  const deltaEvents = events.filter(
+    (event) => event.type === 'tool_call_delta',
+  );
+  assert.deepEqual(
+    deltaEvents.map((event) => event.payload),
+    [
+      {
+        callId: 'call_viz',
+        step: 3,
+        tool: 'visualize',
+        argsDelta: '{"code":"<svg',
+      },
+    ],
+  );
+  if (result.kind === 'success') {
+    assert.equal(result.functionCalls.length, 1);
+  }
+});

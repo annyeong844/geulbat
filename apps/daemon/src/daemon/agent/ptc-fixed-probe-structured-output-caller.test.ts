@@ -7,8 +7,7 @@ import {
   PTC_FIXED_EPOCH_EXECUTION_PROBE_POLICY_ID,
   type PtcFixedEpochProbeRuntimeSummary,
 } from '../ptc/runtime/probes/fixed-probe-runtime-contract.js';
-import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
-import { testProjectId } from '../../test-support/project-id.js';
+import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import {
   PTC_FIXED_PROBE_STRUCTURED_OUTPUT_KIND,
@@ -49,10 +48,10 @@ const TEST_TOOL_CALL: FunctionCall = {
 };
 
 function createRunContext() {
-  return makeRunWorkspaceContext({
+  return makeRunContext({
     threadId: testThreadId(701),
-    projectId: testProjectId('project'),
-    workspaceRoot: '/tmp/geulbat-ptc-fixed-probe-agent-test',
+    stateRoot: '/tmp/geulbat-ptc-fixed-probe-agent-test',
+    workingDirectory: '',
   });
 }
 

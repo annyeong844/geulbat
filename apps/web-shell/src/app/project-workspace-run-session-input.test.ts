@@ -24,7 +24,15 @@ function createRunSessionViewModelStub(): RunSessionViewModel {
       threadId: THREAD_ID,
     }),
     permissionMode: 'full_access',
+    modelId: 'grok-4.5',
+    reasoningEffort: 'medium',
+    subagentModelRouting: { mode: 'auto' },
     setPermissionMode: () => {},
+    setModelId: () => {},
+    prepareProviderTransition: async () => {},
+    setReasoningEffort: () => {},
+    setSubagentModelRouting: () => {},
+    requestWidgetTool: async () => ({ ok: true, output: 'tool-ok' }),
     streamError: 'stream failed',
     backgroundNotifications: [
       {
@@ -34,7 +42,25 @@ function createRunSessionViewModelStub(): RunSessionViewModel {
         state: 'completed',
       },
     ],
+    usageTotals: {
+      inputTokens: 9800,
+      outputTokens: 252,
+      cachedInputTokens: 4000,
+    },
+    contextUsage: {
+      state: 'measured',
+      modelId: 'grok-4.5',
+      inputTokens: 212_500,
+      contextWindow: 500_000,
+      thresholdTokens: 425_000,
+    },
     sendPrompt: async () => {},
+    sendWidgetPrompt: async () => {},
+    regeneratePrompt: async () => {},
+    cancelSteer: async () => {},
+    flushSteers: async () => {},
+    pendingSteers: [],
+    pendingSteerFlushRequested: true,
     startRunRequest: async () => {},
     handleApprove: async () => {},
     handleDeny: async () => {},
@@ -54,8 +80,23 @@ void test('createProjectWorkspaceRunSessionInput preserves the run-session surfa
   assert.equal(input.activeArtifact, null);
   assert.equal(input.pendingApproval, runSession.pendingApproval);
   assert.equal(input.permissionMode, 'full_access');
+  assert.equal(input.modelId, 'grok-4.5');
+  assert.deepEqual(input.subagentModelRouting, { mode: 'auto' });
   assert.equal(input.setPermissionMode, runSession.setPermissionMode);
+  assert.equal(input.setModelId, runSession.setModelId);
+  assert.equal(
+    input.prepareProviderTransition,
+    runSession.prepareProviderTransition,
+  );
+  assert.equal(
+    input.setSubagentModelRouting,
+    runSession.setSubagentModelRouting,
+  );
+  assert.equal(input.flushSteers, runSession.flushSteers);
+  assert.equal(input.pendingSteerFlushRequested, true);
   assert.equal(input.streamError, 'stream failed');
+  assert.equal(input.usageTotals, runSession.usageTotals);
+  assert.equal(input.contextUsage, runSession.contextUsage);
   assert.equal(
     input.backgroundNotifications,
     runSession.backgroundNotifications,

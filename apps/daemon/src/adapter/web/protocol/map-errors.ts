@@ -54,9 +54,9 @@ export function sendFilesRouteError(
   }
   if (error instanceof PathEscapeError) {
     logger.withContext({ logContext }).warn('route failed', {
-      code: 'path_out_of_workspace',
+      code: 'path_out_of_computer_scope',
     });
-    sendApiError(res, 'path_out_of_workspace', error.message);
+    sendApiError(res, 'path_out_of_computer_scope', error.message);
     return;
   }
   sendUnexpectedApiError(res, logContext, error);

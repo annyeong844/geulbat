@@ -26,8 +26,15 @@ export function createSubagentActivityEffect(
         entry: {
           kind: 'subagent_activity',
           childRunId: event.payload.childRunId,
+          childThreadId: event.payload.childThreadId,
           subagentType: event.payload.subagentType,
           state: 'spawned',
+          ...(event.payload.modelId !== undefined
+            ? { modelId: event.payload.modelId }
+            : {}),
+          ...(event.payload.reasoningEffort !== undefined
+            ? { reasoningEffort: event.payload.reasoningEffort }
+            : {}),
         },
       };
     case 'subagent_approval_required':
@@ -49,10 +56,25 @@ export function createSubagentActivityEffect(
           kind: 'subagent_activity',
           deliveryId: event.payload.deliveryId,
           childRunId: event.payload.childRunId,
+          ...(event.payload.childThreadId !== undefined
+            ? { childThreadId: event.payload.childThreadId }
+            : {}),
           subagentType: event.payload.subagentType,
           state: event.payload.terminalState,
           ...(event.payload.reason ? { reason: event.payload.reason } : {}),
           ...(event.payload.result ? { result: event.payload.result } : {}),
+          ...(event.payload.elapsedMs !== undefined
+            ? { elapsedMs: event.payload.elapsedMs }
+            : {}),
+          ...(event.payload.usage !== undefined
+            ? { usage: event.payload.usage }
+            : {}),
+          ...(event.payload.modelId !== undefined
+            ? { modelId: event.payload.modelId }
+            : {}),
+          ...(event.payload.reasoningEffort !== undefined
+            ? { reasoningEffort: event.payload.reasoningEffort }
+            : {}),
         },
       };
   }

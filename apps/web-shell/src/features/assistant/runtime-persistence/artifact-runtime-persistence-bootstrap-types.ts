@@ -1,3 +1,5 @@
+import { isRecord } from '@geulbat/protocol/runtime-utils';
+
 export type PersistenceRecord = Record<string, unknown>;
 export type SessionStorageRecord = Record<string, string>;
 export type PersistenceBootstrapTimeoutHandle = ReturnType<
@@ -34,10 +36,10 @@ export interface PersistenceBootstrapSuccessResponseMessage {
 export function isPersistenceBootstrapSuccessResponseMessage(
   response: unknown,
 ): response is PersistenceBootstrapSuccessResponseMessage {
-  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+  if (!isRecord(response)) {
     return false;
   }
-  const record = response as Record<string, unknown>;
+  const record = response;
   return (
     record.ok === true &&
     typeof record.kind === 'string' &&

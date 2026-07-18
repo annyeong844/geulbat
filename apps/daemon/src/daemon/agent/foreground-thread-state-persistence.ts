@@ -1,4 +1,5 @@
 import type {
+  ArtifactRef,
   ThreadStatePersistenceFailureDiagnostic,
   ThreadSummary,
 } from './contract.js';
@@ -20,6 +21,7 @@ export async function persistSuccessfulForegroundOutput(args: {
   result: AgentResult;
   deps: ResolvedExecuteForegroundRunDeps;
   persistenceDiagnostics: readonly ThreadStatePersistenceFailureDiagnostic[];
+  toolCommittedArtifactRefs?: readonly ArtifactRef[];
 }): Promise<void> {
   const { agentInput, transcriptPrompt, result, deps, persistenceDiagnostics } =
     args;
@@ -28,15 +30,17 @@ export async function persistSuccessfulForegroundOutput(args: {
     agentInput,
     result,
     deps,
+    ...(args.toolCommittedArtifactRefs !== undefined
+      ? { toolCommittedArtifactRefs: args.toolCommittedArtifactRefs }
+      : {}),
   });
 
   await runBestEffortForegroundPersistence(
     'update thread summary',
     () =>
       upsertCurrentThreadSummary({
-        workspaceRoot: runContext.workspaceRoot,
+        workspaceRoot: runContext.stateRoot,
         threadId: runContext.threadId,
-        projectId: runContext.projectId,
         transcriptPrompt,
         deps,
       }),
@@ -54,7 +58,6 @@ export async function persistSuccessfulForegroundOutput(args: {
 export async function upsertCurrentThreadSummary(args: {
   workspaceRoot: string;
   threadId: AgentInput['runContext']['threadId'];
-  projectId: AgentInput['runContext']['projectId'];
   transcriptPrompt: string;
   deps: ResolvedExecuteForegroundRunDeps;
 }): Promise<void> {
@@ -70,7 +73,6 @@ export async function upsertCurrentThreadSummary(args: {
   const title = existing?.title ?? sanitizeTitle(args.transcriptPrompt);
   const summary: ThreadSummary = {
     threadId: args.threadId,
-    projectId: args.projectId,
     lastUpdated: deps.now(),
     messageCount: messages.length,
   };
@@ -136,8 +138,7 @@ async function publishForegroundThreadStateSnapshot(args: {
         createAgentEvent(
           'thread_state_persisted',
           await loadThreadDetailSnapshot({
-            workspaceRoot: runContext.workspaceRoot,
-            projectId: runContext.projectId,
+            workspaceRoot: runContext.stateRoot,
             threadId: runContext.threadId,
           }),
         ),

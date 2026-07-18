@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createActiveRunStore } from '../../sessions/active-runs.js';
-import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../../test-support/run-context.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { startManagedRun } from './managed-run.js';
 
@@ -12,7 +12,7 @@ void test('startManagedRun registers and cleans up an active run', () => {
   const abortController = new AbortController();
   const started = startManagedRun(
     {
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId,
       }),
       abortController,
@@ -38,7 +38,7 @@ void test('getRunById returns a snapshot instead of the live active-run object',
   const threadId = testThreadId(2);
   const started = startManagedRun(
     {
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId,
       }),
     },
@@ -74,7 +74,7 @@ void test('startManagedRun shares the interject buffer with the active run store
   const threadId = testThreadId(8);
   const started = startManagedRun(
     {
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId,
       }),
     },
@@ -111,7 +111,7 @@ void test('startManagedRun reports thread conflicts without replacing the active
   const threadId = testThreadId(3);
   const first = startManagedRun(
     {
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId,
       }),
     },
@@ -125,7 +125,7 @@ void test('startManagedRun reports thread conflicts without replacing the active
 
   const second = startManagedRun(
     {
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId,
       }),
     },
@@ -148,7 +148,7 @@ void test('startManagedRun allows a new top-level run on the owner thread while 
   const parent = startManagedRun(
     {
       runId: 'run-parent-owner',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: ownerThreadId,
       }),
       ownerThreadId,
@@ -163,7 +163,7 @@ void test('startManagedRun allows a new top-level run on the owner thread while 
   const child = startManagedRun(
     {
       runId: 'run-child-background',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: childThreadId,
       }),
       ownerThreadId,
@@ -182,7 +182,7 @@ void test('startManagedRun allows a new top-level run on the owner thread while 
   const nextTopLevel = startManagedRun(
     {
       runId: 'run-parent-next-turn',
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: ownerThreadId,
       }),
       ownerThreadId,

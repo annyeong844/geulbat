@@ -3,8 +3,10 @@ import { createLogger } from '@geulbat/shared-utils/logger';
 
 import type {
   FunctionCall,
+  HistoryItem,
   LLMChunk,
   ProviderStructuredOutput,
+  ProviderUsageTelemetry,
 } from '../llm/index.js';
 import {
   classifyStreamError,
@@ -22,7 +24,9 @@ interface ModelRoundChunkSuccess {
   finalText: string;
   artifactCandidate: AgentArtifactCandidate | undefined;
   functionCalls: FunctionCall[];
+  itemsToAppend: HistoryItem[] | undefined;
   structuredOutputs: ProviderStructuredOutput[];
+  providerUsageTelemetry: ProviderUsageTelemetry | undefined;
 }
 
 interface ModelRoundChunkStreamError {
@@ -57,6 +61,10 @@ export async function consumeModelRoundChunks(args: {
   emit: AgentEventEmitter;
   attemptIndex: number;
   now: () => number;
+  round?: number;
+  // 인자 스트리밍 opt-in 도구 목록 (ToolMeta.streamsArgsDelta) — 목록에
+  // 없는 도구의 델타는 버린다 (전송 낭비 방지)
+  streamArgsToolNames?: ReadonlySet<string>;
 }): Promise<ModelRoundChunkResult> {
   const { chunks, signal, emit, attemptIndex, now } = args;
   const functionCalls: FunctionCall[] = [];
@@ -64,6 +72,8 @@ export async function consumeModelRoundChunks(args: {
   let finalText = '';
   let artifactCandidate: AgentArtifactCandidate | undefined;
   let structuredOutputs: ProviderStructuredOutput[] = [];
+  let itemsToAppend: HistoryItem[] | undefined;
+  let providerUsageTelemetry: ProviderUsageTelemetry | undefined;
   let sawSemanticChunk = false;
   let lastChunkAtMs = now();
   const finalAnswerDeltaEmitter = createFinalAnswerDeltaEmitter(emit);
@@ -93,6 +103,20 @@ export async function consumeModelRoundChunks(args: {
           assistantText += chunk.text;
           break;
         }
+        case 'tool_call_delta':
+          if (
+            chunk.argsDelta &&
+            args.streamArgsToolNames?.has(chunk.toolName) === true
+          ) {
+            sawSemanticChunk = true;
+            emit('tool_call_delta', {
+              callId: chunk.callId,
+              step: args.round ?? 0,
+              tool: chunk.toolName,
+              argsDelta: chunk.argsDelta,
+            });
+          }
+          break;
         case 'tool_call':
           sawSemanticChunk = true;
           functionCalls.push({
@@ -110,6 +134,12 @@ export async function consumeModelRoundChunks(args: {
             chunk.structuredOutputs !== undefined
               ? [...chunk.structuredOutputs]
               : structuredOutputs;
+          itemsToAppend =
+            chunk.itemsToAppend !== undefined
+              ? [...chunk.itemsToAppend]
+              : itemsToAppend;
+          providerUsageTelemetry =
+            chunk.providerUsageTelemetry ?? providerUsageTelemetry;
           break;
         case 'error':
           return {
@@ -154,11 +184,13 @@ export async function consumeModelRoundChunks(args: {
     finalText,
     artifactCandidate,
     functionCalls,
+    itemsToAppend,
     structuredOutputs,
+    providerUsageTelemetry,
   };
 }
 
-export function createFinalAnswerDeltaEmitter(emit: AgentEventEmitter): {
+function createFinalAnswerDeltaEmitter(emit: AgentEventEmitter): {
   push(text: string): void;
   flushOrEmitFallback(fallbackText: string): void;
   clear(): void;

@@ -18,12 +18,24 @@ const SAFE_TOOL_ERROR_CODES = new Set<ErrorCode>([
   'invalid_path',
   'not_found',
   'already_exists',
-  'path_out_of_workspace',
+  'path_out_of_computer_scope',
   'access_denied',
   'binary_file',
   'buffer_limit_exceeded',
   'unsupported_mode',
   'conflict_stale_write',
+  // 이미지 생성 실패 분류(§4.4) — 이 코드들의 메시지는 daemon-media가
+  // 상수로 큐레이션한다(업스트림 본문/시크릿 미포함). 일반화하면 원인이
+  // 삼켜져 사용자 안내가 불가능해진다(S0 실증).
+  'image_provider_unavailable',
+  'quota_exceeded',
+  'invalid_image_response',
+  'artifact_commit_failed',
+  'llm_auth_failed',
+  'llm_rate_limited',
+  // 동영상 폴링 상한/잡 만료(video-generation-open §4.4) — 메시지는
+  // daemon-media가 상수로 큐레이션한다.
+  'timeout',
 ]);
 const logger = createLogger('tool-executor');
 
@@ -206,7 +218,9 @@ export async function executeTool(
   try {
     // Watchdog: if abort fires after tool resolves, still treat as abort
     const execution = tool.executeParsed(parsedArgs, execCtx).then((raw) => {
-      if (combinedSignal?.aborted) return undefined;
+      if (combinedSignal?.aborted) {
+        return undefined;
+      }
       return raw;
     });
     const result = combinedSignal

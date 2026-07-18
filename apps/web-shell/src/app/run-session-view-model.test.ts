@@ -41,13 +41,54 @@ void test('createRunSessionViewModel combines visible projection with controller
           },
         ],
       },
+      contextUsageByThread: {
+        [THREAD_ID_VALUE]: {
+          state: 'measured',
+          modelId: 'grok-4.5',
+          inputTokens: 212_500,
+          contextWindow: 500_000,
+          thresholdTokens: 425_000,
+        },
+      },
     },
     permissionMode: 'full_access',
+    modelId: 'grok-4.5',
+    reasoningEffort: 'medium',
+    subagentModelRouting: {
+      mode: 'fixed',
+      choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
+    },
     setPermissionMode: () => {
       seen.push('setPermissionMode');
     },
+    setModelId: () => {
+      seen.push('setModelId');
+    },
+    prepareProviderTransition: async () => {
+      seen.push('prepareProviderTransition');
+    },
+    setReasoningEffort: () => {},
+    setSubagentModelRouting: () => {
+      seen.push('setSubagentModelRouting');
+    },
     sendPrompt: async () => {
       seen.push('sendPrompt');
+    },
+    sendWidgetPrompt: async () => {
+      seen.push('sendWidgetPrompt');
+    },
+    requestWidgetTool: async () => {
+      seen.push('requestWidgetTool');
+      return { ok: true, output: 'tool-ok' };
+    },
+    regeneratePrompt: async () => {
+      seen.push('regeneratePrompt');
+    },
+    cancelSteer: async () => {
+      seen.push('cancelSteer');
+    },
+    flushSteers: async () => {
+      seen.push('flushSteers');
     },
     startRunRequest: async () => {
       seen.push('startRunRequest');
@@ -72,6 +113,8 @@ void test('createRunSessionViewModel combines visible projection with controller
   ]);
   assert.equal(viewModel.finalAnswerText, 'final');
   assert.equal(viewModel.pendingApproval?.threadId, THREAD_ID_VALUE);
+  assert.equal(viewModel.modelId, 'grok-4.5');
+  assert.equal(viewModel.contextUsage?.inputTokens, 212_500);
   assert.equal(viewModel.streamError, '[internal] failed');
   assert.deepEqual(viewModel.backgroundNotifications, [
     {
@@ -83,10 +126,11 @@ void test('createRunSessionViewModel combines visible projection with controller
   ]);
 
   viewModel.setPermissionMode('basic');
+  viewModel.setModelId('gpt-5.6-sol');
+  await viewModel.prepareProviderTransition('gpt-5.6-sol');
   await viewModel.sendPrompt('prompt');
   await viewModel.startRunRequest({
     prompt: 'prompt',
-    projectId: 'project-1' as never,
   });
   await viewModel.handleApprove(pendingApproval, 'session');
   await viewModel.handleDeny(pendingApproval);
@@ -94,6 +138,8 @@ void test('createRunSessionViewModel combines visible projection with controller
 
   assert.deepEqual(seen, [
     'setPermissionMode',
+    'setModelId',
+    'prepareProviderTransition',
     'sendPrompt',
     'startRunRequest',
     'handleApprove',

@@ -42,13 +42,9 @@ export async function saveArtifactRuntimePersistenceState(
     return postArtifactRuntimePersistenceSaveRequest(request);
   }
 
-  const stateRef = await uploadArtifactRuntimePersistenceState(
-    request.projectId,
-    request.state,
-  );
+  const stateRef = await uploadArtifactRuntimePersistenceState(request.state);
   try {
     return await postArtifactRuntimePersistenceSaveRequest({
-      projectId: request.projectId,
       threadId: request.threadId,
       renderer: request.renderer,
       artifactId: request.artifactId,
@@ -58,7 +54,6 @@ export async function saveArtifactRuntimePersistenceState(
     });
   } catch (error: unknown) {
     await cleanupArtifactRuntimePersistenceStateRefAfterFailure(
-      request.projectId,
       stateRef,
       error,
     );
@@ -67,25 +62,21 @@ export async function saveArtifactRuntimePersistenceState(
 }
 
 function deleteArtifactRuntimePersistenceStateRef(
-  projectId: string,
   stateRef: string,
 ): Promise<unknown> {
   return apiFetch(
-    `/api/artifact-runtime-persistence/state-inputs?projectId=${encodeURIComponent(
-      projectId,
-    )}&stateRef=${encodeURIComponent(stateRef)}`,
+    `/api/artifact-runtime-persistence/state-inputs?stateRef=${encodeURIComponent(stateRef)}`,
     { method: 'DELETE' },
     isApiOkResponse,
   );
 }
 
 async function cleanupArtifactRuntimePersistenceStateRefAfterFailure(
-  projectId: string,
   stateRef: string,
   originalError: unknown,
 ): Promise<void> {
   try {
-    await deleteArtifactRuntimePersistenceStateRef(projectId, stateRef);
+    await deleteArtifactRuntimePersistenceStateRef(stateRef);
   } catch (cleanupError: unknown) {
     logger.warn(
       'failed to delete uploaded runtime persistence state ref after failure:',
@@ -113,13 +104,10 @@ function postArtifactRuntimePersistenceSaveRequest(
 }
 
 async function uploadArtifactRuntimePersistenceState(
-  projectId: string,
   state: JsonValue | null,
 ): Promise<string> {
   const response = await apiFetch(
-    `/api/artifact-runtime-persistence/state-inputs?projectId=${encodeURIComponent(
-      projectId,
-    )}`,
+    '/api/artifact-runtime-persistence/state-inputs',
     {
       method: 'POST',
       headers: { 'Content-Type': ARTIFACT_RUNTIME_STATE_INPUT_CONTENT_TYPE },

@@ -33,16 +33,15 @@ function createArtifactViewModelFromArtifactParsed(
   parsed: ArtifactOnlyParseResult,
   sourceRefInput?: ArtifactSourceInputRef | ResolvedArtifactSourceRef,
 ): ArtifactOnlyViewModel {
-  return createArtifactViewModelFromParsed(
-    parsed,
-    sourceRefInput,
-  ) as ArtifactOnlyViewModel;
+  return createArtifactViewModelFromParsed(parsed, sourceRefInput);
 }
 
-export function createArtifactViewModelFromParsed(
-  parsed: ArtifactParseResult,
+export function createArtifactViewModelFromParsed<
+  T extends ArtifactParseResult,
+>(
+  parsed: T,
   sourceRefInput?: ArtifactSourceInputRef | ResolvedArtifactSourceRef,
-): ArtifactViewModel {
+): ArtifactViewModel & { parsed: T } {
   const sourceRef = sanitizeArtifactSourceInputRef(sourceRefInput);
   const sourceAuthority = resolveArtifactDurabilitySourceAuthorityFromResolved({
     sourceRef,
@@ -62,13 +61,6 @@ export function createArtifactViewModelFromParsed(
     sourceRef,
     sourceAuthority,
     actions: {
-      openSource: sourceRef.filePath
-        ? { visible: true, enabled: true, reason: null }
-        : {
-            visible: false,
-            enabled: false,
-            reason: 'source reference missing',
-          },
       apply: canBuildApply
         ? {
             visible: true,

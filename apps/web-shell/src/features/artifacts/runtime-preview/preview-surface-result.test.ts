@@ -14,7 +14,7 @@ function createResolvedSourceRef(
 ): ResolvedArtifactSourceRef {
   return {
     kind: null,
-    projectId: null,
+    workingDirectory: '',
     threadId: null,
     runId: null,
     filePath: null,
@@ -132,6 +132,6 @@ void test('resolveArtifactPanePreviewSurfaceResult explains static preview resou
   assert.equal(result.previewSurface, unavailable);
   assert.equal(
     result.runtimeUnavailableMessage,
-    '이 미리보기는 너무 커서 바로 렌더링하지 않았습니다. Raw 탭에서 원본을 확인해 주세요.',
+    '이 미리보기는 너무 커서 바로 렌더링하지 않았습니다. 원문 탭에서 내용을 확인해 주세요.',
   );
 });

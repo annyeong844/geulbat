@@ -9,7 +9,6 @@ interface ArtifactPaneStateModel {
   defaultTab: ArtifactTab;
   canShowPreview: boolean;
   supportsStreamingPreview: boolean;
-  showOpenSource: boolean;
   showApply: boolean;
   canApply: boolean;
   surfaceStateBadge: ArtifactSurfaceStateBadge | null;
@@ -41,10 +40,6 @@ export function buildArtifactPaneStateModel(args: {
       parsed.state === 'completed' ||
       (parsed.state === 'streaming' && supportsStreamingPreview),
     supportsStreamingPreview,
-    showOpenSource:
-      viewModel.actions.openSource.visible &&
-      viewModel.actions.openSource.enabled &&
-      viewModel.sourceRef.filePath !== null,
     showApply,
     canApply:
       showApply &&
@@ -67,10 +62,7 @@ function buildDefaultArtifactTab(args: {
   if (parsed.state === 'streaming' && args.supportsStreamingPreview) {
     return 'show';
   }
-  if (parsed.state === 'fallback') {
-    return 'raw';
-  }
-  return 'write';
+  return 'source';
 }
 
 function buildArtifactSurfaceStateBadge(

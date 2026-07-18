@@ -16,12 +16,12 @@ void test('parseWebFetchHttpUrl rejects unsupported schemes and embedded credent
   assert.deepEqual(parseWebFetchHttpUrl('file:///etc/passwd'), {
     ok: false,
     reasonCode: 'invalid_url',
-    message: 'web_fetch only supports http and https URLs.',
+    message: 'fetch_url only supports http and https URLs.',
   });
   assert.deepEqual(parseWebFetchHttpUrl('https://user:pass@example.com/'), {
     ok: false,
     reasonCode: 'unsafe_url',
-    message: 'web_fetch URL must not include embedded credentials.',
+    message: 'fetch_url URL must not include embedded credentials.',
   });
 });
 
@@ -29,7 +29,7 @@ void test('parseWebFetchHttpUrl rejects localhost before network fetch', () => {
   assert.deepEqual(parseWebFetchHttpUrl('http://localhost:5173/'), {
     ok: false,
     reasonCode: 'unsafe_url',
-    message: 'web_fetch URL resolves to a blocked hostname.',
+    message: 'fetch_url URL resolves to a blocked hostname.',
   });
 });
 

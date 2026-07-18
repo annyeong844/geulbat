@@ -6,7 +6,10 @@ import {
   connectWebSocket,
 } from './responses-websocket-connection.js';
 
-const SESSION_WEBSOCKET_CACHE_TTL_MS = 5 * 60 * 1000;
+export interface ResponsesWebSocketReusePolicy {
+  readonly idleRetentionMs: number;
+  readonly maxConnectionLifetimeMs: number;
+}
 
 export interface ResponsesWebSocketSessionSocket extends ResponsesWebSocketEventSource {
   readyState: number;
@@ -18,16 +21,23 @@ interface SessionEntry {
   socket: ResponsesWebSocketSessionSocket;
   busy: boolean;
   idleTimer: ReturnType<typeof setTimeout> | undefined;
+  connectionExpiresAtMs: number;
+  reusePolicy: ResponsesWebSocketReusePolicy;
 }
 
-export interface SocketHandle {
+interface SocketHandle {
   socket: ResponsesWebSocketSessionSocket;
-  entry: SessionEntry;
+  readonly reused: boolean;
   release: (options?: { keep?: boolean }) => void;
 }
 
 interface ResponsesWebSocketSessionStoreDeps {
-  ttlMs?: number;
+  now?: () => number;
+  scheduleTimeout?: (
+    callback: () => void,
+    delayMs: number,
+  ) => ReturnType<typeof setTimeout>;
+  clearScheduledTimeout?: (handle: ReturnType<typeof setTimeout>) => void;
   connectWebSocket?: (
     url: string,
     headers: Headers,
@@ -45,6 +55,7 @@ export interface ResponsesWebSocketSessionStore {
     url: string,
     headers: Headers,
     providerSessionId: string,
+    reusePolicy: ResponsesWebSocketReusePolicy,
     signal?: AbortSignal,
   ): Promise<SocketHandle>;
 }
@@ -53,7 +64,9 @@ export function createResponsesWebSocketSessionStore(
   deps?: ResponsesWebSocketSessionStoreDeps,
 ): ResponsesWebSocketSessionStore {
   const websocketSessionCache = new Map<string, SessionEntry>();
-  const ttlMs = deps?.ttlMs ?? SESSION_WEBSOCKET_CACHE_TTL_MS;
+  const now = deps?.now ?? Date.now;
+  const scheduleTimeout = deps?.scheduleTimeout ?? setTimeout;
+  const clearScheduledTimeout = deps?.clearScheduledTimeout ?? clearTimeout;
   const connectWebSocketImpl: NonNullable<
     ResponsesWebSocketSessionStoreDeps['connectWebSocket']
   > = deps?.connectWebSocket ?? connectWebSocket;
@@ -61,12 +74,76 @@ export function createResponsesWebSocketSessionStore(
     ResponsesWebSocketSessionStoreDeps['closeWebSocketSilently']
   > = deps?.closeWebSocketSilently ?? closeWebSocketSilently;
 
+  function scheduleSessionWebSocketExpiry(
+    cacheKey: string,
+    entry: SessionEntry,
+  ): void {
+    if (entry.idleTimer) {
+      clearScheduledTimeout(entry.idleTimer);
+    }
+    const remainingConnectionLifetimeMs = entry.connectionExpiresAtMs - now();
+    if (remainingConnectionLifetimeMs <= 0) {
+      closeWebSocketSilentlyImpl(
+        entry.socket,
+        1000,
+        'connection_lifetime_reached',
+      );
+      websocketSessionCache.delete(cacheKey);
+      return;
+    }
+
+    const expiresForConnectionLifetime =
+      remainingConnectionLifetimeMs <= entry.reusePolicy.idleRetentionMs;
+    const delayMs = Math.min(
+      entry.reusePolicy.idleRetentionMs,
+      remainingConnectionLifetimeMs,
+    );
+    entry.idleTimer = scheduleTimeout(() => {
+      entry.idleTimer = undefined;
+      if (entry.busy || websocketSessionCache.get(cacheKey) !== entry) {
+        return;
+      }
+      closeWebSocketSilentlyImpl(
+        entry.socket,
+        1000,
+        expiresForConnectionLifetime
+          ? 'connection_lifetime_reached'
+          : 'idle_timeout',
+      );
+      websocketSessionCache.delete(cacheKey);
+    }, delayMs);
+    entry.idleTimer.unref?.();
+  }
+
   return {
-    async acquireWebSocket(url, headers, providerSessionId, signal) {
-      const cached = websocketSessionCache.get(providerSessionId);
+    async acquireWebSocket(
+      url,
+      headers,
+      providerSessionId,
+      reusePolicy,
+      signal,
+    ) {
+      const cacheKey = buildSessionCacheKey(providerSessionId, url);
+      let cached = websocketSessionCache.get(cacheKey);
+      if (
+        cached !== undefined &&
+        !cached.busy &&
+        now() >= cached.connectionExpiresAtMs
+      ) {
+        if (cached.idleTimer) {
+          clearScheduledTimeout(cached.idleTimer);
+        }
+        closeWebSocketSilentlyImpl(
+          cached.socket,
+          1000,
+          'connection_lifetime_reached',
+        );
+        websocketSessionCache.delete(cacheKey);
+        cached = undefined;
+      }
       if (cached) {
         if (cached.idleTimer) {
-          clearTimeout(cached.idleTimer);
+          clearScheduledTimeout(cached.idleTimer);
           cached.idleTimer = undefined;
         }
 
@@ -74,21 +151,15 @@ export function createResponsesWebSocketSessionStore(
           cached.busy = true;
           return {
             socket: cached.socket,
-            entry: cached,
+            reused: true,
             release: ({ keep } = {}) => {
               if (!keep || !isWebSocketReusable(cached.socket)) {
                 closeWebSocketSilentlyImpl(cached.socket);
-                websocketSessionCache.delete(providerSessionId);
+                websocketSessionCache.delete(cacheKey);
                 return;
               }
               cached.busy = false;
-              scheduleSessionWebSocketExpiry(
-                providerSessionId,
-                cached,
-                websocketSessionCache,
-                closeWebSocketSilentlyImpl,
-                ttlMs,
-              );
+              scheduleSessionWebSocketExpiry(cacheKey, cached);
             },
           };
         }
@@ -97,7 +168,7 @@ export function createResponsesWebSocketSessionStore(
           const socket = await connectWebSocketImpl(url, headers, signal);
           return {
             socket,
-            entry: { socket, busy: true, idleTimer: undefined },
+            reused: false,
             release: () => {
               closeWebSocketSilentlyImpl(socket);
             },
@@ -106,66 +177,48 @@ export function createResponsesWebSocketSessionStore(
 
         if (!isWebSocketReusable(cached.socket)) {
           closeWebSocketSilentlyImpl(cached.socket);
-          websocketSessionCache.delete(providerSessionId);
+          websocketSessionCache.delete(cacheKey);
         }
       }
 
       const socket = await connectWebSocketImpl(url, headers, signal);
+      const connectedAtMs = now();
       const entry: SessionEntry = {
         socket,
         busy: true,
         idleTimer: undefined,
+        connectionExpiresAtMs:
+          connectedAtMs + reusePolicy.maxConnectionLifetimeMs,
+        reusePolicy,
       };
-      websocketSessionCache.set(providerSessionId, entry);
+      websocketSessionCache.set(cacheKey, entry);
 
       return {
         socket,
-        entry,
+        reused: false,
         release: ({ keep } = {}) => {
           if (!keep || !isWebSocketReusable(entry.socket)) {
             closeWebSocketSilentlyImpl(entry.socket);
-            if (entry.idleTimer) clearTimeout(entry.idleTimer);
-            if (websocketSessionCache.get(providerSessionId) === entry) {
-              websocketSessionCache.delete(providerSessionId);
+            if (entry.idleTimer) {
+              clearScheduledTimeout(entry.idleTimer);
+            }
+            if (websocketSessionCache.get(cacheKey) === entry) {
+              websocketSessionCache.delete(cacheKey);
             }
             return;
           }
           entry.busy = false;
-          scheduleSessionWebSocketExpiry(
-            providerSessionId,
-            entry,
-            websocketSessionCache,
-            closeWebSocketSilentlyImpl,
-            ttlMs,
-          );
+          scheduleSessionWebSocketExpiry(cacheKey, entry);
         },
       };
     },
   };
 }
 
-function isWebSocketReusable(socket: ResponsesWebSocketSessionSocket): boolean {
-  return socket.readyState === WebSocket.OPEN;
+function buildSessionCacheKey(providerSessionId: string, url: string): string {
+  return JSON.stringify([providerSessionId, url]);
 }
 
-function scheduleSessionWebSocketExpiry(
-  providerSessionId: string,
-  entry: SessionEntry,
-  websocketSessionCache: Map<string, SessionEntry>,
-  closeWebSocketSilentlyImpl: (
-    socket: ResponsesWebSocketSessionSocket,
-    code?: number,
-    reason?: string,
-  ) => void,
-  ttlMs: number,
-): void {
-  if (entry.idleTimer) {
-    clearTimeout(entry.idleTimer);
-  }
-  entry.idleTimer = setTimeout(() => {
-    if (entry.busy) return;
-    closeWebSocketSilentlyImpl(entry.socket, 1000, 'idle_timeout');
-    websocketSessionCache.delete(providerSessionId);
-  }, ttlMs);
-  entry.idleTimer.unref?.();
+function isWebSocketReusable(socket: ResponsesWebSocketSessionSocket): boolean {
+  return socket.readyState === WebSocket.OPEN;
 }

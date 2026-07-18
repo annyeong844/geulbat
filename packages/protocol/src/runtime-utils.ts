@@ -10,7 +10,7 @@ export function isPlainRecord(
   if (!isRecord(value)) {
     return false;
   }
-  const prototype = Object.getPrototypeOf(value);
+  const prototype = Reflect.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 

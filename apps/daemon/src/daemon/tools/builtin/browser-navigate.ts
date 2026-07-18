@@ -6,7 +6,7 @@ import {
   type PtcBrowserNavigateRuntimeResult,
   type PtcBrowserNavigateRuntimeSummary,
 } from '../../ptc/runtime/browser/browser-navigate-runtime-contract.js';
-import { createRunWorkspaceContext } from '../../run-workspace-context.js';
+import { createRunContext } from '../../run-context.js';
 import { toolError } from '../result.js';
 import { defineZodTool } from '../zod-tool.js';
 import {
@@ -43,10 +43,17 @@ export const browserNavigateTool = defineZodTool({
     'Navigate one user-selected HTTP(S) URL inside the PTC lab browser and return a digest-only navigation summary. Does not expose raw requested/final URLs, cookies, DOM, screenshots, or artifacts.',
   argsSchema: browserNavigateArgsSchema,
   sideEffectLevel: 'write',
-  mayMutateWorkspaceFiles: false,
+  mayMutateComputerFiles: false,
   requiresApproval: true,
+  catalogSearchMetadata: {
+    family: 'browser',
+    searchHints: ['browser navigate', 'open webpage in browser', 'visit url'],
+    tags: ['browser', 'ptc', 'navigation'],
+    whenToUse: 'Navigate a fresh PTC browser to one user-provided URL.',
+    notFor: 'Query-based search, arbitrary browser sessions, or file URLs.',
+  },
   async executeParsed(args: BrowserNavigateArgs, ctx) {
-    if (!ctx.threadId || !ctx.projectId) {
+    if (!ctx.threadId || !ctx.stateRoot) {
       return toolError(
         'execution_failed',
         'run context is required for browser_navigate.',
@@ -61,10 +68,10 @@ export const browserNavigateTool = defineZodTool({
     }
 
     const runtimeArgs = {
-      runContext: createRunWorkspaceContext({
+      runContext: createRunContext({
         threadId: ctx.threadId,
-        projectId: ctx.projectId,
-        workspaceRoot: ctx.workspaceRoot,
+        stateRoot: ctx.stateRoot,
+        workingDirectory: ctx.workingDirectory ?? '',
       }),
       request: {
         url: args.url,

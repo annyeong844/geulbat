@@ -71,6 +71,27 @@ void test('listTree rejects trees that exceed the node cap', async () => {
   });
 });
 
+void test('listTree truncate mode marks where the node cap hid entries', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-tree-truncate-'));
+
+  for (let index = 0; index < 4; index += 1) {
+    await writeFile(join(workspaceRoot, `file-${index}.txt`), 'x\n', 'utf8');
+  }
+
+  const tree = await listTree(workspaceRoot, {
+    maxNodes: 2,
+    depthLimitMode: 'truncate',
+  });
+
+  assert.deepEqual(tree.at(-1), {
+    name: '… 더 많은 항목',
+    path: '__geulbat_tree_truncated__',
+    type: 'truncated',
+    message:
+      '이 폴더에는 더 많은 항목이 있습니다. 하위 폴더를 열어 계속 탐색하세요.',
+  });
+});
+
 void test('listTree has no hidden default depth guard', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-tree-deep-'));
 
@@ -86,7 +107,8 @@ void test('listTree has no hidden default depth guard', async () => {
   let node = tree[0];
   for (let depth = 0; depth <= 16; depth += 1) {
     assert.equal(node?.name, `level-${depth}`);
-    node = node?.children?.[0];
+    assert.equal(node?.type, 'directory');
+    node = node.children?.[0];
   }
   assert.equal(node?.name, 'leaf.txt');
 });

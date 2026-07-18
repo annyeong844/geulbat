@@ -1,8 +1,8 @@
 import type { ArtifactRuntimePersistenceRenderer } from '@geulbat/protocol/runtime-persistence';
 
-import {
-  type ArtifactSourceInputRef,
-  type ResolvedArtifactSourceRef,
+import type {
+  ArtifactSourceInputRef,
+  ResolvedArtifactSourceRef,
 } from '../../artifacts/artifact-types.js';
 import { buildCanonicalArtifactSourceRef } from '../../artifacts/artifact-source-ref.js';
 
@@ -16,7 +16,7 @@ export function createArtifactRuntimeSourceIdentity(
 ): string {
   const sanitizedSourceRef = buildCanonicalArtifactSourceRef(sourceRef);
   return JSON.stringify([
-    sanitizedSourceRef.projectId,
+    sanitizedSourceRef.workingDirectory,
     sanitizedSourceRef.threadId,
     sanitizedSourceRef.runId,
     sanitizedSourceRef.filePath,

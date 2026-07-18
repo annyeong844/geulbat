@@ -10,6 +10,7 @@ import {
   readRunApproveRequest,
   readRunCancelRequest,
   readRunInterjectRequest,
+  readRunToolRequest,
 } from './run-channel-control-request.js';
 
 const RUN_ID = testRunId(1);
@@ -78,7 +79,11 @@ void test('readRunApproveRequest rejects invalid approval decision shape', () =>
   );
   assert.deepEqual(
     readRunApproveRequest(approvalRequest({ grantScope: 'forever' })),
-    { ok: false, message: 'grantScope is required' },
+    { ok: false, message: 'grantScope must be once, run, or session' },
+  );
+  assert.deepEqual(
+    readRunApproveRequest(approvalRequest({ grantScope: 'thread' })),
+    { ok: false, message: 'grantScope must be once, run, or session' },
   );
 });
 
@@ -137,5 +142,54 @@ void test('readRunInterjectRequest accepts a valid request without trimming text
       runId: RUN_ID,
       text: '  keep this  ',
     },
+  );
+});
+
+void test('readRunToolRequest accepts a frame tool call with parent-injected context', () => {
+  const threadId = testThreadId(90);
+  const result = readRunToolRequest({
+    threadId,
+    toolName: 'read_file',
+    args: { path: 'draft.md' },
+    scopeHandle: 'scope-1',
+    frameRequestId: 'af-1',
+    workingDirectory: 'Users/sample/Documents',
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    value: {
+      threadId,
+      toolName: 'read_file',
+      args: { path: 'draft.md' },
+      scopeHandle: 'scope-1',
+      frameRequestId: 'af-1',
+      workingDirectory: 'Users/sample/Documents',
+    },
+  });
+});
+
+void test('readRunToolRequest rejects missing or malformed frame tool fields', () => {
+  const threadId = testThreadId(91);
+  const valid = {
+    threadId,
+    toolName: 'read_file',
+    args: {},
+    scopeHandle: 'scope-1',
+    frameRequestId: 'af-1',
+  };
+
+  assert.equal(readRunToolRequest('nope').ok, false);
+  assert.equal(
+    readRunToolRequest({ ...valid, threadId: 'not-a-thread-id!' }).ok,
+    false,
+  );
+  assert.equal(readRunToolRequest({ ...valid, toolName: '  ' }).ok, false);
+  assert.equal(readRunToolRequest({ ...valid, args: 'rm -rf' }).ok, false);
+  assert.equal(readRunToolRequest({ ...valid, scopeHandle: '' }).ok, false);
+  assert.equal(readRunToolRequest({ ...valid, frameRequestId: '' }).ok, false);
+  assert.equal(
+    readRunToolRequest({ ...valid, workingDirectory: 42 }).ok,
+    false,
   );
 });

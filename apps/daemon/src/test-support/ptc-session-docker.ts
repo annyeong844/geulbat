@@ -8,16 +8,23 @@ import {
   PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_DEFAULT_POLICY,
+  PTC_SESSION_DOCKER_HOST_USER_POLICY_ID,
   type PtcSessionDockerCommandInvocation,
   type PtcSessionDockerCommandResult,
   type PtcSessionDockerCommandRunner,
+  type PtcSessionDockerHostUser,
   type PtcSessionDockerIdentity,
   type PtcSessionDockerManager,
   type PtcSessionDockerPolicy,
 } from '../daemon/ptc/lab/session/session-docker-contract.js';
 
 export const PTC_TEST_SESSION_DOCKER_CONTAINER_ID = 'container-ptc-test-1';
-export const PTC_TEST_WORKSPACE_REALPATH = '/real/workspace/project-a';
+export const PTC_TEST_SESSION_DOCKER_HOST_USER: PtcSessionDockerHostUser = {
+  hostUserPolicyId: PTC_SESSION_DOCKER_HOST_USER_POLICY_ID,
+  uid: 1000,
+  gid: 1000,
+};
+export const PTC_TEST_STATE_ROOT_REALPATH = '/real/workspace/project-a';
 
 export interface PtcSessionDockerCommandFixtureArgs {
   policy?: PtcSessionDockerPolicy;
@@ -46,8 +53,8 @@ export interface PtcSessionDockerManagerFixture extends PtcSessionDockerCommandF
 export async function withRealPtcSessionDockerManager<T>(
   args: PtcSessionDockerCommandFixtureArgs & {
     identity: PtcSessionDockerIdentity;
-    realpathWorkspaceRoot?: (workspaceRoot: string) => Promise<string>;
-    workspaceRootRealpath?: string;
+    realpathStateRoot?: (stateRoot: string) => Promise<string>;
+    stateRootRealpath?: string;
   },
   fn: (fixture: PtcSessionDockerManagerFixture) => Promise<T>,
 ): Promise<T> {
@@ -57,12 +64,13 @@ export async function withRealPtcSessionDockerManager<T>(
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
       policy: fixture.policy,
+      hostUser: PTC_TEST_SESSION_DOCKER_HOST_USER,
       commandRunner: fixture.runner,
-      realpathWorkspaceRoot:
-        args.realpathWorkspaceRoot ??
-        (async (workspaceRoot) => {
-          assert.equal(workspaceRoot, args.identity.workspaceRoot);
-          return args.workspaceRootRealpath ?? PTC_TEST_WORKSPACE_REALPATH;
+      realpathStateRoot:
+        args.realpathStateRoot ??
+        (async (stateRoot) => {
+          assert.equal(stateRoot, args.identity.stateRoot);
+          return args.stateRootRealpath ?? PTC_TEST_STATE_ROOT_REALPATH;
         }),
     });
 
@@ -97,6 +105,29 @@ export function createPtcSessionDockerCommandFixture(
       assert.equal(invocation.args[1], 'inspect');
       assert.equal(invocation.args.at(-1), policy.imageRef);
       return { kind: 'exit', exitCode: 0, stdout: '[]', stderr: '' };
+    }
+    if (invocation.args[0] === 'network') {
+      // Slice 1b open egress bridge ensure. Default to "bridge present" so the
+      // adopt path is behavior-preserving for existing open-network tests;
+      // tests that exercise the create path override via commandResult.
+      if (invocation.args[1] === 'inspect') {
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { Name: invocation.args.at(-1), Driver: 'bridge' },
+          ]),
+          stderr: '',
+        };
+      }
+      if (invocation.args[1] === 'create') {
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: 'network-id\n',
+          stderr: '',
+        };
+      }
     }
     if (invocation.args[0] === 'create') {
       await assertPreparedHostRoots(invocation);
@@ -181,7 +212,8 @@ export function readPtcSessionDockerBindMountHostPath(
   const mountSpec = invocation.args.find(
     (item) =>
       item.startsWith('type=bind,src=') &&
-      item.endsWith(`,dst=${containerPath}`),
+      (item.endsWith(`,dst=${containerPath}`) ||
+        item.endsWith(`,dst=${containerPath},readonly`)),
   );
   assert.ok(mountSpec);
   const hostPath = /^type=bind,src=([^,]+),dst=.+$/u.exec(mountSpec)?.[1];

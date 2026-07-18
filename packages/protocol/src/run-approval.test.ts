@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  APPROVAL_GRANT_SCOPES,
   isApprovalClass,
+  isApprovalGrantScope,
+  isApprovalRequest,
   isApprovalRequired,
   toApprovalClass,
   isWellKnownApprovalClass,
@@ -11,6 +14,21 @@ import {
 
 const RUN_ID = 'run-approval-1';
 const THREAD_ID = '11111111-1111-4111-8111-111111111111';
+
+void test('approval grant lifetimes exclude conversation threads', () => {
+  assert.deepEqual(APPROVAL_GRANT_SCOPES, ['once', 'run', 'session']);
+  assert.equal(isApprovalGrantScope('thread'), false);
+  assert.equal(
+    isApprovalRequest({
+      callId: 'call-thread-scope',
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      approved: true,
+      grantScope: 'thread',
+    }),
+    false,
+  );
+});
 
 void test('isWellKnownApprovalClass accepts built-in approval classes and rejects unknown values', () => {
   for (const approvalClass of WELL_KNOWN_APPROVAL_CLASSES) {

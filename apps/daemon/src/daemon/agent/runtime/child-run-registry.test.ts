@@ -6,6 +6,7 @@ import type { RunId, ThreadId } from '@geulbat/protocol/ids';
 import { createChildRunRegistry } from './child-run-registry.js';
 import type { ChildRunSnapshot } from '../../subagent-runtime-contracts.js';
 import { testRunId } from '../../../test-support/run-id.js';
+import { TEST_CHILD_MODEL_REGISTRATION } from '../../../test-support/subagent-model-routing.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 
 function readBrandedSnapshotIds(snapshot: ChildRunSnapshot): {
@@ -44,6 +45,7 @@ void test('child run registry tracks launch, approval pending, and terminal stat
   const registry = createChildRunRegistry();
 
   registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
     childRunId: testRunId('child-1'),
     childThreadId: testThreadId(1),
     parentRunId: testRunId('parent-1'),
@@ -75,6 +77,68 @@ void test('child run registry tracks launch, approval pending, and terminal stat
   assert.equal(terminalResult?.includes('child failed'), true);
 });
 
+void test('child run registry preserves and clones the child model pin and routing policy', () => {
+  const registry = createChildRunRegistry();
+  const childRunId = testRunId('child-model-pin');
+
+  registry.registerChildRun({
+    childRunId,
+    childThreadId: testThreadId(74),
+    parentRunId: testRunId('parent-model-pin'),
+    ownerThreadId: testThreadId(75),
+    subagentType: 'explorer',
+    modelPin: {
+      modelId: 'gpt-5.6-luna',
+      providerRunSelection: {
+        providerModel: {
+          providerId: 'openai_codex_direct',
+          model: 'gpt-5.6-luna',
+        },
+        reasoningEffort: 'xhigh',
+      },
+      selectionSource: 'user_fixed',
+    },
+    subagentModelRouting: {
+      mode: 'fixed',
+      choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
+    },
+  });
+
+  const first = registry.getChildRun(childRunId);
+  assert.ok(first);
+  assert.deepEqual(first.modelPin, {
+    modelId: 'gpt-5.6-luna',
+    providerRunSelection: {
+      providerModel: {
+        providerId: 'openai_codex_direct',
+        model: 'gpt-5.6-luna',
+      },
+      reasoningEffort: 'xhigh',
+    },
+    selectionSource: 'user_fixed',
+  });
+  assert.deepEqual(first.subagentModelRouting, {
+    mode: 'fixed',
+    choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
+  });
+
+  first.modelPin.modelId = 'grok-4.5';
+  first.modelPin.providerRunSelection.providerModel.providerId = 'grok_oauth';
+  first.modelPin.providerRunSelection.providerModel.model = 'grok-4.5';
+  first.modelPin.providerRunSelection.reasoningEffort = 'high';
+  if (first.subagentModelRouting.mode === 'fixed') {
+    first.subagentModelRouting.choice.modelId = 'gpt-5.6-sol';
+    first.subagentModelRouting.choice.reasoningEffort = 'medium';
+  }
+
+  const reread = registry.getChildRun(childRunId);
+  assert.equal(reread?.modelPin.modelId, 'gpt-5.6-luna');
+  assert.deepEqual(reread?.subagentModelRouting, {
+    mode: 'fixed',
+    choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
+  });
+});
+
 void test('child run registry wait resolves on revision change', async () => {
   const registry = createChildRunRegistry();
   const initial = registry.getChildRuns([]).revision;
@@ -82,6 +146,7 @@ void test('child run registry wait resolves on revision change', async () => {
 
   await delay(0);
   registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
     childRunId: testRunId('child-2'),
     childThreadId: testThreadId(3),
     parentRunId: testRunId('parent-2'),
@@ -98,6 +163,7 @@ void test('child run registry does not bump revision when state does not change'
   const childRunId = testRunId('child-3');
 
   registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
     childRunId,
     childThreadId: testThreadId(5),
     parentRunId: testRunId('parent-3'),
@@ -128,6 +194,7 @@ void test('child run registry retains terminal records across elapsed time', asy
   const childRunId = testRunId('child-retained');
 
   registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
     childRunId,
     childThreadId: testThreadId(7),
     parentRunId: testRunId('parent-retained'),
@@ -155,6 +222,7 @@ void test('child run registry retains every terminal record in a broad fan-out',
 
   for (const [index, childRunId] of childRunIds.entries()) {
     registry.registerChildRun({
+      ...TEST_CHILD_MODEL_REGISTRATION,
       childRunId,
       childThreadId: testThreadId(20 + index),
       parentRunId: testRunId('parent-fanout'),
@@ -193,6 +261,7 @@ void test('child run registry claims only terminal records owned by the caller',
   );
 
   registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
     childRunId: runningChildRunId,
     childThreadId: testThreadId(44),
     parentRunId: testRunId('parent-running'),
@@ -227,6 +296,7 @@ function registerTerminalChild(
 ): RunId {
   const childRunId = testRunId(childName);
   registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
     childRunId,
     childThreadId: testThreadId(threadSeed),
     parentRunId: testRunId('parent-terminal'),
@@ -247,6 +317,7 @@ void test('registering an existing child id starts the next lifecycle', () => {
   const childRunId = registerTerminalChild(registry, 'reuse-child', owner, 71);
 
   registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
     childRunId,
     childThreadId: testThreadId(72),
     parentRunId: testRunId('parent-reuse-next'),

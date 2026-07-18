@@ -14,6 +14,7 @@ type PtcLabBrowserRuntimeScriptEvidence =
 interface BuildPtcLabBrowserRuntimeScriptArgs {
   capability: string;
   evidence: PtcLabBrowserRuntimeScriptEvidence;
+  postDomContentLoadedSettle: 'load_and_networkidle' | 'none';
 }
 
 function buildPtcLabBrowserRuntimeScript(
@@ -300,12 +301,15 @@ function buildPtcLabBrowserRuntimeScript(
       waitUntil: input.loadWaitState,
       timeout: input.timeoutMs
     });
-    const policyEventsSettled = await waitForPolicyEventsToSettle(
-      page,
-      input,
-      navigationStartMs,
-      hasPolicyViolation
-    );
+    const policyEventsSettled =
+      config.postDomContentLoadedSettle === 'load_and_networkidle'
+        ? await waitForPolicyEventsToSettle(
+            page,
+            input,
+            navigationStartMs,
+            hasPolicyViolation
+          )
+        : true;
     policyCleanupOk =
       (await closeObservedPopupPages(context, page)) && policyCleanupOk;
     const navigationDurationMs = Math.max(0, Date.now() - navigationStartMs);
@@ -372,6 +376,7 @@ export const PTC_LAB_BROWSER_USER_URL_NAVIGATION_RUNTIME_SCRIPT =
   buildPtcLabBrowserRuntimeScript({
     capability: 'ptc_lab_browser_user_url_navigation',
     evidence: { kind: 'none' },
+    postDomContentLoadedSettle: 'load_and_networkidle',
   });
 
 export const PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_RUNTIME_SCRIPT =
@@ -382,6 +387,7 @@ export const PTC_LAB_BROWSER_PAGE_LOAD_EVIDENCE_RUNTIME_SCRIPT =
       outputKey: 'title',
       failureCode: 'evidence_output_invalid',
     },
+    postDomContentLoadedSettle: 'load_and_networkidle',
   });
 
 export const PTC_LAB_BROWSER_TEXT_EVIDENCE_RUNTIME_SCRIPT =
@@ -392,4 +398,5 @@ export const PTC_LAB_BROWSER_TEXT_EVIDENCE_RUNTIME_SCRIPT =
       outputKey: 'visibleText',
       failureCode: 'evidence_unavailable',
     },
+    postDomContentLoadedSettle: 'none',
   });

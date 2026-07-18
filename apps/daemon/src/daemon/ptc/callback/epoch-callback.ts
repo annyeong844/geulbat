@@ -6,7 +6,13 @@ import { isPtcRecord } from '../shared/record-shape.js';
 
 type PtcEpochCallbackHandlerResult =
   | { ok: true; result: unknown }
-  | { ok: false; errorCode: string; message: string };
+  | {
+      ok: false;
+      errorCode: string;
+      message: string;
+      remediation?: string;
+      details?: Record<string, unknown>;
+    };
 
 export interface PtcEpochCallbackHandlerInvocation {
   requestId: string;
@@ -14,7 +20,7 @@ export interface PtcEpochCallbackHandlerInvocation {
   args: unknown;
   cellId?: string;
   signal: AbortSignal;
-  enterLongWait(): boolean;
+  enterLongWait(this: void): boolean;
 }
 
 export type PtcEpochCallbackHandler = (
@@ -41,7 +47,14 @@ export interface CreatePtcEpochCallbackChannelArgs {
 
 type PtcWireResponse =
   | { requestId?: string; ok: true; result: unknown }
-  | { requestId?: string; ok: false; errorCode: string; message: string };
+  | {
+      requestId?: string;
+      ok: false;
+      errorCode: string;
+      message: string;
+      remediation?: string;
+      details?: Record<string, unknown>;
+    };
 
 export async function createPtcEpochCallbackChannel(
   args: CreatePtcEpochCallbackChannelArgs,
@@ -130,7 +143,7 @@ export async function createPtcEpochCallbackChannel(
         if (handled) {
           return;
         }
-        buffer += chunk;
+        buffer += String(chunk);
         if (
           maxFrameBytes !== undefined &&
           Buffer.byteLength(buffer, 'utf8') > maxFrameBytes
@@ -326,6 +339,12 @@ async function handleCallbackFrame(
         ok: false,
         errorCode: result.value.errorCode,
         message: result.value.message,
+        ...(result.value.remediation === undefined
+          ? {}
+          : { remediation: result.value.remediation }),
+        ...(result.value.details === undefined
+          ? {}
+          : { details: result.value.details }),
       },
       args.maxResponseBytes,
     );

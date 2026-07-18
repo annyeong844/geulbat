@@ -3,6 +3,16 @@ import { isPublicWebFixturePath } from './public-web-fixtures.js';
 import { isPublicGeneratedReactBundleInlinePath } from './react-bundle-inline-compile.js';
 
 const SHELL_OWNED_RUNTIME_HOST = new URL(DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN);
+const IPV4_OCTET_COUNT = 4;
+const IPV4_OCTET_MAX = 0xff;
+const IPV4_LOOPBACK_FIRST_OCTET = 127;
+const IPV4_OCTET_BIT_WIDTH = 8;
+const IPV6_SEGMENT_COUNT = 8;
+const IPV6_SEGMENT_MAX = 0xffff;
+const IPV6_HEXADECIMAL_RADIX = 16;
+const IPV6_LOOPBACK_ZERO_PREFIX_SEGMENT_COUNT = IPV6_SEGMENT_COUNT - 1;
+const IPV4_MAPPED_IPV6_ZERO_PREFIX_SEGMENT_COUNT = 5;
+const IPV4_MAPPED_IPV6_MARKER = IPV6_SEGMENT_MAX;
 
 export type ReactBundleRuntimeUrlPolicyFailureReason =
   | 'empty'
@@ -110,7 +120,7 @@ type Ipv6Segments = readonly [
 
 function parseIpv4(hostname: string): Ipv4Octets | null {
   const parts = hostname.split('.');
-  if (parts.length !== 4) {
+  if (parts.length !== IPV4_OCTET_COUNT) {
     return null;
   }
 
@@ -121,7 +131,10 @@ function parseIpv4(hostname: string): Ipv4Octets | null {
     return Number(part);
   });
   if (
-    octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+    octets.some(
+      (octet) =>
+        !Number.isInteger(octet) || octet < 0 || octet > IPV4_OCTET_MAX,
+    )
   ) {
     return null;
   }
@@ -130,7 +143,7 @@ function parseIpv4(hostname: string): Ipv4Octets | null {
 }
 
 function isLoopbackIpv4(octets: Ipv4Octets): boolean {
-  return octets[0] === 127;
+  return octets[0] === IPV4_LOOPBACK_FIRST_OCTET;
 }
 
 function parseIpv6(hostname: string): Ipv6Segments | null {
@@ -149,7 +162,7 @@ function parseIpv6(hostname: string): Ipv6Segments | null {
       return null;
     }
     const [first, second, third, fourth] = embeddedIpv4;
-    source = `${source.slice(0, lastColonIndex)}:${((first << 8) | second).toString(16)}:${((third << 8) | fourth).toString(16)}`;
+    source = `${source.slice(0, lastColonIndex)}:${((first << IPV4_OCTET_BIT_WIDTH) | second).toString(IPV6_HEXADECIMAL_RADIX)}:${((third << IPV4_OCTET_BIT_WIDTH) | fourth).toString(IPV6_HEXADECIMAL_RADIX)}`;
   }
 
   const doubleColonParts = source.split('::');
@@ -165,11 +178,12 @@ function parseIpv6(hostname: string): Ipv6Segments | null {
       if (!/^[0-9a-f]{1,4}$/u.test(part)) {
         return Number.NaN;
       }
-      return Number.parseInt(part, 16);
+      return Number.parseInt(part, IPV6_HEXADECIMAL_RADIX);
     });
     if (
       values.some(
-        (value) => !Number.isInteger(value) || value < 0 || value > 0xffff,
+        (value) =>
+          !Number.isInteger(value) || value < 0 || value > IPV6_SEGMENT_MAX,
       )
     ) {
       return null;
@@ -184,13 +198,22 @@ function parseIpv6(hostname: string): Ipv6Segments | null {
   }
 
   const fill =
-    doubleColonParts.length === 2 ? 8 - left.length - right.length : 0;
-  if (fill < 0 || (doubleColonParts.length === 1 && left.length !== 8)) {
+    doubleColonParts.length === 2
+      ? IPV6_SEGMENT_COUNT - left.length - right.length
+      : 0;
+  if (
+    fill < 0 ||
+    (doubleColonParts.length === 1 && left.length !== IPV6_SEGMENT_COUNT)
+  ) {
     return null;
   }
 
-  const segments = [...left, ...Array(fill).fill(0), ...right];
-  if (segments.length !== 8) {
+  const segments = [
+    ...left,
+    ...Array.from({ length: fill }, () => 0),
+    ...right,
+  ];
+  if (segments.length !== IPV6_SEGMENT_COUNT) {
     return null;
   }
 
@@ -214,21 +237,27 @@ function parseIpv6(hostname: string): Ipv6Segments | null {
 
 function isLoopbackIpv6(segments: Ipv6Segments): boolean {
   const isLoopback =
-    segments.slice(0, 7).every((segment) => segment === 0) && segments[7] === 1;
+    segments
+      .slice(0, IPV6_LOOPBACK_ZERO_PREFIX_SEGMENT_COUNT)
+      .every((segment) => segment === 0) &&
+    segments[IPV6_LOOPBACK_ZERO_PREFIX_SEGMENT_COUNT] === 1;
   if (isLoopback) {
     return true;
   }
 
   const isIpv4Mapped =
-    segments.slice(0, 5).every((segment) => segment === 0) &&
-    segments[5] === 0xffff;
+    segments
+      .slice(0, IPV4_MAPPED_IPV6_ZERO_PREFIX_SEGMENT_COUNT)
+      .every((segment) => segment === 0) &&
+    segments[IPV4_MAPPED_IPV6_ZERO_PREFIX_SEGMENT_COUNT] ===
+      IPV4_MAPPED_IPV6_MARKER;
   if (!isIpv4Mapped) {
     return false;
   }
 
-  const first = segments[6] >> 8;
-  const second = segments[6] & 0xff;
-  const third = segments[7] >> 8;
-  const fourth = segments[7] & 0xff;
+  const first = segments[6] >> IPV4_OCTET_BIT_WIDTH;
+  const second = segments[6] & IPV4_OCTET_MAX;
+  const third = segments[7] >> IPV4_OCTET_BIT_WIDTH;
+  const fourth = segments[7] & IPV4_OCTET_MAX;
   return isLoopbackIpv4([first, second, third, fourth]);
 }

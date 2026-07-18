@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isPtcRecord } from '../../shared/record-shape.js';
-import { makeRunWorkspaceContext } from '../../../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../../../test-support/run-context.js';
 import {
   createPtcSessionDockerCommandFixture,
   readPtcSessionDockerBindMountHostPath,
@@ -15,7 +15,6 @@ import {
   readPtcStaticImportEdges,
   readPtcStaticImportSpecifiers,
 } from '../../../../test-support/ptc-static-import-graph.js';
-import { testProjectId } from '../../../../test-support/project-id.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT } from '../../lab/session/session-docker-contract.js';
 import type {
@@ -65,7 +64,7 @@ void test('daemon runtime contract references the fixed probe contract type-only
 });
 
 void test('createPtcFixedEpochProbeRuntime runs fixed probe through a PTC session and cleans up', async () => {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-fixed-probe-workspace-'),
   );
   const runtimeRoot = await mkdtemp(
@@ -91,15 +90,14 @@ void test('createPtcFixedEpochProbeRuntime runs fixed probe through a PTC sessio
   const runtime = createPtcFixedEpochProbeRuntime({
     callbackTransportPolicy: TEST_CALLBACK_TRANSPORT_POLICY,
     commandRunner: fixture.runner,
-    runtimeRootForWorkspace: () => runtimeRoot,
+    runtimeRootForState: () => runtimeRoot,
   });
 
   try {
     const result = await runtime.runFixedEpochProbe({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(801),
-        projectId: testProjectId('project'),
-        workspaceRoot,
+        stateRoot,
       }),
     });
 
@@ -119,7 +117,7 @@ void test('createPtcFixedEpochProbeRuntime runs fixed probe through a PTC sessio
       [['rm', '-f', 'container-agent-ptc-fixed-probe-runtime']],
     );
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
@@ -127,7 +125,7 @@ void test('createPtcFixedEpochProbeRuntime runs fixed probe through a PTC sessio
 void test('createPtcFixedEpochProbeRuntime returns cleanup failure as primary after a probe failure', async () => {
   const runtime = createPtcFixedEpochProbeRuntime({
     createSessionManager: createCleanupFailureSessionManager,
-    runtimeRootForWorkspace: () => '/tmp/geulbat-ptc-fixed-probe-runtime',
+    runtimeRootForState: () => '/tmp/geulbat-ptc-fixed-probe-runtime',
     runProbe: async () => ({
       ok: false,
       reasonCode: 'probe_result_failed',
@@ -138,10 +136,9 @@ void test('createPtcFixedEpochProbeRuntime returns cleanup failure as primary af
   });
 
   const result = await runtime.runFixedEpochProbe({
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId: testThreadId(802),
-      projectId: testProjectId('project'),
-      workspaceRoot: '/tmp/geulbat-ptc-fixed-probe-workspace',
+      stateRoot: '/tmp/geulbat-ptc-fixed-probe-workspace',
     }),
   });
 
@@ -160,7 +157,7 @@ void test('createPtcFixedEpochProbeRuntime returns cleanup failure as primary af
 void test('createPtcFixedEpochProbeRuntime returns cleanup failure as primary after a successful probe', async () => {
   const runtime = createPtcFixedEpochProbeRuntime({
     createSessionManager: createCleanupFailureSessionManager,
-    runtimeRootForWorkspace: () => '/tmp/geulbat-ptc-fixed-probe-runtime',
+    runtimeRootForState: () => '/tmp/geulbat-ptc-fixed-probe-runtime',
     runProbe: async () => ({
       ok: true,
       value: FIXED_PROBE_SUMMARY,
@@ -168,10 +165,9 @@ void test('createPtcFixedEpochProbeRuntime returns cleanup failure as primary af
   });
 
   const result = await runtime.runFixedEpochProbe({
-    runContext: makeRunWorkspaceContext({
+    runContext: makeRunContext({
       threadId: testThreadId(803),
-      projectId: testProjectId('project'),
-      workspaceRoot: '/tmp/geulbat-ptc-fixed-probe-workspace',
+      stateRoot: '/tmp/geulbat-ptc-fixed-probe-workspace',
     }),
   });
 

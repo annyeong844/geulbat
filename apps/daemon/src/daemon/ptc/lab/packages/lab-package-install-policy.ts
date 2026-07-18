@@ -9,15 +9,16 @@ import {
   admitPtcLabPolicy,
 } from '../../shared/lab-spine.js';
 import { isPtcSha256Hex } from '../../shared/sha256.js';
-import type { PtcLabAdmittedProfile } from '../profile/lab-profile.js';
-import type { PtcLabPolicyProjection } from '../profile/lab-profile.js';
+import type {
+  PtcLabAdmittedProfile,
+  PtcLabPolicyProjection,
+} from '../profile/lab-profile.js';
 import {
   PTC_LAB_PACKAGE_INSTALL_WORKDIR_EXISTS_EXIT_CODE,
   PTC_LAB_PACKAGE_INSTALL_WORKDIR_EXISTS_MARKER,
-  type PtcLabCacheOnlyNpmInstallRequest,
   type PtcLabCacheOnlyPackageInstallSessionHandle,
-  type PtcLabNetworkNpmInstallRequest,
   type PtcLabNetworkPackageInstallSessionHandle,
+  type PtcLabNpmInstallRequest,
   type PtcLabNpmExactPackage,
   type PtcLabOpenNetworkPolicyProjection,
   type PtcLabPackageInstallModeForSmoke,
@@ -134,7 +135,7 @@ export function validateNetworkPackageInstallSession(args: {
 }
 
 export function validatePackageInstallRequest(args: {
-  request: PtcLabCacheOnlyNpmInstallRequest | PtcLabNetworkNpmInstallRequest;
+  request: PtcLabNpmInstallRequest;
   policy: PtcLabPolicyProjection;
 }): PtcLabPackageInstallResult<PtcLabValidatedNpmInstallRequest> {
   if (
@@ -304,7 +305,7 @@ function isSafeInstallId(value: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/u.test(value);
 }
 
-function isSafeNpmPackageName(value: string): boolean {
+export function isSafeNpmPackageName(value: string): boolean {
   const unscoped = '[a-z0-9][a-z0-9._-]{0,213}';
   const scoped = `@[a-z0-9][a-z0-9._-]{0,213}\\/${unscoped}`;
   if (!new RegExp(`^(?:${unscoped}|${scoped})$`, 'u').test(value)) {

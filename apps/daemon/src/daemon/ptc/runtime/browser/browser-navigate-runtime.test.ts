@@ -22,8 +22,7 @@ import {
   createPtcSessionDockerCommandFixture,
   readPtcSessionDockerBindMountHostPath,
 } from '../../../../test-support/ptc-session-docker.js';
-import { makeRunWorkspaceContext } from '../../../../test-support/run-workspace-context.js';
-import { testProjectId } from '../../../../test-support/project-id.js';
+import { makeRunContext } from '../../../../test-support/run-context.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { createPtcBrowserNavigateRuntime } from './browser-navigate-runtime.js';
 
@@ -106,8 +105,8 @@ void test('createPtcBrowserNavigateRuntime wires user URL browser policy without
   try {
     const runtime = createPtcBrowserNavigateRuntime({
       commandRunner: fixture.runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/browser-navigate',
-      runtimeRootForWorkspace: () => runtimeRoot,
+      realpathStateRoot: async () => '/real/workspace/browser-navigate',
+      runtimeRootForState: () => runtimeRoot,
       now: (() => {
         let value = 100;
         return () => {
@@ -118,10 +117,9 @@ void test('createPtcBrowserNavigateRuntime wires user URL browser policy without
     });
 
     const result = await runtime.navigate({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(940),
-        projectId: testProjectId('project'),
-        workspaceRoot: '/workspace/project',
+        stateRoot: '/workspace/project',
       }),
       request: {
         url: 'https://example.com/private?access_token=secret#id_token=secret',
@@ -151,7 +149,7 @@ void test('createPtcBrowserNavigateRuntime wires user URL browser policy without
   }
 });
 
-void test('createPtcBrowserNavigateRuntime reports workspace owner closeAll cleanup failure', async () => {
+void test('createPtcBrowserNavigateRuntime reports state owner closeAll cleanup failure', async () => {
   const runtimeRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-browser-navigate-close-all-'),
   );
@@ -191,14 +189,13 @@ void test('createPtcBrowserNavigateRuntime reports workspace owner closeAll clea
   try {
     const runtime = createPtcBrowserNavigateRuntime({
       commandRunner: fixture.runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/browser-navigate',
-      runtimeRootForWorkspace: () => runtimeRoot,
+      realpathStateRoot: async () => '/real/workspace/browser-navigate',
+      runtimeRootForState: () => runtimeRoot,
     });
     const result = await runtime.navigate({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(941),
-        projectId: testProjectId('project'),
-        workspaceRoot: '/workspace/project',
+        stateRoot: '/workspace/project',
       }),
       request: {
         url: 'https://example.com/',
@@ -213,7 +210,7 @@ void test('createPtcBrowserNavigateRuntime reports workspace owner closeAll clea
       message: 'PTC browser navigation session cleanup failed',
       diagnostics: {
         cleanupReasonCode: 'container_remove_failed',
-        workspaceRuntimeCount: 1,
+        stateRuntimeCount: 1,
       },
     });
     assert.deepEqual(await runtime.closeAll(), { ok: true });
@@ -227,30 +224,30 @@ void test('createPtcBrowserNavigateRuntime reports workspace owner closeAll clea
   }
 });
 
-void test('createPtcBrowserNavigateRuntime reports workspace runtime admission failures without throwing', async () => {
+void test('createPtcBrowserNavigateRuntime reports state runtime admission failures without throwing', async () => {
   const cases = [
     {
       name: 'workspace-root-realpath',
       runtime: createPtcBrowserNavigateRuntime({
-        realpathWorkspaceRoot: async () => {
+        realpathStateRoot: async () => {
           throw new Error('/private-geulbat/workspace secret');
         },
-        runtimeRootForWorkspace: () => '/unused/runtime/root',
+        runtimeRootForState: () => '/unused/runtime/root',
       }),
-      diagnostics: { workspaceRootRealpathFailed: true },
+      diagnostics: { stateRootRealpathFailed: true },
     },
     {
       name: 'missing-runtime-root-resolver',
       runtime: createPtcBrowserNavigateRuntime({
-        realpathWorkspaceRoot: async () => '/real/workspace/browser-navigate',
+        realpathStateRoot: async () => '/real/workspace/browser-navigate',
       }),
       diagnostics: { runtimeRootUnavailable: true },
     },
     {
       name: 'runtime-root-resolver-throws',
       runtime: createPtcBrowserNavigateRuntime({
-        realpathWorkspaceRoot: async () => '/real/workspace/browser-navigate',
-        runtimeRootForWorkspace: () => {
+        realpathStateRoot: async () => '/real/workspace/browser-navigate',
+        runtimeRootForState: () => {
           throw new Error('/private-geulbat/runtime secret');
         },
       }),
@@ -260,10 +257,9 @@ void test('createPtcBrowserNavigateRuntime reports workspace runtime admission f
 
   for (const item of cases) {
     const result = await item.runtime.navigate({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(942),
-        projectId: testProjectId('project'),
-        workspaceRoot: '/workspace/project',
+        stateRoot: '/workspace/project',
       }),
       request: {
         url: 'https://example.com/private?access_token=secret#id_token=secret',

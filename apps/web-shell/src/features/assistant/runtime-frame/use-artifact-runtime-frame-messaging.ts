@@ -6,7 +6,13 @@ import type {
   GeneratedTextExportSnapshot,
 } from '../../artifacts/artifact-types.js';
 import { createArtifactRuntimePersistenceBridgeResponder } from '../runtime-persistence/artifact-runtime-persistence.js';
-import { handleArtifactRuntimeFrameMessageEvent } from './artifact-runtime-frame-message-handler.js';
+import {
+  handleArtifactRuntimeFrameMessageEvent,
+  type ArtifactRuntimeAgentInterjectIntent,
+  type ArtifactRuntimeAgentPromptIntent,
+  type ArtifactRuntimeAgentToolIntent,
+} from './artifact-runtime-frame-message-handler.js';
+import type { RunToolResultPayload } from '@geulbat/protocol/run-channel';
 
 export function useArtifactRuntimeFrameMessaging(args: {
   iframeRef: { current: HTMLIFrameElement | null };
@@ -14,6 +20,7 @@ export function useArtifactRuntimeFrameMessaging(args: {
   runtimeHostOrigin: string;
   scope: ArtifactRuntimePersistenceScopeRequest | null;
   scopeHandle: string;
+  minFrameHeight?: number;
   markHostReady: () => void;
   setFrameHeight: (height: number) => void;
   onGeneratedTextExportSnapshotChange?: (
@@ -22,6 +29,13 @@ export function useArtifactRuntimeFrameMessaging(args: {
   onGeneratedBinaryExportSnapshotChange?: (
     snapshot: GeneratedBinaryExportSnapshot | null,
   ) => void;
+  onAgentPromptRequest?: (intent: ArtifactRuntimeAgentPromptIntent) => void;
+  onAgentInterjectRequest?: (
+    intent: ArtifactRuntimeAgentInterjectIntent,
+  ) => void;
+  onAgentToolRequest?: (
+    intent: ArtifactRuntimeAgentToolIntent,
+  ) => Promise<RunToolResultPayload>;
 }): void {
   const {
     iframeRef,
@@ -29,10 +43,14 @@ export function useArtifactRuntimeFrameMessaging(args: {
     runtimeHostOrigin,
     scope,
     scopeHandle,
+    minFrameHeight,
     markHostReady,
     setFrameHeight,
     onGeneratedTextExportSnapshotChange,
     onGeneratedBinaryExportSnapshotChange,
+    onAgentPromptRequest,
+    onAgentInterjectRequest,
+    onAgentToolRequest,
   } = args;
 
   const bridgeResponder = useMemo(
@@ -56,6 +74,7 @@ export function useArtifactRuntimeFrameMessaging(args: {
         runtimeDocument,
         runtimeHostOrigin,
         scopeHandle,
+        ...(minFrameHeight !== undefined ? { minFrameHeight } : {}),
         bridgeResponder,
         markHostReady,
         setFrameHeight,
@@ -65,6 +84,11 @@ export function useArtifactRuntimeFrameMessaging(args: {
         ...(onGeneratedTextExportSnapshotChange !== undefined
           ? { onGeneratedTextExportSnapshotChange }
           : {}),
+        ...(onAgentPromptRequest !== undefined ? { onAgentPromptRequest } : {}),
+        ...(onAgentInterjectRequest !== undefined
+          ? { onAgentInterjectRequest }
+          : {}),
+        ...(onAgentToolRequest !== undefined ? { onAgentToolRequest } : {}),
       });
     };
 
@@ -76,6 +100,10 @@ export function useArtifactRuntimeFrameMessaging(args: {
     bridgeResponder,
     iframeRef,
     markHostReady,
+    minFrameHeight,
+    onAgentInterjectRequest,
+    onAgentPromptRequest,
+    onAgentToolRequest,
     onGeneratedBinaryExportSnapshotChange,
     onGeneratedTextExportSnapshotChange,
     runtimeDocument,

@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "composite": true
+  },
+  "references": [{ "path": "../shared-utils" }],
+  "include": ["src/**/*"],
+  "exclude": ["src/**/*.test.ts"]
+}

@@ -10,7 +10,6 @@ import {
 import { createApprovalGrantStore } from './approval-grants.js';
 import { createToolRegistryStore } from './registry.js';
 import type { AnyTool } from './types.js';
-import { testThreadId } from '../../test-support/thread-id.js';
 
 function makeTestTool(args: {
   name: string;
@@ -28,7 +27,7 @@ function makeTestTool(args: {
     },
     strict: true,
     sideEffectLevel: args.sideEffectLevel,
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     timeoutMs: 1000,
     requiresApproval: args.requiresApproval,
     parseArgs() {
@@ -51,7 +50,7 @@ void test('mutating tools require approval and unknown tools fail closed', () =>
   );
   toolRegistry.registerTool(
     makeTestTool({
-      name: 'patch_file',
+      name: 'apply_patch',
       sideEffectLevel: 'write',
       requiresApproval: true,
     }),
@@ -77,7 +76,7 @@ void test('mutating tools require approval and unknown tools fail closed', () =>
     true,
   );
   assert.equal(
-    shouldRequireApproval('patch_file', undefined, policyOptions),
+    shouldRequireApproval('apply_patch', undefined, policyOptions),
     true,
   );
   assert.equal(
@@ -122,6 +121,37 @@ void test('manage_files delete upgrades runtime side effect to destructive', () 
   );
 });
 
+void test('exec_command keeps destructive approval semantics', () => {
+  const toolRegistry = createToolRegistryStore({ builtins: [] });
+  const approvalGrants = createApprovalGrantStore();
+  toolRegistry.registerTool(
+    makeTestTool({
+      name: 'exec_command',
+      sideEffectLevel: 'destructive',
+      requiresApproval: true,
+    }),
+  );
+
+  const context = {
+    runId: 'run-exec-command',
+    sessionId: 'exec-command-session',
+    approvalClass: toApprovalClass('exec_command'),
+    sideEffectLevel: 'destructive' as const,
+    permissionMode: 'full_access' as const,
+  };
+
+  assert.equal(
+    resolveRuntimeSideEffectLevel('exec_command', {}, { toolRegistry }),
+    'destructive',
+  );
+  assert.equal(
+    shouldRequireApproval('exec_command', undefined, { toolRegistry }),
+    true,
+  );
+  // full_access: destructive도 자동 승인 (2026-07-12 소유자 결정)
+  assert.equal(shouldAutoApprove(context, { approvalGrants }), true);
+});
+
 void test('refresh_memory_index truthfully reports write effect and uses approval policy', () => {
   const toolRegistry = createToolRegistryStore({ builtins: [] });
   const approvalGrants = createApprovalGrantStore();
@@ -153,7 +183,6 @@ void test('refresh_memory_index truthfully reports write effect and uses approva
     shouldAutoApprove(
       {
         runId: 'run-refresh',
-        threadId: testThreadId(9),
         sessionId: 'refresh-session',
         approvalClass: toApprovalClass('refresh_memory_index'),
         sideEffectLevel: 'write',
@@ -169,7 +198,6 @@ void test('refresh_memory_index truthfully reports write effect and uses approva
     shouldAutoApprove(
       {
         runId: 'run-refresh',
-        threadId: testThreadId(9),
         sessionId: 'refresh-session',
         approvalClass: toApprovalClass('refresh_memory_index'),
         sideEffectLevel: 'write',
@@ -183,34 +211,134 @@ void test('refresh_memory_index truthfully reports write effect and uses approva
   );
 });
 
-void test('approval class v1 uses tool name by default and splits manage_files by operation', () => {
-  assert.equal(resolveApprovalClass('write_file'), 'write_file');
+void test('approval classes scope file mutations to Computer and split manage_files by operation', () => {
+  assert.equal(resolveApprovalClass('read_file'), 'read_file');
+  assert.equal(resolveApprovalClass('write_file'), 'write_file:computer');
   assert.equal(
     resolveApprovalClass('manage_files', { operation: 'delete' }),
-    'manage_files:delete',
+    'manage_files:delete:computer',
   );
   assert.equal(
     resolveApprovalClass('manage_files', { operation: 'rename' }),
-    'manage_files:rename',
+    'manage_files:rename:computer',
   );
 });
 
-void test('full_access auto-approves write but not destructive without explicit grant', () => {
+void test('Computer file mutations retain truthful runtime effect levels', () => {
+  const toolRegistry = createToolRegistryStore({ builtins: [] });
+  for (const name of ['write_file', 'apply_patch', 'manage_files']) {
+    toolRegistry.registerTool(
+      makeTestTool({
+        name,
+        sideEffectLevel: 'write',
+        requiresApproval: true,
+      }),
+    );
+  }
+
+  assert.equal(resolveApprovalClass('write_file'), 'write_file:computer');
+  assert.equal(resolveApprovalClass('apply_patch'), 'apply_patch:computer');
+  assert.equal(
+    resolveApprovalClass('manage_files', {
+      operation: 'move',
+    }),
+    'manage_files:move:computer',
+  );
+  assert.equal(
+    resolveRuntimeSideEffectLevel('write_file', {}, { toolRegistry }),
+    'write',
+  );
+  assert.equal(
+    resolveRuntimeSideEffectLevel('apply_patch', {}, { toolRegistry }),
+    'write',
+  );
+  assert.equal(
+    resolveRuntimeSideEffectLevel(
+      'manage_files',
+      { operation: 'create' },
+      { toolRegistry },
+    ),
+    'write',
+  );
+  assert.equal(
+    resolveRuntimeSideEffectLevel(
+      'manage_files',
+      { operation: 'delete' },
+      { toolRegistry },
+    ),
+    'destructive',
+  );
+});
+
+void test('legacy unscoped grants do not authorize Computer mutation classes', () => {
   const approvalGrants = createApprovalGrantStore();
-  const threadId = testThreadId(10);
+  const legacyUnscopedContext = {
+    runId: 'run-root-scope',
+    sessionId: 'root-scope-session',
+    approvalClass: toApprovalClass('write_file'),
+    sideEffectLevel: 'write' as const,
+    permissionMode: 'basic' as const,
+  };
+  const computerContext = {
+    ...legacyUnscopedContext,
+    approvalClass: toApprovalClass('write_file:computer'),
+  };
+
+  approvalGrants.registerApprovalGrant(legacyUnscopedContext, 'session');
+  assert.equal(
+    shouldAutoApprove(legacyUnscopedContext, { approvalGrants }),
+    true,
+  );
+  assert.equal(shouldAutoApprove(computerContext, { approvalGrants }), false);
+});
+
+void test('approval grants reuse only within an explicit run or connection session', () => {
+  const approvalGrants = createApprovalGrantStore();
+  const context = {
+    runId: 'run-grant-a',
+    sessionId: 'connection-session-a',
+    approvalClass: toApprovalClass('write_file:computer'),
+    sideEffectLevel: 'write' as const,
+    permissionMode: 'basic' as const,
+  };
+
+  approvalGrants.registerApprovalGrant(context, 'run');
+  assert.equal(approvalGrants.hasApprovalGrant(context), true);
+  assert.equal(
+    approvalGrants.hasApprovalGrant({ ...context, runId: 'run-grant-b' }),
+    false,
+  );
+
+  approvalGrants.clearApprovalSession(context.sessionId);
+  approvalGrants.registerApprovalGrant(context, 'session');
+  assert.equal(
+    approvalGrants.hasApprovalGrant({ ...context, runId: 'run-grant-b' }),
+    true,
+  );
+  assert.equal(
+    approvalGrants.hasApprovalGrant({
+      ...context,
+      runId: 'run-grant-b',
+      sessionId: 'connection-session-b',
+    }),
+    false,
+  );
+});
+
+void test('full_access auto-approves write and destructive; basic still prompts', () => {
+  const approvalGrants = createApprovalGrantStore();
   const sessionId = 'approval-session-test';
   const writeContext = {
     runId: 'run-write',
-    threadId,
     sessionId,
-    approvalClass: toApprovalClass('write_file'),
+    approvalClass: toApprovalClass('write_file:computer'),
     sideEffectLevel: 'write' as const,
     permissionMode: 'full_access' as const,
   };
   const destructiveContext = {
     ...writeContext,
     runId: 'run-delete',
-    approvalClass: toApprovalClass('manage_files:delete'),
+    approvalClass: toApprovalClass('manage_files:delete:computer'),
     sideEffectLevel: 'destructive' as const,
   };
 
@@ -221,19 +349,21 @@ void test('full_access auto-approves write but not destructive without explicit 
     }),
     true,
   );
-  assert.equal(
-    shouldAutoApprove(destructiveContext, {
-      approvalGrants,
-    }),
-    false,
-  );
-
-  approvalGrants.registerApprovalGrant(destructiveContext, 'run');
+  // 전체 액세스 = 전부 자동 (2026-07-12 소유자 결정) — 매 호출 재확인 제거
   assert.equal(
     shouldAutoApprove(destructiveContext, {
       approvalGrants,
     }),
     true,
+  );
+
+  // basic 모드는 grant 없이는 여전히 승인창
+  assert.equal(
+    shouldAutoApprove(
+      { ...destructiveContext, permissionMode: 'basic' as const },
+      { approvalGrants },
+    ),
+    false,
   );
   approvalGrants.clearApprovalSession(sessionId);
 });

@@ -31,6 +31,10 @@ import type {
 } from '../tools/types.js';
 import type { ToolMeta } from '../tools/tool-registry-model.js';
 import { toolError } from '../tools/result.js';
+import {
+  hasPendingInterject,
+  isInterjectFlushRequested,
+} from '../sessions/active-run-interject-buffer.js';
 
 interface ProcessFunctionCallsArgs {
   functionCalls: FunctionCall[];
@@ -42,7 +46,7 @@ interface ProcessFunctionCallsArgs {
 interface PreparedFunctionCall {
   functionCall: FunctionCall;
   toolArgs: Record<string, unknown>;
-  workspaceFilesMayHaveChanged: boolean;
+  computerFilesMayHaveChanged: boolean;
 }
 
 type SharedFunctionCallKind = 'read_only' | 'subagent_launch' | 'ptc_cell';
@@ -80,7 +84,8 @@ export async function processFunctionCalls(
       continue;
     }
 
-    if (isFunctionCallProcessingAborted(runtime)) {
+    const abortSignalBeforeItem = getFunctionCallProcessingAbortSignal(runtime);
+    if (abortSignalBeforeItem !== undefined) {
       await recordSkippedScheduleItems({
         scheduleItems: schedule.slice(itemIndex),
         round,
@@ -88,7 +93,21 @@ export async function processFunctionCalls(
         runtime,
         toolResult: buildAbortedSkippedToolResult(),
       });
-      return settleIfFunctionCallProcessingAborted(runtime) as StepResult<void>;
+      return settleFunctionCallProcessingAbort(runtime, abortSignalBeforeItem);
+    }
+
+    // 스티어 즉시 반영 요청 — 아직 시작하지 않은 이 라운드의 도구 호출을
+    // 건너뛰어 라운드를 조기 종결한다. 다음 라운드 시작 지점에서 대기 중
+    // 인터젝트가 소비된다(이미 실행 중인 도구는 완료를 기다린다).
+    if (shouldFlushPendingInterject(runtime)) {
+      await recordSkippedScheduleItems({
+        scheduleItems: schedule.slice(itemIndex),
+        round,
+        history,
+        runtime,
+        toolResult: buildInterjectFlushSkippedToolResult(),
+      });
+      return { ok: true, value: undefined };
     }
 
     if (item.kind === 'shared_window') {
@@ -101,7 +120,9 @@ export async function processFunctionCalls(
       if (!result.ok) {
         return result;
       }
-      if (isFunctionCallProcessingAborted(runtime)) {
+      const abortSignalAfterSharedWindow =
+        getFunctionCallProcessingAbortSignal(runtime);
+      if (abortSignalAfterSharedWindow !== undefined) {
         await recordSkippedScheduleItems({
           scheduleItems: schedule.slice(itemIndex + 1),
           round,
@@ -109,9 +130,10 @@ export async function processFunctionCalls(
           runtime,
           toolResult: buildAbortedSkippedToolResult(),
         });
-        return settleIfFunctionCallProcessingAborted(
+        return settleFunctionCallProcessingAbort(
           runtime,
-        ) as StepResult<void>;
+          abortSignalAfterSharedWindow,
+        );
       }
       continue;
     }
@@ -127,7 +149,9 @@ export async function processFunctionCalls(
         history,
         emit,
       });
-      if (isFunctionCallProcessingAborted(runtime)) {
+      const abortSignalAfterInvalidArguments =
+        getFunctionCallProcessingAbortSignal(runtime);
+      if (abortSignalAfterInvalidArguments !== undefined) {
         await recordSkippedScheduleItems({
           scheduleItems: schedule.slice(itemIndex + 1),
           round,
@@ -135,9 +159,10 @@ export async function processFunctionCalls(
           runtime,
           toolResult: buildAbortedSkippedToolResult(),
         });
-        return settleIfFunctionCallProcessingAborted(
+        return settleFunctionCallProcessingAbort(
           runtime,
-        ) as StepResult<void>;
+          abortSignalAfterInvalidArguments,
+        );
       }
       continue;
     }
@@ -151,7 +176,9 @@ export async function processFunctionCalls(
       emit,
     });
 
-    if (isFunctionCallProcessingAborted(runtime)) {
+    const abortSignalAfterToolCall =
+      getFunctionCallProcessingAbortSignal(runtime);
+    if (abortSignalAfterToolCall !== undefined) {
       await recordSkippedFunctionCall({
         functionCall: preparedFunctionCall.functionCall,
         toolArgs: preparedFunctionCall.toolArgs,
@@ -168,7 +195,10 @@ export async function processFunctionCalls(
         runtime,
         toolResult: buildAbortedSkippedToolResult(),
       });
-      return settleIfFunctionCallProcessingAborted(runtime) as StepResult<void>;
+      return settleFunctionCallProcessingAbort(
+        runtime,
+        abortSignalAfterToolCall,
+      );
     }
 
     const execution = await executeFunctionCall({
@@ -211,14 +241,16 @@ export async function processFunctionCalls(
       round,
       toolResult: execution.value,
       toolOutputRecoveryAvailable: isToolOutputRecoveryAvailable(runtime),
-      workspaceFilesMayHaveChanged:
-        preparedFunctionCall.workspaceFilesMayHaveChanged,
+      computerFilesMayHaveChanged:
+        preparedFunctionCall.computerFilesMayHaveChanged,
       runContext,
       runId: runtime.executionContextBase.runId,
       history,
       emit,
     });
-    if (isFunctionCallProcessingAborted(runtime)) {
+    const abortSignalAfterToolResult =
+      getFunctionCallProcessingAbortSignal(runtime);
+    if (abortSignalAfterToolResult !== undefined) {
       await recordSkippedScheduleItems({
         scheduleItems: schedule.slice(itemIndex + 1),
         round,
@@ -226,27 +258,27 @@ export async function processFunctionCalls(
         runtime,
         toolResult: buildAbortedSkippedToolResult(),
       });
-      return settleIfFunctionCallProcessingAborted(runtime) as StepResult<void>;
+      return settleFunctionCallProcessingAbort(
+        runtime,
+        abortSignalAfterToolResult,
+      );
     }
   }
 
   return { ok: true, value: undefined };
 }
 
-function isFunctionCallProcessingAborted(
+function getFunctionCallProcessingAbortSignal(
   runtime: AgentToolCallExecutionRuntime,
-): boolean {
-  return getToolRuntimeSignal(runtime)?.aborted === true;
+): AbortSignal | undefined {
+  const signal = getToolRuntimeSignal(runtime);
+  return signal?.aborted === true ? signal : undefined;
 }
 
-function settleIfFunctionCallProcessingAborted(
+function settleFunctionCallProcessingAbort(
   runtime: AgentToolCallExecutionRuntime,
-): StepResult<void> | null {
-  const signal = getToolRuntimeSignal(runtime);
-  if (!signal?.aborted) {
-    return null;
-  }
-
+  signal: AbortSignal,
+): StepResult<void> {
   return {
     ok: false,
     result: emitAndSettleTerminalFailure(
@@ -332,7 +364,7 @@ async function recordSkippedFunctionCall(args: {
     round: args.round,
     toolResult: args.toolResult,
     toolOutputRecoveryAvailable: isToolOutputRecoveryAvailable(args.runtime),
-    workspaceFilesMayHaveChanged: false,
+    computerFilesMayHaveChanged: false,
     runContext,
     runId: args.runtime.executionContextBase.runId,
     history: args.history,
@@ -342,6 +374,24 @@ async function recordSkippedFunctionCall(args: {
 
 function buildAbortedSkippedToolResult(): ExecuteResult {
   return toolError('aborted', 'tool skipped because run was cancelled');
+}
+
+function shouldFlushPendingInterject(
+  runtime: AgentToolCallExecutionRuntime,
+): boolean {
+  const runState = getToolRuntimeRunState(runtime);
+  return (
+    runState !== undefined &&
+    isInterjectFlushRequested(runState.interject) &&
+    hasPendingInterject(runState.interject)
+  );
+}
+
+function buildInterjectFlushSkippedToolResult(): ExecuteResult {
+  return toolError(
+    'aborted',
+    'tool skipped because the user asked to apply a pending message immediately; see the next user message',
+  );
 }
 
 function buildDeferredTerminalSkippedToolResult(
@@ -392,8 +442,8 @@ function prepareFunctionCallSchedule(
     const preparedFunctionCall = {
       functionCall,
       toolArgs: parsedArgs.args,
-      workspaceFilesMayHaveChanged:
-        toolMeta !== null ? toolMeta.mayMutateWorkspaceFiles : false,
+      computerFilesMayHaveChanged:
+        toolMeta !== null ? toolMeta.mayMutateComputerFiles : false,
     };
 
     if (sharedKind === null) {
@@ -424,7 +474,7 @@ function classifySharedFunctionCallKind(args: {
   if (
     toolMeta === null ||
     toolMeta.requiresApproval ||
-    toolMeta.mayMutateWorkspaceFiles
+    toolMeta.mayMutateComputerFiles
   ) {
     return null;
   }
@@ -446,7 +496,7 @@ function classifySharedFunctionCallKind(args: {
 function isPtcCellSharedWindowEligibleToolMeta(toolMeta: ToolMeta): boolean {
   return (
     toolMeta.requiresApproval === false &&
-    toolMeta.mayMutateWorkspaceFiles === false &&
+    toolMeta.mayMutateComputerFiles === false &&
     toolMeta.sideEffectLevel === 'none' &&
     toolMeta.parallelBatchKind === 'ptc_cell'
   );
@@ -694,8 +744,8 @@ async function recordParallelExecutionResult(args: {
     round,
     toolResult,
     toolOutputRecoveryAvailable: isToolOutputRecoveryAvailable(runtime),
-    workspaceFilesMayHaveChanged:
-      preparedFunctionCall.workspaceFilesMayHaveChanged,
+    computerFilesMayHaveChanged:
+      preparedFunctionCall.computerFilesMayHaveChanged,
     runContext: getToolRuntimeRunContext(runtime),
     runId: runtime.executionContextBase.runId,
     history,
@@ -706,7 +756,7 @@ async function recordParallelExecutionResult(args: {
 function getPreparedSubagentType(
   preparedFunctionCall: PreparedFunctionCall,
 ): SubagentType {
-  return String(preparedFunctionCall.toolArgs.subagent_type ?? '') === 'worker'
+  return preparedFunctionCall.toolArgs.subagent_type === 'worker'
     ? 'worker'
     : 'explorer';
 }

@@ -1,0 +1,9 @@
+{
+  "name": "geulbat-creators",
+  "version": "1.0.0",
+  "description": "Create Codex-compatible plugins and skills from a Geulbat conversation.",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Geulbat Creators"
+  }
+}

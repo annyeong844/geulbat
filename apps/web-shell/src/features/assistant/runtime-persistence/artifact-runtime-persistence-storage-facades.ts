@@ -26,10 +26,7 @@ export function createLogicalDatabaseFacade({
       await store.waitForCommittedStorageWrites();
       store.assertSharedStorageAvailable();
       const currentDatabaseMap = store.readCurrentDatabaseMap();
-      return Object.prototype.hasOwnProperty.call(
-        currentDatabaseMap,
-        normalizedKey,
-      )
+      return Object.hasOwn(currentDatabaseMap, normalizedKey)
         ? store.cloneJsonValue(currentDatabaseMap[normalizedKey])
         : null;
     },
@@ -50,9 +47,7 @@ export function createLogicalDatabaseFacade({
       store.assertSharedStorageAvailable();
       const normalizedKey = store.normalizeDatabaseKey(key);
       const currentDatabaseMap = store.readCurrentDatabaseMap();
-      if (
-        !Object.prototype.hasOwnProperty.call(currentDatabaseMap, normalizedKey)
-      ) {
+      if (!Object.hasOwn(currentDatabaseMap, normalizedKey)) {
         return false;
       }
       await store.schedulePersistedMutation(
@@ -99,10 +94,7 @@ export function createStorageFacade({
       await store.waitForCommittedStorageWrites();
       store.assertSharedStorageAvailable();
       const currentStorageMap = store.readCurrentStorageMap();
-      return Object.prototype.hasOwnProperty.call(
-        currentStorageMap,
-        normalizedKey,
-      )
+      return Object.hasOwn(currentStorageMap, normalizedKey)
         ? currentStorageMap[normalizedKey]
         : null;
     },
@@ -123,9 +115,7 @@ export function createStorageFacade({
       store.assertSharedStorageAvailable();
       const normalizedKey = store.normalizeStorageKey(key);
       const currentStorageMap = store.readCurrentStorageMap();
-      if (
-        !Object.prototype.hasOwnProperty.call(currentStorageMap, normalizedKey)
-      ) {
+      if (!Object.hasOwn(currentStorageMap, normalizedKey)) {
         return false;
       }
       await store.schedulePersistedMutation(

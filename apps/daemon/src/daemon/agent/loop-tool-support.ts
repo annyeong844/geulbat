@@ -5,11 +5,11 @@ import type { ExecuteResult } from '../tools/types.js';
 import { appendTranscriptEntry } from '../sessions/transcript-log.js';
 import type { AgentEventEmitter, ToolCallArgs } from './events.js';
 import type { ErrorCode } from '../error-codes.js';
-import type { RunWorkspaceContext } from '../run-workspace-context.js';
+import type { RunContext } from '../run-context.js';
 import { maybeOffloadToolResult } from './tool-output-offload.js';
 import type { ToolCallSource } from './tool-call-source.js';
 
-type TranscriptContext = RunWorkspaceContext;
+type TranscriptContext = RunContext;
 
 interface TranscriptToolCallRecord {
   id: string;
@@ -24,7 +24,7 @@ interface TranscriptToolResultRecord {
   callId: string;
   tool: string;
   ok: boolean;
-  workspaceFilesMayHaveChanged: boolean;
+  computerFilesMayHaveChanged: boolean;
   displayText: string;
   output: string;
   errorCode?: ErrorCode;
@@ -66,13 +66,22 @@ function formatDisplayText(
   output: string,
   error?: string,
 ): string {
-  if (!ok) return error ?? 'execution failed';
+  if (!ok) {
+    return error ?? 'execution failed';
+  }
   return output;
 }
 
-export type ToolResultHistoryMode = 'model_visible' | 'audit_only';
+type ToolResultHistoryMode = 'model_visible' | 'audit_only';
 
-function toPtcCallbackSourcePayload(source: ToolCallSource | undefined) {
+function toToolCallSourcePayload(source: ToolCallSource | undefined) {
+  if (source?.kind === 'artifact_frame') {
+    return {
+      kind: 'artifact_frame' as const,
+      scopeHandle: source.scopeHandle,
+      runtimeToolCallId: source.runtimeToolCallId,
+    };
+  }
   if (source?.kind !== 'ptc_callback') {
     return undefined;
   }
@@ -88,7 +97,7 @@ async function appendToolCallTranscriptEntry(
   runContext: TranscriptContext,
   record: TranscriptToolCallRecord,
 ): Promise<void> {
-  await appendTranscriptEntry(runContext.workspaceRoot, runContext.threadId, {
+  await appendTranscriptEntry(runContext.stateRoot, runContext.threadId, {
     role: 'tool_call',
     content: JSON.stringify(record),
     timestamp: new Date().toISOString(),
@@ -99,7 +108,7 @@ async function appendToolResultTranscriptEntry(
   runContext: TranscriptContext,
   record: TranscriptToolResultRecord,
 ): Promise<void> {
-  await appendTranscriptEntry(runContext.workspaceRoot, runContext.threadId, {
+  await appendTranscriptEntry(runContext.stateRoot, runContext.threadId, {
     role: 'tool_result',
     content: JSON.stringify(record),
     timestamp: new Date().toISOString(),
@@ -111,7 +120,7 @@ async function emitAndPersistToolResult(args: {
   round: number;
   toolResult: ExecuteResult;
   toolOutputRecoveryAvailable?: boolean;
-  workspaceFilesMayHaveChanged: boolean;
+  computerFilesMayHaveChanged: boolean;
   runContext: TranscriptContext;
   runId: string;
   history: HistoryItem[];
@@ -124,7 +133,7 @@ async function emitAndPersistToolResult(args: {
     round,
     toolResult,
     toolOutputRecoveryAvailable,
-    workspaceFilesMayHaveChanged,
+    computerFilesMayHaveChanged,
     runContext,
     runId,
     history,
@@ -132,7 +141,7 @@ async function emitAndPersistToolResult(args: {
     source,
     historyMode = 'model_visible',
   } = args;
-  const sourcePayload = toPtcCallbackSourcePayload(source);
+  const sourcePayload = toToolCallSourcePayload(source);
   const recordedToolResult = await maybeOffloadToolResult({
     functionCall,
     runContext,
@@ -142,6 +151,7 @@ async function emitAndPersistToolResult(args: {
       : {}),
     toolResult,
   });
+  const modelOutput = buildFunctionCallOutput(recordedToolResult);
   const parsedResult = parseToolResultRaw(recordedToolResult.output);
   const displayText = formatDisplayText(
     recordedToolResult.ok,
@@ -154,7 +164,7 @@ async function emitAndPersistToolResult(args: {
       step: round,
       tool: functionCall.name,
       ok: true,
-      workspaceFilesMayHaveChanged,
+      computerFilesMayHaveChanged,
       displayText,
       raw: parsedResult,
       ...(sourcePayload ? { source: sourcePayload } : {}),
@@ -168,7 +178,7 @@ async function emitAndPersistToolResult(args: {
       step: round,
       tool: functionCall.name,
       ok: false,
-      workspaceFilesMayHaveChanged,
+      computerFilesMayHaveChanged,
       displayText,
       raw: parsedResult,
       errorCode,
@@ -180,7 +190,7 @@ async function emitAndPersistToolResult(args: {
       history.push({
         kind: 'function_call_output',
         callId: functionCall.callId,
-        output: buildFunctionCallOutput(recordedToolResult),
+        output: modelOutput,
       });
     }
 
@@ -188,9 +198,9 @@ async function emitAndPersistToolResult(args: {
       callId: functionCall.callId,
       tool: functionCall.name,
       ok: false,
-      workspaceFilesMayHaveChanged,
+      computerFilesMayHaveChanged,
       displayText,
-      output: recordedToolResult.output,
+      output: modelOutput,
       errorCode,
       error,
       ...(source ? { source } : {}),
@@ -203,7 +213,7 @@ async function emitAndPersistToolResult(args: {
     history.push({
       kind: 'function_call_output',
       callId: functionCall.callId,
-      output: buildFunctionCallOutput(recordedToolResult),
+      output: modelOutput,
     });
   }
 
@@ -211,9 +221,9 @@ async function emitAndPersistToolResult(args: {
     callId: functionCall.callId,
     tool: functionCall.name,
     ok: true,
-    workspaceFilesMayHaveChanged,
+    computerFilesMayHaveChanged,
     displayText,
-    output: recordedToolResult.output,
+    output: modelOutput,
     ...(source ? { source } : {}),
     ...(historyMode !== 'model_visible' ? { historyMode } : {}),
   });
@@ -237,7 +247,7 @@ export async function recordToolCall(args: {
     source,
     historyMode,
   } = args;
-  const sourcePayload = toPtcCallbackSourcePayload(source);
+  const sourcePayload = toToolCallSourcePayload(source);
   emit('tool_call', {
     callId: functionCall.callId,
     step: round,
@@ -261,7 +271,7 @@ export async function recordToolResult(args: {
   round: number;
   toolResult: ExecuteResult;
   toolOutputRecoveryAvailable?: boolean;
-  workspaceFilesMayHaveChanged: boolean;
+  computerFilesMayHaveChanged: boolean;
   runContext: TranscriptContext;
   runId: string;
   history: HistoryItem[];
@@ -295,7 +305,7 @@ export async function recordInvalidToolArguments(args: {
     source,
     historyMode,
   } = args;
-  const sourcePayload = toPtcCallbackSourcePayload(source);
+  const sourcePayload = toToolCallSourcePayload(source);
   emit('tool_call', {
     callId: functionCall.callId,
     step: round,
@@ -318,7 +328,7 @@ export async function recordInvalidToolArguments(args: {
     ...(args.toolOutputRecoveryAvailable !== undefined
       ? { toolOutputRecoveryAvailable: args.toolOutputRecoveryAvailable }
       : {}),
-    workspaceFilesMayHaveChanged: false,
+    computerFilesMayHaveChanged: false,
     runContext,
     runId,
     history,

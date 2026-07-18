@@ -1,16 +1,10 @@
 import type {
   ArtifactId,
-  ArtifactRenderer,
   ArtifactRunId,
   ArtifactSourceRef,
 } from '@geulbat/protocol/artifacts';
 import type { ReactBundleInlineCompileFailureCode } from '@geulbat/protocol/react-bundle-inline-compile';
-import {
-  isProjectId,
-  isThreadId,
-  type ProjectId,
-  type ThreadId,
-} from '@geulbat/protocol/ids';
+import { isThreadId, type ThreadId } from '@geulbat/protocol/ids';
 import { isRecord } from '@geulbat/protocol/runtime-utils';
 import type { ReactNode } from 'react';
 import type { ArtifactDurabilitySourceAuthority } from './artifact-durability-source-authority.js';
@@ -23,7 +17,7 @@ export type ArtifactParseResult =
   | {
       kind: 'artifact';
       state: 'streaming' | 'completed' | 'fallback';
-      renderer: ArtifactRenderer | string | null;
+      renderer: string | null;
       digest: string | null;
       payload: string;
       raw: string;
@@ -37,7 +31,7 @@ export type ArtifactOnlyParseResult = Extract<
 
 export interface ArtifactSourceInputRef {
   kind?: ArtifactSourceRef['kind'] | null;
-  projectId?: string | null;
+  workingDirectory?: string | null;
   threadId?: string | null;
   runId?: string | null;
   filePath?: string | null;
@@ -49,7 +43,7 @@ export interface ArtifactSourceInputRef {
 
 export interface ResolvedArtifactSourceRef {
   kind: ArtifactSourceRef['kind'] | null;
-  projectId: ProjectId | null;
+  workingDirectory: string;
   threadId: ThreadId | null;
   runId: ArtifactRunId | null;
   filePath: string | null;
@@ -132,7 +126,6 @@ export interface ArtifactViewModel {
   sourceRef: ResolvedArtifactSourceRef;
   sourceAuthority: ArtifactDurabilitySourceAuthority | null;
   actions: {
-    openSource: ArtifactActionState;
     apply: ArtifactActionState;
     export: ArtifactActionState;
   };
@@ -145,16 +138,15 @@ export type ArtifactOnlyViewModel = ArtifactViewModel & {
 export function sanitizeArtifactSourceInputRef(
   sourceRef: ArtifactSourceInputRef | ResolvedArtifactSourceRef | undefined,
 ): ResolvedArtifactSourceRef {
-  const projectId = readProjectId(sourceRef?.projectId);
+  const workingDirectory = readWorkingDirectory(sourceRef?.workingDirectory);
   const threadId = readThreadId(sourceRef?.threadId);
   const filePath = readNonEmptyString(sourceRef?.filePath);
   return {
     kind: readArtifactSourceRefKind(sourceRef?.kind, {
-      projectId,
       threadId,
       filePath,
     }),
-    projectId,
+    workingDirectory,
     threadId,
     runId: readArtifactRunId(sourceRef?.runId),
     filePath,
@@ -168,7 +160,6 @@ export function sanitizeArtifactSourceInputRef(
 function readArtifactSourceRefKind(
   value: ArtifactSourceRef['kind'] | null | undefined,
   sourceRef: {
-    projectId: ProjectId | null;
     threadId: ThreadId | null;
     filePath: string | null;
   },
@@ -176,7 +167,7 @@ function readArtifactSourceRefKind(
   if (value === 'thread' || value === 'thread-file') {
     return value;
   }
-  if (!sourceRef.projectId || !sourceRef.threadId) {
+  if (!sourceRef.threadId) {
     return null;
   }
   return sourceRef.filePath ? 'thread-file' : 'thread';
@@ -185,8 +176,8 @@ function readArtifactSourceRefKind(
 function isSupportedGeneratedTextExportMimeType(
   value: string,
 ): value is GeneratedTextExportMimeType {
-  return GENERATED_TEXT_EXPORT_MIME_TYPES.includes(
-    value as GeneratedTextExportMimeType,
+  return GENERATED_TEXT_EXPORT_MIME_TYPES.some(
+    (mimeType) => mimeType === value,
   );
 }
 
@@ -288,8 +279,8 @@ function readNonEmptyString(value: string | null | undefined): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
-function readProjectId(value: string | null | undefined): ProjectId | null {
-  return typeof value === 'string' && isProjectId(value) ? value : null;
+function readWorkingDirectory(value: string | null | undefined): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function readThreadId(value: string | null | undefined): ThreadId | null {

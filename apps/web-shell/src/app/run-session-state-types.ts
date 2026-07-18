@@ -3,6 +3,10 @@ import type {
   ThreadArtifactVersion,
 } from '@geulbat/protocol/artifacts';
 import type { ApprovalRequired } from '@geulbat/protocol/run-approval';
+import type {
+  ContextUsageUpdatedEventPayload,
+  RunUsageTotals,
+} from '@geulbat/protocol/run-events';
 import type { RunTranscriptEntry } from '../lib/run-transcript-entry.js';
 
 export type PendingApprovalIdentity = Pick<
@@ -24,7 +28,21 @@ export interface ActiveRunViewState {
   activeArtifactRef: ArtifactRef | null;
   pendingApproval: ApprovalRequired | null;
   pendingApprovals: ApprovalRequired[];
+  // 대기 중 스티어 큐 — 모델이 소비하기 전의 mid-run 입력들
+  pendingSteers: PendingSteer[];
+  // 즉시 반영 요청됨 — 다음 소비까지 UI 힌트를 바꾸고 버튼을 잠근다
+  pendingSteerFlushRequested: boolean;
+  // 런 누적 토큰 사용량 — usage_updated 이벤트로 라운드마다 갱신
+  usageTotals: RunUsageTotals | null;
+  // 스트리밍 중인 도구 호출 인자 (tool_call_delta 누적) — 완성본
+  // tool_call이 도착하면 비워진다
+  streamingToolCall: { callId: string; tool: string; argsText: string } | null;
   streamError: string | null;
+}
+
+export interface PendingSteer {
+  receivedSeq: number;
+  text: string;
 }
 
 export type RunSessionPhase =
@@ -45,6 +63,7 @@ export interface RunSessionState {
   activeRunView: ActiveRunViewState;
   sessionError: string | null;
   backgroundNotificationsByThread: BackgroundNotificationsByThread;
+  contextUsageByThread: Record<string, ContextUsageUpdatedEventPayload>;
 }
 
 export interface VisibleRunState {
@@ -54,6 +73,10 @@ export interface VisibleRunState {
   finalAnswerText: string;
   activeArtifact: ThreadArtifactVersion | null;
   pendingApproval: ApprovalRequired | null;
+  pendingSteers: PendingSteer[];
+  pendingSteerFlushRequested: boolean;
+  usageTotals: RunUsageTotals | null;
+  contextUsage: ContextUsageUpdatedEventPayload | null;
   streamError: string | null;
   backgroundNotifications: BackgroundNotificationEntry[];
   isRunning: boolean;
@@ -80,12 +103,37 @@ export type RunSessionStateAction =
       type: 'transcript_activity_added';
       threadId: string;
       entry: Exclude<RunTranscriptEntry, { kind: 'assistant_text' }>;
+      // 이 완성본이 닫는 스트리밍 도구 호출 (tool_call 이벤트의 callId)
+      streamedToolCallId?: string;
+    }
+  | {
+      type: 'tool_call_args_streamed';
+      threadId: string;
+      callId: string;
+      tool: string;
+      argsDelta: string;
     }
   | {
       type: 'approval_requested';
       threadId: string;
       pendingApproval: ApprovalRequired;
     }
+  | { type: 'run_usage_updated'; threadId: string; usage: RunUsageTotals }
+  | {
+      type: 'run_context_usage_updated';
+      threadId: string;
+      contextUsage: ContextUsageUpdatedEventPayload;
+    }
+  | {
+      type: 'run_terminal';
+      runId: string;
+      threadId: string;
+      ok: boolean;
+    }
+  | { type: 'steer_queued'; threadId: string; steer: PendingSteer }
+  | { type: 'steer_applied'; threadId: string; receivedSeqs: number[] }
+  | { type: 'steer_cancelled'; receivedSeq: number }
+  | { type: 'steer_flush_requested' }
   | {
       type: 'subagent_activity_added';
       threadId: string;
@@ -115,6 +163,10 @@ export function createEmptyActiveRunView(
     activeArtifactRef: null,
     pendingApproval: null,
     pendingApprovals: [],
+    pendingSteers: [],
+    pendingSteerFlushRequested: false,
+    usageTotals: null,
+    streamingToolCall: null,
     streamError: null,
   };
 }

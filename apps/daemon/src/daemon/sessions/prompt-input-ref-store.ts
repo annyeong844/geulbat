@@ -23,12 +23,12 @@ export const RUN_PROMPT_INPUT_REF_STORE: InputRefFileStoreConfig =
     claimedMessage: 'promptRef is already claimed by another operation.',
   });
 
-export interface RunPromptInputRefWriteResult {
+interface RunPromptInputRefWriteResult {
   promptRef: string;
   byteLength: number;
 }
 
-export type RunPromptInputRefReadResult =
+type RunPromptInputRefReadResult =
   | { ok: true; path: string; prompt: string }
   | {
       ok: false;
@@ -36,7 +36,7 @@ export type RunPromptInputRefReadResult =
       message: string;
     };
 
-export type RunPromptInputRefPathResult = InputRefFilePathResult;
+type RunPromptInputRefPathResult = InputRefFilePathResult;
 
 export async function writeRunPromptInputRefFromStream(args: {
   workspaceRoot: string;

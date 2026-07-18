@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
-import { brandProjectId, brandThreadId } from '../../lib/id-brand-helpers.js';
+import { brandThreadId } from '../../lib/id-brand-helpers.js';
 import {
   buildCanonicalArtifactSourceRef,
   buildCommittedArtifactSourceRef,
@@ -12,8 +12,8 @@ import {
   deriveArtifactRuntimePersistenceScopeFromSourceRef,
 } from './artifact-source-ref.js';
 
-const PROJECT_ID = brandProjectId('workspace');
 const THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000001');
+const WORKING_DIRECTORY = 'stories/sample';
 
 void test('artifact source ref helpers assemble transcript, streaming, and committed source refs', () => {
   const message: ThreadMessage = {
@@ -43,7 +43,7 @@ void test('artifact source ref helpers assemble transcript, streaming, and commi
     persistenceEpoch: 3,
     sourceRef: {
       kind: 'thread-file',
-      projectId: PROJECT_ID,
+      workingDirectory: WORKING_DIRECTORY,
       threadId: THREAD_ID,
       runId: 'run-committed',
       filePath: 'notes/demo.md',
@@ -56,7 +56,7 @@ void test('artifact source ref helpers assemble transcript, streaming, and commi
     version: 4,
     sourceRef: {
       kind: 'thread',
-      projectId: PROJECT_ID,
+      workingDirectory: WORKING_DIRECTORY,
       threadId: THREAD_ID,
       runId: 'run-thread-committed',
       filePath: null,
@@ -66,11 +66,11 @@ void test('artifact source ref helpers assemble transcript, streaming, and commi
 
   assert.deepEqual(
     buildTranscriptArtifactSourceRef(message, {
-      projectId: 'workspace',
+      workingDirectory: WORKING_DIRECTORY,
       threadId: THREAD_ID,
     }),
     {
-      projectId: 'workspace',
+      workingDirectory: WORKING_DIRECTORY,
       threadId: THREAD_ID,
       runId: 'run-transcript',
       filePath: 'notes/demo.md',
@@ -80,13 +80,13 @@ void test('artifact source ref helpers assemble transcript, streaming, and commi
 
   assert.deepEqual(
     buildStreamingArtifactSourceRef({
-      projectId: 'workspace',
+      workingDirectory: WORKING_DIRECTORY,
       threadId: THREAD_ID,
       runId: 'run-streaming',
       filePath: 'notes/demo.md',
     }),
     {
-      projectId: 'workspace',
+      workingDirectory: WORKING_DIRECTORY,
       threadId: THREAD_ID,
       runId: 'run-streaming',
       filePath: 'notes/demo.md',
@@ -95,7 +95,7 @@ void test('artifact source ref helpers assemble transcript, streaming, and commi
 
   assert.deepEqual(buildCommittedArtifactSourceRef(artifact), {
     kind: 'thread-file',
-    projectId: PROJECT_ID,
+    workingDirectory: WORKING_DIRECTORY,
     threadId: THREAD_ID,
     runId: 'run-committed',
     filePath: 'notes/demo.md',
@@ -107,7 +107,7 @@ void test('artifact source ref helpers assemble transcript, streaming, and commi
 
   assert.deepEqual(buildCommittedArtifactSourceRef(threadArtifact), {
     kind: 'thread',
-    projectId: PROJECT_ID,
+    workingDirectory: WORKING_DIRECTORY,
     threadId: THREAD_ID,
     runId: 'run-thread-committed',
     filePath: null,
@@ -123,7 +123,7 @@ void test('artifact source ref helper derives runtime persistence scope only for
     deriveArtifactRuntimePersistenceScopeFromSourceRef({
       renderer: 'js',
       sourceRef: {
-        projectId: 'workspace',
+        workingDirectory: WORKING_DIRECTORY,
         threadId: THREAD_ID,
       },
     }),
@@ -134,14 +134,13 @@ void test('artifact source ref helper derives runtime persistence scope only for
     deriveArtifactRuntimePersistenceScopeFromSourceRef({
       renderer: 'js',
       sourceRef: {
-        projectId: 'workspace',
+        workingDirectory: WORKING_DIRECTORY,
         threadId: THREAD_ID,
         artifactId: 'art_demo',
         persistenceEpoch: 4,
       },
     }),
     {
-      projectId: PROJECT_ID,
       threadId: THREAD_ID,
       renderer: 'js',
       artifactId: 'art_demo',
@@ -153,8 +152,8 @@ void test('artifact source ref helper derives runtime persistence scope only for
     deriveArtifactRuntimePersistenceScopeFromSourceRef({
       renderer: 'js',
       sourceRef: {
-        projectId: '../workspace',
-        threadId: THREAD_ID,
+        workingDirectory: WORKING_DIRECTORY,
+        threadId: '../thread',
         artifactId: 'art_demo',
         persistenceEpoch: 0,
       },
@@ -166,7 +165,7 @@ void test('artifact source ref helper derives runtime persistence scope only for
     deriveArtifactRuntimePersistenceScopeFromSourceRef({
       renderer: 'js',
       sourceRef: {
-        projectId: PROJECT_ID,
+        workingDirectory: WORKING_DIRECTORY,
         threadId: THREAD_ID,
         persistenceEpoch: 0,
       },
@@ -178,7 +177,7 @@ void test('artifact source ref helper derives runtime persistence scope only for
     deriveArtifactRuntimePersistenceScopeFromSourceRef({
       renderer: 'js',
       sourceRef: {
-        projectId: PROJECT_ID,
+        workingDirectory: WORKING_DIRECTORY,
         threadId: THREAD_ID,
         artifactId: 'art_demo',
       },
@@ -190,14 +189,13 @@ void test('artifact source ref helper derives runtime persistence scope only for
     deriveArtifactRuntimePersistenceScopeFromSourceRef({
       renderer: 'html5',
       sourceRef: {
-        projectId: PROJECT_ID,
+        workingDirectory: WORKING_DIRECTORY,
         threadId: THREAD_ID,
         artifactId: 'art_demo_html',
         persistenceEpoch: 1,
       },
     }),
     {
-      projectId: PROJECT_ID,
       threadId: THREAD_ID,
       renderer: 'html5',
       artifactId: 'art_demo_html',
@@ -209,7 +207,7 @@ void test('artifact source ref helper derives runtime persistence scope only for
 void test('artifact source ref helper canonicalizes runtime frame source input', () => {
   assert.deepEqual(
     buildCanonicalArtifactSourceRef({
-      projectId: 'workspace',
+      workingDirectory: WORKING_DIRECTORY,
       threadId: THREAD_ID,
       kind: 'thread-file',
       runId: 'run-streaming',
@@ -221,7 +219,7 @@ void test('artifact source ref helper canonicalizes runtime frame source input',
     }),
     {
       kind: 'thread-file',
-      projectId: PROJECT_ID,
+      workingDirectory: WORKING_DIRECTORY,
       threadId: THREAD_ID,
       runId: 'run-streaming',
       artifactId: 'art_demo',
@@ -234,7 +232,7 @@ void test('artifact source ref helper canonicalizes runtime frame source input',
 
   assert.deepEqual(
     buildCanonicalArtifactSourceRef({
-      projectId: 'workspace',
+      workingDirectory: WORKING_DIRECTORY,
       threadId: THREAD_ID,
       runId: 'run-transcript-input',
       filePath: null,
@@ -242,7 +240,7 @@ void test('artifact source ref helper canonicalizes runtime frame source input',
     }),
     {
       kind: 'thread',
-      projectId: PROJECT_ID,
+      workingDirectory: WORKING_DIRECTORY,
       threadId: THREAD_ID,
       runId: 'run-transcript-input',
       artifactId: null,

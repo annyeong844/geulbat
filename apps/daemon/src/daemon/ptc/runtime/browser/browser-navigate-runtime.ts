@@ -6,10 +6,10 @@ import {
   type PtcBrowserNavigateRuntimeResult,
 } from './browser-navigate-runtime-contract.js';
 import {
-  admitPtcBrowserWorkspaceRuntime,
-  createPtcBrowserWorkspaceRuntimeOwner,
+  admitPtcBrowserStateRuntime,
+  createPtcBrowserStateRuntimeOwner,
   type PtcBrowserRuntimeOptions,
-} from './browser-workspace-runtime.js';
+} from './browser-state-runtime.js';
 import { createPtcLabBrowserUserUrlNavigationPolicy } from '../../lab/browser/core/lab-browser-policy.js';
 import { runPtcLabBrowserUserUrlNavigation } from '../../lab/browser/user-url-navigation/lab-browser-user-url-navigation.js';
 import { browserUserUrlNavigationFailure } from '../../lab/browser/user-url-navigation/lab-browser-user-url-navigation-contract.js';
@@ -18,19 +18,19 @@ import { definedPtcProps } from '../../shared/record-shape.js';
 export function createPtcBrowserNavigateRuntime(
   options: PtcBrowserRuntimeOptions = {},
 ): PtcBrowserNavigateRuntime {
-  const workspaceRuntimeOwner = createPtcBrowserWorkspaceRuntimeOwner({
+  const stateRuntimeOwner = createPtcBrowserStateRuntimeOwner({
     options,
     labPolicyId: PTC_BROWSER_NAVIGATE_LAB_POLICY_ID,
     createBrowserPolicy: () =>
       createPtcLabBrowserUserUrlNavigationPolicy({
         maxActionMs: PTC_BROWSER_NAVIGATE_MAX_TIMEOUT_MS,
       }),
-    workspaceRuntimeUnavailable: (
+    stateRuntimeUnavailable: (
       diagnostics,
     ): Extract<PtcBrowserNavigateRuntimeResult, { ok: false }> =>
       browserUserUrlNavigationFailure(
         'ptc_lab_browser_session_unavailable',
-        'PTC browser navigation workspace runtime is unavailable',
+        'PTC browser navigation state runtime is unavailable',
         'session_acquisition',
         { diagnostics },
       ),
@@ -40,8 +40,8 @@ export function createPtcBrowserNavigateRuntime(
 
   return {
     async navigate(args) {
-      const workspaceRuntime = await admitPtcBrowserWorkspaceRuntime({
-        owner: workspaceRuntimeOwner,
+      const stateRuntime = await admitPtcBrowserStateRuntime({
+        owner: stateRuntimeOwner,
         runContext: args.runContext,
         trustContextId:
           options.trustContextId ?? PTC_BROWSER_NAVIGATE_LAB_POLICY_ID,
@@ -55,14 +55,14 @@ export function createPtcBrowserNavigateRuntime(
             },
           ),
       });
-      if (!workspaceRuntime.ok) {
-        return workspaceRuntime;
+      if (!stateRuntime.ok) {
+        return stateRuntime;
       }
 
       return await runPtcLabBrowserUserUrlNavigation({
-        admission: workspaceRuntime.value.admission,
-        identity: workspaceRuntime.value.identity,
-        sessionManager: workspaceRuntime.value.sessionManager,
+        admission: stateRuntime.value.admission,
+        identity: stateRuntime.value.identity,
+        sessionManager: stateRuntime.value.sessionManager,
         request: args.request,
         ...definedPtcProps({
           commandRunner: options.commandRunner,
@@ -76,7 +76,7 @@ export function createPtcBrowserNavigateRuntime(
     async closeAll(args?: {
       signal?: AbortSignal;
     }): Promise<PtcBrowserNavigateRuntimeCleanupResult> {
-      return await workspaceRuntimeOwner.closeAll(args);
+      return await stateRuntimeOwner.closeAll(args);
     },
   };
 }

@@ -5,16 +5,22 @@ import type { ArtifactPaneExportPanelProps } from './export-panel.js';
 import type { ArtifactPaneHeaderProps } from './header.js';
 import type { ArtifactSurfaceStateBadge, ArtifactTab } from './types.js';
 
+// "파일로 저장" 대상 — OS 저장 대화상자로 payload를 로컬 파일에 내려받는다
+export interface ArtifactDirectSaveTarget {
+  payload: string;
+  defaultPath: string;
+}
+
 export interface ArtifactPaneControllerProps {
   headerProps: ArtifactPaneHeaderProps;
   exportPanelProps: ArtifactPaneExportPanelProps | null;
   bodyProps: ArtifactPaneBodyProps;
+  directSave: ArtifactDirectSaveTarget | null;
 }
 
 export interface ArtifactPaneControllerPaneState {
   tab: ArtifactTab;
   canShowPreview: boolean;
-  showOpenSource: boolean;
   showApply: boolean;
   canApply: boolean;
   surfaceStateBadge: ArtifactSurfaceStateBadge | null;
@@ -43,43 +49,63 @@ export interface ArtifactPaneControllerExportState {
   handleToggleOverwrite: (checked: boolean) => void;
 }
 
+const DIRECT_SAVE_EXTENSIONS: Record<string, string> = {
+  markdown: 'md',
+  code: 'txt',
+  table: 'md',
+  diff: 'md',
+  html5: 'html',
+  js: 'html',
+  react_bundle: 'html',
+};
+
+// 에디터 아티팩트 표면도 같은 저장 대상 파생을 공유한다 (포크 금지)
+export function buildDirectSaveTarget(
+  viewModel: ArtifactPaneViewModel,
+): ArtifactDirectSaveTarget | null {
+  const { parsed, sourceRef } = viewModel;
+  if (
+    parsed.kind !== 'artifact' ||
+    parsed.state !== 'completed' ||
+    parsed.renderer === null
+  ) {
+    return null;
+  }
+  const ext = DIRECT_SAVE_EXTENSIONS[parsed.renderer];
+  if (!ext || parsed.payload.trim().length === 0) {
+    return null;
+  }
+  const baseName = sourceRef.artifactId ?? 'artifact';
+  return {
+    payload: parsed.payload,
+    defaultPath: `${baseName}.${ext}`,
+  };
+}
+
 export function buildArtifactPaneControllerProps(args: {
   label: string;
   viewModel: ArtifactPaneViewModel;
   paneState: ArtifactPaneControllerPaneState;
   exportState: ArtifactPaneControllerExportState;
-  onOpenSource?: (path: string) => Promise<void> | void;
 }): ArtifactPaneControllerProps {
-  const { label, viewModel, paneState, exportState, onOpenSource } = args;
-  const sourceFilePath = paneState.showOpenSource
-    ? viewModel.sourceRef.filePath
-    : null;
-  const handleOpenSource =
-    sourceFilePath !== null && onOpenSource !== undefined
-      ? () => onOpenSource(sourceFilePath)
-      : undefined;
-
-  const headerBaseProps: Omit<ArtifactPaneHeaderProps, 'onOpenSource'> = {
-    label,
-    surfaceStateBadge: paneState.surfaceStateBadge,
-    tab: paneState.tab,
-    canShowPreview: paneState.canShowPreview,
-    showApply: paneState.showApply,
-    canApply: paneState.canApply,
-    showExport: exportState.showExport,
-    exportExpanded: exportState.exportExpanded,
-    canOpenExport: exportState.canOpenExport,
-    showOpenSource: paneState.showOpenSource && handleOpenSource !== undefined,
-    onSelectTab: paneState.handleSelectTab,
-    onApply: paneState.handleApply,
-    onToggleExport: exportState.handleToggleExport,
-  };
+  const { label, viewModel, paneState, exportState } = args;
 
   return {
-    headerProps:
-      handleOpenSource !== undefined
-        ? { ...headerBaseProps, onOpenSource: handleOpenSource }
-        : headerBaseProps,
+    directSave: buildDirectSaveTarget(viewModel),
+    headerProps: {
+      label,
+      surfaceStateBadge: paneState.surfaceStateBadge,
+      tab: paneState.tab,
+      canShowPreview: paneState.canShowPreview,
+      showApply: paneState.showApply,
+      canApply: paneState.canApply,
+      showExport: exportState.showExport,
+      exportExpanded: exportState.exportExpanded,
+      canOpenExport: exportState.canOpenExport,
+      onSelectTab: paneState.handleSelectTab,
+      onApply: paneState.handleApply,
+      onToggleExport: exportState.handleToggleExport,
+    },
     exportPanelProps:
       exportState.exportExpanded && exportState.showExport
         ? {

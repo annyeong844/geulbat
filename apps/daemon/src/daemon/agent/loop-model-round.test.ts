@@ -9,7 +9,7 @@ import {
 import type { ResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-cache.js';
 import type { AgentEvent, AgentEventEmitter } from './events.js';
 import { createAgentEvent } from './events.js';
-import { runModelRound } from './loop-model-round.js';
+import { createModelRoundPort, runModelRound } from './loop-model-round.js';
 import {
   composeProviderRounds,
   createScriptedProviderCallModel,
@@ -36,7 +36,7 @@ function makeEmitter(events: AgentEvent[]): AgentEventEmitter {
   };
 }
 
-void test('runModelRound aggregates deltas, function calls, and the composed system prompt', async () => {
+void test('runModelRound keeps instructions byte-stable while aggregating a round', async () => {
   const threadId = testThreadId(51);
   const events: AgentEvent[] = [];
   const providerAuthRuntime = createProviderAuthRuntimeStore();
@@ -50,8 +50,6 @@ void test('runModelRound aggregates deltas, function calls, and the composed sys
   const result = await runModelRound({
     history: [{ kind: 'user', text: 'hello' }],
     systemPrompt: 'system instructions',
-    promptContext: 'prompt context',
-    pendingBackgroundSystemNote: 'background note',
     round: 0,
     toolDefs: [],
     threadId,
@@ -102,8 +100,81 @@ void test('runModelRound aggregates deltas, function calls, and the composed sys
     ['commentary_delta', 'final_answer_delta'],
   );
   assert.deepEqual(seenInput, {
-    systemPrompt: 'system instructions\n\nprompt context\n\nbackground note',
+    systemPrompt: 'system instructions',
     providerSessionId: threadId,
+  });
+});
+
+void test('runModelRound carries provider history items without interpreting them', async () => {
+  const itemsToAppend = [
+    {
+      kind: 'backend_item' as const,
+      data: {
+        id: 'rs_1',
+        type: 'reasoning',
+        encrypted_content: 'opaque-reasoning',
+      },
+    },
+  ];
+
+  const result = await runModelRound({
+    history: [{ kind: 'user', text: 'hello' }],
+    systemPrompt: 'system instructions',
+    round: 0,
+    toolDefs: [],
+    threadId: testThreadId(59),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter([]),
+    async *callModelImpl() {
+      yield {
+        type: 'done',
+        assistantText: '',
+        finalText: '',
+        itemsToAppend,
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    result.ok ? result.value.itemsToAppend : undefined,
+    itemsToAppend,
+  );
+});
+
+void test('createModelRoundPort delegates to the current model-round runner', async () => {
+  const threadId = testThreadId(58);
+  const events: AgentEvent[] = [];
+  const providerAuthRuntime = createProviderAuthRuntimeStore();
+  const port = createModelRoundPort();
+
+  const result = await port.runModelRound({
+    history: [{ kind: 'user', text: 'hello through port' }],
+    systemPrompt: 'system',
+    round: 0,
+    toolDefs: [],
+    threadId,
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime,
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter(events),
+    callModelImpl: createScriptedProviderCallModel([
+      providerFinalAnswerRound('ported model round'),
+    ]),
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    value: {
+      assistantText: 'ported model round',
+      terminalResult: {
+        ok: true,
+        finalProse: 'ported model round',
+      },
+      functionCalls: [],
+    },
   });
 });
 
@@ -114,8 +185,6 @@ void test('runModelRound streams final answer deltas as they arrive without a du
   const result = await runModelRound({
     history: [],
     systemPrompt: 'system',
-    promptContext: '',
-    pendingBackgroundSystemNote: '',
     round: 0,
     toolDefs: [],
     threadId: testThreadId(57),
@@ -180,8 +249,6 @@ void test('runModelRound converts provider error chunks into terminal failure', 
     result = await runModelRound({
       history: [],
       systemPrompt: 'system',
-      promptContext: '',
-      pendingBackgroundSystemNote: '',
       round: 1,
       toolDefs: [],
       threadId: testThreadId(52),
@@ -229,8 +296,6 @@ void test('runModelRound retries retryable stream errors before semantic output'
   const result = await runModelRound({
     history: [],
     systemPrompt: 'system',
-    promptContext: '',
-    pendingBackgroundSystemNote: '',
     round: 1,
     toolDefs: [],
     threadId: testThreadId(59),
@@ -295,8 +360,6 @@ void test('runModelRound respects startup-frozen retry policy when a retryable c
   const result = await runModelRound({
     history: [],
     systemPrompt: 'system',
-    promptContext: '',
-    pendingBackgroundSystemNote: '',
     round: 1,
     toolDefs: [],
     threadId: testThreadId(63),
@@ -344,8 +407,6 @@ void test('runModelRound does not retry after semantic output has been emitted',
   const result = await runModelRound({
     history: [],
     systemPrompt: 'system',
-    promptContext: '',
-    pendingBackgroundSystemNote: '',
     round: 1,
     toolDefs: [],
     threadId: testThreadId(60),
@@ -387,8 +448,6 @@ void test('runModelRound classifies thrown stream failures before retrying', asy
   const result = await runModelRound({
     history: [],
     systemPrompt: 'system',
-    promptContext: '',
-    pendingBackgroundSystemNote: '',
     round: 1,
     toolDefs: [],
     threadId: testThreadId(61),
@@ -444,8 +503,6 @@ void test('runModelRound logs a warning when chunks stall', async () => {
     await runModelRound({
       history: [],
       systemPrompt: 'system',
-      promptContext: '',
-      pendingBackgroundSystemNote: '',
       round: 1,
       toolDefs: [],
       threadId: testThreadId(62),
@@ -476,8 +533,6 @@ void test('runModelRound returns aborted terminal failure when the model throws 
   const result = await runModelRound({
     history: [],
     systemPrompt: 'system',
-    promptContext: '',
-    pendingBackgroundSystemNote: '',
     round: 0,
     toolDefs: [],
     threadId: testThreadId(53),
@@ -511,8 +566,6 @@ void test('runModelRound returns aborted terminal failure when cancellation arri
   const result = await runModelRound({
     history: [],
     systemPrompt: 'system',
-    promptContext: '',
-    pendingBackgroundSystemNote: '',
     round: 0,
     toolDefs: [],
     threadId: testThreadId(54),
@@ -559,8 +612,6 @@ void test('runModelRound treats wrapped legacy envelope final text as plain pros
   const result = await runModelRound({
     history: [],
     systemPrompt: 'system',
-    promptContext: '',
-    pendingBackgroundSystemNote: '',
     round: 0,
     toolDefs: [],
     threadId: testThreadId(56),

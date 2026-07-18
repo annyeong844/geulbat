@@ -36,7 +36,7 @@ export function buildArtifactSessionKey(
     parsed.renderer ?? '',
     parsed.digest ?? '',
     parsed.state,
-    sourceRef.projectId ?? '',
+    sourceRef.workingDirectory,
     sourceRef.threadId ?? '',
     sourceRef.runId ?? '',
     sourceRef.filePath ?? '',

@@ -56,7 +56,7 @@ export type PtcBrowserPageLoadEvidenceRuntimeResult =
   | { ok: true; value: PtcBrowserPageLoadEvidenceRuntimeSummary }
   | PtcBrowserPageLoadEvidenceRuntimeError;
 
-export type PtcBrowserPageLoadEvidenceRuntimeCleanupResult =
+type PtcBrowserPageLoadEvidenceRuntimeCleanupResult =
   PtcBrowserRuntimeCleanupResult<'ptc_browser_page_load_evidence_session_cleanup_failed'>;
 
 export interface PtcBrowserPageLoadEvidenceRuntime {

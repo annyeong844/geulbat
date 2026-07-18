@@ -1,6 +1,8 @@
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadMessage, ThreadSummary } from '@geulbat/protocol/threads';
 
+import type { BranchBeforeEntryResult } from './use-thread-sessions.js';
+
 interface ProjectWorkspaceThreadsInput {
   threads: ThreadSummary[];
   threadError: string | null;
@@ -15,7 +17,17 @@ interface ProjectWorkspaceThreadsInput {
   cancelDeleteThread: () => void;
   confirmDeleteThread: () => Promise<void>;
   setSelectedThreadId: (threadId: string | null) => void;
-  appendOptimisticUserMessage: (prompt: string) => void;
+  appendOptimisticUserMessage: (
+    prompt: string,
+    origin?: 'artifact_frame',
+  ) => void;
+  startNewSession: () => void;
+  branchThreadFromEntry: (entryId: string) => Promise<void>;
+  branchThreadBeforeEntry: (
+    entryId: string,
+  ) => Promise<BranchBeforeEntryResult>;
+  branchNotice: string | null;
+  dismissBranchNotice: () => void;
 }
 
 type ProjectWorkspaceThreadsSource = ProjectWorkspaceThreadsInput;
@@ -38,5 +50,10 @@ export function createProjectWorkspaceThreadsInput(
     confirmDeleteThread: threads.confirmDeleteThread,
     setSelectedThreadId: threads.setSelectedThreadId,
     appendOptimisticUserMessage: threads.appendOptimisticUserMessage,
+    startNewSession: threads.startNewSession,
+    branchThreadFromEntry: threads.branchThreadFromEntry,
+    branchThreadBeforeEntry: threads.branchThreadBeforeEntry,
+    branchNotice: threads.branchNotice,
+    dismissBranchNotice: threads.dismissBranchNotice,
   };
 }

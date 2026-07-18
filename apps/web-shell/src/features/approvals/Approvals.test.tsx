@@ -81,7 +81,26 @@ void test('Approvals marks pending approval UI as a modal dialog', () => {
   assert.match(html, /aria-busy="false"/);
 });
 
-void test('Approvals renders compact mode control when no approval is pending', () => {
+void test('Approvals offers only explicit once, run, and connection-session lifetimes', () => {
+  const html = renderToStaticMarkup(
+    <Approvals
+      pending={makeApprovalRequiredFixture()}
+      permissionMode="basic"
+      onPermissionModeChange={() => {}}
+      onApprove={() => {}}
+      onDeny={() => {}}
+    />,
+  );
+
+  assert.match(html, /<option value="once"/u);
+  assert.match(html, /<option value="run"/u);
+  assert.match(html, /<option value="session"/u);
+  assert.doesNotMatch(html, /<option value="thread"/u);
+  assert.doesNotMatch(html, /This thread/u);
+});
+
+void test('Approvals renders nothing when no approval is pending', () => {
+  // 권한 방식 선택은 입력창 footer가 owner — 대기 승인 없으면 공간 미점유
   const html = renderToStaticMarkup(
     <Approvals
       pending={null}
@@ -92,9 +111,7 @@ void test('Approvals renders compact mode control when no approval is pending', 
     />,
   );
 
-  assert.match(html, /Approval mode/);
-  assert.match(html, /No pending approvals/);
-  assert.match(html, /Full access/);
+  assert.equal(html, '');
 });
 
 void test('Approvals resets approval pass when the compound pending approval identity changes', () => {

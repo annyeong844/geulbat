@@ -10,6 +10,7 @@ import { probeReactBundleExplicitCdnDependencies } from './react-bundle-dependen
 import {
   prepareReactBundleExplicitCdnDependencies,
   type ReactBundleDependencyPrepareRequest,
+  type ValidatedReactBundleDependencyPrepareRequest,
 } from './react-bundle-dependency-prepare.js';
 
 const BASE_REQUEST: ReactBundleDependencyPrepareRequest = {
@@ -84,6 +85,45 @@ function transport(statuses: number[]): HttpMetadataProbeRequestTransport {
       contentLength: 20,
       bytesRead: options.method === 'GET' ? 4 : 0,
     };
+  };
+}
+
+function successfulCandidate(
+  request: ValidatedReactBundleDependencyPrepareRequest,
+): ReactBundleDependencyNetworkProbeCandidate {
+  return {
+    schemaVersion: 1,
+    adapterKind: 'react_bundle_dependency_metadata_probe',
+    inputHash: request.inputHash,
+    probeMode: 'metadata',
+    networkPolicy: 'allowlisted_metadata_probe',
+    networkPolicyVersion: 1,
+    allowlistId: 'react_bundle_dependency_cdn_v1',
+    generatedAt: '2026-05-19T00:00:00.000Z',
+    dependencyProbes: request.dependencyRefs.map((dependency) => ({
+      kind: dependency.kind,
+      ...(dependency.specifier ? { specifier: dependency.specifier } : {}),
+      ...(dependency.packageName
+        ? { packageName: dependency.packageName }
+        : {}),
+      ...(dependency.version ? { version: dependency.version } : {}),
+      ok: true,
+      requestedUrl: dependency.url,
+      finalUrl: dependency.url,
+      method: 'HEAD',
+      status: 200,
+      contentType: 'application/javascript',
+      contentLength: 20,
+      bytesRead: 0,
+      timingBucket: 'lt_100ms',
+      redirectChain: [],
+      policy: {
+        name: 'allowlisted_metadata_probe',
+        version: 1,
+        allowlistId: 'react_bundle_dependency_cdn_v1',
+      },
+    })),
+    failures: [],
   };
 }
 
@@ -464,6 +504,339 @@ void test('probeReactBundleExplicitCdnDependencies preserves extra output files 
         (file) => file.relativePath === 'extra-8.txt',
       ),
     );
+  });
+});
+
+void test('probeReactBundleExplicitCdnDependencies rejects untrusted candidate contract drift', async (t) => {
+  const cases: ReadonlyArray<{
+    name: string;
+    expected: RegExp;
+    mutate(candidate: ReactBundleDependencyNetworkProbeCandidate): unknown;
+  }> = [
+    {
+      name: 'candidate object',
+      expected: /candidate must be an object/u,
+      mutate: () => null,
+    },
+    {
+      name: 'schema version',
+      expected: /candidate schemaVersion must be 1/u,
+      mutate: (candidate) => ({ ...candidate, schemaVersion: 2 }),
+    },
+    {
+      name: 'adapter kind',
+      expected: /candidate adapterKind mismatch/u,
+      mutate: (candidate) => ({ ...candidate, adapterKind: 'other_adapter' }),
+    },
+    {
+      name: 'input hash',
+      expected: /candidate input hash mismatch/u,
+      mutate: (candidate) => ({ ...candidate, inputHash: 'untrusted-hash' }),
+    },
+    {
+      name: 'network policy',
+      expected: /candidate networkPolicy mismatch/u,
+      mutate: (candidate) => ({ ...candidate, networkPolicy: 'none' }),
+    },
+    {
+      name: 'network policy version',
+      expected: /candidate networkPolicyVersion mismatch/u,
+      mutate: (candidate) => ({ ...candidate, networkPolicyVersion: 2 }),
+    },
+    {
+      name: 'allowlist',
+      expected: /candidate allowlistId mismatch/u,
+      mutate: (candidate) => ({ ...candidate, allowlistId: 'other_allowlist' }),
+    },
+    {
+      name: 'probe mode',
+      expected: /candidate probeMode mismatch/u,
+      mutate: (candidate) => ({ ...candidate, probeMode: 'content' }),
+    },
+    {
+      name: 'generated timestamp',
+      expected: /candidate generatedAt must be a string/u,
+      mutate: (candidate) => ({ ...candidate, generatedAt: 0 }),
+    },
+    {
+      name: 'dependency count',
+      expected: /candidate dependency probe count mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        dependencyProbes: candidate.dependencyProbes.slice(1),
+      }),
+    },
+    {
+      name: 'dependency kind',
+      expected: /candidate dependency probe kind mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        dependencyProbes: candidate.dependencyProbes.map((probe, index) =>
+          index === 0 ? { ...probe, kind: 'stylesheet' } : probe,
+        ),
+      }),
+    },
+    {
+      name: 'missing dependency projection',
+      expected: /candidate dependency probe missing/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        dependencyProbes: [null, ...candidate.dependencyProbes.slice(1)],
+      }),
+    },
+    {
+      name: 'dependency requested URL',
+      expected: /candidate dependency probe requestedUrl mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        dependencyProbes: candidate.dependencyProbes.map((probe, index) =>
+          index === 0
+            ? { ...probe, requestedUrl: 'https://untrusted.invalid/module.js' }
+            : probe,
+        ),
+      }),
+    },
+    {
+      name: 'dependency specifier',
+      expected: /candidate dependency probe specifier mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        dependencyProbes: candidate.dependencyProbes.map((probe, index) =>
+          index === 0 ? { ...probe, specifier: 'other-package' } : probe,
+        ),
+      }),
+    },
+    {
+      name: 'dependency package name',
+      expected: /candidate dependency probe packageName mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        dependencyProbes: candidate.dependencyProbes.map((probe, index) =>
+          index === 0 ? { ...probe, packageName: 'other-package' } : probe,
+        ),
+      }),
+    },
+    {
+      name: 'dependency version',
+      expected: /candidate dependency probe version mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        dependencyProbes: candidate.dependencyProbes.map((probe, index) =>
+          index === 0 ? { ...probe, version: '9.9.9' } : probe,
+        ),
+      }),
+    },
+    {
+      name: 'successful dependency result shape',
+      expected: /candidate dependency probe result mismatch at index 0/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        dependencyProbes: candidate.dependencyProbes.map((probe, index) =>
+          index === 0 ? { ...probe, status: '200' } : probe,
+        ),
+      }),
+    },
+    {
+      name: 'failed dependency result reason',
+      expected: /candidate dependency probe result mismatch at index 0/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        dependencyProbes: candidate.dependencyProbes.map((probe, index) =>
+          index === 0
+            ? {
+                ...probe,
+                ok: false,
+                reasonCode: 'untrusted_failure',
+                message: 'failed',
+              }
+            : probe,
+        ),
+        failures: [
+          {
+            requestedUrl: candidate.dependencyProbes[0]?.requestedUrl ?? '',
+            reasonCode: 'untrusted_failure',
+            status: 200,
+          },
+        ],
+      }),
+    },
+    {
+      name: 'failure projection',
+      expected: /candidate failures projection mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        failures: [
+          {
+            requestedUrl: candidate.dependencyProbes[0]?.requestedUrl ?? '',
+            reasonCode: 'untrusted_failure',
+          },
+        ],
+      }),
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      await withWorkspace(async (workspaceRoot) => {
+        const store = createSandboxAttemptStore({
+          now: () => '2026-05-19T00:00:00.000Z',
+        });
+
+        await assert.rejects(
+          () =>
+            probeReactBundleExplicitCdnDependencies({
+              workspaceRoot,
+              store,
+              request: BASE_REQUEST,
+              timeoutMs: 1000,
+              processRunner: async (args) => {
+                const candidate = successfulCandidate(args.request);
+                await args.writeOutput(
+                  'candidate.json',
+                  JSON.stringify(scenario.mutate(candidate), null, 2) + '\n',
+                );
+                return {
+                  kind: 'exit',
+                  exitCode: 0,
+                  stdout: 'candidate emitted',
+                  stderr: '',
+                };
+              },
+            }),
+          scenario.expected,
+        );
+
+        const attempt = store.getAttempts().records[0];
+        assert.equal(attempt?.status, 'failed');
+        assert.equal(attempt?.outputRef, null);
+        assert.match(
+          attempt?.diagnostics ?? '',
+          /candidate_validation_failed/u,
+        );
+        assert.match(attempt?.diagnostics ?? '', scenario.expected);
+        assert.match(attempt?.diagnostics ?? '', /sandbox-output:/u);
+      });
+    });
+  }
+});
+
+void test('docker backend requires an explicit attempt timeout before availability checks', async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    const store = createSandboxAttemptStore({
+      now: () => '2026-05-22T00:00:00.000Z',
+    });
+    let dockerCalls = 0;
+    let transportCalls = 0;
+
+    await assert.rejects(
+      () =>
+        probeReactBundleExplicitCdnDependencies({
+          workspaceRoot,
+          store,
+          request: BASE_REQUEST,
+          backend: {
+            kind: 'docker_worker',
+            imageRef: 'local/geulbat-metadata-probe:2026-05-22',
+          },
+          probeTransport: async () => {
+            transportCalls += 1;
+            return {
+              status: 200,
+              location: null,
+              contentType: 'application/javascript',
+              contentLength: 20,
+              bytesRead: 0,
+            };
+          },
+          dockerCommandRunner: async () => {
+            dockerCalls += 1;
+            return {
+              kind: 'exit',
+              exitCode: 0,
+              stdout: 'Docker version 27.0.0',
+              stderr: '',
+            };
+          },
+        }),
+      /docker probe requires explicit timeoutMs/u,
+    );
+
+    assert.equal(dockerCalls, 0);
+    assert.equal(transportCalls, 0);
+    const attempt = store.getAttempts().records[0];
+    assert.equal(attempt?.status, 'crashed');
+    assert.match(
+      attempt?.diagnostics ?? '',
+      /docker probe requires explicit timeoutMs/u,
+    );
+  });
+});
+
+void test('docker backend rejects output emitted by an availability command', async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    const store = createSandboxAttemptStore({
+      now: () => '2026-05-22T00:00:00.000Z',
+    });
+    let dockerCalls = 0;
+
+    await assert.rejects(
+      () =>
+        probeReactBundleExplicitCdnDependencies({
+          workspaceRoot,
+          store,
+          request: BASE_REQUEST,
+          timeoutMs: 1000,
+          backend: {
+            kind: 'docker_worker',
+            imageRef: 'local/geulbat-metadata-probe:2026-05-22',
+          },
+          dockerCommandRunner: async (invocation) => {
+            dockerCalls += 1;
+            await invocation.writeOutput(
+              'availability-output.json',
+              '{"unexpected":true}',
+            );
+            return {
+              kind: 'exit',
+              exitCode: 0,
+              stdout: 'Docker version 27.0.0',
+              stderr: '',
+            };
+          },
+        }),
+      /unexpected docker output path: availability-output\.json/u,
+    );
+
+    assert.equal(dockerCalls, 1);
+    const attempt = store.getAttempts().records[0];
+    assert.equal(attempt?.status, 'failed');
+    assert.equal(attempt?.outputRef, null);
+    assert.equal(attempt?.diagnostics, 'sandbox_run_failed');
+  });
+});
+
+void test('docker backend rejects a blank image reference before creating an attempt', async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    const store = createSandboxAttemptStore({
+      now: () => '2026-05-22T00:00:00.000Z',
+    });
+
+    await assert.rejects(
+      () =>
+        probeReactBundleExplicitCdnDependencies({
+          workspaceRoot,
+          store,
+          request: BASE_REQUEST,
+          timeoutMs: 1000,
+          backend: {
+            kind: 'docker_worker',
+            imageRef: '   ',
+          },
+        }),
+      /docker metadata probe backend imageRef is required/u,
+    );
+
+    assert.equal(store.getAttempts().records.length, 0);
   });
 });
 

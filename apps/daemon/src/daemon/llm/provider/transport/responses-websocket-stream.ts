@@ -1,4 +1,4 @@
-import { tryParseJsonRecord } from '../../../runtime-json.js';
+import { isRecord, tryParseJsonRecord } from '../../../runtime-json.js';
 import type WebSocket from 'ws';
 
 import { getErrorMessage } from '../../../utils/error.js';
@@ -6,6 +6,11 @@ import {
   extractWebSocketCloseError,
   extractWebSocketError,
 } from './responses-websocket-errors.js';
+
+const DEFAULT_COMPLETION_EVENT_TYPES = [
+  'response.completed',
+  'response.done',
+] as const;
 
 export interface ResponsesWebSocketEventSource {
   on(event: 'message', listener: (data: WebSocket.RawData) => void): void;
@@ -19,18 +24,21 @@ export interface ResponsesWebSocketEventSource {
 export async function* iterateWebSocketEvents(
   socket: ResponsesWebSocketEventSource,
   signal?: AbortSignal,
+  completionEventTypes: readonly string[] = DEFAULT_COMPLETION_EVENT_TYPES,
 ): AsyncGenerator<Record<string, unknown>> {
   const queue: Record<string, unknown>[] = [];
   let pending: (() => void) | null = null;
   let done = false;
-  let failed: Error | null = null;
+  const failureState: { current: Error | null } = { current: null };
   let sawCompletion = false;
   let closeEvent: unknown = null;
   let pendingDecodes = 0;
   let decodeChain = Promise.resolve();
 
   const wake = () => {
-    if (!pending) return;
+    if (!pending) {
+      return;
+    }
     const resolve = pending;
     pending = null;
     resolve();
@@ -40,7 +48,7 @@ export async function* iterateWebSocketEvents(
     if (pendingDecodes > 0) {
       return;
     }
-    if (failed) {
+    if (failureState.current) {
       done = true;
       wake();
       return;
@@ -51,7 +59,7 @@ export async function* iterateWebSocketEvents(
       return;
     }
     if (closeEvent) {
-      failed = extractWebSocketCloseError(closeEvent);
+      failureState.current = extractWebSocketCloseError(closeEvent);
       done = true;
       wake();
     }
@@ -61,28 +69,30 @@ export async function* iterateWebSocketEvents(
     pendingDecodes += 1;
     decodeChain = decodeChain
       .then(async () => {
-        if (failed) {
+        if (failureState.current) {
           return;
         }
         const text = await decodeWebSocketData(data);
-        if (!text) return;
+        if (!text) {
+          return;
+        }
         const parsed = tryParseJsonRecord(text);
         if (!parsed.ok) {
-          failed = new Error(
+          failureState.current = new Error(
             'invalid provider websocket frame: expected JSON object',
           );
           return;
         }
         const type =
           typeof parsed.value.type === 'string' ? parsed.value.type : '';
-        if (type === 'response.completed' || type === 'response.done') {
+        if (completionEventTypes.includes(type)) {
           sawCompletion = true;
         }
         queue.push(parsed.value);
         wake();
       })
       .catch((error: unknown) => {
-        failed = new Error(
+        failureState.current = new Error(
           `invalid provider websocket frame: ${getErrorMessage(error)}`,
         );
       })
@@ -94,7 +104,7 @@ export async function* iterateWebSocketEvents(
   };
 
   const onError = (event: unknown) => {
-    failed = extractWebSocketError(event);
+    failureState.current = extractWebSocketError(event);
     finalizeIfReady();
   };
 
@@ -104,7 +114,7 @@ export async function* iterateWebSocketEvents(
   };
 
   const onAbort = () => {
-    failed = new Error('Request was aborted');
+    failureState.current = new Error('Request was aborted');
     finalizeIfReady();
   };
 
@@ -122,12 +132,17 @@ export async function* iterateWebSocketEvents(
         yield queue.shift()!;
         continue;
       }
-      if (done) break;
+      if (done) {
+        break;
+      }
       await new Promise<void>((resolve) => {
         pending = resolve;
       });
     }
-    if (failed) throw failed;
+    const failure = failureState.current;
+    if (failure) {
+      throw failure;
+    }
     if (!sawCompletion) {
       throw new Error('WebSocket stream closed before response.completed');
     }
@@ -140,7 +155,9 @@ export async function* iterateWebSocketEvents(
 }
 
 async function decodeWebSocketData(data: unknown): Promise<string | null> {
-  if (typeof data === 'string') return data;
+  if (typeof data === 'string') {
+    return data;
+  }
   if (data instanceof ArrayBuffer) {
     return new TextDecoder().decode(new Uint8Array(data));
   }
@@ -149,11 +166,21 @@ async function decodeWebSocketData(data: unknown): Promise<string | null> {
       new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
     );
   }
-  if (data && typeof data === 'object' && 'arrayBuffer' in data) {
-    const blobLike = data as { arrayBuffer: () => Promise<ArrayBuffer> };
-    return new TextDecoder().decode(
-      new Uint8Array(await blobLike.arrayBuffer()),
-    );
+  if (isRecord(data) && 'arrayBuffer' in data) {
+    if (!hasArrayBufferMethod(data)) {
+      throw new TypeError('arrayBuffer is not callable');
+    }
+    const arrayBuffer = await data.arrayBuffer();
+    if (!(arrayBuffer instanceof ArrayBuffer)) {
+      throw new TypeError('arrayBuffer() did not return an ArrayBuffer');
+    }
+    return new TextDecoder().decode(new Uint8Array(arrayBuffer));
   }
   return null;
+}
+
+function hasArrayBufferMethod(
+  value: Record<string, unknown>,
+): value is Record<string, unknown> & { arrayBuffer: () => unknown } {
+  return typeof value.arrayBuffer === 'function';
 }

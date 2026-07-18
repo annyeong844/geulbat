@@ -1,8 +1,10 @@
 import type {
   ProviderAuthLogoutResponse,
-  ProviderAuthStartRequest,
+  ProviderAuthProviderId,
   ProviderAuthStatusResponse,
 } from '@geulbat/protocol/provider-auth';
+import { isProviderAuthProviderId } from '@geulbat/protocol/provider-auth';
+import { isRecord } from '@geulbat/protocol/runtime-utils';
 import { Router } from 'express';
 
 import {
@@ -92,16 +94,24 @@ function createProviderAuthRoutesInternal(args: {
   });
 
   router.post('/api/provider-auth/start', requireAuth, async (req, res) => {
-    const body = req.body as ProviderAuthStartRequest | undefined;
-    const launcher = body?.launcher;
+    const body = isRecord(req.body) ? req.body : undefined;
+    const launcher = body?.['launcher'];
+    const providerIdResult = readProviderAuthProviderId(body?.['providerId']);
 
     if (launcher !== 'web-shell') {
       sendApiError(res, 'bad_request', 'launcher must be "web-shell"');
       return;
     }
+    if (!providerIdResult.ok) {
+      sendApiError(res, 'bad_request', 'providerId is not supported');
+      return;
+    }
 
     const status = await getProviderBootstrapStatus({
       bootstrapStore,
+      ...(providerIdResult.providerId !== undefined
+        ? { providerId: providerIdResult.providerId }
+        : {}),
       runtimeStore,
     });
     if (status.ready) {
@@ -116,7 +126,11 @@ function createProviderAuthRoutesInternal(args: {
     try {
       const response = await startProviderAuthLogin({
         bootstrapStore,
-        ensureCallbackServer: () => callbackServer.ensureListening(),
+        ensureCallbackServer: (callbackListener) =>
+          callbackServer.ensureListening(callbackListener),
+        ...(providerIdResult.providerId !== undefined
+          ? { providerId: providerIdResult.providerId }
+          : {}),
       });
       res.json(response);
     } catch (err: unknown) {
@@ -126,38 +140,91 @@ function createProviderAuthRoutesInternal(args: {
     }
   });
 
-  router.get('/api/provider-auth/status', requireAuth, async (_req, res) => {
+  router.get('/api/provider-auth/status', requireAuth, async (req, res) => {
+    const providerIdResult = readProviderAuthProviderId(
+      req.query['providerId'],
+    );
+    if (!providerIdResult.ok) {
+      sendApiError(res, 'bad_request', 'providerId is not supported');
+      return;
+    }
+
     const status = await getProviderBootstrapStatus({
       bootstrapStore,
+      ...(providerIdResult.providerId !== undefined
+        ? { providerId: providerIdResult.providerId }
+        : {}),
       runtimeStore,
     });
     res.json(status satisfies ProviderAuthStatusResponse);
   });
 
-  router.post('/api/provider-auth/logout', requireAuth, async (_req, res) => {
+  router.post('/api/provider-auth/logout', requireAuth, async (req, res) => {
+    const providerIdResult = readProviderAuthProviderId(
+      readProviderAuthLogoutProviderId(req.body),
+    );
+    if (!providerIdResult.ok) {
+      sendApiError(res, 'bad_request', 'providerId is not supported');
+      return;
+    }
+
     try {
-      const credential = await loadCurrentProviderCredential({ runtimeStore });
+      const credential = await loadCurrentProviderCredential({
+        runtimeStore,
+        ...(providerIdResult.providerId !== undefined
+          ? { providerId: providerIdResult.providerId }
+          : {}),
+      });
       if (credential && PROVIDER_AUTH_REVOCATION_URL) {
         await revokeProviderToken(
           credential.refreshToken || credential.accessToken,
+          providerIdResult.providerId,
         );
       }
     } catch (err: unknown) {
       logger.warn('revoke failed:', getErrorMessage(err));
     }
 
-    await logoutProviderAuth({ bootstrapStore, runtimeStore });
+    await logoutProviderAuth({
+      bootstrapStore,
+      runtimeStore,
+      ...(providerIdResult.providerId !== undefined
+        ? { providerId: providerIdResult.providerId }
+        : {}),
+    });
     res.json({ ok: true } satisfies ProviderAuthLogoutResponse);
   });
 
   return router;
 }
 
-async function revokeProviderToken(token: string): Promise<void> {
+function readProviderAuthProviderId(
+  value: unknown,
+): { ok: true; providerId?: ProviderAuthProviderId } | { ok: false } {
+  if (value === undefined) {
+    return { ok: true };
+  }
+  if (isProviderAuthProviderId(value)) {
+    return { ok: true, providerId: value };
+  }
+  return { ok: false };
+}
+
+function readProviderAuthLogoutProviderId(body: unknown): unknown {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return undefined;
+  }
+  return (body as { providerId?: unknown }).providerId;
+}
+
+async function revokeProviderToken(
+  token: string,
+  providerId?: ProviderAuthProviderId,
+): Promise<void> {
   if (!PROVIDER_AUTH_REVOCATION_URL || !token) {
     return;
   }
-  const clientId = await getRequiredProviderAuthClientId();
+  const clientId = await getRequiredProviderAuthClientId(providerId);
 
   const res = await fetch(PROVIDER_AUTH_REVOCATION_URL, {
     method: 'POST',

@@ -120,6 +120,29 @@ void test('parseResponseEvents preserves oversized provider error messages', asy
   );
 });
 
+void test('parseResponseEvents preserves structured provider error details without object base strings', async () => {
+  await assert.rejects(
+    parseResponseEvents(
+      toAsyncEvents([
+        {
+          type: 'response.failed',
+          response: {
+            error: {
+              message: { reason: 'blocked' },
+            },
+          },
+        },
+      ]),
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, '{"message":{"reason":"blocked"}}');
+      assert.doesNotMatch(error.message, /\[object Object\]/u);
+      return true;
+    },
+  );
+});
+
 void test('parseResponseEvents preserves the original parse failure when iterator cleanup also fails', async () => {
   const parseError = new Error('next failed');
   const cleanupError = new Error('cleanup failed');
@@ -354,6 +377,162 @@ void test('parseResponseEvents normalizes provider usage cache telemetry from re
   });
 });
 
+void test('parseResponseEvents preserves complete provider output items in declared order', async () => {
+  const reasoningItem = {
+    id: 'rs_1',
+    type: 'reasoning',
+    encrypted_content: 'opaque-reasoning',
+    summary: [],
+  };
+  const functionCallItem = {
+    id: 'fc_1',
+    type: 'function_call',
+    call_id: 'call_1',
+    name: 'read_file',
+    arguments: '{"path":"README.md"}',
+    caller: { type: 'programmatic', id: 'program_1' },
+  };
+  const messageItem = {
+    id: 'msg_1',
+    type: 'message',
+    phase: 'commentary',
+    role: 'assistant',
+    content: [{ type: 'output_text', text: 'checking' }],
+  };
+
+  const result = await parseResponseEvents(
+    toAsyncEvents([
+      {
+        type: 'response.output_item.added',
+        item: { id: 'msg_1', type: 'message', phase: 'commentary' },
+      },
+      {
+        type: 'response.output_text.delta',
+        item_id: 'msg_1',
+        delta: 'checking',
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 1,
+        item: functionCallItem,
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: reasoningItem,
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 2,
+        item: messageItem,
+      },
+    ]),
+    undefined,
+    { historyProjection: 'provider_output' },
+  );
+
+  assert.equal(result.assistantText, 'checking');
+  assert.deepEqual(result.functionCalls, [
+    {
+      id: 'fc_1',
+      callId: 'call_1',
+      name: 'read_file',
+      arguments: '{"path":"README.md"}',
+    },
+  ]);
+  assert.deepEqual(result.itemsToAppend, [
+    { kind: 'backend_item', data: reasoningItem },
+    { kind: 'backend_item', data: functionCallItem },
+    { kind: 'backend_item', data: messageItem },
+  ]);
+});
+
+void test('parseResponseEvents preserves a provider function call without inventing reasoning', async () => {
+  const functionCallItem = {
+    id: 'fc_no_reasoning',
+    type: 'function_call',
+    call_id: 'call_no_reasoning',
+    name: 'read_file',
+    arguments: '{"path":"README.md"}',
+  };
+
+  const result = await parseResponseEvents(
+    toAsyncEvents([
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: functionCallItem,
+      },
+    ]),
+    undefined,
+    { historyProjection: 'provider_output' },
+  );
+
+  assert.deepEqual(result.itemsToAppend, [
+    { kind: 'backend_item', data: functionCallItem },
+  ]);
+  assert.deepEqual(result.functionCalls, [
+    {
+      id: 'fc_no_reasoning',
+      callId: 'call_no_reasoning',
+      name: 'read_file',
+      arguments: '{"path":"README.md"}',
+    },
+  ]);
+});
+
+void test('parseResponseEvents does not publish a partial provider batch after failure', async () => {
+  await assert.rejects(
+    parseResponseEvents(
+      toAsyncEvents([
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: {
+            id: 'rs_partial',
+            type: 'reasoning',
+            encrypted_content: 'must-not-be-published',
+          },
+        },
+        {
+          type: 'response.failed',
+          response: { error: { message: 'provider failed' } },
+        },
+      ]),
+      undefined,
+      { historyProjection: 'provider_output' },
+    ),
+    /provider failed/u,
+  );
+});
+
+void test('parseResponseEvents rejects partially indexed provider output batches', async () => {
+  await assert.rejects(
+    parseResponseEvents(
+      toAsyncEvents([
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: { id: 'rs_1', type: 'reasoning' },
+        },
+        {
+          type: 'response.output_item.done',
+          item: {
+            id: 'fc_1',
+            type: 'function_call',
+            call_id: 'call_1',
+            name: 'read_file',
+            arguments: '{}',
+          },
+        },
+      ]),
+      undefined,
+      { historyProjection: 'provider_output' },
+    ),
+    /provider output item ordering is incomplete/u,
+  );
+});
+
 async function* toAsyncEvents(
   events: Array<Record<string, unknown>>,
 ): AsyncGenerator<Record<string, unknown>> {
@@ -361,3 +540,74 @@ async function* toAsyncEvents(
     yield event;
   }
 }
+
+void test('parseResponseEvents streams function-call args deltas and still completes the full call', async () => {
+  const argsDeltas: Array<{
+    itemId: string;
+    callId: string;
+    name: string;
+    argsDelta: string;
+  }> = [];
+
+  const result = await parseResponseEvents(
+    toAsyncEvents([
+      {
+        type: 'response.output_item.added',
+        item: {
+          id: 'fc_1',
+          type: 'function_call',
+          call_id: 'call_1',
+          name: 'visualize',
+          arguments: '',
+        },
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        item_id: 'fc_1',
+        delta: '{"code":"<svg',
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        item_id: 'fc_1',
+        delta: '></svg>"}',
+      },
+      {
+        type: 'response.output_item.done',
+        item: {
+          id: 'fc_1',
+          type: 'function_call',
+          call_id: 'call_1',
+          name: 'visualize',
+          arguments: '{"code":"<svg></svg>"}',
+        },
+      },
+    ]),
+    undefined,
+    {
+      onFunctionCallArgsDelta: (delta) => argsDeltas.push(delta),
+    },
+  );
+
+  assert.deepEqual(argsDeltas, [
+    {
+      itemId: 'fc_1',
+      callId: 'call_1',
+      name: 'visualize',
+      argsDelta: '{"code":"<svg',
+    },
+    {
+      itemId: 'fc_1',
+      callId: 'call_1',
+      name: 'visualize',
+      argsDelta: '></svg>"}',
+    },
+  ]);
+  assert.deepEqual(result.functionCalls, [
+    {
+      id: 'fc_1',
+      callId: 'call_1',
+      name: 'visualize',
+      arguments: '{"code":"<svg></svg>"}',
+    },
+  ]);
+});

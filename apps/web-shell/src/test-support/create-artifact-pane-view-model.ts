@@ -1,4 +1,4 @@
-import { brandProjectId, brandThreadId } from '../lib/id-brand-helpers.js';
+import { brandThreadId } from '../lib/id-brand-helpers.js';
 
 import { resolveArtifactDurabilitySourceAuthorityFromResolved } from '../features/artifacts/artifact-durability.js';
 import type { ArtifactPaneViewModel } from '../features/artifacts/artifact-pane-view-model.js';
@@ -12,7 +12,7 @@ type ArtifactPaneViewModelOverrides = Partial<
 
 const DEFAULT_SOURCE_REF: ArtifactPaneViewModel['sourceRef'] = {
   kind: 'thread-file',
-  projectId: brandProjectId('workspace'),
+  workingDirectory: 'workspace',
   threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
   runId: 'run-1',
   filePath: 'notes/demo.md',
@@ -51,7 +51,6 @@ export function createArtifactPaneViewModel(
         sourceRef,
       }),
     actions: {
-      openSource: { visible: true, enabled: true, reason: null },
       apply: { visible: true, enabled: true, reason: null },
       export: { visible: true, enabled: true, reason: null },
     },

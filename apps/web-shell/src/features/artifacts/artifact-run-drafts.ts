@@ -1,3 +1,5 @@
+import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
+import type { ThreadId } from '@geulbat/protocol/ids';
 import type { RunRequest } from '@geulbat/protocol/run-contract';
 import type { ArtifactDurabilitySourceAuthority } from './artifact-durability-source-authority.js';
 
@@ -17,7 +19,7 @@ import {
 const FILE_MUTATION_ALLOWED_TOOLS = [
   'read_file',
   'write_file',
-  'patch_file',
+  'apply_patch',
 ] as const;
 
 type ResolvedArtifactSourceAuthority = ArtifactDurabilitySourceAuthority;
@@ -54,7 +56,7 @@ export function buildArtifactApplyRunDraftFromAuthority(args: {
       'Requirements:',
       '- Treat the artifact as a derived preview, not the source of truth.',
       '- Read the target file again before mutating it.',
-      '- Use write_file or patch_file with approval and versionToken checks.',
+      '- Use write_file or apply_patch with approval and version checks.',
       `Target file: ${sourceAuthority.filePath}`,
       ...buildSourceAuthorityPromptLines(sourceAuthority, intentSnapshotId),
       '',
@@ -204,20 +206,91 @@ export function deriveGeneratedBinaryExportTargetPathHint(args: {
   return `exports/artifact-preview${readGeneratedBinaryExportExtension(snapshot.blob.type)}`;
 }
 
+// 아티팩트 다시 만들기(♻) — 라우팅은 모델이 스스로 판단한다: 문제가
+// 국소적이면 최소 수정, 구조적으로 심하면 같은 목적으로 처음부터 재작성.
+// 결과는 같은 아티팩트의 새 버전 커밋으로 이어진다.
+export function buildArtifactRewriteRunDraft(args: {
+  artifact: Pick<
+    ThreadArtifactVersion,
+    'artifactId' | 'version' | 'renderer' | 'payload' | 'title'
+  >;
+  threadId: ThreadId;
+}): RunRequest {
+  const { artifact, threadId } = args;
+  const title =
+    artifact.title !== null && artifact.title.trim() !== ''
+      ? artifact.title
+      : '아티팩트';
+  return {
+    threadId,
+    displayPrompt: `아티팩트 다시 만들기 — ${title}`,
+    // 채팅에 질문 말풍선을 만들지 않는다 — 결과는 아티팩트 표면에서
+    // 새 버전 스트리밍으로 보인다 (감사 기록은 metadata.silent로 남음)
+    silentPrompt: true,
+    prompt: buildPromptText([
+      'The artifact below has a problem and the user asked to redo it.',
+      'First diagnose how broken it is, then route yourself:',
+      '- If the defect is local, apply a minimal targeted fix and keep everything that already works.',
+      '- If it is structurally broken, rebuild it from scratch with the same intent.',
+      'Commit the result as a new version of the same artifact: put',
+      `"artifactId":"${artifact.artifactId}" and "baseVersion":${artifact.version}`,
+      'into the GEULBAT_ARTIFACT envelope header exactly as given.',
+      `Artifact id: ${artifact.artifactId}`,
+      `Current version: ${artifact.version}`,
+      `Renderer: ${artifact.renderer}`,
+      '<artifact_payload>',
+      artifact.payload,
+      '</artifact_payload>',
+    ]),
+  };
+}
+
+// 티어 B 강등 (back-channel 설계 §7) — read-only 게이트가 거부한 프레임 발
+// 도구 호출을 "아티팩트가 X를 요청함" 프롬프트로 번역한다. 실행은 agent
+// loop + ApprovalRequired + 사용자 승인이 중재하고(불변식 #3), 턴은
+// promptOrigin으로 아티팩트 발 귀속 렌더된다(가시성 불변식 — silent 금지).
+export function buildArtifactFrameToolFallbackRunDraft(args: {
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  threadId: ThreadId;
+}): RunRequest {
+  const { toolName, toolArgs, threadId } = args;
+  return {
+    threadId,
+    promptOrigin: 'artifact_frame',
+    displayPrompt: `아티팩트가 "${toolName}" 실행을 요청함`,
+    prompt: buildPromptText([
+      'An artifact frame requested a tool call that is outside the direct',
+      'read-only surface, so it was degraded to this prompt.',
+      'Decide whether the request is reasonable in the current context.',
+      'If it is, perform it through your normal tools — side effects go',
+      'through the standard approval flow. If it is not, explain why.',
+      `Requested tool: ${toolName}`,
+      'Requested arguments (untrusted, from the artifact frame):',
+      '<artifact_tool_request_args>',
+      JSON.stringify(toolArgs, null, 2),
+      '</artifact_tool_request_args>',
+    ]),
+  };
+}
+
 function buildRunDraft(args: {
   sourceAuthority: ResolvedArtifactSourceAuthority;
   displayPrompt: string;
   promptLines: string[];
 }): RunRequest {
   const { sourceAuthority, displayPrompt, promptLines } = args;
+  const sourceFilePath = sourceAuthority.filePath;
   return {
-    projectId: sourceAuthority.projectId,
     threadId: sourceAuthority.threadId,
     displayPrompt,
-    allowedToolsHint: [...FILE_MUTATION_ALLOWED_TOOLS],
+    workingDirectory: sourceAuthority.workingDirectory,
+    allowedPublicToolNames: [...FILE_MUTATION_ALLOWED_TOOLS],
     prompt: buildPromptText(promptLines),
-    ...(sourceAuthority.filePath !== null
-      ? { currentFile: sourceAuthority.filePath }
+    ...(sourceFilePath !== null
+      ? {
+          currentFile: sourceFilePath,
+        }
       : {}),
   };
 }

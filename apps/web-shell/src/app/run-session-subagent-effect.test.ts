@@ -30,6 +30,7 @@ void test('createSubagentActivityEffect maps spawned events to spawned transcrip
     entry: {
       kind: 'subagent_activity',
       childRunId: CHILD_RUN_ID,
+      childThreadId: THREAD_ID,
       subagentType: 'worker',
       state: 'spawned',
     },
@@ -96,6 +97,56 @@ void test('createSubagentActivityEffect preserves terminal deliveryId, reason, a
       state: 'failed',
       reason: 'timeout',
       result: 'timed out',
+    },
+  });
+});
+
+void test('createSubagentActivityEffect preserves terminal elapsedMs and usage telemetry', () => {
+  const effect = createSubagentActivityEffect({
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+    seq: 4,
+    ts: '2026-04-18T00:00:03.000Z',
+    type: 'subagent_terminal',
+    payload: {
+      deliveryId: 'delivery-2',
+      parentRunId: RUN_ID,
+      childRunId: CHILD_RUN_ID,
+      childThreadId: THREAD_ID,
+      subagentType: 'explorer',
+      terminalState: 'completed',
+      ok: true,
+      result: 'done',
+      elapsedMs: 475_000,
+      usage: {
+        inputTokens: 15_900,
+        outputTokens: 1_200,
+        cachedInputTokens: 9_000,
+      },
+      modelId: 'gpt-5.6-luna',
+      reasoningEffort: 'high',
+    },
+  });
+
+  assert.deepEqual(effect, {
+    kind: 'subagent_activity_added',
+    threadId: THREAD_ID,
+    entry: {
+      kind: 'subagent_activity',
+      deliveryId: 'delivery-2',
+      childRunId: CHILD_RUN_ID,
+      childThreadId: THREAD_ID,
+      subagentType: 'explorer',
+      state: 'completed',
+      result: 'done',
+      elapsedMs: 475_000,
+      usage: {
+        inputTokens: 15_900,
+        outputTokens: 1_200,
+        cachedInputTokens: 9_000,
+      },
+      modelId: 'gpt-5.6-luna',
+      reasoningEffort: 'high',
     },
   });
 });

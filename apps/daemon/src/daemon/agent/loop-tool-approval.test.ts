@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { toApprovalClass } from '@geulbat/protocol/run-approval';
+import { createCallbackToolDispatcher } from './callback-tool-dispatcher.js';
+import { threadFilePath } from '../sessions/paths.js';
 
 import {
   createAgentEvent,
@@ -17,6 +19,11 @@ import {
 } from './loop-tool-runtime.js';
 import { createDaemonContext } from '../context.js';
 import {
+  completeRun,
+  createRunState,
+  type RunState,
+} from './runtime/run-state.js';
+import {
   PTC_EXECUTE_CODE_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,
   type PtcExecuteCodeRuntime,
@@ -29,8 +36,8 @@ import type {
   ToolParseResult,
 } from '../tools/types.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
-import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
-import { testProjectId } from '../../test-support/project-id.js';
+import { createSymlinkOrSkip } from '../../test-support/symlink-test.js';
+import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 
 function registerOnce(
@@ -54,7 +61,8 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
   description: string;
   sideEffectLevel: AnyTool['sideEffectLevel'];
   requiresApproval: boolean;
-  mayMutateWorkspaceFiles?: boolean;
+  mayMutateComputerFiles?: boolean;
+  exposure?: AnyTool['exposure'];
   parseArgs?: (raw: unknown) => ToolParseResult<TArgs>;
   executeParsed: (
     parsedArgs: TArgs,
@@ -74,9 +82,10 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
     },
     strict: true,
     sideEffectLevel: args.sideEffectLevel,
-    mayMutateWorkspaceFiles: args.mayMutateWorkspaceFiles ?? false,
+    mayMutateComputerFiles: args.mayMutateComputerFiles ?? false,
     timeoutMs: 1_000,
     requiresApproval: args.requiresApproval,
+    ...(args.exposure === undefined ? {} : { exposure: args.exposure }),
     parseArgs: args.parseArgs ?? parseObjectArgs,
     executeParsed: args.executeParsed,
   };
@@ -92,12 +101,15 @@ function makeExecutionRuntime(
   daemonContext: ReturnType<typeof createDaemonContext>,
   args: {
     threadId: ReturnType<typeof testThreadId>;
-    projectId: ReturnType<typeof testProjectId>;
-    workspaceRoot: string;
+    stateRoot: string;
+    computerFileRoot?: string;
+    workingDirectory?: string;
     runId: string;
     approvalContext: ReturnType<typeof makeApprovalContext>;
     emit: ReturnType<typeof makeEmitter>;
     agentSpawnRuntime?: ReturnType<typeof createDaemonContext>;
+    signal?: AbortSignal;
+    runState?: RunState;
   },
 ) {
   return buildToolCallExecutionRuntime({
@@ -107,22 +119,56 @@ function makeExecutionRuntime(
     approvalGate: daemonContext.approvalGate,
     approvalGrants: daemonContext.approvalGrants,
     executionContextBase: buildAgentToolExecutionContextBase({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: args.threadId,
-        projectId: args.projectId,
-        workspaceRoot: args.workspaceRoot,
+        stateRoot: args.stateRoot,
+        workingDirectory: args.workingDirectory ?? '',
       }),
       runId: args.runId,
       approvalContext: args.approvalContext,
       emit: args.emit,
       currentFile: undefined,
       selection: undefined,
-      signal: undefined,
-      runState: undefined,
+      signal: args.signal,
+      runState: args.runState,
+      ...(args.computerFileRoot === undefined
+        ? {}
+        : { computerFileRoot: args.computerFileRoot }),
       memoryIndex: undefined,
       agentSpawnRuntime: args.agentSpawnRuntime,
     }),
   });
+}
+
+// W2 helper: resolve the pending approval from the emitted event, like the
+// web-shell would. Returns the emitter to pass into makeExecutionRuntime.
+function makeApprovalResolvingEmitter(
+  events: AgentEvent[],
+  daemonContext: ReturnType<typeof createDaemonContext>,
+  decision: 'approved' | 'denied',
+  onApprovalRequired?: () => void | Promise<void>,
+): AgentEventEmitter {
+  return (type, payload) => {
+    events.push(createAgentEvent(type, payload));
+    if (type === 'approval_required') {
+      const approval = payload as {
+        callId: string;
+        runId: string;
+        threadId: string;
+      };
+      setTimeout(() => {
+        void (async () => {
+          await onApprovalRequired?.();
+          daemonContext.approvalGate.resolveApproval(
+            approval.callId,
+            approval.runId,
+            approval.threadId,
+            decision,
+          );
+        })();
+      }, 0);
+    }
+  };
 }
 
 void test('executeFunctionCall runs read-only tools without approval and forwards approvalGranted=false', async () => {
@@ -159,8 +205,7 @@ void test('executeFunctionCall runs read-only tools without approval and forward
     history: [],
     runtime: makeExecutionRuntime(daemonContext, {
       threadId,
-      projectId: testProjectId('project'),
-      workspaceRoot,
+      stateRoot: workspaceRoot,
       runId: 'run-read-only',
       approvalContext: makeApprovalContext(),
       emit: makeEmitter(events),
@@ -212,8 +257,7 @@ void test('executeFunctionCall auto-approves write tools in full_access mode', a
     history: [],
     runtime: makeExecutionRuntime(daemonContext, {
       threadId,
-      projectId: testProjectId('project'),
-      workspaceRoot,
+      stateRoot: workspaceRoot,
       runId: 'run-full-access-tool',
       approvalContext: makeApprovalContext({
         sessionId: 'session-full-access-tool',
@@ -261,7 +305,6 @@ void test('executeFunctionCall can auto-approve from an injected approval grant 
   daemonContext.approvalGrants.registerApprovalGrant(
     {
       runId: 'run-grant-store-tool',
-      threadId,
       sessionId: approvalContext.sessionId,
       approvalClass: toApprovalClass(toolName),
       sideEffectLevel: 'destructive',
@@ -283,8 +326,7 @@ void test('executeFunctionCall can auto-approve from an injected approval grant 
     history: [],
     runtime: makeExecutionRuntime(daemonContext, {
       threadId,
-      projectId: testProjectId('project'),
-      workspaceRoot,
+      stateRoot: workspaceRoot,
       runId: 'run-grant-store-tool',
       approvalContext,
       emit: makeEmitter(events),
@@ -302,17 +344,25 @@ void test('executeFunctionCall can auto-approve from an injected approval grant 
   assert.deepEqual(events, []);
 });
 
-void test('executeFunctionCall injects an audit-only callback dispatcher for exec', async () => {
-  const nestedToolName = 'loop_tool_approval_ptc_callback_read_test_tool';
+void test('executeFunctionCall admits an SDK-visible no-effect callback from exec', async () => {
+  const nestedToolName = 'loop_tool_approval_ptc_callback_none_test_tool';
   const daemonContext = createDaemonContext();
   let nestedCtx: ToolExecutionContext | undefined;
   registerOnce(
     daemonContext,
     makeTestTool({
       name: nestedToolName,
-      description: 'PTC callback read test tool',
-      sideEffectLevel: 'read',
+      description: 'PTC callback no-effect test tool',
+      sideEffectLevel: 'none',
       requiresApproval: false,
+      exposure: {
+        directHot: false,
+        sdkVisible: true,
+        inCellCallable: true,
+        directOnly: false,
+        approvalRequired: false,
+        effectClass: 'readOnly',
+      },
       async executeParsed(_, ctx) {
         nestedCtx = ctx;
         return {
@@ -424,8 +474,7 @@ void test('executeFunctionCall injects an audit-only callback dispatcher for exe
     history,
     runtime: makeExecutionRuntime(daemonContext, {
       threadId,
-      projectId: testProjectId('project'),
-      workspaceRoot,
+      stateRoot: workspaceRoot,
       runId: 'run-ptc-callback',
       approvalContext: makeApprovalContext(),
       emit: makeEmitter(events),
@@ -499,8 +548,7 @@ void test('executeFunctionCall rejects PTC callback write dispatch before approv
         history,
         runtime: makeExecutionRuntime(daemonContext, {
           threadId,
-          projectId: testProjectId('project'),
-          workspaceRoot,
+          stateRoot: workspaceRoot,
           runId: 'run-ptc-callback-write',
           approvalContext: makeApprovalContext(),
           emit: makeEmitter(events),
@@ -561,8 +609,7 @@ void test('executeFunctionCall resolves interactive approval against the owner r
     history,
     runtime: makeExecutionRuntime(daemonContext, {
       threadId,
-      projectId: testProjectId('project'),
-      workspaceRoot,
+      stateRoot: workspaceRoot,
       runId: 'run-visible',
       approvalContext: makeApprovalContext({
         sessionId: 'session-interactive-tool',
@@ -646,8 +693,7 @@ void test('executeFunctionCall returns terminal failure when approval is denied 
     history,
     runtime: makeExecutionRuntime(daemonContext, {
       threadId,
-      projectId: testProjectId('project'),
-      workspaceRoot,
+      stateRoot: workspaceRoot,
       runId: 'run-denied-orchestration',
       approvalContext: makeApprovalContext({
         sessionId: 'session-denied-orchestration',
@@ -680,4 +726,987 @@ void test('executeFunctionCall returns terminal failure when approval is denied 
   );
   assert.equal(history.length, 1);
   assert.match(history[0]?.output ?? '', /approval_denied/);
+});
+
+async function withWriteCallbackKnob<T>(
+  value: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const envName = 'GEULBAT_PTC_WRITE_CALLBACK_ENABLED';
+  const previous = process.env[envName];
+  process.env[envName] = value;
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[envName];
+    } else {
+      process.env[envName] = previous;
+    }
+  }
+}
+
+function makePtcWriteCallbackSource(runtimeToolCallId: string) {
+  return {
+    kind: 'ptc_callback' as const,
+    parentToolCallId: 'call-execute-code',
+    runtimeToolCallId,
+    hostCallId: `call-execute-code::${runtimeToolCallId}`,
+  };
+}
+
+void test('W1: full_access auto-approves an admitted PTC write callback and mutates Computer files', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-fullaccess-'));
+  const threadId = testThreadId(84_1);
+  const events: AgentEvent[] = [];
+
+  await withWriteCallbackKnob('1', async () => {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w1-full-access',
+        callId: 'call-execute-code::nested-w1-1',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'create', path: 'w1.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'w1.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-w1-full-access',
+        approvalContext: makeApprovalContext({ permissionMode: 'full_access' }),
+        emit: makeEmitter(events),
+      }),
+      source: makePtcWriteCallbackSource('runtime-w1-1'),
+      denialMode: 'code_visible',
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.ok, true);
+    }
+    const created = await stat(join(workspaceRoot, 'w1.txt'));
+    assert.equal(created.isFile(), true);
+    assert.equal(
+      events.some((event) => event.type === 'approval_required'),
+      false,
+    );
+  });
+});
+
+void test('W2: needs-approval PTC write callback waits and maps denial to a code-visible result', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-denied-'));
+  const threadId = testThreadId(84_2);
+  const events: AgentEvent[] = [];
+
+  await withWriteCallbackKnob('1', async () => {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w2-denied',
+        callId: 'call-execute-code::nested-w2-2',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'create', path: 'w2.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'w2.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-w2-denied',
+        approvalContext: makeApprovalContext(),
+        emit: makeApprovalResolvingEmitter(events, daemonContext, 'denied'),
+      }),
+      source: makePtcWriteCallbackSource('runtime-w2-2'),
+      denialMode: 'code_visible',
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.ok, false);
+      assert.equal(result.value.errorCode, 'approval_denied');
+    }
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['approval_required'],
+    );
+    await assert.rejects(() => stat(join(workspaceRoot, 'w2.txt')));
+    assert.equal(
+      daemonContext.approvalGate.hasPendingApprovalEntry(
+        'call-execute-code::nested-w2-2',
+        'run-w2-denied',
+        threadId,
+      ),
+      false,
+    );
+  });
+});
+
+void test('W2: granted PTC write callback executes once and mutates Computer files', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-granted-'));
+  const threadId = testThreadId(84_7);
+  const events: AgentEvent[] = [];
+
+  await withWriteCallbackKnob('1', async () => {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w2-granted',
+        callId: 'call-execute-code::nested-w2-7',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'create', path: 'w2.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'w2.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-w2-granted',
+        approvalContext: makeApprovalContext(),
+        emit: makeApprovalResolvingEmitter(events, daemonContext, 'approved'),
+      }),
+      source: makePtcWriteCallbackSource('runtime-w2-7'),
+      denialMode: 'code_visible',
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.ok, true);
+    }
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['approval_required'],
+    );
+    const created = await stat(join(workspaceRoot, 'w2.txt'));
+    assert.equal(created.isFile(), true);
+  });
+});
+
+void test('W2: aborted approval wait returns a code-visible aborted result and leaves no pending entry', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-aborted-'));
+  const threadId = testThreadId(84_8);
+  const events: AgentEvent[] = [];
+  const controller = new AbortController();
+  const emit: AgentEventEmitter = (type, payload) => {
+    events.push(createAgentEvent(type, payload));
+    if (type === 'approval_required') {
+      setTimeout(() => controller.abort(), 0);
+    }
+  };
+
+  await withWriteCallbackKnob('1', async () => {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w2-aborted',
+        callId: 'call-execute-code::nested-w2-8',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'create', path: 'w2.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'w2.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-w2-aborted',
+        approvalContext: makeApprovalContext(),
+        emit,
+        signal: controller.signal,
+      }),
+      source: makePtcWriteCallbackSource('runtime-w2-8'),
+      denialMode: 'code_visible',
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.ok, false);
+      assert.equal(result.value.errorCode, 'aborted');
+    }
+    assert.equal(
+      daemonContext.approvalGate.hasPendingApprovalEntry(
+        'call-execute-code::nested-w2-8',
+        'run-w2-aborted',
+        threadId,
+      ),
+      false,
+    );
+    await assert.rejects(() => stat(join(workspaceRoot, 'w2.txt')));
+  });
+});
+
+void test('W2: class-only grants from direct approvals do not auto-approve PTC write callbacks', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-grant-'));
+  const threadId = testThreadId(84_3);
+  const events: AgentEvent[] = [];
+  const approvalContext = makeApprovalContext();
+  const grantContext = {
+    runId: 'run-w1-class-grant',
+    threadId,
+    sessionId: approvalContext.sessionId,
+    approvalClass: toApprovalClass('manage_files:create'),
+    sideEffectLevel: 'write' as const,
+    permissionMode: approvalContext.permissionMode,
+  };
+  daemonContext.approvalGrants.registerApprovalGrant(grantContext, 'run');
+  assert.equal(
+    daemonContext.approvalGrants.hasApprovalGrant(grantContext),
+    true,
+  );
+
+  await withWriteCallbackKnob('1', async () => {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w1-class-grant',
+        callId: 'call-execute-code::nested-w1-3',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'create', path: 'w1.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'w1.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-w1-class-grant',
+        approvalContext,
+        emit: makeApprovalResolvingEmitter(events, daemonContext, 'denied'),
+      }),
+      source: makePtcWriteCallbackSource('runtime-w1-3'),
+      denialMode: 'code_visible',
+    });
+
+    // The stored class grant is not consumed: the callback still had to go
+    // through the interactive wait and the user's denial stands.
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.ok, false);
+      assert.equal(result.value.errorCode, 'approval_denied');
+    }
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['approval_required'],
+    );
+    await assert.rejects(() => stat(join(workspaceRoot, 'w1.txt')));
+  });
+});
+
+void test('W2: an interactive grant is not reused as auto-approval for the next PTC write callback', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-noreuse-'));
+  const threadId = testThreadId(84_9);
+  const approvalContext = makeApprovalContext();
+
+  await withWriteCallbackKnob('1', async () => {
+    const firstEvents: AgentEvent[] = [];
+    // First callback: user approves with a run-scoped "always allow" grant.
+    const first = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w2-noreuse-1',
+        callId: 'call-execute-code::nested-w2-9a',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'create', path: 'first.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'first.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-w2-noreuse',
+        approvalContext,
+        emit: (type, payload) => {
+          firstEvents.push(createAgentEvent(type, payload));
+          if (type === 'approval_required') {
+            const approval = payload as {
+              callId: string;
+              runId: string;
+              threadId: string;
+            };
+            setTimeout(() => {
+              daemonContext.approvalGate.resolveApproval(
+                approval.callId,
+                approval.runId,
+                approval.threadId,
+                'approved',
+                'run',
+              );
+            }, 0);
+          }
+        },
+      }),
+      source: makePtcWriteCallbackSource('runtime-w2-9a'),
+      denialMode: 'code_visible',
+    });
+    assert.equal(first.ok, true);
+    if (first.ok) {
+      assert.equal(first.value.ok, true);
+    }
+
+    // Second callback in the same run/class: the recorded grant must not be
+    // consumed as auto-approval evidence — it waits again and denial stands.
+    const secondEvents: AgentEvent[] = [];
+    const second = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w2-noreuse-2',
+        callId: 'call-execute-code::nested-w2-9b',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'create', path: 'second.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'second.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-w2-noreuse',
+        approvalContext,
+        emit: makeApprovalResolvingEmitter(
+          secondEvents,
+          daemonContext,
+          'denied',
+        ),
+      }),
+      source: makePtcWriteCallbackSource('runtime-w2-9b'),
+      denialMode: 'code_visible',
+    });
+    assert.equal(second.ok, true);
+    if (second.ok) {
+      assert.equal(second.value.ok, false);
+      assert.equal(second.value.errorCode, 'approval_denied');
+    }
+    assert.deepEqual(
+      secondEvents.map((event) => event.type),
+      ['approval_required'],
+    );
+    await assert.rejects(() => stat(join(workspaceRoot, 'second.txt')));
+  });
+});
+
+void test('W2: mutation is re-validated after the approval wait (symlink swap is rejected)', async (t) => {
+  const daemonContext = createDaemonContext();
+  const outerRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-toctou-'));
+  const workspaceRoot = join(outerRoot, 'workspace');
+  const escapeRoot = join(outerRoot, 'outside');
+  await mkdir(join(workspaceRoot, 'sub'), { recursive: true });
+  await mkdir(escapeRoot, { recursive: true });
+  const threadId = testThreadId(85_0);
+  const events: AgentEvent[] = [];
+  let symlinkCreated = true;
+
+  await withWriteCallbackKnob('1', async () => {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w2-toctou',
+        callId: 'call-execute-code::nested-w2-10',
+        name: 'manage_files',
+        arguments: JSON.stringify({
+          operation: 'create',
+          path: 'sub/w2.txt',
+        }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'sub/w2.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-w2-toctou',
+        approvalContext: makeApprovalContext(),
+        emit: makeApprovalResolvingEmitter(
+          events,
+          daemonContext,
+          'approved',
+          async () => {
+            // While the approval waits, the admitted parent directory is
+            // swapped for a symlink escaping ComputerFileScope.
+            await rm(join(workspaceRoot, 'sub'), {
+              recursive: true,
+              force: true,
+            });
+            symlinkCreated = await createSymlinkOrSkip(
+              t,
+              escapeRoot,
+              join(workspaceRoot, 'sub'),
+            );
+          },
+        ),
+      }),
+      source: makePtcWriteCallbackSource('runtime-w2-10'),
+      denialMode: 'code_visible',
+    });
+
+    if (!symlinkCreated) {
+      return;
+    }
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.ok, false);
+    }
+    await assert.rejects(() => stat(join(escapeRoot, 'w2.txt')));
+  });
+});
+
+void test('W1: write tools outside the allowlist and destructive operations stay rejected with the knob on', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-reject-'));
+  const threadId = testThreadId(84_4);
+  const events: AgentEvent[] = [];
+
+  await withWriteCallbackKnob('1', async () => {
+    const runtime = makeExecutionRuntime(daemonContext, {
+      threadId,
+      stateRoot: workspaceRoot,
+      computerFileRoot: workspaceRoot,
+      workingDirectory: workspaceRoot,
+      runId: 'run-w1-reject',
+      approvalContext: makeApprovalContext({ permissionMode: 'full_access' }),
+      emit: makeEmitter(events),
+    });
+
+    await assert.rejects(
+      () =>
+        executeFunctionCall({
+          functionCall: {
+            id: 'fc-w1-write-file',
+            callId: 'call-execute-code::nested-w1-4',
+            name: 'write_file',
+            arguments: JSON.stringify({ path: 'w1.txt', content: 'nope' }),
+          },
+          round: 0,
+          toolArgs: { path: 'w1.txt', content: 'nope' },
+          history: [],
+          runtime,
+          source: makePtcWriteCallbackSource('runtime-w1-4'),
+          denialMode: 'code_visible',
+        }),
+      /PTC callback dispatch rejected a tool outside the admitted callback surface/u,
+    );
+
+    await assert.rejects(
+      () =>
+        executeFunctionCall({
+          functionCall: {
+            id: 'fc-w1-delete',
+            callId: 'call-execute-code::nested-w1-5',
+            name: 'manage_files',
+            arguments: JSON.stringify({ operation: 'delete', path: 'w1.txt' }),
+          },
+          round: 0,
+          toolArgs: { operation: 'delete', path: 'w1.txt' },
+          history: [],
+          runtime,
+          source: makePtcWriteCallbackSource('runtime-w1-5'),
+          denialMode: 'code_visible',
+        }),
+      /PTC callback dispatch rejected a tool outside the admitted callback surface/u,
+    );
+
+    assert.deepEqual(events, []);
+  });
+});
+
+void test('W1: full_access does not bypass the ComputerFileScope path boundary for PTC write callbacks', async () => {
+  const daemonContext = createDaemonContext();
+  const outerRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-boundary-'));
+  const workspaceRoot = join(outerRoot, 'workspace');
+  await mkdir(workspaceRoot, { recursive: true });
+  const threadId = testThreadId(84_5);
+  const events: AgentEvent[] = [];
+
+  await withWriteCallbackKnob('1', async () => {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w1-boundary',
+        callId: 'call-execute-code::nested-w1-6',
+        name: 'manage_files',
+        arguments: JSON.stringify({
+          operation: 'create',
+          path: '../escape.txt',
+        }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: '../escape.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-w1-boundary',
+        approvalContext: makeApprovalContext({ permissionMode: 'full_access' }),
+        emit: makeEmitter(events),
+      }),
+      source: makePtcWriteCallbackSource('runtime-w1-6'),
+      denialMode: 'code_visible',
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.ok, false);
+    }
+    await assert.rejects(() => stat(join(outerRoot, 'escape.txt')));
+  });
+});
+
+void test('W1: callback dispatcher reports changed-files on successful writes and audits the approval class', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-audit-'));
+  const threadId = testThreadId(84_6);
+  const events: AgentEvent[] = [];
+  const runtime = makeExecutionRuntime(daemonContext, {
+    threadId,
+    stateRoot: workspaceRoot,
+    computerFileRoot: workspaceRoot,
+    workingDirectory: workspaceRoot,
+    runId: 'run-w1-audit',
+    approvalContext: makeApprovalContext(),
+    emit: makeEmitter(events),
+  });
+
+  const canned = new Map<string, ExecuteResult>([
+    ['manage_files', { ok: true, output: 'created' }],
+    [
+      'apply_patch',
+      {
+        ok: false,
+        output: '',
+        errorCode: 'approval_denied',
+        error: 'approval denied',
+      },
+    ],
+    ['read_file', { ok: true, output: 'read-ok' }],
+  ]);
+  const dispatcher = createCallbackToolDispatcher({
+    runtime,
+    history: [],
+    parentRound: 0,
+    parentToolCallId: 'call-execute-code',
+    dispatchFunctionCall: async ({ functionCall }) => {
+      const result = canned.get(functionCall.name);
+      assert.ok(result);
+      return { ok: true, value: result };
+    },
+  });
+
+  const writeOk = await dispatcher.dispatch({
+    toolName: 'manage_files',
+    args: { operation: 'create', path: 'a.txt' },
+    runtimeToolCallId: 'rt-write-1',
+    signal: new AbortController().signal,
+  });
+  assert.equal(writeOk.ok, true);
+
+  const writeDenied = await dispatcher.dispatch({
+    toolName: 'apply_patch',
+    args: { path: 'a.txt' },
+    runtimeToolCallId: 'rt-write-2',
+    signal: new AbortController().signal,
+  });
+  assert.equal(writeDenied.ok, false);
+
+  const readOk = await dispatcher.dispatch({
+    toolName: 'read_file',
+    args: { path: 'a.txt' },
+    runtimeToolCallId: 'rt-read-1',
+    signal: new AbortController().signal,
+  });
+  assert.equal(readOk.ok, true);
+
+  const toolResults = events.filter((event) => event.type === 'tool_result');
+  assert.equal(toolResults.length, 3);
+  const changedFlags = toolResults.map((event) =>
+    event.type === 'tool_result'
+      ? event.payload.computerFilesMayHaveChanged
+      : undefined,
+  );
+  assert.deepEqual(changedFlags, [true, false, false]);
+
+  const transcript = await readFile(
+    threadFilePath(workspaceRoot, threadId),
+    'utf8',
+  );
+  const writeCallLine = transcript
+    .split('\n')
+    .find(
+      (line) => line.includes('"tool_call"') && line.includes('rt-write-1'),
+    );
+  assert.ok(writeCallLine);
+  assert.match(writeCallLine, /approvalClass/u);
+  assert.match(writeCallLine, /manage_files:create/u);
+  const readCallLine = transcript
+    .split('\n')
+    .find((line) => line.includes('"tool_call"') && line.includes('rt-read-1'));
+  assert.ok(readCallLine);
+  assert.equal(readCallLine.includes('approvalClass'), false);
+});
+
+void test('W2: detached-cell callbacks use the same interactive approval path', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-cell-'));
+  const threadId = testThreadId(85_1);
+  const events: AgentEvent[] = [];
+
+  await withWriteCallbackKnob('1', async () => {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w2-cell',
+        callId: 'call-execute-code::nested-w2-11',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'create', path: 'cell.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'cell.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-w2-cell',
+        approvalContext: makeApprovalContext(),
+        emit: makeApprovalResolvingEmitter(events, daemonContext, 'approved'),
+      }),
+      source: {
+        ...makePtcWriteCallbackSource('runtime-w2-11'),
+        cellId: 'ptc_cell_w2_test',
+      },
+      denialMode: 'code_visible',
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.ok, true);
+    }
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['approval_required'],
+    );
+    const created = await stat(join(workspaceRoot, 'cell.txt'));
+    assert.equal(created.isFile(), true);
+  });
+});
+
+void test('W2: callbacks that outlive the settled parent run fall back to a no-wait rejection', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-postrun-'));
+  const threadId = testThreadId(85_2);
+  const events: AgentEvent[] = [];
+  const runState = createRunState({
+    runId: '00000000-0000-4000-8000-000000000052',
+    runContext: makeRunContext({
+      threadId,
+      stateRoot: workspaceRoot,
+    }),
+  });
+  completeRun(runState);
+
+  await withWriteCallbackKnob('1', async () => {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w2-postrun',
+        callId: 'call-execute-code::nested-w2-12',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'create', path: 'late.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'late.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: '00000000-0000-4000-8000-000000000052',
+        approvalContext: makeApprovalContext(),
+        emit: makeEmitter(events),
+        runState,
+      }),
+      source: {
+        ...makePtcWriteCallbackSource('runtime-w2-12'),
+        cellId: 'ptc_cell_w2_postrun',
+      },
+      denialMode: 'code_visible',
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.ok, false);
+      assert.equal(result.value.errorCode, 'approval_required');
+      assert.match(result.value.error ?? '', /already settled/u);
+    }
+    // No prompt is emitted and nothing waits: the settled run has no channel
+    // left that could resolve it.
+    assert.deepEqual(events, []);
+    assert.equal(
+      daemonContext.approvalGate.hasPendingApprovalEntry(
+        'call-execute-code::nested-w2-12',
+        '00000000-0000-4000-8000-000000000052',
+        threadId,
+      ),
+      false,
+    );
+    await assert.rejects(() => stat(join(workspaceRoot, 'late.txt')));
+  });
+});
+
+function makeArtifactFrameSource(runtimeToolCallId: string) {
+  return {
+    kind: 'artifact_frame' as const,
+    scopeHandle: 'scope-artifact-frame-test',
+    runtimeToolCallId,
+    hostCallId: `artifact-frame-${runtimeToolCallId}`,
+  };
+}
+
+void test('artifact_frame data_only dispatch runs an admitted read-only callback tool', async () => {
+  const toolName = 'loop_tool_approval_artifact_frame_read_test_tool';
+  const daemonContext = createDaemonContext();
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: toolName,
+      description: 'artifact frame read-only test tool',
+      sideEffectLevel: 'read',
+      requiresApproval: false,
+      exposure: {
+        directHot: false,
+        sdkVisible: true,
+        inCellCallable: true,
+        directOnly: false,
+        approvalRequired: false,
+        effectClass: 'readOnly',
+      },
+      async executeParsed() {
+        return { ok: true, output: 'frame-read-ok' };
+      },
+    }),
+  );
+
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-frame-read-'));
+  const threadId = testThreadId(86_1);
+  const events: AgentEvent[] = [];
+
+  const result = await executeFunctionCall({
+    functionCall: {
+      id: 'fc-frame-read',
+      callId: 'artifact-frame-rt-read-1',
+      name: toolName,
+      arguments: '{"path":"draft.md"}',
+    },
+    round: 0,
+    toolArgs: { path: 'draft.md' },
+    history: [],
+    runtime: makeExecutionRuntime(daemonContext, {
+      threadId,
+      stateRoot: workspaceRoot,
+      runId: 'run-frame-read',
+      approvalContext: makeApprovalContext(),
+      emit: makeEmitter(events),
+    }),
+    source: makeArtifactFrameSource('rt-read-1'),
+    denialMode: 'data_only',
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    value: { ok: true, output: 'frame-read-ok' },
+  });
+  assert.deepEqual(events, []);
+});
+
+void test('artifact_frame data_only rejects tools outside the shared callback surface as data', async () => {
+  const toolName = 'loop_tool_approval_artifact_frame_reject_test_tool';
+  const daemonContext = createDaemonContext();
+  let executionCount = 0;
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: toolName,
+      description: 'artifact frame non-admitted test tool',
+      sideEffectLevel: 'read',
+      requiresApproval: false,
+      // exposure 없음 → sdkVisible 아님 → 공유 surface 밖
+      async executeParsed() {
+        executionCount += 1;
+        return { ok: true, output: 'should-not-run' };
+      },
+    }),
+  );
+
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-frame-reject-'));
+  const threadId = testThreadId(86_2);
+  const events: AgentEvent[] = [];
+
+  const result = await executeFunctionCall({
+    functionCall: {
+      id: 'fc-frame-reject',
+      callId: 'artifact-frame-rt-reject-1',
+      name: toolName,
+      arguments: '{"path":"draft.md"}',
+    },
+    round: 0,
+    toolArgs: { path: 'draft.md' },
+    history: [],
+    runtime: makeExecutionRuntime(daemonContext, {
+      threadId,
+      stateRoot: workspaceRoot,
+      runId: 'run-frame-reject',
+      approvalContext: makeApprovalContext(),
+      emit: makeEmitter(events),
+    }),
+    source: makeArtifactFrameSource('rt-reject-1'),
+    denialMode: 'data_only',
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.ok, false);
+    assert.equal(result.value.errorCode, 'approval_required');
+    assert.match(
+      result.value.error ?? '',
+      /outside the artifact frame callback surface/u,
+    );
+  }
+  assert.equal(executionCount, 0);
+  assert.deepEqual(events, []);
+});
+
+void test('artifact_frame source with terminal denialMode violates the dispatch invariant', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-frame-invariant-'),
+  );
+  const threadId = testThreadId(86_3);
+  const events: AgentEvent[] = [];
+
+  await assert.rejects(
+    () =>
+      executeFunctionCall({
+        functionCall: {
+          id: 'fc-frame-invariant',
+          callId: 'artifact-frame-rt-invariant-1',
+          name: 'read_file',
+          arguments: '{"path":"draft.md"}',
+        },
+        round: 0,
+        toolArgs: { path: 'draft.md' },
+        history: [],
+        runtime: makeExecutionRuntime(daemonContext, {
+          threadId,
+          stateRoot: workspaceRoot,
+          runId: 'run-frame-invariant',
+          approvalContext: makeApprovalContext(),
+          emit: makeEmitter(events),
+        }),
+        source: makeArtifactFrameSource('rt-invariant-1'),
+        denialMode: 'terminal',
+      }),
+    /unsupported tool dispatch source\/denialMode combination/u,
+  );
+  assert.deepEqual(events, []);
+});
+
+void test('artifact_frame write callback: full_access auto-approves via the shared write allowlist', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-frame-write-'));
+  const threadId = testThreadId(86_4);
+  const events: AgentEvent[] = [];
+
+  await withWriteCallbackKnob('1', async () => {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-frame-write',
+        callId: 'artifact-frame-rt-write-1',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'create', path: 'frame.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'frame.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-frame-write',
+        approvalContext: makeApprovalContext({ permissionMode: 'full_access' }),
+        emit: makeEmitter(events),
+      }),
+      source: makeArtifactFrameSource('rt-write-1'),
+      denialMode: 'data_only',
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.ok, true);
+    }
+    const created = await stat(join(workspaceRoot, 'frame.txt'));
+    assert.equal(created.isFile(), true);
+    assert.deepEqual(events, []);
+  });
+});
+
+void test('artifact_frame write callback in basic mode returns approval_required without waiting', async () => {
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-frame-basic-'));
+  const threadId = testThreadId(86_5);
+  const events: AgentEvent[] = [];
+
+  await withWriteCallbackKnob('1', async () => {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-frame-basic-write',
+        callId: 'artifact-frame-rt-write-2',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'create', path: 'frame2.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'create', path: 'frame2.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        computerFileRoot: workspaceRoot,
+        workingDirectory: workspaceRoot,
+        runId: 'run-frame-basic-write',
+        approvalContext: makeApprovalContext(),
+        emit: makeEmitter(events),
+      }),
+      source: makeArtifactFrameSource('rt-write-2'),
+      denialMode: 'data_only',
+    });
+
+    // 프레임에는 승인 카드를 중계할 채널이 없다 — 대기 없이 데이터 거부로
+    // 돌아오고 UI가 프롬프트(티어 B)로 강등한다.
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.ok, false);
+      assert.equal(result.value.errorCode, 'approval_required');
+      assert.match(result.value.error ?? '', /cannot resolve approvals/u);
+    }
+    assert.deepEqual(events, []);
+    await assert.rejects(() => stat(join(workspaceRoot, 'frame2.txt')));
+  });
 });

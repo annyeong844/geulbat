@@ -11,7 +11,7 @@ import type {
 } from './react-bundle-dependency-network-probe.js';
 import { isOpaqueSandboxOutputEvidenceRef } from '../sandbox/output-validation.js';
 
-export type ReactBundleRuntimeManifestAcceptanceFailureReason =
+type ReactBundleRuntimeManifestAcceptanceFailureReason =
   | 'prepare_summary_invalid'
   | 'manifest_entry_url_invalid'
   | 'dependency_evidence_mismatch'
@@ -20,7 +20,7 @@ export type ReactBundleRuntimeManifestAcceptanceFailureReason =
   | 'probe_dependency_mismatch'
   | 'probe_policy_failed';
 
-export type ReactBundleRuntimeManifestDependencyPolicy =
+type ReactBundleRuntimeManifestDependencyPolicy =
   | 'no_runtime_dependencies'
   | 'metadata_probe_required_for_external_dependencies';
 
@@ -28,7 +28,7 @@ type AcceptedRuntimeManifestNetworkPolicy =
   | 'none'
   | 'allowlisted_metadata_probe';
 
-export interface ReactBundleAcceptedRuntimeManifestDependencyEvidence {
+interface ReactBundleAcceptedRuntimeManifestDependencyEvidence {
   kind: 'esm_import' | 'stylesheet';
   specifier?: string;
   packageName?: string;
@@ -45,7 +45,7 @@ export interface ReactBundleAcceptedRuntimeManifestDependencyEvidence {
   };
 }
 
-export interface ReactBundleAcceptedRuntimeManifestSummary {
+interface ReactBundleAcceptedRuntimeManifestSummary {
   ok: true;
   manifest: ReactBundleRuntimeManifest;
   acceptance: {
@@ -109,7 +109,9 @@ export function acceptReactBundleRuntimeManifest(args: {
   now?: () => string;
 }): ReactBundleRuntimeManifestAcceptanceResult {
   const prepareValidation = validatePrepareSummary(args.prepare);
-  if (!prepareValidation.ok) return prepareValidation.failure;
+  if (!prepareValidation.ok) {
+    return prepareValidation.failure;
+  }
 
   try {
     normalizeReactBundleEntryUrl(args.prepare.manifest.entryUrl);
@@ -125,14 +127,18 @@ export function acceptReactBundleRuntimeManifest(args: {
     dependencies: args.prepare.manifest.runtimeDependencies,
     prepareEvidenceRef: args.prepare.evidenceRef,
   });
-  if (!manifestDependencies.ok) return manifestDependencies.failure;
+  if (!manifestDependencies.ok) {
+    return manifestDependencies.failure;
+  }
 
   const preparedEvidence = collectPreparedDependencyEvidence({
     evidence: args.prepare.provenanceSummary.dependencyEvidence,
     manifestDependencies: manifestDependencies.dependencies,
     prepareEvidenceRef: args.prepare.evidenceRef,
   });
-  if (!preparedEvidence.ok) return preparedEvidence.failure;
+  if (!preparedEvidence.ok) {
+    return preparedEvidence.failure;
+  }
 
   if (manifestDependencies.dependencies.length === 0) {
     return buildSuccess({
@@ -157,7 +163,9 @@ export function acceptReactBundleRuntimeManifest(args: {
     manifestDependencies: manifestDependencies.dependencies,
     prepareEvidenceRef: args.prepare.evidenceRef,
   });
-  if (!probeValidation.ok) return probeValidation.failure;
+  if (!probeValidation.ok) {
+    return probeValidation.failure;
+  }
 
   return buildSuccess({
     prepare: args.prepare,
@@ -535,7 +543,9 @@ function preparedEvidenceKey(
   evidence: PreparedDependencyEvidence,
 ): { ok: true; key: string | null } | { ok: false } {
   const normalized = tryNormalizeUrl(evidence.url);
-  if (!normalized.ok) return { ok: false };
+  if (!normalized.ok) {
+    return { ok: false };
+  }
   if (evidence.kind === 'esm_import') {
     return {
       ok: true,
@@ -551,7 +561,9 @@ function probeEvidenceKey(
   probe: ReactBundleDependencyNetworkProbeSummaryProbe,
 ): { ok: true; key: string | null } | { ok: false } {
   const normalized = tryNormalizeUrl(probe.requestedUrl);
-  if (!normalized.ok) return { ok: false };
+  if (!normalized.ok) {
+    return { ok: false };
+  }
   if (probe.kind === 'esm_import') {
     return {
       ok: true,

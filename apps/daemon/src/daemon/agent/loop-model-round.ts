@@ -4,6 +4,7 @@ import {
   type HistoryItem,
   type FunctionCall,
   type ProviderStructuredOutput,
+  type ProviderUsageTelemetry,
 } from '../llm/index.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import type { ToolDefinition } from '../tools/types.js';
@@ -29,20 +30,14 @@ interface ModelRoundData {
   assistantText: string;
   terminalResult: AgentResult;
   functionCalls: FunctionCall[];
+  itemsToAppend?: HistoryItem[];
   structuredOutputs?: ProviderStructuredOutput[];
+  providerUsageTelemetry?: ProviderUsageTelemetry;
 }
 
-type ModelRoundFailureResolution =
-  | { kind: 'retry'; delayMs: number }
-  | { kind: 'terminal'; result: AgentResult };
-
-const logger = createLogger('agent/model-round');
-
-export async function runModelRound(args: {
+export interface RunModelRoundArgs {
   history: HistoryItem[];
   systemPrompt: string;
-  promptContext: string;
-  pendingBackgroundSystemNote: string;
   round: number;
   toolDefs: ToolDefinition[];
   threadId: string;
@@ -54,13 +49,35 @@ export async function runModelRound(args: {
   callModelImpl?: CallModelFn;
   retrySleep?: (delayMs: number) => Promise<void>;
   now?: () => number;
-}): Promise<StepResult<ModelRoundData>> {
+  streamArgsToolNames?: ReadonlySet<string>;
+}
+
+type RunModelRoundResult = StepResult<ModelRoundData>;
+
+export interface ModelRoundPort {
+  runModelRound(args: RunModelRoundArgs): Promise<RunModelRoundResult>;
+}
+
+export function createModelRoundPort(): ModelRoundPort {
+  return {
+    async runModelRound(args) {
+      return await runModelRound(args);
+    },
+  };
+}
+
+type ModelRoundFailureResolution =
+  | { kind: 'retry'; delayMs: number }
+  | { kind: 'terminal'; result: AgentResult };
+
+const logger = createLogger('agent/model-round');
+
+export async function runModelRound(
+  args: RunModelRoundArgs,
+): Promise<RunModelRoundResult> {
   const {
     history,
     systemPrompt,
-    promptContext,
-    pendingBackgroundSystemNote,
-    round,
     toolDefs,
     threadId,
     providerWebSocketSessions,
@@ -75,17 +92,9 @@ export async function runModelRound(args: {
   let attemptIndex = 0;
 
   modelRoundAttempts: for (;;) {
-    const roundPrompt = [
-      systemPrompt,
-      promptContext,
-      round === 0 ? pendingBackgroundSystemNote : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
-
     const input: CallModelInput = {
       history,
-      systemPrompt: roundPrompt,
+      systemPrompt,
       tools: toolDefs,
       providerSessionId: threadId,
       providerWebSocketSessions,
@@ -103,6 +112,10 @@ export async function runModelRound(args: {
       emit,
       attemptIndex,
       now,
+      round: args.round,
+      ...(args.streamArgsToolNames !== undefined
+        ? { streamArgsToolNames: args.streamArgsToolNames }
+        : {}),
     });
 
     switch (chunkResult.kind) {
@@ -127,7 +140,13 @@ export async function runModelRound(args: {
             assistantText: chunkResult.assistantText,
             terminalResult,
             functionCalls: chunkResult.functionCalls,
+            ...(chunkResult.itemsToAppend !== undefined
+              ? { itemsToAppend: chunkResult.itemsToAppend }
+              : {}),
             ...(structuredOutputs !== undefined ? { structuredOutputs } : {}),
+            ...(chunkResult.providerUsageTelemetry !== undefined
+              ? { providerUsageTelemetry: chunkResult.providerUsageTelemetry }
+              : {}),
           },
         };
       }

@@ -1,15 +1,18 @@
 import {
   isArtifactCommittedEventPayload,
+  isContextUsageUpdatedEventPayload,
   isDoneEventPayload,
   isErrorEventPayload,
   isInterjectAppliedEventPayload,
   isRunAckEventPayload,
+  isRunUsageTotals,
   isSubagentApprovalRequiredEventPayload,
   isSubagentSpawnedEventPayload,
   isSubagentTerminalEventPayload,
   isThreadStatePersistedEventPayload,
   isThreadStatePersistFailedEventPayload,
   isTextDeltaEventPayload,
+  isToolCallDeltaEventPayload,
   isToolCallEventPayload,
   isToolResultEventPayload,
 } from '@geulbat/protocol/run-events';
@@ -20,8 +23,8 @@ import type {
   RunEventPayloadMap,
 } from '@geulbat/protocol/run-events';
 import type { ThreadId } from '@geulbat/protocol/ids';
-import type { AgentEvent } from '../../../daemon/agent/events.js';
 import type {
+  AgentEvent,
   AgentEventPayloadMap,
   AgentEventType,
 } from '../../../daemon/agent/events.js';
@@ -38,12 +41,15 @@ const agentEventPayloadGuards: {
   thread_state_persist_failed: isThreadStatePersistFailedEventPayload,
   done: isDoneEventPayload,
   tool_call: isToolCallEventPayload,
+  tool_call_delta: isToolCallDeltaEventPayload,
   tool_result: isToolResultEventPayload,
   subagent_spawned: isSubagentSpawnedEventPayload,
   subagent_terminal: isSubagentTerminalEventPayload,
   subagent_approval_required: isSubagentApprovalRequiredEventPayload,
   interject_applied: isInterjectAppliedEventPayload,
   approval_required: isProtocolApprovalRequired,
+  usage_updated: isRunUsageTotals,
+  context_usage_updated: isContextUsageUpdatedEventPayload,
   error: isErrorEventPayload,
 };
 
@@ -79,6 +85,8 @@ export function mapAgentEventToRunEvent(
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'tool_call':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
+    case 'tool_call_delta':
+      return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'tool_result':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'subagent_spawned':
@@ -90,6 +98,10 @@ export function mapAgentEventToRunEvent(
     case 'interject_applied':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'approval_required':
+      return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
+    case 'usage_updated':
+      return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
+    case 'context_usage_updated':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'error':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);

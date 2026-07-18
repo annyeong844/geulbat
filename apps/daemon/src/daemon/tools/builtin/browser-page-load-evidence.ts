@@ -3,17 +3,16 @@ import {
   PTC_BROWSER_PAGE_LOAD_EVIDENCE_MAX_TIMEOUT_MS,
   PTC_BROWSER_PAGE_LOAD_EVIDENCE_MAX_URL_BYTES,
   PTC_BROWSER_PAGE_LOAD_EVIDENCE_TOOL_NAME,
-  type PtcBrowserPageLoadEvidenceRuntimeResult,
   type PtcBrowserPageLoadEvidenceRuntimeSummary,
 } from '../../ptc/runtime/browser/browser-page-load-evidence-runtime-contract.js';
-import { createRunWorkspaceContext } from '../../run-workspace-context.js';
+import { createRunContext } from '../../run-context.js';
 import { toolError } from '../result.js';
 import { defineZodTool } from '../zod-tool.js';
 import {
   browserFailureReasonMessage,
   browserFailureReasonToToolErrorCode,
   pickBrowserPageLoadEvidencePolicyOutputFields,
-  pickBrowserSafeDiagnosticFields,
+  stringifyBrowserEvidenceFailureOutput,
 } from './browser-summary-output.js';
 
 const browserPageLoadEvidenceArgsSchema = z.strictObject({
@@ -45,10 +44,22 @@ export const browserPageLoadEvidenceTool = defineZodTool({
     'Load one user-selected HTTP(S) URL inside the PTC lab browser and return compact page-load evidence: status, title, redirect count, timing, and digests only. Does not expose raw requested/final URLs, cookies, DOM, screenshots, or artifacts.',
   argsSchema: browserPageLoadEvidenceArgsSchema,
   sideEffectLevel: 'write',
-  mayMutateWorkspaceFiles: false,
+  mayMutateComputerFiles: false,
   requiresApproval: true,
+  catalogSearchMetadata: {
+    family: 'browser',
+    searchHints: [
+      'page load evidence',
+      'browser metadata',
+      'capture page title',
+      'check final url',
+    ],
+    tags: ['browser', 'ptc', 'evidence'],
+    whenToUse: 'Capture bounded page-load evidence for one explicit URL.',
+    notFor: 'Extracting broad page text or controlling a persistent browser.',
+  },
   async executeParsed(args: BrowserPageLoadEvidenceArgs, ctx) {
-    if (!ctx.threadId || !ctx.projectId) {
+    if (!ctx.threadId || !ctx.stateRoot) {
       return toolError(
         'execution_failed',
         'run context is required for browser_page_load_evidence.',
@@ -63,10 +74,10 @@ export const browserPageLoadEvidenceTool = defineZodTool({
     }
 
     const runtimeArgs = {
-      runContext: createRunWorkspaceContext({
+      runContext: createRunContext({
         threadId: ctx.threadId,
-        projectId: ctx.projectId,
-        workspaceRoot: ctx.workspaceRoot,
+        stateRoot: ctx.stateRoot,
+        workingDirectory: ctx.workingDirectory ?? '',
       }),
       request: {
         url: args.url,
@@ -85,7 +96,11 @@ export const browserPageLoadEvidenceTool = defineZodTool({
       });
       return {
         ok: false,
-        output: stringifyBrowserPageLoadEvidenceFailure(result),
+        output: stringifyBrowserEvidenceFailureOutput({
+          failure: result,
+          subject: 'page-load evidence',
+          attemptDigestField: 'pageLoadEvidenceAttemptDigest',
+        }),
         errorCode: browserFailureReasonToToolErrorCode(result.reasonCode),
         error: message,
       };
@@ -121,24 +136,5 @@ function stringifyBrowserPageLoadEvidenceSummary(
     timing: summary.timing,
     evidenceAvailability: summary.evidenceAvailability,
     checks: summary.checks,
-  });
-}
-
-function stringifyBrowserPageLoadEvidenceFailure(
-  failure: Extract<PtcBrowserPageLoadEvidenceRuntimeResult, { ok: false }>,
-): string {
-  return JSON.stringify({
-    kind: failure.kind,
-    ok: failure.ok,
-    reasonCode: failure.reasonCode,
-    message: browserFailureReasonMessage({
-      reasonCode: failure.reasonCode,
-      subject: 'page-load evidence',
-    }),
-    phase: failure.phase,
-    targetDigest: failure.targetDigest,
-    pageLoadEvidenceAttemptDigest: failure.pageLoadEvidenceAttemptDigest,
-    sessionLifecycle: failure.sessionLifecycle,
-    diagnostics: pickBrowserSafeDiagnosticFields(failure.diagnostics),
   });
 }

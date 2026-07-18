@@ -10,7 +10,6 @@ export function CommittedArtifactMessage(props: {
   label: string;
   artifact: ThreadArtifactVersion;
   isRunning: boolean;
-  onOpenSource?: (path: string) => Promise<void> | void;
   onStartArtifactRun?: (request: RunRequest) => Promise<void> | void;
 }) {
   return (

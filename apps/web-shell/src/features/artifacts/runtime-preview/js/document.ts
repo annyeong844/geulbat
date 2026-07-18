@@ -4,7 +4,7 @@ import { replaceTemplateTokens } from '../../artifact-template-tokens.js';
 
 export { JS_RUNTIME_ROOT_ID };
 
-export interface JsArtifactRuntimeDocumentPersistenceBootstrap {
+interface JsArtifactRuntimeDocumentPersistenceBootstrap {
   scopeHandle: string;
   parentOrigin: string;
   awaitStorageBeforePayload?: boolean;

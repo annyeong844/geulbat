@@ -46,6 +46,24 @@ export function createScriptedProviderCallModel(
     roundIndex += 1;
     fixture.inspectInput?.(input);
 
+    const replayFixtureEvents = async (
+      onAssistantDelta: Parameters<typeof parseResponseEvents>[1] | undefined,
+    ) => {
+      if (fixture.error) {
+        throw fixture.error;
+      }
+      const result = await parseResponseEvents(
+        toAsyncEvents(fixture.events ?? []),
+        onAssistantDelta,
+      );
+      return {
+        ...result,
+        ...(fixture.structuredOutputs !== undefined
+          ? { structuredOutputs: fixture.structuredOutputs }
+          : {}),
+      };
+    };
+
     return callModelWithDependencies(input, {
       getProviderAuth: async () => ({
         accessToken: 'token',
@@ -55,21 +73,12 @@ export function createScriptedProviderCallModel(
         accessToken: 'token',
         accountId: 'account',
       }),
-      streamResponsesOverWebSocket: async ({ onAssistantDelta }) => {
-        if (fixture.error) {
-          throw fixture.error;
-        }
-        const result = await parseResponseEvents(
-          toAsyncEvents(fixture.events ?? []),
-          onAssistantDelta,
-        );
-        return {
-          ...result,
-          ...(fixture.structuredOutputs !== undefined
-            ? { structuredOutputs: fixture.structuredOutputs }
-            : {}),
-        };
-      },
+      streamResponsesOverWebSocket: ({ onAssistantDelta }) =>
+        replayFixtureEvents(onAssistantDelta),
+      // Grok routes through its own transport; without this stub a
+      // grok-selected round would hit the real websocket endpoint.
+      streamGrokOAuthResponses: (_grokInput, options) =>
+        replayFixtureEvents(options.onAssistantDelta),
     });
   };
 }

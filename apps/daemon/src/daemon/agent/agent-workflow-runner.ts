@@ -28,7 +28,7 @@ type MaybePromise<T> = T | Promise<T>;
 
 export type AgentWorkflowWaveAttemptKind = 'planned' | 'admission_downshift';
 
-export type AgentWorkflowFailureReasonCode =
+type AgentWorkflowFailureReasonCode =
   | 'capacity_unknown'
   | 'admission_rejected'
   | 'policy_required'
@@ -39,7 +39,7 @@ export type AgentWorkflowFailureReasonCode =
   | 'wave_execution_failed'
   | 'wave_no_progress';
 
-export type AgentWorkflowWaveLaunchResult =
+type AgentWorkflowWaveLaunchResult =
   | {
       readonly ok: true;
       readonly completedItemIds: readonly string[];
@@ -56,7 +56,7 @@ export type AgentWorkflowWaveLaunchResult =
       readonly evidenceRefs: readonly string[];
     };
 
-export interface AgentWorkflowWaveAttempt {
+interface AgentWorkflowWaveAttempt {
   readonly phaseId: string;
   readonly waveIndex: number;
   readonly attemptKind: AgentWorkflowWaveAttemptKind;
@@ -77,14 +77,14 @@ export interface AgentWorkflowWaveAttempt {
       };
 }
 
-export interface AgentWorkflowPhaseTelemetry {
+interface AgentWorkflowPhaseTelemetry {
   readonly recordedWaveAttempts: number;
   readonly serialSafetyFloorAttempts: number;
   readonly widenedAttempts: number;
   readonly admissionDownshiftAttempts: number;
 }
 
-export type AgentWorkflowCapacitySource =
+type AgentWorkflowCapacitySource =
   | 'explicit_policy'
   | 'observed_resources'
   | 'telemetry'
@@ -92,12 +92,9 @@ export type AgentWorkflowCapacitySource =
   | 'admission_downshift'
   | 'unknown';
 
-export type AgentWorkflowPhaseProgressStatus =
-  | 'pending'
-  | 'completed'
-  | 'failed';
+type AgentWorkflowPhaseProgressStatus = 'pending' | 'completed' | 'failed';
 
-export interface AgentWorkflowPhaseProgress {
+interface AgentWorkflowPhaseProgress {
   readonly phaseId: string;
   readonly status: AgentWorkflowPhaseProgressStatus;
   readonly waveAttemptCount: number;
@@ -109,7 +106,7 @@ export interface AgentWorkflowPhaseProgress {
   readonly capacityReasonCode?: AgentWaveCapacityReasonCode;
 }
 
-export type AgentWorkflowPhaseResult =
+type AgentWorkflowPhaseResult =
   | {
       readonly ok: true;
       readonly phaseId: string;
@@ -129,11 +126,11 @@ export type AgentWorkflowPhaseResult =
       readonly progress: AgentWorkflowPhaseProgress;
     };
 
-export interface AgentWorkflowInput {
+interface AgentWorkflowInput {
   readonly phases: readonly AgentWorkflowPhaseInput[];
 }
 
-export type AgentWorkflowResult =
+type AgentWorkflowResult =
   | {
       readonly ok: true;
       readonly completedPhaseIds: readonly string[];
@@ -153,7 +150,7 @@ export type AgentWorkflowResult =
       readonly phaseResults: readonly AgentWorkflowPhaseResult[];
     };
 
-export interface AgentWorkflowPhaseInput {
+interface AgentWorkflowPhaseInput {
   readonly phaseId: string;
   readonly workItems: readonly AgentWaveWorkItem[];
   readonly runState?: ToolRunState;
@@ -179,7 +176,7 @@ export interface AgentWorkflowRunner {
   runWorkflow(input: AgentWorkflowInput): Promise<AgentWorkflowResult>;
 }
 
-export interface AgentWorkflowSubagentWaveLaunchArgs {
+interface AgentWorkflowSubagentWaveLaunchArgs {
   readonly phaseId: string;
   readonly waveIndex: number;
   readonly attemptKind: AgentWorkflowWaveAttemptKind;
@@ -192,7 +189,7 @@ export interface AgentWorkflowSubagentWaveLaunchArgs {
   readonly signal?: AbortSignal;
 }
 
-export interface AgentWorkflowSubagentPhaseRunArgs {
+interface AgentWorkflowSubagentPhaseRunArgs {
   readonly phaseId: string;
   readonly workItems: readonly AgentWaveWorkItem[];
   readonly history: HistoryItem[];
@@ -202,13 +199,13 @@ export interface AgentWorkflowSubagentPhaseRunArgs {
   readonly signal?: AbortSignal;
 }
 
-export interface AgentWorkflowSubagentWorkflowPhaseRunInput {
+interface AgentWorkflowSubagentWorkflowPhaseRunInput {
   readonly phaseId: string;
   readonly workItems: readonly AgentWaveWorkItem[];
   readonly explicitPolicy?: AgentWaveExplicitPolicy;
 }
 
-export interface AgentWorkflowSubagentWorkflowRunArgs {
+interface AgentWorkflowSubagentWorkflowRunArgs {
   readonly phases: readonly AgentWorkflowSubagentWorkflowPhaseRunInput[];
   readonly history: HistoryItem[];
   readonly runtime: AgentToolCallExecutionRuntime;
@@ -337,7 +334,7 @@ export function admitAgentWorkflowSerialFloor(args: {
   };
 }
 
-export async function launchAgentWorkflowWaveWithSubagents(
+async function launchAgentWorkflowWaveWithSubagents(
   args: AgentWorkflowSubagentWaveLaunchArgs,
 ): Promise<AgentWorkflowWaveLaunchResult> {
   const agentRuntime = args.runtime.executionContextBase.agentSpawnRuntime;
@@ -392,6 +389,9 @@ export async function launchAgentWorkflowWaveWithSubagents(
     ownerThreadId: args.runtime.executionContextBase.threadId,
     childRunIds: launched.childRunIds,
     waitMode: 'all',
+    // Internal workflow phases surface approval blocking as a typed wave
+    // failure. Public agent_wait instead remains active through approval.
+    blockedBehavior: 'return',
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
   });
   if (!wait.ok) {
@@ -439,7 +439,7 @@ export async function launchAgentWorkflowWaveWithSubagents(
   };
 }
 
-export async function runAgentWorkflowPhase(
+async function runAgentWorkflowPhase(
   input: AgentWorkflowPhaseInput,
   runtime: {
     agentWavePlanner: AgentWavePlanner;
@@ -550,7 +550,7 @@ export async function runAgentWorkflowPhase(
   };
 }
 
-export async function runAgentWorkflow(
+async function runAgentWorkflow(
   input: AgentWorkflowInput,
   runtime: {
     agentWavePlanner: AgentWavePlanner;
@@ -758,7 +758,7 @@ function readLaunchedChildRunIds(args: {
     if (!parsed.ok || !isAgentLaunchToolRaw(parsed.value)) {
       return failWaveLaunch({
         reasonCode: 'wave_execution_failed',
-        message: `workflow wave launch returned an invalid agent_spawn payload for ${functionCall.callId}`,
+        message: `workflow wave launch returned an invalid agent_spawn payload for ${functionCall.callId}: ${output}`,
         evidenceRefs: [functionCall.callId],
       });
     }
@@ -1139,7 +1139,7 @@ function mapCapacitySource(
       return 'unknown';
     default: {
       const _exhaustive: never = reasonCode;
-      throw new Error(`unhandled capacity reason: ${_exhaustive}`);
+      throw new Error(`unhandled capacity reason: ${String(_exhaustive)}`);
     }
   }
 }
@@ -1167,7 +1167,7 @@ function buildPhaseTelemetry(
         break;
       default: {
         const _exhaustive: never = wave.decision.capacityReason.reasonCode;
-        throw new Error(`unhandled capacity reason: ${_exhaustive}`);
+        throw new Error(`unhandled capacity reason: ${String(_exhaustive)}`);
       }
     }
   }

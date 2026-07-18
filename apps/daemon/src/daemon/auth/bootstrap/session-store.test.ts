@@ -11,6 +11,7 @@ void test('bootstrap session store reuses the current pending session', () => {
 
   bootstrapStore.setPendingProviderAuthSession({
     authSessionId: 'auth-1',
+    providerId: 'openai_codex_direct',
     state: 'state-1',
     codeVerifier: 'verifier-1',
     redirectUri: 'http://localhost:1455/auth/callback',
@@ -33,6 +34,7 @@ void test('bootstrap session store clears codeVerifier after terminal failure', 
 
   bootstrapStore.setPendingProviderAuthSession({
     authSessionId: 'auth-2',
+    providerId: 'openai_codex_direct',
     state: 'state-2',
     codeVerifier: 'verifier-2',
     redirectUri: 'http://localhost:1455/auth/callback',
@@ -71,6 +73,7 @@ void test('createProviderAuthBootstrapStore isolates local sessions across insta
 
   first.setPendingProviderAuthSession({
     authSessionId: 'auth-local-1',
+    providerId: 'openai_codex_direct',
     state: 'state-local-1',
     codeVerifier: 'verifier-local-1',
     redirectUri: 'http://localhost:1455/auth/callback',

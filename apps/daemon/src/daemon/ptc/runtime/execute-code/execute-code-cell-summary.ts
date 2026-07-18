@@ -14,8 +14,11 @@ import type {
 import {
   PTC_EXECUTE_CODE_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,
+  type PtcExecuteCodeCellDurableOutput,
   type PtcExecuteCodeCellId,
+  type PtcExecuteCodeRuntimeCellWaitSummary,
   type PtcExecuteCodeRuntimeResult,
+  type PtcExecuteCodeRuntimeStoreSummary,
   type PtcExecuteCodeRuntimeWaitResult,
 } from './execute-code-runtime-contract.js';
 
@@ -23,6 +26,7 @@ type CreatePtcExecuteCodeCellRegistry = typeof createPtcExecuteCodeCellRegistry;
 
 interface PtcExecuteCodeCallbackRuntimeSnapshot {
   enabled: boolean;
+  toolCallbacksEnabled: boolean;
   observedCount(): number;
 }
 
@@ -52,7 +56,7 @@ export function summarizeRunningCell(args: {
     effectiveTimeoutMs: args.effectiveTimeoutMs,
     durationMs: args.durationMs,
     toolCallbacks: {
-      enabled: args.callbackRuntime.enabled,
+      enabled: args.callbackRuntime.toolCallbacksEnabled,
       observed: args.callbackRuntime.observedCount(),
     },
     sessionLifecycle: {
@@ -64,6 +68,59 @@ export function summarizeRunningCell(args: {
       helpAvailable: true,
       callbackToolCount: args.sdkHelpBundle.callbacks.tools.length,
     },
+  };
+}
+
+export function summarizeQueuedCell(args: {
+  admission: PtcLabAdmittedProfile;
+  callbackRuntime: PtcExecuteCodeCallbackRuntimeSnapshot;
+  cellId: PtcExecuteCodeCellId;
+  effectiveTimeoutMs: number;
+  sdkHelpBundle: ReturnType<typeof buildPtcExecuteCodeSdkHelpBundle>;
+}): Extract<PtcExecuteCodeRuntimeResult, { ok: true }>['value'] {
+  return {
+    ok: true,
+    capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+    policyId: PTC_EXECUTE_CODE_POLICY_ID,
+    labPolicyId:
+      args.admission.labPolicy?.policyId ?? args.admission.metadata.policyId,
+    profile: 'lab',
+    executionClass: 'lab_execute_code',
+    executionSurface: 'node_via_lab_detached_cell',
+    status: 'queued',
+    cellId: args.cellId,
+    stdout: '',
+    stderr: '',
+    effectiveTimeoutMs: args.effectiveTimeoutMs,
+    durationMs: 0,
+    toolCallbacks: {
+      enabled: args.callbackRuntime.toolCallbacksEnabled,
+      observed: args.callbackRuntime.observedCount(),
+    },
+    sessionLifecycle: {
+      mode: 'runtime_owned_reusable',
+      retainedAfterExecution: true,
+    },
+    callbackHelp: {
+      protocolVersion: args.sdkHelpBundle.protocolVersion,
+      helpAvailable: true,
+      callbackToolCount: args.sdkHelpBundle.callbacks.tools.length,
+    },
+  };
+}
+
+export function summarizeWaitQueuedCell(
+  cellId: PtcExecuteCodeCellId,
+): Extract<PtcExecuteCodeRuntimeWaitResult, { ok: true }>['value'] {
+  return {
+    ok: true,
+    capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+    policyId: PTC_EXECUTE_CODE_POLICY_ID,
+    executionSurface: 'node_via_lab_detached_cell',
+    status: 'queued',
+    cellId,
+    stdout: '',
+    stderr: '',
   };
 }
 
@@ -88,10 +145,41 @@ export function summarizeWaitRetainedCell(args: {
   cellId: PtcExecuteCodeCellId;
   result: PtcExecuteCodeCellRetainedResult;
 }): PtcExecuteCodeRuntimeWaitResult {
+  if (args.result.status === 'start_failed') {
+    const failure = args.result.failure;
+    return {
+      ok: false,
+      reasonCode: failure.reasonCode,
+      message: failure.message,
+      ...(failure.remediation === undefined
+        ? {}
+        : { remediation: failure.remediation }),
+      ...(failure.diagnostics === undefined
+        ? {}
+        : { diagnostics: failure.diagnostics }),
+      ...(failure.store === undefined ? {} : { store: failure.store }),
+      ...(failure.storeError === undefined
+        ? {}
+        : { storeError: failure.storeError }),
+    };
+  }
   if (args.result.status === 'cleanup_failed') {
+    if (args.result.terminalResult?.storeError !== undefined) {
+      return storeCommitFailure({
+        cellId: args.cellId,
+        result: args.result.terminalResult,
+        cleanupFailure: {
+          message: args.result.message,
+          diagnostics: args.result.diagnostics,
+        },
+      });
+    }
     if (args.result.terminalResult?.exit.kind === 'output_limit_exceeded') {
       return cellOutputRejected({
         exit: args.result.terminalResult.exit,
+        ...(args.result.terminalResult.store === undefined
+          ? {}
+          : { store: args.result.terminalResult.store }),
         cleanupFailure: {
           message: args.result.message,
           diagnostics: args.result.diagnostics,
@@ -100,6 +188,9 @@ export function summarizeWaitRetainedCell(args: {
     }
     if (args.result.terminalResult?.exit.kind === 'timeout') {
       return cellTimedOut({
+        ...(args.result.terminalResult.store === undefined
+          ? {}
+          : { store: args.result.terminalResult.store }),
         cleanupFailure: {
           message: args.result.message,
           diagnostics: args.result.diagnostics,
@@ -124,11 +215,19 @@ export function summarizeWaitRetainedCell(args: {
       diagnostics: args.result.diagnostics,
     });
   }
+  if (args.result.storeError !== undefined) {
+    return storeCommitFailure({ cellId: args.cellId, result: args.result });
+  }
   if (args.result.exit.kind === 'output_limit_exceeded') {
-    return cellOutputRejected({ exit: args.result.exit });
+    return cellOutputRejected({
+      exit: args.result.exit,
+      ...(args.result.store === undefined ? {} : { store: args.result.store }),
+    });
   }
   if (args.result.exit.kind === 'timeout') {
-    return cellTimedOut();
+    return cellTimedOut({
+      ...(args.result.store === undefined ? {} : { store: args.result.store }),
+    });
   }
   return {
     ok: true,
@@ -139,18 +238,40 @@ export function summarizeWaitRetainedCell(args: {
   };
 }
 
+export function summarizeWaitDurableCell(args: {
+  cellId: PtcExecuteCodeCellId;
+  durableOutput: PtcExecuteCodeCellDurableOutput;
+}): PtcExecuteCodeRuntimeCellWaitSummary {
+  const exitCode = args.durableOutput.exitCode;
+  return {
+    ok: true,
+    capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+    policyId: PTC_EXECUTE_CODE_POLICY_ID,
+    executionSurface: 'node_via_lab_detached_cell',
+    cellId: args.cellId,
+    ...args.durableOutput,
+    offloaded: true,
+    recoveryTool: 'read_tool_output',
+    summary: `wait observed cell ${args.cellId} with status ${args.durableOutput.status}${typeof exitCode === 'number' ? ` and exit code ${String(exitCode)}` : ''}. Exact output is available through read_tool_output with explicit offset and limit.`,
+  };
+}
+
 function cellTimedOut(
   args: {
     cleanupFailure?: {
       message: string;
       diagnostics: Record<string, string | number | boolean>;
     };
+    store?: PtcExecuteCodeRuntimeStoreSummary;
   } = {},
 ): PtcExecuteCodeRuntimeWaitResult {
   return {
     ok: false,
     reasonCode: 'ptc_lab_command_timeout',
     message: 'PTC execute_code cell timed out',
+    ...(args.store !== undefined && 'discardedWrites' in args.store
+      ? { store: args.store }
+      : {}),
     diagnostics:
       args.cleanupFailure === undefined
         ? { cellExitKind: 'timeout' }
@@ -168,11 +289,15 @@ function cellOutputRejected(args: {
     message: string;
     diagnostics: Record<string, string | number | boolean>;
   };
+  store?: PtcExecuteCodeRuntimeStoreSummary;
 }): PtcExecuteCodeRuntimeWaitResult {
   return {
     ok: false,
     reasonCode: 'ptc_lab_command_output_rejected',
     message: 'PTC execute_code cell output exceeded the policy buffer budget',
+    ...(args.store !== undefined && 'discardedWrites' in args.store
+      ? { store: args.store }
+      : {}),
     diagnostics: {
       outputStream: args.exit.stream,
       maxBufferedBytesPerStream: args.exit.maxBufferedBytesPerStream,
@@ -204,6 +329,7 @@ function summarizeWaitTerminalCell(args: {
     exitCode: args.result.exit.exitCode,
     stdout: output.stdout,
     stderr: output.stderr,
+    ...(args.result.store === undefined ? {} : { store: args.result.store }),
   } as const;
   if (args.cleanupFailure === undefined) {
     return {
@@ -225,6 +351,7 @@ export function summarizeWaitClosedCell(args: {
   cellId: PtcExecuteCodeCellId;
   output: DetachedProcessOutputSegment | undefined;
   exit: DetachedProcessExitInfo | undefined;
+  store?: PtcExecuteCodeRuntimeStoreSummary;
 }): Extract<PtcExecuteCodeRuntimeWaitResult, { ok: true }>['value'] {
   return summarizeWaitTerminalCell({
     cellId: args.cellId,
@@ -234,6 +361,7 @@ export function summarizeWaitClosedCell(args: {
       exit:
         args.exit ??
         ({ kind: 'signal', exitCode: null, processTerminated: false } as const),
+      ...(args.store === undefined ? {} : { store: args.store }),
     },
   });
 }
@@ -277,24 +405,69 @@ export function isProvenTerminatedCellCleanup(
     result.ok &&
     result.status === 'terminated' &&
     result.bridgeClosed === true &&
-    result.sessionTainted === true
+    result.sessionTainted === true &&
+    result.cleanupDiagnostics === undefined
   );
 }
 
 export function cellCleanupFailure(args: {
   message: string;
   diagnostics: Record<string, string | number | boolean>;
+  store?: PtcExecuteCodeRuntimeStoreSummary;
 }): {
   ok: false;
   reasonCode: 'ptc_execute_code_session_cleanup_failed';
   message: string;
   diagnostics: Record<string, string | number | boolean>;
+  store?: Extract<
+    PtcExecuteCodeRuntimeStoreSummary,
+    { discardedWrites: number }
+  >;
 } {
   return {
     ok: false,
     reasonCode: 'ptc_execute_code_session_cleanup_failed',
     message: args.message,
     diagnostics: args.diagnostics,
+    ...(args.store !== undefined && 'discardedWrites' in args.store
+      ? { store: args.store }
+      : {}),
+  };
+}
+
+function storeCommitFailure(args: {
+  cellId: PtcExecuteCodeCellId;
+  result: PtcExecuteCodeCellTerminalResult;
+  cleanupFailure?: {
+    message: string;
+    diagnostics: Record<string, string | number | boolean>;
+  };
+}): PtcExecuteCodeRuntimeWaitResult {
+  const storeError = args.result.storeError;
+  if (storeError === undefined) {
+    throw new Error('expected detached-cell store commit failure');
+  }
+  return {
+    ok: false,
+    reasonCode:
+      storeError.errorCode === 'StoreCommitConflict'
+        ? 'ptc_execute_code_store_commit_conflict'
+        : 'ptc_execute_code_store_commit_failed',
+    message: storeError.message,
+    storeError,
+    ...(args.result.store !== undefined &&
+    'discardedWrites' in args.result.store
+      ? { store: args.result.store }
+      : {}),
+    diagnostics: {
+      cellId: args.cellId,
+      ...(args.cleanupFailure === undefined
+        ? {}
+        : {
+            cleanupFailureMessage: args.cleanupFailure.message,
+            ...args.cleanupFailure.diagnostics,
+          }),
+    },
   };
 }
 
@@ -348,9 +521,8 @@ export function sensitiveBridgeMarkers(
 export function validateCellId(
   cellId: string,
 ): PtcExecuteCodeCellId | undefined {
-  return /^ptc_cell_[A-Za-z0-9_.:-]+$/u.test(cellId)
-    ? (cellId as PtcExecuteCodeCellId)
-    : undefined;
+  const suffix = /^ptc_cell_([A-Za-z0-9_.:-]+)$/u.exec(cellId)?.[1];
+  return suffix === undefined ? undefined : `ptc_cell_${suffix}`;
 }
 
 function emptyDetachedOutputSegment(): DetachedProcessOutputSegment {

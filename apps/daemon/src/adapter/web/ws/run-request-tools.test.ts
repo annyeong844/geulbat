@@ -1,35 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { RunRequest } from '@geulbat/protocol/run-contract';
+import { normalizeAllowedPublicToolNames } from './run-request-tools.js';
 
-import { normalizeAllowedToolNames } from './run-request-tools.js';
-
-const PROJECT_ID = 'workspace' as RunRequest['projectId'];
-
-void test('normalizeAllowedToolNames trims, deduplicates, and drops empty hints', () => {
-  const result = normalizeAllowedToolNames({
+void test('normalizeAllowedPublicToolNames trims, deduplicates, and drops empty hints', () => {
+  const result = normalizeAllowedPublicToolNames({
     prompt: 'hello',
-    projectId: PROJECT_ID,
-    allowedToolsHint: [' read_file ', 'patch_file', '', 'read_file', '  '],
+    allowedPublicToolNames: [
+      ' read_file ',
+      'apply_patch',
+      '',
+      'read_file',
+      '  ',
+    ],
   });
 
-  assert.deepEqual(result, ['read_file', 'patch_file']);
+  assert.deepEqual(result, ['read_file', 'apply_patch']);
 });
 
-void test('normalizeAllowedToolNames returns undefined when no usable hints exist', () => {
+void test('normalizeAllowedPublicToolNames returns undefined when no usable hints exist', () => {
   assert.equal(
-    normalizeAllowedToolNames({
+    normalizeAllowedPublicToolNames({
       prompt: 'hello',
-      projectId: PROJECT_ID,
     }),
     undefined,
   );
 
   assert.equal(
-    normalizeAllowedToolNames({
+    normalizeAllowedPublicToolNames({
       prompt: 'hello',
-      projectId: PROJECT_ID,
-      allowedToolsHint: [' ', ''],
+      allowedPublicToolNames: [' ', ''],
     }),
     undefined,
   );

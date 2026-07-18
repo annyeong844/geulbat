@@ -9,7 +9,7 @@ import {
   renderHook,
   textResponse,
 } from '../test-support/hook-test.js';
-import { brandProjectId, brandThreadId } from '../lib/id-brand-helpers.js';
+import { brandThreadId } from '../lib/id-brand-helpers.js';
 
 const THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000001');
 const OTHER_THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000002');
@@ -30,7 +30,7 @@ void test('useThreadSessions surfaces openThread failures', async () => {
     textResponse(500, 'thread failed'),
   );
   restoreFetch = fetchMock.restore;
-  const hook = await renderHook(useThreadSessions, 'workspace');
+  const hook = await renderHook(useThreadSessions, undefined);
 
   await hook.run((current) => current.openThread(THREAD_ID));
 
@@ -51,7 +51,6 @@ void test('useThreadSessions clears the pending delete dialog after conflict', a
         threads: [
           {
             threadId: THREAD_ID,
-            projectId: 'workspace',
             title: 'Thread',
             lastUpdated: '2026-03-30T00:00:00.000Z',
             messageCount: 1,
@@ -61,7 +60,6 @@ void test('useThreadSessions clears the pending delete dialog after conflict', a
     () =>
       jsonResponse({
         threadId: THREAD_ID,
-        projectId: 'workspace',
         snapshotVersion: '2026-03-30T00:00:00.000Z',
         messages: [
           {
@@ -84,7 +82,7 @@ void test('useThreadSessions clears the pending delete dialog after conflict', a
       ),
   );
   restoreFetch = fetchMock.restore;
-  const hook = await renderHook(useThreadSessions, 'workspace');
+  const hook = await renderHook(useThreadSessions, undefined);
 
   await hook.run((current) => current.loadThreads());
   await hook.run((current) => current.openThread(THREAD_ID));
@@ -111,7 +109,6 @@ void test('useThreadSessions clears selected thread state after confirmed delete
         threads: [
           {
             threadId: THREAD_ID,
-            projectId: 'workspace',
             title: 'Thread',
             lastUpdated: '2026-03-30T00:00:00.000Z',
             messageCount: 1,
@@ -121,7 +118,6 @@ void test('useThreadSessions clears selected thread state after confirmed delete
     () =>
       jsonResponse({
         threadId: THREAD_ID,
-        projectId: 'workspace',
         snapshotVersion: '2026-03-30T00:00:00.000Z',
         messages: [
           {
@@ -137,11 +133,10 @@ void test('useThreadSessions clears selected thread state after confirmed delete
       jsonResponse({
         ok: true,
         threadId: THREAD_ID,
-        projectId: 'workspace',
       }),
   );
   restoreFetch = fetchMock.restore;
-  const hook = await renderHook(useThreadSessions, 'workspace');
+  const hook = await renderHook(useThreadSessions, undefined);
 
   await hook.run((current) => current.loadThreads());
   await hook.run((current) => current.openThread(THREAD_ID));
@@ -164,7 +159,6 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
     () =>
       jsonResponse({
         threadId: THREAD_ID,
-        projectId: 'workspace',
         snapshotVersion: '2026-04-16T00:00:01.000Z',
         messages: [
           {
@@ -179,7 +173,6 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
     () =>
       jsonResponse({
         threadId: OTHER_THREAD_ID,
-        projectId: 'workspace',
         snapshotVersion: '2026-04-16T00:00:02.000Z',
         messages: [
           {
@@ -194,7 +187,6 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
     () =>
       jsonResponse({
         threadId: THREAD_ID,
-        projectId: 'workspace',
         snapshotVersion: '2026-04-16T00:00:01.000Z',
         messages: [
           {
@@ -208,7 +200,7 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
       }),
   );
   restoreFetch = fetchMock.restore;
-  const hook = await renderHook(useThreadSessions, 'workspace');
+  const hook = await renderHook(useThreadSessions, undefined);
 
   await hook.run((current) => current.openThread(THREAD_ID));
   await hook.run((current) => current.openThread(OTHER_THREAD_ID));
@@ -227,13 +219,263 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
   hook.unmount();
 });
 
+void test('useThreadSessions branches from an entry, refreshes the list, and switches threads', async () => {
+  restoreDocument = installShellAuthDocument();
+  const fetchMock = installFetchSequence(
+    // 원 스레드 열기
+    () =>
+      jsonResponse({
+        threadId: THREAD_ID,
+        snapshotVersion: '2026-07-12T00:00:01.000Z',
+        messages: [
+          {
+            entryId: 'entry-source-answer',
+            role: 'assistant',
+            content: 'source answer',
+            timestamp: '2026-07-12T00:00:01.000Z',
+          },
+        ],
+        artifacts: [],
+      }),
+    // 브랜치 생성
+    () =>
+      jsonResponse({
+        ok: true,
+        threadId: OTHER_THREAD_ID,
+        sourceThreadId: THREAD_ID,
+        copiedMessageCount: 1,
+      }),
+    // 목록 갱신
+    () =>
+      jsonResponse({
+        threads: [
+          {
+            threadId: THREAD_ID,
+            title: 'Source',
+            lastUpdated: '2026-07-12T00:00:01.000Z',
+            messageCount: 1,
+          },
+          {
+            threadId: OTHER_THREAD_ID,
+            title: 'Source',
+            lastUpdated: '2026-07-12T00:00:02.000Z',
+            messageCount: 1,
+          },
+        ],
+      }),
+    // 새 스레드 열기
+    () =>
+      jsonResponse({
+        threadId: OTHER_THREAD_ID,
+        snapshotVersion: '2026-07-12T00:00:02.000Z',
+        messages: [
+          {
+            entryId: 'entry-branched-answer',
+            role: 'assistant',
+            content: 'source answer',
+            timestamp: '2026-07-12T00:00:01.000Z',
+          },
+        ],
+        artifacts: [],
+      }),
+  );
+  restoreFetch = fetchMock.restore;
+  const hook = await renderHook(useThreadSessions, undefined);
+
+  await hook.run((current) => current.openThread(THREAD_ID));
+  await hook.run((current) =>
+    current.branchThreadFromEntry('entry-source-answer'),
+  );
+
+  assert.equal(hook.result.current.threadError, null);
+  assert.equal(hook.result.current.selectedThreadId, OTHER_THREAD_ID);
+  assert.equal(hook.result.current.threads.length, 2);
+  assert.equal(
+    hook.result.current.messages[0]?.entryId,
+    'entry-branched-answer',
+  );
+  // 성공 알림 — 전환이 화면상 티가 안 나므로 반드시 뜬다
+  assert.match(hook.result.current.branchNotice ?? '', /새 채팅으로 전환/);
+  await hook.run((current) => current.dismissBranchNotice());
+  assert.equal(hook.result.current.branchNotice, null);
+  hook.unmount();
+});
+
+void test('useThreadSessions surfaces branch failures without switching threads', async () => {
+  restoreDocument = installShellAuthDocument();
+  const fetchMock = installFetchSequence(
+    () =>
+      jsonResponse({
+        threadId: THREAD_ID,
+        snapshotVersion: '2026-07-12T00:00:01.000Z',
+        messages: [
+          {
+            entryId: 'entry-source-answer',
+            role: 'assistant',
+            content: 'source answer',
+            timestamp: '2026-07-12T00:00:01.000Z',
+          },
+        ],
+        artifacts: [],
+      }),
+    () => textResponse(500, 'branch failed'),
+  );
+  restoreFetch = fetchMock.restore;
+  const hook = await renderHook(useThreadSessions, undefined);
+
+  await hook.run((current) => current.openThread(THREAD_ID));
+  await hook.run((current) =>
+    current.branchThreadFromEntry('entry-source-answer'),
+  );
+
+  assert.equal(
+    hook.result.current.threadError,
+    `Unable to branch thread ${THREAD_ID}. API 500: branch failed`,
+  );
+  assert.equal(hook.result.current.selectedThreadId, THREAD_ID);
+  assert.equal(hook.result.current.branchNotice, null);
+  hook.unmount();
+});
+
+void test('useThreadSessions branches before an entry for past-question edit', async () => {
+  restoreDocument = installShellAuthDocument();
+  let branchRequestBody = '';
+  const fetchMock = installFetchSequence(
+    // 원 스레드 열기 — [답변, 질문, 답변] 3개
+    () =>
+      jsonResponse({
+        threadId: THREAD_ID,
+        snapshotVersion: '2026-07-12T00:00:01.000Z',
+        messages: [
+          {
+            entryId: 'entry-a1',
+            role: 'assistant',
+            content: 'first answer',
+            timestamp: '2026-07-12T00:00:01.000Z',
+          },
+          {
+            entryId: 'entry-u2',
+            role: 'user',
+            content: 'past question',
+            timestamp: '2026-07-12T00:00:02.000Z',
+          },
+          {
+            entryId: 'entry-a3',
+            role: 'assistant',
+            content: 'second answer',
+            timestamp: '2026-07-12T00:00:03.000Z',
+          },
+        ],
+        artifacts: [],
+      }),
+    // 브랜치 생성 — upToEntryId가 "직전" entry여야 한다
+    (_url, init) => {
+      branchRequestBody = String(init?.body ?? '');
+      return jsonResponse({
+        ok: true,
+        threadId: OTHER_THREAD_ID,
+        sourceThreadId: THREAD_ID,
+        copiedMessageCount: 1,
+      });
+    },
+    () => jsonResponse({ threads: [] }),
+    () =>
+      jsonResponse({
+        threadId: OTHER_THREAD_ID,
+        snapshotVersion: '2026-07-12T00:00:04.000Z',
+        messages: [
+          {
+            entryId: 'entry-branched-a1',
+            role: 'assistant',
+            content: 'first answer',
+            timestamp: '2026-07-12T00:00:01.000Z',
+          },
+        ],
+        artifacts: [],
+      }),
+  );
+  restoreFetch = fetchMock.restore;
+  const hook = await renderHook(useThreadSessions, undefined);
+
+  await hook.run((current) => current.openThread(THREAD_ID));
+  const result = await hook.run((current) =>
+    current.branchThreadBeforeEntry('entry-u2'),
+  );
+
+  assert.deepEqual(result, { kind: 'branched', threadId: OTHER_THREAD_ID });
+  assert.deepEqual(JSON.parse(branchRequestBody), { upToEntryId: 'entry-a1' });
+  assert.equal(hook.result.current.selectedThreadId, OTHER_THREAD_ID);
+  assert.match(hook.result.current.branchNotice ?? '', /수정한 질문/);
+  hook.unmount();
+});
+
+void test('useThreadSessions treats first-message edit as a fresh session', async () => {
+  restoreDocument = installShellAuthDocument();
+  const fetchMock = installFetchSequence(() =>
+    jsonResponse({
+      threadId: THREAD_ID,
+      snapshotVersion: '2026-07-12T00:00:01.000Z',
+      messages: [
+        {
+          entryId: 'entry-first-question',
+          role: 'user',
+          content: 'first question',
+          timestamp: '2026-07-12T00:00:01.000Z',
+        },
+        {
+          entryId: 'entry-answer',
+          role: 'assistant',
+          content: 'answer',
+          timestamp: '2026-07-12T00:00:02.000Z',
+        },
+      ],
+      artifacts: [],
+    }),
+  );
+  restoreFetch = fetchMock.restore;
+  const hook = await renderHook(useThreadSessions, undefined);
+
+  await hook.run((current) => current.openThread(THREAD_ID));
+  const result = await hook.run((current) =>
+    current.branchThreadBeforeEntry('entry-first-question'),
+  );
+
+  assert.deepEqual(result, { kind: 'fresh' });
+  // 새 세션으로 초기화 — 다음 run이 새 스레드를 연다
+  assert.equal(hook.result.current.selectedThreadId, null);
+  assert.deepEqual(hook.result.current.messages, []);
+  hook.unmount();
+});
+
+void test('useThreadSessions returns null for unknown edit entry ids', async () => {
+  const hook = await renderHook(useThreadSessions, undefined);
+
+  // 스레드 미선택 — 네트워크 호출 없이 null
+  const result = await hook.run((current) =>
+    current.branchThreadBeforeEntry('entry-unknown'),
+  );
+
+  assert.equal(result, null);
+  hook.unmount();
+});
+
+void test('useThreadSessions ignores branch requests when no thread is selected', async () => {
+  const hook = await renderHook(useThreadSessions, undefined);
+
+  // fetch mock 없음 — 네트워크 호출이 일어나면 여기서 실패한다
+  await hook.run((current) => current.branchThreadFromEntry('entry-any'));
+
+  assert.equal(hook.result.current.threadError, null);
+  assert.equal(hook.result.current.selectedThreadId, null);
+  hook.unmount();
+});
+
 void test('useThreadSessions can apply a persisted thread snapshot without refetching', async () => {
-  const hook = await renderHook(useThreadSessions, 'workspace');
+  const hook = await renderHook(useThreadSessions, undefined);
 
   await hook.run((current) =>
     current.applyThreadSnapshotForRunSettle({
       threadId: THREAD_ID,
-      projectId: brandProjectId('workspace'),
       snapshotVersion: '2026-04-16T00:00:00.000Z',
       messages: [
         {
@@ -261,12 +503,11 @@ void test('useThreadSessions can apply a persisted thread snapshot without refet
 });
 
 void test('useThreadSessions ignores stale persisted snapshots for the same thread', async () => {
-  const hook = await renderHook(useThreadSessions, 'workspace');
+  const hook = await renderHook(useThreadSessions, undefined);
 
   await hook.run((current) =>
     current.applyThreadSnapshotForRunSettle({
       threadId: THREAD_ID,
-      projectId: brandProjectId('workspace'),
       snapshotVersion: '2026-04-16T00:00:01.000Z',
       messages: [
         {
@@ -283,7 +524,6 @@ void test('useThreadSessions ignores stale persisted snapshots for the same thre
   const appliedStaleSnapshot = await hook.run((current) =>
     current.applyThreadSnapshotForRunSettle({
       threadId: THREAD_ID,
-      projectId: brandProjectId('workspace'),
       snapshotVersion: '2026-04-16T00:00:00.000Z',
       messages: [
         {
@@ -315,7 +555,7 @@ void test('useThreadSessions clears threadError when a persisted snapshot applie
     textResponse(500, 'thread failed'),
   );
   restoreFetch = fetchMock.restore;
-  const hook = await renderHook(useThreadSessions, 'workspace');
+  const hook = await renderHook(useThreadSessions, undefined);
 
   await hook.run((current) => current.openThread(THREAD_ID));
   assert.match(hook.result.current.threadError ?? '', /Unable to open thread/);
@@ -323,7 +563,6 @@ void test('useThreadSessions clears threadError when a persisted snapshot applie
   await hook.run((current) =>
     current.applyThreadSnapshotForRunSettle({
       threadId: THREAD_ID,
-      projectId: brandProjectId('workspace'),
       snapshotVersion: '2026-04-16T00:00:01.000Z',
       messages: [
         {

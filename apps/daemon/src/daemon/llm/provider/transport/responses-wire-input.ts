@@ -1,4 +1,9 @@
-import type { HistoryItem, WireRequestBase } from '../wire/types.js';
+import type {
+  HistoryItem,
+  HistoryUserAttachment,
+  WireRequestBase,
+} from '../wire/types.js';
+import { isRecord } from '../../../runtime-json.js';
 
 export function buildResponseCreatePayload(
   body: WireRequestBase,
@@ -7,11 +12,22 @@ export function buildResponseCreatePayload(
   return {
     type: 'response.create',
     ...body,
-    input: toWireInput(history),
+    input: buildResponseWireInput(history, {
+      providerId: 'openai_codex_direct',
+      model: body.model,
+    }),
   };
 }
 
-function toWireInput(history: HistoryItem[]): unknown[] {
+export interface ProviderNativeHistoryTarget {
+  providerId: string;
+  model: string;
+}
+
+export function buildResponseWireInput(
+  history: HistoryItem[],
+  providerNativeTarget?: ProviderNativeHistoryTarget,
+): unknown[] {
   const input: unknown[] = [];
 
   for (const item of history) {
@@ -19,7 +35,10 @@ function toWireInput(history: HistoryItem[]): unknown[] {
       case 'user':
         input.push({
           role: 'user',
-          content: [{ type: 'input_text', text: item.text }],
+          content: [
+            { type: 'input_text', text: item.text },
+            ...(item.attachments ?? []).flatMap(buildAttachmentContent),
+          ],
         });
         break;
       case 'assistant':
@@ -32,8 +51,8 @@ function toWireInput(history: HistoryItem[]): unknown[] {
       case 'function_call':
         input.push({
           type: 'function_call',
-          // Current history does not persist provider reasoning pairs, so omit
-          // function_call.id on replay and let call_id carry continuity.
+          // Normalized fallback history has no replayable provider item or
+          // reasoning pair. Codex direct rounds use backend_item instead.
           call_id: item.callId,
           name: item.name,
           arguments: item.arguments,
@@ -46,10 +65,76 @@ function toWireInput(history: HistoryItem[]): unknown[] {
           output: item.output,
         });
         break;
+      case 'provider_native_compaction':
+        if (
+          providerNativeTarget === undefined ||
+          item.providerId !== providerNativeTarget.providerId ||
+          item.model !== providerNativeTarget.model
+        ) {
+          throw new ProviderNativeHistoryIncompatibleError();
+        }
+        input.push(...item.output);
+        break;
       case 'backend_item':
+        if (!isRecord(item.data)) {
+          throw new ProviderHistoryItemInvalidError();
+        }
+        input.push(item.data);
         break;
     }
   }
 
   return input;
+}
+
+export class ProviderHistoryItemInvalidError extends Error {
+  readonly code = 'provider_history_item_invalid';
+
+  constructor() {
+    super('provider history item is invalid');
+    this.name = 'ProviderHistoryItemInvalidError';
+  }
+}
+
+export class ProviderNativeHistoryIncompatibleError extends Error {
+  readonly code = 'provider_native_history_incompatible';
+
+  constructor() {
+    super(
+      'provider-native compaction history is incompatible with this request',
+    );
+    this.name = 'ProviderNativeHistoryIncompatibleError';
+  }
+}
+
+// codex의 local image 규약을 따른다 — 이미지 블록 앞뒤로 이름 태그를
+// 둘러서 모델이 어떤 파일인지 알 수 있게 한다.
+function buildAttachmentContent(
+  attachment: HistoryUserAttachment,
+): Array<Record<string, unknown>> {
+  if (attachment.kind === 'image') {
+    return [
+      { type: 'input_text', text: `<image name="${attachment.name}">` },
+      {
+        type: 'input_image',
+        image_url: `data:${attachment.mimeType};base64,${attachment.dataBase64}`,
+      },
+      { type: 'input_text', text: '</image>' },
+    ];
+  }
+  if (attachment.kind === 'pdf') {
+    return [
+      {
+        type: 'input_file',
+        filename: attachment.name,
+        file_data: `data:${attachment.mimeType};base64,${attachment.dataBase64}`,
+      },
+    ];
+  }
+  return [
+    {
+      type: 'input_text',
+      text: `<file name="${attachment.name}">\n${attachment.text}\n</file>`,
+    },
+  ];
 }

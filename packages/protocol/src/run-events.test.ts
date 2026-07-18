@@ -15,7 +15,7 @@ import type {
   UnknownToolResultRaw,
   UnknownToolResultSuccessEventPayload,
 } from './run-events.js';
-import type { ProjectId, RunId, ThreadId } from './ids.js';
+import type { RunId, ThreadId } from './ids.js';
 import {
   AGENT_WAIT_APPROVAL_BLOCKED_REASON,
   AGENT_WAIT_BLOCKED_REASONS,
@@ -27,6 +27,7 @@ import {
   isArtifactCommittedEventPayload,
   isDoneEventPayload,
   isErrorEventPayload,
+  isContextUsageUpdatedEventPayload,
   isInterjectAppliedEventPayload,
   isRunAckEventPayload,
   isRunEvent,
@@ -41,16 +42,11 @@ import {
   isToolResultEventPayload,
   isToolResultRaw,
 } from './run-events.js';
-import { isProjectId, isRunId, isThreadId } from './ids.js';
+import { isRunId, isThreadId } from './ids.js';
 
 function assertFixtureRunId(value: string): RunId {
   assert.equal(isRunId(value), true);
   return value as RunId;
-}
-
-function assertFixtureProjectId(value: string): ProjectId {
-  assert.equal(isProjectId(value), true);
-  return value as ProjectId;
 }
 
 function assertFixtureThreadId(value: string): ThreadId {
@@ -58,9 +54,53 @@ function assertFixtureThreadId(value: string): ThreadId {
   return value as ThreadId;
 }
 
-const PROJECT_ID = assertFixtureProjectId('workspace');
 const THREAD_ID = assertFixtureThreadId('11111111-1111-4111-8111-111111111111');
 const RUN_ID = assertFixtureRunId('run-event-1');
+
+void test('context usage payloads require exact integer policy measurements', () => {
+  const payload = {
+    state: 'measured' as const,
+    modelId: 'gpt-5.6-sol',
+    inputTokens: 122_400,
+    contextWindow: 272_000,
+    thresholdTokens: 244_800,
+  };
+
+  assert.equal(isContextUsageUpdatedEventPayload(payload), true);
+  assert.equal(
+    isRunEvent({
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      seq: 1,
+      type: 'context_usage_updated',
+      ts: '2026-07-17T00:00:00.000Z',
+      payload,
+    }),
+    true,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      ...payload,
+      state: 'compacted',
+    }),
+    true,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({ ...payload, modelId: ' ' }),
+    false,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({ ...payload, inputTokens: 1.5 }),
+    false,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      ...payload,
+      thresholdTokens: payload.contextWindow + 1,
+    }),
+    false,
+  );
+});
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
@@ -197,7 +237,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'read_file',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'ok',
       raw: { path: 'docs/a.md' },
     }),
@@ -205,11 +245,24 @@ void test('shared payload guards accept canonical shapes and reject malformed on
   );
   assert.equal(
     isToolResultEventPayload({
+      callId: 'call-1',
+      step: 1,
+      tool: 'read_file',
+      ok: true,
+      computerFilesMayHaveChanged: false,
+      workspaceFilesMayHaveChanged: false,
+      displayText: 'legacy mutation signal must be rejected',
+      raw: { path: 'docs/a.md' },
+    }),
+    false,
+  );
+  assert.equal(
+    isToolResultEventPayload({
       callId: 'call-parent::nested-1',
       step: 1,
       tool: 'read_file',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'ok',
       raw: { path: 'docs/a.md' },
       source: {
@@ -227,7 +280,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'read_file',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'ok',
       raw: { path: 'docs/a.md' },
       source: { kind: 'ptc_callback', parentCallId: 'call-parent' },
@@ -240,6 +293,9 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       childRunId: RUN_ID,
       childThreadId: THREAD_ID,
       subagentType: 'explorer',
+      modelId: 'gpt-5.6-luna',
+      reasoningEffort: 'xhigh',
+      selectionSource: 'model_selected',
     }),
     true,
   );
@@ -255,6 +311,75 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       result: 'cancelled',
     }),
     true,
+  );
+  assert.equal(
+    isSubagentTerminalEventPayload({
+      deliveryId: 'delivery-usage',
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      childThreadId: THREAD_ID,
+      subagentType: 'explorer',
+      terminalState: 'completed',
+      ok: true,
+      result: 'done',
+      elapsedMs: 1234,
+      usage: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 3 },
+    }),
+    true,
+  );
+  assert.equal(
+    isSubagentTerminalEventPayload({
+      deliveryId: 'delivery-model-meta',
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      childThreadId: THREAD_ID,
+      subagentType: 'worker',
+      terminalState: 'completed',
+      ok: true,
+      result: 'done',
+      modelId: 'gpt-5.6-luna',
+      reasoningEffort: 'high',
+    }),
+    true,
+  );
+  assert.equal(
+    isSubagentTerminalEventPayload({
+      deliveryId: 'delivery-bad-effort',
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      subagentType: 'worker',
+      terminalState: 'completed',
+      ok: true,
+      result: 'done',
+      reasoningEffort: 'ultra',
+    }),
+    false,
+  );
+  assert.equal(
+    isSubagentTerminalEventPayload({
+      deliveryId: 'delivery-bad-child-thread',
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      childThreadId: 'not-a-thread-id',
+      subagentType: 'explorer',
+      terminalState: 'completed',
+      ok: true,
+      result: 'done',
+    }),
+    false,
+  );
+  assert.equal(
+    isSubagentTerminalEventPayload({
+      deliveryId: 'delivery-bad-usage',
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      subagentType: 'explorer',
+      terminalState: 'completed',
+      ok: true,
+      result: 'done',
+      usage: { inputTokens: 10 },
+    }),
+    false,
   );
   assert.equal(
     isSubagentApprovalRequiredEventPayload({
@@ -296,7 +421,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'read_file',
       ok: false,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'failed',
       raw: null,
       errorCode: 'totally_new_error',
@@ -309,7 +434,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'read_file',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'ok',
     }),
     false,
@@ -320,7 +445,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'read_file',
       ok: false,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'failed',
       raw: null,
       errorCode: 'invalid_args',
@@ -333,7 +458,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'agent_spawn',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'child started',
       raw: {
         ok: true,
@@ -352,7 +477,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'agent_wait',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'child wait complete',
       raw: {
         ok: true,
@@ -383,7 +508,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'agent_spawn',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'child launch rejected',
       raw: rejectedSpawnRaw,
     }),
@@ -403,7 +528,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'agent_send_input',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'child continuation rejected',
       raw: cappedSendInputRaw,
     }),
@@ -420,7 +545,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'agent_stop',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'child already terminal',
       raw: stopRaw,
     }),
@@ -432,7 +557,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'agent_spawn',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'malformed child launch',
       raw: {
         ok: false,
@@ -450,7 +575,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'agent_wait',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'malformed child wait',
       raw: {
         ok: true,
@@ -474,7 +599,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'agent_stop',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'malformed child stop',
       raw: {
         ok: true,
@@ -490,7 +615,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       step: 1,
       tool: 'custom_tool',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'unknown raw stays opaque',
       raw: {
         any: 'shape',
@@ -505,7 +630,6 @@ void test('shared payload guards accept canonical shapes and reject malformed on
   assert.equal(
     isThreadStatePersistedEventPayload({
       threadId: THREAD_ID,
-      projectId: PROJECT_ID,
       snapshotVersion: '2026-04-10T00:00:00.000Z',
       messages: [],
       artifacts: [],
@@ -629,7 +753,7 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       persistenceEpoch: 0,
       sourceRef: {
         kind: 'thread-file',
-        projectId: PROJECT_ID,
+        workingDirectory: 'workspace',
         threadId: THREAD_ID,
         runId: RUN_ID,
         filePath: 'episodes/ch01.md',
@@ -650,12 +774,18 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
       tool: 'read_file',
       args: { path: 'docs/a.md' },
     },
+    tool_call_delta: {
+      callId: 'call-1',
+      step: 1,
+      tool: 'visualize',
+      argsDelta: '{"code":"<div',
+    },
     tool_result: {
       callId: 'call-1',
       step: 1,
       tool: 'read_file',
       ok: true,
-      workspaceFilesMayHaveChanged: false,
+      computerFilesMayHaveChanged: false,
       displayText: 'ok',
       raw: { path: 'docs/a.md' },
     },
@@ -705,6 +835,18 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
       argumentsPreview: { path: 'docs/a.md' },
       sideEffectLevel: 'write',
     },
+    usage_updated: {
+      inputTokens: 100,
+      outputTokens: 25,
+      cachedInputTokens: 40,
+    },
+    context_usage_updated: {
+      state: 'measured',
+      modelId: 'gpt-5.6-sol',
+      inputTokens: 122_400,
+      contextWindow: 272_000,
+      thresholdTokens: 244_800,
+    },
     final_answer_delta: { text: 'final' },
     artifact_committed: {
       artifactId: 'art_1',
@@ -722,7 +864,7 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
       persistenceEpoch: 0,
       sourceRef: {
         kind: 'thread-file',
-        projectId: PROJECT_ID,
+        workingDirectory: 'workspace',
         threadId: THREAD_ID,
         runId: RUN_ID,
         filePath: 'episodes/ch01.md',
@@ -731,7 +873,6 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
     },
     thread_state_persisted: {
       threadId: THREAD_ID,
-      projectId: PROJECT_ID,
       snapshotVersion: '2026-04-10T00:00:00.000Z',
       messages: [],
       artifacts: [],
@@ -815,8 +956,24 @@ void test('subagent tool raw guards accept owned shapes and reject malformed raw
       childThreadId: THREAD_ID,
       subagentType: 'explorer',
       launchState: 'started',
+      modelId: 'grok-4.5',
+      reasoningEffort: 'high',
+      selectionSource: 'model_selected',
     }),
     true,
+  );
+  assert.equal(
+    isAgentLaunchToolRaw({
+      ok: true,
+      childRunId: 'child-1',
+      childThreadId: THREAD_ID,
+      subagentType: 'explorer',
+      launchState: 'started',
+      modelId: 'grok-4.5',
+      reasoningEffort: 'xhigh',
+      selectionSource: 'silent_fallback',
+    }),
+    false,
   );
   assert.equal(
     isToolResultRaw('agent_spawn', {

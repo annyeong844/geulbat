@@ -189,6 +189,53 @@ void test('getProviderAuth returns the refreshed token after auto-refresh', asyn
   assert.equal(auth.accountId, 'account-1');
 });
 
+void test('getProviderAuth refreshes the selected provider credential without changing the default provider', async () => {
+  const { runtimeStore } = createProviderAuthTestStores();
+  await initProviderAuth({
+    runtimeStore,
+    readCredential: async () => ({
+      accessToken: 'codex-token',
+      refreshToken: 'codex-refresh-token',
+      accountId: 'codex-account',
+      expiresAt: Date.now() + 60_000,
+    }),
+  });
+  await initProviderAuth({
+    providerId: 'grok_oauth',
+    runtimeStore,
+    readCredential: async () => ({
+      accessToken: 'stale-grok-token',
+      refreshToken: 'grok-refresh-token',
+      accountId: 'grok-account',
+      expiresAt: Date.now() - 1_000,
+    }),
+  });
+
+  const auth = await getProviderAuth({
+    providerId: 'grok_oauth',
+    runtimeStore,
+    refreshCredential: async (current) => ({
+      ...current,
+      accessToken: 'fresh-grok-token',
+      expiresAt: Date.now() + 60_000,
+    }),
+    persistCredential: async (credential) => {
+      runtimeStore.setCachedProviderCredential(credential, 'grok_oauth');
+    },
+  });
+
+  assert.equal(auth.accessToken, 'fresh-grok-token');
+  assert.equal(auth.accountId, 'grok-account');
+  assert.equal(
+    runtimeStore.getCachedProviderCredential()?.accessToken,
+    'codex-token',
+  );
+  assert.equal(
+    runtimeStore.getCachedProviderCredential('grok_oauth')?.accessToken,
+    'fresh-grok-token',
+  );
+});
+
 void test('forceRefreshProviderAuth refreshes even when the cached credential is not near expiry', async () => {
   const { runtimeStore } = createProviderAuthTestStores();
   await initProviderAuth({
@@ -307,6 +354,35 @@ void test('getProviderBootstrapStatus stays ready for a usable cached credential
       process.env['PROVIDER_AUTH_CLIENT_ID'] = currentClientId;
     }
   }
+});
+
+void test('getProviderBootstrapStatus evaluates the selected provider independently', async () => {
+  const { bootstrapStore, runtimeStore } = createProviderAuthTestStores();
+  await initProviderAuth({
+    runtimeStore,
+    readCredential: async () => ({
+      accessToken: 'codex-token',
+      refreshToken: 'codex-refresh-token',
+      accountId: 'codex-account',
+      expiresAt: Date.now() + 60_000,
+    }),
+  });
+  runtimeStore.setHydratedProviderAuth(true, 'grok_oauth');
+
+  const codexStatus = await getProviderBootstrapStatus({
+    runtimeStore,
+    bootstrapStore,
+  });
+  const grokStatus = await getProviderBootstrapStatus({
+    providerId: 'grok_oauth',
+    runtimeStore,
+    bootstrapStore,
+  });
+
+  assert.equal(codexStatus.state, 'ready');
+  assert.equal(codexStatus.ready, true);
+  assert.equal(grokStatus.state, 'missing');
+  assert.equal(grokStatus.ready, false);
 });
 
 void test('missing provider credentials only trigger one hydration read until runtime state is cleared', async () => {

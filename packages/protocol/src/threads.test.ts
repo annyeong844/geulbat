@@ -3,6 +3,11 @@ import test from 'node:test';
 
 import {
   isCompactionEntryData,
+  isPrepareProviderTransitionRequest,
+  isPrepareProviderTransitionResponse,
+  isProviderNativeCompactionEntryData,
+  isProviderTransitionCompactionEntryData,
+  isThreadBranchResponse,
   isThreadDeleteResponse,
   isThreadDetailDiagnostics,
   isThreadDetailResponse,
@@ -13,11 +18,10 @@ import {
 
 const VALID_THREAD_ID = '11111111-1111-4111-8111-111111111111';
 
-void test('thread response guards require canonical project ids', () => {
+void test('thread response guards validate Home thread identities without project ownership', () => {
   assert.equal(
     isThreadSummary({
       threadId: VALID_THREAD_ID,
-      projectId: 'workspace',
       lastUpdated: '2026-04-11T00:00:00.000Z',
       messageCount: 1,
     }),
@@ -25,8 +29,7 @@ void test('thread response guards require canonical project ids', () => {
   );
   assert.equal(
     isThreadSummary({
-      threadId: VALID_THREAD_ID,
-      projectId: '../escape',
+      threadId: '../escape',
       lastUpdated: '2026-04-11T00:00:00.000Z',
       messageCount: 1,
     }),
@@ -36,7 +39,6 @@ void test('thread response guards require canonical project ids', () => {
   assert.equal(
     isThreadDetailResponse({
       threadId: VALID_THREAD_ID,
-      projectId: 'workspace',
       snapshotVersion: '2026-04-11T00:00:00.000Z',
       messages: [],
       diagnostics: {
@@ -48,8 +50,7 @@ void test('thread response guards require canonical project ids', () => {
   );
   assert.equal(
     isThreadDetailResponse({
-      threadId: VALID_THREAD_ID,
-      projectId: '../escape',
+      threadId: '../escape',
       snapshotVersion: '2026-04-11T00:00:00.000Z',
       messages: [],
     }),
@@ -75,17 +76,25 @@ void test('thread response guards require canonical project ids', () => {
     isThreadDeleteResponse({
       ok: true,
       threadId: VALID_THREAD_ID,
-      projectId: 'workspace',
     }),
     true,
   );
   assert.equal(
     isThreadDeleteResponse({
       ok: true,
-      threadId: VALID_THREAD_ID,
-      projectId: '../escape',
+      threadId: '../escape',
     }),
     false,
+  );
+
+  assert.equal(
+    isThreadBranchResponse({
+      ok: true,
+      threadId: VALID_THREAD_ID,
+      sourceThreadId: '22222222-2222-4222-8222-222222222222',
+      copiedMessageCount: 2,
+    }),
+    true,
   );
 });
 
@@ -136,6 +145,131 @@ void test('compaction entry data rejects missing required fields', () => {
       firstKeptEntryId: 'entry-1',
       tokensBefore: 1200,
       budgetProfile: null,
+    }),
+    false,
+  );
+});
+
+void test('provider-native compaction requires pinned, replayable encrypted output', () => {
+  const native = {
+    kind: 'provider_native',
+    providerId: 'openai_codex_direct',
+    model: 'model-a',
+    output: [
+      {
+        type: 'compaction',
+        encrypted_content: 'encrypted-checkpoint',
+      },
+    ],
+    tokensBefore: 7200,
+    contextWindow: 8000,
+    thresholdTokens: 7000,
+  };
+
+  assert.equal(isProviderNativeCompactionEntryData(native), true);
+  assert.equal(isCompactionEntryData(native), true);
+  assert.equal(
+    isProviderNativeCompactionEntryData({
+      ...native,
+      output: [
+        {
+          type: 'compaction_summary',
+          encrypted_content: 'encrypted-checkpoint',
+        },
+      ],
+    }),
+    true,
+  );
+  assert.equal(
+    isProviderNativeCompactionEntryData({
+      ...native,
+      output: [{ type: 'message', role: 'user', content: [] }],
+    }),
+    false,
+  );
+  assert.equal(
+    isProviderNativeCompactionEntryData({
+      ...native,
+      output: [
+        {
+          type: 'unknown_compaction',
+          encrypted_content: 'encrypted-checkpoint',
+        },
+      ],
+    }),
+    false,
+  );
+  assert.equal(
+    isProviderNativeCompactionEntryData({
+      ...native,
+      thresholdTokens: native.contextWindow + 1,
+    }),
+    false,
+  );
+});
+
+void test('provider-transition compaction is readable, cross-provider, and snapshot-pinned', () => {
+  const transition = {
+    kind: 'provider_transition',
+    sourceProviderId: 'grok_oauth',
+    sourceModel: 'grok-4.5',
+    targetProviderId: 'openai_codex_direct',
+    targetModel: 'gpt-5.6-sol',
+    summary: 'Portable handoff.',
+    coveredThroughEntryId: 'entry-7',
+    inputTokens: 300_000,
+  };
+
+  assert.equal(isProviderTransitionCompactionEntryData(transition), true);
+  assert.equal(isCompactionEntryData(transition), true);
+  assert.equal(
+    isProviderTransitionCompactionEntryData({
+      ...transition,
+      targetProviderId: transition.sourceProviderId,
+    }),
+    false,
+  );
+  assert.equal(
+    isProviderTransitionCompactionEntryData({
+      ...transition,
+      coveredThroughEntryId: '',
+    }),
+    false,
+  );
+});
+
+void test('provider-transition request and response guards keep selection transactional', () => {
+  const request = {
+    sourceModelId: 'grok-4.5',
+    targetModelId: 'gpt-5.6-sol',
+    reasoningEffort: 'high',
+  };
+  assert.equal(isPrepareProviderTransitionRequest(request), true);
+  assert.equal(
+    isPrepareProviderTransitionRequest({
+      ...request,
+      targetModelId: 'unknown-model',
+    }),
+    false,
+  );
+  assert.equal(
+    isPrepareProviderTransitionResponse({
+      ok: true,
+      status: 'compacted',
+      threadId: VALID_THREAD_ID,
+      sourceModelId: request.sourceModelId,
+      targetModelId: request.targetModelId,
+      compactionEntryId: 'entry-8',
+    }),
+    true,
+  );
+  assert.equal(
+    isPrepareProviderTransitionResponse({
+      ok: true,
+      status: 'compacted',
+      threadId: VALID_THREAD_ID,
+      sourceModelId: request.sourceModelId,
+      targetModelId: request.targetModelId,
     }),
     false,
   );

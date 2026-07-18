@@ -1,5 +1,5 @@
 import { errorCodeToStatus } from '../apps/daemon/src/daemon/error-codes.ts';
-import { normalizeAllowedToolNames } from '../apps/daemon/src/adapter/web/ws/run-request-tools.ts';
+import { normalizeAllowedPublicToolNames } from '../apps/daemon/src/adapter/web/ws/run-request-tools.ts';
 import {
   beginConnectionAttempt,
   clearReconnectSchedule,
@@ -30,36 +30,36 @@ function fail(code, message) {
   return { ok: false, error: { code, message } };
 }
 
-function buildAllowedToolsHintFixture(name) {
+function buildAllowedPublicToolNamesFixture(name) {
   const base = {
     prompt: 'exec-provider',
     projectId: 'default',
   };
   switch (name) {
-    case 'no_hint':
+    case 'no_names':
       return base;
-    case 'empty_hint':
-      return { ...base, allowedToolsHint: [] };
+    case 'empty_names':
+      return { ...base, allowedPublicToolNames: [] };
     case 'artifact_apply_default':
       return {
         ...base,
-        allowedToolsHint: ['read_file', 'write_file', 'patch_file'],
+        allowedPublicToolNames: ['read_file', 'write_file', 'apply_patch'],
       };
     case 'trim_dedupe':
       return {
         ...base,
-        allowedToolsHint: [
+        allowedPublicToolNames: [
           ' read_file ',
           'write_file',
           'read_file',
           '  ',
-          'patch_file ',
+          'apply_patch ',
         ],
       };
     case 'empty_after_trim':
-      return { ...base, allowedToolsHint: ['  ', '\n', '\t'] };
+      return { ...base, allowedPublicToolNames: ['  ', '\n', '\t'] };
     default:
-      throw new Error(`unknown allowed_tools_hint fixture: ${name}`);
+      throw new Error(`unknown allowed_public_tool_names fixture: ${name}`);
   }
 }
 
@@ -70,11 +70,13 @@ function runExactMap(contract, keys) {
     );
     return ok({ kind: 'exact_map', values });
   }
-  if (contract === 'allowed_tools_hint') {
+  if (contract === 'allowed_public_tool_names') {
     const values = Object.fromEntries(
       keys.map((key) => [
         key,
-        normalizeAllowedToolNames(buildAllowedToolsHintFixture(key)) ?? null,
+        normalizeAllowedPublicToolNames(
+          buildAllowedPublicToolNamesFixture(key),
+        ) ?? null,
       ]),
     );
     return ok({ kind: 'exact_map', values });

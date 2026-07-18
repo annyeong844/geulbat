@@ -120,9 +120,6 @@ export function useArtifactExportState(args: {
           setExportExpanded(false);
           setExportTargetPath('');
         },
-        ...(viewModel.sourceAuthority !== null
-          ? { projectId: viewModel.sourceAuthority.projectId }
-          : {}),
       });
       return;
     }

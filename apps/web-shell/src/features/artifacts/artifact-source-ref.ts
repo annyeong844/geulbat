@@ -14,13 +14,13 @@ import {
 export function buildTranscriptArtifactSourceRef(
   message: ThreadMessage,
   context: {
-    projectId?: string | null;
+    workingDirectory?: string | null;
     threadId?: string | null;
   },
 ): ArtifactSourceInputRef {
   const metadata = message.metadata;
   return {
-    projectId: context.projectId ?? null,
+    workingDirectory: context.workingDirectory ?? '',
     threadId: context.threadId ?? null,
     runId:
       metadata && typeof metadata.sourceRunId === 'string'
@@ -35,13 +35,13 @@ export function buildTranscriptArtifactSourceRef(
 }
 
 export function buildStreamingArtifactSourceRef(args: {
-  projectId: string;
+  workingDirectory: string;
   threadId: string | null;
   runId: string | null;
   filePath: string | null;
 }): ArtifactSourceInputRef {
   return {
-    projectId: args.projectId,
+    workingDirectory: args.workingDirectory,
     threadId: args.threadId,
     runId: args.runId,
     filePath: args.filePath,
@@ -53,7 +53,7 @@ export function buildCommittedArtifactSourceRef(
 ): ArtifactSourceInputRef {
   return {
     kind: artifact.sourceRef?.kind ?? null,
-    projectId: artifact.sourceRef?.projectId ?? null,
+    workingDirectory: artifact.sourceRef?.workingDirectory ?? '',
     threadId: artifact.sourceRef?.threadId ?? null,
     runId: artifact.sourceRef?.runId ?? null,
     filePath: artifact.sourceRef?.filePath ?? null,
@@ -76,7 +76,6 @@ export function deriveArtifactRuntimePersistenceScopeFromSourceRef(args: {
 }): ArtifactRuntimePersistenceScopeRequest | null {
   const sourceRef = buildCanonicalArtifactSourceRef(args.sourceRef);
   if (
-    !sourceRef.projectId ||
     !sourceRef.threadId ||
     !sourceRef.artifactId ||
     sourceRef.persistenceEpoch === null
@@ -85,7 +84,6 @@ export function deriveArtifactRuntimePersistenceScopeFromSourceRef(args: {
   }
 
   return {
-    projectId: sourceRef.projectId,
     threadId: sourceRef.threadId,
     renderer: args.renderer,
     artifactId: sourceRef.artifactId,

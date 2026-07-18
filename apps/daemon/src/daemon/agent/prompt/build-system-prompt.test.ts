@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemPrompt } from './build-system-prompt.js';
 
-void test('buildSystemPrompt includes Phase 4 recovery guidance', () => {
-  const prompt = buildSystemPrompt();
+void test('buildSystemPrompt includes tool and mutation recovery guidance', () => {
+  const prompt = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: true,
+  });
 
   assert.match(prompt, /discovery -> read -> mutate/);
   assert.match(prompt, /versionToken with read_file/);
@@ -29,9 +32,11 @@ void test('buildSystemPrompt includes Phase 4 recovery guidance', () => {
     prompt,
     /launch only the currently independent items as a same-round agent_spawn wave/,
   );
+  assert.match(prompt, /Continue independent parent work while children run/);
+  assert.match(prompt, /agent_wait defaults to an immediate progress snapshot/);
   assert.match(
     prompt,
-    /Use agent_wait results as the progress source for those workflows/,
+    /explicit wait_mode all or any only at a dependency barrier/,
   );
   assert.match(prompt, /blocked children need explicit follow-up/);
   assert.match(
@@ -39,7 +44,7 @@ void test('buildSystemPrompt includes Phase 4 recovery guidance', () => {
     /Do not invent a private workflow tool, hidden queue, or fixed wave-size policy/,
   );
   assert.match(prompt, /visible backpressure/);
-  assert.match(prompt, /call agent_wait explicitly/);
+  assert.match(prompt, /request a progress snapshot with agent_wait/);
   assert.match(
     prompt,
     /use agent_send_input instead of spawning a fresh child/,
@@ -99,33 +104,165 @@ void test('buildSystemPrompt includes Phase 4 recovery guidance', () => {
   assert.match(prompt, /Do not call search_memory_index on every turn/);
   assert.match(prompt, /refresh_memory_index explicitly/);
   assert.match(prompt, /search_memory_index results are hints only/);
+  assert.match(prompt, /Do not read an entire file as reconnaissance/);
+  assert.match(prompt, /explicit offset and the required limit/);
   assert.match(
     prompt,
-    /When using list_files for the workspace root, omit path or use "\."\. Never send path as an empty string\./,
+    /continue from nextOffset only when more lines are needed/,
   );
+  assert.match(
+    prompt,
+    /Use tool_search when you know the action but not the exact tool name/,
+  );
+  assert.match(prompt, /search hints are not callable aliases/);
+  assert.match(prompt, /Use skill_search with invocation=implicit/);
+  assert.match(
+    prompt,
+    /Use invocation=explicit only when the user explicitly requested that Skill/,
+  );
+  assert.match(prompt, /Treat an @skill_name mention.*explicit Skill request/);
+  assert.match(prompt, /Normalize ASCII underscores to hyphens/);
+  assert.match(prompt, /require an exact available Skill result/);
+  assert.match(prompt, /read the complete SKILL\.md at instructionsRef/);
+  assert.match(prompt, /read only the needed resources beneath skillRootRef/);
+  assert.match(prompt, /Never auto-run a Skill script, MCP server, app, hook/);
+  assert.match(
+    prompt,
+    /normal tool availability and approval rules still apply/,
+  );
+  assert.match(
+    prompt,
+    /allowImplicitInvocation=false may be followed only when the user explicitly requested that Skill/,
+  );
+  assert.match(prompt, /pinned read-only geulbat-sdk alias/);
+  assert.match(
+    prompt,
+    /read only the needed geulbat-sdk signature with read_file/,
+  );
+  assert.match(prompt, /import the listed wrapper from the PTC exec tool/);
+  assert.match(prompt, /Do not dump the full SDK tree/);
+  assert.match(
+    prompt,
+    /Use fetch_url only when you already have an explicit public HTTP\(S\) URL/,
+  );
+  assert.match(prompt, /Prefer dedicated typed tools for file listing/);
+  assert.match(prompt, /Do not use exec_command as an alias/);
+  assert.match(
+    prompt,
+    /Use exec_command only when the user explicitly asks for a shell command/,
+  );
+  assert.doesNotMatch(prompt, /exec_command.*including familiar.*ls, cat, rg/u);
+  assert.doesNotMatch(prompt, /execute_code/u);
+  assert.doesNotMatch(prompt, /web_fetch/);
+  assert.match(
+    prompt,
+    /Call list_files and search_files directly for routine file discovery/,
+  );
+  assert.match(
+    prompt,
+    /do not substitute exec_command for that file-tool path/,
+  );
+  assert.match(
+    prompt,
+    /rediscover the new path with the dedicated list_files or search_files tool/,
+  );
+  assert.doesNotMatch(prompt, /list_files\/search_files SDK wrappers/u);
 });
 
-void test('buildSystemPrompt includes author voice for adult fiction co-writing', () => {
-  const prompt = buildSystemPrompt();
+void test('buildSystemPrompt describes a general agent and the actual host boundary', () => {
+  const prompt = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: true,
+  });
 
-  assert.match(prompt, /new-file creation path\.\n\nYou are a co-writer/);
-  assert.match(prompt, /co-writer for the author's Korean fiction workspace/);
-  assert.match(prompt, /intended for an adult readership/);
+  assert.match(prompt, /general-purpose personal agent/);
   assert.match(
     prompt,
-    /dark, violent, morally complex, or sexually explicit content for adult fiction/,
+    /current working directory as path context only\. It is not a project, storage owner, or filesystem authority boundary/,
   );
   assert.match(
     prompt,
-    /explicit version of a scene is the canonical version when requested/,
+    /Follow the user's requested language and domain instead of assuming a fixed fiction, coding, or other specialist role/,
+  );
+  assert.match(prompt, /File tools use the admitted Computer file scope/);
+  assert.match(prompt, /Relative paths start from the run working directory/);
+  assert.match(
+    prompt,
+    /admitted absolute paths and parent traversal may reach other locations inside that same Computer scope/,
+  );
+  assert.match(prompt, /working directory is only a relative-path base/);
+  assert.match(
+    prompt,
+    /does not restrict file visibility, own durable state, or replace Computer file authority/,
   );
   assert.match(
     prompt,
-    /tone applies consistently across chapters, side stories, and revisions/,
+    /another cwd only when it remains inside the admitted Computer file scope/,
   );
+  assert.match(prompt, /Do not add a workspace\/computer root selector/);
+  assert.doesNotMatch(prompt, /root="(?:workspace|computer)"/);
+  assert.doesNotMatch(prompt, /configured Computer root/);
   assert.match(
     prompt,
-    /name the exact reason and ask the author for direction/,
+    /Windows drive path to its mounted drive path under WSL/,
   );
-  assert.match(prompt, /출력은 작가의 원고 톤을 따른다/);
+  assert.match(prompt, /discover and invoke a Windows PowerShell executable/);
+  assert.match(prompt, /may invoke powershell\.exe or wsl\.exe when installed/);
+  assert.doesNotMatch(prompt, /Korean-language novel workspace/);
+  assert.doesNotMatch(prompt, /not a general assistant/);
+  assert.doesNotMatch(prompt, /adult readership/);
+});
+
+void test('buildSystemPrompt gives subagents a compact role prompt and truthful computer capability', () => {
+  const explorerPrompt = buildSystemPrompt({
+    profile: 'explorer',
+    computerSessionAvailable: false,
+  });
+  const workerPrompt = buildSystemPrompt({
+    profile: 'worker',
+    computerSessionAvailable: true,
+  });
+
+  assert.match(explorerPrompt, /explorer subagent/);
+  assert.match(
+    explorerPrompt,
+    /Computer file scope is unavailable in this run/,
+  );
+  assert.match(
+    explorerPrompt,
+    /Do not retry file or host-command access through a workspace fallback/,
+  );
+  assert.match(explorerPrompt, /report the unavailable capability honestly/);
+  assert.doesNotMatch(explorerPrompt, /root="(?:workspace|computer)"/);
+  assert.match(explorerPrompt, /list_files for directory discovery/);
+  assert.match(explorerPrompt, /Do not read an entire file as reconnaissance/);
+  assert.match(explorerPrompt, /explicit offset and the required limit/);
+  assert.match(explorerPrompt, /Continue independent work after spawning/);
+  assert.match(
+    explorerPrompt,
+    /explicit blocking wait_mode only when dependent/,
+  );
+  assert.match(explorerPrompt, /agent_stop on that child handle/);
+  assert.doesNotMatch(explorerPrompt, /tool_search/);
+  assert.doesNotMatch(explorerPrompt, /PTC exec tool/);
+  assert.doesNotMatch(explorerPrompt, /GEULBAT_ARTIFACT/);
+  assert.doesNotMatch(explorerPrompt, /react_bundle/);
+  assert.match(workerPrompt, /worker subagent/);
+  assert.match(workerPrompt, /discovery -> read -> mutate/);
+  assert.match(workerPrompt, /File tools use the admitted Computer file scope/);
+  assert.match(
+    workerPrompt,
+    /Relative paths start from the run working directory/,
+  );
+  assert.match(workerPrompt, /Do not add a workspace\/computer root selector/);
+  assert.doesNotMatch(workerPrompt, /root="(?:workspace|computer)"/);
+  assert.match(workerPrompt, /dedicated list_files, read_file, search_files/);
+  assert.match(workerPrompt, /Do not read an entire file as reconnaissance/);
+  assert.match(workerPrompt, /explicit offset and the required limit/);
+  assert.match(workerPrompt, /Continue independent work after spawning/);
+  assert.match(workerPrompt, /explicit blocking wait_mode only when dependent/);
+  assert.match(workerPrompt, /agent_stop on that child handle/);
+  assert.doesNotMatch(workerPrompt, /tool_search/);
+  assert.doesNotMatch(workerPrompt, /PTC exec tool/);
+  assert.doesNotMatch(workerPrompt, /GEULBAT_ARTIFACT/);
 });

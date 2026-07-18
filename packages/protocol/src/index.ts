@@ -25,8 +25,8 @@ export {
   isPersistenceErrorCode,
   PERSISTENCE_ERROR_CODES,
 } from './errors.js';
-export type { ProjectId, RunId, ThreadId } from './ids.js';
-export { isProjectId, isRunId, isThreadId } from './ids.js';
+export type { RunId, ThreadId } from './ids.js';
+export { isRunId, isThreadId } from './ids.js';
 export type {
   InputRefInventoryEntry,
   InputRefInventoryResponse,
@@ -77,11 +77,13 @@ export {
 } from './artifacts.js';
 export type {
   InterjectThreadMessageMetadata,
+  ThreadMessageAttachment,
   ThreadMessageMetadata,
   ThreadMessagePhase,
 } from './thread-metadata.js';
 export {
   THREAD_MESSAGE_PHASES,
+  isThreadMessageAttachment,
   isThreadMessageMetadata,
   isThreadMessagePhase,
   readActiveArtifactRefFromMetadata,
@@ -134,18 +136,34 @@ export {
 } from './react-bundle-runtime-url-policy.js';
 export type {
   RunAck,
+  RunModelDescriptor,
+  RunModelId,
   RunPromptInputRefResponse,
   RunPromptRefRequest,
+  RunReasoningEffort,
   RunRequest,
   RunSelection,
   RunStartRequest,
+  RunSubagentModelChoice,
+  RunSubagentModelRouting,
+  SubagentModelSelectionSource,
 } from './run-contract.js';
 export {
+  DEFAULT_RUN_MODEL_ID,
+  DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
+  RUN_MODEL_CATALOG,
+  RUN_REASONING_EFFORTS,
+  SUBAGENT_MODEL_SELECTION_SOURCES,
+  isRunModelId,
   isRunPromptInputRefResponse,
   isRunPromptRefRequest,
   isRunRequest,
   isRunSelection,
   isRunStartRequest,
+  isRunSubagentModelChoice,
+  isRunSubagentModelRouting,
+  isSubagentModelSelectionSource,
+  resolveRunModelDescriptor,
 } from './run-contract.js';
 export type {
   ApprovalClass,
@@ -192,25 +210,14 @@ export {
   isFileTreeResponse,
 } from './files.js';
 export type {
-  CreateProjectRequest,
-  ProjectListItem,
-  ProjectListResponse,
-  ProjectMutationResponse,
-  RenameProjectRequest,
-} from './projects.js';
-export {
-  getDefaultProjectDeleteConflictMessage,
-  getDefaultProjectRenameConflictMessage,
-  getProjectRegistryDeleteDescription,
-  getSelectedProjectDeleteConflictMessage,
-  isProjectListResponse,
-} from './projects.js';
-export type {
   BudgetProfile,
   CompactionThreadMessage,
   CompactionEntryData,
   FileOps,
   NonCompactionThreadMessage,
+  ProviderNativeCompactionEntryData,
+  ProviderNativeCompactionOutputItem,
+  SummaryCompactionEntryData,
   ThreadDetailDiagnostics,
   ThreadDeleteResponse,
   ThreadDetailResponse,
@@ -223,6 +230,7 @@ export type {
 export {
   THREAD_MESSAGE_ROLES,
   isCompactionEntryData,
+  isProviderNativeCompactionEntryData,
   isThreadDeleteResponse,
   isThreadDetailDiagnostics,
   isThreadDetailResponse,
@@ -293,6 +301,7 @@ export {
   isToolResultRaw,
 } from './run-events.js';
 export type {
+  ProviderAuthProviderId,
   ProviderAuthLogoutResponse,
   ProviderAuthStartRequest,
   ProviderAuthStartResponse,
@@ -300,7 +309,10 @@ export type {
   ProviderAuthStatusState,
 } from './provider-auth.js';
 export {
+  DEFAULT_PROVIDER_AUTH_PROVIDER_ID,
+  PROVIDER_AUTH_PROVIDER_IDS,
   isProviderAuthLogoutResponse,
+  isProviderAuthProviderId,
   isProviderAuthStartResponse,
   isProviderAuthStatusResponse,
   isProviderAuthStatusState,

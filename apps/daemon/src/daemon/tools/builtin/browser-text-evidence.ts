@@ -3,17 +3,16 @@ import {
   PTC_BROWSER_TEXT_EVIDENCE_MAX_TIMEOUT_MS,
   PTC_BROWSER_TEXT_EVIDENCE_MAX_URL_BYTES,
   PTC_BROWSER_TEXT_EVIDENCE_TOOL_NAME,
-  type PtcBrowserTextEvidenceRuntimeResult,
   type PtcBrowserTextEvidenceRuntimeSummary,
 } from '../../ptc/runtime/browser/browser-text-evidence-runtime-contract.js';
-import { createRunWorkspaceContext } from '../../run-workspace-context.js';
+import { createRunContext } from '../../run-context.js';
 import { toolError } from '../result.js';
 import { defineZodTool } from '../zod-tool.js';
 import {
   browserFailureReasonMessage,
   browserFailureReasonToToolErrorCode,
-  pickBrowserSafeDiagnosticFields,
   pickBrowserTextEvidencePolicyOutputFields,
+  stringifyBrowserEvidenceFailureOutput,
 } from './browser-summary-output.js';
 
 const browserTextEvidenceArgsSchema = z.strictObject({
@@ -43,10 +42,17 @@ export const browserTextEvidenceTool = defineZodTool({
     'Load one user-selected HTTP(S) URL inside the PTC lab browser and return visible text evidence plus redirect count, timing, and digests. Does not expose raw requested/final URLs, cookies, HTML/DOM dumps, screenshots, or artifacts.',
   argsSchema: browserTextEvidenceArgsSchema,
   sideEffectLevel: 'write',
-  mayMutateWorkspaceFiles: false,
+  mayMutateComputerFiles: false,
   requiresApproval: true,
+  catalogSearchMetadata: {
+    family: 'browser',
+    searchHints: ['text evidence', 'extract page text', 'browser text'],
+    tags: ['browser', 'ptc', 'text'],
+    whenToUse: 'Capture bounded visible text evidence for one explicit URL.',
+    notFor: 'Interactive browser control or query-based web search.',
+  },
   async executeParsed(args: BrowserTextEvidenceArgs, ctx) {
-    if (!ctx.threadId || !ctx.projectId) {
+    if (!ctx.threadId || !ctx.stateRoot) {
       return toolError(
         'execution_failed',
         'run context is required for browser_text_evidence.',
@@ -61,10 +67,10 @@ export const browserTextEvidenceTool = defineZodTool({
     }
 
     const runtimeArgs = {
-      runContext: createRunWorkspaceContext({
+      runContext: createRunContext({
         threadId: ctx.threadId,
-        projectId: ctx.projectId,
-        workspaceRoot: ctx.workspaceRoot,
+        stateRoot: ctx.stateRoot,
+        workingDirectory: ctx.workingDirectory ?? '',
       }),
       request: {
         url: args.url,
@@ -83,7 +89,11 @@ export const browserTextEvidenceTool = defineZodTool({
       });
       return {
         ok: false,
-        output: stringifyBrowserTextEvidenceFailure(result),
+        output: stringifyBrowserEvidenceFailureOutput({
+          failure: result,
+          subject: 'text evidence',
+          attemptDigestField: 'textEvidenceAttemptDigest',
+        }),
         errorCode: browserFailureReasonToToolErrorCode(result.reasonCode),
         error: message,
       };
@@ -118,24 +128,5 @@ function stringifyBrowserTextEvidenceSummary(
     timing: summary.timing,
     evidenceAvailability: summary.evidenceAvailability,
     checks: summary.checks,
-  });
-}
-
-function stringifyBrowserTextEvidenceFailure(
-  failure: Extract<PtcBrowserTextEvidenceRuntimeResult, { ok: false }>,
-): string {
-  return JSON.stringify({
-    kind: failure.kind,
-    ok: failure.ok,
-    reasonCode: failure.reasonCode,
-    message: browserFailureReasonMessage({
-      reasonCode: failure.reasonCode,
-      subject: 'text evidence',
-    }),
-    phase: failure.phase,
-    targetDigest: failure.targetDigest,
-    textEvidenceAttemptDigest: failure.textEvidenceAttemptDigest,
-    sessionLifecycle: failure.sessionLifecycle,
-    diagnostics: pickBrowserSafeDiagnosticFields(failure.diagnostics),
   });
 }

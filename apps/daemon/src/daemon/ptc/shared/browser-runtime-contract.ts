@@ -10,7 +10,7 @@ export interface PtcBrowserRuntimeUrlRequest {
 
 interface PtcBrowserRuntimeRunContext {
   threadId: string;
-  workspaceRoot: string;
+  stateRoot: string;
 }
 
 export interface PtcBrowserRuntimeOperationArgs<Request> {

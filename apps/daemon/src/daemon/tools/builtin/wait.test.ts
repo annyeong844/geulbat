@@ -6,7 +6,6 @@ import {
   type PtcExecuteCodeRuntime,
 } from '../../ptc/runtime/execute-code/execute-code-runtime-contract.js';
 import { createDaemonContext } from '../../context.js';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { isToolObjectParameters } from '../types.js';
 import { waitTool } from './wait.js';
@@ -17,21 +16,73 @@ void test('wait description teaches the exec running-cell protocol', () => {
   const cellIdProperty = parameters.properties.cell_id as {
     description?: string;
   };
-  const yieldTimeProperty = parameters.properties.yield_time_ms as {
+  const yieldTimeProperty = parameters.properties['yield-time_ms'] as {
     description?: string;
   };
 
   assert.match(waitTool.description, /exec/u);
+  assert.match(waitTool.description, /status "queued"/u);
   assert.match(waitTool.description, /status "running"/u);
   assert.match(waitTool.description, /cellId/u);
   assert.match(waitTool.description, /cell_id/u);
   assert.match(cellIdProperty.description ?? '', /cellId/u);
   assert.match(cellIdProperty.description ?? '', /cellId is not accepted/u);
+  assert.match(cellIdProperty.description ?? '', /status "queued"/u);
   assert.match(cellIdProperty.description ?? '', /status "running"/u);
   assert.match(
     yieldTimeProperty.description ?? '',
     /yieldTimeMs is not accepted/u,
   );
+});
+
+void test('wait preserves a queued cell as visible scheduler state', async () => {
+  const ptcExecuteCode: PtcExecuteCodeRuntime = {
+    async executeCode() {
+      throw new Error('exec was not expected');
+    },
+    async waitForCell() {
+      return {
+        ok: true,
+        value: {
+          ok: true,
+          capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+          policyId: PTC_EXECUTE_CODE_POLICY_ID,
+          executionSurface: 'node_via_lab_detached_cell',
+          status: 'queued',
+          cellId: 'ptc_cell_wait_queued',
+          stdout: '',
+          stderr: '',
+        },
+      };
+    },
+    async closeAll() {
+      return { ok: true };
+    },
+  };
+
+  const result = await waitTool.execute(
+    { cell_id: 'ptc_cell_wait_queued', 'yield-time_ms': 1_000 },
+    {
+      callId: 'call-wait-queued',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
+      threadId: testThreadId(920_1),
+      agentSpawnRuntime: { ...createDaemonContext(), ptcExecuteCode },
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(JSON.parse(result.output), {
+    kind: 'ptc_execute_code_cell_wait',
+    capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+    policyId: PTC_EXECUTE_CODE_POLICY_ID,
+    executionSurface: 'node_via_lab_detached_cell',
+    status: 'queued',
+    cellId: 'ptc_cell_wait_queued',
+    stdout: '',
+    stderr: '',
+  });
 });
 
 void test('wait exposes snake_case model-facing cell arguments without camelCase aliases', async () => {
@@ -40,7 +91,7 @@ void test('wait exposes snake_case model-facing cell arguments without camelCase
   assert.deepEqual(Object.keys(parameters.properties), [
     'cell_id',
     'terminate',
-    'yield_time_ms',
+    'yield-time_ms',
   ]);
   assert.deepEqual(parameters.required, ['cell_id']);
 
@@ -48,9 +99,10 @@ void test('wait exposes snake_case model-facing cell arguments without camelCase
     { cellId: 'ptc_cell_camel_case' },
     {
       callId: 'call-wait-camel-case',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(919),
-      projectId: testProjectId('project'),
     },
   );
 
@@ -63,9 +115,10 @@ void test('wait exposes snake_case model-facing cell arguments without camelCase
     { cell_id: 'ptc_cell_snake_case', yieldTimeMs: 1_000 },
     {
       callId: 'call-wait-yield-camel-case',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(918),
-      projectId: testProjectId('project'),
     },
   );
 
@@ -79,7 +132,9 @@ void test('wait rejects blank cell_id at the parser boundary', async () => {
     { cell_id: '   ' },
     {
       callId: 'call-wait-blank-cell',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
     },
   );
 
@@ -93,9 +148,10 @@ void test('wait requires an agent runtime service before reading a cell', async 
     { cell_id: 'ptc_cell_missing' },
     {
       callId: 'call-wait-no-runtime',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(920),
-      projectId: testProjectId('project'),
     },
   );
 
@@ -130,6 +186,10 @@ void test('wait reads exec cell results through the current thread runtime', asy
           exitCode: 0,
           stdout: 'done\n',
           stderr: '',
+          store: {
+            committedKeys: ['note'],
+            revisions: { note: 1 },
+          },
         },
       };
     },
@@ -139,12 +199,13 @@ void test('wait reads exec cell results through the current thread runtime', asy
   };
 
   const result = await waitTool.execute(
-    { cell_id: 'ptc_cell_done', terminate: true, yield_time_ms: 1_000 },
+    { cell_id: 'ptc_cell_done', terminate: true, 'yield-time_ms': 1_000 },
     {
       callId: 'call-wait-completed',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(921),
-      projectId: testProjectId('project'),
       agentSpawnRuntime: { ...createDaemonContext(), ptcExecuteCode },
     },
   );
@@ -164,6 +225,60 @@ void test('wait reads exec cell results through the current thread runtime', asy
     exitCode: 0,
     stdout: 'done\n',
     stderr: '',
+    store: {
+      committedKeys: ['note'],
+      revisions: { note: 1 },
+    },
+  });
+});
+
+void test('wait preserves detached-cell store commit conflicts as code-visible failures', async () => {
+  const ptcExecuteCode: PtcExecuteCodeRuntime = {
+    async executeCode() {
+      throw new Error('exec was not expected');
+    },
+    async waitForCell() {
+      return {
+        ok: false,
+        reasonCode: 'ptc_execute_code_store_commit_conflict',
+        message: 'store revision changed',
+        store: { discardedWrites: 1 },
+        storeError: {
+          errorCode: 'StoreCommitConflict',
+          message: 'store revision changed',
+          remediation: 'Read the current revision and re-apply the change.',
+        },
+      };
+    },
+    async closeAll() {
+      return { ok: true };
+    },
+  };
+
+  const result = await waitTool.execute(
+    { cell_id: 'ptc_cell_store_conflict' },
+    {
+      callId: 'call-wait-store-conflict',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
+      threadId: testThreadId(924),
+      agentSpawnRuntime: { ...createDaemonContext(), ptcExecuteCode },
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'execution_failed');
+  assert.deepEqual(JSON.parse(result.output), {
+    kind: 'ptc_execute_code_cell_wait_error',
+    reasonCode: 'ptc_execute_code_store_commit_conflict',
+    message: 'store revision changed',
+    store: { discardedWrites: 1 },
+    storeError: {
+      errorCode: 'StoreCommitConflict',
+      message: 'store revision changed',
+      remediation: 'Read the current revision and re-apply the change.',
+    },
   });
 });
 
@@ -185,12 +300,13 @@ void test('wait maps runtime cancellation to an aborted tool result', async () =
   };
 
   const result = await waitTool.execute(
-    { cell_id: 'ptc_cell_cancelled', yield_time_ms: 1_000 },
+    { cell_id: 'ptc_cell_cancelled', 'yield-time_ms': 1_000 },
     {
       callId: 'call-wait-cancelled',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(922),
-      projectId: testProjectId('project'),
       agentSpawnRuntime: { ...createDaemonContext(), ptcExecuteCode },
     },
   );
@@ -230,9 +346,10 @@ void test('wait reports expired retained cell results distinctly from missing ce
     { cell_id: 'ptc_cell_expired' },
     {
       callId: 'call-wait-expired',
-      workspaceRoot: '/workspace/project',
+      stateRoot: '/workspace/home-state',
+
+      workingDirectory: 'project',
       threadId: testThreadId(923),
-      projectId: testProjectId('project'),
       agentSpawnRuntime: { ...createDaemonContext(), ptcExecuteCode },
     },
   );

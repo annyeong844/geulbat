@@ -11,6 +11,7 @@ export type ArtifactRuntimeBootState = 'waiting' | 'ready' | 'timed_out';
 export function useArtifactRuntimeFrameBootState(args: {
   runtimeFrameRevision: string;
   readyTimeoutMs: number;
+  minFrameHeight?: number;
   onGeneratedTextExportSnapshotChange?: (
     snapshot: GeneratedTextExportSnapshot | null,
   ) => void;
@@ -21,13 +22,12 @@ export function useArtifactRuntimeFrameBootState(args: {
   const {
     runtimeFrameRevision,
     readyTimeoutMs,
+    minFrameHeight = MIN_ARTIFACT_RUNTIME_FRAME_HEIGHT,
     onGeneratedTextExportSnapshotChange,
     onGeneratedBinaryExportSnapshotChange,
   } = args;
   const readyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [frameHeight, setFrameHeight] = useState(
-    MIN_ARTIFACT_RUNTIME_FRAME_HEIGHT,
-  );
+  const [frameHeight, setFrameHeight] = useState(minFrameHeight);
   const [bootState, setBootState] =
     useState<ArtifactRuntimeBootState>('waiting');
 
@@ -47,7 +47,7 @@ export function useArtifactRuntimeFrameBootState(args: {
   useEffect(() => {
     clearReadyTimeout();
     setBootState('waiting');
-    setFrameHeight(MIN_ARTIFACT_RUNTIME_FRAME_HEIGHT);
+    setFrameHeight(minFrameHeight);
     onGeneratedTextExportSnapshotChange?.(null);
     onGeneratedBinaryExportSnapshotChange?.(null);
     readyTimeoutRef.current = setTimeout(() => {
@@ -60,6 +60,7 @@ export function useArtifactRuntimeFrameBootState(args: {
     };
   }, [
     clearReadyTimeout,
+    minFrameHeight,
     onGeneratedBinaryExportSnapshotChange,
     onGeneratedTextExportSnapshotChange,
     readyTimeoutMs,

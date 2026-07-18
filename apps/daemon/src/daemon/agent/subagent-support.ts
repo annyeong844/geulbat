@@ -1,5 +1,6 @@
 import type {
   AgentLaunchAckToolRaw,
+  ResolvedChildModelPin,
   SubagentLaunchReservation,
   SubagentType,
 } from '../subagent-runtime-contracts.js';
@@ -11,6 +12,7 @@ import {
 import type { ToolRunState, AgentEvent } from '../runtime-contracts.js';
 import type { AgentResult } from './agent-result.js';
 import type { AgentInput } from './loop-types.js';
+import type { RunSubagentModelRouting } from './contract.js';
 import { startManagedRun } from './runtime/managed-run.js';
 import { runAgentLoop as runDefaultAgentLoop } from './run-agent-loop.js';
 import {
@@ -28,10 +30,7 @@ import {
   appendChildUserTranscriptEntry,
 } from './subagent-transcript.js';
 import { routeChildAgentEvent } from './subagent-event-routing.js';
-import {
-  createRunWorkspaceContext,
-  type RunWorkspaceContext,
-} from '../run-workspace-context.js';
+import { createRunContext, type RunContext } from '../run-context.js';
 import type {
   AgentRuntimeServices,
   StartSubagentBackgroundRunArgs,
@@ -43,7 +42,14 @@ import {
   buildChildLaunchPayload,
   buildChildLaunchRejected,
 } from '../subagent-runtime-contracts.js';
-
+import {
+  composeAgentLoopUserPrompt,
+  createAgentLoopPromptPort,
+} from './loop-prompt.js';
+import {
+  PTC_EXECUTE_CODE_TOOL_NAME,
+  PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
+} from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
 const logger = createLogger('agent/subagent-support');
 
 const DEFAULT_CHILD_PERMISSION_MODE: PermissionMode = 'basic';
@@ -51,41 +57,62 @@ const DEFAULT_CHILD_PERMISSION_MODE: PermissionMode = 'basic';
 const AGENT_ORCHESTRATION_TOOL_NAMES = [
   'agent_spawn',
   'agent_wait',
-  'agent_send_input',
   'agent_stop',
 ] as const;
 
-const SUBAGENT_TOOL_SETS = {
-  explorer: [
-    'list_files',
-    'read_file',
-    'search_files',
-    ...AGENT_ORCHESTRATION_TOOL_NAMES,
-  ],
-  worker: [
-    'list_files',
-    'read_file',
-    'search_files',
-    'write_file',
-    'patch_file',
-    'manage_files',
-    ...AGENT_ORCHESTRATION_TOOL_NAMES,
-  ],
-} as const satisfies Record<SubagentType, readonly string[]>;
+const EXPLORER_DIRECT_TOOL_NAMES = [
+  'list_files',
+  'read_file',
+  'read_tool_output',
+  'search_files',
+  PTC_EXECUTE_CODE_TOOL_NAME,
+  PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
+  ...AGENT_ORCHESTRATION_TOOL_NAMES,
+] as const;
+
+const WORKER_DIRECT_TOOL_NAMES = [
+  'list_files',
+  'read_file',
+  'read_tool_output',
+  'search_files',
+  'write_file',
+  'apply_patch',
+  'manage_files',
+  ...AGENT_ORCHESTRATION_TOOL_NAMES,
+] as const;
+
+const SUBAGENT_TOOL_SURFACES = {
+  explorer: {
+    directRegistryNames: EXPLORER_DIRECT_TOOL_NAMES,
+    allowedRegistryNames: EXPLORER_DIRECT_TOOL_NAMES,
+  },
+  worker: {
+    directRegistryNames: WORKER_DIRECT_TOOL_NAMES,
+    allowedRegistryNames: WORKER_DIRECT_TOOL_NAMES,
+  },
+} as const satisfies Record<
+  SubagentType,
+  {
+    directRegistryNames: readonly string[];
+    allowedRegistryNames: readonly string[];
+  }
+>;
 
 interface LaunchSubagentBackgroundRunArgs {
   task: string;
   subagentType: SubagentType;
   parentRunId: RunId;
-  ownerThreadId: RunWorkspaceContext['threadId'];
-  projectId: RunWorkspaceContext['projectId'];
-  workspaceRoot: string;
+  ownerThreadId: RunContext['threadId'];
+  stateRoot: string;
+  workingDirectory: string;
   startedChildRun: StartedChildRunHandle;
   parentRunState: ToolRunState;
   runtimeServices: AgentRuntimeServices;
   launchReservation?: SubagentLaunchReservation;
-  approvalSessionId?: string;
+  approvalSessionId: string;
   permissionMode?: PermissionMode;
+  modelPin: ResolvedChildModelPin;
+  subagentModelRouting: RunSubagentModelRouting;
   emitAgentEvent?: (event: AgentEvent) => void;
   runAgentLoop: (input: AgentInput) => Promise<AgentResult>;
   timeoutMs?: number;
@@ -95,6 +122,7 @@ function buildChildLaunchAck(args: {
   childRunId: string;
   childThreadId: string;
   subagentType: SubagentType;
+  modelPin: ResolvedChildModelPin;
 }): AgentLaunchAckToolRaw {
   return {
     ok: true,
@@ -102,6 +130,9 @@ function buildChildLaunchAck(args: {
     childThreadId: args.childThreadId,
     subagentType: args.subagentType,
     launchState: 'started',
+    modelId: args.modelPin.modelId,
+    reasoningEffort: args.modelPin.providerRunSelection.reasoningEffort,
+    selectionSource: args.modelPin.selectionSource,
   };
 }
 
@@ -136,6 +167,17 @@ async function startSubagentBackgroundRun(
   ok: true;
   output: string;
 }> {
+  if (args.approvalSessionId === undefined) {
+    args.launchReservation?.release();
+    return buildChildLaunchPayload(
+      buildChildLaunchRejected({
+        subagentType: args.subagentType,
+        errorCode: 'execution_failed',
+        error: 'approval session is unavailable for the child run',
+      }),
+    );
+  }
+
   const startedChildRun = runtime.startManagedRun(
     {
       ...(args.childRunId !== undefined ? { runId: args.childRunId } : {}),
@@ -143,8 +185,8 @@ async function startSubagentBackgroundRun(
         ...(args.childThreadId !== undefined
           ? { threadId: args.childThreadId }
           : {}),
-        projectId: args.projectId,
-        workspaceRoot: args.workspaceRoot,
+        stateRoot: args.stateRoot,
+        workingDirectory: args.workingDirectory,
       },
       ownerThreadId: args.ownerThreadId,
       parentRunId: args.parentRunId,
@@ -170,8 +212,8 @@ async function startSubagentBackgroundRun(
     subagentType: args.subagentType,
     parentRunId: args.parentRunId,
     ownerThreadId: args.ownerThreadId,
-    projectId: args.projectId,
-    workspaceRoot: args.workspaceRoot,
+    stateRoot: args.stateRoot,
+    workingDirectory: args.workingDirectory,
     startedChildRun: {
       runId: childRunId,
       threadId: startedChildRun.threadId,
@@ -183,12 +225,12 @@ async function startSubagentBackgroundRun(
     ...(args.launchReservation !== undefined
       ? { launchReservation: args.launchReservation }
       : {}),
-    ...(args.approvalSessionId !== undefined
-      ? { approvalSessionId: args.approvalSessionId }
-      : {}),
+    approvalSessionId: args.approvalSessionId,
     ...(args.permissionMode !== undefined
       ? { permissionMode: args.permissionMode }
       : {}),
+    modelPin: args.modelPin,
+    subagentModelRouting: args.subagentModelRouting,
     ...(args.emitAgentEvent !== undefined
       ? { emitAgentEvent: args.emitAgentEvent }
       : {}),
@@ -215,14 +257,16 @@ async function launchSubagentBackgroundRun(
     subagentType,
     parentRunId,
     ownerThreadId,
-    projectId,
-    workspaceRoot,
+    stateRoot,
+    workingDirectory,
     startedChildRun,
     parentRunState,
     runtimeServices,
     launchReservation,
     approvalSessionId,
     permissionMode,
+    modelPin,
+    subagentModelRouting,
     emitAgentEvent,
     runAgentLoop,
     timeoutMs,
@@ -232,12 +276,20 @@ async function launchSubagentBackgroundRun(
     threadId: childThreadId,
     finish,
   } = startedChildRun;
+  const { promptContext } = createAgentLoopPromptPort().buildPromptBundle({
+    threadId: childThreadId,
+  });
+  const modelPrompt = composeAgentLoopUserPrompt({
+    prompt: task,
+    promptContext,
+  });
 
   try {
     await appendChildUserTranscriptEntry({
-      workspaceRoot,
+      workspaceRoot: stateRoot,
       threadId: childThreadId,
       prompt: task,
+      modelPrompt,
     });
   } catch (error: unknown) {
     launchReservation?.release();
@@ -259,19 +311,23 @@ async function launchSubagentBackgroundRun(
     parentRunState,
     runtimeServices,
     launchReservation,
+    modelPin,
+    subagentModelRouting,
     emitAgentEvent,
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   });
 
   void runBackgroundChild({
-    task,
+    task: modelPrompt,
     subagentType,
     parentRunId,
     ownerThreadId,
-    projectId,
-    workspaceRoot,
+    stateRoot,
+    workingDirectory,
     approvalSessionId,
     permissionMode,
+    modelPin,
+    subagentModelRouting,
     emitAgentEvent,
     runAgentLoop,
     runtimeServices,
@@ -283,13 +339,14 @@ async function launchSubagentBackgroundRun(
       childRunId,
       childThreadId,
       subagentType,
+      modelPin,
     }),
   );
 }
 
 async function persistChildAssistantTranscript(args: {
-  workspaceRoot: string;
-  childThreadId: RunWorkspaceContext['threadId'];
+  stateRoot: string;
+  childThreadId: RunContext['threadId'];
   parentRunId: RunId;
   childRunId: RunId;
   subagentType: SubagentType;
@@ -301,7 +358,7 @@ async function persistChildAssistantTranscript(args: {
 
   try {
     await appendChildAssistantTranscriptEntry({
-      workspaceRoot: args.workspaceRoot,
+      workspaceRoot: args.stateRoot,
       threadId: args.childThreadId,
       childRunId: args.childRunId,
       content: args.result.finalProse,
@@ -321,11 +378,13 @@ async function runBackgroundChild(args: {
   task: string;
   subagentType: SubagentType;
   parentRunId: RunId;
-  ownerThreadId: RunWorkspaceContext['threadId'];
-  projectId: RunWorkspaceContext['projectId'];
-  workspaceRoot: string;
-  approvalSessionId: string | undefined;
+  ownerThreadId: RunContext['threadId'];
+  stateRoot: string;
+  workingDirectory: string;
+  approvalSessionId: string;
   permissionMode: PermissionMode | undefined;
+  modelPin: ResolvedChildModelPin;
+  subagentModelRouting: RunSubagentModelRouting;
   emitAgentEvent: ((event: AgentEvent) => void) | undefined;
   runAgentLoop: (input: AgentInput) => Promise<AgentResult>;
   runtimeServices: AgentRuntimeServices;
@@ -336,10 +395,12 @@ async function runBackgroundChild(args: {
     subagentType,
     parentRunId,
     ownerThreadId,
-    projectId,
-    workspaceRoot,
+    stateRoot,
+    workingDirectory,
     approvalSessionId,
     permissionMode,
+    modelPin,
+    subagentModelRouting,
     emitAgentEvent,
     runAgentLoop,
     runtimeServices,
@@ -356,18 +417,22 @@ async function runBackgroundChild(args: {
   try {
     const result = await runAgentLoop({
       runId: childRunId,
-      runContext: createRunWorkspaceContext({
+      runContext: createRunContext({
         threadId: childThreadId,
-        projectId,
-        workspaceRoot,
+        stateRoot,
+        workingDirectory,
       }),
       prompt: task,
       signal: childRunState.abortController.signal,
       runState: childRunState,
-      allowedToolNames: [...SUBAGENT_TOOL_SETS[subagentType]],
+      toolSurface: SUBAGENT_TOOL_SURFACES[subagentType],
+      promptProfile: subagentType,
+      providerModel: modelPin.providerRunSelection.providerModel,
+      reasoningEffort: modelPin.providerRunSelection.reasoningEffort,
+      subagentModelRouting,
       runtimeServices,
       approvalContext: {
-        sessionId: approvalSessionId ?? childThreadId,
+        sessionId: approvalSessionId,
         permissionMode: permissionMode ?? DEFAULT_CHILD_PERMISSION_MODE,
         ...(subagentType === 'worker'
           ? { ownerRunId: parentRunId, ownerThreadId }
@@ -393,7 +458,7 @@ async function runBackgroundChild(args: {
       terminalMessage,
     });
     await persistChildAssistantTranscript({
-      workspaceRoot,
+      stateRoot,
       childThreadId,
       parentRunId,
       childRunId,

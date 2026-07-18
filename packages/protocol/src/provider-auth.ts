@@ -1,14 +1,26 @@
 import { isErrorCode, type ErrorCode } from './errors.js';
 import { isNumber, isRecord, isString } from './runtime-utils.js';
 
+export const DEFAULT_PROVIDER_AUTH_PROVIDER_ID = 'openai_codex_direct' as const;
+
+export const PROVIDER_AUTH_PROVIDER_IDS = [
+  DEFAULT_PROVIDER_AUTH_PROVIDER_ID,
+  'grok_oauth',
+] as const;
+
+export type ProviderAuthProviderId =
+  (typeof PROVIDER_AUTH_PROVIDER_IDS)[number];
+
 export interface ProviderAuthStartRequest {
   launcher: 'web-shell';
+  providerId?: ProviderAuthProviderId;
 }
 
 export interface ProviderAuthStartResponse {
   authSessionId: string;
   authorizeUrl: string;
   expiresAt: number;
+  providerId: ProviderAuthProviderId;
 }
 
 export type ProviderAuthStatusState =
@@ -95,6 +107,15 @@ const PROVIDER_AUTH_STATUS_STATES = [
   'expired',
 ] as const;
 
+export function isProviderAuthProviderId(
+  value: unknown,
+): value is ProviderAuthProviderId {
+  return (
+    typeof value === 'string' &&
+    (PROVIDER_AUTH_PROVIDER_IDS as readonly string[]).includes(value)
+  );
+}
+
 export function isProviderAuthStatusState(
   value: unknown,
 ): value is ProviderAuthStatusState {
@@ -111,7 +132,8 @@ export function isProviderAuthStartResponse(
     isRecord(value) &&
     isString(value.authSessionId) &&
     isString(value.authorizeUrl) &&
-    isNumber(value.expiresAt)
+    isNumber(value.expiresAt) &&
+    isProviderAuthProviderId(value.providerId)
   );
 }
 

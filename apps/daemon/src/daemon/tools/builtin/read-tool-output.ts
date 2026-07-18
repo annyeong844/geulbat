@@ -21,22 +21,26 @@ const readToolOutputArgsSchema = z.strictObject({
     .number()
     .int('limit must be an integer.')
     .min(1, 'limit must be positive.')
-    .optional()
-    .describe(
-      'Optional character count to read. Omit it to read the rest of the snapshot.',
-    ),
+    .describe('Required character count for this bounded output page.'),
 });
 
 export const readToolOutputTool = defineZodTool({
   name: 'read_tool_output',
   description:
-    'Read all or an explicit page of a previously offloaded tool output snapshot by opaque outputRef.',
+    'Read one explicit bounded page of a previously offloaded tool output snapshot by opaque outputRef. Pass the required limit and an optional offset; continue from nextOffset only when more content is needed.',
   argsSchema: readToolOutputArgsSchema,
   sideEffectLevel: 'read',
-  mayMutateWorkspaceFiles: false,
+  mayMutateComputerFiles: false,
   requiresApproval: false,
+  catalogSearchMetadata: {
+    family: 'tool_output',
+    searchHints: ['large output', 'read output ref', 'recover output'],
+    tags: ['tool-output', 'offload', 'recovery'],
+    whenToUse: 'Page through a previously offloaded tool output snapshot.',
+    notFor: 'Reading arbitrary workspace files or raw .geulbat paths.',
+  },
   async executeParsed(args, ctx) {
-    if (!ctx.threadId) {
+    if (!ctx.threadId || !ctx.stateRoot) {
       return toolError(
         'invalid_args',
         'read_tool_output requires an agent thread context.',
@@ -44,7 +48,7 @@ export const readToolOutputTool = defineZodTool({
     }
 
     const snapshotResult = await readToolOutputSnapshot({
-      workspaceRoot: ctx.workspaceRoot,
+      stateRoot: ctx.stateRoot,
       threadId: ctx.threadId,
       outputRef: args.outputRef,
     });
@@ -56,10 +60,7 @@ export const readToolOutputTool = defineZodTool({
     const totalChars = snapshot.output.length;
     const offset = args.offset ?? 0;
     const startOffset = Math.min(offset, totalChars);
-    const endOffset =
-      args.limit === undefined
-        ? totalChars
-        : Math.min(startOffset + args.limit, totalChars);
+    const endOffset = Math.min(startOffset + args.limit, totalChars);
     const hasMore = endOffset < totalChars;
 
     return {
@@ -70,7 +71,7 @@ export const readToolOutputTool = defineZodTool({
         toolName: snapshot.toolName,
         contentType: snapshot.contentType,
         offset: startOffset,
-        limit: args.limit ?? null,
+        limit: args.limit,
         endOffset,
         totalChars,
         hasMore,

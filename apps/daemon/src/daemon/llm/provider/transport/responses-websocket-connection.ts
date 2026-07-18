@@ -7,8 +7,6 @@ import {
   extractWebSocketError,
 } from './responses-websocket-errors.js';
 
-const OPENAI_WS_BETA_HEADER =
-  process.env.GEULBAT_WS_BETA_HEADER ?? 'responses_websockets=2026-02-06';
 const WS_CONNECT_TIMEOUT_MS = 30_000;
 const logger = createLogger('responses-ws');
 
@@ -34,7 +32,6 @@ export async function connectWebSocket(
   signal?: AbortSignal,
 ): Promise<WebSocket> {
   const wsHeaders = headersToRecord(headers);
-  wsHeaders['OpenAI-Beta'] = OPENAI_WS_BETA_HEADER;
 
   return await new Promise((resolve, reject) => {
     let settled = false;
@@ -54,28 +51,36 @@ export async function connectWebSocket(
     }
 
     const onOpen = () => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
       cleanup();
       resolve(socket);
     };
 
     const onError = (event: unknown) => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
       cleanup();
       reject(extractWebSocketError(event));
     };
 
     const onClose = (event: unknown) => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
       cleanup();
       reject(extractWebSocketCloseError(event));
     };
 
     const onAbort = () => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
       cleanup();
       closeWebSocketSilently(socket, 1000, 'aborted');
@@ -83,7 +88,9 @@ export async function connectWebSocket(
     };
 
     const cleanup = () => {
-      if (timeout !== undefined) clearTimeout(timeout);
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
       socket.off('open', onOpen);
       socket.off('error', onError);
       socket.off('close', onClose);
@@ -91,7 +98,9 @@ export async function connectWebSocket(
     };
 
     timeout = setTimeout(() => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
       cleanup();
       closeWebSocketSilently(socket, 1000, 'connect_timeout');

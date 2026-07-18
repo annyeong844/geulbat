@@ -1,6 +1,10 @@
 import type { CSSProperties } from 'react';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
+/**
+ * 우측 어시스턴트 visual reskin (§3.3.2) — Modern Heritage tokens.
+ * 메커니즘은 carry, visual만 변경 (§3.3.1).
+ */
 export const assistantStyles = {
   section: {
     display: 'flex',
@@ -13,145 +17,109 @@ export const assistantStyles = {
     overflowY: 'auto',
     marginBottom: 8,
   },
+  transcriptContent: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
   unreadNoticeRow: {
     display: 'flex',
     justifyContent: 'center',
     padding: '6px 0',
   },
   unreadNoticeButton: {
-    padding: '6px 10px',
+    padding: '6px 12px',
     fontSize: 12,
+    fontWeight: 600,
     cursor: 'pointer',
-    background: '#174ea6',
-    color: '#fff',
+    background: 'var(--primary)',
+    color: 'var(--on-primary)',
     border: 'none',
     borderRadius: 999,
+    fontFamily: 'var(--font-ui-label)',
   },
-  messageBlock: {
-    padding: '6px 8px',
-    marginBottom: 4,
-    borderRadius: 4,
-    fontSize: 13,
+  // user message — solid primary bubble (§3.3.2 #2)
+  userMessageBlock: {
+    alignSelf: 'flex-end',
+    maxWidth: '82%',
+    background: 'var(--primary)',
+    color: 'var(--on-primary)',
+    padding: '10px 14px',
+    borderRadius: 8,
+    borderTopRightRadius: 4,
+    fontFamily: 'var(--font-ui-label)',
+    fontSize: 13.5,
+    lineHeight: 1.55,
+    boxShadow: 'var(--elev-card)',
+    margin: '4px 0',
+  },
+  // assistant text — 박스 없음, prose-serif. 작품 mode 영향 없음 (§10.24)
+  assistantMessageBlock: {
+    fontFamily: 'var(--font-prose-serif)',
+    fontSize: 15,
+    lineHeight: 1.7,
+    color: 'var(--primary)',
+    maxWidth: '92%',
+    wordBreak: 'keep-all',
+    margin: '4px 0',
   },
   messageRole: {
-    fontSize: 11,
-    color: '#888',
+    fontSize: 10.5,
+    color: 'var(--on-surface-muted)',
     marginBottom: 2,
+    fontFamily: 'var(--font-ui-label)',
+    letterSpacing: '0.03em',
   },
   messageText: {
     margin: 0,
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
     fontFamily: 'inherit',
-  },
-  startingBlock: {
-    padding: '6px 8px',
-    marginBottom: 4,
-    borderRadius: 4,
-    background: '#fff8e1',
-    fontSize: 13,
+    fontSize: 'inherit',
+    lineHeight: 'inherit',
   },
   commentaryBlock: {
-    padding: '6px 8px',
-    marginBottom: 4,
-    borderRadius: 4,
-    background: '#f0f8e8',
-    fontSize: 13,
-  },
-  activityBlock: {
-    padding: '6px 8px',
-    marginBottom: 4,
-    borderRadius: 4,
-    background: '#f5f7fb',
-    border: '1px solid #d8e2f0',
-    fontSize: 13,
-  },
-  activityText: {
-    fontSize: 13,
-    color: '#233245',
-    lineHeight: 1.45,
+    fontFamily: 'var(--font-prose-serif)',
+    fontSize: 14,
+    lineHeight: 1.65,
+    color: 'var(--on-surface-variant)',
+    maxWidth: '92%',
+    wordBreak: 'keep-all',
+    margin: '4px 0',
   },
   approvalNoticeBlock: {
-    padding: '6px 8px',
-    marginBottom: 4,
-    borderRadius: 4,
-    background: '#fff8e1',
-    border: '1px solid #f0c36d',
+    margin: '4px 0',
+    padding: '10px 12px',
+    borderRadius: 8,
+    background: 'var(--warning-bg)',
+    color: 'var(--warning-text)',
     fontSize: 13,
+    fontFamily: 'var(--font-ui-label)',
   },
   approvalNoticeDetail: {
-    marginTop: 2,
-    fontSize: 12,
-    color: '#7a4d00',
+    marginTop: 4,
+    fontSize: 11.5,
+    color: 'var(--warning-text)',
+    opacity: 0.85,
     lineHeight: 1.4,
+    fontFamily: 'var(--font-ui-mono)',
+    wordBreak: 'break-all',
   },
   errorBanner: {
-    padding: '8px 10px',
-    marginBottom: 4,
-    borderRadius: 4,
-    background: '#fce8e6',
-    border: '1px solid #d93025',
-    fontSize: 13,
-    color: '#c5221f',
-  },
-  backgroundNotification: {
-    padding: '6px 8px',
-    marginBottom: 4,
-    borderRadius: 4,
-    background: '#eef6ff',
-    color: '#174ea6',
-    fontSize: 13,
-  },
-  inputRow: {
-    display: 'flex',
-    gap: 4,
-  },
-  textarea: {
-    flex: 1,
-    resize: 'vertical',
-    fontSize: 13,
-    padding: 8,
-    border: '1px solid #ccc',
-    borderRadius: 4,
-    fontFamily: 'inherit',
-  },
-  buttonColumn: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4,
-  },
-  sendButton: {
-    padding: '6px 12px',
-    fontSize: 13,
-    cursor: 'pointer',
-    background: '#1a73e8',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 4,
-  },
-  cancelButton: {
-    padding: '6px 12px',
-    fontSize: 13,
-    cursor: 'pointer',
-    background: '#d93025',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 4,
+    margin: '6px 0',
+    padding: '10px 12px',
+    borderRadius: 8,
+    background: 'rgba(177, 74, 58, 0.1)',
+    fontSize: 12.5,
+    color: 'var(--error)',
+    lineHeight: 1.5,
+    fontFamily: 'var(--font-ui-label)',
   },
 } satisfies Record<string, CSSProperties>;
-
-export function getSendButtonStyle(disabled: boolean): CSSProperties {
-  return {
-    ...assistantStyles.sendButton,
-    opacity: disabled ? 0.5 : 1,
-  };
-}
 
 export function getTranscriptMessageStyle(
   role: ThreadMessage['role'],
 ): CSSProperties {
-  return {
-    ...assistantStyles.messageBlock,
-    background: role === 'user' ? '#e8f0fe' : '#f5f5f5',
-  };
+  return role === 'user'
+    ? assistantStyles.userMessageBlock
+    : assistantStyles.assistantMessageBlock;
 }

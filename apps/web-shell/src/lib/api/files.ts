@@ -1,8 +1,10 @@
 import {
+  isComputerFileScopeResponse,
   isFileBinaryInputRefResponse,
   isFileReadResponse,
   isFileSaveResponse,
   isFileTreeResponse,
+  type ComputerFileScopeResponse,
   type FileBinaryInputRefResponse,
   type FileReadResponse,
   type FileSaveResponse,
@@ -12,12 +14,22 @@ import {
   isConflictStaleWriteError,
   type ConflictStaleWriteError,
 } from '@geulbat/protocol/errors';
-import { DEFAULT_PROJECT_ID } from '@geulbat/protocol/ids';
 import { getErrorMessage } from '@geulbat/shared-utils/error';
 import { createLogger } from '@geulbat/shared-utils/logger';
-import { ApiFetchError, apiFetch, isApiOkResponse } from './client.js';
+import {
+  ApiFetchError,
+  apiFetch,
+  apiFetchBlob,
+  isApiOkResponse,
+} from './client.js';
 
 const logger = createLogger('api/files');
+
+export type ComputerFileApiScope = { root: 'computer' };
+export type FileApiScope = ComputerFileApiScope;
+export const COMPUTER_FILE_API_SCOPE: ComputerFileApiScope = {
+  root: 'computer',
+};
 
 export class FileSaveConflictError extends Error {
   readonly conflict: ConflictStaleWriteError;
@@ -30,28 +42,46 @@ export class FileSaveConflictError extends Error {
 }
 
 export function getFileTree(
-  projectId = DEFAULT_PROJECT_ID,
+  scope: FileApiScope = COMPUTER_FILE_API_SCOPE,
+  options?: { path?: string; depth?: number },
 ): Promise<FileTreeResponse> {
+  const params = fileScopeSearchParams(scope);
+  if (options?.path !== undefined) {
+    params.set('path', options.path);
+  }
+  if (options?.depth !== undefined) {
+    params.set('depth', String(options.depth));
+  }
   return apiFetch(
-    `/api/files/tree?projectId=${encodeURIComponent(projectId)}`,
+    `/api/files/tree?${params.toString()}`,
     undefined,
     isFileTreeResponse,
   );
 }
 
+export function getComputerFileScope(): Promise<ComputerFileScopeResponse> {
+  return apiFetch(
+    '/api/files/computer-scope',
+    undefined,
+    isComputerFileScopeResponse,
+  );
+}
+
 export function readFile(
-  projectId: string,
+  scope: FileApiScope,
   path: string,
 ): Promise<FileReadResponse> {
+  const params = fileScopeSearchParams(scope);
+  params.set('path', path);
   return apiFetch(
-    `/api/files/read?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(path)}`,
+    `/api/files/read?${params.toString()}`,
     undefined,
     isFileReadResponse,
   );
 }
 
 export function saveFile(
-  projectId: string,
+  scope: FileApiScope,
   path: string,
   content: string,
   versionToken: string,
@@ -60,18 +90,64 @@ export function saveFile(
     '/api/files/save',
     {
       method: 'POST',
-      body: JSON.stringify({ projectId, path, content, versionToken }),
+      body: JSON.stringify({
+        ...fileScopeBody(scope),
+        path,
+        content,
+        versionToken,
+      }),
     },
     isFileSaveResponse,
   );
 }
 
+export type ManageFileOperation = 'mkdir' | 'delete' | 'rename' | 'move';
+
+interface ManageFileResponse {
+  ok: true;
+  operation: string;
+  path: string;
+  destination?: string;
+}
+
+function isManageFileResponse(value: unknown): value is ManageFileResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { ok?: unknown }).ok === true &&
+    typeof (value as { operation?: unknown }).operation === 'string' &&
+    typeof (value as { path?: unknown }).path === 'string'
+  );
+}
+
+// user file ops shell input path — agent tool과 같은 daemon mutation chain 사용
+export function manageFile(
+  scope: FileApiScope,
+  operation: ManageFileOperation,
+  path: string,
+  destination?: string,
+): Promise<ManageFileResponse> {
+  return apiFetch(
+    '/api/files/manage',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        ...fileScopeBody(scope),
+        operation,
+        path,
+        ...(destination !== undefined ? { destination } : {}),
+      }),
+    },
+    isManageFileResponse,
+  );
+}
+
 export async function saveBinaryFile(
-  projectId: string,
+  scope: FileApiScope,
   path: string,
   blob: Blob,
 ): Promise<FileSaveResponse> {
-  const input = await uploadBinaryInputRef(projectId, blob);
+  const input = await uploadBinaryInputRef(scope, blob);
   const mimeType = blob.type.trim();
   try {
     return await apiFetch(
@@ -80,7 +156,7 @@ export async function saveBinaryFile(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          projectId,
+          ...fileScopeBody(scope),
           path,
           contentRef: input.contentRef,
           mimeType,
@@ -89,13 +165,26 @@ export async function saveBinaryFile(
       isFileSaveResponse,
     );
   } catch (error: unknown) {
-    await cleanupBinaryInputRefAfterFailure(projectId, input.contentRef, error);
+    await cleanupBinaryInputRefAfterFailure(scope, input.contentRef, error);
     throw error;
   }
 }
 
+// 어시스턴트 첨부 업로드 — 바이트를 binary-input ref로 스트리밍 업로드하고
+// run 시작 요청에는 contentRef만 싣는다. 데몬이 run 시작 시 소비한다.
+export async function uploadRunAttachmentBlob(blob: Blob): Promise<string> {
+  const input = await uploadBinaryInputRef({ root: 'computer' }, blob);
+  return input.contentRef;
+}
+
+// 전송 전에 첨부 칩을 제거했을 때의 뒷정리 — 실패해도 무해(고아 ref는
+// 데몬이 미청구 상태로 남긴다)
+export function deleteRunAttachmentBlob(contentRef: string): Promise<unknown> {
+  return deleteBinaryInputRef({ root: 'computer' }, contentRef);
+}
+
 export async function replaceBinaryFile(
-  projectId: string,
+  scope: FileApiScope,
   path: string,
   blob: Blob,
   versionToken: string,
@@ -103,7 +192,7 @@ export async function replaceBinaryFile(
   if (versionToken.trim().length === 0) {
     throw new Error('versionToken is required');
   }
-  const input = await uploadBinaryInputRef(projectId, blob);
+  const input = await uploadBinaryInputRef(scope, blob);
   const mimeType = blob.type.trim();
   try {
     return await apiFetchWithSaveConflict(
@@ -112,7 +201,7 @@ export async function replaceBinaryFile(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          projectId,
+          ...fileScopeBody(scope),
           path,
           contentRef: input.contentRef,
           versionToken,
@@ -122,18 +211,19 @@ export async function replaceBinaryFile(
       isFileSaveResponse,
     );
   } catch (error: unknown) {
-    await cleanupBinaryInputRefAfterFailure(projectId, input.contentRef, error);
+    await cleanupBinaryInputRefAfterFailure(scope, input.contentRef, error);
     throw error;
   }
 }
 
 function uploadBinaryInputRef(
-  projectId: string,
+  scope: FileApiScope,
   blob: Blob,
 ): Promise<FileBinaryInputRefResponse> {
   const contentType = blob.type.trim() || 'application/octet-stream';
+  const params = fileScopeSearchParams(scope);
   return apiFetch(
-    `/api/files/binary-inputs?projectId=${encodeURIComponent(projectId)}`,
+    `/api/files/binary-inputs?${params.toString()}`,
     {
       method: 'POST',
       headers: { 'Content-Type': contentType },
@@ -144,11 +234,13 @@ function uploadBinaryInputRef(
 }
 
 function deleteBinaryInputRef(
-  projectId: string,
+  scope: FileApiScope,
   contentRef: string,
 ): Promise<unknown> {
+  const params = fileScopeSearchParams(scope);
+  params.set('contentRef', contentRef);
   return apiFetch(
-    `/api/files/binary-inputs?projectId=${encodeURIComponent(projectId)}&contentRef=${encodeURIComponent(contentRef)}`,
+    `/api/files/binary-inputs?${params.toString()}`,
     {
       method: 'DELETE',
     },
@@ -157,12 +249,12 @@ function deleteBinaryInputRef(
 }
 
 async function cleanupBinaryInputRefAfterFailure(
-  projectId: string,
+  scope: FileApiScope,
   contentRef: string,
   originalError: unknown,
 ): Promise<void> {
   try {
-    await deleteBinaryInputRef(projectId, contentRef);
+    await deleteBinaryInputRef(scope, contentRef);
   } catch (cleanupError: unknown) {
     logger.warn('failed to delete uploaded binary input ref after failure:', {
       contentRef,
@@ -189,4 +281,30 @@ async function apiFetchWithSaveConflict(
     }
     throw error;
   }
+}
+
+// 이미지 등 바이너리 미리보기 — JSON이 아니라 원본 바이트를 받는다
+export async function fetchRawFileBlob(
+  scope: FileApiScope,
+  path: string,
+): Promise<Blob> {
+  const params = fileScopeSearchParams(scope);
+  params.set('path', path);
+  return apiFetchBlob(`/api/files/raw?${params.toString()}`);
+}
+
+// 미디어 태그(src)용 raw URL — HttpOnly 인증 쿠키가 같이 전송되고,
+// 구간 탐색(Range)은 브라우저가 알아서 요청한다
+export function rawFileUrl(scope: FileApiScope, path: string): string {
+  const params = fileScopeSearchParams(scope);
+  params.set('path', path);
+  return `/api/files/raw?${params.toString()}`;
+}
+
+function fileScopeSearchParams(scope: FileApiScope): URLSearchParams {
+  return new URLSearchParams({ root: scope.root });
+}
+
+function fileScopeBody(scope: FileApiScope): ComputerFileApiScope {
+  return scope;
 }

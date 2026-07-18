@@ -14,9 +14,11 @@ import {
 } from '../utils/atomic-file.js';
 import { runSourceMutationSerial } from './file-mutation-serial.js';
 import {
+  FileAccessError,
   MissingWriteTargetError,
   StaleWriteError,
 } from './file-domain-error.js';
+import { officeTextKindOf } from './office-text-extract.js';
 
 export type SaveFileResult = FileSaveResponse;
 
@@ -40,6 +42,15 @@ export async function saveFile(
   expectedToken: string,
   options?: SaveFileOptions,
 ): Promise<SaveFileResult> {
+  // 오피스 문서는 추출 텍스트로만 열린다 — 텍스트 저장이 원본 바이너리를
+  // 덮어쓰면 문서가 파괴되므로 명시적으로 거부한다.
+  if (officeTextKindOf(relativePath) !== null) {
+    throw new FileAccessError(
+      'access_denied',
+      `office document is read-only (extracted view): ${relativePath}`,
+      relativePath,
+    );
+  }
   const resolvedPath = await resolveSourceMutationTarget(
     workspaceRoot,
     relativePath,
@@ -69,7 +80,9 @@ export async function saveResolvedFile(
       const currentContent = normalizeTextContent(buf.toString('utf8'));
       currentToken = createVersionToken(currentContent);
     } catch (err: unknown) {
-      if (!hasErrorCode(err, 'ENOENT')) throw err;
+      if (!hasErrorCode(err, 'ENOENT')) {
+        throw err;
+      }
       if (normalizedExpectedToken.length > 0) {
         throw new MissingWriteTargetError(normalized, { cause: err });
       }

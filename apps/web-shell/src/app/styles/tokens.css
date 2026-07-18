@@ -1,0 +1,90 @@
+/* ─────────────────────────────────────────────────────────────
+   Modern Heritage / Curated Desk — P7 shell design tokens
+   Source of truth: docs/current/spec/phase7-shell-redesign/DESIGN.md
+   ───────────────────────────────────────────────────────────── */
+:root {
+  --cream: #fbf9f4;
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #f5f1e8;
+  --surface-container: #ebe5d6;
+  --surface-container-high: #ddd5c4;
+
+  --primary: #322214;
+  --on-primary: #fbf9f4;
+  --on-surface: #322214;
+  --on-surface-variant: #4a3a2a;
+  --on-surface-muted: #8a7a64;
+
+  --secondary: #53634d;
+  --secondary-soft: #d7e8cc;
+  --on-secondary-fixed-variant: #2d3829;
+
+  --tertiary: #a87b3a;
+  --warning-bg: #f5e6c4;
+  --warning-text: #5a4a1f;
+  --error: #b14a3a;
+
+  --font-prose-serif:
+    'Newsreader', 'Noto Serif KR', 'Source Han Serif', 'Apple SD Gothic Neo',
+    serif;
+  --font-prose-sans: 'Pretendard', 'Inter', 'Apple SD Gothic Neo', sans-serif;
+  --font-ui-label: 'Inter', 'Pretendard', sans-serif;
+  --font-ui-mono: 'JetBrains Mono', 'D2Coding', monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+
+  --elev-card:
+    0 1px 2px rgba(50, 34, 20, 0.04), 0 4px 12px rgba(50, 34, 20, 0.06);
+  --elev-floating:
+    0 4px 16px rgba(50, 34, 20, 0.08), 0 12px 32px rgba(50, 34, 20, 0.1);
+
+  --transition-base: 200ms ease;
+  --transition-slow: 400ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  --noise: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.20 0 0 0 0 0.13 0 0 0 0 0.08 0 0 0 0.5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html,
+body {
+  background: var(--cream);
+  color: var(--on-surface);
+  font-family: var(--font-ui-label);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* desktop min-width 1280px primary target (§3.7.1) */
+body {
+  min-width: 1280px;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-container-high);
+  border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--on-surface-muted);
+}

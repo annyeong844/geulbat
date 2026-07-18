@@ -7,7 +7,10 @@ import {
   type PendingProviderAuthSession,
   type ProviderAuthBootstrapStore,
 } from './session-store.js';
-import type { ProviderCredential } from '../credentials/store.js';
+import type {
+  ProviderAuthCredentialProviderId,
+  ProviderCredential,
+} from '../credentials/store.js';
 import type { ProviderAuthRuntimeStore } from '../runtime-state.js';
 import {
   exchangeAuthorizationCode,
@@ -30,6 +33,7 @@ export interface ProviderAuthCallbackResult {
 type ProviderAuthExchangeFn = (
   code: string,
   codeVerifier: string,
+  options: { providerId: ProviderAuthCredentialProviderId },
 ) => ReturnType<typeof exchangeAuthorizationCode>;
 
 type ProviderAuthTokenResponse = Awaited<
@@ -81,6 +85,7 @@ export async function completeProviderAuthCallback(
     code: codeResult.code,
     codeVerifier: consumedResult.session.codeVerifier,
     authSessionId: sessionResult.session.authSessionId,
+    providerId: consumedResult.session.providerId,
     bootstrapStore,
     runtimeStore,
     exchangeCode,
@@ -232,6 +237,7 @@ async function exchangeAndPersistProviderCredential(args: {
   code: string;
   codeVerifier: string;
   authSessionId: string;
+  providerId: ProviderAuthCredentialProviderId;
   bootstrapStore: ProviderAuthBootstrapStore;
   runtimeStore: ProviderAuthRuntimeStore;
   exchangeCode: ProviderAuthExchangeFn;
@@ -240,12 +246,15 @@ async function exchangeAndPersistProviderCredential(args: {
     code,
     codeVerifier,
     authSessionId,
+    providerId,
     bootstrapStore,
     runtimeStore,
     exchangeCode,
   } = args;
   try {
-    const tokenResponse = await exchangeCode(code, codeVerifier);
+    const tokenResponse = await exchangeCode(code, codeVerifier, {
+      providerId,
+    });
     const credentialResult =
       buildProviderCredentialFromTokenResponse(tokenResponse);
     if (!credentialResult.ok) {
@@ -262,7 +271,10 @@ async function exchangeAndPersistProviderCredential(args: {
     }
 
     try {
-      await runtimeStore.persistProviderCredential(credentialResult.credential);
+      await runtimeStore.persistProviderCredential(
+        credentialResult.credential,
+        providerId,
+      );
     } catch (err: unknown) {
       const message =
         err instanceof Error

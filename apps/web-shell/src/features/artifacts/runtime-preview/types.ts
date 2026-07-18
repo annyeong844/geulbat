@@ -1,7 +1,7 @@
 import type { ArtifactRuntimePersistenceRenderer } from '@geulbat/protocol/runtime-persistence';
 import type { ReactNode } from 'react';
 
-import type { RuntimeArtifactPreviewRenderer } from '../artifact-renderer-capabilities.js';
+import type { DispatchedRuntimeArtifactPreviewRenderer } from '../artifact-renderer-capabilities.js';
 import type {
   ArtifactPreviewSurface,
   GeneratedBinaryExportSnapshot,
@@ -49,7 +49,7 @@ export interface ArtifactRendererDefinition {
 }
 
 export type RuntimeArtifactPreviewResolver = (
-  renderer: RuntimeArtifactPreviewRenderer,
+  renderer: DispatchedRuntimeArtifactPreviewRenderer,
   payload: string,
   context: ArtifactRuntimePreviewContext,
 ) => ArtifactPreviewSurface;

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import type {
   RunRequest,
@@ -10,7 +10,6 @@ import type {
 } from '@geulbat/protocol/run-contract';
 import type { ThreadId } from '@geulbat/protocol/ids';
 
-import { bootstrapDaemonContext } from '../../../bootstrap-daemon-context.js';
 import { createDaemonContext } from '../../../daemon/context.js';
 import { startManagedRun } from '../../../daemon/agent/runtime/managed-run.js';
 import {
@@ -24,17 +23,12 @@ import {
 import {
   createTestSocket,
   readLastSentMessage,
-} from './run-channel-test-support.js';
+} from '../../../test-support/run-channel-test-support.js';
 import { executeRunRequest } from './run-channel-start.js';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 
 void test('executeRunRequest rejects blank prompts', async () => {
   const daemonContext = createDaemonContext();
-  await bootstrapDaemonContext({
-    projectStore: daemonContext.projectStore,
-    repoRoot: process.cwd(),
-  });
   const socket = createTestSocket();
 
   try {
@@ -43,9 +37,8 @@ void test('executeRunRequest rejects blank prompts', async () => {
       requestId: 'run-start-blank-prompt',
       request: {
         prompt: '   ',
-        projectId: testProjectId(),
       },
-      allowedToolNames: undefined,
+      allowedPublicToolNames: undefined,
       runtimeContext: daemonContext,
     });
 
@@ -61,32 +54,28 @@ void test('executeRunRequest rejects blank prompts', async () => {
   }
 });
 
-void test('executeRunRequest rejects unknown projects before starting a run', async () => {
+void test('executeRunRequest rejects escaped working directories before starting a run', async () => {
   const daemonContext = createDaemonContext();
-  await bootstrapDaemonContext({
-    projectStore: daemonContext.projectStore,
-    repoRoot: process.cwd(),
-  });
   const socket = createTestSocket();
 
   try {
     await executeRunRequest({
       socket,
-      requestId: 'run-start-unknown-project',
+      requestId: 'run-start-escaped-working-directory',
       request: {
         prompt: 'hello',
-        projectId: 'missing-project' as ReturnType<typeof testProjectId>,
+        workingDirectory: '../escape',
       },
-      allowedToolNames: undefined,
+      allowedPublicToolNames: undefined,
       runtimeContext: daemonContext,
     });
 
     assert.deepEqual(readLastSentMessage(socket), {
       type: 'run.error',
-      requestId: 'run-start-unknown-project',
-      status: 404,
-      code: 'not_found',
-      message: 'unknown projectId: missing-project',
+      requestId: 'run-start-escaped-working-directory',
+      status: 400,
+      code: 'bad_request',
+      message: 'invalid workingDirectory',
     });
   } finally {
     cleanupSocketState(socket, daemonContext);
@@ -95,10 +84,6 @@ void test('executeRunRequest rejects unknown projects before starting a run', as
 
 void test('executeRunRequest rejects malformed thread ids', async () => {
   const daemonContext = createDaemonContext();
-  await bootstrapDaemonContext({
-    projectStore: daemonContext.projectStore,
-    repoRoot: process.cwd(),
-  });
   const socket = createTestSocket();
 
   try {
@@ -107,10 +92,9 @@ void test('executeRunRequest rejects malformed thread ids', async () => {
       requestId: 'run-start-invalid-thread',
       request: {
         prompt: 'hello',
-        projectId: testProjectId(),
         threadId: '../bad-thread' as unknown as ThreadId,
       },
-      allowedToolNames: undefined,
+      allowedPublicToolNames: undefined,
       runtimeContext: daemonContext,
     });
 
@@ -128,10 +112,6 @@ void test('executeRunRequest rejects malformed thread ids', async () => {
 
 void test('executeRunRequest does not start a run for a closed socket', async () => {
   const daemonContext = createDaemonContext();
-  await bootstrapDaemonContext({
-    projectStore: daemonContext.projectStore,
-    repoRoot: process.cwd(),
-  });
   const socket = createTestSocket();
   const socketState = getSocketState(socket);
   socketState.closed = true;
@@ -142,9 +122,8 @@ void test('executeRunRequest does not start a run for a closed socket', async ()
       requestId: 'run-start-closed-socket',
       request: {
         prompt: 'hello',
-        projectId: testProjectId(),
       },
-      allowedToolNames: undefined,
+      allowedPublicToolNames: undefined,
       runtimeContext: daemonContext,
     });
 
@@ -157,10 +136,6 @@ void test('executeRunRequest does not start a run for a closed socket', async ()
 
 void test('executeRunRequest reports conflict_active_run when the thread already has a run', async () => {
   const daemonContext = createDaemonContext();
-  await bootstrapDaemonContext({
-    projectStore: daemonContext.projectStore,
-    repoRoot: process.cwd(),
-  });
   const socket = createTestSocket();
   const threadId = testThreadId(31);
   const existingRun = startManagedRun(
@@ -168,8 +143,8 @@ void test('executeRunRequest reports conflict_active_run when the thread already
       runId: 'existing-run-start-conflict',
       runContext: {
         threadId,
-        projectId: testProjectId(),
-        workspaceRoot: resolve(process.cwd(), 'workspace'),
+        stateRoot: daemonContext.homeStateRoot,
+        workingDirectory: 'workspace',
       },
     },
     { activeRuns: daemonContext.activeRuns },
@@ -182,10 +157,9 @@ void test('executeRunRequest reports conflict_active_run when the thread already
       requestId: 'run-start-conflict',
       request: {
         prompt: 'hello',
-        projectId: testProjectId(),
         threadId,
       } satisfies RunRequest,
-      allowedToolNames: undefined,
+      allowedPublicToolNames: undefined,
       runtimeContext: daemonContext,
     });
 
@@ -205,16 +179,12 @@ void test('executeRunRequest reports conflict_active_run when the thread already
 });
 
 void test('executeRunRequest deletes consumed prompt refs after active-run conflicts', async () => {
-  const daemonContext = createDaemonContext();
-  await bootstrapDaemonContext({
-    projectStore: daemonContext.projectStore,
-    repoRoot: process.cwd(),
-  });
-  const workspaceRoot =
-    daemonContext.projectRegistry.resolveProjectRoot(testProjectId());
-  assert.ok(workspaceRoot);
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-run-start-prompt-ref-'),
+  );
+  const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
   const written = await writeRunPromptInputRefFromStream({
-    workspaceRoot,
+    workspaceRoot: stateRoot,
     input: Readable.from(['stored prompt']),
   });
   const socket = createTestSocket();
@@ -224,8 +194,8 @@ void test('executeRunRequest deletes consumed prompt refs after active-run confl
       runId: 'existing-run-start-ref-conflict',
       runContext: {
         threadId,
-        projectId: testProjectId(),
-        workspaceRoot,
+        stateRoot,
+        workingDirectory: '',
       },
     },
     { activeRuns: daemonContext.activeRuns },
@@ -239,10 +209,9 @@ void test('executeRunRequest deletes consumed prompt refs after active-run confl
       request: {
         promptRef: written.promptRef,
         displayPrompt: 'visible prompt',
-        projectId: testProjectId(),
         threadId,
       } satisfies RunStartRequest,
-      allowedToolNames: undefined,
+      allowedPublicToolNames: undefined,
       runtimeContext: daemonContext,
     });
 
@@ -255,7 +224,7 @@ void test('executeRunRequest deletes consumed prompt refs after active-run confl
     });
     assert.deepEqual(
       await readRunPromptInputRef({
-        workspaceRoot,
+        workspaceRoot: stateRoot,
         promptRef: written.promptRef,
       }),
       {
@@ -269,15 +238,12 @@ void test('executeRunRequest deletes consumed prompt refs after active-run confl
       existingRun.finish();
     }
     cleanupSocketState(socket, daemonContext);
+    await rm(stateRoot, { recursive: true, force: true });
   }
 });
 
 void test('executeRunRequest logs request context when foreground execution fails', async () => {
   const daemonContext = createDaemonContext();
-  await bootstrapDaemonContext({
-    projectStore: daemonContext.projectStore,
-    repoRoot: process.cwd(),
-  });
   const root = await mkdtemp(join(tmpdir(), 'geulbat-run-start-log-'));
   const fileWorkspaceRoot = join(root, 'workspace-file');
   await writeFile(fileWorkspaceRoot, 'not a directory', 'utf8');
@@ -292,13 +258,11 @@ void test('executeRunRequest logs request context when foreground execution fail
 
   const runtimeContext = {
     ...daemonContext,
-    projectRegistry: {
-      isKnownProjectId(projectId: string): boolean {
-        return projectId === testProjectId();
-      },
-      resolveProjectRoot(projectId: string): string | null {
-        return projectId === testProjectId() ? fileWorkspaceRoot : null;
-      },
+    homeStateRoot: fileWorkspaceRoot,
+    computerFileScope: {
+      root,
+      browseStartPath: '',
+      browseShortcuts: [],
     },
   };
 
@@ -308,10 +272,9 @@ void test('executeRunRequest logs request context when foreground execution fail
       requestId,
       request: {
         prompt: 'hello',
-        projectId: testProjectId(),
         threadId,
       } satisfies RunRequest,
-      allowedToolNames: undefined,
+      allowedPublicToolNames: undefined,
       runtimeContext,
     });
 
@@ -320,7 +283,7 @@ void test('executeRunRequest logs request context when foreground execution fail
     );
     assert.ok(executeRunLog);
     const logLine = String(executeRunLog[0]);
-    assert.match(logLine, /projectId="workspace"/);
+    assert.doesNotMatch(logLine, /projectId=/u);
     assert.match(logLine, /requestId="run-start-execute-failure"/);
     assert.match(logLine, new RegExp(`threadId="${threadId}"`, 'u'));
 

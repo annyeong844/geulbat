@@ -1,8 +1,8 @@
 import {
-  isRuntimeArtifactPreviewRenderer,
+  isDispatchedRuntimeArtifactPreviewRenderer,
   supportsRuntimeGeneratedExportSnapshots,
   usesHookManagedArtifactPreview,
-  type RuntimeArtifactPreviewRenderer,
+  type DispatchedRuntimeArtifactPreviewRenderer,
 } from '../artifact-renderer-capabilities.js';
 import {
   isStaticArtifactPreviewRenderer,
@@ -23,7 +23,7 @@ export type ArtifactPanePreviewSurfaceModel =
     }
   | {
       kind: 'runtime';
-      renderer: RuntimeArtifactPreviewRenderer;
+      renderer: DispatchedRuntimeArtifactPreviewRenderer;
       payload: string;
       context: ArtifactRuntimePreviewContext;
     };
@@ -69,11 +69,18 @@ export function resolveArtifactPanePreviewSurfaceModel(args: {
     return surfacePreviewModel(hookManagedPreviewSurface);
   }
   if (isStaticArtifactPreviewRenderer(parsed.renderer)) {
+    const sourceThreadId = viewModel.sourceRef?.threadId;
     return surfacePreviewModel(
-      resolveStaticArtifactPreview(parsed.renderer, parsed.payload),
+      resolveStaticArtifactPreview(parsed.renderer, parsed.payload, {
+        // video 등 미디어 참조 렌더러의 스레드 스코프(§4.6) — 커밋 시
+        // sourceRef가 항상 threadId를 갖는다
+        ...(typeof sourceThreadId === 'string' && sourceThreadId !== ''
+          ? { threadId: sourceThreadId }
+          : {}),
+      }),
     );
   }
-  if (!isRuntimeArtifactPreviewRenderer(parsed.renderer)) {
+  if (!isDispatchedRuntimeArtifactPreviewRenderer(parsed.renderer)) {
     return surfacePreviewModel(null);
   }
 

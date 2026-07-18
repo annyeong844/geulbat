@@ -10,7 +10,7 @@ import {
 import {
   createTestSocket,
   readLastSentMessage,
-} from './run-channel-test-support.js';
+} from '../../../test-support/run-channel-test-support.js';
 import { handleRunAuth } from './run-channel-auth.js';
 
 const TEST_DEV_TOKEN = 'test-token-123456';

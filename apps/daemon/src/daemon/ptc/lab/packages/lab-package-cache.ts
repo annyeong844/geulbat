@@ -3,7 +3,6 @@ import { join, sep } from 'node:path';
 import { ptcFailure } from '../../shared/lab-spine.js';
 import { isPtcSha256Hex } from '../../shared/sha256.js';
 import { hashPtcStableJson } from '../../shared/stable-identity.js';
-import { buildPtcPackageCacheRoot } from './lab-package-cache-root.js';
 import { pickPtcPackageCacheIdentityInput } from './lab-package-cache-contract.js';
 import type {
   PtcLabPackageCacheFailureReason,
@@ -47,11 +46,28 @@ export async function cleanupPtcPackageCacheRoot(args: {
     );
   }
 
+  return await cleanupPtcPackageCacheRootByHash({
+    runtimeRoot: args.runtimeRoot,
+    cacheIdentityHash: args.expectedCacheIdentityHash,
+  });
+}
+
+export async function cleanupPtcPackageCacheRootByHash(args: {
+  runtimeRoot: string;
+  cacheIdentityHash: string;
+}): Promise<PtcLabPackageCacheResult<void>> {
+  if (!isPtcSha256Hex(args.cacheIdentityHash)) {
+    return failure(
+      'ptc_lab_package_cache_policy_invalid',
+      'PTC lab package cache cleanup identity is invalid',
+    );
+  }
+
   const namespaceRoot = join(args.runtimeRoot, 'ptc-package-caches');
-  const root = buildPtcPackageCacheRoot(args);
+  const rootPath = join(namespaceRoot, args.cacheIdentityHash);
   try {
     const namespaceRealpath = await realpath(namespaceRoot);
-    const parentRealpath = await realpath(join(root.hostPath, '..'));
+    const parentRealpath = await realpath(join(rootPath, '..'));
     if (
       parentRealpath !== namespaceRealpath &&
       !parentRealpath.startsWith(`${namespaceRealpath}${sep}`)
@@ -61,7 +77,7 @@ export async function cleanupPtcPackageCacheRoot(args: {
         'PTC lab package cache cleanup path is invalid',
       );
     }
-    await rm(root.hostPath, { recursive: true, force: true });
+    await rm(rootPath, { recursive: true, force: true });
     return { ok: true, value: undefined };
   } catch {
     return failure(
@@ -85,6 +101,8 @@ function isNormalizedPtcPackageCacheIdentity(
 function isSafeCacheIdentity(identity: PtcPackageCacheIdentity): boolean {
   return (
     isSafePackageCacheIdentityToken(identity.trustContextId) &&
+    (identity.ephemeralBurstId === undefined ||
+      isSafePackageCacheIdentityToken(identity.ephemeralBurstId)) &&
     isSafePackageCacheIdentityToken(identity.labPolicyId) &&
     isSafePackageCacheIdentityToken(identity.packageCacheId) &&
     isSafePackageCacheIdentityToken(identity.packageCacheMountPolicyId) &&

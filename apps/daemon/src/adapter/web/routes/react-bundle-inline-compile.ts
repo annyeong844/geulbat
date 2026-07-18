@@ -16,19 +16,16 @@ import {
   writeReactBundleInlineCompileInputRefFromStream,
 } from '../../../daemon/react-bundle-inline/input-ref-store.js';
 import { tryParseJson } from '../../../daemon/runtime-json.js';
-import { readProjectWorkspaceScopeFromQuery } from '#web/request/project-scope.js';
 import {
   sendApiError,
   sendUnexpectedApiError,
 } from '#web/response/send-api-error.js';
 import { registerInputRefDeleteRoute } from './input-ref-routes.js';
-import type { ProjectScopedRoutesContext } from './routes-context.js';
 
 export function createReactBundleInlineCompileRoutes(args: {
-  projectRegistry: ProjectScopedRoutesContext['projectRegistry'];
+  homeStateRoot: string;
 }): Router {
   const router = Router();
-  const { projectRegistry } = args;
 
   router.post('/api/react-bundle-inline-compile/inputs', async (req, res) => {
     if (req.is('application/json')) {
@@ -40,18 +37,9 @@ export function createReactBundleInlineCompileRoutes(args: {
       return;
     }
 
-    const projectScope = readProjectWorkspaceScopeFromQuery(
-      req.query['projectId'],
-      { projectRegistry },
-    );
-    if (!projectScope.ok) {
-      sendApiError(res, projectScope.code, projectScope.message);
-      return;
-    }
-
     try {
       const result = await writeReactBundleInlineCompileInputRefFromStream({
-        workspaceRoot: projectScope.workspaceRoot,
+        workspaceRoot: args.homeStateRoot,
         input: req,
       });
       const response: ReactBundleInlineCompileInputRefResponse = {
@@ -79,8 +67,7 @@ export function createReactBundleInlineCompileRoutes(args: {
     try {
       const resolvedRequest = await resolveReactBundleInlineCompileRequest({
         request: decoded.value,
-        queryProjectId: req.query['projectId'],
-        projectRegistry,
+        homeStateRoot: args.homeStateRoot,
       });
       if (!resolvedRequest.ok) {
         if (resolvedRequest.kind === 'api_error') {
@@ -119,7 +106,7 @@ export function createReactBundleInlineCompileRoutes(args: {
   registerInputRefDeleteRoute({
     router,
     path: '/api/react-bundle-inline-compile/inputs',
-    projectRegistry,
+    resolveWorkspaceRoot: () => args.homeStateRoot,
     refQueryName: 'inputRef',
     logContext: 'react-bundle-inline-compile/inputs/delete',
     readRefPath: ({ workspaceRoot, ref }) =>
@@ -165,8 +152,7 @@ function buildRequestOrigin(req: {
 
 async function resolveReactBundleInlineCompileRequest(args: {
   request: ReactBundleInlineCompileRouteRequest;
-  queryProjectId: unknown;
-  projectRegistry: ProjectScopedRoutesContext['projectRegistry'];
+  homeStateRoot: string;
 }): Promise<
   | { ok: true; value: ReactBundleInlineCompileRequest }
   | {
@@ -186,20 +172,8 @@ async function resolveReactBundleInlineCompileRequest(args: {
     return { ok: true, value: args.request };
   }
 
-  const projectScope = readProjectWorkspaceScopeFromQuery(args.queryProjectId, {
-    projectRegistry: args.projectRegistry,
-  });
-  if (!projectScope.ok) {
-    return {
-      ok: false,
-      kind: 'api_error',
-      code: projectScope.code,
-      message: projectScope.message,
-    };
-  }
-
   const refInput = await readReactBundleInlineCompileInputRef({
-    workspaceRoot: projectScope.workspaceRoot,
+    workspaceRoot: args.homeStateRoot,
     inputRef: args.request.inputRef,
   });
   if (!refInput.ok) {

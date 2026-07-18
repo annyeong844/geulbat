@@ -48,7 +48,9 @@ export function createChunkRecords(
 function deriveTitle(relativePath: string, lines: string[]): string {
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed) {
+      continue;
+    }
     return trimmed.replace(/^#+\s+/, '');
   }
   const fileName = basename(relativePath);

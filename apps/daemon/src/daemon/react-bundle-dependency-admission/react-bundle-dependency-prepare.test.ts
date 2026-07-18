@@ -9,6 +9,7 @@ import {
   prepareReactBundleExplicitCdnDependencies,
   validateReactBundleDependencyPrepareRequest,
   type ReactBundleDependencyPrepareRequest,
+  type ValidatedReactBundleDependencyPrepareRequest,
 } from './react-bundle-dependency-prepare.js';
 
 const BASE_REQUEST: ReactBundleDependencyPrepareRequest = {
@@ -39,6 +40,26 @@ const BASE_REQUEST: ReactBundleDependencyPrepareRequest = {
     },
   ],
 };
+
+function buildDependencyPrepareCandidateFixture(
+  request: ValidatedReactBundleDependencyPrepareRequest,
+) {
+  return {
+    schemaVersion: 1 as const,
+    adapterKind: 'react_bundle_explicit_cdn_dependency_prepare' as const,
+    entryUrl: request.entryUrl,
+    runtimeDependencies: request.runtimeDependencies,
+    provenance: {
+      inputHash: request.inputHash,
+      generatedAt: '2026-05-18T00:00:00.000Z',
+      provider: 'explicit_cdn' as const,
+      resolvedUrls: request.dependencyRefs.map((dependency) => dependency.url),
+      dependencyRefs: request.dependencyRefs,
+      lifecycleScripts: 'not_applicable' as const,
+      networkPolicy: 'none' as const,
+    },
+  };
+}
 
 const UNSAFE_RUNTIME_URLS = [
   'file:///tmp/app.js',
@@ -441,38 +462,133 @@ void test('prepareReactBundleExplicitCdnDependencies classifies process failures
   }
 });
 
-void test('prepareReactBundleExplicitCdnDependencies rejects malformed imported candidate output', async () => {
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-react-bundle-deps-'),
-  );
-  try {
-    const store = createSandboxAttemptStore({
-      now: () => '2026-05-18T00:00:00.000Z',
+void test('prepareReactBundleExplicitCdnDependencies rejects untrusted candidate contract drift', async (t) => {
+  const cases: ReadonlyArray<{
+    name: string;
+    expected: RegExp;
+    mutate(
+      candidate: ReturnType<typeof buildDependencyPrepareCandidateFixture>,
+    ): unknown;
+  }> = [
+    {
+      name: 'candidate object',
+      expected: /candidate must be an object/u,
+      mutate: () => null,
+    },
+    {
+      name: 'adapter kind',
+      expected: /candidate adapterKind mismatch/u,
+      mutate: (candidate) => ({ ...candidate, adapterKind: 'wrong' }),
+    },
+    {
+      name: 'entry URL',
+      expected: /candidate entryUrl mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        entryUrl: 'https://untrusted.invalid/app.js',
+      }),
+    },
+    {
+      name: 'runtime dependencies',
+      expected: /candidate runtimeDependencies mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        runtimeDependencies: { stylesheets: [] },
+      }),
+    },
+    {
+      name: 'provenance object',
+      expected: /candidate provenance must be an object/u,
+      mutate: (candidate) => ({ ...candidate, provenance: null }),
+    },
+    {
+      name: 'generated timestamp',
+      expected: /candidate generatedAt must be a string/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        provenance: { ...candidate.provenance, generatedAt: 0 },
+      }),
+    },
+    {
+      name: 'provider',
+      expected: /candidate provider mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        provenance: { ...candidate.provenance, provider: 'untrusted' },
+      }),
+    },
+    {
+      name: 'resolved URLs',
+      expected: /candidate resolvedUrls mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        provenance: {
+          ...candidate.provenance,
+          resolvedUrls: ['https://untrusted.invalid/dependency.js'],
+        },
+      }),
+    },
+    {
+      name: 'dependency refs',
+      expected: /candidate dependencyRefs mismatch/u,
+      mutate: (candidate) => ({
+        ...candidate,
+        provenance: {
+          ...candidate.provenance,
+          dependencyRefs: candidate.provenance.dependencyRefs.slice(1),
+        },
+      }),
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const workspaceRoot = await mkdtemp(
+        join(tmpdir(), 'geulbat-react-bundle-deps-'),
+      );
+      try {
+        const store = createSandboxAttemptStore({
+          now: () => '2026-05-18T00:00:00.000Z',
+        });
+
+        await assert.rejects(
+          () =>
+            prepareReactBundleExplicitCdnDependencies({
+              workspaceRoot,
+              store,
+              request: BASE_REQUEST,
+              timeoutMs: 1_000,
+              processRunner: async (args) => {
+                const candidate = buildDependencyPrepareCandidateFixture(
+                  args.request,
+                );
+                await args.writeOutput(
+                  'candidate.json',
+                  JSON.stringify(scenario.mutate(candidate), null, 2) + '\n',
+                );
+                return {
+                  kind: 'exit',
+                  exitCode: 0,
+                  stdout: 'candidate emitted',
+                  stderr: '',
+                };
+              },
+            }),
+          scenario.expected,
+        );
+
+        const attempt = store.getAttempts().records[0];
+        assert.equal(attempt?.status, 'failed');
+        assert.equal(attempt?.outputRef, null);
+        assert.match(
+          attempt?.diagnostics ?? '',
+          /candidate_validation_failed/u,
+        );
+        assert.match(attempt?.diagnostics ?? '', scenario.expected);
+      } finally {
+        await rm(workspaceRoot, { recursive: true, force: true });
+      }
     });
-
-    await assert.rejects(
-      () =>
-        prepareReactBundleExplicitCdnDependencies({
-          workspaceRoot,
-          store,
-          request: BASE_REQUEST,
-          timeoutMs: 1_000,
-          processRunner: async (args) => {
-            await args.writeOutput(
-              'candidate.json',
-              JSON.stringify({ schemaVersion: 1, adapterKind: 'wrong' }),
-            );
-            return { kind: 'exit', exitCode: 0, stdout: 'ok', stderr: '' };
-          },
-        }),
-      /candidate adapterKind mismatch/,
-    );
-
-    const attempt = store.getAttempts().records[0];
-    assert.equal(attempt?.status, 'failed');
-    assert.equal(attempt?.outputRef, null);
-  } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
   }
 });
 
@@ -494,23 +610,7 @@ void test('prepareReactBundleExplicitCdnDependencies preserves extra output file
         await args.writeOutput(
           'candidate.json',
           JSON.stringify(
-            {
-              schemaVersion: 1,
-              adapterKind: 'react_bundle_explicit_cdn_dependency_prepare',
-              entryUrl: args.request.entryUrl,
-              runtimeDependencies: args.request.runtimeDependencies,
-              provenance: {
-                inputHash: args.request.inputHash,
-                generatedAt: '2026-05-18T00:00:00.000Z',
-                provider: 'explicit_cdn',
-                resolvedUrls: args.request.dependencyRefs.map(
-                  (dependency) => dependency.url,
-                ),
-                dependencyRefs: args.request.dependencyRefs,
-                lifecycleScripts: 'not_applicable',
-                networkPolicy: 'none',
-              },
-            },
+            buildDependencyPrepareCandidateFixture(args.request),
             null,
             2,
           ) + '\n',

@@ -2,13 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH } from '@geulbat/protocol/public-web-fixtures';
-import { PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX } from '@geulbat/protocol/react-bundle-inline-compile';
 
-import {
-  brandProjectId,
-  brandThreadId,
-} from '../../../lib/id-brand-helpers.js';
+import { brandThreadId } from '../../../lib/id-brand-helpers.js';
 import type {
   GeneratedBinaryExportSnapshot,
   GeneratedTextExportSnapshot,
@@ -21,16 +16,12 @@ import type {
 } from './types.js';
 import { resolveArtifactRuntimePreview } from './renderer-dispatch.js';
 
-const PUBLIC_CDN_REACT_ENTRY_URL = 'https://cdn.example.com/react-entry.js';
-const PRIVATE_LOCAL_REACT_ENTRY_URL = `https://192.168.0.1${PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH}`;
-const LOCAL_GENERATED_REACT_ENTRY_URL = `http://127.0.0.1:3456${PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX}cache-key/entry.js`;
-
 function createResolvedSourceRef(
   overrides: Partial<ResolvedArtifactSourceRef> = {},
 ): ResolvedArtifactSourceRef {
   return {
     kind: null,
-    projectId: null,
+    workingDirectory: '',
     threadId: null,
     runId: null,
     filePath: null,
@@ -50,7 +41,7 @@ function createPreviewContext(
     state: 'completed',
     isStreamingPreview: false,
     sourceRef: createResolvedSourceRef({
-      projectId: brandProjectId('workspace'),
+      workingDirectory: 'stories/sample',
       threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
     }),
     ...overrides,
@@ -216,60 +207,4 @@ void test('resolveArtifactRuntimePreview preserves generated export callbacks th
     html,
     /sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"/,
   );
-});
-
-void test('resolveArtifactRuntimePreview renders supported react_bundle fixtures through the runtime frame', () => {
-  const preview = resolveArtifactRuntimePreview({
-    renderer: 'react_bundle',
-    payload: JSON.stringify({
-      entryUrl: `https://fixtures.geulbat.local${PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH}`,
-    }),
-    context: createPreviewContext(),
-    renderRuntimeFrame,
-  });
-
-  assert.equal(preview.kind, 'rendered');
-  const html = renderToStaticMarkup(preview.node);
-  assert.match(html, /<iframe/);
-  assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
-  assert.match(html, /renderer=react_bundle&amp;rev=fake/);
-});
-
-void test('resolveArtifactRuntimePreview keeps public CDN react_bundle manifest entry URLs rendered', () => {
-  const preview = resolveArtifactRuntimePreview({
-    renderer: 'react_bundle',
-    payload: JSON.stringify({
-      entryUrl: PUBLIC_CDN_REACT_ENTRY_URL,
-    }),
-    context: createPreviewContext(),
-    renderRuntimeFrame,
-  });
-
-  assert.equal(preview.kind, 'rendered');
-  const html = renderToStaticMarkup(preview.node);
-  assert.match(html, /<iframe/);
-  assert.doesNotMatch(html, /sanitize_rejected/);
-  assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
-  assert.match(html, /renderer=react_bundle&amp;rev=fake/);
-});
-
-void test('resolveArtifactRuntimePreview keeps personal-local react_bundle manifest entry URLs rendered', () => {
-  for (const entryUrl of [
-    PRIVATE_LOCAL_REACT_ENTRY_URL,
-    LOCAL_GENERATED_REACT_ENTRY_URL,
-  ]) {
-    const preview = resolveArtifactRuntimePreview({
-      renderer: 'react_bundle',
-      payload: JSON.stringify({ entryUrl }),
-      context: createPreviewContext(),
-      renderRuntimeFrame,
-    });
-
-    assert.equal(preview.kind, 'rendered');
-    const html = renderToStaticMarkup(preview.node);
-    assert.match(html, /<iframe/);
-    assert.doesNotMatch(html, /sanitize_rejected/);
-    assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
-    assert.match(html, /renderer=react_bundle&amp;rev=fake/);
-  }
 });

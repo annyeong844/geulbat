@@ -16,7 +16,7 @@ export interface SubagentConcurrencyPolicy {
   maxConcurrentChildren?: number | null;
 }
 
-export type SubagentLaunchAdmission =
+type SubagentLaunchAdmission =
   | {
       ok: true;
       reservation: SubagentLaunchReservation;

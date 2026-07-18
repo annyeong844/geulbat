@@ -4,10 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 
-import {
-  brandProjectId,
-  brandThreadId,
-} from '../../../lib/id-brand-helpers.js';
+import { brandThreadId } from '../../../lib/id-brand-helpers.js';
 import type { ArtifactRuntimeFrameRenderArgs } from '../runtime-preview/types.js';
 import { CommittedArtifactPane } from './committed-artifact-pane.js';
 
@@ -48,7 +45,7 @@ function createCommittedArtifact(
     persistenceEpoch: overrides.persistenceEpoch ?? 0,
     sourceRef: overrides.sourceRef ?? {
       kind: 'thread-file',
-      projectId: brandProjectId('workspace'),
+      workingDirectory: 'stories/sample',
       threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
       runId: 'run-1',
       filePath: 'notes/demo.md',

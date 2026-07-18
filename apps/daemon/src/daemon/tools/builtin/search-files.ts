@@ -1,6 +1,8 @@
 import { z } from 'zod';
-import { catchToolError } from '../result.js';
+import { catchToolError, toolError } from '../result.js';
 import { resolveSourceDirectoryTarget } from '../../files/file-platform.js';
+import { resolveComputerFileToolPath } from '../file-tool-root.js';
+import { resolveToolLibraryProjectionBrowsePath } from '../tool-library-projection-browse.js';
 import { createGlobMatcher, filenameSearch } from './search-files-filename.js';
 import { resolveRipgrepPath, runRipgrep } from './search-files-ripgrep.js';
 import { defineZodTool } from '../zod-tool.js';
@@ -22,7 +24,7 @@ const searchFilesArgsSchema = z.strictObject({
     })
     .optional()
     .describe(
-      'The directory to search in, relative to the workspace root. Defaults to workspace root.',
+      'The directory to search in. Relative paths start from the current directory inside ComputerFileScope.',
     ),
   type: z
     .enum(['content', 'filename'])
@@ -52,11 +54,27 @@ const searchFilesArgsSchema = z.strictObject({
 export const searchFilesTool = defineZodTool({
   name: 'search_files',
   description:
-    'Search for files matching a pattern or search for text content within files. Returns matching file paths and optionally matching lines.',
+    'Search filenames or file contents under ComputerFileScope. Relative paths start from the current directory.',
   argsSchema: searchFilesArgsSchema,
   sideEffectLevel: 'read',
-  mayMutateWorkspaceFiles: false,
+  mayMutateComputerFiles: false,
   requiresApproval: false,
+  exposure: {
+    directHot: true,
+    sdkVisible: true,
+    inCellCallable: true,
+    directOnly: false,
+    approvalRequired: false,
+    effectClass: 'readOnly',
+  },
+  catalogSearchMetadata: {
+    family: 'file',
+    searchHints: ['grep text', 'rg pattern', 'find text', 'search files'],
+    tags: ['file', 'search', 'computer'],
+    whenToUse:
+      'Find file paths or text matches under a selected filesystem root.',
+    notFor: 'Reading a known file after you already have its path.',
+  },
   async executeParsed(args, ctx) {
     const query = args.pattern;
     const searchPath = args.path ?? '.';
@@ -65,14 +83,33 @@ export const searchFilesTool = defineZodTool({
     const maxResults = args.maxResults;
 
     try {
+      const projectionPath = await resolveToolLibraryProjectionBrowsePath({
+        ctx,
+        inputPath: searchPath,
+      });
+      if (projectionPath.kind === 'failure') {
+        return toolError('not_found', projectionPath.message);
+      }
+      if (projectionPath.kind === 'projection_path') {
+        return toolError(
+          'invalid_args',
+          'search_files does not search the geulbat-sdk projection; use list_files and read_file.',
+        );
+      }
+      const filePath = resolveComputerFileToolPath(ctx, searchPath);
       const rootTarget = await resolveSourceDirectoryTarget(
-        ctx.workspaceRoot,
-        searchPath,
+        filePath.absoluteRoot,
+        filePath.path,
       );
+      const source = {
+        root: filePath.root,
+        path: rootTarget.relativePath,
+      };
       if (!rootTarget.exists) {
         return {
           ok: true,
           output: JSON.stringify({
+            ...source,
             backend: searchType === 'filename' ? 'filename' : 'ripgrep',
             query,
             total: 0,
@@ -89,25 +126,31 @@ export const searchFilesTool = defineZodTool({
         const includeMatcher = createGlobMatcher(glob);
         const filenameResult = await filenameSearch(
           rootDir,
-          ctx.workspaceRoot,
+          filePath.absoluteRoot,
           queryMatcher,
           includeMatcher,
           maxResults,
         );
-        return { ok: true, output: JSON.stringify(filenameResult) };
+        return {
+          ok: true,
+          output: JSON.stringify({ ...source, ...filenameResult }),
+        };
       }
 
-      const rgPath = await resolveRipgrepPath();
+      const rgPath = await resolveRipgrepPath(rootDir);
       const rgResult = await runRipgrep(
         rgPath,
         query,
         rootDir,
         glob,
-        ctx.workspaceRoot,
+        filePath.absoluteRoot,
         maxResults,
         ctx.signal,
       );
-      return { ok: true, output: JSON.stringify(rgResult) };
+      return {
+        ok: true,
+        output: JSON.stringify({ ...source, ...rgResult }),
+      };
     } catch (err: unknown) {
       return catchToolError(err);
     }

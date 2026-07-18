@@ -1,5 +1,6 @@
 import type http from 'node:http';
 import type { WebSocketServer } from 'ws';
+import { getErrorMessage } from './daemon/utils/error.js';
 
 type DaemonRuntimeSessionCleanupResult =
   | { ok: true }
@@ -11,7 +12,12 @@ interface DaemonRuntimeSessionCloser {
   }): Promise<DaemonRuntimeSessionCleanupResult>;
 }
 
+interface DaemonMcpRuntimeCloser {
+  close(args?: { signal?: AbortSignal }): Promise<void>;
+}
+
 export interface DaemonRuntimeSessionClosers {
+  globalMcp: DaemonMcpRuntimeCloser;
   ptcBrowserPageLoadEvidence: DaemonRuntimeSessionCloser;
   ptcBrowserTextEvidence: DaemonRuntimeSessionCloser;
   ptcBrowserNavigate: DaemonRuntimeSessionCloser;
@@ -24,6 +30,51 @@ export async function closeDaemonServers(args: {
 }): Promise<void> {
   await Promise.all(args.webSocketServers.map(closeWebSocketServer));
   await closeHttpServer(args.server);
+}
+
+export async function closeDaemonForShutdown(args: {
+  admissionLock: { release(): Promise<void> };
+  runtimeSessions: DaemonRuntimeSessionClosers;
+  server: http.Server;
+  signal?: AbortSignal;
+  webSocketServers: readonly WebSocketServer[];
+}): Promise<void> {
+  const failures: Error[] = [];
+  const attempt = async (
+    phase: 'servers' | 'runtimeSessions' | 'admissionLock',
+    close: () => Promise<void>,
+  ): Promise<void> => {
+    try {
+      await close();
+    } catch (error: unknown) {
+      failures.push(
+        new Error(`${phase}: ${getErrorMessage(error)}`, { cause: error }),
+      );
+    }
+  };
+
+  await attempt('servers', () =>
+    closeDaemonServers({
+      server: args.server,
+      webSocketServers: args.webSocketServers,
+    }),
+  );
+  await attempt('runtimeSessions', () =>
+    closeDaemonRuntimeSessions({
+      runtimeSessions: args.runtimeSessions,
+      ...(args.signal === undefined ? {} : { signal: args.signal }),
+    }),
+  );
+  await attempt('admissionLock', () => args.admissionLock.release());
+
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `daemon shutdown cleanup failed: ${failures
+        .map((failure) => failure.message)
+        .join('; ')}`,
+    );
+  }
 }
 
 export function listenDaemonHttpServer(args: {
@@ -51,7 +102,9 @@ export function listenDaemonHttpServer(args: {
       args.server.listen(args.port, args.host);
     } catch (error: unknown) {
       cleanup();
-      reject(error);
+      reject(
+        error instanceof Error ? error : new Error(getErrorMessage(error)),
+      );
     }
   });
 }
@@ -61,6 +114,10 @@ export async function closeDaemonRuntimeSessions(args: {
   signal?: AbortSignal;
 }): Promise<void> {
   const results = await Promise.all([
+    closeDaemonMcpRuntime({
+      runtime: args.runtimeSessions.globalMcp,
+      signal: args.signal,
+    }),
     closeDaemonRuntimeSession({
       label: 'ptcBrowserPageLoadEvidence',
       runtime: args.runtimeSessions.ptcBrowserPageLoadEvidence,
@@ -89,6 +146,20 @@ export async function closeDaemonRuntimeSessions(args: {
     throw new Error(
       `daemon runtime session cleanup failed: ${failures.join('; ')}`,
     );
+  }
+}
+
+async function closeDaemonMcpRuntime(args: {
+  runtime: DaemonMcpRuntimeCloser;
+  signal: AbortSignal | undefined;
+}): Promise<{ failure?: string }> {
+  try {
+    await args.runtime.close(
+      args.signal === undefined ? undefined : { signal: args.signal },
+    );
+    return {};
+  } catch {
+    return { failure: 'globalMcp:threw' };
   }
 }
 

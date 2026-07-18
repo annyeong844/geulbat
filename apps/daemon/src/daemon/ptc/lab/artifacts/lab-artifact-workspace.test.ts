@@ -32,18 +32,18 @@ const PRIVATE_TEST_PATH = '/tmp/geulbat-private/.geulbat/private';
 const PRIVATE_TEST_HOME = '/tmp/geulbat-private';
 
 async function withTempRoots<T>(
-  fn: (roots: { workspaceRoot: string; artifactRoot: string }) => Promise<T>,
+  fn: (roots: { stateRoot: string; artifactRoot: string }) => Promise<T>,
 ): Promise<T> {
-  const workspaceRoot = await mkdtemp(
+  const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-import-workspace-'),
   );
   const artifactRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-import-artifacts-'),
   );
   try {
-    return await fn({ workspaceRoot, artifactRoot });
+    return await fn({ stateRoot, artifactRoot });
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
     await rm(artifactRoot, { recursive: true, force: true });
   }
 }
@@ -89,7 +89,7 @@ function session(
 }
 
 void test('importPtcLabArtifactWorkspaceFile imports one explicit file into sandbox evidence', async () => {
-  await withTempRoots(async ({ workspaceRoot, artifactRoot }) => {
+  await withTempRoots(async ({ stateRoot, artifactRoot }) => {
     await mkdir(join(artifactRoot, 'out'), { recursive: true });
     await writeFile(
       join(artifactRoot, 'out', 'result.txt'),
@@ -103,7 +103,7 @@ void test('importPtcLabArtifactWorkspaceFile imports one explicit file into sand
     const result = await importPtcLabArtifactWorkspaceFile({
       admission: admittedLab(),
       session: session(artifactRoot),
-      workspaceRoot,
+      stateRoot,
       attemptStore: store,
       request: { relativePath: 'out/result.txt', maxBytes: 1024 },
       now: () => '2026-06-02T00:00:01.000Z',
@@ -166,7 +166,7 @@ void test('importPtcLabArtifactWorkspaceFile imports one explicit file into sand
 });
 
 void test('importPtcLabArtifactWorkspaceFile rejects policy and session mismatches before reading files', async () => {
-  await withTempRoots(async ({ workspaceRoot, artifactRoot }) => {
+  await withTempRoots(async ({ stateRoot, artifactRoot }) => {
     const store = createSandboxAttemptStore();
     const mismatch = await importPtcLabArtifactWorkspaceFile({
       admission: admittedLab(),
@@ -174,7 +174,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects policy and session mismatch
         ...session(artifactRoot),
         artifactWorkspaceMountPolicyId: 'other_artifact_mount_policy',
       },
-      workspaceRoot,
+      stateRoot,
       attemptStore: store,
       request: { relativePath: 'out/result.txt' },
     });
@@ -189,7 +189,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects policy and session mismatch
 });
 
 void test('importPtcLabArtifactWorkspaceFile rejects invalid relative paths and maxBytes', async () => {
-  await withTempRoots(async ({ workspaceRoot, artifactRoot }) => {
+  await withTempRoots(async ({ stateRoot, artifactRoot }) => {
     const invalidCases = [
       { relativePath: '', reasonCode: 'ptc_lab_artifact_path_invalid' },
       {
@@ -234,7 +234,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects invalid relative paths and 
       const result = await importPtcLabArtifactWorkspaceFile({
         admission: admittedLab(),
         session: session(artifactRoot),
-        workspaceRoot,
+        stateRoot,
         attemptStore: createSandboxAttemptStore(),
         request: { relativePath: item.relativePath },
       });
@@ -245,7 +245,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects invalid relative paths and 
     const invalidBytes = await importPtcLabArtifactWorkspaceFile({
       admission: admittedLab(),
       session: session(artifactRoot),
-      workspaceRoot,
+      stateRoot,
       attemptStore: createSandboxAttemptStore(),
       request: {
         relativePath: 'out/result.txt',
@@ -261,7 +261,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects invalid relative paths and 
 });
 
 void test('importPtcLabArtifactWorkspaceFile rejects missing files, directories, oversized files, and symlinks', async () => {
-  await withTempRoots(async ({ workspaceRoot, artifactRoot }) => {
+  await withTempRoots(async ({ stateRoot, artifactRoot }) => {
     await mkdir(join(artifactRoot, 'out'), { recursive: true });
     await writeFile(join(artifactRoot, 'out', 'large.txt'), 'abcdef', 'utf8');
     await symlink(
@@ -277,7 +277,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects missing files, directories,
     const missing = await importPtcLabArtifactWorkspaceFile({
       admission: admittedLab(),
       session: session(artifactRoot),
-      workspaceRoot,
+      stateRoot,
       attemptStore: createSandboxAttemptStore(),
       request: { relativePath: 'out/missing.txt' },
     });
@@ -290,7 +290,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects missing files, directories,
     const directory = await importPtcLabArtifactWorkspaceFile({
       admission: admittedLab(),
       session: session(artifactRoot),
-      workspaceRoot,
+      stateRoot,
       attemptStore: createSandboxAttemptStore(),
       request: { relativePath: 'out' },
     });
@@ -303,7 +303,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects missing files, directories,
     const oversized = await importPtcLabArtifactWorkspaceFile({
       admission: admittedLab(),
       session: session(artifactRoot),
-      workspaceRoot,
+      stateRoot,
       attemptStore: createSandboxAttemptStore(),
       request: { relativePath: 'out/large.txt', maxBytes: 3 },
     });
@@ -316,7 +316,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects missing files, directories,
     const link = await importPtcLabArtifactWorkspaceFile({
       admission: admittedLab(),
       session: session(artifactRoot),
-      workspaceRoot,
+      stateRoot,
       attemptStore: createSandboxAttemptStore(),
       request: { relativePath: 'out/link.txt' },
     });
@@ -330,7 +330,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects missing files, directories,
       const parentLink = await importPtcLabArtifactWorkspaceFile({
         admission: admittedLab(),
         session: session(artifactRoot),
-        workspaceRoot,
+        stateRoot,
         attemptStore: createSandboxAttemptStore(),
         request: { relativePath: 'escaped-parent/result.txt' },
       });
@@ -346,7 +346,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects missing files, directories,
 });
 
 void test('importPtcLabArtifactWorkspaceFile rejects a symlink artifact root without reading its target', async () => {
-  await withTempRoots(async ({ workspaceRoot, artifactRoot }) => {
+  await withTempRoots(async ({ stateRoot, artifactRoot }) => {
     const outsideRoot = await mkdtemp(
       join(tmpdir(), 'geulbat-ptc-import-symlink-root-target-'),
     );
@@ -361,7 +361,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects a symlink artifact root wit
         const result = await importPtcLabArtifactWorkspaceFile({
           admission: admittedLab(),
           session: session(rootPath),
-          workspaceRoot,
+          stateRoot,
           attemptStore: store,
           request: { relativePath: 'out/result.txt' },
         });
@@ -381,7 +381,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects a symlink artifact root wit
 });
 
 void test('importPtcLabArtifactWorkspaceFile rejects package-cache-looking host roots', async () => {
-  await withTempRoots(async ({ workspaceRoot, artifactRoot }) => {
+  await withTempRoots(async ({ stateRoot, artifactRoot }) => {
     const packageCacheRoot = join(
       artifactRoot,
       '..',
@@ -394,7 +394,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects package-cache-looking host 
     const result = await importPtcLabArtifactWorkspaceFile({
       admission: admittedLab(),
       session: session(packageCacheRoot),
-      workspaceRoot,
+      stateRoot,
       attemptStore: createSandboxAttemptStore(),
       request: { relativePath: 'out/result.txt' },
     });
@@ -413,7 +413,7 @@ void test('importPtcLabArtifactWorkspaceFile rejects package-cache-looking host 
 });
 
 void test('importPtcLabArtifactWorkspaceFile keeps diagnostics sanitized on import failures', async () => {
-  await withTempRoots(async ({ workspaceRoot, artifactRoot }) => {
+  await withTempRoots(async ({ stateRoot, artifactRoot }) => {
     await mkdir(join(artifactRoot, 'out'), { recursive: true });
     await writeFile(join(artifactRoot, 'out', 'result.txt'), 'ok', 'utf8');
     const result = await importPtcLabArtifactWorkspaceFile({
@@ -422,7 +422,7 @@ void test('importPtcLabArtifactWorkspaceFile keeps diagnostics sanitized on impo
         ...session(artifactRoot),
         labSessionId: PRIVATE_TEST_PATH,
       },
-      workspaceRoot,
+      stateRoot,
       attemptStore: createSandboxAttemptStore(),
       request: { relativePath: 'out/result.txt' },
     });

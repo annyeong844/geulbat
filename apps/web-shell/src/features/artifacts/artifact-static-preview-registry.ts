@@ -1,5 +1,7 @@
 import {
   isArtifactRenderer,
+  parseImageArtifactPayload,
+  parseVideoArtifactPayload,
   type ArtifactRenderer,
 } from '@geulbat/protocol/artifacts';
 
@@ -12,13 +14,21 @@ import {
 import {
   renderCodeArtifactPreview,
   renderDiffArtifactPreview,
+  renderImageArtifactPreview,
   renderTableArtifactPreview,
+  renderVideoArtifactPreview,
 } from './artifact-renderer-previews.js';
 
 type StaticArtifactPreviewRenderer = Extract<
   ArtifactRenderer,
-  'markdown' | 'code' | 'diff' | 'table'
+  'markdown' | 'code' | 'diff' | 'table' | 'image' | 'video'
 >;
+
+// 일부 렌더러(video)는 payload만으로 렌더할 수 없다 — 미디어 라우트 URL을
+// 만들려면 스레드 스코프가 필요하다(§4.6). 호출자가 아는 만큼만 넘긴다.
+export interface StaticArtifactPreviewContext {
+  threadId?: string;
+}
 
 export const STATIC_ARTIFACT_PREVIEW_RESOURCE_POLICY = {
   policyId: 'artifact_static_preview_resource_v1',
@@ -27,10 +37,16 @@ export const STATIC_ARTIFACT_PREVIEW_RESOURCE_POLICY = {
   maxDiffLines: 2_000,
   maxTableRows: 512,
   maxTableCells: 4_096,
+  // 이미지 payload는 base64 매니페스트라 텍스트 한도와 별도로 관리한다.
+  // 데몬 쪽 32MB 바이트 정책의 base64 팽창(4/3) + 여유분.
+  maxImagePayloadCodeUnits: 64_000_000,
 } as const;
 
 interface StaticArtifactPreviewDefinition {
-  render: (payload: string) => ArtifactPreviewSurface;
+  render: (
+    payload: string,
+    context: StaticArtifactPreviewContext,
+  ) => ArtifactPreviewSurface;
 }
 
 const staticArtifactPreviewRegistry = {
@@ -70,28 +86,87 @@ const staticArtifactPreviewRegistry = {
       return renderedArtifactPreview(renderTableArtifactPreview(payload));
     },
   },
+  image: {
+    render(payload, context) {
+      if (
+        payload.length >
+        STATIC_ARTIFACT_PREVIEW_RESOURCE_POLICY.maxImagePayloadCodeUnits
+      ) {
+        return blockedStaticArtifactPreview(
+          'image',
+          `image payload has ${payload.length} code units; static preview policy allows ${STATIC_ARTIFACT_PREVIEW_RESOURCE_POLICY.maxImagePayloadCodeUnits}`,
+        );
+      }
+      const manifest = parseImageArtifactPayload(payload);
+      if (manifest === null) {
+        return unavailableArtifactPreview(
+          'sanitize_rejected',
+          'image artifact payload is not a valid generated-image manifest.',
+        );
+      }
+      // thread_media 이미지(신형)는 미디어 라우트 URL 생성에 스레드 스코프가
+      // 필요하다. inline_base64(구형)는 스코프 없이도 렌더된다.
+      if (
+        manifest.source.type === 'thread_media' &&
+        context.threadId === undefined
+      ) {
+        return unavailableArtifactPreview(
+          'sanitize_rejected',
+          'image artifact preview requires a thread scope.',
+        );
+      }
+      return renderedArtifactPreview(
+        renderImageArtifactPreview(manifest, context.threadId),
+      );
+    },
+  },
+  video: {
+    render(payload, context) {
+      const manifest = parseVideoArtifactPayload(payload);
+      if (manifest === null) {
+        return unavailableArtifactPreview(
+          'sanitize_rejected',
+          'video artifact payload is not a valid generated-video manifest.',
+        );
+      }
+      if (context.threadId === undefined) {
+        // 미디어 라우트는 스레드 스코프다 — 스코프를 모르면 렌더하지 않는다
+        // (잘못된 URL로 조용히 깨지는 것 방지, fail-closed)
+        return unavailableArtifactPreview(
+          'sanitize_rejected',
+          'video artifact preview requires a thread scope.',
+        );
+      }
+      return renderedArtifactPreview(
+        renderVideoArtifactPreview(manifest, context.threadId),
+      );
+    },
+  },
 } satisfies Record<
   StaticArtifactPreviewRenderer,
   StaticArtifactPreviewDefinition
 >;
 
 export function isStaticArtifactPreviewRenderer(
-  renderer: ArtifactRenderer | string | null,
+  renderer: string | null,
 ): renderer is StaticArtifactPreviewRenderer {
   return (
     isArtifactRenderer(renderer) &&
     (renderer === 'markdown' ||
       renderer === 'code' ||
       renderer === 'diff' ||
-      renderer === 'table')
+      renderer === 'table' ||
+      renderer === 'image' ||
+      renderer === 'video')
   );
 }
 
 export function resolveStaticArtifactPreview(
   renderer: StaticArtifactPreviewRenderer,
   payload: string,
+  context: StaticArtifactPreviewContext = {},
 ): ArtifactPreviewSurface {
-  return staticArtifactPreviewRegistry[renderer].render(payload);
+  return staticArtifactPreviewRegistry[renderer].render(payload, context);
 }
 
 function checkStaticPreviewTextResource(

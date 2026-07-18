@@ -15,6 +15,11 @@ export interface BackgroundNotificationQueue {
     result: BackgroundChildResult,
   ): void;
   consumeThreadBackgroundResults(threadId: ThreadId): BackgroundChildResult[];
+  readThreadBackgroundResults(threadId: ThreadId): BackgroundChildResult[];
+  acknowledgeThreadBackgroundResults(
+    threadId: ThreadId,
+    deliveryIds: readonly string[],
+  ): void;
   clearThreadBackgroundResults(threadId: ThreadId): void;
   subscribeThreadBackgroundResults(
     threadId: ThreadId,
@@ -44,8 +49,9 @@ export function createThreadBackgroundNotificationQueue(): BackgroundNotificatio
       return existing;
     }
 
-    let signal!: Signal<[BackgroundChildResult]>;
-    signal = createSignal<[BackgroundChildResult]>({
+    const signal: Signal<[BackgroundChildResult]> = createSignal<
+      [BackgroundChildResult]
+    >({
       onListenerError(error) {
         logger.warn('listener failed:', error);
       },
@@ -88,6 +94,27 @@ export function createThreadBackgroundNotificationQueue(): BackgroundNotificatio
       }
       pendingByThread.delete(key);
       return pending.results.slice();
+    },
+    readThreadBackgroundResults(threadId) {
+      return pendingByThread.get(threadId)?.results.slice() ?? [];
+    },
+    acknowledgeThreadBackgroundResults(threadId, deliveryIds) {
+      if (deliveryIds.length === 0) {
+        return;
+      }
+      const pending = pendingByThread.get(threadId);
+      if (!pending) {
+        return;
+      }
+      const acknowledged = new Set(deliveryIds);
+      const remaining = pending.results.filter(
+        (result) => !acknowledged.has(result.deliveryId),
+      );
+      if (remaining.length === 0) {
+        pendingByThread.delete(threadId);
+        return;
+      }
+      pending.results = remaining;
     },
     clearThreadBackgroundResults(threadId) {
       pendingByThread.delete(threadId);

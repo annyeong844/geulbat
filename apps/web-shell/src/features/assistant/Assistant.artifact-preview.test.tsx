@@ -29,7 +29,6 @@ void test('assistant renders code artifact preview through the static preview re
       finalAnswerText=""
       streamError={null}
       isRunning={false}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}
@@ -37,8 +36,8 @@ void test('assistant renders code artifact preview through the static preview re
   );
 
   assert.match(html, /const value = 1;/);
-  assert.doesNotMatch(html, />Apply</);
-  assert.doesNotMatch(html, />Export</);
+  assert.doesNotMatch(html, />적용</);
+  assert.doesNotMatch(html, />내보내기</);
   assert.doesNotMatch(html, /snippet/);
 });
 
@@ -58,7 +57,6 @@ void test('assistant renders diff artifact preview through the static preview re
       finalAnswerText=""
       streamError={null}
       isRunning={false}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}
@@ -68,8 +66,8 @@ void test('assistant renders diff artifact preview through the static preview re
   assert.match(html, /@@ -1 \+1 @@/);
   assert.match(html, /-old/);
   assert.match(html, /\+new/);
-  assert.doesNotMatch(html, />Apply</);
-  assert.doesNotMatch(html, />Export</);
+  assert.doesNotMatch(html, />적용</);
+  assert.doesNotMatch(html, />내보내기</);
   assert.doesNotMatch(html, /patch/);
 });
 
@@ -92,7 +90,6 @@ void test('assistant renders table artifact preview through the static preview r
       finalAnswerText=""
       streamError={null}
       isRunning={false}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}
@@ -104,8 +101,8 @@ void test('assistant renders table artifact preview through the static preview r
   assert.match(html, /score/);
   assert.match(html, /sample/);
   assert.match(html, /mari/);
-  assert.doesNotMatch(html, />Apply</);
-  assert.doesNotMatch(html, />Export</);
+  assert.doesNotMatch(html, />적용</);
+  assert.doesNotMatch(html, />내보내기</);
   assert.doesNotMatch(html, /hidden-table-token-123/);
 });
 
@@ -134,7 +131,6 @@ void test('assistant falls back to raw access copy for oversized static artifact
       finalAnswerText=""
       streamError={null}
       isRunning={false}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}
@@ -143,9 +139,9 @@ void test('assistant falls back to raw access copy for oversized static artifact
 
   assert.match(
     html,
-    /이 미리보기는 너무 커서 바로 렌더링하지 않았습니다\. Raw 탭에서 원본을 확인해 주세요\./,
+    /이 미리보기는 너무 커서 바로 렌더링하지 않았습니다\. 원문 탭에서 내용을 확인해 주세요\./,
   );
-  assert.match(html, /Raw<\/strong> 탭에서 원본을 확인할 수 있습니다\./);
+  assert.match(html, /원문<\/strong> 탭에서 내용을 확인할 수 있습니다\./);
   assert.doesNotMatch(html, /<h1/);
   assert.doesNotMatch(html, /STATIC_PREVIEW_RESOURCE_TAIL_TOKEN/);
   assert.doesNotMatch(html, /hidden-large-static-token/);
@@ -170,7 +166,6 @@ void test('assistant renders html5 artifact inside a sandboxed iframe', () => {
       finalAnswerText=""
       streamError={null}
       isRunning={false}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}
@@ -183,8 +178,8 @@ void test('assistant renders html5 artifact inside a sandboxed iframe', () => {
     html,
     /src="http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?[^"]*rev=/,
   );
-  assert.doesNotMatch(html, />Apply</);
-  assert.doesNotMatch(html, />Export</);
+  assert.doesNotMatch(html, />적용</);
+  assert.doesNotMatch(html, />내보내기</);
   assert.doesNotMatch(html, /hidden-page-token/);
 });
 
@@ -208,7 +203,6 @@ void test('assistant renders js artifact inside a download-capable sandboxed ifr
       finalAnswerText=""
       streamError={null}
       isRunning={false}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}
@@ -224,12 +218,12 @@ void test('assistant renders js artifact inside a download-capable sandboxed ifr
     html,
     /src="http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?[^"]*rev=/,
   );
-  assert.doesNotMatch(html, />Apply</);
-  assert.doesNotMatch(html, />Export</);
+  assert.doesNotMatch(html, />적용</);
+  assert.doesNotMatch(html, />내보내기</);
   assert.doesNotMatch(html, /hidden-js-token/);
 });
 
-void test('assistant renders react_bundle artifact inside a sandboxed iframe', () => {
+void test('assistant shows pending preview state for react_bundle manifests during SSR', () => {
   const artifact = createCommittedArtifact({
     artifactId: 'art_react_bundle_1',
     renderer: 'react_bundle',
@@ -249,21 +243,17 @@ void test('assistant renders react_bundle artifact inside a sandboxed iframe', (
       finalAnswerText=""
       streamError={null}
       isRunning={false}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}
     />,
   );
 
-  assert.match(html, /<iframe/);
-  assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
-  assert.match(
-    html,
-    /src="http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?[^"]*rev=/,
-  );
-  assert.doesNotMatch(html, />Apply</);
-  assert.doesNotMatch(html, />Export</);
+  assert.match(html, /캔버스 미리보기 준비 중/);
+  assert.match(html, /리액트 번들을 준비하고 있습니다\.\.\./);
+  assert.doesNotMatch(html, /<iframe/);
+  assert.doesNotMatch(html, />적용</);
+  assert.doesNotMatch(html, />내보내기</);
   assert.doesNotMatch(html, /hidden-react-token/);
 });
 
@@ -286,7 +276,6 @@ void test('assistant shows a user-facing unavailable state for disallowed html5 
       finalAnswerText=""
       streamError={null}
       isRunning={false}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}
@@ -297,7 +286,7 @@ void test('assistant shows a user-facing unavailable state for disallowed html5 
     html,
     /이 캔버스는 현재 웹쉘 경계를 넘는 링크나 리소스 때문에 바로 열 수 없습니다\./,
   );
-  assert.match(html, /Raw<\/strong> 탭에서 원본을 확인할 수 있습니다\./);
+  assert.match(html, /원문<\/strong> 탭에서 내용을 확인할 수 있습니다\./);
   assert.doesNotMatch(html, /<iframe/);
   assert.doesNotMatch(html, /sanitize_rejected/);
 });
@@ -321,7 +310,6 @@ void test('assistant shows a user-facing boot failure for empty js payloads', ()
       finalAnswerText=""
       streamError={null}
       isRunning={false}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}
@@ -332,7 +320,7 @@ void test('assistant shows a user-facing boot failure for empty js payloads', ()
     html,
     /캔버스를 시작하지 못했습니다\. js artifact payload is empty/,
   );
-  assert.match(html, /Raw<\/strong> 탭에서 원본을 확인할 수 있습니다\./);
+  assert.match(html, /원문<\/strong> 탭에서 내용을 확인할 수 있습니다\./);
   assert.match(html, /js artifact payload is empty/);
   assert.doesNotMatch(html, /<iframe/);
   assert.doesNotMatch(html, /boot_failed/);
@@ -363,7 +351,6 @@ void test('assistant shows pending preview state for inline react bundle source 
       finalAnswerText=""
       streamError={null}
       isRunning={false}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}
@@ -372,7 +359,10 @@ void test('assistant shows pending preview state for inline react bundle source 
 
   assert.match(html, /캔버스 미리보기 준비 중/);
   assert.match(html, /리액트 번들을 준비하고 있습니다\.\.\./);
-  assert.doesNotMatch(html, /Raw<\/strong> 탭에서 원본을 확인할 수 있습니다\./);
+  assert.doesNotMatch(
+    html,
+    /원문<\/strong> 탭에서 내용을 확인할 수 있습니다\./,
+  );
   assert.doesNotMatch(
     html,
     /react bundle inline source manifests with files\/entry are unsupported/,
@@ -399,13 +389,12 @@ void test('assistant disables artifact apply and export actions while a run is a
       finalAnswerText=""
       streamError={null}
       isRunning={true}
-      onOpenSource={() => {}}
       onSend={() => {}}
       onStartArtifactRun={() => {}}
       onCancel={() => {}}
     />,
   );
 
-  assert.match(html, /<button[^>]*disabled=""[^>]*>Apply<\/button>/);
-  assert.match(html, /<button[^>]*disabled=""[^>]*>Export<\/button>/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>적용<\/button>/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>내보내기<\/button>/);
 });

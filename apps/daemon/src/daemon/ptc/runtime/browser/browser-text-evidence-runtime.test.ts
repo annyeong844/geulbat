@@ -19,11 +19,11 @@ import {
 } from '../../../../test-support/ptc-browser-text-evidence.js';
 import {
   PTC_TEST_SESSION_DOCKER_CONTAINER_ID,
+  PTC_TEST_SESSION_DOCKER_HOST_USER,
   createPtcSessionDockerCommandFixture,
   readPtcSessionDockerBindMountHostPath,
 } from '../../../../test-support/ptc-session-docker.js';
-import { makeRunWorkspaceContext } from '../../../../test-support/run-workspace-context.js';
-import { testProjectId } from '../../../../test-support/project-id.js';
+import { makeRunContext } from '../../../../test-support/run-context.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { createPtcBrowserTextEvidenceRuntime } from './browser-text-evidence-runtime.js';
 
@@ -109,9 +109,9 @@ void test('createPtcBrowserTextEvidenceRuntime wires text evidence policy withou
   try {
     const runtime = createPtcBrowserTextEvidenceRuntime({
       commandRunner: fixture.runner,
-      realpathWorkspaceRoot: async () =>
-        '/real/workspace/browser-text-evidence',
-      runtimeRootForWorkspace: () => runtimeRoot,
+      hostUser: PTC_TEST_SESSION_DOCKER_HOST_USER,
+      realpathStateRoot: async () => '/real/workspace/browser-text-evidence',
+      runtimeRootForState: () => runtimeRoot,
       now: (() => {
         let value = 100;
         return () => {
@@ -122,10 +122,9 @@ void test('createPtcBrowserTextEvidenceRuntime wires text evidence policy withou
     });
 
     const result = await runtime.collectEvidence({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(951),
-        projectId: testProjectId('project'),
-        workspaceRoot: '/workspace/project',
+        stateRoot: '/workspace/project',
       }),
       request: {
         url: 'https://example.com/private?access_token=secret#id_token=secret',
@@ -154,6 +153,50 @@ void test('createPtcBrowserTextEvidenceRuntime wires text evidence policy withou
       'Example Domain Visible Text',
     );
     assert.equal(PTC_BROWSER_TEXT_EVIDENCE_TOOL_NAME, 'browser_text_evidence');
+  } finally {
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcBrowserTextEvidenceRuntime warms a state-owned session without URL evidence exec', async () => {
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-browser-text-warm-'),
+  );
+  const fixture = createPtcSessionDockerCommandFixture({
+    commandResult: async (invocation) => {
+      assert.notEqual(invocation.args[0], 'exec');
+      if (invocation.args[0] === 'create') {
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: `${PTC_TEST_SESSION_DOCKER_CONTAINER_ID}\n`,
+          stderr: '',
+        };
+      }
+      return undefined;
+    },
+  });
+
+  try {
+    const runtime = createPtcBrowserTextEvidenceRuntime({
+      commandRunner: fixture.runner,
+      realpathStateRoot: async () => '/real/workspace/browser-text-warm',
+      runtimeRootForState: () => runtimeRoot,
+    });
+
+    assert.ok(runtime.warmState);
+    const result = await runtime.warmState({
+      runContext: makeRunContext({
+        threadId: testThreadId(952),
+        stateRoot: '/workspace/project',
+      }),
+    });
+
+    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(
+      fixture.invocations.map((invocation) => invocation.args[0]),
+      ['--version', 'image', 'network', 'create', 'start', 'inspect'],
+    );
   } finally {
     await rm(runtimeRoot, { recursive: true, force: true });
   }

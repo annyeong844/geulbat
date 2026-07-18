@@ -94,6 +94,11 @@ void test('window.sessionStorage shim is ephemeral and isolated from persistent 
   assert.equal(firstHarness.window.localStorage.getItem('draft'), null);
   assert.deepEqual(await firstHarness.window.storage.list(), []);
 
+  firstHarness.window.sessionStorage.clear();
+  assert.equal(firstHarness.window.sessionStorage.getItem('draft'), null);
+  assert.equal(firstHarness.window.sessionStorage.length, 0);
+  assert.equal(firstHarness.window.sessionStorage.key(0), null);
+
   const secondHarness = createBootstrapHarness(respond);
   await secondHarness.ready;
   assert.equal(secondHarness.window.sessionStorage.getItem('draft'), null);

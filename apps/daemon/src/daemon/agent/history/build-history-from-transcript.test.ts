@@ -72,6 +72,44 @@ void test('buildHistoryFromTranscript reconstructs structured history from trans
   ]);
 });
 
+void test('buildHistoryFromTranscript replays stored recoverable output bytes without normalization', () => {
+  const outputRef = 'tool-output:thread-replay/run-replay/call-replay';
+  const storedOutput = JSON.stringify({
+    status: 'exit',
+    stdout: 'large output'.repeat(10_000),
+    outputRef,
+    fullOutputBytes: 120_000,
+    fullOutputChars: 120_000,
+  });
+  const transcript = createTranscript([
+    {
+      role: 'tool_call',
+      content: JSON.stringify({
+        id: 'fc_replay',
+        callId: 'call_replay',
+        tool: 'exec_command',
+        args: { cmd: 'rg pattern .' },
+      }),
+      timestamp: '2026-03-23T00:00:02.000Z',
+    },
+    {
+      role: 'tool_result',
+      content: JSON.stringify({
+        callId: 'call_replay',
+        output: storedOutput,
+      }),
+      timestamp: '2026-03-23T00:00:03.000Z',
+    },
+  ]);
+
+  const history = buildHistoryFromTranscript(transcript);
+  assert.equal(history[1]?.kind, 'function_call_output');
+  if (history[1]?.kind !== 'function_call_output') {
+    throw new Error('expected function_call_output');
+  }
+  assert.equal(history[1].output, storedOutput);
+});
+
 void test('buildHistoryFromTranscript preserves legacy tool_call ids for replay sanitization downstream', () => {
   const transcript = createTranscript([
     {
@@ -279,4 +317,117 @@ void test('buildHistoryFromTranscript carries assistant artifact refs as object 
       },
     ],
   );
+});
+
+void test('buildHistoryFromTranscript omits image artifact payload from history carry text', () => {
+  const transcript = createTranscript([
+    {
+      role: 'assistant',
+      content: '이미지를 생성했어요.',
+      timestamp: '2026-07-05T00:00:00.000Z',
+      metadata: {
+        phase: 'final_answer',
+        artifactRefs: [{ artifactId: 'art_img', version: 1 }],
+        activeArtifactRef: { artifactId: 'art_img', version: 1 },
+      },
+    },
+  ]);
+  const hugeBase64Manifest = JSON.stringify({
+    schemaVersion: 1,
+    kind: 'generated_image',
+    source: { type: 'inline_base64', dataBase64: 'x'.repeat(1_000_000) },
+  });
+  const artifact: ThreadArtifactVersion = {
+    artifactId: 'art_img',
+    version: 1,
+    parentVersion: null,
+    baseVersion: null,
+    renderer: 'image',
+    payload: hugeBase64Manifest,
+    digest: 'img-digest',
+    contentHash: 'hash',
+    createdAt: '2026-07-05T00:00:00.000Z',
+    createdByRunId: 'run_1',
+    previewValidation: { ok: true },
+    title: '눈 오는 골목길',
+    persistenceEpoch: 0,
+    sourceRef: null,
+  };
+
+  const history = buildHistoryFromTranscript(
+    transcript,
+    new Map([
+      [createArtifactRefKey({ artifactId: 'art_img', version: 1 }), artifact],
+    ]),
+  );
+
+  assert.equal(history.length, 1);
+  const item = history[0];
+  assert.ok(item && item.kind === 'assistant');
+  assert.ok(item.text.includes('artifactRef: art_img@1'));
+  assert.ok(item.text.includes('renderer: image'));
+  assert.ok(item.text.includes('title: 눈 오는 골목길'));
+  // 수 MB base64 매니페스트가 모델 히스토리로 재주입되면 안 된다.
+  assert.ok(!item.text.includes('x'.repeat(64)));
+  assert.ok(item.text.length < 1_000);
+});
+
+void test('buildHistoryFromTranscript attaches preloaded user attachment contents by id', () => {
+  const transcript = createTranscript([
+    {
+      role: 'user',
+      content: '이 이미지 좀 봐줘',
+      timestamp: '2026-03-23T00:00:00.000Z',
+      metadata: {
+        attachments: [
+          {
+            attachmentId: 'a2c3f1de-0000-4000-8000-000000000001',
+            name: '증상.png',
+            mimeType: 'image/png',
+            kind: 'image',
+            byteLength: 5,
+          },
+          {
+            attachmentId: 'a2c3f1de-0000-4000-8000-000000000002',
+            name: '유실.png',
+            mimeType: 'image/png',
+            kind: 'image',
+            byteLength: 5,
+          },
+        ],
+      },
+    },
+  ]);
+
+  const history = buildHistoryFromTranscript(
+    transcript,
+    new Map(),
+    new Map([
+      [
+        'a2c3f1de-0000-4000-8000-000000000001',
+        {
+          kind: 'image' as const,
+          name: '증상.png',
+          mimeType: 'image/png',
+          dataBase64: 'aGVsbG8=',
+        },
+      ],
+    ]),
+  );
+
+  assert.deepEqual(history, [
+    {
+      kind: 'user',
+      text: '이 이미지 좀 봐줘',
+      // 스토어에서 유실된 두 번째 첨부는 조용히 생략된다
+      attachments: [
+        {
+          kind: 'image',
+          name: '증상.png',
+          mimeType: 'image/png',
+          dataBase64: 'aGVsbG8=',
+        },
+      ],
+    },
+  ]);
 });

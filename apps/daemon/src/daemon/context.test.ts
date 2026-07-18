@@ -1,11 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { toApprovalClass } from '@geulbat/protocol/run-approval';
 
-import { bootstrapDaemonContext } from '../bootstrap-daemon-context.js';
 import {
   SUBAGENT_BACKGROUND_CAPACITY_ENV,
   resolveSubagentConcurrencyPolicyFromEnv,
@@ -15,18 +14,23 @@ import {
   resolveReactBundleStructuredOutputIngressPolicyFromEnv,
 } from './agent/react-bundle-structured-output-ingress-policy.js';
 import { createRunState } from './agent/runtime/run-state.js';
-import { createDaemonContext } from './context.js';
+import { createResourceBudgetProvider } from './agent/resource-budget-provider.js';
+import {
+  createDaemonContext,
+  projectPtcExecuteCodePlacementResourceBudget,
+} from './context.js';
 import { resolveProviderRequestOptions } from './llm/provider/provider-options.js';
 import {
   PTC_EXECUTE_CODE_CELL_ENABLED_ENV,
   PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV,
   PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV,
+  PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV,
   resolvePtcExecuteCodeCellRuntimeConfigFromEnv,
 } from './ptc/runtime/execute-code/execute-code-runtime.js';
+import { PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS } from './ptc/runtime/execute-code/execute-code-cell-registry.js';
 import { createRunInterjectBuffer } from './sessions/active-run-interject-buffer.js';
-import { createRunWorkspaceContext } from './run-workspace-context.js';
+import { createRunContext } from './run-context.js';
 import type { AnyTool } from './tools/types.js';
-import { testProjectId } from '../test-support/project-id.js';
 import { testRunId } from '../test-support/run-id.js';
 import { testThreadId } from '../test-support/thread-id.js';
 
@@ -42,7 +46,7 @@ function createTestTool(name: string): AnyTool {
     },
     strict: true,
     sideEffectLevel: 'none',
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     parseArgs() {
@@ -65,13 +69,43 @@ function restoreEnv(name: string, previous: string | undefined): void {
 function createSubagentCapacityRunState(runId = 'context-capacity-run') {
   return createRunState({
     runId,
-    runContext: createRunWorkspaceContext({
+    runContext: createRunContext({
       threadId: testThreadId(20),
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
     }),
   });
 }
+
+void test('PTC resource projection uses host memory when Node reports an invalid unconstrained sentinel', () => {
+  const snapshot = createResourceBudgetProvider({
+    reader: {
+      createSnapshotId: () => 'resource-snapshot-wsl-sentinel',
+      now: () => '2026-07-14T00:00:00.000Z',
+      readAvailableParallelism: () => 12,
+      readHostTotalMemoryBytes: () => 8_000,
+      readHostFreeMemoryBytes: () => 4_000,
+      readDaemonConstrainedMemoryBytes: () => Number.MAX_SAFE_INTEGER + 1,
+      readDaemonAvailableMemoryBytes: () => 4_000,
+    },
+  }).captureSnapshot();
+
+  assert.equal(snapshot.memory.precedence, 'host_os_context_only');
+  assert.deepEqual(
+    projectPtcExecuteCodePlacementResourceBudget(snapshot)
+      .constrainedMemoryBytes,
+    { ok: true, value: 8_000 },
+  );
+});
+
+void test('createDaemonContext exposes one consistent computer file authority root', () => {
+  const daemonContext = createDaemonContext();
+
+  assert.equal(
+    daemonContext.computerFileRoot,
+    daemonContext.computerFileScope?.root,
+  );
+});
 
 void test('createDaemonContext isolates runtime singleton state per instance', async () => {
   const first = createDaemonContext();
@@ -83,8 +117,8 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
     first.activeRuns.tryStartRun(threadId, {
       runId,
       threadId,
-      projectId: testProjectId(),
-      workspaceRoot: '/tmp/workspace',
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
       ownerThreadId: threadId,
       abortController: new AbortController(),
       interject: createRunInterjectBuffer(),
@@ -143,13 +177,6 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
     0,
   );
 
-  first.projectRegistry.replaceProjectRegistry([
-    { projectId: testProjectId('workspace'), label: 'Workspace' },
-    { projectId: testProjectId('alpha'), label: 'Alpha' },
-  ]);
-  assert.equal(first.projectRegistry.isKnownProjectId('alpha'), true);
-  assert.equal(second.projectRegistry.isKnownProjectId('alpha'), false);
-
   first.toolRegistry.registerTool(createTestTool('context_tool_only'));
   assert.ok(first.toolRegistry.getTool('context_tool_only'));
   assert.equal(second.toolRegistry.getTool('context_tool_only'), undefined);
@@ -162,6 +189,7 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
   });
   first.providerAuthBootstrap.setPendingProviderAuthSession({
     authSessionId: 'context-auth-session',
+    providerId: 'openai_codex_direct',
     state: 'context-state',
     codeVerifier: 'context-verifier',
     redirectUri: 'http://localhost:1455/auth/callback',
@@ -195,30 +223,99 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
   assert.notEqual(first.agentWorkflowRunner, second.agentWorkflowRunner);
   assert.notEqual(first.agentWavePlanner, second.agentWavePlanner);
   assert.notEqual(first.resourceBudgetProvider, second.resourceBudgetProvider);
+  assert.notEqual(first.pluginSkills, first.plugins);
+  assert.notEqual(second.pluginSkills, second.plugins);
+  assert.notEqual(first.pluginSkills, second.pluginSkills);
+});
 
-  const firstRoot = await mkdtemp(join(tmpdir(), 'daemon-context-first-'));
-  const secondRoot = await mkdtemp(join(tmpdir(), 'daemon-context-second-'));
+void test('createDaemonContext installs a default tool library projection port', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-context-tool-library-'),
+  );
   try {
-    await bootstrapDaemonContext({
-      projectStore: first.projectStore,
-      repoRoot: firstRoot,
-    });
-    await bootstrapDaemonContext({
-      projectStore: second.projectStore,
-      repoRoot: secondRoot,
+    const daemonContext = createDaemonContext();
+    assert.notEqual(daemonContext.toolLibraryProjection, undefined);
+
+    const result = await daemonContext.toolLibraryProjection.resolveProjection({
+      stateRoot: stateRoot,
+      threadId: testThreadId(101),
     });
 
+    assert.equal(result.ok, true);
+    if (!result.ok) {
+      assert.fail('expected default projection port to resolve');
+    }
+    assert.equal(result.projection.sdkVersion, 'geulbat-tool-library-sdk-v1');
     assert.equal(
-      first.projectStore.getProjectRegistryFilePath(),
-      join(firstRoot, '.geulbat', 'projects.json'),
+      result.projection.sourceRegistryVersion,
+      'daemon-builtin-tool-registry-v1',
     );
     assert.equal(
-      second.projectStore.getProjectRegistryFilePath(),
-      join(secondRoot, '.geulbat', 'projects.json'),
+      result.projection.runtimeCompatibilityRange,
+      'ptc_execute_code_sdk_v1',
+    );
+    assert.equal(
+      result.projection.modelFacingCatalogRef,
+      'geulbat-sdk://catalog',
+    );
+    assert.equal(result.projection.importSpecifier, 'geulbat-sdk');
+    assert.equal(result.projection.policyId, 'ptc_sdk_reachable_read_tools_v1');
+    assert.deepEqual(result.projection.allowedRegistryNames, [
+      'fetch_url',
+      'list_files',
+      'read_file',
+      'search_files',
+      'search_memory_index',
+    ]);
+    assert.deepEqual(
+      result.pin.allowedRegistryNames,
+      result.projection.allowedRegistryNames,
+    );
+    assert.match(result.pin.projectionDirectory, /^sha256-[0-9a-f]{64}$/u);
+    assert.equal(result.mount.importSpecifier, 'geulbat-sdk');
+    assert.equal(
+      result.mount.modelFacingCatalogRef,
+      result.projection.modelFacingCatalogRef,
+    );
+    assert.equal(
+      result.mount.sdkProjectionHash,
+      result.projection.sdkProjectionHash,
+    );
+    assert.equal(result.mount.projectionRootPath, result.projection.rootPath);
+    assert.match(
+      result.projection.rootPath,
+      /\.geulbat[\\/]+tool-library[\\/]+projections[\\/]+thread-[0-9a-f]{16}[\\/]+sha256-[0-9a-f]{64}$/u,
+    );
+    assert.equal(result.projection.rootPath.includes(testThreadId(101)), false);
+    assert.equal(JSON.stringify(result.projection).includes(stateRoot), true);
+    assert.equal(
+      JSON.stringify({
+        sdkVersion: result.projection.sdkVersion,
+        sdkProjectionHash: result.projection.sdkProjectionHash,
+        policyId: result.projection.policyId,
+      }).includes(stateRoot),
+      false,
+    );
+    assert.deepEqual(
+      result.projection.tools.map((tool) => tool.wrapperModule),
+      [
+        'tools/fetch-url.js',
+        'files/listFiles.js',
+        'files/readFile.js',
+        'files/searchFiles.js',
+        'tools/search-memory-index.js',
+      ],
+    );
+    assert.deepEqual(result.writtenFiles, [
+      ...result.projection.files.map((file) => file.path),
+    ]);
+    assert.equal(
+      await readFile(join(result.projection.rootPath, 'index.d.ts'), 'utf8'),
+      result.projection.files.find((file) => file.path === 'index.d.ts')
+        ?.content,
     );
   } finally {
-    await rm(firstRoot, { recursive: true, force: true });
-    await rm(secondRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
   }
 });
 
@@ -480,7 +577,27 @@ void test('resolvePtcExecuteCodeCellRuntimeConfigFromEnv accepts explicit cell s
       [PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV]: ' 2500 ',
       [PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV]: ' 600000 ',
     }),
-    { enabled: true, initialYieldTimeMs: 2500, runningCellReapAfterMs: 600000 },
+    {
+      enabled: true,
+      initialYieldTimeMs: 2500,
+      runningCellReapAfterMs: 600000,
+      terminalResultMemoryRetentionMs:
+        PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS,
+    },
+  );
+  assert.deepEqual(
+    resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+      [PTC_EXECUTE_CODE_CELL_ENABLED_ENV]: 'true',
+      [PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV]: '2500',
+      [PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV]: '600000',
+      [PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV]: '45000',
+    }),
+    {
+      enabled: true,
+      initialYieldTimeMs: 2500,
+      runningCellReapAfterMs: 600000,
+      terminalResultMemoryRetentionMs: 45000,
+    },
   );
   assert.deepEqual(
     resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
@@ -548,6 +665,32 @@ void test('resolvePtcExecuteCodeCellRuntimeConfigFromEnv rejects invalid running
   }
 });
 
+void test('resolvePtcExecuteCodeCellRuntimeConfigFromEnv rejects invalid terminal memory retention values', () => {
+  for (const value of [
+    '',
+    ' ',
+    '0',
+    '-1',
+    '+1',
+    '1.5',
+    '1e3',
+    '9007199254740992',
+  ]) {
+    assert.throws(
+      () =>
+        resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+          [PTC_EXECUTE_CODE_CELL_ENABLED_ENV]: 'true',
+          [PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV]: '1000',
+          [PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV]: '600000',
+          [PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV]: value,
+        }),
+      new RegExp(
+        `invalid ${PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV}`,
+      ),
+    );
+  }
+});
+
 void test('resolvePtcExecuteCodeCellRuntimeConfigFromEnv requires enabled true for cell config', () => {
   assert.throws(
     () =>
@@ -596,6 +739,25 @@ void test('resolvePtcExecuteCodeCellRuntimeConfigFromEnv requires enabled true f
       `PTC execute_code cell settings require ${PTC_EXECUTE_CODE_CELL_ENABLED_ENV}=true`,
     ),
   );
+  assert.throws(
+    () =>
+      resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+        [PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV]: '300000',
+      }),
+    new RegExp(
+      `PTC execute_code cell settings require ${PTC_EXECUTE_CODE_CELL_ENABLED_ENV}=true`,
+    ),
+  );
+  assert.throws(
+    () =>
+      resolvePtcExecuteCodeCellRuntimeConfigFromEnv({
+        [PTC_EXECUTE_CODE_CELL_ENABLED_ENV]: 'false',
+        [PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV]: '300000',
+      }),
+    new RegExp(
+      `PTC execute_code cell settings require ${PTC_EXECUTE_CODE_CELL_ENABLED_ENV}=true`,
+    ),
+  );
 });
 
 void test('createDaemonContext freezes PTC execute_code cell config from env', async () => {
@@ -604,15 +766,19 @@ void test('createDaemonContext freezes PTC execute_code cell config from env', a
     process.env[PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV];
   const previousRunningReap =
     process.env[PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV];
+  const previousTerminalMemoryRetention =
+    process.env[PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV];
   process.env[PTC_EXECUTE_CODE_CELL_ENABLED_ENV] = 'true';
   process.env[PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV] = '2500';
   process.env[PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV] = '600000';
+  process.env[PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV] = '45000';
 
   try {
     const daemonContext = createDaemonContext();
     process.env[PTC_EXECUTE_CODE_CELL_ENABLED_ENV] = 'false';
     delete process.env[PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV];
     delete process.env[PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV];
+    delete process.env[PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV];
 
     const wait = await daemonContext.ptcExecuteCode.waitForCell({
       runContext: { threadId: testThreadId(50) },
@@ -630,6 +796,10 @@ void test('createDaemonContext freezes PTC execute_code cell config from env', a
       previousInitialYield,
     );
     restoreEnv(PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV, previousRunningReap);
+    restoreEnv(
+      PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV,
+      previousTerminalMemoryRetention,
+    );
   }
 });
 

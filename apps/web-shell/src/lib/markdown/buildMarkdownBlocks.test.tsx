@@ -1,68 +1,159 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
 
 import { buildMarkdownBlocks } from './buildMarkdownBlocks.js';
 
-void test('buildMarkdownBlocks closes language-tagged code fences on bare closing fences', () => {
-  const blocks = buildMarkdownBlocks(
-    ['```ts', 'const value = 1;', '```', 'after fence'].join('\n'),
-  );
-
-  assert.equal(blocks.length, 2);
-  assert.equal(React.isValidElement(blocks[0]), true);
-  assert.equal(React.isValidElement(blocks[1]), true);
-  if (
-    !React.isValidElement<{ children: React.ReactNode }>(blocks[0]) ||
-    !React.isValidElement<{ children: React.ReactNode }>(blocks[1])
-  ) {
-    return;
+(
+  globalThis as typeof globalThis & {
+    IS_REACT_ACT_ENVIRONMENT?: boolean;
   }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
-  assert.equal(blocks[0].type, 'pre');
-  assert.equal(blocks[1].type, 'p');
-  assert.equal(blocks[0].props.children, 'const value = 1;');
-  assert.equal(blocks[1].props.children, 'after fence');
-});
-
-void test('buildMarkdownBlocks preserves mixed block order and children', () => {
-  const blocks = buildMarkdownBlocks(
+void test('buildMarkdownBlocks renders CommonMark prose and GFM tables semantically', () => {
+  const html = renderMarkdown(
     [
-      'intro line',
-      'continued',
+      '# 계약 점검',
       '',
-      '## Heading',
-      '> quote A',
-      '> quote B',
-      '- one',
-      '* two',
+      '**굵게**, *기울임*, ~~삭제~~, `inline()`',
+      '',
+      '> 실제 경계를 확인합니다.',
+      '',
+      '1. 첫 단계',
+      '2. 둘째 단계',
+      '',
+      '- 안전',
+      '- 진단 가능',
+      '',
+      '| 항목 | 판정 | 증거 |',
+      '|:---|:---:|---:|',
+      '| any / ts-ignore | ✅ healthy | `:any=0` |',
+      '| type escape | ⚠ watch | 29 |',
     ].join('\n'),
   );
 
-  assert.equal(blocks.length, 4);
-  const paragraph = getBlockElement(blocks, 0);
-  const heading = getBlockElement(blocks, 1);
-  const quote = getBlockElement(blocks, 2);
-  const list = getBlockElement(blocks, 3);
-
-  assert.equal(paragraph.type, 'p');
-  assert.equal(paragraph.props.children, 'intro line continued');
-  assert.equal(heading.type, 'div');
-  assert.equal(heading.props.children, 'Heading');
-  assert.equal(quote.type, 'blockquote');
-  assert.equal(quote.props.children, 'quote A\nquote B');
-  assert.equal(list.type, 'ul');
-  assert.equal(Array.isArray(list.props.children), true);
+  assert.match(html, /<h1>계약 점검<\/h1>/);
+  assert.match(html, /<strong>굵게<\/strong>/);
+  assert.match(html, /<em>기울임<\/em>/);
+  assert.match(html, /<del>삭제<\/del>/);
+  assert.match(html, /rendered-markdown-code/);
+  assert.match(html, /<blockquote>/);
+  assert.match(html, /<ol>/);
+  assert.match(html, /<ul>/);
+  assert.match(html, /rendered-markdown-table-scroll/);
+  assert.match(html, /<table class="rendered-markdown-table">/);
+  assert.match(html, /<thead>/);
+  assert.match(html, /<th style="text-align:center">판정<\/th>/);
+  assert.match(html, /<td style="text-align:right">29<\/td>/);
 });
 
-function getBlockElement(blocks: readonly React.ReactNode[], index: number) {
-  const block = blocks[index];
-  assert.equal(
-    React.isValidElement<{ children: React.ReactNode }>(block),
-    true,
+void test('buildMarkdownBlocks keeps fenced code and incomplete Markdown renderable', () => {
+  const html = renderMarkdown(
+    ['```ts', 'const value = 1;', '```', '', '**아직 닫히지 않음'].join('\n'),
   );
-  if (!React.isValidElement<{ children: React.ReactNode }>(block)) {
-    throw new Error(`expected React element at index ${index}`);
-  }
-  return block;
+
+  assert.match(html, /rendered-markdown-code-block/);
+  assert.match(html, /language-ts/);
+  assert.match(html, /const value = 1;/);
+  assert.match(html, /\*\*아직 닫히지 않음/);
+});
+
+void test('buildMarkdownBlocks allows explicit safe links without activating unsafe content', () => {
+  const html = renderMarkdown(
+    [
+      '[공식 문서](https://example.com/docs)',
+      '[메일](mailto:hello@example.com)',
+      '[이 섹션](#section)',
+      '[상대 경로](./admin)',
+      '[스크립트](javascript:alert(1))',
+      '[데이터](data:text/html,bad)',
+      `[파일](${['file:', '///etc/passwd'].join('')})`,
+      '[에디터](vscode://file/tmp/a)',
+      '![원격 이미지](https://example.com/tracker.png)',
+      '<script>alert(1)</script>',
+      '<img src="https://example.com/tracker.png" onerror="alert(1)">',
+    ].join('\n\n'),
+  );
+
+  assert.match(html, /href="https:\/\/example.com\/docs"/);
+  assert.match(html, /href="mailto:hello@example.com"/);
+  assert.match(html, /href="#section"/);
+  assert.match(html, /target="_blank"/);
+  assert.match(html, /rel="noopener noreferrer"/);
+  assert.doesNotMatch(html, /href="\.\/admin"/);
+  assert.doesNotMatch(html, /javascript:/i);
+  assert.doesNotMatch(html, /data:text/i);
+  assert.doesNotMatch(html, /file:\/\//i);
+  assert.doesNotMatch(html, /vscode:/i);
+  assert.doesNotMatch(html, /<script/i);
+  assert.doesNotMatch(html, /<img/i);
+  assert.match(html, /rendered-markdown-image-alt/);
+  assert.match(html, />원격 이미지<\/span>/);
+});
+
+void test('buildMarkdownBlocks preserves references across top-level blocks', () => {
+  const html = renderMarkdown(
+    [
+      '[공식 문서][docs]에서 계약을 확인합니다.',
+      '',
+      '> 다음 블록도 같은 문서의 일부입니다.',
+      '',
+      '[docs]: https://example.com/docs "공식"',
+    ].join('\n'),
+  );
+
+  assert.match(html, /href="https:\/\/example.com\/docs"/);
+  assert.match(html, /title="공식"/);
+  assert.match(html, /<blockquote>/);
+  assert.doesNotMatch(html, /\[docs\]:/);
+});
+
+void test('buildMarkdownBlocks preserves Markdown semantics across appended updates', async () => {
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <>{buildMarkdownBlocks('첫 문단입니다.')}</>,
+    );
+  });
+  await act(async () => {
+    renderer.update(
+      <>
+        {buildMarkdownBlocks(
+          ['첫 문단입니다.', '', '> 이어지는 인용문입니다.'].join('\n'),
+        )}
+      </>,
+    );
+  });
+  await act(async () => {
+    renderer.update(
+      <>
+        {buildMarkdownBlocks(
+          [
+            '첫 문단입니다.',
+            '',
+            '> 이어지는 인용문입니다.',
+            '',
+            '[공식 문서][docs]',
+            '',
+            '[docs]: https://example.com/docs',
+          ].join('\n'),
+        )}
+      </>,
+    );
+  });
+
+  const rendered = JSON.stringify(renderer.toJSON());
+  assert.match(rendered, /첫 문단입니다/);
+  assert.match(rendered, /이어지는 인용문입니다/);
+  assert.match(rendered, /https:\/\/example\.com\/docs/);
+  assert.doesNotMatch(rendered, /\[docs\]:/);
+
+  await act(async () => {
+    renderer.unmount();
+  });
+});
+
+function renderMarkdown(markdown: string): string {
+  return renderToStaticMarkup(<>{buildMarkdownBlocks(markdown)}</>);
 }

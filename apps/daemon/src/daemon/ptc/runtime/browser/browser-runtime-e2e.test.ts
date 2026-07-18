@@ -50,8 +50,7 @@ import {
   createPtcSessionDockerCommandFixture,
   readPtcSessionDockerBindMountHostPath,
 } from '../../../../test-support/ptc-session-docker.js';
-import { makeRunWorkspaceContext } from '../../../../test-support/run-workspace-context.js';
-import { testProjectId } from '../../../../test-support/project-id.js';
+import { makeRunContext } from '../../../../test-support/run-context.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import type {
   PtcSessionDockerCommandInvocation,
@@ -251,16 +250,15 @@ void test('PTC browser runtimes execute through deterministic Docker session bou
     });
     const runtime = createPtcBrowserNavigateRuntime({
       commandRunner: boundary.fixture.runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/browser-e2e',
-      runtimeRootForWorkspace: () => runtimeRoot,
+      realpathStateRoot: async () => '/real/workspace/browser-e2e',
+      runtimeRootForState: () => runtimeRoot,
       now: fixedNow(),
     });
 
     const result = await runtime.navigate({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(960),
-        projectId: testProjectId('project'),
-        workspaceRoot: '/workspace/project',
+        stateRoot: '/workspace/project',
       }),
       request: { url: TARGET_URL, timeoutMs: 1000 },
     });
@@ -293,16 +291,15 @@ void test('PTC browser runtimes execute through deterministic Docker session bou
     });
     const runtime = createPtcBrowserPageLoadEvidenceRuntime({
       commandRunner: boundary.fixture.runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/browser-e2e',
-      runtimeRootForWorkspace: () => runtimeRoot,
+      realpathStateRoot: async () => '/real/workspace/browser-e2e',
+      runtimeRootForState: () => runtimeRoot,
       now: fixedNow(),
     });
 
     const result = await runtime.collectEvidence({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(961),
-        projectId: testProjectId('project'),
-        workspaceRoot: '/workspace/project',
+        stateRoot: '/workspace/project',
       }),
       request: { url: TARGET_URL, timeoutMs: 1000 },
     });
@@ -337,16 +334,15 @@ void test('PTC browser runtimes execute through deterministic Docker session bou
     });
     const runtime = createPtcBrowserTextEvidenceRuntime({
       commandRunner: boundary.fixture.runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/browser-e2e',
-      runtimeRootForWorkspace: () => runtimeRoot,
+      realpathStateRoot: async () => '/real/workspace/browser-e2e',
+      runtimeRootForState: () => runtimeRoot,
       now: fixedNow(),
     });
 
     const result = await runtime.collectEvidence({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(962),
-        projectId: testProjectId('project'),
-        workspaceRoot: '/workspace/project',
+        stateRoot: '/workspace/project',
       }),
       request: { url: TARGET_URL, timeoutMs: 1000 },
     });
@@ -366,7 +362,7 @@ void test('PTC browser runtimes execute through deterministic Docker session bou
   });
 });
 
-void test('PTC browser runtime cleanup failure reports diagnostics and clears workspace runtime state', async () => {
+void test('PTC browser runtime cleanup failure reports diagnostics and clears state runtime tracking', async () => {
   await withRuntimeRoot('browser-cleanup-e2e', async (runtimeRoot) => {
     const boundary = createBrowserRuntimeBoundaryFixture({
       labPolicyId: PTC_BROWSER_NAVIGATE_LAB_POLICY_ID,
@@ -385,15 +381,14 @@ void test('PTC browser runtime cleanup failure reports diagnostics and clears wo
     });
     const runtime = createPtcBrowserNavigateRuntime({
       commandRunner: boundary.fixture.runner,
-      realpathWorkspaceRoot: async () => '/real/workspace/browser-cleanup-e2e',
-      runtimeRootForWorkspace: () => runtimeRoot,
+      realpathStateRoot: async () => '/real/workspace/browser-cleanup-e2e',
+      runtimeRootForState: () => runtimeRoot,
     });
 
     const result = await runtime.navigate({
-      runContext: makeRunWorkspaceContext({
+      runContext: makeRunContext({
         threadId: testThreadId(963),
-        projectId: testProjectId('project'),
-        workspaceRoot: '/workspace/project',
+        stateRoot: '/workspace/project',
       }),
       request: { url: TARGET_URL, timeoutMs: 1000 },
     });
@@ -405,7 +400,7 @@ void test('PTC browser runtime cleanup failure reports diagnostics and clears wo
       message: 'PTC browser navigation session cleanup failed',
       diagnostics: {
         cleanupReasonCode: 'container_remove_failed',
-        workspaceRuntimeCount: 1,
+        stateRuntimeCount: 1,
       },
     });
     const rmCountAfterFailure = boundary.getRmInvocationCount();

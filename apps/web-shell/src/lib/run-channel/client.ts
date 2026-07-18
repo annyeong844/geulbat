@@ -3,10 +3,18 @@ import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
 import type {
   RunChannelClientMessage,
+  RunControlMessage,
   RunChannelServerMessage,
+  RunInterjectRequest,
+  RunToolRequest,
+  RunToolResultPayload,
 } from '@geulbat/protocol/run-channel';
 import type { RunStartRequest } from '@geulbat/protocol/run-contract';
-import { tryParseJsonWithGuard } from '@geulbat/protocol/runtime-utils';
+import {
+  isRecord,
+  isString,
+  tryParseJson,
+} from '@geulbat/protocol/runtime-utils';
 import { buildRunChannelAuthMessage } from '../auth/shell-auth.js';
 import {
   beginConnectionAttempt,
@@ -51,8 +59,8 @@ interface RunChannelClientOptions {
   getWebSocketUrl?: () => string;
   buildAuthMessage?: (requestId: string) => RunChannelClientMessage;
   createWebSocket?: (url: string) => WebSocketLike;
-  scheduleTask?: (callback: () => void, delayMs: number) => unknown;
-  clearScheduledTask?: (handle: unknown) => void;
+  scheduleTask?: (callback: () => void, delayMs: number) => number;
+  clearScheduledTask?: (handle: number) => void;
 }
 
 const SOCKET_OPEN = 1;
@@ -65,8 +73,15 @@ interface PendingSocketConnection {
   opened: boolean;
   authenticated: boolean;
   settled: boolean;
+  protocolFailureMessage: string | null;
   detachListeners: () => void;
   resolve: (socket: WebSocketLike) => void;
+  reject: (error: Error) => void;
+}
+
+interface PendingControlAck {
+  action: RunControlMessage['action'];
+  resolve: (ack: RunControlMessage) => void;
   reject: (error: Error) => void;
 }
 
@@ -100,6 +115,7 @@ export class RunChannelClient {
   private socket: WebSocketLike | null = null;
   private connectPromise: Promise<WebSocketLike> | null = null;
   private listeners = new Set<Listener>();
+  private pendingControlAcks = new Map<string, PendingControlAck>();
   private connectionState: RunChannelConnectionState =
     createInitialRunChannelConnectionState();
 
@@ -111,8 +127,8 @@ export class RunChannelClient {
   private readonly scheduleTask: (
     callback: () => void,
     delayMs: number,
-  ) => unknown;
-  private readonly clearScheduledTask: (handle: unknown) => void;
+  ) => number;
+  private readonly clearScheduledTask: (handle: number) => void;
 
   constructor(options: RunChannelClientOptions = {}) {
     this.resolveWebSocketUrl = options.getWebSocketUrl ?? getWebSocketUrl;
@@ -122,10 +138,9 @@ export class RunChannelClient {
       options.createWebSocket ?? ((url: string) => new WebSocket(url));
     this.scheduleTask =
       options.scheduleTask ??
-      ((callback, delayMs) => setTimeout(callback, delayMs));
+      ((callback, delayMs) => window.setTimeout(callback, delayMs));
     this.clearScheduledTask =
-      options.clearScheduledTask ??
-      ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+      options.clearScheduledTask ?? ((handle) => window.clearTimeout(handle));
   }
 
   subscribe(listener: Listener): () => void {
@@ -211,9 +226,135 @@ export class RunChannelClient {
     return requestId;
   }
 
+  // 실행 중 스티어링 — 진행 중인 run에 사용자 지시를 주입한다.
+  // 대기열에 잡힌 receivedSeq를 돌려주므로 셸이 큐 행을 그릴 수 있다.
+  async interject(
+    request: RunInterjectRequest,
+  ): Promise<{ requestId: string; receivedSeq: number }> {
+    const requestId = createRequestId();
+    const ack = new Promise<RunControlMessage>((resolve, reject) => {
+      this.pendingControlAcks.set(requestId, {
+        action: 'run.interject',
+        resolve,
+        reject,
+      });
+    });
+    try {
+      await this.send({
+        type: 'run.interject',
+        requestId,
+        request: { runId: request.runId, text: request.text },
+      });
+    } catch (error: unknown) {
+      this.pendingControlAcks.delete(requestId);
+      throw error;
+    }
+    const control = await ack;
+    return {
+      requestId,
+      receivedSeq: control.action === 'run.interject' ? control.receivedSeq : 0,
+    };
+  }
+
+  // 대기 중 스티어 취소 — 아직 소비되지 않았으면 큐에서 제거된다.
+  async cancelInterject(request: {
+    runId: RunInterjectRequest['runId'];
+    receivedSeq: number;
+  }): Promise<{ cancelled: boolean }> {
+    const requestId = createRequestId();
+    const ack = new Promise<RunControlMessage>((resolve, reject) => {
+      this.pendingControlAcks.set(requestId, {
+        action: 'run.interject.cancel',
+        resolve,
+        reject,
+      });
+    });
+    try {
+      await this.send({
+        type: 'run.interject.cancel',
+        requestId,
+        request: {
+          runId: request.runId,
+          receivedSeq: request.receivedSeq,
+        },
+      });
+    } catch (error: unknown) {
+      this.pendingControlAcks.delete(requestId);
+      throw error;
+    }
+    const control = await ack;
+    return {
+      cancelled:
+        control.action === 'run.interject.cancel' ? control.cancelled : false,
+    };
+  }
+
+  // 대기 중 스티어 즉시 반영 — 데몬이 현재 라운드의 남은 도구 호출을
+  // 건너뛰고 다음 소비 지점으로 빨리 가도록 요청한다.
+  async flushInterject(request: {
+    runId: RunInterjectRequest['runId'];
+  }): Promise<{ flushed: boolean }> {
+    const requestId = createRequestId();
+    const ack = new Promise<RunControlMessage>((resolve, reject) => {
+      this.pendingControlAcks.set(requestId, {
+        action: 'run.interject.flush',
+        resolve,
+        reject,
+      });
+    });
+    try {
+      await this.send({
+        type: 'run.interject.flush',
+        requestId,
+        request: { runId: request.runId },
+      });
+    } catch (error: unknown) {
+      this.pendingControlAcks.delete(requestId);
+      throw error;
+    }
+    const control = await ack;
+    return {
+      flushed:
+        control.action === 'run.interject.flush' ? control.flushed : false,
+    };
+  }
+
+  // 아티팩트 프레임 발 도구 호출 — interject와 같은 pending-ack 패턴으로
+  // requestId 상관 단일 응답(run.control action=run.tool)을 기다린다.
+  async tool(request: RunToolRequest): Promise<RunToolResultPayload> {
+    const requestId = createRequestId();
+    const ack = new Promise<RunControlMessage>((resolve, reject) => {
+      this.pendingControlAcks.set(requestId, {
+        action: 'run.tool',
+        resolve,
+        reject,
+      });
+    });
+    try {
+      await this.send({
+        type: 'run.tool',
+        requestId,
+        request: { ...request },
+      });
+    } catch (error: unknown) {
+      this.pendingControlAcks.delete(requestId);
+      throw error;
+    }
+    const control = await ack;
+    if (control.action !== 'run.tool') {
+      return {
+        ok: false,
+        errorCode: 'internal',
+        error: 'unexpected run.tool control ack shape',
+      };
+    }
+    return control.result;
+  }
+
   close(): void {
     this.clearReconnectTask();
     this.connectionState = markConnectionClosed(this.connectionState, true);
+    this.rejectPendingControlAcks('run channel closed');
     this.socket?.close();
     this.socket = null;
     this.connectPromise = null;
@@ -240,6 +381,7 @@ export class RunChannelClient {
       opened: false,
       authenticated: false,
       settled: false,
+      protocolFailureMessage: null,
       detachListeners: () => undefined,
       resolve,
       reject,
@@ -257,21 +399,20 @@ export class RunChannelClient {
     pending: PendingSocketConnection,
     event: { data: string },
   ): void {
+    if (pending.protocolFailureMessage !== null) {
+      return;
+    }
     if (pending.authenticated && this.socket !== pending.socket) {
       return;
     }
 
-    const parsed = tryParseJsonWithGuard(
-      String(event.data),
-      isRunChannelServerMessage,
-    );
-    if (!parsed.ok) {
-      this.emit({
-        type: 'run.error',
-        code: 'internal',
-        message: 'invalid websocket payload',
-        status: 500,
-      });
+    const parsed = tryParseJson(String(event.data));
+    if (!parsed.ok || !isRunChannelServerMessage(parsed.value)) {
+      if (parsed.ok && this.settleMalformedPendingControlAck(parsed.value)) {
+        return;
+      }
+      pending.protocolFailureMessage = 'invalid websocket payload';
+      pending.socket.close();
       return;
     }
 
@@ -279,7 +420,14 @@ export class RunChannelClient {
     if (this.handleUnauthenticatedMessage(pending, message)) {
       return;
     }
-    this.emit(message);
+    const consumedByControlError = this.settlePendingControlAck(message);
+    // A run.error that answers a pending control request is surfaced to that
+    // caller via the rejected ack; re-emitting it here would also flip the
+    // whole session into the error phase while the daemon run keeps going
+    // (the next prompt would then run.start into conflict_active_run).
+    if (!consumedByControlError) {
+      this.emit(message);
+    }
   }
 
   private handleUnauthenticatedMessage(
@@ -326,7 +474,8 @@ export class RunChannelClient {
     if (!pending.authenticated) {
       this.rejectBeforeAuth(
         pending,
-        'run channel websocket connection failed',
+        pending.protocolFailureMessage ??
+          'run channel websocket connection failed',
         true,
       );
       return;
@@ -336,10 +485,13 @@ export class RunChannelClient {
       this.connectionState.closedExplicitly,
     );
     if (!this.connectionState.closedExplicitly) {
+      const failureMessage =
+        pending.protocolFailureMessage ?? 'run channel disconnected';
+      this.rejectPendingControlAcks(failureMessage);
       this.emit({
         type: 'run.error',
         code: 'internal',
-        message: 'run channel disconnected',
+        message: failureMessage,
         status: 500,
       });
       this.scheduleReconnect();
@@ -415,5 +567,57 @@ export class RunChannelClient {
     }
     this.clearScheduledTask(this.connectionState.reconnectTask);
     this.connectionState = clearReconnectSchedule(this.connectionState);
+  }
+
+  private settleMalformedPendingControlAck(value: unknown): boolean {
+    if (
+      !isRecord(value) ||
+      (value.type !== 'run.control' && value.type !== 'run.error') ||
+      !isString(value.requestId)
+    ) {
+      return false;
+    }
+    const pending = this.pendingControlAcks.get(value.requestId);
+    if (!pending) {
+      return false;
+    }
+    this.pendingControlAcks.delete(value.requestId);
+    pending.reject(new Error('invalid websocket payload'));
+    return true;
+  }
+
+  // Returns true only when a run.error was consumed by a pending control
+  // ack — that error belongs to the awaiting caller, not the session stream.
+  private settlePendingControlAck(message: RunChannelServerMessage): boolean {
+    if (message.type === 'run.control') {
+      const pending = this.pendingControlAcks.get(message.requestId);
+      if (!pending || pending.action !== message.action) {
+        return false;
+      }
+      this.pendingControlAcks.delete(message.requestId);
+      pending.resolve(message);
+      return false;
+    }
+    if (message.type !== 'run.error' || message.requestId === undefined) {
+      return false;
+    }
+    const pending = this.pendingControlAcks.get(message.requestId);
+    if (!pending) {
+      return false;
+    }
+    this.pendingControlAcks.delete(message.requestId);
+    pending.reject(new Error(message.message));
+    return true;
+  }
+
+  private rejectPendingControlAcks(message: string): void {
+    if (this.pendingControlAcks.size === 0) {
+      return;
+    }
+    const pending = Array.from(this.pendingControlAcks.values());
+    this.pendingControlAcks.clear();
+    for (const ack of pending) {
+      ack.reject(new Error(message));
+    }
   }
 }

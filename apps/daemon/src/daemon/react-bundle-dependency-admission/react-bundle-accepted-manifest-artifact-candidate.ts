@@ -3,13 +3,14 @@ import {
   isReactBundleRuntimeManifest,
   type ReactBundleRuntimeManifest,
 } from '@geulbat/protocol/react-bundle-inline-compile';
+import { isRecord } from '@geulbat/protocol/runtime-utils';
 import { sha256Digest } from '@geulbat/shared-utils/sha256';
 import { stableStringify } from '@geulbat/shared-utils/stable-json';
 import type { ReactBundleRuntimeManifestAcceptanceResult } from './react-bundle-accepted-runtime-manifest.js';
 import { normalizeDependencyUrl } from './react-bundle-dependency-prepare.js';
 import { isOpaqueSandboxOutputEvidenceRef } from '../sandbox/output-validation.js';
 
-export type ReactBundleAcceptedManifestArtifactCandidate =
+type ReactBundleAcceptedManifestArtifactCandidate =
   ParsedCanonicalArtifactEnvelope;
 
 export type ReactBundleAcceptedRuntimeManifestSuccess = Extract<
@@ -33,14 +34,14 @@ export type ReactBundleAcceptedManifestArtifactCandidateSource =
   | ReactBundleAcceptedRuntimeManifestBoundarySuccess
   | ReactBundleAcceptedRuntimeManifestFailure;
 
-export type ReactBundleAcceptedManifestArtifactCandidateFailureReason =
+type ReactBundleAcceptedManifestArtifactCandidateFailureReason =
   | 'accepted_summary_invalid'
   | 'manifest_payload_invalid'
   | 'evidence_ref_not_opaque'
   | 'dependency_policy_mismatch'
   | 'payload_leaks_private_metadata';
 
-export interface ReactBundleAcceptedManifestArtifactCandidateSuccess {
+interface ReactBundleAcceptedManifestArtifactCandidateSuccess {
   ok: true;
   artifactCandidate: ReactBundleAcceptedManifestArtifactCandidate;
   handoff: {
@@ -154,7 +155,9 @@ export function buildReactBundleAcceptedManifestArtifactCandidate(args: {
   }
 
   const policyValidation = validateDependencyPolicy(accepted, parsed.value);
-  if (!policyValidation.ok) return policyValidation.failure;
+  if (!policyValidation.ok) {
+    return policyValidation.failure;
+  }
 
   const artifactCandidate: ReactBundleAcceptedManifestArtifactCandidate = {
     renderer: 'react_bundle',
@@ -328,8 +331,8 @@ function containsPrivateMetadata(value: unknown): boolean {
   if (Array.isArray(value)) {
     return value.some(containsPrivateMetadata);
   }
-  if (value && typeof value === 'object') {
-    return Object.entries(value as Record<string, unknown>).some(
+  if (isRecord(value)) {
+    return Object.entries(value).some(
       ([key, nested]) =>
         [
           'prepareEvidenceRef',

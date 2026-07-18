@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useReducer,
   useRef,
   useState,
@@ -11,8 +12,17 @@ import type {
   PermissionMode,
 } from '@geulbat/protocol/run-approval';
 import type {
+  RunAttachmentInput,
+  RunModelId,
+  RunReasoningEffort,
   RunRequest,
   RunStartRequest,
+  RunSubagentModelRouting,
+} from '@geulbat/protocol/run-contract';
+import {
+  DEFAULT_RUN_MODEL_ID,
+  DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
+  resolveRunModelDescriptor,
 } from '@geulbat/protocol/run-contract';
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 
@@ -24,6 +34,7 @@ import type {
   StartRunCommandClient,
 } from './run-session-commands.js';
 import { useRunSessionControllerActions } from './run-session-controller-actions.js';
+import type { RequestWidgetTool } from './run-session-view-model.js';
 import { useRunSessionDiagnostics } from './run-session-diagnostics.js';
 import { useRunSessionSettleHandlers } from './run-session-settle-handlers.js';
 import { getActiveRunId } from './run-session-state-selectors.js';
@@ -36,10 +47,23 @@ import type {
   RunSessionStateAction,
 } from './run-session-state-types.js';
 import { RunChannelClient } from '../lib/run-channel/client.js';
+import { prepareThreadProviderTransition } from '../lib/api/threads.js';
+import {
+  readStoredContextUsageByThread,
+  storeContextUsageByThread,
+} from './run-session-context-usage-cache.js';
 
 export interface RunSessionControllerClient
   extends
-    Pick<RunChannelClient, 'subscribe' | 'close'>,
+    Pick<
+      RunChannelClient,
+      | 'subscribe'
+      | 'close'
+      | 'interject'
+      | 'cancelInterject'
+      | 'flushInterject'
+      | 'tool'
+    >,
     StartRunCommandClient,
     ApprovalDecisionClient,
     CancelRunSessionClient {}
@@ -84,12 +108,16 @@ function useHandleRunStarted({
 }
 
 interface UseRunSessionRuntimeArgs {
-  projectId: string;
+  workingDirectory: string;
   selectedFile: string | null;
   selectedThreadId: string | null;
   loadThreads: () => Promise<void>;
   openFile: (path: string) => Promise<void>;
-  appendOptimisticUserMessage: (prompt: string) => void;
+  appendOptimisticUserMessage: (
+    prompt: string,
+    origin?: 'artifact_frame',
+  ) => void;
+  trimMessagesForRegenerate: () => void;
   loadTree: () => Promise<void>;
   setSelectedThreadId: (threadId: string | null) => void;
   openThreadForRunSettle: (
@@ -98,13 +126,29 @@ interface UseRunSessionRuntimeArgs {
   applyThreadSnapshotForRunSettle?: (thread: ThreadDetailResponse) => boolean;
   createClient?: () => RunSessionControllerClient;
   prepareStartRequest?: (request: RunRequest) => Promise<RunStartRequest>;
+  prepareProviderTransitionRequest?: typeof prepareThreadProviderTransition;
 }
 
 interface UseRunSessionRuntimeResult {
   state: RunSessionState;
   permissionMode: PermissionMode;
   setPermissionMode: (mode: PermissionMode) => void;
-  sendPrompt: (prompt: string) => Promise<void>;
+  modelId: RunModelId;
+  setModelId: (modelId: RunModelId) => void;
+  prepareProviderTransition: (targetModelId: RunModelId) => Promise<void>;
+  reasoningEffort: RunReasoningEffort;
+  setReasoningEffort: (effort: RunReasoningEffort) => void;
+  subagentModelRouting: RunSubagentModelRouting;
+  setSubagentModelRouting: (routing: RunSubagentModelRouting) => void;
+  sendPrompt: (
+    prompt: string,
+    attachments?: RunAttachmentInput[],
+  ) => Promise<void>;
+  sendWidgetPrompt: (prompt: string) => Promise<void>;
+  requestWidgetTool: RequestWidgetTool;
+  regeneratePrompt: (prompt: string) => Promise<void>;
+  cancelSteer: (receivedSeq: number) => Promise<void>;
+  flushSteers: () => Promise<void>;
   startRunRequest: (
     request: RunRequest,
     optimisticPrompt?: string,
@@ -118,18 +162,20 @@ interface UseRunSessionRuntimeResult {
 }
 
 export function useRunSessionRuntime({
-  projectId,
+  workingDirectory,
   selectedFile,
   selectedThreadId,
   loadThreads,
   loadTree,
   openFile,
   appendOptimisticUserMessage,
+  trimMessagesForRegenerate,
   setSelectedThreadId,
   openThreadForRunSettle,
   applyThreadSnapshotForRunSettle = () => true,
   createClient = () => new RunChannelClient(),
   prepareStartRequest,
+  prepareProviderTransitionRequest = prepareThreadProviderTransition,
 }: UseRunSessionRuntimeArgs): UseRunSessionRuntimeResult {
   const [client] = useState(() => createClient());
   const projectTreeRefreshControllerRef = useRef(
@@ -138,9 +184,64 @@ export function useRunSessionRuntime({
   const [state, dispatch] = useReducer(
     reduceRunSessionState,
     undefined,
-    createInitialRunSessionState,
+    () => ({
+      ...createInitialRunSessionState(),
+      contextUsageByThread: readStoredContextUsageByThread(),
+    }),
   );
+  useEffect(() => {
+    storeContextUsageByThread(state.contextUsageByThread);
+  }, [state.contextUsageByThread]);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('basic');
+  const [modelId, setModelIdState] = useState<RunModelId>(DEFAULT_RUN_MODEL_ID);
+  const [reasoningEffort, setReasoningEffort] =
+    useState<RunReasoningEffort>('medium');
+  const [subagentModelRouting, setSubagentModelRouting] =
+    useState<RunSubagentModelRouting>(DEFAULT_RUN_SUBAGENT_MODEL_ROUTING);
+  const setModelId = useCallback((nextModelId: RunModelId) => {
+    const model = resolveRunModelDescriptor(nextModelId);
+    setModelIdState(nextModelId);
+    setReasoningEffort((current) =>
+      model.reasoningEfforts.some((effort) => effort === current)
+        ? current
+        : model.defaultReasoningEffort,
+    );
+  }, []);
+  const prepareProviderTransition = useCallback(
+    async (targetModelId: RunModelId) => {
+      const source = resolveRunModelDescriptor(modelId);
+      const target = resolveRunModelDescriptor(targetModelId);
+      if (
+        selectedThreadId === null ||
+        source.providerId === target.providerId
+      ) {
+        return;
+      }
+      const response = await prepareProviderTransitionRequest(
+        selectedThreadId,
+        {
+          sourceModelId: modelId,
+          targetModelId,
+          reasoningEffort,
+        },
+      );
+      if (
+        response.threadId !== selectedThreadId ||
+        response.sourceModelId !== modelId ||
+        response.targetModelId !== targetModelId
+      ) {
+        throw new Error('provider transition response does not match request');
+      }
+      await loadThreads();
+    },
+    [
+      loadThreads,
+      modelId,
+      prepareProviderTransitionRequest,
+      reasoningEffort,
+      selectedThreadId,
+    ],
+  );
   const { clearSessionError, reportSessionFailure, logCommandFailure } =
     useRunSessionDiagnostics({
       dispatch,
@@ -156,6 +257,11 @@ export function useRunSessionRuntime({
     });
   const {
     sendPrompt,
+    sendWidgetPrompt,
+    requestWidgetTool,
+    regeneratePrompt,
+    cancelSteer,
+    flushSteers,
     startRunRequest,
     handleApprove,
     handleDeny,
@@ -164,16 +270,21 @@ export function useRunSessionRuntime({
     startClient: client,
     approvalClient: client,
     cancelClient: client,
+    interjectClient: client,
+    frameToolClient: client,
     dispatch,
-    projectId,
     appendOptimisticUserMessage,
+    trimMessagesForRegenerate,
     clearSessionError,
     reportSessionFailure,
     logCommandFailure,
     promptInputs: {
+      workingDirectory,
+      modelId,
       selectedThreadId,
-      selectedFile,
       permissionMode,
+      reasoningEffort,
+      subagentModelRouting,
     },
     cancelState: {
       phase: state.phase,
@@ -206,7 +317,19 @@ export function useRunSessionRuntime({
     state,
     permissionMode,
     setPermissionMode,
+    modelId,
+    setModelId,
+    prepareProviderTransition,
+    reasoningEffort,
+    setReasoningEffort,
+    subagentModelRouting,
+    setSubagentModelRouting,
     sendPrompt,
+    sendWidgetPrompt,
+    requestWidgetTool,
+    regeneratePrompt,
+    cancelSteer,
+    flushSteers,
     startRunRequest,
     handleApprove,
     handleDeny,

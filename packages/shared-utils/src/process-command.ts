@@ -34,6 +34,7 @@ export interface ProcessOutputLimitExceededCommandResult {
 export interface BoundedProcessCommandInvocation {
   executable: string;
   args: string[];
+  cwd?: string;
   timeoutMs?: number;
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
@@ -98,10 +99,32 @@ export async function runBoundedProcessCommand(
   }
 
   return await new Promise((resolve) => {
-    const child = spawn(invocation.executable, invocation.args, {
-      env: invocation.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(invocation.executable, invocation.args, {
+        ...(invocation.cwd === undefined ? {} : { cwd: invocation.cwd }),
+        env: invocation.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error: unknown) {
+      resolve({
+        kind: 'crash',
+        stdout: '',
+        stderr:
+          error instanceof Error ? error.message : 'process command failed',
+      });
+      return;
+    }
+    const stdoutStream = child.stdout;
+    const stderrStream = child.stderr;
+    if (!stdoutStream || !stderrStream) {
+      resolve({
+        kind: 'crash',
+        stdout: '',
+        stderr: 'process command failed to open output streams',
+      });
+      return;
+    }
     let stdout = '';
     let stderr = '';
     let stdoutBufferedBytes = 0;
@@ -193,12 +216,12 @@ export async function runBoundedProcessCommand(
       terminate('cancelled');
     }
 
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
+    stdoutStream.setEncoding('utf8');
+    stderrStream.setEncoding('utf8');
+    stdoutStream.on('data', (chunk: string) => {
       appendOutput('stdout', chunk);
     });
-    child.stderr.on('data', (chunk: string) => {
+    stderrStream.on('data', (chunk: string) => {
       appendOutput('stderr', chunk);
     });
     child.on('error', (error) => {

@@ -15,10 +15,10 @@ import {
 import {
   createTestSocket,
   readLastSentMessage,
-} from './run-channel-test-support.js';
+} from '../../../test-support/run-channel-test-support.js';
 import { createRunInterjectBuffer } from '../../../daemon/sessions/active-run-interject-buffer.js';
 import { createDaemonContext } from '../../../daemon/context.js';
-import { makeRunWorkspaceContext } from '../../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../../test-support/run-context.js';
 import { testRunId } from '../../../test-support/run-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 
@@ -193,7 +193,7 @@ void test('cleanupSocketState clears subscriptions and aborts socket-owned runs'
 
   const startResult = daemonContext.activeRuns.tryStartRun(threadId, {
     runId,
-    ...makeRunWorkspaceContext({ threadId }),
+    ...makeRunContext({ threadId }),
     ownerThreadId: threadId,
     abortController,
     interject: createRunInterjectBuffer(),
@@ -264,7 +264,7 @@ void test('cleanupSocketState aborts socket-owned runs without cancelling backgr
   assert.deepEqual(
     daemonContext.activeRuns.tryStartRun(ownerThreadId, {
       runId: parentRunId,
-      ...makeRunWorkspaceContext({ threadId: ownerThreadId }),
+      ...makeRunContext({ threadId: ownerThreadId }),
       ownerThreadId,
       abortController: parentAbortController,
       interject: createRunInterjectBuffer(),
@@ -275,7 +275,7 @@ void test('cleanupSocketState aborts socket-owned runs without cancelling backgr
   assert.deepEqual(
     daemonContext.activeRuns.tryStartRun(childThreadId, {
       runId: childRunId,
-      ...makeRunWorkspaceContext({ threadId: childThreadId }),
+      ...makeRunContext({ threadId: childThreadId }),
       ownerThreadId,
       abortController: childAbortController,
       interject: createRunInterjectBuffer(),
@@ -313,7 +313,7 @@ void test('cleanupSocketState clears local runtime stores', () => {
 
   const startResult = daemonContext.activeRuns.tryStartRun(threadId, {
     runId,
-    ...makeRunWorkspaceContext({ threadId }),
+    ...makeRunContext({ threadId }),
     ownerThreadId: threadId,
     abortController,
     interject: createRunInterjectBuffer(),
@@ -348,7 +348,6 @@ void test('cleanupSocketState clears approval session runtime state', async () =
     threadId,
     {
       runId: 'run-socket-approval-cleanup',
-      threadId,
       sessionId: state.approvalSessionId,
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',

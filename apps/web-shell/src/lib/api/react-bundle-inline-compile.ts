@@ -4,7 +4,6 @@ import {
   type ReactBundleInlineCompileResponse,
   type ReactBundleInlineSourceInput,
 } from '@geulbat/protocol/react-bundle-inline-compile';
-import { DEFAULT_PROJECT_ID, type ProjectId } from '@geulbat/protocol/ids';
 import { getErrorMessage } from '@geulbat/shared-utils/error';
 import { createLogger } from '@geulbat/shared-utils/logger';
 
@@ -14,10 +13,9 @@ const logger = createLogger('api/react-bundle-inline-compile');
 
 export async function compileReactBundleInlineSource(
   input: ReactBundleInlineSourceInput,
-  projectId: ProjectId = DEFAULT_PROJECT_ID,
 ): Promise<ReactBundleInlineCompileResponse> {
   const uploaded = await apiFetch(
-    `/api/react-bundle-inline-compile/inputs?projectId=${encodeURIComponent(projectId)}`,
+    '/api/react-bundle-inline-compile/inputs',
     {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
@@ -28,7 +26,7 @@ export async function compileReactBundleInlineSource(
 
   try {
     return await apiFetch(
-      `/api/react-bundle-inline-compile?projectId=${encodeURIComponent(projectId)}`,
+      '/api/react-bundle-inline-compile',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -41,7 +39,6 @@ export async function compileReactBundleInlineSource(
     );
   } catch (error: unknown) {
     await cleanupReactBundleInlineCompileInputRefAfterFailure(
-      projectId,
       uploaded.inputRef,
       error,
     );
@@ -50,15 +47,12 @@ export async function compileReactBundleInlineSource(
 }
 
 async function cleanupReactBundleInlineCompileInputRefAfterFailure(
-  projectId: ProjectId,
   inputRef: string,
   originalError: unknown,
 ): Promise<void> {
   try {
     await apiFetch(
-      `/api/react-bundle-inline-compile/inputs?projectId=${encodeURIComponent(
-        projectId,
-      )}&inputRef=${encodeURIComponent(inputRef)}`,
+      `/api/react-bundle-inline-compile/inputs?inputRef=${encodeURIComponent(inputRef)}`,
       { method: 'DELETE' },
       isApiOkResponse,
     );

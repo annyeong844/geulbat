@@ -186,7 +186,7 @@ function packageCacheIdentityForPolicy(
 ): ReturnType<typeof normalizePtcPackageCacheIdentity> {
   return normalizePtcPackageCacheIdentity({
     trustContextId: 'trust-package-install-test',
-    workspaceRootRealpath: '/workspace/package-install-test',
+    stateRootRealpath: '/workspace/package-install-test',
     labPolicyId: policy.policyId,
     packageCacheId: policy.packageCache.cacheId,
     packageCacheMountPolicyId: policy.packageCache.mountPolicyId,

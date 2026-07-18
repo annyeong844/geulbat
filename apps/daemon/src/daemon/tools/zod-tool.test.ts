@@ -21,7 +21,7 @@ void test('defineZodTool derives the current Tool.parameters subset from a stric
       recursive: z.boolean().optional().describe('Recursive flag.'),
     }),
     sideEffectLevel: 'read',
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     async executeParsed() {
@@ -63,25 +63,57 @@ void test('defineZodTool derives the current Tool.parameters subset from a stric
   });
 });
 
-void test('defineZodTool fails closed when a property falls outside the scalar-only first-slice subset', () => {
-  assert.throws(() =>
-    defineZodTool({
-      name: 'nested_tool',
-      description: 'nested',
-      argsSchema: z.strictObject({
-        payload: z.strictObject({
-          path: z.string(),
-        }),
-      }),
-      sideEffectLevel: 'read',
-      mayMutateWorkspaceFiles: false,
-      timeoutMs: 1_000,
-      requiresApproval: false,
-      async executeParsed() {
-        return { ok: true, output: 'ok' };
-      },
+void test('defineZodTool projects supported array/object properties', () => {
+  const tool = defineZodTool({
+    name: 'nested_tool',
+    description: 'nested',
+    argsSchema: z.strictObject({
+      items: z
+        .array(
+          z.strictObject({
+            text: z.string().min(1),
+            status: z.enum(['pending', 'completed']),
+          }),
+        )
+        .min(1)
+        .describe('Ordered items.'),
     }),
-  );
+    sideEffectLevel: 'read',
+    mayMutateComputerFiles: false,
+    timeoutMs: 1_000,
+    requiresApproval: false,
+    async executeParsed() {
+      return { ok: true, output: 'ok' };
+    },
+  });
+
+  assert.deepEqual(tool.parameters, {
+    type: 'object',
+    properties: {
+      items: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            text: {
+              type: 'string',
+              minLength: 1,
+            },
+            status: {
+              type: 'string',
+              enum: ['pending', 'completed'],
+            },
+          },
+          required: ['text', 'status'],
+          additionalProperties: false,
+        },
+        description: 'Ordered items.',
+        minItems: 1,
+      },
+    },
+    required: ['items'],
+    additionalProperties: false,
+  });
 });
 
 void test('zodSchemaToToolParameters projects root oneOf object branches', () => {
@@ -197,7 +229,7 @@ void test('defineZodTool formats invalid_args messages as stable path-based stri
       recursive: z.boolean().optional(),
     }),
     sideEffectLevel: 'read',
-    mayMutateWorkspaceFiles: false,
+    mayMutateComputerFiles: false,
     timeoutMs: 1_000,
     requiresApproval: false,
     async executeParsed() {
@@ -207,7 +239,7 @@ void test('defineZodTool formats invalid_args messages as stable path-based stri
 
   const result = await tool.execute(
     { path: '', mode: 'delete', recursive: true, extra: true },
-    { callId: 'call-zod-tool-1', workspaceRoot: '/tmp' },
+    { callId: 'call-zod-tool-1' },
   );
 
   assert.equal(result.ok, false);

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { resetArtifactBackchannelRateLimitForTests } from './artifact-backchannel-rate-limit.js';
 import {
   ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
   ARTIFACT_RUNTIME_HOST_RESIZE_ACTION,
@@ -15,7 +16,7 @@ import {
   RUNTIME_DOCUMENT,
   RUNTIME_HOST_ORIGIN,
   SCOPE_HANDLE,
-} from './artifact-runtime-frame-message-handler-test-support.js';
+} from '../../../test-support/artifact-runtime-frame-message-handler.js';
 
 void test('handleArtifactRuntimeFrameMessageEvent ignores messages outside the runtime frame origin and source', async () => {
   const frameWindow = new FakeFrameWindow();
@@ -209,4 +210,251 @@ void test('handleArtifactRuntimeFrameMessageEvent applies resize and generated s
     },
     null,
   ]);
+});
+
+void test('handleArtifactRuntimeFrameMessageEvent round-trips agent tool requests back to the frame', async () => {
+  const frameWindow = new FakeFrameWindow();
+  const seenIntents: Array<unknown> = [];
+
+  await handleArtifactRuntimeFrameMessageEvent(
+    createMessageEvent({
+      source: frameWindow,
+      data: {
+        kind: 'geulbat.artifact_runtime_agent',
+        action: 'request_tool',
+        scopeHandle: SCOPE_HANDLE,
+        requestId: 'af-1',
+        toolName: 'read_file',
+        args: { path: 'draft.md' },
+      },
+    }),
+    {
+      iframeRef: createIframeRef(frameWindow),
+      runtimeDocument: RUNTIME_DOCUMENT,
+      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      scopeHandle: SCOPE_HANDLE,
+      bridgeResponder: createBridgeResponder(),
+      markHostReady() {},
+      setFrameHeight() {},
+      async onAgentToolRequest(intent) {
+        seenIntents.push(intent);
+        return { ok: true, output: 'tool-output' };
+      },
+    },
+  );
+
+  assert.deepEqual(seenIntents, [
+    {
+      requestId: 'af-1',
+      toolName: 'read_file',
+      args: { path: 'draft.md' },
+      scopeHandle: SCOPE_HANDLE,
+    },
+  ]);
+  assert.deepEqual(frameWindow.postedMessages, [
+    {
+      message: {
+        kind: 'geulbat.shell.agent_tool_result',
+        requestId: 'af-1',
+        result: { ok: true, output: 'tool-output' },
+      },
+      targetOrigin: RUNTIME_HOST_ORIGIN,
+    },
+  ]);
+});
+
+void test('handleArtifactRuntimeFrameMessageEvent answers unwired or failing tool requests with an error result', async () => {
+  const frameWindow = new FakeFrameWindow();
+
+  // 콜백 미배선 — 프레임 pending Promise가 매달리지 않도록 unavailable 회신
+  await handleArtifactRuntimeFrameMessageEvent(
+    createMessageEvent({
+      source: frameWindow,
+      data: {
+        kind: 'geulbat.artifact_runtime_agent',
+        action: 'request_tool',
+        scopeHandle: SCOPE_HANDLE,
+        requestId: 'af-2',
+        toolName: 'read_file',
+        args: {},
+      },
+    }),
+    {
+      iframeRef: createIframeRef(frameWindow),
+      runtimeDocument: RUNTIME_DOCUMENT,
+      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      scopeHandle: SCOPE_HANDLE,
+      bridgeResponder: createBridgeResponder(),
+      markHostReady() {},
+      setFrameHeight() {},
+    },
+  );
+
+  // 콜백 예외 — internal 오류 결과로 회신
+  await handleArtifactRuntimeFrameMessageEvent(
+    createMessageEvent({
+      source: frameWindow,
+      data: {
+        kind: 'geulbat.artifact_runtime_agent',
+        action: 'request_tool',
+        scopeHandle: SCOPE_HANDLE,
+        requestId: 'af-3',
+        toolName: 'read_file',
+        args: {},
+      },
+    }),
+    {
+      iframeRef: createIframeRef(frameWindow),
+      runtimeDocument: RUNTIME_DOCUMENT,
+      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      scopeHandle: SCOPE_HANDLE,
+      bridgeResponder: createBridgeResponder(),
+      markHostReady() {},
+      setFrameHeight() {},
+      async onAgentToolRequest() {
+        throw new Error('boom');
+      },
+    },
+  );
+
+  assert.equal(frameWindow.postedMessages.length, 2);
+  const [unwired, failed] = frameWindow.postedMessages;
+  assert.deepEqual(unwired?.message, {
+    kind: 'geulbat.shell.agent_tool_result',
+    requestId: 'af-2',
+    result: {
+      ok: false,
+      errorCode: 'unavailable',
+      error: 'tool channel is not wired for this artifact frame',
+    },
+  });
+  assert.deepEqual(failed?.message, {
+    kind: 'geulbat.shell.agent_tool_result',
+    requestId: 'af-3',
+    result: { ok: false, errorCode: 'internal', error: 'boom' },
+  });
+});
+
+void test('handleArtifactRuntimeFrameMessageEvent drops prompt intents over the scopeHandle budget', async () => {
+  resetArtifactBackchannelRateLimitForTests();
+  const frameWindow = new FakeFrameWindow();
+  const prompts: string[] = [];
+  const baseArgs = {
+    iframeRef: createIframeRef(frameWindow),
+    runtimeDocument: RUNTIME_DOCUMENT,
+    runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+    scopeHandle: SCOPE_HANDLE,
+    bridgeResponder: createBridgeResponder(),
+    markHostReady() {},
+    setFrameHeight() {},
+    onAgentPromptRequest(intent: { text: string }) {
+      prompts.push(intent.text);
+    },
+  };
+
+  // prompt 레인 예산(3/10s) 초과분은 조용히 드롭된다 — 루프 난사 방지
+  for (let index = 0; index < 5; index += 1) {
+    await handleArtifactRuntimeFrameMessageEvent(
+      createMessageEvent({
+        source: frameWindow,
+        data: {
+          kind: 'geulbat.artifact_runtime_agent',
+          action: 'request_prompt',
+          scopeHandle: SCOPE_HANDLE,
+          text: `prompt-${index}`,
+        },
+      }),
+      baseArgs,
+    );
+  }
+
+  assert.deepEqual(prompts, ['prompt-0', 'prompt-1', 'prompt-2']);
+  assert.deepEqual(frameWindow.postedMessages, []);
+  resetArtifactBackchannelRateLimitForTests();
+});
+
+void test('handleArtifactRuntimeFrameMessageEvent settles tool requests over budget with rate_limited', async () => {
+  resetArtifactBackchannelRateLimitForTests();
+  const frameWindow = new FakeFrameWindow();
+  let toolCallCount = 0;
+  const baseArgs = {
+    iframeRef: createIframeRef(frameWindow),
+    runtimeDocument: RUNTIME_DOCUMENT,
+    runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+    scopeHandle: SCOPE_HANDLE,
+    bridgeResponder: createBridgeResponder(),
+    markHostReady() {},
+    setFrameHeight() {},
+    async onAgentToolRequest() {
+      toolCallCount += 1;
+      return { ok: true as const, output: 'ok' };
+    },
+  };
+
+  for (let index = 0; index < 11; index += 1) {
+    await handleArtifactRuntimeFrameMessageEvent(
+      createMessageEvent({
+        source: frameWindow,
+        data: {
+          kind: 'geulbat.artifact_runtime_agent',
+          action: 'request_tool',
+          scopeHandle: SCOPE_HANDLE,
+          requestId: `af-limit-${index}`,
+          toolName: 'read_file',
+          args: {},
+        },
+      }),
+      baseArgs,
+    );
+  }
+
+  // 예산(10/10s) 안쪽은 실행되고, 초과분은 실행 없이 rate_limited로 settle
+  assert.equal(toolCallCount, 10);
+  assert.equal(frameWindow.postedMessages.length, 11);
+  const lastReply = frameWindow.postedMessages.at(-1);
+  assert.deepEqual(lastReply?.message, {
+    kind: 'geulbat.shell.agent_tool_result',
+    requestId: 'af-limit-10',
+    result: {
+      ok: false,
+      errorCode: 'rate_limited',
+      error: 'artifact frame tool budget exhausted; retry later',
+    },
+  });
+  resetArtifactBackchannelRateLimitForTests();
+});
+
+void test('handleArtifactRuntimeFrameMessageEvent ignores tool requests with a spoofed scopeHandle', async () => {
+  const frameWindow = new FakeFrameWindow();
+  let toolCallCount = 0;
+
+  await handleArtifactRuntimeFrameMessageEvent(
+    createMessageEvent({
+      source: frameWindow,
+      data: {
+        kind: 'geulbat.artifact_runtime_agent',
+        action: 'request_tool',
+        scopeHandle: 'stolen-scope',
+        requestId: 'af-4',
+        toolName: 'read_file',
+        args: {},
+      },
+    }),
+    {
+      iframeRef: createIframeRef(frameWindow),
+      runtimeDocument: RUNTIME_DOCUMENT,
+      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      scopeHandle: SCOPE_HANDLE,
+      bridgeResponder: createBridgeResponder(),
+      markHostReady() {},
+      setFrameHeight() {},
+      async onAgentToolRequest() {
+        toolCallCount += 1;
+        return { ok: true, output: 'never' };
+      },
+    },
+  );
+
+  assert.equal(toolCallCount, 0);
+  assert.deepEqual(frameWindow.postedMessages, []);
 });

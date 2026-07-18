@@ -1,8 +1,11 @@
+import { isRecord } from '../../runtime-json.js';
 import type { ProviderUsageTelemetry } from './wire/types.js';
 
 interface ProviderTelemetryContext {
-  providerSessionId: string;
-  promptCacheKey: string;
+  promptCacheKeyHash?: string;
+  stablePrefixFingerprint?: string;
+  prefixFingerprintVersion?: string;
+  cacheProjectionVersion?: string;
 }
 
 type TelemetryRecord = Record<string, unknown>;
@@ -63,14 +66,28 @@ export function buildProviderCacheTelemetryLogFields(
   telemetry: ProviderUsageTelemetry | undefined,
   context: ProviderTelemetryContext,
 ): Record<string, string | number> {
+  const traceFields = {
+    ...(context.promptCacheKeyHash !== undefined
+      ? { promptCacheKeyHash: context.promptCacheKeyHash }
+      : {}),
+    ...(context.stablePrefixFingerprint !== undefined
+      ? { stablePrefixFingerprint: context.stablePrefixFingerprint }
+      : {}),
+    ...(context.prefixFingerprintVersion !== undefined
+      ? { prefixFingerprintVersion: context.prefixFingerprintVersion }
+      : {}),
+    ...(context.cacheProjectionVersion !== undefined
+      ? { cacheProjectionVersion: context.cacheProjectionVersion }
+      : {}),
+  };
+
   if (!telemetry) {
-    return { providerUsage: 'absent' };
+    return { providerUsage: 'absent', ...traceFields };
   }
 
   return {
     providerUsage: 'present',
-    providerSessionId: context.providerSessionId,
-    promptCacheKey: context.promptCacheKey,
+    ...traceFields,
     ...(telemetry.inputTokens !== undefined
       ? { inputTokens: telemetry.inputTokens }
       : {}),
@@ -136,7 +153,5 @@ function readNonNegativeInteger(
 }
 
 function asRecord(value: unknown): TelemetryRecord | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as TelemetryRecord)
-    : null;
+  return isRecord(value) ? value : null;
 }

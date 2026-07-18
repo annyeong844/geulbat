@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import type { HistoryItem } from '../llm/index.js';
+import { buildHistoryFromTranscript } from './history/build-history-from-transcript.js';
+import { recordToolResult } from './loop-tool-support.js';
 import { processFunctionCalls } from './loop-tool-execution.js';
 import {
   buildAgentToolExecutionContextBase,
@@ -26,11 +28,19 @@ import type {
   ToolParseResult,
 } from '../tools/types.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
-import { testProjectId } from '../../test-support/project-id.js';
 import { testRunId } from '../../test-support/run-id.js';
-import { makeRunWorkspaceContext } from '../../test-support/run-workspace-context.js';
+import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import { createRunState } from './runtime/run-state.js';
+import {
+  isInterjectFlushRequested,
+  pushPendingInterject,
+  requestInterjectFlush,
+} from '../sessions/active-run-interject-buffer.js';
+import {
+  TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+  TEST_INHERITED_SOL_MODEL_PIN,
+} from '../../test-support/subagent-model-routing.js';
 
 function registerOnce(
   daemonContext: ReturnType<typeof createDaemonContext>,
@@ -52,7 +62,7 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
   name: string;
   description: string;
   sideEffectLevel: AnyTool['sideEffectLevel'];
-  mayMutateWorkspaceFiles?: boolean;
+  mayMutateComputerFiles?: boolean;
   parallelBatchKind?: AnyTool['parallelBatchKind'];
   requiresApproval: boolean;
   parseArgs?: (raw: unknown) => ToolParseResult<TArgs>;
@@ -72,7 +82,7 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
     },
     strict: true,
     sideEffectLevel: args.sideEffectLevel,
-    mayMutateWorkspaceFiles: args.mayMutateWorkspaceFiles ?? false,
+    mayMutateComputerFiles: args.mayMutateComputerFiles ?? false,
     ...(args.parallelBatchKind
       ? { parallelBatchKind: args.parallelBatchKind }
       : {}),
@@ -86,7 +96,7 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
 function makeExecutionRuntime(
   daemonContext: ReturnType<typeof createDaemonContext>,
   args: {
-    runContext: ReturnType<typeof makeRunWorkspaceContext>;
+    runContext: ReturnType<typeof makeRunContext>;
     runId: string;
     approvalContext: ReturnType<typeof makeApprovalContext>;
     emit: Parameters<typeof buildToolCallExecutionRuntime>[0]['emit'];
@@ -94,6 +104,7 @@ function makeExecutionRuntime(
     selection?: ToolExecutionContext['selection'];
     signal?: AbortSignal;
     runState?: ReturnType<typeof createRunState>;
+    computerFileRoot?: string;
   },
 ) {
   return buildToolCallExecutionRuntime({
@@ -111,8 +122,13 @@ function makeExecutionRuntime(
       selection: args.selection,
       signal: args.signal,
       runState: args.runState,
+      ...(args.computerFileRoot === undefined
+        ? {}
+        : { computerFileRoot: args.computerFileRoot }),
       memoryIndex: undefined,
       agentSpawnRuntime: daemonContext,
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      subagentModelRouting: TEST_AUTO_SUBAGENT_MODEL_ROUTING,
     }),
   });
 }
@@ -131,10 +147,9 @@ void test('invalid tool arguments persist tool_call and tool_result to transcrip
   const threadId = testThreadId(1);
   const daemonContext = createDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-invalid-args-'));
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const events: string[] = [];
@@ -172,6 +187,21 @@ void test('invalid tool arguments persist tool_call and tool_result to transcrip
     transcript.map((entry) => entry.role),
     ['tool_call', 'tool_result'],
   );
+  const liveOutput =
+    history[0]?.kind === 'function_call_output' ? history[0].output : undefined;
+  assert.equal(typeof liveOutput, 'string');
+  const storedResult = JSON.parse(transcript[1]?.content ?? '{}') as {
+    output?: unknown;
+  };
+  assert.equal(storedResult.output, liveOutput);
+  const replayedHistory = buildHistoryFromTranscript(transcript);
+  const replayedOutput = replayedHistory.find(
+    (item) => item.kind === 'function_call_output',
+  );
+  assert.equal(replayedOutput?.kind, 'function_call_output');
+  if (replayedOutput?.kind === 'function_call_output') {
+    assert.equal(replayedOutput.output, liveOutput);
+  }
 });
 
 void test('large search_files output is offloaded and readable through its output ref', async () => {
@@ -182,16 +212,19 @@ void test('large search_files output is offloaded and readable through its outpu
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-search-offload-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-offload-files-'),
+  );
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('search-offload'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
+    workingDirectory: computerFileRoot,
   });
 
   for (let index = 0; index < 60; index += 1) {
     await writeFile(
       join(
-        workspaceRoot,
+        computerFileRoot,
         `MATCH_OFFLOAD_${String(index).padStart(2, '0')}_${'x'.repeat(
           120,
         )}.txt`,
@@ -222,6 +255,7 @@ void test('large search_files output is offloaded and readable through its outpu
     runtime: makeExecutionRuntime(daemonContext, {
       runContext,
       runId,
+      computerFileRoot,
       approvalContext: makeApprovalContext({
         sessionId: 'session-search-offload',
       }),
@@ -374,10 +408,9 @@ void test('approval denial persists tool_result to transcript before terminal fa
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-approval-denied-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const events: string[] = [];
@@ -470,10 +503,9 @@ void test('approval denial settles later same-round tool obligations before term
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-approval-denied-later-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const events: string[] = [];
@@ -548,13 +580,16 @@ void test('approval-delayed write_file surfaces stale conflicts after external m
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-approval-stale-'),
   );
-  const absolutePath = join(workspaceRoot, 'draft.md');
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-approval-stale-files-'),
+  );
+  const absolutePath = join(computerFileRoot, 'draft.md');
   await writeFile(absolutePath, 'hello\n', 'utf8');
-  const file = await readFile(workspaceRoot, 'draft.md');
-  const runContext = makeRunWorkspaceContext({
+  const file = await readFile(computerFileRoot, 'draft.md');
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
+    workingDirectory: computerFileRoot,
   });
   const history: HistoryItem[] = [];
   const events: string[] = [];
@@ -577,6 +612,7 @@ void test('approval-delayed write_file surfaces stale conflicts after external m
     runtime: makeExecutionRuntime(daemonContext, {
       runContext,
       runId: 'run-approval-stale',
+      computerFileRoot,
       approvalContext: makeApprovalContext({
         sessionId: 'session-approval-stale',
       }),
@@ -625,16 +661,16 @@ void test('approval-delayed write_file surfaces stale conflicts after external m
   }
 });
 
-void test('tool_result reports daemon-owned workspace mutation signal', async () => {
+void test('tool_result reports daemon-owned Computer file mutation signal', async () => {
   const threadId = testThreadId(21);
   const daemonContext = createDaemonContext();
   registerOnce(
     daemonContext,
     makeTestTool({
-      name: 'workspace_mutation_signal_test_tool',
-      description: 'writes a workspace file',
+      name: 'computer_file_mutation_signal_test_tool',
+      description: 'writes a Computer file',
       sideEffectLevel: 'write',
-      mayMutateWorkspaceFiles: true,
+      mayMutateComputerFiles: true,
       requiresApproval: false,
       async executeParsed() {
         return { ok: true, output: 'written' };
@@ -643,12 +679,15 @@ void test('tool_result reports daemon-owned workspace mutation signal', async ()
   );
 
   const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-workspace-mutation-signal-'),
+    join(tmpdir(), 'geulbat-computer-file-mutation-signal-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-computer-file-mutation-signal-files-'),
+  );
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
+    workingDirectory: computerFileRoot,
   });
   const emitted: Array<{ type: string; payload: unknown }> = [];
 
@@ -657,7 +696,7 @@ void test('tool_result reports daemon-owned workspace mutation signal', async ()
       {
         id: 'fc-write-signal',
         callId: 'call-write-signal',
-        name: 'workspace_mutation_signal_test_tool',
+        name: 'computer_file_mutation_signal_test_tool',
         arguments: '{}',
       },
     ],
@@ -666,6 +705,7 @@ void test('tool_result reports daemon-owned workspace mutation signal', async ()
     runtime: makeExecutionRuntime(daemonContext, {
       runContext,
       runId: 'run-write-signal',
+      computerFileRoot,
       approvalContext: makeApprovalContext({
         sessionId: 'session-write-signal',
       }),
@@ -681,9 +721,9 @@ void test('tool_result reports daemon-owned workspace mutation signal', async ()
   assert.deepEqual(toolResultEvent.payload, {
     callId: 'call-write-signal',
     step: 0,
-    tool: 'workspace_mutation_signal_test_tool',
+    tool: 'computer_file_mutation_signal_test_tool',
     ok: true,
-    workspaceFilesMayHaveChanged: true,
+    computerFilesMayHaveChanged: true,
     displayText: 'written',
     raw: 'written',
   });
@@ -709,10 +749,9 @@ void test('tool_result displayText preserves full tool output', async () => {
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-long-display-text-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const emitted: Array<{ type: string; payload: unknown }> = [];
@@ -748,7 +787,7 @@ void test('tool_result displayText preserves full tool output', async () => {
     step: 0,
     tool: 'long_display_text_test_tool',
     ok: true,
-    workspaceFilesMayHaveChanged: false,
+    computerFilesMayHaveChanged: false,
     displayText: longOutput,
     raw: longOutput,
   });
@@ -774,6 +813,74 @@ void test('tool_result displayText preserves full tool output', async () => {
   }
 });
 
+void test('failed tool_result keeps structured event raw while history and transcript share one model output', async () => {
+  const threadId = testThreadId(304);
+  const rawFailure = {
+    ok: false,
+    status: 'failed',
+    detail: 'structured failure detail',
+  };
+
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-structured-failure-raw-'),
+  );
+  const history: HistoryItem[] = [];
+  const emitted: Array<{ type: string; payload: unknown }> = [];
+
+  await recordToolResult({
+    functionCall: {
+      id: 'fc-structured-failure-raw',
+      callId: 'call-structured-failure-raw',
+      name: 'structured_failure_raw_test_tool',
+      arguments: '{}',
+    },
+    round: 0,
+    toolResult: {
+      ok: false,
+      output: JSON.stringify(rawFailure),
+      errorCode: 'execution_failed',
+      error: 'structured failure',
+    },
+    computerFilesMayHaveChanged: false,
+    runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+    runId: 'run-structured-failure-raw',
+    history,
+    emit: (type, payload) => {
+      emitted.push({ type, payload });
+    },
+  });
+
+  const toolResultEvent = emitted.find((event) => event.type === 'tool_result');
+  assert.ok(toolResultEvent);
+  assert.deepEqual(toolResultEvent.payload, {
+    callId: 'call-structured-failure-raw',
+    step: 0,
+    tool: 'structured_failure_raw_test_tool',
+    ok: false,
+    computerFilesMayHaveChanged: false,
+    displayText: 'structured failure',
+    raw: rawFailure,
+    errorCode: 'execution_failed',
+    error: 'structured failure',
+  });
+
+  const liveOutput =
+    history[0]?.kind === 'function_call_output' ? history[0].output : undefined;
+  assert.equal(
+    liveOutput,
+    JSON.stringify({
+      ok: false,
+      errorCode: 'execution_failed',
+      error: 'structured failure',
+    }),
+  );
+  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
+  const storedResult = JSON.parse(transcript[0]?.content ?? '{}') as {
+    output?: unknown;
+  };
+  assert.equal(storedResult.output, liveOutput);
+});
+
 void test('full_access auto-approved write skips prompt and executes successfully', async () => {
   const threadId = testThreadId(3);
   const daemonContext = createDaemonContext();
@@ -791,10 +898,9 @@ void test('full_access auto-approved write skips prompt and executes successfull
   );
 
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-full-access-'));
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const events: string[] = [];
@@ -884,10 +990,9 @@ void test('processFunctionCalls records skipped results for later tools when the
   );
 
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-batch-abort-'));
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const events: string[] = [];
@@ -944,6 +1049,104 @@ void test('processFunctionCalls records skipped results for later tools when the
   );
 });
 
+void test('processFunctionCalls skips the remaining batch when an interject flush is requested mid-round', async () => {
+  const threadId = testThreadId(42);
+  const daemonContext = createDaemonContext();
+  let secondToolExecutions = 0;
+
+  const runContextSeed = makeRunContext({
+    threadId,
+    stateRoot: await mkdtemp(join(tmpdir(), 'geulbat-batch-flush-state-')),
+  });
+  const runState = createRunState({
+    runId: 'run-batch-flush',
+    runContext: runContextSeed,
+  });
+  pushPendingInterject(runState.interject, 'queued steer');
+
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: 'batch_flush_first_tool',
+      description: 'requests an interject flush after finishing',
+      sideEffectLevel: 'read',
+      requiresApproval: false,
+      async executeParsed() {
+        requestInterjectFlush(runState.interject);
+        return { ok: true, output: 'first tool finished' };
+      },
+    }),
+  );
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: 'batch_flush_second_tool',
+      description: 'must be skipped once the flush is requested',
+      sideEffectLevel: 'write',
+      requiresApproval: false,
+      async executeParsed() {
+        secondToolExecutions += 1;
+        return { ok: true, output: 'should not run' };
+      },
+    }),
+  );
+
+  const history: HistoryItem[] = [];
+  const events: string[] = [];
+
+  const result = await processFunctionCalls({
+    functionCalls: [
+      {
+        id: 'fc-batch-flush-1',
+        callId: 'call-batch-flush-1',
+        name: 'batch_flush_first_tool',
+        arguments: '{}',
+      },
+      {
+        id: 'fc-batch-flush-2',
+        callId: 'call-batch-flush-2',
+        name: 'batch_flush_second_tool',
+        arguments: '{}',
+      },
+    ],
+    round: 0,
+    history,
+    runtime: makeExecutionRuntime(daemonContext, {
+      runContext: runContextSeed,
+      runId: 'run-batch-flush',
+      approvalContext: makeApprovalContext({
+        sessionId: 'session-batch-flush',
+      }),
+      emit: (type) => {
+        events.push(type);
+      },
+      runState,
+    }),
+  });
+
+  // 라운드는 정상 종료(continue)해야 다음 라운드에서 인터젝트가 소비된다
+  assert.equal(result.ok, true);
+  assert.equal(secondToolExecutions, 0);
+  assert.deepEqual(events, [
+    'tool_call',
+    'tool_result',
+    'tool_call',
+    'tool_result',
+  ]);
+  assert.equal(history.length, 2);
+  const skippedRawOutput =
+    history[1]?.kind === 'function_call_output' ? history[1].output : '{}';
+  const skippedOutput = JSON.parse(skippedRawOutput) as {
+    ok?: boolean;
+    errorCode?: string;
+  };
+  assert.equal(skippedOutput.ok, false);
+  assert.equal(skippedOutput.errorCode, 'aborted');
+  assert.match(skippedRawOutput, /apply a pending message immediately/);
+  // 플러시 플래그는 소비 시점(run-agent-loop)에서 지워지므로 여기선 유지
+  assert.equal(isInterjectFlushRequested(runState.interject), true);
+});
+
 void test('processFunctionCalls settles shared-window tool results before terminal abort', async () => {
   const threadId = testThreadId(41);
   const daemonContext = createDaemonContext();
@@ -951,10 +1154,9 @@ void test('processFunctionCalls settles shared-window tool results before termin
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-shared-window-abort-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const events: string[] = [];
@@ -1045,10 +1247,9 @@ void test('processFunctionCalls executes independent read-only tools in parallel
   const threadId = testThreadId(5);
   const daemonContext = createDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-parallel-'));
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const events: string[] = [];
@@ -1138,10 +1339,9 @@ void test('processFunctionCalls settles sibling results when a shared-window exe
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-shared-reject-settle-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const events: string[] = [];
@@ -1248,10 +1448,9 @@ void test('processFunctionCalls executes same-round subagent launch batches in p
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-agent-spawn-parallel-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const events: string[] = [];
@@ -1341,10 +1540,9 @@ void test('processFunctionCalls runs builtin agent_spawn calls as a same-round l
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-builtin-agent-spawn-wave-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-builtin-agent-spawn-wave',
@@ -1469,10 +1667,9 @@ void test('processFunctionCalls allows four same-round subagent launches under t
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-agent-spawn-four-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   let executeCount = 0;
@@ -1558,10 +1755,9 @@ void test('processFunctionCalls atomically rejects same-round subagent launch ba
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-agent-spawn-cap-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-agent-spawn-cap',
@@ -1656,10 +1852,9 @@ void test('processFunctionCalls executes read-only tools and subagent launches i
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-mixed-shared-window-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const events: string[] = [];
@@ -1799,10 +1994,9 @@ void test('processFunctionCalls rejects only subagent launches when a mixed shar
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-mixed-subagent-cap-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-mixed-subagent-cap',
@@ -1934,10 +2128,13 @@ void test('processFunctionCalls treats write tools as barriers without collapsin
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-write-barrier-window-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-write-barrier-window-files-'),
+  );
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
+    workingDirectory: computerFileRoot,
   });
   const history: HistoryItem[] = [];
   const releaseFirstReads = createDeferred<void>();
@@ -2045,6 +2242,7 @@ void test('processFunctionCalls treats write tools as barriers without collapsin
     runtime: makeExecutionRuntime(daemonContext, {
       runContext,
       runId: 'run-write-barrier-window',
+      computerFileRoot,
       approvalContext: makeApprovalContext({
         sessionId: 'session-write-barrier-window',
       }),
@@ -2107,10 +2305,9 @@ void test('processFunctionCalls requires explicit shared-safe metadata before a 
     const workspaceRoot = await mkdtemp(
       join(tmpdir(), `geulbat-metadata-gate-${scenario.id}-`),
     );
-    const runContext = makeRunWorkspaceContext({
+    const runContext = makeRunContext({
       threadId,
-      projectId: testProjectId('project'),
-      workspaceRoot,
+      stateRoot: workspaceRoot,
     });
     const history: HistoryItem[] = [];
 
@@ -2185,10 +2382,9 @@ void test('processFunctionCalls keeps PTC none-effect tools exclusive until cell
   const threadId = testThreadId(158);
   const daemonContext = createDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-ptc-cell-gate-'));
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const releaseFirstReads = createDeferred<void>();
@@ -2376,10 +2572,9 @@ void test('processFunctionCalls mixes public exec and non-terminating wait with 
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-public-ptc-cell-window-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const releaseSharedWindow = createDeferred<void>();
@@ -2540,13 +2735,13 @@ void test('processFunctionCalls mixes public exec and non-terminating wait with 
   });
 
   await allCallsStarted.promise;
-  assert.deepEqual(events, [
-    'read-before',
-    'exec',
-    'read-between',
-    'wait',
-    'read-after',
-  ]);
+  // Shared-window transcript order remains input-stable below. Tool-local
+  // async preflight may reach each implementation in a different order; the
+  // concurrency contract is that every admitted call starts before release.
+  assert.deepEqual(
+    [...events].sort(),
+    ['read-before', 'exec', 'read-between', 'wait', 'read-after'].sort(),
+  );
 
   releaseSharedWindow.resolve();
   const result = await processing;
@@ -2577,10 +2772,9 @@ void test('processFunctionCalls keeps public terminate wait exclusive after PTC 
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-public-ptc-terminate-wait-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const history: HistoryItem[] = [];
   const releaseReadBefore = createDeferred<void>();
@@ -2721,10 +2915,9 @@ void test('processFunctionCalls mixes explicit PTC cells with read and subagent 
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-cell-window-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-ptc-cell-window',
@@ -2923,10 +3116,9 @@ void test('processFunctionCalls passes shared resource snapshot refs into public
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-public-exec-resource-window-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
   });
   const runState = createRunState({
     runId: 'run-public-exec-resource-window',
@@ -3089,10 +3281,13 @@ void test('processFunctionCalls keeps write tools on the sequential path', async
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-write-sequential-'),
   );
-  const runContext = makeRunWorkspaceContext({
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-write-sequential-files-'),
+  );
+  const runContext = makeRunContext({
     threadId,
-    projectId: testProjectId('project'),
-    workspaceRoot,
+    stateRoot: workspaceRoot,
+    workingDirectory: computerFileRoot,
   });
   const history: HistoryItem[] = [];
   const releaseFirstTool = createDeferred<void>();
@@ -3149,6 +3344,7 @@ void test('processFunctionCalls keeps write tools on the sequential path', async
     runtime: makeExecutionRuntime(daemonContext, {
       runContext,
       runId: 'run-sequential-write',
+      computerFileRoot,
       approvalContext: makeApprovalContext({
         sessionId: 'session-sequential-write',
       }),

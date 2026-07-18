@@ -129,10 +129,10 @@ export class PathNotFoundError extends Error {
 }
 
 export class PathEscapeError extends Error {
-  code = 'path_out_of_workspace' as const;
+  code = 'path_out_of_computer_scope' as const;
 
   constructor(path: string) {
-    super(`path escapes workspace: ${path}`);
+    super(`path escapes ComputerFileScope: ${path}`);
     this.name = 'PathEscapeError';
   }
 }

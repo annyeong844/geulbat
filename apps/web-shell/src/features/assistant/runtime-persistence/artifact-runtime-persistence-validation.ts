@@ -16,12 +16,11 @@ export function createArtifactRuntimePersistenceValidation() {
   const createPersistenceError = (
     code: string,
     message: string,
-  ): GeulbatRuntimePersistenceError => {
-    const error = new Error(message) as GeulbatRuntimePersistenceError;
-    error.name = 'GeulbatRuntimePersistenceError';
-    error.code = code;
-    return error;
-  };
+  ): GeulbatRuntimePersistenceError =>
+    Object.assign(new Error(message), {
+      name: 'GeulbatRuntimePersistenceError',
+      code,
+    });
 
   const clonePersistenceError = (error: GeulbatRuntimePersistenceError) =>
     createPersistenceError(error.code, error.message);
@@ -70,13 +69,15 @@ export function createArtifactRuntimePersistenceValidation() {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return false;
     }
-    const prototype = Object.getPrototypeOf(value);
+    const prototype: unknown = Object.getPrototypeOf(value);
     if (prototype === null || prototype === Object.prototype) {
       return true;
     }
     return (
       Object.prototype.toString.call(value) === '[object Object]' &&
-      typeof prototype?.constructor === 'function' &&
+      typeof prototype === 'object' &&
+      'constructor' in prototype &&
+      typeof prototype.constructor === 'function' &&
       prototype.constructor.name === 'Object'
     );
   };

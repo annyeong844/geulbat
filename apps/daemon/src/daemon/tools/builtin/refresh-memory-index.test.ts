@@ -3,18 +3,19 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { testProjectId } from '../../../test-support/project-id.js';
 import { createMemoryIndexStore } from '../../memory/build-index.js';
 import { refreshMemoryIndexTool } from './refresh-memory-index.js';
 
 function createRefreshMemoryIndexContext(
-  workspaceRoot: string,
+  sourceRoot: string,
   memoryIndex = createMemoryIndexStore(),
+  stateRoot = sourceRoot,
 ) {
   return {
-    callId: `call-refresh-${workspaceRoot}`,
-    workspaceRoot,
-    projectId: testProjectId(),
+    callId: `call-refresh-${sourceRoot}`,
+    stateRoot,
+    computerFileRoot: sourceRoot,
+    workingDirectory: '',
     memoryIndex,
   };
 }
@@ -23,30 +24,33 @@ void test('refresh_memory_index builds manifest and memory jsonl while skipping 
   assert.equal(refreshMemoryIndexTool.sideEffectLevel, 'write');
   assert.equal(refreshMemoryIndexTool.requiresApproval, true);
 
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-memory-refresh-'),
-  );
-  await mkdir(join(workspaceRoot, 'docs'), { recursive: true });
-  await mkdir(join(workspaceRoot, 'node_modules', 'pkg'), { recursive: true });
+  const sourceRoot = await mkdtemp(join(tmpdir(), 'geulbat-memory-refresh-'));
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-home-state-'));
+  await mkdir(join(sourceRoot, 'docs'), { recursive: true });
+  await mkdir(join(sourceRoot, 'node_modules', 'pkg'), { recursive: true });
   await writeFile(
-    join(workspaceRoot, 'docs', 'sample.md'),
+    join(sourceRoot, 'docs', 'sample.md'),
     '# Sample\r\nhello memory index\r\n',
     'utf8',
   );
   await writeFile(
-    join(workspaceRoot, 'package-lock.json'),
+    join(sourceRoot, 'package-lock.json'),
     '{"name":"skip"}\n',
     'utf8',
   );
   await writeFile(
-    join(workspaceRoot, 'node_modules', 'pkg', 'index.js'),
+    join(sourceRoot, 'node_modules', 'pkg', 'index.js'),
     'console.log("skip")\n',
     'utf8',
   );
 
   const result = await refreshMemoryIndexTool.execute(
     {},
-    createRefreshMemoryIndexContext(workspaceRoot),
+    createRefreshMemoryIndexContext(
+      sourceRoot,
+      createMemoryIndexStore(),
+      stateRoot,
+    ),
   );
 
   assert.equal(result.ok, true);
@@ -64,14 +68,16 @@ void test('refresh_memory_index builds manifest and memory jsonl while skipping 
   assert.equal(payload.chunkCount, 1);
 
   const manifestRaw = await readFile(
-    join(workspaceRoot, '.geulbat', 'index', 'manifest.json'),
+    join(stateRoot, '.geulbat', 'index', 'manifest.json'),
     'utf8',
   );
   const memoryRaw = await readFile(
-    join(workspaceRoot, '.geulbat', 'index', 'memory', 'all-memory.jsonl'),
+    join(stateRoot, '.geulbat', 'index', 'memory', 'all-memory.jsonl'),
     'utf8',
   );
   const manifest = JSON.parse(manifestRaw) as {
+    version: number;
+    sourceDirectory: string;
     generationId: string;
     files: Array<{ path: string; chunkCount: number }>;
   };
@@ -80,6 +86,8 @@ void test('refresh_memory_index builds manifest and memory jsonl while skipping 
     searchText: string;
   };
 
+  assert.equal(manifest.version, 2);
+  assert.equal(manifest.sourceDirectory, sourceRoot);
   assert.equal(manifest.files.length, 1);
   assert.equal(manifest.files[0]?.path, 'docs/sample.md');
   assert.equal(manifest.files[0]?.chunkCount, 1);
@@ -89,13 +97,11 @@ void test('refresh_memory_index builds manifest and memory jsonl while skipping 
 });
 
 void test('refresh_memory_index rejects unexpected keys instead of silently ignoring them', async () => {
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-memory-refresh-'),
-  );
+  const sourceRoot = await mkdtemp(join(tmpdir(), 'geulbat-memory-refresh-'));
 
   const result = await refreshMemoryIndexTool.execute(
     { extra: true },
-    createRefreshMemoryIndexContext(workspaceRoot),
+    createRefreshMemoryIndexContext(sourceRoot),
   );
 
   assert.equal(result.ok, false);
@@ -103,13 +109,11 @@ void test('refresh_memory_index rejects unexpected keys instead of silently igno
   assert.match(result.error ?? '', /unexpected keys: extra\./);
 });
 
-void test('refresh_memory_index uses workspace-scoped single-flight', async () => {
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-memory-refresh-'),
-  );
-  await mkdir(join(workspaceRoot, 'docs'), { recursive: true });
+void test('refresh_memory_index uses Home/source-scoped single-flight', async () => {
+  const sourceRoot = await mkdtemp(join(tmpdir(), 'geulbat-memory-refresh-'));
+  await mkdir(join(sourceRoot, 'docs'), { recursive: true });
   await writeFile(
-    join(workspaceRoot, 'docs', 'sample.md'),
+    join(sourceRoot, 'docs', 'sample.md'),
     '# Sample\nhello\n',
     'utf8',
   );
@@ -118,11 +122,11 @@ void test('refresh_memory_index uses workspace-scoped single-flight', async () =
   const [first, second] = await Promise.all([
     refreshMemoryIndexTool.execute(
       {},
-      createRefreshMemoryIndexContext(workspaceRoot, memoryIndex),
+      createRefreshMemoryIndexContext(sourceRoot, memoryIndex),
     ),
     refreshMemoryIndexTool.execute(
       {},
-      createRefreshMemoryIndexContext(workspaceRoot, memoryIndex),
+      createRefreshMemoryIndexContext(sourceRoot, memoryIndex),
     ),
   ]);
 
@@ -148,8 +152,9 @@ void test('refresh_memory_index can use an injected memory index store', async (
     {},
     {
       callId: 'call-refresh-local-store',
-      workspaceRoot: '/tmp/memory-local-store',
-      projectId: testProjectId(),
+      stateRoot: '/tmp/memory-local-home',
+      computerFileRoot: '/tmp',
+      workingDirectory: 'memory-local-source',
       memoryIndex,
     },
   );
@@ -160,13 +165,16 @@ void test('refresh_memory_index can use an injected memory index store', async (
 });
 
 void test('refresh_memory_index rejects missing memory index runtime', async () => {
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-memory-refresh-'),
-  );
+  const sourceRoot = await mkdtemp(join(tmpdir(), 'geulbat-memory-refresh-'));
 
   const result = await refreshMemoryIndexTool.execute(
     {},
-    { callId: 'call-refresh-missing-runtime', workspaceRoot },
+    {
+      callId: 'call-refresh-missing-runtime',
+      stateRoot: sourceRoot,
+      computerFileRoot: sourceRoot,
+      workingDirectory: '',
+    },
   );
 
   assert.equal(result.ok, false);

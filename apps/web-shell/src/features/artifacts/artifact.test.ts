@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { brandProjectId, brandThreadId } from '../../lib/id-brand-helpers.js';
+import { brandThreadId } from '../../lib/id-brand-helpers.js';
 
 import { parseArtifactEnvelope } from './artifact-envelope.js';
 import {
@@ -9,6 +9,7 @@ import {
 } from './export/use-generated-binary-export-state.js';
 import {
   buildArtifactApplyRunDraftFromAuthority,
+  buildArtifactRewriteRunDraft,
   buildArtifactExportRunDraftFromAuthority,
   canBuildGeneratedBinaryExportFromAuthority,
   buildGeneratedTextExportRunDraftFromAuthority,
@@ -30,7 +31,6 @@ import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 
 const THREAD_ID = '00000000-0000-4000-8000-000000000001';
 const MESSAGE_TIMESTAMP = '2026-04-04T00:00:00.000Z';
-const PROJECT_ID = brandProjectId('workspace');
 const BRANDED_THREAD_ID = brandThreadId(THREAD_ID);
 
 function createResolvedArtifactSourceRef(
@@ -38,7 +38,7 @@ function createResolvedArtifactSourceRef(
 ): ResolvedArtifactSourceRef {
   return {
     kind: 'thread',
-    projectId: PROJECT_ID,
+    workingDirectory: 'stories/sample',
     threadId: BRANDED_THREAD_ID,
     runId: 'run-1',
     filePath: null,
@@ -228,7 +228,6 @@ void test('createArtifactViewModel exposes visible apply and export actions for 
     isRunning: false,
   });
 
-  assert.equal(view.actions.openSource.visible, true);
   assert.equal(view.actions.apply.visible, true);
   assert.equal(view.actions.apply.enabled, true);
   assert.equal(view.actions.export.visible, true);
@@ -247,7 +246,6 @@ void test('createArtifactViewModel keeps code artifact preview visible without w
 
   assert.equal(view.parsed.kind, 'artifact');
   assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.openSource.visible, true);
   assert.equal(view.actions.apply.visible, false);
   assert.equal(view.actions.export.visible, false);
 });
@@ -264,7 +262,6 @@ void test('createArtifactViewModel keeps diff artifact preview visible without w
 
   assert.equal(view.parsed.kind, 'artifact');
   assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.openSource.visible, true);
   assert.equal(view.actions.apply.visible, false);
   assert.equal(view.actions.export.visible, false);
 });
@@ -281,7 +278,6 @@ void test('createArtifactViewModel keeps table artifact preview visible without 
 
   assert.equal(view.parsed.kind, 'artifact');
   assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.openSource.visible, true);
   assert.equal(view.actions.apply.visible, false);
   assert.equal(view.actions.export.visible, false);
 });
@@ -298,7 +294,6 @@ void test('createArtifactViewModel keeps html5 artifact preview visible without 
 
   assert.equal(view.parsed.kind, 'artifact');
   assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.openSource.visible, true);
   assert.equal(view.actions.apply.visible, false);
   assert.equal(view.actions.export.visible, false);
 });
@@ -315,7 +310,6 @@ void test('createArtifactViewModel keeps react bundle artifact preview visible w
 
   assert.equal(view.parsed.kind, 'artifact');
   assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.openSource.visible, true);
   assert.equal(view.actions.apply.visible, false);
   assert.equal(view.actions.export.visible, false);
 });
@@ -332,7 +326,6 @@ void test('createArtifactViewModel keeps js artifact preview visible without wid
 
   assert.equal(view.parsed.kind, 'artifact');
   assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.openSource.visible, true);
   assert.equal(view.actions.apply.visible, false);
   assert.equal(view.actions.export.visible, false);
 });
@@ -424,14 +417,14 @@ void test('buildArtifactApplyRunDraftFromAuthority produces a top-level run requ
   });
 
   assert.ok(draft);
-  assert.equal(draft.projectId, 'workspace');
+  assert.equal(draft.workingDirectory, 'stories/sample');
   assert.equal(draft.threadId, THREAD_ID);
   assert.equal(draft.currentFile, 'episodes/ch01.md');
   assert.equal(draft.displayPrompt, 'Apply artifact to episodes/ch01.md');
-  assert.deepEqual(draft.allowedToolsHint, [
+  assert.deepEqual(draft.allowedPublicToolNames, [
     'read_file',
     'write_file',
-    'patch_file',
+    'apply_patch',
   ]);
   assert.match(draft.prompt, /Apply this artifact preview to the current file/);
   assert.match(draft.prompt, /Artifact session authority key:/);
@@ -526,15 +519,15 @@ void test('buildArtifactExportRunDraftFromAuthority requires an explicit target 
   });
 
   assert.ok(draft);
-  assert.equal(draft.projectId, 'workspace');
+  assert.equal(draft.workingDirectory, 'stories/sample');
   assert.equal(
     draft.displayPrompt,
     'Export artifact to exports/ch01-preview.md',
   );
-  assert.deepEqual(draft.allowedToolsHint, [
+  assert.deepEqual(draft.allowedPublicToolNames, [
     'read_file',
     'write_file',
-    'patch_file',
+    'apply_patch',
   ]);
   assert.match(draft.prompt, /Artifact session authority key:/);
   assert.match(draft.prompt, /Explicit durability intent id: intent-/);
@@ -562,7 +555,7 @@ void test('createCommittedArtifactViewModel does not rehydrate a legacy envelope
     persistenceEpoch: 0,
     sourceRef: {
       kind: 'thread-file',
-      projectId: PROJECT_ID,
+      workingDirectory: 'stories/sample',
       threadId: BRANDED_THREAD_ID,
       runId: 'run-1',
       filePath: 'episodes/ch01.md',
@@ -607,7 +600,7 @@ void test('createCommittedArtifactViewModel hides open-source action when commit
     persistenceEpoch: 0,
     sourceRef: {
       kind: 'thread',
-      projectId: PROJECT_ID,
+      workingDirectory: 'stories/sample',
       threadId: BRANDED_THREAD_ID,
       runId: 'run-1',
       filePath: null,
@@ -625,12 +618,7 @@ void test('createCommittedArtifactViewModel hides open-source action when commit
     }),
   });
 
-  assert.equal(view.actions.openSource.visible, false);
-  assert.equal(view.actions.openSource.enabled, false);
-  assert.match(
-    view.actions.openSource.reason ?? '',
-    /source reference missing/,
-  );
+  assert.equal(view.actions.apply.visible, false);
 });
 
 void test('buildArtifactExportRunDraftFromAuthority requires full artifact session authority even for completed artifacts', () => {
@@ -642,7 +630,6 @@ void test('buildArtifactExportRunDraftFromAuthority requires full artifact sessi
     buildArtifactExportRunDraftFromAuthority({
       parsed,
       sourceAuthority: createArtifactSourceAuthority({
-        projectId: null,
         threadId: null,
         runId: null,
         messageTimestamp: null,
@@ -687,7 +674,6 @@ void test('buildGeneratedTextExportRunDraftFromAuthority requires full artifact 
         fileNameHint: 'preview.json',
       },
       sourceAuthority: createArtifactSourceAuthority({
-        projectId: null,
         threadId: null,
         runId: null,
         messageTimestamp: null,
@@ -728,17 +714,17 @@ void test('buildGeneratedTextExportRunDraftFromAuthority creates a top-level run
   });
 
   assert.ok(draft);
-  assert.equal(draft.projectId, 'workspace');
+  assert.equal(draft.workingDirectory, 'stories/sample');
   assert.equal(draft.threadId, THREAD_ID);
   assert.equal(draft.currentFile, 'notes/demo.js');
   assert.equal(
     draft.displayPrompt,
     'Export generated asset to exports/preview.json',
   );
-  assert.deepEqual(draft.allowedToolsHint, [
+  assert.deepEqual(draft.allowedPublicToolNames, [
     'read_file',
     'write_file',
-    'patch_file',
+    'apply_patch',
   ]);
   assert.match(draft.prompt, /Artifact session authority key:/);
   assert.match(draft.prompt, /Explicit durability intent id: intent-/);
@@ -846,7 +832,7 @@ void test('deriveGeneratedBinaryExportTargetPathHint prefers explicit sanitized 
   );
 });
 
-void test('canBuildGeneratedBinaryExportFromAuthority requires project context and a blob snapshot', () => {
+void test('canBuildGeneratedBinaryExportFromAuthority requires source authority and a blob snapshot', () => {
   assert.equal(
     canBuildGeneratedBinaryExportFromAuthority({
       snapshot: {
@@ -865,7 +851,6 @@ void test('canBuildGeneratedBinaryExportFromAuthority requires project context a
         fileNameHint: null,
       },
       sourceAuthority: createArtifactSourceAuthority({
-        projectId: null,
         threadId: null,
         runId: null,
         messageTimestamp: null,
@@ -901,7 +886,7 @@ void test('artifact durability helpers derive canonical authority and explicit i
   assert.equal(
     createArtifactDurabilitySourceAuthorityKey(authority),
     JSON.stringify([
-      'workspace',
+      'stories/sample',
       THREAD_ID,
       'run-1',
       '2026-04-04T00:00:00.000Z',
@@ -931,7 +916,33 @@ void test('createArtifactViewModel hides explicit export when artifact session a
     isRunning: false,
   });
 
-  assert.equal(view.actions.openSource.visible, true);
   assert.equal(view.actions.apply.visible, false);
   assert.equal(view.actions.export.visible, false);
+});
+
+void test('buildArtifactRewriteRunDraft lets the model route between targeted fix and full rewrite', () => {
+  const artifact = {
+    artifactId: 'artifact-rewrite-1',
+    version: 3,
+    renderer: 'html5',
+    payload: '<!doctype html><html><body>broken</body></html>',
+    title: '펠리컨 카드',
+  } as Pick<
+    ThreadArtifactVersion,
+    'artifactId' | 'version' | 'renderer' | 'payload' | 'title'
+  >;
+
+  const draft = buildArtifactRewriteRunDraft({
+    artifact,
+    threadId: BRANDED_THREAD_ID,
+  });
+  assert.equal(draft.threadId, BRANDED_THREAD_ID);
+  assert.equal(draft.displayPrompt, '아티팩트 다시 만들기 — 펠리컨 카드');
+  // 한 프롬프트 안에 두 라우팅이 모두 있고 선택은 모델이 한다
+  assert.match(draft.prompt, /route yourself/u);
+  assert.match(draft.prompt, /minimal targeted fix/u);
+  assert.match(draft.prompt, /rebuild it from scratch/iu);
+  assert.match(draft.prompt, /Artifact id: artifact-rewrite-1/u);
+  assert.match(draft.prompt, /Current version: 3/u);
+  assert.match(draft.prompt, /<artifact_payload>/u);
 });
