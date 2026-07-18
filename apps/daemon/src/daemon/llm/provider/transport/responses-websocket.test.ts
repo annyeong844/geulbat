@@ -4,6 +4,11 @@ import { EventEmitter } from 'node:events';
 
 import { buildResponseCreatePayload } from './responses-wire-input.js';
 import {
+  extractWebSocketCloseError,
+  extractWebSocketError,
+} from './responses-websocket-errors.js';
+import { resolveCodexWebSocketUrl } from './responses-websocket-url.js';
+import {
   resolveResponsesStreamIdleTimeoutMs,
   streamResponsesOverWebSocket,
 } from './responses-websocket.js';
@@ -22,6 +27,60 @@ const baseBody = {
   text: { verbosity: 'medium' },
   reasoning: { effort: 'medium', summary: 'auto' },
 } as const;
+
+void test('WebSocket URL resolution preserves configured Codex endpoints and local proxies', () => {
+  assert.equal(
+    resolveCodexWebSocketUrl('https://api.openai.com/v1/codex'),
+    'wss://api.openai.com/v1/codex/responses',
+  );
+  assert.equal(
+    resolveCodexWebSocketUrl('https://api.openai.com/v1'),
+    'wss://api.openai.com/v1/codex/responses',
+  );
+  assert.equal(
+    resolveCodexWebSocketUrl('http://127.0.0.1:8787/v1/codex/responses/'),
+    'ws://127.0.0.1:8787/v1/codex/responses',
+  );
+});
+
+void test('WebSocket error extraction accepts browser-style message events', () => {
+  assert.equal(
+    extractWebSocketError({ message: 'proxy disconnected' }).message,
+    'proxy disconnected',
+  );
+  assert.equal(
+    extractWebSocketError({ message: '' }).message,
+    'WebSocket error',
+  );
+});
+
+void test('WebSocket close extraction preserves string, binary, and unstructured reasons', () => {
+  assert.equal(
+    extractWebSocketCloseError({
+      code: 1006,
+      reason: 'abnormal close',
+    }).message,
+    'WebSocket closed 1006 abnormal close',
+  );
+  assert.equal(
+    extractWebSocketCloseError({
+      reason: new TextEncoder().encode('maintenance'),
+    }).message,
+    'WebSocket closed maintenance',
+  );
+  assert.equal(
+    extractWebSocketCloseError({ code: 1000, reason: '' }).message,
+    'WebSocket closed 1000',
+  );
+  assert.equal(
+    extractWebSocketCloseError({ code: 1000 }).message,
+    'WebSocket closed 1000',
+  );
+  assert.equal(
+    extractWebSocketCloseError(undefined).message,
+    'WebSocket closed',
+  );
+});
 
 void test('resolveResponsesStreamIdleTimeoutMs preserves the normative 60-second default', () => {
   assert.equal(resolveResponsesStreamIdleTimeoutMs({}), 60_000);
