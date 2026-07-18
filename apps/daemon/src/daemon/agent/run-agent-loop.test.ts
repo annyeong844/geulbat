@@ -222,6 +222,11 @@ void test('runAgentLoop emits usage_updated with accumulated totals when the pro
     prompt: 'report usage',
     runState,
     runtimeServices: daemonContext,
+    memoryPort: {
+      async compactAfterModelRound() {
+        return { kind: 'not_needed', reason: 'under_threshold' };
+      },
+    },
     approvalContext: makeApprovalContext({ sessionId: 'session-loop-usage' }),
     callModelImpl: createScriptedProviderCallModel([
       {
