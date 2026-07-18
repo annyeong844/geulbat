@@ -19,7 +19,7 @@ export { settleRunEffects };
 export type { RunSessionControllerClient };
 
 interface UseRunSessionArgs {
-  workingDirectory: string;
+  workingDirectory?: string;
   selectedFile: string | null;
   selectedThreadId: string | null;
   loadThreads: () => Promise<void>;
@@ -78,7 +78,7 @@ export function useRunSession({
     handleDeny,
     handleCancel,
   } = useRunSessionRuntime({
-    workingDirectory,
+    ...(workingDirectory !== undefined ? { workingDirectory } : {}),
     selectedFile,
     selectedThreadId,
     loadThreads,

@@ -8,10 +8,7 @@ import type {
   RunStartRequest,
   RunSubagentModelRouting,
 } from '@geulbat/protocol/run-contract';
-import type {
-  ThreadDetailResponse,
-  ThreadMessage,
-} from '@geulbat/protocol/threads';
+import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 
 import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
 import { appendThreadNotification } from './run-session-entry-state.js';
@@ -44,7 +41,7 @@ interface RunSessionClientHarness {
 
 function createPersistedThreadDetail(args?: {
   snapshotVersion?: string;
-  messages?: ThreadMessage[];
+  messages?: ThreadDetailResponse['messages'];
   artifacts?: ThreadArtifactVersion[];
 }): ThreadDetailResponse {
   return {
@@ -59,7 +56,6 @@ function createRunSessionArgs(
   overrides: Partial<UseRunSessionArgs> = {},
 ): UseRunSessionArgs {
   return {
-    workingDirectory: '',
     selectedFile: null,
     selectedThreadId: null,
     loadThreads: async () => {},
@@ -108,6 +104,9 @@ function createRunSessionClientHarness(overrides?: {
   let unsubscribeCount = 0;
 
   const client: RunSessionControllerClient = {
+    async acknowledgeEvent() {
+      return 'req-event-ack';
+    },
     subscribe(callback) {
       subscribeCount += 1;
       listener = callback;
@@ -424,7 +423,7 @@ void test('useRunSession ignores stale persisted snapshots without settling the 
   hook.unmount();
 });
 
-void test('useRunSession starts prompts through a stale callback with the latest explorer directory', async () => {
+void test('useRunSession starts prompts through a stale callback with the latest explicit cwd selection', async () => {
   const startedRequests: Array<{
     promptRef: string;
     workingDirectory?: string;
@@ -468,7 +467,7 @@ void test('useRunSession starts prompts through a stale callback with the latest
   const hook = await renderHook(
     useRunSession,
     createRunSessionArgs({
-      workingDirectory: 'Users/sample/novel-one',
+      workingDirectory: 'home/user/novel-one',
       selectedFile: 'chapter-1.md',
       appendOptimisticUserMessage: (prompt: string) => {
         optimisticPrompts.push(prompt);
@@ -483,7 +482,7 @@ void test('useRunSession starts prompts through a stale callback with the latest
   });
   await hook.rerender(
     createRunSessionArgs({
-      workingDirectory: 'Users/sample/Downloads',
+      workingDirectory: 'home/user/Downloads',
       selectedFile: 'chapter-2.md',
       selectedThreadId: THREAD_ID_VALUE,
       appendOptimisticUserMessage: (prompt: string) => {
@@ -499,7 +498,7 @@ void test('useRunSession starts prompts through a stale callback with the latest
   assert.deepEqual(startedRequests, [
     {
       promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
-      workingDirectory: 'Users/sample/Downloads',
+      workingDirectory: 'home/user/Downloads',
       modelId: 'gpt-5.6-sol',
       permissionMode: 'full_access',
       threadId: THREAD_ID_VALUE,

@@ -7,7 +7,7 @@ import {
   resolveSourceReadTarget,
   type SourceDirectoryTarget,
 } from '../files/file-platform.js';
-import { shouldExcludeWorkspaceEntry } from '../files/reserved-paths.js';
+import { shouldExcludeMemorySourceEntry } from '../files/reserved-paths.js';
 import { createVersionToken } from '../files/version-token.js';
 import { decodeTextBuffer, isBinaryBuffer } from '../files/text-content.js';
 import { getErrorCode } from '../utils/error.js';
@@ -123,7 +123,7 @@ function shouldExcludePath(
 ): boolean {
   if (isDirectory) {
     return (
-      shouldExcludeWorkspaceEntry(relativePath, entryName) ||
+      shouldExcludeMemorySourceEntry(relativePath, entryName) ||
       EXCLUDED_DIRECTORY_NAMES.has(entryName)
     );
   }

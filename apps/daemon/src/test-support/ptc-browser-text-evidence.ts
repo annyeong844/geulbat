@@ -11,7 +11,6 @@ import {
   type PtcSessionDockerPolicy,
 } from '../daemon/ptc/lab/session/session-docker-contract.js';
 import type { PtcSessionDockerManagerFixture } from './ptc-session-docker.js';
-import { PTC_TEST_PRIVATE_GEULBAT_SECRET_PATH } from './ptc-private-path.js';
 import {
   createPtcBrowserTestLab,
   type PtcBrowserRuntimeExecContext,
@@ -22,9 +21,6 @@ import {
   ptcBrowserAdapterStdout,
   ptcBrowserEvidenceSuccessStdout,
 } from './ptc-browser-stdout.js';
-
-export const PTC_BROWSER_TEXT_EVIDENCE_TEST_PRIVATE_PATH =
-  PTC_TEST_PRIVATE_GEULBAT_SECRET_PATH;
 
 export const PTC_BROWSER_TEXT_EVIDENCE_TEST_IDENTITY: PtcSessionDockerIdentity =
   Object.freeze({

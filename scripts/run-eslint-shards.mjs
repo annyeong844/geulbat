@@ -303,7 +303,7 @@ async function runEslintProcesses(processes, { cwd, env }) {
   }
 }
 
-export async function runEslintShards(
+async function runEslintShards(
   shards = LINT_SHARDS,
   {
     cwd = process.cwd(),
@@ -342,7 +342,7 @@ export async function runEslintShards(
   return results;
 }
 
-export async function main(
+async function main(
   args = process.argv.slice(2),
   { cwd = process.cwd(), env = process.env } = {},
 ) {

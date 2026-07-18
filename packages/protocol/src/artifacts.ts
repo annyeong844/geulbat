@@ -1,7 +1,7 @@
 import { isThreadId, type ThreadId } from './ids.js';
 import { isNumber, isRecord, isString } from './runtime-utils.js';
 
-export const ARTIFACT_RENDERERS = [
+const ARTIFACT_RENDERERS = [
   'markdown',
   'code',
   'diff',
@@ -39,12 +39,12 @@ interface ArtifactSourceRefBase {
   messageTimestamp: string | null;
 }
 
-export interface ArtifactThreadSourceRef extends ArtifactSourceRefBase {
+interface ArtifactThreadSourceRef extends ArtifactSourceRefBase {
   kind: 'thread';
   filePath: null;
 }
 
-export interface ArtifactThreadFileSourceRef extends ArtifactSourceRefBase {
+interface ArtifactThreadFileSourceRef extends ArtifactSourceRefBase {
   kind: 'thread-file';
   filePath: string;
 }
@@ -85,7 +85,7 @@ export interface ThreadArtifactVersion extends ArtifactVersionRecord {
   sourceRef: ArtifactSourceRef | null;
 }
 
-export type ArtifactPreviewValidation =
+type ArtifactPreviewValidation =
   | {
       ok: true;
     }
@@ -217,7 +217,7 @@ export function normalizeArtifactSourceRef(
   };
 }
 
-const WINDOWS_ABSOLUTE_PATH = /^(?:[a-zA-Z]:[\\/]|\\\\)/u;
+const PORTABLE_WINDOWS_DRIVE_PATH = /^[a-zA-Z]:\//u;
 
 function isPortableArtifactPath(
   value: unknown,
@@ -229,16 +229,52 @@ function isPortableArtifactPath(
   if (value === '') {
     return allowEmpty;
   }
-  if (
-    value.startsWith('/') ||
-    value.includes('\\') ||
-    WINDOWS_ABSOLUTE_PATH.test(value)
-  ) {
+  if (value.includes('\\')) {
     return false;
   }
-  return value
-    .split('/')
-    .every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+
+  const isPortableUncPath = value.startsWith('//');
+  const portableWindowsDrivePrefix = value.match(
+    PORTABLE_WINDOWS_DRIVE_PATH,
+  )?.[0];
+  const isPortableWindowsDrivePath = portableWindowsDrivePrefix !== undefined;
+  if (value.startsWith('/') && !isPortableUncPath) {
+    return false;
+  }
+  if (/^[a-zA-Z]:/u.test(value) && !isPortableWindowsDrivePath) {
+    return false;
+  }
+
+  const pathBody = isPortableUncPath
+    ? value.slice('//'.length)
+    : portableWindowsDrivePrefix !== undefined
+      ? value.slice(portableWindowsDrivePrefix.length)
+      : value;
+  if (pathBody === '') {
+    return isPortableWindowsDrivePath;
+  }
+  const segments = pathBody.split('/');
+  if (segments.some((segment) => segment === '' || segment === '.')) {
+    return false;
+  }
+  if (isPortableUncPath) {
+    return segments.length >= 2 && !segments.includes('..');
+  }
+  if (isPortableWindowsDrivePath) {
+    return !segments.includes('..');
+  }
+
+  let sawNamedSegment = false;
+  for (const segment of segments) {
+    if (segment === '..') {
+      if (sawNamedSegment) {
+        return false;
+      }
+      continue;
+    }
+    sawNamedSegment = true;
+  }
+  return true;
 }
 
 export function isArtifactRecord(value: unknown): value is ArtifactRecord {
@@ -354,13 +390,13 @@ export function isArtifactDraftCommitRequest(
 
 export const IMAGE_ARTIFACT_PAYLOAD_SCHEMA_VERSION = 1;
 
-export interface ImageArtifactPayloadDigest {
+interface ImageArtifactPayloadDigest {
   algorithm: 'sha256';
   encoding: 'hex';
   value: string;
 }
 
-export interface ImageArtifactPayloadProvenance {
+interface ImageArtifactPayloadProvenance {
   providerId: string;
   model: string;
   capability: 'image_generation';
@@ -374,7 +410,7 @@ export interface ImageArtifactPayloadProvenance {
 //   파서는 계속 읽되, 신규 생성분은 더 이상 만들지 않는다(D-V7).
 // - `thread_media`: 신형. 실제 바이트는 media 파일 스토어에 있고 mediaRef로
 //   가리켜 스냅샷/와이어에서 base64가 사라진다(동영상과 동일 규범).
-export type ImageArtifactSource =
+type ImageArtifactSource =
   | { type: 'inline_base64'; dataBase64: string }
   | { type: 'thread_media'; mediaRef: string };
 
@@ -420,7 +456,7 @@ export function isThreadMediaRef(value: unknown): value is string {
   return typeof value === 'string' && THREAD_MEDIA_REF_PATTERN.test(value);
 }
 
-export interface VideoArtifactPayloadProvenance {
+interface VideoArtifactPayloadProvenance {
   providerId: string;
   model: string;
   capability: 'video_generation';
@@ -598,7 +634,7 @@ export function parseImageArtifactPayload(
 // 함께 명시하면 커밋 경로가 새 artifactId v1 대신 같은 아티팩트의 다음
 // 버전으로 append를 시도한다 (♻ 재작성 등). 대상이 무효하면 커밋 경로가
 // 새 아티팩트 생성으로 폴백해 콘텐츠를 잃지 않는다.
-export interface ArtifactEnvelopeUpdateTarget {
+interface ArtifactEnvelopeUpdateTarget {
   artifactId: ArtifactId;
   baseVersion: number;
 }

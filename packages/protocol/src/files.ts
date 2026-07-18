@@ -15,17 +15,16 @@ export type ComputerFileScopeResponse =
       browseShortcuts: ComputerFileBrowseShortcut[];
     };
 
+export type ComputerDirectorySelectionResponse =
+  | { status: 'cancelled' }
+  | { status: 'selected'; path: string };
+
 /**
- * Deterministic content version token for one normalized workspace-relative path.
+ * Deterministic content version token for one normalized portable Computer coordinate.
  * The daemon mints a new token whenever that path's persisted bytes change.
  * Clients must treat it as an opaque, path-scoped concurrency token.
  */
-export type FileVersionToken = string;
-
-export interface FileReadRequest {
-  root: ComputerFileRoot;
-  path: string;
-}
+type FileVersionToken = string;
 
 export interface FileReadResponse {
   path: string;
@@ -37,13 +36,6 @@ export interface FileReadResponse {
   // 오피스 문서(docx/xlsx/hwpx)에서 추출된 읽기 전용 텍스트임을 표시.
   // 이 값이 있으면 content는 원본이 아니라 추출본이며 저장할 수 없다.
   extractedDocument?: 'docx' | 'xlsx' | 'hwpx';
-}
-
-export interface FileSaveRequest {
-  root: ComputerFileRoot;
-  path: string;
-  content: string;
-  versionToken: FileVersionToken;
 }
 
 export interface FileSaveResponse {
@@ -59,24 +51,20 @@ export interface FileBinaryInputRefResponse {
   byteLength: number;
 }
 
-export interface FileTreeRequest {
-  root: ComputerFileRoot;
-}
-
-export interface FileTreeFileNode {
+interface FileTreeFileNode {
   name: string;
   path: string;
   type: 'file';
 }
 
-export interface FileTreeDirectoryNode {
+interface FileTreeDirectoryNode {
   name: string;
   path: string;
   type: 'directory';
   children?: FileTreeNode[];
 }
 
-export interface FileTreeTruncatedNode {
+interface FileTreeTruncatedNode {
   name: string;
   path: string;
   type: 'truncated';
@@ -93,7 +81,7 @@ export interface FileTreeResponse {
   tree: FileTreeNode[];
 }
 
-export function isFileTreeNode(value: unknown): value is FileTreeNode {
+function isFileTreeNode(value: unknown): value is FileTreeNode {
   if (!isRecord(value)) {
     return false;
   }
@@ -140,6 +128,22 @@ export function isComputerFileScopeResponse(
         isString(shortcut.label) &&
         isString(shortcut.path),
     )
+  );
+}
+
+export function isComputerDirectorySelectionResponse(
+  value: unknown,
+): value is ComputerDirectorySelectionResponse {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.status === 'cancelled') {
+    return Object.keys(value).length === 1;
+  }
+  return (
+    value.status === 'selected' &&
+    isString(value.path) &&
+    Object.keys(value).every((key) => key === 'status' || key === 'path')
   );
 }
 

@@ -7,7 +7,7 @@ export const ARTIFACT_RUNTIME_HOST_READY_ACTION = 'ready';
 export const ARTIFACT_RUNTIME_HOST_RESIZE_ACTION = 'resize';
 export const DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN = 'http://127.0.0.1:3456';
 
-export interface ArtifactRuntimeHostBootMessage {
+interface ArtifactRuntimeHostBootMessage {
   kind: typeof ARTIFACT_RUNTIME_HOST_MESSAGE_KIND;
   action: typeof ARTIFACT_RUNTIME_HOST_BOOT_ACTION;
   documentHtml: string;
@@ -24,7 +24,7 @@ export interface ArtifactRuntimeHostResizeMessage {
   height: number;
 }
 
-export type ArtifactRuntimeHostMessage =
+type ArtifactRuntimeHostMessage =
   | ArtifactRuntimeHostBootMessage
   | ArtifactRuntimeHostReadyMessage
   | ArtifactRuntimeHostResizeMessage;

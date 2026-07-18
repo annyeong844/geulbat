@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { Router, type Response } from 'express';
 import { listTree } from '../../../daemon/files/list-tree.js';
 import { readFile } from '../../../daemon/files/read-file.js';
@@ -12,15 +13,17 @@ import {
   saveBinaryFileFromPath,
 } from '../../../daemon/files/save-binary-file.js';
 import { saveFile } from '../../../daemon/files/save-file.js';
+import { normalizePath } from '../../../daemon/files/normalize-path.js';
+import {
+  ComputerDirectoryPickerError,
+  type ComputerDirectoryPicker,
+} from '../../../daemon/files/computer-directory-picker.js';
 import {
   commitPreparedDeletion,
   commitPreparedDirectoryCreation,
   commitPreparedRelocation,
-  isFileAuthorityRootPath,
   prepareMutatingFilePath,
   prepareRelocationPaths,
-  FILE_AUTHORITY_ROOT_DELETE_ERROR,
-  FILE_AUTHORITY_ROOT_RELOCATE_ERROR,
 } from '../../../daemon/files/file-mutation-chain.js';
 import {
   claimFileBinaryInputRefPath,
@@ -41,19 +44,21 @@ import { sendFilesRouteError } from '../protocol/map-errors.js';
 import { registerInputRefDeleteRoute } from './input-ref-routes.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import type {
+  ComputerDirectorySelectionResponse,
   ComputerFileRoot,
   ComputerFileScopeResponse,
   FileBinaryInputRefResponse,
 } from '@geulbat/protocol/files';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord, isString } from '@geulbat/protocol/runtime-utils';
 import type { ComputerFileScope } from '../../../daemon/files/computer-file-scope.js';
 
 type FilesRouteScopeArgs = {
+  computerDirectoryPicker: ComputerDirectoryPicker;
   computerFileScope?: ComputerFileScope;
 };
-type FileWorkspaceScope = {
+type ComputerFileBase = {
   root: ComputerFileRoot;
-  workspaceRoot: string;
+  basePath: string;
 };
 const logger = createLogger('web/files');
 
@@ -75,6 +80,7 @@ export function createFilesRoutes(args: FilesRouteScopeArgs): Router {
     res.status(200).json(response);
   });
 
+  registerComputerDirectoryPickerRoute(router, args);
   registerFilesTreeRoute(router, args);
   registerFileReadRoute(router, args);
   registerFileRawReadRoute(router, args);
@@ -87,8 +93,76 @@ export function createFilesRoutes(args: FilesRouteScopeArgs): Router {
   return router;
 }
 
+function registerComputerDirectoryPickerRoute(
+  router: Router,
+  scopeArgs: FilesRouteScopeArgs,
+): void {
+  router.post('/api/files/select-directory', async (req, res) => {
+    const body = isRecord(req.body) ? req.body : {};
+    const scope = readComputerFileBaseOrSendError(
+      res,
+      { root: body['root'], projectId: body['projectId'] },
+      scopeArgs,
+    );
+    if (scope === null) {
+      return;
+    }
+    const rawInitialPath = body['initialPath'];
+    if (rawInitialPath !== undefined && !isString(rawInitialPath)) {
+      sendApiError(res, 'bad_request', 'initialPath must be a string');
+      return;
+    }
+
+    const selectionAbort = new AbortController();
+    const abortSelection = () => selectionAbort.abort();
+    const abortSelectionWhenResponseCloses = () => {
+      if (!res.writableEnded) {
+        abortSelection();
+      }
+    };
+    req.once('aborted', abortSelection);
+    res.once('close', abortSelectionWhenResponseCloses);
+    try {
+      const initialPath =
+        rawInitialPath ?? scopeArgs.computerFileScope?.browseStartPath ?? '';
+      const normalizedInitialPath = normalizePath(scope.basePath, initialPath);
+      const selection = await scopeArgs.computerDirectoryPicker.select({
+        initialAbsolutePath: resolve(scope.basePath, normalizedInitialPath),
+        signal: selectionAbort.signal,
+      });
+      if (selectionAbort.signal.aborted || res.destroyed) {
+        return;
+      }
+      const response: ComputerDirectorySelectionResponse =
+        selection.kind === 'cancelled'
+          ? { status: 'cancelled' }
+          : {
+              status: 'selected',
+              path: normalizePath(scope.basePath, selection.absolutePath),
+            };
+      res.status(200).json(response);
+    } catch (error) {
+      if (selectionAbort.signal.aborted || res.destroyed) {
+        return;
+      }
+      if (error instanceof ComputerDirectoryPickerError) {
+        sendApiError(
+          res,
+          error.code === 'unavailable' ? 'not_implemented' : 'execution_failed',
+          error.message,
+        );
+        return;
+      }
+      sendFilesRouteError(res, 'files/select-directory', error);
+    } finally {
+      req.off('aborted', abortSelection);
+      res.off('close', abortSelectionWhenResponseCloses);
+    }
+  });
+}
+
 // lazy 트리: 요청당 depth를 제한하고, 셸이 폴더 펼침 시 path로 하위를 다시
-// 요청한다. 넓은 boundary root(computer-session profile)에서도 응답이
+// 요청한다. 넓은 host coordinate base에서도 응답이
 // 폭발하지 않도록 truncate 모드를 쓴다.
 const TREE_DEFAULT_DEPTH = 4;
 const TREE_MAX_DEPTH = 8;
@@ -110,7 +184,7 @@ function registerFilesTreeRoute(
   scopeArgs: FilesRouteScopeArgs,
 ): void {
   router.get('/api/files/tree', async (req, res) => {
-    const request = readFileWorkspaceScopeOrSendError(
+    const request = readComputerFileBaseOrSendError(
       res,
       { root: req.query['root'], projectId: req.query['projectId'] },
       scopeArgs,
@@ -125,8 +199,10 @@ function registerFilesTreeRoute(
       sendError: sendUnexpectedApiError,
       run: async (scope) => ({
         root: scope.root,
-        tree: await listTree(scope.workspaceRoot, {
-          maxDepth: depth,
+        tree: await listTree(scope.basePath, {
+          // HTTP depth counts visible levels. listTree counts the requested
+          // directory itself as depth zero, so one visible level maps to zero.
+          maxDepth: depth - 1,
           maxNodes: TREE_MAX_NODES,
           depthLimitMode: 'truncate',
           ...(subPath !== undefined ? { subPath } : {}),
@@ -141,7 +217,7 @@ function registerFileReadRoute(
   scopeArgs: FilesRouteScopeArgs,
 ): void {
   router.get('/api/files/read', async (req, res) => {
-    const fileScope = readFileWorkspaceScopeOrSendError(
+    const fileScope = readComputerFileBaseOrSendError(
       res,
       { root: req.query['root'], projectId: req.query['projectId'] },
       scopeArgs,
@@ -157,7 +233,7 @@ function registerFileReadRoute(
     await respondWithRouteResult({
       res,
       request: pathResult.ok
-        ? { workspaceRoot: fileScope.workspaceRoot, path: pathResult.value }
+        ? { workspaceRoot: fileScope.basePath, path: pathResult.value }
         : null,
       logContext: 'files/read',
       run: (request) => readFile(request.workspaceRoot, request.path),
@@ -195,7 +271,7 @@ function registerFileRawReadRoute(
   scopeArgs: FilesRouteScopeArgs,
 ): void {
   router.get('/api/files/raw', async (req, res) => {
-    const fileScope = readFileWorkspaceScopeOrSendError(
+    const fileScope = readComputerFileBaseOrSendError(
       res,
       { root: req.query['root'], projectId: req.query['projectId'] },
       scopeArgs,
@@ -211,7 +287,7 @@ function registerFileRawReadRoute(
     const range = parseByteRangeHeader(req.headers.range);
     try {
       const result = await createRawFileStream(
-        fileScope.workspaceRoot,
+        fileScope.basePath,
         pathResult.value,
         range ?? undefined,
       );
@@ -402,9 +478,6 @@ async function runManagedFileOperation(request: {
       const prepared = await prepareMutatingFilePath(workspaceRoot, path, {
         allowMissingLeaf: true,
       });
-      if (isFileAuthorityRootPath(prepared.resolvedPath.relativePath)) {
-        throw new Error(FILE_AUTHORITY_ROOT_DELETE_ERROR);
-      }
       const result = await commitPreparedDeletion(prepared);
       return { ok: true, operation, path: result.path };
     }
@@ -418,9 +491,6 @@ async function runManagedFileOperation(request: {
         path,
         destination,
       );
-      if (isFileAuthorityRootPath(prepared.sourcePath.relativePath)) {
-        throw new Error(FILE_AUTHORITY_ROOT_RELOCATE_ERROR);
-      }
       const result = await commitPreparedRelocation(prepared);
       return {
         ok: true,
@@ -530,7 +600,7 @@ function registerBinaryInputRefRoute(
       return;
     }
 
-    const fileScope = readFileWorkspaceScopeOrSendError(
+    const fileScope = readComputerFileBaseOrSendError(
       res,
       { root: req.query['root'], projectId: req.query['projectId'] },
       scopeArgs,
@@ -541,7 +611,7 @@ function registerBinaryInputRefRoute(
 
     try {
       const result = await writeFileBinaryInputRefFromStream({
-        workspaceRoot: fileScope.workspaceRoot,
+        workspaceRoot: fileScope.basePath,
         input: req,
       });
       const response: FileBinaryInputRefResponse = {
@@ -558,11 +628,11 @@ function registerBinaryInputRefRoute(
     router,
     path: '/api/files/binary-inputs',
     resolveWorkspaceRoot: (req, res) =>
-      readFileWorkspaceScopeOrSendError(
+      readComputerFileBaseOrSendError(
         res,
         { root: req.query['root'], projectId: req.query['projectId'] },
         scopeArgs,
-      )?.workspaceRoot ?? null,
+      )?.basePath ?? null,
     refQueryName: 'contentRef',
     logContext: 'files/binary-inputs/delete',
     readRefPath: ({ workspaceRoot, ref }) =>
@@ -577,7 +647,7 @@ function readFileScopedBodyStringsOrSendError<const T extends string>(
   names: readonly T[],
   args: FilesRouteScopeArgs,
 ): { workspaceRoot: string; read(name: T): string } | null {
-  const fileScope = readFileWorkspaceScopeOrSendError(
+  const fileScope = readComputerFileBaseOrSendError(
     res,
     { root: body?.['root'], projectId: body?.['projectId'] },
     args,
@@ -591,7 +661,7 @@ function readFileScopedBodyStringsOrSendError<const T extends string>(
     return null;
   }
   return {
-    workspaceRoot: fileScope.workspaceRoot,
+    workspaceRoot: fileScope.basePath,
     read(name) {
       return bodyResult.read(name);
     },
@@ -654,11 +724,11 @@ async function readBinaryContentInputOrSendError(
   return { kind: 'buffer', content };
 }
 
-function readFileWorkspaceScopeOrSendError(
+function readComputerFileBaseOrSendError(
   res: Response,
   selector: { root: unknown; projectId: unknown },
   args: FilesRouteScopeArgs,
-): FileWorkspaceScope | null {
+): ComputerFileBase | null {
   if (selector.projectId !== undefined) {
     sendApiError(res, 'bad_request', 'projectId is not supported');
     return null;
@@ -668,10 +738,10 @@ function readFileWorkspaceScopeOrSendError(
     return null;
   }
   if (args.computerFileScope === undefined) {
-    sendApiError(res, 'not_found', 'computer file root is unavailable');
+    sendApiError(res, 'not_found', 'computer filesystem is unavailable');
     return null;
   }
-  return { root: 'computer', workspaceRoot: args.computerFileScope.root };
+  return { root: 'computer', basePath: args.computerFileScope.root };
 }
 
 function decodeBase64Body(value: string): Buffer | null {

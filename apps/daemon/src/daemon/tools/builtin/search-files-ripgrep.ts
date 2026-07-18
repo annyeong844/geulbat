@@ -1,25 +1,44 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { access, readdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
-import { getExcludedContentSearchGlobs } from '../../files/reserved-paths.js';
 import { getErrorMessage } from '../../utils/error.js';
 import type { SearchFilesResult, SearchMatch } from './search-files-shared.js';
-import { toRipgrepFsPath } from './search-files-ripgrep-paths.js';
+import {
+  fromRipgrepFsPath,
+  toRipgrepFsPath,
+} from './search-files-ripgrep-paths.js';
 import {
   buildRipgrepCloseError,
   buildRipgrepResult,
   parseRipgrepMatchLine,
 } from './search-files-ripgrep-result.js';
 
-let _rgPath: string | undefined;
+type RipgrepRootClass = 'posix' | 'wsl-drive' | 'windows';
+
+const rgPathByRootClass = new Map<RipgrepRootClass, string>();
 
 export async function resolveRipgrepPath(rootDir?: string): Promise<string> {
-  if (_rgPath && isRipgrepBinaryCompatibleWithRoot(_rgPath, rootDir)) {
-    return _rgPath;
+  const rootClass = classifyRipgrepRoot(rootDir);
+  const cachedPath = rgPathByRootClass.get(rootClass);
+  if (cachedPath && isRipgrepBinaryCompatibleWithRoot(cachedPath, rootDir)) {
+    return cachedPath;
   }
   const probeFailures: string[] = [];
   const require = createRequire(import.meta.url);
+
+  for (const candidatePath of await listWindowsInteropRipgrepCandidatePaths(
+    rootDir,
+    probeFailures,
+  )) {
+    try {
+      await access(candidatePath);
+      rgPathByRootClass.set(rootClass, candidatePath);
+      return candidatePath;
+    } catch (error: unknown) {
+      probeFailures.push(`${candidatePath}: ${getErrorMessage(error)}`);
+    }
+  }
 
   try {
     const rg: unknown = require('@vscode/ripgrep');
@@ -42,7 +61,7 @@ export async function resolveRipgrepPath(rootDir?: string): Promise<string> {
       }
       try {
         await access(candidatePath);
-        _rgPath = candidatePath;
+        rgPathByRootClass.set(rootClass, candidatePath);
         return candidatePath;
       } catch (error: unknown) {
         probeFailures.push(`${candidatePath}: ${getErrorMessage(error)}`);
@@ -64,7 +83,7 @@ export async function resolveRipgrepPath(rootDir?: string): Promise<string> {
     }
     try {
       await access(candidatePath);
-      _rgPath = candidatePath;
+      rgPathByRootClass.set(rootClass, candidatePath);
       return candidatePath;
     } catch (error: unknown) {
       probeFailures.push(`${candidatePath}: ${getErrorMessage(error)}`);
@@ -74,7 +93,7 @@ export async function resolveRipgrepPath(rootDir?: string): Promise<string> {
   for (const candidatePath of listSystemRipgrepCandidatePaths()) {
     try {
       await access(candidatePath);
-      _rgPath = candidatePath;
+      rgPathByRootClass.set(rootClass, candidatePath);
       return candidatePath;
     } catch (error: unknown) {
       probeFailures.push(`${candidatePath}: ${getErrorMessage(error)}`);
@@ -85,9 +104,63 @@ export async function resolveRipgrepPath(rootDir?: string): Promise<string> {
     probeFailures.length > 0 ? ` Last probe: ${probeFailures[0]}.` : '';
   throw Object.assign(
     new Error(
-      `search_files requires an accessible ripgrep binary for content search. Run a normal npm ci with postinstall enabled or install rg on PATH.${failureDetail}`,
+      `search_files requires an accessible ripgrep binary. Run a normal npm ci with postinstall enabled or install rg on PATH.${failureDetail}`,
     ),
     { code: 'execution_failed' },
+  );
+}
+
+function classifyRipgrepRoot(rootDir: string | undefined): RipgrepRootClass {
+  if (/^\/mnt\/[a-z](\/|$)/iu.test(rootDir ?? '')) {
+    return 'wsl-drive';
+  }
+  if (/^[a-z]:[\\/]/iu.test(rootDir ?? '') || process.platform === 'win32') {
+    return 'windows';
+  }
+  return 'posix';
+}
+
+async function listWindowsInteropRipgrepCandidatePaths(
+  rootDir: string | undefined,
+  probeFailures: string[],
+): Promise<string[]> {
+  if (classifyRipgrepRoot(rootDir) !== 'wsl-drive' || rootDir === undefined) {
+    return [];
+  }
+  const whereExecutable = '/mnt/c/Windows/System32/where.exe';
+  try {
+    await access(whereExecutable);
+  } catch (error: unknown) {
+    probeFailures.push(
+      `Windows ripgrep discovery unavailable: ${getErrorMessage(error)}`,
+    );
+    return [];
+  }
+
+  const windowsPaths = await new Promise<string[]>((resolve) => {
+    execFile(
+      whereExecutable,
+      ['rg.exe'],
+      { encoding: 'utf8' },
+      (error, stdout) => {
+        if (error) {
+          probeFailures.push(
+            `Windows ripgrep discovery failed: ${getErrorMessage(error)}`,
+          );
+          resolve([]);
+          return;
+        }
+        resolve(
+          stdout
+            .split(/\r?\n/u)
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0),
+        );
+      },
+    );
+  });
+  return uniqueSorted(
+    windowsPaths.map((path) => fromRipgrepFsPath(path, 'rg.exe', rootDir)),
   );
 }
 
@@ -175,14 +248,12 @@ export async function runRipgrep(
     const rgRootDir = toRipgrepFsPath(rootDir, rgPath);
     const rgArgs = [
       '--json',
-      '--fixed-strings',
       '-j',
       '1',
+      '--hidden',
+      '--no-ignore',
+      '--follow',
       ...(glob ? ['--glob', glob] : []),
-      ...getExcludedContentSearchGlobs().flatMap((excludedGlob) => [
-        '--iglob',
-        excludedGlob,
-      ]),
       '--',
       query,
       rgRootDir,

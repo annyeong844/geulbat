@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   clearInterjectFlushRequest,
+  closeInterjectBuffer,
   createRunInterjectBuffer,
   dropPendingInterjectFront,
   hasPendingInterject,
@@ -57,6 +58,29 @@ void test('restorePendingInterjectFront preserves FIFO against later appends', (
     takePendingInterject(buffer).map((interject) => interject.text),
     ['a', 'b', 'c'],
   );
+});
+
+void test('restorePendingInterjectFront restores the durable receive sequence', () => {
+  const buffer = createRunInterjectBuffer();
+
+  restorePendingInterjectFront(
+    buffer,
+    [{ receivedSeq: 4, text: 'restored' }],
+    7,
+  );
+
+  assert.deepEqual(pushPendingInterject(buffer, 'new'), {
+    receivedSeq: 8,
+    bufferDepth: 2,
+  });
+});
+
+void test('closeInterjectBuffer marks terminal admission closed', () => {
+  const buffer = createRunInterjectBuffer();
+
+  closeInterjectBuffer(buffer);
+
+  assert.equal(buffer.accepting, false);
 });
 
 void test('peek and drop operate on the front item only', () => {

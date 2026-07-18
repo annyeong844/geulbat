@@ -34,7 +34,7 @@ import {
   type PtcExecuteCodePlacementBatchRunner,
   type PtcExecuteCodePlacementCoordinator,
   type PtcExecuteCodePlacementContinuityProvenanceProvider,
-} from './execute-code-placement.js';
+} from './execute-code-placement-contract.js';
 import {
   PTC_EXECUTE_CODE_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,
@@ -43,16 +43,11 @@ import {
   type PtcExecuteCodeRuntimeSummary,
   type PtcExecuteCodeStoreError,
   type PtcExecuteCodeRuntimeToolCallbackHandler,
+  type ValidatedExecuteCodeRequest,
 } from './execute-code-runtime-contract.js';
 import type { PtcExecuteCodeStoreExecution } from './execute-code-store.js';
 
 type CreatePtcSessionEpochBridge = typeof createPtcSessionEpochBridge;
-
-export interface ValidatedExecuteCodeRequest {
-  code: string;
-  timeoutMs: number;
-  yieldTimeMs?: number;
-}
 
 type ExecuteCodeBatchCommandResult = Awaited<
   ReturnType<

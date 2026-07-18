@@ -443,17 +443,7 @@ void test('writeToolLibraryProjectionFiles writes generated SDK files under the 
 void test('createToolLibraryProjectionPort writes a pinned projection under the runtime root', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-library-'));
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
 
     const result = await runtime.resolveProjection({
       stateRoot,
@@ -566,7 +556,7 @@ void test('createToolLibraryProjectionPort builds the written projection from on
   let registeredNamesReadCount = 0;
   const resolvedToolNames: string[] = [];
   try {
-    const runtime = createToolLibraryProjectionPort({
+    const runtime = createTestProjectionPort({
       registry: {
         getAllRegisteredToolNames() {
           registeredNamesReadCount += 1;
@@ -577,14 +567,6 @@ void test('createToolLibraryProjectionPort builds the written projection from on
           return baseRegistry.getTool(name);
         },
       },
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
     });
 
     const result = await runtime.resolveProjection({
@@ -606,16 +588,10 @@ void test('createToolLibraryProjectionPort keeps projection catch diagnostics sa
     'raw /private/geulbat/token-value should not leak',
   ) as Error & { code: string };
   projectionError.code = 'EACCES';
-  const runtime = createToolLibraryProjectionPort({
-    registry: createBuiltinToolRegistryStore(),
+  const runtime = createTestProjectionPort({
     runtimeRootForState() {
       throw projectionError;
     },
-    sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-    sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-    runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-    modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-    importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
   });
 
   const resolved = await runtime.resolveProjection({
@@ -658,19 +634,13 @@ void test('createToolLibraryProjectionPort drops token-shaped projection diagnos
     'ghp',
     'projectionDiagnosticTokenShouldNotLeak',
   ].join('_');
-  const runtime = createToolLibraryProjectionPort({
-    registry: createBuiltinToolRegistryStore(),
+  const runtime = createTestProjectionPort({
     runtimeRootForState() {
       throw {
         code: tokenShapedCode,
         name: tokenShapedName,
       };
     },
-    sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-    sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-    runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-    modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-    importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
   });
 
   const result = await runtime.resolveProjection({
@@ -694,16 +664,8 @@ void test('createToolLibraryProjectionPort keeps a live thread pinned while a ne
   );
   try {
     const registry = createBuiltinToolRegistryStore();
-    const runtime = createToolLibraryProjectionPort({
+    const runtime = createTestProjectionPort({
       registry,
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
       projectionPolicy: { policyId: 'test-sdk-reachable-policy' },
     });
 
@@ -833,16 +795,8 @@ void test('createToolLibraryProjectionPort refreshes a live pin when an existing
           : undefined;
       },
     };
-    const runtime = createToolLibraryProjectionPort({
+    const runtime = createTestProjectionPort({
       registry,
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
     });
 
     const first = await runtime.resolveProjection({
@@ -894,17 +848,7 @@ void test('generated tool library SDK modules can be imported and used at runtim
     join(tmpdir(), 'geulbat-tool-library-runtime-import-'),
   );
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
     const result = await runtime.resolveProjection({
       stateRoot,
       threadId: 'thread-runtime-import-test',
@@ -994,17 +938,7 @@ void test('model-facing generated SDK specifiers resolve through the mount befor
     join(tmpdir(), 'geulbat-tool-library-import-specifier-'),
   );
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
     const result = await runtime.resolveProjection({
       stateRoot,
       threadId: 'thread-import-specifier-test',
@@ -1097,16 +1031,8 @@ void test('model-facing discovery result can seed the generated SDK projection',
       buildToolSignatureRef('fetch_url'),
     );
 
-    const runtime = createToolLibraryProjectionPort({
+    const runtime = createTestProjectionPort({
       registry,
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
     });
     const result = await runtime.resolveProjection({
       stateRoot,
@@ -1195,17 +1121,7 @@ void test('generated SDK root import exposes multi-family wrappers and signature
     join(tmpdir(), 'geulbat-tool-library-multifamily-runtime-'),
   );
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
     const result = await runtime.resolveProjection({
       stateRoot,
       threadId: 'thread-multifamily-runtime-test',
@@ -1357,16 +1273,8 @@ void test('generated catalog search results resolve to narrow signature descript
       'fetch_url',
       'read_file',
     ] as const;
-    const runtime = createToolLibraryProjectionPort({
+    const runtime = createTestProjectionPort({
       registry,
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
     });
     const result = await runtime.resolveProjection({
       stateRoot,
@@ -1701,17 +1609,7 @@ void test('readVerifiedToolLibraryProjectionMount rehydrates from observer proje
     join(tmpdir(), 'geulbat-tool-library-replay-identity-'),
   );
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
     const result = await runtime.resolveProjection({
       stateRoot,
       threadId: 'thread-runtime-test',
@@ -1748,17 +1646,7 @@ void test('readVerifiedToolLibraryProjectionMount rejects replay identity mismat
     join(tmpdir(), 'geulbat-tool-library-replay-identity-mismatch-'),
   );
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
     const result = await runtime.resolveProjection({
       stateRoot,
       threadId: 'thread-runtime-test',
@@ -1795,17 +1683,7 @@ void test('createToolLibraryProjectionPort rehydrates pinned projection through 
     join(tmpdir(), 'geulbat-tool-library-runtime-rehydrate-'),
   );
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
     const resolved = await runtime.resolveProjection({
       stateRoot,
       threadId: 'thread-runtime-test',
@@ -1839,17 +1717,7 @@ void test('createToolLibraryProjectionPort rejects stale rehydration identity', 
     join(tmpdir(), 'geulbat-tool-library-runtime-rehydrate-mismatch-'),
   );
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
     const resolved = await runtime.resolveProjection({
       stateRoot,
       threadId: 'thread-runtime-test',
@@ -1886,17 +1754,7 @@ void test('readVerifiedToolLibraryProjectionMount rejects import specifier misma
     join(tmpdir(), 'geulbat-tool-library-mount-mismatch-'),
   );
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
     const result = await runtime.resolveProjection({
       stateRoot,
       threadId: 'thread-runtime-test',
@@ -1930,17 +1788,7 @@ void test('readVerifiedToolLibraryProjectionMount rejects missing mount files', 
     join(tmpdir(), 'geulbat-tool-library-mount-missing-'),
   );
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
     const result = await runtime.resolveProjection({
       stateRoot,
       threadId: 'thread-runtime-test',
@@ -1977,17 +1825,7 @@ void test('resolveToolLibraryProjectionMountedModule resolves only owned generat
     join(tmpdir(), 'geulbat-tool-library-mounted-module-'),
   );
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
     const result = await runtime.resolveProjection({
       stateRoot,
       threadId: 'thread-runtime-test',
@@ -2156,17 +1994,7 @@ void test('resolveToolLibraryProjectionMountedModule rejects aliases and travers
     join(tmpdir(), 'geulbat-tool-library-mounted-module-reject-'),
   );
   try {
-    const runtime = createToolLibraryProjectionPort({
-      registry: createBuiltinToolRegistryStore(),
-      runtimeRootForState(root) {
-        return join(root, '.geulbat', 'tool-library', 'projections');
-      },
-      sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-      sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-      runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-      modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
+    const runtime = createTestProjectionPort();
     const result = await runtime.resolveProjection({
       stateRoot,
       threadId: 'thread-runtime-test',
@@ -2234,6 +2062,28 @@ void test('writeToolLibraryProjectionFiles rejects unsafe generated file paths',
     await rm(parentPath, { recursive: true, force: true });
   }
 });
+
+function createTestProjectionPort(
+  overrides: Partial<
+    Pick<
+      Parameters<typeof createToolLibraryProjectionPort>[0],
+      'registry' | 'runtimeRootForState' | 'projectionPolicy'
+    >
+  > = {},
+) {
+  return createToolLibraryProjectionPort({
+    registry: createBuiltinToolRegistryStore(),
+    runtimeRootForState(root) {
+      return join(root, '.geulbat', 'tool-library', 'projections');
+    },
+    sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
+    sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
+    runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
+    modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
+    importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
+    ...overrides,
+  });
+}
 
 function buildTestProjection(
   overrides: Pick<

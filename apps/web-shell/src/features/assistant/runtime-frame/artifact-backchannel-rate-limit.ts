@@ -8,7 +8,7 @@
 // 도구 호출(read-only 왕복)보다 훨씬 낮은 상한을 갖는다. 티어 B 강등도
 // 턴을 만들므로 prompt 레인 예산을 소모한다.
 
-export type ArtifactBackchannelLane = 'prompt' | 'tool';
+type ArtifactBackchannelLane = 'prompt' | 'tool';
 
 const LANE_LIMITS: Record<
   ArtifactBackchannelLane,

@@ -13,7 +13,7 @@ void test('listTree rejects a missing workspace root', async () => {
   await assert.rejects(() => listTree(missingRoot));
 });
 
-void test('listTree hides dotfiles and returns visible entries', async () => {
+void test('listTree includes dotfiles with other OS-visible entries', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-tree-'));
   await mkdir(join(workspaceRoot, 'docs'), { recursive: true });
   await writeFile(join(workspaceRoot, '.secret'), 'hidden\n', 'utf8');
@@ -23,6 +23,11 @@ void test('listTree hides dotfiles and returns visible entries', async () => {
   const tree = await listTree(workspaceRoot);
 
   assert.deepEqual(tree, [
+    {
+      name: '.secret',
+      path: '.secret',
+      type: 'file',
+    },
     {
       name: 'docs',
       path: 'docs',
@@ -125,7 +130,7 @@ void test('listTree has no hidden default node cap', async () => {
   assert.equal(tree.length, 10_005);
 });
 
-void test('listTree skips repeated real-directory branches created by symlink cycles', async (t) => {
+void test('listTree keeps symlink aliases visible while stopping canonical cycles', async (t) => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-tree-cycle-'));
   const docsDir = join(workspaceRoot, 'docs');
   const nestedDir = join(docsDir, 'nested');
@@ -154,7 +159,14 @@ void test('listTree skips repeated real-directory branches created by symlink cy
           name: 'nested',
           path: 'docs/nested',
           type: 'directory',
-          children: [],
+          children: [
+            {
+              name: 'loop',
+              path: 'docs/nested/loop',
+              type: 'directory',
+              children: [],
+            },
+          ],
         },
       ],
     },

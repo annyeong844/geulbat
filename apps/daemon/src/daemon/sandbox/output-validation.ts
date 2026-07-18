@@ -1,7 +1,7 @@
 import { sha256Hex } from '@geulbat/shared-utils/sha256';
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
-import { isPathInsideWorkspaceBoundary } from '../files/normalize-path.js';
+import { isSameOrDescendantPath } from '../files/normalize-path.js';
 import type { SandboxOutputFileRef } from './attempt-store.js';
 
 interface SandboxOutputBudget {
@@ -51,7 +51,7 @@ export async function collectSandboxOutputRef(
 
       if (entryStats.isSymbolicLink()) {
         const realTarget = await realpath(fullPath);
-        if (!isPathInsideWorkspaceBoundary(rootPath, realTarget)) {
+        if (!isSameOrDescendantPath(rootPath, realTarget)) {
           throw new Error(
             `sandbox output escapes sandbox output directory: ${entry.name}`,
           );
@@ -67,7 +67,7 @@ export async function collectSandboxOutputRef(
       }
 
       const realFilePath = await realpath(fullPath);
-      if (!isPathInsideWorkspaceBoundary(rootPath, realFilePath)) {
+      if (!isSameOrDescendantPath(rootPath, realFilePath)) {
         throw new Error(
           `sandbox output escapes sandbox output directory: ${entry.name}`,
         );

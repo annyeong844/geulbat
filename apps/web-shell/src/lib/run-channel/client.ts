@@ -5,6 +5,7 @@ import type {
   RunChannelClientMessage,
   RunControlMessage,
   RunChannelServerMessage,
+  RunEventAckRequest,
   RunInterjectRequest,
   RunToolRequest,
   RunToolResultPayload,
@@ -24,7 +25,6 @@ import {
   markAuthHandshakeStarted,
   markConnectionClosed,
   markConnectionReady,
-  markReconnectFailed,
   markReconnectScheduled,
   type RunChannelConnectionState,
 } from './client-state.js';
@@ -65,7 +65,6 @@ interface RunChannelClientOptions {
 
 const SOCKET_OPEN = 1;
 const RECONNECT_DELAY_STEPS_MS = [500, 1_000, 2_000, 5_000] as const;
-const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAY_STEPS_MS.length;
 
 interface PendingSocketConnection {
   socket: WebSocketLike;
@@ -200,6 +199,16 @@ export class RunChannelClient {
     const requestId = createRequestId();
     await this.send({
       type: 'run.start',
+      requestId,
+      request,
+    });
+    return requestId;
+  }
+
+  async acknowledgeEvent(request: RunEventAckRequest): Promise<string> {
+    const requestId = createRequestId();
+    await this.send({
+      type: 'run.event.ack',
       requestId,
       request,
     });
@@ -488,12 +497,14 @@ export class RunChannelClient {
       const failureMessage =
         pending.protocolFailureMessage ?? 'run channel disconnected';
       this.rejectPendingControlAcks(failureMessage);
-      this.emit({
-        type: 'run.error',
-        code: 'internal',
-        message: failureMessage,
-        status: 500,
-      });
+      if (pending.protocolFailureMessage !== null) {
+        this.emit({
+          type: 'run.error',
+          code: 'internal',
+          message: failureMessage,
+          status: 500,
+        });
+      }
       this.scheduleReconnect();
     }
   }
@@ -536,16 +547,7 @@ export class RunChannelClient {
   }
 
   private scheduleReconnect(): void {
-    if (!canScheduleReconnect(this.connectionState, MAX_RECONNECT_ATTEMPTS)) {
-      if (!this.connectionState.closedExplicitly) {
-        this.connectionState = markReconnectFailed(this.connectionState);
-        this.emit({
-          type: 'run.error',
-          code: 'internal',
-          message: 'run channel reconnect failed',
-          status: 500,
-        });
-      }
+    if (!canScheduleReconnect(this.connectionState)) {
       return;
     }
     const delayMs = getReconnectDelay(this.connectionState.reconnectAttempts);

@@ -10,10 +10,10 @@ import {
   resolveDerivedArtifactTarget,
   resolveExplicitExportTarget,
   resolveRuntimeStateTarget,
+  resolveSourceDirectoryTarget,
   resolveSourceMutationTarget,
   resolveSourceReadTarget,
 } from './file-platform.js';
-import { FileAccessError } from './file-domain-error.js';
 import { PathEscapeError } from './normalize-path.js';
 import { createSymlinkOrSkip } from '../../test-support/symlink-test.js';
 
@@ -42,7 +42,7 @@ void test('resolveSourceReadTarget follows workspace-internal symlink reads', as
   }
 });
 
-void test('resolveSourceReadTarget rejects workspace-external symlink escape', async (t) => {
+void test('resolveSourceReadTarget follows a symlink anywhere on the host filesystem', async (t) => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-file-platform-'));
   const outsideRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-file-platform-outside-'),
@@ -56,17 +56,16 @@ void test('resolveSourceReadTarget rejects workspace-external symlink escape', a
       return;
     }
 
-    await assert.rejects(
-      () => resolveSourceReadTarget(workspaceRoot, 'linked.txt'),
-      (error: unknown) => error instanceof PathEscapeError,
-    );
+    const target = await resolveSourceReadTarget(workspaceRoot, 'linked.txt');
+    assert.equal(target.relativePath, 'linked.txt');
+    assert.equal(target.absolutePath, outsideFile);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
     await rm(outsideRoot, { recursive: true, force: true });
   }
 });
 
-void test('resolveSourceMutationTarget rejects reserved source paths and symlinked parents', async (t) => {
+void test('resolveSourceMutationTarget accepts protected-looking paths and follows symlinked parents', async (t) => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-file-platform-'));
   const outsideRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-file-platform-outside-'),
@@ -77,29 +76,33 @@ void test('resolveSourceMutationTarget rejects reserved source paths and symlink
   try {
     await mkdir(realDir, { recursive: true });
 
-    await assert.rejects(
-      () =>
-        resolveSourceMutationTarget(
-          workspaceRoot,
-          '.geulbat/index/manifest.json',
-          {
-            allowMissingLeaf: true,
-          },
-        ),
-      (error: unknown) =>
-        error instanceof FileAccessError && error.code === 'access_denied',
+    const internalTarget = await resolveSourceMutationTarget(
+      workspaceRoot,
+      '.geulbat/index/manifest.json',
+      {
+        allowMissingLeaf: true,
+      },
+    );
+    assert.equal(
+      internalTarget.canonicalAbsolutePath,
+      join(workspaceRoot, '.geulbat', 'index', 'manifest.json'),
     );
 
     if (!(await createSymlinkOrSkip(t, realDir, linkedDir))) {
       return;
     }
 
-    await assert.rejects(
-      () =>
-        resolveSourceMutationTarget(workspaceRoot, 'linked-dir/child.txt', {
-          allowMissingLeaf: true,
-        }),
-      (error: unknown) => error instanceof PathEscapeError,
+    const linkedTarget = await resolveSourceMutationTarget(
+      workspaceRoot,
+      'linked-dir/child.txt',
+      {
+        allowMissingLeaf: true,
+      },
+    );
+    assert.equal(linkedTarget.absolutePath, join(linkedDir, 'child.txt'));
+    assert.equal(
+      linkedTarget.canonicalAbsolutePath,
+      join(realDir, 'child.txt'),
     );
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
@@ -107,7 +110,7 @@ void test('resolveSourceMutationTarget rejects reserved source paths and symlink
   }
 });
 
-void test('resolveSourceMutationTarget rejects internal symlink aliases to reserved targets', async (t) => {
+void test('resolveSourceMutationTarget follows a file symlink regardless of target name', async (t) => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-file-platform-'));
   const reservedFile = join(workspaceRoot, '.env');
   const linkedFile = join(workspaceRoot, 'settings.txt');
@@ -118,13 +121,15 @@ void test('resolveSourceMutationTarget rejects internal symlink aliases to reser
       return;
     }
 
-    await assert.rejects(
-      () =>
-        resolveSourceMutationTarget(workspaceRoot, 'settings.txt', {
-          allowMissingLeaf: true,
-        }),
-      (error: unknown) => error instanceof PathEscapeError,
+    const target = await resolveSourceMutationTarget(
+      workspaceRoot,
+      'settings.txt',
+      {
+        allowMissingLeaf: true,
+      },
     );
+    assert.equal(target.absolutePath, linkedFile);
+    assert.equal(target.canonicalAbsolutePath, reservedFile);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
@@ -213,6 +218,66 @@ void test('enumerateCanonicalChildren marks workspace-internal symlink directori
     assert.equal(linked?.canonicalAbsolutePath, realDir);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+void test('enumerateCanonicalChildren includes symlink directories outside the coordinate base', async (t) => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-file-platform-'));
+  const outsideRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-file-platform-outside-'),
+  );
+  const linkDir = join(workspaceRoot, 'outside-link');
+
+  try {
+    await writeFile(join(outsideRoot, 'note.md'), '# outside\n', 'utf8');
+    if (!(await createSymlinkOrSkip(t, outsideRoot, linkDir))) {
+      return;
+    }
+
+    const root = await resolveSourceReadTarget(workspaceRoot, '.');
+    const children = await enumerateCanonicalChildren({
+      kind: 'source',
+      mode: 'enumerate',
+      relativePath: '.',
+      canonicalAbsolutePath: root.workspaceCanonicalRoot,
+      workspaceCanonicalRoot: root.workspaceCanonicalRoot,
+    });
+    const linked = children.find((entry) => entry.name === 'outside-link');
+    assert.equal(linked?.type, 'directory');
+    assert.equal(linked?.viaSymlink, true);
+    assert.equal(linked?.canonicalAbsolutePath, outsideRoot);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+void test('enumerateCanonicalChildren includes symlink aliases regardless of target name', async (t) => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-file-platform-protected-link-'),
+  );
+  const outsideRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-file-platform-protected-target-'),
+  );
+  const protectedDir = join(outsideRoot, '.git');
+  const linkDir = join(workspaceRoot, 'history');
+  try {
+    await mkdir(protectedDir);
+    await writeFile(join(protectedDir, 'config'), 'secret\n', 'utf8');
+    if (!(await createSymlinkOrSkip(t, protectedDir, linkDir))) {
+      return;
+    }
+
+    const target = await resolveSourceDirectoryTarget(workspaceRoot, '.');
+    const children = await enumerateCanonicalChildren(target);
+
+    const linked = children.find((entry) => entry.name === 'history');
+    assert.equal(linked?.type, 'directory');
+    assert.equal(linked?.viaSymlink, true);
+    assert.equal(linked?.canonicalAbsolutePath, protectedDir);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(outsideRoot, { recursive: true, force: true });
   }
 });
 

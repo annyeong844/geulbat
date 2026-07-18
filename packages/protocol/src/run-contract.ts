@@ -58,7 +58,7 @@ export const RUN_MODEL_CATALOG = [
   defaultReasoningEffort: RunReasoningEffort;
 }[];
 
-export type RunModelDescriptor = (typeof RUN_MODEL_CATALOG)[number];
+type RunModelDescriptor = (typeof RUN_MODEL_CATALOG)[number];
 export type RunModelId = RunModelDescriptor['id'];
 
 export const DEFAULT_RUN_MODEL_ID = 'gpt-5.6-sol' as const satisfies RunModelId;
@@ -105,7 +105,7 @@ export const IMAGE_GENERATION_MODEL_CATALOG = [
   providerId: ProviderAuthProviderId;
 }[];
 
-export type ImageGenerationModelDescriptor =
+type ImageGenerationModelDescriptor =
   (typeof IMAGE_GENERATION_MODEL_CATALOG)[number];
 export type ImageGenerationModelId = ImageGenerationModelDescriptor['id'];
 
@@ -144,7 +144,7 @@ export const VIDEO_GENERATION_MODEL_CATALOG = [
   modality: 'video';
 }[];
 
-export type VideoGenerationModelDescriptor =
+type VideoGenerationModelDescriptor =
   (typeof VIDEO_GENERATION_MODEL_CATALOG)[number];
 export type VideoGenerationModelId = VideoGenerationModelDescriptor['id'];
 
@@ -231,7 +231,7 @@ export const DEFAULT_RUN_SUBAGENT_MODEL_ROUTING = {
   mode: 'auto',
 } as const satisfies RunSubagentModelRouting;
 
-export const SUBAGENT_MODEL_SELECTION_SOURCES = [
+const SUBAGENT_MODEL_SELECTION_SOURCES = [
   'user_fixed',
   'model_selected',
   'inherited',
@@ -253,8 +253,8 @@ export interface RunRequest {
   prompt: string;
   displayPrompt?: string;
   threadId?: ThreadId;
-  // Computer-root-relative preferred working directory. The daemon admits it
-  // against the current computer file scope before starting the run.
+  // Preferred host working directory. Relative paths start from the Computer
+  // coordinate base; absolute and parent-relative paths are allowed.
   workingDirectory?: string;
   modelId?: RunModelId;
   currentFile?: string;
@@ -283,7 +283,7 @@ export interface RunRequest {
   videoGenerationSettings?: VideoGenerationSettings;
 }
 
-export type RunPromptRefRequest = Omit<RunRequest, 'prompt'> & {
+type RunPromptRefRequest = Omit<RunRequest, 'prompt'> & {
   promptRef: string;
 };
 
@@ -301,7 +301,7 @@ export interface RunAck {
   threadId: ThreadId;
 }
 
-export type RunSelection = NonNullable<RunRequest['selection']>;
+type RunSelection = NonNullable<RunRequest['selection']>;
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(isString);
@@ -326,7 +326,7 @@ export function isSubagentModelSelectionSource(
   );
 }
 
-export function isRunSubagentModelChoice(
+function isRunSubagentModelChoice(
   value: unknown,
 ): value is RunSubagentModelChoice {
   if (
@@ -363,7 +363,7 @@ export function isRunSubagentModelRouting(
   );
 }
 
-export function isRunSelection(value: unknown): value is RunSelection {
+function isRunSelection(value: unknown): value is RunSelection {
   return (
     isRecord(value) &&
     isNumber(value.startLine) &&
@@ -381,9 +381,7 @@ export function isRunRequest(value: unknown): value is RunRequest {
   );
 }
 
-export function isRunPromptRefRequest(
-  value: unknown,
-): value is RunPromptRefRequest {
+function isRunPromptRefRequest(value: unknown): value is RunPromptRefRequest {
   return (
     isRecord(value) &&
     value.prompt === undefined &&
@@ -466,9 +464,7 @@ function isRunRequestBase(value: Record<string, unknown>): boolean {
   );
 }
 
-export function isRunAttachmentInput(
-  value: unknown,
-): value is RunAttachmentInput {
+function isRunAttachmentInput(value: unknown): value is RunAttachmentInput {
   return (
     isRecord(value) &&
     hasOnlyKeys(value, ['name', 'contentRef', 'mimeType']) &&

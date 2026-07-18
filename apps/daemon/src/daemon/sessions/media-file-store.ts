@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { createWriteStream } from 'node:fs';
 import { copyFile, mkdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { finished } from 'node:stream/promises';
 
 import { isThreadMediaRef } from '@geulbat/protocol/artifacts';
 
@@ -48,6 +50,7 @@ export async function writeThreadMediaFileFromStream(args: {
 
   const sink = createWriteStream(tempPath, { flags: 'wx' });
   try {
+    await once(sink, 'open');
     for await (const chunk of args.stream) {
       byteLength += chunk.byteLength;
       if (byteLength > args.maxBytes) {
@@ -55,16 +58,11 @@ export async function writeThreadMediaFileFromStream(args: {
       }
       hash.update(chunk);
       if (!sink.write(chunk)) {
-        await new Promise<void>((resolve, reject) => {
-          sink.once('drain', resolve);
-          sink.once('error', reject);
-        });
+        await once(sink, 'drain');
       }
     }
-    await new Promise<void>((resolve, reject) => {
-      sink.end(() => resolve());
-      sink.once('error', reject);
-    });
+    sink.end();
+    await finished(sink);
 
     const sha256 = hash.digest('hex');
     const mediaRef = `${sha256}.${args.extension}`;
@@ -74,6 +72,7 @@ export async function writeThreadMediaFileFromStream(args: {
     return { mediaRef, sha256, byteLength };
   } catch (error: unknown) {
     sink.destroy();
+    await finished(sink).catch(() => undefined);
     await rm(tempPath, { force: true });
     throw error;
   }

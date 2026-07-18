@@ -16,6 +16,7 @@ import type {
   ToolCatalogSearchMetadata,
   ToolExposure,
   ToolParameters,
+  ToolRecoveryStrategy,
 } from './tool-registry-model.js';
 
 export type { PermissionMode } from '@geulbat/protocol/run-approval';
@@ -40,6 +41,7 @@ export type {
   ToolExposure,
   ToolMeta,
   ToolParameters,
+  ToolRecoveryStrategy,
 } from './tool-registry-model.js';
 
 interface ToolSelection {
@@ -192,6 +194,7 @@ export interface ToolDescriptor {
   // The registry supplies a conservative direct-only value when a local or
   // test tool has not opted into the SDK/callback routing contract.
   exposure?: ToolExposure;
+  recoveryStrategy?: ToolRecoveryStrategy;
   // 도구 인자 스트리밍 opt-in — provider args 델타가 tool_call_delta로
   // 클라이언트까지 흐른다 (visualize 실시간 렌더)
   streamsArgsDelta?: boolean;

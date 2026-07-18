@@ -7,8 +7,6 @@ import { createGlobMatcher, filenameSearch } from './search-files-filename.js';
 import { resolveRipgrepPath, runRipgrep } from './search-files-ripgrep.js';
 import { defineZodTool } from '../zod-tool.js';
 
-const MAX_INCLUDE_GLOB_LENGTH = 256;
-
 const searchFilesArgsSchema = z.strictObject({
   pattern: z
     .string()
@@ -24,7 +22,7 @@ const searchFilesArgsSchema = z.strictObject({
     })
     .optional()
     .describe(
-      'The directory to search in. Relative paths start from the current directory inside ComputerFileScope.',
+      'The host directory to search. Relative paths start from the current directory; absolute paths may address any location readable by the daemon process.',
     ),
   type: z
     .enum(['content', 'filename'])
@@ -34,13 +32,10 @@ const searchFilesArgsSchema = z.strictObject({
     ),
   include: z
     .string()
-    .max(
-      MAX_INCLUDE_GLOB_LENGTH,
-      `include glob is too long (max ${MAX_INCLUDE_GLOB_LENGTH} characters).`,
-    )
-    .regex(/^(?!!).*$/u, 'include glob must not start with "!".')
     .optional()
-    .describe('Glob pattern to filter which files to search (e.g. "*.ts").'),
+    .describe(
+      'Glob pattern to include files (e.g. "*.ts") or exclude them with a leading "!" (e.g. "!**/*.test.ts").',
+    ),
   maxResults: z
     .number()
     .int('maxResults must be a positive integer.')
@@ -54,7 +49,7 @@ const searchFilesArgsSchema = z.strictObject({
 export const searchFilesTool = defineZodTool({
   name: 'search_files',
   description:
-    'Search filenames or file contents under ComputerFileScope. Relative paths start from the current directory.',
+    'Search filenames or file contents across the host filesystem. Relative paths start from the current directory; hidden and ignored files are included when the OS exposes them.',
   argsSchema: searchFilesArgsSchema,
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
@@ -110,7 +105,7 @@ export const searchFilesTool = defineZodTool({
           ok: true,
           output: JSON.stringify({
             ...source,
-            backend: searchType === 'filename' ? 'filename' : 'ripgrep',
+            backend: searchType === 'filename' ? 'ripgrep-files' : 'ripgrep',
             query,
             total: 0,
             truncated: false,
@@ -127,9 +122,11 @@ export const searchFilesTool = defineZodTool({
         const filenameResult = await filenameSearch(
           rootDir,
           filePath.absoluteRoot,
+          query,
           queryMatcher,
           includeMatcher,
           maxResults,
+          ctx.signal,
         );
         return {
           ok: true,

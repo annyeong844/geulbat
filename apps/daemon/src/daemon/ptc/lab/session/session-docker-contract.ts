@@ -27,6 +27,7 @@ import type {
   PtcDockerClientCommandInvocation,
   PtcDockerClientCommandResult,
 } from '../../shared/process-command.js';
+import { hashPtcStableJson } from '../../shared/stable-identity.js';
 import {
   PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_SDK_PROJECTION_MOUNT_POLICY_ID,
@@ -56,6 +57,12 @@ export const PTC_SESSION_DOCKER_ARTIFACT_WORKSPACE_MOUNT_POLICY_ID =
   'ptc_session_artifact_workspace_mount_v1' as const;
 export const PTC_SESSION_DOCKER_LOCAL_BATCH_COMMAND_LAUNCH_POLICY_ID =
   'ptc_session_docker_local_batch_command_launch_v1' as const;
+
+export function buildPtcSessionDockerRuntimeScopeHash(
+  runtimeRoot: string,
+): string {
+  return hashPtcStableJson({ runtimeRoot });
+}
 
 type PtcSessionDockerLaunchPolicyId =
   | typeof PTC_SESSION_DOCKER_DEFAULT_LAUNCH_POLICY_ID
@@ -185,6 +192,7 @@ export type PtcSessionDockerFailureReason =
   | 'container_host_root_cleanup_failed'
   | 'container_start_cleanup_failed'
   | 'ephemeral_startup_sweep_failed'
+  | 'restart_residue_sweep_failed'
   | 'manager_closing';
 
 export type PtcSessionDockerResult<T> =
@@ -240,6 +248,7 @@ export interface PtcSessionDockerHandle {
 }
 
 export interface PtcSessionDockerManager {
+  reapRestartResidue?(): Promise<PtcSessionDockerResult<void>>;
   getOrCreate(
     identity: PtcSessionDockerIdentity,
     options?: { signal?: AbortSignal },

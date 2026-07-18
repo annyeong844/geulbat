@@ -1,5 +1,7 @@
 import { statSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve, win32 } from 'node:path';
+import { join, resolve } from 'node:path';
+
+import { normalizePath } from './normalize-path.js';
 
 export interface ComputerFileScope {
   root: string;
@@ -43,7 +45,7 @@ export function createComputerFileScope(args?: {
   }
   const root = resolve(args.root);
   const browseStartPath = args.home?.trim()
-    ? normalizeComputerBrowseRelativePath(relative(root, resolve(args.home)))
+    ? normalizePath(root, resolve(args.home))
     : undefined;
   const isDirectory = args.isDirectory ?? defaultIsDirectory;
   const browseShortcuts =
@@ -57,30 +59,12 @@ export function createComputerFileScope(args?: {
   };
 }
 
-export function normalizeComputerBrowseRelativePath(
-  relativePath: string,
-): string | undefined {
-  if (
-    isAbsolute(relativePath) ||
-    win32.isAbsolute(relativePath) ||
-    relativePath === '..' ||
-    relativePath.startsWith('../') ||
-    relativePath.startsWith('..\\')
-  ) {
-    return undefined;
-  }
-  return relativePath
-    .split(/[\\/]+/u)
-    .filter((part) => part.length > 0)
-    .join('/');
-}
-
 function collectBrowseShortcuts(args: {
   root: string;
   browseStartPath: string;
   isDirectory: (path: string) => boolean;
 }): Array<{ label: string; path: string }> {
-  const homeAbsolute = join(args.root, args.browseStartPath);
+  const homeAbsolute = resolve(args.root, args.browseStartPath);
   const pathPrefix =
     args.browseStartPath === '' ? '' : `${args.browseStartPath}/`;
   const found: Array<{ label: string; path: string }> = [];

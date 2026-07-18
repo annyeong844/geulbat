@@ -6,7 +6,7 @@ import { parseResponseEvents } from '../daemon/llm/provider/transport/responses-
 import type { ProviderStructuredOutput } from '../daemon/llm/index.js';
 import type { CallModelFn } from '../daemon/agent/loop-types.js';
 
-export type ProviderResponseEventFixture = Record<string, unknown>;
+type ProviderResponseEventFixture = Record<string, unknown>;
 
 export interface ProviderRoundFixture {
   events?: ProviderResponseEventFixture[];
@@ -48,6 +48,7 @@ export function createScriptedProviderCallModel(
 
     const replayFixtureEvents = async (
       onAssistantDelta: Parameters<typeof parseResponseEvents>[1] | undefined,
+      historyProjection: 'normalized' | 'provider_output',
     ) => {
       if (fixture.error) {
         throw fixture.error;
@@ -55,6 +56,7 @@ export function createScriptedProviderCallModel(
       const result = await parseResponseEvents(
         toAsyncEvents(fixture.events ?? []),
         onAssistantDelta,
+        { historyProjection },
       );
       return {
         ...result,
@@ -74,11 +76,11 @@ export function createScriptedProviderCallModel(
         accountId: 'account',
       }),
       streamResponsesOverWebSocket: ({ onAssistantDelta }) =>
-        replayFixtureEvents(onAssistantDelta),
+        replayFixtureEvents(onAssistantDelta, 'provider_output'),
       // Grok routes through its own transport; without this stub a
       // grok-selected round would hit the real websocket endpoint.
       streamGrokOAuthResponses: (_grokInput, options) =>
-        replayFixtureEvents(options.onAssistantDelta),
+        replayFixtureEvents(options.onAssistantDelta, 'normalized'),
     });
   };
 }
@@ -112,7 +114,12 @@ export function providerFinalAnswerRound(
       },
       {
         type: 'response.output_item.done',
-        item: { id: itemId, type: 'message', phase: 'final_answer' },
+        item: {
+          id: itemId,
+          type: 'message',
+          phase: 'final_answer',
+          content: [{ type: 'output_text', text }],
+        },
       },
     ],
   };
@@ -144,7 +151,12 @@ export function providerToolRound(args: {
       },
       {
         type: 'response.output_item.done',
-        item: { id: messageId, type: 'message', phase: 'commentary' },
+        item: {
+          id: messageId,
+          type: 'message',
+          phase: 'commentary',
+          content: [{ type: 'output_text', text: commentaryText }],
+        },
       },
       {
         type: 'response.output_item.done',

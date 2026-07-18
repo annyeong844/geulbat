@@ -9,6 +9,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createSymlinkOrSkip } from '../../../test-support/symlink-test.js';
 import { readFile } from '../../files/read-file.js';
 import { isToolObjectParameters } from '../types.js';
 import { applyPatchTool } from './apply-patch.js';
@@ -103,6 +104,27 @@ void test('apply_patch applies one update hunk with exact context', async () => 
     await fsReadFile(join(computerFileRoot, 'hello.txt'), 'utf8'),
     'hello\ngeulbat\n',
   );
+});
+
+void test('apply_patch atomically updates a file through a symlink', async (t) => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-apply-patch-symlink-'),
+  );
+  const targetPath = join(computerFileRoot, '.env');
+  const linkedPath = join(computerFileRoot, 'settings.txt');
+  await writeFile(targetPath, 'MODE=old\n', 'utf8');
+  if (!(await createSymlinkOrSkip(t, targetPath, linkedPath))) {
+    return;
+  }
+
+  const result = await applyPatchTool.execute(
+    { patch: updatePatch('settings.txt', 'MODE=old\n', 'MODE=new\n') },
+    { callId: 'call-apply-patch-symlink', computerFileRoot },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(await fsReadFile(targetPath, 'utf8'), 'MODE=new\n');
+  assert.equal(await fsReadFile(linkedPath, 'utf8'), 'MODE=new\n');
 });
 
 void test('apply_patch applies multiple hunks in one file operation', async () => {

@@ -13,8 +13,10 @@ import {
   isInterjectFlushRequested,
   pushPendingInterject,
   requestInterjectFlush,
+  restorePendingInterjectFront,
 } from '../sessions/active-run-interject-buffer.js';
 import { readTranscriptEntries } from '../sessions/transcript-log.js';
+import { persistSingleInterjectToTranscript } from './loop-history.js';
 import type {
   AnyTool,
   ExecuteResult,
@@ -62,13 +64,25 @@ import {
   PTC_FIXED_PROBE_STRUCTURED_OUTPUT_KIND,
   PTC_FIXED_PROBE_STRUCTURED_OUTPUT_PROBE_ID,
 } from './ptc-fixed-probe-structured-output-caller.js';
-import { MID_RUN_STEER_ENABLED_ENV } from './mid-run-steer-flag.js';
 
 function registerOnce(
   daemonContext: ReturnType<typeof createDaemonContext>,
   tool: AnyTool,
 ): void {
   daemonContext.toolRegistry.registerTool(tool);
+}
+
+async function startApprovalCheckpoint(
+  daemonContext: ReturnType<typeof createDaemonContext>,
+  threadId: ReturnType<typeof testThreadId>,
+  runId: ReturnType<typeof testRunId>,
+): Promise<void> {
+  const result = await daemonContext.runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: '.', permissionMode: 'basic' },
+  });
+  assert.equal(result.ok, true);
 }
 
 const STRUCTURED_NO_DEPENDENCY_REQUEST = {
@@ -250,7 +264,12 @@ void test('runAgentLoop emits usage_updated with accumulated totals when the pro
 
 void test('runAgentLoop persists approval denial as transcripted terminal failure', async () => {
   const threadId = testThreadId(1);
-  const daemonContext = createDaemonContext();
+  const runId = testRunId('loop-denied');
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-denied-'));
+  const daemonContext = createDaemonContext({
+    homeStateRoot: join(workspaceRoot, 'daemon-home'),
+  });
+  await startApprovalCheckpoint(daemonContext, threadId, runId);
   registerOnce(
     daemonContext,
     makeTestTool({
@@ -264,19 +283,18 @@ void test('runAgentLoop persists approval denial as transcripted terminal failur
     }),
   );
 
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-denied-'));
   const events: AgentEvent[] = [];
   const runContext = makeRunContext({
     threadId,
     stateRoot: workspaceRoot,
   });
   const runState = createRunState({
-    runId: 'run-loop-denied',
+    runId,
     runContext,
   });
 
   const result = await runAgentLoop({
-    runId: 'run-loop-denied',
+    runId,
     runContext,
     prompt: 'please write the file',
     runState,
@@ -297,7 +315,7 @@ void test('runAgentLoop persists approval denial as transcripted terminal failur
       events.push(event);
       if (event.type === 'approval_required') {
         setTimeout(() => {
-          daemonContext.approvalGate.resolveApproval(
+          void daemonContext.approvalGate.resolveApproval(
             event.payload.callId,
             event.payload.runId,
             event.payload.threadId,
@@ -331,7 +349,12 @@ void test('runAgentLoop persists approval denial as transcripted terminal failur
 
 void test('runAgentLoop completes after approved tool execution and second-round final answer', async () => {
   const threadId = testThreadId(2);
-  const daemonContext = createDaemonContext();
+  const runId = testRunId('loop-success');
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-success-'));
+  const daemonContext = createDaemonContext({
+    homeStateRoot: join(workspaceRoot, 'daemon-home'),
+  });
+  await startApprovalCheckpoint(daemonContext, threadId, runId);
   registerOnce(
     daemonContext,
     makeTestTool({
@@ -345,14 +368,13 @@ void test('runAgentLoop completes after approved tool execution and second-round
     }),
   );
 
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-success-'));
   const events: AgentEvent[] = [];
   const runContext = makeRunContext({
     threadId,
     stateRoot: workspaceRoot,
   });
   const runState = createRunState({
-    runId: 'run-loop-success',
+    runId,
     runContext,
   });
   const callModelImpl = createScriptedProviderCallModel([
@@ -363,7 +385,7 @@ void test('runAgentLoop completes after approved tool execution and second-round
   ]);
 
   const result = await runAgentLoop({
-    runId: 'run-loop-success',
+    runId,
     runContext,
     prompt: 'please run the tool and finish',
     runState,
@@ -380,7 +402,7 @@ void test('runAgentLoop completes after approved tool execution and second-round
       events.push(event);
       if (event.type === 'approval_required') {
         setTimeout(() => {
-          daemonContext.approvalGate.resolveApproval(
+          void daemonContext.approvalGate.resolveApproval(
             event.payload.callId,
             event.payload.runId,
             event.payload.threadId,
@@ -573,7 +595,6 @@ void test('runAgentLoop preserves provider output items exactly once across a to
     content: [{ type: 'output_text', text: 'done' }],
   };
   let modelRound = 0;
-
   const result = await runAgentLoop({
     runId: 'run-loop-provider-output-continuity',
     runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
@@ -680,283 +701,346 @@ void test('runAgentLoop preserves provider output items exactly once across a to
 });
 
 void test('runAgentLoop compacts successful round input before appending the new assistant tail', async () => {
-  const previousFlag = process.env[MID_RUN_STEER_ENABLED_ENV];
-  process.env[MID_RUN_STEER_ENABLED_ENV] = '1';
-  try {
-    const threadId = testThreadId(1204);
-    const daemonContext = createDaemonContext();
-    const workspaceRoot = await mkdtemp(
-      join(tmpdir(), 'geulbat-loop-native-compaction-'),
-    );
-    const history: HistoryItem[] = [{ kind: 'user', text: 'old context' }];
-    let memoryCalls = 0;
-    const events: AgentEvent[] = [];
+  const threadId = testThreadId(1204);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-native-compaction-'),
+  );
+  const history: HistoryItem[] = [{ kind: 'user', text: 'old context' }];
+  let memoryCalls = 0;
+  const events: AgentEvent[] = [];
 
-    const result = await runAgentLoop({
-      runId: 'run-loop-native-compaction',
-      runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
-      prompt: 'continue',
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext({
-        sessionId: 'session-loop-native-compaction',
-      }),
-      historyPort: {
-        async loadInitialHistory() {
-          return history;
-        },
+  const result = await runAgentLoop({
+    runId: 'run-loop-native-compaction',
+    runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+    prompt: 'continue',
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-native-compaction',
+    }),
+    historyPort: {
+      async loadInitialHistory() {
+        return history;
       },
-      modelRoundPort: {
-        async runModelRound() {
-          return {
-            ok: true,
-            value: {
-              assistantText: 'new tail',
-              terminalResult: { ok: true, finalProse: 'new tail' },
-              functionCalls: [],
-              providerUsageTelemetry: { inputTokens: 90 },
-            },
-          };
-        },
-      },
-      memoryPort: {
-        async compactAfterModelRound(args) {
-          memoryCalls += 1;
-          assert.equal(args.inputTokens, 90);
-          assert.deepEqual(args.history, [
-            { kind: 'user', text: 'old context' },
-          ]);
-          const contextUsage = {
-            modelId: args.providerRequestOptions.model,
-            inputTokens: 90,
-            contextWindow: 100,
-            thresholdTokens: 90,
-          };
-          args.onContextUsage?.({ state: 'measured', ...contextUsage });
-          args.history.splice(0, args.history.length, {
-            kind: 'provider_native_compaction',
-            providerId: 'openai_codex_direct',
-            model: args.providerRequestOptions.model,
-            output: [
-              {
-                type: 'compaction',
-                encrypted_content: 'opaque-checkpoint',
-              },
-            ],
-          });
-          args.onContextUsage?.({ state: 'compacted', ...contextUsage });
-          return { kind: 'compacted' };
-        },
-      },
-      onEvent: (event) => events.push(event),
-    });
-
-    assert.deepEqual(result, { ok: true, finalProse: 'new tail' });
-    assert.equal(memoryCalls, 1);
-    assert.deepEqual(
-      events
-        .filter((event) => event.type === 'context_usage_updated')
-        .map((event) => event.payload.state),
-      ['measured', 'compacted'],
-    );
-    assert.deepEqual(history, [
-      {
-        kind: 'provider_native_compaction',
-        providerId: 'openai_codex_direct',
-        model: daemonContext.providerRequestOptions.model,
-        output: [
-          {
-            type: 'compaction',
-            encrypted_content: 'opaque-checkpoint',
+    },
+    modelRoundPort: {
+      async runModelRound() {
+        return {
+          ok: true,
+          value: {
+            assistantText: 'new tail',
+            terminalResult: { ok: true, finalProse: 'new tail' },
+            functionCalls: [],
+            providerUsageTelemetry: { inputTokens: 90 },
           },
-        ],
+        };
       },
-      { kind: 'assistant', phase: 'final_answer', text: 'new tail' },
-    ]);
-  } finally {
-    if (previousFlag === undefined) {
-      delete process.env[MID_RUN_STEER_ENABLED_ENV];
-    } else {
-      process.env[MID_RUN_STEER_ENABLED_ENV] = previousFlag;
-    }
-  }
+    },
+    memoryPort: {
+      async compactAfterModelRound(args) {
+        memoryCalls += 1;
+        assert.equal(args.inputTokens, 90);
+        assert.deepEqual(args.history, [{ kind: 'user', text: 'old context' }]);
+        const contextUsage = {
+          modelId: args.providerRequestOptions.model,
+          inputTokens: 90,
+          contextWindow: 100,
+          thresholdTokens: 90,
+        };
+        args.onContextUsage?.({ state: 'measured', ...contextUsage });
+        args.history.splice(0, args.history.length, {
+          kind: 'provider_native_compaction',
+          providerId: 'openai_codex_direct',
+          model: args.providerRequestOptions.model,
+          output: [
+            {
+              type: 'compaction',
+              encrypted_content: 'opaque-checkpoint',
+            },
+          ],
+        });
+        args.onContextUsage?.({ state: 'compacted', ...contextUsage });
+        return { kind: 'compacted' };
+      },
+    },
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.deepEqual(result, { ok: true, finalProse: 'new tail' });
+  assert.equal(memoryCalls, 1);
+  assert.deepEqual(
+    events
+      .filter((event) => event.type === 'context_usage_updated')
+      .map((event) => event.payload.state),
+    ['measured', 'compacted'],
+  );
+  assert.deepEqual(history, [
+    {
+      kind: 'provider_native_compaction',
+      providerId: 'openai_codex_direct',
+      model: daemonContext.providerRequestOptions.model,
+      output: [
+        {
+          type: 'compaction',
+          encrypted_content: 'opaque-checkpoint',
+        },
+      ],
+    },
+    { kind: 'assistant', phase: 'final_answer', text: 'new tail' },
+  ]);
 });
 
-void test('runAgentLoop fails closed when an enabled compaction transaction fails', async () => {
-  const previousFlag = process.env[MID_RUN_STEER_ENABLED_ENV];
-  process.env[MID_RUN_STEER_ENABLED_ENV] = '1';
-  try {
-    const threadId = testThreadId(1205);
-    const daemonContext = createDaemonContext();
-    const workspaceRoot = await mkdtemp(
-      join(tmpdir(), 'geulbat-loop-compaction-failure-'),
-    );
-    const events: AgentEvent[] = [];
+void test('runAgentLoop fails closed when a compaction transaction fails', async () => {
+  const threadId = testThreadId(1205);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-compaction-failure-'),
+  );
+  const events: AgentEvent[] = [];
 
-    const result = await runAgentLoop({
-      runId: 'run-loop-compaction-failure',
-      runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
-      prompt: 'continue',
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext({
-        sessionId: 'session-loop-compaction-failure',
-      }),
-      modelRoundPort: {
-        async runModelRound() {
-          return {
-            ok: true,
-            value: {
-              assistantText: 'must not commit',
-              terminalResult: { ok: true, finalProse: 'must not commit' },
-              functionCalls: [],
-              providerUsageTelemetry: { inputTokens: 90 },
-            },
-          };
-        },
+  const result = await runAgentLoop({
+    runId: 'run-loop-compaction-failure',
+    runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+    prompt: 'continue',
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-compaction-failure',
+    }),
+    modelRoundPort: {
+      async runModelRound() {
+        return {
+          ok: true,
+          value: {
+            assistantText: 'must not commit',
+            terminalResult: { ok: true, finalProse: 'must not commit' },
+            functionCalls: [],
+            providerUsageTelemetry: { inputTokens: 90 },
+          },
+        };
       },
-      memoryPort: {
-        async compactAfterModelRound() {
-          return {
-            kind: 'failed',
-            reason: 'stale_snapshot',
-            message: 'context changed while compaction was being committed',
-          };
-        },
+    },
+    memoryPort: {
+      async compactAfterModelRound() {
+        return {
+          kind: 'failed',
+          reason: 'stale_snapshot',
+          message: 'context changed while compaction was being committed',
+        };
       },
-      onEvent: (event) => events.push(event),
-    });
+    },
+    onEvent: (event) => events.push(event),
+  });
 
-    assert.deepEqual(result, { ok: false, finalProse: '' });
-    const terminal = events.at(-1);
-    assert.equal(terminal?.type, 'error');
-    if (terminal?.type === 'error') {
-      assert.match(terminal.payload.message, /context_compaction_failed/u);
-    }
-  } finally {
-    if (previousFlag === undefined) {
-      delete process.env[MID_RUN_STEER_ENABLED_ENV];
-    } else {
-      process.env[MID_RUN_STEER_ENABLED_ENV] = previousFlag;
-    }
+  assert.deepEqual(result, { ok: false, finalProse: '' });
+  const terminal = events.at(-1);
+  assert.equal(terminal?.type, 'error');
+  if (terminal?.type === 'error') {
+    assert.match(terminal.payload.message, /context_compaction_failed/u);
   }
 });
 
 void test('runAgentLoop applies pending interject before the next steer-aware model round', async () => {
-  const previousFlag = process.env[MID_RUN_STEER_ENABLED_ENV];
-  process.env[MID_RUN_STEER_ENABLED_ENV] = '1';
-  try {
-    const threadId = testThreadId(1201);
-    const daemonContext = createDaemonContext();
-    const workspaceRoot = await mkdtemp(
-      join(tmpdir(), 'geulbat-loop-interject-run-'),
-    );
-    const events: AgentEvent[] = [];
-    const runContext = makeRunContext({
-      threadId,
-      stateRoot: workspaceRoot,
-    });
-    const runState = createRunState({
-      runId: 'run-loop-interject',
-      runContext,
-    });
-    let injected = false;
-    const callModelImpl = createScriptedProviderCallModel([
+  const threadId = testThreadId(1201);
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-interject-run-'),
+  );
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const events: AgentEvent[] = [];
+  const runContext = makeRunContext({
+    threadId,
+    stateRoot: workspaceRoot,
+  });
+  const runState = createRunState({
+    runId: 'run-loop-interject',
+    runContext,
+  });
+  await daemonContext.runCheckpoints.startRun({
+    runId: runState.runId,
+    threadId,
+    request: { workingDirectory: '', permissionMode: 'basic' },
+  });
+  let injected = false;
+  const callModelImpl = createScriptedProviderCallModel([
+    {
+      ...providerFinalAnswerRound('first answer'),
+      inspectInput(input) {
+        assert.equal(
+          input.history.some(
+            (item) => item.kind === 'user' && item.text === 'please revise',
+          ),
+          false,
+        );
+      },
+    },
+    {
+      ...providerFinalAnswerRound('second answer'),
+      inspectInput(input) {
+        const userTurns = input.history
+          .filter((item) => item.kind === 'user')
+          .map((item) => item.text);
+        assert.deepEqual(userTurns, ['please answer once', 'please revise']);
+        assert.deepEqual(input.history[1], {
+          kind: 'backend_item',
+          data: {
+            id: 'msg_1',
+            type: 'message',
+            phase: 'final_answer',
+            content: [{ type: 'output_text', text: 'first answer' }],
+          },
+        });
+      },
+    },
+  ]);
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-interject',
+    runContext,
+    prompt: 'please answer once',
+    runState,
+    toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-interject',
+    }),
+    callModelImpl,
+    onEvent: (event) => {
+      events.push(event);
+      if (event.type === 'final_answer_delta' && !injected) {
+        injected = true;
+        pushPendingInterject(runState.interject, 'please revise');
+        requestInterjectFlush(runState.interject);
+      }
+    },
+  });
+
+  assert.equal(injected, true);
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'second answer',
+  });
+  assert.equal(runState.status, 'completed');
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      'run_ack',
+      'final_answer_delta',
+      'interject_applied',
+      'final_answer_delta',
+    ],
+  );
+  const applied = events.find((event) => event.type === 'interject_applied');
+  assert.deepEqual(applied?.payload, {
+    runId: 'run-loop-interject',
+    count: 1,
+    receivedSeqs: [1],
+  });
+  // 소비 시점에 즉시 반영 요청이 1회성으로 지워진다
+  assert.equal(isInterjectFlushRequested(runState.interject), false);
+  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.deepEqual(
+    transcript.map((entry) => ({
+      role: entry.role,
+      content: entry.content,
+      source: entry.metadata?.source,
+    })),
+    [
       {
-        ...providerFinalAnswerRound('first answer'),
+        role: 'user',
+        content: 'please revise',
+        source: 'interject',
+      },
+    ],
+  );
+});
+
+void test('runAgentLoop reconciles a transcript-persisted applying interject exactly once after restart', async () => {
+  const threadId = testThreadId(1206);
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-interject-restart-'),
+  );
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({ threadId, stateRoot: workspaceRoot });
+  const runState = createRunState({
+    runId: 'run-loop-interject-restart',
+    runContext,
+  });
+  const interject = { receivedSeq: 1, text: 'resume with this steer' };
+  await daemonContext.runCheckpoints.startRun({
+    runId: runState.runId,
+    threadId,
+    request: { workingDirectory: '', permissionMode: 'basic' },
+  });
+  await daemonContext.runCheckpoints.enqueueInterject({
+    threadId,
+    runId: runState.runId,
+    interject,
+  });
+  await daemonContext.runCheckpoints.claimInterject({
+    threadId,
+    runId: runState.runId,
+    receivedSeq: interject.receivedSeq,
+  });
+  await persistSingleInterjectToTranscript(
+    workspaceRoot,
+    threadId,
+    runState.runId,
+    interject,
+  );
+  restorePendingInterjectFront(runState.interject, [interject], 1);
+  const history: HistoryItem[] = [
+    { kind: 'user', text: 'resume with this steer' },
+  ];
+
+  const result = await runAgentLoop({
+    runId: runState.runId,
+    runContext,
+    prompt: 'resume with this steer',
+    runState,
+    toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-interject-restart',
+    }),
+    historyPort: {
+      async loadInitialHistory() {
+        return history;
+      },
+    },
+    callModelImpl: createScriptedProviderCallModel([
+      {
+        ...providerFinalAnswerRound('recovered answer'),
         inspectInput(input) {
-          assert.equal(
-            input.history.some(
-              (item) => item.kind === 'user' && item.text === 'please revise',
-            ),
-            false,
+          assert.deepEqual(
+            input.history
+              .filter((item) => item.kind === 'user')
+              .map((item) => item.text),
+            ['resume with this steer'],
           );
         },
       },
-      {
-        ...providerFinalAnswerRound('second answer'),
-        inspectInput(input) {
-          const userTurns = input.history
-            .filter((item) => item.kind === 'user')
-            .map((item) => item.text);
-          assert.deepEqual(userTurns, ['please answer once', 'please revise']);
-          assert.equal(
-            input.history.some(
-              (item) =>
-                item.kind === 'assistant' &&
-                item.phase === 'final_answer' &&
-                item.text === 'first answer',
-            ),
-            true,
-          );
-        },
-      },
-    ]);
+    ]),
+    onEvent: () => undefined,
+  });
 
-    const result = await runAgentLoop({
-      runId: 'run-loop-interject',
-      runContext,
-      prompt: 'please answer once',
-      runState,
-      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext({
-        sessionId: 'session-loop-interject',
-      }),
-      callModelImpl,
-      onEvent: (event) => {
-        events.push(event);
-        if (event.type === 'final_answer_delta' && !injected) {
-          injected = true;
-          pushPendingInterject(runState.interject, 'please revise');
-          requestInterjectFlush(runState.interject);
-        }
-      },
-    });
-
-    assert.equal(injected, true);
-    assert.deepEqual(result, {
-      ok: true,
-      finalProse: 'second answer',
-    });
-    assert.equal(runState.status, 'completed');
-    assert.deepEqual(
-      events.map((event) => event.type),
-      [
-        'run_ack',
-        'final_answer_delta',
-        'interject_applied',
-        'final_answer_delta',
-      ],
-    );
-    const applied = events.find((event) => event.type === 'interject_applied');
-    assert.deepEqual(applied?.payload, {
-      runId: 'run-loop-interject',
-      count: 1,
-      receivedSeqs: [1],
-    });
-    // 소비 시점에 즉시 반영 요청이 1회성으로 지워진다
-    assert.equal(isInterjectFlushRequested(runState.interject), false);
-    const transcript = await readTranscriptEntries(workspaceRoot, threadId);
-    assert.deepEqual(
-      transcript.map((entry) => ({
-        role: entry.role,
-        content: entry.content,
-        source: entry.metadata?.source,
-      })),
-      [
-        {
-          role: 'user',
-          content: 'please revise',
-          source: 'interject',
-        },
-      ],
-    );
-  } finally {
-    if (previousFlag === undefined) {
-      delete process.env[MID_RUN_STEER_ENABLED_ENV];
-    } else {
-      process.env[MID_RUN_STEER_ENABLED_ENV] = previousFlag;
-    }
-  }
+  assert.deepEqual(result, { ok: true, finalProse: 'recovered answer' });
+  assert.equal(history.length, 2);
+  assert.deepEqual(
+    await daemonContext.runCheckpoints
+      .readThread(threadId)
+      .then((checkpoint) =>
+        checkpoint === null
+          ? null
+          : {
+              applyingInterject: checkpoint.applyingInterject,
+              pendingInterjects: checkpoint.pendingInterjects,
+            },
+      ),
+    { applyingInterject: null, pendingInterjects: [] },
+  );
+  assert.equal(
+    (await readTranscriptEntries(workspaceRoot, threadId)).length,
+    1,
+  );
 });
 
 void test('runAgentLoop continues across tool rounds through the while loop', async () => {
@@ -1132,109 +1216,100 @@ void test('runAgentLoop routes structured react bundle output through typed ingr
 });
 
 void test('runAgentLoop records structured output before applying a pending steer', async () => {
-  const previousFlag = process.env[MID_RUN_STEER_ENABLED_ENV];
-  process.env[MID_RUN_STEER_ENABLED_ENV] = '1';
-  try {
-    const threadId = testThreadId(1202);
-    const daemonContext = createDaemonContext();
-    const workspaceRoot = await mkdtemp(
-      join(tmpdir(), 'geulbat-loop-structured-interject-'),
-    );
-    const runContext = makeRunContext({
-      threadId,
-      stateRoot: workspaceRoot,
-    });
-    const runState = createRunState({
-      runId: 'run-loop-structured-interject',
-      runContext,
-    });
-    const events: AgentEvent[] = [];
-    let injected = false;
+  const threadId = testThreadId(1202);
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-structured-interject-'),
+  );
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
+    threadId,
+    stateRoot: workspaceRoot,
+  });
+  const runState = createRunState({
+    runId: 'run-loop-structured-interject',
+    runContext,
+  });
+  await daemonContext.runCheckpoints.startRun({
+    runId: runState.runId,
+    threadId,
+    request: { workingDirectory: '', permissionMode: 'basic' },
+  });
+  const events: AgentEvent[] = [];
+  let injected = false;
 
-    const result = await runAgentLoop({
-      runId: 'run-loop-structured-interject',
-      runContext,
-      prompt: 'create a structured react bundle artifact',
-      runState,
-      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext({
-        sessionId: 'session-loop-structured-interject',
-      }),
-      callModelImpl: createScriptedProviderCallModel([
-        {
-          ...providerStructuredOutputRound(
-            structuredReactBundleOutput(STRUCTURED_NO_DEPENDENCY_REQUEST),
-          ),
-          inspectInput(input) {
-            assert.equal(input.history.length, 1);
-            if (!injected) {
-              injected = true;
-              pushPendingInterject(
-                runState.interject,
-                'please revise artifact',
-              );
-            }
-          },
+  const result = await runAgentLoop({
+    runId: 'run-loop-structured-interject',
+    runContext,
+    prompt: 'create a structured react bundle artifact',
+    runState,
+    toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      sessionId: 'session-loop-structured-interject',
+    }),
+    callModelImpl: createScriptedProviderCallModel([
+      {
+        ...providerStructuredOutputRound(
+          structuredReactBundleOutput(STRUCTURED_NO_DEPENDENCY_REQUEST),
+        ),
+        inspectInput(input) {
+          assert.equal(input.history.length, 1);
+          if (!injected) {
+            injected = true;
+            pushPendingInterject(runState.interject, 'please revise artifact');
+          }
         },
-        {
-          ...providerFinalAnswerRound('revised artifact answer'),
-          inspectInput(input) {
-            assert.equal(
-              input.history.some(
-                (item) =>
-                  item.kind === 'assistant' &&
-                  item.phase === 'final_answer' &&
-                  item.text.includes('[artifact:react_bundle]'),
-              ),
-              true,
-            );
-            assert.equal(
-              input.history.some(
-                (item) =>
-                  item.kind === 'user' &&
-                  item.text === 'please revise artifact',
-              ),
-              true,
-            );
-          },
+      },
+      {
+        ...providerFinalAnswerRound('revised artifact answer'),
+        inspectInput(input) {
+          assert.equal(
+            input.history.some(
+              (item) =>
+                item.kind === 'assistant' &&
+                item.phase === 'final_answer' &&
+                item.text.includes('[artifact:react_bundle]'),
+            ),
+            true,
+          );
+          assert.equal(
+            input.history.some(
+              (item) =>
+                item.kind === 'user' && item.text === 'please revise artifact',
+            ),
+            true,
+          );
         },
-      ]),
-      onEvent: (event) => events.push(event),
-    });
+      },
+    ]),
+    onEvent: (event) => events.push(event),
+  });
 
-    assert.equal(injected, true);
-    assert.deepEqual(result, {
-      ok: true,
-      finalProse: 'revised artifact answer',
-    });
-    assert.equal(runState.status, 'completed');
-    assert.deepEqual(
-      events.map((event) => event.type),
-      ['run_ack', 'interject_applied', 'final_answer_delta'],
-    );
-    const transcript = await readTranscriptEntries(workspaceRoot, threadId);
-    assert.deepEqual(
-      transcript.map((entry) => ({
-        role: entry.role,
-        content: entry.content,
-        source: entry.metadata?.source,
-      })),
-      [
-        {
-          role: 'user',
-          content: 'please revise artifact',
-          source: 'interject',
-        },
-      ],
-    );
-  } finally {
-    if (previousFlag === undefined) {
-      delete process.env[MID_RUN_STEER_ENABLED_ENV];
-    } else {
-      process.env[MID_RUN_STEER_ENABLED_ENV] = previousFlag;
-    }
-  }
+  assert.equal(injected, true);
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'revised artifact answer',
+  });
+  assert.equal(runState.status, 'completed');
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['run_ack', 'interject_applied', 'final_answer_delta'],
+  );
+  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.deepEqual(
+    transcript.map((entry) => ({
+      role: entry.role,
+      content: entry.content,
+      source: entry.metadata?.source,
+    })),
+    [
+      {
+        role: 'user',
+        content: 'please revise artifact',
+        source: 'interject',
+      },
+    ],
+  );
 });
 
 void test('runAgentLoop routes structured PTC fixed probe output through daemon runtime', async () => {

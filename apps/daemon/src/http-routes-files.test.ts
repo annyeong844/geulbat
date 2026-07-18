@@ -9,7 +9,10 @@ import {
   writeFile as fsWriteFile,
 } from 'node:fs/promises';
 
-import { isComputerFileScopeResponse } from '@geulbat/protocol/files';
+import {
+  isComputerDirectorySelectionResponse,
+  isComputerFileScopeResponse,
+} from '@geulbat/protocol/files';
 import { createBinaryVersionToken } from './daemon/files/version-token.js';
 import { readFileBinaryInputRefPath } from './daemon/files/binary-input-ref-store.js';
 import {
@@ -39,6 +42,139 @@ void test('authenticated computer file scope route omits the raw host root', asy
     },
     { daemonContext },
   );
+});
+
+void test('authenticated directory picker route returns a Computer-relative native selection', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
+  const initialAbsolutePath = join(computerFileRoot, 'initial');
+  const selectedAbsolutePath = join(computerFileRoot, 'selected');
+  const observedInitialPaths: string[] = [];
+  const observedSignals: AbortSignal[] = [];
+  let selectionCount = 0;
+  daemonContext.computerDirectoryPicker = {
+    async select({ initialAbsolutePath: requestedInitialPath, signal }) {
+      observedInitialPaths.push(requestedInitialPath);
+      assert.ok(signal);
+      observedSignals.push(signal);
+      selectionCount += 1;
+      return selectionCount === 1
+        ? { kind: 'selected', absolutePath: selectedAbsolutePath }
+        : { kind: 'cancelled' };
+    },
+    async close() {},
+  };
+
+  await withAuthenticatedDaemonServer(
+    async ({ port }) => {
+      const selectedResponse = await fetch(
+        `http://127.0.0.1:${port}/api/files/select-directory`,
+        {
+          method: 'POST',
+          headers: {
+            ...authHeaders(),
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ root: 'computer', initialPath: 'initial' }),
+        },
+      );
+      assert.equal(selectedResponse.status, 200);
+      const selectedBody: unknown = await selectedResponse.json();
+      assert.equal(isComputerDirectorySelectionResponse(selectedBody), true);
+      assert.deepEqual(selectedBody, {
+        status: 'selected',
+        path: 'selected',
+      });
+
+      const cancelledResponse = await fetch(
+        `http://127.0.0.1:${port}/api/files/select-directory`,
+        {
+          method: 'POST',
+          headers: {
+            ...authHeaders(),
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ root: 'computer', initialPath: 'initial' }),
+        },
+      );
+      assert.equal(cancelledResponse.status, 200);
+      assert.deepEqual(await cancelledResponse.json(), {
+        status: 'cancelled',
+      });
+    },
+    { daemonContext },
+  );
+
+  assert.deepEqual(observedInitialPaths, [
+    initialAbsolutePath,
+    initialAbsolutePath,
+  ]);
+  assert.equal(
+    observedSignals.every((signal) => !signal.aborted),
+    true,
+  );
+});
+
+void test('disconnecting a directory picker request aborts the owned native selection', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  let observedSignal: AbortSignal | undefined;
+  let markSelectionStarted: (() => void) | undefined;
+  let markSelectionAborted: (() => void) | undefined;
+  const selectionStarted = new Promise<void>((resolve) => {
+    markSelectionStarted = resolve;
+  });
+  const selectionAborted = new Promise<void>((resolve) => {
+    markSelectionAborted = resolve;
+  });
+  daemonContext.computerDirectoryPicker = {
+    select({ signal }) {
+      assert.ok(signal);
+      observedSignal = signal;
+      markSelectionStarted?.();
+      return new Promise((resolve) => {
+        const cancelSelection = () => {
+          markSelectionAborted?.();
+          resolve({ kind: 'cancelled' });
+        };
+        if (signal.aborted) {
+          cancelSelection();
+          return;
+        }
+        signal.addEventListener('abort', cancelSelection, { once: true });
+      });
+    },
+    async close() {},
+  };
+
+  await withAuthenticatedDaemonServer(
+    async ({ port }) => {
+      const controller = new AbortController();
+      const request = fetch(
+        `http://127.0.0.1:${port}/api/files/select-directory`,
+        {
+          method: 'POST',
+          headers: {
+            ...authHeaders(),
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ root: 'computer' }),
+          signal: controller.signal,
+        },
+      );
+      await selectionStarted;
+      controller.abort();
+
+      await assert.rejects(
+        request,
+        (error: unknown) =>
+          error instanceof DOMException && error.name === 'AbortError',
+      );
+      await selectionAborted;
+    },
+    { daemonContext },
+  );
+
+  assert.equal(observedSignal?.aborted, true);
 });
 
 void test('authenticated file routes resolve root=computer without a project id', async () => {
@@ -289,6 +425,67 @@ void test('authenticated files/tree route reads the computer root', async () => 
   }
 });
 
+void test('files/tree depth 1 reads only the requested directory level', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
+  const relativeRoot = `route-tree-lazy-${randomUUID()}`;
+  const nestedDirectory = join(
+    computerFileRoot,
+    relativeRoot,
+    'child-directory',
+  );
+
+  await mkdir(nestedDirectory, { recursive: true });
+  await fsWriteFile(
+    join(computerFileRoot, relativeRoot, 'direct.txt'),
+    'direct\n',
+    'utf8',
+  );
+  await fsWriteFile(
+    join(nestedDirectory, 'grandchild.txt'),
+    'nested\n',
+    'utf8',
+  );
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const response = await fetch(
+          `http://127.0.0.1:${port}/api/files/tree?root=computer&path=${encodeURIComponent(relativeRoot)}&depth=1`,
+          { headers: authHeaders() },
+        );
+
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as {
+          tree: Array<{
+            path: string;
+            type: string;
+            children?: unknown[];
+          }>;
+        };
+        assert.deepEqual(body.tree, [
+          {
+            name: 'child-directory',
+            path: `${relativeRoot}/child-directory`,
+            type: 'directory',
+          },
+          {
+            name: 'direct.txt',
+            path: `${relativeRoot}/direct.txt`,
+            type: 'file',
+          },
+        ]);
+      },
+      { daemonContext },
+    );
+  } finally {
+    await rm(join(computerFileRoot, relativeRoot), {
+      recursive: true,
+      force: true,
+    });
+  }
+});
+
 void test('authenticated files/save route creates a new file and returns canonical metadata', async () => {
   const daemonContext = createRouteTestDaemonContext();
   const computerFileRoot = getComputerFileRootFromContext(daemonContext);
@@ -465,69 +662,43 @@ void test('authenticated files/manage route performs a real mkdir, rename, and d
   }
 });
 
-void test('authenticated files/manage route rejects invalid operations and unsafe roots', async () => {
+void test('authenticated files/manage route rejects invalid operation shapes', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const computerFileRoot = getComputerFileRootFromContext(daemonContext);
   const sentinelName = `route-manage-root-${randomUUID()}.txt`;
-  const sentinelPath = join(computerFileRoot, sentinelName);
 
-  await mkdir(computerFileRoot, { recursive: true });
-  await fsWriteFile(sentinelPath, 'keep root\n', 'utf8');
-
-  try {
-    await withAuthenticatedDaemonServer(
-      async ({ port }) => {
-        const manage = (body: Record<string, unknown>) =>
-          fetch(`http://127.0.0.1:${port}/api/files/manage`, {
-            method: 'POST',
-            headers: authHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify(body),
-          });
-
-        const invalidOperation = await manage({
-          root: 'computer',
-          operation: 'copy',
-          path: sentinelName,
-        });
-        assert.equal(invalidOperation.status, 400);
-        assert.deepEqual(await invalidOperation.json(), {
-          code: 'bad_request',
-          message: 'operation must be one of mkdir, delete, rename, move',
+  await withAuthenticatedDaemonServer(
+    async ({ port }) => {
+      const manage = (body: Record<string, unknown>) =>
+        fetch(`http://127.0.0.1:${port}/api/files/manage`, {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(body),
         });
 
-        const invalidScope = await manage({
-          root: 'workspace',
-          operation: 'delete',
-          path: sentinelName,
-        });
-        assert.equal(invalidScope.status, 400);
-        assert.deepEqual(await invalidScope.json(), {
-          code: 'bad_request',
-          message: 'root must be computer',
-        });
+      const invalidOperation = await manage({
+        root: 'computer',
+        operation: 'copy',
+        path: sentinelName,
+      });
+      assert.equal(invalidOperation.status, 400);
+      assert.deepEqual(await invalidOperation.json(), {
+        code: 'bad_request',
+        message: 'operation must be one of mkdir, delete, rename, move',
+      });
 
-        const deleteRoot = await manage({
-          root: 'computer',
-          operation: 'delete',
-          path: '.',
-        });
-        assert.equal(deleteRoot.ok, false);
-        assert.equal(await fsReadFile(sentinelPath, 'utf8'), 'keep root\n');
-
-        const relocateRoot = await manage({
-          root: 'computer',
-          operation: 'move',
-          path: '.',
-          destination: `relocated-${randomUUID()}`,
-        });
-        assert.equal(relocateRoot.ok, false);
-        assert.equal(await fsReadFile(sentinelPath, 'utf8'), 'keep root\n');
-      },
-      { daemonContext },
-    );
-  } finally {
-    await rm(computerFileRoot, { recursive: true, force: true });
-  }
+      const invalidScope = await manage({
+        root: 'workspace',
+        operation: 'delete',
+        path: sentinelName,
+      });
+      assert.equal(invalidScope.status, 400);
+      assert.deepEqual(await invalidScope.json(), {
+        code: 'bad_request',
+        message: 'root must be computer',
+      });
+    },
+    { daemonContext },
+  );
 });
 
 void test('authenticated files/save-binary route writes a create-only binary file', async () => {

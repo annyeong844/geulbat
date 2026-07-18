@@ -6,6 +6,7 @@ export interface PendingInterject {
 export interface RunInterjectBuffer {
   items: PendingInterject[];
   seq: number;
+  accepting: boolean;
   // 즉시 반영 요청 — 에이전트 루프가 현재 라운드의 남은 도구 호출을
   // 건너뛰고 다음 소비 지점으로 빨리 가도록 하는 1회성 신호
   flushRequested: boolean;
@@ -14,7 +15,7 @@ export interface RunInterjectBuffer {
 // Shared by reference between RunState and ActiveRun; mutation stays on the
 // daemon event loop and is only observed at explicit loop checkpoints.
 export function createRunInterjectBuffer(): RunInterjectBuffer {
-  return { items: [], seq: 0, flushRequested: false };
+  return { items: [], seq: 0, accepting: true, flushRequested: false };
 }
 
 export function pushPendingInterject(
@@ -39,8 +40,18 @@ export function hasPendingInterject(buffer: RunInterjectBuffer): boolean {
 export function restorePendingInterjectFront(
   buffer: RunInterjectBuffer,
   interjects: PendingInterject[],
+  lastReceivedSeq?: number,
 ): void {
   buffer.items.unshift(...interjects);
+  buffer.seq = Math.max(
+    buffer.seq,
+    lastReceivedSeq ?? 0,
+    ...interjects.map((interject) => interject.receivedSeq),
+  );
+}
+
+export function closeInterjectBuffer(buffer: RunInterjectBuffer): void {
+  buffer.accepting = false;
 }
 
 export function peekPendingInterject(

@@ -17,7 +17,7 @@ interface DaemonInstanceAdmissionLockOwner {
   stateRoot: string;
 }
 
-export interface DaemonInstanceAdmissionLock {
+interface DaemonInstanceAdmissionLock {
   lockPath: string;
   owner: DaemonInstanceAdmissionLockOwner;
   release(): Promise<void>;

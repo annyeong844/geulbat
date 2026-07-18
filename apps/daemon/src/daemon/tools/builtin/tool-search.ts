@@ -40,7 +40,18 @@ export interface ToolSearchCatalogCard extends ToolSearchIndexCard {
   notFor: string;
 }
 
-type ToolSearchResult = RankedToolSearchResult<ToolSearchCatalogCard>;
+type ToolSearchResult = Pick<
+  RankedToolSearchResult<ToolSearchCatalogCard>,
+  | 'rank'
+  | 'score'
+  | 'publicName'
+  | 'family'
+  | 'summary'
+  | 'sideEffectLevel'
+  | 'approvalClass'
+  | 'mayMutateComputerFiles'
+  | 'signatureRef'
+>;
 
 interface ToolSearchOutput {
   ok: true;
@@ -80,13 +91,26 @@ export function createToolSearchTool(deps: {
           : deps
               .getCatalog()
               .filter((card) => allowedRegistryNames.has(card.publicName));
-      const results = searchToolCatalog(args.query, catalog);
+      const results: ToolSearchResult[] = searchToolCatalog(
+        args.query,
+        catalog,
+      ).map((result) => ({
+        rank: result.rank,
+        score: result.score,
+        publicName: result.publicName,
+        family: result.family,
+        summary: result.summary,
+        sideEffectLevel: result.sideEffectLevel,
+        approvalClass: result.approvalClass,
+        mayMutateComputerFiles: result.mayMutateComputerFiles,
+        signatureRef: result.signatureRef,
+      }));
       const output: ToolSearchOutput = {
         ok: true,
         query: args.query.trim(),
         total: results.length,
         results,
-        note: 'tool_search returns BM25-ranked live registered catalog cards only. Search hints are not callable aliases.',
+        note: 'tool_search returns BM25-ranked light catalog cards. Read one selected signatureRef before use; search hints are ranking metadata, not callable aliases.',
       };
       return { ok: true, output: JSON.stringify(output) };
     },
@@ -106,7 +130,7 @@ export function buildToolSearchCatalog(
 export function searchToolCatalog(
   query: string,
   catalog: readonly ToolSearchCatalogCard[],
-): ToolSearchResult[] {
+): RankedToolSearchResult<ToolSearchCatalogCard>[] {
   return searchRankedToolCatalog(query, catalog);
 }
 

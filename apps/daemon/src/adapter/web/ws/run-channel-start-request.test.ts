@@ -1,8 +1,8 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import type { ThreadId } from '@geulbat/protocol/ids';
 
@@ -38,39 +38,48 @@ void test('readRunStartRequest rejects blank prompts', async (t) => {
   );
 });
 
-void test('readRunStartRequest rejects working directories outside the computer root', async (t) => {
-  assert.deepEqual(
-    await readRunStartRequest(
-      { prompt: 'hello', workingDirectory: '../escape' },
-      await createArgs(t),
-    ),
-    {
-      ok: false,
-      status: 400,
-      code: 'bad_request',
-      message: 'invalid workingDirectory',
-    },
+void test('readRunStartRequest admits a working directory anywhere on the host filesystem', async (t) => {
+  const args = await createArgs(t);
+  const outsideRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-run-start-outside-'),
   );
+  t.after(() => rm(outsideRoot, { recursive: true, force: true }));
+  const workingDirectory = relative(args.computerFileScope.root, outsideRoot)
+    .split(sep)
+    .join('/');
+
+  const result = await readRunStartRequest(
+    { prompt: 'hello', workingDirectory },
+    args,
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.workingDirectory, workingDirectory);
 });
 
-void test('readRunStartRequest rejects absolute and escaping current file paths', async (t) => {
+void test('readRunStartRequest admits current files anywhere on the host filesystem', async (t) => {
   const args = await createArgs(t);
-  for (const currentFile of [
-    '/workspace/writer/novel.md',
-    'D:\\workspace\\writer\\novel.md',
-    '../novel.md',
-  ]) {
-    assert.deepEqual(
-      await readRunStartRequest({ prompt: 'hello', currentFile }, args),
-      {
-        ok: false,
-        status: 400,
-        code: 'bad_request',
-        message: 'invalid currentFile',
-      },
-      currentFile,
-    );
-  }
+  const outsideRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-run-current-file-outside-'),
+  );
+  t.after(() => rm(outsideRoot, { recursive: true, force: true }));
+  const absoluteCurrentFile = join(outsideRoot, 'novel.md');
+  await writeFile(absoluteCurrentFile, '# novel\n', 'utf8');
+
+  const result = await readRunStartRequest(
+    { prompt: 'hello', currentFile: absoluteCurrentFile },
+    args,
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(
+    result.value.currentFile,
+    relative(args.computerFileScope.root, absoluteCurrentFile)
+      .split(sep)
+      .join('/'),
+  );
 });
 
 void test('readRunStartRequest canonicalizes a portable current file path', async (t) => {

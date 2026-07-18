@@ -1,6 +1,6 @@
 import http from 'node:http';
-import type { WebSocketServer } from 'ws';
 import { createDaemon } from './create-daemon.js';
+import { createDaemonRuntimeOwner } from './daemon-runtime-owner.js';
 import {
   closeDaemonForShutdown,
   listenDaemonHttpServer,
@@ -8,16 +8,12 @@ import {
 import { initProviderAuth } from './daemon/auth/init.js';
 import { attachPublicWebFixtureWebSocketServer } from './adapter/web/ws/public-web-fixtures.js';
 import { attachRunChannelServer } from './adapter/web/ws/run-channel.js';
-import type { RunChannelRuntimeContext } from './adapter/web/ws/run-channel-runtime-context.js';
 import { getConfiguredDevToken } from './adapter/web/auth/token.js';
 import { createDaemonContext } from './daemon/context.js';
 import { readDaemonPort } from './daemon/port.js';
 import { getErrorMessage } from './daemon/utils/error.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
-import {
-  acquireDaemonInstanceAdmissionLock,
-  type DaemonInstanceAdmissionLock,
-} from './daemon/daemon-instance-admission-lock.js';
+import { acquireDaemonInstanceAdmissionLock } from './daemon/daemon-instance-admission-lock.js';
 
 const PORT = readDaemonPort(process.env['PORT']);
 const HOST = process.env['HOST'] ?? '127.0.0.1';
@@ -36,95 +32,39 @@ async function main() {
   logBootPhase('auth-token');
   const daemonContext = createDaemonContext();
   logBootPhase('context');
-  const admissionLock = await acquireDaemonInstanceAdmissionLock({
-    stateRoot: daemonContext.homeStateRoot,
-  });
-  logBootPhase('admission-lock');
-  try {
-    await initProviderAuth({
-      runtimeStore: daemonContext.providerAuthRuntime,
-    });
-    logBootPhase('provider-auth');
-    const { app } = await createDaemon({ daemonContext });
-    logBootPhase('create-daemon');
-    const server = http.createServer(app);
-    const runChannelRuntimeContext = {
-      activeRuns: daemonContext.activeRuns,
-      approvalGrants: daemonContext.approvalGrants,
-      approvalGate: daemonContext.approvalGate,
-      artifactFrameToolDispatch: daemonContext.artifactFrameToolDispatch,
-      backgroundNotifications: daemonContext.backgroundNotifications,
-      ...(daemonContext.computerFileScope !== undefined
-        ? { computerFileScope: daemonContext.computerFileScope }
-        : {}),
-      ...(daemonContext.computerFileRoot !== undefined
-        ? { computerFileRoot: daemonContext.computerFileRoot }
-        : {}),
-      homeStateRoot: daemonContext.homeStateRoot,
-      childRuns: daemonContext.childRuns,
-      fileStateCache: daemonContext.fileStateCache,
-      agentWorkflowRunner: daemonContext.agentWorkflowRunner,
-      agentWavePlanner: daemonContext.agentWavePlanner,
-      imageGeneration: daemonContext.imageGeneration,
-      videoGeneration: daemonContext.videoGeneration,
-      memoryIndex: daemonContext.memoryIndex,
-      providerAuthRuntime: daemonContext.providerAuthRuntime,
-      providerRequestOptions: daemonContext.providerRequestOptions,
-      providerWebSocketSessions: daemonContext.providerWebSocketSessions,
-      reactBundleStructuredOutputIngressPolicy:
-        daemonContext.reactBundleStructuredOutputIngressPolicy,
-      resourceBudgetProvider: daemonContext.resourceBudgetProvider,
-      ptcBrowserPageLoadEvidence: daemonContext.ptcBrowserPageLoadEvidence,
-      ptcBrowserTextEvidence: daemonContext.ptcBrowserTextEvidence,
-      ptcBrowserNavigate: daemonContext.ptcBrowserNavigate,
-      ptcExecuteCode: daemonContext.ptcExecuteCode,
-      ptcPackageInstall: daemonContext.ptcPackageInstall,
-      ptcFixedProbe: daemonContext.ptcFixedProbe,
-      pluginSkills: daemonContext.pluginSkills,
-      sandboxAttempts: daemonContext.sandboxAttempts,
-      subagentAdmission: daemonContext.subagentAdmission,
-      subagentRuns: daemonContext.subagentRuns,
-      toolLibraryProjection: daemonContext.toolLibraryProjection,
-      toolRegistry: daemonContext.toolRegistry,
-    } satisfies RunChannelRuntimeContext;
-    const publicWebSockets = attachPublicWebFixtureWebSocketServer(server);
-    const runChannelSockets = attachRunChannelServer(server, {
-      runtimeContext: runChannelRuntimeContext,
-    });
-    daemonContext.providerAuthCallbackServer.bindLifecycle(server);
-    registerProcessShutdown({
-      admissionLock,
-      runtimeSessions: {
-        globalMcp: daemonContext.globalMcp,
-        ptcBrowserPageLoadEvidence: daemonContext.ptcBrowserPageLoadEvidence,
-        ptcBrowserTextEvidence: daemonContext.ptcBrowserTextEvidence,
-        ptcBrowserNavigate: daemonContext.ptcBrowserNavigate,
-        ptcExecuteCode: daemonContext.ptcExecuteCode,
+  const daemonRuntime = createDaemonRuntimeOwner({
+    daemonContext,
+    policies: {
+      acquireAdmissionLock: (lockArgs) =>
+        acquireDaemonInstanceAdmissionLock(lockArgs),
+      initProviderAuth: () =>
+        initProviderAuth({ runtimeStore: daemonContext.providerAuthRuntime }),
+      createApp: async () => (await createDaemon({ daemonContext })).app,
+      createHttpServer: (app) => http.createServer(app),
+      attachWebSockets: ({ server, runtimeContext }) => [
+        attachPublicWebFixtureWebSocketServer(server),
+        attachRunChannelServer(server, { runtimeContext }),
+      ],
+      bindProviderAuthCallback: (server) => {
+        daemonContext.providerAuthCallbackServer.bindLifecycle(server);
       },
-      server,
-      webSocketServers: [publicWebSockets, runChannelSockets],
-    });
-
-    await listenDaemonHttpServer({
-      server,
-      port: PORT,
-      host: HOST,
-    });
-    logBootPhase('listen');
-    logger.info(`http://${HOST}:${PORT}`);
-  } catch (error: unknown) {
-    await admissionLock.release();
-    throw error;
-  }
+      listen: (listenArgs) => listenDaemonHttpServer(listenArgs),
+      closeForShutdown: (closeArgs) => closeDaemonForShutdown(closeArgs),
+      onBootPhase: logBootPhase,
+    },
+  });
+  await daemonRuntime.start({
+    port: PORT,
+    host: HOST,
+    beforeListen: () => {
+      registerProcessShutdown({ shutdown: () => daemonRuntime.shutdown() });
+    },
+  });
+  logger.info(`http://${HOST}:${PORT}`);
 }
 
 function registerProcessShutdown(args: {
-  admissionLock: DaemonInstanceAdmissionLock;
-  runtimeSessions: Parameters<
-    typeof closeDaemonForShutdown
-  >[0]['runtimeSessions'];
-  server: http.Server;
-  webSocketServers: readonly WebSocketServer[];
+  shutdown: () => Promise<void>;
 }): void {
   let shuttingDown = false;
 
@@ -137,12 +77,7 @@ function registerProcessShutdown(args: {
 
     void (async () => {
       try {
-        await closeDaemonForShutdown({
-          admissionLock: args.admissionLock,
-          runtimeSessions: args.runtimeSessions,
-          server: args.server,
-          webSocketServers: args.webSocketServers,
-        });
+        await args.shutdown();
         process.exit(0);
       } catch (error: unknown) {
         logger.error('shutdown failed:', getErrorMessage(error));

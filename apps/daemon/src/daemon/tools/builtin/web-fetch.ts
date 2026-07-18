@@ -35,6 +35,7 @@ export function createFetchUrlTool(
     sideEffectLevel: 'read',
     mayMutateComputerFiles: false,
     requiresApproval: false,
+    recoveryStrategy: 'replay_safe',
     exposure: {
       directHot: false,
       sdkVisible: true,

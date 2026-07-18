@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSymlinkOrSkip } from '../../../test-support/symlink-test.js';
@@ -177,7 +184,7 @@ void test('manage_files move rejects empty destination before execution', async 
   assert.equal(result.error, 'destination is required for move.');
 });
 
-void test('manage_files delete rejects symlink paths', async (t) => {
+void test('manage_files delete removes the symlink entry without deleting its target', async (t) => {
   const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
   const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-outside-'));
   const outsideDir = join(outsideRoot, 'outside-dir');
@@ -193,25 +200,37 @@ void test('manage_files delete rejects symlink paths', async (t) => {
     { callId: 'call-1', computerFileRoot: computerFileRoot },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'path_out_of_computer_scope');
+  assert.equal(result.ok, true);
+  await assert.rejects(() => lstat(linkedDir), { code: 'ENOENT' });
+  assert.equal((await stat(outsideDir)).isDirectory(), true);
 });
 
-void test('manage_files delete rejects the computer file root', async () => {
+void test('manage_files move relocates the symlink entry without moving its target', async (t) => {
   const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
+  const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-outside-'));
+  const targetFile = join(outsideRoot, 'target.txt');
+  const sourceLink = join(computerFileRoot, 'source-link.txt');
+  const destinationLink = join(computerFileRoot, 'moved-link.txt');
+
+  await writeFile(targetFile, 'outside\n', 'utf8');
+  if (!(await createSymlinkOrSkip(t, targetFile, sourceLink))) {
+    return;
+  }
 
   const result = await manageFilesTool.execute(
-    { operation: 'delete', path: '.' },
-    { callId: 'call-delete-root', computerFileRoot: computerFileRoot },
+    {
+      operation: 'move',
+      path: 'source-link.txt',
+      destination: 'moved-link.txt',
+    },
+    { callId: 'call-move-symlink', computerFileRoot },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'invalid_args');
-  assert.equal(result.error, 'cannot delete computer file root.');
-  const stats = await import('node:fs/promises').then((fs) =>
-    fs.stat(computerFileRoot),
-  );
-  assert.equal(stats.isDirectory(), true);
+  assert.equal(result.ok, true);
+  await assert.rejects(() => lstat(sourceLink), { code: 'ENOENT' });
+  assert.equal((await lstat(destinationLink)).isSymbolicLink(), true);
+  assert.equal(await readFile(targetFile, 'utf8'), 'outside\n');
+  assert.equal(await readFile(destinationLink, 'utf8'), 'outside\n');
 });
 
 void test('manage_files delete reports missing source through delete precondition', async () => {
@@ -227,7 +246,7 @@ void test('manage_files delete reports missing source through delete preconditio
   assert.equal(result.error, 'file not found: missing.txt');
 });
 
-void test('manage_files create rejects writes through symlinked parent directories', async (t) => {
+void test('manage_files create writes through a symlinked parent directory', async (t) => {
   const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
   const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-outside-'));
   const realDir = join(outsideRoot, 'real-dir');
@@ -243,8 +262,8 @@ void test('manage_files create rejects writes through symlinked parent directori
     { callId: 'call-create-symlink', computerFileRoot: computerFileRoot },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'path_out_of_computer_scope');
+  assert.equal(result.ok, true);
+  assert.equal(await readFile(join(realDir, 'child.txt'), 'utf8'), '');
 });
 
 void test('manage_files create returns already_exists when target file already exists', async () => {
@@ -347,23 +366,6 @@ void test('manage_files rename rejects same canonical source and destination', a
     result.error,
     /source and destination resolve to the same target/,
   );
-});
-
-void test('manage_files rename rejects the computer file root as source', async () => {
-  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-'));
-
-  const result = await manageFilesTool.execute(
-    { operation: 'rename', path: '.', destination: 'renamed-root' },
-    { callId: 'call-rename-root', computerFileRoot: computerFileRoot },
-  );
-
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'invalid_args');
-  assert.equal(result.error, 'cannot relocate computer file root.');
-  const stats = await import('node:fs/promises').then((fs) =>
-    fs.stat(computerFileRoot),
-  );
-  assert.equal(stats.isDirectory(), true);
 });
 
 void test('manage_files rename rejects moving a directory into its own descendant', async () => {
@@ -499,24 +501,4 @@ void test('manage_files creates, moves, and deletes within the explicit computer
   );
   assert.equal(deleted.ok, true);
   assert.equal(JSON.parse(deleted.output).root, 'computer');
-
-  const rootDelete = await manageFilesTool.execute(
-    { operation: 'delete', path: '.' },
-    { ...context, callId: 'call-computer-manage-delete-root' },
-  );
-  assert.equal(rootDelete.ok, false);
-  assert.equal(rootDelete.errorCode, 'invalid_args');
-  assert.equal(rootDelete.error, 'cannot delete computer file root.');
-
-  const rootMove = await manageFilesTool.execute(
-    {
-      operation: 'move',
-      path: '.',
-      destination: 'nested/root',
-    },
-    { ...context, callId: 'call-computer-manage-move-root' },
-  );
-  assert.equal(rootMove.ok, false);
-  assert.equal(rootMove.errorCode, 'invalid_args');
-  assert.equal(rootMove.error, 'cannot relocate computer file root.');
 });

@@ -5,7 +5,7 @@ import { isRecord } from '@geulbat/protocol/runtime-utils';
 // write_file(전체 덮어쓰기 → 전량 + 라인). 그 외 도구/형식 불일치는 null로
 // 돌려 기존 raw JSON 렌더로 폴백한다.
 
-export interface ToolDiffLine {
+interface ToolDiffLine {
   type: 'hunk' | 'context' | 'add' | 'remove';
   text: string;
 }

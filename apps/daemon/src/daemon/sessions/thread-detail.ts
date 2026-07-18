@@ -38,11 +38,15 @@ export async function loadThreadDetailSnapshot(args: {
   const snapshotVersion = await resolveThreadSnapshotVersion(args);
   const diagnostics = collectThreadDetailDiagnostics(messages, artifacts);
   emitThreadDetailDiagnostics(args.threadId, diagnostics);
+  const publicMessages = messages.filter(
+    (message): message is ThreadDetailResponse['messages'][number] =>
+      message.role !== 'compaction',
+  );
 
   return {
     threadId: args.threadId,
     snapshotVersion,
-    messages,
+    messages: publicMessages,
     artifacts,
     ...(diagnostics ? { diagnostics } : {}),
   };

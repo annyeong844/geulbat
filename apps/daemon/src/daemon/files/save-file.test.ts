@@ -19,9 +19,8 @@ import { hasErrorCode } from '../utils/error.js';
 import { StaleWriteError } from './file-domain-error.js';
 import { readFile } from './read-file.js';
 import { saveFile } from './save-file.js';
-import { PathEscapeError } from './normalize-path.js';
 
-void test('saveFile rejects symlink targets for existing files', async (t) => {
+void test('saveFile atomically updates the canonical target of an existing symlink', async (t) => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-save-'));
   const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-outside-'));
   const outsideFile = join(outsideRoot, 'outside.txt');
@@ -32,13 +31,18 @@ void test('saveFile rejects symlink targets for existing files', async (t) => {
     return;
   }
 
-  await assert.rejects(
-    () => saveFile(workspaceRoot, 'linked.txt', 'updated\n', 'token'),
-    (error: unknown) => error instanceof PathEscapeError,
+  const current = await readFile(workspaceRoot, 'linked.txt');
+  const result = await saveFile(
+    workspaceRoot,
+    'linked.txt',
+    'updated\n',
+    current.versionToken,
   );
+  assert.equal(result.ok, true);
+  assert.equal(await fsReadFile(outsideFile, 'utf8'), 'updated\n');
 });
 
-void test('saveFile rejects new writes through symlinked parent directories', async (t) => {
+void test('saveFile creates a file through a symlinked parent directory', async (t) => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-save-'));
   const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-outside-'));
   const realDir = join(outsideRoot, 'real-dir');
@@ -49,9 +53,16 @@ void test('saveFile rejects new writes through symlinked parent directories', as
     return;
   }
 
-  await assert.rejects(
-    () => saveFile(workspaceRoot, 'linked-dir/child.txt', 'updated\n', 'token'),
-    (error: unknown) => error instanceof PathEscapeError,
+  const result = await saveFile(
+    workspaceRoot,
+    'linked-dir/child.txt',
+    'updated\n',
+    '',
+  );
+  assert.equal(result.ok, true);
+  assert.equal(
+    await fsReadFile(join(realDir, 'child.txt'), 'utf8'),
+    'updated\n',
   );
 });
 

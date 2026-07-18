@@ -112,6 +112,13 @@ export type HostToolEffect =
   | 'hostStateMutation'
   | 'exclusive';
 
+export type ToolRecoveryStrategy =
+  | 'replay_safe'
+  | 'idempotency_key'
+  | 'reconcile_then_replay'
+  | 'durable_handle'
+  | 'at_least_once';
+
 export interface ToolExposure {
   directHot: boolean;
   sdkVisible: boolean;
@@ -136,6 +143,7 @@ export interface ToolMeta {
   timeoutMs?: number;
   requiresApproval: boolean;
   exposure: ToolExposure;
+  recoveryStrategy?: ToolRecoveryStrategy;
   // 도구 인자 스트리밍 opt-in — 켜면 provider args 델타가 tool_call_delta
   // 이벤트로 클라이언트까지 흐른다 (visualize의 실시간 렌더용)
   streamsArgsDelta?: boolean;
@@ -152,6 +160,7 @@ export interface RegisteredToolLike {
   timeoutMs?: number;
   requiresApproval: boolean;
   exposure?: ToolExposure;
+  recoveryStrategy?: ToolRecoveryStrategy;
   streamsArgsDelta?: boolean;
   catalogSearchMetadata?: ToolCatalogSearchMetadata;
   parseArgs(

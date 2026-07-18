@@ -10,11 +10,11 @@ import { makeRunContext } from '../../../../test-support/run-context.js';
 import { readToolOutputSnapshot } from '../../../files/tool-output-store.js';
 import { createPtcExecuteCodeCellTerminalResultStore } from '../../../ptc-execute-code-terminal-result-store.js';
 import { createPtcExecuteCodeCellRegistry } from './execute-code-cell-registry.js';
+import { createPtcExecuteCodePlacementCoordinator } from './execute-code-placement.js';
 import {
   createPtcExecuteCodeCallbackEffectPolicy,
-  createPtcExecuteCodePlacementCoordinator,
   type PtcExecuteCodePlacementCoordinator,
-} from './execute-code-placement.js';
+} from './execute-code-placement-contract.js';
 import { waitForExecuteCodeCell } from './execute-code-cell-wait.js';
 import { PTC_EXECUTE_CODE_TOOL_NAME } from './execute-code-runtime-contract.js';
 import { createPtcExecuteCodeRuntime } from './execute-code-runtime.js';

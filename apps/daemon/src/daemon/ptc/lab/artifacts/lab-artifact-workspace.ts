@@ -1,5 +1,6 @@
 import { constants as fsConstants } from 'node:fs';
 import {
+  lstat,
   mkdtemp,
   mkdir,
   open,
@@ -159,6 +160,9 @@ async function openArtifactFileWithoutSymlinkAncestors(args: {
     );
   }
 
+  // O_NOFOLLOW is defense in depth: older Linux overlay combinations may
+  // follow links. Match each lstat observation to the opened descriptor before
+  // traversing it or reading bytes.
   const segments = args.relativePath.split('/');
   const finalSegment = segments.at(-1);
   if (finalSegment === undefined) {
@@ -185,12 +189,32 @@ async function openArtifactFileWithoutSymlinkAncestors(args: {
       await previousDirectory.close().catch(() => {});
     }
 
+    const finalPath = join(procSelfFdPath(currentDirectory.fd), finalSegment);
+    const expectedStats = await lstat(finalPath, { bigint: true });
+    if (!expectedStats.isFile() || expectedStats.isSymbolicLink()) {
+      throw new PtcArtifactOpenError('ptc_lab_artifact_file_unsupported');
+    }
+    const file = await open(
+      finalPath,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+    );
+    try {
+      const openedStats = await file.stat({ bigint: true });
+      if (
+        !openedStats.isFile() ||
+        openedStats.dev !== expectedStats.dev ||
+        openedStats.ino !== expectedStats.ino
+      ) {
+        throw new PtcArtifactOpenError('ptc_lab_artifact_file_changed');
+      }
+    } catch (error: unknown) {
+      await file.close().catch(() => {});
+      throw error;
+    }
+
     return {
       ok: true,
-      value: await open(
-        join(procSelfFdPath(currentDirectory.fd), finalSegment),
-        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
-      ),
+      value: file,
     };
   } catch (error: unknown) {
     return artifactOpenFailure(error);
@@ -303,12 +327,27 @@ async function openArtifactDirectory(
   path: string,
   position: 'root' | 'ancestor',
 ): Promise<FileHandle> {
+  let directory: FileHandle | undefined;
   try {
-    return await open(
+    const expectedStats = await lstat(path, { bigint: true });
+    if (!expectedStats.isDirectory() || expectedStats.isSymbolicLink()) {
+      throw new PtcArtifactOpenError('ptc_lab_artifact_file_unsupported');
+    }
+    directory = await open(
       path,
       fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
     );
+    const openedStats = await directory.stat({ bigint: true });
+    if (
+      !openedStats.isDirectory() ||
+      openedStats.dev !== expectedStats.dev ||
+      openedStats.ino !== expectedStats.ino
+    ) {
+      throw new PtcArtifactOpenError('ptc_lab_artifact_file_changed');
+    }
+    return directory;
   } catch (error: unknown) {
+    await directory?.close().catch(() => {});
     if (position === 'root' && isNodeErrorCode(error, 'ENOENT')) {
       throw new PtcArtifactOpenError('ptc_lab_artifact_workspace_unavailable');
     }
@@ -319,10 +358,19 @@ async function openArtifactDirectory(
 function artifactOpenFailure(
   error: unknown,
 ): PtcLabArtifactWorkspaceImportResult<never> {
-  if (
-    error instanceof PtcArtifactOpenError &&
-    error.reasonCode === 'ptc_lab_artifact_workspace_unavailable'
-  ) {
+  if (error instanceof PtcArtifactOpenError) {
+    if (error.reasonCode === 'ptc_lab_artifact_file_unsupported') {
+      return failure(
+        'ptc_lab_artifact_file_unsupported',
+        'PTC lab artifact file is unsupported',
+      );
+    }
+    if (error.reasonCode === 'ptc_lab_artifact_file_changed') {
+      return failure(
+        'ptc_lab_artifact_file_changed',
+        'PTC lab artifact file changed during import',
+      );
+    }
     return failure(
       'ptc_lab_artifact_workspace_unavailable',
       'PTC lab artifact workspace is unavailable',
@@ -350,7 +398,9 @@ class PtcArtifactOpenError extends Error {
   constructor(
     readonly reasonCode: Extract<
       PtcLabArtifactWorkspaceImportFailureReason,
-      'ptc_lab_artifact_workspace_unavailable'
+      | 'ptc_lab_artifact_workspace_unavailable'
+      | 'ptc_lab_artifact_file_unsupported'
+      | 'ptc_lab_artifact_file_changed'
     >,
   ) {
     super(reasonCode);

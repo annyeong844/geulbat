@@ -1,10 +1,6 @@
 import type {
   InstalledPluginView,
   PluginMarketplaceAddRequest,
-  PluginMarketplaceDiagnosticView,
-  PluginMarketplaceEntrySourceKind,
-  PluginMarketplaceEntryStatus,
-  PluginMarketplaceEntryView,
   PluginMarketplaceInstallRequest,
   PluginMarketplaceListResponse,
   PluginMarketplaceSourceView,
@@ -14,51 +10,37 @@ import {
   isPluginMarketplaceInstallRequest,
   isPluginMarketplaceListResponse,
 } from '@geulbat/protocol/plugins';
+import { isRecord } from '@geulbat/protocol/runtime-utils';
 import { randomUUID } from 'node:crypto';
-import {
-  constants,
-  lstat,
-  mkdir,
-  open,
-  readdir,
-  rename,
-  rm,
-} from 'node:fs/promises';
-import { join, posix } from 'node:path';
+import { lstat, mkdir, readdir, rename, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { checkNoSymlinkPathSegments } from '../files/normalize-path.js';
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
 import { getErrorCode } from '../utils/error.js';
-import {
-  buildAllowlistedProcessEnv,
-  runBoundedProcessCommand,
-} from '../utils/process-command.js';
-import {
-  PluginPackageAdmissionError,
-  inspectPluginPackage,
-  pluginIconContentType,
-} from './plugin-package-admission.js';
+import { inspectPluginPackage } from './plugin-package-admission.js';
 import type { PluginMarketplaceInstallCandidate } from './plugin-store.js';
+import {
+  PLUGIN_NAME_PATTERN,
+  PluginMarketplaceStoreError,
+  safeDiagnosticMessage,
+  type PluginMarketplaceGitAcquirer,
+} from './plugin-marketplace-contract.js';
+import { createMarketplaceCatalogStateOwner } from './plugin-marketplace-state.js';
+import {
+  acquirePluginMarketplaceGitRepository,
+  readGitRevision,
+} from './plugin-marketplace-git.js';
+import { readTextFileNoFollow } from './plugin-marketplace-fs.js';
+import {
+  inspectMarketplaceRepository,
+  type MarketplaceCatalogSnapshot,
+} from './plugin-marketplace-catalog.js';
 
 const REGISTRY_SCHEMA_VERSION = 2 as const;
 const LEGACY_REGISTRY_SCHEMA_VERSION = 1 as const;
 const MARKETPLACE_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
-const GIT_REVISION_PATTERN = /^git:[a-f0-9]{40,64}$/u;
-const NETWORK_ENV_KEYS = [
-  'ALL_PROXY',
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'NO_PROXY',
-  'all_proxy',
-  'http_proxy',
-  'https_proxy',
-  'no_proxy',
-  'SSL_CERT_DIR',
-  'SSL_CERT_FILE',
-] as const;
-
 export const OFFICIAL_CODEX_MARKETPLACE_SOURCE = {
   sourceKind: 'git',
   url: 'https://github.com/openai/plugins.git',
@@ -79,29 +61,9 @@ interface LoadedMarketplaceRegistry {
   sources: PluginMarketplaceSourceView[];
 }
 
-interface MarketplaceCatalogSnapshot {
-  source: PluginMarketplaceSourceView;
-  entries: PluginMarketplaceEntryView[];
-  diagnostics: PluginMarketplaceDiagnosticView[];
-  localEntryRoots: Map<string, string>;
-  iconAssets: Map<string, MarketplaceEntryIconAsset>;
-}
-
-interface MarketplaceEntryIconAsset {
-  packageRoot: string;
-  relativePath: string;
-  contentType: string;
-}
-
-export interface ResolvedMarketplaceEntryIcon {
+interface ResolvedMarketplaceEntryIcon {
   absolutePath: string;
   contentType: string;
-}
-
-interface MarketplaceDocument {
-  name: string;
-  displayName: string;
-  plugins: unknown[];
 }
 
 export interface PluginMarketplaceStore {
@@ -123,29 +85,6 @@ export interface PluginMarketplaceStore {
   ): Promise<PluginMarketplaceInstallCandidate>;
 }
 
-export type PluginMarketplaceStoreErrorCode =
-  | 'invalid_request'
-  | 'not_found'
-  | 'conflict'
-  | 'corrupt_registry';
-
-export class PluginMarketplaceStoreError extends Error {
-  constructor(
-    readonly code: PluginMarketplaceStoreErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'PluginMarketplaceStoreError';
-  }
-}
-
-export type PluginMarketplaceGitAcquirer = (args: {
-  repositoryRoot: string;
-  url: string;
-  requestedRef: string | null;
-  isolatedConfigRoot: string;
-}) => Promise<void>;
-
 export function createPluginMarketplaceStore(args: {
   homeStateRoot: string;
   acquireGitRepository?: PluginMarketplaceGitAcquirer;
@@ -155,26 +94,11 @@ export function createPluginMarketplaceStore(args: {
   const sourcesRoot = join(marketplacesRoot, 'sources');
   const stagingRoot = join(marketplacesRoot, '.staging');
   const registryPath = join(marketplacesRoot, 'registry.json');
-  const catalogs = new Map<string, MarketplaceCatalogSnapshot>();
-  let initialized = false;
-  let mutationTail: Promise<void> = Promise.resolve();
+  const state = createMarketplaceCatalogStateOwner({
+    persistSources: (sources) => persist(sources),
+  });
   const acquireGitSource =
     args.acquireGitRepository ?? acquirePluginMarketplaceGitRepository;
-
-  function serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const result = mutationTail.then(operation, operation);
-    mutationTail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
-
-  function assertInitialized(): void {
-    if (!initialized) {
-      throw new Error('plugin marketplace store is not initialized');
-    }
-  }
 
   async function ensureManagedRoots(): Promise<void> {
     await mkdir(sourcesRoot, { recursive: true, mode: 0o700 });
@@ -249,7 +173,7 @@ export function createPluginMarketplaceStore(args: {
     request: PluginMarketplaceAddRequest,
     sourceRole: PluginMarketplaceSourceView['sourceRole'],
   ): Promise<PluginMarketplaceSourceView> {
-    assertInitialized();
+    state.requireInitialized();
     if (!isPluginMarketplaceAddRequest(request)) {
       throw new PluginMarketplaceStoreError(
         'invalid_request',
@@ -262,13 +186,7 @@ export function createPluginMarketplaceStore(args: {
         'the Codex official marketplace is managed by the built-in source',
       );
     }
-    if (
-      [...catalogs.values()].some(
-        (catalog) =>
-          catalog.source.sourceUrl === request.url &&
-          catalog.source.requestedRef === (request.ref ?? null),
-      )
-    ) {
+    if (state.hasGitSource(request.url, request.ref ?? null)) {
       throw new PluginMarketplaceStoreError(
         'conflict',
         'this marketplace Git source is already registered',
@@ -314,11 +232,7 @@ export function createPluginMarketplaceStore(args: {
           'the built-in source did not resolve the Codex official marketplace',
         );
       }
-      if (
-        [...catalogs.values()].some(
-          (catalog) => catalog.source.name === staged.source.name,
-        )
-      ) {
+      if (state.hasSourceName(staged.source.name)) {
         throw new PluginMarketplaceStoreError(
           'conflict',
           `marketplace name is already registered: ${staged.source.name}`,
@@ -340,11 +254,7 @@ export function createPluginMarketplaceStore(args: {
         addedAt: now,
         refreshedAt: now,
       });
-      await persist([
-        ...[...catalogs.values()].map((catalog) => catalog.source),
-        finalSnapshot.source,
-      ]);
-      catalogs.set(marketplaceId, finalSnapshot);
+      await state.commitRegistered(finalSnapshot);
       return finalSnapshot.source;
     } catch (error: unknown) {
       await rm(movedToFinal ? finalSourceRoot : stageSourceRoot, {
@@ -360,14 +270,14 @@ export function createPluginMarketplaceStore(args: {
 
   return {
     async initialize() {
-      await serialize(async () => {
-        if (initialized) {
+      await state.serialize(async () => {
+        if (state.isInitialized()) {
           return;
         }
         await mkdir(args.homeStateRoot, { recursive: true, mode: 0o700 });
         const registry = await readRegistry(registryPath);
         if (!registry) {
-          initialized = true;
+          state.markInitialized();
           return;
         }
         await ensureManagedRoots();
@@ -380,9 +290,9 @@ export function createPluginMarketplaceStore(args: {
         });
         for (const source of registry.sources) {
           try {
-            catalogs.set(source.marketplaceId, await loadCatalog(source));
+            state.restoreLoadedSnapshot(await loadCatalog(source));
           } catch (error: unknown) {
-            catalogs.set(source.marketplaceId, {
+            state.restoreLoadedSnapshot({
               source,
               entries: [],
               diagnostics: [
@@ -404,12 +314,12 @@ export function createPluginMarketplaceStore(args: {
         if (registry.schemaVersion !== REGISTRY_SCHEMA_VERSION) {
           await persist(registry.sources);
         }
-        initialized = true;
+        state.markInitialized();
       });
     },
 
     list(installedPlugins) {
-      assertInitialized();
+      state.requireInitialized();
       const installedByEntry = new Map<string, string>();
       for (const plugin of installedPlugins) {
         if (plugin.sourceKind !== 'marketplace' || !plugin.marketplaceSource) {
@@ -420,9 +330,11 @@ export function createPluginMarketplaceStore(args: {
           plugin.installationId,
         );
       }
-      const snapshots = [...catalogs.values()].sort((left, right) =>
-        left.source.displayName.localeCompare(right.source.displayName),
-      );
+      const snapshots = state
+        .snapshots()
+        .sort((left, right) =>
+          left.source.displayName.localeCompare(right.source.displayName),
+        );
       return {
         sources: snapshots.map((snapshot) => snapshot.source),
         entries: snapshots.flatMap((snapshot) =>
@@ -438,32 +350,30 @@ export function createPluginMarketplaceStore(args: {
     },
 
     async add(request) {
-      return serialize(() => addSource(request, 'custom'));
+      return state.serialize(() => addSource(request, 'custom'));
     },
 
     async ensureOfficialMarketplace() {
-      return serialize(async () => {
-        assertInitialized();
-        const current = [...catalogs.values()].find(
-          (catalog) => catalog.source.sourceRole === 'official',
-        );
+      return state.serialize(async () => {
+        state.requireInitialized();
+        const current = state.findOfficialSource();
         if (current) {
-          return current.source;
+          return current;
         }
         return addSource(OFFICIAL_CODEX_MARKETPLACE_SOURCE, 'official');
       });
     },
 
     async remove(marketplaceId) {
-      await serialize(async () => {
-        assertInitialized();
+      await state.serialize(async () => {
+        state.requireInitialized();
         if (!MARKETPLACE_ID_PATTERN.test(marketplaceId)) {
           throw new PluginMarketplaceStoreError(
             'invalid_request',
             'marketplace identity is invalid',
           );
         }
-        const current = catalogs.get(marketplaceId);
+        const current = state.getSnapshot(marketplaceId);
         if (!current) {
           throw new PluginMarketplaceStoreError(
             'not_found',
@@ -476,11 +386,7 @@ export function createPluginMarketplaceStore(args: {
             'the Codex official marketplace is a built-in source',
           );
         }
-        const remaining = [...catalogs.values()]
-          .filter((catalog) => catalog.source.marketplaceId !== marketplaceId)
-          .map((catalog) => catalog.source);
-        await persist(remaining);
-        catalogs.delete(marketplaceId);
+        await state.commitRemoved(marketplaceId);
         try {
           await rm(join(sourcesRoot, marketplaceId), {
             recursive: true,
@@ -496,14 +402,14 @@ export function createPluginMarketplaceStore(args: {
     },
 
     async resolveEntryIcon(marketplaceId, entryId) {
-      assertInitialized();
+      state.requireInitialized();
       if (
         !MARKETPLACE_ID_PATTERN.test(marketplaceId) ||
         !PLUGIN_NAME_PATTERN.test(entryId)
       ) {
         return null;
       }
-      const icon = catalogs.get(marketplaceId)?.iconAssets.get(entryId);
+      const icon = state.getSnapshot(marketplaceId)?.iconAssets.get(entryId);
       if (!icon) {
         return null;
       }
@@ -529,15 +435,15 @@ export function createPluginMarketplaceStore(args: {
     },
 
     async resolveInstallCandidate(request) {
-      return serialize(async () => {
-        assertInitialized();
+      return state.serialize(async () => {
+        state.requireInitialized();
         if (!isPluginMarketplaceInstallRequest(request)) {
           throw new PluginMarketplaceStoreError(
             'invalid_request',
             'marketplace plugin install request is invalid',
           );
         }
-        const catalog = catalogs.get(request.marketplaceId);
+        const catalog = state.getSnapshot(request.marketplaceId);
         const entry = catalog?.entries.find(
           (candidate) => candidate.entryId === request.entryId,
         );
@@ -595,434 +501,6 @@ export function createPluginMarketplaceStore(args: {
       });
     },
   };
-}
-
-async function inspectMarketplaceRepository(args: {
-  marketplaceId: string;
-  repositoryRoot: string;
-  sourceRole: PluginMarketplaceSourceView['sourceRole'];
-  sourceUrl: string;
-  requestedRef: string | null;
-  resolvedRevision: string;
-  addedAt: string;
-  refreshedAt: string;
-}): Promise<MarketplaceCatalogSnapshot> {
-  const marketplace = await readMarketplaceDocument(args.repositoryRoot);
-  const source: PluginMarketplaceSourceView = {
-    marketplaceId: args.marketplaceId,
-    name: marketplace.name,
-    displayName: marketplace.displayName,
-    sourceRole: args.sourceRole,
-    sourceKind: 'git',
-    sourceUrl: args.sourceUrl,
-    requestedRef: args.requestedRef,
-    resolvedRevision: args.resolvedRevision,
-    addedAt: args.addedAt,
-    refreshedAt: args.refreshedAt,
-  };
-  const entries: PluginMarketplaceEntryView[] = [];
-  const diagnostics: PluginMarketplaceDiagnosticView[] = [];
-  const localEntryRoots = new Map<string, string>();
-  const iconAssets = new Map<string, MarketplaceEntryIconAsset>();
-  const seenNames = new Set<string>();
-
-  for (const rawEntry of marketplace.plugins) {
-    const entryName = readEntryName(rawEntry);
-    if (!entryName || seenNames.has(entryName)) {
-      diagnostics.push({
-        marketplaceId: args.marketplaceId,
-        entryName,
-        code: 'invalid-entry',
-        message: entryName
-          ? 'marketplace contains a duplicate plugin name'
-          : 'marketplace contains an entry without a valid plugin name',
-      });
-      continue;
-    }
-    seenNames.add(entryName);
-    const parsed = readEntryPolicy(rawEntry);
-    if (!parsed) {
-      diagnostics.push({
-        marketplaceId: args.marketplaceId,
-        entryName,
-        code: 'invalid-entry',
-        message: 'marketplace plugin policy or category is invalid',
-      });
-      continue;
-    }
-    const sourceKind = readEntrySourceKind(rawEntry);
-    const base = {
-      entryId: entryName,
-      marketplaceId: args.marketplaceId,
-      marketplaceName: marketplace.name,
-      marketplaceDisplayName: marketplace.displayName,
-      name: entryName,
-      category: parsed.category,
-      sourceKind,
-      installationPolicy: parsed.installationPolicy,
-      authenticationPolicy: parsed.authenticationPolicy,
-      resolvedRevision: args.resolvedRevision,
-      installedInstallationId: null,
-    } as const;
-
-    if (sourceKind !== 'local') {
-      entries.push({
-        ...base,
-        displayName: entryName,
-        version: null,
-        description: '',
-        iconAvailable: false,
-        status: 'unsupported-source',
-        contentDigest: null,
-        capabilities: [],
-      });
-      diagnostics.push({
-        marketplaceId: args.marketplaceId,
-        entryName,
-        code: 'unsupported-source',
-        message: `${sourceKind} marketplace plugin sources are not active yet`,
-      });
-      continue;
-    }
-
-    const relativePath = readLocalEntryPath(rawEntry);
-    if (!relativePath) {
-      entries.push({
-        ...base,
-        displayName: entryName,
-        version: null,
-        description: '',
-        iconAvailable: false,
-        status: 'invalid-package',
-        contentDigest: null,
-        capabilities: [],
-      });
-      diagnostics.push({
-        marketplaceId: args.marketplaceId,
-        entryName,
-        code: 'invalid-entry',
-        message: 'local marketplace plugin path is invalid',
-      });
-      continue;
-    }
-
-    try {
-      const requestedRoot = join(
-        args.repositoryRoot,
-        ...relativePath.split('/').filter(Boolean),
-      );
-      const sourceRoot = await checkNoSymlinkPathSegments(
-        args.repositoryRoot,
-        requestedRoot,
-      );
-      const inspected = await inspectPluginPackage(sourceRoot);
-      if (inspected.manifest.name !== entryName) {
-        throw new PluginPackageAdmissionError(
-          'invalid_request',
-          'marketplace entry name does not match its plugin manifest',
-        );
-      }
-      const status: PluginMarketplaceEntryStatus =
-        parsed.installationPolicy === 'NOT_AVAILABLE'
-          ? 'not-available'
-          : 'installable';
-      const iconPath = inspected.manifest.iconPath;
-      const iconContentType =
-        iconPath === null ? null : pluginIconContentType(iconPath);
-      entries.push({
-        ...base,
-        displayName: inspected.manifest.displayName,
-        version: inspected.manifest.version,
-        description: inspected.manifest.description,
-        iconAvailable: iconContentType !== null,
-        status,
-        contentDigest: inspected.contentDigest,
-        capabilities: inspected.capabilities,
-      });
-      if (iconPath !== null && iconContentType !== null) {
-        iconAssets.set(entryName, {
-          packageRoot: sourceRoot,
-          relativePath: iconPath,
-          contentType: iconContentType,
-        });
-      }
-      if (status === 'installable') {
-        localEntryRoots.set(entryName, sourceRoot);
-      }
-    } catch (error: unknown) {
-      entries.push({
-        ...base,
-        displayName: entryName,
-        version: null,
-        description: '',
-        iconAvailable: false,
-        status: 'invalid-package',
-        contentDigest: null,
-        capabilities: [],
-      });
-      diagnostics.push({
-        marketplaceId: args.marketplaceId,
-        entryName,
-        code: 'invalid-package',
-        message: safeDiagnosticMessage(
-          'marketplace plugin package is invalid',
-          error,
-        ),
-      });
-    }
-  }
-
-  entries.sort(
-    (left, right) =>
-      left.category.localeCompare(right.category) ||
-      left.displayName.localeCompare(right.displayName),
-  );
-  return { source, entries, diagnostics, localEntryRoots, iconAssets };
-}
-
-async function readMarketplaceDocument(
-  repositoryRoot: string,
-): Promise<MarketplaceDocument> {
-  const candidates = [
-    '.agents/plugins/marketplace.json',
-    '.claude-plugin/marketplace.json',
-  ];
-  let raw: Buffer | undefined;
-  for (const relativePath of candidates) {
-    const requestedPath = join(
-      repositoryRoot,
-      ...relativePath.split('/').filter(Boolean),
-    );
-    try {
-      await lstat(requestedPath);
-      const admittedPath = await checkNoSymlinkPathSegments(
-        repositoryRoot,
-        requestedPath,
-      );
-      raw = await readBufferFileNoFollow(admittedPath, 'marketplace catalog');
-      break;
-    } catch (error: unknown) {
-      if (getErrorCode(error) === 'ENOENT') {
-        continue;
-      }
-      throw error;
-    }
-  }
-  if (!raw) {
-    throw new PluginMarketplaceStoreError(
-      'invalid_request',
-      'Git source does not contain a supported marketplace.json',
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw));
-  } catch {
-    throw new PluginMarketplaceStoreError(
-      'invalid_request',
-      'marketplace.json is not valid UTF-8 JSON',
-    );
-  }
-  if (!isRecord(parsed) || !isNonEmptyString(parsed['name'])) {
-    throw new PluginMarketplaceStoreError(
-      'invalid_request',
-      'marketplace.json has an invalid identity',
-    );
-  }
-  const interfaceValue = parsed['interface'];
-  const displayName =
-    isRecord(interfaceValue) && isNonEmptyString(interfaceValue['displayName'])
-      ? interfaceValue['displayName']
-      : parsed['name'];
-  if (!Array.isArray(parsed['plugins'])) {
-    throw new PluginMarketplaceStoreError(
-      'invalid_request',
-      'marketplace.json plugins must be an array',
-    );
-  }
-  return { name: parsed['name'], displayName, plugins: parsed['plugins'] };
-}
-
-function readEntryName(value: unknown): string | null {
-  return isRecord(value) &&
-    isNonEmptyString(value['name']) &&
-    PLUGIN_NAME_PATTERN.test(value['name'])
-    ? value['name']
-    : null;
-}
-
-function readEntryPolicy(value: unknown): {
-  installationPolicy: string;
-  authenticationPolicy: string;
-  category: string;
-} | null {
-  if (!isRecord(value) || !isRecord(value['policy'])) {
-    return null;
-  }
-  const installationPolicy = value['policy']['installation'];
-  const authenticationPolicy = value['policy']['authentication'];
-  const category = value['category'];
-  return isNonEmptyString(installationPolicy) &&
-    isNonEmptyString(authenticationPolicy) &&
-    isNonEmptyString(category)
-    ? { installationPolicy, authenticationPolicy, category }
-    : null;
-}
-
-function readEntrySourceKind(value: unknown): PluginMarketplaceEntrySourceKind {
-  if (!isRecord(value)) {
-    return 'unknown';
-  }
-  const source = value['source'];
-  if (typeof source === 'string') {
-    return 'local';
-  }
-  if (!isRecord(source)) {
-    return 'unknown';
-  }
-  if (source['source'] === 'local') {
-    return 'local';
-  }
-  if (source['source'] === 'url' || source['source'] === 'git-subdir') {
-    return 'git';
-  }
-  if (source['source'] === 'npm') {
-    return 'npm';
-  }
-  return 'unknown';
-}
-
-function readLocalEntryPath(value: unknown): string | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const source = value['source'];
-  const rawPath =
-    typeof source === 'string'
-      ? source
-      : isRecord(source) && source['source'] === 'local'
-        ? source['path']
-        : undefined;
-  if (!isNonEmptyString(rawPath) || !rawPath.startsWith('./')) {
-    return null;
-  }
-  const normalized = posix.normalize(rawPath.slice(2));
-  if (
-    normalized === '' ||
-    normalized === '.' ||
-    normalized === '..' ||
-    normalized.startsWith('../') ||
-    normalized.startsWith('/') ||
-    normalized.includes('\\')
-  ) {
-    return null;
-  }
-  return normalized;
-}
-
-export async function acquirePluginMarketplaceGitRepository(args: {
-  repositoryRoot: string;
-  url: string;
-  requestedRef: string | null;
-  isolatedConfigRoot: string;
-}): Promise<void> {
-  await mkdir(args.isolatedConfigRoot, { recursive: true, mode: 0o700 });
-  const hooksRoot = join(args.isolatedConfigRoot, 'hooks');
-  await mkdir(hooksRoot, { recursive: true, mode: 0o700 });
-  const env = {
-    ...buildAllowlistedProcessEnv(NETWORK_ENV_KEYS),
-    GCM_INTERACTIVE: 'Never',
-    GIT_CONFIG_GLOBAL: join(args.isolatedConfigRoot, 'gitconfig'),
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_TERMINAL_PROMPT: '0',
-    HOME: args.isolatedConfigRoot,
-    XDG_CONFIG_HOME: args.isolatedConfigRoot,
-  } satisfies NodeJS.ProcessEnv;
-  await runGit(
-    ['init', '--quiet', args.repositoryRoot],
-    env,
-    'Git marketplace repository initialization failed',
-  );
-  await runGit(
-    ['-C', args.repositoryRoot, 'config', 'core.hooksPath', hooksRoot],
-    env,
-    'Git marketplace hook isolation failed',
-  );
-  await runGit(
-    ['-C', args.repositoryRoot, 'remote', 'add', 'origin', args.url],
-    env,
-    'Git marketplace source registration failed',
-  );
-  await runGit(
-    [
-      '-C',
-      args.repositoryRoot,
-      'fetch',
-      '--depth=1',
-      '--no-tags',
-      'origin',
-      args.requestedRef ?? 'HEAD',
-    ],
-    env,
-    'Git marketplace fetch failed',
-  );
-  await runGit(
-    [
-      '-C',
-      args.repositoryRoot,
-      'checkout',
-      '--detach',
-      '--force',
-      'FETCH_HEAD',
-    ],
-    env,
-    'Git marketplace checkout failed',
-  );
-}
-
-async function readGitRevision(
-  repositoryRoot: string,
-  marketplaceId: string,
-): Promise<string> {
-  const env = {
-    ...buildAllowlistedProcessEnv([]),
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_TERMINAL_PROMPT: '0',
-  } satisfies NodeJS.ProcessEnv;
-  const result = await runBoundedProcessCommand({
-    executable: 'git',
-    args: ['-C', repositoryRoot, 'rev-parse', 'HEAD'],
-    env,
-  });
-  if (result.kind !== 'exit' || result.exitCode !== 0) {
-    throw new PluginMarketplaceStoreError(
-      'corrupt_registry',
-      `managed marketplace revision is unreadable: ${marketplaceId}`,
-    );
-  }
-  const revision = `git:${result.stdout.trim()}`;
-  if (!GIT_REVISION_PATTERN.test(revision)) {
-    throw new PluginMarketplaceStoreError(
-      'corrupt_registry',
-      'managed marketplace revision is invalid',
-    );
-  }
-  return revision;
-}
-
-async function runGit(
-  gitArgs: string[],
-  env: NodeJS.ProcessEnv,
-  failureMessage: string,
-): Promise<void> {
-  const result = await runBoundedProcessCommand({
-    executable: 'git',
-    args: gitArgs,
-    env,
-  });
-  if (result.kind !== 'exit' || result.exitCode !== 0) {
-    throw new PluginMarketplaceStoreError('invalid_request', failureMessage);
-  }
 }
 
 async function readRegistry(
@@ -1131,65 +609,6 @@ function isLegacyOfficialSource(source: Record<string, unknown>): boolean {
   );
 }
 
-async function readTextFileNoFollow(
-  path: string,
-  label: string,
-): Promise<string | undefined> {
-  const raw = await readBufferFileNoFollow(path, label);
-  if (raw === undefined) {
-    return undefined;
-  }
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(raw);
-  } catch {
-    throw new PluginMarketplaceStoreError(
-      'corrupt_registry',
-      `${label} is not valid UTF-8`,
-    );
-  }
-}
-
-async function readBufferFileNoFollow(
-  path: string,
-  label: string,
-): Promise<Buffer | undefined> {
-  let expectedStats: Awaited<ReturnType<typeof lstat>>;
-  try {
-    expectedStats = await lstat(path);
-  } catch (error: unknown) {
-    if (getErrorCode(error) === 'ENOENT') {
-      return undefined;
-    }
-    throw error;
-  }
-  if (!expectedStats.isFile() || expectedStats.isSymbolicLink()) {
-    throw new PluginMarketplaceStoreError(
-      'corrupt_registry',
-      `${label} is not a regular file`,
-    );
-  }
-  const file = await open(
-    path,
-    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-  );
-  try {
-    const openedStats = await file.stat();
-    if (
-      !openedStats.isFile() ||
-      openedStats.dev !== expectedStats.dev ||
-      openedStats.ino !== expectedStats.ino
-    ) {
-      throw new PluginMarketplaceStoreError(
-        'corrupt_registry',
-        `${label} changed while it was being opened`,
-      );
-    }
-    return await file.readFile();
-  } finally {
-    await file.close();
-  }
-}
-
 async function reconcileManagedSources(args: {
   sourcesRoot: string;
   stagingRoot: string;
@@ -1226,21 +645,6 @@ function safeStorageError(message: string, error: unknown): Error {
     'corrupt_registry',
     safeDiagnosticMessage(message, error),
   );
-}
-
-function safeDiagnosticMessage(message: string, error: unknown): string {
-  return error instanceof PluginPackageAdmissionError ||
-    error instanceof PluginMarketplaceStoreError
-    ? `${message}: ${error.message}`
-    : message;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function hasOnlyKeys(

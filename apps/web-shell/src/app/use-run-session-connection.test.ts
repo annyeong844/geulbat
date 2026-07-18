@@ -11,10 +11,7 @@ import {
 import { RUN_SESSION_STREAM_BATCH_WINDOW_MS } from './run-session-stream-batch.js';
 import { useRunSessionConnection } from './use-run-session-connection.js';
 import type { RunSessionStateAction } from './run-session-state-types.js';
-import {
-  createProjectTreeRefreshController,
-  requestProjectTreeRefresh,
-} from './run-session-tree-refresh.js';
+import { createComputerTreeRefreshController } from './run-session-computer-tree-refresh.js';
 import { renderHook } from '../test-support/hook-test.js';
 
 const RUN_ID = brandRunId('run-1');
@@ -41,42 +38,6 @@ function createPersistedThreadDetail() {
   };
 }
 
-void test('requestProjectTreeRefresh coalesces repeated requests while a refresh is in flight', async () => {
-  const controller = createProjectTreeRefreshController();
-  const resolvers: Array<() => void> = [];
-  let loadCount = 0;
-
-  const loadTree = () =>
-    new Promise<void>((resolve) => {
-      loadCount += 1;
-      resolvers.push(resolve);
-    });
-
-  void requestProjectTreeRefresh(controller, loadTree);
-  assert.equal(loadCount, 1);
-  assert.equal(controller.readPhase(), 'running');
-
-  void requestProjectTreeRefresh(controller, loadTree);
-  assert.equal(loadCount, 1);
-  assert.equal(controller.readPhase(), 'queued');
-
-  const firstResolve = resolvers.shift();
-  assert.ok(firstResolve);
-  firstResolve();
-  await Promise.resolve();
-
-  assert.equal(loadCount, 2);
-  assert.equal(controller.readPhase(), 'running');
-
-  const secondResolve = resolvers.shift();
-  assert.ok(secondResolve);
-  secondResolve();
-  await Promise.resolve();
-
-  assert.equal(loadCount, 2);
-  assert.equal(controller.readPhase(), 'idle');
-});
-
 void test('handleRunSessionMessage acknowledges the run and refreshes threads', async () => {
   const actions: RunSessionStateAction[] = [];
   const startedRuns: Array<{ threadId: string; runId: string }> = [];
@@ -96,7 +57,7 @@ void test('handleRunSessionMessage acknowledges the run and refreshes threads', 
     dispatch: (action) => {
       actions.push(action);
     },
-    requestProjectTreeRefresh: () => {},
+    requestComputerTreeRefresh: () => {},
     handleRunStarted: (threadId, runId) => {
       startedRuns.push({ threadId, runId });
     },
@@ -171,7 +132,7 @@ void test('handleRunSessionMessage dispatches failed done evidence to run state'
     dispatch: (action) => {
       actions.push(action);
     },
-    requestProjectTreeRefresh: () => {},
+    requestComputerTreeRefresh: () => {},
     handleRunStarted: () => {},
     handleRunSettledSuccess: async () => {},
     handleRunSettleSyncFailed: async () => {},
@@ -305,7 +266,7 @@ void test('adaptRunSessionMessage maps semantic subagent lifecycle events to tra
   );
 });
 
-void test('handleRunSessionMessage marks tree refresh when daemon reports workspace file changes', async () => {
+void test('handleRunSessionMessage marks tree refresh when daemon reports computer file changes', async () => {
   const actions: RunSessionStateAction[] = [];
   let requestedRefreshCount = 0;
 
@@ -334,7 +295,7 @@ void test('handleRunSessionMessage marks tree refresh when daemon reports worksp
     dispatch: (action) => {
       actions.push(action);
     },
-    requestProjectTreeRefresh: () => {
+    requestComputerTreeRefresh: () => {
       requestedRefreshCount += 1;
     },
     handleRunStarted: () => {},
@@ -385,7 +346,7 @@ void test('handleRunSessionMessage dispatches committed artifacts into live run 
           persistenceEpoch: 0,
           sourceRef: {
             kind: 'thread-file',
-            workingDirectory: 'workspace',
+            workingDirectory: 'computer-root',
             threadId: THREAD_ID,
             runId: RUN_ID,
             filePath: 'episodes/ch01.md',
@@ -397,7 +358,7 @@ void test('handleRunSessionMessage dispatches committed artifacts into live run 
     dispatch: (action) => {
       actions.push(action);
     },
-    requestProjectTreeRefresh: () => {},
+    requestComputerTreeRefresh: () => {},
     handleRunStarted: () => {},
     handleRunSettledSuccess: async () => {},
     handleRunSettleSyncFailed: async () => {},
@@ -424,7 +385,7 @@ void test('handleRunSessionMessage dispatches committed artifacts into live run 
         persistenceEpoch: 0,
         sourceRef: {
           kind: 'thread-file',
-          workingDirectory: 'workspace',
+          workingDirectory: 'computer-root',
           threadId: THREAD_ID,
           runId: RUN_ID,
           filePath: 'episodes/ch01.md',
@@ -442,6 +403,9 @@ void test('useRunSessionConnection keeps a single subscription across rerenders 
   let closeCount = 0;
   const seen: string[] = [];
   const fakeClient = {
+    async acknowledgeEvent() {
+      return 'req-event-ack';
+    },
     subscribe(callback: (message: RunChannelServerMessage) => void) {
       subscribeCount += 1;
       listener = callback;
@@ -462,8 +426,8 @@ void test('useRunSessionConnection keeps a single subscription across rerenders 
     dispatch: () => {
       seen.push('initial:dispatch');
     },
-    projectTreeRefreshControllerRef: {
-      current: createProjectTreeRefreshController(),
+    computerTreeRefreshControllerRef: {
+      current: createComputerTreeRefreshController(),
     },
     loadTree: async () => {
       seen.push('initial:loadTree');
@@ -490,8 +454,8 @@ void test('useRunSessionConnection keeps a single subscription across rerenders 
     dispatch: () => {
       seen.push('latest:dispatch');
     },
-    projectTreeRefreshControllerRef: {
-      current: createProjectTreeRefreshController(),
+    computerTreeRefreshControllerRef: {
+      current: createComputerTreeRefreshController(),
     },
     loadTree: async () => {
       seen.push('latest:loadTree');
@@ -545,11 +509,14 @@ void test('useRunSessionConnection keeps a single subscription across rerenders 
   assert.equal(closeCount, 1);
 });
 
-void test('useRunSessionConnection reports project tree refresh failures', async () => {
+void test('useRunSessionConnection reports Computer tree refresh failures', async () => {
   let listener: ((message: RunChannelServerMessage) => void) | null = null;
   const refreshError = new Error('tree refresh broke');
   const reports: Array<{ logContext: string; error: unknown }> = [];
   const fakeClient = {
+    async acknowledgeEvent() {
+      return 'req-event-ack';
+    },
     subscribe(callback: (message: RunChannelServerMessage) => void) {
       listener = callback;
       return () => {
@@ -564,8 +531,8 @@ void test('useRunSessionConnection reports project tree refresh failures', async
   const hook = await renderHook(useRunSessionConnection, {
     client: fakeClient,
     dispatch: () => {},
-    projectTreeRefreshControllerRef: {
-      current: createProjectTreeRefreshController(),
+    computerTreeRefreshControllerRef: {
+      current: createComputerTreeRefreshController(),
     },
     loadTree: async () => {
       throw refreshError;
@@ -610,7 +577,7 @@ void test('useRunSessionConnection reports project tree refresh failures', async
   await hook.flush();
 
   assert.equal(reports.length, 1);
-  assert.equal(reports[0]?.logContext, 'project tree refresh failed');
+  assert.equal(reports[0]?.logContext, 'computer tree refresh failed');
   assert.equal(reports[0]?.error, refreshError);
 
   hook.unmount();
@@ -620,6 +587,9 @@ void test('useRunSessionConnection batches consecutive streamed text updates bef
   let listener: ((message: RunChannelServerMessage) => void) | null = null;
   const actions: RunSessionStateAction[] = [];
   const fakeClient = {
+    async acknowledgeEvent() {
+      return 'req-event-ack';
+    },
     subscribe(callback: (message: RunChannelServerMessage) => void) {
       listener = callback;
       return () => {
@@ -636,8 +606,8 @@ void test('useRunSessionConnection batches consecutive streamed text updates bef
     dispatch: (action) => {
       actions.push(action);
     },
-    projectTreeRefreshControllerRef: {
-      current: createProjectTreeRefreshController(),
+    computerTreeRefreshControllerRef: {
+      current: createComputerTreeRefreshController(),
     },
     loadTree: async () => {},
     handleRunStarted: async () => {},
@@ -715,6 +685,9 @@ void test('useRunSessionConnection flushes pending stream text before settle eff
   let listener: ((message: RunChannelServerMessage) => void) | null = null;
   const seen: string[] = [];
   const fakeClient = {
+    async acknowledgeEvent() {
+      return 'req-event-ack';
+    },
     subscribe(callback: (message: RunChannelServerMessage) => void) {
       listener = callback;
       return () => {
@@ -733,8 +706,8 @@ void test('useRunSessionConnection flushes pending stream text before settle eff
         seen.push(`stream:${action.text}`);
       }
     },
-    projectTreeRefreshControllerRef: {
-      current: createProjectTreeRefreshController(),
+    computerTreeRefreshControllerRef: {
+      current: createComputerTreeRefreshController(),
     },
     loadTree: async () => {},
     handleRunStarted: async () => {},
@@ -784,6 +757,109 @@ void test('useRunSessionConnection flushes pending stream text before settle eff
   hook.unmount();
 });
 
+void test('useRunSessionConnection acknowledges terminal replay after snapshot and terminal application', async () => {
+  let listener: ((message: RunChannelServerMessage) => void) | null = null;
+  const seen: string[] = [];
+  const acknowledgements: Array<{
+    runId: string;
+    threadId: string;
+    seq: number;
+  }> = [];
+  let releaseFollowUp: (() => void) | undefined;
+  const followUpGate = new Promise<void>((resolve) => {
+    releaseFollowUp = resolve;
+  });
+  const fakeClient = {
+    async acknowledgeEvent(request: {
+      runId: typeof RUN_ID;
+      threadId: typeof THREAD_ID;
+      seq: number;
+    }) {
+      seen.push('acknowledged');
+      acknowledgements.push(request);
+      return 'req-event-ack';
+    },
+    subscribe(callback: (message: RunChannelServerMessage) => void) {
+      listener = callback;
+      return () => {
+        if (listener === callback) {
+          listener = null;
+        }
+      };
+    },
+    close() {},
+  } satisfies RunSessionConnectionClient;
+
+  const hook = await renderHook(useRunSessionConnection, {
+    client: fakeClient,
+    dispatch: (action) => {
+      if (action.type === 'run_terminal') {
+        seen.push('terminal-applied');
+      }
+    },
+    computerTreeRefreshControllerRef: {
+      current: createComputerTreeRefreshController(),
+    },
+    loadTree: async () => {},
+    handleRunStarted: async () => {},
+    handleRunSettledSuccess: async () => {
+      seen.push('snapshot-applied');
+      await followUpGate;
+    },
+    handleRunSettleSyncFailed: async () => {},
+    handleRunSettledError: async () => {},
+    reportSessionFailure: () => {},
+  });
+
+  const invokeListener = (message: RunChannelServerMessage) => {
+    if (listener === null) {
+      throw new Error('run session listener was not registered');
+    }
+    listener(message);
+  };
+
+  await hook.run(async () => {
+    invokeListener({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 4,
+        ts: new Date().toISOString(),
+        type: 'thread_state_persisted',
+        payload: createPersistedThreadDetail(),
+      },
+    });
+    invokeListener({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 5,
+        ts: new Date().toISOString(),
+        type: 'done',
+        payload: { answer: 'persisted', ok: true },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  assert.deepEqual(seen, [
+    'snapshot-applied',
+    'terminal-applied',
+    'acknowledged',
+  ]);
+  assert.deepEqual(acknowledgements, [
+    { runId: RUN_ID, threadId: THREAD_ID, seq: 5 },
+  ]);
+
+  assert.ok(releaseFollowUp);
+  releaseFollowUp();
+  await hook.flush();
+  hook.unmount();
+});
+
 void test('handleRunSessionMessage dispatches semantic subagent activity entries', async () => {
   const actions: RunSessionStateAction[] = [];
 
@@ -807,7 +883,7 @@ void test('handleRunSessionMessage dispatches semantic subagent activity entries
     dispatch: (action) => {
       actions.push(action);
     },
-    requestProjectTreeRefresh: () => {},
+    requestComputerTreeRefresh: () => {},
     handleRunStarted: () => {},
     handleRunSettledSuccess: async () => {},
     handleRunSettleSyncFailed: async () => {},
@@ -857,7 +933,7 @@ void test('handleRunSessionMessage settles successful runs through the provided 
       },
     },
     dispatch: () => {},
-    requestProjectTreeRefresh: () => {},
+    requestComputerTreeRefresh: () => {},
     handleRunStarted: () => {},
     handleRunSettledSuccess: async (thread) => {
       settledThreadIds.push(thread.threadId);
@@ -888,7 +964,7 @@ void test('handleRunSessionMessage routes thread snapshot sync failures through 
       },
     },
     dispatch: () => {},
-    requestProjectTreeRefresh: () => {},
+    requestComputerTreeRefresh: () => {},
     handleRunStarted: () => {},
     handleRunSettledSuccess: async () => {},
     handleRunSettleSyncFailed: async (threadId, message) => {
@@ -925,7 +1001,7 @@ void test('handleRunSessionMessage settles errored runs through the provided err
       },
     },
     dispatch: () => {},
-    requestProjectTreeRefresh: () => {},
+    requestComputerTreeRefresh: () => {},
     handleRunStarted: () => {},
     handleRunSettledSuccess: async () => {},
     handleRunSettleSyncFailed: async () => {},

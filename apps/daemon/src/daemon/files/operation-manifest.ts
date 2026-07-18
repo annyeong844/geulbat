@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { isPathInsideWorkspaceBoundary } from './normalize-path.js';
+import { isSameOrDescendantPath } from './normalize-path.js';
 
 type OperationKind =
   | 'create_file'
@@ -82,7 +82,6 @@ type OperationCommitOutcomeStatus =
 type OperationCommitOutcomeReasonCode =
   | OperationRelocationPreconditionReasonCode
   | 'conflict_stale_write'
-  | 'outside_file_authority'
   | 'approval_denied'
   | 'lease_conflict'
   | 'atomicity_unsupported'
@@ -287,7 +286,7 @@ export function evaluateRelocationPreconditions(
     sourceTarget.expectedKind !== 'file' &&
     sourceTarget.canonicalTargetId !== undefined &&
     destinationTarget.canonicalTargetId !== undefined &&
-    isPathInsideWorkspaceBoundary(
+    isSameOrDescendantPath(
       sourceTarget.canonicalTargetId,
       destinationTarget.canonicalTargetId,
     )

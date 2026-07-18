@@ -1,15 +1,11 @@
 import { lstat, realpath } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, parse, relative, resolve, sep } from 'node:path';
 
 import {
   PathEscapeError,
   PathNotFoundError,
-  checkSymlinkEscape,
-  isPathInsideWorkspaceBoundary,
   normalizePath,
 } from './normalize-path.js';
-import { isReservedPath } from './reserved-paths.js';
-import { FileAccessError } from './file-domain-error.js';
 import type { InspectedCanonicalWorkspacePath } from './file-platform-target-types.js';
 import { getErrorCode } from '../utils/error.js';
 
@@ -25,10 +21,7 @@ export async function resolveCanonicalReadPath(
     workspaceCanonicalRoot,
     relativePath,
   );
-  const canonicalAbsolutePath = await checkSymlinkEscape(
-    workspaceRoot,
-    requestedAbsolutePath,
-  );
+  const canonicalAbsolutePath = await realpath(requestedAbsolutePath);
   normalizeSourceRelativePath(workspaceCanonicalRoot, canonicalAbsolutePath);
 
   return {
@@ -54,10 +47,7 @@ export async function resolveCanonicalDirectoryPath(
   let canonicalAbsolutePath = requestedAbsolutePath;
   let exists = true;
   try {
-    canonicalAbsolutePath = await checkSymlinkEscape(
-      workspaceRoot,
-      requestedAbsolutePath,
-    );
+    canonicalAbsolutePath = await realpath(requestedAbsolutePath);
     normalizeSourceRelativePath(workspaceCanonicalRoot, canonicalAbsolutePath);
   } catch (error: unknown) {
     const code = getErrorCode(error);
@@ -79,13 +69,7 @@ export function normalizeSourceRelativePath(
   workspaceRoot: string,
   inputPath: string,
 ): string {
-  const relativePath = toDisplayRelativePath(
-    normalizePath(workspaceRoot, inputPath),
-  );
-  if (isReservedPath(relativePath)) {
-    throw FileAccessError.reservedPath(relativePath);
-  }
-  return relativePath;
+  return toDisplayRelativePath(normalizePath(workspaceRoot, inputPath));
 }
 
 export function normalizeInternalRelativePath(
@@ -102,7 +86,7 @@ function toCanonicalWorkspacePath(
   if (relativePath === '.' || relativePath === '') {
     return workspaceCanonicalRoot;
   }
-  return join(workspaceCanonicalRoot, ...relativePath.split('/'));
+  return resolve(workspaceCanonicalRoot, relativePath);
 }
 
 export async function inspectCanonicalWorkspacePath(
@@ -111,6 +95,7 @@ export async function inspectCanonicalWorkspacePath(
   options?: {
     allowMissingLeaf?: boolean;
     allowMissingWorkspaceRoot?: boolean;
+    rejectSymlinks?: boolean;
   },
 ): Promise<InspectedCanonicalWorkspacePath> {
   let workspaceCanonicalRoot: string;
@@ -127,9 +112,15 @@ export async function inspectCanonicalWorkspacePath(
       throw error;
     }
   }
-  const segments =
-    relativePath === '.' ? [] : relativePath.split('/').filter(Boolean);
-  let currentCanonicalPath = workspaceCanonicalRoot;
+  const requestedAbsolutePath = toCanonicalWorkspacePath(
+    workspaceCanonicalRoot,
+    relativePath,
+  );
+  const filesystemRoot = parse(requestedAbsolutePath).root;
+  const segments = relative(filesystemRoot, requestedAbsolutePath)
+    .split(sep)
+    .filter(Boolean);
+  let currentCanonicalPath = await realpath(filesystemRoot);
 
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index]!;
@@ -137,9 +128,10 @@ export async function inspectCanonicalWorkspacePath(
 
     try {
       const stats = await lstat(nextPath);
-      if (stats.isSymbolicLink()) {
+      if (stats.isSymbolicLink() && options?.rejectSymlinks !== false) {
         throw new PathEscapeError(segments.slice(0, index + 1).join('/'));
       }
+      currentCanonicalPath = await realpath(nextPath);
     } catch (error: unknown) {
       const code = getErrorCode(error);
       if (code === 'ENOENT') {
@@ -174,14 +166,6 @@ export async function inspectCanonicalWorkspacePath(
       }
       throw error;
     }
-
-    const realCurrentPath = await realpath(nextPath);
-    if (
-      !isPathInsideWorkspaceBoundary(workspaceCanonicalRoot, realCurrentPath)
-    ) {
-      throw new PathEscapeError(segments.slice(0, index + 1).join('/'));
-    }
-    currentCanonicalPath = realCurrentPath;
   }
 
   return {

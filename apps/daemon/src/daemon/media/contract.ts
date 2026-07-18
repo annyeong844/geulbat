@@ -145,7 +145,7 @@ export interface ImageGenerationRuntime {
 // 런타임이 투명 캔버스를 주입해 text 발상을 흡수한다(D-V5 브리지).
 // 오류는 ImageGenerationError를 공유한다(§4.4 — 분류 7종 재사용).
 
-export interface VideoGenerationRequest {
+interface VideoGenerationRequest {
   prompt: string;
   // 현재 턴 명시(D2) 운반 — 미지정이면 요청 스코프 기본값 > env > 내장 5초
   durationSeconds?: number;

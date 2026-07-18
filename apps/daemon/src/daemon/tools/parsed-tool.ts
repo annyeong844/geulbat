@@ -36,6 +36,9 @@ export function defineParsedTool<TArgs extends object>(
       : {}),
     requiresApproval: options.requiresApproval,
     ...(options.exposure ? { exposure: options.exposure } : {}),
+    ...(options.recoveryStrategy
+      ? { recoveryStrategy: options.recoveryStrategy }
+      : {}),
     ...(options.catalogSearchMetadata
       ? { catalogSearchMetadata: options.catalogSearchMetadata }
       : {}),

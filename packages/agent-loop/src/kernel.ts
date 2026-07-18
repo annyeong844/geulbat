@@ -1,13 +1,13 @@
-export interface AgentLoopKernelResult {
+interface AgentLoopKernelResult {
   ok: boolean;
 }
 
-export interface AgentLoopRoundContext {
+interface AgentLoopRoundContext {
   round: number;
   sawFirstModelRequest: boolean;
 }
 
-export type AgentLoopTerminalSource =
+type AgentLoopTerminalSource =
   | 'aborted'
   | 'model_failure'
   | 'structured_output_failure'
@@ -30,11 +30,11 @@ export type AgentLoopKernelEvent =
       terminalOk?: boolean;
     };
 
-export type AgentLoopStepResult<TResult, TValue> =
+type AgentLoopStepResult<TResult, TValue> =
   | { ok: true; value: TValue }
   | { ok: false; result: TResult };
 
-export interface AgentLoopModelRoundValue<
+interface AgentLoopModelRoundValue<
   TResult,
   TFunctionCall,
   TStructuredOutput,
@@ -47,16 +47,16 @@ export interface AgentLoopModelRoundValue<
   structuredOutputs?: readonly TStructuredOutput[];
 }
 
-export type AgentLoopStructuredOutputResult<TResult> =
+type AgentLoopStructuredOutputResult<TResult> =
   | { ok: true; handled: false }
   | { ok: true; handled: true; result: TResult }
   | { ok: false; message: string };
 
-export type AgentLoopTerminalCandidateDecision =
+type AgentLoopTerminalCandidateDecision =
   | { kind: 'terminal' }
   | { kind: 'continue'; historyText?: string };
 
-export type AgentLoopKernelFailure =
+type AgentLoopKernelFailure =
   | { kind: 'aborted'; message: string }
   | { kind: 'structured_output_failure'; message: string }
   | { kind: 'structured_output_unhandled'; message: string };
@@ -110,7 +110,7 @@ export interface AgentLoopKernelPorts<
   observe?(event: AgentLoopKernelEvent): void;
 }
 
-export interface RunAgentLoopKernelArgs<
+interface RunAgentLoopKernelArgs<
   TResult extends AgentLoopKernelResult,
   TFunctionCall,
   TStructuredOutput,

@@ -1,35 +1,36 @@
 import { isApprovalRequest, type ApprovalRequest } from './run-approval.js';
 import { isCancelRequest, type CancelRequest } from './cancel.js';
 import { isErrorCode, type ErrorCode } from './errors.js';
+import { isRunId, isThreadId } from './ids.js';
 import { isRunEvent, type RunEvent } from './run-events.js';
 import { isRunStartRequest, type RunStartRequest } from './run-contract.js';
-import { isNumber, isRecord, isString } from './runtime-utils.js';
+import { isBoolean, isNumber, isRecord, isString } from './runtime-utils.js';
 
-export interface RunAuthMessage {
+interface RunAuthMessage {
   type: 'run.auth';
   requestId: string;
   token: string;
 }
 
-export interface RunStartMessage {
+interface RunStartMessage {
   type: 'run.start';
   requestId: string;
   request: RunStartRequest;
 }
 
-export interface RunCancelMessage {
+interface RunCancelMessage {
   type: 'run.cancel';
   requestId: string;
   request: CancelRequest;
 }
 
-export interface RunApproveMessage {
+interface RunApproveMessage {
   type: 'run.approve';
   requestId: string;
   request: ApprovalRequest;
 }
 
-export interface RunInterjectEnvelopeMessage {
+interface RunInterjectEnvelopeMessage {
   type: 'run.interject';
   requestId: string;
   request: Record<string, unknown>;
@@ -41,36 +42,39 @@ export interface RunInterjectRequest {
 }
 
 // 대기 중 스티어 취소 — 모델이 소비하기 전의 큐 항목을 receivedSeq로 지운다
-export interface RunInterjectCancelEnvelopeMessage {
+interface RunInterjectCancelEnvelopeMessage {
   type: 'run.interject.cancel';
   requestId: string;
   request: Record<string, unknown>;
 }
 
-export interface RunInterjectCancelRequest {
-  runId: CancelRequest['runId'];
-  receivedSeq: number;
-}
-
 // 대기 중 스티어 즉시 반영 — 현재 라운드의 남은 도구 호출을 건너뛰고
 // 다음 모델 호출 직전 소비 지점으로 최대한 빨리 도달하게 한다
-export interface RunInterjectFlushEnvelopeMessage {
+interface RunInterjectFlushEnvelopeMessage {
   type: 'run.interject.flush';
   requestId: string;
   request: Record<string, unknown>;
 }
 
-export interface RunInterjectFlushRequest {
-  runId: CancelRequest['runId'];
-}
-
 // 아티팩트 프레임 발 read-only 도구 호출 — 프레임은 데이터(toolName/args)만
 // 주고, 신뢰 컨텍스트(threadId, workingDirectory)는 부모(웹셸)가 자기 신뢰
 // 상태에서 주입한다. 서버는 PTC와 공유하는 read-only 게이트 통과분만 실행한다.
-export interface RunToolEnvelopeMessage {
+interface RunToolEnvelopeMessage {
   type: 'run.tool';
   requestId: string;
   request: Record<string, unknown>;
+}
+
+export interface RunEventAckRequest {
+  runId: RunEvent['runId'];
+  threadId: RunEvent['threadId'];
+  seq: number;
+}
+
+interface RunEventAckEnvelopeMessage {
+  type: 'run.event.ack';
+  requestId: string;
+  request: RunEventAckRequest;
 }
 
 export interface RunToolRequest {
@@ -95,34 +99,35 @@ export type RunChannelClientMessage =
   | RunInterjectEnvelopeMessage
   | RunInterjectCancelEnvelopeMessage
   | RunInterjectFlushEnvelopeMessage
+  | RunEventAckEnvelopeMessage
   | RunToolEnvelopeMessage;
 
-export interface RunAuthOkMessage {
+interface RunAuthOkMessage {
   type: 'run.auth.ok';
   requestId: string;
   ok: true;
 }
 
-export interface RunEventMessage {
+interface RunEventMessage {
   type: 'run.event';
   event: RunEvent;
 }
 
-export interface RunCancelControlMessage {
+interface RunCancelControlMessage {
   type: 'run.control';
   requestId: string;
   action: 'run.cancel';
   ok: true;
 }
 
-export interface RunApproveControlMessage {
+interface RunApproveControlMessage {
   type: 'run.control';
   requestId: string;
   action: 'run.approve';
   ok: true;
 }
 
-export interface RunInterjectControlMessage {
+interface RunInterjectControlMessage {
   type: 'run.control';
   requestId: string;
   action: 'run.interject';
@@ -131,7 +136,7 @@ export interface RunInterjectControlMessage {
   bufferDepth: number;
 }
 
-export interface RunInterjectCancelControlMessage {
+interface RunInterjectCancelControlMessage {
   type: 'run.control';
   requestId: string;
   action: 'run.interject.cancel';
@@ -139,7 +144,7 @@ export interface RunInterjectCancelControlMessage {
   cancelled: boolean;
 }
 
-export interface RunInterjectFlushControlMessage {
+interface RunInterjectFlushControlMessage {
   type: 'run.control';
   requestId: string;
   action: 'run.interject.flush';
@@ -148,7 +153,7 @@ export interface RunInterjectFlushControlMessage {
   flushed: boolean;
 }
 
-export interface RunToolControlMessage {
+interface RunToolControlMessage {
   type: 'run.control';
   requestId: string;
   action: 'run.tool';
@@ -157,15 +162,24 @@ export interface RunToolControlMessage {
   result: RunToolResultPayload;
 }
 
+interface RunEventAckControlMessage {
+  type: 'run.control';
+  requestId: string;
+  action: 'run.event.ack';
+  ok: true;
+  seq: number;
+}
+
 export type RunControlMessage =
   | RunCancelControlMessage
   | RunApproveControlMessage
   | RunInterjectControlMessage
   | RunInterjectCancelControlMessage
   | RunInterjectFlushControlMessage
+  | RunEventAckControlMessage
   | RunToolControlMessage;
 
-export interface RunErrorMessage {
+interface RunErrorMessage {
   type: 'run.error';
   requestId?: string;
   code: ErrorCode;
@@ -261,9 +275,33 @@ export function isRunToolEnvelope(
   );
 }
 
-export function isRunToolResultPayload(
+function isRunEventSequence(value: unknown): value is number {
+  return isNumber(value) && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isRunEventAckRequest(value: unknown): value is RunEventAckRequest {
+  return (
+    isRecord(value) &&
+    isString(value.runId) &&
+    isRunId(value.runId) &&
+    isString(value.threadId) &&
+    isThreadId(value.threadId) &&
+    isRunEventSequence(value.seq)
+  );
+}
+
+export function isRunEventAckEnvelope(
   value: unknown,
-): value is RunToolResultPayload {
+): value is RunEventAckEnvelopeMessage {
+  return (
+    isRecord(value) &&
+    value.type === 'run.event.ack' &&
+    isString(value.requestId) &&
+    isRunEventAckRequest(value.request)
+  );
+}
+
+function isRunToolResultPayload(value: unknown): value is RunToolResultPayload {
   if (!isRecord(value)) {
     return false;
   }
@@ -286,18 +324,66 @@ export function isRunChannelClientMessage(
     isRunInterjectEnvelope(value) ||
     isRunInterjectCancelEnvelope(value) ||
     isRunInterjectFlushEnvelope(value) ||
+    isRunEventAckEnvelope(value) ||
     isRunToolEnvelope(value)
   );
 }
 
-const RUN_CONTROL_ACTIONS = new Set([
-  'run.cancel',
-  'run.approve',
-  'run.interject',
-  'run.interject.cancel',
-  'run.interject.flush',
-  'run.tool',
-]);
+type RunControlAction = RunControlMessage['action'];
+type RunControlEnvelopeField = 'type' | 'requestId' | 'action' | 'ok';
+type RunControlMessageFor<TAction extends RunControlAction> = Extract<
+  RunControlMessage,
+  { action: TAction }
+>;
+// Adding an action or a required action-specific field must also add a
+// compatible runtime guard, or this mapped type fails compilation.
+type RunControlFieldGuardMap = {
+  [TAction in RunControlAction]: {
+    [TField in Exclude<
+      keyof RunControlMessageFor<TAction>,
+      RunControlEnvelopeField
+    >]: (value: unknown) => value is RunControlMessageFor<TAction>[TField];
+  };
+};
+
+const RUN_CONTROL_FIELD_GUARDS = {
+  'run.cancel': {},
+  'run.approve': {},
+  'run.interject': {
+    receivedSeq: (value: unknown): value is number =>
+      isNumber(value) && Number.isInteger(value) && value > 0,
+    bufferDepth: (value: unknown): value is number =>
+      isNumber(value) && Number.isInteger(value) && value >= 0,
+  },
+  'run.interject.cancel': {
+    cancelled: isBoolean,
+  },
+  'run.interject.flush': {
+    flushed: isBoolean,
+  },
+  'run.event.ack': {
+    seq: isRunEventSequence,
+  },
+  'run.tool': {
+    result: isRunToolResultPayload,
+  },
+} satisfies RunControlFieldGuardMap;
+
+function isRunControlAction(value: string): value is RunControlAction {
+  return Object.hasOwn(RUN_CONTROL_FIELD_GUARDS, value);
+}
+
+function hasValidRunControlFields(
+  action: RunControlAction,
+  value: Record<string, unknown>,
+): boolean {
+  const fieldGuards: Readonly<
+    Record<string, (fieldValue: unknown) => boolean>
+  > = RUN_CONTROL_FIELD_GUARDS[action];
+  return Object.entries(fieldGuards).every(([field, isValid]) =>
+    isValid(value[field]),
+  );
+}
 
 export function isRunChannelServerMessage(
   value: unknown,
@@ -315,28 +401,12 @@ export function isRunChannelServerMessage(
       if (
         !isString(value.requestId) ||
         !isString(value.action) ||
-        !RUN_CONTROL_ACTIONS.has(value.action) ||
+        !isRunControlAction(value.action) ||
         value.ok !== true
       ) {
         return false;
       }
-      if (value.action === 'run.interject.cancel') {
-        return typeof value.cancelled === 'boolean';
-      }
-      if (value.action === 'run.tool') {
-        return isRunToolResultPayload(value.result);
-      }
-      if (value.action !== 'run.interject') {
-        return true;
-      }
-      return (
-        isNumber(value.receivedSeq) &&
-        Number.isInteger(value.receivedSeq) &&
-        value.receivedSeq > 0 &&
-        isNumber(value.bufferDepth) &&
-        Number.isInteger(value.bufferDepth) &&
-        value.bufferDepth >= 0
-      );
+      return hasValidRunControlFields(value.action, value);
     }
     case 'run.error':
       return (

@@ -35,7 +35,7 @@ export function isJsonValue(value: unknown): value is JsonValue {
   return Object.values(value).every(isJsonValue);
 }
 
-export const ARTIFACT_RUNTIME_PERSISTENCE_RENDERERS = [
+const ARTIFACT_RUNTIME_PERSISTENCE_RENDERERS = [
   'html5',
   'js',
   'react_bundle',

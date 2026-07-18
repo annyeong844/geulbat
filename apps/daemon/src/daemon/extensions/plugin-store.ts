@@ -3,39 +3,57 @@ import type {
   PluginInstallRequest,
   PluginMarketplaceInstallationSourceView,
 } from '@geulbat/protocol/plugins';
-import {
-  isInstalledPluginView,
-  isPluginInstallRequest,
-} from '@geulbat/protocol/plugins';
+import { isPluginInstallRequest } from '@geulbat/protocol/plugins';
+import { isRecord } from '@geulbat/protocol/runtime-utils';
 import { randomUUID } from 'node:crypto';
-import {
-  constants,
-  lstat,
-  mkdir,
-  open,
-  readdir,
-  realpath,
-  rename,
-  rm,
-} from 'node:fs/promises';
+import { lstat, mkdir, realpath, rename, rm } from 'node:fs/promises';
 import { isAbsolute, join, posix, win32 } from 'node:path';
 
 import type { ComputerFileScope } from '../files/computer-file-scope.js';
 import {
   checkNoSymlinkPathSegments,
-  isPathInsideWorkspaceBoundary,
+  isSameOrDescendantPath,
 } from '../files/normalize-path.js';
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
-import { getErrorCode } from '../utils/error.js';
 import {
-  PluginPackageAdmissionError,
   inspectPluginPackage,
   readPluginPackageFile,
   stagePluginPackage,
   type InspectedPluginPackage,
-  type InspectedPluginMcpServer,
-  type PluginMcpStdioConfig,
 } from './plugin-package-admission.js';
+import type {
+  InspectedPluginMcpServer,
+  PluginMcpStdioConfig,
+} from './plugin-package-mcp-inspection.js';
+import { PluginPackageAdmissionError } from './plugin-package-admission-contract.js';
+import {
+  CONTENT_DIGEST_PATTERN,
+  INSTALLATION_ID_PATTERN,
+  REGISTRY_SCHEMA_VERSION,
+  hasOnlyKeys,
+  readPersistedRegistry,
+  serializePluginRegistry,
+  type PersistedPluginRegistry,
+} from './plugin-registry-codec.js';
+import {
+  PluginStoreError,
+  safeErrorMessage,
+  safeStorageError,
+} from './plugin-store-contract.js';
+import { createPluginRegistrationStateOwner } from './plugin-store-state.js';
+import {
+  assertManagedDirectory,
+  assertManagedDirectoryIdentity,
+  assertManagedRootIdentities,
+  assertSameManagedDirectoryObject,
+  captureManagedDirectoryIdentity,
+  captureManagedRootIdentities,
+  ensureManagedDirectory,
+  lstatIfExists,
+  reconcileManagedStore,
+  type ManagedDirectoryIdentity,
+  type ManagedRootIdentities,
+} from './plugin-managed-directory.js';
 import {
   buildPluginSkillDirectoryEntries,
   buildPluginSkillCatalogEntry,
@@ -49,41 +67,6 @@ import {
   type PluginSkillInventory,
   type PluginSkillRuntime,
 } from './plugin-skill-runtime.js';
-
-const REGISTRY_SCHEMA_VERSION = 4 as const;
-const LEGACY_REGISTRY_SCHEMA_VERSION = 1 as const;
-const SKILL_RUNTIME_REGISTRY_SCHEMA_VERSION = 2 as const;
-const MCP_RUNTIME_REGISTRY_SCHEMA_VERSION = 3 as const;
-const INSTALLATION_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-const CONTENT_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/u;
-
-interface PersistedPluginRegistry {
-  schemaVersion:
-    | typeof LEGACY_REGISTRY_SCHEMA_VERSION
-    | typeof SKILL_RUNTIME_REGISTRY_SCHEMA_VERSION
-    | typeof MCP_RUNTIME_REGISTRY_SCHEMA_VERSION
-    | typeof REGISTRY_SCHEMA_VERSION;
-  plugins: PersistedPluginRecord[];
-}
-
-interface PersistedPluginRecord {
-  view: InstalledPluginView;
-  packageObjectId: string;
-}
-
-interface ManagedDirectoryIdentity {
-  canonicalPath: string;
-  device: bigint;
-  inode: bigint;
-  birthtimeNs: bigint;
-}
-
-interface ManagedRootIdentities {
-  extensions: ManagedDirectoryIdentity;
-  plugins: ManagedDirectoryIdentity;
-  staging: ManagedDirectoryIdentity;
-}
 
 export interface PluginStore extends PluginSkillRuntime {
   initialize(): Promise<void>;
@@ -130,24 +113,8 @@ export interface PluginBundledMcpLaunchRequest {
   pluginServerName: string;
 }
 
-export interface PluginBundledMcpLaunch extends PluginBundledMcpServerSnapshot {
+interface PluginBundledMcpLaunch extends PluginBundledMcpServerSnapshot {
   absoluteCwd: string;
-}
-
-export type PluginStoreErrorCode =
-  | 'invalid_request'
-  | 'not_found'
-  | 'conflict'
-  | 'corrupt_registry';
-
-export class PluginStoreError extends Error {
-  constructor(
-    readonly code: PluginStoreErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'PluginStoreError';
-  }
 }
 
 export function createPluginStore(args: {
@@ -157,44 +124,16 @@ export function createPluginStore(args: {
   const pluginsRoot = join(extensionsRoot, 'plugins');
   const stagingRoot = join(extensionsRoot, '.staging');
   const registryPath = join(extensionsRoot, 'registry.json');
-  const registrations = new Map<string, InstalledPluginView>();
-  const packageObjectIds = new Map<string, string>();
-  let initialized = false;
   let managedRootIdentities: ManagedRootIdentities | undefined;
-  let mutationTail: Promise<void> = Promise.resolve();
-
-  function serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const result = mutationTail.then(operation, operation);
-    mutationTail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
-
-  function assertInitialized(): void {
-    if (!initialized) {
-      throw new Error('plugin store is not initialized');
-    }
-  }
+  const state = createPluginRegistrationStateOwner({
+    persistRegistry: (plugins, objectIds) => persist(plugins, objectIds),
+  });
 
   async function persist(
     plugins: InstalledPluginView[],
-    objectIds: ReadonlyMap<string, string> = packageObjectIds,
+    objectIds: ReadonlyMap<string, string>,
   ): Promise<void> {
-    const registry: PersistedPluginRegistry = {
-      schemaVersion: REGISTRY_SCHEMA_VERSION,
-      plugins: plugins.map((plugin) => {
-        const packageObjectId = objectIds.get(plugin.installationId);
-        if (!packageObjectId) {
-          throw new PluginStoreError(
-            'corrupt_registry',
-            'plugin package object identity is missing',
-          );
-        }
-        return { view: plugin, packageObjectId };
-      }),
-    };
+    const registry = serializePluginRegistry(plugins, objectIds);
     try {
       await assertManagedRootsUnchanged();
       await writeTextFileAtomically(
@@ -239,19 +178,8 @@ export function createPluginStore(args: {
     );
   }
 
-  function packageObjectIdFor(plugin: InstalledPluginView): string {
-    const packageObjectId = packageObjectIds.get(plugin.installationId);
-    if (!packageObjectId) {
-      throw new PluginStoreError(
-        'corrupt_registry',
-        'plugin package object identity is missing',
-      );
-    }
-    return packageObjectId;
-  }
-
   function packageRootFor(plugin: InstalledPluginView): string {
-    return join(pluginsRoot, packageObjectIdFor(plugin), 'package');
+    return join(pluginsRoot, state.packageObjectIdFor(plugin), 'package');
   }
 
   async function inspectRegisteredPackage(
@@ -265,8 +193,9 @@ export function createPluginStore(args: {
   async function listPluginSkillsOperation(
     includeDisabled: boolean,
   ): Promise<PluginSkillInventory> {
-    assertInitialized();
-    const plugins = [...registrations.values()]
+    state.requireInitialized();
+    const plugins = state
+      .plugins()
       .filter((plugin) => includeDisabled || plugin.enabled)
       .sort((left, right) =>
         left.installationId.localeCompare(right.installationId),
@@ -331,7 +260,7 @@ export function createPluginStore(args: {
         'plugin skill reference is invalid',
       );
     }
-    const plugin = registrations.get(parsed.installationId);
+    const plugin = state.getPlugin(parsed.installationId);
     if (!plugin?.enabled) {
       throw new PluginStoreError(
         'not_found',
@@ -365,10 +294,12 @@ export function createPluginStore(args: {
   async function listSupportedBundledMcpServersOperation(): Promise<
     PluginBundledMcpServerSnapshot[]
   > {
-    assertInitialized();
-    const plugins = [...registrations.values()].sort((left, right) =>
-      left.installationId.localeCompare(right.installationId),
-    );
+    state.requireInitialized();
+    const plugins = state
+      .plugins()
+      .sort((left, right) =>
+        left.installationId.localeCompare(right.installationId),
+      );
     if (plugins.length === 0) {
       return [];
     }
@@ -396,9 +327,9 @@ export function createPluginStore(args: {
   async function resolveBundledMcpServerLaunchOperation(
     request: PluginBundledMcpLaunchRequest,
   ): Promise<PluginBundledMcpLaunch> {
-    assertInitialized();
+    state.requireInitialized();
     assertPluginMcpLaunchRequest(request);
-    const plugin = registrations.get(request.installationId);
+    const plugin = state.getPlugin(request.installationId);
     if (!plugin?.enabled) {
       throw new PluginStoreError(
         'not_found',
@@ -436,7 +367,7 @@ export function createPluginStore(args: {
             ...server.config.relativeCwd.split('/').filter(Boolean),
           ),
     );
-    if (!isPathInsideWorkspaceBoundary(canonicalPackageRoot, absoluteCwd)) {
+    if (!isSameOrDescendantPath(canonicalPackageRoot, absoluteCwd)) {
       throw new PluginStoreError(
         'corrupt_registry',
         'bundled plugin MCP cwd escaped its managed package',
@@ -537,11 +468,7 @@ export function createPluginStore(args: {
       );
       assertPersistedPackageMatches(plugin, finalInspected, false);
       await assertManagedRootsUnchanged();
-      const nextObjectIds = new Map(packageObjectIds);
-      nextObjectIds.set(installationId, packageObjectId);
-      await persist([...registrations.values(), plugin], nextObjectIds);
-      packageObjectIds.set(installationId, packageObjectId);
-      registrations.set(installationId, plugin);
+      await state.commitInstalled(plugin, packageObjectId);
       return plugin;
     } catch (error: unknown) {
       if (managedRootsAdmitted && stagedInstallationIdentity) {
@@ -577,8 +504,8 @@ export function createPluginStore(args: {
 
   return {
     async initialize() {
-      await serialize(async () => {
-        if (initialized) {
+      await state.serialize(async () => {
+        if (state.isInitialized()) {
           return;
         }
         try {
@@ -590,7 +517,7 @@ export function createPluginStore(args: {
           }
           const persistedRegistry = await readPersistedRegistry(registryPath);
           if (!persistedRegistry && !existingExtensionsRoot) {
-            initialized = true;
+            state.markInitialized();
             return;
           }
           const registry: PersistedPluginRegistry = persistedRegistry ?? {
@@ -642,18 +569,10 @@ export function createPluginStore(args: {
           if (registryMigrationRequired) {
             await persist(normalizedPlugins, normalizedObjectIds);
           }
-          for (const plugin of normalizedPlugins) {
-            registrations.set(plugin.installationId, plugin);
-            packageObjectIds.set(
-              plugin.installationId,
-              normalizedObjectIds.get(plugin.installationId) ??
-                plugin.installationId,
-            );
-          }
-          initialized = true;
+          state.restoreLoaded(normalizedPlugins, normalizedObjectIds);
+          state.markInitialized();
         } catch (error: unknown) {
-          registrations.clear();
-          packageObjectIds.clear();
+          state.resetOnInitializationFailure();
           if (error instanceof PluginStoreError) {
             throw error;
           }
@@ -672,29 +591,33 @@ export function createPluginStore(args: {
     },
 
     listPlugins() {
-      assertInitialized();
-      return [...registrations.values()].sort((left, right) =>
-        left.displayName.localeCompare(right.displayName),
-      );
+      state.requireInitialized();
+      return state
+        .plugins()
+        .sort((left, right) =>
+          left.displayName.localeCompare(right.displayName),
+        );
     },
 
     async listPluginSkills(options) {
-      return serialize(() =>
+      return state.serialize(() =>
         listPluginSkillsOperation(options?.includeDisabled ?? false),
       );
     },
 
     async listSupportedBundledMcpServers() {
-      return serialize(listSupportedBundledMcpServersOperation);
+      return state.serialize(listSupportedBundledMcpServersOperation);
     },
 
     async resolveBundledMcpServerLaunch(request) {
-      return serialize(() => resolveBundledMcpServerLaunchOperation(request));
+      return state.serialize(() =>
+        resolveBundledMcpServerLaunchOperation(request),
+      );
     },
 
     async readEnabledSkillFile(logicalPath) {
-      return serialize(async (): Promise<PluginSkillFile> => {
-        assertInitialized();
+      return state.serialize(async (): Promise<PluginSkillFile> => {
+        state.requireInitialized();
         const target = await resolveEnabledSkillTarget(logicalPath);
         if (target.relativePath === '') {
           throw new PluginStoreError(
@@ -755,8 +678,8 @@ export function createPluginStore(args: {
     },
 
     async listEnabledSkillDirectory(logicalPath, recursive) {
-      return serialize(async (): Promise<PluginSkillDirectory> => {
-        assertInitialized();
+      return state.serialize(async (): Promise<PluginSkillDirectory> => {
+        state.requireInitialized();
         const target = await resolveEnabledSkillTarget(logicalPath);
         const files = [
           'SKILL.md',
@@ -786,8 +709,8 @@ export function createPluginStore(args: {
     },
 
     async installPlugin(request, computerFileScope) {
-      return serialize(async () => {
-        assertInitialized();
+      return state.serialize(async () => {
+        state.requireInitialized();
         if (!isPluginInstallRequest(request)) {
           throw new PluginStoreError(
             'invalid_request',
@@ -807,8 +730,8 @@ export function createPluginStore(args: {
     },
 
     async installMarketplacePlugin(candidate) {
-      return serialize(async () => {
-        assertInitialized();
+      return state.serialize(async () => {
+        state.requireInitialized();
         if (
           !CONTENT_DIGEST_PATTERN.test(candidate.expectedContentDigest) ||
           candidate.sourceRoot.trim().length === 0
@@ -819,12 +742,14 @@ export function createPluginStore(args: {
           );
         }
         if (
-          [...registrations.values()].some(
-            (plugin) =>
-              plugin.marketplaceSource?.marketplaceId ===
-                candidate.source.marketplaceId &&
-              plugin.marketplaceSource.entryId === candidate.source.entryId,
-          )
+          state
+            .plugins()
+            .some(
+              (plugin) =>
+                plugin.marketplaceSource?.marketplaceId ===
+                  candidate.source.marketplaceId &&
+                plugin.marketplaceSource.entryId === candidate.source.entryId,
+            )
         ) {
           throw new PluginStoreError(
             'conflict',
@@ -843,9 +768,9 @@ export function createPluginStore(args: {
     },
 
     async setEnabled(installationId, enabled) {
-      return serialize(async () => {
-        assertInitialized();
-        const current = registrations.get(installationId);
+      return state.serialize(async () => {
+        state.requireInitialized();
+        const current = state.getPlugin(installationId);
         if (!current) {
           throw new PluginStoreError(
             'not_found',
@@ -866,19 +791,15 @@ export function createPluginStore(args: {
           enabled,
           updatedAt: new Date().toISOString(),
         };
-        const next = [...registrations.values()].map((plugin) =>
-          plugin.installationId === installationId ? updated : plugin,
-        );
-        await persist(next);
-        registrations.set(installationId, updated);
+        await state.commitUpdated(updated);
         return updated;
       });
     },
 
     async uninstall(installationId) {
-      await serialize(async () => {
-        assertInitialized();
-        const current = registrations.get(installationId);
+      await state.serialize(async () => {
+        state.requireInitialized();
+        const current = state.getPlugin(installationId);
         if (!current) {
           throw new PluginStoreError(
             'not_found',
@@ -886,7 +807,10 @@ export function createPluginStore(args: {
           );
         }
         await assertManagedRootsUnchanged();
-        const installationRoot = join(pluginsRoot, packageObjectIdFor(current));
+        const installationRoot = join(
+          pluginsRoot,
+          state.packageObjectIdFor(current),
+        );
         const installationIdentity = await captureManagedDirectoryIdentity(
           installationRoot,
           'managed plugin installation',
@@ -898,20 +822,10 @@ export function createPluginStore(args: {
             enabled: false,
             updatedAt: new Date().toISOString(),
           };
-          await persist(
-            [...registrations.values()].map((plugin) =>
-              plugin.installationId === installationId ? disabled : plugin,
-            ),
-          );
-          registrations.set(installationId, disabled);
+          await state.commitUpdated(disabled);
         }
 
-        const remaining = [...registrations.values()].filter(
-          (plugin) => plugin.installationId !== installationId,
-        );
-        await persist(remaining);
-        registrations.delete(installationId);
-        packageObjectIds.delete(installationId);
+        await state.commitRemoved(installationId);
         try {
           await assertManagedRootsUnchanged();
           await assertManagedDirectoryIdentity(
@@ -999,8 +913,8 @@ async function assertSourceDisjointFromHome(
     const canonicalSourceRoot = await realpath(sourceRoot);
     const canonicalHomeRoot = await realpath(homeStateRoot);
     if (
-      isPathInsideWorkspaceBoundary(canonicalSourceRoot, canonicalHomeRoot) ||
-      isPathInsideWorkspaceBoundary(canonicalHomeRoot, canonicalSourceRoot)
+      isSameOrDescendantPath(canonicalSourceRoot, canonicalHomeRoot) ||
+      isSameOrDescendantPath(canonicalHomeRoot, canonicalSourceRoot)
     ) {
       throw new PluginStoreError(
         'invalid_request',
@@ -1092,283 +1006,6 @@ function normalizePortableRelativePath(inputPath: string): string {
   return normalized;
 }
 
-async function captureManagedRootIdentities(args: {
-  extensionsRoot: string;
-  pluginsRoot: string;
-  stagingRoot: string;
-}): Promise<ManagedRootIdentities> {
-  return {
-    extensions: await captureManagedDirectoryIdentity(
-      args.extensionsRoot,
-      'extensions root',
-    ),
-    plugins: await captureManagedDirectoryIdentity(
-      args.pluginsRoot,
-      'plugins root',
-    ),
-    staging: await captureManagedDirectoryIdentity(
-      args.stagingRoot,
-      'plugin staging root',
-    ),
-  };
-}
-
-async function assertManagedRootIdentities(
-  paths: {
-    extensionsRoot: string;
-    pluginsRoot: string;
-    stagingRoot: string;
-  },
-  expected: ManagedRootIdentities,
-): Promise<void> {
-  await assertManagedDirectoryIdentity(
-    paths.extensionsRoot,
-    'extensions root',
-    expected.extensions,
-  );
-  await assertManagedDirectoryIdentity(
-    paths.pluginsRoot,
-    'plugins root',
-    expected.plugins,
-  );
-  await assertManagedDirectoryIdentity(
-    paths.stagingRoot,
-    'plugin staging root',
-    expected.staging,
-  );
-}
-
-async function captureManagedDirectoryIdentity(
-  path: string,
-  label: string,
-): Promise<ManagedDirectoryIdentity> {
-  try {
-    const stats = await lstat(path, { bigint: true });
-    assertManagedDirectory(stats, label);
-    return {
-      canonicalPath: await realpath(path),
-      device: stats.dev,
-      inode: stats.ino,
-      birthtimeNs: stats.birthtimeNs,
-    };
-  } catch (error: unknown) {
-    if (error instanceof PluginStoreError) {
-      throw error;
-    }
-    throw new PluginStoreError(
-      'corrupt_registry',
-      safeErrorMessage(`${label} identity could not be verified`, error),
-    );
-  }
-}
-
-async function assertManagedDirectoryIdentity(
-  path: string,
-  label: string,
-  expected: ManagedDirectoryIdentity,
-): Promise<void> {
-  const current = await captureManagedDirectoryIdentity(path, label);
-  if (
-    current.canonicalPath !== expected.canonicalPath ||
-    current.device !== expected.device ||
-    current.inode !== expected.inode ||
-    current.birthtimeNs !== expected.birthtimeNs
-  ) {
-    throw new PluginStoreError(
-      'corrupt_registry',
-      `${label} changed after plugin store initialization`,
-    );
-  }
-}
-
-function assertSameManagedDirectoryObject(
-  before: ManagedDirectoryIdentity,
-  after: ManagedDirectoryIdentity,
-  label: string,
-): void {
-  if (
-    before.device !== after.device ||
-    before.inode !== after.inode ||
-    before.birthtimeNs !== after.birthtimeNs
-  ) {
-    throw new PluginStoreError(
-      'corrupt_registry',
-      `${label} changed while it was moved into place`,
-    );
-  }
-}
-
-async function readPersistedRegistry(
-  registryPath: string,
-): Promise<PersistedPluginRegistry | undefined> {
-  let expectedStats: Awaited<ReturnType<typeof lstat>>;
-  try {
-    expectedStats = await lstat(registryPath);
-  } catch (error: unknown) {
-    if (getErrorCode(error) === 'ENOENT') {
-      return undefined;
-    }
-    throw error;
-  }
-  assertManagedRegularFile(expectedStats, 'plugin registry');
-
-  const registryFile = await open(
-    registryPath,
-    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-  );
-  let raw: string;
-  try {
-    const openedStats = await registryFile.stat();
-    assertManagedRegularFile(openedStats, 'plugin registry');
-    if (
-      openedStats.dev !== expectedStats.dev ||
-      openedStats.ino !== expectedStats.ino
-    ) {
-      throw new PluginStoreError(
-        'corrupt_registry',
-        'plugin registry changed while it was being opened',
-      );
-    }
-    raw = await registryFile.readFile('utf8');
-  } finally {
-    await registryFile.close();
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch {
-    throw new PluginStoreError(
-      'corrupt_registry',
-      'plugin registry is not valid JSON',
-    );
-  }
-  if (
-    !isRecord(parsed) ||
-    !hasOnlyKeys(parsed, ['schemaVersion', 'plugins']) ||
-    (parsed['schemaVersion'] !== LEGACY_REGISTRY_SCHEMA_VERSION &&
-      parsed['schemaVersion'] !== SKILL_RUNTIME_REGISTRY_SCHEMA_VERSION &&
-      parsed['schemaVersion'] !== MCP_RUNTIME_REGISTRY_SCHEMA_VERSION &&
-      parsed['schemaVersion'] !== REGISTRY_SCHEMA_VERSION) ||
-    !Array.isArray(parsed['plugins'])
-  ) {
-    throw new PluginStoreError(
-      'corrupt_registry',
-      'plugin registry has an invalid shape',
-    );
-  }
-  const plugins: PersistedPluginRecord[] =
-    parsed['schemaVersion'] === REGISTRY_SCHEMA_VERSION
-      ? parsed['plugins'].every(isPersistedPluginRecord)
-        ? parsed['plugins']
-        : []
-      : parsed['plugins'].every(isInstalledPluginView)
-        ? parsed['plugins'].map((view) => ({
-            view,
-            packageObjectId: view.installationId,
-          }))
-        : [];
-  if (plugins.length !== parsed['plugins'].length) {
-    throw new PluginStoreError(
-      'corrupt_registry',
-      'plugin registry has an invalid shape',
-    );
-  }
-  const seenIds = new Set<string>();
-  const seenPackageObjectIds = new Set<string>();
-  for (const plugin of plugins) {
-    if (
-      !INSTALLATION_ID_PATTERN.test(plugin.view.installationId) ||
-      seenIds.has(plugin.view.installationId) ||
-      !INSTALLATION_ID_PATTERN.test(plugin.packageObjectId) ||
-      seenPackageObjectIds.has(plugin.packageObjectId)
-    ) {
-      throw new PluginStoreError(
-        'corrupt_registry',
-        'plugin registry contains an invalid or duplicate object identity',
-      );
-    }
-    seenIds.add(plugin.view.installationId);
-    seenPackageObjectIds.add(plugin.packageObjectId);
-  }
-  return {
-    schemaVersion: parsed['schemaVersion'],
-    plugins,
-  };
-}
-
-async function reconcileManagedStore(args: {
-  extensionsRoot: string;
-  pluginsRoot: string;
-  stagingRoot: string;
-  registeredIds: Set<string>;
-}): Promise<void> {
-  await ensureManagedDirectory(args.extensionsRoot, 'extensions root');
-  await ensureManagedDirectory(args.pluginsRoot, 'plugins root');
-
-  const existingStaging = await lstatIfExists(args.stagingRoot);
-  if (existingStaging) {
-    assertManagedDirectory(existingStaging, 'plugin staging root');
-    await rm(args.stagingRoot, { recursive: true, force: true });
-  }
-  await ensureManagedDirectory(args.stagingRoot, 'plugin staging root');
-
-  const entries = await readdir(args.pluginsRoot, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!args.registeredIds.has(entry.name)) {
-      await rm(join(args.pluginsRoot, entry.name), {
-        recursive: true,
-        force: true,
-      });
-    }
-  }
-}
-
-async function ensureManagedDirectory(
-  path: string,
-  label: string,
-): Promise<void> {
-  await mkdir(path, { recursive: true, mode: 0o700 });
-  assertManagedDirectory(await lstat(path), label);
-}
-
-async function lstatIfExists(
-  path: string,
-): Promise<Awaited<ReturnType<typeof lstat>> | undefined> {
-  try {
-    return await lstat(path);
-  } catch (error: unknown) {
-    if (getErrorCode(error) === 'ENOENT') {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-function assertManagedDirectory(
-  stats: Awaited<ReturnType<typeof lstat>>,
-  label: string,
-): void {
-  if (!stats.isDirectory() || stats.isSymbolicLink()) {
-    throw new PluginStoreError(
-      'corrupt_registry',
-      `${label} must be a regular daemon-owned directory`,
-    );
-  }
-}
-
-function assertManagedRegularFile(
-  stats: Awaited<ReturnType<typeof lstat>>,
-  label: string,
-): void {
-  if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink > 1) {
-    throw new PluginStoreError(
-      'corrupt_registry',
-      `${label} must be a regular daemon-owned file`,
-    );
-  }
-}
-
 function assertPersistedPackageMatches(
   plugin: InstalledPluginView,
   inspected: InspectedPluginPackage,
@@ -1423,35 +1060,4 @@ function pluginSkillSource(
     version: plugin.version,
     contentDigest: plugin.contentDigest,
   };
-}
-
-function isPersistedPluginRecord(
-  value: unknown,
-): value is PersistedPluginRecord {
-  return (
-    isRecord(value) &&
-    hasOnlyKeys(value, ['view', 'packageObjectId']) &&
-    isInstalledPluginView(value['view']) &&
-    typeof value['packageObjectId'] === 'string'
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function hasOnlyKeys(
-  value: Record<string, unknown>,
-  allowedKeys: readonly string[],
-): boolean {
-  return Object.keys(value).every((key) => allowedKeys.includes(key));
-}
-
-function safeStorageError(message: string, error: unknown): Error {
-  return new Error(safeErrorMessage(message, error));
-}
-
-function safeErrorMessage(message: string, error: unknown): string {
-  const errorCode = getErrorCode(error);
-  return errorCode ? `${message} (${errorCode})` : message;
 }

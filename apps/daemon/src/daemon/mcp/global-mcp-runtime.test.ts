@@ -12,9 +12,9 @@ import {
   McpServerConfigError,
   McpServerNotFoundError,
   McpServerOwnershipError,
-  createGlobalMcpRuntime,
-  type PluginMcpServerBinding,
-} from './global-mcp-runtime.js';
+} from './global-mcp-contract.js';
+import type { PluginMcpServerBinding } from './global-mcp-registration.js';
+import { createGlobalMcpRuntime } from './global-mcp-runtime.js';
 
 const require = createRequire(import.meta.url);
 

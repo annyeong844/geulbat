@@ -24,7 +24,7 @@ const ARTIFACT_RUNTIME_TIMEOUT_MESSAGE =
 
 // card: 아티팩트 패널의 떠 있는 카드 표면 (기본값).
 // inline: 채팅 본문에 녹아드는 투명 표면 — visualize 위젯용.
-export type ArtifactRuntimeFrameVariant = 'card' | 'inline';
+type ArtifactRuntimeFrameVariant = 'card' | 'inline';
 
 export function ArtifactRuntimeFrame(props: {
   renderer: ArtifactRuntimePersistenceRenderer;

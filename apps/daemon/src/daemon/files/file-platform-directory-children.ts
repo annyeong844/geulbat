@@ -2,8 +2,6 @@ import type { Dirent } from 'node:fs';
 import { lstat, readdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { isPathInsideWorkspaceBoundary } from './normalize-path.js';
-import { isReservedPath } from './reserved-paths.js';
 import type {
   CanonicalDirectoryTarget,
   EnumeratedCanonicalChild,
@@ -23,12 +21,7 @@ export async function enumerateCanonicalChildren(
       target.relativePath === '.'
         ? entry.name
         : `${target.relativePath}/${entry.name}`;
-    if (target.kind === 'source' && isReservedPath(relativePath)) {
-      continue;
-    }
-
     const resolvedChild = await resolveEnumeratedChild(
-      target.workspaceCanonicalRoot,
       target.canonicalAbsolutePath,
       relativePath,
       entry,
@@ -43,7 +36,6 @@ export async function enumerateCanonicalChildren(
 }
 
 async function resolveEnumeratedChild(
-  workspaceCanonicalRoot: string,
   parentCanonicalPath: string,
   relativePath: string,
   entry: Dirent,
@@ -53,9 +45,6 @@ async function resolveEnumeratedChild(
   if (entry.isSymbolicLink()) {
     try {
       const realTarget = await realpath(fullPath);
-      if (!isPathInsideWorkspaceBoundary(workspaceCanonicalRoot, realTarget)) {
-        return null;
-      }
       const stats = await lstat(realTarget);
       if (stats.isDirectory()) {
         return {
@@ -86,25 +75,16 @@ async function resolveEnumeratedChild(
   }
 
   if (entry.isDirectory()) {
-    try {
-      const realTarget = await realpath(fullPath);
-      if (!isPathInsideWorkspaceBoundary(workspaceCanonicalRoot, realTarget)) {
-        return null;
-      }
-      return {
-        name: entry.name,
-        relativePath,
-        canonicalAbsolutePath: realTarget,
-        type: 'directory',
-        viaSymlink: false,
-      };
-    } catch (error: unknown) {
-      const code = getErrorCode(error);
-      if (code === 'ENOENT' || code === 'ENOTDIR') {
-        return null;
-      }
-      throw error;
-    }
+    return {
+      name: entry.name,
+      relativePath,
+      // The parent is already canonical and Dirent proved this child is not a
+      // symlink. Joining the name therefore preserves the canonical target
+      // without another realpath syscall per directory entry.
+      canonicalAbsolutePath: fullPath,
+      type: 'directory',
+      viaSymlink: false,
+    };
   }
 
   if (entry.isFile()) {

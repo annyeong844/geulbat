@@ -6,7 +6,7 @@ import type { ArtifactPaneHeaderProps } from './header.js';
 import type { ArtifactSurfaceStateBadge, ArtifactTab } from './types.js';
 
 // "파일로 저장" 대상 — OS 저장 대화상자로 payload를 로컬 파일에 내려받는다
-export interface ArtifactDirectSaveTarget {
+interface ArtifactDirectSaveTarget {
   payload: string;
   defaultPath: string;
 }

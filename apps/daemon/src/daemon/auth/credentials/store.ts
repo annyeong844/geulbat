@@ -11,6 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
+import { isRecord } from '../../runtime-json.js';
 import {
   getErrorCode,
   getErrorMessage,
@@ -330,10 +331,6 @@ function isProviderAuthCredentialSchema(
     value.accessToken !== '' &&
     value.accountId !== ''
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function createProviderAuthInvalidFileError(message: string): Error {

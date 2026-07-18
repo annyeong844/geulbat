@@ -7,7 +7,7 @@ import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
   }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-export interface FetchCall {
+interface FetchCall {
   readonly url: string;
   readonly init: RequestInit | undefined;
 }
@@ -71,7 +71,7 @@ export function textResponse(status: number, body: string): Response {
   });
 }
 
-export interface HookHarness<T, P> {
+interface HookHarness<T, P> {
   readonly result: { readonly current: T };
   run<R>(callback: (current: T) => R | Promise<R>): Promise<R>;
   rerender(nextProps: P): Promise<void>;

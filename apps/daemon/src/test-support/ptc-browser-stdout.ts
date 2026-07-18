@@ -1,4 +1,4 @@
-export type PtcBrowserAdapterStdoutArgs<Checks, ErrorCode extends string> =
+type PtcBrowserAdapterStdoutArgs<Checks, ErrorCode extends string> =
   | {
       ok: true;
       capability: string;
@@ -12,7 +12,7 @@ export type PtcBrowserAdapterStdoutArgs<Checks, ErrorCode extends string> =
       errorCode: ErrorCode;
     };
 
-export interface PtcBrowserEvidenceSuccessStdoutArgs<Checks> {
+interface PtcBrowserEvidenceSuccessStdoutArgs<Checks> {
   capability: string;
   checks: Checks;
   finalUrlDigest?: `sha256:${string}`;

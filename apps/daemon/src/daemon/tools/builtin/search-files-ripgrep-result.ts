@@ -2,7 +2,6 @@ import { isRecord, tryParseJsonRecord } from '@geulbat/protocol/runtime-utils';
 import type { SearchFilesResult, SearchMatch } from './search-files-shared.js';
 import {
   fromRipgrepFsPath,
-  isWorkspaceRelativeSearchPath,
   toWorkspaceRelativeSearchPath,
 } from './search-files-ripgrep-paths.js';
 
@@ -36,7 +35,7 @@ export function parseRipgrepMatchLine(
     workspaceRoot,
   );
   const relPath = toWorkspaceRelativeSearchPath(workspaceRoot, absPath);
-  if (!isWorkspaceRelativeSearchPath(relPath)) {
+  if (relPath === '') {
     return null;
   }
 
@@ -57,7 +56,12 @@ export function buildRipgrepCloseError(args: {
   stderr: string;
 }): Error | null {
   const { exitCode, killed, stderr } = args;
-  if (exitCode !== null && exitCode >= 2 && !killed) {
+  if (
+    exitCode !== null &&
+    exitCode >= 2 &&
+    !killed &&
+    !hasOnlySymlinkCycleDiagnostics(stderr)
+  ) {
     return Object.assign(
       new Error(`ripgrep error (exit ${exitCode}): ${stderr.slice(0, 200)}`),
       {
@@ -67,6 +71,17 @@ export function buildRipgrepCloseError(args: {
   }
 
   return null;
+}
+
+function hasOnlySymlinkCycleDiagnostics(stderr: string): boolean {
+  const diagnostics = stderr
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return (
+    diagnostics.length > 0 &&
+    diagnostics.every((line) => line.includes('File system loop found:'))
+  );
 }
 
 export function buildRipgrepResult(

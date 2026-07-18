@@ -77,7 +77,7 @@ export function branchThread(
 }
 
 // draft → 버전 커밋의 409 — 서버 latestVersion을 담아 UI가 재로드하게 한다
-export class ArtifactVersionConflictError extends Error {
+class ArtifactVersionConflictError extends Error {
   readonly latestVersion: number | null;
 
   constructor(message: string, latestVersion: number | null) {

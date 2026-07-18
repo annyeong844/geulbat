@@ -10,6 +10,7 @@ import {
   replaceBinaryFile,
   saveBinaryFile,
   saveFile,
+  selectComputerDirectory,
 } from './files.js';
 
 function installApiTestBootstrap(
@@ -61,6 +62,29 @@ void test('computer file APIs use root scope without a project id', async (t) =>
     'v1',
   );
   assert.deepEqual(calls, ['/api/files/computer-scope', '/api/files/save']);
+});
+
+void test('selectComputerDirectory requests a native folder dialog from the current path', async (t) => {
+  installApiTestBootstrap(t, async (input, init) => {
+    assert.equal(String(input), '/api/files/select-directory');
+    assert.equal(init?.method, 'POST');
+    assert.deepEqual(JSON.parse(String(init?.body)), {
+      root: 'computer',
+      initialPath: 'mnt/c/Users/user',
+    });
+    return new Response(
+      JSON.stringify({
+        status: 'selected',
+        path: 'mnt/c/Users/user/Downloads/repo',
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
+  assert.deepEqual(await selectComputerDirectory('mnt/c/Users/user'), {
+    status: 'selected',
+    path: 'mnt/c/Users/user/Downloads/repo',
+  });
 });
 
 void test('saveFile maps stale write api conflict into FileSaveConflictError', async (t) => {

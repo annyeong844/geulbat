@@ -14,7 +14,7 @@ export function createCommittedArtifactSourceRef(
     filePath?: string | null;
   } = {},
 ): CommittedArtifactSourceRef {
-  const workingDirectory = overrides.workingDirectory ?? 'workspace';
+  const workingDirectory = overrides.workingDirectory ?? 'computer-root';
   const threadId = overrides.threadId ?? THREAD_ID;
   const runId = overrides.runId ?? 'run-1';
   const messageTimestamp =

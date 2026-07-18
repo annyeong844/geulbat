@@ -1,9 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { RunId } from '@geulbat/protocol/ids';
-import { createDaemonContext } from '../../../daemon/context.js';
+import { assertRunId, type RunId } from '@geulbat/protocol/ids';
 import { startManagedRun } from '../../../daemon/agent/runtime/managed-run.js';
-import { MID_RUN_STEER_ENABLED_ENV } from '../../../daemon/agent/mid-run-steer-flag.js';
 import {
   cleanupSocketState,
   getSocketState,
@@ -11,6 +9,7 @@ import {
 import { resetShellAuthFailureRateLimitForTests } from '#web/auth/auth-failure-rate-limit.js';
 import {
   clearSentMessages,
+  createRunChannelTestDaemonContext,
   createTestSocket,
   readLastSentMessage,
 } from '../../../test-support/run-channel-test-support.js';
@@ -21,7 +20,7 @@ const TEST_DEV_TOKEN = 'test-token-123456';
 
 void test('handleClientMessage rejects invalid websocket JSON', async () => {
   const socket = createTestSocket();
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
 
   try {
     await handleClientMessage(socket, '{', daemonContext);
@@ -39,7 +38,7 @@ void test('handleClientMessage rejects invalid websocket JSON', async () => {
 
 void test('handleClientMessage rejects blank requestId before auth', async () => {
   const socket = createTestSocket();
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
 
   try {
     await handleClientMessage(
@@ -67,7 +66,7 @@ void test('handleClientMessage authenticates a socket and rejects duplicate auth
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
   const socket = createTestSocket();
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
   const state = getSocketState(socket);
   state.authTimeout = setTimeout(() => undefined, 60_000);
 
@@ -114,9 +113,181 @@ void test('handleClientMessage authenticates a socket and rejects duplicate auth
   }
 });
 
+void test('handleClientMessage automatically rebinds detached run delivery after auth', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
+  const detachedSocket = createTestSocket();
+  const detachedState = getSocketState(detachedSocket);
+  const runId = 'run-auto-rebind-after-auth' as RunId;
+  const threadId = testThreadId(61);
+  detachedState.activeRunIds.add(runId);
+  daemonContext.liveRunEvents.startRun({
+    runId,
+    threadId,
+    ownerId: detachedState.approvalSessionId,
+    sink: () => true,
+  });
+  cleanupSocketState(detachedSocket, daemonContext);
+  daemonContext.liveRunEvents.publishRunEvent(runId, {
+    type: 'commentary_delta',
+    payload: { text: 'continued while disconnected' },
+  });
+
+  const replacementSocket = createTestSocket();
+  const replacementState = getSocketState(replacementSocket);
+  replacementState.upgradeAuthorized = true;
+
+  try {
+    await handleClientMessage(
+      replacementSocket,
+      JSON.stringify({
+        type: 'run.auth',
+        requestId: 'auth-auto-rebind',
+        token: 'cookie-auth',
+      }),
+      daemonContext,
+    );
+
+    const message = readLastSentMessage(replacementSocket);
+    assert.equal(message?.type, 'run.event');
+    if (message?.type !== 'run.event') {
+      return;
+    }
+    assert.equal(message.event.runId, runId);
+    assert.equal(message.event.threadId, threadId);
+    assert.equal(message.event.seq, 0);
+    assert.equal(message.event.type, 'commentary_delta');
+    assert.deepEqual(message.event.payload, {
+      text: 'continued while disconnected',
+    });
+    assert.equal(replacementState.activeRunIds.has(runId), true);
+  } finally {
+    cleanupSocketState(replacementSocket, daemonContext);
+  }
+});
+
+void test('handleClientMessage durably acknowledges only the matching terminal event cursor', async () => {
+  const socket = createTestSocket();
+  const daemonContext = createRunChannelTestDaemonContext();
+  const threadId = testThreadId(62);
+  const runId = assertRunId('run-terminal-event-ack');
+  getSocketState(socket).authenticated = true;
+
+  try {
+    await daemonContext.runCheckpoints.startRun({
+      threadId,
+      runId,
+      request: { workingDirectory: '', permissionMode: 'basic' },
+    });
+    await daemonContext.runCheckpoints.settleRun({
+      threadId,
+      runId,
+      terminal: {
+        eventCursor: 5,
+        event: {
+          type: 'done',
+          payload: { answer: 'done', ok: true },
+        },
+      },
+    });
+
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'run.event.ack',
+        requestId: 'req-terminal-event-ack',
+        request: { threadId, runId, seq: 5 },
+      }),
+      daemonContext,
+    );
+
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.control',
+      requestId: 'req-terminal-event-ack',
+      action: 'run.event.ack',
+      ok: true,
+      seq: 5,
+    });
+    assert.equal(
+      (await daemonContext.runCheckpoints.readThread(threadId))?.terminal
+        ?.acknowledged,
+      true,
+    );
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('authenticated reconnect prefers the detached live terminal buffer over durable replay', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
+  const detachedSocket = createTestSocket();
+  const detachedState = getSocketState(detachedSocket);
+  const threadId = testThreadId(63);
+  const runId = assertRunId('run-live-terminal-before-durable');
+  detachedState.activeRunIds.add(runId);
+
+  await daemonContext.runCheckpoints.startRun({
+    threadId,
+    runId,
+    request: { workingDirectory: '', permissionMode: 'basic' },
+  });
+  daemonContext.liveRunEvents.startRun({
+    runId,
+    threadId,
+    ownerId: detachedState.approvalSessionId,
+    sink: () => true,
+  });
+  daemonContext.liveRunEvents.publishRunEvent(runId, {
+    type: 'run_ack',
+    payload: { runId, threadId },
+  });
+  cleanupSocketState(detachedSocket, daemonContext);
+  await daemonContext.liveRunEvents.commitTerminalRunEvent({
+    runId,
+    event: {
+      type: 'done',
+      payload: { answer: 'one delivery', ok: true },
+    },
+    async persist(envelope) {
+      await daemonContext.runCheckpoints.settleRun({
+        threadId,
+        runId,
+        terminal: {
+          eventCursor: envelope.seq,
+          event: envelope.event,
+        },
+      });
+    },
+  });
+  daemonContext.liveRunEvents.finishRun(runId);
+
+  const replacementSocket = createTestSocket();
+  getSocketState(replacementSocket).upgradeAuthorized = true;
+  try {
+    await handleClientMessage(
+      replacementSocket,
+      JSON.stringify({
+        type: 'run.auth',
+        requestId: 'auth-live-terminal-before-durable',
+        token: 'cookie-auth',
+      }),
+      daemonContext,
+    );
+
+    assert.equal(replacementSocket.sentFrames.length, 2);
+    const message = readLastSentMessage(replacementSocket);
+    assert.equal(message?.type, 'run.event');
+    if (message?.type === 'run.event') {
+      assert.equal(message.event.type, 'done');
+      assert.equal(message.event.seq, 1);
+    }
+  } finally {
+    cleanupSocketState(replacementSocket, daemonContext);
+  }
+});
+
 void test('handleClientMessage authenticates sockets that were authorized during websocket upgrade', async () => {
   const socket = createTestSocket();
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
   const state = getSocketState(socket);
   state.upgradeAuthorized = true;
   state.authTimeout = setTimeout(() => undefined, 60_000);
@@ -149,7 +320,7 @@ void test('handleClientMessage closes unauthorized sockets for invalid auth toke
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
   const socket = createTestSocket();
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
   getSocketState(socket).remoteAddress = '127.0.0.31';
 
   try {
@@ -183,7 +354,7 @@ void test('handleClientMessage rate limits repeated websocket auth failures from
   resetShellAuthFailureRateLimitForTests();
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
 
   try {
     for (let index = 0; index < 8; index += 1) {
@@ -239,7 +410,7 @@ void test('handleClientMessage rate limits repeated websocket auth failures from
 
 void test('handleClientMessage closes unauthenticated sockets for run messages', async () => {
   const socket = createTestSocket();
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
 
   try {
     await handleClientMessage(
@@ -272,7 +443,7 @@ void test('handleClientMessage closes unauthenticated sockets for run messages',
 void test('handleClientMessage routes authenticated run.start validation errors through executeRunRequest', async () => {
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
   const socket = createTestSocket();
 
   try {
@@ -315,7 +486,7 @@ void test('handleClientMessage routes authenticated run.start validation errors 
 void test('handleClientMessage rejects a second same-socket run.start while another start is in flight', async () => {
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
   const socket = createTestSocket();
 
   try {
@@ -356,59 +527,10 @@ void test('handleClientMessage rejects a second same-socket run.start while anot
   }
 });
 
-void test('handleClientMessage preserves requestId when run.interject is not yet enabled', async () => {
+void test('handleClientMessage routes run.interject to the durable active run buffer', async () => {
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
-  const previousMidRunSteer = process.env[MID_RUN_STEER_ENABLED_ENV];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
-  restoreEnv(MID_RUN_STEER_ENABLED_ENV, undefined);
-  const daemonContext = createDaemonContext();
-  const socket = createTestSocket();
-
-  try {
-    await handleClientMessage(
-      socket,
-      JSON.stringify({
-        type: 'run.auth',
-        requestId: 'auth-interject-disabled',
-        token: TEST_DEV_TOKEN,
-      }),
-      daemonContext,
-    );
-
-    clearSentMessages(socket);
-    await handleClientMessage(
-      socket,
-      JSON.stringify({
-        type: 'run.interject',
-        requestId: 'interject-disabled',
-        request: {
-          runId: 'run-interject-disabled',
-          text: 'please steer this run',
-        },
-      }),
-      daemonContext,
-    );
-
-    assert.deepEqual(readLastSentMessage(socket), {
-      type: 'run.error',
-      requestId: 'interject-disabled',
-      status: 503,
-      code: 'bad_request',
-      message: 'mid-run steer is not enabled',
-    });
-  } finally {
-    cleanupSocketState(socket, daemonContext);
-    restoreEnv('GEULBAT_DEV_TOKEN', previousDevToken);
-    restoreEnv(MID_RUN_STEER_ENABLED_ENV, previousMidRunSteer);
-  }
-});
-
-void test('handleClientMessage routes enabled run.interject to the active run buffer', async () => {
-  const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
-  const previousMidRunSteer = process.env[MID_RUN_STEER_ENABLED_ENV];
-  process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
-  process.env[MID_RUN_STEER_ENABLED_ENV] = '1';
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
   const socket = createTestSocket();
   const threadId = testThreadId(142);
   const startedRun = startManagedRun(
@@ -425,6 +547,11 @@ void test('handleClientMessage routes enabled run.interject to the active run bu
   if (!startedRun.ok) {
     assert.fail(`expected run to start; active run: ${startedRun.activeRunId}`);
   }
+  await daemonContext.runCheckpoints.startRun({
+    runId: startedRun.runId,
+    threadId,
+    request: { workingDirectory: '', permissionMode: 'basic' },
+  });
 
   try {
     await handleClientMessage(
@@ -463,17 +590,21 @@ void test('handleClientMessage routes enabled run.interject to the active run bu
     assert.deepEqual(startedRun.runState.interject.items, [
       { receivedSeq: 1, text: 'route this into the live run' },
     ]);
+    assert.deepEqual(
+      (await daemonContext.runCheckpoints.readThread(threadId))
+        ?.pendingInterjects,
+      [{ receivedSeq: 1, text: 'route this into the live run' }],
+    );
   } finally {
     startedRun.finish();
     cleanupSocketState(socket, daemonContext);
     restoreEnv('GEULBAT_DEV_TOKEN', previousDevToken);
-    restoreEnv(MID_RUN_STEER_ENABLED_ENV, previousMidRunSteer);
   }
 });
 
 void test('handleClientMessage preserves requestId when run.cancel dispatch throws unexpectedly', async () => {
   const socket = createTestSocket();
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
   const runId = 'run-cancel-dispatch-throw' as RunId;
   const socketState = getSocketState(socket);
   socketState.authenticated = true;
@@ -527,7 +658,7 @@ void test('handleClientMessage preserves requestId when run.cancel dispatch thro
 void test('handleClientMessage preserves requestId when run.start setup throws unexpectedly', async () => {
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
   const socket = createTestSocket();
   const originalTryStartRun = daemonContext.activeRuns.tryStartRun;
   daemonContext.activeRuns.tryStartRun = (() => {
@@ -592,7 +723,7 @@ void test('handleClientMessage preserves requestId when run.start setup throws u
 void test('handleClientMessage can route run.start through an injected active-run store', async () => {
   const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
   const socket = createTestSocket();
   const threadId = testThreadId(141);
   const existingRun = startManagedRun(

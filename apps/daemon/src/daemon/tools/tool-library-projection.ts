@@ -6,6 +6,7 @@ import type { ToolLibraryProjectionImportableModule } from '@geulbat/tool-librar
 import {
   buildToolLibraryProjectionFiles,
   buildToolLibraryProjectionImportableModules,
+  TOOL_LIBRARY_PROJECTION_GENERATOR_VERSION,
 } from '@geulbat/tool-library/projection-generator';
 import {
   getToolLibraryProjectionManifest,
@@ -38,8 +39,6 @@ import {
   writeToolLibraryProjectionPinFile,
 } from './tool-library-projection-store.js';
 
-const TOOL_LIBRARY_PROJECTION_GENERATOR_VERSION =
-  'geulbat-tool-library-projection-v8';
 const SAFE_PROJECTION_ERROR_CODES = new Set([
   'EACCES',
   'EEXIST',

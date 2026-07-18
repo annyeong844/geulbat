@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { PUBLIC_WEB_WEBSOCKET_ECHO_PATH } from '@geulbat/protocol/public-web-fixtures';
 import WebSocket from 'ws';
 
-import { createDaemonContext } from '../../../daemon/context.js';
+import { createRunChannelTestDaemonContext } from '../../../test-support/run-channel-test-support.js';
 import { attachPublicWebFixtureWebSocketServer } from './public-web-fixtures.js';
 import { attachRunChannelServer } from './run-channel.js';
 
@@ -14,7 +14,7 @@ void test('public web websocket echo fixture coexists with the run channel upgra
   const server = createServer();
   const publicWebSockets = attachPublicWebFixtureWebSocketServer(server);
   const runChannelSockets = attachRunChannelServer(server, {
-    runtimeContext: createDaemonContext(),
+    runtimeContext: createRunChannelTestDaemonContext(),
   });
   await listen(server);
 

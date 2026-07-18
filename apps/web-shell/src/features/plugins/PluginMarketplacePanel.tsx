@@ -14,11 +14,16 @@ import {
   ensureOfficialPluginMarketplace,
   installMarketplacePlugin,
   listPluginMarketplaces,
-  marketplacePluginIconUrl,
   removePlugin,
   removePluginMarketplace,
 } from '../../lib/api/plugins.js';
-import { PluginIcon } from './PluginIcon.js';
+import {
+  filterVisibleMarketplaceEntries,
+  groupMarketplaceEntries,
+  selectFeaturedMarketplaceEntries,
+} from './marketplace-entry-grouping.js';
+import { MarketplaceEntryRow } from './MarketplaceEntryRow.js';
+import { SectionMoreButton } from './SectionMoreButton.js';
 
 export interface PluginMarketplaceClient {
   list(): Promise<PluginMarketplaceListResponse>;
@@ -62,7 +67,6 @@ const EMPTY_CATALOG: PluginMarketplaceListResponse = {
 
 const SECTION_PREVIEW_ENTRY_COUNT = 6;
 const FEATURED_SECTION_KEY = 'featured';
-const LEAD_CATEGORY = 'Productivity';
 
 export function PluginMarketplacePanel({
   disabled = false,
@@ -283,28 +287,12 @@ export function PluginMarketplacePanel({
     [catalog.sources],
   );
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const visibleEntries = catalog.entries.filter((entry) => {
-    if (sourceRoles.get(entry.marketplaceId) !== sourceFilter) {
-      return false;
-    }
-    if (
-      capabilityFilter === 'skills' &&
-      !entry.capabilities.some(
-        (capability) =>
-          capability.kind === 'skills' && capability.itemCount > 0,
-      )
-    ) {
-      return false;
-    }
-    if (!normalizedQuery) {
-      return true;
-    }
-    return [
-      entry.displayName,
-      entry.name,
-      entry.description,
-      entry.category,
-    ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+  const visibleEntries = filterVisibleMarketplaceEntries({
+    entries: catalog.entries,
+    sourceRoles,
+    sourceFilter,
+    capabilityFilter,
+    normalizedQuery,
   });
   const customSourceCount = catalog.sources.filter(
     (source) => source.sourceRole === 'custom',
@@ -672,352 +660,4 @@ export function PluginMarketplacePanel({
       ) : null}
     </section>
   );
-}
-
-function SectionMoreButton({
-  sectionLabel,
-  hiddenEntries,
-  expanded,
-  onToggle,
-}: {
-  sectionLabel: string;
-  hiddenEntries: PluginMarketplaceEntryView[];
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  if (hiddenEntries.length === 0) {
-    return null;
-  }
-  const namedEntries = hiddenEntries.slice(0, 2);
-  const remainingCount = hiddenEntries.length - namedEntries.length;
-  const collapsedLabel = `${namedEntries
-    .map((entry) => entry.displayName)
-    .join(', ')}${remainingCount > 0 ? ` 외 ${remainingCount}개` : ''} 더 보기`;
-  return (
-    <button
-      type="button"
-      className="extension-section-more"
-      aria-label={
-        expanded
-          ? `${sectionLabel} 플러그인 접기`
-          : `${sectionLabel}의 숨겨진 플러그인 ${hiddenEntries.length}개 더 보기`
-      }
-      aria-expanded={expanded}
-      onClick={onToggle}
-    >
-      <span className="extension-section-more-icons" aria-hidden="true">
-        {hiddenEntries.slice(0, 3).map((entry) => (
-          <PluginIcon
-            key={`${entry.marketplaceId}/${entry.entryId}`}
-            label={entry.displayName}
-            src={
-              entry.iconAvailable
-                ? marketplacePluginIconUrl(entry.marketplaceId, entry.entryId)
-                : null
-            }
-            size="small"
-            defer
-          />
-        ))}
-      </span>
-      <span>{expanded ? `${sectionLabel} 접기` : collapsedLabel}</span>
-      <span aria-hidden="true">⌄</span>
-    </button>
-  );
-}
-
-function MarketplaceEntryRow({
-  entry,
-  disabled,
-  onInstall,
-  onManage,
-  onUninstall,
-}: {
-  entry: PluginMarketplaceEntryView;
-  disabled: boolean;
-  onInstall: () => void;
-  onManage?: () => void;
-  onUninstall?: () => void;
-}) {
-  const installed = entry.installedInstallationId !== null;
-  const installable = entry.status === 'installable' && !installed;
-  const unavailableLabel =
-    entry.status === 'not-available'
-      ? '배포 정책상 설치 불가'
-      : entry.status === 'unsupported-source'
-        ? `${entry.sourceKind} 소스 지원 예정`
-        : '패키지 확인 필요';
-  return (
-    <article
-      className="extension-list-row"
-      aria-label={`${entry.displayName} 마켓 플러그인`}
-    >
-      <PluginIcon
-        label={entry.displayName}
-        src={
-          entry.iconAvailable
-            ? marketplacePluginIconUrl(entry.marketplaceId, entry.entryId)
-            : null
-        }
-        defer
-      />
-      <div className="extension-list-copy">
-        <div className="extension-list-title">
-          <strong>{entry.displayName}</strong>
-        </div>
-        {entry.description ? <p>{entry.description}</p> : null}
-        <span className="extension-list-meta">
-          {entry.capabilities.length > 0
-            ? entry.capabilities
-                .map(
-                  (capability) =>
-                    `${capabilityLabel(capability.kind)} ${capability.itemCount}개 · ${capabilitySupportLabel(capability.supportStatus)}`,
-                )
-                .join(' · ')
-            : entry.marketplaceDisplayName}
-        </span>
-      </div>
-      {installable ? (
-        <button
-          type="button"
-          className="extension-install-action"
-          disabled={disabled}
-          onClick={onInstall}
-        >
-          설치
-        </button>
-      ) : installed ? (
-        <MarketplaceEntryMenu
-          label={entry.displayName}
-          disabled={disabled}
-          {...(onManage ? { onManage } : {})}
-          {...(onUninstall ? { onUninstall } : {})}
-        />
-      ) : (
-        <span
-          className="extension-entry-unavailable"
-          aria-label={unavailableLabel}
-          title={unavailableLabel}
-        >
-          —
-        </span>
-      )}
-    </article>
-  );
-}
-
-function MarketplaceEntryMenu({
-  label,
-  disabled,
-  onManage,
-  onUninstall,
-}: {
-  label: string;
-  disabled: boolean;
-  onManage?: () => void;
-  onUninstall?: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [confirmingRemove, setConfirmingRemove] = useState(false);
-
-  const close = () => {
-    setOpen(false);
-    setConfirmingRemove(false);
-  };
-
-  return (
-    <div className="extension-entry-menu">
-      <button
-        type="button"
-        className="extension-entry-menu-trigger"
-        aria-label={`${label} 플러그인 메뉴`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={disabled}
-        onClick={() => {
-          setOpen((current) => !current);
-          setConfirmingRemove(false);
-        }}
-      >
-        …
-      </button>
-      {open ? (
-        <div className="extension-entry-menu-popover" role="menu">
-          {confirmingRemove ? (
-            <>
-              <span>이 플러그인을 제거할까요?</span>
-              <button
-                type="button"
-                className="danger"
-                role="menuitem"
-                aria-label={`${label} 플러그인 제거 확인`}
-                onClick={() => {
-                  close();
-                  onUninstall?.();
-                }}
-              >
-                제거
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                aria-label={`${label} 플러그인 제거 취소`}
-                onClick={() => setConfirmingRemove(false)}
-              >
-                취소
-              </button>
-            </>
-          ) : (
-            <>
-              {onManage ? (
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    close();
-                    onManage();
-                  }}
-                >
-                  관리
-                </button>
-              ) : null}
-              {onUninstall ? (
-                <button
-                  type="button"
-                  className="danger"
-                  role="menuitem"
-                  aria-label={`${label} 플러그인 제거`}
-                  onClick={() => setConfirmingRemove(true)}
-                >
-                  제거
-                </button>
-              ) : null}
-              {!onManage && !onUninstall ? (
-                <span>설치된 플러그인입니다</span>
-              ) : null}
-            </>
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function selectFeaturedMarketplaceEntries(
-  entries: PluginMarketplaceEntryView[],
-): PluginMarketplaceEntryView[] {
-  const representatives = new Map<string, PluginMarketplaceEntryView>();
-  for (const entry of entries) {
-    if (runtimeReadyCapabilityScore(entry) === null) {
-      continue;
-    }
-    const current = representatives.get(entry.category);
-    if (!current || compareFeaturedEntries(entry, current) < 0) {
-      representatives.set(entry.category, entry);
-    }
-  }
-  return [...representatives.values()].sort(compareFeaturedEntries);
-}
-
-function compareFeaturedEntries(
-  left: PluginMarketplaceEntryView,
-  right: PluginMarketplaceEntryView,
-): number {
-  const leftScore = runtimeReadyCapabilityScore(left);
-  const rightScore = runtimeReadyCapabilityScore(right);
-  if (leftScore === null) {
-    return rightScore === null ? 0 : 1;
-  }
-  if (rightScore === null) {
-    return -1;
-  }
-  const installedDifference =
-    Number(right.installedInstallationId !== null) -
-    Number(left.installedInstallationId !== null);
-  if (installedDifference !== 0) {
-    return installedDifference;
-  }
-  const supportedDifference = rightScore.supported - leftScore.supported;
-  if (supportedDifference !== 0) {
-    return supportedDifference;
-  }
-  const partialDifference = rightScore.partial - leftScore.partial;
-  if (partialDifference !== 0) {
-    return partialDifference;
-  }
-  return left.displayName.localeCompare(right.displayName);
-}
-
-function runtimeReadyCapabilityScore(
-  entry: PluginMarketplaceEntryView,
-): { supported: number; partial: number } | null {
-  if (
-    entry.status !== 'installable' &&
-    entry.installedInstallationId === null
-  ) {
-    return null;
-  }
-  let supported = 0;
-  let partial = 0;
-  for (const capability of entry.capabilities) {
-    if (capability.supportStatus === 'supported') {
-      supported += capability.itemCount;
-    } else if (capability.supportStatus === 'partially-supported') {
-      partial += capability.itemCount;
-    }
-  }
-  return supported + partial > 0 ? { supported, partial } : null;
-}
-
-function groupMarketplaceEntries(
-  entries: PluginMarketplaceEntryView[],
-): Array<[string, PluginMarketplaceEntryView[]]> {
-  const grouped = new Map<string, PluginMarketplaceEntryView[]>();
-  for (const entry of entries) {
-    const categoryEntries = grouped.get(entry.category);
-    if (categoryEntries) {
-      categoryEntries.push(entry);
-    } else {
-      grouped.set(entry.category, [entry]);
-    }
-  }
-  return [...grouped.entries()].sort(([left], [right]) => {
-    if (left === LEAD_CATEGORY) {
-      return -1;
-    }
-    if (right === LEAD_CATEGORY) {
-      return 1;
-    }
-    return 0;
-  });
-}
-
-function capabilityLabel(
-  kind: PluginMarketplaceEntryView['capabilities'][number]['kind'],
-): string {
-  switch (kind) {
-    case 'skills':
-      return '스킬';
-    case 'mcpServers':
-      return 'MCP';
-    case 'apps':
-      return 'App';
-    case 'hooks':
-      return '훅';
-  }
-}
-
-function capabilitySupportLabel(
-  status: PluginMarketplaceEntryView['capabilities'][number]['supportStatus'],
-): string {
-  switch (status) {
-    case 'supported':
-      return '사용 가능';
-    case 'partially-supported':
-      return '일부 사용 가능';
-    case 'not-yet-supported':
-      return '연결 준비 중';
-    case 'unsupported':
-      return '연결 필요';
-  }
 }

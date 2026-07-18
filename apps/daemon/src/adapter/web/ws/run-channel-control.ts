@@ -12,7 +12,6 @@ import {
   readRunInterjectFlushRequest,
   readRunInterjectRequest,
 } from './run-channel-control-request.js';
-import { isMidRunSteerEnabled } from '../../../daemon/agent/mid-run-steer-flag.js';
 
 export function handleRunCancel(
   socket: WebSocket,
@@ -52,12 +51,12 @@ export function handleRunCancel(
   });
 }
 
-export function handleRunApprove(
+export async function handleRunApprove(
   socket: WebSocket,
   requestId: string,
   request: ApprovalRequest,
   controlContext: RunChannelControlContext,
-): void {
+): Promise<void> {
   const parsedRequest = readRunApproveRequest(request);
   if (!parsedRequest.ok) {
     sendError(socket, requestId, 400, 'bad_request', parsedRequest.message);
@@ -85,7 +84,7 @@ export function handleRunApprove(
   }
 
   const decision = approved ? 'approved' : 'denied';
-  const result = controlContext.approvalGate.resolveApproval(
+  const result = await controlContext.approvalGate.resolveApproval(
     callId,
     runId,
     threadId,
@@ -123,23 +122,12 @@ export function handleRunApprove(
   }
 }
 
-export function handleRunInterject(
+export async function handleRunInterject(
   socket: WebSocket,
   requestId: string,
   request: unknown,
   controlContext: RunChannelControlContext,
-): void {
-  if (!isMidRunSteerEnabled()) {
-    sendError(
-      socket,
-      requestId,
-      503,
-      'bad_request',
-      'mid-run steer is not enabled',
-    );
-    return;
-  }
-
+): Promise<void> {
   const parsedRequest = readRunInterjectRequest(request);
   if (!parsedRequest.ok) {
     sendError(socket, requestId, 400, 'invalid_args', parsedRequest.message);
@@ -172,6 +160,33 @@ export function handleRunInterject(
     return;
   }
 
+  const checkpointResult = await controlContext.runCheckpoints.enqueueInterject(
+    {
+      threadId: run.threadId,
+      runId,
+      interject: { text, receivedSeq: appendResult.receivedSeq },
+    },
+  );
+  if (!checkpointResult.ok) {
+    controlContext.activeRuns.cancelPendingInterject(
+      runId,
+      appendResult.receivedSeq,
+    );
+    const unavailable =
+      checkpointResult.code === 'not_found' ||
+      checkpointResult.code === 'terminal';
+    sendError(
+      socket,
+      requestId,
+      unavailable ? 404 : 409,
+      unavailable ? 'not_found' : 'conflict',
+      unavailable
+        ? `no active run: ${runId}`
+        : `interject sequence conflict: ${runId}`,
+    );
+    return;
+  }
+
   sendMessage(socket, {
     type: 'run.control',
     requestId,
@@ -184,23 +199,12 @@ export function handleRunInterject(
 
 // 대기 중 스티어 취소 — 소비 전이면 큐에서 제거(cancelled=true), 이미
 // 소비됐거나 없으면 cancelled=false로 응답한다(경합은 정상 흐름).
-export function handleRunInterjectCancel(
+export async function handleRunInterjectCancel(
   socket: WebSocket,
   requestId: string,
   request: unknown,
   controlContext: RunChannelControlContext,
-): void {
-  if (!isMidRunSteerEnabled()) {
-    sendError(
-      socket,
-      requestId,
-      503,
-      'bad_request',
-      'mid-run steer is not enabled',
-    );
-    return;
-  }
-
+): Promise<void> {
   const parsedRequest = readRunInterjectCancelRequest(request);
   if (!parsedRequest.ok) {
     sendError(socket, requestId, 400, 'invalid_args', parsedRequest.message);
@@ -219,13 +223,22 @@ export function handleRunInterjectCancel(
     return;
   }
 
-  const result = controlContext.activeRuns.cancelPendingInterject(
-    runId,
-    receivedSeq,
-  );
-  if (!result.ok) {
+  const run = controlContext.activeRuns.getRunById(runId);
+  if (!run || run.aborted) {
     sendError(socket, requestId, 404, 'not_found', `no active run: ${runId}`);
     return;
+  }
+  const durableResult = await controlContext.runCheckpoints.cancelInterject({
+    threadId: run.threadId,
+    runId,
+    receivedSeq,
+  });
+  if (!durableResult.ok) {
+    sendError(socket, requestId, 404, 'not_found', `no active run: ${runId}`);
+    return;
+  }
+  if (durableResult.changed) {
+    controlContext.activeRuns.cancelPendingInterject(runId, receivedSeq);
   }
 
   sendMessage(socket, {
@@ -233,7 +246,7 @@ export function handleRunInterjectCancel(
     requestId,
     action: 'run.interject.cancel',
     ok: true,
-    cancelled: result.cancelled,
+    cancelled: durableResult.changed,
   });
 }
 
@@ -245,17 +258,6 @@ export function handleRunInterjectFlush(
   request: unknown,
   controlContext: RunChannelControlContext,
 ): void {
-  if (!isMidRunSteerEnabled()) {
-    sendError(
-      socket,
-      requestId,
-      503,
-      'bad_request',
-      'mid-run steer is not enabled',
-    );
-    return;
-  }
-
   const parsedRequest = readRunInterjectFlushRequest(request);
   if (!parsedRequest.ok) {
     sendError(socket, requestId, 400, 'invalid_args', parsedRequest.message);

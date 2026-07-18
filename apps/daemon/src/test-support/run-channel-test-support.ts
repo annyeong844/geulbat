@@ -1,6 +1,11 @@
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { isRunChannelServerMessage } from '@geulbat/protocol/run-channel';
 import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
 import WebSocket from 'ws';
+
+import { createDaemonContext, type DaemonContext } from '../daemon/context.js';
 
 class FakeSocket {
   readyState: number = WebSocket.OPEN;
@@ -28,7 +33,13 @@ class FakeSocket {
   }
 }
 
-export type TestSocket = WebSocket & FakeSocket;
+type TestSocket = WebSocket & FakeSocket;
+
+export function createRunChannelTestDaemonContext(): DaemonContext {
+  return createDaemonContext({
+    homeStateRoot: join(tmpdir(), `geulbat-run-channel-test-${randomUUID()}`),
+  });
+}
 
 export function createTestSocket(): TestSocket {
   return new FakeSocket() as TestSocket;

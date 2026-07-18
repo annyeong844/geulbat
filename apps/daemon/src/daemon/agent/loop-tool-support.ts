@@ -1,7 +1,7 @@
 import { isRecord, tryParseJson } from '../runtime-json.js';
 import type { HistoryItem, FunctionCall } from '../llm/index.js';
 import { toolError } from '../tools/result.js';
-import type { ExecuteResult } from '../tools/types.js';
+import type { ExecuteResult, ToolRecoveryStrategy } from '../tools/types.js';
 import { appendTranscriptEntry } from '../sessions/transcript-log.js';
 import type { AgentEventEmitter, ToolCallArgs } from './events.js';
 import type { ErrorCode } from '../error-codes.js';
@@ -16,6 +16,8 @@ interface TranscriptToolCallRecord {
   callId: string;
   tool: string;
   args: ToolCallArgs;
+  round: number;
+  recoveryStrategy?: ToolRecoveryStrategy;
   source?: ToolCallSource;
   historyMode?: ToolResultHistoryMode;
 }
@@ -73,6 +75,44 @@ function formatDisplayText(
 }
 
 type ToolResultHistoryMode = 'model_visible' | 'audit_only';
+
+function projectAuditOnlyReadToolOutputResult(
+  functionCall: FunctionCall,
+  toolResult: ExecuteResult,
+  historyMode: ToolResultHistoryMode,
+): ExecuteResult {
+  if (
+    historyMode !== 'audit_only' ||
+    functionCall.name !== 'read_tool_output' ||
+    !toolResult.ok
+  ) {
+    return toolResult;
+  }
+  const parsed = tryParseJson(toolResult.output);
+  if (
+    !parsed.ok ||
+    !isRecord(parsed.value) ||
+    parsed.value['ok'] !== true ||
+    typeof parsed.value['outputRef'] !== 'string' ||
+    typeof parsed.value['content'] !== 'string'
+  ) {
+    return toolResult;
+  }
+
+  const auditRecord = { ...parsed.value };
+  const content = parsed.value['content'];
+  delete auditRecord['content'];
+  return {
+    ok: true,
+    output: JSON.stringify({
+      ...auditRecord,
+      auditProjection: 'read_tool_output_page_ref_v1',
+      contentOmittedFromAudit: true,
+      contentChars: content.length,
+      contentBytes: Buffer.byteLength(content, 'utf8'),
+    }),
+  };
+}
 
 function toToolCallSourcePayload(source: ToolCallSource | undefined) {
   if (source?.kind === 'artifact_frame') {
@@ -142,6 +182,11 @@ async function emitAndPersistToolResult(args: {
     historyMode = 'model_visible',
   } = args;
   const sourcePayload = toToolCallSourcePayload(source);
+  const auditProjectedToolResult = projectAuditOnlyReadToolOutputResult(
+    functionCall,
+    toolResult,
+    historyMode,
+  );
   const recordedToolResult = await maybeOffloadToolResult({
     functionCall,
     runContext,
@@ -149,15 +194,21 @@ async function emitAndPersistToolResult(args: {
     ...(toolOutputRecoveryAvailable !== undefined
       ? { toolOutputRecoveryAvailable }
       : {}),
-    toolResult,
+    toolResult: auditProjectedToolResult,
   });
   const modelOutput = buildFunctionCallOutput(recordedToolResult);
   const parsedResult = parseToolResultRaw(recordedToolResult.output);
-  const displayText = formatDisplayText(
-    recordedToolResult.ok,
-    recordedToolResult.output,
-    recordedToolResult.ok ? undefined : recordedToolResult.error,
-  );
+  const displayText =
+    historyMode === 'audit_only' &&
+    functionCall.name === 'read_tool_output' &&
+    isRecord(parsedResult) &&
+    parsedResult['auditProjection'] === 'read_tool_output_page_ref_v1'
+      ? `read_tool_output audit page ${String(parsedResult['offset'])}-${String(parsedResult['endOffset'])} of ${String(parsedResult['totalChars'])}; content omitted; outputRef=${String(parsedResult['outputRef'])}`
+      : formatDisplayText(
+          recordedToolResult.ok,
+          recordedToolResult.output,
+          recordedToolResult.ok ? undefined : recordedToolResult.error,
+        );
   if (recordedToolResult.ok) {
     emit('tool_result', {
       callId: functionCall.callId,
@@ -237,6 +288,7 @@ export async function recordToolCall(args: {
   emit: AgentEventEmitter;
   source?: ToolCallSource;
   historyMode?: ToolResultHistoryMode;
+  recoveryStrategy?: ToolRecoveryStrategy;
 }): Promise<void> {
   const {
     functionCall,
@@ -246,6 +298,7 @@ export async function recordToolCall(args: {
     emit,
     source,
     historyMode,
+    recoveryStrategy,
   } = args;
   const sourcePayload = toToolCallSourcePayload(source);
   emit('tool_call', {
@@ -261,6 +314,8 @@ export async function recordToolCall(args: {
     callId: functionCall.callId,
     tool: functionCall.name,
     args: toolArgs,
+    round,
+    ...(recoveryStrategy ? { recoveryStrategy } : {}),
     ...(source ? { source } : {}),
     ...(historyMode && historyMode !== 'model_visible' ? { historyMode } : {}),
   });
@@ -318,6 +373,7 @@ export async function recordInvalidToolArguments(args: {
     callId: functionCall.callId,
     tool: functionCall.name,
     args: {},
+    round,
     ...(source ? { source } : {}),
     ...(historyMode && historyMode !== 'model_visible' ? { historyMode } : {}),
   });

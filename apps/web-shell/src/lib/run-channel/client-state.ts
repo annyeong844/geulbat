@@ -4,7 +4,6 @@ type RunChannelConnectionPhase =
   | 'authenticating'
   | 'connected'
   | 'reconnecting'
-  | 'failed'
   | 'closed';
 
 export interface RunChannelConnectionState {
@@ -68,13 +67,8 @@ export function markConnectionClosed(
 
 export function canScheduleReconnect(
   state: RunChannelConnectionState,
-  maxReconnectAttempts: number = Number.POSITIVE_INFINITY,
 ): boolean {
-  return (
-    !state.closedExplicitly &&
-    state.reconnectTask == null &&
-    state.reconnectAttempts < maxReconnectAttempts
-  );
+  return !state.closedExplicitly && state.reconnectTask == null;
 }
 
 export function markReconnectScheduled(
@@ -96,15 +90,5 @@ export function clearReconnectSchedule(
     ...state,
     reconnectTask: null,
     phase: state.closedExplicitly ? 'closed' : 'idle',
-  };
-}
-
-export function markReconnectFailed(
-  state: RunChannelConnectionState,
-): RunChannelConnectionState {
-  return {
-    ...state,
-    phase: 'failed',
-    reconnectTask: null,
   };
 }

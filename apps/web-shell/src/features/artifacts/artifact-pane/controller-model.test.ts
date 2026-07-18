@@ -26,7 +26,7 @@ void test('buildArtifactPaneControllerProps opens export panel from export state
     exportExpanded: true,
     exportTargetPath: 'exports/demo.md',
     exportPlaceholder: 'exports/demo.md',
-    exportHint: 'Export markdown into a workspace file.',
+    exportHint: 'Export markdown into a computer file.',
     generatedBinaryExportError: 'export failed',
   });
   const controller = buildArtifactPaneControllerProps({
@@ -42,7 +42,7 @@ void test('buildArtifactPaneControllerProps opens export panel from export state
   assert.equal(controller.exportPanelProps?.value, 'exports/demo.md');
   assert.equal(
     controller.exportPanelProps?.exportHint,
-    'Export markdown into a workspace file.',
+    'Export markdown into a computer file.',
   );
   assert.equal(controller.exportPanelProps?.error, 'export failed');
 });

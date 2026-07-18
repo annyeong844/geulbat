@@ -1,12 +1,12 @@
 import { buildPtcPackageCacheRoot } from '../packages/lab-package-cache-root.js';
 import { PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT } from '../packages/lab-package-cache-contract.js';
-import { hashPtcStableJson } from '../../shared/stable-identity.js';
 import {
   buildPtcLabDockerNetworkIdentityArgs,
   buildPtcLabDockerNetworkIdentityLabels,
 } from '../network/lab-network-policy.js';
 import { buildPtcLabBrowserIdentityLabels } from '../browser/core/lab-browser-identity.js';
 import {
+  buildPtcSessionDockerRuntimeScopeHash,
   PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
 } from './session-docker-contract.js';
@@ -117,12 +117,6 @@ function buildPtcSessionDockerLabels(
     `geulbat.idleEntrypointVersion=${reuseKey.idleEntrypointVersion}`,
     'geulbat.managerVersion=ptc-session-docker-v1',
   ];
-}
-
-export function buildPtcSessionDockerRuntimeScopeHash(
-  runtimeRoot: string,
-): string {
-  return hashPtcStableJson({ runtimeRoot });
 }
 
 function buildDockerLabelArgs(labels: readonly string[]): string[] {

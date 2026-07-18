@@ -103,6 +103,25 @@ void test('thread message metadata accepts interject source metadata', () => {
   assert.equal(isThreadMessageMetadata(metadata), true);
   assert.equal(readArtifactRefsFromMetadata(metadata).length, 0);
   assert.equal(readActiveArtifactRefFromMetadata(metadata), null);
+  assert.equal(
+    isThreadMessageMetadata({
+      source: 'interject',
+      sourceRunId: 'run-thread-metadata-interject',
+      receivedSeq: 7,
+    }),
+    true,
+  );
+  assert.equal(
+    isThreadMessageMetadata({
+      source: 'interject',
+      sourceRunId: 'run-thread-metadata-interject',
+    }),
+    false,
+  );
+  assert.equal(
+    isThreadMessageMetadata({ source: 'interject', receivedSeq: 0 }),
+    false,
+  );
 });
 
 void test('thread message metadata accepts commentary metadata', () => {

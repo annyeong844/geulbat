@@ -9,6 +9,7 @@ import type { ToolLibraryProjectionGeneratedTool } from './projection-descriptor
 import {
   buildToolLibraryProjectionFiles,
   buildToolLibraryProjectionImportableModules,
+  TOOL_LIBRARY_PROJECTION_GENERATOR_VERSION,
 } from './projection-generator.js';
 
 const sampleTool: ToolLibraryProjectionGeneratedTool = {
@@ -72,6 +73,10 @@ const sampleManifest: ToolLibraryProjectionManifest = {
 };
 
 void test('projection generator builds importable module descriptors', () => {
+  assert.equal(
+    TOOL_LIBRARY_PROJECTION_GENERATOR_VERSION,
+    'geulbat-tool-library-projection-v10',
+  );
   const importableModules = buildToolLibraryProjectionImportableModules({
     importSpecifier: '@geulbat/generated-tools',
     tools: [sampleTool],
@@ -99,7 +104,7 @@ void test('projection generator builds importable module descriptors', () => {
   );
 });
 
-void test('projection generator emits importable files from descriptors', () => {
+void test('projection generator emits importable files from descriptors', async () => {
   const files = buildToolLibraryProjectionFiles({
     projectionManifest: sampleManifest,
     tools: [sampleTool],
@@ -142,6 +147,28 @@ void test('projection generator emits importable files from descriptors', () => 
     byPath
       .get('tools/fetch-url.d.ts')
       ?.content.includes('"timeoutMs"?: number'),
+    true,
+  );
+
+  const signatureModule = byPath.get('signatures/fetch-url.js');
+  assert.ok(signatureModule);
+  const importedSignature = (await import(
+    `data:text/javascript;base64,${Buffer.from(
+      signatureModule.content,
+    ).toString('base64')}`
+  )) as { signature: { invocationExample?: unknown } };
+  assert.equal(
+    importedSignature.signature.invocationExample,
+    [
+      'if (!geulbat.help().callbacks.enabled) throw new Error("PTC callbacks unavailable");',
+      'const { fetchUrl } = require("@geulbat/generated-tools/tools/fetch-url");',
+      'return await fetchUrl({ /* arguments matching parameters */ });',
+    ].join('\n'),
+  );
+  assert.equal(
+    byPath
+      .get('signatures/fetch-url.d.ts')
+      ?.content.includes('readonly invocationExample:'),
     true,
   );
 });

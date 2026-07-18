@@ -3,6 +3,8 @@ import type {
   HistoryUserAttachment,
   FunctionCall,
 } from '../llm/index.js';
+import type { ProviderRequestOptions } from '../llm/provider/provider-options.js';
+import { createLogger } from '@geulbat/shared-utils/logger';
 import {
   appendTranscriptEntry,
   readTranscriptEntries,
@@ -14,13 +16,34 @@ import {
 import { readRunAttachment } from '../sessions/run-attachment-store.js';
 import type { PendingInterject } from '../sessions/active-run-interject-buffer.js';
 import type { TranscriptEntry } from '../sessions/transcript-log.js';
-import { createAgentArtifactRefKey as createArtifactRefKey } from './contract.js';
-import { buildCompactionAwareHistory } from './memory/compaction-rebuild.js';
+import {
+  readProviderRoundHistory,
+  type ProviderRoundJournalRecord,
+} from '../sessions/provider-round-journal.js';
+import { isRecord, tryParseJsonRecord } from '../runtime-json.js';
+import {
+  assertAgentThreadId,
+  createAgentArtifactRefKey as createArtifactRefKey,
+  type ThreadArtifactVersion,
+} from './contract.js';
+import { buildHistoryFromTranscript } from './history/build-history-from-transcript.js';
+import {
+  buildCompactionAwareHistory,
+  getActiveTranscriptEntries,
+} from './memory/compaction-rebuild.js';
+
+export type ProviderHistoryTarget = Pick<
+  ProviderRequestOptions,
+  'providerId' | 'model'
+>;
+
+const logger = createLogger('agent/loop-history');
 
 interface LoadInitialHistoryArgs {
   workspaceRoot: string;
   threadId: string;
   prompt: string;
+  providerTarget: ProviderHistoryTarget;
 }
 
 export interface AgentLoopHistoryPort {
@@ -34,6 +57,7 @@ export function createAgentLoopHistoryPort(): AgentLoopHistoryPort {
         args.workspaceRoot,
         args.threadId,
         args.prompt,
+        args.providerTarget,
       );
     },
   };
@@ -43,6 +67,24 @@ export async function loadInitialHistory(
   workspaceRoot: string,
   threadId: string,
   prompt: string,
+  providerTarget?: ProviderHistoryTarget,
+): Promise<HistoryItem[]> {
+  const history = await loadExistingHistory(
+    workspaceRoot,
+    threadId,
+    providerTarget,
+  );
+  const lastItem = history.at(-1);
+  if (lastItem?.kind !== 'user' || lastItem.text !== prompt) {
+    history.push({ kind: 'user', text: prompt });
+  }
+  return history;
+}
+
+export async function loadExistingHistory(
+  workspaceRoot: string,
+  threadId: string,
+  providerTarget?: ProviderHistoryTarget,
 ): Promise<HistoryItem[]> {
   const transcriptEntries = await readTranscriptEntries(
     workspaceRoot,
@@ -70,17 +112,214 @@ export async function loadInitialHistory(
     threadId,
     transcriptEntries,
   );
-  const history = buildCompactionAwareHistory(
+  const providerRounds = await readProviderRoundHistory(
+    workspaceRoot,
+    assertAgentThreadId(threadId),
+  );
+  const activeHistoryOverride =
+    providerRounds.length === 0
+      ? undefined
+      : buildProviderRoundAwareActiveHistory({
+          transcriptEntries,
+          threadId,
+          providerRounds,
+          ...(providerTarget === undefined ? {} : { providerTarget }),
+          artifactVersionsByRef,
+          attachmentsById,
+        });
+  return buildCompactionAwareHistory(
     transcriptEntries,
     threadId,
     artifactVersionsByRef,
     attachmentsById,
+    activeHistoryOverride,
   );
-  const lastItem = history.at(-1);
-  if (lastItem?.kind !== 'user' || lastItem.text !== prompt) {
-    history.push({ kind: 'user', text: prompt });
+}
+
+function buildProviderRoundAwareActiveHistory(args: {
+  transcriptEntries: TranscriptEntry[];
+  threadId: string;
+  providerRounds: ProviderRoundJournalRecord[];
+  providerTarget?: ProviderHistoryTarget;
+  artifactVersionsByRef: ReadonlyMap<string, ThreadArtifactVersion>;
+  attachmentsById: ReadonlyMap<string, HistoryUserAttachment>;
+}): HistoryItem[] {
+  const active = getActiveTranscriptEntries(
+    args.transcriptEntries,
+    args.threadId,
+  );
+  const transcriptIndexById = new Map(
+    args.transcriptEntries.map(
+      (entry, index) => [entry.entryId, index] as const,
+    ),
+  );
+  const latestCompactionIndex =
+    active.latestCompactionEntryId === undefined
+      ? -1
+      : (transcriptIndexById.get(active.latestCompactionEntryId) ?? -1);
+  const activeProviderRounds = args.providerRounds.filter((record) => {
+    const anchor = record.precedingTranscriptEntryId;
+    if (anchor === null) {
+      if (latestCompactionIndex >= 0) {
+        return false;
+      }
+      if (args.transcriptEntries.length > 0) {
+        throw new Error('provider round history has no transcript anchor');
+      }
+      return true;
+    }
+    if (anchor === active.latestCompactionEntryId) {
+      return true;
+    }
+    const anchorIndex = transcriptIndexById.get(anchor);
+    if (anchorIndex === undefined) {
+      // Regenerate keeps the journal append-only while replacing the active
+      // transcript tail. A record whose anchor is no longer reachable belongs
+      // to that superseded tail and is intentionally excluded from replay.
+      logger.warn('provider round is unreachable from active transcript:', {
+        threadId: args.threadId,
+        runId: record.runId,
+        round: record.round,
+        anchor,
+      });
+      return false;
+    }
+    return anchorIndex > latestCompactionIndex;
+  });
+
+  if (activeProviderRounds.length === 0) {
+    return buildHistoryFromTranscript(
+      active.activeEntries,
+      args.artifactVersionsByRef,
+      args.attachmentsById,
+    );
   }
+  if (args.providerTarget === undefined) {
+    throw new Error('provider round history target is required');
+  }
+  for (const record of activeProviderRounds) {
+    if (
+      record.providerId !== args.providerTarget.providerId ||
+      record.model !== args.providerTarget.model
+    ) {
+      throw new Error(
+        `provider round history is incompatible with ${args.providerTarget.providerId}/${args.providerTarget.model}`,
+      );
+    }
+  }
+
+  const coveredFunctionCallIds = new Set<string>();
+  const providerMessageRunIds = new Set<string>();
+  const recordsByAnchor = new Map<
+    string | null,
+    ProviderRoundJournalRecord[]
+  >();
+  for (const record of activeProviderRounds) {
+    const anchored = recordsByAnchor.get(record.precedingTranscriptEntryId);
+    if (anchored === undefined) {
+      recordsByAnchor.set(record.precedingTranscriptEntryId, [record]);
+    } else {
+      anchored.push(record);
+    }
+    for (const item of record.items) {
+      if (!isRecord(item)) {
+        continue;
+      }
+      if (item['type'] === 'function_call') {
+        const callId = readString(item['call_id']);
+        if (callId !== undefined) {
+          coveredFunctionCallIds.add(callId);
+        }
+      }
+      if (item['type'] === 'message') {
+        providerMessageRunIds.add(record.runId);
+      }
+    }
+  }
+
+  const history: HistoryItem[] = [];
+  appendProviderRounds(
+    history,
+    recordsByAnchor.get(active.latestCompactionEntryId ?? null) ?? [],
+  );
+  let segmentStart = 0;
+  for (let index = 0; index < active.activeEntries.length; index += 1) {
+    const entry = active.activeEntries[index];
+    if (entry === undefined) {
+      continue;
+    }
+    const anchored = recordsByAnchor.get(entry.entryId);
+    if (anchored === undefined) {
+      continue;
+    }
+    appendTranscriptHistorySegment(
+      history,
+      active.activeEntries.slice(segmentStart, index + 1),
+      coveredFunctionCallIds,
+      providerMessageRunIds,
+      args.artifactVersionsByRef,
+      args.attachmentsById,
+    );
+    appendProviderRounds(history, anchored);
+    segmentStart = index + 1;
+  }
+  appendTranscriptHistorySegment(
+    history,
+    active.activeEntries.slice(segmentStart),
+    coveredFunctionCallIds,
+    providerMessageRunIds,
+    args.artifactVersionsByRef,
+    args.attachmentsById,
+  );
   return history;
+}
+
+function appendTranscriptHistorySegment(
+  history: HistoryItem[],
+  entries: TranscriptEntry[],
+  coveredFunctionCallIds: ReadonlySet<string>,
+  providerMessageRunIds: ReadonlySet<string>,
+  artifactVersionsByRef: ReadonlyMap<string, ThreadArtifactVersion>,
+  attachmentsById: ReadonlyMap<string, HistoryUserAttachment>,
+): void {
+  history.push(
+    ...buildHistoryFromTranscript(
+      entries.filter((entry) => {
+        if (
+          entry.role === 'assistant' &&
+          entry.metadata?.sourceRunId !== undefined &&
+          providerMessageRunIds.has(entry.metadata.sourceRunId)
+        ) {
+          return false;
+        }
+        if (entry.role !== 'tool_call') {
+          return true;
+        }
+        const parsed = tryParseJsonRecord(entry.content);
+        const callId = parsed.ok
+          ? readString(parsed.value['callId'])
+          : undefined;
+        return callId === undefined || !coveredFunctionCallIds.has(callId);
+      }),
+      artifactVersionsByRef,
+      attachmentsById,
+    ),
+  );
+}
+
+function appendProviderRounds(
+  history: HistoryItem[],
+  records: readonly ProviderRoundJournalRecord[],
+): void {
+  for (const record of records) {
+    history.push(
+      ...record.items.map((data) => ({ kind: 'backend_item', data }) as const),
+    );
+  }
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 // 트랜스크립트가 참조하는 첨부 바이트를 스토어에서 읽어 모델 입력 형태로
@@ -168,14 +407,33 @@ export function appendInterjectToHistory(
 export async function persistSingleInterjectToTranscript(
   workspaceRoot: string,
   threadId: string,
+  runId: string,
   interject: PendingInterject,
-): Promise<void> {
+): Promise<{ appended: boolean }> {
+  const entries = await readTranscriptEntries(workspaceRoot, threadId);
+  const existing = entries.find(
+    (entry) =>
+      entry.metadata?.source === 'interject' &&
+      entry.metadata.sourceRunId === runId &&
+      entry.metadata.receivedSeq === interject.receivedSeq,
+  );
+  if (existing !== undefined) {
+    if (existing.role !== 'user' || existing.content !== interject.text) {
+      throw new Error(
+        `interject transcript identity conflict: ${runId}:${interject.receivedSeq}`,
+      );
+    }
+    return { appended: false };
+  }
   await appendTranscriptEntry(workspaceRoot, threadId, {
     role: 'user',
     content: interject.text,
     timestamp: new Date().toISOString(),
     metadata: {
       source: 'interject',
+      sourceRunId: runId,
+      receivedSeq: interject.receivedSeq,
     },
   });
+  return { appended: true };
 }

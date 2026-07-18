@@ -8,6 +8,8 @@ import type { AgentRuntimeServices } from '../../../daemon/daemon-runtime-contra
 import type { ApprovalGate } from '../../../daemon/agent/runtime/approval-gate.js';
 import type { BackgroundNotificationQueue } from '../../../daemon/agent/runtime/background-notification-queue.js';
 import type { ActiveRunStore } from '../../../daemon/sessions/active-runs.js';
+import type { LiveRunEventStore } from '../../../daemon/sessions/live-run-events.js';
+import type { RunCheckpointStore } from '../../../daemon/sessions/run-checkpoint-store.js';
 import type { ComputerFileScope } from '../../../daemon/files/computer-file-scope.js';
 
 type RunChannelActiveRuns = AgentRuntimeServices['activeRuns'] &
@@ -26,6 +28,7 @@ type RunChannelApprovalGate = AgentRuntimeServices['approvalGate'] &
     ApprovalGate,
     | 'clearApprovalSessionRuntime'
     | 'hasPendingApprovalForSession'
+    | 'rebindApprovalSessionRuntime'
     | 'resolveApproval'
   >;
 
@@ -33,7 +36,7 @@ type RunChannelBackgroundNotifications =
   AgentRuntimeServices['backgroundNotifications'] &
     Pick<BackgroundNotificationQueue, 'subscribeThreadBackgroundResults'>;
 
-export type RunChannelArtifactFrameToolDispatch = (args: {
+type RunChannelArtifactFrameToolDispatch = (args: {
   threadId: ThreadId;
   runId: string;
   workingDirectory: string;
@@ -54,11 +57,13 @@ export type RunChannelRuntimeContext = Omit<
   backgroundNotifications: RunChannelBackgroundNotifications;
   computerFileScope?: ComputerFileScope;
   homeStateRoot: string;
+  liveRunEvents: LiveRunEventStore;
+  runCheckpoints: RunCheckpointStore;
 };
 
 export type RunChannelControlContext = Pick<
   RunChannelRuntimeContext,
-  'activeRuns' | 'approvalGate'
+  'activeRuns' | 'approvalGate' | 'runCheckpoints'
 >;
 
 export type RunChannelSubscriptionContext = Pick<
@@ -68,5 +73,5 @@ export type RunChannelSubscriptionContext = Pick<
 
 export type RunChannelSocketCleanupContext = Pick<
   RunChannelRuntimeContext,
-  'activeRuns' | 'approvalGate'
+  'approvalGate' | 'liveRunEvents'
 >;

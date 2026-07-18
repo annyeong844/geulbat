@@ -7,7 +7,11 @@ import {
   buildAgentToolExecutionContextBase,
   buildToolCallExecutionRuntime,
 } from './loop-tool-runtime.js';
-import { createRunState, markRunApprovalPending } from './runtime/run-state.js';
+import {
+  cancelRun,
+  createRunState,
+  markRunApprovalPending,
+} from './runtime/run-state.js';
 import { createApprovalGrantStore } from '../tools/approval-grants.js';
 import { createToolRegistryStore } from '../tools/registry.js';
 import { createDaemonContext } from '../context.js';
@@ -186,6 +190,78 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
   assert.deepEqual(events, [
     createAgentEvent('commentary_delta', { text: 'from-tool' }),
   ]);
+});
+
+void test('executeResolvedFunctionCall does not revive or execute a run cancelled during approval', async () => {
+  const toolName = 'execute_context_cancelled_approval_tool';
+  const store = createToolRegistryStore({ builtins: [] });
+  let executionCount = 0;
+  store.registerTool(
+    makeTestTool({
+      name: toolName,
+      description: 'must not execute after the run is cancelled',
+      sideEffectLevel: 'write',
+      requiresApproval: false,
+      async executeParsed() {
+        executionCount += 1;
+        return { ok: true, output: 'unexpected execution' };
+      },
+    }),
+  );
+
+  const runContext = makeRunContext({
+    threadId: testThreadId(74),
+    stateRoot: '/tmp/execute-context-cancelled-state',
+  });
+  const runState = createRunState({
+    runId: 'run-execute-context-cancelled',
+    runContext,
+  });
+  markRunApprovalPending(runState);
+  cancelRun(runState);
+
+  const result = await executeResolvedFunctionCall({
+    functionCall: {
+      id: 'fc-execute-context-cancelled',
+      callId: 'call-execute-context-cancelled',
+      name: toolName,
+      arguments: '{}',
+    },
+    toolArgs: {},
+    approvalGranted: true,
+    runtime: buildToolCallExecutionRuntime({
+      approvalContext: makeApprovalContext({
+        sessionId: 'session-execute-context-cancelled',
+      }),
+      emit: () => {},
+      approvalGrants: createApprovalGrantStore(),
+      toolRegistry: store,
+      approvalGate: { waitForApproval: async () => 'approved' },
+      executionContextBase: buildAgentToolExecutionContextBase({
+        runId: 'run-execute-context-cancelled',
+        runContext,
+        approvalContext: makeApprovalContext({
+          sessionId: 'session-execute-context-cancelled',
+        }),
+        emit: () => {},
+        currentFile: undefined,
+        selection: undefined,
+        signal: undefined,
+        runState,
+        memoryIndex: undefined,
+        agentSpawnRuntime: undefined,
+      }),
+    }),
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'aborted',
+    error: 'run cancelled before tool execution',
+  });
+  assert.equal(runState.status, 'cancelled');
+  assert.equal(executionCount, 0);
 });
 
 void test('buildAgentToolExecutionContextBase projects registered child ownership', () => {

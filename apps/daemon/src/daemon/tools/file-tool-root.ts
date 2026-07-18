@@ -17,8 +17,8 @@ export interface ComputerFileToolPath {
 }
 
 /**
- * Resolve a model-facing path from the run's current directory while keeping
- * ComputerFileScope as the sole file authority boundary.
+ * Resolve a model-facing path from the run's current directory. The Computer
+ * root is a portable coordinate base, not a host-filesystem sandbox.
  */
 export function resolveComputerFileToolPath(
   ctx: ComputerFileToolContext,
@@ -45,7 +45,7 @@ function requireComputerFileRoot(ctx: ComputerFileToolContext): string {
   if (!computerFileRoot) {
     throw new FileAccessError(
       'access_denied',
-      'computer file scope is unavailable',
+      'computer filesystem is unavailable',
     );
   }
   return computerFileRoot;

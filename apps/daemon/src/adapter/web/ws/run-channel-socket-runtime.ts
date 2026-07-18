@@ -5,15 +5,17 @@ import type { ThreadId } from '@geulbat/protocol/ids';
 import { createLogger } from '@geulbat/shared-utils/logger';
 
 import { mapBackgroundSubagentTerminalToRunEvent } from '../protocol/map-events.js';
-import { sendMessage } from './run-channel-socket.js';
+import { sendMessage, sendRunEvent } from './run-channel-socket.js';
 import {
   cleanupSocketRuntimeState,
   clearSocketHeartbeatRuntime,
 } from './run-channel-socket-cleanup.js';
 import type {
   RunChannelSocketCleanupContext,
+  RunChannelRuntimeContext,
   RunChannelSubscriptionContext,
 } from './run-channel-runtime-context.js';
+import type { LiveRunEventSink } from '../../../daemon/sessions/live-run-events.js';
 import { getErrorMessage } from '../../../daemon/utils/error.js';
 
 const logger = createLogger('run-channel/heartbeat');
@@ -198,6 +200,39 @@ export function ensureThreadBackgroundSubscription(
     );
 
   state.threadUnsubscribes.set(threadId, unsubscribe);
+}
+
+export function createSocketRunEventSink(socket: WebSocket): LiveRunEventSink {
+  return ({ runId, threadId, seq, event }) =>
+    sendRunEvent(socket, runId, threadId, seq, event);
+}
+
+export function bindDetachedSocketRuns(
+  socket: WebSocket,
+  runtimeContext: RunChannelRuntimeContext,
+): number {
+  const state = getSocketState(socket);
+  const rebound = runtimeContext.liveRunEvents.bindDetachedRuns({
+    ownerId: state.approvalSessionId,
+    sink: createSocketRunEventSink(socket),
+  });
+  const previousOwnerIds = new Set<string>();
+
+  for (const run of rebound) {
+    previousOwnerIds.add(run.previousOwnerId);
+    if (run.terminal) {
+      continue;
+    }
+    state.activeRunIds.add(run.runId);
+    ensureThreadBackgroundSubscription(socket, run.threadId, runtimeContext);
+  }
+  for (const previousOwnerId of previousOwnerIds) {
+    runtimeContext.approvalGate.rebindApprovalSessionRuntime(
+      previousOwnerId,
+      state.approvalSessionId,
+    );
+  }
+  return rebound.length;
 }
 
 export function socketOwnsRun(

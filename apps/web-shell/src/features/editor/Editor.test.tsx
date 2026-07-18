@@ -95,7 +95,7 @@ void test('Editor preserves the dirty buffer read-only when the daemon disconnec
   assert.match(html, /draft/);
 });
 
-void test('Editor shows the empty pre-workspace state without a file', () => {
+void test('Editor shows the empty state before a file is opened', () => {
   const html = renderToStaticMarkup(
     <Editor
       filePath={null}

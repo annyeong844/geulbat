@@ -199,6 +199,17 @@ void test('tool_search executes against the injected catalog without registry ac
   assert.equal(output.results[0]?.publicName, 'read_file');
   assert.equal(output.results[0]?.family, 'file');
   assert.equal(output.results[0]?.registryName, undefined);
+  assert.deepEqual(Object.keys(output.results[0] ?? {}), [
+    'rank',
+    'score',
+    'publicName',
+    'family',
+    'summary',
+    'sideEffectLevel',
+    'approvalClass',
+    'mayMutateComputerFiles',
+    'signatureRef',
+  ]);
   assert.match(output.note, /not callable aliases/);
 });
 

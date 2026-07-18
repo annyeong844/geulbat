@@ -67,11 +67,14 @@ void test('buildResponseCreatePayload keeps full structured context when tool re
     { kind: 'user', text: '안녕' },
     { kind: 'assistant', phase: 'commentary', text: '파일을 확인해볼게요.' },
     {
-      kind: 'function_call',
-      id: 'fc_1',
-      callId: 'call_1',
-      name: 'read_file',
-      arguments: '{"path":"hello.txt"}',
+      kind: 'backend_item',
+      data: {
+        id: 'fc_1',
+        type: 'function_call',
+        call_id: 'call_1',
+        name: 'read_file',
+        arguments: '{"path":"hello.txt"}',
+      },
     },
     {
       kind: 'function_call_output',
@@ -91,6 +94,7 @@ void test('buildResponseCreatePayload keeps full structured context when tool re
       phase: 'commentary',
     },
     {
+      id: 'fc_1',
       type: 'function_call',
       call_id: 'call_1',
       name: 'read_file',

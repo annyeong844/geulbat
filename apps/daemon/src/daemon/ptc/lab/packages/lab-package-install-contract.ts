@@ -53,8 +53,8 @@ export interface PtcLabNpmInstallRequest {
   timeoutMs?: number;
 }
 
-export type PtcLabCacheOnlyNpmInstallRequest = PtcLabNpmInstallRequest;
-export type PtcLabNetworkNpmInstallRequest = PtcLabNpmInstallRequest;
+type PtcLabCacheOnlyNpmInstallRequest = PtcLabNpmInstallRequest;
+type PtcLabNetworkNpmInstallRequest = PtcLabNpmInstallRequest;
 
 interface PtcLabPackageInstallSessionHandleBase {
   profile: 'lab';

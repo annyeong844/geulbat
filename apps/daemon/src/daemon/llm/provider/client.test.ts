@@ -4,15 +4,17 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   CODEX_DIRECT_RESPONSES_WEBSOCKET_REUSE_POLICY,
-  buildResponsesRequestHeaders,
   callModelWithDependencies,
+} from './client.js';
+import { buildResponsesRequestHeaders } from './codex-request.js';
+import {
   compactGrokHistory,
   compactOpenAiHistory,
   resolveGrokNativeCompactionPolicy,
   resolveOpenAiNativeCompactionPolicy,
   type OpenAiNativeCompactionInput,
   type ProviderNativeCompactionInput,
-} from './client.js';
+} from './provider-native-compaction.js';
 import { createProviderAuthRuntimeStore } from '../../auth/runtime-state.js';
 import {
   resolveProviderRequestOptions,
@@ -31,6 +33,24 @@ const unusedProviderWebSocketSessions: Pick<
 
 const defaultProviderRequestOptions: ProviderRequestOptions =
   resolveProviderRequestOptions({});
+
+function createCodexAssistantItems(
+  text: string,
+  phase: 'commentary' | 'final_answer' = 'final_answer',
+) {
+  return [
+    {
+      kind: 'backend_item' as const,
+      data: {
+        id: 'msg-test',
+        type: 'message',
+        role: 'assistant',
+        phase,
+        content: [{ type: 'output_text', text }],
+      },
+    },
+  ];
+}
 
 function createOpenAiNativeCompactionInput(
   overrides: Partial<OpenAiNativeCompactionInput> = {},
@@ -88,6 +108,7 @@ void test('buildResponsesRequestHeaders uses the current Codex direct originator
 
 void test('callModelWithDependencies uses frozen provider request options instead of live env', async () => {
   const runtimeStore = createProviderAuthRuntimeStore();
+  const itemsToAppend = createCodexAssistantItems('ok');
   const previousModel = process.env.GEULBAT_CODEX_MODEL;
   const previousReasoningEffort = process.env.GEULBAT_CODEX_REASONING_EFFORT;
   const previousTextVerbosity = process.env.GEULBAT_CODEX_TEXT_VERBOSITY;
@@ -129,7 +150,7 @@ void test('callModelWithDependencies uses frozen provider request options instea
         });
         assert.deepEqual(body.text, { verbosity: 'low' });
         return {
-          itemsToAppend: [],
+          itemsToAppend,
           functionCalls: [],
           assistantText: 'ok',
           finalText: 'ok',
@@ -144,6 +165,7 @@ void test('callModelWithDependencies uses frozen provider request options instea
         type: 'done',
         assistantText: 'ok',
         finalText: 'ok',
+        itemsToAppend,
       },
     ]);
   } finally {
@@ -167,6 +189,7 @@ void test('callModelWithDependencies uses frozen provider request options instea
 
 void test('callModelWithDependencies builds provider body from daemon-local provider request options', async () => {
   const runtimeStore = createProviderAuthRuntimeStore();
+  const itemsToAppend = createCodexAssistantItems('ok');
   const providerRequestOptions: ProviderRequestOptions = {
     ...defaultProviderRequestOptions,
     model: 'gpt-5.6-sol',
@@ -210,7 +233,7 @@ void test('callModelWithDependencies builds provider body from daemon-local prov
         });
         assert.deepEqual(body.text, { verbosity: 'high' });
         return {
-          itemsToAppend: [],
+          itemsToAppend,
           functionCalls: [],
           assistantText: 'ok',
           finalText: 'ok',
@@ -226,6 +249,7 @@ void test('callModelWithDependencies builds provider body from daemon-local prov
       type: 'done',
       assistantText: 'ok',
       finalText: 'ok',
+      itemsToAppend,
     },
   ]);
 });
@@ -535,9 +559,123 @@ void test('callModelWithDependencies streams deltas and carries Codex output ite
   ]);
 });
 
+void test('callModelWithDependencies fails closed on a mixed Codex history projection', async () => {
+  const chunks = [];
+
+  for await (const chunk of callModelWithDependencies(
+    {
+      history: [],
+      systemPrompt: 'system',
+      providerSessionId: 'provider-session',
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime: createProviderAuthRuntimeStore(),
+      providerRequestOptions: defaultProviderRequestOptions,
+    },
+    {
+      getProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      forceRefreshProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      streamResponsesOverWebSocket: async () => ({
+        itemsToAppend: [
+          {
+            kind: 'backend_item',
+            data: {
+              type: 'reasoning',
+              encrypted_content: 'must-not-leak',
+            },
+          },
+          {
+            kind: 'function_call',
+            id: 'fc-1',
+            callId: 'call-1',
+            name: 'read_file',
+            arguments: '{"path":"README.md"}',
+          },
+        ],
+        functionCalls: [
+          {
+            id: 'fc-1',
+            callId: 'call-1',
+            name: 'read_file',
+            arguments: '{"path":"README.md"}',
+          },
+        ],
+        assistantText: '',
+        finalText: '',
+      }),
+    },
+  )) {
+    chunks.push(chunk);
+  }
+
+  assert.deepEqual(chunks, [
+    {
+      type: 'error',
+      code: 'internal',
+      message: 'provider request failed',
+    },
+  ]);
+});
+
+void test('callModelWithDependencies fails closed when a Codex function call has no provider batch', async () => {
+  const chunks = [];
+
+  for await (const chunk of callModelWithDependencies(
+    {
+      history: [],
+      systemPrompt: 'system',
+      providerSessionId: 'provider-session',
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime: createProviderAuthRuntimeStore(),
+      providerRequestOptions: defaultProviderRequestOptions,
+    },
+    {
+      getProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      forceRefreshProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      streamResponsesOverWebSocket: async () => ({
+        itemsToAppend: [],
+        functionCalls: [
+          {
+            id: 'fc-1',
+            callId: 'call-1',
+            name: 'read_file',
+            arguments: '{"path":"README.md"}',
+          },
+        ],
+        assistantText: '',
+        finalText: '',
+      }),
+    },
+  )) {
+    chunks.push(chunk);
+  }
+
+  assert.deepEqual(chunks, [
+    {
+      type: 'error',
+      code: 'internal',
+      message: 'provider request failed',
+    },
+  ]);
+});
+
 void test('callModelWithDependencies carries provider artifact candidates in done metadata', async () => {
   const chunks = [];
   const runtimeStore = createProviderAuthRuntimeStore();
+  const assistantText =
+    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"sha256:abc123"} -->\n# Chapter 1\n<!-- /GEULBAT_ARTIFACT -->';
+  const itemsToAppend = createCodexAssistantItems(assistantText);
 
   for await (const chunk of callModelWithDependencies(
     {
@@ -558,12 +696,10 @@ void test('callModelWithDependencies carries provider artifact candidates in don
         accountId: 'account',
       }),
       streamResponsesOverWebSocket: async () => ({
-        itemsToAppend: [],
+        itemsToAppend,
         functionCalls: [],
-        assistantText:
-          '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"sha256:abc123"} -->\n# Chapter 1\n<!-- /GEULBAT_ARTIFACT -->',
-        finalText:
-          '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"sha256:abc123"} -->\n# Chapter 1\n<!-- /GEULBAT_ARTIFACT -->',
+        assistantText,
+        finalText: assistantText,
         artifactCandidate: {
           renderer: 'markdown',
           payload: '\n# Chapter 1\n',
@@ -578,10 +714,9 @@ void test('callModelWithDependencies carries provider artifact candidates in don
   assert.deepEqual(chunks, [
     {
       type: 'done',
-      assistantText:
-        '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"sha256:abc123"} -->\n# Chapter 1\n<!-- /GEULBAT_ARTIFACT -->',
-      finalText:
-        '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"sha256:abc123"} -->\n# Chapter 1\n<!-- /GEULBAT_ARTIFACT -->',
+      assistantText,
+      finalText: assistantText,
+      itemsToAppend,
       artifactCandidate: {
         renderer: 'markdown',
         payload: '\n# Chapter 1\n',
@@ -792,6 +927,7 @@ void test('callModelWithDependencies logs provider failures with redacted conver
 
 void test('callModelWithDependencies logs redacted provider cache telemetry when usage is present', async () => {
   const runtimeStore = createProviderAuthRuntimeStore();
+  const itemsToAppend = createCodexAssistantItems('ok');
   const originalLog = console.log;
   const logs: unknown[][] = [];
   console.log = (...args: unknown[]) => {
@@ -821,7 +957,7 @@ void test('callModelWithDependencies logs redacted provider cache telemetry when
           accountId: 'account',
         }),
         streamResponsesOverWebSocket: async () => ({
-          itemsToAppend: [],
+          itemsToAppend,
           functionCalls: [],
           assistantText: 'ok',
           finalText: 'ok',
@@ -841,6 +977,7 @@ void test('callModelWithDependencies logs redacted provider cache telemetry when
         type: 'done',
         assistantText: 'ok',
         finalText: 'ok',
+        itemsToAppend,
         // Usage rides on the done chunk so the agent loop can aggregate
         // per-run totals (subagent drill-down telemetry).
         providerUsageTelemetry: {
@@ -914,6 +1051,7 @@ void test('callModelWithDependencies logs redacted provider cache telemetry when
 void test('callModelWithDependencies forces one refresh and retries once after canonical auth failure', async () => {
   const chunks = [];
   const runtimeStore = createProviderAuthRuntimeStore();
+  const itemsToAppend = createCodexAssistantItems('assistant answer');
   let token = 'stale-token';
   let streamCalls = 0;
   let forcedRefreshCalls = 0;
@@ -951,7 +1089,7 @@ void test('callModelWithDependencies forces one refresh and retries once after c
 
         assert.equal(headers.get('Authorization'), 'Bearer fresh-token');
         return {
-          itemsToAppend: [],
+          itemsToAppend,
           functionCalls: [],
           assistantText: 'assistant answer',
           finalText: 'assistant answer',
@@ -969,6 +1107,7 @@ void test('callModelWithDependencies forces one refresh and retries once after c
       type: 'done',
       assistantText: 'assistant answer',
       finalText: 'assistant answer',
+      itemsToAppend,
     },
   ]);
 });

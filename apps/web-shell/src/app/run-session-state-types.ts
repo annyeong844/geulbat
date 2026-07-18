@@ -7,6 +7,7 @@ import type {
   ContextUsageUpdatedEventPayload,
   RunUsageTotals,
 } from '@geulbat/protocol/run-events';
+import type { PendingSteer } from '../lib/run-channel/pending-steer.js';
 import type { RunTranscriptEntry } from '../lib/run-transcript-entry.js';
 
 export type PendingApprovalIdentity = Pick<
@@ -38,11 +39,6 @@ export interface ActiveRunViewState {
   // tool_call이 도착하면 비워진다
   streamingToolCall: { callId: string; tool: string; argsText: string } | null;
   streamError: string | null;
-}
-
-export interface PendingSteer {
-  receivedSeq: number;
-  text: string;
 }
 
 export type RunSessionPhase =

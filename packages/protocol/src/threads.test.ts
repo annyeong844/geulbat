@@ -324,3 +324,35 @@ void test('isThreadMessage enforces role-specific compaction data', () => {
     false,
   );
 });
+
+void test('isThreadDetailResponse rejects internal compaction entries', () => {
+  assert.equal(
+    isThreadDetailResponse({
+      threadId: VALID_THREAD_ID,
+      snapshotVersion: '2026-06-28T00:00:00.000Z',
+      messages: [
+        {
+          entryId: 'entry-compaction',
+          role: 'compaction',
+          content: 'internal provider checkpoint',
+          timestamp: '2026-06-28T00:00:00.000Z',
+          compactionData: {
+            kind: 'provider_native',
+            providerId: 'openai_codex_direct',
+            model: 'model-a',
+            output: [
+              {
+                type: 'compaction',
+                encrypted_content: 'must-not-be-public',
+              },
+            ],
+            tokensBefore: 7200,
+            contextWindow: 8000,
+            thresholdTokens: 7000,
+          },
+        },
+      ],
+    }),
+    false,
+  );
+});

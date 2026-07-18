@@ -11,11 +11,6 @@ export const PROVIDER_AUTH_PROVIDER_IDS = [
 export type ProviderAuthProviderId =
   (typeof PROVIDER_AUTH_PROVIDER_IDS)[number];
 
-export interface ProviderAuthStartRequest {
-  launcher: 'web-shell';
-  providerId?: ProviderAuthProviderId;
-}
-
 export interface ProviderAuthStartResponse {
   authSessionId: string;
   authorizeUrl: string;
@@ -116,7 +111,7 @@ export function isProviderAuthProviderId(
   );
 }
 
-export function isProviderAuthStatusState(
+function isProviderAuthStatusState(
   value: unknown,
 ): value is ProviderAuthStatusState {
   return (

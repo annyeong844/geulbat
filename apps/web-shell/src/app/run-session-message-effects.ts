@@ -102,7 +102,7 @@ export type RunSessionMessageEffect =
 
 interface RunSessionMessageEffectHandlers {
   dispatch: (action: RunSessionStateAction) => void;
-  requestProjectTreeRefresh: () => void;
+  requestComputerTreeRefresh: () => void;
   handleRunStarted: (threadId: string, runId: string) => void | Promise<void>;
   handleRunSettledSuccess: (thread: ThreadDetailResponse) => Promise<void>;
   handleRunSettleSyncFailed: (
@@ -286,7 +286,7 @@ export function shouldRefreshTreeAfterToolResult(
 export async function handleRunSessionMessage({
   message,
   dispatch,
-  requestProjectTreeRefresh,
+  requestComputerTreeRefresh,
   handleRunStarted,
   handleRunSettledSuccess,
   handleRunSettleSyncFailed,
@@ -300,7 +300,7 @@ export async function handleRunSessionMessage({
   await applyRunSessionMessageEffect({
     effect,
     dispatch,
-    requestProjectTreeRefresh,
+    requestComputerTreeRefresh,
     handleRunStarted,
     handleRunSettledSuccess,
     handleRunSettleSyncFailed,
@@ -311,7 +311,7 @@ export async function handleRunSessionMessage({
 async function applyRunSessionMessageEffect({
   effect,
   dispatch,
-  requestProjectTreeRefresh,
+  requestComputerTreeRefresh,
   handleRunStarted,
   handleRunSettledSuccess,
   handleRunSettleSyncFailed,
@@ -346,7 +346,7 @@ async function applyRunSessionMessageEffect({
       return;
     case 'transcript_activity_added':
       if (shouldRefreshTreeAfterToolResult(effect)) {
-        requestProjectTreeRefresh();
+        requestComputerTreeRefresh();
       }
       dispatch({
         type: 'transcript_activity_added',

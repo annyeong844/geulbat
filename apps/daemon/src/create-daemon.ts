@@ -41,6 +41,13 @@ const JSON_BODY_LIMIT = '256kb';
 export async function createDaemon(options: DaemonOptions = {}) {
   const daemonContext = options.daemonContext ?? createDaemonContext();
   const homeStateRoot = daemonContext.homeStateRoot;
+  const ptcRestartCleanup =
+    await daemonContext.ptcExecuteCode.reapRestartResidue?.({
+      stateRoot: homeStateRoot,
+    });
+  if (ptcRestartCleanup !== undefined && !ptcRestartCleanup.ok) {
+    throw new Error('PTC restart residue cleanup failed during daemon startup');
+  }
   await daemonContext.plugins.initialize();
   await daemonContext.pluginMarketplaces.initialize();
   const app = express();
@@ -80,6 +87,7 @@ export async function createDaemon(options: DaemonOptions = {}) {
   );
   app.use(
     createFilesRoutes({
+      computerDirectoryPicker: daemonContext.computerDirectoryPicker,
       ...(daemonContext.computerFileScope === undefined
         ? {}
         : { computerFileScope: daemonContext.computerFileScope }),

@@ -11,6 +11,7 @@ import {
   type AgentLoopObserverEvent,
   type AgentLoopObserverSnapshot,
 } from './observer/agent-loop-observer.js';
+import type { AgentLoopHistoryPort } from './loop-history.js';
 import { runAgentLoop } from './run-agent-loop.js';
 import { createDaemonContext } from '../context.js';
 import type { FunctionCall, ProviderStructuredOutput } from '../llm/index.js';
@@ -271,11 +272,9 @@ void test('runAgentLoop can load initial history through an injected history por
     stateRoot: workspaceRoot,
   });
   const snapshots: AgentLoopObserverSnapshot[] = [];
-  const calls: Array<{
-    workspaceRoot: string;
-    threadId: string;
-    prompt: string;
-  }> = [];
+  const calls: Array<
+    Parameters<AgentLoopHistoryPort['loadInitialHistory']>[0]
+  > = [];
 
   const result = await runAgentLoop({
     runId,
@@ -305,7 +304,15 @@ void test('runAgentLoop can load initial history through an injected history por
 
   assert.equal(result.ok, true);
   assert.deepEqual(calls, [
-    { workspaceRoot, threadId, prompt: 'history port prompt' },
+    {
+      workspaceRoot,
+      threadId,
+      prompt: 'history port prompt',
+      providerTarget: {
+        providerId: 'openai_codex_direct',
+        model: 'gpt-5.6-sol',
+      },
+    },
   ]);
   assert.equal(snapshots.length, 1);
   assert.equal(snapshots[0]?.input.historyPort, 'injected');

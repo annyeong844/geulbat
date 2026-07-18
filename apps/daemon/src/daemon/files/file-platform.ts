@@ -7,7 +7,6 @@ export {
   writeAtomically,
 } from './file-platform-canonical-paths.js';
 export { enumerateCanonicalChildren } from './file-platform-directory-children.js';
-export { isPathInsideWorkspaceBoundary as isPathInsideComputerFileScope } from './normalize-path.js';
 export {
   resolveSourceReadTarget,
   resolveSourceMutationTarget,

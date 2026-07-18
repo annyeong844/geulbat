@@ -32,12 +32,20 @@ export const readToolOutputTool = defineZodTool({
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  exposure: {
+    directHot: true,
+    sdkVisible: true,
+    inCellCallable: true,
+    directOnly: false,
+    approvalRequired: false,
+    effectClass: 'readOnly',
+  },
   catalogSearchMetadata: {
     family: 'tool_output',
     searchHints: ['large output', 'read output ref', 'recover output'],
     tags: ['tool-output', 'offload', 'recovery'],
     whenToUse: 'Page through a previously offloaded tool output snapshot.',
-    notFor: 'Reading arbitrary workspace files or raw .geulbat paths.',
+    notFor: 'Reading arbitrary Computer files or raw .geulbat paths.',
   },
   async executeParsed(args, ctx) {
     if (!ctx.threadId || !ctx.stateRoot) {

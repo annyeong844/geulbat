@@ -17,11 +17,12 @@ const WS_POLICY_VIOLATION_CLOSE_CODE = 1008;
 export function sendMessage(
   socket: WebSocket,
   message: RunChannelServerMessage,
-): void {
+): boolean {
   if (socket.readyState !== WebSocket.OPEN) {
-    return;
+    return false;
   }
   socket.send(JSON.stringify(message));
+  return true;
 }
 
 export function sendError(
@@ -46,9 +47,9 @@ export function sendRunEvent(
   threadId: ThreadId,
   seq: number,
   agentEvent: AgentEvent,
-): void {
+): boolean {
   const event = mapAgentEventToRunEvent(runId, threadId, seq, agentEvent);
-  sendMessage(socket, { type: 'run.event', event });
+  return sendMessage(socket, { type: 'run.event', event });
 }
 
 export function closeUnauthorized(

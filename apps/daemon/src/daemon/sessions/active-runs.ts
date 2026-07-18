@@ -125,7 +125,11 @@ export function createActiveRunStore(): ActiveRunStore {
     },
     appendPendingInterject(runId, request) {
       const run = byRunId.get(runId);
-      if (!run || run.abortController.signal.aborted) {
+      if (
+        !run ||
+        run.abortController.signal.aborted ||
+        !run.interject.accepting
+      ) {
         return { ok: false, code: 'not_found' };
       }
       const { receivedSeq, bufferDepth } = pushPendingInterject(

@@ -7,7 +7,10 @@ import {
   type ActiveRunStore,
   createActiveRunStore,
 } from './active-runs.js';
-import { createRunInterjectBuffer } from './active-run-interject-buffer.js';
+import {
+  closeInterjectBuffer,
+  createRunInterjectBuffer,
+} from './active-run-interject-buffer.js';
 import { testRunId } from '../../test-support/run-id.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 
@@ -335,6 +338,31 @@ void test('appendPendingInterject returns not_found for unknown or aborted runs'
     code: 'not_found',
   });
 
+  store.finishRun(threadId, runId);
+});
+
+void test('appendPendingInterject rejects admission after the loop commits terminal', () => {
+  const store = createActiveRunStore();
+  const threadId = testThreadId(32);
+  const runId = testRunId('append-interject-terminal');
+  const interject = createRunInterjectBuffer();
+  store.tryStartRun(threadId, {
+    runId,
+    threadId,
+    stateRoot: '/tmp/home-state',
+    workingDirectory: 'stories',
+    ownerThreadId: threadId,
+    abortController: new AbortController(),
+    interject,
+    startedAt: '2026-03-24T00:00:00.000Z',
+  });
+
+  closeInterjectBuffer(interject);
+
+  assert.deepEqual(store.appendPendingInterject(runId, { text: 'too late' }), {
+    ok: false,
+    code: 'not_found',
+  });
   store.finishRun(threadId, runId);
 });
 

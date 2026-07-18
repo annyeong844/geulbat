@@ -19,7 +19,7 @@ export function buildResponseCreatePayload(
   };
 }
 
-export interface ProviderNativeHistoryTarget {
+interface ProviderNativeHistoryTarget {
   providerId: string;
   model: string;
 }
@@ -28,6 +28,7 @@ export function buildResponseWireInput(
   history: HistoryItem[],
   providerNativeTarget?: ProviderNativeHistoryTarget,
 ): unknown[] {
+  assertValidFunctionCallReplay(history, providerNativeTarget);
   const input: unknown[] = [];
 
   for (const item of history) {
@@ -87,6 +88,46 @@ export function buildResponseWireInput(
   return input;
 }
 
+function assertValidFunctionCallReplay(
+  history: HistoryItem[],
+  providerNativeTarget?: ProviderNativeHistoryTarget,
+): void {
+  const normalizedCallIds = new Set<string>();
+  for (const item of history) {
+    if (item.kind !== 'function_call') {
+      continue;
+    }
+    if (
+      providerNativeTarget?.providerId === 'openai_codex_direct' ||
+      normalizedCallIds.has(item.callId)
+    ) {
+      throw new ProviderHistoryItemInvalidError();
+    }
+    normalizedCallIds.add(item.callId);
+  }
+
+  const providerCallIds = new Set<string>();
+  for (const item of history) {
+    if (
+      item.kind !== 'backend_item' ||
+      !isRecord(item.data) ||
+      item.data['type'] !== 'function_call'
+    ) {
+      continue;
+    }
+    const callId = item.data['call_id'];
+    if (
+      typeof callId !== 'string' ||
+      callId.trim() === '' ||
+      normalizedCallIds.has(callId) ||
+      providerCallIds.has(callId)
+    ) {
+      throw new ProviderHistoryItemInvalidError();
+    }
+    providerCallIds.add(callId);
+  }
+}
+
 export class ProviderHistoryItemInvalidError extends Error {
   readonly code = 'provider_history_item_invalid';
 
@@ -96,7 +137,7 @@ export class ProviderHistoryItemInvalidError extends Error {
   }
 }
 
-export class ProviderNativeHistoryIncompatibleError extends Error {
+class ProviderNativeHistoryIncompatibleError extends Error {
   readonly code = 'provider_native_history_incompatible';
 
   constructor() {

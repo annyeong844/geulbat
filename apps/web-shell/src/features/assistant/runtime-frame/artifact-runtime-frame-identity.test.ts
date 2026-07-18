@@ -68,8 +68,8 @@ void test('createArtifactRuntimeFrameIdentity keeps persistence scope unavailabl
 
 void test('resolveArtifactRuntimeParentOrigin uses the browser origin when present', () => {
   assert.equal(
-    resolveArtifactRuntimeParentOrigin('https://workspace.example.test'),
-    'https://workspace.example.test',
+    resolveArtifactRuntimeParentOrigin('https://home.example.test'),
+    'https://home.example.test',
   );
   assert.equal(
     resolveArtifactRuntimeParentOrigin(undefined),

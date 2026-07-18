@@ -63,6 +63,45 @@ void test('exec description teaches the running-cell wait handoff', () => {
   assert.match(executeCodeTool.description, /cell_id/u);
 });
 
+void test('exec description does not imply host access when callbacks are disabled', () => {
+  assert.match(executeCodeTool.description, /no direct host filesystem mount/u);
+  assert.match(
+    executeCodeTool.description,
+    /call geulbat\.help\(\).*callbacks\.enabled/u,
+  );
+  assert.match(executeCodeTool.description, /do not infer/u);
+  assert.match(
+    executeCodeTool.description,
+    /operator callback transport policy/u,
+  );
+});
+
+void test('exec description shows the generated wrapper named require form', () => {
+  assert.equal(
+    executeCodeTool.description.includes(
+      "const { readFile } = require('geulbat-sdk/files/readFile')",
+    ),
+    true,
+  );
+});
+
+void test('exec description teaches the generated wrapper result envelope', () => {
+  assert.match(
+    executeCodeTool.description,
+    /kind: "inline".*value.*ok: true.*output: string/u,
+  );
+  assert.match(executeCodeTool.description, /result\.value\.ok/u);
+  assert.match(executeCodeTool.description, /result\.value\.output/u);
+  assert.match(
+    executeCodeTool.description,
+    /preserve each request path or name.*errorCode.*error.*generic message/u,
+  );
+  assert.match(executeCodeTool.description, /payload\.hasMore === false/u);
+  assert.match(executeCodeTool.description, /payload\.content/u);
+  assert.match(executeCodeTool.description, /user-selected run cwd/u);
+  assert.match(executeCodeTool.description, /do not assume a repository cwd/u);
+});
+
 void test('exec surfaces capacity pressure as a queued cell handoff', async () => {
   const daemonContext = createDaemonContext();
   const ptcExecuteCode: PtcExecuteCodeRuntime = {
@@ -655,6 +694,10 @@ void test('exec resolves Home-owned SDK wrappers independently of cwd and reject
           exportName: 'readFile',
         },
         {
+          specifier: 'geulbat-sdk/tools/read-tool-output',
+          exportName: 'readToolOutput',
+        },
+        {
           specifier: 'geulbat-sdk/files/searchFiles',
           exportName: 'searchFiles',
         },
@@ -847,6 +890,7 @@ void test('exec callback surface defaults to the read-only callable registry sna
     expectedToolNames,
   );
   assert.equal(surface.allows('read_file'), true);
+  assert.equal(surface.allows('read_tool_output'), true);
   assert.equal(surface.allows('agent_wait'), false);
   assert.equal(surface.allows(PTC_EXECUTE_CODE_TOOL_NAME), false);
   assert.equal(surface.allows(PTC_EXECUTE_CODE_FORBIDDEN_OLD_TOOL_NAME), false);

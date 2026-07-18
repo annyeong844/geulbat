@@ -16,13 +16,14 @@ interface ListTreeOptions {
   // 'truncate': 한도에 닿으면 오류 대신 디렉터리를 children 없이 반환한다
   // (lazy 로딩 — 셸이 폴더 펼침 시 subPath로 다시 요청). 기본은 'error'.
   depthLimitMode?: 'error' | 'truncate';
-  // workspace root 기준 상대 경로의 하위 트리만 나열 (boundary 검증 포함).
+  // 기준 경로 상대 좌표다. `..` 또는 절대경로로 호스트의 다른 위치도 가리킨다.
   subPath?: string;
 }
 
 /**
- * List visible file tree under workspaceRoot.
- * Hides `.geulbat/`, dotfiles starting with `.`, and symlinks escaping workspace.
+ * List a visible file tree from any OS-accessible host directory.
+ * Canonical directory identities prevent symlink cycles while aliases remain
+ * visible to the caller.
  */
 export async function listTree(
   workspaceRoot: string,
@@ -86,10 +87,6 @@ async function scanDir(
   }
 
   for (const entry of entries) {
-    if (entry.name.startsWith('.')) {
-      continue;
-    }
-
     limits.count.value += 1;
     if (limits.maxNodes !== undefined && limits.count.value > limits.maxNodes) {
       if (limits.depthLimitMode === 'truncate') {
@@ -104,6 +101,12 @@ async function scanDir(
 
     if (entry.type === 'directory') {
       if (visitedRealDirs.has(entry.canonicalAbsolutePath)) {
+        nodes.push({
+          name: entry.name,
+          path: entry.relativePath,
+          type: 'directory',
+          children: [],
+        });
         continue;
       }
       // truncate 모드에서 depth 한도에 닿은 디렉터리는 children 없이 반환

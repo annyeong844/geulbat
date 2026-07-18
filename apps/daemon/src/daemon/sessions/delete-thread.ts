@@ -10,6 +10,8 @@ import { deleteThreadRunAttachments } from './run-attachment-store.js';
 import { removeThreadSummary } from './threads-index.js';
 import { clearTranscriptEntryCacheForThread } from './transcript-log.js';
 import { deleteThreadToolOutputs } from '../files/tool-output-store.js';
+import { assertSessionThreadId } from './contract.js';
+import { deleteProviderRoundHistory } from './provider-round-journal.js';
 import { hasErrorCode } from '../utils/error.js';
 
 export async function deleteThreadSession(
@@ -24,6 +26,7 @@ export async function deleteThreadSession(
     deleteThreadToolOutputs({ stateRoot: workspaceRoot, threadId }),
     deleteThreadRunAttachments({ workspaceRoot, threadId }),
     deleteThreadMediaDir(workspaceRoot, threadId),
+    deleteProviderRoundHistory(workspaceRoot, assertSessionThreadId(threadId)),
   ]);
 
   clearTranscriptEntryCacheForThread(workspaceRoot, threadId);

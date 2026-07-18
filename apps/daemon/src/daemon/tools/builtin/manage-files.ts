@@ -5,12 +5,9 @@ import {
   commitPreparedDeletion,
   commitPreparedDirectoryCreation,
   commitPreparedRelocation,
-  isFileAuthorityRootPath,
   prepareMutatingFilePath,
   prepareRelocationPaths,
   persistPreparedFile,
-  FILE_AUTHORITY_ROOT_DELETE_ERROR,
-  FILE_AUTHORITY_ROOT_RELOCATE_ERROR,
 } from '../../files/file-mutation-chain.js';
 import {
   evaluateOperationManifestPreconditions,
@@ -44,11 +41,11 @@ const manageFilesPathSchema = z
     message: 'path must not be empty.',
   })
   .describe(
-    'The target path. Relative paths start from the current directory inside ComputerFileScope.',
+    'The target host path. Relative paths start from the current directory; absolute paths may address any location accessible to the daemon process.',
   );
 
 const manageFilesDestinationDescription =
-  'The destination path for rename/move operations. Relative paths start from the current directory inside ComputerFileScope. Required for rename/move and forbidden for create/mkdir/delete.';
+  'The destination host path for rename/move operations. Relative paths start from the current directory; absolute paths may address any location accessible to the daemon process. Required for rename/move and forbidden for create/mkdir/delete.';
 
 const manageFilesDestinationSchema = z
   .string()
@@ -124,7 +121,7 @@ interface ManageFilesExecutionContext {
 export const manageFilesTool = defineParsedTool({
   name: 'manage_files',
   description:
-    'Manage files and directories admitted by ComputerFileScope. Supports creating, renaming, moving, deleting files, and creating directories.',
+    'Manage host files and directories using OS permissions and approval as the authority boundary. Supports creating, renaming, moving, deleting files, and creating directories; deleting or moving a symlink acts on the link itself.',
   parameters: zodSchemaToToolParameters(manageFilesBranchSchema),
   strict: true,
   sideEffectLevel: 'write',
@@ -324,9 +321,6 @@ async function deleteManagedPath(
       allowMissingLeaf: true,
     },
   );
-  if (isFileAuthorityRootPath(preparedPath.resolvedPath.relativePath)) {
-    return toolError('invalid_args', FILE_AUTHORITY_ROOT_DELETE_ERROR);
-  }
   const manifest = prepareManageFilesDeleteManifest(preparedPath, context);
   const precondition = evaluateOperationManifestPreconditions(manifest, [
     {
@@ -463,10 +457,6 @@ async function relocateManagedPath(
     destination,
   );
   const { sourcePath, destinationPath, destinationExists } = preparedPaths;
-  if (isFileAuthorityRootPath(sourcePath.relativePath)) {
-    return toolError('invalid_args', FILE_AUTHORITY_ROOT_RELOCATE_ERROR);
-  }
-
   const manifest = prepareManageFilesRelocationManifest(
     operation,
     preparedPaths,

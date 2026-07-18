@@ -75,6 +75,9 @@ function cloneTool(tool: AnyTool): NormalizedTool {
     ...(tool.timeoutMs !== undefined ? { timeoutMs: tool.timeoutMs } : {}),
     requiresApproval: tool.requiresApproval,
     exposure: resolveToolExposure(tool),
+    ...(tool.recoveryStrategy
+      ? { recoveryStrategy: tool.recoveryStrategy }
+      : {}),
     ...(tool.catalogSearchMetadata
       ? {
           catalogSearchMetadata: cloneToolCatalogSearchMetadata(
@@ -173,6 +176,9 @@ export function createToolRegistryStore(options?: {
         ...(tool.timeoutMs !== undefined ? { timeoutMs: tool.timeoutMs } : {}),
         requiresApproval: tool.requiresApproval,
         exposure: { ...tool.exposure },
+        ...(tool.recoveryStrategy
+          ? { recoveryStrategy: tool.recoveryStrategy }
+          : {}),
         ...(tool.streamsArgsDelta === true ? { streamsArgsDelta: true } : {}),
       };
     },

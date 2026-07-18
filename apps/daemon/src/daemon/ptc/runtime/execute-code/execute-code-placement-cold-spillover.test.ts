@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { testThreadId } from '../../../../test-support/thread-id.js';
+import { createPtcExecuteCodePlacementCoordinator } from './execute-code-placement.js';
 import {
   classifyPtcExecuteCodePlacementContinuity,
   createPtcExecuteCodeCallbackEffectPolicy,
-  createPtcExecuteCodePlacementCoordinator,
   readPtcExecuteCodePlacementObservation,
   resolvePtcExecuteCodeBurstPlacementConfigFromEnv,
   type PtcExecuteCodePlacementBatchRunner,
-} from './execute-code-placement.js';
+} from './execute-code-placement-contract.js';
 import type { PtcSessionDockerManager } from '../../lab/session/session-docker-contract.js';
 
 function createUnusedPlacementDependencies() {

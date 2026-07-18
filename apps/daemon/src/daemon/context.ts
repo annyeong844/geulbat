@@ -32,6 +32,10 @@ import {
   type ComputerFileScope,
 } from './files/computer-file-scope.js';
 import {
+  createComputerDirectoryPicker,
+  type ComputerDirectoryPicker,
+} from './files/computer-directory-picker.js';
+import {
   createPluginStore,
   type PluginStore,
 } from './extensions/plugin-store.js';
@@ -96,6 +100,14 @@ import {
   createActiveRunStore,
   type ActiveRunStore,
 } from './sessions/active-runs.js';
+import {
+  createLiveRunEventStore,
+  type LiveRunEventStore,
+} from './sessions/live-run-events.js';
+import {
+  createRunCheckpointStore,
+  type RunCheckpointStore,
+} from './sessions/run-checkpoint-store.js';
 import {
   createSandboxAttemptStore,
   type SandboxAttemptStore,
@@ -170,6 +182,7 @@ const TOOL_LIBRARY_PTC_REACHABLE_POLICY = Object.freeze({
 
 interface DaemonContextOptions {
   homeStateRoot?: string | undefined;
+  computerDirectoryPicker?: ComputerDirectoryPicker | undefined;
   subagentConcurrencyPolicy?: SubagentConcurrencyPolicy | undefined;
   providerRequestOptions?: ProviderRequestOptions | undefined;
   reactBundleStructuredOutputIngressPolicy?:
@@ -189,6 +202,8 @@ interface DaemonContextOptions {
 
 export interface DaemonContext {
   activeRuns: ActiveRunStore;
+  liveRunEvents: LiveRunEventStore;
+  runCheckpoints: RunCheckpointStore;
   approvalGrants: ApprovalGrantStore;
   approvalGate: ApprovalGate;
   artifactFrameToolDispatch: (args: {
@@ -203,6 +218,7 @@ export interface DaemonContext {
   }) => Promise<ArtifactFrameToolCallResult>;
   backgroundNotifications: BackgroundNotificationQueue;
   childRuns: ChildRunRegistry;
+  computerDirectoryPicker: ComputerDirectoryPicker;
   computerFileScope?: ComputerFileScope;
   computerFileRoot?: string;
   homeStateRoot: string;
@@ -280,6 +296,8 @@ export function createDaemonContext(
     : resolveSubagentConcurrencyPolicyFromEnv();
   const approvalGrants = createApprovalGrantStore();
   const computerFileScope = resolveComputerFileScope();
+  const computerDirectoryPicker =
+    options.computerDirectoryPicker ?? createComputerDirectoryPicker();
   const homeStateRoot = options.homeStateRoot ?? resolveHomeStateRoot();
   const computerFileRoot = computerFileScope?.root;
   const providerAuthBootstrap = createProviderAuthBootstrapStore();
@@ -351,10 +369,15 @@ export function createDaemonContext(
       importSpecifier: TOOL_LIBRARY_IMPORT_SPECIFIER,
       projectionPolicy: TOOL_LIBRARY_PTC_REACHABLE_POLICY,
     });
+  const runCheckpoints = createRunCheckpointStore({
+    stateRoot: homeStateRoot,
+  });
   const daemonContext: DaemonContext = {
     activeRuns: createActiveRunStore(),
+    liveRunEvents: createLiveRunEventStore(),
+    runCheckpoints,
     approvalGrants,
-    approvalGate: createApprovalGate({ approvalGrants }),
+    approvalGate: createApprovalGate({ approvalGrants, runCheckpoints }),
     artifactFrameToolDispatch: (args) =>
       dispatchArtifactFrameToolFromDaemonContext({
         daemonContext,
@@ -362,6 +385,7 @@ export function createDaemonContext(
       }),
     backgroundNotifications: createThreadBackgroundNotificationQueue(),
     childRuns: createChildRunRegistry(),
+    computerDirectoryPicker,
     ...(computerFileScope === undefined ? {} : { computerFileScope }),
     ...(computerFileRoot === undefined ? {} : { computerFileRoot }),
     homeStateRoot,

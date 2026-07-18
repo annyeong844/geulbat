@@ -165,7 +165,7 @@ export function buildLiveToolTimelineItems(
   return items;
 }
 
-export interface ToolGroupCallCounts {
+interface ToolGroupCallCounts {
   commandCount: number;
   toolCount: number;
 }

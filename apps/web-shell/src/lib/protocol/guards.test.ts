@@ -339,7 +339,7 @@ void test('isRunChannelServerMessage accepts all run.event payload variants', ()
       persistenceEpoch: 0,
       sourceRef: {
         kind: 'thread-file',
-        workingDirectory: 'workspace',
+        workingDirectory: 'computer-root',
         threadId: THREAD_ID,
         runId: RUN_ID,
         filePath: 'episodes/ch01.md',

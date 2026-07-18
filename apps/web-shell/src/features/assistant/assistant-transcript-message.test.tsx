@@ -99,7 +99,7 @@ function createThreadArtifactVersion(args: {
     persistenceEpoch: 0,
     sourceRef: {
       kind: 'thread-file',
-      workingDirectory: 'workspace',
+      workingDirectory: 'computer-root',
       threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
       runId: 'run-1',
       filePath: 'notes/demo.md',

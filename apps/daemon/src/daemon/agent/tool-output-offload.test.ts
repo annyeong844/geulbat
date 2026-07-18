@@ -18,12 +18,52 @@ import {
   PTC_EXECUTE_CODE_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,
 } from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
-import { maybeOffloadToolResult } from './tool-output-offload.js';
+import {
+  maybeOffloadToolResult,
+  resolveToolOutputProjectionPolicyFromEnv,
+} from './tool-output-offload.js';
 
-void test('maybeOffloadToolResult offloads search_files output without an inline threshold', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
+const DEFAULT_PROJECTION_POLICY = resolveToolOutputProjectionPolicyFromEnv({});
+const FORCE_OFFLOAD_POLICY = { inlineMaxBytes: 1 };
+
+void test('resolveToolOutputProjectionPolicyFromEnv owns the documented inline byte budget', () => {
+  assert.deepEqual(DEFAULT_PROJECTION_POLICY, {
+    inlineMaxBytes: 40 * 1024,
+  });
+  assert.deepEqual(
+    resolveToolOutputProjectionPolicyFromEnv({
+      GEULBAT_TOOL_OUTPUT_INLINE_MAX_BYTES: ' 8192 ',
+    }),
+    { inlineMaxBytes: 8192 },
+  );
+  assert.throws(
+    () =>
+      resolveToolOutputProjectionPolicyFromEnv({
+        GEULBAT_TOOL_OUTPUT_INLINE_MAX_BYTES: '',
+      }),
+    /invalid GEULBAT_TOOL_OUTPUT_INLINE_MAX_BYTES: empty/,
+  );
+  assert.throws(
+    () =>
+      resolveToolOutputProjectionPolicyFromEnv({
+        GEULBAT_TOOL_OUTPUT_INLINE_MAX_BYTES: '1.5',
+      }),
+    /expected positive integer/,
+  );
+  assert.throws(
+    () =>
+      resolveToolOutputProjectionPolicyFromEnv({
+        GEULBAT_TOOL_OUTPUT_INLINE_MAX_BYTES: '0',
+      }),
+    /expected positive integer/,
+  );
+});
+
+void test('maybeOffloadToolResult keeps a small search_files result inline without creating a snapshot', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-state-'));
   const threadId = testThreadId(91);
+  const callId = 'call-small-search-output';
+  const runId = 'run-small-search-output';
   const output = JSON.stringify({
     root: 'computer',
     path: 'Users/sample/Downloads',
@@ -33,41 +73,27 @@ void test('maybeOffloadToolResult offloads search_files output without an inline
   });
 
   const result = await maybeOffloadToolResult({
-    functionCall: searchFilesCall('call-small-search-output'),
+    functionCall: searchFilesCall(callId),
     runContext: createRunContext({
       threadId,
       stateRoot,
     }),
-    runId: 'run-small-search-output',
+    runId,
+    projectionPolicy: DEFAULT_PROJECTION_POLICY,
     toolResult: { ok: true, output },
   });
 
-  assert.equal(result.ok, true);
-  const slimOutput = JSON.parse(result.output);
-  assert.equal(slimOutput.offloaded, true);
-  assert.equal(slimOutput.fullOutputChars, output.length);
-  assert.equal(slimOutput.root, 'computer');
-  assert.equal(slimOutput.path, 'Users/sample/Downloads');
-
+  assert.deepEqual(result, { ok: true, output });
   const snapshot = await readToolOutputSnapshot({
     stateRoot,
     threadId,
-    outputRef: slimOutput.outputRef,
+    outputRef: buildToolOutputRef({ threadId, runId, callId }),
   });
-  assert.equal(snapshot.ok, true);
-  assert.equal(snapshot.value.output, output);
-  assert.deepEqual(snapshot.value.source, {
-    root: 'computer',
-    path: 'Users/sample/Downloads',
-    query: 'small',
+  assert.deepEqual(snapshot, {
+    ok: false,
+    errorCode: 'not_found',
+    message: 'tool output snapshot was not found.',
   });
-  const workspaceSnapshot = await readToolOutputSnapshot({
-    stateRoot: workspaceRoot,
-    threadId,
-    outputRef: slimOutput.outputRef,
-  });
-  assert.equal(workspaceSnapshot.ok, false);
-  assert.equal(workspaceSnapshot.errorCode, 'not_found');
 });
 
 void test('maybeOffloadToolResult keeps tools outside the offload owner inline', async () => {
@@ -87,7 +113,59 @@ void test('maybeOffloadToolResult keeps tools outside the offload owner inline',
   assert.deepEqual(result, { ok: true, output });
 });
 
-void test('maybeOffloadToolResult returns a cache-stable exec ref before model consumption', async () => {
+void test('maybeOffloadToolResult applies the inline limit to UTF-8 bytes inclusively', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
+  const threadId = testThreadId(104);
+  const output = '한글';
+  const outputBytes = Buffer.byteLength(output, 'utf8');
+
+  const inlineResult = await maybeOffloadToolResult({
+    functionCall: searchFilesCall('call-utf8-inline-boundary'),
+    runContext: createRunContext({ threadId, stateRoot }),
+    runId: 'run-utf8-inline-boundary',
+    projectionPolicy: { inlineMaxBytes: outputBytes },
+    toolResult: { ok: true, output },
+  });
+  assert.deepEqual(inlineResult, { ok: true, output });
+
+  const offloadedResult = await maybeOffloadToolResult({
+    functionCall: searchFilesCall('call-utf8-over-boundary'),
+    runContext: createRunContext({ threadId, stateRoot }),
+    runId: 'run-utf8-over-boundary',
+    projectionPolicy: { inlineMaxBytes: outputBytes - 1 },
+    toolResult: { ok: true, output },
+  });
+  assert.equal(offloadedResult.ok, true);
+  const projected = JSON.parse(offloadedResult.output);
+  assert.equal(projected.offloaded, true);
+  assert.equal(projected.fullOutputBytes, outputBytes);
+});
+
+void test('maybeOffloadToolResult keeps a small exec result inline', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
+  const output = JSON.stringify({
+    kind: 'ptc_execute_code_cell_running',
+    status: 'running',
+    cellId: 'cell-exec-inline',
+    stdout: 'short output\n',
+    stderr: '',
+  });
+
+  const result = await maybeOffloadToolResult({
+    functionCall: execCall('call-exec-inline'),
+    runContext: createRunContext({
+      threadId: testThreadId(105),
+      stateRoot,
+    }),
+    runId: 'run-exec-inline',
+    projectionPolicy: DEFAULT_PROJECTION_POLICY,
+    toolResult: { ok: true, output },
+  });
+
+  assert.deepEqual(result, { ok: true, output });
+});
+
+void test('maybeOffloadToolResult returns a cache-stable exec ref above the configured inline budget', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
   const threadId = testThreadId(98);
   const output = JSON.stringify({
@@ -105,6 +183,7 @@ void test('maybeOffloadToolResult returns a cache-stable exec ref before model c
       stateRoot: workspaceRoot,
     }),
     runId: 'run-exec-recoverable-output',
+    projectionPolicy: FORCE_OFFLOAD_POLICY,
     toolResult: { ok: true, output },
   });
 
@@ -130,7 +209,7 @@ void test('maybeOffloadToolResult returns a cache-stable exec ref before model c
   assert.equal(snapshot.value.output, output);
 });
 
-void test('maybeOffloadToolResult returns a cache-stable exec_command ref before model consumption', async () => {
+void test('maybeOffloadToolResult returns a cache-stable exec_command ref above the configured inline budget', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
   const threadId = testThreadId(102);
   const output = JSON.stringify({
@@ -153,6 +232,7 @@ void test('maybeOffloadToolResult returns a cache-stable exec_command ref before
       stateRoot: workspaceRoot,
     }),
     runId: 'run-exec-command-recoverable-output',
+    projectionPolicy: FORCE_OFFLOAD_POLICY,
     toolResult: { ok: true, output },
   });
 
@@ -202,6 +282,7 @@ void test('maybeOffloadToolResult keeps a recoverable exec inline when its snaps
         stateRoot: workspaceRoot,
       }),
       runId: 'run-exec-record-failure',
+      projectionPolicy: FORCE_OFFLOAD_POLICY,
       toolResult: { ok: true, output },
     });
   } finally {
@@ -229,7 +310,7 @@ void test('maybeOffloadToolResult keeps a recoverable exec inline when its snaps
   );
 });
 
-void test('maybeOffloadToolResult returns a cache-stable wait ref before model consumption', async () => {
+void test('maybeOffloadToolResult returns a cache-stable wait ref above the configured inline budget', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-offload-'));
   const threadId = testThreadId(99);
   const output = JSON.stringify({
@@ -248,6 +329,7 @@ void test('maybeOffloadToolResult returns a cache-stable wait ref before model c
       stateRoot: workspaceRoot,
     }),
     runId: 'run-wait-recoverable-output',
+    projectionPolicy: FORCE_OFFLOAD_POLICY,
     toolResult: { ok: true, output },
   });
 
@@ -412,6 +494,7 @@ void test('maybeOffloadToolResult offloads search_files without partial preview 
       stateRoot: workspaceRoot,
     }),
     runId: 'run-search-without-preview-text',
+    projectionPolicy: FORCE_OFFLOAD_POLICY,
     toolResult: { ok: true, output },
   });
 
@@ -428,6 +511,7 @@ void test('maybeOffloadToolResult offloads search_files without partial preview 
   });
   assert.equal(snapshot.ok, true);
   assert.equal(snapshot.value.output, output);
+  assert.deepEqual(snapshot.value.source, { query: 'needle' });
 });
 
 void test('maybeOffloadToolResult offloads search_memory_index without partial preview text', async () => {
@@ -461,6 +545,7 @@ void test('maybeOffloadToolResult offloads search_memory_index without partial p
       stateRoot: workspaceRoot,
     }),
     runId: 'run-memory-index-offload',
+    projectionPolicy: FORCE_OFFLOAD_POLICY,
     toolResult: { ok: true, output },
   });
 
@@ -504,6 +589,7 @@ void test('maybeOffloadToolResult fails visibly when snapshot write fails', asyn
         stateRoot: workspaceRoot,
       }),
       runId: 'run-write-failure',
+      projectionPolicy: FORCE_OFFLOAD_POLICY,
       toolResult: { ok: true, output },
     });
   } finally {
@@ -537,9 +623,13 @@ void test('maybeOffloadToolResult offloads a large fetch_url result and preserve
     status: 200,
     contentType: 'text/html; charset=utf-8',
     title: 'Example',
-    content: 'x'.repeat(5000),
+    content: 'x'.repeat(DEFAULT_PROJECTION_POLICY.inlineMaxBytes + 1),
     untrusted: true,
   });
+  assert.ok(
+    Buffer.byteLength(output, 'utf8') >
+      DEFAULT_PROJECTION_POLICY.inlineMaxBytes,
+  );
 
   const result = await maybeOffloadToolResult({
     functionCall: fetchUrlCall('call-fetch-url-offload'),
@@ -548,6 +638,7 @@ void test('maybeOffloadToolResult offloads a large fetch_url result and preserve
       stateRoot: workspaceRoot,
     }),
     runId: 'run-fetch-url-offload',
+    projectionPolicy: DEFAULT_PROJECTION_POLICY,
     toolResult: { ok: true, output },
   });
 
@@ -578,13 +669,17 @@ void test('maybeOffloadToolResult offloads a large list_files result and preserv
   const output = JSON.stringify({
     root: 'computer',
     path: 'Users/sample/Downloads',
-    total: 400,
-    entries: Array.from({ length: 400 }, (_, index) => ({
+    total: 800,
+    entries: Array.from({ length: 800 }, (_, index) => ({
       name: `entry-${String(index).padStart(3, '0')}.txt`,
       path: `entry-${String(index).padStart(3, '0')}.txt`,
       type: 'file',
     })),
   });
+  assert.ok(
+    Buffer.byteLength(output, 'utf8') >
+      DEFAULT_PROJECTION_POLICY.inlineMaxBytes,
+  );
 
   const result = await maybeOffloadToolResult({
     functionCall: listFilesCall('call-list-files-offload'),
@@ -593,6 +688,7 @@ void test('maybeOffloadToolResult offloads a large list_files result and preserv
       stateRoot: workspaceRoot,
     }),
     runId: 'run-list-files-offload',
+    projectionPolicy: DEFAULT_PROJECTION_POLICY,
     toolResult: { ok: true, output },
   });
 
@@ -602,7 +698,7 @@ void test('maybeOffloadToolResult offloads a large list_files result and preserv
   assert.equal(slimOutput.tool, 'list_files');
   assert.equal(slimOutput.root, 'computer');
   assert.equal(slimOutput.path, 'Users/sample/Downloads');
-  assert.equal(slimOutput.total, 400);
+  assert.equal(slimOutput.total, 800);
   assert.equal(Object.hasOwn(slimOutput, 'preview'), false);
 
   const snapshot = await readToolOutputSnapshot({

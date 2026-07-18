@@ -14,18 +14,17 @@ import { toPtcLabNetworkIdentitySnapshot } from '../network/lab-network-policy.j
 import { toPtcLabBrowserIdentitySnapshot } from '../browser/core/lab-browser-identity.js';
 import { sanitizePtcPrivateMarkers } from '../../shared/output-redaction.js';
 import { runPtcSessionDockerCommand } from './session-docker-command.js';
-import {
-  buildPtcSessionDockerCreateArgs,
-  buildPtcSessionDockerRuntimeScopeHash,
-} from './session-docker-create-args.js';
+import { buildPtcSessionDockerCreateArgs } from './session-docker-create-args.js';
 import { ensurePtcOpenNetworkBridge } from './session-docker-open-network-bridge.js';
 import {
+  buildPtcSessionDockerRuntimeScopeHash,
   PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_DEFAULT_POLICY,
   PTC_SESSION_DOCKER_HOST_USER_POLICY_ID,
 } from './session-docker-contract.js';
 import {
+  buildPtcSessionDockerCallbackRoot,
   buildPtcSessionDockerSessionRoot,
   preparePtcSessionDockerHostDirs,
   ptcSessionDockerHostRootPrepareDiagnostics,
@@ -166,6 +165,7 @@ export function createPtcSessionDockerManager(args: {
   const operationQueues = new Map<string, Promise<void>>();
   let closingAll = false;
   let ephemeralStartupSweep: Promise<PtcSessionDockerResult<void>> | undefined;
+  let restartResidueSweep: Promise<PtcSessionDockerResult<void>> | undefined;
 
   function ensureEphemeralStartupSweep(): Promise<
     PtcSessionDockerResult<void>
@@ -173,11 +173,22 @@ export function createPtcSessionDockerManager(args: {
     if (args.reapEphemeralOnFirstUse !== true) {
       return Promise.resolve({ ok: true, value: undefined });
     }
-    ephemeralStartupSweep ??= reapEphemeralPtcSessionResidue({
+    ephemeralStartupSweep ??= reapPtcSessionResidue({
       runtimeRoot: args.runtimeRoot,
       runDocker,
+      scope: 'ephemeral',
     });
     return ephemeralStartupSweep;
+  }
+
+  function ensureRestartResidueSweep(): Promise<PtcSessionDockerResult<void>> {
+    restartResidueSweep ??= reapPtcSessionResidue({
+      runtimeRoot: args.runtimeRoot,
+      runDocker,
+      scope: 'all',
+    });
+    ephemeralStartupSweep ??= restartResidueSweep;
+    return restartResidueSweep;
   }
 
   async function buildKey(
@@ -230,6 +241,9 @@ export function createPtcSessionDockerManager(args: {
   }
 
   return {
+    async reapRestartResidue() {
+      return await ensureRestartResidueSweep();
+    },
     async getOrCreate(identity, options) {
       const startupSweep = await ensureEphemeralStartupSweep();
       if (!startupSweep.ok) {
@@ -606,10 +620,19 @@ async function cleanupUntrackedPtcSessionResidue(request: {
   });
 }
 
-async function reapEphemeralPtcSessionResidue(request: {
+async function reapPtcSessionResidue(request: {
   runtimeRoot: string;
   runDocker: PtcSessionDockerCommandExecutor;
+  scope: 'all' | 'ephemeral';
 }): Promise<PtcSessionDockerResult<void>> {
+  const sweepFailureReason: PtcSessionDockerFailureReason =
+    request.scope === 'ephemeral'
+      ? 'ephemeral_startup_sweep_failed'
+      : 'restart_residue_sweep_failed';
+  const residueLabel =
+    request.scope === 'ephemeral'
+      ? 'ephemeral PTC session'
+      : 'PTC restart residue';
   const runtimeScopeHash = buildPtcSessionDockerRuntimeScopeHash(
     request.runtimeRoot,
   );
@@ -620,17 +643,18 @@ async function reapEphemeralPtcSessionResidue(request: {
     'label=geulbat.kind=ptc-session',
     '--filter',
     'label=geulbat.owner=daemon',
-    '--filter',
-    'label=geulbat.ephemeral=true',
+    ...(request.scope === 'ephemeral'
+      ? ['--filter', 'label=geulbat.ephemeral=true']
+      : []),
     '--filter',
     `label=geulbat.runtimeScopeHash=${runtimeScopeHash}`,
     '--format',
-    '{{.ID}}|{{.Label "geulbat.identityHash"}}|{{.Label "geulbat.packageCacheIdentityHash"}}',
+    '{{.ID}}|{{.Label "geulbat.identityHash"}}|{{.Label "geulbat.packageCacheIdentityHash"}}|{{.Label "geulbat.ephemeral"}}',
   ]);
   if (!isSuccessfulExit(listed)) {
     return failure(
-      'ephemeral_startup_sweep_failed',
-      'failed to inspect ephemeral PTC session containers',
+      sweepFailureReason,
+      `failed to inspect ${residueLabel} containers`,
       listed,
     );
   }
@@ -639,12 +663,20 @@ async function reapEphemeralPtcSessionResidue(request: {
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .map(parseEphemeralPtcSessionResidueRecord);
-  if (records.some((record) => record === undefined)) {
+    .map(parsePtcSessionResidueRecord);
+  if (
+    records.some(
+      (record) =>
+        record === undefined ||
+        (request.scope === 'ephemeral' && !record.ephemeral),
+    )
+  ) {
     return failureDiagnostics(
-      'ephemeral_startup_sweep_failed',
-      'ephemeral PTC session labels are invalid',
-      { ephemeralLabelInvalid: true },
+      sweepFailureReason,
+      `${residueLabel} labels are invalid`,
+      request.scope === 'ephemeral'
+        ? { ephemeralLabelInvalid: true }
+        : { restartResidueLabelInvalid: true },
     );
   }
   const validRecords = records.filter(
@@ -661,8 +693,8 @@ async function reapEphemeralPtcSessionResidue(request: {
   ]);
   if (!isSuccessfulExit(removed)) {
     return failure(
-      'ephemeral_startup_sweep_failed',
-      'failed to remove ephemeral PTC session containers',
+      sweepFailureReason,
+      `failed to remove ${residueLabel} containers`,
       removed,
     );
   }
@@ -674,38 +706,48 @@ async function reapEphemeralPtcSessionResidue(request: {
     });
     if (!sessionRoot.ok) {
       return failureDiagnostics(
-        'ephemeral_startup_sweep_failed',
-        'failed to clean ephemeral PTC session host root',
-        { ephemeralSessionRootCleanupFailed: true },
+        sweepFailureReason,
+        `failed to clean ${residueLabel} host root`,
+        request.scope === 'ephemeral'
+          ? { ephemeralSessionRootCleanupFailed: true }
+          : { restartResidueSessionRootCleanupFailed: true },
       );
     }
-    const packageCache = await cleanupPtcPackageCacheRootByHash({
-      runtimeRoot: request.runtimeRoot,
-      cacheIdentityHash: record.packageCacheIdentityHash,
-    });
-    if (!packageCache.ok) {
-      return failureDiagnostics(
-        'ephemeral_startup_sweep_failed',
-        'failed to clean ephemeral PTC package cache root',
-        {
-          ephemeralPackageCacheCleanupFailed: true,
-          packageCacheReasonCode: packageCache.reasonCode,
-        },
-      );
+    if (record.ephemeral) {
+      const packageCache = await cleanupPtcPackageCacheRootByHash({
+        runtimeRoot: request.runtimeRoot,
+        cacheIdentityHash: record.packageCacheIdentityHash,
+      });
+      if (!packageCache.ok) {
+        return failureDiagnostics(
+          sweepFailureReason,
+          'failed to clean ephemeral PTC package cache root',
+          {
+            ephemeralPackageCacheCleanupFailed: true,
+            packageCacheReasonCode: packageCache.reasonCode,
+          },
+        );
+      }
     }
   }
   return { ok: true, value: undefined };
 }
 
-function parseEphemeralPtcSessionResidueRecord(line: string):
+function parsePtcSessionResidueRecord(line: string):
   | {
       containerId: string;
       identityHash: string;
       packageCacheIdentityHash: string;
+      ephemeral: boolean;
     }
   | undefined {
-  const [containerId, identityHash, packageCacheIdentityHash, extra] =
-    line.split('|');
+  const [
+    containerId,
+    identityHash,
+    packageCacheIdentityHash,
+    ephemeralLabel,
+    extra,
+  ] = line.split('|');
   if (
     extra !== undefined ||
     containerId === undefined ||
@@ -713,11 +755,17 @@ function parseEphemeralPtcSessionResidueRecord(line: string):
     identityHash === undefined ||
     !isPtcSha256Hex(identityHash) ||
     packageCacheIdentityHash === undefined ||
-    !isPtcSha256Hex(packageCacheIdentityHash)
+    !isPtcSha256Hex(packageCacheIdentityHash) ||
+    (ephemeralLabel !== '' && ephemeralLabel !== 'true')
   ) {
     return undefined;
   }
-  return { containerId, identityHash, packageCacheIdentityHash };
+  return {
+    containerId,
+    identityHash,
+    packageCacheIdentityHash,
+    ephemeral: ephemeralLabel === 'true',
+  };
 }
 
 async function removePtcSessionDockerOwnedHostRoots(args: {
@@ -749,15 +797,20 @@ async function ptcSessionDockerSessionRootMayExist(args: {
   runtimeRoot: string;
   reuseKey: PtcSessionDockerReuseKey;
 }): Promise<boolean> {
-  try {
-    await access(buildPtcSessionDockerSessionRoot(args));
-    return true;
-  } catch (error: unknown) {
-    if (isPtcRecord(error) && error.code === 'ENOENT') {
-      return false;
+  for (const path of [
+    buildPtcSessionDockerSessionRoot(args),
+    buildPtcSessionDockerCallbackRoot(args),
+  ]) {
+    try {
+      await access(path);
+      return true;
+    } catch (error: unknown) {
+      if (!isPtcRecord(error) || error.code !== 'ENOENT') {
+        return true;
+      }
     }
-    return true;
   }
+  return false;
 }
 
 async function cleanupPreparedSessionFailure(request: {

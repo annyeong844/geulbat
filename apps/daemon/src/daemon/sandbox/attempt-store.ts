@@ -309,7 +309,7 @@ export function createSandboxAttemptStore(
   };
 }
 
-export function isSandboxAttemptTerminalStatus(
+function isSandboxAttemptTerminalStatus(
   status: SandboxAttemptStatus,
 ): status is SandboxTerminalStatus {
   return (

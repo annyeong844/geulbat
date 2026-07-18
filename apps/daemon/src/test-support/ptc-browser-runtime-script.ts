@@ -61,7 +61,7 @@ exports.chromium = {
 };
 `;
 
-export interface PtcBrowserRuntimeScriptRunResult {
+interface PtcBrowserRuntimeScriptRunResult {
   exitCode: number | null;
   signal: string | null;
   stdout: string;
@@ -69,7 +69,7 @@ export interface PtcBrowserRuntimeScriptRunResult {
   jsonLines: unknown[];
 }
 
-export async function resolveWorkspaceChromiumExecutablePath(): Promise<
+async function resolveWorkspaceChromiumExecutablePath(): Promise<
   string | undefined
 > {
   const requireFromHere = createRequire(import.meta.url);

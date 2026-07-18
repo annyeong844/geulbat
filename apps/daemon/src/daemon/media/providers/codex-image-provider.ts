@@ -1,7 +1,5 @@
-import {
-  CODEX_DIRECT_RESPONSES_WEBSOCKET_REUSE_POLICY,
-  buildResponsesRequestHeaders,
-} from '../../llm/provider/client.js';
+import { CODEX_DIRECT_RESPONSES_WEBSOCKET_REUSE_POLICY } from '../../llm/provider/client.js';
+import { buildResponsesRequestHeaders } from '../../llm/provider/codex-request.js';
 import { streamResponsesOverWebSocket } from '../../llm/provider/transport/responses-websocket.js';
 import type { ResponsesWebSocketSessionStore } from '../../llm/provider/transport/responses-websocket-cache.js';
 import { isRecord } from '../../runtime-json.js';

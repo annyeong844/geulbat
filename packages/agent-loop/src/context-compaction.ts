@@ -1,4 +1,4 @@
-export interface ContextCompactionCheckpoint<TCheckpoint> {
+interface ContextCompactionCheckpoint<TCheckpoint> {
   firstKeptEntryId: string;
   value: TCheckpoint;
 }
@@ -21,7 +21,7 @@ interface InvalidContextCompactionBoundary {
   firstKeptEntryId: string;
 }
 
-export type ActiveContextBoundaryResolution<TCheckpoint> =
+type ActiveContextBoundaryResolution<TCheckpoint> =
   | { kind: 'uncompacted' }
   | {
       kind: 'resolved';
@@ -52,7 +52,7 @@ export type InvalidContextCompactionBudgetReason =
   | 'threshold_and_reserve_exceed_context_window'
   | 'compacted_request_exceeds_threshold';
 
-export type ContextCompactionBudgetValidation =
+type ContextCompactionBudgetValidation =
   | { kind: 'valid' }
   | {
       kind: 'invalid';
@@ -60,7 +60,7 @@ export type ContextCompactionBudgetValidation =
       field?: keyof ContextCompactionBudget;
     };
 
-export type ContextCompactionTriggerEvaluation =
+type ContextCompactionTriggerEvaluation =
   | { kind: 'under_threshold' }
   | { kind: 'threshold_reached' }
   | {
@@ -71,12 +71,12 @@ export type ContextCompactionTriggerEvaluation =
       field?: keyof ContextCompactionBudget;
     };
 
-export interface ContextCompactionSelectionItem {
+interface ContextCompactionSelectionItem {
   tokenCount: number;
   canStartRetainedTail: boolean;
 }
 
-export type ContextCompactionPrefixSelection =
+type ContextCompactionPrefixSelection =
   | { kind: 'no_summarizable_prefix' }
   | { kind: 'tail_exceeds_budget' }
   | {

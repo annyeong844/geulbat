@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { catchToolError, toolError } from '../result.js';
-import { shouldExcludeWorkspaceEntry } from '../../files/reserved-paths.js';
 import {
   enumerateCanonicalChildren,
   resolveSourceDirectoryTarget,
@@ -30,7 +29,7 @@ const listFilesArgsSchema = z.strictObject({
     })
     .optional()
     .describe(
-      'A directory resolved from the current directory inside ComputerFileScope, a verified read-only geulbat-sdk directory, or an opaque geulbat-skill ref returned by skill_search.',
+      'A host directory resolved from the current directory, a verified read-only geulbat-sdk directory, or an opaque geulbat-skill ref returned by skill_search. Absolute paths may address any location readable by the daemon process.',
     ),
   recursive: z
     .boolean()
@@ -41,7 +40,7 @@ const listFilesArgsSchema = z.strictObject({
 export const listFilesTool = defineZodTool({
   name: 'list_files',
   description:
-    'List a directory admitted by ComputerFileScope, the verified read-only geulbat-sdk tree, or an enabled bundled/installed plugin skill tree. Relative paths start from the current directory.',
+    'List the host filesystem, the verified read-only geulbat-sdk tree, or an enabled bundled/installed plugin skill tree. Relative paths start from the current directory; hidden entries and symlink aliases are included when the OS exposes them.',
   argsSchema: listFilesArgsSchema,
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
@@ -223,13 +222,6 @@ async function listSingleDir(
   const dirEntries = await enumerateCanonicalChildren(target);
 
   for (const entry of dirEntries) {
-    if (
-      entry.viaSymlink ||
-      shouldExcludeWorkspaceEntry(entry.relativePath, entry.name)
-    ) {
-      continue;
-    }
-
     if (entry.type === 'directory') {
       results.push({
         name: entry.name,
@@ -250,17 +242,15 @@ async function listSingleDir(
 async function walkDirectory(
   target: SourceDirectoryTarget,
   results: EntryInfo[],
+  visitedDirectories: Set<string> = new Set(),
 ): Promise<void> {
+  if (visitedDirectories.has(target.canonicalAbsolutePath)) {
+    return;
+  }
+  visitedDirectories.add(target.canonicalAbsolutePath);
   const dirEntries = await enumerateCanonicalChildren(target);
 
   for (const entry of dirEntries) {
-    if (
-      entry.viaSymlink ||
-      shouldExcludeWorkspaceEntry(entry.relativePath, entry.name)
-    ) {
-      continue;
-    }
-
     if (entry.type === 'directory') {
       results.push({
         name: entry.name,
@@ -277,6 +267,7 @@ async function walkDirectory(
           exists: true,
         },
         results,
+        visitedDirectories,
       );
     } else {
       results.push({

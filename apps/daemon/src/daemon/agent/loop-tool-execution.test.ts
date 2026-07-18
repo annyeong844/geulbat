@@ -133,6 +133,19 @@ function makeExecutionRuntime(
   });
 }
 
+async function startApprovalCheckpoint(
+  daemonContext: ReturnType<typeof createDaemonContext>,
+  threadId: ReturnType<typeof testThreadId>,
+  runId: ReturnType<typeof testRunId>,
+): Promise<void> {
+  const result = await daemonContext.runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: '.', permissionMode: 'basic' },
+  });
+  assert.equal(result.ok, true);
+}
+
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -221,11 +234,11 @@ void test('large search_files output is offloaded and readable through its outpu
     workingDirectory: computerFileRoot,
   });
 
-  for (let index = 0; index < 60; index += 1) {
+  for (let index = 0; index < 300; index += 1) {
     await writeFile(
       join(
         computerFileRoot,
-        `MATCH_OFFLOAD_${String(index).padStart(2, '0')}_${'x'.repeat(
+        `MATCH_OFFLOAD_${String(index).padStart(3, '0')}_${'x'.repeat(
           120,
         )}.txt`,
       ),
@@ -244,7 +257,7 @@ void test('large search_files output is offloaded and readable through its outpu
         callId,
         name: 'search_files',
         arguments: JSON.stringify({
-          maxResults: 80,
+          maxResults: 320,
           pattern: 'MATCH_OFFLOAD_*',
           type: 'filename',
         }),
@@ -284,7 +297,7 @@ void test('large search_files output is offloaded and readable through its outpu
     historyOutput.outputRef,
     `tool-output:${threadId}/${runId}/${callId}`,
   );
-  assert.doesNotMatch(history[0].output, /MATCH_OFFLOAD_59/);
+  assert.doesNotMatch(history[0].output, /MATCH_OFFLOAD_299/);
 
   const snapshotPath = join(
     workspaceRoot,
@@ -302,7 +315,7 @@ void test('large search_files output is offloaded and readable through its outpu
   assert.equal(snapshot.outputRef, historyOutput.outputRef);
   assert.equal(snapshot.toolName, 'search_files');
   assert.match(snapshot.output, /MATCH_OFFLOAD_0/);
-  assert.match(snapshot.output, /MATCH_OFFLOAD_59/);
+  assert.match(snapshot.output, /MATCH_OFFLOAD_299/);
 
   const transcript = await readTranscriptEntries(workspaceRoot, threadId);
   const toolResult = transcript.find((entry) => entry.role === 'tool_result');
@@ -391,7 +404,14 @@ void test('large search_files output is offloaded and readable through its outpu
 
 void test('approval denial persists tool_result to transcript before terminal failure', async () => {
   const threadId = testThreadId(2);
-  const daemonContext = createDaemonContext();
+  const runId = testRunId('denied');
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-approval-denied-'),
+  );
+  const daemonContext = createDaemonContext({
+    homeStateRoot: join(workspaceRoot, 'daemon-home'),
+  });
+  await startApprovalCheckpoint(daemonContext, threadId, runId);
   registerOnce(
     daemonContext,
     makeTestTool({
@@ -405,9 +425,6 @@ void test('approval denial persists tool_result to transcript before terminal fa
     }),
   );
 
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-approval-denied-'),
-  );
   const runContext = makeRunContext({
     threadId,
     stateRoot: workspaceRoot,
@@ -428,7 +445,7 @@ void test('approval denial persists tool_result to transcript before terminal fa
     history,
     runtime: makeExecutionRuntime(daemonContext, {
       runContext,
-      runId: 'run-denied',
+      runId,
       approvalContext: makeApprovalContext({
         sessionId: 'session-denied',
       }),
@@ -436,9 +453,9 @@ void test('approval denial persists tool_result to transcript before terminal fa
         events.push(type);
         if (type === 'approval_required') {
           setTimeout(() => {
-            daemonContext.approvalGate.resolveApproval(
+            void daemonContext.approvalGate.resolveApproval(
               'call-denied',
-              'run-denied',
+              runId,
               threadId,
               'denied',
             );
@@ -472,7 +489,14 @@ void test('approval denial persists tool_result to transcript before terminal fa
 
 void test('approval denial settles later same-round tool obligations before terminal failure', async () => {
   const threadId = testThreadId(2_1);
-  const daemonContext = createDaemonContext();
+  const runId = testRunId('denied-later');
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-approval-denied-later-'),
+  );
+  const daemonContext = createDaemonContext({
+    homeStateRoot: join(workspaceRoot, 'daemon-home'),
+  });
+  await startApprovalCheckpoint(daemonContext, threadId, runId);
   let laterReadExecutions = 0;
   registerOnce(
     daemonContext,
@@ -500,9 +524,6 @@ void test('approval denial settles later same-round tool obligations before term
     }),
   );
 
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-approval-denied-later-'),
-  );
   const runContext = makeRunContext({
     threadId,
     stateRoot: workspaceRoot,
@@ -529,7 +550,7 @@ void test('approval denial settles later same-round tool obligations before term
     history,
     runtime: makeExecutionRuntime(daemonContext, {
       runContext,
-      runId: 'run-denied-later',
+      runId,
       approvalContext: makeApprovalContext({
         sessionId: 'session-denied-later',
       }),
@@ -537,9 +558,9 @@ void test('approval denial settles later same-round tool obligations before term
         events.push(type);
         if (type === 'approval_required') {
           setTimeout(() => {
-            daemonContext.approvalGate.resolveApproval(
+            void daemonContext.approvalGate.resolveApproval(
               'call-denied-barrier',
-              'run-denied-later',
+              runId,
               threadId,
               'denied',
             );
@@ -576,10 +597,14 @@ void test('approval denial settles later same-round tool obligations before term
 
 void test('approval-delayed write_file surfaces stale conflicts after external modification before resume', async () => {
   const threadId = testThreadId(22);
-  const daemonContext = createDaemonContext();
+  const runId = testRunId('approval-stale');
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-approval-stale-'),
   );
+  const daemonContext = createDaemonContext({
+    homeStateRoot: join(workspaceRoot, 'daemon-home'),
+  });
+  await startApprovalCheckpoint(daemonContext, threadId, runId);
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-approval-stale-files-'),
   );
@@ -611,7 +636,7 @@ void test('approval-delayed write_file surfaces stale conflicts after external m
     history,
     runtime: makeExecutionRuntime(daemonContext, {
       runContext,
-      runId: 'run-approval-stale',
+      runId,
       computerFileRoot,
       approvalContext: makeApprovalContext({
         sessionId: 'session-approval-stale',
@@ -622,9 +647,9 @@ void test('approval-delayed write_file surfaces stale conflicts after external m
           setTimeout(() => {
             void (async () => {
               await writeFile(absolutePath, 'external\n', 'utf8');
-              daemonContext.approvalGate.resolveApproval(
+              void daemonContext.approvalGate.resolveApproval(
                 'call-approval-stale',
-                'run-approval-stale',
+                runId,
                 threadId,
                 'approved',
               );

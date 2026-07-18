@@ -9,7 +9,6 @@ const ROOT_PROMPT_LINES = [
   'Inspect the relevant context before making assumptions about files, tools, or workflow.',
   "Follow the user's requested language and domain instead of assuming a fixed fiction, coding, or other specialist role.",
   'Do not invent hidden planners, routers, or semantic workflows.',
-  'Do not access or modify reserved internal paths such as .geulbat/ unless explicitly exposed by the runtime.',
   'Use agent_spawn only when a direct single-agent read would be too large or a bounded helper is clearly useful; child agents may also spawn admitted helper agents when that is the right decomposition.',
   'If you need multiple independent subtasks, issue multiple agent_spawn calls in the same round instead of serializing them one by one; agent_spawn always launches in parallel.',
   'For broader inspection or verification workflows, make the phase and pending work visible and launch only the currently independent items as a same-round agent_spawn wave. Continue independent parent work while children run; request a progress snapshot with agent_wait only when progress affects what to do next.',
@@ -54,7 +53,7 @@ const ROOT_PROMPT_LINES = [
   'Use fetch_url only when you already have an explicit public HTTP(S) URL. It reads one URL and does not search the web.',
   'Prefer dedicated typed tools for file listing, reading, searching, and mutation. Do not use exec_command as an alias for list_files, read_file, search_files, write_file, apply_patch, or manage_files.',
   'Use exec_command only when the user explicitly asks for a shell command or the task genuinely requires host process or CLI semantics that no dedicated Geulbat tool owns. It is not PTC exec and is not read-only.',
-  'When available, exec_command may use another cwd only when it remains inside the admitted Computer file scope. Stay within the user-requested scope, do not inspect unrelated credentials or sensitive paths, and report approval or runtime failures honestly.',
+  'When available, exec_command may use any host cwd available to the daemon process. Stay within the user-requested task and report approval or runtime failures honestly.',
   'If a user supplies a path in another operating system syntax, translate it only when the host mapping is established, such as a Windows drive path to its mounted drive path under WSL; otherwise inspect the host context or ask instead of inventing a mapping.',
   'A WSL daemon uses its WSL shell; discover and invoke a Windows PowerShell executable explicitly when PowerShell syntax is required. A native Windows daemon uses cmd.exe and may invoke powershell.exe or wsl.exe when installed.',
   'For file mutations, use the recovery order discovery -> read -> mutate.',
@@ -66,13 +65,13 @@ const ROOT_PROMPT_LINES = [
 ];
 
 const ROOT_COMPUTER_AVAILABLE_LINES = [
-  'File tools use the admitted Computer file scope. Relative paths start from the run working directory, while admitted absolute paths and parent traversal may reach other locations inside that same Computer scope.',
-  'The run working directory is only a relative-path base. It does not restrict file visibility, own durable state, or replace Computer file authority; read_file and the discoverable list_files wrapper also resolve the pinned read-only geulbat-sdk alias.',
-  'Do not add a workspace/computer root selector or claim that another Computer path is unavailable before trying the admitted path with the dedicated file tool.',
+  'File tools use the host filesystem available to the daemon process. Relative paths start from the run working directory; absolute paths and parent traversal are not confined to the Computer coordinate base. Path names, symlinks, and filesystem roots do not create additional tool-level deny rules; OS permissions, mutation approval, and atomic conflict checks remain authoritative.',
+  'The run working directory is only a relative-path base. It does not restrict host-file visibility, own durable state, or create filesystem authority; read_file and the discoverable list_files wrapper also resolve the pinned read-only geulbat-sdk alias.',
+  'Do not add another file-root selector or treat the Computer coordinate base as a sandbox. Try the user-requested host path with the dedicated file tool.',
 ];
 
 const COMPUTER_UNAVAILABLE_LINE =
-  'The Computer file scope is unavailable in this run. Do not retry file or host-command access through a workspace fallback; report the unavailable capability honestly.';
+  'Computer filesystem access is unavailable in this run. Do not retry file or host-command access through a hidden root fallback; report the unavailable capability honestly.';
 
 const EXPLORER_PROMPT_LINES = [
   'You are an explorer subagent performing bounded read and search work for a parent agent.',
@@ -101,17 +100,32 @@ const WORKER_PROMPT_LINES = [
   'If a nested child is no longer needed or is stuck awaiting approval, use agent_stop on that child handle.',
 ];
 
-function computerCapabilityLines(computerSessionAvailable: boolean): string[] {
-  return computerSessionAvailable
-    ? ROOT_COMPUTER_AVAILABLE_LINES
-    : [COMPUTER_UNAVAILABLE_LINE];
+function computerCapabilityLines(
+  computerSessionAvailable: boolean,
+  workingDirectory: string | undefined,
+): string[] {
+  if (!computerSessionAvailable) {
+    return [COMPUTER_UNAVAILABLE_LINE];
+  }
+  if (workingDirectory === undefined) {
+    return ROOT_COMPUTER_AVAILABLE_LINES;
+  }
+  const cwd = workingDirectory === '' ? 'Computer root (/)' : workingDirectory;
+  return [
+    ...ROOT_COMPUTER_AVAILABLE_LINES,
+    `The user-selected run cwd is ${JSON.stringify(cwd)}. It remains the relative-path and command start location through context compaction; absolute host paths remain available independently of cwd.`,
+  ];
 }
 
 export function buildSystemPrompt(args: {
   profile: AgentLoopPromptProfile;
   computerSessionAvailable: boolean;
+  workingDirectory?: string;
 }): string {
-  const computerLines = computerCapabilityLines(args.computerSessionAvailable);
+  const computerLines = computerCapabilityLines(
+    args.computerSessionAvailable,
+    args.workingDirectory,
+  );
   if (args.profile === 'explorer') {
     return [...EXPLORER_PROMPT_LINES, ...computerLines].join('\n');
   }

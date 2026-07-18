@@ -14,6 +14,7 @@ void test('createAgentLoopPromptPort delegates to the current prompt builders', 
     threadId: testThreadId(91),
     promptProfile: 'root',
     computerSessionAvailable: true,
+    workingDirectory: 'home/user/chosen-start',
     currentFile: 'src/app.ts',
     selection: {
       startLine: 3,
@@ -23,6 +24,10 @@ void test('createAgentLoopPromptPort delegates to the current prompt builders', 
   });
 
   assert.match(bundle.systemPrompt, /general-purpose personal agent/u);
+  assert.match(
+    bundle.systemPrompt,
+    /user-selected run cwd is "home\/user\/chosen-start"/u,
+  );
   assert.equal(
     bundle.promptContext,
     [
@@ -42,7 +47,10 @@ void test('createAgentLoopPromptPort projects the explorer capability prompt', (
   });
 
   assert.match(bundle.systemPrompt, /explorer subagent/u);
-  assert.match(bundle.systemPrompt, /Computer file scope is unavailable/u);
+  assert.match(
+    bundle.systemPrompt,
+    /Computer filesystem access is unavailable/u,
+  );
   assert.doesNotMatch(bundle.systemPrompt, /react_bundle/u);
 });
 

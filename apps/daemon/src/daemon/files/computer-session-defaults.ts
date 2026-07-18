@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, parse } from 'node:path';
 
 // 컴퓨터 세션 루트/홈 자동 감지 — env 없이도 설치 직후 바로 동작하도록
 // OS별 기본값을 잡는다. env(GEULBAT_COMPUTER_SESSION_ROOT/_HOME)가 있으면
@@ -34,8 +34,11 @@ export function detectComputerSessionDefaults(
   const exists = probe.exists ?? existsSync;
   const homeDirectory = probe.homeDirectory ?? homedir;
   const daemonHome = homeDirectory();
+  const globalComputerRoot = parse(daemonHome).root;
 
-  // WSL: Windows C 드라이브가 마운트되어 있으면 그쪽이 사용자의 컴퓨터다
+  // WSL에서는 /가 Linux ext4와 /mnt 아래의 Windows 드라이브를 함께
+  // 표현하는 공통 경로 기준점이다. Windows 프로필은 탐색 시작점일 뿐
+  // 파일 권한이나 대화/run 저장소를 소유하지 않는다.
   if (isDirectory('/mnt/c')) {
     const usersRoot = '/mnt/c/Users';
     if (isDirectory(usersRoot)) {
@@ -51,15 +54,17 @@ export function detectComputerSessionDefaults(
           (candidate) =>
             isDirectory(candidate) && exists(join(candidate, 'NTUSER.DAT')),
         );
-      return userHome !== undefined
-        ? { root: '/mnt/c', home: userHome }
-        : { root: '/mnt/c' };
+      return {
+        root: globalComputerRoot,
+        home: userHome ?? daemonHome,
+      };
     }
-    return { root: '/mnt/c' };
+    return { root: globalComputerRoot, home: daemonHome };
   }
 
-  // 그 외(리눅스/맥 네이티브): 홈을 루트로 — 안전한 기본값
-  return { root: daemonHome, home: daemonHome };
+  // 네이티브 환경도 Home은 시작점일 뿐이다. 파일 접근 권한은 현재 OS가
+  // 결정하고, 볼륨 루트는 경로 좌표의 기준점으로만 사용한다.
+  return { root: globalComputerRoot, home: daemonHome };
 }
 
 function defaultIsDirectory(path: string): boolean {

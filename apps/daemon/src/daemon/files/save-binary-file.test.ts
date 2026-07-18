@@ -16,7 +16,6 @@ import {
 } from '../utils/error.js';
 import { replaceBinaryFile, saveBinaryFile } from './save-binary-file.js';
 import { createBinaryVersionToken } from './version-token.js';
-import { PathEscapeError } from './normalize-path.js';
 
 void test('saveBinaryFile creates a new binary file and returns binary metadata', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-save-binary-'));
@@ -51,7 +50,7 @@ void test('saveBinaryFile is create-only and returns already_exists when the tar
   );
 });
 
-void test('saveBinaryFile rejects new writes through symlinked parent directories', async (t) => {
+void test('saveBinaryFile creates a file through a symlinked parent directory', async (t) => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-save-binary-'));
   const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-outside-'));
   const realDir = join(outsideRoot, 'real-dir');
@@ -62,14 +61,15 @@ void test('saveBinaryFile rejects new writes through symlinked parent directorie
     return;
   }
 
-  await assert.rejects(
-    () =>
-      saveBinaryFile(
-        workspaceRoot,
-        'linked-dir/child.bin',
-        new Uint8Array([1]),
-      ),
-    (error: unknown) => error instanceof PathEscapeError,
+  const result = await saveBinaryFile(
+    workspaceRoot,
+    'linked-dir/child.bin',
+    new Uint8Array([1]),
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    await fsReadFile(join(realDir, 'child.bin')),
+    Buffer.from([1]),
   );
 });
 

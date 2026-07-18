@@ -10,6 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFile } from '../../files/read-file.js';
+import { normalizePath } from '../../files/normalize-path.js';
 import { createFileStateCache } from '../../utils/file-state-cache.js';
 import { createSymlinkOrSkip } from '../../../test-support/symlink-test.js';
 import { manageFilesTool } from './manage-files.js';
@@ -41,6 +42,24 @@ void test('write_file allows creating a new file without a versionToken', async 
   const payload = JSON.parse(result.output) as { mode: string; path: string };
   assert.equal(payload.mode, 'created');
   assert.equal(payload.path, 'new.txt');
+});
+
+void test('write_file creates an absolute file outside the coordinate base', async () => {
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-write-base-'));
+  const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-write-outside-'));
+  const absolutePath = join(outsideRoot, 'created.txt');
+
+  const result = await writeFileTool.execute(
+    { path: absolutePath, content: 'created outside\n' },
+    { callId: 'call-write-outside-base', computerFileRoot },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(await fsReadFile(absolutePath, 'utf8'), 'created outside\n');
+  assert.equal(
+    JSON.parse(result.output).path,
+    normalizePath(computerFileRoot, absolutePath),
+  );
 });
 
 void test('write_file creates and overwrites files in ComputerFileScope', async () => {
@@ -108,7 +127,7 @@ void test('write_file preserves stale-write detection in the computer root', asy
   assert.equal(await fsReadFile(absolutePath, 'utf8'), 'changed\n');
 });
 
-void test('write_file rejects computer-root symlink aliases to reserved files', async (t) => {
+void test('write_file updates a symlink target regardless of its filename', async (t) => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-computer-write-tool-'),
   );
@@ -118,11 +137,13 @@ void test('write_file rejects computer-root symlink aliases to reserved files', 
   if (!(await createSymlinkOrSkip(t, reservedFile, linkedFile))) {
     return;
   }
+  const current = await readFile(computerFileRoot, 'settings.txt');
 
   const result = await writeFileTool.execute(
     {
       path: 'settings.txt',
       content: 'SECRET=changed\n',
+      versionToken: current.versionToken,
     },
     {
       callId: 'call-computer-write-reserved-alias',
@@ -130,9 +151,8 @@ void test('write_file rejects computer-root symlink aliases to reserved files', 
     },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'path_out_of_computer_scope');
-  assert.equal(await fsReadFile(reservedFile, 'utf8'), 'SECRET=kept\n');
+  assert.equal(result.ok, true);
+  assert.equal(await fsReadFile(reservedFile, 'utf8'), 'SECRET=changed\n');
 });
 
 void test('write_file rejects blank versionToken at the parser boundary', async () => {

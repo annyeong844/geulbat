@@ -14,14 +14,10 @@ import {
 import { createReadStream } from 'node:fs';
 import { Router, type Response } from 'express';
 
-import {
-  PluginStoreError,
-  type PluginStore,
-} from '../../../daemon/extensions/plugin-store.js';
-import {
-  PluginMarketplaceStoreError,
-  type PluginMarketplaceStore,
-} from '../../../daemon/extensions/plugin-marketplace-store.js';
+import type { PluginStore } from '../../../daemon/extensions/plugin-store.js';
+import { PluginStoreError } from '../../../daemon/extensions/plugin-store-contract.js';
+import type { PluginMarketplaceStore } from '../../../daemon/extensions/plugin-marketplace-store.js';
+import { PluginMarketplaceStoreError } from '../../../daemon/extensions/plugin-marketplace-contract.js';
 import type { PluginSkillRuntime } from '../../../daemon/extensions/plugin-skill-runtime.js';
 import type { ComputerFileScope } from '../../../daemon/files/computer-file-scope.js';
 import {

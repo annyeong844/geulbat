@@ -34,7 +34,7 @@ interface BootstrapLogicalDbApi {
   clear(): Promise<void>;
 }
 
-export interface BootstrapWindow {
+interface BootstrapWindow {
   parent: {
     postMessage: (
       message: ArtifactRuntimePersistenceRequestMessage,

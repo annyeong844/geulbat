@@ -7,7 +7,35 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { createDaemon } from './create-daemon.js';
+import { createDaemonContext } from './daemon/context.js';
 import { createRouteTestDaemonContext } from './test-support/http-routes.js';
+
+void test('createDaemon reaps prior PTC runtime residue before mounting routes', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const observedStateRoots: string[] = [];
+  daemonContext.ptcExecuteCode.reapRestartResidue = async ({ stateRoot }) => {
+    observedStateRoots.push(stateRoot);
+    return { ok: true };
+  };
+
+  await createDaemon({ daemonContext });
+
+  assert.deepEqual(observedStateRoots, [daemonContext.homeStateRoot]);
+});
+
+void test('createDaemon fails closed when prior PTC runtime residue cannot be reaped', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  daemonContext.ptcExecuteCode.reapRestartResidue = async () => ({
+    ok: false,
+    reasonCode: 'ptc_execute_code_session_cleanup_failed',
+    message: 'cleanup unavailable',
+  });
+
+  await assert.rejects(
+    () => createDaemon({ daemonContext }),
+    /PTC restart residue cleanup failed during daemon startup/u,
+  );
+});
 
 void test('createDaemon returns loopback CORS headers for allowed preflight origins', async () => {
   const { app } = await createIsolatedDaemon();
@@ -237,7 +265,13 @@ void test('createDaemon resolves the configured Home state root independently of
 
   try {
     process.chdir(tempCwd);
-    const { app, daemonContext } = await createDaemon();
+    const configuredDaemonContext = createDaemonContext();
+    configuredDaemonContext.ptcExecuteCode.reapRestartResidue = async () => ({
+      ok: true,
+    });
+    const { app, daemonContext } = await createDaemon({
+      daemonContext: configuredDaemonContext,
+    });
     assert.equal(daemonContext.homeStateRoot, expectedHomeStateRoot);
     server = app.listen(0, '127.0.0.1');
     await onceListening(server);
@@ -264,7 +298,9 @@ void test('createDaemon resolves the configured Home state root independently of
 });
 
 function createIsolatedDaemon() {
-  return createDaemon({ daemonContext: createRouteTestDaemonContext() });
+  const daemonContext = createRouteTestDaemonContext();
+  daemonContext.ptcExecuteCode.reapRestartResidue = async () => ({ ok: true });
+  return createDaemon({ daemonContext });
 }
 
 function onceListening(server: Server): Promise<void> {

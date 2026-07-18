@@ -1,4 +1,6 @@
 // Source target resolvers map user-facing workspace paths to canonical targets.
+import { resolve } from 'node:path';
+
 import type {
   SourceDirectoryTarget,
   SourceMutationTarget,
@@ -41,6 +43,7 @@ export async function resolveSourceMutationTarget(
     relativePath,
     {
       allowMissingLeaf: options?.allowMissingLeaf ?? false,
+      rejectSymlinks: false,
     },
   );
 
@@ -50,7 +53,7 @@ export async function resolveSourceMutationTarget(
     requestedRelativePath: inputPath,
     relativePath,
     canonicalAbsolutePath: inspected.canonicalAbsolutePath,
-    absolutePath: inspected.canonicalAbsolutePath,
+    absolutePath: resolve(inspected.workspaceCanonicalRoot, relativePath),
     workspaceCanonicalRoot: inspected.workspaceCanonicalRoot,
     existingCanonicalAncestor: inspected.existingCanonicalAncestor,
     missingTailSegments: inspected.missingTailSegments,

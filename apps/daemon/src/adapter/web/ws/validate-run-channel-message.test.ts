@@ -179,6 +179,20 @@ void test('readRunChannelClientMessage accepts run.tool envelopes without reques
   assert.equal(result.message.type, 'run.tool');
 });
 
+void test('readRunChannelClientMessage accepts a valid run event acknowledgement', () => {
+  const result = readRunChannelClientMessage({
+    type: 'run.event.ack',
+    requestId: 'req-event-ack',
+    request: {
+      runId: 'run-event-ack',
+      threadId: '123e4567-e89b-42d3-a456-426614174000',
+      seq: 4,
+    },
+  });
+
+  assert.equal(result.ok, true);
+});
+
 void test('readRunChannelClientMessage rejects run.tool envelopes without requestId', () => {
   assert.equal(
     readRunChannelClientMessage({ type: 'run.tool', request: {} }).ok,

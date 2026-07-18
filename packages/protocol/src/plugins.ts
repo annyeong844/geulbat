@@ -2,48 +2,45 @@ import { isBoolean, isRecord, isString } from './runtime-utils.js';
 
 export const PLUGIN_SKILL_LOGICAL_ROOT = 'geulbat-skill' as const;
 
-export const PLUGIN_CAPABILITY_KINDS = [
+const PLUGIN_CAPABILITY_KINDS = [
   'skills',
   'mcpServers',
   'apps',
   'hooks',
 ] as const;
 
-export const PLUGIN_CAPABILITY_SUPPORT_STATUSES = [
+const PLUGIN_CAPABILITY_SUPPORT_STATUSES = [
   'supported',
   'partially-supported',
   'not-yet-supported',
   'unsupported',
 ] as const;
 
-export const PLUGIN_SKILL_RUNTIME_STATUSES = [
+const PLUGIN_SKILL_RUNTIME_STATUSES = [
   'available',
   'unavailable-tool-dependencies',
 ] as const;
 
-export const PLUGIN_MARKETPLACE_ENTRY_SOURCE_KINDS = [
+const PLUGIN_MARKETPLACE_ENTRY_SOURCE_KINDS = [
   'local',
   'git',
   'npm',
   'unknown',
 ] as const;
 
-export const PLUGIN_MARKETPLACE_ENTRY_STATUSES = [
+const PLUGIN_MARKETPLACE_ENTRY_STATUSES = [
   'installable',
   'not-available',
   'unsupported-source',
   'invalid-package',
 ] as const;
 
-export const PLUGIN_MARKETPLACE_SOURCE_ROLES = ['official', 'custom'] as const;
-
 export type PluginCapabilityKind = (typeof PLUGIN_CAPABILITY_KINDS)[number];
 
-export type PluginCapabilitySupportStatus =
+type PluginCapabilitySupportStatus =
   (typeof PLUGIN_CAPABILITY_SUPPORT_STATUSES)[number];
 
-export type PluginSkillRuntimeStatus =
-  (typeof PLUGIN_SKILL_RUNTIME_STATUSES)[number];
+type PluginSkillRuntimeStatus = (typeof PLUGIN_SKILL_RUNTIME_STATUSES)[number];
 
 export type PluginMarketplaceEntrySourceKind =
   (typeof PLUGIN_MARKETPLACE_ENTRY_SOURCE_KINDS)[number];
@@ -51,8 +48,7 @@ export type PluginMarketplaceEntrySourceKind =
 export type PluginMarketplaceEntryStatus =
   (typeof PLUGIN_MARKETPLACE_ENTRY_STATUSES)[number];
 
-export type PluginMarketplaceSourceRole =
-  (typeof PLUGIN_MARKETPLACE_SOURCE_ROLES)[number];
+type PluginMarketplaceSourceRole = 'official' | 'custom';
 
 export interface PluginCapabilityView {
   kind: PluginCapabilityKind;
@@ -151,7 +147,7 @@ export interface PluginSkillView {
   pluginVersion: string;
 }
 
-export interface PluginSkillDiagnosticView {
+interface PluginSkillDiagnosticView {
   pluginInstallationId: string;
   pluginName: string;
   code: 'managed-package-invalid';
@@ -188,7 +184,7 @@ export interface PluginMarketplaceDeleteResponse {
   removedMarketplaceId: string;
 }
 
-export interface PluginEnabledRequest {
+interface PluginEnabledRequest {
   enabled: boolean;
 }
 

@@ -208,3 +208,81 @@ void test('buildResponseWireInput rejects an invalid opaque provider history ite
     /provider history item is invalid/u,
   );
 });
+
+void test('buildResponseWireInput rejects duplicate normalized and provider function-call replay', () => {
+  assert.throws(
+    () =>
+      buildResponseWireInput([
+        {
+          kind: 'function_call',
+          id: 'fc-normalized',
+          callId: 'call-1',
+          name: 'read_file',
+          arguments: '{"path":"README.md"}',
+        },
+        {
+          kind: 'backend_item',
+          data: {
+            id: 'fc-provider',
+            type: 'function_call',
+            call_id: 'call-1',
+            name: 'read_file',
+            arguments: '{"path":"README.md"}',
+          },
+        },
+      ]),
+    /provider history item is invalid/u,
+  );
+});
+
+void test('buildResponseWireInput rejects normalized function-call replay for Codex direct', () => {
+  const normalizedFunctionCall = {
+    kind: 'function_call' as const,
+    id: 'fc-normalized',
+    callId: 'call-1',
+    name: 'read_file',
+    arguments: '{"path":"README.md"}',
+  };
+
+  assert.throws(
+    () =>
+      buildResponseWireInput([normalizedFunctionCall], {
+        providerId: 'openai_codex_direct',
+        model: 'gpt-test',
+      }),
+    /provider history item is invalid/u,
+  );
+  assert.deepEqual(
+    buildResponseWireInput([normalizedFunctionCall], {
+      providerId: 'grok_oauth',
+      model: 'grok-test',
+    }),
+    [
+      {
+        type: 'function_call',
+        call_id: 'call-1',
+        name: 'read_file',
+        arguments: '{"path":"README.md"}',
+      },
+    ],
+  );
+});
+
+void test('buildResponseWireInput rejects duplicate provider function-call ids', () => {
+  const functionCall = {
+    id: 'fc-provider',
+    type: 'function_call',
+    call_id: 'call-1',
+    name: 'read_file',
+    arguments: '{"path":"README.md"}',
+  };
+
+  assert.throws(
+    () =>
+      buildResponseWireInput([
+        { kind: 'backend_item', data: functionCall },
+        { kind: 'backend_item', data: { ...functionCall, id: 'fc-copy' } },
+      ]),
+    /provider history item is invalid/u,
+  );
+});

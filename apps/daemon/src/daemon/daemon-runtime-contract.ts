@@ -40,6 +40,7 @@ import type {
 } from './media/contract.js';
 import type { ToolLibraryProjectionPort } from './tools/tool-library-projection-port.js';
 import type { PluginSkillRuntime } from './extensions/plugin-skill-runtime.js';
+import type { RunCheckpointStore } from './sessions/run-checkpoint-store.js';
 
 export type {
   ProviderRunSelection,
@@ -119,6 +120,7 @@ export interface AgentRuntimeServices {
   providerAuthRuntime: ProviderAuthRuntimeStore;
   providerRequestOptions: ProviderRequestOptions;
   providerWebSocketSessions: ResponsesWebSocketSessionStore;
+  runCheckpoints: RunCheckpointStore;
   reactBundleStructuredOutputIngressPolicy: ReactBundleStructuredOutputIngressPolicy;
   resourceBudgetProvider: ResourceBudgetProvider;
   ptcBrowserPageLoadEvidence: PtcBrowserPageLoadEvidenceRuntime;

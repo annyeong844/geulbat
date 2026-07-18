@@ -8,7 +8,7 @@ import type { RunTranscriptEntry } from '../../../lib/run-transcript-entry.js';
 // 데몬 상태를 다시 묻지 않고 트랜스크립트에서 파생한다.
 export const UPDATE_PLAN_TOOL_NAME = 'update_plan';
 
-export type RunPlanStepStatus = 'pending' | 'in_progress' | 'completed';
+type RunPlanStepStatus = 'pending' | 'in_progress' | 'completed';
 
 export interface RunPlanStep {
   step: string;

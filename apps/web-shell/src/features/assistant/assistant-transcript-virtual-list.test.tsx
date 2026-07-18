@@ -81,6 +81,7 @@ void test('commentary stays conversational while adjacent tool history remains c
     renderer = TestRenderer.create(
       <VirtualizedTranscriptRows
         scrollElementRef={React.createRef<HTMLDivElement>()}
+        onVirtualizerUpdate={() => {}}
         messages={messages}
         messageKeys={messages.map((message) => message.entryId)}
         transcriptEntries={[]}
@@ -122,6 +123,7 @@ void test('live commentary is not folded into a running tool activity row', asyn
     renderer = TestRenderer.create(
       <VirtualizedTranscriptRows
         scrollElementRef={React.createRef<HTMLDivElement>()}
+        onVirtualizerUpdate={() => {}}
         messages={[]}
         messageKeys={[]}
         transcriptEntries={[
@@ -161,6 +163,7 @@ void test('consecutive child launches render as one collapsed spawn wave', async
     renderer = TestRenderer.create(
       <VirtualizedTranscriptRows
         scrollElementRef={React.createRef<HTMLDivElement>()}
+        onVirtualizerUpdate={() => {}}
         messages={[]}
         messageKeys={[]}
         transcriptEntries={transcriptEntries}
@@ -200,6 +203,7 @@ void test('long transcripts mount only the viewport rows', async () => {
     renderer = TestRenderer.create(
       <VirtualizedTranscriptRows
         scrollElementRef={React.createRef<HTMLDivElement>()}
+        onVirtualizerUpdate={() => {}}
         messages={messages}
         messageKeys={messages.map((message) => message.entryId)}
         transcriptEntries={[]}
@@ -250,6 +254,7 @@ void test('past questions edit through the branch path while the last question k
     renderer = TestRenderer.create(
       <VirtualizedTranscriptRows
         scrollElementRef={React.createRef<HTMLDivElement>()}
+        onVirtualizerUpdate={() => {}}
         messages={messages}
         messageKeys={messages.map((message) => message.entryId)}
         transcriptEntries={[]}

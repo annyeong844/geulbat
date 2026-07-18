@@ -38,6 +38,7 @@ export const searchMemoryIndexTool = defineZodTool({
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   exposure: {
     directHot: false,
     sdkVisible: true,

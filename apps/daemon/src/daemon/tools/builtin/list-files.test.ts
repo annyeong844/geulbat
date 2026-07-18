@@ -149,24 +149,64 @@ void test('list_files resolves relative paths from the current directory', async
   );
 });
 
-void test('list_files rejects traversal outside the computer root', async () => {
+void test('list_files traverses outside the coordinate base', async () => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-list-computer-'),
   );
+  const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-list-outside-'));
+  await writeFile(join(outsideRoot, 'note.txt'), 'outside\n', 'utf8');
 
   const result = await listFilesTool.execute(
-    { path: '../outside' },
+    { path: outsideRoot },
     {
       callId: 'call-list-computer-traversal',
       computerFileRoot,
     },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'path_out_of_computer_scope');
+  assert.equal(result.ok, true);
+  assert.match(result.output, /note\.txt/u);
 });
 
-void test('list_files rejects a safe symlink whose canonical target is reserved', async (t) => {
+void test('list_files includes hidden and ignored-looking host entries', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-list-hidden-'),
+  );
+  await mkdir(join(computerFileRoot, '.git'), { recursive: true });
+  await mkdir(join(computerFileRoot, 'node_modules', 'package'), {
+    recursive: true,
+  });
+  await writeFile(join(computerFileRoot, '.env'), 'TOKEN=value\n', 'utf8');
+  await writeFile(join(computerFileRoot, '.git', 'config'), '[core]\n', 'utf8');
+  await writeFile(
+    join(computerFileRoot, 'node_modules', 'package', 'index.js'),
+    'export {};\n',
+    'utf8',
+  );
+
+  const result = await listFilesTool.execute(
+    { recursive: true },
+    { callId: 'call-list-hidden', computerFileRoot },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    entries: Array<{ path: string }>;
+  };
+  assert.deepEqual(
+    payload.entries.map((entry) => entry.path),
+    [
+      '.env',
+      '.git',
+      '.git/config',
+      'node_modules',
+      'node_modules/package',
+      'node_modules/package/index.js',
+    ],
+  );
+});
+
+void test('list_files follows a directory symlink regardless of its target name', async (t) => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-list-computer-'),
   );
@@ -186,9 +226,14 @@ void test('list_files rejects a safe symlink whose canonical target is reserved'
     },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'access_denied');
-  assert.match(result.error ?? '', /reserved path: \.geulbat/);
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    entries: Array<{ path: string }>;
+  };
+  assert.deepEqual(
+    payload.entries.map((entry) => entry.path),
+    ['internal-link/state.json'],
+  );
 });
 
 void test('list_files rejects the removed legacy root selector', async () => {

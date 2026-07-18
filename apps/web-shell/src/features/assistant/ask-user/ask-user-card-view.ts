@@ -4,7 +4,7 @@ import { isRecord } from '@geulbat/protocol/runtime-utils';
 // 원본은 tool_call args가 정본이다.
 export const ASK_USER_TOOL_NAME = 'ask_user';
 
-export interface AskUserCardOption {
+interface AskUserCardOption {
   label: string;
   description: string | null;
 }

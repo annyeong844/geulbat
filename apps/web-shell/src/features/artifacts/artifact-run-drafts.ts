@@ -94,7 +94,7 @@ export function buildArtifactExportRunDraftFromAuthority(args: {
     sourceAuthority,
     displayPrompt: `Export artifact to ${targetPath}`,
     promptLines: [
-      'Export the current artifact preview into a workspace file.',
+      'Export the current artifact preview into a computer file.',
       'Treat the artifact as a derived preview, not the source of truth.',
       'Use the normal file mutation path with approval and versionToken checks.',
       `Target export path: ${targetPath}`,
@@ -127,7 +127,7 @@ export function buildGeneratedTextExportRunDraftFromAuthority(args: {
     sourceAuthority,
     displayPrompt: `Export generated asset to ${targetPath}`,
     promptLines: [
-      'Export the current JS runtime generated text snapshot into a workspace file.',
+      'Export the current JS runtime generated text snapshot into a computer file.',
       'Treat the snapshot as a derived export, not the source of truth.',
       'Use the normal file mutation path with approval and versionToken checks.',
       `Target export path: ${targetPath}`,

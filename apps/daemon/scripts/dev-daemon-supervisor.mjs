@@ -186,7 +186,7 @@ export async function createDaemonSourceWatcher({
   return watcher;
 }
 
-export function waitForChildClose(child) {
+function waitForChildClose(child) {
   return new Promise((resolveClose) => {
     child.once('close', (code, signal) => {
       resolveClose({ code, signal });

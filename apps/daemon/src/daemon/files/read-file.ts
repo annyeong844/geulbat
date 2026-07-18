@@ -39,8 +39,8 @@ interface ReadFileOptions {
 }
 
 /**
- * Read a text file within the workspace boundary.
- * Rejects binary files, reserved paths, and workspace escapes.
+ * Read a text file from any OS-accessible host path.
+ * Rejects binary files; host permissions decide which paths are readable.
  */
 export async function readFile(
   workspaceRoot: string,

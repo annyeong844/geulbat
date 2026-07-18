@@ -60,6 +60,10 @@ void test('createAgentLoopHistoryPort delegates to the current transcript-backed
     workspaceRoot,
     threadId,
     prompt: 'canonical prompt',
+    providerTarget: {
+      providerId: 'openai_codex_direct',
+      model: 'history-port-test',
+    },
   });
 
   assert.deepEqual(history, [{ kind: 'user', text: 'canonical prompt' }]);
@@ -234,12 +238,28 @@ void test('persistSingleInterjectToTranscript writes one interject-tagged user e
   );
   const threadId = testThreadId(44);
 
-  await persistSingleInterjectToTranscript(workspaceRoot, threadId, {
-    receivedSeq: 1,
-    text: 'please revise the next step',
-  });
+  const first = await persistSingleInterjectToTranscript(
+    workspaceRoot,
+    threadId,
+    'run-loop-history-interject',
+    {
+      receivedSeq: 1,
+      text: 'please revise the next step',
+    },
+  );
+  const duplicate = await persistSingleInterjectToTranscript(
+    workspaceRoot,
+    threadId,
+    'run-loop-history-interject',
+    {
+      receivedSeq: 1,
+      text: 'please revise the next step',
+    },
+  );
 
   const entries = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.deepEqual(first, { appended: true });
+  assert.deepEqual(duplicate, { appended: false });
   assert.equal(entries.length, 1);
   assert.equal(typeof entries[0]?.entryId, 'string');
   assert.notEqual(entries[0]?.entryId, '');
@@ -250,6 +270,8 @@ void test('persistSingleInterjectToTranscript writes one interject-tagged user e
     timestamp: entries[0]?.timestamp,
     metadata: {
       source: 'interject',
+      sourceRunId: 'run-loop-history-interject',
+      receivedSeq: 1,
     },
   });
   assert.equal(typeof entries[0]?.timestamp, 'string');

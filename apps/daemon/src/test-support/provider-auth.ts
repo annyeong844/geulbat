@@ -11,7 +11,7 @@ import {
   type ProviderAuthRuntimeStore,
 } from '../daemon/auth/runtime-state.js';
 
-export interface ProviderAuthTestStores {
+interface ProviderAuthTestStores {
   bootstrapStore: ProviderAuthBootstrapStore;
   runtimeStore: ProviderAuthRuntimeStore;
 }

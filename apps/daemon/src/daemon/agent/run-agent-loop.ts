@@ -30,9 +30,10 @@ import {
 } from './loop-history.js';
 import {
   clearInterjectFlushRequest,
-  dropPendingInterjectFront,
+  closeInterjectBuffer,
   hasPendingInterject,
   peekPendingInterject,
+  removePendingInterjectBySeq,
 } from '../sessions/active-run-interject-buffer.js';
 import { createAgentLoopLifecyclePort } from './loop-lifecycle-port.js';
 import {
@@ -52,8 +53,10 @@ import {
   projectProviderRunSelection,
   resolveProviderRequestOptionsForRun,
 } from '../llm/provider/provider-options.js';
-import { isMidRunSteerEnabled } from './mid-run-steer-flag.js';
 import { createAgentLoopMemoryPort } from './memory/compaction-loop.js';
+import type { RunCheckpointStore } from '../sessions/run-checkpoint-store.js';
+import { readTranscriptEntries } from '../sessions/transcript-log.js';
+import { appendProviderRound } from '../sessions/provider-round-journal.js';
 import type {
   FunctionCall,
   ProviderStructuredOutput,
@@ -120,6 +123,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     threadId,
     promptProfile,
     computerSessionAvailable: runtimeServices.computerFileRoot !== undefined,
+    workingDirectory: runContext.workingDirectory,
     ...(currentFile === undefined ? {} : { currentFile }),
     ...(selection === undefined ? {} : { selection }),
   });
@@ -188,8 +192,34 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     workspaceRoot: stateRoot,
     threadId,
     prompt,
+    providerTarget: {
+      providerId: providerRequestOptions.providerId,
+      model: providerRequestOptions.model,
+    },
   });
-  const midRunSteerEnabled = isMidRunSteerEnabled();
+  const processRoundFunctionCalls = async (args: {
+    round: number;
+    functionCalls: readonly FunctionCall[];
+  }) =>
+    await toolRuntimePort.processFunctionCalls({
+      functionCalls: [...args.functionCalls],
+      round: args.round,
+      history,
+      runContext,
+      runId,
+      approvalContext,
+      emit,
+      currentFile,
+      selection,
+      signal,
+      runState,
+      ...(toolSurface === undefined
+        ? {}
+        : { allowedRegistryNames: toolSurface.allowedRegistryNames }),
+      toolLibraryProjectionIdentity: toolLibraryProjection.identity,
+      providerRunSelection: projectProviderRunSelection(providerRequestOptions),
+      ...(subagentModelRouting === undefined ? {} : { subagentModelRouting }),
+    });
   recordAgentLoopObserverSnapshot(
     observer,
     buildAgentLoopObserverSnapshot({
@@ -222,7 +252,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
             : 'child',
       initialHistoryItemCount: history.length,
       pendingBackgroundResultCount: embeddedBackgroundResultCount,
-      midRunSteerEnabled,
+      midRunSteerEnabled: true,
     }),
   );
 
@@ -237,17 +267,14 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       getHistoryItemCount() {
         return history.length;
       },
-      async beforeModelRound({ sawFirstModelRequest }) {
-        if (
-          midRunSteerEnabled &&
-          sawFirstModelRequest &&
-          runState !== undefined
-        ) {
+      async beforeModelRound() {
+        if (runState !== undefined) {
           await applyNextPendingInterject({
             history,
             workspaceRoot: stateRoot,
             threadId,
             runState,
+            runCheckpoints: runtimeServices.runCheckpoints,
             emit,
           });
         }
@@ -281,7 +308,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
             emit('usage_updated', { ...runState.usageTotals });
           }
         }
-        if (modelRound.ok && midRunSteerEnabled) {
+        if (modelRound.ok) {
           const compaction = await memoryPort.compactAfterModelRound({
             workspaceRoot: stateRoot,
             threadId,
@@ -312,6 +339,34 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
               }),
             };
           }
+          const providerItems = modelRound.value.itemsToAppend;
+          if (
+            providerItems !== undefined &&
+            providerItems.length > 0 &&
+            providerItems.every((item) => item.kind === 'backend_item')
+          ) {
+            const transcriptEntries = await readTranscriptEntries(
+              stateRoot,
+              threadId,
+            );
+            await appendProviderRound({
+              stateRoot,
+              threadId,
+              runId: assertValidRunId(runId),
+              round,
+              providerId: providerRequestOptions.providerId,
+              model: providerRequestOptions.model,
+              precedingTranscriptEntryId:
+                transcriptEntries.at(-1)?.entryId ?? null,
+              items: providerItems.map((item) => item.data),
+              functionCalls: modelRound.value.functionCalls.map((call) => ({
+                ...call,
+                replaySafe:
+                  registry.getToolMeta(call.name)?.recoveryStrategy ===
+                  'replay_safe',
+              })),
+            });
+          }
         }
         return modelRound;
       },
@@ -333,36 +388,13 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         appendFunctionCallsToHistory(history, [...functionCalls]);
       },
       async processFunctionCalls({ context, functionCalls }) {
-        return toolRuntimePort.processFunctionCalls({
-          functionCalls: [...functionCalls],
+        return await processRoundFunctionCalls({
           round: context.round,
-          history,
-          runContext,
-          runId,
-          approvalContext,
-          emit,
-          currentFile,
-          selection,
-          signal,
-          runState,
-          ...(toolSurface === undefined
-            ? {}
-            : { allowedRegistryNames: toolSurface.allowedRegistryNames }),
-          toolLibraryProjectionIdentity: toolLibraryProjection.identity,
-          providerRunSelection: projectProviderRunSelection(
-            providerRequestOptions,
-          ),
-          ...(subagentModelRouting === undefined
-            ? {}
-            : { subagentModelRouting }),
+          functionCalls,
         });
       },
       resolveTerminalCandidate({ source, result }) {
-        if (
-          midRunSteerEnabled &&
-          runState !== undefined &&
-          hasPendingInterject(runState.interject)
-        ) {
+        if (runState !== undefined && hasPendingInterject(runState.interject)) {
           return source === 'structured_output'
             ? {
                 kind: 'continue',
@@ -370,9 +402,15 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
               }
             : { kind: 'continue' };
         }
+        if (runState !== undefined) {
+          closeInterjectBuffer(runState.interject);
+        }
         return { kind: 'terminal' };
       },
       createTerminalFailure(failure) {
+        if (runState !== undefined) {
+          closeInterjectBuffer(runState.interject);
+        }
         return lifecyclePort.createTerminalFailure({
           emit,
           code: failure.kind === 'aborted' ? 'aborted' : 'execution_failed',
@@ -380,6 +418,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         });
       },
       settleTerminal({ result, source }) {
+        if (runState !== undefined) {
+          closeInterjectBuffer(runState.interject);
+        }
         lifecyclePort.settleAfterResult({
           runState,
           result,
@@ -422,6 +463,7 @@ async function applyNextPendingInterject(args: {
   workspaceRoot: string;
   threadId: string;
   runState: NonNullable<AgentInput['runState']>;
+  runCheckpoints: RunCheckpointStore;
   emit: AgentEventEmitter;
 }): Promise<void> {
   const interject = peekPendingInterject(args.runState.interject);
@@ -429,15 +471,64 @@ async function applyNextPendingInterject(args: {
     return;
   }
 
-  await persistSingleInterjectToTranscript(
+  const enqueued = await args.runCheckpoints.enqueueInterject({
+    threadId: args.runState.threadId,
+    runId: args.runState.runId,
+    interject,
+  });
+  if (!enqueued.ok) {
+    if (enqueued.code === 'not_pending') {
+      removePendingInterjectBySeq(
+        args.runState.interject,
+        interject.receivedSeq,
+      );
+      return;
+    }
+    throw new Error(`interject checkpoint enqueue failed: ${enqueued.code}`);
+  }
+  const claimed = await args.runCheckpoints.claimInterject({
+    threadId: args.runState.threadId,
+    runId: args.runState.runId,
+    receivedSeq: interject.receivedSeq,
+  });
+  if (!claimed.ok) {
+    if (claimed.code === 'not_pending') {
+      removePendingInterjectBySeq(
+        args.runState.interject,
+        interject.receivedSeq,
+      );
+      return;
+    }
+    throw new Error(`interject checkpoint claim failed: ${claimed.code}`);
+  }
+  const persisted = await persistSingleInterjectToTranscript(
     args.workspaceRoot,
     args.threadId,
+    args.runState.runId,
     interject,
   );
-  dropPendingInterjectFront(args.runState.interject);
+  const completed = await args.runCheckpoints.completeInterject({
+    threadId: args.runState.threadId,
+    runId: args.runState.runId,
+    receivedSeq: interject.receivedSeq,
+  });
+  if (!completed.ok) {
+    throw new Error(
+      `interject checkpoint completion failed: ${completed.code}`,
+    );
+  }
+  if (
+    !removePendingInterjectBySeq(args.runState.interject, interject.receivedSeq)
+  ) {
+    throw new Error(
+      `applied interject missing from live buffer: ${interject.receivedSeq}`,
+    );
+  }
   // 즉시 반영 요청은 소비 1회로 목적을 다한다 — 남은 큐는 평소 케이던스로
   clearInterjectFlushRequest(args.runState.interject);
-  appendInterjectToHistory(args.history, interject);
+  if (persisted.appended) {
+    appendInterjectToHistory(args.history, interject);
+  }
   args.emit('interject_applied', {
     runId: args.runState.runId,
     count: 1,

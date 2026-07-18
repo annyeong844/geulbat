@@ -4,7 +4,6 @@ import {
   useState,
   useSyncExternalStore,
   type KeyboardEvent,
-  type ReactNode,
 } from 'react';
 import type { PermissionMode } from '@geulbat/protocol/run-approval';
 import type { ContextUsageUpdatedEventPayload } from '@geulbat/protocol/run-events';
@@ -13,11 +12,7 @@ import {
   IMAGE_GENERATION_MODEL_CATALOG,
   RUN_MODEL_CATALOG,
   RUN_REASONING_EFFORTS,
-  VIDEO_GENERATION_ASPECT_RATIOS,
   VIDEO_GENERATION_MODEL_CATALOG,
-  VIDEO_GENERATION_RESOLUTIONS,
-  type VideoGenerationAspectRatio,
-  type VideoGenerationResolution,
   resolveImageGenerationModelDescriptor,
   resolveRunModelDescriptor,
   type RunModelId,
@@ -46,10 +41,17 @@ import {
 import {
   getVideoGenerationPref,
   getVideoGenerationPrefServerSnapshot,
-  setVideoGenerationPref,
   subscribeVideoGenerationPref,
   VERIFIED_VIDEO_GENERATION_MODEL_IDS,
 } from './video-generation-prefs.js';
+import { VideoSettingsDialog } from './VideoSettingsDialog.js';
+import {
+  ComposerMenuButton,
+  MenuBackRow,
+  MenuNavRow,
+  MenuOptionRow,
+} from './composer-menu-rows.js';
+import { ContextUsageRing } from './context-usage-ring.js';
 
 const PERMISSION_MODE_OPTIONS: Array<{
   value: PermissionMode;
@@ -105,6 +107,10 @@ interface AssistantComposerProps {
   onModelIdChange: (modelId: RunModelId) => void;
   onReasoningEffortChange: (effort: RunReasoningEffort) => void;
   onSubagentModelRoutingChange: (routing: RunSubagentModelRouting) => void;
+  workingDirectory?: string | null;
+  browseStartPath?: string;
+  workingDirectorySelectionPending?: boolean;
+  onOpenWorkingDirectoryPicker?: () => void;
   onUploadFiles?: ((files: FileList) => Promise<void>) | undefined;
   attachments?: ComposerAttachment[];
   onRemoveAttachment?: (contentRef: string) => void;
@@ -137,6 +143,10 @@ export function AssistantComposer({
   onModelIdChange,
   onReasoningEffortChange,
   onSubagentModelRoutingChange,
+  workingDirectory = null,
+  browseStartPath = '',
+  workingDirectorySelectionPending = false,
+  onOpenWorkingDirectoryPicker,
   onUploadFiles,
   attachments = [],
   onRemoveAttachment,
@@ -200,20 +210,7 @@ export function AssistantComposer({
           ...(videoPref.resolution !== undefined ? [videoPref.resolution] : []),
         ].join(' · ');
   const [videoSettingsOpen, setVideoSettingsOpen] = useState(false);
-  const [videoDraftEnabled, setVideoDraftEnabled] = useState(false);
-  const [videoDraftDuration, setVideoDraftDuration] = useState(5);
-  // '자동' = 미지정(프로바이더 기본) — null로 표현한다
-  const [videoDraftAspectRatio, setVideoDraftAspectRatio] =
-    useState<VideoGenerationAspectRatio | null>(null);
-  const [videoDraftResolution, setVideoDraftResolution] =
-    useState<VideoGenerationResolution | null>(null);
-  const openVideoSettings = () => {
-    setVideoDraftEnabled(videoPref !== null);
-    setVideoDraftDuration(videoPref?.durationSeconds ?? 5);
-    setVideoDraftAspectRatio(videoPref?.aspectRatio ?? null);
-    setVideoDraftResolution(videoPref?.resolution ?? null);
-    setVideoSettingsOpen(true);
-  };
+  const openVideoSettings = () => setVideoSettingsOpen(true);
   const [imageModelNotice, setImageModelNotice] = useState<string | null>(null);
   const imageModelNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -312,6 +309,14 @@ export function AssistantComposer({
             ? ''
             : ` ${REASONING_EFFORT_LABELS[fixedSubagentEffort]}`
         } 고정`;
+  const selectedWorkingDirectory = workingDirectory ?? browseStartPath;
+  const workingDirectoryLabel =
+    selectedWorkingDirectory === '' ? '컴퓨터 루트' : selectedWorkingDirectory;
+  const workingDirectorySelectionDisabled =
+    onOpenWorkingDirectoryPicker === undefined ||
+    isBusy ||
+    isRunning ||
+    workingDirectorySelectionPending;
 
   const handleUpload = (files: FileList | null) => {
     closeMenu();
@@ -328,175 +333,16 @@ export function AssistantComposer({
         </div>
       ) : null}
       {videoSettingsOpen ? (
-        <>
-          <button
-            type="button"
-            aria-label="동영상 설정 닫기"
-            className="video-settings-backdrop"
-            onClick={() => setVideoSettingsOpen(false)}
-          />
-          <div
-            className="video-settings-card"
-            role="dialog"
-            aria-label="동영상 설정"
-          >
-            <div className="video-settings-header">
-              <span className="video-settings-title">동영상 설정</span>
-              <button
-                type="button"
-                className="video-settings-close"
-                onClick={() => setVideoSettingsOpen(false)}
-              >
-                ✕
-              </button>
-            </div>
-            <div className="composer-menu-note">
-              대화에서 &ldquo;…동영상 만들어줘&rdquo;라고 요청하면 이 설정으로
-              생성돼요. 이미지를 먼저 그렸다면 &ldquo;움직여줘&rdquo;로
-              애니메이션할 수 있어요.
-            </div>
-            <MenuOptionRow
-              title={videoModel.label}
-              description={
-                !videoModelVerified
-                  ? '검증 대기'
-                  : imageProviderConnected[videoModel.providerId] !== true
-                    ? 'AI 제공자 연결 필요'
-                    : 'xAI · 글·이미지 모두 이 모델로'
-              }
-              checked={videoDraftEnabled}
-              disabled={
-                !videoModelVerified ||
-                imageProviderConnected[videoModel.providerId] !== true
-              }
-              onClick={() => setVideoDraftEnabled(true)}
-            />
-            <MenuOptionRow
-              title="시스템 기본값"
-              description="선택 해제 — 데몬 기본 설정을 따릅니다"
-              checked={!videoDraftEnabled}
-              onClick={() => setVideoDraftEnabled(false)}
-            />
-            <div
-              className={`video-settings-detail${videoDraftEnabled ? '' : ' disabled'}`}
-            >
-              <span className="video-settings-detail-label">
-                길이 <strong>{videoDraftDuration}초</strong>
-              </span>
-              <input
-                type="range"
-                min={1}
-                max={15}
-                step={1}
-                value={videoDraftDuration}
-                disabled={!videoDraftEnabled}
-                aria-label="동영상 길이(초)"
-                onChange={(event) =>
-                  setVideoDraftDuration(Number(event.target.value))
-                }
-              />
-              <span className="video-settings-detail-hint">
-                길수록 생성이 오래 걸려요 (1~15초)
-              </span>
-            </div>
-            <div
-              className={`video-settings-detail${videoDraftEnabled ? '' : ' disabled'}`}
-            >
-              <span className="video-settings-detail-label">
-                화면비 <strong>{videoDraftAspectRatio ?? '자동'}</strong>
-              </span>
-              <div
-                className="video-settings-chips"
-                role="radiogroup"
-                aria-label="화면비"
-              >
-                <button
-                  type="button"
-                  className={`video-settings-chip${videoDraftAspectRatio === null ? ' active' : ''}`}
-                  disabled={!videoDraftEnabled}
-                  onClick={() => setVideoDraftAspectRatio(null)}
-                >
-                  자동
-                </button>
-                {VIDEO_GENERATION_ASPECT_RATIOS.map((ratio) => (
-                  <button
-                    key={ratio}
-                    type="button"
-                    className={`video-settings-chip${videoDraftAspectRatio === ratio ? ' active' : ''}`}
-                    disabled={!videoDraftEnabled}
-                    onClick={() => setVideoDraftAspectRatio(ratio)}
-                  >
-                    {ratio}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div
-              className={`video-settings-detail${videoDraftEnabled ? '' : ' disabled'}`}
-            >
-              <span className="video-settings-detail-label">
-                해상도 <strong>{videoDraftResolution ?? '자동'}</strong>
-              </span>
-              <div
-                className="video-settings-chips"
-                role="radiogroup"
-                aria-label="해상도"
-              >
-                <button
-                  type="button"
-                  className={`video-settings-chip${videoDraftResolution === null ? ' active' : ''}`}
-                  disabled={!videoDraftEnabled}
-                  onClick={() => setVideoDraftResolution(null)}
-                >
-                  자동
-                </button>
-                {VIDEO_GENERATION_RESOLUTIONS.map((resolution) => (
-                  <button
-                    key={resolution}
-                    type="button"
-                    className={`video-settings-chip${videoDraftResolution === resolution ? ' active' : ''}`}
-                    disabled={!videoDraftEnabled}
-                    onClick={() => setVideoDraftResolution(resolution)}
-                  >
-                    {resolution}
-                  </button>
-                ))}
-              </div>
-              <span className="video-settings-detail-hint">
-                자동이면 모델이 알아서 정해요. 해상도가 높을수록 오래 걸려요.
-              </span>
-            </div>
-            <div className="video-settings-actions">
-              <button
-                type="button"
-                className="video-settings-save"
-                onClick={() => {
-                  if (videoDraftEnabled) {
-                    setVideoGenerationPref({
-                      model: videoModel.id,
-                      durationSeconds: videoDraftDuration,
-                      ...(videoDraftAspectRatio !== null
-                        ? { aspectRatio: videoDraftAspectRatio }
-                        : {}),
-                      ...(videoDraftResolution !== null
-                        ? { resolution: videoDraftResolution }
-                        : {}),
-                    });
-                    showImageModelNotice(
-                      `동영상 설정을 저장했어요 — ${videoModel.label} · ${videoDraftDuration}초${videoDraftAspectRatio !== null ? ` · ${videoDraftAspectRatio}` : ''}${videoDraftResolution !== null ? ` · ${videoDraftResolution}` : ''}`,
-                    );
-                  } else {
-                    setVideoGenerationPref(null);
-                    showImageModelNotice('동영상 설정을 해제했어요');
-                  }
-                  setVideoSettingsOpen(false);
-                }}
-              >
-                저장
-              </button>
-            </div>
-          </div>
-        </>
+        <VideoSettingsDialog
+          videoModel={videoModel}
+          videoModelVerified={videoModelVerified}
+          videoModelConnected={
+            imageProviderConnected[videoModel.providerId] === true
+          }
+          videoPref={videoPref}
+          onClose={() => setVideoSettingsOpen(false)}
+          onNotice={showImageModelNotice}
+        />
       ) : null}
       {attachments.length > 0 || uploadPending ? (
         <div className="composer-attachments">
@@ -594,6 +440,19 @@ export function AssistantComposer({
                       onClick={() => imageInputRef.current?.click()}
                     />
                     <div className="context-menu-divider" />
+                    <MenuOptionRow
+                      title="시작 위치"
+                      description={
+                        workingDirectorySelectionPending
+                          ? '폴더 선택 창이 열려 있어요'
+                          : workingDirectoryLabel
+                      }
+                      disabled={workingDirectorySelectionDisabled}
+                      onClick={() => {
+                        closeMenu();
+                        onOpenWorkingDirectoryPicker?.();
+                      }}
+                    />
                     <MenuNavRow
                       label="이미지"
                       value={imageModelLabel}
@@ -888,7 +747,7 @@ export function AssistantComposer({
       <input
         ref={fileInputRef}
         type="file"
-        name="workspace-file-upload"
+        name="computer-file-upload"
         aria-label="파일 업로드"
         title="파일 업로드"
         multiple
@@ -898,7 +757,7 @@ export function AssistantComposer({
       <input
         ref={imageInputRef}
         type="file"
-        name="workspace-image-upload"
+        name="computer-image-upload"
         aria-label="이미지 업로드"
         title="이미지 업로드"
         accept="image/*"
@@ -907,178 +766,5 @@ export function AssistantComposer({
         onChange={(event) => handleUpload(event.target.files)}
       />
     </div>
-  );
-}
-
-const CONTEXT_TOKEN_FORMATTER = new Intl.NumberFormat('ko-KR');
-const CONTEXT_PERCENT_FORMATTER = new Intl.NumberFormat('ko-KR', {
-  maximumFractionDigits: 1,
-});
-
-function ContextUsageRing(props: {
-  contextUsage: ContextUsageUpdatedEventPayload | null;
-  modelId: RunModelId;
-}) {
-  const snapshot =
-    props.contextUsage?.modelId === props.modelId ? props.contextUsage : null;
-  const measuredProgress =
-    snapshot?.state === 'measured'
-      ? Math.min(100, (snapshot.inputTokens / snapshot.thresholdTokens) * 100)
-      : 0;
-  const previousProgress =
-    snapshot === null
-      ? 0
-      : Math.min(100, (snapshot.inputTokens / snapshot.thresholdTokens) * 100);
-  const tooltip = formatContextUsageTooltip(snapshot, previousProgress);
-
-  return (
-    <span
-      className="context-usage-ring"
-      role="img"
-      tabIndex={0}
-      aria-label={tooltip}
-      title={tooltip}
-      data-tooltip={tooltip}
-      data-state={snapshot?.state ?? 'unknown'}
-      data-percentage={CONTEXT_PERCENT_FORMATTER.format(measuredProgress)}
-    >
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <circle
-          className="context-usage-ring-track"
-          cx="12"
-          cy="12"
-          r="9"
-          pathLength="100"
-        />
-        <circle
-          className="context-usage-ring-value"
-          cx="12"
-          cy="12"
-          r="9"
-          pathLength="100"
-          strokeDasharray="100"
-          strokeDashoffset={100 - measuredProgress}
-        />
-      </svg>
-    </span>
-  );
-}
-
-function formatContextUsageTooltip(
-  snapshot: ContextUsageUpdatedEventPayload | null,
-  progress: number,
-): string {
-  if (snapshot === null) {
-    return '컨텍스트 0%';
-  }
-
-  const percentage = CONTEXT_PERCENT_FORMATTER.format(progress);
-  const tokens = `${CONTEXT_TOKEN_FORMATTER.format(snapshot.inputTokens)} / ${CONTEXT_TOKEN_FORMATTER.format(snapshot.thresholdTokens)} 토큰`;
-  if (snapshot.state === 'compacted') {
-    return `컨텍스트 압축 완료 · 직전 ${percentage}% (${tokens})`;
-  }
-  return `컨텍스트 ${percentage}% (${tokens})`;
-}
-
-function ComposerMenuButton(props: {
-  label: string;
-  title: string;
-  active: boolean;
-  emphasis?: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <span className="composer-menu-anchor">
-      <button
-        type="button"
-        className={[
-          'composer-pill',
-          props.active ? 'active' : '',
-          props.emphasis ? 'emphasis' : '',
-        ]
-          .filter(Boolean)
-          .join(' ')}
-        title={props.title}
-        onClick={props.onToggle}
-      >
-        {props.label}
-      </button>
-      {props.children}
-    </span>
-  );
-}
-
-// 클로드식 2줄 옵션 — 제목(+뱃지) 줄과 회색 설명 줄, 오른쪽 ✓
-function MenuOptionRow(props: {
-  title: string;
-  description?: string;
-  badge?: string;
-  checked?: boolean;
-  warning?: boolean;
-  disabled?: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      className={[
-        'context-menu-item',
-        'menu-option',
-        props.warning ? 'warning' : '',
-      ]
-        .filter(Boolean)
-        .join(' ')}
-      disabled={props.disabled ?? false}
-      onClick={props.onClick}
-    >
-      <span className="menu-option-main">
-        <span className="menu-option-title">
-          {props.title}
-          {props.badge !== undefined ? (
-            <span className="menu-badge">{props.badge}</span>
-          ) : null}
-        </span>
-        {props.description !== undefined ? (
-          <span className="menu-option-desc">{props.description}</span>
-        ) : null}
-      </span>
-      {props.checked ? <span className="menu-option-check">✓</span> : null}
-    </button>
-  );
-}
-
-// 서브패널로 들어가는 행 — 현재 값과 › 를 오른쪽에 보여준다
-function MenuNavRow(props: {
-  label: string;
-  value: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      className="context-menu-item menu-nav-row"
-      onClick={props.onClick}
-    >
-      <span className="menu-option-title">{props.label}</span>
-      <span className="menu-nav-value">
-        {props.value} <span aria-hidden="true">›</span>
-      </span>
-    </button>
-  );
-}
-
-function MenuBackRow(props: { label: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      className="context-menu-item menu-back-row"
-      onClick={props.onClick}
-    >
-      <span aria-hidden="true">‹</span> {props.label}
-    </button>
   );
 }

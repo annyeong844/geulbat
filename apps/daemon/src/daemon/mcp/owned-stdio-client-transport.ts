@@ -26,7 +26,7 @@ type TransportState =
 
 type SettlementReason = 'requested' | 'unexpected-exit';
 
-export interface OwnedStdioClientTransportOptions {
+interface OwnedStdioClientTransportOptions {
   command: string;
   args?: readonly string[];
   env: Record<string, string>;

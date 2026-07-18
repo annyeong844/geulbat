@@ -105,6 +105,105 @@ void test('creator draft requests preserve existing composer text without auto-s
   await act(async () => renderer.unmount());
 });
 
+void test('the plus menu opens the start-location picker without changing file authority itself', async () => {
+  let openCount = 0;
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <AssistantComposer
+        isBusy={false}
+        isRunning={false}
+        permissionMode="basic"
+        modelId="gpt-5.6-sol"
+        reasoningEffort="medium"
+        subagentModelRouting={{ mode: 'auto' }}
+        workingDirectory="home/user/old-project"
+        browseStartPath="home/user"
+        onOpenWorkingDirectoryPicker={() => {
+          openCount += 1;
+        }}
+        onPermissionModeChange={() => {}}
+        onModelIdChange={() => {}}
+        onReasoningEffortChange={() => {}}
+        onSubagentModelRoutingChange={() => {}}
+        onCancel={() => {}}
+        onSend={async () => true}
+      />,
+    );
+  });
+
+  const plusButton = renderer.root
+    .findAllByType('button')
+    .find((node) => node.props.title === '첨부와 도구');
+  assert.ok(plusButton);
+  act(() => {
+    plusButton.props.onClick();
+  });
+  const startLocation = renderer.root
+    .findAllByProps({ className: 'menu-option-title' })
+    .find((node) => node.children.includes('시작 위치'));
+  assert.ok(startLocation?.parent?.parent);
+  assert.equal(
+    startLocation.parent.findByProps({ className: 'menu-option-desc' })
+      .children[0],
+    'home/user/old-project',
+  );
+  act(() => {
+    startLocation.parent?.parent?.props.onClick();
+  });
+
+  assert.equal(openCount, 1);
+  assert.equal(renderer.root.findAllByProps({ role: 'menu' }).length, 0);
+  await act(async () => renderer.unmount());
+});
+
+void test('the start-location row is visibly disabled while the native picker is pending', async () => {
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <AssistantComposer
+        isBusy={false}
+        isRunning={false}
+        permissionMode="basic"
+        modelId="gpt-5.6-sol"
+        reasoningEffort="medium"
+        subagentModelRouting={{ mode: 'auto' }}
+        workingDirectory="home/user"
+        workingDirectorySelectionPending
+        onOpenWorkingDirectoryPicker={() => {}}
+        onPermissionModeChange={() => {}}
+        onModelIdChange={() => {}}
+        onReasoningEffortChange={() => {}}
+        onSubagentModelRoutingChange={() => {}}
+        onCancel={() => {}}
+        onSend={async () => true}
+      />,
+    );
+  });
+
+  act(() => {
+    renderer.root
+      .findAllByType('button')
+      .find((node) => node.props.title === '첨부와 도구')
+      ?.props.onClick();
+  });
+  const startLocation = renderer.root
+    .findAllByType('button')
+    .find((node) =>
+      node
+        .findAllByProps({ className: 'menu-option-title' })
+        .some((title) => title.children.includes('시작 위치')),
+    );
+
+  assert.ok(startLocation);
+  assert.equal(startLocation.props.disabled, true);
+  assert.equal(
+    startLocation.findByProps({ className: 'menu-option-desc' }).children[0],
+    '폴더 선택 창이 열려 있어요',
+  );
+  await act(async () => renderer.unmount());
+});
+
 void test('context usage ring starts at a zero-percent baseline before the first exact measurement', async () => {
   let renderer!: ReactTestRenderer;
   await act(async () => {

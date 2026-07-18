@@ -30,10 +30,6 @@ export class FileAccessError extends FileDomainError {
     super('FileAccessError', code, message, path, options);
   }
 
-  static reservedPath(path: string): FileAccessError {
-    return new FileAccessError('access_denied', `reserved path: ${path}`, path);
-  }
-
   static notFound(path: string): FileAccessError {
     return new FileAccessError('not_found', `file not found: ${path}`, path);
   }

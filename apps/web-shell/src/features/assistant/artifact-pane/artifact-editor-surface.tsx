@@ -23,7 +23,7 @@ const renderEditorRuntimeFrame: RenderArtifactRuntimeFrame = (args) =>
 // 좌측 [👁 프리뷰 | </> 원문] 아이콘 토글 + 이름·타입, 우측 복사 · ♻ 다시
 // 만들기(부분/전체 라우팅은 모델 몫) · 저장 · 확대/축소. 생성 중에는 원문
 // 모드에서 코드가 타이핑되듯 흘러들어오고, 끝나면 프리뷰로 자동 전환된다.
-export type ArtifactEditorSurfaceMode = 'render' | 'code';
+type ArtifactEditorSurfaceMode = 'render' | 'code';
 
 export function ArtifactEditorSurface(props: {
   artifact: ThreadArtifactVersion;

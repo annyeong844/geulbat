@@ -23,7 +23,7 @@ export type ProcessCommandResult =
 
 export type BoundedProcessCommandResult = ProcessCommandResult;
 
-export interface ProcessOutputLimitExceededCommandResult {
+interface ProcessOutputLimitExceededCommandResult {
   kind: 'output_limit_exceeded';
   stdout: string;
   stderr: string;
@@ -31,7 +31,7 @@ export interface ProcessOutputLimitExceededCommandResult {
   maxBufferedBytesPerStream: number;
 }
 
-export interface BoundedProcessCommandInvocation {
+interface BoundedProcessCommandInvocation {
   executable: string;
   args: string[];
   cwd?: string;
@@ -56,7 +56,7 @@ export type DockerClientCommandRunner = (
   invocation: DockerClientCommandInvocation,
 ) => Promise<DockerClientCommandResult>;
 
-export const DOCKER_CLIENT_ENV_KEYS = [
+const DOCKER_CLIENT_ENV_KEYS = [
   'DOCKER_API_VERSION',
   'DOCKER_CERT_PATH',
   'DOCKER_CONFIG',

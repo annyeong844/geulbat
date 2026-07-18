@@ -6,16 +6,10 @@ import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 
 import { readRunPromptInputRef } from '../../../daemon/sessions/prompt-input-ref-store.js';
 import type { ResolvedRunAttachment } from '../../../daemon/agent/run-attachments.js';
-import {
-  type ComputerFileScope,
-  normalizeComputerBrowseRelativePath,
-} from '../../../daemon/files/computer-file-scope.js';
+import type { ComputerFileScope } from '../../../daemon/files/computer-file-scope.js';
 import { FileAccessError } from '../../../daemon/files/file-domain-error.js';
 import { resolveSourceDirectoryTarget } from '../../../daemon/files/file-platform.js';
-import {
-  normalizePath,
-  PathEscapeError,
-} from '../../../daemon/files/normalize-path.js';
+import { normalizePath } from '../../../daemon/files/normalize-path.js';
 import { resolveRunAttachments } from './run-attachment-input.js';
 
 interface NormalizedRunStartRequest {
@@ -161,8 +155,7 @@ function readCurrentFile(
   if (value === undefined) {
     return { ok: true, value: undefined };
   }
-  const portablePath = normalizeComputerBrowseRelativePath(value);
-  if (portablePath === undefined || portablePath.trim() === '') {
+  if (value.trim() === '') {
     return {
       ok: false,
       status: 400,
@@ -170,35 +163,24 @@ function readCurrentFile(
       message: 'invalid currentFile',
     };
   }
-  try {
-    const normalizedPath = normalizePath(
-      args.computerFileScope.root,
-      portablePath,
-    );
-    if (normalizedPath === '') {
-      return {
-        ok: false,
-        status: 400,
-        code: 'bad_request',
-        message: 'invalid currentFile',
-      };
-    }
-    return { ok: true, value: normalizedPath };
-  } catch (error: unknown) {
-    if (error instanceof PathEscapeError) {
-      return {
-        ok: false,
-        status: 400,
-        code: 'bad_request',
-        message: 'invalid currentFile',
-      };
-    }
-    throw error;
+  const normalizedPath = normalizePath(
+    args.computerFileScope.root,
+    value.replaceAll('\\', '/'),
+  );
+  if (normalizedPath === '') {
+    return {
+      ok: false,
+      status: 400,
+      code: 'bad_request',
+      message: 'invalid currentFile',
+    };
   }
+  return { ok: true, value: normalizedPath };
 }
 
-// run.start와 run.tool(artifact frame)이 같은 경계로 workingDirectory를
-// 검증한다 — 포크 금지.
+// run.start와 run.tool(artifact frame)이 같은 canonical path owner로
+// workingDirectory를 검증한다 — 포크 금지. Computer base는 좌표 기준일 뿐
+// host filesystem을 가두는 sandbox가 아니다.
 export async function readWorkingDirectory(
   request: Pick<RunStartRequest, 'workingDirectory'>,
   args: { computerFileScope: ComputerFileScope },
@@ -239,7 +221,7 @@ export async function readWorkingDirectory(
       workingDirectory: target.relativePath,
     };
   } catch (error: unknown) {
-    if (error instanceof PathEscapeError || error instanceof FileAccessError) {
+    if (error instanceof FileAccessError) {
       return {
         ok: false,
         status: 400,

@@ -11,9 +11,7 @@ import { ImageGenerationError } from '../contract.js';
 const DEFAULT_GROK_VIDEO_MODEL = 'grok-imagine-video-1.5';
 
 // 우선순위(§4.1): 요청 스코프 모델(사용자 선택) > env knob > 내장 기본값
-export function resolveGrokVideoModel(
-  requestModel: string | undefined,
-): string {
+function resolveGrokVideoModel(requestModel: string | undefined): string {
   return (
     requestModel ??
     process.env.GEULBAT_VIDEO_GENERATION_GROK_MODEL ??
@@ -48,14 +46,14 @@ function resolvePositiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function resolveGrokVideoPollIntervalMs(): number {
+function resolveGrokVideoPollIntervalMs(): number {
   return resolvePositiveIntEnv(
     'GEULBAT_VIDEO_GENERATION_POLL_INTERVAL_MS',
     DEFAULT_POLL_INTERVAL_MS,
   );
 }
 
-export function resolveGrokVideoPollTimeoutMs(): number {
+function resolveGrokVideoPollTimeoutMs(): number {
   return resolvePositiveIntEnv(
     'GEULBAT_VIDEO_GENERATION_POLL_TIMEOUT_MS',
     DEFAULT_POLL_TIMEOUT_MS,
@@ -85,7 +83,7 @@ function classifyGrokVideoFailure(status: number): ImageGenerationError {
   });
 }
 
-export interface GrokVideoProviderInput {
+interface GrokVideoProviderInput {
   request: {
     prompt: string;
     durationSeconds: number;
@@ -103,7 +101,7 @@ export interface GrokVideoProviderInput {
   pollTimeoutMs?: number;
 }
 
-export interface GrokGeneratedVideo {
+interface GrokGeneratedVideo {
   videoUrl: string;
   durationSeconds: number;
   model: string;

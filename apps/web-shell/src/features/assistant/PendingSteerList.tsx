@@ -1,13 +1,10 @@
+import type { PendingSteer } from '../../lib/run-channel/pending-steer.js';
+
 // 대기 중 스티어 큐 — 입력창 위에 잡혀 있다가 모델이 소비하는 순간
 // 대화(사용자 말풍선)로 합류한다. 소비 전에는 🗑로 취소할 수 있고,
 // ⚡ 지금 반영으로 다음 라운드를 기다리지 않고 즉시 밀어넣을 수 있다.
-export interface PendingSteerItem {
-  receivedSeq: number;
-  text: string;
-}
-
 export function PendingSteerList(props: {
-  steers: readonly PendingSteerItem[];
+  steers: readonly PendingSteer[];
   onCancel: (receivedSeq: number) => void;
   onFlush?: () => void;
   flushRequested?: boolean;

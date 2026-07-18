@@ -1,9 +1,4 @@
-export const SIDE_EFFECT_LEVELS = [
-  'none',
-  'read',
-  'write',
-  'destructive',
-] as const;
+const SIDE_EFFECT_LEVELS = ['none', 'read', 'write', 'destructive'] as const;
 
 export type SideEffectLevel = (typeof SIDE_EFFECT_LEVELS)[number];
 

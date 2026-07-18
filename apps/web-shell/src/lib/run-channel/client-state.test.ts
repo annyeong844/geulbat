@@ -9,7 +9,6 @@ import {
   markAuthHandshakeStarted,
   markConnectionClosed,
   markConnectionReady,
-  markReconnectFailed,
   markReconnectScheduled,
 } from './client-state.js';
 
@@ -52,20 +51,13 @@ void test('run-channel client state keeps reconnect scheduling explicit', () => 
   assert.equal(canScheduleReconnect(state), false);
 });
 
-void test('run-channel client state stops reconnect scheduling after the retry ceiling', () => {
+void test('run-channel client state keeps reconnect eligible without a retry ceiling', () => {
   let state = createInitialRunChannelConnectionState();
 
-  state = markReconnectScheduled(state, 1);
-  state = clearReconnectSchedule(state);
-  state = markReconnectScheduled(state, 2);
-  state = clearReconnectSchedule(state);
-
-  assert.equal(canScheduleReconnect(state, 3), true);
-
-  state = markReconnectScheduled(state, 3);
-  assert.equal(canScheduleReconnect(state, 3), false);
-
-  state = markReconnectFailed(state);
-  assert.equal(state.phase, 'failed');
-  assert.equal(state.reconnectTask, null);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    state = markReconnectScheduled(state, attempt + 1);
+    assert.equal(canScheduleReconnect(state), false);
+    state = clearReconnectSchedule(state);
+    assert.equal(canScheduleReconnect(state), true);
+  }
 });

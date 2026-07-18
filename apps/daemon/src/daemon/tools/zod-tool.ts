@@ -10,6 +10,7 @@ import type {
   ToolExposure,
   ToolObjectParameters,
   ToolParameters,
+  ToolRecoveryStrategy,
 } from './types.js';
 import { defineParsedTool, failToolParse } from './parsed-tool.js';
 
@@ -26,6 +27,7 @@ interface ZodToolOptions<TSchema extends AnyZodObject> {
   timeoutMs?: number;
   requiresApproval: boolean;
   exposure?: ToolExposure;
+  recoveryStrategy?: ToolRecoveryStrategy;
   streamsArgsDelta?: boolean;
   catalogSearchMetadata?: ToolCatalogSearchMetadata;
   executeParsed: (
@@ -54,6 +56,9 @@ export function defineZodTool<TSchema extends AnyZodObject>(
       : {}),
     requiresApproval: options.requiresApproval,
     ...(options.exposure ? { exposure: options.exposure } : {}),
+    ...(options.recoveryStrategy
+      ? { recoveryStrategy: options.recoveryStrategy }
+      : {}),
     ...(options.streamsArgsDelta === true ? { streamsArgsDelta: true } : {}),
     ...(options.catalogSearchMetadata
       ? { catalogSearchMetadata: options.catalogSearchMetadata }

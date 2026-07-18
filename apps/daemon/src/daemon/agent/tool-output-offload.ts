@@ -17,10 +17,37 @@ import {
 
 const logger = createLogger('tool-output-offload');
 
+const TOOL_OUTPUT_INLINE_MAX_BYTES_ENV = 'GEULBAT_TOOL_OUTPUT_INLINE_MAX_BYTES';
+const DEFAULT_TOOL_OUTPUT_INLINE_MAX_BYTES = 40 * 1024;
+
+interface ToolOutputProjectionPolicy {
+  inlineMaxBytes: number;
+}
+
+type ToolOutputProjectionPolicyEnv = Partial<
+  Record<typeof TOOL_OUTPUT_INLINE_MAX_BYTES_ENV, string>
+>;
+
+export function resolveToolOutputProjectionPolicyFromEnv(
+  env: ToolOutputProjectionPolicyEnv = process.env,
+): ToolOutputProjectionPolicy {
+  return {
+    inlineMaxBytes: readPositiveIntegerEnv(
+      env,
+      TOOL_OUTPUT_INLINE_MAX_BYTES_ENV,
+      DEFAULT_TOOL_OUTPUT_INLINE_MAX_BYTES,
+    ),
+  };
+}
+
+const PROCESS_TOOL_OUTPUT_PROJECTION_POLICY =
+  resolveToolOutputProjectionPolicyFromEnv();
+
 interface ToolOutputOffloadArgs {
   functionCall: FunctionCall;
   runContext: RunContext;
   runId: string;
+  projectionPolicy?: ToolOutputProjectionPolicy;
   toolOutputRecoveryAvailable?: boolean;
   toolResult: ExecuteResult;
 }
@@ -137,6 +164,15 @@ export async function maybeOffloadToolResult(
     return toolResult;
   }
 
+  const projectionPolicy =
+    args.projectionPolicy ?? PROCESS_TOOL_OUTPUT_PROJECTION_POLICY;
+  if (
+    Buffer.byteLength(toolResult.output, 'utf8') <=
+    projectionPolicy.inlineMaxBytes
+  ) {
+    return toolResult;
+  }
+
   const outputRef = buildToolOutputRef({
     callId: functionCall.callId,
     runId,
@@ -192,6 +228,29 @@ export async function maybeOffloadToolResult(
     ok: true,
     output: JSON.stringify(buildSlimOutput(snapshot)),
   };
+}
+
+function readPositiveIntegerEnv(
+  env: ToolOutputProjectionPolicyEnv,
+  name: keyof ToolOutputProjectionPolicyEnv,
+  fallback: number,
+): number {
+  const raw = env[name];
+  if (raw === undefined) {
+    return fallback;
+  }
+  const value = raw.trim();
+  if (!value) {
+    throw new Error(`invalid ${name}: empty`);
+  }
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new Error(`invalid ${name}: expected positive integer`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`invalid ${name}: expected positive integer`);
+  }
+  return parsed;
 }
 
 function buildRecoverableInlineFallback(

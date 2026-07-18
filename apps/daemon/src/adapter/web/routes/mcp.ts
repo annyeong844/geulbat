@@ -12,8 +12,8 @@ import {
   McpServerConfigError,
   McpServerNotFoundError,
   McpServerOwnershipError,
-  type GlobalMcpRuntime,
-} from '../../../daemon/mcp/global-mcp-runtime.js';
+} from '../../../daemon/mcp/global-mcp-contract.js';
+import type { GlobalMcpRuntime } from '../../../daemon/mcp/global-mcp-runtime.js';
 import {
   sendApiError,
   sendUnexpectedApiError,

@@ -74,11 +74,11 @@ function installRunStartCommandFetch(
   });
 }
 
-void test('buildPromptRunRequest uses the explicit explorer directory', () => {
+void test('buildPromptRunRequest carries only the explicitly selected command start directory', () => {
   assert.deepEqual(
     buildPromptRunRequest({
       prompt: 'hello',
-      workingDirectory: 'Users/sample/Downloads',
+      workingDirectory: 'home/user/repo',
       modelId: 'gpt-5.6-sol',
       selectedThreadId: THREAD_ID_VALUE,
       permissionMode: 'basic',
@@ -87,7 +87,7 @@ void test('buildPromptRunRequest uses the explicit explorer directory', () => {
     }),
     {
       prompt: 'hello',
-      workingDirectory: 'Users/sample/Downloads',
+      workingDirectory: 'home/user/repo',
       modelId: 'gpt-5.6-sol',
       threadId: THREAD_ID,
       permissionMode: 'basic',
@@ -97,7 +97,21 @@ void test('buildPromptRunRequest uses the explicit explorer directory', () => {
   );
 });
 
-void test('buildPromptRunRequest preserves an explicit empty explorer directory', () => {
+void test('buildPromptRunRequest omits cwd when no start directory was selected', () => {
+  const request = buildPromptRunRequest({
+    prompt: 'hello',
+    modelId: 'gpt-5.6-sol',
+    selectedThreadId: null,
+    permissionMode: 'basic',
+    reasoningEffort: 'medium',
+    subagentModelRouting: DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
+  });
+
+  assert.equal(request.workingDirectory, undefined);
+  assert.equal(Object.hasOwn(request, 'workingDirectory'), false);
+});
+
+void test('buildPromptRunRequest preserves an explicitly selected Computer root', () => {
   const request = buildPromptRunRequest({
     prompt: 'hello',
     workingDirectory: '',
@@ -118,7 +132,6 @@ void test('run request builders carry the saved default image model on every pat
     // 일반 전송/재생성 경로
     const promptRequest = buildPromptRunRequest({
       prompt: 'hello',
-      workingDirectory: 'Users/sample/Pictures',
       modelId: 'gpt-5.6-sol',
       selectedThreadId: THREAD_ID_VALUE,
       permissionMode: 'basic',
@@ -158,7 +171,6 @@ void test('run request builders carry the saved default image model on every pat
   // 무선택 상태면 필드를 싣지 않는다(데몬 env/내장 기본값 전용, §4.2)
   const withoutPref = buildPromptRunRequest({
     prompt: 'hello',
-    workingDirectory: '',
     modelId: 'gpt-5.6-sol',
     selectedThreadId: THREAD_ID_VALUE,
     permissionMode: 'basic',

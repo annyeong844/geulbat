@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import type { ReactBundleRuntimeDependencies } from '@geulbat/protocol/react-bundle-inline-compile';
 import {
   validateReactBundleRuntimeUrlPolicy,
   type ReactBundleRuntimeUrlPolicyFailureReason,
@@ -13,22 +14,8 @@ import {
 import type {
   SandboxAttemptStore,
   SandboxOutputRef,
-  SandboxTerminalStatus,
 } from '../sandbox/attempt-store.js';
-import {
-  sandboxRootFailureDiagnostics,
-  withRunningSandboxAttemptRoot,
-} from '../sandbox/attempt-root.js';
-import { buildSandboxEnvironment } from '../sandbox/environment.js';
-import { importSandboxOutputEvidence } from '../sandbox/output-evidence-store.js';
-import { collectSandboxOutputRef } from '../sandbox/output-validation.js';
-
-export interface ReactBundleRuntimeDependencies {
-  importMap?: {
-    imports?: Record<string, string>;
-  };
-  stylesheets?: string[];
-}
+import { runReactBundleDependencyAttempt } from './react-bundle-dependency-attempt-lifecycle.js';
 
 type ReactBundleExplicitDependencyRef =
   | {
@@ -251,68 +238,42 @@ export async function prepareReactBundleExplicitCdnDependencies(args: {
   processRunner?: DependencyPrepareProcessRunner;
 }): Promise<ReactBundleDependencyPrepareSummary> {
   const request = validateReactBundleDependencyPrepareRequest(args.request);
-  const attempt = args.store.createAttempt({
-    jobKind: 'react_bundle_dependency_prepare',
-    adapterKind: 'react_bundle_explicit_cdn_dependency_prepare',
-  });
 
-  return await withRunningSandboxAttemptRoot({
-    attemptId: attempt.attemptId,
+  return await runReactBundleDependencyAttempt({
+    workspaceRoot: args.workspaceRoot,
     store: args.store,
-    onRootFailure: (message) => {
-      args.store.markTerminal(attempt.attemptId, {
-        status: 'failed',
-        diagnostics: sandboxRootFailureDiagnostics(message),
-      });
-      throw new Error(
-        `react bundle dependency prepare sandbox_root_failed: ${message}`,
-      );
+    errorPrefix: 'react bundle dependency prepare',
+    attempt: {
+      jobKind: 'react_bundle_dependency_prepare',
+      adapterKind: 'react_bundle_explicit_cdn_dependency_prepare',
     },
-    run: async (root) => {
-      const env = buildSandboxEnvironment({
-        homeDir: root.homeDir,
-        tempDir: root.tempDir,
-        adapterEnv: {
-          GEULBAT_REACT_BUNDLE_DEPENDENCY_PREPARE: '1',
-          GEULBAT_SANDBOX_NETWORK_POLICY: 'none',
-        },
-      });
-
-      const processResult = await runDependencyPrepareProcess({
-        cwd: root.rootPath,
-        outputDir: root.outputDir,
+    adapterEnv: {
+      GEULBAT_REACT_BUNDLE_DEPENDENCY_PREPARE: '1',
+      GEULBAT_SANDBOX_NETWORK_POLICY: 'none',
+    },
+    runProcess: ({ rootPath, outputDir, env }) =>
+      runDependencyPrepareProcess({
+        cwd: rootPath,
+        outputDir,
         env,
         request,
         ...(args.signal ? { signal: args.signal } : {}),
         ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
         ...(args.processRunner ? { processRunner: args.processRunner } : {}),
-      });
-      const status = classifyDependencyPrepareResult(processResult);
-      if (status !== 'succeeded') {
-        args.store.markTerminal(attempt.attemptId, {
-          status,
-          exitCode:
-            processResult.kind === 'exit' ? processResult.exitCode : null,
-          diagnostics: joinDiagnostics(
-            processResult.stdout,
-            processResult.stderr,
-          ),
-        });
-        throw new Error(`react bundle dependency prepare failed: ${status}`);
+      }),
+    produceCandidate: async ({ outputRef, failAttempt }) => {
+      try {
+        return await readAndValidateCandidate({ outputRef, request });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        return failAttempt(
+          `candidate_validation_failed: ${message}; evidenceRef=${outputRef.evidenceRef}`,
+          error,
+        );
       }
-      if (processResult.kind !== 'exit') {
-        throw new Error('succeeded dependency prepare did not exit');
-      }
-
-      return await importDependencyPrepareOutput({
-        workspaceRoot: args.workspaceRoot,
-        store: args.store,
-        attemptId: attempt.attemptId,
-        request,
-        processResult,
-        outputDir: root.outputDir,
-      });
     },
+    buildSummary: ({ attempt, outputRef, candidate }) =>
+      toSummary({ attempt, outputRef, candidate }),
   });
 }
 
@@ -384,102 +345,6 @@ function buildCandidate(request: ValidatedReactBundleDependencyPrepareRequest) {
       networkPolicy: 'none' as const,
     },
   };
-}
-
-function classifyDependencyPrepareResult(
-  result: DependencyPrepareProcessResult,
-): SandboxTerminalStatus {
-  switch (result.kind) {
-    case 'exit':
-      return result.exitCode === 0 ? 'succeeded' : 'failed';
-    case 'timeout':
-      return 'timed_out';
-    case 'cancelled':
-      return 'cancelled';
-    case 'output_limit_exceeded':
-      return 'crashed';
-    case 'crash':
-      return 'crashed';
-  }
-}
-
-async function importDependencyPrepareOutput(args: {
-  workspaceRoot: string;
-  store: SandboxAttemptStore;
-  attemptId: string;
-  request: ValidatedReactBundleDependencyPrepareRequest;
-  processResult: Extract<DependencyPrepareProcessResult, { kind: 'exit' }>;
-  outputDir: string;
-}): Promise<ReactBundleDependencyPrepareSummary> {
-  const current = args.store.getAttempt(args.attemptId);
-  if (!current) {
-    throw new Error(`sandbox attempt not found: ${args.attemptId}`);
-  }
-
-  let collectedOutput: Awaited<ReturnType<typeof collectSandboxOutputRef>>;
-  try {
-    collectedOutput = await collectSandboxOutputRef(args.outputDir);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    args.store.markTerminal(args.attemptId, {
-      status: 'failed',
-      exitCode: args.processResult.exitCode,
-      diagnostics: `output_collection_failed: ${message}`,
-    });
-    throw new Error(
-      `react bundle dependency prepare output_collection_failed: ${message}`,
-    );
-  }
-  let outputRef: SandboxOutputRef;
-  try {
-    outputRef = await importSandboxOutputEvidence({
-      workspaceRoot: args.workspaceRoot,
-      attempt: current,
-      collectedOutput,
-    });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    args.store.markTerminal(args.attemptId, {
-      status: 'failed',
-      exitCode: args.processResult.exitCode,
-      diagnostics: `evidence_import_failed: ${message}`,
-    });
-    throw new Error(
-      `react bundle dependency prepare evidence_import_failed: ${message}`,
-    );
-  }
-
-  let candidate: DependencyPrepareCandidate;
-  try {
-    candidate = await readAndValidateCandidate({
-      outputRef,
-      request: args.request,
-    });
-  } catch (error: unknown) {
-    args.store.markTerminal(args.attemptId, {
-      status: 'failed',
-      exitCode: args.processResult.exitCode,
-      diagnostics: `candidate_validation_failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    });
-    throw error;
-  }
-  const summary = toSummary({
-    attempt: current,
-    outputRef,
-    candidate,
-  });
-  args.store.markTerminal(args.attemptId, {
-    status: 'succeeded',
-    exitCode: args.processResult.exitCode,
-    diagnostics: joinDiagnostics(
-      args.processResult.stdout,
-      args.processResult.stderr,
-    ),
-    outputRef,
-  });
-  return summary;
 }
 
 async function readAndValidateCandidate(args: {
@@ -601,10 +466,6 @@ function toSummary(args: {
       ),
     },
   };
-}
-
-function joinDiagnostics(stdout: string, stderr: string): string {
-  return [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
 }
 
 function normalizeDependencyRef(

@@ -10,7 +10,7 @@ import {
   type ToolCallSourcePayload,
 } from './tool-call-source.js';
 
-export const PERMISSION_MODES = ['basic', 'full_access'] as const;
+const PERMISSION_MODES = ['basic', 'full_access'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 export function isPermissionMode(value: unknown): value is PermissionMode {
@@ -87,7 +87,7 @@ export interface ApprovalRequest {
   grantScope: ApprovalGrantScope;
 }
 
-export interface ApprovalResponse {
+interface ApprovalResponse {
   ok: boolean;
 }
 

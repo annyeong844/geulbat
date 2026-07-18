@@ -18,15 +18,8 @@ import type {
   SandboxAttemptCapabilityProjection,
   SandboxAttemptStore,
   SandboxOutputRef,
-  SandboxTerminalStatus,
 } from '../sandbox/attempt-store.js';
-import {
-  sandboxRootFailureDiagnostics,
-  withRunningSandboxAttemptRoot,
-} from '../sandbox/attempt-root.js';
-import { buildSandboxEnvironment } from '../sandbox/environment.js';
-import { importSandboxOutputEvidence } from '../sandbox/output-evidence-store.js';
-import { collectSandboxOutputRef } from '../sandbox/output-validation.js';
+import { runReactBundleDependencyAttempt } from './react-bundle-dependency-attempt-lifecycle.js';
 import {
   validateReactBundleDependencyPrepareRequest,
   type ReactBundleDependencyPrepareRequest,
@@ -40,6 +33,7 @@ import type {
 } from './react-bundle-dependency-network-probe-candidate.js';
 import {
   checkDockerMetadataProbeBackendAvailable,
+  rejectDockerAvailabilityOutput,
   runDockerMetadataProbeProcess,
   type DockerMetadataProbeCommandRunner,
 } from './react-bundle-dependency-docker-backend.js';
@@ -206,38 +200,24 @@ export async function probeReactBundleExplicitCdnDependencies(args: {
   const request = validateReactBundleDependencyPrepareRequest(args.request);
   const backend = normalizeMetadataProbeBackend(args.backend);
   const backendSummary = summarizeMetadataProbeBackend(backend);
-  const attempt = args.store.createAttempt({
-    jobKind: 'react_bundle_dependency_network_probe',
-    adapterKind: 'react_bundle_dependency_metadata_probe',
-    capability: projectMetadataProbeCapability(backendSummary),
-  });
 
-  return await withRunningSandboxAttemptRoot({
-    attemptId: attempt.attemptId,
+  return await runReactBundleDependencyAttempt({
+    workspaceRoot: args.workspaceRoot,
     store: args.store,
-    onRootFailure: (message) => {
-      args.store.markTerminal(attempt.attemptId, {
-        status: 'failed',
-        diagnostics: sandboxRootFailureDiagnostics(message),
-      });
-      throw new Error(
-        `react bundle dependency metadata probe sandbox_root_failed: ${message}`,
-      );
+    errorPrefix: 'react bundle dependency metadata probe',
+    attempt: {
+      jobKind: 'react_bundle_dependency_network_probe',
+      adapterKind: 'react_bundle_dependency_metadata_probe',
+      capability: projectMetadataProbeCapability(backendSummary),
     },
-    run: async (root) => {
-      const env = buildSandboxEnvironment({
-        homeDir: root.homeDir,
-        tempDir: root.tempDir,
-        adapterEnv: {
-          GEULBAT_REACT_BUNDLE_DEPENDENCY_METADATA_PROBE: '1',
-          GEULBAT_SANDBOX_NETWORK_POLICY:
-            REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY,
-        },
-      });
-
-      const processResult = await runNetworkProbeProcess({
-        rootPath: root.rootPath,
-        outputDir: root.outputDir,
+    adapterEnv: {
+      GEULBAT_REACT_BUNDLE_DEPENDENCY_METADATA_PROBE: '1',
+      GEULBAT_SANDBOX_NETWORK_POLICY: REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY,
+    },
+    runProcess: ({ rootPath, outputDir, env }) =>
+      runNetworkProbeProcess({
+        rootPath,
+        outputDir,
         env,
         now: args.now ?? (() => new Date().toISOString()),
         request,
@@ -251,36 +231,36 @@ export async function probeReactBundleExplicitCdnDependencies(args: {
         ...(args.dockerCommandRunner
           ? { dockerCommandRunner: args.dockerCommandRunner }
           : {}),
-      });
-      const status = classifyNetworkProbeResult(processResult);
-      if (status !== 'succeeded' || processResult.kind !== 'exit') {
-        const diagnostics = joinDiagnostics(
-          processResult.stdout,
-          processResult.stderr,
-        );
-        args.store.markTerminal(attempt.attemptId, {
-          status,
-          exitCode:
-            processResult.kind === 'exit' ? processResult.exitCode : null,
-          diagnostics,
+      }),
+    produceCandidate: async ({ outputRef, processResult, failAttempt }) => {
+      let candidate: ReactBundleDependencyNetworkProbeCandidate;
+      try {
+        candidate = await readAndValidateCandidate({
+          outputRef,
+          request,
+          ...(processResult.expectedCandidateHash
+            ? { expectedCandidateHash: processResult.expectedCandidateHash }
+            : {}),
         });
-        throw new Error(
-          `react bundle dependency metadata probe failed: ${status}${
-            diagnostics ? `: ${diagnostics}` : ''
-          }`,
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        return failAttempt(
+          `candidate_validation_failed: ${message}; evidenceRef=${outputRef.evidenceRef}`,
+          error,
         );
       }
-
-      return await importNetworkProbeOutput({
-        workspaceRoot: args.workspaceRoot,
-        store: args.store,
-        attemptId: attempt.attemptId,
-        request,
-        backendSummary,
-        processResult,
-        outputDir: root.outputDir,
-      });
+      if (candidate.failures.length > 0) {
+        failAttempt(
+          `dependency_probe_policy_failed: ${candidate.failures.length} probe(s) failed; evidenceRef=${outputRef.evidenceRef}`,
+          new Error(
+            'react bundle dependency metadata probe dependency_probe_policy_failed',
+          ),
+        );
+      }
+      return candidate;
     },
+    buildSummary: ({ attempt, outputRef, candidate }) =>
+      toSummary({ attempt, outputRef, candidate, backendSummary }),
   });
 }
 
@@ -423,13 +403,6 @@ async function runDefaultNetworkProbeProcess(
   };
 }
 
-async function rejectDockerAvailabilityOutput(
-  relativePath: string,
-  _content: string,
-): Promise<void> {
-  throw new Error(`unexpected docker output path: ${relativePath}`);
-}
-
 async function buildCandidate(args: {
   request: ValidatedReactBundleDependencyPrepareRequest;
   now: () => string;
@@ -475,118 +448,6 @@ function probeIdentity(
     ...(dependency.version ? { version: dependency.version } : {}),
     requestedUrl: dependency.url,
   };
-}
-
-function classifyNetworkProbeResult(
-  result: NetworkProbeProcessResult,
-): SandboxTerminalStatus {
-  switch (result.kind) {
-    case 'exit':
-      return result.exitCode === 0 ? 'succeeded' : 'failed';
-    case 'timeout':
-      return 'timed_out';
-    case 'cancelled':
-      return 'cancelled';
-    case 'output_limit_exceeded':
-      return 'crashed';
-    case 'crash':
-      return 'crashed';
-  }
-}
-
-async function importNetworkProbeOutput(args: {
-  workspaceRoot: string;
-  store: SandboxAttemptStore;
-  attemptId: string;
-  request: ValidatedReactBundleDependencyPrepareRequest;
-  backendSummary: ReactBundleDependencyMetadataProbeBackendSummary;
-  processResult: Extract<NetworkProbeProcessResult, { kind: 'exit' }>;
-  outputDir: string;
-}): Promise<ReactBundleDependencyNetworkProbeSummary> {
-  const current = args.store.getAttempt(args.attemptId);
-  if (!current) {
-    throw new Error(`sandbox attempt not found: ${args.attemptId}`);
-  }
-
-  let collectedOutput: Awaited<ReturnType<typeof collectSandboxOutputRef>>;
-  try {
-    collectedOutput = await collectSandboxOutputRef(args.outputDir);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    args.store.markTerminal(args.attemptId, {
-      status: 'failed',
-      exitCode: args.processResult.exitCode,
-      diagnostics: `output_collection_failed: ${message}`,
-    });
-    throw new Error(
-      `react bundle dependency metadata probe output_collection_failed: ${message}`,
-    );
-  }
-  let outputRef: SandboxOutputRef;
-  try {
-    outputRef = await importSandboxOutputEvidence({
-      workspaceRoot: args.workspaceRoot,
-      attempt: current,
-      collectedOutput,
-    });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    args.store.markTerminal(args.attemptId, {
-      status: 'failed',
-      exitCode: args.processResult.exitCode,
-      diagnostics: `evidence_import_failed: ${message}`,
-    });
-    throw new Error(
-      `react bundle dependency metadata probe evidence_import_failed: ${message}`,
-    );
-  }
-
-  let candidate: ReactBundleDependencyNetworkProbeCandidate;
-  try {
-    candidate = await readAndValidateCandidate({
-      outputRef,
-      request: args.request,
-      ...(args.processResult.expectedCandidateHash
-        ? { expectedCandidateHash: args.processResult.expectedCandidateHash }
-        : {}),
-    });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    args.store.markTerminal(args.attemptId, {
-      status: 'failed',
-      exitCode: args.processResult.exitCode,
-      diagnostics: `candidate_validation_failed: ${message}; evidenceRef=${outputRef.evidenceRef}`,
-    });
-    throw error;
-  }
-
-  if (candidate.failures.length > 0) {
-    args.store.markTerminal(args.attemptId, {
-      status: 'failed',
-      exitCode: args.processResult.exitCode,
-      diagnostics: `dependency_probe_policy_failed: ${candidate.failures.length} probe(s) failed; evidenceRef=${outputRef.evidenceRef}`,
-    });
-    throw new Error(
-      'react bundle dependency metadata probe dependency_probe_policy_failed',
-    );
-  }
-
-  const summary = toSummary({
-    attempt: current,
-    outputRef,
-    candidate,
-    backendSummary: args.backendSummary,
-  });
-  args.store.markTerminal(args.attemptId, {
-    status: 'succeeded',
-    exitCode: args.processResult.exitCode,
-    diagnostics: joinDiagnostics(
-      args.processResult.stdout,
-      args.processResult.stderr,
-    ),
-    outputRef,
-  });
-  return summary;
 }
 
 function isHttpMetadataProbeResult(
@@ -997,8 +858,4 @@ function isFailedProbe(
 ): probe is ReactBundleDependencyProbeIdentity &
   Extract<HttpMetadataProbeResult, { ok: false }> {
   return !probe.ok;
-}
-
-function joinDiagnostics(stdout: string, stderr: string): string {
-  return [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
 }

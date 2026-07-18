@@ -6,6 +6,7 @@ import WebSocket from 'ws';
 import { assertRunId as assertValidRunId } from '@geulbat/protocol/ids';
 import { createRunInterjectBuffer } from '../../../daemon/sessions/active-run-interject-buffer.js';
 import { createDaemonContext } from '../../../daemon/context.js';
+import { createRunChannelTestDaemonContext } from '../../../test-support/run-channel-test-support.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { attachRunChannelServer } from './run-channel.js';
 import { getSocketState } from './run-channel-socket-runtime.js';
@@ -117,7 +118,9 @@ void test('run-channel decodes array-buffer and fragmented websocket messages', 
 
 void test('run-channel rejects non-authenticated run messages and closes the socket', async () => {
   const server = createServer();
-  attachRunChannelServer(server, { runtimeContext: createDaemonContext() });
+  attachRunChannelServer(server, {
+    runtimeContext: createRunChannelTestDaemonContext(),
+  });
   await listen(server);
 
   try {
@@ -164,7 +167,7 @@ void test('run-channel rejects non-authenticated run messages and closes the soc
 });
 
 void test('run-channel preserves requestId when working-directory admission throws', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createRunChannelTestDaemonContext();
   daemonContext.computerFileScope = {
     root: '/definitely-missing-geulbat-computer-root',
     browseStartPath: '',
@@ -265,7 +268,7 @@ void test('run-channel rejects control messages from a socket that does not own 
   }
 });
 
-void test('run-channel aborts socket-owned active runs when the socket closes', async () => {
+void test('run-channel keeps socket-owned active runs alive when the socket closes', async () => {
   const runId = assertValidRunId('run-owned-by-socket');
   const threadId = testThreadId(3);
   const abortController = new AbortController();
@@ -276,15 +279,13 @@ void test('run-channel aborts socket-owned active runs when the socket closes', 
       const client = await connectAuthenticatedSocket(port, 'auth-owner');
       try {
         markFirstServerSocketOwnsRun(wss, runId);
-        const aborted = new Promise<void>((resolve) => {
-          abortController.signal.addEventListener('abort', () => resolve(), {
-            once: true,
-          });
+        const closed = new Promise<void>((resolve) => {
+          client.once('close', () => resolve());
         });
-
         client.close();
-        await aborted;
-        assert.equal(abortController.signal.aborted, true);
+        await closed;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(abortController.signal.aborted, false);
       } finally {
         client.close();
       }
@@ -293,8 +294,8 @@ void test('run-channel aborts socket-owned active runs when the socket closes', 
   );
 });
 
-void test('run-channel can use an injected daemon context for socket cleanup', async () => {
-  const daemonContext = createDaemonContext();
+void test('run-channel keeps injected-context runs alive during socket cleanup', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
   const runId = assertValidRunId('run-owned-by-local-context');
   const threadId = testThreadId(4);
   const abortController = new AbortController();
@@ -306,15 +307,13 @@ void test('run-channel can use an injected daemon context for socket cleanup', a
       const client = await connectAuthenticatedSocket(port, 'auth-local-owner');
       try {
         markFirstServerSocketOwnsRun(wss, runId);
-        const aborted = new Promise<void>((resolve) => {
-          abortController.signal.addEventListener('abort', () => resolve(), {
-            once: true,
-          });
+        const closed = new Promise<void>((resolve) => {
+          client.once('close', () => resolve());
         });
-
         client.close();
-        await aborted;
-        assert.equal(abortController.signal.aborted, true);
+        await closed;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(abortController.signal.aborted, false);
       } finally {
         client.close();
       }
@@ -373,23 +372,13 @@ void test('run-channel closes dead peers that stop answering heartbeat pings', a
           assert.ok(serverSocket);
           serverSocket.ping = (() => undefined) as typeof serverSocket.ping;
 
-          await Promise.all([
-            new Promise<void>((resolve, reject) => {
-              client.once('close', () => resolve());
-              client.once('error', reject);
-            }),
-            new Promise<void>((resolve) => {
-              abortController.signal.addEventListener(
-                'abort',
-                () => resolve(),
-                {
-                  once: true,
-                },
-              );
-            }),
-          ]);
+          await new Promise<void>((resolve, reject) => {
+            client.once('close', () => resolve());
+            client.once('error', reject);
+          });
+          await new Promise<void>((resolve) => setImmediate(resolve));
 
-          assert.equal(abortController.signal.aborted, true);
+          assert.equal(abortController.signal.aborted, false);
         } finally {
           client.close();
         }
@@ -451,7 +440,8 @@ async function withRunChannelServer<T>(
   setOptionalEnv('GEULBAT_DEV_TOKEN', options.devToken);
 
   const server = createServer();
-  const daemonContext = options.daemonContext ?? createDaemonContext();
+  const daemonContext =
+    options.daemonContext ?? createRunChannelTestDaemonContext();
   const wss = attachRunChannelServer(server, {
     runtimeContext: daemonContext,
     ...(options.heartbeatIntervalMs !== undefined

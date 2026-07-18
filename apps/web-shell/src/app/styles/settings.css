@@ -1,14 +1,14 @@
 /* ─────────────────────────────────────
    CENTER — Home settings
    ───────────────────────────────────── */
-.workspace-editor-surface {
+.home-editor-surface {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-height: 0;
 }
 
-.workspace-editor-surface[hidden] {
+.home-editor-surface[hidden] {
   display: none;
 }
 
@@ -29,7 +29,7 @@
   border: 0;
 }
 
-.workspace-settings {
+.home-settings {
   display: flex;
   flex: 1;
   flex-direction: column;

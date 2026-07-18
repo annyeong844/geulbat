@@ -1953,3 +1953,10 @@
   flex-direction: column;
   gap: 6px;
 }
+
+.working-directory-selection-error {
+  margin: 0 12px 8px;
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.45;
+}

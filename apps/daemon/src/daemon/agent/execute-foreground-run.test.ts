@@ -29,8 +29,7 @@ import { testThreadId } from '../../test-support/thread-id.js';
 import { testRunId } from '../../test-support/run-id.js';
 import { createAgentLoopMemoryPort } from './memory/compaction-loop.js';
 import { compactThreadContextNative } from './memory/compaction-run.js';
-import { loadInitialHistory } from './loop-history.js';
-import { MID_RUN_STEER_ENABLED_ENV } from './mid-run-steer-flag.js';
+import { loadExistingHistory, loadInitialHistory } from './loop-history.js';
 
 const FIXED_NOW = '2026-04-02T00:00:00.000Z';
 const THREAD_STATE_PERSIST_FAILURE_MESSAGE =
@@ -50,6 +49,94 @@ function findThreadStatePersistFailedEvent(
   assert.ok(event);
   return event;
 }
+
+void test('handled terminal failures persist and deliver one exact acknowledgement cursor', async () => {
+  const threadId = testThreadId(703);
+  const runId = testRunId(703);
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-fg-terminal-cursor-'),
+  );
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({ threadId, stateRoot: workspaceRoot });
+  const delivered: Array<{ seq: number; event: AgentEvent }> = [];
+  daemonContext.liveRunEvents.startRun({
+    runId,
+    threadId,
+    ownerId: 'terminal-cursor-test',
+    sink(envelope) {
+      delivered.push({ seq: envelope.seq, event: envelope.event });
+      return true;
+    },
+  });
+
+  const result = await executeForegroundRun({
+    agentInput: {
+      runId,
+      runContext,
+      prompt: 'fail before provider execution',
+      runtimeServices: daemonContext,
+      approvalContext: makeApprovalContext(),
+      toolSurface: {
+        directRegistryNames: ['not-admitted'],
+        allowedRegistryNames: [],
+      },
+      onEvent(event) {
+        daemonContext.liveRunEvents.publishRunEvent(runId, event);
+      },
+    },
+    transcriptPrompt: 'fail before provider execution',
+    async onInputPersisted() {
+      const started = await daemonContext.runCheckpoints.startRun({
+        runId,
+        threadId,
+        request: { workingDirectory: '', permissionMode: 'basic' },
+      });
+      assert.equal(started.ok, true);
+    },
+    async onTerminalEvent({ event }) {
+      await daemonContext.liveRunEvents.commitTerminalRunEvent({
+        runId,
+        event,
+        async persist(envelope) {
+          await daemonContext.runCheckpoints.settleRun({
+            runId,
+            threadId,
+            terminal: {
+              eventCursor: envelope.seq,
+              event: envelope.event,
+            },
+          });
+        },
+      });
+    },
+  });
+
+  assert.deepEqual(result, { ok: false, finalProse: '' });
+  assert.deepEqual(
+    delivered.map(({ seq, event }) => ({ seq, type: event.type })),
+    [
+      { seq: 0, type: 'run_ack' },
+      { seq: 1, type: 'error' },
+    ],
+  );
+  const checkpoint = await daemonContext.runCheckpoints.readThread(threadId);
+  assert.deepEqual(checkpoint?.terminal, {
+    eventCursor: 1,
+    acknowledged: false,
+    event: delivered[1]?.event,
+  });
+  const acknowledged =
+    await daemonContext.runCheckpoints.acknowledgeTerminalEvent({
+      runId,
+      threadId,
+      eventCursor: delivered[1]?.seq ?? -1,
+    });
+  assert.equal(acknowledged.ok, true);
+  if (acknowledged.ok) {
+    assert.equal(acknowledged.changed, true);
+    assert.equal(acknowledged.checkpoint.terminal?.acknowledged, true);
+  }
+});
 
 void test('executeForegroundRun persists transcript and summary around a successful foreground run', async () => {
   const threadId = testThreadId(31);
@@ -913,99 +1000,97 @@ void test('executeForegroundRun rolls back an artifact when assistant transcript
 });
 
 void test('executeForegroundRun persists provider-native checkpoint before the new assistant tail and rebuilds it after restart', async () => {
-  const previousFlag = process.env[MID_RUN_STEER_ENABLED_ENV];
-  process.env[MID_RUN_STEER_ENABLED_ENV] = '1';
-  try {
-    const threadId = testThreadId(35);
-    const workspaceRoot = await mkdtemp(
-      join(tmpdir(), 'geulbat-fg-native-compaction-'),
-    );
-    const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
-    const runContext = makeRunContext({
-      threadId,
-      stateRoot: workspaceRoot,
-    });
-    const finalRound = providerFinalAnswerRound('assistant tail');
-    const memoryPort = createAgentLoopMemoryPort({
-      resolvePolicy: async () => ({
-        providerId: 'openai_codex_direct',
-        model: daemonContext.providerRequestOptions.model,
-        contextWindow: 100,
-        thresholdTokens: 90,
-        supportsParallelToolCalls: true,
-      }),
-      compactHistory: async (input) => {
-        assert.equal(input.history.at(-1)?.kind, 'user');
-        return {
-          output: [
-            {
-              type: 'compaction',
-              encrypted_content: 'opaque-checkpoint',
-            },
-          ],
-        };
-      },
-      compactThread: compactThreadContextNative,
-    });
-
-    const result = await executeForegroundRun({
-      agentInput: {
-        runId: 'run-fg-native-compaction',
-        runContext,
-        prompt: 'compact this thread',
-        runtimeServices: daemonContext,
-        approvalContext: makeApprovalContext(),
-        memoryPort,
-        callModelImpl: createScriptedProviderCallModel([
+  const threadId = testThreadId(35);
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-fg-native-compaction-'),
+  );
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
+    threadId,
+    stateRoot: workspaceRoot,
+  });
+  const finalRound = providerFinalAnswerRound('assistant tail');
+  const memoryPort = createAgentLoopMemoryPort({
+    resolvePolicy: async () => ({
+      providerId: 'openai_codex_direct',
+      model: daemonContext.providerRequestOptions.model,
+      contextWindow: 100,
+      thresholdTokens: 90,
+      supportsParallelToolCalls: true,
+    }),
+    compactHistory: async (input) => {
+      assert.equal(input.history.at(-1)?.kind, 'user');
+      return {
+        output: [
           {
-            ...finalRound,
-            events: [
-              ...(finalRound.events ?? []),
-              {
-                type: 'response.completed',
-                response: {
-                  usage: {
-                    input_tokens: 90,
-                    output_tokens: 4,
-                  },
+            type: 'compaction',
+            encrypted_content: 'opaque-checkpoint',
+          },
+        ],
+      };
+    },
+    compactThread: compactThreadContextNative,
+  });
+
+  const result = await executeForegroundRun({
+    agentInput: {
+      runId: 'run-fg-native-compaction',
+      runContext,
+      prompt: 'compact this thread',
+      runtimeServices: daemonContext,
+      approvalContext: makeApprovalContext(),
+      memoryPort,
+      callModelImpl: createScriptedProviderCallModel([
+        {
+          ...finalRound,
+          events: [
+            ...(finalRound.events ?? []),
+            {
+              type: 'response.completed',
+              response: {
+                usage: {
+                  input_tokens: 90,
+                  output_tokens: 4,
                 },
               },
-            ],
-          },
-        ]),
-        onEvent: () => undefined,
-      },
-      transcriptPrompt: 'compact this thread',
-      deps: { now: () => FIXED_NOW },
-    });
+            },
+          ],
+        },
+      ]),
+      onEvent: () => undefined,
+    },
+    transcriptPrompt: 'compact this thread',
+    deps: { now: () => FIXED_NOW },
+  });
 
-    assert.deepEqual(result, { ok: true, finalProse: 'assistant tail' });
-    const transcript = await readTranscriptEntries(workspaceRoot, threadId);
-    assert.deepEqual(
-      transcript.map((entry) => entry.role),
-      ['user', 'compaction', 'assistant'],
-    );
-    const restartedHistory = await loadInitialHistory(
-      workspaceRoot,
-      threadId,
-      'next prompt',
-    );
-    assert.equal(restartedHistory[0]?.kind, 'provider_native_compaction');
-    assert.deepEqual(restartedHistory.slice(1), [
-      {
-        kind: 'assistant',
+  assert.deepEqual(result, { ok: true, finalProse: 'assistant tail' });
+  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.deepEqual(
+    transcript.map((entry) => entry.role),
+    ['user', 'compaction', 'assistant'],
+  );
+  const restartedHistory = await loadInitialHistory(
+    workspaceRoot,
+    threadId,
+    'next prompt',
+    {
+      providerId: 'openai_codex_direct',
+      model: daemonContext.providerRequestOptions.model,
+    },
+  );
+  assert.equal(restartedHistory[0]?.kind, 'provider_native_compaction');
+  assert.deepEqual(restartedHistory.slice(1), [
+    {
+      kind: 'backend_item',
+      data: {
+        id: 'msg_1',
+        type: 'message',
         phase: 'final_answer',
-        text: 'assistant tail',
+        content: [{ type: 'output_text', text: 'assistant tail' }],
       },
-      { kind: 'user', text: 'next prompt' },
-    ]);
-  } finally {
-    if (previousFlag === undefined) {
-      delete process.env[MID_RUN_STEER_ENABLED_ENV];
-    } else {
-      process.env[MID_RUN_STEER_ENABLED_ENV] = previousFlag;
-    }
-  }
+    },
+    { kind: 'user', text: 'next prompt' },
+  ]);
 });
 
 void test('executeForegroundRun logs run lifecycle with run and thread identity', async () => {
@@ -1077,4 +1162,64 @@ void test('executeForegroundRun logs run lifecycle with run and thread identity'
     'number',
   );
   assert.equal((agentLogs[1]?.[1] as { ok?: unknown })?.ok, true);
+});
+
+void test('executeForegroundRun resumes a persisted turn without appending the user prompt again', async () => {
+  const threadId = testThreadId(37);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-resume-'));
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({ threadId, stateRoot: workspaceRoot });
+  const modelPrompt = 'exact persisted model prompt';
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: 'visible persisted prompt',
+    metadata: { hiddenPrompt: modelPrompt },
+    timestamp: FIXED_NOW,
+  });
+  let inputPersistenceCalled = false;
+  let seenUserCount = 0;
+
+  await executeForegroundRun({
+    agentInput: {
+      runId: 'run-fg-resume',
+      runContext,
+      prompt: modelPrompt,
+      runtimeServices: daemonContext,
+      approvalContext: makeApprovalContext(),
+      historyPort: {
+        async loadInitialHistory(args) {
+          return await loadExistingHistory(
+            args.workspaceRoot,
+            args.threadId,
+            args.providerTarget,
+          );
+        },
+      },
+      callModelImpl: createScriptedProviderCallModel([
+        {
+          ...providerFinalAnswerRound('resumed answer'),
+          inspectInput(input) {
+            seenUserCount = input.history.filter(
+              (item) => item.kind === 'user',
+            ).length;
+          },
+        },
+      ]),
+      onEvent() {},
+    },
+    transcriptPrompt: 'visible persisted prompt',
+    resumeModelPrompt: modelPrompt,
+    async onInputPersisted() {
+      inputPersistenceCalled = true;
+    },
+  });
+
+  assert.equal(inputPersistenceCalled, false);
+  assert.equal(seenUserCount, 1);
+  assert.equal(
+    (await readTranscriptEntries(workspaceRoot, threadId)).filter(
+      (entry) => entry.role === 'user',
+    ).length,
+    1,
+  );
 });

@@ -17,6 +17,11 @@ export type AgentEvent = {
   };
 }[AgentEventType];
 
+export type TerminalAgentEvent = Extract<
+  AgentEvent,
+  { type: 'done' | 'error' }
+>;
+
 export type AgentEventEmitter = <Type extends AgentEventType>(
   type: Type,
   payload: AgentEventPayloadMap[Type],

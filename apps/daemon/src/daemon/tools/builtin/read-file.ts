@@ -15,7 +15,7 @@ const readFileArgsSchema = z.strictObject({
       message: 'path must not be empty.',
     })
     .describe(
-      'A file path resolved from the current directory inside ComputerFileScope, a geulbat-sdk path/ref, or an opaque geulbat-skill ref returned by skill_search.',
+      'A host file path resolved from the current directory, a geulbat-sdk path/ref, or an opaque geulbat-skill ref returned by skill_search. Absolute paths may address any location readable by the daemon process.',
     ),
   offset: z
     .number()
@@ -37,7 +37,7 @@ const readFileArgsSchema = z.strictObject({
 export const readFileTool = defineZodTool({
   name: 'read_file',
   description:
-    'Read a bounded line page from a file admitted by ComputerFileScope, a verified read-only geulbat-sdk file/ref, or an enabled bundled/installed plugin skill ref. Relative paths start from the current directory.',
+    'Read a bounded line page from the host filesystem, a verified read-only geulbat-sdk file/ref, or an enabled bundled/installed plugin skill ref. Relative paths start from cwd; absolute paths are independent of cwd; OS permissions determine host-path access.',
   argsSchema: readFileArgsSchema,
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,

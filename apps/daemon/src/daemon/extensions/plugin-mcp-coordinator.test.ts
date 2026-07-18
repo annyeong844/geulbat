@@ -17,7 +17,8 @@ import type { ComputerFileScope } from '../files/computer-file-scope.js';
 import { createGlobalMcpRuntime } from '../mcp/global-mcp-runtime.js';
 import { createToolRegistryStore } from '../tools/registry.js';
 import { createMcpCoordinatedPluginStore } from '../plugin-mcp-coordinator.js';
-import { PluginStoreError, createPluginStore } from './plugin-store.js';
+import { createPluginStore } from './plugin-store.js';
+import { PluginStoreError } from './plugin-store-contract.js';
 
 const require = createRequire(import.meta.url);
 

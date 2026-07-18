@@ -177,10 +177,10 @@ void test('read_file fails closed when the computer root is unavailable', async 
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'access_denied');
-  assert.match(result.error ?? '', /computer file scope is unavailable/);
+  assert.match(result.error ?? '', /computer filesystem is unavailable/);
 });
 
-void test('read_file rejects a safe symlink whose canonical target is reserved', async (t) => {
+void test('read_file follows a symlink regardless of its target name', async (t) => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-read-computer-'),
   );
@@ -199,9 +199,9 @@ void test('read_file rejects a safe symlink whose canonical target is reserved',
     },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'access_denied');
-  assert.match(result.error ?? '', /reserved path: \.env/);
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as { content: string };
+  assert.equal(payload.content, 'SECRET=hidden\n');
 });
 
 void test('read_file rejects the removed legacy root selector', async () => {

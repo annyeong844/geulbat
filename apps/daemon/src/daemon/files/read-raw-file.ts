@@ -16,8 +16,8 @@ interface RawFileReadResult {
 }
 
 /**
- * Read raw bytes within the workspace boundary. Same path/symlink checks as
- * text reads — only the binary rejection is skipped.
+ * Read raw bytes from any OS-accessible host path. Unlike text reads, binary
+ * content is accepted.
  */
 export async function readRawFile(
   workspaceRoot: string,

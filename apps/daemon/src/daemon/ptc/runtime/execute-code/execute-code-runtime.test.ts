@@ -28,6 +28,7 @@ import {
   createPtcSessionDockerLocalBatchCommandPolicy,
   PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_SDK_PROJECTION_MOUNT_POLICY_ID,
+  type PtcSessionDockerManager,
 } from '../../lab/session/session-docker-contract.js';
 import { runPtcSessionDockerCommand } from '../../lab/session/session-docker-command.js';
 import type { PtcSessionDockerCommandInvocation } from '../../lab/session/session-docker-contract.js';
@@ -41,6 +42,49 @@ const TEST_CALLBACK_TRANSPORT_POLICY = Object.freeze({
   maxCallbacks: 20,
   callbackTimeoutMs: 30_000,
   maxResponseBytes: 8192,
+});
+
+void test('createPtcExecuteCodeRuntime delegates restart residue cleanup without starting a session', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-restart-cleanup-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-restart-cleanup-runtime-'),
+  );
+  let reapCount = 0;
+  let closeAllCount = 0;
+  const sessionManager: PtcSessionDockerManager = {
+    async reapRestartResidue() {
+      reapCount += 1;
+      return { ok: true, value: undefined };
+    },
+    async getOrCreate() {
+      throw new Error('restart cleanup must not start a session');
+    },
+    async close() {
+      return { ok: true, value: undefined };
+    },
+    async closeAll() {
+      closeAllCount += 1;
+      return { ok: true, value: undefined };
+    },
+  };
+  const runtime = createPtcExecuteCodeRuntime({
+    createSessionManager: () => sessionManager,
+    runtimeRootForState: () => runtimeRoot,
+  });
+
+  try {
+    assert.deepEqual(await runtime.reapRestartResidue?.({ stateRoot }), {
+      ok: true,
+    });
+    assert.equal(reapCount, 1);
+  } finally {
+    await runtime.closeAll();
+    assert.equal(closeAllCount, 1);
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
 });
 
 void test('createPtcExecuteCodeRuntime runs model code through lab batch command without raw shell interpolation', async () => {

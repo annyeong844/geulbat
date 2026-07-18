@@ -33,23 +33,22 @@ void test('createAppShellView maps provider auth into the single Home shell', ()
     providerAuth,
   });
 
-  assert.equal(shell.workspaceKey, 'home');
   assert.equal(shell.providerAuthNotice, 'Provider auth refreshed.');
   assert.equal(
-    shell.workspaceProps.providerAuthStatuses,
+    shell.homeProps.providerAuthStatuses,
     providerAuth.providerAuthStatuses,
   );
-  assert.equal(shell.workspaceProps.providerAuthBusyProviderId, 'grok_oauth');
+  assert.equal(shell.homeProps.providerAuthBusyProviderId, 'grok_oauth');
   assert.equal(
-    shell.workspaceProps.providerAuthErrors,
+    shell.homeProps.providerAuthErrors,
     providerAuth.providerAuthErrors,
   );
   assert.equal(
-    shell.workspaceProps.onConnectProvider,
+    shell.homeProps.onConnectProvider,
     providerAuth.handleConnectProvider,
   );
   assert.equal(
-    shell.workspaceProps.onDisconnectProvider,
+    shell.homeProps.onDisconnectProvider,
     providerAuth.handleDisconnectProvider,
   );
 });

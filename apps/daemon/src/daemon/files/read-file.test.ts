@@ -1,39 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { FileAccessError } from './file-domain-error.js';
 import { readFile, readFilePage } from './read-file.js';
-import { PathEscapeError } from './normalize-path.js';
 import type { FileStateCache } from '../utils/file-state-cache.js';
 
-void test('readFile blocks reserved .env files', async () => {
+void test('readFile reads a hidden configuration file like any other host file', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-'));
   await writeFile(join(workspaceRoot, '.env'), 'SECRET=1\n', 'utf8');
 
-  await assert.rejects(
-    () => readFile(workspaceRoot, '.env'),
-    (error: unknown) =>
-      error instanceof FileAccessError && error.code === 'access_denied',
-  );
+  const result = await readFile(workspaceRoot, '.env');
+
+  assert.equal(result.path, '.env');
+  assert.equal(result.content, 'SECRET=1\n');
 });
 
-void test('readFile blocks workspace escape paths', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-'));
-  await mkdir(join(workspaceRoot, 'docs'), { recursive: true });
-  await writeFile(join(workspaceRoot, 'docs', 'sample.md'), '# ok\n', 'utf8');
+void test('readFile reads an absolute path outside the coordinate base', async () => {
+  const computerBase = await mkdtemp(join(tmpdir(), 'geulbat-read-base-'));
+  const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-outside-'));
+  const outsideFile = join(outsideRoot, 'sample.md');
+  await writeFile(outsideFile, '# outside\n', 'utf8');
 
-  await assert.rejects(
-    () => readFile(workspaceRoot, '../../etc/passwd'),
-    (error: unknown) => error instanceof PathEscapeError,
-  );
-});
+  const result = await readFile(computerBase, outsideFile);
 
-void test('readFile rejects Windows-form absolute paths outside the workspace drive', async () => {
-  await assert.rejects(
-    () => readFile('C:\\workspace', 'D:\\secrets\\file.txt'),
-    (error: unknown) => error instanceof PathEscapeError,
+  assert.equal(result.content, '# outside\n');
+  assert.equal(
+    result.path,
+    relative(computerBase, outsideFile).split(sep).join('/'),
   );
 });
 

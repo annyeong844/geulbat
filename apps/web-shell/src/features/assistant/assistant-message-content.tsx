@@ -7,7 +7,7 @@ import {
 import { buildMarkdownBlocks } from '../../lib/markdown/buildMarkdownBlocks.js';
 import { assistantStyles } from './assistant-styles.js';
 
-export type MessageContentSegment =
+type MessageContentSegment =
   | { kind: 'text'; text: string }
   | { kind: 'code'; language: string | null; code: string };
 
@@ -98,10 +98,7 @@ export function useCopyToClipboard(): {
   return { copied, copy };
 }
 
-export function MessageCodeBlock(props: {
-  language: string | null;
-  code: string;
-}) {
+function MessageCodeBlock(props: { language: string | null; code: string }) {
   const { language, code } = props;
   const { copied, copy } = useCopyToClipboard();
 

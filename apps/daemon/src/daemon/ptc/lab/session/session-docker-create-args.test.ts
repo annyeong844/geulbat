@@ -35,6 +35,7 @@ import {
 } from '../browser/core/lab-browser-policy.js';
 import { buildPtcSessionDockerCreateArgs } from './session-docker-create-args.js';
 import { normalizePtcSessionDockerReuseKey } from './session-docker.js';
+import { buildPtcSessionDockerCallbackRoot } from './session-docker-host-roots.js';
 import {
   createPtcSessionDockerLocalBatchCommandPolicy,
   PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
@@ -77,7 +78,6 @@ void test('session-docker create-args owner does not own reuse-key normalization
   assert.deepEqual(directSpecifiers, [
     '../packages/lab-package-cache-root.js',
     '../packages/lab-package-cache-contract.js',
-    '../../shared/stable-identity.js',
     '../network/lab-network-policy.js',
     '../browser/core/lab-browser-identity.js',
     './session-docker-contract.js',
@@ -162,6 +162,10 @@ void test('buildPtcSessionDockerCreateArgs uses ambient-zero args and callback r
       reuseKey,
       runtimeRoot,
     });
+    const callbackRoot = buildPtcSessionDockerCallbackRoot({
+      reuseKey,
+      runtimeRoot,
+    });
 
     assert.equal(args[0], 'create');
     assert.equal(args.includes('--network'), true);
@@ -188,8 +192,8 @@ void test('buildPtcSessionDockerCreateArgs uses ambient-zero args and callback r
     assert.equal(
       args.some(
         (item: string) =>
-          item.startsWith(`type=bind,src=${runtimeRoot}/s/`) &&
-          item.endsWith(`,dst=${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}`),
+          item ===
+          `type=bind,src=${callbackRoot},dst=${PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT}`,
       ),
       true,
     );

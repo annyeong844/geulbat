@@ -6,12 +6,12 @@ import { join } from 'node:path';
 import { createPtcSessionDockerCommandFixture } from '../../../../test-support/ptc-session-docker.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { makeRunContext } from '../../../../test-support/run-context.js';
+import { createPtcExecuteCodePlacementCoordinator } from './execute-code-placement.js';
 import {
   classifyPtcExecuteCodePlacementContinuity,
   classifyPtcExecuteCodeWarmPlacementDecision,
   createPtcExecuteCodeCallbackEffectPolicy,
   createPtcExecuteCodePlacementPreflightRecord,
-  createPtcExecuteCodePlacementCoordinator,
   createPtcExecuteCodePlacementObservation,
   isPtcExecuteCodePlacementBurstEligible,
   readPtcExecuteCodePlacementObservation,
@@ -19,7 +19,7 @@ import {
   readPtcExecuteCodePlacementDecision,
   type PtcExecuteCodePlacementBatchRunner,
   type PtcExecuteCodePlacementCoordinator,
-} from './execute-code-placement.js';
+} from './execute-code-placement-contract.js';
 import { createPtcExecuteCodeRuntime } from './execute-code-runtime.js';
 import {
   createPtcSessionDockerLocalBatchCommandPolicy,

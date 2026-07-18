@@ -191,6 +191,35 @@ void test('isArtifactSourceRef accepts only discriminated thread source refs', (
     true,
   );
 
+  for (const sourceRef of [
+    {
+      kind: 'thread-file',
+      workingDirectory: '../outside',
+      threadId: '00000000-0000-4000-8000-000000000001',
+      runId: 'run-1',
+      filePath: '../outside/chapter.md',
+      messageTimestamp: '2026-04-10T00:00:00.000Z',
+    },
+    {
+      kind: 'thread-file',
+      workingDirectory: 'D:/writing',
+      threadId: '00000000-0000-4000-8000-000000000001',
+      runId: 'run-1',
+      filePath: 'D:/writing/chapter.md',
+      messageTimestamp: '2026-04-10T00:00:00.000Z',
+    },
+    {
+      kind: 'thread',
+      workingDirectory: '//server/share/writing',
+      threadId: '00000000-0000-4000-8000-000000000001',
+      runId: 'run-1',
+      filePath: null,
+      messageTimestamp: '2026-04-10T00:00:00.000Z',
+    },
+  ]) {
+    assert.equal(isArtifactSourceRef(sourceRef), true);
+  }
+
   assert.equal(
     isArtifactSourceRef({
       workingDirectory: 'workspace',
@@ -287,13 +316,31 @@ void test('normalizeArtifactSourceRef upgrades legacy nullable records to discri
 
   assert.equal(
     normalizeArtifactSourceRef({
-      workingDirectory: '../workspace',
+      workingDirectory: 'workspace/../outside',
       threadId: '00000000-0000-4000-8000-000000000001',
       runId: null,
       filePath: null,
       messageTimestamp: null,
     }),
     null,
+  );
+
+  assert.deepEqual(
+    normalizeArtifactSourceRef({
+      workingDirectory: '../workspace',
+      threadId: '00000000-0000-4000-8000-000000000001',
+      runId: null,
+      filePath: null,
+      messageTimestamp: null,
+    }),
+    {
+      kind: 'thread',
+      workingDirectory: '../workspace',
+      threadId: '00000000-0000-4000-8000-000000000001',
+      runId: null,
+      filePath: null,
+      messageTimestamp: null,
+    },
   );
 });
 

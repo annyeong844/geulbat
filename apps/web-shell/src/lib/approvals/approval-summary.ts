@@ -78,7 +78,7 @@ function buildWellKnownApprovalSummary(
       };
     case 'refresh_memory_index':
       return {
-        title: 'Rebuild workspace memory index',
+        title: 'Rebuild computer file memory index',
         detail: null,
       };
     case 'exec_command':

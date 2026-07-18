@@ -118,7 +118,7 @@ export async function commitThreadArtifactVersion(
   );
 }
 
-export interface CommitThreadArtifactUpdateVersionArgs {
+interface CommitThreadArtifactUpdateVersionArgs {
   workspaceRoot: string;
   threadId: ThreadId;
   artifactId: ArtifactId;
@@ -134,7 +134,7 @@ export interface CommitThreadArtifactUpdateVersionArgs {
   expectedRenderer?: ArtifactRenderer;
 }
 
-export type CommitThreadArtifactUpdateVersionResult =
+type CommitThreadArtifactUpdateVersionResult =
   | {
       ok: true;
       artifact: ArtifactRecord;

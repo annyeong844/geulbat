@@ -1,9 +1,11 @@
-import type { ReactBundleRuntimeManifest } from '@geulbat/protocol/react-bundle-inline-compile';
+import type {
+  ReactBundleRuntimeDependencies,
+  ReactBundleRuntimeManifest,
+} from '@geulbat/protocol/react-bundle-inline-compile';
 import {
   normalizeDependencyUrl,
   normalizeReactBundleEntryUrl,
   type ReactBundleDependencyPrepareSummary,
-  type ReactBundleRuntimeDependencies,
 } from './react-bundle-dependency-prepare.js';
 import type {
   ReactBundleDependencyNetworkProbeSummary,

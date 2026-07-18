@@ -16,10 +16,12 @@ import type {
 import type { FunctionCall, HistoryItem } from '../llm/index.js';
 import {
   collectPreflight,
+  isApprovalPreflightCurrent,
   resolveApprovalClass,
   resolveRuntimeSideEffectLevel,
   shouldAutoApprove,
   shouldRequireApproval,
+  type ApprovalPreflight,
 } from '../tools/approval-runtime-policy.js';
 import type {
   ApprovalClass,
@@ -239,6 +241,15 @@ export async function executeFunctionCall(args: {
           value: toolError('aborted', 'approval aborted'),
         };
       }
+      const preflightFailure = await revalidateApprovedToolPreflight({
+        approvalState,
+        toolName: functionCall.name,
+        toolArgs,
+        runtime,
+      });
+      if (preflightFailure !== undefined) {
+        return { ok: true, value: preflightFailure };
+      }
       return {
         ok: true,
         value: await executeResolvedFunctionCall({
@@ -265,6 +276,15 @@ export async function executeFunctionCall(args: {
     });
     if (decision !== 'approved') {
       return decision;
+    }
+    const preflightFailure = await revalidateApprovedToolPreflight({
+      approvalState,
+      toolName: functionCall.name,
+      toolArgs,
+      runtime,
+    });
+    if (preflightFailure !== undefined) {
+      return { ok: true, value: preflightFailure };
     }
     return {
       ok: true,
@@ -328,7 +348,11 @@ interface ResolveToolApprovalStateArgs {
 
 export async function resolveToolApprovalState(
   args: ResolveToolApprovalStateArgs,
-): Promise<{ needsApproval: boolean; approvalGranted: boolean }> {
+): Promise<{
+  needsApproval: boolean;
+  approvalGranted: boolean;
+  preflight?: ApprovalPreflight;
+}> {
   const { approvalTarget, toolName, toolArgs, runtime } = args;
   const sideEffectLevel =
     args.sideEffectLevel ??
@@ -372,6 +396,7 @@ export async function resolveToolApprovalState(
         toolRegistry: runtime.toolRegistry,
       }),
       approvalGranted: false,
+      preflight,
     };
   } catch (error) {
     logger.warn('tool approval preflight failed; falling back to fail-closed', {
@@ -380,6 +405,40 @@ export async function resolveToolApprovalState(
     });
     return { needsApproval: true, approvalGranted: false };
   }
+}
+
+async function revalidateApprovedToolPreflight(args: {
+  approvalState: { preflight?: ApprovalPreflight };
+  toolName: string;
+  toolArgs: ToolCallArgs;
+  runtime: Pick<AgentToolCallExecutionRuntime, 'executionContextBase'>;
+}): Promise<ExecuteResult | undefined> {
+  const preflight = args.approvalState.preflight;
+  if (preflight === undefined || preflight.mutationTargets.length === 0) {
+    return undefined;
+  }
+
+  try {
+    if (
+      await isApprovalPreflightCurrent(
+        args.runtime.executionContextBase,
+        args.toolArgs,
+        preflight,
+      )
+    ) {
+      return undefined;
+    }
+  } catch (error: unknown) {
+    logger.warn('tool approval target revalidation failed', {
+      toolName: args.toolName,
+      message: getErrorMessage(error),
+    });
+  }
+
+  return toolError(
+    'access_denied',
+    `tool "${args.toolName}" target changed or could not be revalidated after approval`,
+  );
 }
 
 interface WaitForPtcCallbackApprovalDecisionArgs {
@@ -414,17 +473,6 @@ async function waitForPtcCallbackApprovalDecision(
   const { approvalContext, emit, approvalGate } = runtime;
   const signal = getToolRuntimeSignal(runtime);
 
-  emit('approval_required', {
-    callId: functionCall.callId,
-    runId: assertValidRunId(approvalTarget.runId),
-    threadId: approvalTarget.threadId,
-    toolName: functionCall.name,
-    approvalClass,
-    permissionMode: approvalContext.permissionMode,
-    argumentsPreview: toolArgs,
-    sideEffectLevel: runtimeSideEffectLevel,
-  });
-
   return await approvalGate.waitForApproval(
     functionCall.callId,
     approvalTarget.runId,
@@ -436,6 +484,18 @@ async function waitForPtcCallbackApprovalDecision(
       runtimeSideEffectLevel,
     ),
     signal,
+    () => {
+      emit('approval_required', {
+        callId: functionCall.callId,
+        runId: assertValidRunId(approvalTarget.runId),
+        threadId: approvalTarget.threadId,
+        toolName: functionCall.name,
+        approvalClass,
+        permissionMode: approvalContext.permissionMode,
+        argumentsPreview: toolArgs,
+        sideEffectLevel: runtimeSideEffectLevel,
+      });
+    },
   );
 }
 
@@ -475,17 +535,6 @@ export async function resolveApprovalDecision(
   if (runState) {
     markRunApprovalPending(runState);
   }
-  emit('approval_required', {
-    callId: functionCall.callId,
-    runId: assertValidRunId(approvalTarget.runId),
-    threadId: approvalTarget.threadId,
-    toolName: functionCall.name,
-    approvalClass,
-    permissionMode: approvalContext.permissionMode,
-    argumentsPreview: toolArgs,
-    sideEffectLevel: runtimeSideEffectLevel,
-  });
-
   const decision = await approvalGate.waitForApproval(
     functionCall.callId,
     approvalTarget.runId,
@@ -497,6 +546,18 @@ export async function resolveApprovalDecision(
       runtimeSideEffectLevel,
     ),
     signal,
+    () => {
+      emit('approval_required', {
+        callId: functionCall.callId,
+        runId: assertValidRunId(approvalTarget.runId),
+        threadId: approvalTarget.threadId,
+        toolName: functionCall.name,
+        approvalClass,
+        permissionMode: approvalContext.permissionMode,
+        argumentsPreview: toolArgs,
+        sideEffectLevel: runtimeSideEffectLevel,
+      });
+    },
   );
 
   if (decision === 'denied') {

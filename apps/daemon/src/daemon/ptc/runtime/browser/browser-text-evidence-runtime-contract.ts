@@ -35,8 +35,7 @@ export type PtcBrowserTextEvidenceRuntimeSummary =
     PtcBrowserTextEvidenceDigest
   >;
 
-export type PtcBrowserTextEvidenceFailureReason =
-  PtcLabBrowserEvidenceFailureReason;
+type PtcBrowserTextEvidenceFailureReason = PtcLabBrowserEvidenceFailureReason;
 
 type PtcBrowserTextEvidenceFailurePhase = PtcLabBrowserEvidencePhase;
 

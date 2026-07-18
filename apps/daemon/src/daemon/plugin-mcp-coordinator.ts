@@ -1,15 +1,13 @@
 import type { InstalledPluginView } from '@geulbat/protocol/plugins';
 
+import type { PluginMcpServerBinding } from './mcp/global-mcp-registration.js';
+import type { GlobalMcpRuntime } from './mcp/global-mcp-runtime.js';
 import type {
-  GlobalMcpRuntime,
-  PluginMcpServerBinding,
-} from './mcp/global-mcp-runtime.js';
-import {
-  PluginStoreError,
-  type PluginBundledMcpLaunchRequest,
-  type PluginBundledMcpServerSnapshot,
-  type PluginStore,
+  PluginBundledMcpLaunchRequest,
+  PluginBundledMcpServerSnapshot,
+  PluginStore,
 } from './extensions/plugin-store.js';
+import { PluginStoreError } from './extensions/plugin-store-contract.js';
 
 /**
  * Coordinates plugin package mutations with the existing global MCP owner.

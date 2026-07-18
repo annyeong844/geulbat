@@ -1,9 +1,11 @@
 import {
+  isComputerDirectorySelectionResponse,
   isComputerFileScopeResponse,
   isFileBinaryInputRefResponse,
   isFileReadResponse,
   isFileSaveResponse,
   isFileTreeResponse,
+  type ComputerDirectorySelectionResponse,
   type ComputerFileScopeResponse,
   type FileBinaryInputRefResponse,
   type FileReadResponse,
@@ -25,7 +27,7 @@ import {
 
 const logger = createLogger('api/files');
 
-export type ComputerFileApiScope = { root: 'computer' };
+type ComputerFileApiScope = { root: 'computer' };
 export type FileApiScope = ComputerFileApiScope;
 export const COMPUTER_FILE_API_SCOPE: ComputerFileApiScope = {
   root: 'computer',
@@ -64,6 +66,23 @@ export function getComputerFileScope(): Promise<ComputerFileScopeResponse> {
     '/api/files/computer-scope',
     undefined,
     isComputerFileScopeResponse,
+  );
+}
+
+export function selectComputerDirectory(
+  initialPath?: string,
+): Promise<ComputerDirectorySelectionResponse> {
+  return apiFetch(
+    '/api/files/select-directory',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...fileScopeBody(COMPUTER_FILE_API_SCOPE),
+        ...(initialPath === undefined ? {} : { initialPath }),
+      }),
+    },
+    isComputerDirectorySelectionResponse,
   );
 }
 

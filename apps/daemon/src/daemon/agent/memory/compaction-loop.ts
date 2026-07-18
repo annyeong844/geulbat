@@ -3,13 +3,15 @@ import { createLogger } from '@geulbat/shared-utils/logger';
 
 import {
   callModel,
-  compactProviderNativeHistory,
-  resolveProviderNativeCompactionPolicy,
   type CallModelInput,
   type LLMChunk,
+} from '../../llm/provider/client.js';
+import {
+  compactProviderNativeHistory,
+  resolveProviderNativeCompactionPolicy,
   type ProviderNativeCompactionInput,
   type ProviderNativeCompactionPolicy,
-} from '../../llm/provider/client.js';
+} from '../../llm/provider/provider-native-compaction.js';
 import type { HistoryItem } from '../../llm/provider/wire/types.js';
 import {
   resolveProviderRequestOptionsForRun,
@@ -24,7 +26,7 @@ import {
   compactThreadContextNative,
 } from './compaction-run.js';
 
-export interface CompactAfterModelRoundArgs {
+interface CompactAfterModelRoundArgs {
   workspaceRoot: string;
   threadId: string;
   history: HistoryItem[];
@@ -39,7 +41,7 @@ export interface CompactAfterModelRoundArgs {
   signal?: AbortSignal;
 }
 
-export type CompactAfterModelRoundResult =
+type CompactAfterModelRoundResult =
   | {
       kind: 'not_needed';
       reason:
@@ -157,6 +159,10 @@ export async function prepareProviderTransitionCompaction(
             args.workspaceRoot,
             args.threadId,
             handoffRequest,
+            {
+              providerId: args.source.providerId,
+              model: args.source.model,
+            },
           );
           return await collectProviderTransitionSummary(
             deps.callModel({

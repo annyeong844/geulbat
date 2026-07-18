@@ -9,12 +9,12 @@ import {
   type PtcSessionDockerIdentity,
   type PtcSessionDockerManager,
 } from '../../lab/session/session-docker-contract.js';
+import { createPtcExecuteCodePlacementCoordinator } from './execute-code-placement.js';
 import {
   classifyPtcExecuteCodePlacementContinuity,
   createPtcExecuteCodeCallbackEffectPolicy,
-  createPtcExecuteCodePlacementCoordinator,
   type PtcExecuteCodePlacementBatchRunner,
-} from './execute-code-placement.js';
+} from './execute-code-placement-contract.js';
 import {
   createPtcExecuteCodeStandbyPool,
   buildPtcExecuteCodeStandbyIdentityKey,

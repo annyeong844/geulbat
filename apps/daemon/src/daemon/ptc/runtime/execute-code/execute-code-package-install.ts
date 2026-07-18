@@ -10,7 +10,7 @@ import type {
   PtcSessionDockerIdentity,
 } from '../../lab/session/session-docker-contract.js';
 import { isPtcRecord } from '../../shared/record-shape.js';
-import type { PtcExecuteCodePlacementBatchRunner } from './execute-code-placement.js';
+import type { PtcExecuteCodePlacementBatchRunner } from './execute-code-placement-contract.js';
 import type { PtcExecuteCodePackageInstallRuntimeConfig } from './execute-code-package-install-config.js';
 import {
   PTC_EXECUTE_CODE_INSTALLED_PACKAGES_NODE_PATH,
@@ -112,7 +112,7 @@ interface RunPtcExecuteCodePackageInstallArgs {
 }
 
 // Effective spec sent to npm: the requested version or 'latest' when omitted.
-export interface PtcValidatedInstallPackage {
+interface PtcValidatedInstallPackage {
   name: string;
   spec: string;
 }

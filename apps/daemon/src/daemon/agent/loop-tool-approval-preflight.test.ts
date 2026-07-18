@@ -1,17 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { resolveToolApprovalState } from './loop-tool-approval.js';
 import { buildAgentToolExecutionContextBase } from './loop-tool-runtime.js';
-import { collectPreflight } from '../tools/approval-runtime-policy.js';
+import {
+  collectPreflight,
+  isApprovalPreflightCurrent,
+} from '../tools/approval-runtime-policy.js';
 import { createApprovalGrantStore } from '../tools/approval-grants.js';
 import { createBuiltinToolRegistryStore } from '../tools/builtin/catalog.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
 import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
+import { createSymlinkOrSkip } from '../../test-support/symlink-test.js';
 
 function makePreflightRuntime(args: {
   runId: string;
@@ -152,17 +156,44 @@ void test('collectPreflight resolves explicit computer paths against the compute
   );
   const computerPath = join(computerFileRoot, 'draft.md');
 
-  await assert.doesNotReject(
-    collectPreflight({ computerFileRoot }, { path: computerPath }),
+  assert.deepEqual(
+    await collectPreflight({ computerFileRoot }, { path: computerPath }),
+    {
+      mutationTargets: [
+        {
+          argument: 'path',
+          canonicalTargetId: computerPath,
+        },
+      ],
+    },
   );
   await assert.rejects(collectPreflight({}, { path: computerPath }));
 });
 
-void test('resolveToolApprovalState fails closed when preflight throws', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-approval-'));
-  const computerFileRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-computer-approval-'),
+void test('isApprovalPreflightCurrent rejects a parent symlink swap', async (t) => {
+  const outerRoot = await mkdtemp(join(tmpdir(), 'geulbat-approval-swap-'));
+  t.after(() => rm(outerRoot, { recursive: true, force: true }));
+  const computerFileRoot = join(outerRoot, 'computer');
+  const outsideRoot = join(outerRoot, 'outside');
+  const linkedParent = join(computerFileRoot, 'sub');
+  await mkdir(linkedParent, { recursive: true });
+  await mkdir(outsideRoot, { recursive: true });
+  const toolArgs = { path: 'sub/draft.md' };
+  const preflight = await collectPreflight({ computerFileRoot }, toolArgs);
+
+  await rm(linkedParent, { recursive: true, force: true });
+  if (!(await createSymlinkOrSkip(t, outsideRoot, linkedParent))) {
+    return;
+  }
+
+  assert.equal(
+    await isApprovalPreflightCurrent({ computerFileRoot }, toolArgs, preflight),
+    false,
   );
+});
+
+void test('resolveToolApprovalState fails closed when the Computer coordinate base is unavailable', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-approval-'));
   const toolRegistry = createBuiltinToolRegistryStore();
 
   const result = await resolveToolApprovalState({
@@ -173,7 +204,7 @@ void test('resolveToolApprovalState fails closed when preflight throws', async (
     toolName: 'manage_files',
     toolArgs: {
       operation: 'create',
-      path: '../escape.txt',
+      path: 'draft.txt',
     },
     runtime: makePreflightRuntime({
       runId: 'run-preflight-failure',
@@ -184,7 +215,6 @@ void test('resolveToolApprovalState fails closed when preflight throws', async (
       approvalContext: makeApprovalContext(),
       approvalGrants: createApprovalGrantStore(),
       toolRegistry,
-      computerFileRoot,
     }),
   });
 

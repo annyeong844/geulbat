@@ -1,10 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  createComputerFileScope,
-  normalizeComputerBrowseRelativePath,
-} from './computer-file-scope.js';
+import { createComputerFileScope } from './computer-file-scope.js';
+
+void test('createComputerFileScope stays unavailable without a host root', () => {
+  assert.equal(createComputerFileScope(), undefined);
+});
+
+void test('createComputerFileScope tolerates hosts without a home or shortcut directories', () => {
+  assert.deepEqual(createComputerFileScope({ root: '/computer' }), {
+    root: '/computer',
+    browseShortcuts: [],
+  });
+
+  assert.deepEqual(
+    createComputerFileScope({
+      root: '/computer',
+      home: '/computer/missing-home',
+    }),
+    {
+      root: '/computer',
+      browseStartPath: 'missing-home',
+      browseShortcuts: [],
+    },
+  );
+});
 
 void test('createComputerFileScope derives root-relative home and existing shortcuts', () => {
   const scope = createComputerFileScope({
@@ -36,16 +56,17 @@ void test('createComputerFileScope keeps root home as an empty browse path', () 
   );
 });
 
-void test('normalizeComputerBrowseRelativePath rejects paths outside the root', () => {
-  assert.equal(normalizeComputerBrowseRelativePath(''), '');
-  assert.equal(
-    normalizeComputerBrowseRelativePath('Users\\Alice\\Documents'),
-    'Users/Alice/Documents',
+void test('createComputerFileScope treats root as a coordinate base rather than a sandbox', () => {
+  assert.deepEqual(
+    createComputerFileScope({
+      root: '/computer',
+      home: '/Users/Alice',
+      isDirectory: (path) => path === '/Users/Alice/Documents',
+    }),
+    {
+      root: '/computer',
+      browseStartPath: '../Users/Alice',
+      browseShortcuts: [{ label: '문서', path: '../Users/Alice/Documents' }],
+    },
   );
-  assert.equal(normalizeComputerBrowseRelativePath('../outside'), undefined);
-  assert.equal(
-    normalizeComputerBrowseRelativePath('D:\\Users\\Alice'),
-    undefined,
-  );
-  assert.equal(normalizeComputerBrowseRelativePath('/outside'), undefined);
 });

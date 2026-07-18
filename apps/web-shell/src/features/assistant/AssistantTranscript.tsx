@@ -112,6 +112,7 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
     hasUnreadStreamContent,
     isAwayFromBottom,
     handleTranscriptScroll,
+    handleVirtualizerUpdate,
     handleJumpToLatest,
   } = useAssistantTranscriptScrollState({
     isRunning,
@@ -140,6 +141,7 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
       <div ref={contentRef} style={assistantStyles.transcriptContent}>
         <VirtualizedTranscriptRows
           scrollElementRef={transcriptRef}
+          onVirtualizerUpdate={handleVirtualizerUpdate}
           messages={messages}
           messageKeys={messageKeys}
           transcriptEntries={transcriptEntries}

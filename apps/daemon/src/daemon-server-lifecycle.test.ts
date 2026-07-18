@@ -42,9 +42,11 @@ void test('closeDaemonForShutdown closes phases in order before releasing admiss
   const server = createServer();
   await listen(server);
   let serverClosed = false;
+  let pickerClosed = false;
   let runtimeCloseCount = 0;
   let admissionReleased = false;
   server.once('close', () => {
+    assert.equal(pickerClosed, true);
     serverClosed = true;
   });
   const closeRuntime = async () => {
@@ -53,6 +55,12 @@ void test('closeDaemonForShutdown closes phases in order before releasing admiss
     return { ok: true } as const;
   };
   const runtimeSessions: DaemonRuntimeSessionClosers = {
+    computerDirectoryPicker: {
+      async close() {
+        assert.equal(serverClosed, false);
+        pickerClosed = true;
+      },
+    },
     globalMcp: {
       async close() {
         await closeRuntime();
@@ -68,6 +76,7 @@ void test('closeDaemonForShutdown closes phases in order before releasing admiss
     admissionLock: {
       async release() {
         assert.equal(runtimeCloseCount, 5);
+        assert.equal(pickerClosed, true);
         admissionReleased = true;
       },
     },
@@ -84,6 +93,11 @@ void test('closeDaemonForShutdown attempts every phase and aggregates failures',
   const server = createServer();
   const calls: string[] = [];
   const runtimeSessions: DaemonRuntimeSessionClosers = {
+    computerDirectoryPicker: {
+      async close() {
+        calls.push('picker');
+      },
+    },
     globalMcp: {
       async close() {
         calls.push('mcp');
@@ -145,6 +159,7 @@ void test('closeDaemonForShutdown attempts every phase and aggregates failures',
     },
   );
   assert.deepEqual(calls, [
+    'picker',
     'mcp',
     'page-load',
     'text',
@@ -192,6 +207,11 @@ void test('closeDaemonRuntimeSessions closes MCP and retained PTC runtimes durin
   const controller = new AbortController();
   const calls: string[] = [];
   const runtimeSessions: DaemonRuntimeSessionClosers = {
+    computerDirectoryPicker: {
+      async close() {
+        calls.push('picker');
+      },
+    },
     globalMcp: {
       async close(args) {
         calls.push(`mcp:${args?.signal === controller.signal}`);
@@ -229,6 +249,7 @@ void test('closeDaemonRuntimeSessions closes MCP and retained PTC runtimes durin
   });
 
   assert.deepEqual(calls, [
+    'picker',
     'mcp:true',
     'page-load:true',
     'text:true',
@@ -240,6 +261,11 @@ void test('closeDaemonRuntimeSessions closes MCP and retained PTC runtimes durin
 void test('closeDaemonRuntimeSessions surfaces cleanup failures after trying every runtime', async () => {
   const calls: string[] = [];
   const runtimeSessions: DaemonRuntimeSessionClosers = {
+    computerDirectoryPicker: {
+      async close() {
+        calls.push('picker');
+      },
+    },
     globalMcp: {
       async close() {
         calls.push('mcp');
@@ -284,7 +310,14 @@ void test('closeDaemonRuntimeSessions surfaces cleanup failures after trying eve
     closeDaemonRuntimeSessions({ runtimeSessions }),
     /globalMcp:threw; ptcBrowserTextEvidence:ptc_browser_text_evidence_session_cleanup_failed; ptcBrowserNavigate:ptc_browser_navigate_session_cleanup_failed; ptcExecuteCode:threw/u,
   );
-  assert.deepEqual(calls, ['mcp', 'page-load', 'text', 'browser', 'execute']);
+  assert.deepEqual(calls, [
+    'picker',
+    'mcp',
+    'page-load',
+    'text',
+    'browser',
+    'execute',
+  ]);
 });
 
 function listen(server: ReturnType<typeof createServer>): Promise<void> {

@@ -79,7 +79,7 @@ void test('plugin settings installs from a portable path, toggles, and removes a
 
   act(() => {
     renderer.root.findByProps({ id: 'plugin-source-path' }).props.onChange({
-      currentTarget: { value: 'D:\\workspace\\writing-tools' },
+      currentTarget: { value: 'D:\\tools\\writing-tools' },
     });
   });
   await act(async () => {

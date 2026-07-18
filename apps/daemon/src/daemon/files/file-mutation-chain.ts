@@ -1,4 +1,4 @@
-import { mkdir, rename, rm, stat, unlink } from 'node:fs/promises';
+import { lstat, mkdir, rename, rm, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
   resolveSourceMutationTarget,
@@ -112,17 +112,6 @@ export async function prepareResolvedMutatingPath(
   };
 }
 
-// ComputerFileScope root 자체에 대한 파괴적 조작 금지 — route(user path)와
-// manage_files tool(agent path)이 같은 가드를 공유한다.
-export const FILE_AUTHORITY_ROOT_DELETE_ERROR =
-  'cannot delete computer file root.';
-export const FILE_AUTHORITY_ROOT_RELOCATE_ERROR =
-  'cannot relocate computer file root.';
-
-export function isFileAuthorityRootPath(relativePath: string): boolean {
-  return relativePath === '.';
-}
-
 export async function prepareRelocationPaths(
   fileAuthorityRoot: string,
   inputPath: string,
@@ -132,7 +121,7 @@ export async function prepareRelocationPaths(
     fileAuthorityRoot,
     inputPath,
   );
-  const sourceStats = await stat(sourcePath.absolutePath);
+  const sourceStats = await lstat(sourcePath.absolutePath);
   const destinationPath = await resolveSourceMutationTarget(
     fileAuthorityRoot,
     destination,
@@ -194,7 +183,7 @@ export async function commitPreparedRelocation(
       prepared.destinationPath.canonicalAbsolutePath,
     ],
     async () => {
-      const sourceStats = await stat(prepared.sourcePath.absolutePath).catch(
+      const sourceStats = await lstat(prepared.sourcePath.absolutePath).catch(
         (error: unknown) => {
           if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {
             throw new MissingWriteTargetError(
@@ -279,7 +268,7 @@ export async function commitPreparedDeletion(
     async () => {
       let stats;
       try {
-        stats = await stat(prepared.resolvedPath.absolutePath);
+        stats = await lstat(prepared.resolvedPath.absolutePath);
       } catch (error: unknown) {
         if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {
           throw new MissingWriteTargetError(
@@ -373,7 +362,7 @@ async function getExistingPathKind(
   path: string,
 ): Promise<PreparedPathKind | undefined> {
   try {
-    const stats = await stat(path);
+    const stats = await lstat(path);
     return stats.isDirectory() ? 'directory' : 'file';
   } catch (error: unknown) {
     if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {

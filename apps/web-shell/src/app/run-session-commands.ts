@@ -65,7 +65,8 @@ interface CancelRunSessionArgs {
 
 interface BuildPromptRunRequestArgs {
   prompt: string;
-  workingDirectory: string;
+  // 사용자가 명시적으로 고른 명령 시작 위치. 탐색 위치와는 독립적이다.
+  workingDirectory?: string;
   modelId: RunModelId;
   selectedThreadId: string | null;
   permissionMode: PermissionMode;
@@ -123,8 +124,8 @@ type CancelRunSessionResult =
     }
   | { kind: 'noop' };
 
-// 현재 컴퓨터 탐색기 폴더를 실행 cwd로 명시한다. 열려 있는 파일은 프롬프트
-// 컨텍스트에 주입하지 않으며 실행 cwd도 결정하지 않는다.
+// 일반 대화는 컴퓨터 탐색기의 현재 위치를 cwd로 승격하지 않는다. 사용자가
+// 별도로 고른 시작 위치만 RunRequest.workingDirectory로 전달한다.
 export function buildPromptRunRequest({
   prompt,
   workingDirectory,
@@ -141,7 +142,7 @@ export function buildPromptRunRequest({
   const videoGenerationPref = getVideoGenerationPref();
   return {
     prompt,
-    workingDirectory,
+    ...(workingDirectory !== undefined ? { workingDirectory } : {}),
     modelId,
     permissionMode,
     reasoningEffort,

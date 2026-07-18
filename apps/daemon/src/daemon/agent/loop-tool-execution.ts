@@ -29,7 +29,10 @@ import type {
   ExecuteResult,
   ToolExecutionResourceSnapshotRef,
 } from '../tools/types.js';
-import type { ToolMeta } from '../tools/tool-registry-model.js';
+import type {
+  ToolMeta,
+  ToolRecoveryStrategy,
+} from '../tools/tool-registry-model.js';
 import { toolError } from '../tools/result.js';
 import {
   hasPendingInterject,
@@ -174,6 +177,10 @@ export async function processFunctionCalls(
       toolArgs: preparedFunctionCall.toolArgs,
       runContext,
       emit,
+      ...readToolRecoveryStrategyInput(
+        runtime,
+        preparedFunctionCall.functionCall.name,
+      ),
     });
 
     const abortSignalAfterToolCall =
@@ -357,6 +364,7 @@ async function recordSkippedFunctionCall(args: {
       toolArgs: args.toolArgs,
       runContext,
       emit: args.runtime.emit,
+      ...readToolRecoveryStrategyInput(args.runtime, args.functionCall.name),
     });
   }
   await recordToolResult({
@@ -697,8 +705,21 @@ async function recordPreparedParallelToolCalls(args: {
       toolArgs: preparedFunctionCall.toolArgs,
       runContext,
       emit,
+      ...readToolRecoveryStrategyInput(
+        runtime,
+        preparedFunctionCall.functionCall.name,
+      ),
     });
   }
+}
+
+function readToolRecoveryStrategyInput(
+  runtime: AgentToolCallExecutionRuntime,
+  toolName: string,
+): { recoveryStrategy: ToolRecoveryStrategy } | Record<string, never> {
+  const recoveryStrategy =
+    runtime.toolRegistry.getToolMeta(toolName)?.recoveryStrategy;
+  return recoveryStrategy ? { recoveryStrategy } : {};
 }
 
 function isPreparedSubagentLaunchCall(

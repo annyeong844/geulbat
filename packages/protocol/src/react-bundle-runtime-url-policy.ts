@@ -20,7 +20,7 @@ export type ReactBundleRuntimeUrlPolicyFailureReason =
   | 'unsupported_scheme'
   | 'shell_owned_privileged';
 
-export type ReactBundleRuntimeUrlPolicyResult =
+type ReactBundleRuntimeUrlPolicyResult =
   | { ok: true; url: string }
   | { ok: false; reasonCode: ReactBundleRuntimeUrlPolicyFailureReason };
 

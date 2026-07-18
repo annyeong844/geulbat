@@ -11,10 +11,8 @@ import {
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { createDaemonContext } from '../../context.js';
 import { createAgentLoopToolDefinitionPort } from '../../agent/loop-tool-definitions.js';
-import {
-  createPtcExecuteCodePlacementCoordinator,
-  readPtcExecuteCodePlacementPreflightRecord,
-} from '../../ptc/runtime/execute-code/execute-code-placement.js';
+import { createPtcExecuteCodePlacementCoordinator } from '../../ptc/runtime/execute-code/execute-code-placement.js';
+import { readPtcExecuteCodePlacementPreflightRecord } from '../../ptc/runtime/execute-code/execute-code-placement-contract.js';
 import {
   createPtcSessionDockerLocalBatchCommandPolicy,
   PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
@@ -212,6 +210,7 @@ void test('WO6-V3 removed search_memory_index stays usable through the pinned mu
       'fetch_url',
       'list_files',
       'read_file',
+      'read_tool_output',
       'search_files',
       'search_memory_index',
     ]);
@@ -232,7 +231,8 @@ void test('WO6-V3 removed search_memory_index stays usable through the pinned mu
     const execResult = await executeCodeTool.execute(
       {
         code: [
-          "const { readFile } = require('geulbat-sdk/files/readFile');",
+          "const readFile = require('geulbat-sdk/files/readFile');",
+          "if (typeof readFile !== 'function' || readFile.readFile !== readFile) throw new Error('readFile CommonJS interop is unavailable');",
           "const { searchMemoryIndex } = require('geulbat-sdk/tools/search-memory-index');",
           "const result = await readFile({ path: 'docs/note.txt', limit: 1 });",
           "if (result.kind !== 'inline') throw new Error('read_file callback was offloaded');",

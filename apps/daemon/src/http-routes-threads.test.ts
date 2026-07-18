@@ -24,6 +24,7 @@ import {
 } from './daemon/sessions/paths.js';
 import { createRunInterjectBuffer } from './daemon/sessions/active-run-interject-buffer.js';
 import { commitThreadArtifactVersion } from './daemon/sessions/artifact-store.js';
+import { appendTranscriptEntry } from './daemon/sessions/transcript-log.js';
 import { hasErrorCode } from './daemon/utils/error.js';
 import { assertThreadId as assertValidThreadId } from '@geulbat/protocol/ids';
 import { isThreadBranchResponse } from '@geulbat/protocol/threads';
@@ -167,6 +168,73 @@ void test('authenticated threads routes return stored summaries and transcript d
     await restoreFileSnapshot(indexPath, indexSnapshot);
     await restoreFileSnapshot(transcriptPath, transcriptSnapshot);
     await restoreFileSnapshot(artifactPath, artifactSnapshot);
+  }
+});
+
+void test('authenticated thread detail excludes provider compaction payloads from the public DTO', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const stateRoot = daemonContext.homeStateRoot;
+  const threadId = assertValidThreadId(randomUUID());
+  const indexPath = indexFilePath(stateRoot);
+  const transcriptPath = threadFilePath(stateRoot, threadId);
+  const indexSnapshot = await snapshotFile(indexPath);
+  const transcriptSnapshot = await snapshotFile(transcriptPath);
+  const encryptedContent = 'must-not-cross-the-public-thread-detail-boundary';
+
+  await upsertThreadSummary(stateRoot, {
+    threadId,
+    title: 'Provider compaction visibility test',
+    lastUpdated: '2026-03-25T00:00:00.000Z',
+    messageCount: 2,
+  });
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'compaction',
+    content: 'provider-native compaction',
+    timestamp: '2026-03-25T00:00:00.000Z',
+    compactionData: {
+      kind: 'provider_native',
+      providerId: 'openai_codex_direct',
+      model: 'model-a',
+      output: [
+        {
+          type: 'compaction',
+          encrypted_content: encryptedContent,
+        },
+      ],
+      tokensBefore: 7200,
+      contextWindow: 8000,
+      thresholdTokens: 7000,
+    },
+  });
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'user',
+    content: 'continue',
+    timestamp: '2026-03-25T00:00:01.000Z',
+  });
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const response = await fetch(
+          `http://127.0.0.1:${port}/api/threads/${threadId}`,
+          { headers: authHeaders() },
+        );
+        assert.equal(response.status, 200);
+        const responseText = await response.text();
+        assert.doesNotMatch(responseText, new RegExp(encryptedContent, 'u'));
+        const detail = JSON.parse(responseText) as {
+          messages: Array<{ role: string; content: string }>;
+        };
+        assert.equal(detail.messages.length, 1);
+        assert.equal(detail.messages[0]?.role, 'user');
+        assert.equal(detail.messages[0]?.content, 'continue');
+        assert.equal('compactionData' in (detail.messages[0] ?? {}), false);
+      },
+      { daemonContext },
+    );
+  } finally {
+    await restoreFileSnapshot(indexPath, indexSnapshot);
+    await restoreFileSnapshot(transcriptPath, transcriptSnapshot);
   }
 });
 

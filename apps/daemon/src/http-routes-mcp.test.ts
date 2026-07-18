@@ -12,7 +12,7 @@ import {
   createRouteTestDaemonContext,
   withAuthenticatedDaemonServer,
 } from './test-support/http-routes.js';
-import { McpServerOwnershipError } from './daemon/mcp/global-mcp-runtime.js';
+import { McpServerOwnershipError } from './daemon/mcp/global-mcp-contract.js';
 
 void test('authenticated MCP routes add, report, disable, and remove a global stdio registration', async () => {
   const daemonContext = createRouteTestDaemonContext();

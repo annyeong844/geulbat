@@ -3,7 +3,11 @@ import { tryDecodeJson } from '@geulbat/protocol/runtime-utils';
 import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 import type { RunChannelClientMessage } from '@geulbat/protocol/run-channel';
 
-import { closeUnauthorized, sendError } from './run-channel-socket.js';
+import {
+  closeUnauthorized,
+  sendError,
+  sendMessage,
+} from './run-channel-socket.js';
 import type { RunChannelRuntimeContext } from './run-channel-runtime-context.js';
 import { handleRunAuth } from './run-channel-auth.js';
 import {
@@ -14,10 +18,16 @@ import {
   handleRunInterjectFlush,
 } from './run-channel-control.js';
 import { handleRunTool } from './run-channel-tool.js';
-import { getSocketState } from './run-channel-socket-runtime.js';
+import {
+  bindDetachedSocketRuns,
+  getSocketState,
+} from './run-channel-socket-runtime.js';
 import { claimSocketRunStart } from './run-channel-start-gate.js';
 import { normalizeAllowedPublicToolNames } from './run-request-tools.js';
-import { executeRunRequest } from './run-channel-start.js';
+import {
+  executeRunRequest,
+  recoverDurableRunsForSocket,
+} from './run-channel-start.js';
 import { readRunChannelClientMessage } from './validate-run-channel-message.js';
 import { createLogger, type LoggerContext } from '@geulbat/shared-utils/logger';
 import { getErrorMessage } from '../../../daemon/utils/error.js';
@@ -46,7 +56,12 @@ export async function handleClientMessage(
 
   try {
     if (message.type === 'run.auth') {
+      const wasAuthenticated = socketState.authenticated;
       handleRunAuth(socket, requestId, message.token);
+      if (!wasAuthenticated && socketState.authenticated) {
+        await recoverDurableRunsForSocket(socket, runtimeContext);
+        bindDetachedSocketRuns(socket, runtimeContext);
+      }
       return;
     }
 
@@ -69,13 +84,23 @@ export async function handleClientMessage(
         handleRunCancel(socket, requestId, message.request, runtimeContext);
         return;
       case 'run.approve':
-        handleRunApprove(socket, requestId, message.request, runtimeContext);
+        await handleRunApprove(
+          socket,
+          requestId,
+          message.request,
+          runtimeContext,
+        );
         return;
       case 'run.interject':
-        handleRunInterject(socket, requestId, message.request, runtimeContext);
+        await handleRunInterject(
+          socket,
+          requestId,
+          message.request,
+          runtimeContext,
+        );
         return;
       case 'run.interject.cancel':
-        handleRunInterjectCancel(
+        await handleRunInterjectCancel(
           socket,
           requestId,
           message.request,
@@ -90,6 +115,33 @@ export async function handleClientMessage(
           runtimeContext,
         );
         return;
+      case 'run.event.ack': {
+        const acknowledged =
+          await runtimeContext.runCheckpoints.acknowledgeTerminalEvent({
+            threadId: message.request.threadId,
+            runId: message.request.runId,
+            eventCursor: message.request.seq,
+          });
+        if (!acknowledged.ok) {
+          const notFound = acknowledged.code === 'not_found';
+          sendError(
+            socket,
+            requestId,
+            notFound ? 404 : 409,
+            notFound ? 'not_found' : 'conflict',
+            `run event acknowledgement rejected: ${acknowledged.code}`,
+          );
+          return;
+        }
+        sendMessage(socket, {
+          type: 'run.control',
+          requestId,
+          action: 'run.event.ack',
+          ok: true,
+          seq: message.request.seq,
+        });
+        return;
+      }
       case 'run.tool':
         await handleRunTool(socket, requestId, message.request, runtimeContext);
         return;
@@ -149,6 +201,13 @@ function buildDispatchLogContext(
       return {
         messageType: message.type,
         requestId: message.requestId,
+      };
+    case 'run.event.ack':
+      return {
+        messageType: message.type,
+        requestId: message.requestId,
+        runId: message.request.runId,
+        threadId: message.request.threadId,
       };
     case 'run.tool':
       return {

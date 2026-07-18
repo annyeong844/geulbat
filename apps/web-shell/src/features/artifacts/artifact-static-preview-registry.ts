@@ -26,7 +26,7 @@ type StaticArtifactPreviewRenderer = Extract<
 
 // 일부 렌더러(video)는 payload만으로 렌더할 수 없다 — 미디어 라우트 URL을
 // 만들려면 스레드 스코프가 필요하다(§4.6). 호출자가 아는 만큼만 넘긴다.
-export interface StaticArtifactPreviewContext {
+interface StaticArtifactPreviewContext {
   threadId?: string;
 }
 

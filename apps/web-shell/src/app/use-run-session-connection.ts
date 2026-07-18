@@ -8,19 +8,19 @@ import {
   handleRunSessionMessage,
 } from './run-session-message-effects.js';
 import { createRunSessionStreamBatchController } from './run-session-stream-batch.js';
-import type { createProjectTreeRefreshController } from './run-session-tree-refresh.js';
-import { requestProjectTreeRefresh } from './run-session-tree-refresh.js';
+import type { createComputerTreeRefreshController } from './run-session-computer-tree-refresh.js';
+import { requestComputerTreeRefresh } from './run-session-computer-tree-refresh.js';
 
 interface RunSessionConnectionClient extends Pick<
   RunChannelClient,
-  'subscribe' | 'close'
+  'subscribe' | 'close' | 'acknowledgeEvent'
 > {}
 
 interface UseRunSessionConnectionArgs {
   client: RunSessionConnectionClient;
   dispatch: (action: RunSessionStateAction) => void;
-  projectTreeRefreshControllerRef: MutableRefObject<
-    ReturnType<typeof createProjectTreeRefreshController>
+  computerTreeRefreshControllerRef: MutableRefObject<
+    ReturnType<typeof createComputerTreeRefreshController>
   >;
   loadTree: () => Promise<void>;
   handleRunStarted: (threadId: string, runId: string) => void | Promise<void>;
@@ -36,7 +36,7 @@ interface UseRunSessionConnectionArgs {
 export function useRunSessionConnection({
   client,
   dispatch,
-  projectTreeRefreshControllerRef,
+  computerTreeRefreshControllerRef,
   loadTree,
   handleRunStarted,
   handleRunSettledSuccess,
@@ -47,7 +47,7 @@ export function useRunSessionConnection({
   const latestArgsRef = useRef<UseRunSessionConnectionArgs>({
     client,
     dispatch,
-    projectTreeRefreshControllerRef,
+    computerTreeRefreshControllerRef,
     loadTree,
     handleRunStarted,
     handleRunSettledSuccess,
@@ -66,7 +66,7 @@ export function useRunSessionConnection({
     latestArgsRef.current = {
       client,
       dispatch,
-      projectTreeRefreshControllerRef,
+      computerTreeRefreshControllerRef,
       loadTree,
       handleRunStarted,
       handleRunSettledSuccess,
@@ -78,7 +78,7 @@ export function useRunSessionConnection({
   }, [
     client,
     dispatch,
-    projectTreeRefreshControllerRef,
+    computerTreeRefreshControllerRef,
     loadTree,
     handleRunStarted,
     handleRunSettledSuccess,
@@ -114,22 +114,37 @@ export function useRunSessionConnection({
       }
 
       streamBatchController.flushPendingStreamEffects();
-      void handleRunSessionMessage({
+      const handled = handleRunSessionMessage({
         message,
         dispatch: dispatchRef.current,
-        requestProjectTreeRefresh: () => {
-          void requestProjectTreeRefresh(
-            latestArgs.projectTreeRefreshControllerRef.current,
+        requestComputerTreeRefresh: () => {
+          void requestComputerTreeRefresh(
+            latestArgs.computerTreeRefreshControllerRef.current,
             latestArgs.loadTree,
           ).catch((err: unknown) => {
-            latestArgs.reportSessionFailure('project tree refresh failed', err);
+            latestArgs.reportSessionFailure(
+              'computer tree refresh failed',
+              err,
+            );
           });
         },
         handleRunStarted: latestArgs.handleRunStarted,
         handleRunSettledSuccess: latestArgs.handleRunSettledSuccess,
         handleRunSettleSyncFailed: latestArgs.handleRunSettleSyncFailed,
         handleRunSettledError: latestArgs.handleRunSettledError,
-      }).catch((err: unknown) => {
+      });
+      const terminalHandled =
+        message.type === 'run.event' &&
+        (message.event.type === 'done' || message.event.type === 'error')
+          ? handled.then(async () => {
+              await client.acknowledgeEvent({
+                runId: message.event.runId,
+                threadId: message.event.threadId,
+                seq: message.event.seq,
+              });
+            })
+          : handled;
+      void terminalHandled.catch((err: unknown) => {
         latestArgs.reportSessionFailure('run channel message failed', err);
       });
     });

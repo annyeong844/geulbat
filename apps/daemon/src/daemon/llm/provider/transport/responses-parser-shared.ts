@@ -45,7 +45,7 @@ export interface CompletedAssistantItem {
   text: string;
 }
 
-export interface CompletedProviderOutputItem {
+interface CompletedProviderOutputItem {
   completionOrder: number;
   item: Record<string, unknown>;
   outputIndex?: number;

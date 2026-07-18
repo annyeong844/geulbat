@@ -6,10 +6,8 @@ import { join } from 'node:path';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { makeRunContext } from '../../../../test-support/run-context.js';
 import { runPtcSessionDockerCommand } from '../../lab/session/session-docker-command.js';
-import {
-  buildNodeExecuteCodeCommand,
-  type ValidatedExecuteCodeRequest,
-} from './execute-code-batch-runtime.js';
+import { buildNodeExecuteCodeCommand } from './execute-code-batch-runtime.js';
+import type { ValidatedExecuteCodeRequest } from './execute-code-runtime-contract.js';
 import { createPtcExecuteCodeRuntime } from './execute-code-runtime.js';
 import { buildPtcExecuteCodeSdkHelpBundle } from './execute-code-sdk.js';
 

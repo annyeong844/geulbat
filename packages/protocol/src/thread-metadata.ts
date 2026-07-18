@@ -1,9 +1,9 @@
 import { isArtifactRef, type ArtifactRef } from './artifacts.js';
 import { isRecord, isString } from './runtime-utils.js';
 
-export const THREAD_MESSAGE_PHASES = ['commentary', 'final_answer'] as const;
+const THREAD_MESSAGE_PHASES = ['commentary', 'final_answer'] as const;
 
-export type ThreadMessagePhase = (typeof THREAD_MESSAGE_PHASES)[number];
+type ThreadMessagePhase = (typeof THREAD_MESSAGE_PHASES)[number];
 
 // 사용자 메시지에 실린 업로드 첨부 — 바이트는 스레드 첨부 스토어에 있고
 // 여기에는 참조와 표시용 정보만 남는다. kind는 모델 전달 형태를 뜻한다
@@ -16,7 +16,7 @@ export interface ThreadMessageAttachment {
   byteLength: number;
 }
 
-export interface UserThreadMessageMetadata {
+interface UserThreadMessageMetadata {
   hiddenPrompt?: string;
   attachments?: ThreadMessageAttachment[];
   // UI 발 자동 요청(아티팩트 ♻ 등) — 감사용으로만 기록되고 채팅에는
@@ -33,7 +33,7 @@ export interface UserThreadMessageMetadata {
   activeArtifactRef?: never;
 }
 
-export interface CommentaryThreadMessageMetadata {
+interface CommentaryThreadMessageMetadata {
   phase: 'commentary';
   sourceRunId?: string;
   sourceFile?: string;
@@ -57,13 +57,14 @@ export interface FinalAnswerThreadMessageMetadata {
   origin?: never;
 }
 
-export interface InterjectThreadMessageMetadata {
+interface InterjectThreadMessageMetadata {
   source: 'interject';
+  sourceRunId?: string;
+  receivedSeq?: number;
   phase?: never;
   hiddenPrompt?: never;
   silent?: never;
   origin?: never;
-  sourceRunId?: never;
   sourceFile?: never;
   artifactRefs?: never;
   activeArtifactRef?: never;
@@ -93,7 +94,11 @@ const FINAL_ANSWER_METADATA_KEYS = [
   'artifactRefs',
   'activeArtifactRef',
 ] as const;
-const INTERJECT_METADATA_KEYS = ['source'] as const;
+const INTERJECT_METADATA_KEYS = [
+  'source',
+  'sourceRunId',
+  'receivedSeq',
+] as const;
 
 export function isThreadMessagePhase(
   value: unknown,
@@ -112,7 +117,18 @@ export function isThreadMessageMetadata(
   }
 
   if (value.source === 'interject') {
-    return hasOnlyMetadataKeys(value, INTERJECT_METADATA_KEYS);
+    const hasLegacyIdentity =
+      value.sourceRunId === undefined && value.receivedSeq === undefined;
+    const hasDurableIdentity =
+      isString(value.sourceRunId) &&
+      value.sourceRunId.length > 0 &&
+      typeof value.receivedSeq === 'number' &&
+      Number.isSafeInteger(value.receivedSeq) &&
+      value.receivedSeq > 0;
+    return (
+      hasOnlyMetadataKeys(value, INTERJECT_METADATA_KEYS) &&
+      (hasLegacyIdentity || hasDurableIdentity)
+    );
   }
 
   if (value.phase === undefined) {
@@ -170,7 +186,7 @@ function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || isString(value);
 }
 
-export function isThreadMessageAttachment(
+function isThreadMessageAttachment(
   value: unknown,
 ): value is ThreadMessageAttachment {
   return (

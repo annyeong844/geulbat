@@ -23,6 +23,10 @@ interface ApprovalGrantBucket {
 
 export interface ApprovalGrantStore {
   clearApprovalSession(sessionId: string): void;
+  rebindApprovalRunGrants(
+    previousSessionId: string,
+    nextSessionId: string,
+  ): void;
   registerApprovalGrant(
     approvalGrantContext: ApprovalGrantContext,
     grantScope: ApprovalGrantScope,
@@ -57,6 +61,20 @@ export function createApprovalGrantStore(): ApprovalGrantStore {
   return {
     clearApprovalSession(sessionId) {
       approvalGrantsBySession.delete(sessionId);
+    },
+    rebindApprovalRunGrants(previousSessionId, nextSessionId) {
+      if (previousSessionId === nextSessionId) {
+        return;
+      }
+      const previous = approvalGrantsBySession.get(previousSessionId);
+      if (!previous) {
+        return;
+      }
+      const next = getApprovalGrantBucket(nextSessionId);
+      for (const grant of previous.run) {
+        next.run.add(grant);
+      }
+      approvalGrantsBySession.delete(previousSessionId);
     },
     registerApprovalGrant(approvalGrantContext, grantScope) {
       if (grantScope === 'once') {

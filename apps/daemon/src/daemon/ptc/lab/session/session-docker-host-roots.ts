@@ -1,5 +1,5 @@
-import { mkdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { lstat, mkdir, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { isPtcRecord } from '../../shared/record-shape.js';
 import { isPtcSha256Hex } from '../../shared/sha256.js';
 import {
@@ -9,6 +9,7 @@ import {
 import { pickPtcPackageCacheIdentityInput } from '../packages/lab-package-cache-contract.js';
 import { preparePtcPackageCacheRoot } from '../packages/lab-package-cache-root.js';
 import type { PtcPackageCacheIdentity } from '../packages/lab-package-cache-contract.js';
+import { buildPtcSessionDockerRuntimeScopeHash } from './session-docker-contract.js';
 import type {
   PtcSessionDockerResult,
   PtcSessionDockerReuseKey,
@@ -18,13 +19,19 @@ const PTC_SESSION_DOCKER_HOST_SESSIONS_ROOT = 's';
 const PTC_SESSION_DOCKER_HOST_CALLBACK_ROOT = 'c';
 const PTC_SESSION_DOCKER_HOST_ARTIFACT_ROOT = 'a';
 const PTC_SESSION_DOCKER_HOST_IDENTITY_HASH_CHARS = 16;
+const PTC_SESSION_DOCKER_HOST_DIRECTORY_MODE = 0o700;
+const PTC_SESSION_DOCKER_CALLBACK_RUNTIME_PARENT = '/tmp';
+const PTC_SESSION_DOCKER_CALLBACK_RUNTIME_OWNER_PREFIX = 'geulbat-ptc-';
 
 export function buildPtcSessionDockerCallbackRoot(args: {
   runtimeRoot: string;
   reuseKey: PtcSessionDockerReuseKey;
 }): string {
   return join(
-    buildPtcSessionDockerSessionRoot(args),
+    buildPtcSessionDockerCallbackSessionRoot({
+      runtimeRoot: args.runtimeRoot,
+      identityHash: args.reuseKey.identityHash,
+    }),
     PTC_SESSION_DOCKER_HOST_CALLBACK_ROOT,
   );
 }
@@ -33,14 +40,10 @@ export function buildPtcSessionDockerSessionRoot(args: {
   runtimeRoot: string;
   reuseKey: PtcSessionDockerReuseKey;
 }): string {
-  return join(
-    args.runtimeRoot,
-    PTC_SESSION_DOCKER_HOST_SESSIONS_ROOT,
-    args.reuseKey.identityHash.slice(
-      0,
-      PTC_SESSION_DOCKER_HOST_IDENTITY_HASH_CHARS,
-    ),
-  );
+  return buildPtcSessionDockerSessionRootByIdentityHash({
+    runtimeRoot: args.runtimeRoot,
+    identityHash: args.reuseKey.identityHash,
+  });
 }
 
 export function buildPtcSessionDockerArtifactRoot(args: {
@@ -85,25 +88,20 @@ export async function preparePtcSessionDockerHostDirs(args: {
   await applyPtcHostPathMode({
     path: sessionsRoot,
     pathKind: 'ptc_sessions_root',
-    mode: 0o700,
+    mode: PTC_SESSION_DOCKER_HOST_DIRECTORY_MODE,
   });
   await mkdir(sessionRoot, { recursive: true });
   await applyPtcHostPathMode({
     path: sessionRoot,
     pathKind: 'ptc_session_root',
-    mode: 0o700,
+    mode: PTC_SESSION_DOCKER_HOST_DIRECTORY_MODE,
   });
-  await mkdir(callbackRoot, { recursive: true });
-  await applyPtcHostPathMode({
-    path: callbackRoot,
-    pathKind: 'ptc_session_callback_root',
-    mode: 0o700,
-  });
+  await preparePtcSessionDockerCallbackRuntimeRoot(args);
   await mkdir(artifactRoot, { recursive: true });
   await applyPtcHostPathMode({
     path: artifactRoot,
     pathKind: 'ptc_session_artifact_root',
-    mode: 0o700,
+    mode: PTC_SESSION_DOCKER_HOST_DIRECTORY_MODE,
   });
   return {
     callbackRoot,
@@ -141,17 +139,15 @@ export async function removePtcSessionDockerHostRootByIdentityHash(args: {
     };
   }
   try {
-    await rm(
-      join(
-        args.runtimeRoot,
-        PTC_SESSION_DOCKER_HOST_SESSIONS_ROOT,
-        args.identityHash.slice(0, PTC_SESSION_DOCKER_HOST_IDENTITY_HASH_CHARS),
-      ),
-      {
-        recursive: true,
-        force: true,
-      },
-    );
+    const sessionRoot = buildPtcSessionDockerSessionRootByIdentityHash(args);
+    const callbackSessionRoot = buildPtcSessionDockerCallbackSessionRoot(args);
+    if (process.platform !== 'win32') {
+      await preparePtcSessionDockerCallbackRuntimeOwnerRoot();
+    }
+    await rm(sessionRoot, { recursive: true, force: true });
+    if (callbackSessionRoot !== sessionRoot) {
+      await rm(callbackSessionRoot, { recursive: true, force: true });
+    }
     return { ok: true, value: undefined };
   } catch (error: unknown) {
     return {
@@ -161,6 +157,124 @@ export async function removePtcSessionDockerHostRootByIdentityHash(args: {
       diagnostics: hostRootCleanupDiagnostics(error),
     };
   }
+}
+
+function buildPtcSessionDockerSessionRootByIdentityHash(args: {
+  runtimeRoot: string;
+  identityHash: string;
+}): string {
+  return join(
+    args.runtimeRoot,
+    PTC_SESSION_DOCKER_HOST_SESSIONS_ROOT,
+    args.identityHash.slice(0, PTC_SESSION_DOCKER_HOST_IDENTITY_HASH_CHARS),
+  );
+}
+
+function buildPtcSessionDockerCallbackSessionRoot(args: {
+  runtimeRoot: string;
+  identityHash: string;
+}): string {
+  if (process.platform === 'win32') {
+    return buildPtcSessionDockerSessionRootByIdentityHash(args);
+  }
+  return join(
+    buildPtcSessionDockerCallbackRuntimeOwnerRoot(),
+    PTC_SESSION_DOCKER_HOST_SESSIONS_ROOT,
+    buildPtcSessionDockerRuntimeScopeHash(args.runtimeRoot).slice(
+      0,
+      PTC_SESSION_DOCKER_HOST_IDENTITY_HASH_CHARS,
+    ),
+    args.identityHash.slice(0, PTC_SESSION_DOCKER_HOST_IDENTITY_HASH_CHARS),
+  );
+}
+
+async function preparePtcSessionDockerCallbackRuntimeRoot(args: {
+  runtimeRoot: string;
+  reuseKey: PtcSessionDockerReuseKey;
+}): Promise<void> {
+  const callbackRoot = buildPtcSessionDockerCallbackRoot(args);
+  const callbackSessionRoot = buildPtcSessionDockerCallbackSessionRoot({
+    runtimeRoot: args.runtimeRoot,
+    identityHash: args.reuseKey.identityHash,
+  });
+  const callbackRuntimeScopeRoot = dirname(callbackSessionRoot);
+  const callbackSessionsRoot = join(
+    process.platform === 'win32'
+      ? args.runtimeRoot
+      : buildPtcSessionDockerCallbackRuntimeOwnerRoot(),
+    PTC_SESSION_DOCKER_HOST_SESSIONS_ROOT,
+  );
+  if (process.platform !== 'win32') {
+    await preparePtcSessionDockerCallbackRuntimeOwnerRoot();
+  }
+  await mkdir(callbackSessionsRoot, { recursive: true });
+  await applyPtcHostPathMode({
+    path: callbackSessionsRoot,
+    pathKind: 'ptc_callback_sessions_root',
+    mode: PTC_SESSION_DOCKER_HOST_DIRECTORY_MODE,
+  });
+  await mkdir(callbackRuntimeScopeRoot, { recursive: true });
+  await applyPtcHostPathMode({
+    path: callbackRuntimeScopeRoot,
+    pathKind: 'ptc_callback_runtime_scope_root',
+    mode: PTC_SESSION_DOCKER_HOST_DIRECTORY_MODE,
+  });
+  await mkdir(callbackSessionRoot, { recursive: true });
+  await applyPtcHostPathMode({
+    path: callbackSessionRoot,
+    pathKind: 'ptc_callback_session_root',
+    mode: PTC_SESSION_DOCKER_HOST_DIRECTORY_MODE,
+  });
+  await mkdir(callbackRoot, { recursive: true });
+  await applyPtcHostPathMode({
+    path: callbackRoot,
+    pathKind: 'ptc_session_callback_root',
+    mode: PTC_SESSION_DOCKER_HOST_DIRECTORY_MODE,
+  });
+}
+
+async function preparePtcSessionDockerCallbackRuntimeOwnerRoot(): Promise<void> {
+  const ownerRoot = buildPtcSessionDockerCallbackRuntimeOwnerRoot();
+  try {
+    await mkdir(ownerRoot, {
+      mode: PTC_SESSION_DOCKER_HOST_DIRECTORY_MODE,
+      recursive: false,
+    });
+  } catch (error: unknown) {
+    if (!isPtcRecord(error) || error.code !== 'EEXIST') {
+      throw error;
+    }
+  }
+  const stats = await lstat(ownerRoot);
+  if (
+    !stats.isDirectory() ||
+    stats.isSymbolicLink() ||
+    stats.uid !== readPtcSessionDockerProcessUid()
+  ) {
+    throw new Error(
+      'PTC callback runtime owner root is not a private directory',
+    );
+  }
+  await applyPtcHostPathMode({
+    path: ownerRoot,
+    pathKind: 'ptc_callback_runtime_owner_root',
+    mode: PTC_SESSION_DOCKER_HOST_DIRECTORY_MODE,
+  });
+}
+
+function buildPtcSessionDockerCallbackRuntimeOwnerRoot(): string {
+  return join(
+    PTC_SESSION_DOCKER_CALLBACK_RUNTIME_PARENT,
+    `${PTC_SESSION_DOCKER_CALLBACK_RUNTIME_OWNER_PREFIX}${readPtcSessionDockerProcessUid()}`,
+  );
+}
+
+function readPtcSessionDockerProcessUid(): number {
+  const uid = process.getuid?.();
+  if (uid === undefined) {
+    throw new Error('PTC callback runtime requires a POSIX process uid');
+  }
+  return uid;
 }
 
 function hostRootCleanupDiagnostics(

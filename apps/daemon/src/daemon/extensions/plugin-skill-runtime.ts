@@ -2,15 +2,14 @@ import {
   isPluginSkillLogicalPath,
   PLUGIN_SKILL_LOGICAL_ROOT,
 } from '@geulbat/protocol/plugins';
+import { isRecord } from '@geulbat/protocol/runtime-utils';
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import { parseDocument } from 'yaml';
 
 const SKILL_DOCUMENT_NAME = 'SKILL.md';
 
-export type PluginSkillRuntimeStatus =
-  | 'available'
-  | 'unavailable-tool-dependencies';
+type PluginSkillRuntimeStatus = 'available' | 'unavailable-tool-dependencies';
 
 export interface InspectedPluginSkill {
   entryPath: string;
@@ -43,7 +42,7 @@ export interface PluginSkillCatalogEntry {
   sourcePlugin: PluginSkillSource;
 }
 
-export interface PluginSkillDiagnostic {
+interface PluginSkillDiagnostic {
   pluginInstallationId: string;
   pluginName: string;
   code: 'managed-package-invalid';
@@ -63,7 +62,7 @@ export interface PluginSkillFile {
   packageRelativePath: string;
 }
 
-export interface PluginSkillDirectoryEntry {
+interface PluginSkillDirectoryEntry {
   name: string;
   path: string;
   type: 'file' | 'directory';
@@ -405,8 +404,4 @@ function decodeUtf8(content: Buffer, displayPath: string): string {
 
 function digestBuffer(content: Buffer): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }

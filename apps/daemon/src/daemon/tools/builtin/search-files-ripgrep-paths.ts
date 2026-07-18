@@ -8,10 +8,6 @@ function isWindowsFsPath(filePath: string): boolean {
   return /^[a-z]:[\\/]/i.test(filePath);
 }
 
-function isWslFsPath(filePath: string): boolean {
-  return /^\/mnt\/[a-z](\/|$)/i.test(filePath);
-}
-
 export function toRipgrepFsPath(filePath: string, rgPath: string): string {
   if (!isWindowsRipgrepBinary(rgPath)) {
     return filePath;
@@ -34,12 +30,19 @@ export function fromRipgrepFsPath(
     return filePath;
   }
 
+  return fromWindowsFsPath(filePath, workspaceRoot);
+}
+
+export function fromWindowsFsPath(
+  filePath: string,
+  workspaceRoot: string,
+): string {
   const match = /^([a-z]):\\(.*)$/i.exec(filePath);
   if (!match) {
     return filePath;
   }
 
-  if (!isWslFsPath(workspaceRoot)) {
+  if (isWindowsFsPath(workspaceRoot)) {
     return filePath;
   }
 
@@ -54,13 +57,4 @@ export function toWorkspaceRelativeSearchPath(
     return win32.relative(workspaceRoot, absPath).split(win32.sep).join('/');
   }
   return posix.relative(workspaceRoot, absPath).split(posix.sep).join('/');
-}
-
-export function isWorkspaceRelativeSearchPath(relPath: string): boolean {
-  return (
-    relPath !== '' &&
-    !relPath.startsWith('..') &&
-    !posix.isAbsolute(relPath) &&
-    !win32.isAbsolute(relPath)
-  );
 }

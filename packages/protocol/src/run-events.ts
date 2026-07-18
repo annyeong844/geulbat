@@ -18,11 +18,7 @@ import {
   isToolCallSourcePayload,
   type ToolCallSourcePayload,
 } from './tool-call-source.js';
-import {
-  isSideEffectLevel,
-  SIDE_EFFECT_LEVELS,
-  type SideEffectLevel,
-} from './side-effect-level.js';
+import type { SideEffectLevel } from './side-effect-level.js';
 import {
   isThreadArtifactVersion,
   type ThreadArtifactVersion,
@@ -32,12 +28,10 @@ import {
   type ThreadDetailResponse,
 } from './threads.js';
 
-export { SIDE_EFFECT_LEVELS, isSideEffectLevel };
 export type { SideEffectLevel };
 export { isToolCallSourcePayload };
-export type { ToolCallSourcePayload };
 
-export type RunEventType =
+type RunEventType =
   | 'run_ack'
   | 'commentary_delta'
   | 'tool_call'
@@ -57,13 +51,13 @@ export type RunEventType =
   | 'done'
   | 'error';
 
-export type RunAckEventPayload = RunAck;
+type RunAckEventPayload = RunAck;
 
-export interface TextDeltaEventPayload {
+interface TextDeltaEventPayload {
   text: string;
 }
 
-export interface ToolCallEventPayload {
+interface ToolCallEventPayload {
   callId: string;
   step: number;
   tool: string;
@@ -73,7 +67,7 @@ export interface ToolCallEventPayload {
 
 // 스트리밍 도구 인자 델타 — streamsArgsDelta를 켠 도구(visualize 등)만
 // 방출된다. argsDelta는 arguments JSON 텍스트의 이어붙일 조각이다.
-export interface ToolCallDeltaEventPayload {
+interface ToolCallDeltaEventPayload {
   callId: string;
   step: number;
   tool: string;
@@ -125,7 +119,7 @@ export const AGENT_WAIT_BLOCKED_REASONS = [
 export type AgentWaitBlockedReason =
   (typeof AGENT_WAIT_BLOCKED_REASONS)[number];
 
-export interface AgentWaitToolRaw {
+interface AgentWaitToolRaw {
   ok: true;
   completed: Array<{
     childRunId: string;
@@ -141,7 +135,7 @@ export interface AgentWaitToolRaw {
   }>;
 }
 
-export type AgentStopToolRaw =
+type AgentStopToolRaw =
   | {
       ok: true;
       childRunId: string;
@@ -166,11 +160,6 @@ export type KnownToolResultRaw<TTool extends KnownToolResultRawTool> =
   ToolResultRawMap[TTool];
 
 export type UnknownToolResultRaw = unknown;
-
-export type ToolResultRaw<TTool extends string> =
-  TTool extends KnownToolResultRawTool
-    ? KnownToolResultRaw<TTool>
-    : UnknownToolResultRaw;
 
 type ToolResultRawGuardMap = {
   [K in KnownToolResultRawTool]: (
@@ -217,7 +206,7 @@ export type ToolResultSuccessEventPayload<TTool extends string = string> =
     ? KnownToolResultSuccessEventPayload | UnknownToolResultSuccessEventPayload
     : ToolResultSuccessEventPayloadFor<TTool>;
 
-export interface ToolResultFailureEventPayload<
+interface ToolResultFailureEventPayload<
   TTool extends string = string,
 > extends ToolResultEventPayloadBase<TTool> {
   ok: false;
@@ -230,26 +219,26 @@ export type ToolResultEventPayload<TTool extends string = string> =
   | ToolResultSuccessEventPayload<TTool>
   | ToolResultFailureEventPayload<TTool>;
 
-export interface DoneEventPayload {
+interface DoneEventPayload {
   answer: string;
   ok: boolean;
 }
 
-export type ThreadStatePersistedEventPayload = ThreadDetailResponse;
+type ThreadStatePersistedEventPayload = ThreadDetailResponse;
 
 export interface ThreadStatePersistenceFailureDiagnostic {
   phase: string;
   message: string;
 }
 
-export interface ThreadStatePersistFailedEventPayload {
+interface ThreadStatePersistFailedEventPayload {
   message: string;
   diagnostics?: ThreadStatePersistenceFailureDiagnostic[];
 }
 
-export type ErrorEventPayload = ApiError;
+type ErrorEventPayload = ApiError;
 
-export interface SubagentSpawnedEventPayload {
+interface SubagentSpawnedEventPayload {
   parentRunId: RunId;
   childRunId: RunId;
   childThreadId: ThreadId;
@@ -274,7 +263,7 @@ export interface ContextUsageUpdatedEventPayload {
   thresholdTokens: number;
 }
 
-export interface SubagentTerminalEventPayload {
+interface SubagentTerminalEventPayload {
   deliveryId: string;
   parentRunId: RunId;
   childRunId: RunId;
@@ -294,7 +283,7 @@ export interface SubagentTerminalEventPayload {
   reasoningEffort?: RunReasoningEffort;
 }
 
-export interface SubagentApprovalRequiredEventPayload {
+interface SubagentApprovalRequiredEventPayload {
   parentRunId: RunId;
   childRunId: RunId;
   subagentType: SubagentType;

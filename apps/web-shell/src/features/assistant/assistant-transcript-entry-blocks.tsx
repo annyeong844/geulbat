@@ -226,7 +226,7 @@ export function formatElapsedDuration(elapsedMs: number): string {
   return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
-export function formatTokenCount(count: number): string {
+function formatTokenCount(count: number): string {
   if (count < 1000) {
     return String(count);
   }

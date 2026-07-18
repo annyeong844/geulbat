@@ -11,12 +11,12 @@ type PluginSkillDirectory = Awaited<
   ReturnType<PluginSkillRuntime['listEnabledSkillDirectory']>
 >;
 
-export type PluginSkillFileBrowseResult =
+type PluginSkillFileBrowseResult =
   | { kind: 'computer_path' }
   | { kind: 'failure'; message: string }
   | { kind: 'plugin_skill_file'; file: PluginSkillFile };
 
-export type PluginSkillDirectoryBrowseResult =
+type PluginSkillDirectoryBrowseResult =
   | { kind: 'computer_path' }
   | { kind: 'failure'; message: string }
   | { kind: 'plugin_skill_directory'; directory: PluginSkillDirectory };

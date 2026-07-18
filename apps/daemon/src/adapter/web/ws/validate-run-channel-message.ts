@@ -3,6 +3,7 @@ import {
   isRunApproveMessage,
   isRunAuthMessage,
   isRunCancelMessage,
+  isRunEventAckEnvelope,
   isRunInterjectCancelEnvelope,
   isRunInterjectEnvelope,
   isRunInterjectFlushEnvelope,
@@ -33,6 +34,9 @@ export function readRunChannelClientMessage(
     return readClientMessageWithRequestId(value);
   }
   if (isRunInterjectFlushEnvelope(value)) {
+    return readClientMessageWithRequestId(value);
+  }
+  if (isRunEventAckEnvelope(value)) {
     return readClientMessageWithRequestId(value);
   }
   if (isRunToolEnvelope(value)) {

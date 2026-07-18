@@ -38,13 +38,9 @@ export interface McpServerRegistration {
   transport: McpStdioTransportConfig;
 }
 
-export type McpServerConnectionState =
-  | 'disabled'
-  | 'connecting'
-  | 'ready'
-  | 'error';
+type McpServerConnectionState = 'disabled' | 'connecting' | 'ready' | 'error';
 
-export type McpServerDisabledReason = 'server-disabled' | 'plugin-disabled';
+type McpServerDisabledReason = 'server-disabled' | 'plugin-disabled';
 
 export interface McpServerRuntimeStatus {
   state: McpServerConnectionState;

@@ -1,10 +1,12 @@
 import { executeTool } from '../tools/executor.js';
+import { toolError } from '../tools/result.js';
 import {
   buildAgentToolExecutionContext,
   type CallbackToolDispatcher,
   type ExecuteResult,
   type ToolExecutionResourceSnapshotRef,
 } from '../tools/types.js';
+import { RUN_APPROVAL_PENDING_STATUS } from '../runtime-contracts.js';
 import { markRunRunning } from './runtime/run-state.js';
 import type { FunctionCall } from '../llm/index.js';
 import type { ToolCallArgs } from './events.js';
@@ -28,7 +30,10 @@ export async function executeResolvedFunctionCall(
   const { functionCall, toolArgs, approvalGranted, runtime } = args;
 
   const runState = getToolRuntimeRunState(runtime);
-  if (runState) {
+  if (runState?.status === 'cancelled') {
+    return toolError('aborted', 'run cancelled before tool execution');
+  }
+  if (runState?.status === RUN_APPROVAL_PENDING_STATUS) {
     markRunRunning(runState);
   }
 

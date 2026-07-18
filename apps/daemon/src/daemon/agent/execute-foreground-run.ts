@@ -21,7 +21,6 @@ import { runAgentLoop } from './run-agent-loop.js';
 import type { AgentInput } from './loop-types.js';
 import type { AgentResult } from './agent-result.js';
 import { createAgentEvent } from './events.js';
-import { hasVisibleAgentOutput } from './agent-result.js';
 import { getErrorMessage } from '../utils/error.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import type {
@@ -38,7 +37,10 @@ import {
   createAgentLoopPromptPort,
 } from './loop-prompt.js';
 import { formatBackgroundResultNote } from './loop-shared.js';
-import { isRootRunState } from '../runtime-contracts.js';
+import {
+  isRootRunState,
+  type TerminalAgentEvent,
+} from '../runtime-contracts.js';
 
 const logger = createLogger('agent/execute-foreground-run');
 
@@ -54,6 +56,12 @@ interface ExecuteForegroundRunArgs {
   // 아티팩트 프레임 발 턴 귀속 — 사용자 턴에 metadata.origin으로 각인해
   // 채팅이 "아티팩트 발"로 렌더한다 (back-channel 설계 가시성 불변식).
   promptOrigin?: 'artifact_frame';
+  resumeModelPrompt?: string;
+  onInputPersisted?: (modelPrompt: string) => Promise<void>;
+  onTerminalEvent?: (args: {
+    event: TerminalAgentEvent;
+    result: AgentResult;
+  }) => Promise<void>;
   deps?: ExecuteForegroundRunDeps;
 }
 
@@ -141,11 +149,14 @@ export async function executeForegroundRun(
 
   try {
     const pendingBackgroundResults =
-      agentInput.runState === undefined || isRootRunState(agentInput.runState)
-        ? agentInput.runtimeServices.backgroundNotifications.readThreadBackgroundResults(
-            runContext.threadId,
-          )
-        : [];
+      args.resumeModelPrompt !== undefined
+        ? []
+        : agentInput.runState === undefined ||
+            isRootRunState(agentInput.runState)
+          ? agentInput.runtimeServices.backgroundNotifications.readThreadBackgroundResults(
+              runContext.threadId,
+            )
+          : [];
     const promptPort = agentInput.promptPort ?? createAgentLoopPromptPort();
     const { promptContext } = promptPort.buildPromptBundle({
       threadId: runContext.threadId,
@@ -159,16 +170,18 @@ export async function executeForegroundRun(
     const loopAgentInput: AgentInput = {
       ...agentInput,
       embeddedBackgroundResultCount: pendingBackgroundResults.length,
-      prompt: composeAgentLoopUserPrompt({
-        prompt: agentInput.prompt,
-        promptContext,
-        backgroundResultNote: formatBackgroundResultNote(
-          pendingBackgroundResults,
-        ),
-      }),
+      prompt:
+        args.resumeModelPrompt ??
+        composeAgentLoopUserPrompt({
+          prompt: agentInput.prompt,
+          promptContext,
+          backgroundResultNote: formatBackgroundResultNote(
+            pendingBackgroundResults,
+          ),
+        }),
     };
 
-    if (args.regenerate) {
+    if (args.resumeModelPrompt === undefined && args.regenerate) {
       await truncateThreadForRegenerate({
         workspaceRoot: runContext.stateRoot,
         threadId: runContext.threadId,
@@ -178,29 +191,42 @@ export async function executeForegroundRun(
 
     // Pre-run transcript persistence is required. If the user prompt cannot be
     // recorded, the run should not start because future replay/history would diverge.
-    await persistRequiredForegroundInput({
-      agentInput: loopAgentInput,
-      transcriptPrompt,
-      silentPrompt: args.silentPrompt === true,
-      ...(args.promptOrigin !== undefined
-        ? { promptOrigin: args.promptOrigin }
-        : {}),
-      deps,
-      onTranscriptPersisted() {
-        agentInput.runtimeServices.backgroundNotifications.acknowledgeThreadBackgroundResults(
-          runContext.threadId,
-          pendingBackgroundResults.map((result) => result.deliveryId),
-        );
-      },
-    });
+    if (args.resumeModelPrompt === undefined) {
+      await persistRequiredForegroundInput({
+        agentInput: loopAgentInput,
+        transcriptPrompt,
+        silentPrompt: args.silentPrompt === true,
+        ...(args.promptOrigin !== undefined
+          ? { promptOrigin: args.promptOrigin }
+          : {}),
+        deps,
+        onTranscriptPersisted() {
+          agentInput.runtimeServices.backgroundNotifications.acknowledgeThreadBackgroundResults(
+            runContext.threadId,
+            pendingBackgroundResults.map((result) => result.deliveryId),
+          );
+        },
+      });
+      await args.onInputPersisted?.(loopAgentInput.prompt);
+    }
 
     // 도구(generate_image 등)가 런 도중 직접 커밋한 아티팩트 ref를 수집해
     // 어시스턴트 메시지 메타데이터에 바인딩한다. 바인딩이 없으면 재로드 시
     // 트랜스크립트에서 아티팩트를 다시 찾을 수 없다.
     const toolCommittedArtifactRefs: ArtifactRef[] = [];
+    let terminalError:
+      | Extract<TerminalAgentEvent, { type: 'error' }>
+      | undefined;
     const observedLoopAgentInput: AgentInput = {
       ...loopAgentInput,
       onEvent: (event) => {
+        if (event.type === 'error') {
+          if (terminalError !== undefined) {
+            throw new Error('agent loop emitted more than one terminal error');
+          }
+          terminalError = event;
+          return;
+        }
         if (event.type === 'artifact_committed') {
           toolCommittedArtifactRefs.push({
             artifactId: event.payload.artifactId,
@@ -232,13 +258,22 @@ export async function executeForegroundRun(
       });
     }
 
-    if (hasVisibleAgentOutput(result)) {
-      agentInput.onEvent(
-        createAgentEvent('done', {
-          answer: result.finalProse,
-          ok: result.ok,
-        }),
-      );
+    if (result.ok && terminalError !== undefined) {
+      throw new Error('successful agent result emitted a terminal error');
+    }
+    if (!result.ok && terminalError === undefined) {
+      throw new Error('failed agent result omitted its terminal error');
+    }
+    const terminalEvent: TerminalAgentEvent =
+      terminalError ??
+      createAgentEvent('done', {
+        answer: result.finalProse,
+        ok: true,
+      });
+    if (args.onTerminalEvent === undefined) {
+      agentInput.onEvent(terminalEvent);
+    } else {
+      await args.onTerminalEvent({ event: terminalEvent, result });
     }
 
     runLogger.info('run completed', {

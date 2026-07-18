@@ -27,7 +27,7 @@ import {
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 
 import { useRunSessionConnection } from './use-run-session-connection.js';
-import { createProjectTreeRefreshController } from './run-session-tree-refresh.js';
+import { createComputerTreeRefreshController } from './run-session-computer-tree-refresh.js';
 import type {
   ApprovalDecisionClient,
   CancelRunSessionClient,
@@ -59,6 +59,7 @@ export interface RunSessionControllerClient
       RunChannelClient,
       | 'subscribe'
       | 'close'
+      | 'acknowledgeEvent'
       | 'interject'
       | 'cancelInterject'
       | 'flushInterject'
@@ -72,8 +73,8 @@ interface RunStartedHandlerArgs {
   dispatch: (action: RunSessionStateAction) => void;
   clearSessionError: () => void;
   loadThreads: () => Promise<void>;
-  projectTreeRefreshControllerRef: MutableRefObject<
-    ReturnType<typeof createProjectTreeRefreshController>
+  computerTreeRefreshControllerRef: MutableRefObject<
+    ReturnType<typeof createComputerTreeRefreshController>
   >;
   setSelectedThreadId: (threadId: string | null) => void;
 }
@@ -82,13 +83,13 @@ function useHandleRunStarted({
   dispatch,
   clearSessionError,
   loadThreads,
-  projectTreeRefreshControllerRef,
+  computerTreeRefreshControllerRef,
   setSelectedThreadId,
 }: RunStartedHandlerArgs) {
   return useCallback(
     (threadId: string, runId: string) => {
       clearSessionError();
-      projectTreeRefreshControllerRef.current.clearQueuedRefresh();
+      computerTreeRefreshControllerRef.current.clearQueuedRefresh();
       dispatch({
         type: 'run_started',
         threadId,
@@ -101,14 +102,14 @@ function useHandleRunStarted({
       clearSessionError,
       dispatch,
       loadThreads,
-      projectTreeRefreshControllerRef,
+      computerTreeRefreshControllerRef,
       setSelectedThreadId,
     ],
   );
 }
 
 interface UseRunSessionRuntimeArgs {
-  workingDirectory: string;
+  workingDirectory?: string;
   selectedFile: string | null;
   selectedThreadId: string | null;
   loadThreads: () => Promise<void>;
@@ -178,8 +179,8 @@ export function useRunSessionRuntime({
   prepareProviderTransitionRequest = prepareThreadProviderTransition,
 }: UseRunSessionRuntimeArgs): UseRunSessionRuntimeResult {
   const [client] = useState(() => createClient());
-  const projectTreeRefreshControllerRef = useRef(
-    createProjectTreeRefreshController(),
+  const computerTreeRefreshControllerRef = useRef(
+    createComputerTreeRefreshController(),
   );
   const [state, dispatch] = useReducer(
     reduceRunSessionState,
@@ -279,7 +280,7 @@ export function useRunSessionRuntime({
     reportSessionFailure,
     logCommandFailure,
     promptInputs: {
-      workingDirectory,
+      ...(workingDirectory !== undefined ? { workingDirectory } : {}),
       modelId,
       selectedThreadId,
       permissionMode,
@@ -297,14 +298,14 @@ export function useRunSessionRuntime({
     dispatch,
     clearSessionError,
     loadThreads,
-    projectTreeRefreshControllerRef,
+    computerTreeRefreshControllerRef,
     setSelectedThreadId,
   });
 
   useRunSessionConnection({
     client,
     dispatch,
-    projectTreeRefreshControllerRef,
+    computerTreeRefreshControllerRef,
     loadTree,
     handleRunStarted,
     handleRunSettledSuccess: settleRunSuccess,

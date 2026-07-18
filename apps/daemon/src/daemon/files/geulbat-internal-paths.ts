@@ -1,7 +1,6 @@
 import { join } from 'node:path';
 
 export const GEULBAT_INTERNAL_ROOT = '.geulbat';
-export const GEULBAT_INTERNAL_EXCLUDE_GLOB = `!${GEULBAT_INTERNAL_ROOT}/`;
 
 export const GEULBAT_INDEX_ROOT = `${GEULBAT_INTERNAL_ROOT}/index`;
 const GEULBAT_MEMORY_INDEX_ROOT = `${GEULBAT_INDEX_ROOT}/memory`;

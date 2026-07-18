@@ -24,9 +24,9 @@ export const PTC_TEST_SESSION_DOCKER_HOST_USER: PtcSessionDockerHostUser = {
   uid: 1000,
   gid: 1000,
 };
-export const PTC_TEST_STATE_ROOT_REALPATH = '/real/workspace/project-a';
+const PTC_TEST_STATE_ROOT_REALPATH = '/real/workspace/project-a';
 
-export interface PtcSessionDockerCommandFixtureArgs {
+interface PtcSessionDockerCommandFixtureArgs {
   policy?: PtcSessionDockerPolicy;
   containerId?: string;
   createResult?: PtcSessionDockerCommandResult;
@@ -38,7 +38,7 @@ export interface PtcSessionDockerCommandFixtureArgs {
     | Promise<PtcSessionDockerCommandResult | undefined>;
 }
 
-export interface PtcSessionDockerCommandFixture {
+interface PtcSessionDockerCommandFixture {
   containerId: string;
   invocations: PtcSessionDockerCommandInvocation[];
   policy: PtcSessionDockerPolicy;

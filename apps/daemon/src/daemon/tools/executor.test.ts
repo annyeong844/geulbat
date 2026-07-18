@@ -540,7 +540,42 @@ void test('executeTool timeout aborts the per-tool signal without mutating the r
   assert.equal(capturedContext.runSignal?.aborted, false);
 });
 
-void test('executeTool classifies caller aborts before tool completion as client disconnects', async () => {
+void test('executeTool does not enter a tool when the caller signal is already aborted', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  const controller = new AbortController();
+  let executionCount = 0;
+  store.registerTool(
+    makeTool({
+      name: 'caller_pre_aborted_executor_tool',
+      omitTimeout: true,
+      async executeParsed() {
+        executionCount += 1;
+        return { ok: true, output: 'unexpected execution' };
+      },
+    }),
+  );
+  controller.abort();
+
+  const result = await executeTool(
+    'caller_pre_aborted_executor_tool',
+    {},
+    {
+      callId: 'call_caller_pre_aborted',
+      signal: controller.signal,
+    },
+    { toolRegistry: store },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'aborted',
+    error: 'tool execution cancelled',
+  });
+  assert.equal(executionCount, 0);
+});
+
+void test('executeTool classifies caller aborts before tool completion as cancellation', async () => {
   const store = createToolRegistryStore({ builtins: [] });
   const controller = new AbortController();
   store.registerTool(
@@ -574,11 +609,11 @@ void test('executeTool classifies caller aborts before tool completion as client
     ok: false,
     output: '',
     errorCode: 'aborted',
-    error: 'client disconnected',
+    error: 'tool execution cancelled',
   });
 });
 
-void test('executeTool classifies thrown-after-caller-abort as client disconnects', async () => {
+void test('executeTool classifies thrown-after-caller-abort as cancellation', async () => {
   const store = createToolRegistryStore({ builtins: [] });
   const controller = new AbortController();
   store.registerTool(
@@ -606,6 +641,6 @@ void test('executeTool classifies thrown-after-caller-abort as client disconnect
     ok: false,
     output: '',
     errorCode: 'aborted',
-    error: 'client disconnected',
+    error: 'tool execution cancelled',
   });
 });

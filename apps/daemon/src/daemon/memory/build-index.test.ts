@@ -287,7 +287,7 @@ void test('createMemoryIndexStore scans the source root and writes only through 
   assert.equal('sourceProjectId' in (manifests[0] ?? {}), false);
 });
 
-void test('resolveMemoryIndexScope derives cwd under ComputerFileScope and fails closed without it', () => {
+void test('resolveMemoryIndexScope resolves any host cwd and fails closed without a computer base', () => {
   assert.deepEqual(
     resolveMemoryIndexScope({
       stateRoot: '/tmp/private-home-state',
@@ -306,15 +306,28 @@ void test('resolveMemoryIndexScope derives cwd under ComputerFileScope and fails
         stateRoot: '/tmp/private-home-state',
         workingDirectory: 'Users/sample/Downloads',
       }),
-    /Computer file scope is unavailable/,
+    /Computer filesystem is unavailable/,
   );
-  assert.throws(
-    () =>
-      resolveMemoryIndexScope({
-        stateRoot: '/tmp/private-home-state',
-        computerFileRoot: '/computer',
-        workingDirectory: '../outside',
-      }),
-    /escapes the Computer file scope/,
+  assert.deepEqual(
+    resolveMemoryIndexScope({
+      stateRoot: '/tmp/private-home-state',
+      computerFileRoot: '/computer',
+      workingDirectory: '../outside',
+    }),
+    {
+      stateRoot: '/tmp/private-home-state',
+      sourceRoot: '/outside',
+    },
+  );
+  assert.deepEqual(
+    resolveMemoryIndexScope({
+      stateRoot: '/tmp/private-home-state',
+      computerFileRoot: '/computer',
+      workingDirectory: '/var/log',
+    }),
+    {
+      stateRoot: '/tmp/private-home-state',
+      sourceRoot: '/var/log',
+    },
   );
 });

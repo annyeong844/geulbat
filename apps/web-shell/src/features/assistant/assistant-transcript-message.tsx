@@ -41,7 +41,7 @@ import {
 } from './tool-diff-prefs.js';
 
 // 메시지 하단 액션 — 답변은 항상 노출(좌측), 질문은 hover 시에만(우측).
-export interface TranscriptMessageActions {
+interface TranscriptMessageActions {
   // 마지막 답변에만: 답변 재생성(덮어쓰기)
   onRetry?: () => void;
   // 마지막 질문에만: 인라인 편집 → 수정본으로 재생성
@@ -287,7 +287,7 @@ export function ToolDiffBlock(props: { diff: ToolCallDiffView }) {
 // 도구 결과 블록 — 접힌 헤더(도구명 + ✓/! + 한 줄 요약), 클릭 시
 // displayText/output 본문(JSON은 pretty)이 펼쳐진다. diff 블록과 같은
 // 시각 언어를 공유한다.
-export function ToolResultBlock(props: { view: ToolResultView }) {
+function ToolResultBlock(props: { view: ToolResultView }) {
   const { view } = props;
   const [expanded, setExpanded] = useState(false);
   return (
@@ -474,7 +474,7 @@ export function TranscriptTextMessage(props: {
 }
 
 // 메시지 하단 액션 행 — claude.ai 배치: 답변(좌, 항상), 질문(우, hover).
-export function MessageActionsRow(props: {
+function MessageActionsRow(props: {
   role: ThreadMessage['role'];
   content: string;
   onRetry?: () => void;

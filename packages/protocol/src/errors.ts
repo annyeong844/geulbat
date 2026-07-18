@@ -126,7 +126,7 @@ export interface GenericApiError {
   message: string;
 }
 
-export const PERSISTENCE_ERROR_CODES = [
+const PERSISTENCE_ERROR_CODES = [
   'persistence_unsupported',
   'persistence_blocked',
   'persistence_unavailable',
@@ -134,7 +134,7 @@ export const PERSISTENCE_ERROR_CODES = [
   'persistence_quota_exceeded',
 ] as const;
 
-export type PersistenceErrorCode = (typeof PERSISTENCE_ERROR_CODES)[number];
+type PersistenceErrorCode = (typeof PERSISTENCE_ERROR_CODES)[number];
 
 export interface ConflictStaleWriteError {
   code: 'conflict_stale_write';
@@ -150,19 +150,19 @@ export interface ConflictActiveRunError {
   activeRunId: string;
 }
 
-export interface NotFoundPathError {
+interface NotFoundPathError {
   code: 'not_found';
   message: string;
   path: string;
 }
 
-export interface InvalidPathError {
+interface InvalidPathError {
   code: 'invalid_path';
   message: string;
   path: string;
 }
 
-export interface AlreadyExistsError {
+interface AlreadyExistsError {
   code: 'already_exists';
   message: string;
   path: string;
@@ -239,9 +239,7 @@ function isPathCapableApiError(
   );
 }
 
-export function isPersistenceErrorCode(
-  value: unknown,
-): value is PersistenceErrorCode {
+function isPersistenceErrorCode(value: unknown): value is PersistenceErrorCode {
   return (
     typeof value === 'string' &&
     (PERSISTENCE_ERROR_CODES as readonly string[]).includes(value)

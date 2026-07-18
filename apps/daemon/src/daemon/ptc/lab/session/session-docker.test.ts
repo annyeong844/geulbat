@@ -31,17 +31,20 @@ import {
 } from '../network/lab-network-policy.js';
 import { createPtcLabLocalDockerBatchCommandPolicyProjection } from '../profile/lab-profile.js';
 import { PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_POLICY_ID } from '../profile/lab-profile-contract.js';
+import { createPtcEpochCallbackChannel } from '../../callback/epoch-callback.js';
 import {
   createPtcSessionDockerManager,
   normalizePtcSessionDockerReuseKey,
 } from './session-docker.js';
-import { buildPtcSessionDockerRuntimeScopeHash } from './session-docker-create-args.js';
 import {
   buildPtcSessionDockerArtifactRoot,
   buildPtcSessionDockerCallbackRoot,
   buildPtcSessionDockerSessionRoot,
+  preparePtcSessionDockerHostDirs,
+  removePtcSessionDockerHostRoot,
 } from './session-docker-host-roots.js';
 import {
+  buildPtcSessionDockerRuntimeScopeHash,
   createPtcSessionDockerLocalBatchCommandPolicy,
   PTC_SESSION_DOCKER_ARTIFACT_WORKSPACE_MOUNT_POLICY_ID,
   PTC_SESSION_DOCKER_DEFAULT_POLICY,
@@ -554,7 +557,12 @@ void test('PTC session Docker root builders keep callbacks and artifacts separat
       sessionRoot.endsWith(`/s/${reuseKey.identityHash.slice(0, 16)}`),
       true,
     );
-    assert.equal(callbackRoot, `${sessionRoot}/c`);
+    if (process.platform === 'win32') {
+      assert.equal(callbackRoot, `${sessionRoot}/c`);
+    } else {
+      assert.equal(callbackRoot.startsWith(`${runtimeRoot}/`), false);
+      assert.equal(callbackRoot.endsWith('/c'), true);
+    }
     assert.equal(artifactRoot, `${sessionRoot}/a`);
     assert.equal(
       packageCacheRoot.hostPath,
@@ -575,6 +583,60 @@ void test('PTC session Docker root builders keep callbacks and artifacts separat
     );
   });
 });
+
+void test(
+  'PTC session callback sockets remain usable with a long durable runtime root',
+  { skip: process.platform === 'win32' },
+  async () => {
+    await withTempRuntimeRoot(async (tempRoot) => {
+      const runtimeRoot = join(tempRoot, 'durable-runtime-root-'.repeat(5));
+      await mkdir(runtimeRoot, { recursive: true });
+      const reuseKey = normalizePtcSessionDockerReuseKey({
+        identity: IDENTITY,
+        stateRootRealpath: '/real/workspace/project-a',
+        policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
+      });
+      const legacySocketPath = join(
+        buildPtcSessionDockerSessionRoot({ runtimeRoot, reuseKey }),
+        'c',
+        'ptc-epoch-XXXXXX',
+        'callback.sock',
+      );
+      const hostDirs = await preparePtcSessionDockerHostDirs({
+        runtimeRoot,
+        reuseKey,
+      });
+      assert.equal((await stat(hostDirs.callbackRoot)).mode & 0o777, 0o700);
+      let channel:
+        | Awaited<ReturnType<typeof createPtcEpochCallbackChannel>>
+        | undefined;
+      try {
+        channel = await createPtcEpochCallbackChannel({
+          rootDir: hostDirs.callbackRoot,
+          handler: async () => ({
+            ok: true,
+            result: { kind: 'inline', value: 'ok' },
+          }),
+        });
+        assert.equal(channel.socketPath.startsWith(`${runtimeRoot}/`), false);
+        assert.equal(
+          Buffer.byteLength(channel.socketPath, 'utf8') <
+            Buffer.byteLength(legacySocketPath, 'utf8'),
+          true,
+        );
+        await access(channel.socketPath);
+      } finally {
+        await channel?.close();
+        const cleanup = await removePtcSessionDockerHostRoot({
+          runtimeRoot,
+          reuseKey,
+        });
+        assert.equal(cleanup.ok, true);
+        await assert.rejects(() => access(hostDirs.callbackRoot), /ENOENT/u);
+      }
+    });
+  },
+);
 
 void test('PtcSessionDockerManager creates, inspects, reuses, and closes one container', async () => {
   await withTempRuntimeRoot(async (runtimeRoot) => {
@@ -799,7 +861,7 @@ void test('PtcSessionDockerManager sweeps scoped ephemeral residue once before f
         return {
           kind: 'exit',
           exitCode: 0,
-          stdout: `stale-burst|${staleKey.identityHash}|${staleKey.packageCacheIdentityHash}\n`,
+          stdout: `stale-burst|${staleKey.identityHash}|${staleKey.packageCacheIdentityHash}|true\n`,
           stderr: '',
         };
       }
@@ -858,6 +920,95 @@ void test('PtcSessionDockerManager sweeps scoped ephemeral residue once before f
     );
     assert.deepEqual(staleRemove?.args, ['rm', '-f', 'stale-burst']);
     await manager.close(IDENTITY);
+  });
+});
+
+void test('PtcSessionDockerManager restart cleanup reaps all prior containers without deleting reusable caches', async () => {
+  await withTempRuntimeRoot(async (runtimeRoot) => {
+    const persistentKey = normalizePtcSessionDockerReuseKey({
+      identity: IDENTITY,
+      stateRootRealpath: '/real/workspace/project-a',
+      policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
+    });
+    const ephemeralKey = normalizePtcSessionDockerReuseKey({
+      identity: {
+        ...IDENTITY,
+        ephemeralBurstId: 'ptc_burst_restart_residue',
+      },
+      stateRootRealpath: '/real/workspace/project-a',
+      policy: PTC_SESSION_DOCKER_DEFAULT_POLICY,
+    });
+    const persistentSessionRoot = buildPtcSessionDockerSessionRoot({
+      runtimeRoot,
+      reuseKey: persistentKey,
+    });
+    const ephemeralSessionRoot = buildPtcSessionDockerSessionRoot({
+      runtimeRoot,
+      reuseKey: ephemeralKey,
+    });
+    const persistentPackageCacheRoot = packageCacheHostRootFor({
+      runtimeRoot,
+      reuseKey: persistentKey,
+    });
+    const ephemeralPackageCacheRoot = packageCacheHostRootFor({
+      runtimeRoot,
+      reuseKey: ephemeralKey,
+    });
+    await Promise.all(
+      [
+        persistentSessionRoot,
+        ephemeralSessionRoot,
+        persistentPackageCacheRoot,
+        ephemeralPackageCacheRoot,
+      ].map((path) => mkdir(path, { recursive: true })),
+    );
+
+    const invocations: PtcSessionDockerCommandInvocation[] = [];
+    const manager = createPtcSessionDockerManager({
+      runtimeRoot,
+      realpathStateRoot: async () => '/real/workspace/project-a',
+      commandRunner: async (invocation) => {
+        invocations.push(invocation);
+        if (invocation.args[0] === 'ps') {
+          assert.equal(
+            invocation.args.includes('label=geulbat.ephemeral=true'),
+            false,
+          );
+          return {
+            kind: 'exit',
+            exitCode: 0,
+            stdout: [
+              `persistent-before-restart|${persistentKey.identityHash}|${persistentKey.packageCacheIdentityHash}|`,
+              `burst-before-restart|${ephemeralKey.identityHash}|${ephemeralKey.packageCacheIdentityHash}|true`,
+              '',
+            ].join('\n'),
+            stderr: '',
+          };
+        }
+        if (invocation.args[0] === 'rm') {
+          return { kind: 'exit', exitCode: 0, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected docker args: ${invocation.args.join(' ')}`);
+      },
+    });
+
+    assert.deepEqual(await manager.reapRestartResidue?.(), {
+      ok: true,
+      value: undefined,
+    });
+    const remove = invocations.find(
+      (invocation) => invocation.args[0] === 'rm',
+    );
+    assert.deepEqual(remove?.args, [
+      'rm',
+      '-f',
+      'persistent-before-restart',
+      'burst-before-restart',
+    ]);
+    await assert.rejects(() => access(persistentSessionRoot), /ENOENT/u);
+    await assert.rejects(() => access(ephemeralSessionRoot), /ENOENT/u);
+    await access(persistentPackageCacheRoot);
+    await assert.rejects(() => access(ephemeralPackageCacheRoot), /ENOENT/u);
   });
 });
 

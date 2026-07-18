@@ -6,6 +6,7 @@ import {
 } from '@geulbat/shared-utils/process-command';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { joinDiagnostics } from './react-bundle-dependency-attempt-lifecycle.js';
 import type { ReactBundleDependencyNetworkProbeCandidate } from './react-bundle-dependency-network-probe-candidate.js';
 
 type DockerCommandResult = DockerClientCommandResult;
@@ -201,7 +202,7 @@ export async function runDockerMetadataProbeProcess(args: {
   });
 }
 
-async function rejectDockerAvailabilityOutput(
+export async function rejectDockerAvailabilityOutput(
   relativePath: string,
   _content: string,
 ): Promise<void> {
@@ -256,8 +257,4 @@ function formatDiagnosticsSuffix(result: {
 }): string {
   const diagnostics = joinDiagnostics(result.stdout, result.stderr);
   return diagnostics.length > 0 ? `: ${diagnostics}` : '';
-}
-
-function joinDiagnostics(stdout: string, stderr: string): string {
-  return [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
 }

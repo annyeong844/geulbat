@@ -113,7 +113,7 @@ function classifyAbortOutcome(args: {
   timeoutMs: number | undefined;
 }): ExecuteResult {
   if (args.callerSignal?.aborted) {
-    return toolError('aborted', 'client disconnected');
+    return toolError('aborted', 'tool execution cancelled');
   }
   if (args.timeoutSignal?.aborted && args.timeoutMs !== undefined) {
     return toolError(
@@ -164,6 +164,15 @@ export async function executeTool(
 
   if (!tool) {
     return toolError('unknown_tool', `unknown tool: ${name}`);
+  }
+
+  if (ctx.signal?.aborted) {
+    return classifyAbortOutcome({
+      name,
+      callerSignal: ctx.signal,
+      timeoutSignal: undefined,
+      timeoutMs: tool.timeoutMs,
+    });
   }
 
   let parsedArgs: object;

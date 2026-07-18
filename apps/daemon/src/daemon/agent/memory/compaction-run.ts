@@ -26,14 +26,14 @@ type CompactionTranscriptEntry = Extract<
   TranscriptEntry,
   { role: 'compaction' }
 >;
-export interface ContextCompactionSummaryRequest {
+interface ContextCompactionSummaryRequest {
   previousSummary?: string;
   historyPrefix: readonly TranscriptEntry[];
   summaryBudgetTokens: number;
   signal?: AbortSignal;
 }
 
-export interface ContextCompactionSummary {
+interface ContextCompactionSummary {
   summary: string;
   shortSummary: string;
   summaryTokens: number;
@@ -45,7 +45,7 @@ export interface ContextCompactionSummarizer {
   ): Promise<ContextCompactionSummary>;
 }
 
-export type CompactThreadContextResult =
+type CompactThreadContextResult =
   | Exclude<PrepareContextCompactionResult, PreparedContextCompaction>
   | {
       kind: 'summary_invalid';
@@ -69,7 +69,7 @@ export type CompactThreadContextResult =
       summaryTokens: number;
     };
 
-export type CompactThreadContextNativeResult =
+type CompactThreadContextNativeResult =
   | { kind: 'transcript_empty' }
   | {
       kind: 'stale_snapshot';
@@ -81,19 +81,19 @@ export type CompactThreadContextNativeResult =
       checkpoint: CompactionTranscriptEntry;
     };
 
-export interface ProviderTransitionContextSummary {
+interface ProviderTransitionContextSummary {
   summary: string;
   inputTokens?: number;
 }
 
-export interface ProviderTransitionContextSummarizer {
+interface ProviderTransitionContextSummarizer {
   summarizeContext(request: {
     coveredThroughEntryId: string;
     signal?: AbortSignal;
   }): Promise<ProviderTransitionContextSummary>;
 }
 
-export type CompactThreadContextForProviderTransitionResult =
+type CompactThreadContextForProviderTransitionResult =
   | { kind: 'transcript_empty' }
   | {
       kind: 'summary_invalid';

@@ -3,7 +3,7 @@ import type {
   ProviderAuthStatusResponse,
 } from '@geulbat/protocol/provider-auth';
 
-import type { ProjectWorkspaceProps } from './project-workspace-shell.js';
+import type { HomeShellProps } from './home-shell.js';
 
 interface AppProviderAuthInput {
   providerAuthStatuses: Record<
@@ -22,8 +22,7 @@ interface AppProviderAuthInput {
 }
 
 export interface AppShellView {
-  workspaceKey: string;
-  workspaceProps: ProjectWorkspaceProps;
+  homeProps: HomeShellProps;
   providerAuthNotice: string | null;
 }
 
@@ -35,8 +34,7 @@ export function createAppShellView({
   providerAuth,
 }: CreateAppShellViewArgs): AppShellView {
   return {
-    workspaceKey: 'home',
-    workspaceProps: {
+    homeProps: {
       providerAuthStatuses: providerAuth.providerAuthStatuses,
       providerAuthBusyProviderId: providerAuth.providerAuthBusyProviderId,
       providerAuthErrors: providerAuth.providerAuthErrors,

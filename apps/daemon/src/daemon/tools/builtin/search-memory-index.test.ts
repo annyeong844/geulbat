@@ -7,6 +7,10 @@ import { createMemoryIndexStore } from '../../memory/build-index.js';
 import { refreshMemoryIndexTool } from './refresh-memory-index.js';
 import { searchMemoryIndexTool } from './search-memory-index.js';
 
+void test('search_memory_index declares replay-safe restart recovery', () => {
+  assert.equal(searchMemoryIndexTool.recoveryStrategy, 'replay_safe');
+});
+
 function createSearchMemoryIndexContext(
   sourceRoot: string,
   stateRoot = sourceRoot,
@@ -305,7 +309,7 @@ void test('search_memory_index rejects missing memory index runtime', async () =
   assert.match(result.error ?? '', /memory index store is required/);
 });
 
-void test('search_memory_index fails closed when ComputerFileScope is unavailable', async () => {
+void test('search_memory_index fails closed when the Computer filesystem is unavailable', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-home-state-'));
   const result = await searchMemoryIndexTool.execute(
     { query: 'memory' },
@@ -319,5 +323,5 @@ void test('search_memory_index fails closed when ComputerFileScope is unavailabl
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'access_denied');
-  assert.match(result.error ?? '', /Computer file scope is unavailable/);
+  assert.match(result.error ?? '', /Computer filesystem is unavailable/);
 });

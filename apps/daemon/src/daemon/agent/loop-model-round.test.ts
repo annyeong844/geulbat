@@ -93,6 +93,36 @@ void test('runModelRound keeps instructions byte-stable while aggregating a roun
           arguments: '{"path":"draft.md"}',
         },
       ],
+      itemsToAppend: [
+        {
+          kind: 'backend_item',
+          data: {
+            id: 'msg_1',
+            type: 'message',
+            phase: 'commentary',
+            content: [{ type: 'output_text', text: 'thinking ' }],
+          },
+        },
+        {
+          kind: 'backend_item',
+          data: {
+            id: 'fc-1',
+            type: 'function_call',
+            call_id: 'call-1',
+            name: 'read_file',
+            arguments: '{"path":"draft.md"}',
+          },
+        },
+        {
+          kind: 'backend_item',
+          data: {
+            id: 'msg_2',
+            type: 'message',
+            phase: 'final_answer',
+            content: [{ type: 'output_text', text: 'done' }],
+          },
+        },
+      ],
     },
   });
   assert.deepEqual(
@@ -174,6 +204,17 @@ void test('createModelRoundPort delegates to the current model-round runner', as
         finalProse: 'ported model round',
       },
       functionCalls: [],
+      itemsToAppend: [
+        {
+          kind: 'backend_item',
+          data: {
+            id: 'msg_1',
+            type: 'message',
+            phase: 'final_answer',
+            content: [{ type: 'output_text', text: 'ported model round' }],
+          },
+        },
+      ],
     },
   });
 });
@@ -211,7 +252,12 @@ void test('runModelRound streams final answer deltas as they arrive without a du
           },
           {
             type: 'response.output_item.done',
-            item: { id: 'msg_1', type: 'message', phase: 'final_answer' },
+            item: {
+              id: 'msg_1',
+              type: 'message',
+              phase: 'final_answer',
+              content: [{ type: 'output_text', text: '안녕하세요' }],
+            },
           },
         ],
       },
@@ -227,6 +273,17 @@ void test('runModelRound streams final answer deltas as they arrive without a du
         finalProse: '안녕하세요',
       },
       functionCalls: [],
+      itemsToAppend: [
+        {
+          kind: 'backend_item',
+          data: {
+            id: 'msg_1',
+            type: 'message',
+            phase: 'final_answer',
+            content: [{ type: 'output_text', text: '안녕하세요' }],
+          },
+        },
+      ],
     },
   });
   assert.deepEqual(events, [
@@ -633,6 +690,17 @@ void test('runModelRound treats wrapped legacy envelope final text as plain pros
         finalProse: answer,
       },
       functionCalls: [],
+      itemsToAppend: [
+        {
+          kind: 'backend_item',
+          data: {
+            id: 'msg_1',
+            type: 'message',
+            phase: 'final_answer',
+            content: [{ type: 'output_text', text: answer }],
+          },
+        },
+      ],
     },
   });
   assert.deepEqual(events, [

@@ -12,14 +12,13 @@ void test('search_files projects parser-owned scalar constraints into tool param
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(parameters.properties.include, {
     type: 'string',
-    maxLength: 256,
-    pattern: '^(?!!).*$',
-    description: 'Glob pattern to filter which files to search (e.g. "*.ts").',
+    description:
+      'Glob pattern to include files (e.g. "*.ts") or exclude them with a leading "!" (e.g. "!**/*.test.ts").',
   });
   assert.equal(parameters.properties.root, undefined);
 });
 
-void test('search_files rejects a symlinked path that escapes ComputerFileScope', async (t) => {
+void test('search_files follows a directory symlink anywhere on the host filesystem', async (t) => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-search-computer-'),
   );
@@ -38,37 +37,12 @@ void test('search_files rejects a symlinked path that escapes ComputerFileScope'
     { callId: 'call-search-1', computerFileRoot },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'path_out_of_computer_scope');
-  assert.match(result.error ?? '', /linked-dir/);
+  assert.equal(result.ok, true);
+  assert.match(result.output, /secret\.txt/u);
+  assert.match(result.output, /hello world/u);
 });
 
-void test('search_files rejects a symlinked path that escapes the computer root', async (t) => {
-  const computerFileRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-search-computer-'),
-  );
-  const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-search-outside-'));
-  const linkedDir = join(computerFileRoot, 'linked-dir');
-
-  await writeFile(join(outsideRoot, 'secret.txt'), 'hello world\n', 'utf8');
-  if (!(await createSymlinkOrSkip(t, outsideRoot, linkedDir))) {
-    return;
-  }
-
-  const result = await searchFilesTool.execute(
-    { pattern: 'hello', path: 'linked-dir' },
-    {
-      callId: 'call-search-computer-symlink',
-      computerFileRoot,
-    },
-  );
-
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'path_out_of_computer_scope');
-  assert.match(result.error ?? '', /linked-dir/);
-});
-
-void test('search_files rejects a safe symlink whose canonical target is reserved', async (t) => {
+void test('search_files follows a directory symlink regardless of its target name', async (t) => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-search-computer-'),
   );
@@ -88,24 +62,130 @@ void test('search_files rejects a safe symlink whose canonical target is reserve
     },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'access_denied');
-  assert.match(result.error ?? '', /reserved path: \.git/);
+  assert.equal(result.ok, true);
+  assert.match(result.output, /config/u);
+  assert.match(result.output, /secret history/u);
 });
 
-void test('search_files rejects overly long include globs', async () => {
+void test('search_files follows directory symlinks nested below the selected root', async (t) => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-computer-'),
+  );
+  const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-search-outside-'));
+  const linkedDir = join(computerFileRoot, 'linked-external');
+  await writeFile(
+    join(outsideRoot, 'needle.txt'),
+    'nested-symlink-marker\n',
+    'utf8',
+  );
+  if (!(await createSymlinkOrSkip(t, outsideRoot, linkedDir))) {
+    return;
+  }
+
+  const contentResult = await searchFilesTool.execute(
+    { pattern: 'nested-symlink-marker' },
+    { callId: 'call-search-nested-symlink-content', computerFileRoot },
+  );
+  const filenameResult = await searchFilesTool.execute(
+    { pattern: '**/needle.txt', type: 'filename' },
+    { callId: 'call-search-nested-symlink-filename', computerFileRoot },
+  );
+
+  assert.equal(contentResult.ok, true);
+  assert.deepEqual(
+    (
+      JSON.parse(contentResult.output) as {
+        results: Array<{ path: string }>;
+      }
+    ).results.map((entry) => entry.path),
+    ['linked-external/needle.txt'],
+  );
+  assert.equal(filenameResult.ok, true);
+  assert.deepEqual(
+    (
+      JSON.parse(filenameResult.output) as {
+        results: Array<{ path: string }>;
+      }
+    ).results.map((entry) => entry.path),
+    ['linked-external/needle.txt'],
+  );
+});
+
+void test('search_files stops symlink cycles without losing reachable matches', async (t) => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-cycle-'),
+  );
+  const docsDir = join(computerFileRoot, 'docs');
+  const nestedDir = join(docsDir, 'nested');
+  await mkdir(nestedDir, { recursive: true });
+  await writeFile(join(docsDir, 'needle.txt'), 'cycle-safe-marker\n', 'utf8');
+  if (!(await createSymlinkOrSkip(t, docsDir, join(nestedDir, 'loop')))) {
+    return;
+  }
+
+  const contentResult = await searchFilesTool.execute(
+    { pattern: 'cycle-safe-marker' },
+    { callId: 'call-search-cycle-content', computerFileRoot },
+  );
+  const filenameResult = await searchFilesTool.execute(
+    { pattern: '**/needle.txt', type: 'filename' },
+    { callId: 'call-search-cycle-filename', computerFileRoot },
+  );
+
+  assert.equal(contentResult.ok, true);
+  assert.deepEqual(
+    (
+      JSON.parse(contentResult.output) as {
+        results: Array<{ path: string }>;
+      }
+    ).results.map((entry) => entry.path),
+    ['docs/needle.txt'],
+  );
+  assert.equal(filenameResult.ok, true);
+  assert.deepEqual(
+    (
+      JSON.parse(filenameResult.output) as {
+        results: Array<{ path: string }>;
+      }
+    ).results.map((entry) => entry.path),
+    ['docs/needle.txt'],
+  );
+});
+
+void test('search_files accepts a valid include glob longer than 256 characters', async () => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-search-glob-'),
   );
+  const segments = Array.from(
+    { length: 30 },
+    (_, index) => `segment-${String(index).padStart(2, '0')}`,
+  );
+  const relativePath = [...segments, 'needle.txt'].join('/');
+  assert.ok(relativePath.length > 256);
+  await mkdir(join(computerFileRoot, ...segments), { recursive: true });
+  await writeFile(
+    join(computerFileRoot, ...segments, 'needle.txt'),
+    'long-glob-marker\n',
+    'utf8',
+  );
 
   const result = await searchFilesTool.execute(
-    { pattern: 'hello', include: '*'.repeat(257) },
+    {
+      pattern: '**/needle.txt',
+      type: 'filename',
+      include: relativePath,
+    },
     { callId: 'call-search-2', computerFileRoot },
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'invalid_args');
-  assert.match(result.error ?? '', /include glob is too long/);
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    results: Array<{ path: string }>;
+  };
+  assert.deepEqual(
+    payload.results.map((entry) => entry.path),
+    [relativePath],
+  );
 });
 
 void test('search_files rejects unexpected keys instead of ignoring them', async () => {
@@ -149,15 +229,53 @@ void test('search_files rejects blank path at the parser boundary', async () => 
   assert.match(result.error ?? '', /path.*empty/);
 });
 
-void test('search_files rejects include globs starting with ! at the parser boundary', async () => {
-  const result = await searchFilesTool.execute(
-    { pattern: 'hello', include: '!.git' },
-    { callId: 'call-search-negated-glob', computerFileRoot: '/computer' },
+void test('search_files applies a leading ! include glob as an exclusion', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-negated-glob-'),
+  );
+  await mkdir(join(computerFileRoot, 'src'), { recursive: true });
+  await writeFile(
+    join(computerFileRoot, 'src', 'product.ts'),
+    'negated-glob-marker\n',
+    'utf8',
+  );
+  await writeFile(
+    join(computerFileRoot, 'src', 'product.test.ts'),
+    'negated-glob-marker\n',
+    'utf8',
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'invalid_args');
-  assert.match(result.error ?? '', /must not start with "!"/);
+  for (const [callId, args] of [
+    [
+      'call-search-negated-glob-content',
+      {
+        pattern: 'negated-glob-marker',
+        include: '!**/*.test.ts',
+      },
+    ],
+    [
+      'call-search-negated-glob-filename',
+      {
+        pattern: '**/*.ts',
+        include: '!**/*.test.ts',
+        type: 'filename' as const,
+      },
+    ],
+  ] as const) {
+    const result = await searchFilesTool.execute(args, {
+      callId,
+      computerFileRoot,
+    });
+
+    assert.equal(result.ok, true);
+    const payload = JSON.parse(result.output) as {
+      results: Array<{ path: string }>;
+    };
+    assert.deepEqual(
+      payload.results.map((entry) => entry.path),
+      ['src/product.ts'],
+    );
+  }
 });
 
 void test('search_files rejects non-positive or fractional maxResults at the parser boundary', async () => {
@@ -201,11 +319,42 @@ void test('search_files supports filename mode', async () => {
     results: Array<{ path: string; line: number; text: string }>;
   };
 
-  assert.equal(payload.backend, 'js-filename');
+  assert.equal(payload.backend, 'ripgrep-files');
   assert.equal(payload.total, 1);
   assert.deepEqual(payload.results, [
     { path: 'docs/note.md', line: 0, text: '' },
   ]);
+});
+
+void test('search_files filename mode includes hidden and ignored-looking paths', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-hidden-filename-'),
+  );
+  await mkdir(join(computerFileRoot, '.git'), { recursive: true });
+  await mkdir(join(computerFileRoot, 'node_modules', 'package'), {
+    recursive: true,
+  });
+  await writeFile(join(computerFileRoot, '.env'), 'TOKEN=value\n', 'utf8');
+  await writeFile(join(computerFileRoot, '.git', 'config'), '[core]\n', 'utf8');
+  await writeFile(
+    join(computerFileRoot, 'node_modules', 'package', 'index.js'),
+    'export {};\n',
+    'utf8',
+  );
+
+  const result = await searchFilesTool.execute(
+    { pattern: '**/*', type: 'filename' },
+    { callId: 'call-search-hidden-filename', computerFileRoot },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    results: Array<{ path: string }>;
+  };
+  assert.deepEqual(
+    payload.results.map((entry) => entry.path),
+    ['.env', '.git/config', 'node_modules/package/index.js'],
+  );
 });
 
 void test('search_files filename mode treats **/ as matching authority-root files', async () => {
@@ -228,7 +377,7 @@ void test('search_files filename mode treats **/ as matching authority-root file
     results: Array<{ path: string; line: number; text: string }>;
   };
 
-  assert.equal(payload.backend, 'js-filename');
+  assert.equal(payload.backend, 'ripgrep-files');
   assert.equal(payload.total, 2);
   assert.deepEqual(payload.results, [
     { path: 'docs/note.txt', line: 0, text: '' },
@@ -365,7 +514,7 @@ void test('search_files infers the computer root for an admitted absolute path',
   ]);
 });
 
-void test('search_files content mode excludes nested secret configuration files under the computer root', async () => {
+void test('search_files content mode includes hidden configuration files under the selected root', async () => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-search-computer-'),
   );
@@ -419,11 +568,12 @@ void test('search_files content mode excludes nested secret configuration files 
     total: number;
     results: Array<{ path: string }>;
   };
-  assert.equal(payload.total, 1);
-  assert.deepEqual(
-    payload.results.map((entry) => entry.path),
-    ['project/allowed.txt'],
-  );
+  const paths = payload.results.map((entry) => entry.path);
+  assert.equal(payload.total, 12);
+  assert.equal(paths.includes('project/allowed.txt'), true);
+  assert.equal(paths.includes('project/nested/.env'), true);
+  assert.equal(paths.includes('project/nested/.env.production'), true);
+  assert.equal(paths.includes('project/nested/.GIT/config'), true);
 });
 
 void test('search_files content mode returns all matches when maxResults is omitted', async () => {
@@ -508,6 +658,34 @@ void test('search_files content mode preserves full matching line text', async (
     results: Array<{ text: string }>;
   };
   assert.equal(payload.results[0]?.text, longLine);
+});
+
+void test('search_files content mode evaluates the documented regular expression', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-content-regex-'),
+  );
+  await mkdir(join(computerFileRoot, 'docs'), { recursive: true });
+  await writeFile(
+    join(computerFileRoot, 'docs', 'regex.md'),
+    ['regex-one', 'regex-two', 'regex-three'].join('\n') + '\n',
+    'utf8',
+  );
+
+  const result = await searchFilesTool.execute(
+    { pattern: 'regex-(one|two)' },
+    { callId: 'call-search-content-regex', computerFileRoot },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    total: number;
+    results: Array<{ text: string }>;
+  };
+  assert.equal(payload.total, 2);
+  assert.deepEqual(
+    payload.results.map((entry) => entry.text),
+    ['regex-one', 'regex-two'],
+  );
 });
 
 void test('search_files content mode treats dash-prefixed patterns as literals', async () => {

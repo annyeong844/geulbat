@@ -17,6 +17,7 @@ interface DaemonMcpRuntimeCloser {
 }
 
 export interface DaemonRuntimeSessionClosers {
+  computerDirectoryPicker: { close(): Promise<void> };
   globalMcp: DaemonMcpRuntimeCloser;
   ptcBrowserPageLoadEvidence: DaemonRuntimeSessionCloser;
   ptcBrowserTextEvidence: DaemonRuntimeSessionCloser;
@@ -41,7 +42,11 @@ export async function closeDaemonForShutdown(args: {
 }): Promise<void> {
   const failures: Error[] = [];
   const attempt = async (
-    phase: 'servers' | 'runtimeSessions' | 'admissionLock',
+    phase:
+      | 'interactiveRequests'
+      | 'servers'
+      | 'runtimeSessions'
+      | 'admissionLock',
     close: () => Promise<void>,
   ): Promise<void> => {
     try {
@@ -53,18 +58,25 @@ export async function closeDaemonForShutdown(args: {
     }
   };
 
+  await attempt('interactiveRequests', async () => {
+    const result = await closeComputerDirectoryPicker(
+      args.runtimeSessions.computerDirectoryPicker,
+    );
+    throwForRuntimeSessionFailures([result]);
+  });
   await attempt('servers', () =>
     closeDaemonServers({
       server: args.server,
       webSocketServers: args.webSocketServers,
     }),
   );
-  await attempt('runtimeSessions', () =>
-    closeDaemonRuntimeSessions({
+  await attempt('runtimeSessions', async () => {
+    const results = await collectDaemonBackgroundRuntimeSessionResults({
       runtimeSessions: args.runtimeSessions,
       ...(args.signal === undefined ? {} : { signal: args.signal }),
-    }),
-  );
+    });
+    throwForRuntimeSessionFailures(results);
+  });
   await attempt('admissionLock', () => args.admissionLock.release());
 
   if (failures.length > 0) {
@@ -113,7 +125,18 @@ export async function closeDaemonRuntimeSessions(args: {
   runtimeSessions: DaemonRuntimeSessionClosers;
   signal?: AbortSignal;
 }): Promise<void> {
-  const results = await Promise.all([
+  const [pickerResult, backgroundResults] = await Promise.all([
+    closeComputerDirectoryPicker(args.runtimeSessions.computerDirectoryPicker),
+    collectDaemonBackgroundRuntimeSessionResults(args),
+  ]);
+  throwForRuntimeSessionFailures([pickerResult, ...backgroundResults]);
+}
+
+async function collectDaemonBackgroundRuntimeSessionResults(args: {
+  runtimeSessions: DaemonRuntimeSessionClosers;
+  signal?: AbortSignal;
+}): Promise<ReadonlyArray<{ failure?: string }>> {
+  return await Promise.all([
     closeDaemonMcpRuntime({
       runtime: args.runtimeSessions.globalMcp,
       signal: args.signal,
@@ -139,6 +162,11 @@ export async function closeDaemonRuntimeSessions(args: {
       signal: args.signal,
     }),
   ]);
+}
+
+function throwForRuntimeSessionFailures(
+  results: ReadonlyArray<{ failure?: string }>,
+): void {
   const failures = results
     .map((result) => result.failure)
     .filter((failure): failure is string => typeof failure === 'string');
@@ -146,6 +174,17 @@ export async function closeDaemonRuntimeSessions(args: {
     throw new Error(
       `daemon runtime session cleanup failed: ${failures.join('; ')}`,
     );
+  }
+}
+
+async function closeComputerDirectoryPicker(
+  picker: DaemonRuntimeSessionClosers['computerDirectoryPicker'],
+): Promise<{ failure?: string }> {
+  try {
+    await picker.close();
+    return {};
+  } catch {
+    return { failure: 'computerDirectoryPicker:threw' };
   }
 }
 

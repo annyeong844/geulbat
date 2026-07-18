@@ -3,7 +3,7 @@ import { sha256Hex } from '@geulbat/shared-utils/sha256';
 import { mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { joinWorkspaceGeulbatPath } from '../files/geulbat-internal-paths.js';
-import { isPathInsideWorkspaceBoundary } from '../files/normalize-path.js';
+import { isSameOrDescendantPath } from '../files/normalize-path.js';
 import {
   writeFileAtomically,
   writeTextFileAtomically,
@@ -141,7 +141,7 @@ async function readValidatedSourceFile(args: {
   const sourceRoot = await realpath(args.collectedOutput.rootPath);
   const realSourcePath = await realpath(args.sourcePath);
 
-  if (!isPathInsideWorkspaceBoundary(sourceRoot, realSourcePath)) {
+  if (!isSameOrDescendantPath(sourceRoot, realSourcePath)) {
     throw new Error(
       `sandbox output escapes sandbox output directory: ${displayPath}`,
     );

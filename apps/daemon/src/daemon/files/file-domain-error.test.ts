@@ -3,11 +3,6 @@ import assert from 'node:assert/strict';
 import { FileAccessError } from './file-domain-error.js';
 
 void test('FileAccessError static factories preserve canonical code/path/message shapes', () => {
-  const reserved = FileAccessError.reservedPath('.env');
-  assert.equal(reserved.code, 'access_denied');
-  assert.equal(reserved.path, '.env');
-  assert.equal(reserved.message, 'reserved path: .env');
-
   const missing = FileAccessError.notFound('missing.txt');
   assert.equal(missing.code, 'not_found');
   assert.equal(missing.path, 'missing.txt');

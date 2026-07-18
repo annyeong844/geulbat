@@ -9,7 +9,6 @@ import {
   FileAccessError,
   StaleWriteError,
 } from '../../../daemon/files/file-domain-error.js';
-import { PathEscapeError } from '../../../daemon/files/normalize-path.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import {
   sendApiError,
@@ -50,13 +49,6 @@ export function sendFilesRouteError(
         code: error.code,
       });
     sendFileAccessError(res, error);
-    return;
-  }
-  if (error instanceof PathEscapeError) {
-    logger.withContext({ logContext }).warn('route failed', {
-      code: 'path_out_of_computer_scope',
-    });
-    sendApiError(res, 'path_out_of_computer_scope', error.message);
     return;
   }
   sendUnexpectedApiError(res, logContext, error);

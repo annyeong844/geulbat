@@ -9,7 +9,14 @@ import type {
   ApprovalGrantContext,
 } from './approval-grants.js';
 
-type ApprovalPreflight = Record<never, never>;
+interface ApprovalPreflightTarget {
+  argument: 'path' | 'destination';
+  canonicalTargetId: string;
+}
+
+export interface ApprovalPreflight {
+  mutationTargets: ApprovalPreflightTarget[];
+}
 
 const FILE_MUTATION_TOOL_NAMES = new Set([
   'write_file',
@@ -52,14 +59,45 @@ export function shouldAutoApprove(
 
 export async function collectPreflight(
   ctx: { computerFileRoot?: string; workingDirectory?: string },
-  args: { path?: unknown },
+  args: Record<string, unknown>,
 ): Promise<ApprovalPreflight> {
-  const inputPath = typeof args['path'] === 'string' ? args['path'] : '';
-  const filePath = resolveComputerFileToolPath(ctx, inputPath);
-  await resolveSourceMutationTarget(filePath.absoluteRoot, filePath.path, {
-    allowMissingLeaf: true,
-  });
-  return {};
+  const mutationTargets: ApprovalPreflightTarget[] = [];
+  for (const argument of ['path', 'destination'] as const) {
+    const inputPath = args[argument];
+    if (typeof inputPath !== 'string') {
+      continue;
+    }
+    const filePath = resolveComputerFileToolPath(ctx, inputPath);
+    const resolvedPath = await resolveSourceMutationTarget(
+      filePath.absoluteRoot,
+      filePath.path,
+      { allowMissingLeaf: true },
+    );
+    mutationTargets.push({
+      argument,
+      canonicalTargetId: resolvedPath.canonicalAbsolutePath,
+    });
+  }
+  return { mutationTargets };
+}
+
+export async function isApprovalPreflightCurrent(
+  ctx: { computerFileRoot?: string; workingDirectory?: string },
+  args: Record<string, unknown>,
+  expected: ApprovalPreflight,
+): Promise<boolean> {
+  const current = await collectPreflight(ctx, args);
+  return (
+    current.mutationTargets.length === expected.mutationTargets.length &&
+    current.mutationTargets.every((target, index) => {
+      const expectedTarget = expected.mutationTargets[index];
+      return (
+        expectedTarget !== undefined &&
+        target.argument === expectedTarget.argument &&
+        target.canonicalTargetId === expectedTarget.canonicalTargetId
+      );
+    })
+  );
 }
 
 export function shouldRequireApproval(

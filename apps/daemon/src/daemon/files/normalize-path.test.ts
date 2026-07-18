@@ -1,50 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
-import {
-  checkNoSymlinkPathSegments,
-  PathNotFoundError,
-  PathEscapeError,
-  normalizePath,
-} from './normalize-path.js';
+import { normalizePath } from './normalize-path.js';
 
-void test('checkNoSymlinkPathSegments surfaces missing source paths when missing leaf is not allowed', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-normalize-'));
-
-  await assert.rejects(
-    () =>
-      checkNoSymlinkPathSegments(
-        workspaceRoot,
-        join(workspaceRoot, 'missing.txt'),
-      ),
-    (error: unknown) =>
-      error instanceof PathNotFoundError &&
-      error.code === 'not_found' &&
-      error.path === 'missing.txt',
+void test('normalizePath preserves a Windows absolute path on another drive', () => {
+  assert.equal(
+    normalizePath('C:\\workspace', 'D:\\Documents\\file.txt'),
+    'D:/Documents/file.txt',
   );
 });
 
-void test('checkNoSymlinkPathSegments allows missing tails for create-like paths', async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-normalize-'));
-
-  await assert.doesNotReject(() =>
-    checkNoSymlinkPathSegments(
-      workspaceRoot,
-      join(workspaceRoot, 'drafts', 'chapter-1.md'),
-      {
-        allowMissingLeaf: true,
-      },
-    ),
-  );
-});
-
-void test('normalizePath rejects Windows-form absolute paths on a different drive', () => {
-  assert.throws(
-    () => normalizePath('C:\\workspace', 'D:\\secrets\\file.txt'),
-    (error: unknown) => error instanceof PathEscapeError,
+void test('normalizePath preserves paths outside the coordinate base', () => {
+  assert.equal(
+    normalizePath('/computer/home', '/var/log/system.log'),
+    '../../var/log/system.log',
   );
 });
 
@@ -55,5 +24,12 @@ void test('normalizePath accepts Windows-form paths within the same root regardl
       'c:\\users\\user\\workspace\\notes\\todo.md',
     ),
     'notes/todo.md',
+  );
+});
+
+void test('normalizePath treats the filesystem root as a valid global coordinate base', () => {
+  assert.equal(
+    normalizePath('/', '/home/user/Documents/note.md'),
+    'home/user/Documents/note.md',
   );
 });

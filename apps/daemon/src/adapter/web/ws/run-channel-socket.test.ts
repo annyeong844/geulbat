@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { RunId } from '@geulbat/protocol/ids';
 import { toApprovalClass } from '@geulbat/protocol/run-approval';
 import WebSocket from 'ws';
@@ -179,7 +182,7 @@ void test('ensureThreadBackgroundSubscription replays pending background results
   }
 });
 
-void test('cleanupSocketState clears subscriptions and aborts socket-owned runs', () => {
+void test('cleanupSocketState clears socket-local state and detaches active run delivery', () => {
   const socket = createTestSocket();
   const daemonContext = createDaemonContext();
   const threadId = testThreadId(24);
@@ -201,13 +204,19 @@ void test('cleanupSocketState clears subscriptions and aborts socket-owned runs'
   });
   assert.equal(startResult.ok, true);
   state.activeRunIds.add(runId);
+  daemonContext.liveRunEvents.startRun({
+    runId,
+    threadId,
+    ownerId: state.approvalSessionId,
+    sink: () => true,
+  });
   ensureThreadBackgroundSubscription(socket, threadId, daemonContext);
   nextSocketThreadSeq(socket, threadId);
 
   try {
     cleanupSocketState(socket, daemonContext);
 
-    assert.equal(abortController.signal.aborted, true);
+    assert.equal(abortController.signal.aborted, false);
     assert.equal(state.threadUnsubscribes.size, 0);
     assert.equal(state.threadSeqByThread.size, 0);
     assert.equal(state.heartbeatInterval, null);
@@ -217,7 +226,35 @@ void test('cleanupSocketState clears subscriptions and aborts socket-owned runs'
     const nextState = getSocketState(socket);
     assert.notEqual(nextState.approvalSessionId, state.approvalSessionId);
     assert.equal(nextState.activeRunIds.size, 0);
+
+    assert.deepEqual(
+      daemonContext.liveRunEvents.publishRunEvent(runId, {
+        type: 'commentary_delta',
+        payload: { text: 'continued after socket cleanup' },
+      }),
+      { seq: 0, delivery: 'buffered' },
+    );
+    const deliveredSeqs: number[] = [];
+    assert.deepEqual(
+      daemonContext.liveRunEvents.bindDetachedRuns({
+        ownerId: 'replacement-socket-session',
+        sink: (envelope) => {
+          deliveredSeqs.push(envelope.seq);
+          return true;
+        },
+      }),
+      [
+        {
+          runId,
+          threadId,
+          previousOwnerId: state.approvalSessionId,
+          terminal: false,
+        },
+      ],
+    );
+    assert.deepEqual(deliveredSeqs, [0]);
   } finally {
+    daemonContext.liveRunEvents.finishRun(runId);
     daemonContext.activeRuns.finishRun(threadId, runId);
     cleanupSocketState(socket, daemonContext);
   }
@@ -250,7 +287,7 @@ void test('cleanupSocketState keeps closed socket state until in-flight message 
   cleanupSocketState(socket, daemonContext);
 });
 
-void test('cleanupSocketState aborts socket-owned runs without cancelling background child runs', () => {
+void test('cleanupSocketState preserves parent and background child runs after disconnect', () => {
   const socket = createTestSocket();
   const daemonContext = createDaemonContext();
   const ownerThreadId = testThreadId(224);
@@ -290,7 +327,7 @@ void test('cleanupSocketState aborts socket-owned runs without cancelling backgr
   try {
     cleanupSocketState(socket, daemonContext);
 
-    assert.equal(parentAbortController.signal.aborted, true);
+    assert.equal(parentAbortController.signal.aborted, false);
     assert.equal(childAbortController.signal.aborted, false);
   } finally {
     daemonContext.activeRuns.finishRun(ownerThreadId, parentRunId);
@@ -299,7 +336,7 @@ void test('cleanupSocketState aborts socket-owned runs without cancelling backgr
   }
 });
 
-void test('cleanupSocketState clears local runtime stores', () => {
+void test('cleanupSocketState clears local runtime stores while preserving the active run', () => {
   const socket = createTestSocket();
   const daemonContext = createDaemonContext();
   const threadId = testThreadId(124);
@@ -310,6 +347,7 @@ void test('cleanupSocketState clears local runtime stores', () => {
   state.heartbeatInterval = setInterval(() => undefined, 60_000);
   state.heartbeatTimeout = setTimeout(() => undefined, 60_000);
   state.awaitingPong = true;
+  state.runStartInFlightRequestId = 'request-socket-local-cleanup';
 
   const startResult = daemonContext.activeRuns.tryStartRun(threadId, {
     runId,
@@ -326,8 +364,10 @@ void test('cleanupSocketState clears local runtime stores', () => {
   try {
     cleanupSocketState(socket, daemonContext);
 
-    assert.equal(abortController.signal.aborted, true);
-    assert.equal(daemonContext.activeRuns.getRunById(runId)?.aborted, true);
+    assert.equal(abortController.signal.aborted, false);
+    assert.equal(daemonContext.activeRuns.getRunById(runId)?.aborted, false);
+    assert.equal(state.activeRunIds.size, 0);
+    assert.equal(state.runStartInFlightRequestId, null);
     assert.equal(state.heartbeatInterval, null);
     assert.equal(state.heartbeatTimeout, null);
     assert.equal(state.awaitingPong, false);
@@ -339,15 +379,23 @@ void test('cleanupSocketState clears local runtime stores', () => {
 
 void test('cleanupSocketState clears approval session runtime state', async () => {
   const socket = createTestSocket();
-  const daemonContext = createDaemonContext();
+  const daemonContext = createDaemonContext({
+    homeStateRoot: await mkdtemp(join(tmpdir(), 'geulbat-socket-approval-')),
+  });
   const state = getSocketState(socket);
   const threadId = testThreadId(125);
+  const runId = testRunId('socket-approval-cleanup');
+  await daemonContext.runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: 'stories', permissionMode: 'basic' },
+  });
   const wait = daemonContext.approvalGate.waitForApproval(
     'call-socket-cleanup',
-    'run-socket-approval-cleanup',
+    runId,
     threadId,
     {
-      runId: 'run-socket-approval-cleanup',
+      runId,
       sessionId: state.approvalSessionId,
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
@@ -360,9 +408,9 @@ void test('cleanupSocketState clears approval session runtime state', async () =
 
   assert.equal(await wait, 'aborted');
   assert.equal(
-    daemonContext.approvalGate.resolveApproval(
+    await daemonContext.approvalGate.resolveApproval(
       'call-socket-cleanup',
-      'run-socket-approval-cleanup',
+      runId,
       threadId,
       'approved',
     ),

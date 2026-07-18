@@ -25,21 +25,24 @@ const execCommandArgsSchema = z.strictObject({
     })
     .optional()
     .describe(
-      'Working directory. Relative paths resolve from the run current directory; every path must remain inside ComputerFileScope.',
+      'Working directory. Relative paths resolve from the selected run cwd; an admitted absolute path may select any Computer location independently of that cwd.',
     ),
   timeoutMs: z
     .number()
     .int()
     .positive()
     .max(EXEC_COMMAND_MAX_TIMER_MS)
-    .describe('Command timeout in milliseconds.'),
+    .optional()
+    .describe(
+      'Optional command timeout in milliseconds. Omit it to rely on run cancellation instead of a command-local deadline.',
+    ),
   maxOutputBytesPerStream: z
     .number()
     .int()
     .positive()
-    .max(EXEC_COMMAND_MAX_TIMER_MS)
+    .optional()
     .describe(
-      'Maximum buffered bytes for stdout and stderr separately before the command is stopped.',
+      'Optional caller-owned buffered byte stop for stdout and stderr separately. Omit it to let the command finish without a tool-imposed output stop; completed output is preserved through the durable tool-output path.',
     ),
 });
 
@@ -53,8 +56,8 @@ interface ExecCommandOutput {
   stdout: string;
   stderr: string;
   durationMs: number;
-  timeoutMs: number;
-  maxOutputBytesPerStream: number;
+  timeoutMs: number | null;
+  maxOutputBytesPerStream: number | null;
   outputLimitExceeded: {
     stream: 'stdout' | 'stderr';
     maxBufferedBytesPerStream: number;
@@ -69,7 +72,7 @@ interface ShellCommandInvocation {
 export const execCommandTool = defineZodTool({
   name: 'exec_command',
   description:
-    'Run a real approved shell command from the daemon host with the daemon process environment. This is not PTC exec, not a file-tool alias, and not a read-only shortcut.',
+    'Run a real approved shell command from the daemon host with the daemon process environment. Its optional cwd is a start location, not a file-authority boundary; admitted absolute cwd paths may select another Computer directory. This is not PTC exec, not a file-tool alias, and not a read-only shortcut.',
   argsSchema: execCommandArgsSchema,
   sideEffectLevel: 'destructive',
   mayMutateComputerFiles: true,
@@ -98,13 +101,17 @@ export const execCommandTool = defineZodTool({
       executable: shell.executable,
       args: shell.args,
       cwd,
-      timeoutMs: args.timeoutMs,
+      ...(args.timeoutMs === undefined ? {} : { timeoutMs: args.timeoutMs }),
       env: process.env,
       ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
       cancelledStderr: 'exec_command cancelled',
-      outputBufferPolicy: {
-        maxBufferedBytesPerStream: args.maxOutputBytesPerStream,
-      },
+      ...(args.maxOutputBytesPerStream === undefined
+        ? {}
+        : {
+            outputBufferPolicy: {
+              maxBufferedBytesPerStream: args.maxOutputBytesPerStream,
+            },
+          }),
     });
     const output = buildExecCommandOutput({
       command: args.cmd,
@@ -150,9 +157,9 @@ function buildExecCommandOutput(args: {
   command: string;
   cwd: string;
   durationMs: number;
-  maxOutputBytesPerStream: number;
+  maxOutputBytesPerStream: number | undefined;
   result: BoundedProcessCommandResult;
-  timeoutMs: number;
+  timeoutMs: number | undefined;
 }): ExecCommandOutput {
   return {
     command: args.command,
@@ -162,8 +169,8 @@ function buildExecCommandOutput(args: {
     stdout: args.result.stdout,
     stderr: args.result.stderr,
     durationMs: args.durationMs,
-    timeoutMs: args.timeoutMs,
-    maxOutputBytesPerStream: args.maxOutputBytesPerStream,
+    timeoutMs: args.timeoutMs ?? null,
+    maxOutputBytesPerStream: args.maxOutputBytesPerStream ?? null,
     outputLimitExceeded:
       args.result.kind === 'output_limit_exceeded'
         ? {

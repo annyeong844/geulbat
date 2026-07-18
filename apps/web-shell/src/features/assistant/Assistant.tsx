@@ -13,6 +13,7 @@ import {
 } from '@geulbat/protocol/run-contract';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
+import { getErrorMessage } from '@geulbat/shared-utils/error';
 
 import type {
   ContextUsageUpdatedEventPayload,
@@ -93,6 +94,9 @@ interface Props {
   onReasoningEffortChange?: (effort: RunReasoningEffort) => void;
   subagentModelRouting?: RunSubagentModelRouting;
   onSubagentModelRoutingChange?: (routing: RunSubagentModelRouting) => void;
+  workingDirectory?: string | null;
+  browseStartPath?: string;
+  onChooseWorkingDirectory?: () => Promise<void>;
   onUploadFiles?: (files: FileList) => Promise<ComposerAttachment[]>;
   onDiscardUploadedAttachment?: (contentRef: string) => void;
   attachmentImageUrl?: (attachmentId: string) => string | null;
@@ -145,6 +149,9 @@ export function Assistant({
   onReasoningEffortChange = () => {},
   subagentModelRouting = DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
   onSubagentModelRoutingChange = () => {},
+  workingDirectory = null,
+  browseStartPath = '',
+  onChooseWorkingDirectory,
   onUploadFiles,
   onDiscardUploadedAttachment,
   attachmentImageUrl,
@@ -164,6 +171,12 @@ export function Assistant({
   } | null>(null);
   const [providerTransitionPending, setProviderTransitionPending] =
     useState(false);
+  const [workingDirectorySelectionError, setWorkingDirectorySelectionError] =
+    useState<string | null>(null);
+  const [
+    workingDirectorySelectionPending,
+    setWorkingDirectorySelectionPending,
+  ] = useState(false);
   const [providerTransitionError, setProviderTransitionError] = useState<
     string | null
   >(null);
@@ -171,6 +184,25 @@ export function Assistant({
   // 실행 중 입력을 열어 run.interject로 보낸다.
   const isBusy = isStarting || isSettling;
   const canInterject = isRunning && !isStarting && !isSettling;
+  const chooseWorkingDirectory = useCallback(async () => {
+    if (
+      onChooseWorkingDirectory === undefined ||
+      workingDirectorySelectionPending
+    ) {
+      return;
+    }
+    setWorkingDirectorySelectionPending(true);
+    setWorkingDirectorySelectionError(null);
+    try {
+      await onChooseWorkingDirectory();
+    } catch (error: unknown) {
+      setWorkingDirectorySelectionError(
+        `시작 위치 창을 열지 못했습니다. ${getErrorMessage(error)}`,
+      );
+    } finally {
+      setWorkingDirectorySelectionPending(false);
+    }
+  }, [onChooseWorkingDirectory, workingDirectorySelectionPending]);
   const requestModelChange = useCallback(
     (targetModelId: RunModelId) => {
       if (targetModelId === modelId || isRunning || isBusy) {
@@ -530,6 +562,12 @@ export function Assistant({
         />
       ) : null}
 
+      {workingDirectorySelectionError !== null ? (
+        <p className="working-directory-selection-error" role="alert">
+          {workingDirectorySelectionError}
+        </p>
+      ) : null}
+
       <AssistantComposer
         draftRequest={composerDraftRequest}
         isBusy={isBusy}
@@ -543,6 +581,16 @@ export function Assistant({
         onModelIdChange={requestModelChange}
         onReasoningEffortChange={onReasoningEffortChange}
         onSubagentModelRoutingChange={onSubagentModelRoutingChange}
+        workingDirectory={workingDirectory}
+        browseStartPath={browseStartPath}
+        workingDirectorySelectionPending={workingDirectorySelectionPending}
+        {...(onChooseWorkingDirectory !== undefined
+          ? {
+              onOpenWorkingDirectoryPicker: () => {
+                void chooseWorkingDirectory();
+              },
+            }
+          : {})}
         {...(onUploadFiles !== undefined ? { onUploadFiles: uploadFiles } : {})}
         attachments={attachments}
         onRemoveAttachment={handleRemoveAttachment}

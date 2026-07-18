@@ -24,7 +24,7 @@ import {
   type PtcSessionDockerManagerFixture,
 } from './ptc-session-docker.js';
 
-export type PtcBrowserTestLabNetworkMode = 'open' | 'disabled';
+type PtcBrowserTestLabNetworkMode = 'open' | 'disabled';
 
 export interface PtcBrowserTestLab {
   admission: PtcLabAdmittedProfile;
@@ -39,7 +39,7 @@ export interface PtcBrowserRuntimeExecContext<Input> {
   inputContainerPath: string;
 }
 
-export interface WithPtcBrowserRuntimeSessionManagerArgs<Input> {
+interface WithPtcBrowserRuntimeSessionManagerArgs<Input> {
   identity: PtcSessionDockerIdentity;
   runtimeScript: string;
   policy?: PtcSessionDockerPolicy;
@@ -50,7 +50,7 @@ export interface WithPtcBrowserRuntimeSessionManagerArgs<Input> {
   ) => PtcSessionDockerCommandResult | Promise<PtcSessionDockerCommandResult>;
 }
 
-export interface CreatePtcBrowserTestLabArgs {
+interface CreatePtcBrowserTestLabArgs {
   policyId: PtcLabPolicyId;
   browser: PtcLabPolicyProjection['browser'];
   networkMode?: PtcBrowserTestLabNetworkMode;

@@ -61,7 +61,7 @@ interface RunSessionControllerActionsArgs {
 }
 
 interface PromptActionInputs {
-  workingDirectory: string;
+  workingDirectory?: string;
   modelId: RunModelId;
   selectedThreadId: string | null;
   permissionMode: PermissionMode;
@@ -217,7 +217,9 @@ export async function sendPromptAction({
     clearSessionError,
     buildPromptRunRequest({
       prompt,
-      workingDirectory: promptInputs.workingDirectory,
+      ...(promptInputs.workingDirectory !== undefined
+        ? { workingDirectory: promptInputs.workingDirectory }
+        : {}),
       modelId: promptInputs.modelId,
       selectedThreadId: promptInputs.selectedThreadId,
       permissionMode: promptInputs.permissionMode,
@@ -259,6 +261,7 @@ export async function degradeWidgetToolRequestAction(args: {
   prepareStartRequest?: (request: RunRequest) => Promise<RunStartRequest>;
   startRequestInFlight: { current: boolean };
   tryConsumeBudget?: (scopeHandle: string, lane: 'prompt') => boolean;
+  workingDirectory?: string;
 }): Promise<RunToolResultPayload> {
   const {
     request,
@@ -283,6 +286,10 @@ export async function degradeWidgetToolRequestAction(args: {
     toolArgs: request.args,
     threadId: brandThreadId(threadId),
   });
+  const runDraft =
+    args.workingDirectory === undefined || draft.workingDirectory !== undefined
+      ? draft
+      : { ...draft, workingDirectory: args.workingDirectory };
   if (cancelState.phase === 'running' && cancelState.activeRunId !== null) {
     await interjectPromptAction({
       client: interjectClient,
@@ -308,11 +315,11 @@ export async function degradeWidgetToolRequestAction(args: {
       startClient,
       dispatch,
       clearSessionError,
-      draft,
+      runDraft,
       appendOptimisticUserMessage,
       logCommandFailure,
       prepareStartRequest,
-      draft.displayPrompt,
+      runDraft.displayPrompt,
     );
   } finally {
     startRequestInFlight.current = false;
@@ -352,7 +359,9 @@ export async function regeneratePromptAction({
     clearSessionError,
     buildPromptRunRequest({
       prompt,
-      workingDirectory: promptInputs.workingDirectory,
+      ...(promptInputs.workingDirectory !== undefined
+        ? { workingDirectory: promptInputs.workingDirectory }
+        : {}),
       modelId: promptInputs.modelId,
       selectedThreadId: promptInputs.selectedThreadId,
       permissionMode: promptInputs.permissionMode,
@@ -651,6 +660,11 @@ export function useRunSessionControllerActions({
         logCommandFailure,
         prepareStartRequest,
         startRequestInFlight: startRequestInFlightRef,
+        ...(latestPromptInputsRef.current.workingDirectory !== undefined
+          ? {
+              workingDirectory: latestPromptInputsRef.current.workingDirectory,
+            }
+          : {}),
       }),
     [
       appendOptimisticUserMessage,
@@ -663,9 +677,10 @@ export function useRunSessionControllerActions({
     ],
   );
 
-  // 위젯/아티팩트 프레임 발 도구 호출 — 프레임은 데이터만 주고, 신뢰
-  // threadId/workingDirectory는 여기서 주입한다. 실패는 예외 대신 데이터
-  // 응답으로 돌려 프레임의 pending Promise가 항상 settle되게 한다.
+  // 위젯/아티팩트 프레임 발 도구 호출 — 프레임은 데이터만 주고 신뢰
+  // threadId와 사용자가 고른 시작 위치는 여기서 주입한다. 활성 run의 cwd는
+  // daemon이 소유하며, 탐색기 위치는 권한이나 cwd가 아니다. 실패는 데이터
+  // 응답으로 돌려 pending Promise를 settle한다.
   const requestWidgetTool = useCallback(
     async (request: WidgetToolRequestIntent): Promise<RunToolResultPayload> => {
       const inputs = latestPromptInputsRef.current;
@@ -680,11 +695,13 @@ export function useRunSessionControllerActions({
       try {
         const result = await frameToolClient.tool({
           threadId,
+          ...(inputs.workingDirectory !== undefined
+            ? { workingDirectory: inputs.workingDirectory }
+            : {}),
           toolName: request.toolName,
           args: request.args,
           scopeHandle: request.scopeHandle,
           frameRequestId: request.requestId,
-          workingDirectory: inputs.workingDirectory,
         });
         // 티어 A 밖(승인 필요/서피스 밖) 거부는 티어 B 프롬프트로 강등한다
         if (result.ok === false && result.errorCode === 'approval_required') {
@@ -780,15 +797,20 @@ export function useRunSessionControllerActions({
       }
       startRequestInFlightRef.current = true;
       try {
+        const inputs = latestPromptInputsRef.current;
+        const requestWithWorkingDirectory =
+          request.workingDirectory !== undefined ||
+          inputs.workingDirectory === undefined
+            ? request
+            : { ...request, workingDirectory: inputs.workingDirectory };
         await startRunAction({
           client: startClient,
           dispatch,
           clearSessionError,
-          request,
-          modelId: latestPromptInputsRef.current.modelId,
-          permissionMode: latestPromptInputsRef.current.permissionMode,
-          subagentModelRouting:
-            latestPromptInputsRef.current.subagentModelRouting,
+          request: requestWithWorkingDirectory,
+          modelId: inputs.modelId,
+          permissionMode: inputs.permissionMode,
+          subagentModelRouting: inputs.subagentModelRouting,
           appendOptimisticUserMessage,
           optimisticPrompt,
           logCommandFailure,

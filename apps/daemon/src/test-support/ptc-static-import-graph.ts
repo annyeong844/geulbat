@@ -1,13 +1,13 @@
 import { readFile } from 'node:fs/promises';
 
-export interface PtcStaticImportEdge {
+interface PtcStaticImportEdge {
   sourcePath: string;
   specifier: string;
   statementKind: 'import' | 'export';
   typeOnly: boolean;
 }
 
-export type PtcStaticImportGraph = Map<string, PtcStaticImportEdge[]>;
+type PtcStaticImportGraph = Map<string, PtcStaticImportEdge[]>;
 
 const PTC_SOURCE_ROOT_URL = new URL('../../src/daemon/ptc/', import.meta.url);
 const STATIC_IMPORT_PATTERN =

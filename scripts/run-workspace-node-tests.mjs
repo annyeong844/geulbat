@@ -45,7 +45,7 @@ const workspaceTestBuildCacheDirectory = 'dist-test-cache';
 const workspaceTestBuildCacheLock = 'dist-test-cache.lock';
 const workspaceTestBuildInfoFile = 'tsconfig.test.tsbuildinfo';
 
-export function parseWorkspaceTestArgs(args) {
+function parseWorkspaceTestArgs(args) {
   const patterns = [];
   let coverageOutput;
   let jobs;

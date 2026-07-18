@@ -12,18 +12,18 @@ export const ARTIFACT_RUNTIME_AGENT_MESSAGE_KIND =
 // 프레임이 초대형 페이로드를 밀어 넣는 것을 수신 경계에서 거른다.
 const MAX_AGENT_TEXT_LENGTH = 8000;
 
-export interface ArtifactRuntimeAgentPromptRequest {
+interface ArtifactRuntimeAgentPromptRequest {
   kind: 'agent_prompt_request';
   text: string;
   displayText: string | null;
 }
 
-export interface ArtifactRuntimeAgentInterjectRequest {
+interface ArtifactRuntimeAgentInterjectRequest {
   kind: 'agent_interject_request';
   text: string;
 }
 
-export interface ArtifactRuntimeAgentToolRequest {
+interface ArtifactRuntimeAgentToolRequest {
   kind: 'agent_tool_request';
   requestId: string;
   toolName: string;
@@ -37,7 +37,7 @@ export type ArtifactRuntimeAgentMessage =
 
 // 부모 → 프레임 도구 결과 회신. 프레임 helper(window.geulbat.requestTool)의
 // pending Promise가 requestId로 상관해 resolve한다.
-export const ARTIFACT_RUNTIME_AGENT_TOOL_RESULT_MESSAGE_KIND =
+const ARTIFACT_RUNTIME_AGENT_TOOL_RESULT_MESSAGE_KIND =
   'geulbat.shell.agent_tool_result';
 
 export function createArtifactRuntimeAgentToolResultMessage(args: {

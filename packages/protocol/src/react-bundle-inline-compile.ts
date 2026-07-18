@@ -14,7 +14,7 @@ export type ReactBundleInlineCompileFailureCode =
   | 'boot_failed'
   | 'runtime_crashed';
 
-export interface ReactBundleRuntimeImportMap {
+interface ReactBundleRuntimeImportMap {
   imports?: Record<string, string>;
 }
 
@@ -33,16 +33,12 @@ export interface ReactBundleInlineSourceInput {
   entry: string;
 }
 
-export type ReactBundleArtifactInput =
-  | ReactBundleRuntimeManifest
-  | ReactBundleInlineSourceInput;
-
 export interface ReactBundleInlineCompileRequest {
   renderer: 'react_bundle';
   input: ReactBundleInlineSourceInput;
 }
 
-export interface ReactBundleInlineCompileInputRefRequest {
+interface ReactBundleInlineCompileInputRefRequest {
   renderer: 'react_bundle';
   inputRef: string;
 }
@@ -76,33 +72,6 @@ export function isReactBundleRuntimeManifest(
     isString(value.entryUrl) &&
     isOptionalReactBundleRuntimeDependencies(value.runtimeDependencies)
   );
-}
-
-export function isReactBundleInlineSourceInput(
-  value: unknown,
-): value is ReactBundleInlineSourceInput {
-  return decodeReactBundleInlineSourceInput(value).ok;
-}
-
-export function isReactBundleArtifactInput(
-  value: unknown,
-): value is ReactBundleArtifactInput {
-  return (
-    isReactBundleRuntimeManifest(value) || isReactBundleInlineSourceInput(value)
-  );
-}
-
-export function isReactBundleInlineCompileRequest(
-  value: unknown,
-): value is ReactBundleInlineCompileRequest {
-  const decoded = decodeReactBundleInlineCompileRequest(value);
-  return decoded.ok && 'input' in decoded.value;
-}
-
-export function isReactBundleInlineCompileRouteRequest(
-  value: unknown,
-): value is ReactBundleInlineCompileRouteRequest {
-  return decodeReactBundleInlineCompileRequest(value).ok;
 }
 
 export function isReactBundleInlineCompileResponse(

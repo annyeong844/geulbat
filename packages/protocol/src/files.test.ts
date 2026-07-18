@@ -2,12 +2,35 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  isComputerDirectorySelectionResponse,
   isComputerFileScopeResponse,
   isFileBinaryInputRefResponse,
   isFileReadResponse,
   isFileSaveResponse,
   isFileTreeResponse,
 } from './files.js';
+
+void test('isComputerDirectorySelectionResponse accepts only selected paths or cancellation', () => {
+  assert.equal(
+    isComputerDirectorySelectionResponse({
+      status: 'selected',
+      path: 'mnt/c/Users/user/Downloads/repo',
+    }),
+    true,
+  );
+  assert.equal(
+    isComputerDirectorySelectionResponse({ status: 'cancelled' }),
+    true,
+  );
+  assert.equal(
+    isComputerDirectorySelectionResponse({ status: 'selected' }),
+    false,
+  );
+  assert.equal(
+    isComputerDirectorySelectionResponse({ status: 'cancelled', path: '' }),
+    false,
+  );
+});
 
 void test('isComputerFileScopeResponse accepts sanitized browse metadata only', () => {
   assert.equal(isComputerFileScopeResponse({ available: false }), true);

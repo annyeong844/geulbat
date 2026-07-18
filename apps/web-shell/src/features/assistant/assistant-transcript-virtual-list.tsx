@@ -1,5 +1,9 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import {
+  elementScroll,
+  useVirtualizer,
+  type Virtualizer,
+} from '@tanstack/react-virtual';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { RunRequest } from '@geulbat/protocol/run-contract';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
@@ -73,6 +77,7 @@ type TranscriptVirtualRow =
 
 interface VirtualizedTranscriptRowsProps {
   scrollElementRef: React.RefObject<HTMLDivElement | null>;
+  onVirtualizerUpdate: () => void;
   messages: ThreadMessage[];
   messageKeys: string[];
   transcriptEntries: RunTranscriptEntry[];
@@ -104,6 +109,7 @@ const INITIAL_VIEWPORT_RECT = { width: 400, height: 800 };
 export const VirtualizedTranscriptRows = React.memo(
   function VirtualizedTranscriptRows({
     scrollElementRef,
+    onVirtualizerUpdate,
     messages,
     messageKeys,
     transcriptEntries,
@@ -153,6 +159,20 @@ export const VirtualizedTranscriptRows = React.memo(
         return next;
       });
     }, []);
+    const scrollVirtualizer = useCallback(
+      (
+        offset: number,
+        options: { adjustments?: number; behavior?: ScrollBehavior },
+        instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+      ) => {
+        elementScroll(offset, options, instance);
+        // TanStack의 scroll write가 끝난 바로 뒤 최종 follow 판정을
+        // transcript owner에게 돌려준다. 브라우저 scroll event보다 먼저
+        // 실행되므로 내부 offset 보정을 사용자 스크롤로 오인하지 않는다.
+        onVirtualizerUpdate();
+      },
+      [onVirtualizerUpdate],
+    );
     const virtualizer = useVirtualizer({
       count: rows.length,
       getScrollElement: () => scrollElementRef.current,
@@ -160,11 +180,11 @@ export const VirtualizedTranscriptRows = React.memo(
       getItemKey: (index) => rows[index]?.key ?? index,
       anchorTo: 'end',
       followOnAppend: true,
+      scrollToFn: scrollVirtualizer,
       initialRect: INITIAL_VIEWPORT_RECT,
       useFlushSync: false,
       useAnimationFrameWithResizeObserver: true,
     });
-
     return (
       <div
         className="transcript-virtual-list"

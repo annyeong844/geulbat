@@ -13,7 +13,7 @@ const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const THREAD_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export class InvalidRunIdError extends Error {
+class InvalidRunIdError extends Error {
   readonly code = 'invalid_run_id';
 
   constructor(runId: string) {
@@ -22,7 +22,7 @@ export class InvalidRunIdError extends Error {
   }
 }
 
-export class InvalidThreadIdError extends Error {
+class InvalidThreadIdError extends Error {
   readonly code = 'invalid_thread_id';
 
   constructor(threadId: string) {

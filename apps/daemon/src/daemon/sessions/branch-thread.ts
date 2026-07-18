@@ -17,6 +17,7 @@ import {
   replaceTranscriptEntries,
   type TranscriptEntry,
 } from './transcript-log.js';
+import { copyProviderRoundHistory } from './provider-round-journal.js';
 
 const logger = createLogger('sessions/branch-thread');
 
@@ -69,6 +70,14 @@ export async function branchThreadSession(args: {
     branchedThreadId,
     copiedEntries,
   );
+  await copyProviderRoundHistory({
+    stateRoot: args.workspaceRoot,
+    sourceThreadId: args.sourceThreadId,
+    targetThreadId: branchedThreadId,
+    retainedTranscriptEntryIds: new Set(
+      copiedEntries.map((entry) => entry.entryId),
+    ),
+  });
   await copyThreadArtifactVersionsByRefs({
     workspaceRoot: args.workspaceRoot,
     sourceThreadId: args.sourceThreadId,

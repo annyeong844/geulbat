@@ -6,6 +6,7 @@ void test('buildSystemPrompt includes tool and mutation recovery guidance', () =
   const prompt = buildSystemPrompt({
     profile: 'root',
     computerSessionAvailable: true,
+    workingDirectory: 'home/user/chosen-start',
   });
 
   assert.match(prompt, /discovery -> read -> mutate/);
@@ -173,6 +174,7 @@ void test('buildSystemPrompt describes a general agent and the actual host bound
   const prompt = buildSystemPrompt({
     profile: 'root',
     computerSessionAvailable: true,
+    workingDirectory: 'home/user/chosen-start',
   });
 
   assert.match(prompt, /general-purpose personal agent/);
@@ -184,22 +186,26 @@ void test('buildSystemPrompt describes a general agent and the actual host bound
     prompt,
     /Follow the user's requested language and domain instead of assuming a fixed fiction, coding, or other specialist role/,
   );
-  assert.match(prompt, /File tools use the admitted Computer file scope/);
+  assert.match(prompt, /File tools use the host filesystem/);
   assert.match(prompt, /Relative paths start from the run working directory/);
   assert.match(
     prompt,
-    /admitted absolute paths and parent traversal may reach other locations inside that same Computer scope/,
+    /absolute paths and parent traversal are not confined to the Computer coordinate base/,
   );
   assert.match(prompt, /working directory is only a relative-path base/);
   assert.match(
     prompt,
-    /does not restrict file visibility, own durable state, or replace Computer file authority/,
+    /does not restrict host-file visibility, own durable state, or create filesystem authority/,
   );
+  assert.match(prompt, /may use any host cwd available to the daemon process/);
+  assert.match(prompt, /Do not add another file-root selector/);
+  assert.match(prompt, /user-selected run cwd is "home\/user\/chosen-start"/);
+  assert.match(prompt, /through context compaction/);
   assert.match(
     prompt,
-    /another cwd only when it remains inside the admitted Computer file scope/,
+    /absolute host paths remain available independently of cwd/,
   );
-  assert.match(prompt, /Do not add a workspace\/computer root selector/);
+  assert.doesNotMatch(prompt, /\bworkspace\b/u);
   assert.doesNotMatch(prompt, /root="(?:workspace|computer)"/);
   assert.doesNotMatch(prompt, /configured Computer root/);
   assert.match(
@@ -226,11 +232,11 @@ void test('buildSystemPrompt gives subagents a compact role prompt and truthful 
   assert.match(explorerPrompt, /explorer subagent/);
   assert.match(
     explorerPrompt,
-    /Computer file scope is unavailable in this run/,
+    /Computer filesystem access is unavailable in this run/,
   );
   assert.match(
     explorerPrompt,
-    /Do not retry file or host-command access through a workspace fallback/,
+    /Do not retry file or host-command access through a hidden root fallback/,
   );
   assert.match(explorerPrompt, /report the unavailable capability honestly/);
   assert.doesNotMatch(explorerPrompt, /root="(?:workspace|computer)"/);
@@ -249,12 +255,12 @@ void test('buildSystemPrompt gives subagents a compact role prompt and truthful 
   assert.doesNotMatch(explorerPrompt, /react_bundle/);
   assert.match(workerPrompt, /worker subagent/);
   assert.match(workerPrompt, /discovery -> read -> mutate/);
-  assert.match(workerPrompt, /File tools use the admitted Computer file scope/);
+  assert.match(workerPrompt, /File tools use the host filesystem/);
   assert.match(
     workerPrompt,
     /Relative paths start from the run working directory/,
   );
-  assert.match(workerPrompt, /Do not add a workspace\/computer root selector/);
+  assert.match(workerPrompt, /Do not add another file-root selector/);
   assert.doesNotMatch(workerPrompt, /root="(?:workspace|computer)"/);
   assert.match(workerPrompt, /dedicated list_files, read_file, search_files/);
   assert.match(workerPrompt, /Do not read an entire file as reconnaissance/);

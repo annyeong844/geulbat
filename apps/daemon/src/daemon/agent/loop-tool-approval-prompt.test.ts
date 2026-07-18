@@ -11,8 +11,9 @@ import { resolveApprovalDecision } from './loop-tool-approval.js';
 import { buildAgentToolExecutionContextBase } from './loop-tool-runtime.js';
 import { createApprovalGate } from './runtime/approval-gate.js';
 import { createRunState } from './runtime/run-state.js';
+import { createRunCheckpointStore } from '../sessions/run-checkpoint-store.js';
 import { readTranscriptEntries } from '../sessions/transcript-log.js';
-import { assertRunId as assertValidRunId } from '@geulbat/protocol/ids';
+import { assertRunId } from '@geulbat/protocol/ids';
 import { createApprovalGrantStore } from '../tools/approval-grants.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
 import { makeRunContext } from '../../test-support/run-context.js';
@@ -57,8 +58,17 @@ void test('resolveApprovalDecision persists denial as tool_result before termina
     runId: 'run-approval-denied',
     runContext,
   });
+  const runCheckpoints = createRunCheckpointStore({
+    stateRoot: workspaceRoot,
+  });
+  await runCheckpoints.startRun({
+    runId: assertRunId('run-approval-denied'),
+    threadId,
+    request: { workingDirectory: 'stories', permissionMode: 'basic' },
+  });
   const approvalGate = createApprovalGate({
     approvalGrants: createApprovalGrantStore(),
+    runCheckpoints,
   });
   const history: Array<{
     kind: 'function_call_output';
@@ -100,7 +110,7 @@ void test('resolveApprovalDecision persists denial as tool_result before termina
         events.push(event);
         if (event.type === 'approval_required') {
           setTimeout(() => {
-            approvalGate.resolveApproval(
+            void approvalGate.resolveApproval(
               event.payload.callId,
               event.payload.runId,
               event.payload.threadId,
@@ -145,8 +155,17 @@ void test('resolveApprovalDecision marks the run cancelled when approval is abor
     runId: 'run-approval-aborted',
     runContext,
   });
+  const runCheckpoints = createRunCheckpointStore({
+    stateRoot: workspaceRoot,
+  });
+  await runCheckpoints.startRun({
+    runId: assertRunId('run-approval-aborted'),
+    threadId,
+    request: { workingDirectory: 'stories', permissionMode: 'basic' },
+  });
   const approvalGate = createApprovalGate({
     approvalGrants: createApprovalGrantStore(),
+    runCheckpoints,
   });
   const events: AgentEvent[] = [];
   const controller = new AbortController();
@@ -200,7 +219,7 @@ void test('resolveApprovalDecision marks the run cancelled when approval is abor
   assert.deepEqual(events, [
     createAgentEvent('approval_required', {
       callId: 'call-aborted-runtime',
-      runId: assertValidRunId('run-approval-aborted'),
+      runId: assertRunId('run-approval-aborted'),
       threadId,
       toolName: 'manage_files',
       approvalClass: 'manage_files:create',
@@ -229,8 +248,17 @@ void test('resolveApprovalDecision can use an injected approval gate without rel
     runId: 'run-approval-local-gate',
     runContext,
   });
+  const runCheckpoints = createRunCheckpointStore({
+    stateRoot: workspaceRoot,
+  });
+  await runCheckpoints.startRun({
+    runId: assertRunId('run-approval-local-gate'),
+    threadId,
+    request: { workingDirectory: 'stories', permissionMode: 'basic' },
+  });
   const approvalGate = createApprovalGate({
     approvalGrants: createApprovalGrantStore(),
+    runCheckpoints,
   });
 
   const result = await resolveApprovalDecision({
@@ -265,7 +293,7 @@ void test('resolveApprovalDecision can use an injected approval gate without rel
         const event: AgentEvent = createAgentEvent(type, payload);
         if (event.type === 'approval_required') {
           setTimeout(() => {
-            approvalGate.resolveApproval(
+            void approvalGate.resolveApproval(
               event.payload.callId,
               event.payload.runId,
               event.payload.threadId,

@@ -27,7 +27,7 @@ import {
   PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV,
   resolvePtcExecuteCodeCellRuntimeConfigFromEnv,
 } from './ptc/runtime/execute-code/execute-code-runtime.js';
-import { PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS } from './ptc/runtime/execute-code/execute-code-cell-registry.js';
+import { PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS } from './ptc/runtime/execute-code/execute-code-cell-terminal-retention.js';
 import { createRunInterjectBuffer } from './sessions/active-run-interject-buffer.js';
 import { createRunContext } from './run-context.js';
 import type { AnyTool } from './tools/types.js';
@@ -98,7 +98,7 @@ void test('PTC resource projection uses host memory when Node reports an invalid
   );
 });
 
-void test('createDaemonContext exposes one consistent computer file authority root', () => {
+void test('createDaemonContext exposes one consistent computer path coordinate base', () => {
   const daemonContext = createDaemonContext();
 
   assert.equal(
@@ -108,8 +108,10 @@ void test('createDaemonContext exposes one consistent computer file authority ro
 });
 
 void test('createDaemonContext isolates runtime singleton state per instance', async () => {
-  const first = createDaemonContext();
-  const second = createDaemonContext();
+  const firstRoot = await mkdtemp(join(tmpdir(), 'geulbat-context-first-'));
+  const secondRoot = await mkdtemp(join(tmpdir(), 'geulbat-context-second-'));
+  const first = createDaemonContext({ homeStateRoot: firstRoot });
+  const second = createDaemonContext({ homeStateRoot: secondRoot });
   const threadId = testThreadId(1);
   const runId = testRunId('context-a');
 
@@ -136,6 +138,11 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
     sideEffectLevel: 'write' as const,
     permissionMode: 'basic' as const,
   };
+  await first.runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: 'stories', permissionMode: 'basic' },
+  });
   const wait = first.approvalGate.waitForApproval(
     'call-context-a',
     approvalContext.runId,
@@ -144,7 +151,7 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
     AbortSignal.timeout(1_000),
   );
   assert.equal(
-    first.approvalGate.resolveApproval(
+    await first.approvalGate.resolveApproval(
       'call-context-a',
       approvalContext.runId,
       threadId,
@@ -264,6 +271,7 @@ void test('createDaemonContext installs a default tool library projection port',
       'fetch_url',
       'list_files',
       'read_file',
+      'read_tool_output',
       'search_files',
       'search_memory_index',
     ]);
@@ -302,6 +310,7 @@ void test('createDaemonContext installs a default tool library projection port',
         'tools/fetch-url.js',
         'files/listFiles.js',
         'files/readFile.js',
+        'tools/read-tool-output.js',
         'files/searchFiles.js',
         'tools/search-memory-index.js',
       ],

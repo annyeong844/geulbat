@@ -56,7 +56,7 @@ function createStartActionHarness() {
 void test('sendPromptAction runs the shared run-start pipeline for prompt requests', async () => {
   const harness = createStartActionHarness();
   const promptInputs: SendPromptActionArgs['promptInputs'] = {
-    workingDirectory: 'Users/sample/Downloads',
+    workingDirectory: 'home/user/Downloads',
     modelId: 'grok-4.5',
     selectedThreadId: THREAD_ID_VALUE,
     permissionMode: 'basic',
@@ -98,7 +98,7 @@ void test('sendPromptAction runs the shared run-start pipeline for prompt reques
   ]);
   assert.deepEqual(harness.startedRequests, [
     {
-      workingDirectory: 'Users/sample/Downloads',
+      workingDirectory: 'home/user/Downloads',
       modelId: 'grok-4.5',
       threadId: THREAD_ID,
       permissionMode: 'basic',
@@ -113,7 +113,7 @@ void test('regeneratePromptAction trims the stale turn and optimistically re-app
   const harness = createStartActionHarness();
   let trimCalls = 0;
   const promptInputs: SendPromptActionArgs['promptInputs'] = {
-    workingDirectory: 'Users/sample/Documents',
+    workingDirectory: 'home/user/Documents',
     modelId: 'grok-4.5',
     selectedThreadId: THREAD_ID_VALUE,
     permissionMode: 'basic',
@@ -153,7 +153,7 @@ void test('regeneratePromptAction trims the stale turn and optimistically re-app
   assert.equal(harness.startedRequests.length, 1);
   const started = harness.startedRequests[0];
   assert.ok(started && 'regenerate' in started && started.regenerate === true);
-  assert.equal(started?.workingDirectory, 'Users/sample/Documents');
+  assert.equal(started?.workingDirectory, 'home/user/Documents');
   assert.deepEqual(harness.logFailures, []);
 });
 
@@ -167,7 +167,6 @@ void test('regeneratePromptAction is a no-op without a selected thread', async (
     clearSessionError: harness.clearSessionError,
     prompt: 'Write the summary',
     promptInputs: {
-      workingDirectory: '',
       modelId: 'grok-4.5',
       selectedThreadId: null,
       permissionMode: 'basic',

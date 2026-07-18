@@ -8,7 +8,7 @@ export type RuntimeArtifactPreviewRenderer = Extract<
   'html5' | 'js' | 'react_bundle'
 >;
 
-export type HookManagedArtifactPreviewRenderer = Extract<
+type HookManagedArtifactPreviewRenderer = Extract<
   RuntimeArtifactPreviewRenderer,
   'react_bundle'
 >;

@@ -15,10 +15,7 @@ import type {
   MemoryManifest,
   MemoryManifestFile,
 } from './types.js';
-import {
-  isPathInsideComputerFileScope,
-  resolveDerivedArtifactTarget,
-} from '../files/file-platform.js';
+import { resolveDerivedArtifactTarget } from '../files/file-platform.js';
 import {
   GEULBAT_MEMORY_INDEX_RECORDS_PATH,
   GEULBAT_MEMORY_MANIFEST_PATH,
@@ -67,7 +64,7 @@ export function resolveMemoryIndexScope(args: {
   );
   const computerFileRoot = resolveRequiredAbsoluteRoot(
     args.computerFileRoot,
-    'memory index Computer file scope is unavailable',
+    'memory index Computer filesystem is unavailable',
     'access_denied',
   );
   if (args.workingDirectory === undefined) {
@@ -80,26 +77,9 @@ export function resolveMemoryIndexScope(args: {
   const pathModule = WINDOWS_ABSOLUTE_PATH.test(computerFileRoot)
     ? win32
     : undefined;
-  const workingDirectoryIsAbsolute = pathModule
-    ? pathModule.isAbsolute(args.workingDirectory)
-    : isAbsolute(args.workingDirectory) ||
-      win32.isAbsolute(args.workingDirectory);
-  if (workingDirectoryIsAbsolute) {
-    throw createScopeError(
-      'memory index working directory must be relative to the Computer file scope',
-      'access_denied',
-    );
-  }
-
   const sourceRoot = pathModule
     ? pathModule.resolve(computerFileRoot, args.workingDirectory || '.')
     : resolve(computerFileRoot, args.workingDirectory || '.');
-  if (!isPathInsideComputerFileScope(computerFileRoot, sourceRoot)) {
-    throw createScopeError(
-      'memory index working directory escapes the Computer file scope',
-      'access_denied',
-    );
-  }
 
   return { stateRoot, sourceRoot };
 }

@@ -535,6 +535,9 @@ export interface PtcPackageInstallRuntime {
 }
 
 export interface PtcExecuteCodeRuntime {
+  reapRestartResidue?(args: {
+    stateRoot: string;
+  }): Promise<PtcExecuteCodeRuntimeCleanupResult>;
   executeCode(args: {
     runContext: {
       threadId: string;
@@ -582,7 +585,7 @@ type PtcExecuteCodeWriteCallbackEnv = Readonly<
   >
 >;
 
-export interface PtcExecuteCodeWriteCallbackRuntimeConfig {
+interface PtcExecuteCodeWriteCallbackRuntimeConfig {
   enabled: boolean;
 }
 
@@ -608,4 +611,12 @@ export function resolvePtcExecuteCodeWriteCallbackConfigFromEnv(
   throw new Error(
     `invalid ${PTC_EXECUTE_CODE_WRITE_CALLBACK_ENABLED_ENV}: ${value || 'empty'}`,
   );
+}
+
+// 검증 통과한 execute_code 실행 요청 — batch 실행과 placement provenance가
+// 같은 shape를 공유한다 (구 PtcExecuteCodePlacementRuntimeRequest 병합).
+export interface ValidatedExecuteCodeRequest {
+  code: string;
+  timeoutMs: number;
+  yieldTimeMs?: number;
 }

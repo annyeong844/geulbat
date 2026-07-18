@@ -36,7 +36,9 @@ export interface ToolLibraryProjectionGeneratedTool {
 export interface ToolLibraryProjectionGeneratedSignature extends Omit<
   ToolLibraryProjectionGeneratedTool,
   'callbackName' | 'registryName'
-> {}
+> {
+  invocationExample: string;
+}
 
 export interface ToolLibraryProjectionFile {
   path: string;

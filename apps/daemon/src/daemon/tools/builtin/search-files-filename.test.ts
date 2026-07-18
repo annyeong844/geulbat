@@ -1,40 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { filenameSearch } from './search-files-filename.js';
+import { createGlobMatcher } from './search-files-filename.js';
 
-void test('filenameSearch skips missing directories during traversal churn', async () => {
-  const result = await filenameSearch(
-    '/workspace',
-    '/workspace',
-    null,
-    null,
-    10,
-    {
-      readdir: async () => {
-        const error = Object.assign(new Error('missing'), { code: 'ENOENT' });
-        throw error;
-      },
-    },
-  );
+void test('filename glob **/ also matches files at the search root', () => {
+  const matcher = createGlobMatcher('**/*.md');
 
-  assert.equal(result.total, 0);
-  assert.deepEqual(result.results, []);
-  assert.equal(result.truncated, false);
+  assert.equal(matcher?.('README.md'), true);
+  assert.equal(matcher?.('docs/README.md'), true);
+  assert.equal(matcher?.('README.txt'), false);
 });
 
-void test('filenameSearch surfaces unexpected directory I/O failures', async () => {
-  await assert.rejects(
-    () =>
-      filenameSearch('/workspace', '/workspace', null, null, 10, {
-        readdir: async () => {
-          const error = Object.assign(new Error('denied'), { code: 'EACCES' });
-          throw error;
-        },
-      }),
-    (error: unknown) => {
-      assert.equal((error as { code?: string }).code, 'EACCES');
-      return true;
-    },
-  );
+void test('filename glob matching keeps path separators semantic', () => {
+  const matcher = createGlobMatcher('docs/*.md');
+
+  assert.equal(matcher?.('docs/guide.md'), true);
+  assert.equal(matcher?.('docs/nested/guide.md'), false);
+});
+
+void test('filename glob matching supports leading ! exclusions', () => {
+  const matcher = createGlobMatcher('!**/*.test.ts');
+
+  assert.equal(matcher?.('src/product.ts'), true);
+  assert.equal(matcher?.('src/product.test.ts'), false);
 });

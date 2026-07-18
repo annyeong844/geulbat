@@ -47,10 +47,11 @@ export function cleanupSocketRuntimeState(
     clearTimeout(authTimeout);
   }
   clearSocketHeartbeatRuntime(state);
-  for (const runId of activeRunIds) {
-    cleanupContext.activeRuns.abortTrackedRun(runId, 'socket_disconnect');
+  if (activeRunIds.size > 0) {
+    cleanupContext.liveRunEvents.detachOwner(approvalSessionId);
+  } else {
+    cleanupContext.approvalGate.clearApprovalSessionRuntime(approvalSessionId);
   }
-  cleanupContext.approvalGate.clearApprovalSessionRuntime(approvalSessionId);
   for (const unsubscribe of threadUnsubscribes.values()) {
     unsubscribe();
   }

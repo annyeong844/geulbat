@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { PathEscapeError } from '../../files/normalize-path.js';
 import { isToolObjectParameters, type ToolExecutionContext } from '../types.js';
 import { execCommandTool } from './exec-command.js';
 
@@ -13,11 +12,7 @@ void test('exec_command exposes a real command schema and destructive approval m
   assert.equal(execCommandTool.requiresApproval, true);
   assert.equal(execCommandTool.mayMutateComputerFiles, true);
   assert.ok(isToolObjectParameters(execCommandTool.parameters));
-  assert.deepEqual(execCommandTool.parameters.required, [
-    'cmd',
-    'timeoutMs',
-    'maxOutputBytesPerStream',
-  ]);
+  assert.deepEqual(execCommandTool.parameters.required, ['cmd']);
   assert.deepEqual(Object.keys(execCommandTool.parameters.properties), [
     'cmd',
     'cwd',
@@ -33,16 +28,49 @@ void test('exec_command exposes a real command schema and destructive approval m
   );
 });
 
-void test('exec_command requires explicit timeout and output buffer policy', async () => {
+void test('exec_command runs without caller-imposed timeout or output stop policy', async () => {
   const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-exec-'));
   const result = await execCommandTool.execute(
     { cmd: 'node -e "process.stdout.write(\'ok\')"' },
     createStandaloneContext(computerFileRoot),
   );
 
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'invalid_args');
-  assert.match(result.error, /timeoutMs/u);
+  assert.equal(result.ok, true);
+  const output = JSON.parse(result.output) as {
+    status: string;
+    stdout: string;
+    timeoutMs: number | null;
+    maxOutputBytesPerStream: number | null;
+    outputLimitExceeded: unknown;
+  };
+  assert.equal(output.status, 'exit');
+  assert.equal(output.stdout, 'ok');
+  assert.equal(output.timeoutMs, null);
+  assert.equal(output.maxOutputBytesPerStream, null);
+  assert.equal(output.outputLimitExceeded, null);
+});
+
+void test('exec_command does not impose a hidden output stop when the caller omits one', async () => {
+  const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-exec-'));
+  const expectedChars = 256 * 1024;
+  const result = await execCommandTool.execute(
+    {
+      cmd: `node -e "process.stdout.write('x'.repeat(${String(expectedChars)}))"`,
+    },
+    createStandaloneContext(computerFileRoot),
+  );
+
+  assert.equal(result.ok, true);
+  const output = JSON.parse(result.output) as {
+    status: string;
+    stdout: string;
+    maxOutputBytesPerStream: number | null;
+    outputLimitExceeded: unknown;
+  };
+  assert.equal(output.status, 'exit');
+  assert.equal(output.stdout.length, expectedChars);
+  assert.equal(output.maxOutputBytesPerStream, null);
+  assert.equal(output.outputLimitExceeded, null);
 });
 
 void test('exec_command runs a real shell command in the requested cwd', async () => {
@@ -79,24 +107,51 @@ void test('exec_command runs a real shell command in the requested cwd', async (
   assert.equal(output.outputLimitExceeded, null);
 });
 
-void test('exec_command rejects an absolute cwd outside ComputerFileScope', async () => {
+void test('exec_command can start in another absolute Computer directory without changing run cwd', async () => {
+  const runDirectory = await mkdtemp(join(tmpdir(), 'geulbat-exec-run-'));
+  const selectedDirectory = await mkdtemp(
+    join(tmpdir(), 'geulbat-exec-selected-'),
+  );
+
+  const result = await execCommandTool.execute(
+    {
+      cmd: 'node -e "process.stdout.write(process.cwd())"',
+      cwd: selectedDirectory,
+      timeoutMs: 1000,
+      maxOutputBytesPerStream: 8192,
+    },
+    createStandaloneContext('/', runDirectory.slice(1)),
+  );
+
+  assert.equal(result.ok, true);
+  const output = JSON.parse(result.output) as { cwd: string; stdout: string };
+  assert.equal(await realpath(output.cwd), await realpath(selectedDirectory));
+  assert.equal(
+    await realpath(output.stdout),
+    await realpath(selectedDirectory),
+  );
+});
+
+void test('exec_command starts in an absolute cwd anywhere on the host filesystem', async () => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-exec-computer-'),
   );
   const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-exec-outside-'));
 
-  await assert.rejects(
-    execCommandTool.execute(
-      {
-        cmd: 'node -e "process.stdout.write(process.cwd())"',
-        cwd: outsideRoot,
-        timeoutMs: 1000,
-        maxOutputBytesPerStream: 8192,
-      },
-      createStandaloneContext(computerFileRoot),
-    ),
-    (error: unknown) => error instanceof PathEscapeError,
+  const result = await execCommandTool.execute(
+    {
+      cmd: 'node -e "process.stdout.write(process.cwd())"',
+      cwd: outsideRoot,
+      timeoutMs: 1000,
+      maxOutputBytesPerStream: 8192,
+    },
+    createStandaloneContext(computerFileRoot),
   );
+
+  assert.equal(result.ok, true);
+  const output = JSON.parse(result.output) as { cwd: string; stdout: string };
+  assert.equal(await realpath(output.cwd), await realpath(outsideRoot));
+  assert.equal(await realpath(output.stdout), await realpath(outsideRoot));
 });
 
 void test('exec_command reports non-zero exit as command status instead of tool failure', async () => {

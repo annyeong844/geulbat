@@ -22,6 +22,13 @@ void test('read_tool_output provider schema requires an explicit page limit', ()
   assert.deepEqual(parameters.required, ['outputRef', 'limit']);
 });
 
+void test('read_tool_output catalog distinguishes snapshots from Computer files', () => {
+  const metadata = readToolOutputTool.catalogSearchMetadata;
+  assert.ok(metadata);
+  assert.match(metadata.notFor, /Computer files/u);
+  assert.doesNotMatch(metadata.notFor, /workspace/u);
+});
+
 void test('read_tool_output rejects raw .geulbat paths instead of treating them as references', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-read-output-'));
 

@@ -116,8 +116,8 @@ export default [
           pattern: ['apps/web-shell/src/features/project-selector/**'],
         },
         {
-          type: 'feature-project-tree',
-          pattern: ['apps/web-shell/src/features/project-tree/**'],
+          type: 'feature-computer-tree',
+          pattern: ['apps/web-shell/src/features/computer-tree/**'],
         },
         {
           type: 'feature-provider-auth',
@@ -145,6 +145,7 @@ export default [
           type: 'daemon-composition',
           pattern: [
             'apps/daemon/src/create-daemon.ts',
+            'apps/daemon/src/daemon-runtime-owner.ts',
             'apps/daemon/src/daemon-server-lifecycle.ts',
             'apps/daemon/src/home-state-root.ts',
             'apps/daemon/src/daemon/context.ts',
@@ -469,7 +470,7 @@ export default [
                     'feature-mcp',
                     'feature-plugins',
                     'feature-project-selector',
-                    'feature-project-tree',
+                    'feature-computer-tree',
                     'feature-provider-auth',
                     'feature-thread-list',
                   ],
@@ -507,7 +508,7 @@ export default [
                     'feature-mcp',
                     'feature-plugins',
                     'feature-project-selector',
-                    'feature-project-tree',
+                    'feature-computer-tree',
                     'feature-provider-auth',
                     'feature-thread-list',
                   ],
@@ -625,14 +626,14 @@ export default [
               },
             },
             {
-              from: { type: 'feature-project-tree' },
+              from: { type: 'feature-computer-tree' },
               allow: {
                 to: {
                   type: [
                     'protocol',
                     'shared-utils',
                     'web-shell-lib',
-                    'feature-project-tree',
+                    'feature-computer-tree',
                   ],
                 },
               },
@@ -1394,36 +1395,6 @@ export default [
                   ],
                 },
               },
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    files: [
-      'apps/web-shell/src/features/assistant/**/*.ts',
-      'apps/web-shell/src/features/assistant/**/*.tsx',
-    ],
-    ignores: [
-      'apps/web-shell/src/features/assistant/artifact.test.ts',
-      'apps/web-shell/src/features/assistant/test-support/**/*.ts',
-      'apps/web-shell/src/features/assistant/test-support/**/*.tsx',
-      'apps/web-shell/src/features/assistant/artifacts/artifact-envelope.ts',
-    ],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: [
-                './artifacts/artifact-envelope.js',
-                '../artifacts/artifact-envelope.js',
-                '../../artifacts/artifact-envelope.js',
-              ],
-              message:
-                'artifact-envelope is legacy migration scaffolding. Do not import it outside dedicated tests/test-support.',
             },
           ],
         },

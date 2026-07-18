@@ -70,7 +70,7 @@ void test('buildArtifactSessionKey falls back to digest and source context for l
       'markdown',
       'fixture',
       'completed',
-      'workspace',
+      'computer-root',
       '00000000-0000-4000-8000-000000000001',
       'run-1',
       'notes/demo.md',

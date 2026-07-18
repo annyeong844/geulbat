@@ -21,7 +21,8 @@ import type { InstalledPluginView } from '@geulbat/protocol/plugins';
 
 import type { ComputerFileScope } from '../files/computer-file-scope.js';
 import { inspectPluginPackage } from './plugin-package-admission.js';
-import { PluginStoreError, createPluginStore } from './plugin-store.js';
+import { createPluginStore } from './plugin-store.js';
+import { PluginStoreError } from './plugin-store-contract.js';
 
 void test('fresh Home initialization creates the root without materializing plugin storage', async () => {
   const fixture = await createFixture('fresh-home');

@@ -24,6 +24,9 @@ import {
   TOOL_LIBRARY_PROJECTION_SEARCH_RUNTIME_MODULE,
 } from './projection-modules.js';
 
+export const TOOL_LIBRARY_PROJECTION_GENERATOR_VERSION =
+  'geulbat-tool-library-projection-v10';
+
 export function buildToolLibraryProjectionImportableModules(args: {
   importSpecifier: string;
   tools: readonly ToolLibraryProjectionGeneratedTool[];
@@ -310,6 +313,7 @@ function buildSignatureModule(
     wrapperDeclarationModule: tool.wrapperDeclarationModule,
     wrapperDeclarationImportSpecifier: tool.wrapperDeclarationImportSpecifier,
     wrapperExportName: tool.wrapperExportName,
+    invocationExample: buildInvocationExample(tool),
     argsTypeName: tool.argsTypeName,
     sideEffectLevel: tool.sideEffectLevel,
     approvalClass: tool.approvalClass,
@@ -363,6 +367,9 @@ function buildSignatureDeclarationModule(
       tool.wrapperDeclarationImportSpecifier,
     )};`,
     `  readonly wrapperExportName: ${JSON.stringify(tool.wrapperExportName)};`,
+    `  readonly invocationExample: ${JSON.stringify(
+      buildInvocationExample(tool),
+    )};`,
     `  readonly argsTypeName: ${JSON.stringify(tool.argsTypeName)};`,
     `  readonly args: ${tool.argsTypeName};`,
     `  readonly sideEffectLevel: ${JSON.stringify(tool.sideEffectLevel)};`,
@@ -382,6 +389,18 @@ function buildSignatureDeclarationModule(
       tool.publicName,
     )}ToolSignature, "args">;`,
     '',
+  ].join('\n');
+}
+
+function buildInvocationExample(
+  tool: ToolLibraryProjectionGeneratedTool,
+): string {
+  return [
+    'if (!geulbat.help().callbacks.enabled) throw new Error("PTC callbacks unavailable");',
+    `const { ${tool.wrapperExportName} } = require(${JSON.stringify(
+      tool.wrapperImportSpecifier,
+    )});`,
+    `return await ${tool.wrapperExportName}({ /* arguments matching parameters */ });`,
   ].join('\n');
 }
 

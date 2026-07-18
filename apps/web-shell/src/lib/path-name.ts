@@ -1,4 +1,4 @@
-// workspace 상대 경로 문자열 분해 — 트리/에디터/버퍼가 공유하는 단일 owner
+// Computer root 상대 경로 문자열 분해 — 트리/에디터/버퍼가 공유하는 단일 owner
 
 export function baseNameOf(path: string): string {
   const index = path.lastIndexOf('/');

@@ -293,8 +293,12 @@ void test('provider transition uses the source provider and commits only its por
           };
         },
         compactThread: compactThreadContextForProviderTransition,
-        async loadHistory(_workspaceRoot, _threadId, prompt) {
+        async loadHistory(_workspaceRoot, _threadId, prompt, providerTarget) {
           assert.match(prompt, /openai_codex_direct\/gpt-5\.6-sol/u);
+          assert.deepEqual(providerTarget, {
+            providerId: 'grok_oauth',
+            model: 'grok-4.5',
+          });
           return [{ kind: 'user', text: 'continue this work' }];
         },
       },

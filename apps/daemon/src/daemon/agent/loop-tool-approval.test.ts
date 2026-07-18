@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { toApprovalClass } from '@geulbat/protocol/run-approval';
+import { assertRunId } from '@geulbat/protocol/ids';
 import { createCallbackToolDispatcher } from './callback-tool-dispatcher.js';
 import { threadFilePath } from '../sessions/paths.js';
+import { readTranscriptEntries } from '../sessions/transcript-log.js';
 
 import {
   createAgentEvent,
@@ -39,6 +42,25 @@ import { makeApprovalContext } from '../../test-support/approval-runtime.js';
 import { createSymlinkOrSkip } from '../../test-support/symlink-test.js';
 import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
+
+function createTestDaemonContext(): ReturnType<typeof createDaemonContext> {
+  return createDaemonContext({
+    homeStateRoot: join(tmpdir(), `geulbat-loop-approval-home-${randomUUID()}`),
+  });
+}
+
+async function startApprovalCheckpoint(
+  daemonContext: ReturnType<typeof createDaemonContext>,
+  threadId: ReturnType<typeof testThreadId>,
+  runId: string,
+): Promise<void> {
+  const result = await daemonContext.runCheckpoints.startRun({
+    runId: assertRunId(runId),
+    threadId,
+    request: { workingDirectory: 'stories', permissionMode: 'basic' },
+  });
+  assert.equal(result.ok, true);
+}
 
 function registerOnce(
   daemonContext: ReturnType<typeof createDaemonContext>,
@@ -159,7 +181,7 @@ function makeApprovalResolvingEmitter(
       setTimeout(() => {
         void (async () => {
           await onApprovalRequired?.();
-          daemonContext.approvalGate.resolveApproval(
+          void daemonContext.approvalGate.resolveApproval(
             approval.callId,
             approval.runId,
             approval.threadId,
@@ -173,7 +195,7 @@ function makeApprovalResolvingEmitter(
 
 void test('executeFunctionCall runs read-only tools without approval and forwards approvalGranted=false', async () => {
   const toolName = 'loop_tool_approval_read_test_tool';
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   let seenApprovalGranted: boolean | undefined;
   registerOnce(
     daemonContext,
@@ -225,7 +247,7 @@ void test('executeFunctionCall runs read-only tools without approval and forward
 
 void test('executeFunctionCall auto-approves write tools in full_access mode', async () => {
   const toolName = 'loop_tool_approval_full_access_test_tool';
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   let seenApprovalGranted: boolean | undefined;
   registerOnce(
     daemonContext,
@@ -280,7 +302,7 @@ void test('executeFunctionCall auto-approves write tools in full_access mode', a
 
 void test('executeFunctionCall can auto-approve from an injected approval grant store', async () => {
   const toolName = 'loop_tool_approval_grant_store_test_tool';
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   let seenApprovalGranted: boolean | undefined;
   registerOnce(
     daemonContext,
@@ -346,7 +368,7 @@ void test('executeFunctionCall can auto-approve from an injected approval grant 
 
 void test('executeFunctionCall admits an SDK-visible no-effect callback from exec', async () => {
   const nestedToolName = 'loop_tool_approval_ptc_callback_none_test_tool';
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   let nestedCtx: ToolExecutionContext | undefined;
   registerOnce(
     daemonContext,
@@ -511,7 +533,7 @@ void test('executeFunctionCall admits an SDK-visible no-effect callback from exe
 
 void test('executeFunctionCall rejects PTC callback write dispatch before approval or execution', async () => {
   const toolName = 'loop_tool_approval_ptc_callback_write_test_tool';
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   let executionCount = 0;
   registerOnce(
     daemonContext,
@@ -571,7 +593,7 @@ void test('executeFunctionCall rejects PTC callback write dispatch before approv
 
 void test('executeFunctionCall resolves interactive approval against the owner run/thread target before execution', async () => {
   const toolName = 'loop_tool_approval_interactive_test_tool';
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   let seenApprovalGranted: boolean | undefined;
   registerOnce(
     daemonContext,
@@ -596,6 +618,7 @@ void test('executeFunctionCall resolves interactive approval against the owner r
     output: string;
   }> = [];
   const events: AgentEvent[] = [];
+  await startApprovalCheckpoint(daemonContext, ownerThreadId, 'run-owner');
 
   const result = await executeFunctionCall({
     functionCall: {
@@ -621,7 +644,7 @@ void test('executeFunctionCall resolves interactive approval against the owner r
         events.push(event);
         if (event.type === 'approval_required') {
           setTimeout(() => {
-            daemonContext.approvalGate.resolveApproval(
+            void daemonContext.approvalGate.resolveApproval(
               event.payload.callId,
               event.payload.runId,
               event.payload.threadId,
@@ -656,7 +679,7 @@ void test('executeFunctionCall resolves interactive approval against the owner r
 
 void test('executeFunctionCall returns terminal failure when approval is denied and does not execute the tool', async () => {
   const toolName = 'loop_tool_approval_denied_test_tool';
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   let executionCount = 0;
   registerOnce(
     daemonContext,
@@ -680,6 +703,11 @@ void test('executeFunctionCall returns terminal failure when approval is denied 
     output: string;
   }> = [];
   const events: AgentEvent[] = [];
+  await startApprovalCheckpoint(
+    daemonContext,
+    threadId,
+    'run-denied-orchestration',
+  );
 
   const result = await executeFunctionCall({
     functionCall: {
@@ -703,7 +731,7 @@ void test('executeFunctionCall returns terminal failure when approval is denied 
         events.push(event);
         if (event.type === 'approval_required') {
           setTimeout(() => {
-            daemonContext.approvalGate.resolveApproval(
+            void daemonContext.approvalGate.resolveApproval(
               event.payload.callId,
               event.payload.runId,
               event.payload.threadId,
@@ -756,7 +784,7 @@ function makePtcWriteCallbackSource(runtimeToolCallId: string) {
 }
 
 void test('W1: full_access auto-approves an admitted PTC write callback and mutates Computer files', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-fullaccess-'));
   const threadId = testThreadId(84_1);
   const events: AgentEvent[] = [];
@@ -799,10 +827,11 @@ void test('W1: full_access auto-approves an admitted PTC write callback and muta
 });
 
 void test('W2: needs-approval PTC write callback waits and maps denial to a code-visible result', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-denied-'));
   const threadId = testThreadId(84_2);
   const events: AgentEvent[] = [];
+  await startApprovalCheckpoint(daemonContext, threadId, 'run-w2-denied');
 
   await withWriteCallbackKnob('1', async () => {
     const result = await executeFunctionCall({
@@ -850,10 +879,11 @@ void test('W2: needs-approval PTC write callback waits and maps denial to a code
 });
 
 void test('W2: granted PTC write callback executes once and mutates Computer files', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-granted-'));
   const threadId = testThreadId(84_7);
   const events: AgentEvent[] = [];
+  await startApprovalCheckpoint(daemonContext, threadId, 'run-w2-granted');
 
   await withWriteCallbackKnob('1', async () => {
     const result = await executeFunctionCall({
@@ -893,11 +923,12 @@ void test('W2: granted PTC write callback executes once and mutates Computer fil
 });
 
 void test('W2: aborted approval wait returns a code-visible aborted result and leaves no pending entry', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-aborted-'));
   const threadId = testThreadId(84_8);
   const events: AgentEvent[] = [];
   const controller = new AbortController();
+  await startApprovalCheckpoint(daemonContext, threadId, 'run-w2-aborted');
   const emit: AgentEventEmitter = (type, payload) => {
     events.push(createAgentEvent(type, payload));
     if (type === 'approval_required') {
@@ -948,7 +979,7 @@ void test('W2: aborted approval wait returns a code-visible aborted result and l
 });
 
 void test('W2: class-only grants from direct approvals do not auto-approve PTC write callbacks', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-grant-'));
   const threadId = testThreadId(84_3);
   const events: AgentEvent[] = [];
@@ -966,6 +997,7 @@ void test('W2: class-only grants from direct approvals do not auto-approve PTC w
     daemonContext.approvalGrants.hasApprovalGrant(grantContext),
     true,
   );
+  await startApprovalCheckpoint(daemonContext, threadId, 'run-w1-class-grant');
 
   await withWriteCallbackKnob('1', async () => {
     const result = await executeFunctionCall({
@@ -1007,10 +1039,11 @@ void test('W2: class-only grants from direct approvals do not auto-approve PTC w
 });
 
 void test('W2: an interactive grant is not reused as auto-approval for the next PTC write callback', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-noreuse-'));
   const threadId = testThreadId(84_9);
   const approvalContext = makeApprovalContext();
+  await startApprovalCheckpoint(daemonContext, threadId, 'run-w2-noreuse');
 
   await withWriteCallbackKnob('1', async () => {
     const firstEvents: AgentEvent[] = [];
@@ -1041,7 +1074,7 @@ void test('W2: an interactive grant is not reused as auto-approval for the next 
               threadId: string;
             };
             setTimeout(() => {
-              daemonContext.approvalGate.resolveApproval(
+              void daemonContext.approvalGate.resolveApproval(
                 approval.callId,
                 approval.runId,
                 approval.threadId,
@@ -1103,7 +1136,7 @@ void test('W2: an interactive grant is not reused as auto-approval for the next 
 });
 
 void test('W2: mutation is re-validated after the approval wait (symlink swap is rejected)', async (t) => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const outerRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-toctou-'));
   const workspaceRoot = join(outerRoot, 'workspace');
   const escapeRoot = join(outerRoot, 'outside');
@@ -1112,6 +1145,7 @@ void test('W2: mutation is re-validated after the approval wait (symlink swap is
   const threadId = testThreadId(85_0);
   const events: AgentEvent[] = [];
   let symlinkCreated = true;
+  await startApprovalCheckpoint(daemonContext, threadId, 'run-w2-toctou');
 
   await withWriteCallbackKnob('1', async () => {
     const result = await executeFunctionCall({
@@ -1169,7 +1203,7 @@ void test('W2: mutation is re-validated after the approval wait (symlink swap is
 });
 
 void test('W1: write tools outside the allowlist and destructive operations stay rejected with the knob on', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-reject-'));
   const threadId = testThreadId(84_4);
   const events: AgentEvent[] = [];
@@ -1227,8 +1261,8 @@ void test('W1: write tools outside the allowlist and destructive operations stay
   });
 });
 
-void test('W1: full_access does not bypass the ComputerFileScope path boundary for PTC write callbacks', async () => {
-  const daemonContext = createDaemonContext();
+void test('W1: full_access preserves host-wide Computer paths for PTC write callbacks', async () => {
+  const daemonContext = createTestDaemonContext();
   const outerRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-boundary-'));
   const workspaceRoot = join(outerRoot, 'workspace');
   await mkdir(workspaceRoot, { recursive: true });
@@ -1264,14 +1298,19 @@ void test('W1: full_access does not bypass the ComputerFileScope path boundary f
 
     assert.equal(result.ok, true);
     if (result.ok) {
-      assert.equal(result.value.ok, false);
+      assert.equal(result.value.ok, true);
     }
-    await assert.rejects(() => stat(join(outerRoot, 'escape.txt')));
+    const created = await stat(join(outerRoot, 'escape.txt'));
+    assert.equal(created.isFile(), true);
+    assert.equal(
+      events.some((event) => event.type === 'approval_required'),
+      false,
+    );
   });
 });
 
 void test('W1: callback dispatcher reports changed-files on successful writes and audits the approval class', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-audit-'));
   const threadId = testThreadId(84_6);
   const events: AgentEvent[] = [];
@@ -1362,11 +1401,107 @@ void test('W1: callback dispatcher reports changed-files on successful writes an
   assert.equal(readCallLine.includes('approvalClass'), false);
 });
 
+void test('PTC read_tool_output keeps the page code-visible while audit records only its immutable range', async () => {
+  const daemonContext = createTestDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-read-output-audit-'),
+  );
+  const threadId = testThreadId(84_7);
+  const events: AgentEvent[] = [];
+  const pageContent = `AUDIT_PAGE_CONTENT_MUST_NOT_REPEAT_${'x'.repeat(256)}`;
+  const outputRef = `tool-output:${threadId}/run-read-output/source-call`;
+  const pageOutput = JSON.stringify({
+    ok: true,
+    outputRef,
+    toolName: 'search_files',
+    contentType: 'application/json',
+    offset: 0,
+    limit: 4_000,
+    endOffset: pageContent.length,
+    totalChars: pageContent.length,
+    hasMore: false,
+    nextOffset: null,
+    content: pageContent,
+  });
+  const runtime = makeExecutionRuntime(daemonContext, {
+    threadId,
+    stateRoot: workspaceRoot,
+    computerFileRoot: workspaceRoot,
+    workingDirectory: workspaceRoot,
+    runId: 'run-read-output-audit',
+    approvalContext: makeApprovalContext(),
+    emit: makeEmitter(events),
+  });
+  const dispatcher = createCallbackToolDispatcher({
+    runtime,
+    history: [],
+    parentRound: 0,
+    parentToolCallId: 'call-execute-code-read-output',
+    dispatchFunctionCall: async () => ({
+      ok: true,
+      value: { ok: true, output: pageOutput },
+    }),
+  });
+
+  try {
+    const cellResult = await dispatcher.dispatch({
+      toolName: 'read_tool_output',
+      args: { outputRef, offset: 0, limit: 4_000 },
+      runtimeToolCallId: 'rt-read-output-1',
+      signal: new AbortController().signal,
+    });
+    assert.deepEqual(cellResult, { ok: true, output: pageOutput });
+
+    const resultEvent = events.find(
+      (event) =>
+        event.type === 'tool_result' &&
+        event.payload.tool === 'read_tool_output',
+    );
+    assert.ok(resultEvent?.type === 'tool_result');
+    assert.ok(isRecord(resultEvent.payload.raw));
+    assert.equal(resultEvent.payload.raw['content'], undefined);
+    assert.equal(
+      resultEvent.payload.raw['auditProjection'],
+      'read_tool_output_page_ref_v1',
+    );
+    assert.equal(resultEvent.payload.raw['contentChars'], pageContent.length);
+    assert.equal(
+      resultEvent.payload.raw['contentBytes'],
+      Buffer.byteLength(pageContent, 'utf8'),
+    );
+    assert.match(resultEvent.payload.displayText, /content omitted/u);
+    assert.doesNotMatch(
+      resultEvent.payload.displayText,
+      /AUDIT_PAGE_CONTENT_MUST_NOT_REPEAT_/u,
+    );
+
+    const transcript = await readFile(
+      threadFilePath(workspaceRoot, threadId),
+      'utf8',
+    );
+    assert.doesNotMatch(transcript, /AUDIT_PAGE_CONTENT_MUST_NOT_REPEAT_/u);
+    assert.match(transcript, /read_tool_output_page_ref_v1/u);
+    const transcriptEntries = await readTranscriptEntries(
+      workspaceRoot,
+      threadId,
+    );
+    assert.equal(transcriptEntries.length, 2);
+    for (const entry of transcriptEntries) {
+      const record: unknown = JSON.parse(entry.content);
+      assert.ok(isRecord(record));
+      assert.equal(record['historyMode'], 'audit_only');
+    }
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 void test('W2: detached-cell callbacks use the same interactive approval path', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-cell-'));
   const threadId = testThreadId(85_1);
   const events: AgentEvent[] = [];
+  await startApprovalCheckpoint(daemonContext, threadId, 'run-w2-cell');
 
   await withWriteCallbackKnob('1', async () => {
     const result = await executeFunctionCall({
@@ -1409,7 +1544,7 @@ void test('W2: detached-cell callbacks use the same interactive approval path', 
 });
 
 void test('W2: callbacks that outlive the settled parent run fall back to a no-wait rejection', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-postrun-'));
   const threadId = testThreadId(85_2);
   const events: AgentEvent[] = [];
@@ -1482,7 +1617,7 @@ function makeArtifactFrameSource(runtimeToolCallId: string) {
 
 void test('artifact_frame data_only dispatch runs an admitted read-only callback tool', async () => {
   const toolName = 'loop_tool_approval_artifact_frame_read_test_tool';
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   registerOnce(
     daemonContext,
     makeTestTool({
@@ -1538,7 +1673,7 @@ void test('artifact_frame data_only dispatch runs an admitted read-only callback
 
 void test('artifact_frame data_only rejects tools outside the shared callback surface as data', async () => {
   const toolName = 'loop_tool_approval_artifact_frame_reject_test_tool';
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   let executionCount = 0;
   registerOnce(
     daemonContext,
@@ -1594,7 +1729,7 @@ void test('artifact_frame data_only rejects tools outside the shared callback su
 });
 
 void test('artifact_frame source with terminal denialMode violates the dispatch invariant', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-frame-invariant-'),
   );
@@ -1629,7 +1764,7 @@ void test('artifact_frame source with terminal denialMode violates the dispatch 
 });
 
 void test('artifact_frame write callback: full_access auto-approves via the shared write allowlist', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-frame-write-'));
   const threadId = testThreadId(86_4);
   const events: AgentEvent[] = [];
@@ -1669,7 +1804,7 @@ void test('artifact_frame write callback: full_access auto-approves via the shar
 });
 
 void test('artifact_frame write callback in basic mode returns approval_required without waiting', async () => {
-  const daemonContext = createDaemonContext();
+  const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-frame-basic-'));
   const threadId = testThreadId(86_5);
   const events: AgentEvent[] = [];

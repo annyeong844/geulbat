@@ -30,9 +30,7 @@ export const THREAD_MESSAGE_ROLES = [
 
 export type ThreadMessageRole = (typeof THREAD_MESSAGE_ROLES)[number];
 
-export function isThreadMessageRole(
-  value: unknown,
-): value is ThreadMessageRole {
+function isThreadMessageRole(value: unknown): value is ThreadMessageRole {
   return (
     typeof value === 'string' &&
     (THREAD_MESSAGE_ROLES as readonly string[]).includes(value)
@@ -50,7 +48,7 @@ export interface ThreadListResponse {
   threads: ThreadSummary[];
 }
 
-export interface ThreadDetailDiagnostics {
+interface ThreadDetailDiagnostics {
   unlinkedPersistedArtifactCount: number;
   missingLinkedArtifactCount: number;
 }
@@ -58,7 +56,7 @@ export interface ThreadDetailDiagnostics {
 export interface ThreadDetailResponse {
   threadId: ThreadId;
   snapshotVersion: string;
-  messages: ThreadMessage[];
+  messages: NonCompactionThreadMessage[];
   artifacts?: ThreadArtifactVersion[];
   diagnostics?: ThreadDetailDiagnostics;
 }
@@ -96,7 +94,7 @@ export type PrepareProviderTransitionResponse =
       compactionEntryId: string;
     });
 
-export interface FileOps {
+interface FileOps {
   readFiles: string[];
   modifiedFiles: string[];
   createdFiles?: string[];
@@ -148,7 +146,7 @@ export interface ProviderTransitionCompactionEntryData {
   inputTokens?: number;
 }
 
-export type CompactionEntryData =
+type CompactionEntryData =
   | SummaryCompactionEntryData
   | ProviderNativeCompactionEntryData
   | ProviderTransitionCompactionEntryData;
@@ -165,7 +163,7 @@ export type CompactionThreadMessage = ThreadMessageBase & {
   compactionData: CompactionEntryData;
 };
 
-export type NonCompactionThreadMessage = ThreadMessageBase & {
+type NonCompactionThreadMessage = ThreadMessageBase & {
   role: Exclude<ThreadMessageRole, 'compaction'>;
   compactionData?: never;
 };
@@ -415,7 +413,9 @@ export function isThreadDetailResponse(
     typeof value.snapshotVersion === 'string' &&
     value.snapshotVersion.trim() !== '' &&
     Array.isArray(value.messages) &&
-    value.messages.every(isThreadMessage) &&
+    value.messages.every(
+      (message) => isThreadMessage(message) && message.role !== 'compaction',
+    ) &&
     (value.diagnostics === undefined ||
       isThreadDetailDiagnostics(value.diagnostics)) &&
     (value.artifacts === undefined ||

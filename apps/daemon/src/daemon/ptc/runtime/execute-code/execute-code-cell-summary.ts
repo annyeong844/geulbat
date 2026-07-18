@@ -6,11 +6,11 @@ import type {
 import { sanitizePtcOutput } from '../../shared/output-redaction.js';
 import type { PtcSessionEpochBridge } from '../../callback/session-epoch-bridge.js';
 import type { buildPtcExecuteCodeSdkHelpBundle } from './execute-code-sdk.js';
+import type { createPtcExecuteCodeCellRegistry } from './execute-code-cell-registry.js';
 import type {
-  createPtcExecuteCodeCellRegistry,
   PtcExecuteCodeCellRetainedResult,
   PtcExecuteCodeCellTerminalResult,
-} from './execute-code-cell-registry.js';
+} from './execute-code-cell-terminal-retention.js';
 import {
   PTC_EXECUTE_CODE_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,

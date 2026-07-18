@@ -12,6 +12,7 @@ interface BuildAgentLoopPromptContextArgs {
   selection?: { startLine: number; endLine: number; text: string };
   promptProfile?: AgentLoopPromptProfile;
   computerSessionAvailable?: boolean;
+  workingDirectory?: string;
 }
 
 interface AgentLoopPromptBundle {
@@ -57,6 +58,9 @@ export function createAgentLoopPromptPort(): AgentLoopPromptPort {
         systemPrompt: buildSystemPrompt({
           profile: args.promptProfile ?? 'root',
           computerSessionAvailable: args.computerSessionAvailable ?? false,
+          ...(args.workingDirectory === undefined
+            ? {}
+            : { workingDirectory: args.workingDirectory }),
         }),
         promptContext: buildPromptContext(promptContextArgs),
       };

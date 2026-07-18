@@ -15,11 +15,12 @@ import test from 'node:test';
 
 import {
   OFFICIAL_CODEX_MARKETPLACE_SOURCE,
-  PluginMarketplaceStoreError,
-  acquirePluginMarketplaceGitRepository,
   createPluginMarketplaceStore,
 } from './plugin-marketplace-store.js';
-import { PluginStoreError, createPluginStore } from './plugin-store.js';
+import { PluginMarketplaceStoreError } from './plugin-marketplace-contract.js';
+import { acquirePluginMarketplaceGitRepository } from './plugin-marketplace-git.js';
+import { createPluginStore } from './plugin-store.js';
+import { PluginStoreError } from './plugin-store-contract.js';
 
 void test('real Git acquisition resolves a detached local revision without repository hooks', async () => {
   const fixture = await createMarketplaceFixture();

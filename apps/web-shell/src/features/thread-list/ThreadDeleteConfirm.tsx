@@ -17,8 +17,7 @@ export function ThreadDeleteConfirm({
     <section className="thread-delete-confirm" role="alertdialog">
       <strong>Delete thread?</strong>
       <p>
-        {thread.title ?? 'New Thread'} will be removed from this workspace
-        session list.
+        {thread.title ?? 'New Thread'} will be removed from Home session list.
       </p>
       <div className="thread-delete-confirm-actions">
         <button type="button" onClick={() => void onConfirm()} disabled={busy}>

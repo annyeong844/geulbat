@@ -29,7 +29,7 @@ void test('ArtifactPaneView renders artifact-owned pane shell', () => {
       canOpenExport: true,
       canSubmitExport: true,
       exportPlaceholder: 'exports/demo.md',
-      exportHint: 'Export markdown into a workspace file.',
+      exportHint: 'Export markdown into a computer file.',
       generatedBinaryOverwriteArmed: false,
       canOfferRememberedBinaryOverwrite: false,
       generatedBinaryExportPending: false,

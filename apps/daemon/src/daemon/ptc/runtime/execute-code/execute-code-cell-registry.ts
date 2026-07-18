@@ -11,9 +11,21 @@ import type {
   PtcExecuteCodeRuntimeStoreSummary,
   PtcExecuteCodeStoreError,
 } from './execute-code-runtime-contract.js';
+import { createPtcExecuteCodeCellRevisionSignal } from './execute-code-cell-revision-signal.js';
+import {
+  createPtcExecuteCodeCellTerminalRetentionStore,
+  PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS,
+  type BaseCellRecord,
+  type PersistPtcExecuteCodeCellTerminalResult,
+  type PtcExecuteCodeCellReapCallback,
+  type PtcExecuteCodeCellReapCancel,
+  type PtcExecuteCodeCellRetainedResult,
+  type PtcExecuteCodeCellStoreFinalization,
+  type PtcExecuteCodeCellTerminalResult,
+  type TerminalCellLookupResult,
+} from './execute-code-cell-terminal-retention.js';
 
 export const PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS = 1_000;
-export const PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS = 300_000;
 const CLEANUP_DIAGNOSTIC_TOKEN_MAX_LENGTH = 80;
 const CLEANUP_DIAGNOSTIC_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]*$/u;
 
@@ -32,36 +44,6 @@ type PtcExecuteCodeCellCloseReason =
   | 'orphan_reap'
   | 'shutdown';
 
-export interface PtcExecuteCodeCellTerminalResult {
-  status: 'completed' | 'terminated';
-  output: DetachedProcessOutputSegment;
-  exit: DetachedProcessExitInfo;
-  store?: PtcExecuteCodeRuntimeStoreSummary;
-  storeError?: PtcExecuteCodeStoreError;
-}
-
-export interface PtcExecuteCodeCellStoreFinalization {
-  store?: PtcExecuteCodeRuntimeStoreSummary;
-  storeError?: PtcExecuteCodeStoreError;
-}
-
-interface PtcExecuteCodeCellCleanupFailureResult {
-  status: 'cleanup_failed';
-  message: string;
-  diagnostics: Record<string, string | number | boolean>;
-  terminalResult?: PtcExecuteCodeCellTerminalResult;
-}
-
-interface PtcExecuteCodeCellStartFailureResult {
-  status: 'start_failed';
-  failure: Extract<PtcExecuteCodeRuntimeResult, { ok: false }>;
-}
-
-export type PtcExecuteCodeCellRetainedResult =
-  | PtcExecuteCodeCellTerminalResult
-  | PtcExecuteCodeCellCleanupFailureResult
-  | PtcExecuteCodeCellStartFailureResult;
-
 interface PtcExecuteCodeCellResources {
   effectiveTimeoutMs: number;
   handle: DetachedProcessHandle;
@@ -78,13 +60,6 @@ interface PtcExecuteCodeCellResources {
   terminalResultStateRoot?: string;
 }
 
-type PersistPtcExecuteCodeCellTerminalResult = (args: {
-  stateRoot: string;
-  threadId: string;
-  cellId: PtcExecuteCodeCellId;
-  result: PtcExecuteCodeCellRetainedResult;
-}) => Promise<PtcExecuteCodeCellDurableOutput | undefined>;
-
 type PtcExecuteCodeCellPlacementFinalization =
   | { ok: true }
   | {
@@ -92,10 +67,6 @@ type PtcExecuteCodeCellPlacementFinalization =
       message: string;
       diagnostics: Record<string, string | number | boolean>;
     };
-
-type PtcExecuteCodeCellReapCallback = () => Promise<void>;
-
-type PtcExecuteCodeCellReapCancel = () => void;
 
 interface PtcExecuteCodeCellReapTimerPolicy {
   runningCellReapAfterMs?: number;
@@ -124,10 +95,6 @@ type CellLookupResult<T> =
   | { ok: true; value: T }
   | { ok: false; reasonCode: 'cell_missing' };
 
-type TerminalCellLookupResult =
-  | { ok: true; value: PtcExecuteCodeCellRetainedResult }
-  | { ok: false; reasonCode: 'cell_missing' | 'cell_expired' };
-
 type CloseCellResult =
   | {
       ok: true;
@@ -154,12 +121,6 @@ type CloseCellResult =
       store?: PtcExecuteCodeRuntimeStoreSummary;
     }
   | { ok: false; reasonCode: 'cell_missing' };
-
-interface BaseCellRecord {
-  threadId: string;
-  cellId: PtcExecuteCodeCellId;
-  createdAtMs: number;
-}
 
 interface AdmittingCellRecord extends BaseCellRecord {
   state: 'admitting';
@@ -189,26 +150,6 @@ interface TerminatingCellRecord
   orphanReapTimer?: PtcExecuteCodeCellReapCancel;
 }
 
-interface TerminalRetainedCellRecord extends BaseCellRecord {
-  state: 'terminal_retained';
-  completedAtMs: number;
-  memoryExpiresAtMs?: number;
-  result: PtcExecuteCodeCellRetainedResult;
-  durableOutput?: PtcExecuteCodeCellDurableOutput;
-  terminalResultStateRoot?: string;
-  retentionReapTimer?: PtcExecuteCodeCellReapCancel;
-}
-
-interface TerminalExpiredCellRecord extends BaseCellRecord {
-  state: 'terminal_expired';
-  completedAtMs: number;
-  expiredAtMs: number;
-}
-
-type TerminalCellRecord =
-  | TerminalRetainedCellRecord
-  | TerminalExpiredCellRecord;
-
 type CellRecord =
   | AdmittingCellRecord
   | QueuedCellRecord
@@ -228,10 +169,6 @@ export function createPtcExecuteCodeCellRegistry(
     string,
     Map<PtcExecuteCodeCellId, CellRecord>
   >();
-  const retainedCellsByThread = new Map<
-    string,
-    Map<PtcExecuteCodeCellId, TerminalCellRecord>
-  >();
   const createCellId =
     options.createCellId ?? (() => `ptc_cell_${randomUUID()}`);
   const allowConcurrentCells = options.allowConcurrentCells === true;
@@ -247,8 +184,6 @@ export function createPtcExecuteCodeCellRegistry(
       'PTC execute_code terminal result memory retention is invalid',
     );
   }
-  const persistTerminalResult = options.persistTerminalResult;
-  const terminalResultPersistenceByCell = new Map<string, Promise<void>>();
   const runningCellReapAfterMs = options.runningCellReapAfterMs;
   if (
     runningCellReapAfterMs !== undefined &&
@@ -258,54 +193,51 @@ export function createPtcExecuteCodeCellRegistry(
   }
   const scheduleReapTimeout =
     options.scheduleReapTimeout ?? scheduleDefaultReapTimeout;
-  let revision = 0;
-  const revisionWaiters = new Set<(nextRevision: number) => void>();
-  const threadRevisions = new Map<string, number>();
-  const threadRevisionWaiters = new Map<
-    string,
-    Set<(nextRevision: number) => void>
-  >();
+  // 변경 신호 백본 — 상태(카운터·waiter)는 신호기가 소유하고, 스레드
+  // 프루닝 판정(활성/보존 셀이 모두 비었는가)만 여기서 주입한다.
+  const {
+    bumpRevision,
+    getRevision,
+    getThreadRevision,
+    waitForRevisionChange,
+    waitForThreadRevisionChange,
+    waitUntilAbort,
+  } = createPtcExecuteCodeCellRevisionSignal({
+    isThreadIdle: (threadId) =>
+      !hasActiveCells(threadId) && !hasRetainedCells(threadId),
+  });
 
-  function bumpRevision(threadId?: string): void {
-    revision += 1;
-    const waiters = [...revisionWaiters];
-    revisionWaiters.clear();
-    for (const waiter of waiters) {
-      waiter(revision);
-    }
-    if (threadId !== undefined) {
-      bumpThreadRevision(threadId);
-      pruneThreadRevisionIfIdle(threadId);
-    }
-  }
-
-  function bumpThreadRevision(threadId: string): void {
-    const nextRevision = getThreadRevision({ threadId }) + 1;
-    threadRevisions.set(threadId, nextRevision);
-    const waiters = threadRevisionWaiters.get(threadId);
-    if (waiters === undefined) {
-      return;
-    }
-    threadRevisionWaiters.delete(threadId);
-    for (const waiter of waiters) {
-      waiter(nextRevision);
-    }
-  }
-
-  function pruneThreadRevisionIfIdle(threadId: string): void {
-    if (hasActiveCells(threadId)) {
-      return;
-    }
-    const retained = retainedCellsByThread.get(threadId);
-    if (retained !== undefined && retained.size > 0) {
-      return;
-    }
-    const waiters = threadRevisionWaiters.get(threadId);
-    if (waiters !== undefined && waiters.size > 0) {
-      return;
-    }
-    threadRevisions.delete(threadId);
-  }
+  // 터미널 결과 보존 스토어 — terminal 이후 상태(보존·만료·영속화·reap)는
+  // retention 모듈이 소유하고, registry는 활성 셀 상태 머신만 남는다.
+  const {
+    hasRetainedCells,
+    peekTerminalCell,
+    peekFirstTerminalCell,
+    readAllTerminalCells,
+    getTerminalCellResult,
+    getTerminalCellRecord,
+    getFirstClaimableRetainedCell,
+    isTerminalExpired,
+    deleteExpiredTerminalRetainedCell,
+    storeTerminalRetainedCell,
+    retainTerminalCellResult,
+    retainTerminalCellResultIfMissing,
+    retainOrphanReapTerminalResult,
+    retainCellCleanupFailure,
+    createTerminalRetainedCellRecord,
+    persistTerminalRetainedCell,
+    getRetainedTerminalCellRecord,
+    getRetainedTerminalResult,
+    deleteTerminalRetainedCell,
+  } = createPtcExecuteCodeCellTerminalRetentionStore({
+    now,
+    terminalResultMemoryRetentionMs,
+    scheduleReapTimeout,
+    ...(options.persistTerminalResult === undefined
+      ? {}
+      : { persistTerminalResult: options.persistTerminalResult }),
+    bumpRevision,
+  });
 
   function getActiveCell(args: {
     threadId: string;
@@ -741,10 +673,7 @@ export function createPtcExecuteCodeCellRegistry(
     threadId: string;
     cellId: PtcExecuteCodeCellId;
   }): PtcExecuteCodeCellDurableOutput | undefined {
-    const retained = retainedCellsByThread.get(args.threadId)?.get(args.cellId);
-    return retained?.state === 'terminal_retained'
-      ? retained.durableOutput
-      : undefined;
+    return getRetainedTerminalCellRecord(args)?.durableOutput;
   }
 
   function takeTerminalCellResult(args: {
@@ -829,9 +758,7 @@ export function createPtcExecuteCodeCellRegistry(
   }): Promise<CloseCellResult> {
     const current = getActiveCell(args);
     if (!isMatchingCell(current, args.cellId)) {
-      const retained = retainedCellsByThread
-        .get(args.threadId)
-        ?.get(args.cellId);
+      const retained = peekTerminalCell(args);
       if (retained === undefined) {
         return { ok: false, reasonCode: 'cell_missing' };
       }
@@ -904,13 +831,10 @@ export function createPtcExecuteCodeCellRegistry(
       threadId: cell.threadId,
       cellId: cell.cellId,
     }));
-    const retainedSnapshot = [...retainedCellsByThread.values()].flatMap(
-      (retainedByCellId) =>
-        [...retainedByCellId.values()].map((cell) => ({
-          threadId: cell.threadId,
-          cellId: cell.cellId,
-        })),
-    );
+    const retainedSnapshot = readAllTerminalCells().map((cell) => ({
+      threadId: cell.threadId,
+      cellId: cell.cellId,
+    }));
     let closedCount = 0;
     for (const cell of activeSnapshot) {
       const closed = await closeCell({
@@ -1021,11 +945,10 @@ export function createPtcExecuteCodeCellRegistry(
     if (current !== undefined) {
       return { cellId: current.cellId, state: current.state };
     }
-    const retainedByCellId = retainedCellsByThread.get(args.threadId);
     const retained =
       args.cellId === undefined
-        ? retainedByCellId?.values().next().value
-        : retainedByCellId?.get(args.cellId);
+        ? peekFirstTerminalCell(args.threadId)
+        : peekTerminalCell({ threadId: args.threadId, cellId: args.cellId });
     if (
       retained?.state === 'terminal_retained' &&
       isTerminalExpired(retained)
@@ -1037,429 +960,6 @@ export function createPtcExecuteCodeCellRegistry(
     return retained === undefined
       ? null
       : { cellId: retained.cellId, state: retained.state };
-  }
-
-  function getRevision(): number {
-    return revision;
-  }
-
-  function getThreadRevision(args: { threadId: string }): number {
-    return threadRevisions.get(args.threadId) ?? 0;
-  }
-
-  function waitForRevisionChange(
-    afterRevision: number,
-    abortSignal?: AbortSignal,
-  ): Promise<number> {
-    if (revision !== afterRevision) {
-      return Promise.resolve(revision);
-    }
-
-    return new Promise<number>((resolve, reject) => {
-      let settled = false;
-      const finish = (fn: () => void) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        revisionWaiters.delete(onRevisionChange);
-        abortSignal?.removeEventListener('abort', onAbort);
-        fn();
-      };
-
-      const onAbort = () => {
-        finish(() => reject(new Error('PTC execute_code cell wait aborted')));
-      };
-
-      const onRevisionChange = (nextRevision: number) => {
-        if (nextRevision === afterRevision) {
-          return;
-        }
-        finish(() => resolve(nextRevision));
-      };
-
-      if (abortSignal?.aborted) {
-        onAbort();
-        return;
-      }
-      revisionWaiters.add(onRevisionChange);
-      abortSignal?.addEventListener('abort', onAbort, { once: true });
-    });
-  }
-
-  function waitForThreadRevisionChange(args: {
-    threadId: string;
-    afterRevision: number;
-    abortSignal?: AbortSignal;
-  }): Promise<number> {
-    const revision = getThreadRevision({ threadId: args.threadId });
-    if (revision !== args.afterRevision) {
-      return Promise.resolve(revision);
-    }
-
-    return new Promise<number>((resolve, reject) => {
-      let settled = false;
-      const finish = (fn: () => void) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        const waiters = threadRevisionWaiters.get(args.threadId);
-        waiters?.delete(onThreadRevisionChange);
-        if (waiters?.size === 0) {
-          threadRevisionWaiters.delete(args.threadId);
-        }
-        args.abortSignal?.removeEventListener('abort', onAbort);
-        fn();
-      };
-      const onAbort = () => {
-        finish(() =>
-          reject(new Error('PTC execute_code cell thread wait aborted')),
-        );
-      };
-      const onThreadRevisionChange = (nextRevision: number) => {
-        if (nextRevision === args.afterRevision) {
-          return;
-        }
-        finish(() => resolve(nextRevision));
-      };
-
-      if (args.abortSignal?.aborted) {
-        onAbort();
-        return;
-      }
-      const waiters =
-        threadRevisionWaiters.get(args.threadId) ??
-        new Set<(nextRevision: number) => void>();
-      waiters.add(onThreadRevisionChange);
-      threadRevisionWaiters.set(args.threadId, waiters);
-      args.abortSignal?.addEventListener('abort', onAbort, { once: true });
-    });
-  }
-
-  function waitUntilAbort(abortSignal?: AbortSignal): Promise<number> {
-    return new Promise<number>((_resolve, reject) => {
-      const finish = () => {
-        abortSignal?.removeEventListener('abort', onAbort);
-        reject(new Error('PTC execute_code cell output wait aborted'));
-      };
-      const onAbort = () => {
-        finish();
-      };
-
-      if (abortSignal?.aborted) {
-        finish();
-        return;
-      }
-      abortSignal?.addEventListener('abort', onAbort, { once: true });
-    });
-  }
-
-  function getTerminalCellResult(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): TerminalCellLookupResult {
-    const current = getTerminalCellRecord(args);
-    if (!current.ok) {
-      return current;
-    }
-    return { ok: true, value: current.value.result };
-  }
-
-  function getTerminalCellRecord(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }):
-    | { ok: true; value: TerminalRetainedCellRecord }
-    | { ok: false; reasonCode: 'cell_missing' | 'cell_expired' } {
-    const current = retainedCellsByThread.get(args.threadId)?.get(args.cellId);
-    if (current === undefined) {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-    if (current.state === 'terminal_expired') {
-      deleteExpiredTerminalRetainedCell(current);
-      bumpRevision(current.threadId);
-      return { ok: false, reasonCode: 'cell_expired' };
-    }
-    if (isTerminalExpired(current)) {
-      deleteExpiredTerminalRetainedCell(current);
-      bumpRevision(current.threadId);
-      return { ok: false, reasonCode: 'cell_expired' };
-    }
-    return { ok: true, value: current };
-  }
-
-  function getFirstClaimableRetainedCell(
-    threadId: string,
-  ): TerminalRetainedCellRecord | undefined {
-    const retainedByCellId = retainedCellsByThread.get(threadId);
-    if (retainedByCellId === undefined) {
-      return undefined;
-    }
-    for (const retained of retainedByCellId.values()) {
-      if (retained.state === 'terminal_expired') {
-        deleteExpiredTerminalRetainedCell(retained);
-        bumpRevision(retained.threadId);
-        continue;
-      }
-      if (isTerminalExpired(retained)) {
-        deleteExpiredTerminalRetainedCell(retained);
-        bumpRevision(retained.threadId);
-        continue;
-      }
-      return retained;
-    }
-    return undefined;
-  }
-
-  function isTerminalExpired(record: TerminalRetainedCellRecord): boolean {
-    return (
-      record.memoryExpiresAtMs !== undefined &&
-      now() >= record.memoryExpiresAtMs
-    );
-  }
-
-  function deleteExpiredTerminalRetainedCell(
-    record: TerminalCellRecord,
-  ): TerminalExpiredCellRecord {
-    const expired: TerminalExpiredCellRecord =
-      record.state === 'terminal_expired'
-        ? record
-        : {
-            threadId: record.threadId,
-            cellId: record.cellId,
-            state: 'terminal_expired',
-            createdAtMs: record.createdAtMs,
-            completedAtMs: record.completedAtMs,
-            expiredAtMs: now(),
-          };
-    deleteTerminalRetainedCell({
-      threadId: record.threadId,
-      cellId: record.cellId,
-    });
-    return expired;
-  }
-
-  function storeTerminalRetainedCell(record: TerminalCellRecord): void {
-    const retainedByCellId =
-      retainedCellsByThread.get(record.threadId) ??
-      new Map<PtcExecuteCodeCellId, TerminalCellRecord>();
-    const previous = retainedByCellId.get(record.cellId);
-    if (previous?.state === 'terminal_retained') {
-      clearTerminalRetainedCellReapTimer(previous);
-    }
-    if (
-      record.state === 'terminal_retained' &&
-      record.memoryExpiresAtMs !== undefined
-    ) {
-      scheduleTerminalRetainedCellReap(record);
-    }
-    retainedByCellId.set(record.cellId, record);
-    retainedCellsByThread.set(record.threadId, retainedByCellId);
-  }
-
-  async function retainTerminalCellResult(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-    createdAtMs: number;
-    result: PtcExecuteCodeCellTerminalResult;
-    terminalResultStateRoot?: string;
-  }): Promise<TerminalRetainedCellRecord> {
-    const record = createTerminalRetainedCellRecord(args);
-    storeTerminalRetainedCell(record);
-    await persistTerminalRetainedCell(record);
-    return record;
-  }
-
-  async function retainTerminalCellResultIfMissing(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-    createdAtMs: number;
-    result: PtcExecuteCodeCellTerminalResult;
-    terminalResultStateRoot?: string;
-  }): Promise<TerminalRetainedCellRecord> {
-    return (
-      getRetainedTerminalCellRecord(args) ?? retainTerminalCellResult(args)
-    );
-  }
-
-  async function retainOrphanReapTerminalResult(args: {
-    record: RunningCellRecord;
-    output: DetachedProcessOutputSegment;
-    exit: DetachedProcessExitInfo;
-    storeFinalization: PtcExecuteCodeCellStoreFinalization;
-    cleanupDiagnostics: Record<string, string | number | boolean>;
-  }): Promise<void> {
-    const terminalResult = getRetainedTerminalResult(args.record) ?? {
-      status: 'terminated',
-      output: args.output,
-      exit: args.exit,
-      ...args.storeFinalization,
-    };
-    if (Object.keys(args.cleanupDiagnostics).length > 0) {
-      await retainCellCleanupFailure({
-        threadId: args.record.threadId,
-        cellId: args.record.cellId,
-        createdAtMs: args.record.createdAtMs,
-        terminalResult,
-        message: 'PTC execute_code cell orphan reaper cleanup failed',
-        diagnostics: args.cleanupDiagnostics,
-        ...(args.record.terminalResultStateRoot === undefined
-          ? {}
-          : {
-              terminalResultStateRoot: args.record.terminalResultStateRoot,
-            }),
-      });
-      return;
-    }
-    await retainTerminalCellResultIfMissing({
-      threadId: args.record.threadId,
-      cellId: args.record.cellId,
-      createdAtMs: args.record.createdAtMs,
-      result: terminalResult,
-      ...(args.record.terminalResultStateRoot === undefined
-        ? {}
-        : { terminalResultStateRoot: args.record.terminalResultStateRoot }),
-    });
-  }
-
-  async function retainCellCleanupFailure(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-    createdAtMs: number;
-    message: string;
-    diagnostics: Record<string, string | number | boolean>;
-    terminalResult?: PtcExecuteCodeCellTerminalResult;
-    terminalResultStateRoot?: string;
-  }): Promise<void> {
-    const record = createTerminalRetainedCellRecord({
-      threadId: args.threadId,
-      cellId: args.cellId,
-      createdAtMs: args.createdAtMs,
-      ...(args.terminalResultStateRoot === undefined
-        ? {}
-        : { terminalResultStateRoot: args.terminalResultStateRoot }),
-      result: {
-        status: 'cleanup_failed',
-        message: args.message,
-        diagnostics: args.diagnostics,
-        ...(args.terminalResult !== undefined
-          ? { terminalResult: args.terminalResult }
-          : {}),
-      },
-    });
-    storeTerminalRetainedCell(record);
-    await persistTerminalRetainedCell(record);
-  }
-
-  function createTerminalRetainedCellRecord(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-    createdAtMs: number;
-    result: PtcExecuteCodeCellRetainedResult;
-    terminalResultStateRoot?: string;
-  }): TerminalRetainedCellRecord {
-    const completedAtMs = now();
-    return {
-      threadId: args.threadId,
-      cellId: args.cellId,
-      state: 'terminal_retained',
-      createdAtMs: args.createdAtMs,
-      completedAtMs,
-      result: args.result,
-      ...(args.terminalResultStateRoot === undefined
-        ? {}
-        : { terminalResultStateRoot: args.terminalResultStateRoot }),
-    };
-  }
-
-  async function persistTerminalRetainedCell(
-    record: TerminalRetainedCellRecord,
-  ): Promise<void> {
-    const stateRoot = record.terminalResultStateRoot;
-    if (persistTerminalResult === undefined || stateRoot === undefined) {
-      return;
-    }
-
-    const persistenceKey = JSON.stringify([record.threadId, record.cellId]);
-    const previousPersistence =
-      terminalResultPersistenceByCell.get(persistenceKey) ?? Promise.resolve();
-    const persistence = previousPersistence
-      .catch(() => undefined)
-      .then(async () => {
-        const durableOutput = await persistTerminalResult({
-          stateRoot,
-          threadId: record.threadId,
-          cellId: record.cellId,
-          result: record.result,
-        });
-        if (durableOutput === undefined) {
-          return;
-        }
-        const current = retainedCellsByThread
-          .get(record.threadId)
-          ?.get(record.cellId);
-        if (current !== record) {
-          return;
-        }
-        record.durableOutput = durableOutput;
-        record.memoryExpiresAtMs = now() + terminalResultMemoryRetentionMs;
-        scheduleTerminalRetainedCellReap(record);
-      });
-    terminalResultPersistenceByCell.set(persistenceKey, persistence);
-    try {
-      await persistence;
-    } finally {
-      if (terminalResultPersistenceByCell.get(persistenceKey) === persistence) {
-        terminalResultPersistenceByCell.delete(persistenceKey);
-      }
-    }
-  }
-
-  function getRetainedTerminalCellRecord(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): TerminalRetainedCellRecord | undefined {
-    const retained = retainedCellsByThread.get(args.threadId)?.get(args.cellId);
-    if (retained?.state !== 'terminal_retained') {
-      return undefined;
-    }
-    return retained;
-  }
-
-  function getRetainedTerminalResult(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): PtcExecuteCodeCellTerminalResult | undefined {
-    const retained = getRetainedTerminalCellRecord(args);
-    if (retained === undefined) {
-      return undefined;
-    }
-    if (retained.result.status === 'cleanup_failed') {
-      return retained.result.terminalResult;
-    }
-    if (retained.result.status === 'start_failed') {
-      return undefined;
-    }
-    return retained.result;
-  }
-
-  function deleteTerminalRetainedCell(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): void {
-    const retainedByCellId = retainedCellsByThread.get(args.threadId);
-    if (retainedByCellId === undefined) {
-      return;
-    }
-    const retained = retainedByCellId.get(args.cellId);
-    if (retained?.state === 'terminal_retained') {
-      clearTerminalRetainedCellReapTimer(retained);
-    }
-    retainedByCellId.delete(args.cellId);
-    if (retainedByCellId.size === 0) {
-      retainedCellsByThread.delete(args.threadId);
-    }
   }
 
   return {
@@ -1495,40 +995,6 @@ export function createPtcExecuteCodeCellRegistry(
     }
     record.orphanReapTimer();
     delete record.orphanReapTimer;
-  }
-
-  function scheduleTerminalRetainedCellReap(
-    record: TerminalRetainedCellRecord,
-  ): void {
-    if (record.memoryExpiresAtMs === undefined) {
-      return;
-    }
-    const delayMs = Math.max(1, record.memoryExpiresAtMs - now());
-    record.retentionReapTimer = scheduleReapTimeout(async () => {
-      const current = retainedCellsByThread
-        .get(record.threadId)
-        ?.get(record.cellId);
-      if (current !== record || current.state !== 'terminal_retained') {
-        return;
-      }
-      delete current.retentionReapTimer;
-      if (!isTerminalExpired(current)) {
-        scheduleTerminalRetainedCellReap(current);
-        return;
-      }
-      deleteExpiredTerminalRetainedCell(current);
-      bumpRevision(current.threadId);
-    }, delayMs);
-  }
-
-  function clearTerminalRetainedCellReapTimer(
-    record: TerminalRetainedCellRecord,
-  ): void {
-    if (record.retentionReapTimer === undefined) {
-      return;
-    }
-    record.retentionReapTimer();
-    delete record.retentionReapTimer;
   }
 }
 

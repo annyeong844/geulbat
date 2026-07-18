@@ -6,6 +6,12 @@ export interface SearchMatch {
 
 export interface SearchFilesResult {
   backend: string;
+  consistency?: 'eventual_index' | 'filesystem_snapshot';
+  acceleration?: {
+    backend: 'windows-search-index';
+    status: 'unavailable';
+    reasonCode: string;
+  };
   query: string;
   total: number;
   truncated: boolean;

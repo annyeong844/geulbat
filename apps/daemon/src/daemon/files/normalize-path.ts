@@ -9,10 +9,7 @@ type PathModule = Pick<
 
 const WINDOWS_ABSOLUTE_PATH = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
 
-/**
- * Normalize and validate a path within the workspace boundary.
- * Rejects `..` escapes and symlink escapes.
- */
+/** Normalize a host path without treating its coordinate base as a sandbox. */
 export function normalizePath(
   workspaceRoot: string,
   inputPath: string,
@@ -20,9 +17,6 @@ export function normalizePath(
   const pathModule = getPathModule(workspaceRoot, inputPath);
   const resolvedWorkspaceRoot = pathModule.resolve(workspaceRoot);
   const resolvedTarget = pathModule.resolve(resolvedWorkspaceRoot, inputPath);
-  if (!isPathInsideWorkspaceBoundary(resolvedWorkspaceRoot, resolvedTarget)) {
-    throw new PathEscapeError(inputPath);
-  }
   return pathModule
     .relative(resolvedWorkspaceRoot, resolvedTarget)
     .split(pathModule.sep)
@@ -42,31 +36,14 @@ function toWorkspaceDisplayPath(
 }
 
 /**
- * Check that a resolved path doesn't escape workspace via symlinks.
- * Returns the real path if safe, throws if it escapes.
- */
-export async function checkSymlinkEscape(
-  workspaceRoot: string,
-  absolutePath: string,
-): Promise<string> {
-  const realRoot = await realpath(workspaceRoot);
-  const realTarget = await realpath(absolutePath);
-  if (!isPathInsideWorkspaceBoundary(realRoot, realTarget)) {
-    throw new PathEscapeError(
-      toWorkspaceDisplayPath(workspaceRoot, absolutePath),
-    );
-  }
-  return realTarget;
-}
-
-/**
- * Reject mutating paths when any existing segment under workspace is a symlink.
- * This is stricter than read-time escape checks and intentionally fail-closed.
+ * Reject a path for operations that require a symlink-free route. The base is
+ * only a coordinate origin; parent segments may walk to any OS-accessible
+ * location.
  *
  * - existing leaf symlink: rejected
  * - existing parent symlink: rejected
  * - missing leaf: allowed when `allowMissingLeaf` is true, as long as every
- *   existing ancestor beneath workspaceRoot is a real directory path
+ *   existing ancestor on the resolved route is a real directory path
  */
 export async function checkNoSymlinkPathSegments(
   workspaceRoot: string,
@@ -79,7 +56,6 @@ export async function checkNoSymlinkPathSegments(
   const segments = relativePath.split('/').filter(Boolean);
 
   let currentPath = await realpath(workspaceRoot);
-  const realRoot = await realpath(workspaceRoot);
 
   for (let i = 0; i < segments.length; i += 1) {
     const nextPath = pathModule.resolve(currentPath, segments[i]!);
@@ -105,13 +81,7 @@ export async function checkNoSymlinkPathSegments(
       throw error;
     }
 
-    const realCurrent = await realpath(nextPath);
-    if (!isPathInsideWorkspaceBoundary(realRoot, realCurrent)) {
-      throw new PathEscapeError(
-        toWorkspaceDisplayPath(workspaceRoot, nextPath),
-      );
-    }
-    currentPath = realCurrent;
+    currentPath = await realpath(nextPath);
   }
 
   return currentPath;
@@ -132,7 +102,7 @@ export class PathEscapeError extends Error {
   code = 'path_out_of_computer_scope' as const;
 
   constructor(path: string) {
-    super(`path escapes ComputerFileScope: ${path}`);
+    super(`path is not allowed for this operation: ${path}`);
     this.name = 'PathEscapeError';
   }
 }
@@ -161,21 +131,24 @@ function normalizeBoundaryPath(
   return normalized;
 }
 
-export function isPathInsideWorkspaceBoundary(
-  workspaceRoot: string,
+export function isSameOrDescendantPath(
+  ancestorPath: string,
   targetPath: string,
 ): boolean {
-  const pathModule = getPathModule(workspaceRoot, targetPath);
-  const normalizedWorkspaceRoot = normalizeBoundaryPath(
-    pathModule.resolve(workspaceRoot),
+  const pathModule = getPathModule(ancestorPath, targetPath);
+  const normalizedAncestor = normalizeBoundaryPath(
+    pathModule.resolve(ancestorPath),
     pathModule,
   );
   const normalizedTarget = normalizeBoundaryPath(
     pathModule.resolve(targetPath),
     pathModule,
   );
+  const ancestorPrefix = normalizedAncestor.endsWith(pathModule.sep)
+    ? normalizedAncestor
+    : normalizedAncestor + pathModule.sep;
   return (
-    normalizedTarget === normalizedWorkspaceRoot ||
-    normalizedTarget.startsWith(normalizedWorkspaceRoot + pathModule.sep)
+    normalizedTarget === normalizedAncestor ||
+    normalizedTarget.startsWith(ancestorPrefix)
   );
 }

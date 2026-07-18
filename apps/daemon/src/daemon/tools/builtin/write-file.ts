@@ -15,7 +15,7 @@ const writeFileArgsSchema = z.strictObject({
       message: 'path must not be empty.',
     })
     .describe(
-      'The path to write. Relative paths start from the current directory inside ComputerFileScope.',
+      'The host path to write. Relative paths start from the current directory; absolute paths may address any location writable by the daemon process.',
     ),
   content: z.string().describe('The content to write to the file.'),
   versionToken: z
@@ -30,7 +30,7 @@ const writeFileArgsSchema = z.strictObject({
 export const writeFileTool = defineZodTool({
   name: 'write_file',
   description:
-    'Write content to a file at the specified path. Creates the file if it does not exist, or overwrites it if it does. Parent directories are created as needed.',
+    'Atomically write content to the host filesystem. Relative paths start from cwd; absolute paths are independent of cwd. Creates the file if it does not exist, or overwrites it if it does. Parent directories are created as needed, and symlink targets are supported.',
   argsSchema: writeFileArgsSchema,
   sideEffectLevel: 'write',
   mayMutateComputerFiles: true,

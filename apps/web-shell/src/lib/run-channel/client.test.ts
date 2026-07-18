@@ -6,7 +6,7 @@ import type {
   RunChannelServerMessage,
 } from '@geulbat/protocol/run-channel';
 
-import { brandRunId } from '../id-brand-helpers.js';
+import { brandRunId, brandThreadId } from '../id-brand-helpers.js';
 import {
   buildRunChannelUrl,
   getReconnectDelay,
@@ -230,12 +230,7 @@ void test('RunChannelClient reconnects after unexpected authenticated close', as
 
   getSocket(harness.sockets).close();
   assert.equal(harness.scheduler.peekDelay(), 500);
-  assert.deepEqual(harness.messages.at(-1), {
-    type: 'run.error',
-    code: 'internal',
-    message: 'run channel disconnected',
-    status: 500,
-  });
+  assert.deepEqual(harness.messages, []);
 
   harness.scheduler.runNext();
   assert.equal(harness.sockets.length, 2);
@@ -308,6 +303,24 @@ void test('RunChannelClient sends supplied prompt refs without inline prompts', 
     'run-prompt-input:11111111-1111-4111-8111-111111111111',
   );
   assert.equal('prompt' in startMessage.request, false);
+});
+
+void test('RunChannelClient sends an exact run event acknowledgement cursor', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+  const runId = brandRunId('run-event-ack');
+  const threadId = brandThreadId('123e4567-e89b-42d3-a456-426614174000');
+
+  await harness.client.acknowledgeEvent({ runId, threadId, seq: 7 });
+
+  const message = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(message.type, 'run.event.ack');
+  if (message.type !== 'run.event.ack') {
+    return;
+  }
+  assert.deepEqual(message.request, { runId, threadId, seq: 7 });
 });
 
 void test('RunChannelClient waits for run.interject acknowledgement', async () => {
@@ -525,26 +538,21 @@ void test('RunChannelClient transport connect failure schedules reconnect', asyn
   assert.equal(harness.scheduler.peekDelay(), 500);
 });
 
-void test('RunChannelClient surfaces a terminal reconnect failure after the retry ceiling', async () => {
+void test('RunChannelClient continues reconnecting beyond the former retry ceiling', async () => {
   const harness = createClientHarness();
   await connectAuthenticatedClient(harness);
 
   getSocket(harness.sockets).close();
   assert.equal(harness.scheduler.peekDelay(), 500);
 
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     harness.scheduler.runNext();
     getSocket(harness.sockets, attempt + 1).emitError();
     await Promise.resolve();
+    assert.equal(harness.scheduler.size, 1);
   }
 
-  assert.equal(harness.scheduler.size, 0);
-  assert.deepEqual(harness.messages.at(-1), {
-    type: 'run.error',
-    code: 'internal',
-    message: 'run channel reconnect failed',
-    status: 500,
-  });
+  assert.deepEqual(harness.messages, []);
 });
 
 void test('RunChannelClient auth rejection does not schedule reconnect', async () => {
