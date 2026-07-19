@@ -311,7 +311,12 @@ void test('RunChannelClient sends an exact run event acknowledgement cursor', as
   const runId = brandRunId('run-event-ack');
   const threadId = brandThreadId('123e4567-e89b-42d3-a456-426614174000');
 
-  await harness.client.acknowledgeEvent({ runId, threadId, seq: 7 });
+  const acknowledgementPromise = harness.client.acknowledgeEvent({
+    runId,
+    threadId,
+    seq: 7,
+  });
+  await Promise.resolve();
 
   const message = JSON.parse(
     socket.sent[1] ?? 'null',
@@ -321,6 +326,45 @@ void test('RunChannelClient sends an exact run event acknowledgement cursor', as
     return;
   }
   assert.deepEqual(message.request, { runId, threadId, seq: 7 });
+
+  socket.emitMessage({
+    type: 'run.control',
+    requestId: message.requestId,
+    action: 'run.event.ack',
+    ok: true,
+    seq: 7,
+  });
+  assert.equal(await acknowledgementPromise, message.requestId);
+});
+
+void test('RunChannelClient keeps run event acknowledgement conflicts out of the session stream', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+  const acknowledgementPromise = harness.client.acknowledgeEvent({
+    runId: brandRunId('run-event-ack-conflict'),
+    threadId: brandThreadId('123e4567-e89b-42d3-a456-426614174000'),
+    seq: 7,
+  });
+  await Promise.resolve();
+
+  const message = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(message.type, 'run.event.ack');
+  if (message.type !== 'run.event.ack') {
+    return;
+  }
+
+  socket.emitMessage({
+    type: 'run.error',
+    requestId: message.requestId,
+    code: 'conflict',
+    message: 'run event acknowledgement rejected: cursor_conflict',
+    status: 409,
+  });
+
+  await assert.rejects(acknowledgementPromise, /cursor_conflict/u);
+  assert.deepEqual(harness.messages, []);
 });
 
 void test('RunChannelClient waits for run.interject acknowledgement', async () => {

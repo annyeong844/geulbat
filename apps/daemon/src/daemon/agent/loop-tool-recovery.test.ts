@@ -17,7 +17,13 @@ import {
 } from '../sessions/transcript-log.js';
 import { appendProviderRound } from '../sessions/provider-round-journal.js';
 import { defineZodTool } from '../tools/zod-tool.js';
+import {
+  createScriptedProviderCallModel,
+  providerFinalAnswerRound,
+} from '../../test-support/provider-response-fixtures.js';
+import { loadExistingHistory } from './loop-history.js';
 import { recoverPendingReplaySafeToolCalls } from './loop-tool-recovery.js';
+import { runAgentLoop } from './run-agent-loop.js';
 
 void test('restart recovery automatically replays a declared replay-safe tool once', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-recovery-'));
@@ -92,7 +98,7 @@ void test('restart recovery automatically replays a declared replay-safe tool on
   );
 });
 
-void test('restart recovery materializes and settles a journaled call that crashed before its public transcript entry', async (t) => {
+void test('restart recovery settles a journaled pre-transcript call before the next provider continuation', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-recovery-'));
   t.after(async () => rm(stateRoot, { recursive: true, force: true }));
   const threadId = assertThreadId(randomUUID());
@@ -173,6 +179,66 @@ void test('restart recovery materializes and settles a journaled call that crash
     entries.filter((entry) => entry.role === 'tool_result').length,
     1,
   );
+
+  let continuationRequests = 0;
+  const result = await runAgentLoop({
+    runId,
+    runContext: createRunContext({
+      threadId,
+      stateRoot,
+      workingDirectory: stateRoot,
+    }),
+    prompt: recovered.modelPrompt,
+    runtimeServices: daemonContext,
+    approvalContext: {
+      sessionId: 'replacement-session',
+      permissionMode: 'basic',
+    },
+    historyPort: {
+      async loadInitialHistory(args) {
+        return await loadExistingHistory(
+          args.workspaceRoot,
+          args.threadId,
+          args.providerTarget,
+        );
+      },
+    },
+    callModelImpl: createScriptedProviderCallModel([
+      {
+        ...providerFinalAnswerRound('continued after recovery'),
+        inspectInput(input) {
+          continuationRequests += 1;
+          assert.deepEqual(
+            input.history.filter((item) => item.kind === 'user'),
+            [
+              {
+                kind: 'user',
+                text: 'recover journaled provider state',
+              },
+            ],
+          );
+          assert.deepEqual(
+            input.history.filter((item) => item.kind === 'backend_item'),
+            [{ kind: 'backend_item', data: rawFunctionCall }],
+          );
+          const outputs = input.history.filter(
+            (item) => item.kind === 'function_call_output',
+          );
+          assert.equal(outputs.length, 1);
+          assert.equal(outputs[0]?.callId, rawFunctionCall.call_id);
+          assert.match(outputs[0]?.output ?? '', /recovered/u);
+        },
+      },
+    ]),
+    onEvent() {},
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'continued after recovery',
+  });
+  assert.equal(continuationRequests, 1);
+  assert.equal(executions, 1);
 });
 
 void test('restart recovery re-emits a durable pending approval before executing the replay-safe tool', async (t) => {

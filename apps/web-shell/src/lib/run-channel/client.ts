@@ -207,11 +207,26 @@ export class RunChannelClient {
 
   async acknowledgeEvent(request: RunEventAckRequest): Promise<string> {
     const requestId = createRequestId();
-    await this.send({
-      type: 'run.event.ack',
-      requestId,
-      request,
-    });
+    const acknowledgement = new Promise<RunControlMessage>(
+      (resolve, reject) => {
+        this.pendingControlAcks.set(requestId, {
+          action: 'run.event.ack',
+          resolve,
+          reject,
+        });
+      },
+    );
+    try {
+      await this.send({
+        type: 'run.event.ack',
+        requestId,
+        request,
+      });
+    } catch (error: unknown) {
+      this.pendingControlAcks.delete(requestId);
+      throw error;
+    }
+    await acknowledgement;
     return requestId;
   }
 
