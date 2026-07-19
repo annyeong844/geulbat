@@ -21,8 +21,12 @@ export async function filenameSearch(
   matchesInclude: SearchPathMatcher,
   maxResults: number | undefined,
   signal?: AbortSignal,
+  dependencies: {
+    searchFilenameIndex?: typeof tryWindowsFilenameIndexSearch;
+  } = {},
 ): Promise<SearchFilesResult> {
   const results: SearchMatch[] = [];
+  const acceptedRelativePaths = new Set<string>();
   let totalMatches = 0;
   const acceptHostPath = (hostPath: string) => {
     const rootRelativePath = toWorkspaceRelativeSearchPath(rootDir, hostPath);
@@ -40,7 +44,11 @@ export async function filenameSearch(
     if (matchesPattern && !matchesPattern(relativePath)) {
       return;
     }
+    if (acceptedRelativePaths.has(relativePath)) {
+      return;
+    }
 
+    acceptedRelativePaths.add(relativePath);
     totalMatches += 1;
     insertBoundedSortedResult(
       results,
@@ -49,7 +57,9 @@ export async function filenameSearch(
     );
   };
 
-  const indexedSearch = await tryWindowsFilenameIndexSearch({
+  const indexedSearch = await (
+    dependencies.searchFilenameIndex ?? tryWindowsFilenameIndexSearch
+  )({
     rootDir,
     pattern,
     ...(signal === undefined ? {} : { signal }),
@@ -58,20 +68,13 @@ export async function filenameSearch(
     for (const path of indexedSearch.paths) {
       acceptHostPath(path);
     }
-    return {
-      backend: 'windows-search-index',
-      consistency: 'eventual_index',
-      query: 'filename',
-      total: totalMatches,
-      truncated: maxResults !== undefined && totalMatches > results.length,
-      results,
-    };
   }
 
   const rgPath = await resolveRipgrepPath(rootDir);
   const acceleration =
-    indexedSearch.reasonCode === 'powershell_unavailable' ||
-    indexedSearch.reasonCode === 'query_failed'
+    indexedSearch.kind === 'unavailable' &&
+    (indexedSearch.reasonCode === 'powershell_unavailable' ||
+      indexedSearch.reasonCode === 'query_failed')
       ? {
           backend: 'windows-search-index' as const,
           status: 'unavailable' as const,
@@ -138,8 +141,14 @@ export async function filenameSearch(
         return;
       }
       resolve({
-        backend: 'ripgrep-files',
-        consistency: 'filesystem_snapshot',
+        backend:
+          indexedSearch.kind === 'results'
+            ? 'windows-search-index+ripgrep-files'
+            : 'ripgrep-files',
+        consistency:
+          indexedSearch.kind === 'results'
+            ? 'eventual_index'
+            : 'filesystem_snapshot',
         ...(acceleration === undefined ? {} : { acceleration }),
         query: 'filename',
         total: totalMatches,

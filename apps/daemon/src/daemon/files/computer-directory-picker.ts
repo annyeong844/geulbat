@@ -4,20 +4,28 @@ import { stat } from 'node:fs/promises';
 
 const WSL_PWSH_PATH = '/mnt/c/Program Files/PowerShell/7/pwsh.exe';
 const WINDOWS_PWSH_PATH = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+const WSL_WINDOWS_POWERSHELL_PATH =
+  '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+const WINDOWS_WINDOWS_POWERSHELL_PATH =
+  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 const WINDOWS_FOLDER_PICKER_INITIAL_PATH_PLACEHOLDER =
   '__GEULBAT_DIRECTORY_PICKER_INITIAL_PATH_BASE64__';
 const WINDOWS_FOLDER_PICKER_SCRIPT = String.raw`
-Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName System.Windows.Forms
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$dialog = [Microsoft.Win32.OpenFolderDialog]::new()
-$dialog.Title = '시작 위치 선택'
-$dialog.Multiselect = $false
+$dialog = [System.Windows.Forms.FolderBrowserDialog]::new()
+$dialog.Description = '시작 위치 선택'
+$dialog.ShowNewFolderButton = $true
 $initialPath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${WINDOWS_FOLDER_PICKER_INITIAL_PATH_PLACEHOLDER}'))
 if ($initialPath -and [System.IO.Directory]::Exists($initialPath)) {
-  $dialog.InitialDirectory = $initialPath
+  $dialog.SelectedPath = $initialPath
 }
-if ($dialog.ShowDialog() -eq $true) {
-  [Console]::Out.Write($dialog.FolderName)
+try {
+  if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Out.Write($dialog.SelectedPath)
+  }
+} finally {
+  $dialog.Dispose()
 }
 `;
 
@@ -224,8 +232,20 @@ function resolvePickerRuntime(
   if (platform === 'win32' && fileExists(WINDOWS_PWSH_PATH)) {
     return { kind: 'windows', powershellCommand: WINDOWS_PWSH_PATH };
   }
+  if (platform === 'win32' && fileExists(WINDOWS_WINDOWS_POWERSHELL_PATH)) {
+    return {
+      kind: 'windows',
+      powershellCommand: WINDOWS_WINDOWS_POWERSHELL_PATH,
+    };
+  }
   if (platform === 'linux' && fileExists(WSL_PWSH_PATH)) {
     return { kind: 'wsl', powershellCommand: WSL_PWSH_PATH };
+  }
+  if (platform === 'linux' && fileExists(WSL_WINDOWS_POWERSHELL_PATH)) {
+    return {
+      kind: 'wsl',
+      powershellCommand: WSL_WINDOWS_POWERSHELL_PATH,
+    };
   }
   throw new ComputerDirectoryPickerError(
     'unavailable',

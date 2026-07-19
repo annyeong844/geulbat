@@ -757,17 +757,23 @@ void test('useRunSessionConnection flushes pending stream text before settle eff
   hook.unmount();
 });
 
-void test('useRunSessionConnection acknowledges terminal replay after snapshot and terminal application', async () => {
+void test('useRunSessionConnection sequences terminal replay after snapshot settlement and stops on snapshot failure', async () => {
   let listener: ((message: RunChannelServerMessage) => void) | null = null;
   const seen: string[] = [];
+  const reports: Array<{ logContext: string; error: unknown }> = [];
   const acknowledgements: Array<{
     runId: string;
     threadId: string;
     seq: number;
   }> = [];
+  let snapshotFailure: Error | undefined;
   let releaseFollowUp: (() => void) | undefined;
   const followUpGate = new Promise<void>((resolve) => {
     releaseFollowUp = resolve;
+  });
+  let resolveFailureReported: (() => void) | undefined;
+  const failureReported = new Promise<void>((resolve) => {
+    resolveFailureReported = resolve;
   });
   const fakeClient = {
     async acknowledgeEvent(request: {
@@ -805,10 +811,16 @@ void test('useRunSessionConnection acknowledges terminal replay after snapshot a
     handleRunSettledSuccess: async () => {
       seen.push('snapshot-applied');
       await followUpGate;
+      if (snapshotFailure) {
+        throw snapshotFailure;
+      }
     },
     handleRunSettleSyncFailed: async () => {},
     handleRunSettledError: async () => {},
-    reportSessionFailure: () => {},
+    reportSessionFailure: (logContext, error) => {
+      reports.push({ logContext, error });
+      resolveFailureReported?.();
+    },
   });
 
   const invokeListener = (message: RunChannelServerMessage) => {
@@ -845,6 +857,13 @@ void test('useRunSessionConnection acknowledges terminal replay after snapshot a
     await Promise.resolve();
   });
 
+  assert.deepEqual(seen, ['snapshot-applied']);
+  assert.deepEqual(acknowledgements, []);
+
+  assert.ok(releaseFollowUp);
+  releaseFollowUp();
+  await hook.flush();
+
   assert.deepEqual(seen, [
     'snapshot-applied',
     'terminal-applied',
@@ -854,9 +873,49 @@ void test('useRunSessionConnection acknowledges terminal replay after snapshot a
     { runId: RUN_ID, threadId: THREAD_ID, seq: 5 },
   ]);
 
-  assert.ok(releaseFollowUp);
-  releaseFollowUp();
+  snapshotFailure = new Error('snapshot application failed');
+  await hook.run(() => {
+    invokeListener({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 6,
+        ts: new Date().toISOString(),
+        type: 'thread_state_persisted',
+        payload: createPersistedThreadDetail(),
+      },
+    });
+    invokeListener({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 7,
+        ts: new Date().toISOString(),
+        type: 'done',
+        payload: { answer: 'must remain replayable', ok: true },
+      },
+    });
+  });
+  await failureReported;
   await hook.flush();
+
+  assert.deepEqual(seen, [
+    'snapshot-applied',
+    'terminal-applied',
+    'acknowledged',
+    'snapshot-applied',
+  ]);
+  assert.deepEqual(acknowledgements, [
+    { runId: RUN_ID, threadId: THREAD_ID, seq: 5 },
+  ]);
+  assert.deepEqual(reports, [
+    {
+      logContext: 'run channel message failed',
+      error: snapshotFailure,
+    },
+  ]);
   hook.unmount();
 });
 

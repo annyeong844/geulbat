@@ -59,6 +59,59 @@ void test('WSL native directory picker converts the initial and selected Windows
   assert.deepEqual(calls[2]?.args, ['-u', 'C:\\Users\\user\\Downloads\\repo']);
 });
 
+void test('native directory picker falls back to built-in Windows PowerShell on Windows and WSL', async () => {
+  const scenarios = [
+    {
+      platform: 'win32',
+      initialAbsolutePath: 'C:\\Users\\user',
+      expectedCommand:
+        'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    },
+    {
+      platform: 'linux',
+      initialAbsolutePath: '/mnt/c/Users/user',
+      expectedCommand:
+        '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    const picker = createComputerDirectoryPicker({
+      platform: scenario.platform,
+      fileExists: (path) => path === scenario.expectedCommand,
+      isDirectory: async () => false,
+      async runCommand(command, args) {
+        calls.push({ command, args });
+        if (command === 'wslpath') {
+          return { stdout: 'C:\\Users\\user\r\n' };
+        }
+        return { stdout: '' };
+      },
+    });
+
+    assert.deepEqual(
+      await picker.select({
+        initialAbsolutePath: scenario.initialAbsolutePath,
+      }),
+      { kind: 'cancelled' },
+    );
+    const pickerCall = calls.find(
+      ({ command }) => command === scenario.expectedCommand,
+    );
+    assert.ok(pickerCall);
+    const encodedCommandIndex = pickerCall.args.indexOf('-EncodedCommand');
+    assert.notEqual(encodedCommandIndex, -1);
+    const encodedCommand = pickerCall.args[encodedCommandIndex + 1];
+    assert.ok(encodedCommand);
+    const pickerScript = Buffer.from(encodedCommand, 'base64').toString(
+      'utf16le',
+    );
+    assert.match(pickerScript, /System\.Windows\.Forms\.FolderBrowserDialog/u);
+    assert.doesNotMatch(pickerScript, /Microsoft\.Win32\.OpenFolderDialog/u);
+  }
+});
+
 void test('native directory picker joins concurrent requests to one host dialog', async () => {
   let commandCount = 0;
   let finishCommand: ((result: { stdout: string }) => void) | undefined;

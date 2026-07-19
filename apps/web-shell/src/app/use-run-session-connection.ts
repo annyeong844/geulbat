@@ -97,13 +97,12 @@ export function useRunSessionConnection({
 
   useEffect(() => {
     const streamBatchController = streamBatchControllerRef.current;
+    const runEventHandlingByRun = new Map<string, Promise<boolean>>();
     const unsubscribe = client.subscribe((message) => {
-      const latestArgs = latestArgsRef.current;
       const effect = adaptRunSessionMessage(message);
       if (!effect) {
         return;
       }
-
       if (effect.kind === 'assistant_text_streamed') {
         streamBatchController.queueStreamedTextEffect(effect);
         return;
@@ -113,44 +112,84 @@ export function useRunSessionConnection({
         return;
       }
 
-      streamBatchController.flushPendingStreamEffects();
-      const handled = handleRunSessionMessage({
-        message,
-        dispatch: dispatchRef.current,
-        requestComputerTreeRefresh: () => {
-          void requestComputerTreeRefresh(
-            latestArgs.computerTreeRefreshControllerRef.current,
-            latestArgs.loadTree,
-          ).catch((err: unknown) => {
-            latestArgs.reportSessionFailure(
-              'computer tree refresh failed',
-              err,
-            );
+      const processMessage = async () => {
+        const latestArgs = latestArgsRef.current;
+        streamBatchController.flushPendingStreamEffects();
+        await handleRunSessionMessage({
+          message,
+          dispatch: dispatchRef.current,
+          requestComputerTreeRefresh: () => {
+            void requestComputerTreeRefresh(
+              latestArgs.computerTreeRefreshControllerRef.current,
+              latestArgs.loadTree,
+            ).catch((err: unknown) => {
+              latestArgs.reportSessionFailure(
+                'computer tree refresh failed',
+                err,
+              );
+            });
+          },
+          handleRunStarted: latestArgs.handleRunStarted,
+          handleRunSettledSuccess: latestArgs.handleRunSettledSuccess,
+          handleRunSettleSyncFailed: latestArgs.handleRunSettleSyncFailed,
+          handleRunSettledError: latestArgs.handleRunSettledError,
+        });
+        if (
+          message.type === 'run.event' &&
+          (message.event.type === 'done' || message.event.type === 'error')
+        ) {
+          await client.acknowledgeEvent({
+            runId: message.event.runId,
+            threadId: message.event.threadId,
+            seq: message.event.seq,
           });
-        },
-        handleRunStarted: latestArgs.handleRunStarted,
-        handleRunSettledSuccess: latestArgs.handleRunSettledSuccess,
-        handleRunSettleSyncFailed: latestArgs.handleRunSettleSyncFailed,
-        handleRunSettledError: latestArgs.handleRunSettledError,
+        }
+      };
+
+      if (message.type !== 'run.event') {
+        void processMessage().catch((err: unknown) => {
+          latestArgsRef.current.reportSessionFailure(
+            'run channel message failed',
+            err,
+          );
+        });
+        return;
+      }
+
+      const runId = message.event.runId;
+      const previousHandling =
+        runEventHandlingByRun.get(runId) ?? Promise.resolve(true);
+      const handled = previousHandling.then(async (previousSucceeded) => {
+        if (!previousSucceeded) {
+          return false;
+        }
+        try {
+          await processMessage();
+          return true;
+        } catch (err: unknown) {
+          latestArgsRef.current.reportSessionFailure(
+            'run channel message failed',
+            err,
+          );
+          return false;
+        }
       });
-      const terminalHandled =
-        message.type === 'run.event' &&
-        (message.event.type === 'done' || message.event.type === 'error')
-          ? handled.then(async () => {
-              await client.acknowledgeEvent({
-                runId: message.event.runId,
-                threadId: message.event.threadId,
-                seq: message.event.seq,
-              });
-            })
-          : handled;
-      void terminalHandled.catch((err: unknown) => {
-        latestArgs.reportSessionFailure('run channel message failed', err);
-      });
+      runEventHandlingByRun.set(runId, handled);
+
+      const terminal =
+        message.event.type === 'done' || message.event.type === 'error';
+      if (terminal) {
+        void handled.finally(() => {
+          if (runEventHandlingByRun.get(runId) === handled) {
+            runEventHandlingByRun.delete(runId);
+          }
+        });
+      }
     });
 
     return () => {
       streamBatchController.clearPendingStreamEffects();
+      runEventHandlingByRun.clear();
       unsubscribe();
     };
   }, [client]);
