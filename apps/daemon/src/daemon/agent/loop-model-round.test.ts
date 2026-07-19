@@ -6,6 +6,8 @@ import {
   resolveProviderRequestOptions,
   type ProviderRequestOptions,
 } from '../llm/provider/provider-options.js';
+import { createProviderReplayScopeId } from '../llm/provider/provider-replay-scope.js';
+import { resolveCodexResponsesUrl } from '../llm/provider/transport/responses-websocket-url.js';
 import type { ResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-cache.js';
 import type { AgentEvent, AgentEventEmitter } from './events.js';
 import { createAgentEvent } from './events.js';
@@ -29,6 +31,11 @@ const unusedProviderWebSocketSessions: Pick<
 
 const defaultProviderRequestOptions: ProviderRequestOptions =
   resolveProviderRequestOptions({});
+const defaultProviderReplayScopeId = createProviderReplayScopeId({
+  providerId: 'openai_codex_direct',
+  accountId: 'account',
+  endpoint: resolveCodexResponsesUrl(),
+});
 
 function makeEmitter(events: AgentEvent[]): AgentEventEmitter {
   return (type, payload) => {
@@ -97,11 +104,22 @@ void test('runModelRound keeps instructions byte-stable while aggregating a roun
         {
           kind: 'backend_item',
           data: {
+            id: 'rs-fc-1',
+            type: 'reasoning',
+            summary: [],
+            encrypted_content: 'opaque-rs-fc-1',
+          },
+          providerReplayScopeId: defaultProviderReplayScopeId,
+        },
+        {
+          kind: 'backend_item',
+          data: {
             id: 'msg_1',
             type: 'message',
             phase: 'commentary',
             content: [{ type: 'output_text', text: 'thinking ' }],
           },
+          providerReplayScopeId: defaultProviderReplayScopeId,
         },
         {
           kind: 'backend_item',
@@ -112,6 +130,7 @@ void test('runModelRound keeps instructions byte-stable while aggregating a roun
             name: 'read_file',
             arguments: '{"path":"draft.md"}',
           },
+          providerReplayScopeId: defaultProviderReplayScopeId,
         },
         {
           kind: 'backend_item',
@@ -121,6 +140,7 @@ void test('runModelRound keeps instructions byte-stable while aggregating a roun
             phase: 'final_answer',
             content: [{ type: 'output_text', text: 'done' }],
           },
+          providerReplayScopeId: defaultProviderReplayScopeId,
         },
       ],
     },
@@ -213,6 +233,7 @@ void test('createModelRoundPort delegates to the current model-round runner', as
             phase: 'final_answer',
             content: [{ type: 'output_text', text: 'ported model round' }],
           },
+          providerReplayScopeId: defaultProviderReplayScopeId,
         },
       ],
     },
@@ -282,6 +303,7 @@ void test('runModelRound streams final answer deltas as they arrive without a du
             phase: 'final_answer',
             content: [{ type: 'output_text', text: '안녕하세요' }],
           },
+          providerReplayScopeId: defaultProviderReplayScopeId,
         },
       ],
     },
@@ -699,6 +721,7 @@ void test('runModelRound treats wrapped legacy envelope final text as plain pros
             phase: 'final_answer',
             content: [{ type: 'output_text', text: answer }],
           },
+          providerReplayScopeId: defaultProviderReplayScopeId,
         },
       ],
     },

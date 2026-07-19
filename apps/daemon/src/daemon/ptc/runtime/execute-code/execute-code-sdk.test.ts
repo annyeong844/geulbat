@@ -24,6 +24,14 @@ interface GeulbatFacade {
     args?: Record<string, unknown>,
   ) => Promise<unknown>;
   help(): unknown;
+  toolOutput?: {
+    readAll(args: { outputRef: string; pageLimit: number }): Promise<{
+      outputRef: string;
+      content: string;
+      totalChars: number;
+      pageCount: number;
+    }>;
+  };
   store?: {
     get(key: unknown): Promise<unknown>;
     set(key: unknown, value: unknown, options?: unknown): Promise<unknown>;
@@ -78,6 +86,92 @@ void test('execute_code SDK does not open a callback socket when args serializat
       assert.equal(connectionCount, 0);
       assert.equal(activeSockets.size, 0);
     },
+  );
+});
+
+void test('execute_code SDK collects a complete tool output through exact callback pages', async () => {
+  const outputRef = 'tool-output:thread/run/call';
+  const source = 'page-one-page-two';
+  const observedOffsets: number[] = [];
+
+  await withCallbackSocketServer(
+    (socket) => {
+      socket.setEncoding('utf8');
+      socket.once('data', (chunk) => {
+        const request = JSON.parse(String(chunk).trim()) as {
+          requestId: string;
+          kind: string;
+          args: {
+            toolName: string;
+            args: { outputRef: string; offset: number; limit: number };
+          };
+        };
+        assert.equal(request.kind, 'geulbat_tool_call');
+        assert.equal(request.args.toolName, 'read_tool_output');
+        assert.equal(request.args.args.outputRef, outputRef);
+        const { offset, limit } = request.args.args;
+        observedOffsets.push(offset);
+        const content = source.slice(offset, offset + limit);
+        const endOffset = offset + content.length;
+        const hasMore = endOffset < source.length;
+        socket.end(
+          `${JSON.stringify({
+            requestId: request.requestId,
+            ok: true,
+            result: {
+              ok: true,
+              output: JSON.stringify({
+                ok: true,
+                outputRef,
+                offset,
+                limit,
+                endOffset,
+                totalChars: source.length,
+                hasMore,
+                nextOffset: hasMore ? endOffset : null,
+                content,
+              }),
+            },
+          })}\n`,
+        );
+      });
+    },
+    async (socketPath) => {
+      const geulbat = createGeulbatFacade(socketPath, undefined, true);
+      assert.ok(geulbat.toolOutput !== undefined);
+      assert.match(
+        JSON.stringify(geulbat.help()),
+        /geulbat\.toolOutput\.readAll/u,
+      );
+      const recovered = await geulbat.toolOutput.readAll({
+        outputRef,
+        pageLimit: 6,
+      });
+      assert.equal(recovered.outputRef, outputRef);
+      assert.equal(recovered.content, source);
+      assert.equal(recovered.totalChars, source.length);
+      assert.equal(recovered.pageCount, 3);
+    },
+  );
+
+  assert.deepEqual(observedOffsets, [0, 6, 12]);
+  assert.equal(
+    createGeulbatFacade('/unused/no-output-recovery.sock').toolOutput,
+    undefined,
+  );
+});
+
+void test('execute_code SDK rejects invalid complete-output input before opening a callback', async () => {
+  const geulbat = createGeulbatFacade(
+    '/unused/invalid-output-recovery.sock',
+    undefined,
+    true,
+  );
+  assert.ok(geulbat.toolOutput !== undefined);
+
+  await assert.rejects(
+    geulbat.toolOutput.readAll(null as never),
+    /outputRef must be a non-empty string/u,
   );
 });
 
@@ -267,6 +361,7 @@ void test('execute_code SDK help exposes pinned import identity without exposing
 function createGeulbatFacade(
   socketPath: string | undefined,
   storeMode?: 'batch_exec' | 'detached_cell',
+  includeToolOutputRecovery = false,
 ): GeulbatFacade {
   const source = buildPtcExecuteCodeGeulbatFacadeSource({
     ...(socketPath === undefined
@@ -286,6 +381,24 @@ function createGeulbatFacade(
               additionalProperties: false,
             },
           },
+          ...(includeToolOutputRecovery
+            ? [
+                {
+                  name: 'read_tool_output',
+                  description: 'Read one tool output page.',
+                  parameters: {
+                    type: 'object' as const,
+                    properties: {
+                      outputRef: { type: 'string' as const },
+                      offset: { type: 'number' as const },
+                      limit: { type: 'number' as const },
+                    },
+                    required: ['outputRef', 'limit'],
+                    additionalProperties: false as const,
+                  },
+                },
+              ]
+            : []),
         ],
       },
       ...(storeMode === undefined ? {} : { storeMode }),

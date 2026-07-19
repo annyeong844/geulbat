@@ -11,13 +11,15 @@ import {
 } from '@geulbat/protocol/ids';
 import {
   isProviderAuthProviderId,
+  isProviderReplayScopeId,
   type ProviderAuthProviderId,
+  type ProviderReplayScopeId,
 } from '@geulbat/protocol/provider-auth';
 
 import { isJsonValue, isRecord, type JsonValue } from '../runtime-json.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
 
-const PROVIDER_ROUND_JOURNAL_SCHEMA_VERSION = 1;
+const PROVIDER_ROUND_JOURNAL_SCHEMA_VERSION = 2;
 const runProviderRoundAppendSerial = createKeyedSerialRunner();
 
 export interface ProviderRoundJournalRecord {
@@ -27,6 +29,7 @@ export interface ProviderRoundJournalRecord {
   round: number;
   providerId: ProviderAuthProviderId;
   model: string;
+  replayScopeId: ProviderReplayScopeId | null;
   precedingTranscriptEntryId: string | null;
   items: JsonValue[];
   functionCalls: ProviderRoundJournalFunctionCall[];
@@ -48,6 +51,7 @@ export async function appendProviderRound(args: {
   round: number;
   providerId: ProviderAuthProviderId;
   model: string;
+  replayScopeId: ProviderReplayScopeId | null;
   precedingTranscriptEntryId: string | null;
   items: readonly unknown[];
   functionCalls: readonly ProviderRoundJournalFunctionCall[];
@@ -59,6 +63,12 @@ export async function appendProviderRound(args: {
   const model = args.model.trim();
   if (model === '') {
     throw new Error('invalid provider round journal model');
+  }
+  if (
+    args.replayScopeId !== null &&
+    !isProviderReplayScopeId(args.replayScopeId)
+  ) {
+    throw new Error('invalid provider round replay scope');
   }
   if (
     args.precedingTranscriptEntryId !== null &&
@@ -97,6 +107,7 @@ export async function appendProviderRound(args: {
     round: args.round,
     providerId: args.providerId,
     model,
+    replayScopeId: args.replayScopeId,
     precedingTranscriptEntryId: args.precedingTranscriptEntryId,
     items,
     functionCalls,
@@ -160,6 +171,7 @@ export async function copyProviderRoundHistory(args: {
       round: record.round,
       providerId: record.providerId,
       model: record.model,
+      replayScopeId: record.replayScopeId,
       precedingTranscriptEntryId: record.precedingTranscriptEntryId,
       items: record.items,
       functionCalls: record.functionCalls,
@@ -203,7 +215,8 @@ function parseProviderRoundJournalRecord(
 ): ProviderRoundJournalRecord {
   if (
     !isRecord(value) ||
-    value.schemaVersion !== PROVIDER_ROUND_JOURNAL_SCHEMA_VERSION ||
+    (value.schemaVersion !== 1 &&
+      value.schemaVersion !== PROVIDER_ROUND_JOURNAL_SCHEMA_VERSION) ||
     typeof value.threadId !== 'string' ||
     !isThreadId(value.threadId) ||
     value.threadId !== expectedThreadId ||
@@ -215,6 +228,9 @@ function parseProviderRoundJournalRecord(
     !isProviderAuthProviderId(value.providerId) ||
     typeof value.model !== 'string' ||
     value.model.trim() === '' ||
+    (value.schemaVersion === PROVIDER_ROUND_JOURNAL_SCHEMA_VERSION &&
+      value.replayScopeId !== null &&
+      !isProviderReplayScopeId(value.replayScopeId)) ||
     (value.precedingTranscriptEntryId !== null &&
       (typeof value.precedingTranscriptEntryId !== 'string' ||
         value.precedingTranscriptEntryId.trim() === '')) ||
@@ -237,6 +253,10 @@ function parseProviderRoundJournalRecord(
     round: value.round,
     providerId: value.providerId,
     model: value.model,
+    replayScopeId:
+      value.schemaVersion === 1
+        ? null
+        : (value.replayScopeId as ProviderReplayScopeId | null),
     precedingTranscriptEntryId: value.precedingTranscriptEntryId,
     items: value.items,
     functionCalls: value.functionCalls,
@@ -253,7 +273,10 @@ function providerFunctionCallsMatch(
     { id: string; name: string; arguments: string }
   >();
   for (const item of items) {
-    if (!isRecord(item) || item['type'] !== 'function_call') {
+    if (!isRecord(item)) {
+      continue;
+    }
+    if (item['type'] !== 'function_call') {
       continue;
     }
     const id = item['id'];

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import type { ProviderReplayScopeId } from '@geulbat/protocol/provider-auth';
 import {
   CODEX_DIRECT_RESPONSES_WEBSOCKET_REUSE_POLICY,
   callModelWithDependencies,
@@ -20,6 +21,9 @@ import {
   resolveProviderRequestOptions,
   type ProviderRequestOptions,
 } from './provider-options.js';
+import { resolveGrokOAuthModelDescriptor } from './grok-oauth-transport.js';
+import { createProviderReplayScopeId } from './provider-replay-scope.js';
+import { resolveCodexResponsesUrl } from './transport/responses-websocket-url.js';
 import type { ResponsesWebSocketSessionStore } from './transport/responses-websocket-cache.js';
 
 const unusedProviderWebSocketSessions: Pick<
@@ -33,6 +37,16 @@ const unusedProviderWebSocketSessions: Pick<
 
 const defaultProviderRequestOptions: ProviderRequestOptions =
   resolveProviderRequestOptions({});
+const CODEX_TEST_REPLAY_SCOPE_ID = createProviderReplayScopeId({
+  providerId: 'openai_codex_direct',
+  accountId: 'account',
+  endpoint: resolveCodexResponsesUrl(),
+});
+const GROK_TEST_REPLAY_SCOPE_ID = createProviderReplayScopeId({
+  providerId: 'grok_oauth',
+  accountId: 'grok-account',
+  endpoint: resolveGrokOAuthModelDescriptor('grok-4.5').baseUrl,
+});
 
 function createCodexAssistantItems(
   text: string,
@@ -41,11 +55,27 @@ function createCodexAssistantItems(
   return [
     {
       kind: 'backend_item' as const,
+      providerReplayScopeId: CODEX_TEST_REPLAY_SCOPE_ID,
       data: {
         id: 'msg-test',
         type: 'message',
         role: 'assistant',
         phase,
+        content: [{ type: 'output_text', text }],
+      },
+    },
+  ];
+}
+
+function createGrokTransportAssistantItems(text: string) {
+  return [
+    {
+      kind: 'backend_item' as const,
+      data: {
+        id: 'msg-grok-test',
+        type: 'message',
+        role: 'assistant',
+        phase: 'final_answer',
         content: [{ type: 'output_text', text }],
       },
     },
@@ -276,6 +306,7 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
     reasoningEffort?: string;
     discoverySink?: unknown;
     providerWebSocketSessions?: unknown;
+    providerReplayScopeId?: ProviderReplayScopeId;
   } = {};
 
   for await (const chunk of callModelWithDependencies(
@@ -310,6 +341,9 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
         observed.providerWebSocketSessions = input.providerWebSocketSessions;
         observed.reasoningEffort = input.reasoningEffort;
         observed.discoverySink = input.discoverySink;
+        if (input.providerReplayScopeId !== undefined) {
+          observed.providerReplayScopeId = input.providerReplayScopeId;
+        }
         if (input.instructions !== undefined) {
           observed.instructions = input.instructions;
         }
@@ -319,13 +353,7 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
           text: 'hello from grok',
         });
         return {
-          itemsToAppend: [
-            {
-              kind: 'assistant',
-              phase: 'final_answer',
-              text: 'hello from grok',
-            },
-          ],
+          itemsToAppend: createGrokTransportAssistantItems('hello from grok'),
           functionCalls: [],
           assistantText: 'hello from grok',
           finalText: 'hello from grok',
@@ -351,6 +379,7 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
       reasoningEffort: 'high',
       discoverySink: undefined,
       providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerReplayScopeId: GROK_TEST_REPLAY_SCOPE_ID,
     },
   );
   assert.deepEqual(chunks, [
@@ -363,6 +392,12 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
       type: 'done',
       assistantText: 'hello from grok',
       finalText: 'hello from grok',
+      itemsToAppend: createGrokTransportAssistantItems('hello from grok').map(
+        (item) => ({
+          ...item,
+          providerReplayScopeId: GROK_TEST_REPLAY_SCOPE_ID,
+        }),
+      ),
     },
   ]);
 });
@@ -423,7 +458,7 @@ void test('callModelWithDependencies uses Grok provider auth refresh for Grok OA
           throw Object.assign(new Error('expired token'), { status: 401 });
         }
         return {
-          itemsToAppend: [],
+          itemsToAppend: createGrokTransportAssistantItems('ok'),
           functionCalls: [],
           assistantText: 'ok',
           finalText: 'ok',
@@ -456,6 +491,10 @@ void test('callModelWithDependencies uses Grok provider auth refresh for Grok OA
       type: 'done',
       assistantText: 'ok',
       finalText: 'ok',
+      itemsToAppend: createGrokTransportAssistantItems('ok').map((item) => ({
+        ...item,
+        providerReplayScopeId: GROK_TEST_REPLAY_SCOPE_ID,
+      })),
     },
   ]);
 });
@@ -466,6 +505,7 @@ void test('callModelWithDependencies streams deltas and carries Codex output ite
   const itemsToAppend = [
     {
       kind: 'backend_item' as const,
+      providerReplayScopeId: CODEX_TEST_REPLAY_SCOPE_ID,
       data: {
         id: 'rs_1',
         type: 'reasoning',
@@ -474,6 +514,7 @@ void test('callModelWithDependencies streams deltas and carries Codex output ite
     },
     {
       kind: 'backend_item' as const,
+      providerReplayScopeId: CODEX_TEST_REPLAY_SCOPE_ID,
       data: {
         id: 'msg_1',
         type: 'message',
@@ -484,6 +525,7 @@ void test('callModelWithDependencies streams deltas and carries Codex output ite
     },
     {
       kind: 'backend_item' as const,
+      providerReplayScopeId: CODEX_TEST_REPLAY_SCOPE_ID,
       data: {
         id: 'fc_1',
         type: 'function_call',
@@ -666,6 +708,85 @@ void test('callModelWithDependencies fails closed when a Codex function call has
       type: 'error',
       code: 'internal',
       message: 'provider request failed',
+    },
+  ]);
+});
+
+void test('callModelWithDependencies accepts a function-call-only provider batch', async () => {
+  const chunks = [];
+
+  for await (const chunk of callModelWithDependencies(
+    {
+      history: [],
+      systemPrompt: 'system',
+      providerSessionId: 'provider-session',
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime: createProviderAuthRuntimeStore(),
+      providerRequestOptions: defaultProviderRequestOptions,
+    },
+    {
+      getProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      forceRefreshProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'account',
+      }),
+      streamResponsesOverWebSocket: async () => ({
+        itemsToAppend: [
+          {
+            kind: 'backend_item',
+            data: {
+              id: 'fc-1',
+              type: 'function_call',
+              call_id: 'call-1',
+              name: 'read_file',
+              arguments: '{"path":"README.md"}',
+            },
+          },
+        ],
+        functionCalls: [
+          {
+            id: 'fc-1',
+            callId: 'call-1',
+            name: 'read_file',
+            arguments: '{"path":"README.md"}',
+          },
+        ],
+        assistantText: '',
+        finalText: '',
+      }),
+    },
+  )) {
+    chunks.push(chunk);
+  }
+
+  assert.deepEqual(chunks, [
+    {
+      type: 'tool_call',
+      id: 'fc-1',
+      callId: 'call-1',
+      toolName: 'read_file',
+      argumentsJson: '{"path":"README.md"}',
+    },
+    {
+      type: 'done',
+      assistantText: '',
+      finalText: '',
+      itemsToAppend: [
+        {
+          kind: 'backend_item',
+          providerReplayScopeId: CODEX_TEST_REPLAY_SCOPE_ID,
+          data: {
+            id: 'fc-1',
+            type: 'function_call',
+            call_id: 'call-1',
+            name: 'read_file',
+            arguments: '{"path":"README.md"}',
+          },
+        },
+      ],
     },
   ]);
 });
@@ -889,7 +1010,7 @@ void test('callModelWithDependencies logs provider failures with redacted conver
           accountId: 'account',
         }),
         streamResponsesOverWebSocket: async () => {
-          throw new Error('Provider request timed out');
+          throw new Error('private-provider-marker request timed out');
         },
       },
     )) {
@@ -920,9 +1041,54 @@ void test('callModelWithDependencies logs provider failures with redacted conver
     'llm_connect_timeout',
   );
   assert.equal(
-    (warns[0]?.[1] as { cause?: unknown })?.cause,
-    'Provider request timed out',
+    Object.hasOwn((warns[0]?.[1] as object | undefined) ?? {}, 'cause'),
+    false,
   );
+  assert.doesNotMatch(JSON.stringify(warns), /private-provider-marker/u);
+});
+
+void test('callModelWithDependencies surfaces replay-scope mismatch as a clean auth error chunk', async () => {
+  let streamCalls = 0;
+  const chunks = [];
+
+  for await (const chunk of callModelWithDependencies(
+    {
+      history: [{ kind: 'user', text: 'continue' }],
+      systemPrompt: 'system',
+      providerSessionId: 'provider-session',
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime: createProviderAuthRuntimeStore(),
+      providerRequestOptions: defaultProviderRequestOptions,
+      providerReplayScopeId: `sha256:${'f'.repeat(
+        64,
+      )}` as ProviderReplayScopeId,
+    },
+    {
+      getProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'current-account',
+      }),
+      forceRefreshProviderAuth: async () => ({
+        accessToken: 'token',
+        accountId: 'current-account',
+      }),
+      streamResponsesOverWebSocket: async () => {
+        streamCalls += 1;
+        throw new Error('must not reach the provider transport');
+      },
+    },
+  )) {
+    chunks.push(chunk);
+  }
+
+  assert.deepEqual(chunks, [
+    {
+      type: 'error',
+      code: 'llm_auth_failed',
+      message: 'provider authentication failed',
+    },
+  ]);
+  assert.equal(streamCalls, 0);
 });
 
 void test('callModelWithDependencies logs redacted provider cache telemetry when usage is present', async () => {
@@ -1502,6 +1668,14 @@ void test('compactOpenAiHistory retries OAuth once and preserves the opaque repl
       content: [{ type: 'output_text', text: 'replacement' }],
     },
   ]);
+  assert.equal(
+    result.providerReplayScopeId,
+    createProviderReplayScopeId({
+      providerId: 'openai_codex_direct',
+      accountId: 'account',
+      endpoint: 'https://chatgpt.test/backend-api/codex/responses',
+    }),
+  );
 });
 
 void test('compactOpenAiHistory accepts the live OAuth compaction_summary window without pruning retained items', async () => {
@@ -1559,6 +1733,14 @@ void test('compactOpenAiHistory accepts the live OAuth compaction_summary window
       encrypted_content: 'opaque-checkpoint',
     },
   ]);
+  assert.equal(
+    result.providerReplayScopeId,
+    createProviderReplayScopeId({
+      providerId: 'openai_codex_direct',
+      accountId: 'account',
+      endpoint: resolveCodexResponsesUrl(),
+    }),
+  );
 });
 
 void test('resolveGrokNativeCompactionPolicy derives the approved Grok Build threshold from the live model descriptor', async () => {
@@ -1659,13 +1841,13 @@ void test('compactGrokHistory retries OAuth once and preserves the xAI opaque ou
         );
         return {
           accessToken: forceRefreshCalls > 0 ? 'fresh-token' : 'token',
-          accountId: '',
+          accountId: 'grok-account',
         };
       },
       forceRefreshProviderAuth: async (options) => {
         assert.equal(options.providerId, 'grok_oauth');
         forceRefreshCalls += 1;
-        return { accessToken: 'fresh-token', accountId: '' };
+        return { accessToken: 'fresh-token', accountId: 'grok-account' };
       },
       fetchImpl: async (request, init) => {
         requestCalls += 1;
@@ -1722,4 +1904,12 @@ void test('compactGrokHistory retries OAuth once and preserves the xAI opaque ou
       encrypted_content: 'new-opaque-checkpoint',
     },
   ]);
+  assert.equal(
+    result.providerReplayScopeId,
+    createProviderReplayScopeId({
+      providerId: 'grok_oauth',
+      accountId: 'grok-account',
+      endpoint: 'https://api.x.ai/v1',
+    }),
+  );
 });

@@ -13,6 +13,8 @@ import {
   type ProviderNativeCompactionEntryData,
   type SummaryCompactionEntryData,
 } from '../contract.js';
+import type { ProviderReplayScopeId } from '../../runtime-contracts.js';
+import { ProviderReplayScopeMismatchError } from '../../llm/provider/provider-replay-scope.js';
 
 import type { HistoryItem, HistoryUserAttachment } from '../../llm/index.js';
 import { tryParseJsonRecord } from '../../runtime-json.js';
@@ -243,6 +245,7 @@ export function buildCompactionAwareHistory(
   artifactVersionsByRef: ReadonlyMap<string, ThreadArtifactVersion> = new Map(),
   attachmentsById: ReadonlyMap<string, HistoryUserAttachment> = new Map(),
   activeHistoryOverride?: readonly HistoryItem[],
+  providerReplayScopeId?: ProviderReplayScopeId,
 ): HistoryItem[] {
   const active = getActiveTranscriptEntries(entries, threadId);
   const history =
@@ -255,11 +258,20 @@ export function buildCompactionAwareHistory(
       : [...activeHistoryOverride];
 
   if (active.previousProviderNativeCompaction !== undefined) {
+    const compactionReplayScopeId =
+      active.previousProviderNativeCompaction.replayScopeId ?? null;
+    if (
+      providerReplayScopeId !== undefined &&
+      compactionReplayScopeId !== providerReplayScopeId
+    ) {
+      throw new ProviderReplayScopeMismatchError();
+    }
     return [
       {
         kind: 'provider_native_compaction',
         providerId: active.previousProviderNativeCompaction.providerId,
         model: active.previousProviderNativeCompaction.model,
+        providerReplayScopeId: compactionReplayScopeId,
         output: active.previousProviderNativeCompaction.output,
       },
       ...history,

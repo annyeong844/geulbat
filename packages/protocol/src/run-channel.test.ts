@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  isRunChannelClientMessage,
+  isRunAuthMessage,
+  isRunCancelMessage,
   isRunChannelServerMessage,
   isRunEventAckEnvelope,
   isRunInterjectEnvelope,
   isRunInterjectFlushEnvelope,
+  isRunToolEnvelope,
   type RunControlMessage,
 } from './run-channel.js';
 
@@ -24,6 +26,47 @@ void test('isRunInterjectEnvelope accepts a well-formed envelope without inspect
       type: 'run.interject',
       requestId: 'req-1',
       request: {},
+      traceId: 'future-diagnostic-field',
+    }),
+    true,
+  );
+});
+
+void test('client authorization and mutation requests reject unknown intent fields', () => {
+  assert.equal(
+    isRunAuthMessage({
+      type: 'run.auth',
+      requestId: 'auth-1',
+      token: 'token',
+    }),
+    true,
+  );
+  assert.equal(
+    isRunAuthMessage({
+      type: 'run.auth',
+      requestId: 'auth-1',
+      token: 'token',
+      audience: 'future-daemon',
+    }),
+    false,
+  );
+  assert.equal(
+    isRunCancelMessage({
+      type: 'run.cancel',
+      requestId: 'cancel-1',
+      request: { runId: 'run-1', force: true },
+    }),
+    false,
+  );
+});
+
+void test('opaque client envelopes remain additive before full request decoding', () => {
+  assert.equal(
+    isRunToolEnvelope({
+      type: 'run.tool',
+      requestId: 'tool-1',
+      request: {},
+      traceId: 'future-diagnostic-field',
     }),
     true,
   );
@@ -43,17 +86,6 @@ void test('isRunInterjectEnvelope rejects missing requestId or non-record reques
     false,
   );
   assert.equal(isRunInterjectEnvelope({ type: 'run.start' }), false);
-});
-
-void test('isRunChannelClientMessage accepts a run.interject envelope', () => {
-  assert.equal(
-    isRunChannelClientMessage({
-      type: 'run.interject',
-      requestId: 'req-1',
-      request: { runId: 'run_1', text: 'hi' },
-    }),
-    true,
-  );
 });
 
 void test('run.control interject ack requires integer receivedSeq and bufferDepth', () => {
@@ -173,7 +205,6 @@ void test('run event acknowledgement requires exact run, thread, and cursor iden
   };
 
   assert.equal(isRunEventAckEnvelope(message), true);
-  assert.equal(isRunChannelClientMessage(message), true);
   assert.equal(
     isRunEventAckEnvelope({
       ...message,
@@ -185,6 +216,13 @@ void test('run event acknowledgement requires exact run, thread, and cursor iden
     isRunEventAckEnvelope({
       ...message,
       request: { ...message.request, threadId: '../thread' },
+    }),
+    false,
+  );
+  assert.equal(
+    isRunEventAckEnvelope({
+      ...message,
+      request: { ...message.request, futureCursor: 2 },
     }),
     false,
   );
@@ -238,6 +276,73 @@ void test('run.control rejects undeclared actions', () => {
       ok: true,
     }),
     false,
+  );
+});
+
+void test('run.tool failures use the owned daemon and frame-bridge error-code set', () => {
+  const base = {
+    type: 'run.control',
+    requestId: 'tool-1',
+    action: 'run.tool',
+    ok: true,
+  };
+
+  assert.equal(
+    isRunChannelServerMessage({
+      ...base,
+      result: {
+        ok: false,
+        errorCode: 'unavailable',
+        error: 'tool bridge unavailable',
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isRunChannelServerMessage({
+      ...base,
+      result: {
+        ok: false,
+        errorCode: 'approval_required',
+        error: 'approval required',
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isRunChannelServerMessage({
+      ...base,
+      result: {
+        ok: false,
+        errorCode: 'future_tool_failure',
+        error: 'unknown failure',
+      },
+    }),
+    false,
+  );
+});
+
+void test('server projections accept additive informational fields', () => {
+  assert.equal(
+    isRunChannelServerMessage({
+      type: 'run.control',
+      requestId: 'cancel-1',
+      action: 'run.cancel',
+      ok: true,
+      diagnosticTraceId: 'trace-1',
+    }),
+    true,
+  );
+  assert.equal(
+    isRunChannelServerMessage({
+      type: 'run.error',
+      requestId: 'error-1',
+      code: 'internal',
+      message: 'boom',
+      status: 500,
+      retryable: false,
+    }),
+    true,
   );
 });
 
@@ -300,17 +405,6 @@ void test('isRunInterjectFlushEnvelope accepts a well-formed envelope and reject
     false,
   );
   assert.equal(isRunInterjectFlushEnvelope({ type: 'run.interject' }), false);
-});
-
-void test('isRunChannelClientMessage accepts a run.interject.flush envelope', () => {
-  assert.equal(
-    isRunChannelClientMessage({
-      type: 'run.interject.flush',
-      requestId: 'req-1',
-      request: { runId: 'run_1' },
-    }),
-    true,
-  );
 });
 
 void test('run.control interject flush ack requires a boolean flushed field', () => {

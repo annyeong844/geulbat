@@ -80,7 +80,7 @@ export function createScriptedProviderCallModel(
       // Grok routes through its own transport; without this stub a
       // grok-selected round would hit the real websocket endpoint.
       streamGrokOAuthResponses: (_grokInput, options) =>
-        replayFixtureEvents(options.onAssistantDelta, 'normalized'),
+        replayFixtureEvents(options.onAssistantDelta, 'provider_output'),
     });
   };
 }
@@ -130,16 +130,27 @@ export function providerToolRound(args: {
   argumentsJson?: string;
   commentaryText?: string;
   messageId?: string;
+  reasoningId?: string;
   functionCallId?: string;
   callId?: string;
 }): ProviderRoundFixture {
   const messageId = args.messageId ?? 'msg_1';
   const functionCallId = args.functionCallId ?? 'fc-1';
+  const reasoningId = args.reasoningId ?? `rs-${functionCallId}`;
   const callId = args.callId ?? 'call-1';
   const commentaryText = args.commentaryText ?? 'thinking...';
 
   return {
     events: [
+      {
+        type: 'response.output_item.done',
+        item: {
+          id: reasoningId,
+          type: 'reasoning',
+          summary: [],
+          encrypted_content: `opaque-${reasoningId}`,
+        },
+      },
       {
         type: 'response.output_item.added',
         item: { id: messageId, type: 'message', phase: 'commentary' },

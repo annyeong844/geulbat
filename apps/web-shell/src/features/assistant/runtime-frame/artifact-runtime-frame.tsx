@@ -34,6 +34,8 @@ export function ArtifactRuntimeFrame(props: {
   sourceRef: ResolvedArtifactSourceRef;
   readyTimeoutMs?: number;
   variant?: ArtifactRuntimeFrameVariant;
+  initialFrameHeight?: number;
+  onFrameHeightChange?: (height: number) => void;
   onGeneratedTextExportSnapshotChange?: (
     snapshot: GeneratedTextExportSnapshot | null,
   ) => void;
@@ -59,6 +61,8 @@ export function ArtifactRuntimeFrame(props: {
     sourceRef,
     readyTimeoutMs = ARTIFACT_RUNTIME_READY_TIMEOUT_MS,
     variant = 'card',
+    initialFrameHeight,
+    onFrameHeightChange,
     onGeneratedTextExportSnapshotChange,
     onGeneratedBinaryExportSnapshotChange,
     onAgentPromptRequest,
@@ -79,6 +83,8 @@ export function ArtifactRuntimeFrame(props: {
       runtimePayload,
       readyTimeoutMs,
       minFrameHeight,
+      ...(initialFrameHeight !== undefined ? { initialFrameHeight } : {}),
+      ...(onFrameHeightChange !== undefined ? { onFrameHeightChange } : {}),
       ...(onGeneratedTextExportSnapshotChange !== undefined
         ? { onGeneratedTextExportSnapshotChange }
         : {}),

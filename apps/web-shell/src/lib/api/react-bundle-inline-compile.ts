@@ -4,7 +4,7 @@ import {
   type ReactBundleInlineCompileResponse,
   type ReactBundleInlineSourceInput,
 } from '@geulbat/protocol/react-bundle-inline-compile';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../error-message.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 
 import { apiFetch, isApiOkResponse } from './client.js';

@@ -170,6 +170,7 @@ export function buildPtcPackageInstallCommand(
       '--ignore-scripts',
       '--no-audit',
       '--no-fund',
+      '--no-update-notifier',
       `--cache '${PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT}/npm'`,
       `--userconfig '${prefix}/.empty-npmrc'`,
       `--globalconfig '${prefix}/.empty-global-npmrc'`,
@@ -226,7 +227,7 @@ export async function runPtcExecuteCodePackageInstall(
     return validated;
   }
 
-  const now = args.now ?? Date.now;
+  const now = args.now ?? (() => performance.now());
   const start = now();
   const runner =
     args.commandRunner === undefined

@@ -65,6 +65,12 @@ void test('classifyStreamError maps existing provider codes into stream categori
     classifyStreamError(new Error('Model context length exceeded')),
     'llm_context_overflow',
   );
+  assert.equal(
+    classifyStreamError(
+      new Error('The model is currently at capacity due to high demand.'),
+    ),
+    'llm_overloaded',
+  );
 });
 
 void test('classifyStreamError distinguishes user aborts and provider refusals', () => {

@@ -94,6 +94,36 @@ void test('isApprovalRequired accepts optional PTC callback source payloads', ()
   );
 });
 
+void test('approval decisions are exact while server projections remain additive', () => {
+  const decision = {
+    callId: 'call-1',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+    approved: true,
+    grantScope: 'once',
+  } as const;
+  assert.equal(isApprovalRequest(decision), true);
+  assert.equal(
+    isApprovalRequest({ ...decision, futureGrantSelector: 'workspace' }),
+    false,
+  );
+
+  assert.equal(
+    isApprovalRequired({
+      callId: 'call-1',
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      toolName: 'write_file',
+      approvalClass: 'write_file',
+      permissionMode: 'basic',
+      argumentsPreview: { path: 'draft.md' },
+      sideEffectLevel: 'write',
+      explanatoryHint: 'future informational field',
+    }),
+    true,
+  );
+});
+
 void test('approvalClass uses a centralized normalized token guard', () => {
   assert.equal(isApprovalClass('write_file'), true);
   assert.equal(

@@ -7,6 +7,7 @@ import {
 } from './daemon-server-lifecycle.js';
 import { initProviderAuth } from './daemon/auth/init.js';
 import { attachPublicWebFixtureWebSocketServer } from './adapter/web/ws/public-web-fixtures.js';
+import { readPublicWebConformanceFixturesEnabled } from './adapter/web/public-web-conformance.js';
 import { attachRunChannelServer } from './adapter/web/ws/run-channel.js';
 import { getConfiguredDevToken } from './adapter/web/auth/token.js';
 import { createDaemonContext } from './daemon/context.js';
@@ -30,6 +31,11 @@ async function main() {
   logBootPhase('start');
   getConfiguredDevToken();
   logBootPhase('auth-token');
+  const enablePublicWebConformanceFixtures =
+    readPublicWebConformanceFixturesEnabled(process.env);
+  if (enablePublicWebConformanceFixtures) {
+    logger.info('public web conformance fixtures enabled');
+  }
   const daemonContext = createDaemonContext();
   logBootPhase('context');
   const daemonRuntime = createDaemonRuntimeOwner({
@@ -39,10 +45,18 @@ async function main() {
         acquireDaemonInstanceAdmissionLock(lockArgs),
       initProviderAuth: () =>
         initProviderAuth({ runtimeStore: daemonContext.providerAuthRuntime }),
-      createApp: async () => (await createDaemon({ daemonContext })).app,
+      createApp: async () =>
+        (
+          await createDaemon({
+            daemonContext,
+            enablePublicWebConformanceFixtures,
+          })
+        ).app,
       createHttpServer: (app) => http.createServer(app),
       attachWebSockets: ({ server, runtimeContext }) => [
-        attachPublicWebFixtureWebSocketServer(server),
+        ...(enablePublicWebConformanceFixtures
+          ? [attachPublicWebFixtureWebSocketServer(server)]
+          : []),
         attachRunChannelServer(server, { runtimeContext }),
       ],
       bindProviderAuthCallback: (server) => {

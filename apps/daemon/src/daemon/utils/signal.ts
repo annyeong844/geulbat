@@ -1,4 +1,4 @@
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from './error.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 
 export interface Signal<Args extends unknown[]> {

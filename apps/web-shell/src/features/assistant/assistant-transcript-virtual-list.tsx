@@ -1,7 +1,15 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
+  defaultRangeExtractor,
   elementScroll,
   useVirtualizer,
+  type Range,
   type Virtualizer,
 } from '@tanstack/react-virtual';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
@@ -15,6 +23,7 @@ import {
   type WidgetToolRequestHandler,
 } from './assistant-transcript-entry-blocks.js';
 import { TranscriptMessage } from './assistant-transcript-message.js';
+import { prepareAssistantMessageContent } from './assistant-message-content.js';
 import {
   buildLiveToolTimelineItems,
   buildSettledToolTimelineItems,
@@ -105,6 +114,84 @@ interface ParsedToolMessage {
 }
 
 const INITIAL_VIEWPORT_RECT = { width: 400, height: 800 };
+const TRANSCRIPT_ROW_OVERSCAN = 3;
+const TRANSCRIPT_ROW_ESTIMATE = 120;
+
+function useTranscriptScrollFrameActivity(
+  scrollElementRef: React.RefObject<HTMLDivElement | null>,
+) {
+  const [isActive, setIsActive] = useState(false);
+  const isActiveRef = useRef(false);
+
+  useEffect(() => {
+    const scrollElement = scrollElementRef.current;
+    if (scrollElement === null) {
+      return;
+    }
+    const view = scrollElement.ownerDocument.defaultView;
+    if (view === null) {
+      return;
+    }
+    const observedScrollElement: HTMLDivElement = scrollElement;
+    const observedView: Window = view;
+
+    let animationFrameId: number | null = null;
+    let activityRevision = 0;
+    let checkedRevision = -1;
+    let checkedScrollTop = Number.NaN;
+
+    function scheduleStabilityCheck() {
+      if (animationFrameId !== null) {
+        return;
+      }
+      animationFrameId = observedView.requestAnimationFrame(checkStability);
+    }
+    function checkStability() {
+      animationFrameId = null;
+      const scrollTop = observedScrollElement.scrollTop;
+      if (
+        checkedRevision === activityRevision &&
+        checkedScrollTop === scrollTop
+      ) {
+        if (isActiveRef.current) {
+          isActiveRef.current = false;
+          setIsActive(false);
+        }
+        return;
+      }
+      checkedRevision = activityRevision;
+      checkedScrollTop = scrollTop;
+      scheduleStabilityCheck();
+    }
+    function markActive() {
+      activityRevision += 1;
+      if (!isActiveRef.current) {
+        isActiveRef.current = true;
+        setIsActive(true);
+      }
+      scheduleStabilityCheck();
+    }
+
+    observedScrollElement.addEventListener('wheel', markActive, {
+      capture: true,
+      passive: true,
+    });
+    observedScrollElement.addEventListener('scroll', markActive, {
+      passive: true,
+    });
+    return () => {
+      observedScrollElement.removeEventListener('wheel', markActive, {
+        capture: true,
+      });
+      observedScrollElement.removeEventListener('scroll', markActive);
+      if (animationFrameId !== null) {
+        observedView.cancelAnimationFrame(animationFrameId);
+      }
+    };
+  }, [scrollElementRef]);
+
+  return isActive;
+}
 
 export const VirtualizedTranscriptRows = React.memo(
   function VirtualizedTranscriptRows({
@@ -143,6 +230,59 @@ export const VirtualizedTranscriptRows = React.memo(
       () => [...settledRows, ...liveRows],
       [liveRows, settledRows],
     );
+    const rowIndexesByKey = useMemo(
+      () => new Map(rows.map((row, index) => [row.key, index])),
+      [rows],
+    );
+    // iframe-backed visualize rows are expensive to destroy and recreate.
+    // Keep a row that has entered the virtual range connected until the
+    // current scroll gesture settles; then release anything outside the
+    // ordinary overscan range. This is gesture-scoped retention, not a
+    // growing keep-alive cache.
+    const retainedVisualizeRowKeysRef = useRef(new Set<string>());
+    const isScrollFrameActive =
+      useTranscriptScrollFrameActivity(scrollElementRef);
+    useEffect(() => {
+      if (!isScrollFrameActive) {
+        retainedVisualizeRowKeysRef.current.clear();
+      }
+    }, [isScrollFrameActive]);
+    useEffect(() => {
+      const requestIdleCallback = globalThis.requestIdleCallback;
+      const cancelIdleCallback = globalThis.cancelIdleCallback;
+      if (
+        typeof requestIdleCallback !== 'function' ||
+        typeof cancelIdleCallback !== 'function'
+      ) {
+        return;
+      }
+      let messageIndex = messages.length - 1;
+      let idleCallbackId: number | null = null;
+      let cancelled = false;
+      const prepareNextMessages = (deadline: IdleDeadline) => {
+        while (
+          !cancelled &&
+          messageIndex >= 0 &&
+          deadline.timeRemaining() > 0
+        ) {
+          const message = messages[messageIndex];
+          messageIndex -= 1;
+          if (message?.role === 'assistant') {
+            prepareAssistantMessageContent(message, message.content);
+          }
+        }
+        if (!cancelled && messageIndex >= 0) {
+          idleCallbackId = requestIdleCallback(prepareNextMessages);
+        }
+      };
+      idleCallbackId = requestIdleCallback(prepareNextMessages);
+      return () => {
+        cancelled = true;
+        if (idleCallbackId !== null) {
+          cancelIdleCallback(idleCallbackId);
+        }
+      };
+    }, [messages]);
     const lastAssistantIndex = findLastRoleIndex(messages, 'assistant');
     const lastUserIndex = findLastRoleIndex(messages, 'user');
     const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
@@ -178,37 +318,77 @@ export const VirtualizedTranscriptRows = React.memo(
       getScrollElement: () => scrollElementRef.current,
       estimateSize: (index) => estimateTranscriptRowSize(rows[index]),
       getItemKey: (index) => rows[index]?.key ?? index,
+      rangeExtractor: (range: Range) => {
+        const indexes = new Set(defaultRangeExtractor(range));
+        if (!isScrollFrameActive) {
+          return [...indexes];
+        }
+        for (const key of retainedVisualizeRowKeysRef.current) {
+          const index = rowIndexesByKey.get(key);
+          if (index !== undefined) {
+            indexes.add(index);
+          }
+        }
+        return [...indexes].sort((left, right) => left - right);
+      },
+      overscan: TRANSCRIPT_ROW_OVERSCAN,
       anchorTo: 'end',
       followOnAppend: true,
       scrollToFn: scrollVirtualizer,
+      onChange: (instance, sync) => {
+        const range = instance.range;
+        if ((instance.isScrolling || isScrollFrameActive) && range !== null) {
+          for (const index of defaultRangeExtractor({
+            ...range,
+            overscan: TRANSCRIPT_ROW_OVERSCAN,
+            count: rows.length,
+          })) {
+            const row = rows[index];
+            if (row !== undefined && isVisualizeWidgetRow(row)) {
+              retainedVisualizeRowKeysRef.current.add(row.key);
+            }
+          }
+        }
+        if (!sync) {
+          onVirtualizerUpdate();
+        }
+      },
       initialRect: INITIAL_VIEWPORT_RECT,
       useFlushSync: false,
-      useAnimationFrameWithResizeObserver: true,
+      directDomUpdates: true,
+      directDomUpdatesMode: 'position',
     });
     return (
-      <div
-        className="transcript-virtual-list"
-        style={{ height: virtualizer.getTotalSize() }}
-      >
+      <div ref={virtualizer.containerRef} className="transcript-virtual-list">
         {virtualizer.getVirtualItems().map((virtualRow) => {
           const row = rows[virtualRow.index];
           if (row === undefined) {
             return null;
           }
+          const visibleRange = virtualizer.range;
+          const isOutsideVisibleRange =
+            visibleRange === null ||
+            virtualRow.index < visibleRange.startIndex ||
+            virtualRow.index > visibleRange.endIndex;
+          // direct DOM의 position 모드는 transform stacking context를 만들지
+          // 않아 position:fixed 아티팩트 오버레이의 viewport 기준을 보존한다.
           return (
             <div
               key={virtualRow.key}
               ref={virtualizer.measureElement}
               data-index={virtualRow.index}
               className="transcript-virtual-row"
-              // transform은 position:fixed 자손(아티팩트 확대 오버레이)의
-              // 기준을 행으로 가둔다 — top 배치로 뷰포트 기준을 보존한다
-              style={{ top: virtualRow.start }}
             >
               <TranscriptVirtualRowContent
                 row={row}
                 artifactsByRef={artifactsByRef}
                 isRunning={isRunning}
+                deferVisualizeRuntimeBoot={
+                  isVisualizeWidgetRow(row) &&
+                  (virtualizer.isScrolling ||
+                    isScrollFrameActive ||
+                    isOutsideVisibleRange)
+                }
                 lastAssistantIndex={lastAssistantIndex}
                 lastUserIndex={lastUserIndex}
                 onStartArtifactRun={onStartArtifactRun}
@@ -268,6 +448,7 @@ const TranscriptVirtualRowContent = React.memo(
     onAskUserAnswer?: (prompt: string) => Promise<void> | void;
     onWidgetToolRequest?: WidgetToolRequestHandler;
     onOpenArtifact?: (artifact: ThreadArtifactVersion) => void;
+    deferVisualizeRuntimeBoot: boolean;
     expanded: boolean;
     onToggleGroup: (key: string) => void;
   }) {
@@ -288,6 +469,7 @@ const TranscriptVirtualRowContent = React.memo(
       onAskUserAnswer,
       onWidgetToolRequest,
       onOpenArtifact,
+      deferVisualizeRuntimeBoot,
       expanded,
       onToggleGroup,
     } = props;
@@ -323,6 +505,7 @@ const TranscriptVirtualRowContent = React.memo(
           artifactsByRef={artifactsByRef}
           isRunning={isRunning}
           onStartArtifactRun={onStartArtifactRun}
+          deferVisualizeRuntimeBoot={deferVisualizeRuntimeBoot}
           {...(attachmentImageUrl !== undefined ? { attachmentImageUrl } : {})}
           {...(Object.keys(actions).length > 0 ? { actions } : {})}
           {...(onWidgetPrompt !== undefined ? { onWidgetPrompt } : {})}
@@ -339,6 +522,7 @@ const TranscriptVirtualRowContent = React.memo(
       return (
         <RunTranscriptEntryBlock
           entry={row.entry}
+          deferVisualizeRuntimeBoot={deferVisualizeRuntimeBoot}
           {...(onOpenChildSession !== undefined ? { onOpenChildSession } : {})}
           {...(onWidgetPrompt !== undefined ? { onWidgetPrompt } : {})}
           {...(onAskUserAnswer !== undefined ? { onAskUserAnswer } : {})}
@@ -652,6 +836,17 @@ function isVisualizeWidgetEntry(entry: RunTranscriptEntry): boolean {
   );
 }
 
+function isVisualizeWidgetRow(row: TranscriptVirtualRow | undefined): boolean {
+  if (row?.kind === 'message') {
+    return (
+      row.message.role === 'tool_call' &&
+      readCanonicalJsonStringField(row.message.content, 'tool') ===
+        VISUALIZE_TOOL_NAME
+    );
+  }
+  return row?.kind === 'entry' && isVisualizeWidgetEntry(row.entry);
+}
+
 function isSpawnedSubagentEntry(
   entry: RunTranscriptEntry,
 ): entry is SubagentSpawnEntry {
@@ -710,5 +905,5 @@ function estimateTranscriptRowSize(
   ) {
     return 44;
   }
-  return 120;
+  return TRANSCRIPT_ROW_ESTIMATE;
 }

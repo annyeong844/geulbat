@@ -1,4 +1,8 @@
-import type { ThreadMessageMetadata } from './contract.js';
+import {
+  assertAgentRunId,
+  type RunId,
+  type ThreadMessageMetadata,
+} from './contract.js';
 
 import { appendTranscriptEntry } from '../sessions/transcript-log.js';
 
@@ -26,18 +30,19 @@ export async function appendChildAssistantTranscriptEntry(args: {
   content: string;
   timestamp?: string;
 }): Promise<void> {
+  const childRunId = assertAgentRunId(args.childRunId);
   await appendTranscriptEntry(args.workspaceRoot, args.threadId, {
     role: 'assistant',
     content: args.content,
     metadata: buildChildAssistantMetadata({
-      childRunId: args.childRunId,
+      childRunId,
     }),
     timestamp: args.timestamp ?? new Date().toISOString(),
   });
 }
 
 function buildChildAssistantMetadata(args: {
-  childRunId: string;
+  childRunId: RunId;
 }): ThreadMessageMetadata {
   return {
     phase: 'final_answer',

@@ -44,6 +44,7 @@ export interface RunModelRoundArgs {
   providerWebSocketSessions: CallModelInput['providerWebSocketSessions'];
   providerAuthRuntime: CallModelInput['providerAuthRuntime'];
   providerRequestOptions: CallModelInput['providerRequestOptions'];
+  providerReplayScopeId?: CallModelInput['providerReplayScopeId'];
   signal?: AbortSignal;
   emit: AgentEventEmitter;
   callModelImpl?: CallModelFn;
@@ -83,6 +84,7 @@ export async function runModelRound(
     providerWebSocketSessions,
     providerAuthRuntime,
     providerRequestOptions,
+    providerReplayScopeId,
     signal,
     emit,
     callModelImpl,
@@ -100,6 +102,7 @@ export async function runModelRound(
       providerWebSocketSessions,
       providerAuthRuntime,
       providerRequestOptions,
+      ...(providerReplayScopeId === undefined ? {} : { providerReplayScopeId }),
     };
     if (signal !== undefined) {
       input.signal = signal;

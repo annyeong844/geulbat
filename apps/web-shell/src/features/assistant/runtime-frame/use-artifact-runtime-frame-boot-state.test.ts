@@ -7,7 +7,10 @@ import {
   useArtifactRuntimeFrameBootState,
   type ArtifactRuntimeBootState,
 } from './use-artifact-runtime-frame-boot-state.js';
-import { MIN_ARTIFACT_RUNTIME_FRAME_HEIGHT } from './artifact-runtime-frame-messages.js';
+import {
+  MIN_ARTIFACT_RUNTIME_FRAME_HEIGHT,
+  MIN_INLINE_ARTIFACT_RUNTIME_FRAME_HEIGHT,
+} from './artifact-runtime-frame-messages.js';
 
 (
   globalThis as typeof globalThis & {
@@ -164,4 +167,38 @@ void test('useArtifactRuntimeFrameBootState resets height, boot state, and gener
 
   assert.deepEqual(textSnapshots, [null, null, null, null]);
   assert.deepEqual(binarySnapshots, [null, null, null, null]);
+});
+
+void test('useArtifactRuntimeFrameBootState uses a cached seed but follows current content height', async () => {
+  const initialFrameHeight = 424;
+  const smallerFrameHeight = 240;
+  const largerFrameHeight = 640;
+  const harness = await createBootStateHarness({
+    minFrameHeight: MIN_INLINE_ARTIFACT_RUNTIME_FRAME_HEIGHT,
+    initialFrameHeight,
+  });
+
+  try {
+    assert.equal(harness.latest().frameHeight, initialFrameHeight);
+
+    await act(async () => {
+      harness.latest().setFrameHeight(smallerFrameHeight);
+      await Promise.resolve();
+    });
+
+    assert.equal(harness.latest().frameHeight, smallerFrameHeight);
+
+    await act(async () => {
+      harness.latest().setFrameHeight(largerFrameHeight);
+      await Promise.resolve();
+    });
+
+    assert.equal(harness.latest().frameHeight, largerFrameHeight);
+
+    await harness.update({ runtimeFrameRevision: 'rev-2' });
+
+    assert.equal(harness.latest().frameHeight, initialFrameHeight);
+  } finally {
+    harness.unmount();
+  }
 });

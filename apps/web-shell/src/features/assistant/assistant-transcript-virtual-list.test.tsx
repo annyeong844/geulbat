@@ -219,11 +219,102 @@ void test('long transcripts mount only the viewport rows', async () => {
     className: 'transcript-virtual-row',
   });
   assert.ok(mountedRows.length > 0);
+  assert.ok(
+    mountedRows.length >= 10,
+    'the viewport keeps enough neighboring rows mounted to absorb the next scroll',
+  );
   assert.ok(mountedRows.length < messages.length);
 
   await act(async () => {
     renderer.unmount();
   });
+});
+
+void test('idle preparation starts with the newest assistant row', async () => {
+  const idleCallbacks: IdleRequestCallback[] = [];
+  const contentReads: string[] = [];
+  const requestIdleCallbackDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'requestIdleCallback',
+  );
+  const cancelIdleCallbackDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'cancelIdleCallback',
+  );
+  Object.defineProperty(globalThis, 'requestIdleCallback', {
+    configurable: true,
+    value: (callback: IdleRequestCallback) => {
+      idleCallbacks.push(callback);
+      return idleCallbacks.length;
+    },
+  });
+  Object.defineProperty(globalThis, 'cancelIdleCallback', {
+    configurable: true,
+    value: () => {},
+  });
+  const messages: ThreadMessage[] = ['oldest', 'middle', 'newest'].map(
+    (entryId, index) => ({
+      entryId,
+      role: 'assistant',
+      get content() {
+        contentReads.push(entryId);
+        return `message ${entryId}`;
+      },
+      timestamp: new Date(index).toISOString(),
+    }),
+  );
+  let renderer: ReactTestRenderer | undefined;
+
+  try {
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <VirtualizedTranscriptRows
+          scrollElementRef={React.createRef<HTMLDivElement>()}
+          onVirtualizerUpdate={() => {}}
+          messages={messages}
+          messageKeys={messages.map((message) => message.entryId)}
+          transcriptEntries={[]}
+          transcriptEntryKeys={[]}
+          artifactsByRef={new Map()}
+          isRunning={false}
+          onStartArtifactRun={() => {}}
+        />,
+      );
+    });
+    contentReads.length = 0;
+    const prepareNextMessages = idleCallbacks.shift();
+    assert.ok(prepareNextMessages);
+    let timeRemainingCalls = 0;
+
+    prepareNextMessages({
+      didTimeout: false,
+      timeRemaining: () => (timeRemainingCalls++ === 0 ? 1 : 0),
+    });
+
+    assert.deepEqual(contentReads, ['newest']);
+  } finally {
+    await act(async () => {
+      renderer?.unmount();
+    });
+    if (requestIdleCallbackDescriptor === undefined) {
+      Reflect.deleteProperty(globalThis, 'requestIdleCallback');
+    } else {
+      Object.defineProperty(
+        globalThis,
+        'requestIdleCallback',
+        requestIdleCallbackDescriptor,
+      );
+    }
+    if (cancelIdleCallbackDescriptor === undefined) {
+      Reflect.deleteProperty(globalThis, 'cancelIdleCallback');
+    } else {
+      Object.defineProperty(
+        globalThis,
+        'cancelIdleCallback',
+        cancelIdleCallbackDescriptor,
+      );
+    }
+  }
 });
 
 void test('past questions edit through the branch path while the last question keeps in-place regenerate', async () => {

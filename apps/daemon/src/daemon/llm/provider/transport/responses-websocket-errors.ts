@@ -3,17 +3,23 @@ import {
   getErrorStringProperty,
 } from '../../../utils/error.js';
 
+function createWebSocketConnectionError(message: string): Error {
+  return Object.assign(new Error(message), {
+    llmCode: 'llm_connection_lost' as const,
+  });
+}
+
 export function extractWebSocketError(event: unknown): Error {
   if (event instanceof Error && event.message) {
-    return event;
+    return createWebSocketConnectionError(event.message);
   }
   if (event && typeof event === 'object' && 'message' in event) {
     const message = (event as { message?: unknown }).message;
     if (typeof message === 'string' && message.length > 0) {
-      return new Error(message);
+      return createWebSocketConnectionError(message);
     }
   }
-  return new Error('WebSocket error');
+  return createWebSocketConnectionError('WebSocket error');
 }
 
 export function extractWebSocketCloseError(event: unknown): Error {
@@ -30,7 +36,9 @@ export function extractWebSocketCloseError(event: unknown): Error {
         : reason instanceof Uint8Array
           ? ` ${new TextDecoder().decode(reason)}`
           : '';
-    return new Error(`WebSocket closed${codeText}${reasonText}`.trim());
+    return createWebSocketConnectionError(
+      `WebSocket closed${codeText}${reasonText}`.trim(),
+    );
   }
-  return new Error('WebSocket closed');
+  return createWebSocketConnectionError('WebSocket closed');
 }

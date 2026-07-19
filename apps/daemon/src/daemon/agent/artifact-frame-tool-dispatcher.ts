@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../utils/error.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 
 import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
+import type { ErrorCode } from '../error-codes.js';
 import type { FunctionCall } from '../llm/index.js';
 import type { RunContext } from '../run-context.js';
 import { resolveApprovalClass } from '../tools/approval-runtime-policy.js';
@@ -29,7 +30,7 @@ const noopEmit: AgentEventEmitter = () => {};
 // protocol 패키지에 의존하지 않으므로 여기서는 구조 타입으로 둔다.
 export type ArtifactFrameToolCallResult =
   | { ok: true; output: string }
-  | { ok: false; errorCode: string; error: string };
+  | { ok: false; errorCode: ErrorCode; error: string };
 
 // 아티팩트 프레임 발 도구 호출의 경량 standalone dispatch
 // (callback-tool-dispatcher의 형제). 실행 경계는 PTC와 공유하는 게이트

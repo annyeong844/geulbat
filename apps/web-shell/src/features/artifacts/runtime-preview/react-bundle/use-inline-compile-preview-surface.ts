@@ -1,4 +1,4 @@
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../../../../lib/error-message.js';
 import { useEffect, useMemo, useState } from 'react';
 
 import { compileReactBundleInlineSource } from '../../../../lib/api/react-bundle-inline-compile.js';

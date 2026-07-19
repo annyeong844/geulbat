@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   admitPtcExecutionProfile,
   createPtcLabLocalDockerPolicyProjection,
@@ -148,6 +149,28 @@ void test('runPtcLabBatchCommandExecution builds docker exec argv and returns co
   assert.equal(invocations[0]?.timeoutMs, 1000);
   assert.equal(invocations[0]?.maxProcessCount, 1);
   assert.equal(invocations[0]?.maxBufferedBytesPerStream, 4096);
+});
+
+void test('runPtcLabBatchCommandExecution uses a monotonic default clock when the wall clock moves backwards', async (t) => {
+  const { admission, session } = admittedLab({ shellMode: 'batch_command' });
+  let wallClockMs = 10;
+  t.mock.method(Date, 'now', () => {
+    wallClockMs -= 1;
+    return wallClockMs;
+  });
+
+  const result = await runPtcLabBatchCommandExecution({
+    admission,
+    session,
+    request: { command: 'printf hello' },
+    runner: async () => {
+      await delay(5);
+      return { kind: 'exit', exitCode: 0, stdout: 'hello', stderr: '' };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(result.ok && result.value.durationMs > 0);
 });
 
 void test('runPtcLabBatchCommandExecution passes a command beyond the removed 32 KiB policy to the process boundary', async () => {

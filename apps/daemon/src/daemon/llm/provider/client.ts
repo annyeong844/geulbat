@@ -15,8 +15,9 @@ import {
   forceRefreshProviderAuth,
   getProviderAuth,
 } from '../../auth/access.js';
+import type { ProviderReplayScopeId } from '../../runtime-contracts.js';
+import { isRecord } from '../../runtime-json.js';
 import type { ProviderAuthRuntimeStore } from '../../auth/runtime-state.js';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import { mergeAbortSignals } from '../../utils/abort.js';
 import { AsyncQueue } from './async-queue.js';
@@ -42,9 +43,14 @@ import {
   sanitizeProviderErrorMessage,
 } from './provider-error.js';
 import { decideProviderRetryPolicy } from './provider-retry-policy.js';
+import {
+  assertProviderReplayScope,
+  createProviderReplayScopeId,
+} from './provider-replay-scope.js';
 import type { ProviderRequestOptions } from './provider-options.js';
 import { ProviderHistoryItemInvalidError } from './transport/responses-wire-input.js';
 import { streamResponsesOverWebSocket } from './transport/responses-websocket.js';
+import { resolveCodexResponsesUrl } from './transport/responses-websocket-url.js';
 import type { ResponsesWireDiscoverySink } from './transport/responses-websocket.js';
 import type {
   ResponsesWebSocketReusePolicy,
@@ -110,6 +116,7 @@ export interface CallModelInput {
   >;
   providerAuthRuntime: ProviderAuthRuntimeStore;
   providerRequestOptions: ProviderRequestOptions;
+  providerReplayScopeId?: ProviderReplayScopeId;
   oauthWireDiscoverySink?: ResponsesWireDiscoverySink;
   signal?: AbortSignal;
 }
@@ -215,7 +222,6 @@ export async function* callModelWithDependencies(
       } else {
         providerLogger.warn('provider stream failed', {
           code,
-          cause: getErrorMessage(err),
         });
       }
       channel.push({ type: 'error', code, message });
@@ -319,6 +325,12 @@ async function callCodexDirectResponsesOnce(
     runtimeStore: input.providerAuthRuntime,
   });
   const promptCacheProjection = buildCodexDirectPromptCacheProjection(input);
+  const providerReplayScopeId = createProviderReplayScopeId({
+    providerId: 'openai_codex_direct',
+    accountId: auth.accountId,
+    endpoint: resolveCodexResponsesUrl(),
+  });
+  assertProviderReplayScope(providerReplayScopeId, input.providerReplayScopeId);
   const body = buildResponsesRequestBody(input, promptCacheProjection);
   const headers = buildResponsesRequestHeaders({
     accessToken: auth.accessToken,
@@ -330,7 +342,9 @@ async function callCodexDirectResponsesOnce(
   const result = await deps.streamResponsesOverWebSocket({
     body,
     headers,
+    historyProjection: 'provider_output',
     history: input.history,
+    providerReplayScopeId,
     providerSessionId: input.providerSessionId,
     webSocketReusePolicy: CODEX_DIRECT_RESPONSES_WEBSOCKET_REUSE_POLICY,
     providerWebSocketSessions: input.providerWebSocketSessions,
@@ -340,21 +354,13 @@ async function callCodexDirectResponsesOnce(
     ...streamCallbacks,
     ...(input.signal !== undefined ? { signal: input.signal } : {}),
   });
-
-  if (
-    result.itemsToAppend.some((item) => item.kind !== 'backend_item') ||
-    (result.itemsToAppend.length === 0 &&
-      (result.functionCalls.length > 0 ||
-        result.assistantText.length > 0 ||
-        result.finalText.length > 0))
-  ) {
-    throw new ProviderHistoryItemInvalidError();
-  }
+  const itemsToAppend = scopeProviderOutputBatch({
+    ...result,
+    providerReplayScopeId,
+  });
 
   return {
-    ...(result.itemsToAppend.length > 0
-      ? { itemsToAppend: result.itemsToAppend }
-      : {}),
+    ...(itemsToAppend === undefined ? {} : { itemsToAppend }),
     functionCalls: result.functionCalls,
     assistantText: result.assistantText,
     finalText: result.finalText,
@@ -394,6 +400,12 @@ async function callGrokOAuthResponsesOnce(
   const model = resolveGrokOAuthModelDescriptor(
     input.providerRequestOptions.model,
   );
+  const providerReplayScopeId = createProviderReplayScopeId({
+    providerId: 'grok_oauth',
+    accountId: auth.accountId,
+    endpoint: model.baseUrl,
+  });
+  assertProviderReplayScope(providerReplayScopeId, input.providerReplayScopeId);
   const instructions = buildProviderInstructions(input);
   const streamCallbacks = buildProviderStreamCallbacks(channel, options);
   const result = await (
@@ -402,6 +414,7 @@ async function callGrokOAuthResponsesOnce(
     {
       model,
       accessToken: auth.accessToken,
+      providerReplayScopeId,
       providerSessionId: input.providerSessionId,
       history: input.history,
       reasoningEffort: input.providerRequestOptions.reasoning.effort,
@@ -415,8 +428,13 @@ async function callGrokOAuthResponsesOnce(
     },
     streamCallbacks,
   );
+  const itemsToAppend = scopeProviderOutputBatch({
+    ...result,
+    providerReplayScopeId,
+  });
 
   return {
+    ...(itemsToAppend === undefined ? {} : { itemsToAppend }),
     functionCalls: result.functionCalls,
     assistantText: result.assistantText,
     finalText: result.finalText,
@@ -430,6 +448,86 @@ async function callGrokOAuthResponsesOnce(
       ? { providerUsageTelemetry: result.providerUsageTelemetry }
       : {}),
   };
+}
+
+function scopeProviderOutputBatch(args: {
+  itemsToAppend: HistoryItem[];
+  functionCalls: readonly FunctionCall[];
+  assistantText: string;
+  finalText: string;
+  providerReplayScopeId: ProviderReplayScopeId;
+}): HistoryItem[] | undefined {
+  if (
+    args.itemsToAppend.length === 0 &&
+    (args.functionCalls.length > 0 ||
+      args.assistantText.length > 0 ||
+      args.finalText.length > 0)
+  ) {
+    throw new ProviderHistoryItemInvalidError();
+  }
+
+  const scopedItems: HistoryItem[] = [];
+  const rawCalls = new Map<
+    string,
+    { id: string; name: string; arguments: string }
+  >();
+  let hasMessageItem = false;
+  for (const item of args.itemsToAppend) {
+    if (item.kind !== 'backend_item' || !isRecord(item.data)) {
+      throw new ProviderHistoryItemInvalidError();
+    }
+    scopedItems.push({
+      ...item,
+      providerReplayScopeId: args.providerReplayScopeId,
+    });
+
+    if (item.data['type'] === 'reasoning') {
+      continue;
+    }
+    if (item.data['type'] === 'message') {
+      hasMessageItem = true;
+      continue;
+    }
+    if (item.data['type'] !== 'function_call') {
+      continue;
+    }
+
+    const id = item.data['id'];
+    const callId = item.data['call_id'];
+    const name = item.data['name'];
+    const callArguments = item.data['arguments'];
+    if (
+      typeof id !== 'string' ||
+      id.trim() === '' ||
+      typeof callId !== 'string' ||
+      callId.trim() === '' ||
+      typeof name !== 'string' ||
+      name.trim() === '' ||
+      typeof callArguments !== 'string' ||
+      rawCalls.has(callId)
+    ) {
+      throw new ProviderHistoryItemInvalidError();
+    }
+    rawCalls.set(callId, { id, name, arguments: callArguments });
+  }
+
+  if (
+    rawCalls.size !== args.functionCalls.length ||
+    !args.functionCalls.every((call) => {
+      const raw = rawCalls.get(call.callId);
+      return (
+        raw !== undefined &&
+        raw.id === call.id &&
+        raw.name === call.name &&
+        raw.arguments === call.arguments
+      );
+    }) ||
+    ((args.assistantText.length > 0 || args.finalText.length > 0) &&
+      !hasMessageItem)
+  ) {
+    throw new ProviderHistoryItemInvalidError();
+  }
+  return scopedItems.length === 0 ? undefined : scopedItems;
 }
 
 async function callResponsesWithRetryPolicy(

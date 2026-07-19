@@ -1,4 +1,5 @@
 import { isArtifactRef, type ArtifactRef } from './artifacts.js';
+import { isRunId, type RunId } from './ids.js';
 import { isRecord, isString } from './runtime-utils.js';
 
 const THREAD_MESSAGE_PHASES = ['commentary', 'final_answer'] as const;
@@ -35,7 +36,7 @@ interface UserThreadMessageMetadata {
 
 interface CommentaryThreadMessageMetadata {
   phase: 'commentary';
-  sourceRunId?: string;
+  sourceRunId?: RunId;
   sourceFile?: string;
   source?: never;
   hiddenPrompt?: never;
@@ -47,7 +48,7 @@ interface CommentaryThreadMessageMetadata {
 
 export interface FinalAnswerThreadMessageMetadata {
   phase: 'final_answer';
-  sourceRunId?: string;
+  sourceRunId?: RunId;
   sourceFile?: string;
   artifactRefs?: ArtifactRef[];
   activeArtifactRef?: ArtifactRef;
@@ -59,7 +60,7 @@ export interface FinalAnswerThreadMessageMetadata {
 
 interface InterjectThreadMessageMetadata {
   source: 'interject';
-  sourceRunId?: string;
+  sourceRunId?: RunId;
   receivedSeq?: number;
   phase?: never;
   hiddenPrompt?: never;
@@ -121,7 +122,7 @@ export function isThreadMessageMetadata(
       value.sourceRunId === undefined && value.receivedSeq === undefined;
     const hasDurableIdentity =
       isString(value.sourceRunId) &&
-      value.sourceRunId.length > 0 &&
+      isRunId(value.sourceRunId) &&
       typeof value.receivedSeq === 'number' &&
       Number.isSafeInteger(value.receivedSeq) &&
       value.receivedSeq > 0;
@@ -148,7 +149,7 @@ export function isThreadMessageMetadata(
   if (value.phase === 'commentary') {
     return (
       hasOnlyMetadataKeys(value, COMMENTARY_METADATA_KEYS) &&
-      isOptionalString(value.sourceRunId) &&
+      isOptionalRunId(value.sourceRunId) &&
       isOptionalString(value.sourceFile)
     );
   }
@@ -156,7 +157,7 @@ export function isThreadMessageMetadata(
   return (
     value.phase === 'final_answer' &&
     hasOnlyMetadataKeys(value, FINAL_ANSWER_METADATA_KEYS) &&
-    isOptionalString(value.sourceRunId) &&
+    isOptionalRunId(value.sourceRunId) &&
     isOptionalString(value.sourceFile) &&
     isOptionalArtifactRefs(value.artifactRefs) &&
     isOptionalArtifactRef(value.activeArtifactRef)
@@ -180,6 +181,10 @@ function hasOnlyMetadataKeys(
   allowedKeys: readonly string[],
 ): boolean {
   return Object.keys(value).every((key) => allowedKeys.includes(key));
+}
+
+function isOptionalRunId(value: unknown): value is RunId | undefined {
+  return value === undefined || (isString(value) && isRunId(value));
 }
 
 function isOptionalString(value: unknown): value is string | undefined {

@@ -72,6 +72,7 @@ import {
   PTC_EXECUTE_CODE_TRUST_CONTEXT_ID,
   stringifyPtcExecuteCodeWaitSummary,
   type PtcExecuteCodeCellId,
+  type PtcExecuteCodeModuleFormat,
   type PtcExecuteCodeCellTerminalResultStore,
   type PtcExecuteCodePlacementResourceBudget,
   type PtcExecuteCodeRuntimeCellTerminalStatus,
@@ -626,6 +627,9 @@ export function createPtcExecuteCodeRuntime(
       });
       const sdkHelpBundle = buildPtcExecuteCodeSdkHelpBundle({
         callbacksEnabled: callbackRuntime.toolCallbacksEnabled,
+        ...(request.value.moduleFormat === undefined
+          ? {}
+          : { moduleFormat: request.value.moduleFormat }),
         sdkHelp: args.sdkHelp,
         ...(args.sdkProjection === undefined
           ? {}
@@ -888,6 +892,7 @@ function isPtcExecuteCodeTerminalWaitStatus(
 function validateExecuteCodeRequest(
   request: {
     code: string;
+    moduleFormat?: PtcExecuteCodeModuleFormat;
     timeoutMs?: number;
     yieldTimeMs?: number;
   },
@@ -906,6 +911,18 @@ function validateExecuteCodeRequest(
       ok: false,
       reasonCode: 'ptc_execute_code_invalid',
       message: 'PTC execute_code input is invalid',
+    };
+  }
+
+  if (
+    request.moduleFormat !== undefined &&
+    request.moduleFormat !== 'commonjs' &&
+    request.moduleFormat !== 'esm'
+  ) {
+    return {
+      ok: false,
+      reasonCode: 'ptc_execute_code_invalid',
+      message: 'PTC execute_code module format is invalid',
     };
   }
 
@@ -950,6 +967,9 @@ function validateExecuteCodeRequest(
     ok: true,
     value: {
       code: request.code,
+      ...(request.moduleFormat === undefined
+        ? {}
+        : { moduleFormat: request.moduleFormat }),
       timeoutMs: timeout.value,
       ...(request.yieldTimeMs !== undefined
         ? { yieldTimeMs: request.yieldTimeMs }

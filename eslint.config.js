@@ -73,6 +73,10 @@ export default [
           ],
         },
         {
+          type: 'tool-sdk',
+          pattern: ['packages/tool-sdk/src/**', 'packages/tool-sdk/dist/**'],
+        },
+        {
           type: 'web-shell-entry',
           pattern: ['apps/web-shell/src/*.ts', 'apps/web-shell/src/*.tsx'],
           mode: 'full',
@@ -350,6 +354,13 @@ export default [
           pattern: ['apps/daemon/src/daemon/ptc/runtime/browser/**'],
         },
         {
+          type: 'daemon-ptc-runtime-execute-code-sdk',
+          pattern: [
+            'apps/daemon/src/daemon/ptc/runtime/execute-code/execute-code-sdk.ts',
+          ],
+          mode: 'full',
+        },
+        {
           type: 'daemon-ptc-runtime-execute-code',
           pattern: ['apps/daemon/src/daemon/ptc/runtime/execute-code/**'],
         },
@@ -447,6 +458,7 @@ export default [
             { from: { type: 'agent-loop' }, allow: [] },
             { from: { type: 'shared-utils' }, allow: [] },
             { from: { type: 'protocol' }, allow: [] },
+            { from: { type: 'tool-sdk' }, allow: [] },
             {
               from: { type: 'tool-library' },
               allow: { to: { type: ['shared-utils'] } },
@@ -671,6 +683,7 @@ export default [
                   type: [
                     'shared-utils',
                     'protocol',
+                    'tool-sdk',
                     'adapter-web',
                     'daemon-kernel',
                     'daemon-composition',
@@ -779,6 +792,7 @@ export default [
                     'daemon-network',
                     'daemon-utils',
                     'tool-library',
+                    'tool-sdk',
                   ],
                 },
               },
@@ -994,6 +1008,7 @@ export default [
                     'daemon-ptc-runtime-contract',
                     'daemon-ptc-runtime-common',
                     'daemon-ptc-runtime-execute-code',
+                    'daemon-ptc-runtime-execute-code-sdk',
                     'daemon-ptc-runtime-ingress-helper',
                     'daemon-ptc-runtime-probes',
                     'daemon-ptc-package-helpers',
@@ -1244,6 +1259,18 @@ export default [
               },
             },
             {
+              from: { type: 'daemon-ptc-runtime-execute-code-sdk' },
+              allow: {
+                to: {
+                  type: [
+                    'daemon-ptc-runtime-contract',
+                    'daemon-ptc-runtime-execute-code',
+                    'tool-library',
+                  ],
+                },
+              },
+            },
+            {
               from: { type: 'daemon-ptc-runtime-execute-code' },
               allow: {
                 to: {
@@ -1258,6 +1285,7 @@ export default [
                     'daemon-ptc-package-helpers',
                     'daemon-ptc-runtime-contract',
                     'daemon-ptc-runtime-execute-code',
+                    'daemon-ptc-runtime-execute-code-sdk',
                     'daemon-ptc-shared',
                   ],
                 },

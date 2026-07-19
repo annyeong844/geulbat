@@ -79,6 +79,7 @@ async function main() {
     repoRoot,
     logs: daemonLogs,
     port: daemonPort,
+    enablePublicWebConformanceFixtures: true,
   });
 
   try {
@@ -611,9 +612,8 @@ async function createConformanceHarnessServer(fixture, daemonOrigin) {
       fixture.buildRuntimePayload(),
       {
         ...persistenceBootstrap,
-        bootstrapSource: buildJsRuntimePersistenceBootstrap(
-          persistenceBootstrap,
-        ),
+        bootstrapSource:
+          buildJsRuntimePersistenceBootstrap(persistenceBootstrap),
       },
     );
 

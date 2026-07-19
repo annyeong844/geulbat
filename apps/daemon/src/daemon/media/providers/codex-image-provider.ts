@@ -205,6 +205,7 @@ export async function generateImageViaCodexResponses(
   const result = await streamResponses({
     payload,
     headers,
+    historyProjection: 'provider_output',
     providerSessionId: input.providerSessionId,
     webSocketReusePolicy: CODEX_DIRECT_RESPONSES_WEBSOCKET_REUSE_POLICY,
     providerWebSocketSessions: input.providerWebSocketSessions,

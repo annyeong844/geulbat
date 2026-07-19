@@ -23,6 +23,13 @@ void test('install_packages metadata: strict schema, no time budget field, opt-i
   assert.ok(!('timeoutMs' in parameters.properties));
   assert.ok(!('registry' in parameters.properties));
   assert.ok(!('lifecycleScripts' in parameters.properties));
+  assert.match(installPackagesTool.description, /CommonJS require\(\)/u);
+  assert.match(installPackagesTool.description, /explicit-ESM static imports/u);
+  const metadata = installPackagesTool.catalogSearchMetadata;
+  assert.ok(metadata);
+  assert.match(metadata.whenToUse, /explicit-ESM/u);
+  assert.match(metadata.searchHints.join(' '), /esm package import/u);
+  assert.doesNotMatch(metadata.notFor, /Version ranges|latest/u);
 });
 
 void test('install_packages is absent from the default registry and present only with the operator opt-in', () => {

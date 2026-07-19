@@ -40,6 +40,32 @@ type _ActiveRunConflictIdIsBranded = Expect<
   Equal<ActiveRunConflict['activeRunId'], RunId>
 >;
 
+function registerTestActiveRun(args: {
+  store: ActiveRunStore;
+  runId: RunId;
+  threadId: ActiveRun['threadId'];
+  ownerThreadId: ActiveRun['ownerThreadId'];
+  abortController: AbortController;
+  parentRunId?: RunId;
+}): void {
+  assert.deepEqual(
+    args.store.tryStartRun(args.threadId, {
+      runId: args.runId,
+      threadId: args.threadId,
+      stateRoot: '/tmp/home-state',
+      workingDirectory: 'stories',
+      ownerThreadId: args.ownerThreadId,
+      abortController: args.abortController,
+      interject: createRunInterjectBuffer(),
+      startedAt: '2026-03-24T00:00:00.000Z',
+      ...(args.parentRunId === undefined
+        ? {}
+        : { parentRunId: args.parentRunId }),
+    }),
+    { ok: true },
+  );
+}
+
 void test('abortRun rejects direct child cancellation', () => {
   const store = createActiveRunStore();
   const parentThreadId = testThreadId(1);
@@ -89,7 +115,7 @@ void test('abortRun rejects direct child cancellation', () => {
   store.finishRun(parentThreadId, parentRunId);
 });
 
-void test('abortTrackedRun can cancel a child run by stable child handle', () => {
+void test('abortRunSubtree can cancel a child run by stable child handle', () => {
   const store = createActiveRunStore();
   const parentThreadId = testThreadId(21);
   const childThreadId = testThreadId(22);
@@ -126,7 +152,7 @@ void test('abortTrackedRun can cancel a child run by stable child handle', () =>
     { ok: true },
   );
 
-  assert.equal(store.abortTrackedRun(childRunId), true);
+  assert.equal(store.abortRunSubtree(childRunId), true);
   assert.equal(childController.signal.aborted, true);
   assert.equal(parentController.signal.aborted, false);
 
@@ -226,6 +252,103 @@ void test('abortThreadTree ignores finished runs and clears owner index on clean
 
   store.finishRun(parentThreadId, parentRunId);
   assert.equal(store.abortThreadTree(parentThreadId), false);
+});
+
+void test('abortThreadTree reaches a recursive descendant through a finished parent', () => {
+  const store = createActiveRunStore();
+  const rootThreadId = testThreadId(33);
+  const childThreadId = testThreadId(34);
+  const grandchildThreadId = testThreadId(35);
+  const rootRunId = testRunId('recursive-root');
+  const childRunId = testRunId('recursive-child');
+  const grandchildRunId = testRunId('recursive-grandchild');
+  const rootController = new AbortController();
+  const childController = new AbortController();
+  const grandchildController = new AbortController();
+
+  registerTestActiveRun({
+    store,
+    runId: rootRunId,
+    threadId: rootThreadId,
+    ownerThreadId: rootThreadId,
+    abortController: rootController,
+  });
+  registerTestActiveRun({
+    store,
+    runId: childRunId,
+    threadId: childThreadId,
+    ownerThreadId: rootThreadId,
+    abortController: childController,
+    parentRunId: rootRunId,
+  });
+  registerTestActiveRun({
+    store,
+    runId: grandchildRunId,
+    threadId: grandchildThreadId,
+    ownerThreadId: childThreadId,
+    abortController: grandchildController,
+    parentRunId: childRunId,
+  });
+
+  store.finishRun(childThreadId, childRunId);
+
+  assert.equal(store.abortThreadTree(rootThreadId), true);
+  assert.equal(rootController.signal.aborted, true);
+  assert.equal(childController.signal.aborted, false);
+  assert.equal(grandchildController.signal.aborted, true);
+
+  store.finishRun(rootThreadId, rootRunId);
+  store.finishRun(grandchildThreadId, grandchildRunId);
+  assert.equal(store.abortThreadTree(rootThreadId), false);
+});
+
+void test('abortRunSubtree cancels one child subtree without cancelling its parent', () => {
+  const store = createActiveRunStore();
+  const rootThreadId = testThreadId(36);
+  const childThreadId = testThreadId(37);
+  const grandchildThreadId = testThreadId(38);
+  const rootRunId = testRunId('subtree-root');
+  const childRunId = testRunId('subtree-child');
+  const grandchildRunId = testRunId('subtree-grandchild');
+  const rootController = new AbortController();
+  const childController = new AbortController();
+  const grandchildController = new AbortController();
+  const reason = 'explicit subtree stop';
+
+  registerTestActiveRun({
+    store,
+    runId: rootRunId,
+    threadId: rootThreadId,
+    ownerThreadId: rootThreadId,
+    abortController: rootController,
+  });
+  registerTestActiveRun({
+    store,
+    runId: childRunId,
+    threadId: childThreadId,
+    ownerThreadId: rootThreadId,
+    abortController: childController,
+    parentRunId: rootRunId,
+  });
+  registerTestActiveRun({
+    store,
+    runId: grandchildRunId,
+    threadId: grandchildThreadId,
+    ownerThreadId: childThreadId,
+    abortController: grandchildController,
+    parentRunId: childRunId,
+  });
+
+  assert.equal(store.abortRunSubtree(childRunId, reason), true);
+  assert.equal(rootController.signal.aborted, false);
+  assert.equal(childController.signal.aborted, true);
+  assert.equal(childController.signal.reason, reason);
+  assert.equal(grandchildController.signal.aborted, true);
+  assert.equal(grandchildController.signal.reason, reason);
+
+  store.finishRun(grandchildThreadId, grandchildRunId);
+  store.finishRun(childThreadId, childRunId);
+  store.finishRun(rootThreadId, rootRunId);
 });
 
 void test('getRunById exposes aborted state without leaking the abort controller', () => {

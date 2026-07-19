@@ -4,7 +4,10 @@ import {
   ARTIFACT_START_PREFIX,
 } from '@geulbat/protocol/artifacts';
 
-import { buildMarkdownBlocks } from '../../lib/markdown/buildMarkdownBlocks.js';
+import {
+  buildMarkdownBlocks,
+  prepareMarkdownBlocks,
+} from '../../lib/markdown/buildMarkdownBlocks.js';
 import { assistantStyles } from './assistant-styles.js';
 
 type MessageContentSegment =
@@ -122,8 +125,28 @@ function MessageCodeBlock(props: { language: string | null; code: string }) {
 }
 
 // 답변 본문 렌더 — 텍스트는 공용 Markdown, 코드 펜스는 복사 가능한 블록.
+export function prepareAssistantMessageContent(
+  renderCacheOwner: object,
+  content: string,
+): void {
+  if (
+    content.includes(ARTIFACT_START_PREFIX) ||
+    content.includes(ARTIFACT_END_MARKER)
+  ) {
+    return;
+  }
+  for (const segment of splitMessageContentSegments(content)) {
+    if (segment.kind === 'text') {
+      prepareMarkdownBlocks(renderCacheOwner, segment.text);
+    }
+  }
+}
+
 export const AssistantMessageContent = memo(
-  function AssistantMessageContent(props: { content: string }) {
+  function AssistantMessageContent(props: {
+    content: string;
+    renderCacheOwner?: object;
+  }) {
     if (
       props.content.includes(ARTIFACT_START_PREFIX) ||
       props.content.includes(ARTIFACT_END_MARKER)
@@ -143,7 +166,7 @@ export const AssistantMessageContent = memo(
             />
           ) : (
             <div key={`text-${index}`} className="message-markdown">
-              {buildMarkdownBlocks(segment.text)}
+              {buildMarkdownBlocks(segment.text, props.renderCacheOwner)}
             </div>
           ),
         )}

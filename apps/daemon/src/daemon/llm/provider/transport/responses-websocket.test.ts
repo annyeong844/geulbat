@@ -7,7 +7,10 @@ import {
   extractWebSocketCloseError,
   extractWebSocketError,
 } from './responses-websocket-errors.js';
-import { resolveCodexWebSocketUrl } from './responses-websocket-url.js';
+import {
+  resolveCodexResponsesUrl,
+  resolveCodexWebSocketUrl,
+} from './responses-websocket-url.js';
 import {
   resolveResponsesStreamIdleTimeoutMs,
   streamResponsesOverWebSocket,
@@ -30,6 +33,10 @@ const baseBody = {
 
 void test('WebSocket URL resolution preserves configured Codex endpoints and local proxies', () => {
   assert.equal(
+    resolveCodexResponsesUrl('https://api.openai.com/v1/codex/'),
+    'https://api.openai.com/v1/codex/responses',
+  );
+  assert.equal(
     resolveCodexWebSocketUrl('https://api.openai.com/v1/codex'),
     'wss://api.openai.com/v1/codex/responses',
   );
@@ -44,24 +51,23 @@ void test('WebSocket URL resolution preserves configured Codex endpoints and loc
 });
 
 void test('WebSocket error extraction accepts browser-style message events', () => {
-  assert.equal(
-    extractWebSocketError({ message: 'proxy disconnected' }).message,
-    'proxy disconnected',
-  );
-  assert.equal(
-    extractWebSocketError({ message: '' }).message,
-    'WebSocket error',
-  );
+  const browserError = extractWebSocketError({ message: 'proxy disconnected' });
+  const genericError = extractWebSocketError({ message: '' });
+
+  assert.equal(browserError.message, 'proxy disconnected');
+  assert.equal(genericError.message, 'WebSocket error');
+  assert.equal(Reflect.get(browserError, 'llmCode'), 'llm_connection_lost');
+  assert.equal(Reflect.get(genericError, 'llmCode'), 'llm_connection_lost');
 });
 
 void test('WebSocket close extraction preserves string, binary, and unstructured reasons', () => {
-  assert.equal(
-    extractWebSocketCloseError({
-      code: 1006,
-      reason: 'abnormal close',
-    }).message,
-    'WebSocket closed 1006 abnormal close',
-  );
+  const abnormalClose = extractWebSocketCloseError({
+    code: 1006,
+    reason: 'abnormal close',
+  });
+
+  assert.equal(abnormalClose.message, 'WebSocket closed 1006 abnormal close');
+  assert.equal(Reflect.get(abnormalClose, 'llmCode'), 'llm_connection_lost');
   assert.equal(
     extractWebSocketCloseError({
       reason: new TextEncoder().encode('maintenance'),
@@ -128,6 +134,14 @@ void test('buildResponseCreatePayload keeps full structured context when tool re
     {
       kind: 'backend_item',
       data: {
+        id: 'rs_1',
+        type: 'reasoning',
+        encrypted_content: 'opaque-reasoning',
+      },
+    },
+    {
+      kind: 'backend_item',
+      data: {
         id: 'fc_1',
         type: 'function_call',
         call_id: 'call_1',
@@ -151,6 +165,11 @@ void test('buildResponseCreatePayload keeps full structured context when tool re
       role: 'assistant',
       content: [{ type: 'output_text', text: '파일을 확인해볼게요.' }],
       phase: 'commentary',
+    },
+    {
+      id: 'rs_1',
+      type: 'reasoning',
+      encrypted_content: 'opaque-reasoning',
     },
     {
       id: 'fc_1',
@@ -197,6 +216,7 @@ void test('streamResponsesOverWebSocket rejects incompatible native history befo
     streamResponsesOverWebSocket({
       body: baseBody,
       headers: new Headers(),
+      historyProjection: 'provider_output',
       history: [
         {
           kind: 'provider_native_compaction',
@@ -255,6 +275,7 @@ void test('streamResponsesOverWebSocket can emit sanitized discovery snapshots w
       'chatgpt-account-id': 'acct-secret',
       session_id: 'session-secret',
     }),
+    historyProjection: 'provider_output',
     history: [{ kind: 'user', text: 'private user text' }],
     providerSessionId: 'session-secret',
     webSocketReusePolicy: TEST_REUSE_POLICY,
@@ -385,6 +406,7 @@ void test('streamResponsesOverWebSocket reconnects a stale reused socket before 
   const runPromise = streamResponsesOverWebSocket({
     body: baseBody,
     headers: new Headers(),
+    historyProjection: 'provider_output',
     history: [...history],
     providerSessionId: 'provider-session',
     webSocketReusePolicy: TEST_REUSE_POLICY,

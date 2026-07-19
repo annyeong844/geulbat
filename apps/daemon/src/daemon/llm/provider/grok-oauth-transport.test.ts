@@ -241,7 +241,13 @@ void test('streamGrokOAuthResponses performs the xAI Responses WebSocket provide
   });
   observed.emit({
     type: 'response.output_item.done',
-    item: { id: 'msg_1', type: 'message' },
+    item: {
+      id: 'msg_1',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'hello world' }],
+    },
   });
   observed.emit({
     type: 'response.done',
@@ -295,7 +301,16 @@ void test('streamGrokOAuthResponses performs the xAI Responses WebSocket provide
   assert.equal(result.assistantText, 'hello world');
   assert.equal(result.finalText, 'hello world');
   assert.deepEqual(result.itemsToAppend, [
-    { kind: 'assistant', phase: 'final_answer', text: 'hello world' },
+    {
+      kind: 'backend_item',
+      data: {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'hello world' }],
+      },
+    },
   ]);
   assert.deepEqual(result.providerUsageTelemetry, {
     inputTokens: 11,
@@ -303,6 +318,61 @@ void test('streamGrokOAuthResponses performs the xAI Responses WebSocket provide
     cachedInputTokens: 3,
   });
   assert.equal(observed.releaseKeep, true);
+});
+
+void test('streamGrokOAuthResponses preserves reasoning and function-call items as one provider batch', async () => {
+  const model = resolveGrokOAuthModelDescriptor('grok');
+  const observed = createObservedWebSocketRun();
+  const reasoningItem = {
+    id: 'rs_1',
+    type: 'reasoning',
+    encrypted_content: 'opaque-reasoning',
+  };
+  const functionCallItem = {
+    id: 'fc_1',
+    type: 'function_call',
+    call_id: 'call_1',
+    name: 'read_file',
+    arguments: '{"path":"README.md"}',
+  };
+  const resultPromise = streamGrokOAuthResponses(
+    {
+      model,
+      accessToken: 'access-token',
+      providerSessionId: 'provider-session',
+      history: [{ kind: 'user', text: 'read it' }],
+      reasoningEffort: 'high',
+      providerWebSocketSessions: observed.providerWebSocketSessions,
+    },
+    {},
+  );
+
+  await setImmediatePromise();
+  observed.emit({
+    type: 'response.output_item.done',
+    output_index: 0,
+    item: reasoningItem,
+  });
+  observed.emit({
+    type: 'response.output_item.done',
+    output_index: 1,
+    item: functionCallItem,
+  });
+  observed.emit({ type: 'response.completed', response: {} });
+
+  const result = await resultPromise;
+  assert.deepEqual(result.itemsToAppend, [
+    { kind: 'backend_item', data: reasoningItem },
+    { kind: 'backend_item', data: functionCallItem },
+  ]);
+  assert.deepEqual(result.functionCalls, [
+    {
+      id: 'fc_1',
+      callId: 'call_1',
+      name: 'read_file',
+      arguments: '{"path":"README.md"}',
+    },
+  ]);
 });
 
 void test('streamGrokOAuthResponses surfaces xAI WebSocket error envelopes for retry owners', async () => {

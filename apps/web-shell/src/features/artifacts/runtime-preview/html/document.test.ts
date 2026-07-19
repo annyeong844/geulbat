@@ -12,6 +12,19 @@ void test('html5 payloads inject a resize helper before closing body', () => {
   assert.match(payload, /window\.parent\.postMessage\(/);
   assert.match(payload, /action: 'resize'/);
   assert.match(payload, /ResizeObserver/);
+  assert.match(payload, /const measureResize = \(\) =>/);
+  const measureIndex = payload.indexOf('const height = measureResize();');
+  const animationFrameIndex = payload.indexOf(
+    'window.requestAnimationFrame(() => {',
+  );
+  const sendIndex = payload.indexOf('sendResize(height);', animationFrameIndex);
+  assert.ok(measureIndex >= 0);
+  assert.ok(animationFrameIndex > measureIndex);
+  assert.ok(sendIndex > animationFrameIndex);
+  assert.doesNotMatch(
+    payload.slice(animationFrameIndex, sendIndex),
+    /measureResize\(\)/,
+  );
   assert.doesNotMatch(payload, /MutationObserver/);
   assert.doesNotMatch(payload, /postMessage\([^)]*['"]\*['"]\)/);
   assert.match(payload, /\\u003Cscript>\(\(\) => \{/);

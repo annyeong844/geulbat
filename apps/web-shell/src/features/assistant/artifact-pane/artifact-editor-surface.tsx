@@ -1,6 +1,6 @@
 import { createElement, useEffect, useRef, useState } from 'react';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../../../lib/error-message.js';
 
 import { LineNumberedCodeArea } from '../../../lib/code-area/line-numbered-code-area.js';
 import { saveTextToLocalFile } from '../../../lib/save-local-file.js';

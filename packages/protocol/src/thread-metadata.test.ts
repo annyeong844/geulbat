@@ -8,6 +8,10 @@ import {
   readArtifactRefsFromMetadata,
   type ThreadMessageMetadata,
 } from './thread-metadata.js';
+import { assertRunId } from './ids.js';
+
+const COMMENTARY_RUN_ID = assertRunId('run-thread-metadata-commentary');
+const FINAL_RUN_ID = assertRunId('run-thread-metadata-1');
 
 type Expect<T extends true> = T;
 type Equal<A, B> =
@@ -17,6 +21,18 @@ type Equal<A, B> =
 
 type _MetadataRejectsOpaqueRecords = Expect<
   Equal<{ kind: 'final' } extends ThreadMessageMetadata ? true : false, false>
+>;
+
+type _MetadataRejectsUnbrandedSourceRunId = Expect<
+  Equal<
+    {
+      phase: 'final_answer';
+      sourceRunId: string;
+    } extends ThreadMessageMetadata
+      ? true
+      : false,
+    false
+  >
 >;
 
 type _FinalAnswerMetadataRejectsHiddenPrompt = Expect<
@@ -127,7 +143,7 @@ void test('thread message metadata accepts interject source metadata', () => {
 void test('thread message metadata accepts commentary metadata', () => {
   const metadata: ThreadMessageMetadata = {
     phase: 'commentary',
-    sourceRunId: 'run-thread-metadata-commentary',
+    sourceRunId: COMMENTARY_RUN_ID,
   };
 
   assert.equal(isThreadMessageMetadata(metadata), true);
@@ -139,7 +155,7 @@ void test('thread message metadata accepts commentary metadata', () => {
 void test('thread message metadata accepts final-answer artifact refs', () => {
   const metadata: ThreadMessageMetadata = {
     phase: 'final_answer',
-    sourceRunId: 'run-thread-metadata-1',
+    sourceRunId: FINAL_RUN_ID,
     sourceFile: 'episodes/ch01.md',
     artifactRefs: [{ artifactId: 'art_1', version: 1 }],
     activeArtifactRef: { artifactId: 'art_1', version: 1 },
@@ -175,6 +191,14 @@ void test('thread message metadata accepts artifact_frame origin on user turns o
 });
 
 void test('thread message metadata rejects invalid known-key payloads', () => {
+  assert.equal(
+    isThreadMessageMetadata({
+      phase: 'final_answer',
+      sourceRunId: 'invalid run id',
+    }),
+    false,
+  );
+
   assert.equal(
     isThreadMessageMetadata({
       phase: 'whatever',

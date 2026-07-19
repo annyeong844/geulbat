@@ -17,7 +17,7 @@ import type {
   RunToolRequest,
   RunToolResultPayload,
 } from '@geulbat/protocol/run-channel';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../lib/error-message.js';
 
 import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
 import { buildArtifactFrameToolFallbackRunDraft } from '../features/artifacts/artifact-run-drafts.js';
@@ -85,6 +85,8 @@ interface InterjectRunClient {
 interface FrameToolClient {
   tool(request: RunToolRequest): Promise<RunToolResultPayload>;
 }
+
+type RunToolFailure = Extract<RunToolResultPayload, { ok: false }>;
 
 // 위젯/프레임이 올린 도구 호출 의도 — 데이터만 담고, 신뢰 컨텍스트
 // (threadId/workingDirectory)는 이 컨트롤러가 주입한다.
@@ -247,7 +249,7 @@ export async function degradeWidgetToolRequestAction(args: {
     scopeHandle: string;
   };
   threadId: string;
-  rejection: { ok: false; errorCode: string; error: string };
+  rejection: RunToolFailure;
   cancelState: CancelActionState;
   startClient: StartRunClient;
   interjectClient: InterjectRunClient;
@@ -645,7 +647,7 @@ export function useRunSessionControllerActions({
     async (
       request: WidgetToolRequestIntent,
       threadId: string,
-      rejection: { ok: false; errorCode: string; error: string },
+      rejection: RunToolFailure,
     ): Promise<RunToolResultPayload> =>
       degradeWidgetToolRequestAction({
         request,
@@ -694,7 +696,7 @@ export function useRunSessionControllerActions({
       }
       try {
         const result = await frameToolClient.tool({
-          threadId,
+          threadId: brandThreadId(threadId),
           ...(inputs.workingDirectory !== undefined
             ? { workingDirectory: inputs.workingDirectory }
             : {}),

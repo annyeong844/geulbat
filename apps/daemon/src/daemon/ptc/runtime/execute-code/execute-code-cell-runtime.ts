@@ -37,6 +37,7 @@ import {
 } from './execute-code-cell-settlement.js';
 import type {
   PtcExecuteCodeCellId,
+  PtcExecuteCodeModuleFormat,
   PtcExecuteCodePlacementResourceSnapshotRef,
   PtcExecuteCodeRuntimeResult,
 } from './execute-code-runtime-contract.js';
@@ -65,6 +66,7 @@ export type StartPtcExecuteCodeCellProcess = typeof startPtcDockerClientProcess;
 
 interface PtcExecuteCodeValidatedRequest {
   code: string;
+  moduleFormat?: PtcExecuteCodeModuleFormat;
   timeoutMs: number;
 }
 
@@ -114,6 +116,7 @@ interface PtcExecuteCodeCommandBuilder {
     code: string,
     args: {
       callbackConfig?: { socketPath: string; token: string };
+      moduleFormat?: PtcExecuteCodeModuleFormat;
       sdkHelpBundle: ReturnType<typeof buildPtcExecuteCodeSdkHelpBundle>;
     },
   ): string;
@@ -590,6 +593,9 @@ async function createCellCommandEnvelope(args: {
   const bridge = bridgeResult.value.bridge;
   const command = runtimeArgs.buildCommand(runtimeArgs.request.code, {
     sdkHelpBundle: runtimeArgs.sdkHelpBundle,
+    ...(runtimeArgs.request.moduleFormat === undefined
+      ? {}
+      : { moduleFormat: runtimeArgs.request.moduleFormat }),
     ...(bridge === undefined
       ? {}
       : {

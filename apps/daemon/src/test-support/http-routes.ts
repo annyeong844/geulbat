@@ -66,11 +66,22 @@ export async function withAuthenticatedDaemonServer<T>(
 
 export async function withDaemonServer<T>(
   run: (ctx: { port: number; daemonContext: DaemonContext }) => Promise<T>,
-  args?: { daemonContext?: DaemonContext },
+  args?: {
+    daemonContext?: DaemonContext;
+    enablePublicWebConformanceFixtures?: boolean;
+  },
 ): Promise<T> {
   const daemonContext = args?.daemonContext ?? createRouteTestDaemonContext();
   await ensureRouteTestRoots(daemonContext);
-  const { app } = await createDaemon({ daemonContext });
+  const { app } = await createDaemon({
+    daemonContext,
+    ...(args?.enablePublicWebConformanceFixtures === undefined
+      ? {}
+      : {
+          enablePublicWebConformanceFixtures:
+            args.enablePublicWebConformanceFixtures,
+        }),
+  });
   const server = app.listen(0, '127.0.0.1');
 
   try {
@@ -85,6 +96,18 @@ export async function withDaemonServer<T>(
       await daemonContext.providerAuthCallbackServer.close();
     }
   }
+}
+
+export async function withPublicWebConformanceServer<T>(
+  run: (ctx: { port: number; daemonContext: DaemonContext }) => Promise<T>,
+  args?: { daemonContext?: DaemonContext },
+): Promise<T> {
+  return await withDaemonServer(run, {
+    ...(args?.daemonContext === undefined
+      ? {}
+      : { daemonContext: args.daemonContext }),
+    enablePublicWebConformanceFixtures: true,
+  });
 }
 
 function setDevToken(): () => void {

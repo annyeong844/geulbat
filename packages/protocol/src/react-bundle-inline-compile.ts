@@ -5,8 +5,6 @@ export const PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX =
 export const REACT_BUNDLE_RUNTIME_ABI_VERSION = 'react-bundle-runtime-v1';
 export const REACT_BUNDLE_RUNTIME_REACT_MAJOR = 19;
 export const REACT_BUNDLE_RUNTIME_SHIM_MAP_VERSION = 'react-inline-shims-v1';
-export const REACT_BUNDLE_INLINE_COMPILE_POLICY_VERSION =
-  'react-inline-compile-policy-v1';
 
 export type ReactBundleInlineCompileFailureCode =
   | 'sanitize_rejected'

@@ -44,8 +44,8 @@ const PROCESS_TOOL_OUTPUT_PROJECTION_POLICY =
   resolveToolOutputProjectionPolicyFromEnv();
 
 interface ToolOutputOffloadArgs {
-  functionCall: FunctionCall;
-  runContext: RunContext;
+  functionCall: Pick<FunctionCall, 'callId' | 'name' | 'arguments'>;
+  runContext: Pick<RunContext, 'threadId' | 'stateRoot'>;
   runId: string;
   projectionPolicy?: ToolOutputProjectionPolicy;
   toolOutputRecoveryAvailable?: boolean;

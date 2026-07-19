@@ -1,4 +1,4 @@
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../utils/error.js';
 import type { FunctionCall, HistoryItem } from '../llm/index.js';
 import type { RunContext } from '../run-context.js';
 import { resolveApprovalClass } from '../tools/approval-runtime-policy.js';

@@ -34,6 +34,7 @@ import { prepareProviderTransitionCompaction } from './daemon/agent/memory/compa
 
 interface DaemonOptions {
   daemonContext?: DaemonContext;
+  enablePublicWebConformanceFixtures?: boolean;
 }
 
 const JSON_BODY_LIMIT = '256kb';
@@ -62,7 +63,9 @@ export async function createDaemon(options: DaemonOptions = {}) {
       configuredAllowedOrigins,
     }),
   );
-  app.use(createPublicWebFixtureRoutes());
+  if (options.enablePublicWebConformanceFixtures === true) {
+    app.use(createPublicWebFixtureRoutes());
+  }
   app.use(createPublicReactBundleInlineGeneratedAssetRoutes());
 
   // Health check — before auth guard, for diagnostics

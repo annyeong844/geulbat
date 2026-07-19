@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -34,6 +34,10 @@ const PACKAGE_WORKSPACES = [
   {
     manifestPath: 'packages/tool-library/package.json',
     name: '@geulbat/tool-library',
+  },
+  {
+    manifestPath: 'packages/tool-sdk/package.json',
+    name: '@geulbat/tool-sdk',
   },
   {
     manifestPath: 'apps/daemon/package.json',
@@ -116,6 +120,7 @@ async function runNpmInstallableDistributionCheck(options) {
   );
   const packDir = path.join(tempRoot, 'pack');
   const installDir = path.join(tempRoot, 'install');
+  const toolSdkInstallDir = path.join(tempRoot, 'tool-sdk-consumer');
   const homeDir = path.join(tempRoot, 'home');
   const childEnv = createNpmInstallableDistributionChildEnv({
     env: options.env,
@@ -125,6 +130,7 @@ async function runNpmInstallableDistributionCheck(options) {
   try {
     await mkdir(packDir, { recursive: true });
     await mkdir(installDir, { recursive: true });
+    await mkdir(toolSdkInstallDir, { recursive: true });
     await mkdir(homeDir, { recursive: true });
 
     if (!options.skipBuild) {
@@ -146,6 +152,12 @@ async function runNpmInstallableDistributionCheck(options) {
       packDir,
       packedPackages,
     });
+    await installPackedToolSdk({
+      childEnv,
+      installDir: toolSdkInstallDir,
+      packDir,
+      packedPackages,
+    });
     await validateInstalledDaemonProviderAuth({
       approvedClientIds: options.approvedClientIds,
       childEnv,
@@ -155,6 +167,10 @@ async function runNpmInstallableDistributionCheck(options) {
     await validateInstalledRuntimeImports({
       childEnv,
       installDir,
+    });
+    await validateInstalledToolSdkConsumer({
+      childEnv,
+      installDir: toolSdkInstallDir,
     });
 
     return {
@@ -184,6 +200,8 @@ async function packWorkspacePackages(packDir, env) {
       'packages/protocol',
       '-w',
       'packages/tool-library',
+      '-w',
+      'packages/tool-sdk',
       '-w',
       'apps/daemon',
     ],
@@ -247,7 +265,28 @@ async function installPackedPackages(args) {
         '@geulbat/tool-library',
         args.packDir,
       ),
+      readTarballPath(args.packedPackages, '@geulbat/tool-sdk', args.packDir),
       readTarballPath(args.packedPackages, '@geulbat/daemon', args.packDir),
+    ],
+    {
+      cwd: args.installDir,
+      env: args.childEnv,
+    },
+  );
+}
+
+async function installPackedToolSdk(args) {
+  await runCommand('npm', ['init', '-y'], {
+    cwd: args.installDir,
+    env: args.childEnv,
+  });
+  await runCommand(
+    'npm',
+    [
+      'install',
+      '--ignore-scripts',
+      '--package-lock=false',
+      readTarballPath(args.packedPackages, '@geulbat/tool-sdk', args.packDir),
     ],
     {
       cwd: args.installDir,
@@ -281,6 +320,7 @@ async function validateInstalledRuntimeImports(args) {
         "await import('@geulbat/agent-loop/kernel');",
         "await import('@geulbat/protocol/provider-auth');",
         "await import('@geulbat/shared-utils/logger');",
+        "await import('@geulbat/tool-sdk');",
         "await import('./node_modules/@geulbat/daemon/dist/daemon/auth/bootstrap/config.js');",
       ].join(' '),
     ],
@@ -290,6 +330,141 @@ async function validateInstalledRuntimeImports(args) {
     },
   );
   console.log('installed runtime imports passed');
+}
+
+async function validateInstalledToolSdkConsumer(args) {
+  const consumerSource = `
+import {
+  TOOL_SDK_RELEASE,
+  createToolSdkClient,
+  type ListFilesInput,
+  type ToolSdkTransport,
+} from '@geulbat/tool-sdk';
+
+const projection = {
+  schemaVersion: TOOL_SDK_RELEASE.projectionSchemaVersion,
+  sdkProjectionHash: ${JSON.stringify(`sha256:${'e'.repeat(64)}`)},
+  policyId: 'clean-consumer-v1',
+} as const;
+const transport: ToolSdkTransport = {
+  async handshake(request) {
+    return {
+      ok: true,
+      value: {
+        compatibility: request.compatibility,
+        capabilities: ['tool.invoke'],
+        publicTools: [...request.requestedPublicTools],
+      },
+    };
+  },
+  async invoke(request) {
+    if (request.publicTool === 'files.read') {
+      return {
+        ok: true,
+        value: {
+          kind: 'inline',
+          value: {
+            path: request.input.path ?? '',
+            content: 'clean consumer\\n',
+            versionToken: 'clean-consumer-version',
+            totalLines: 1,
+            pageLimit: request.input.limit ?? 0,
+            startLine: 1,
+            endLine: 1,
+            hasMore: false,
+            nextOffset: null,
+          },
+        },
+      };
+    }
+    if (request.publicTool === 'files.list') {
+      return {
+        ok: true,
+        value: {
+          kind: 'inline',
+          value: {
+            path: request.input.path ?? '.',
+            total: 1,
+            entries: [
+              { name: 'consumer.txt', path: 'consumer.txt', type: 'file' },
+            ],
+            internalBinding: 'must-not-escape',
+          },
+        },
+      };
+    }
+    throw new Error('unexpected public tool');
+  },
+};
+const client = createToolSdkClient({
+  projection,
+  transport,
+  credentialProvider: {
+    async getCredential() {
+      return { scheme: 'Bearer', value: 'ephemeral-clean-consumer' };
+    },
+  },
+});
+const connection = await client.connect();
+if (!connection.ok) {
+  throw new Error(connection.error.code);
+}
+const result = await client.readFile({ path: 'consumer.txt', limit: 1 });
+if (!result.ok || result.value.content !== 'clean consumer\\n') {
+  throw new Error(result.ok ? 'unexpected output' : result.error.code);
+}
+const listInput: ListFilesInput = { recursive: false };
+const listing = await client.listFiles(listInput);
+if (
+  !listing.ok ||
+  listing.value.total !== 1 ||
+  listing.value.entries[0]?.path !== 'consumer.txt' ||
+  'internalBinding' in listing.value
+) {
+  throw new Error(listing.ok ? 'unexpected listing' : listing.error.code);
+}
+`;
+  await writeFile(
+    path.join(args.installDir, 'consumer.mts'),
+    consumerSource,
+    'utf8',
+  );
+  await writeFile(
+    path.join(args.installDir, 'tsconfig.json'),
+    `${JSON.stringify(
+      {
+        compilerOptions: {
+          exactOptionalPropertyTypes: true,
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          outDir: 'consumer-dist',
+          skipLibCheck: false,
+          strict: true,
+          target: 'ES2022',
+          types: [],
+        },
+        files: ['consumer.mts'],
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+  await runCommand(
+    process.execPath,
+    [
+      path.join(REPO_ROOT, 'node_modules', '.bin', 'tsc'),
+      '--project',
+      'tsconfig.json',
+    ],
+    { cwd: args.installDir, env: args.childEnv },
+  );
+  await runCommand(
+    process.execPath,
+    [path.join(args.installDir, 'consumer-dist', 'consumer.mjs')],
+    { cwd: args.installDir, env: args.childEnv },
+  );
+  console.log('standalone Tool SDK typed consumer passed');
 }
 
 function readTarballPath(packageInfos, packageName, packDir) {

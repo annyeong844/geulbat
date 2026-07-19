@@ -227,8 +227,6 @@ void test('createDaemonContext isolates runtime singleton state per instance', a
     second.providerWebSocketSessions,
   );
   assert.notEqual(first.fileStateCache, second.fileStateCache);
-  assert.notEqual(first.agentWorkflowRunner, second.agentWorkflowRunner);
-  assert.notEqual(first.agentWavePlanner, second.agentWavePlanner);
   assert.notEqual(first.resourceBudgetProvider, second.resourceBudgetProvider);
   assert.notEqual(first.pluginSkills, first.plugins);
   assert.notEqual(second.pluginSkills, second.plugins);
@@ -351,18 +349,6 @@ void test('createDaemonContext owns a resource budget observation service', () =
     'run_state_background_children',
   );
   assert.equal(snapshot.subagents.activeBackgroundChildren.ok, true);
-});
-
-void test('createDaemonContext owns an agent wave planner service', () => {
-  const daemonContext = createDaemonContext();
-
-  assert.equal(typeof daemonContext.agentWavePlanner.planNextWave, 'function');
-});
-
-void test('createDaemonContext owns an agent workflow runner service', () => {
-  const daemonContext = createDaemonContext();
-
-  assert.equal(typeof daemonContext.agentWorkflowRunner.runPhase, 'function');
 });
 
 void test('createDaemonContext owns a PTC execute_code runtime service', () => {

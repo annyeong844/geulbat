@@ -3,7 +3,7 @@
  * NOT runtime Error classes. These go directly on the wire.
  */
 
-import { isRunId, isThreadId } from './ids.js';
+import { isRunId, isThreadId, type RunId, type ThreadId } from './ids.js';
 import { isRecord, isString } from './runtime-utils.js';
 
 export type ErrorCode =
@@ -146,8 +146,8 @@ export interface ConflictStaleWriteError {
 export interface ConflictActiveRunError {
   code: 'conflict_active_run';
   message: string;
-  threadId: string;
-  activeRunId: string;
+  threadId: ThreadId;
+  activeRunId: RunId;
 }
 
 interface NotFoundPathError {

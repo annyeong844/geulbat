@@ -3,6 +3,18 @@ import type {
   SharedRunEventPayloadMap,
 } from '@geulbat/protocol/run-events';
 import type { RunId } from '@geulbat/protocol/ids';
+import {
+  isProviderReplayScopeId as isProtocolProviderReplayScopeId,
+  type ProviderReplayScopeId,
+} from '@geulbat/protocol/provider-auth';
+
+export type { ProviderReplayScopeId };
+
+export function isProviderReplayScopeId(
+  value: unknown,
+): value is ProviderReplayScopeId {
+  return isProtocolProviderReplayScopeId(value);
+}
 
 export type ToolCallArgs = SharedRunEventPayloadMap['tool_call']['args'];
 

@@ -4,6 +4,10 @@ import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+import {
+  isProviderReplayScopeId,
+  type ProviderReplayScopeId,
+} from '@geulbat/protocol/provider-auth';
 import { runAgentLoop } from './run-agent-loop.js';
 import type { AgentEvent } from './events.js';
 import { createThreadBackgroundNotificationQueue } from './runtime/background-notification-queue.js';
@@ -24,6 +28,7 @@ import type {
   ToolParseResult,
 } from '../tools/types.js';
 import { createResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-cache.js';
+import { ProviderReplayScopeMismatchError } from '../llm/provider/provider-replay-scope.js';
 import type { HistoryItem } from '../llm/index.js';
 import type { PtcFixedEpochProbeRuntime } from '../daemon-runtime-contract.js';
 import {
@@ -202,6 +207,36 @@ void test('runAgentLoop rejects direct tools outside the allowed registry surfac
     terminalEvent.payload.message,
     /direct tool is outside the allowed registry surface: write_file/,
   );
+});
+
+void test('runAgentLoop surfaces a persisted replay-scope mismatch as a terminal auth error', async () => {
+  const events: AgentEvent[] = [];
+  const daemonContext = createDaemonContext();
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-replay-scope-mismatch',
+    runContext: makeRunContext({ threadId: testThreadId(1210) }),
+    prompt: 'continue',
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext(),
+    historyPort: {
+      async loadInitialHistory() {
+        throw new ProviderReplayScopeMismatchError();
+      },
+    },
+    async *callModelImpl() {
+      assert.fail('provider call must not start after replay-scope mismatch');
+    },
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.deepEqual(result, { ok: false, finalProse: '' });
+  assert.equal(events.at(-1)?.type, 'error');
+  const terminal = events.at(-1);
+  if (terminal?.type === 'error') {
+    assert.equal(terminal.payload.code, 'llm_auth_failed');
+    assert.equal(terminal.payload.message, 'provider authentication failed');
+  }
 });
 
 void test('runAgentLoop emits usage_updated with accumulated totals when the provider reports usage', async () => {
@@ -599,6 +634,12 @@ void test('runAgentLoop preserves provider output items exactly once across a to
     status: 'completed',
     content: [{ type: 'output_text', text: 'done' }],
   };
+  const replayScopeId = `sha256:${'7'.repeat(64)}` as ProviderReplayScopeId;
+  const providerItem = (data: unknown) => ({
+    kind: 'backend_item' as const,
+    data,
+    providerReplayScopeId: replayScopeId,
+  });
   let modelRound = 0;
   const result = await runAgentLoop({
     runId: 'run-loop-provider-output-continuity',
@@ -631,8 +672,8 @@ void test('runAgentLoop preserves provider output items exactly once across a to
                 },
               ],
               itemsToAppend: [
-                { kind: 'backend_item', data: reasoningItem },
-                { kind: 'backend_item', data: functionCallItem },
+                providerItem(reasoningItem),
+                providerItem(functionCallItem),
               ],
             },
           };
@@ -640,8 +681,8 @@ void test('runAgentLoop preserves provider output items exactly once across a to
 
         assert.deepEqual(history, [
           { kind: 'user', text: 'look it up' },
-          { kind: 'backend_item', data: reasoningItem },
-          { kind: 'backend_item', data: functionCallItem },
+          providerItem(reasoningItem),
+          providerItem(functionCallItem),
           {
             kind: 'function_call_output',
             callId: 'call_round_1',
@@ -654,7 +695,7 @@ void test('runAgentLoop preserves provider output items exactly once across a to
             assistantText: 'done',
             terminalResult: { ok: true, finalProse: 'done' },
             functionCalls: [],
-            itemsToAppend: [{ kind: 'backend_item', data: finalMessageItem }],
+            itemsToAppend: [providerItem(finalMessageItem)],
           },
         };
       },
@@ -663,8 +704,8 @@ void test('runAgentLoop preserves provider output items exactly once across a to
       async processFunctionCalls(args) {
         assert.deepEqual(args.history, [
           { kind: 'user', text: 'look it up' },
-          { kind: 'backend_item', data: reasoningItem },
-          { kind: 'backend_item', data: functionCallItem },
+          providerItem(reasoningItem),
+          providerItem(functionCallItem),
         ]);
         args.history.push({
           kind: 'function_call_output',
@@ -689,14 +730,14 @@ void test('runAgentLoop preserves provider output items exactly once across a to
   assert.equal(modelRound, 2);
   assert.deepEqual(history, [
     { kind: 'user', text: 'look it up' },
-    { kind: 'backend_item', data: reasoningItem },
-    { kind: 'backend_item', data: functionCallItem },
+    providerItem(reasoningItem),
+    providerItem(functionCallItem),
     {
       kind: 'function_call_output',
       callId: 'call_round_1',
       output: '{"result":"found"}',
     },
-    { kind: 'backend_item', data: finalMessageItem },
+    providerItem(finalMessageItem),
   ]);
   const transcript = await readTranscriptEntries(workspaceRoot, threadId);
   assert.doesNotMatch(
@@ -884,14 +925,19 @@ void test('runAgentLoop applies pending interject before the next steer-aware mo
           .filter((item) => item.kind === 'user')
           .map((item) => item.text);
         assert.deepEqual(userTurns, ['please answer once', 'please revise']);
-        assert.deepEqual(input.history[1], {
-          kind: 'backend_item',
-          data: {
-            id: 'msg_1',
-            type: 'message',
-            phase: 'final_answer',
-            content: [{ type: 'output_text', text: 'first answer' }],
-          },
+        const firstProviderItem = input.history[1];
+        assert.equal(firstProviderItem?.kind, 'backend_item');
+        if (firstProviderItem?.kind !== 'backend_item') {
+          return;
+        }
+        assert.ok(
+          isProviderReplayScopeId(firstProviderItem.providerReplayScopeId),
+        );
+        assert.deepEqual(firstProviderItem.data, {
+          id: 'msg_1',
+          type: 'message',
+          phase: 'final_answer',
+          content: [{ type: 'output_text', text: 'first answer' }],
         });
       },
     },

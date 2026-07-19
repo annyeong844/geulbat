@@ -122,6 +122,18 @@ void test('normalizeProviderErrorCode maps explicit timeout phrases without matc
   );
 });
 
+void test('normalizeProviderErrorCode maps live provider capacity responses to overload', () => {
+  const error = new Error(
+    'The model is currently at capacity due to high demand. Please try again in a few minutes.',
+  );
+
+  assert.equal(normalizeProviderErrorCode(error), 'llm_overloaded');
+  assert.equal(
+    sanitizeProviderErrorMessage('llm_overloaded'),
+    'provider overloaded',
+  );
+});
+
 void test('normalizeProviderErrorCode still maps non-status context length messages', () => {
   assert.equal(
     normalizeProviderErrorCode(new Error('Model context length exceeded')),

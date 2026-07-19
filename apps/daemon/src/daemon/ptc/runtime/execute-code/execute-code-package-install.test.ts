@@ -166,6 +166,7 @@ void test('package install command targets the cumulative prefix with hardened n
   assert.ok(command.includes('--prefer-online'));
   assert.ok(command.includes('--ignore-scripts'));
   assert.ok(command.includes('--no-audit'));
+  assert.ok(command.includes('--no-update-notifier'));
   assert.ok(command.includes("--cache '/geulbat/package-cache/npm'"));
   assert.ok(
     command.includes(

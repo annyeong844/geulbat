@@ -1,9 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
+import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
 
 import { makeApprovalRequiredFixture } from '../../test-support/protocol-fixtures.js';
 import { RunTranscriptEntryBlock } from './assistant-transcript-entry-blocks.js';
+
+(
+  globalThis as typeof globalThis & {
+    IS_REACT_ACT_ENVIRONMENT?: boolean;
+  }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 void test('RunTranscriptEntryBlock renders run transcript leaf entries', () => {
   const assistantTextHtml = renderToStaticMarkup(
@@ -43,6 +50,72 @@ void test('RunTranscriptEntryBlock renders run transcript leaf entries', () => {
   assert.match(subagentHtml, /explorer 작업 완료/);
   assert.match(subagentHtml, /summary/);
   assert.match(subagentHtml, /<details/);
+});
+
+void test('RunTranscriptEntryBlock defers a live visualize iframe without dropping its layout shell', () => {
+  const markup = renderToStaticMarkup(
+    <RunTranscriptEntryBlock
+      entry={{
+        kind: 'tool_activity',
+        tool: 'visualize',
+        state: 'running',
+        argsText: JSON.stringify({
+          code: '<svg viewBox="0 0 10 10"><circle r="4" /></svg>',
+          title: 'Live visualization',
+        }),
+      }}
+      deferVisualizeRuntimeBoot
+    />,
+  );
+
+  assert.match(markup, /visualize-widget/);
+  assert.doesNotMatch(markup, /<iframe/);
+});
+
+void test('RunTranscriptEntryBlock keeps a live visualize iframe mounted during later scroll deferral', async () => {
+  const entry = {
+    kind: 'tool_activity' as const,
+    tool: 'visualize',
+    state: 'running' as const,
+    argsText: JSON.stringify({
+      code: '<svg viewBox="0 0 10 10"><circle r="4" /></svg>',
+      title: 'Live visualization',
+    }),
+  };
+  const partialEntry = {
+    ...entry,
+    argsText: '{"code":',
+  };
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <RunTranscriptEntryBlock entry={partialEntry} />,
+    );
+  });
+  assert.equal(renderer.root.findAllByType('iframe').length, 0);
+
+  await act(async () => {
+    renderer.update(
+      <RunTranscriptEntryBlock entry={entry} deferVisualizeRuntimeBoot />,
+    );
+  });
+  assert.equal(renderer.root.findAllByType('iframe').length, 0);
+
+  await act(async () => {
+    renderer.update(<RunTranscriptEntryBlock entry={entry} />);
+  });
+  const mountedFrame = renderer.root.findByType('iframe');
+
+  await act(async () => {
+    renderer.update(
+      <RunTranscriptEntryBlock entry={entry} deferVisualizeRuntimeBoot />,
+    );
+  });
+  assert.equal(renderer.root.findByType('iframe'), mountedFrame);
+
+  await act(async () => {
+    renderer.unmount();
+  });
 });
 
 void test('RunTranscriptEntryBlock renders subagent terminal telemetry as CC-style meta', () => {

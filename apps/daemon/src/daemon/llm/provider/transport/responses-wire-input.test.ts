@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import type { ProviderReplayScopeId } from '@geulbat/protocol/provider-auth';
 import type { HistoryItem } from '../wire/types.js';
 import { buildResponseWireInput } from './responses-wire-input.js';
 
@@ -147,6 +148,52 @@ void test('buildResponseWireInput replays opaque provider output before function
   ]);
 });
 
+void test('buildResponseWireInput rejects persisted provider state from another replay scope', () => {
+  const currentScope = `sha256:${'1'.repeat(64)}` as ProviderReplayScopeId;
+  const otherScope = `sha256:${'2'.repeat(64)}` as ProviderReplayScopeId;
+  const target = {
+    providerId: 'openai_codex_direct',
+    model: 'gpt-test',
+    providerReplayScopeId: currentScope,
+  };
+
+  assert.throws(
+    () =>
+      buildResponseWireInput(
+        [
+          {
+            kind: 'backend_item',
+            data: { id: 'reasoning-scope', type: 'reasoning' },
+            providerReplayScopeId: otherScope,
+          },
+        ],
+        target,
+      ),
+    /different authentication scope/u,
+  );
+  assert.throws(
+    () =>
+      buildResponseWireInput(
+        [
+          {
+            kind: 'provider_native_compaction',
+            providerId: target.providerId,
+            model: target.model,
+            providerReplayScopeId: null,
+            output: [
+              {
+                type: 'compaction',
+                encrypted_content: 'legacy-checkpoint',
+              },
+            ],
+          },
+        ],
+        target,
+      ),
+    /different authentication scope/u,
+  );
+});
+
 void test('buildResponseWireInput keeps batched calls before call-ordered outputs', () => {
   const reasoningItem = {
     id: 'rs_parallel',
@@ -235,7 +282,7 @@ void test('buildResponseWireInput rejects duplicate normalized and provider func
   );
 });
 
-void test('buildResponseWireInput rejects normalized function-call replay for Codex direct', () => {
+void test('buildResponseWireInput rejects normalized function-call replay for reasoning providers', () => {
   const normalizedFunctionCall = {
     kind: 'function_call' as const,
     id: 'fc-normalized',
@@ -252,19 +299,31 @@ void test('buildResponseWireInput rejects normalized function-call replay for Co
       }),
     /provider history item is invalid/u,
   );
+  assert.throws(
+    () =>
+      buildResponseWireInput([normalizedFunctionCall], {
+        providerId: 'grok_oauth',
+        model: 'grok-test',
+      }),
+    /provider history item is invalid/u,
+  );
+});
+
+void test('buildResponseWireInput replays a provider function call when the round has no reasoning item', () => {
+  const functionCall = {
+    id: 'fc-provider',
+    type: 'function_call',
+    call_id: 'call-1',
+    name: 'read_file',
+    arguments: '{"path":"README.md"}',
+  };
+
   assert.deepEqual(
-    buildResponseWireInput([normalizedFunctionCall], {
+    buildResponseWireInput([{ kind: 'backend_item', data: functionCall }], {
       providerId: 'grok_oauth',
       model: 'grok-test',
     }),
-    [
-      {
-        type: 'function_call',
-        call_id: 'call-1',
-        name: 'read_file',
-        arguments: '{"path":"README.md"}',
-      },
-    ],
+    [functionCall],
   );
 });
 

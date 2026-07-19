@@ -5,7 +5,7 @@ import {
   type PluginCapabilityView,
   type PluginInstallRequest,
 } from '@geulbat/protocol/plugins';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../../lib/error-message.js';
 
 import {
   installPlugin,

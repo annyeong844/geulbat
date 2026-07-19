@@ -155,6 +155,7 @@ void test('provider-native compaction requires pinned, replayable encrypted outp
     kind: 'provider_native',
     providerId: 'openai_codex_direct',
     model: 'model-a',
+    replayScopeId: `sha256:${'a'.repeat(64)}`,
     output: [
       {
         type: 'compaction',
@@ -168,6 +169,13 @@ void test('provider-native compaction requires pinned, replayable encrypted outp
 
   assert.equal(isProviderNativeCompactionEntryData(native), true);
   assert.equal(isCompactionEntryData(native), true);
+  assert.equal(
+    isProviderNativeCompactionEntryData({
+      ...native,
+      replayScopeId: 'sha256:not-a-digest',
+    }),
+    false,
+  );
   assert.equal(
     isProviderNativeCompactionEntryData({
       ...native,

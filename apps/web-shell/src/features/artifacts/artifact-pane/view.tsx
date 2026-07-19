@@ -1,6 +1,6 @@
 import { useState, type CSSProperties } from 'react';
 
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../../../lib/error-message.js';
 
 import { saveTextToLocalFile } from '../../../lib/save-local-file.js';
 

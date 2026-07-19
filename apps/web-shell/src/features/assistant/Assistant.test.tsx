@@ -13,6 +13,7 @@ import {
   createCommittedArtifactMessage,
 } from '../../test-support/thread-artifact-fixtures.js';
 import { makeApprovalRequiredFixture } from '../../test-support/protocol-fixtures.js';
+import { brandRunId } from '../../lib/id-brand-helpers.js';
 
 (
   globalThis as typeof globalThis & {
@@ -549,7 +550,7 @@ void test('assistant keeps legacy transcript envelope content as plain text with
           timestamp: '2026-03-24T00:00:01.000Z',
           metadata: {
             sourceFile: 'episodes/ch01.md',
-            sourceRunId: 'run-1',
+            sourceRunId: brandRunId('run-1'),
             phase: 'final_answer',
           },
         },

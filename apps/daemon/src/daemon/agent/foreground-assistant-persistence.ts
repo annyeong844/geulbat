@@ -2,10 +2,12 @@ import { createLogger } from '@geulbat/shared-utils/logger';
 
 import type {
   ArtifactRef,
+  RunId,
   ThreadArtifactVersion,
   ThreadMessage,
   ThreadMessageMetadata,
 } from './contract.js';
+import { assertAgentRunId } from './contract.js';
 
 import type { AgentInput } from './loop-types.js';
 import type { AgentArtifactCandidate, AgentResult } from './agent-result.js';
@@ -96,13 +98,14 @@ async function persistAssistantAnswer(args: {
     onArtifactCommitted,
     deps,
   } = args;
+  const sourceRunId = assertAgentRunId(runId);
   const timestamp = deps.now();
   const committedArtifact = artifactCandidate
     ? await commitAssistantArtifactCandidate({
         workspaceRoot,
         workingDirectory,
         threadId,
-        runId,
+        runId: sourceRunId,
         ...(currentFile !== undefined ? { currentFile } : {}),
         candidate: artifactCandidate,
         timestamp,
@@ -113,7 +116,7 @@ async function persistAssistantAnswer(args: {
   const assistantMetadataArgs: Parameters<
     typeof buildAssistantTranscriptMetadata
   >[0] = {
-    runId,
+    runId: sourceRunId,
     artifactRef: committedArtifact?.ref ?? null,
   };
 
@@ -230,7 +233,7 @@ async function commitAssistantArtifactCandidate(args: {
 }
 
 function buildAssistantTranscriptMetadata(args: {
-  runId: string;
+  runId: RunId;
   currentFile?: string;
   artifactRef?: ArtifactRef | null;
   toolCommittedArtifactRefs?: readonly ArtifactRef[];

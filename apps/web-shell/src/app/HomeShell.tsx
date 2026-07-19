@@ -27,7 +27,7 @@ import {
   commitArtifactDraftVersion,
   threadAttachmentUrl,
 } from '../lib/api/threads.js';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../lib/error-message.js';
 import {
   isShellCenterHidden,
   type HomeShellProps,

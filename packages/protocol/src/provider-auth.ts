@@ -11,6 +11,14 @@ export const PROVIDER_AUTH_PROVIDER_IDS = [
 export type ProviderAuthProviderId =
   (typeof PROVIDER_AUTH_PROVIDER_IDS)[number];
 
+export type ProviderReplayScopeId = `sha256:${string}`;
+
+export function isProviderReplayScopeId(
+  value: unknown,
+): value is ProviderReplayScopeId {
+  return typeof value === 'string' && /^sha256:[a-f0-9]{64}$/u.test(value);
+}
+
 export interface ProviderAuthStartResponse {
   authSessionId: string;
   authorizeUrl: string;

@@ -16,6 +16,7 @@
     { "path": "packages/shared-utils" },
     { "path": "packages/protocol" },
     { "path": "packages/agent-loop" },
+    { "path": "packages/tool-sdk" },
     { "path": "packages/tool-library" },
     { "path": "apps/daemon" },
     { "path": "apps/web-shell" }

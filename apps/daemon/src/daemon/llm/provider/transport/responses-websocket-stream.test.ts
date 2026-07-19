@@ -146,7 +146,9 @@ void test('iterateWebSocketEvents surfaces websocket error events', async () => 
   socket.emit('error', failure);
 
   await assert.rejects(nextFrame, (error: unknown) => {
-    assert.equal(error, failure);
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, failure.message);
+    assert.equal(Reflect.get(error, 'llmCode'), 'llm_connection_lost');
     return true;
   });
 });

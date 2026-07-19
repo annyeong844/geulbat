@@ -3,7 +3,7 @@ import type {
   McpServerCreateRequest,
   McpServerView,
 } from '@geulbat/protocol/mcp';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../../lib/error-message.js';
 
 import {
   addMcpServer,

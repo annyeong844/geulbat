@@ -407,6 +407,9 @@ export function isRunPromptInputRefResponse(
 }
 
 function isRunRequestBase(value: Record<string, unknown>): boolean {
+  // run.start selects model, permissions, tools, workspace, and media policy.
+  // Treat it as a closed mutation/authority command so misspelled selectors do
+  // not disappear while the daemon executes a different intent.
   return (
     hasOnlyKeys(value, [
       'prompt',

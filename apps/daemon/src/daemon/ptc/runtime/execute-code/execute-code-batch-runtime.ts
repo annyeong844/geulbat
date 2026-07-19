@@ -1,3 +1,5 @@
+import { posix as pathPosix } from 'node:path';
+
 import { definedPtcProps, isPtcRecord } from '../../shared/record-shape.js';
 import type { PtcLabAdmittedProfile } from '../../lab/profile/lab-profile.js';
 import {
@@ -38,6 +40,7 @@ import {
 import {
   PTC_EXECUTE_CODE_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,
+  type PtcExecuteCodeModuleFormat,
   type PtcExecuteCodePlacementResourceSnapshotRef,
   type PtcExecuteCodeRuntimeResult,
   type PtcExecuteCodeRuntimeSummary,
@@ -161,6 +164,9 @@ export async function runExecuteCodeRuntimeAttempt(args: {
 
     const command = buildNodeExecuteCodeCommand(args.request.code, {
       sdkHelpBundle: args.sdkHelpBundle,
+      ...(args.request.moduleFormat === undefined
+        ? {}
+        : { moduleFormat: args.request.moduleFormat }),
       ...(args.installedPackagesNodePath === undefined
         ? {}
         : { installedPackagesNodePath: args.installedPackagesNodePath }),
@@ -318,40 +324,74 @@ export function buildNodeExecuteCodeCommand(
     callbackConfig?: { socketPath: string; token: string };
     sdkHelpBundle: ReturnType<typeof buildPtcExecuteCodeSdkHelpBundle>;
     installedPackagesNodePath?: string;
+    moduleFormat?: PtcExecuteCodeModuleFormat;
   },
 ): string {
-  const runnerSource = [
-    'const __geulbatUserRun = async (console, require, process, geulbat) => {',
-    code,
-    '};',
-    '(async () => {',
-    buildPtcExecuteCodeGeulbatFacadeSource({
-      ...(args.callbackConfig === undefined
-        ? {}
-        : { callbackConfig: args.callbackConfig }),
-      helpBundle: args.sdkHelpBundle,
-    }),
-    buildPtcExecuteCodeReservedSdkRequireSource(args.sdkHelpBundle),
-    'const value = await __geulbatUserRun(console, __geulbatReservedRequire, process, geulbat);',
-    "if (value !== undefined) { const printable = typeof value === 'string' ? value : JSON.stringify(value); if (printable !== undefined) process.stdout.write(`${printable}\\n`); }",
-    '})().catch((error) => { const message = error && error.stack ? error.stack : String(error); process.stderr.write(`${message}\\n`); process.exitCode = 1; });',
-  ].join('\n');
+  const moduleFormat = args.moduleFormat ?? 'commonjs';
+  const facadeSource = buildPtcExecuteCodeGeulbatFacadeSource({
+    ...(args.callbackConfig === undefined
+      ? {}
+      : { callbackConfig: args.callbackConfig }),
+    helpBundle: args.sdkHelpBundle,
+  });
+  const sdkRequireSource = buildPtcExecuteCodeReservedSdkRequireSource(
+    args.sdkHelpBundle,
+  );
+  const runnerSource =
+    moduleFormat === 'esm'
+      ? [
+          "import { createRequire as __geulbatCreateRequire } from 'node:module';",
+          'const require = __geulbatCreateRequire(import.meta.url);',
+          ...(args.installedPackagesNodePath === undefined
+            ? []
+            : [
+                'const __geulbatOriginalCwd = process.env.GEULBAT_PTC_ORIGINAL_CWD;',
+                'if (__geulbatOriginalCwd !== undefined) { process.chdir(__geulbatOriginalCwd); delete process.env.GEULBAT_PTC_ORIGINAL_CWD; }',
+              ]),
+          facadeSource,
+          sdkRequireSource,
+          code,
+        ].join('\n')
+      : [
+          'const __geulbatUserRun = async (console, require, process, geulbat) => {',
+          code,
+          '};',
+          '(async () => {',
+          facadeSource,
+          sdkRequireSource,
+          'const value = await __geulbatUserRun(console, __geulbatReservedRequire, process, geulbat);',
+          "if (value !== undefined) { const printable = typeof value === 'string' ? value : JSON.stringify(value); if (printable !== undefined) process.stdout.write(`${printable}\\n`); }",
+          '})().catch((error) => { const message = error && error.stack ? error.stack : String(error); process.stderr.write(`${message}\\n`); process.exitCode = 1; });',
+        ].join('\n');
   const encodedRunner = Buffer.from(runnerSource, 'utf8').toString('base64');
-  const decodeRunner =
-    "process.stdout.write(Buffer.from(process.argv[1] ?? '', 'base64'))";
+  const esmPackageRoot =
+    moduleFormat === 'esm' && args.installedPackagesNodePath !== undefined
+      ? pathPosix.dirname(args.installedPackagesNodePath)
+      : undefined;
 
   return [
     `GEULBAT_PTC_RUNNER_B64=${shellSingleQuote(encodedRunner)};`,
-    ...(args.installedPackagesNodePath === undefined
+    ...(esmPackageRoot === undefined
+      ? []
+      : [
+          'export GEULBAT_PTC_ORIGINAL_CWD="$PWD";',
+          `mkdir -p ${shellSingleQuote(esmPackageRoot)} || exit $?;`,
+          `cd ${shellSingleQuote(esmPackageRoot)} || exit $?;`,
+        ]),
+    `GEULBAT_PTC_RUNNER_SOURCE="$(printf '%s' "$GEULBAT_PTC_RUNNER_B64" | base64 --decode)" || exit $?;`,
+    ...(moduleFormat !== 'commonjs' ||
+    args.installedPackagesNodePath === undefined
       ? []
       : [`NODE_PATH=${shellSingleQuote(args.installedPackagesNodePath)}`]),
-    // CommonJS-only reachability contract: installed packages are visible to
-    // require() through NODE_PATH; ESM bare imports stay out of scope.
     'exec',
     'node',
-    '--input-type=commonjs-typescript',
-    '-e',
-    `"$(node -e ${shellSingleQuote(decodeRunner)} "$GEULBAT_PTC_RUNNER_B64")"`,
+    '--no-warnings=ExperimentalWarning',
+    '--experimental-transform-types',
+    moduleFormat === 'esm'
+      ? '--input-type=module-typescript'
+      : '--input-type=commonjs-typescript',
+    '-',
+    '<<< "$GEULBAT_PTC_RUNNER_SOURCE"',
   ].join(' ');
 }
 

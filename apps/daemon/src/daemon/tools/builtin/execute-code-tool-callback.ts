@@ -8,7 +8,7 @@ import {
   type PtcExecuteCodeRuntimeSdkProjection,
   type PtcExecuteCodeRuntimeToolCallbackHandler,
 } from '../../ptc/runtime/execute-code/execute-code-runtime-contract.js';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../../utils/error.js';
 import { resolveToolLibraryProjectionMountedModule } from '../tool-library-projection-mount.js';
 import { resolveRuntimeSideEffectLevel } from '../approval-runtime-policy.js';
 import type { ToolExecutionContext } from '../types.js';

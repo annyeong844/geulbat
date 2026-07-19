@@ -63,7 +63,12 @@ async function main() {
   );
 
   const daemonLogs = [];
-  const daemon = startDaemon({ repoRoot, logs: daemonLogs, watch: true });
+  const daemon = startDaemon({
+    repoRoot,
+    logs: daemonLogs,
+    watch: true,
+    enablePublicWebConformanceFixtures: true,
+  });
 
   try {
     await waitForDaemonReady(daemonHostUrl, daemonLogs);

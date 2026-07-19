@@ -1,7 +1,7 @@
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
-import { brandThreadId } from '../lib/id-brand-helpers.js';
+import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
 
 const THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000001');
 
@@ -89,7 +89,9 @@ export function createCommittedArtifactMessage(
     metadata: {
       phase: 'final_answer',
       ...(sourceFile !== undefined ? { sourceFile } : {}),
-      ...(sourceRunId !== undefined ? { sourceRunId } : {}),
+      ...(sourceRunId !== undefined
+        ? { sourceRunId: brandRunId(sourceRunId) }
+        : {}),
       artifactRefs: [
         { artifactId: artifact.artifactId, version: artifact.version },
       ],

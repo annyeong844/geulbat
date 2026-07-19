@@ -1,4 +1,4 @@
-import { memo, PureComponent, type ReactNode } from 'react';
+import { memo, PureComponent, type ReactElement, type ReactNode } from 'react';
 import ReactMarkdown, {
   type Components,
   type Options as ReactMarkdownOptions,
@@ -15,6 +15,10 @@ const REMARK_PLUGINS = [
 const MARKDOWN_SOURCE_PROCESSOR = unified()
   .use(remarkParse)
   .use(remarkGfm, REMARK_GFM_OPTIONS);
+const PREPARED_MARKDOWN_BY_OWNER = new WeakMap<
+  object,
+  Map<string, ReactElement>
+>();
 
 const MARKDOWN_COMPONENTS = {
   a({ children, href, title }) {
@@ -70,8 +74,24 @@ const MARKDOWN_COMPONENTS = {
   },
 } satisfies Components;
 
-export function buildMarkdownBlocks(markdown: string): ReactNode[] {
-  return [<IncrementalMarkdown key="markdown" markdown={markdown} />];
+export function buildMarkdownBlocks(
+  markdown: string,
+  renderCacheOwner?: object,
+): ReactNode[] {
+  return [
+    <IncrementalMarkdown
+      key="markdown"
+      markdown={markdown}
+      {...(renderCacheOwner !== undefined ? { renderCacheOwner } : {})}
+    />,
+  ];
+}
+
+export function prepareMarkdownBlocks(
+  renderCacheOwner: object,
+  markdown: string,
+): void {
+  readPreparedMarkdown(renderCacheOwner, markdown);
 }
 
 interface MarkdownSourceNode {
@@ -83,20 +103,33 @@ interface MarkdownSourceNode {
 
 interface MarkdownSourceProjection {
   markdown: string;
-  nodes: MarkdownSourceNode[];
+  stableContentNodes: MarkdownSourceNode[];
+  stableDefinitionSources: string[];
+  tailNode: MarkdownSourceNode | null;
 }
 
 class IncrementalMarkdown extends PureComponent<
-  { markdown: string },
+  { markdown: string; renderCacheOwner?: object },
   { projection: MarkdownSourceProjection; hasUpdated: boolean }
 > {
-  state: { projection: MarkdownSourceProjection; hasUpdated: boolean } = {
-    projection: { markdown: this.props.markdown, nodes: [] },
-    hasUpdated: false,
-  };
+  state: { projection: MarkdownSourceProjection; hasUpdated: boolean } =
+    this.props.renderCacheOwner === undefined
+      ? {
+          projection: projectMarkdownSource(this.props.markdown, null),
+          hasUpdated: true,
+        }
+      : {
+          projection: {
+            markdown: this.props.markdown,
+            stableContentNodes: [],
+            stableDefinitionSources: [],
+            tailNode: null,
+          },
+          hasUpdated: false,
+        };
 
   static getDerivedStateFromProps(
-    props: { markdown: string },
+    props: { markdown: string; renderCacheOwner?: object },
     state: { projection: MarkdownSourceProjection; hasUpdated: boolean },
   ) {
     if (props.markdown === state.projection.markdown) {
@@ -110,41 +143,108 @@ class IncrementalMarkdown extends PureComponent<
 
   render() {
     if (!this.state.hasUpdated) {
-      return <MarkdownBlock markdown={this.props.markdown} />;
+      return (
+        <MarkdownBlock
+          markdown={this.props.markdown}
+          {...(this.props.renderCacheOwner !== undefined
+            ? { renderCacheOwner: this.props.renderCacheOwner }
+            : {})}
+        />
+      );
     }
 
-    const definitions = this.state.projection.nodes
-      .filter((node) => node.isDefinition)
-      .map((node) => node.source)
-      .join('\n\n');
+    const { stableContentNodes, stableDefinitionSources, tailNode } =
+      this.state.projection;
+    const definitions = [
+      ...stableDefinitionSources,
+      ...(tailNode?.isDefinition === true ? [tailNode.source] : []),
+    ].join('\n\n');
 
-    return this.state.projection.nodes
-      .filter((node) => !node.isDefinition)
-      .map((node) => (
-        <MarkdownBlock
-          key={node.key}
-          markdown={
-            definitions ? `${node.source}\n\n${definitions}` : node.source
-          }
+    return (
+      <>
+        <StableMarkdownBlocks
+          nodes={stableContentNodes}
+          definitions={definitions}
+          {...(this.props.renderCacheOwner !== undefined
+            ? { renderCacheOwner: this.props.renderCacheOwner }
+            : {})}
         />
-      ));
+        {tailNode !== null && !tailNode.isDefinition ? (
+          <MarkdownBlock
+            key={tailNode.key}
+            markdown={
+              definitions
+                ? `${tailNode.source}\n\n${definitions}`
+                : tailNode.source
+            }
+            {...(this.props.renderCacheOwner !== undefined
+              ? { renderCacheOwner: this.props.renderCacheOwner }
+              : {})}
+          />
+        ) : null}
+      </>
+    );
   }
 }
 
-const MarkdownBlock = memo(function MarkdownBlock(props: { markdown: string }) {
-  return (
-    <div className="rendered-markdown">
-      <ReactMarkdown
-        remarkPlugins={REMARK_PLUGINS}
-        components={MARKDOWN_COMPONENTS}
-        skipHtml
-        urlTransform={transformMarkdownUrl}
-      >
-        {props.markdown}
-      </ReactMarkdown>
-    </div>
-  );
+const StableMarkdownBlocks = memo(function StableMarkdownBlocks(props: {
+  nodes: MarkdownSourceNode[];
+  definitions: string;
+  renderCacheOwner?: object;
+}) {
+  return props.nodes.map((node) => (
+    <MarkdownBlock
+      key={node.key}
+      markdown={
+        props.definitions
+          ? `${node.source}\n\n${props.definitions}`
+          : node.source
+      }
+      {...(props.renderCacheOwner !== undefined
+        ? { renderCacheOwner: props.renderCacheOwner }
+        : {})}
+    />
+  ));
 });
+
+const MarkdownBlock = memo(function MarkdownBlock(props: {
+  markdown: string;
+  renderCacheOwner?: object;
+}) {
+  const rendered =
+    props.renderCacheOwner === undefined
+      ? renderMarkdown(props.markdown)
+      : readPreparedMarkdown(props.renderCacheOwner, props.markdown);
+  return <div className="rendered-markdown">{rendered}</div>;
+});
+
+function readPreparedMarkdown(
+  renderCacheOwner: object,
+  markdown: string,
+): ReactElement {
+  let preparedByMarkdown = PREPARED_MARKDOWN_BY_OWNER.get(renderCacheOwner);
+  if (preparedByMarkdown === undefined) {
+    preparedByMarkdown = new Map();
+    PREPARED_MARKDOWN_BY_OWNER.set(renderCacheOwner, preparedByMarkdown);
+  }
+  const prepared = preparedByMarkdown.get(markdown);
+  if (prepared !== undefined) {
+    return prepared;
+  }
+  const next = renderMarkdown(markdown);
+  preparedByMarkdown.set(markdown, next);
+  return next;
+}
+
+function renderMarkdown(markdown: string): ReactElement {
+  return ReactMarkdown({
+    remarkPlugins: REMARK_PLUGINS,
+    components: MARKDOWN_COMPONENTS,
+    skipHtml: true,
+    urlTransform: transformMarkdownUrl,
+    children: markdown,
+  });
+}
 
 function projectMarkdownSource(
   markdown: string,
@@ -152,26 +252,59 @@ function projectMarkdownSource(
 ): MarkdownSourceProjection {
   if (
     previous === null ||
-    previous.nodes.length === 0 ||
+    previous.tailNode === null ||
     !markdown.startsWith(previous.markdown)
   ) {
-    return {
+    return createMarkdownSourceProjection(
       markdown,
-      nodes: parseMarkdownSourceNodes(markdown, 0),
-    };
+      parseMarkdownSourceNodes(markdown, 0),
+    );
   }
 
-  const previousTail = previous.nodes.at(-1)!;
-  const stableNodes = previous.nodes.slice(0, -1);
+  const parsedTail = parseMarkdownSourceNodes(
+    markdown.slice(previous.tailNode.startOffset),
+    previous.tailNode.startOffset,
+  );
+  if (parsedTail.length === 0) {
+    return createMarkdownSourceProjection(
+      markdown,
+      parseMarkdownSourceNodes(markdown, 0),
+    );
+  }
+
+  const promotedNodes = parsedTail.slice(0, -1);
+  const promotedContentNodes = promotedNodes.filter(
+    (node) => !node.isDefinition,
+  );
+  const promotedDefinitionSources = promotedNodes
+    .filter((node) => node.isDefinition)
+    .map((node) => node.source);
   return {
     markdown,
-    nodes: [
-      ...stableNodes,
-      ...parseMarkdownSourceNodes(
-        markdown.slice(previousTail.startOffset),
-        previousTail.startOffset,
-      ),
-    ],
+    stableContentNodes:
+      promotedContentNodes.length === 0
+        ? previous.stableContentNodes
+        : [...previous.stableContentNodes, ...promotedContentNodes],
+    stableDefinitionSources:
+      promotedDefinitionSources.length === 0
+        ? previous.stableDefinitionSources
+        : [...previous.stableDefinitionSources, ...promotedDefinitionSources],
+    tailNode: parsedTail.at(-1) ?? null,
+  };
+}
+
+function createMarkdownSourceProjection(
+  markdown: string,
+  nodes: MarkdownSourceNode[],
+): MarkdownSourceProjection {
+  const stableNodes = nodes.slice(0, -1);
+  return {
+    markdown,
+    stableContentNodes: stableNodes.filter((node) => !node.isDefinition),
+    stableDefinitionSources: stableNodes
+      .filter((node) => node.isDefinition)
+      .map((node) => node.source),
+    tailNode: nodes.at(-1) ?? null,
   };
 }
 

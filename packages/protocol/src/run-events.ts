@@ -629,6 +629,17 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+function isRunEventTimestamp(value: unknown): value is string {
+  if (
+    !isString(value) ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)
+  ) {
+    return false;
+  }
+  const parsed = Date.parse(value);
+  return !Number.isNaN(parsed) && new Date(parsed).toISOString() === value;
+}
+
 function isPositiveSafeInteger(value: unknown): value is number {
   return isNonNegativeSafeInteger(value) && value > 0;
 }
@@ -699,8 +710,8 @@ export function isRunEvent(value: unknown): value is RunEvent {
     !isRunId(value.runId) ||
     !isString(value.threadId) ||
     !isThreadId(value.threadId) ||
-    !isNumber(value.seq) ||
-    !isString(value.ts)
+    !isNonNegativeSafeInteger(value.seq) ||
+    !isRunEventTimestamp(value.ts)
   ) {
     return false;
   }

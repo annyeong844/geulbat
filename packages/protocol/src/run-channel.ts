@@ -1,7 +1,7 @@
 import { isApprovalRequest, type ApprovalRequest } from './run-approval.js';
 import { isCancelRequest, type CancelRequest } from './cancel.js';
 import { isErrorCode, type ErrorCode } from './errors.js';
-import { isRunId, isThreadId } from './ids.js';
+import { isRunId, isThreadId, type ThreadId } from './ids.js';
 import { isRunEvent, type RunEvent } from './run-events.js';
 import { isRunStartRequest, type RunStartRequest } from './run-contract.js';
 import { isBoolean, isNumber, isRecord, isString } from './runtime-utils.js';
@@ -78,7 +78,7 @@ interface RunEventAckEnvelopeMessage {
 }
 
 export interface RunToolRequest {
-  threadId: string;
+  threadId: ThreadId;
   toolName: string;
   args: Record<string, unknown>;
   scopeHandle: string;
@@ -89,8 +89,18 @@ export interface RunToolRequest {
 
 export type RunToolResultPayload =
   | { ok: true; output: string }
-  | { ok: false; errorCode: string; error: string };
+  | {
+      ok: false;
+      // Daemon tool failures use ErrorCode. `unavailable` is owned by the
+      // in-shell artifact-frame bridge when no tool channel is wired.
+      errorCode: ErrorCode | 'unavailable';
+      error: string;
+    };
 
+/**
+ * Transport-level client messages. Envelope-only variants retain an opaque
+ * request record until their capability-specific reader validates it.
+ */
 export type RunChannelClientMessage =
   | RunAuthMessage
   | RunStartMessage
@@ -193,9 +203,13 @@ export type RunChannelServerMessage =
   | RunControlMessage
   | RunErrorMessage;
 
+// Authentication is the one client message whose authority-bearing fields live
+// directly on the transport envelope. Keep it exact so a misspelled or future
+// auth selector cannot be silently ignored by an older daemon.
 export function isRunAuthMessage(value: unknown): value is RunAuthMessage {
   return (
     isRecord(value) &&
+    hasOnlyKeys(value, ['type', 'requestId', 'token']) &&
     value.type === 'run.auth' &&
     isString(value.requestId) &&
     isString(value.token)
@@ -231,6 +245,12 @@ export function isRunStartMessage(value: unknown): value is RunStartMessage {
   );
 }
 
+/**
+ * These guards validate only the transport envelope. Extra envelope fields are
+ * intentionally additive; each opaque request record is decoded by its
+ * capability owner before dispatch, and that full decoder owns unknown-key
+ * policy for the authority or mutation command itself.
+ */
 export function isRunInterjectEnvelope(
   value: unknown,
 ): value is RunInterjectEnvelopeMessage {
@@ -282,6 +302,7 @@ function isRunEventSequence(value: unknown): value is number {
 function isRunEventAckRequest(value: unknown): value is RunEventAckRequest {
   return (
     isRecord(value) &&
+    hasOnlyKeys(value, ['runId', 'threadId', 'seq']) &&
     isString(value.runId) &&
     isRunId(value.runId) &&
     isString(value.threadId) &&
@@ -309,23 +330,9 @@ function isRunToolResultPayload(value: unknown): value is RunToolResultPayload {
     return isString(value.output);
   }
   return (
-    value.ok === false && isString(value.errorCode) && isString(value.error)
-  );
-}
-
-export function isRunChannelClientMessage(
-  value: unknown,
-): value is RunChannelClientMessage {
-  return (
-    isRunAuthMessage(value) ||
-    isRunCancelMessage(value) ||
-    isRunApproveMessage(value) ||
-    isRunStartMessage(value) ||
-    isRunInterjectEnvelope(value) ||
-    isRunInterjectCancelEnvelope(value) ||
-    isRunInterjectFlushEnvelope(value) ||
-    isRunEventAckEnvelope(value) ||
-    isRunToolEnvelope(value)
+    value.ok === false &&
+    (isErrorCode(value.errorCode) || value.errorCode === 'unavailable') &&
+    isString(value.error)
   );
 }
 
@@ -385,6 +392,9 @@ function hasValidRunControlFields(
   );
 }
 
+// Server messages are informational projections. Their required semantic
+// fields remain validated, while unknown fields are intentionally tolerated so
+// an older shell can ignore additive diagnostics from a newer daemon.
 export function isRunChannelServerMessage(
   value: unknown,
 ): value is RunChannelServerMessage {
@@ -418,4 +428,11 @@ export function isRunChannelServerMessage(
     default:
       return false;
   }
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+): boolean {
+  return Object.keys(value).every((key) => allowedKeys.includes(key));
 }

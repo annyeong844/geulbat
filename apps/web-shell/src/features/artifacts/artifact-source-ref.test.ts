@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
-import { brandThreadId } from '../../lib/id-brand-helpers.js';
+import { brandRunId, brandThreadId } from '../../lib/id-brand-helpers.js';
 import {
   buildCanonicalArtifactSourceRef,
   buildCommittedArtifactSourceRef,
@@ -23,7 +23,7 @@ void test('artifact source ref helpers assemble transcript, streaming, and commi
     timestamp: '2026-04-12T00:00:00.000Z',
     metadata: {
       phase: 'final_answer',
-      sourceRunId: 'run-transcript',
+      sourceRunId: brandRunId('run-transcript'),
       sourceFile: 'notes/demo.md',
     },
   };

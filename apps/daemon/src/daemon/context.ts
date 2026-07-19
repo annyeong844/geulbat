@@ -121,6 +121,10 @@ import type { ToolLibraryProjectionPort } from './tools/tool-library-projection-
 import type { ToolRegistryStore } from './tools/registry.js';
 import { createBuiltinToolRegistryStore } from './tools/builtin/catalog.js';
 import {
+  createDaemonToolSdkTransport,
+  type CreateDaemonToolSdkTransportOptions,
+} from './tools/external-tool-sdk-transport.js';
+import {
   createSubagentAdmissionController,
   resolveSubagentConcurrencyPolicyFromEnv,
   type SubagentConcurrencyPolicy,
@@ -131,14 +135,7 @@ import {
   type ResourceBudgetProvider,
   type ResourceBudgetSnapshot,
 } from './agent/resource-budget-provider.js';
-import {
-  createAgentWavePlanner,
-  type AgentWavePlanner,
-} from './agent/agent-wave-planner.js';
-import {
-  createAgentWorkflowRunner,
-  type AgentWorkflowRunner,
-} from './agent/agent-workflow-runner.js';
+import { maybeOffloadToolResult } from './agent/tool-output-offload.js';
 import { createSubagentRunLauncher } from './agent/subagent-support.js';
 import type { SubagentRunLauncher } from './daemon-runtime-contract.js';
 import {
@@ -228,8 +225,6 @@ export interface DaemonContext {
   providerAuthRuntime: ProviderAuthRuntimeStore;
   providerRequestOptions: ProviderRequestOptions;
   reactBundleStructuredOutputIngressPolicy: ReactBundleStructuredOutputIngressPolicy;
-  agentWorkflowRunner: AgentWorkflowRunner;
-  agentWavePlanner: AgentWavePlanner;
   imageGeneration: ImageGenerationRuntime;
   videoGeneration: VideoGenerationRuntime;
   memoryIndex: MemoryIndexStore;
@@ -254,6 +249,12 @@ export interface DaemonContext {
   subagentRuns: SubagentRunLauncher;
   toolLibraryProjection: ToolLibraryProjectionPort;
   toolRegistry: ToolRegistryStore;
+  createExternalToolSdkTransport<Principal>(
+    options: Omit<
+      CreateDaemonToolSdkTransportOptions<Principal>,
+      'offloadResult' | 'registry'
+    >,
+  ): ReturnType<typeof createDaemonToolSdkTransport>;
 }
 
 function dispatchArtifactFrameToolFromDaemonContext(args: {
@@ -342,7 +343,6 @@ export function createDaemonContext(
       ptcExecuteCodeRuntimeOptions.runtimeRootForState ??
       resolvePtcExecuteCodeRuntimeRoot,
   });
-  const agentWavePlanner = createAgentWavePlanner();
   const providerWebSocketSessions = createResponsesWebSocketSessionStore();
   const toolRegistry = createBuiltinToolRegistryStore({
     includeInstallPackagesTool: ptcPackageInstallConfig?.enabled === true,
@@ -398,11 +398,6 @@ export function createDaemonContext(
     providerAuthRuntime,
     providerRequestOptions,
     reactBundleStructuredOutputIngressPolicy,
-    agentWorkflowRunner: createAgentWorkflowRunner({
-      agentWavePlanner,
-      resourceBudgetProvider,
-    }),
-    agentWavePlanner,
     imageGeneration: createImageGenerationRuntime({
       providerAuthRuntime,
       providerWebSocketSessions,
@@ -454,6 +449,34 @@ export function createDaemonContext(
     subagentRuns: createSubagentRunLauncher(),
     toolLibraryProjection,
     toolRegistry,
+    createExternalToolSdkTransport: (transportOptions) =>
+      createDaemonToolSdkTransport({
+        ...transportOptions,
+        offloadResult: async ({ context, input, internalTool, output }) => {
+          if (
+            context.threadId === undefined ||
+            context.runId === undefined ||
+            context.stateRoot === undefined
+          ) {
+            return { ok: true, output };
+          }
+          return maybeOffloadToolResult({
+            functionCall: {
+              callId: context.callId,
+              name: internalTool,
+              arguments: JSON.stringify(input),
+            },
+            runContext: {
+              threadId: context.threadId,
+              stateRoot: context.stateRoot,
+            },
+            runId: context.runId,
+            toolOutputRecoveryAvailable: true,
+            toolResult: { ok: true, output },
+          });
+        },
+        registry: toolRegistry,
+      }),
   };
   return daemonContext;
 }

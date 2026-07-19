@@ -1,4 +1,5 @@
 import { evaluateContextCompactionTrigger } from '@geulbat/agent-loop/context-compaction';
+import type { ProviderReplayScopeId } from '../../runtime-contracts.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 
 import {
@@ -12,13 +13,16 @@ import {
   type ProviderNativeCompactionInput,
   type ProviderNativeCompactionPolicy,
 } from '../../llm/provider/provider-native-compaction.js';
+import { resolveGrokOAuthModelDescriptor } from '../../llm/provider/grok-oauth-transport.js';
+import { normalizeProviderErrorCode } from '../../llm/provider/provider-error.js';
+import { resolveProviderReplayScopeForRun } from '../../llm/provider/provider-replay-scope.js';
+import { resolveCodexResponsesUrl } from '../../llm/provider/transport/responses-websocket-url.js';
 import type { HistoryItem } from '../../llm/provider/wire/types.js';
 import {
   resolveProviderRequestOptionsForRun,
   type ProviderRequestOptions,
 } from '../../llm/provider/provider-options.js';
 import type { ToolDefinition } from '../../tools/types.js';
-import { getErrorMessage } from '../../utils/error.js';
 import type { AgentEventPayloadMap } from '../events.js';
 import { loadInitialHistory } from '../loop-history.js';
 import {
@@ -34,6 +38,7 @@ interface CompactAfterModelRoundArgs {
   tools: ToolDefinition[];
   providerAuthRuntime: ProviderNativeCompactionInput['providerAuthRuntime'];
   providerRequestOptions: ProviderRequestOptions;
+  providerReplayScopeId?: ProviderReplayScopeId;
   inputTokens?: number;
   onContextUsage?: (
     snapshot: AgentEventPayloadMap['context_usage_updated'],
@@ -115,6 +120,7 @@ interface ProviderTransitionCompactionDependencies {
   callModel: typeof callModel;
   compactThread: typeof compactThreadContextForProviderTransition;
   loadHistory: typeof loadInitialHistory;
+  resolveReplayScope: typeof resolveProviderReplayScopeForRun;
 }
 
 const defaultProviderTransitionCompactionDependencies: ProviderTransitionCompactionDependencies =
@@ -122,6 +128,7 @@ const defaultProviderTransitionCompactionDependencies: ProviderTransitionCompact
     callModel,
     compactThread: compactThreadContextForProviderTransition,
     loadHistory: loadInitialHistory,
+    resolveReplayScope: resolveProviderReplayScopeForRun,
   };
 
 export async function prepareProviderTransitionCompaction(
@@ -145,6 +152,15 @@ export async function prepareProviderTransitionCompaction(
   );
 
   try {
+    const providerReplayScopeId = await deps.resolveReplayScope({
+      providerId: providerRequestOptions.providerId,
+      endpoint:
+        providerRequestOptions.providerId === 'grok_oauth'
+          ? resolveGrokOAuthModelDescriptor(providerRequestOptions.model)
+              .baseUrl
+          : resolveCodexResponsesUrl(),
+      providerAuthRuntime: args.providerAuthRuntime,
+    });
     const result = await deps.compactThread({
       workspaceRoot: args.workspaceRoot,
       threadId: args.threadId,
@@ -162,6 +178,7 @@ export async function prepareProviderTransitionCompaction(
             {
               providerId: args.source.providerId,
               model: args.source.model,
+              replayScopeId: providerReplayScopeId,
             },
           );
           return await collectProviderTransitionSummary(
@@ -173,6 +190,7 @@ export async function prepareProviderTransitionCompaction(
               providerWebSocketSessions: args.providerWebSocketSessions,
               providerAuthRuntime: args.providerAuthRuntime,
               providerRequestOptions,
+              providerReplayScopeId,
               ...(signal === undefined ? {} : { signal }),
             }),
           );
@@ -208,7 +226,7 @@ export async function prepareProviderTransitionCompaction(
       sourceModel: args.source.model,
       targetProviderId: args.target.providerId,
       targetModel: args.target.model,
-      cause: getErrorMessage(error),
+      code: normalizeProviderErrorCode(error),
     });
     return {
       kind: 'failed',
@@ -304,6 +322,9 @@ export function createAgentLoopMemoryPort(
         providerSessionId: args.threadId,
         providerAuthRuntime: args.providerAuthRuntime,
         providerRequestOptions: args.providerRequestOptions,
+        ...(args.providerReplayScopeId === undefined
+          ? {}
+          : { providerReplayScopeId: args.providerReplayScopeId }),
         ...(args.signal !== undefined ? { signal: args.signal } : {}),
       };
       const modelKey = `${args.providerRequestOptions.providerId}\0${args.providerRequestOptions.model}`;
@@ -319,7 +340,7 @@ export function createAgentLoopMemoryPort(
         logger.warn('provider-native compaction policy resolution failed', {
           providerId: args.providerRequestOptions.providerId,
           model: args.providerRequestOptions.model,
-          cause: getErrorMessage(error),
+          code: normalizeProviderErrorCode(error),
         });
         return {
           kind: 'failed',
@@ -396,7 +417,7 @@ export function createAgentLoopMemoryPort(
         logger.warn('provider-native compaction failed', {
           providerId: policy.providerId,
           model: policy.model,
-          cause: getErrorMessage(error),
+          code: normalizeProviderErrorCode(error),
         });
         return {
           kind: 'failed',

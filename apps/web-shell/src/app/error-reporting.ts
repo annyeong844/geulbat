@@ -1,4 +1,4 @@
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../lib/error-message.js';
 
 interface ErrorLogger {
   error(message: string, ...args: unknown[]): void;

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { assertRunId, assertThreadId } from '@geulbat/protocol/ids';
+import type { ProviderReplayScopeId } from '@geulbat/protocol/provider-auth';
 import { toApprovalClass } from '@geulbat/protocol/run-approval';
 import { z } from 'zod';
 
@@ -133,6 +134,7 @@ void test('restart recovery settles a journaled pre-transcript call before the n
     arguments: '{"value":"recovered"}',
     status: 'completed',
   };
+  const replayScopeId = `sha256:${'b'.repeat(64)}` as ProviderReplayScopeId;
   await appendProviderRound({
     stateRoot,
     threadId,
@@ -140,6 +142,7 @@ void test('restart recovery settles a journaled pre-transcript call before the n
     round: 0,
     providerId: daemonContext.providerRequestOptions.providerId,
     model: daemonContext.providerRequestOptions.model,
+    replayScopeId,
     precedingTranscriptEntryId: user.entryId,
     items: [rawFunctionCall],
     functionCalls: [
@@ -219,7 +222,13 @@ void test('restart recovery settles a journaled pre-transcript call before the n
           );
           assert.deepEqual(
             input.history.filter((item) => item.kind === 'backend_item'),
-            [{ kind: 'backend_item', data: rawFunctionCall }],
+            [
+              {
+                kind: 'backend_item',
+                data: rawFunctionCall,
+                providerReplayScopeId: replayScopeId,
+              },
+            ],
           );
           const outputs = input.history.filter(
             (item) => item.kind === 'function_call_output',

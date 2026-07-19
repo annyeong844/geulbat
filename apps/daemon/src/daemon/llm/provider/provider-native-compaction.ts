@@ -2,6 +2,7 @@ import {
   forceRefreshProviderAuth,
   getProviderAuth,
 } from '../../auth/access.js';
+import type { ProviderReplayScopeId } from '../../runtime-contracts.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 
 import { isJsonValue, type JsonValue } from '../../runtime-json.js';
@@ -16,11 +17,15 @@ import {
   resolveGrokOAuthModelDescriptor,
 } from './grok-oauth-transport.js';
 import { decideProviderRetryPolicy } from './provider-retry-policy.js';
+import {
+  assertProviderReplayScope,
+  createProviderReplayScopeId,
+  requireProviderReplayScopeId,
+} from './provider-replay-scope.js';
 import { buildResponseWireInput } from './transport/responses-wire-input.js';
+import { resolveCodexResponsesUrl } from './transport/responses-websocket-url.js';
 import type { ProviderNativeCompactionOutputItem } from './wire/types.js';
 
-const DEFAULT_CODEX_RESPONSES_URL =
-  'https://chatgpt.com/backend-api/codex/responses';
 const CODEX_AUTO_COMPACT_CONTEXT_NUMERATOR = 9;
 const CODEX_AUTO_COMPACT_CONTEXT_DENOMINATOR = 10;
 const GROK_BUILD_AUTO_COMPACT_CONTEXT_NUMERATOR = 85;
@@ -37,6 +42,7 @@ export type ProviderNativeCompactionInput = Pick<
   | 'providerSessionId'
   | 'providerAuthRuntime'
   | 'providerRequestOptions'
+  | 'providerReplayScopeId'
   | 'signal'
 >;
 
@@ -63,6 +69,7 @@ export type ProviderNativeCompactionPolicy =
 
 interface CompactOpenAiHistoryResult {
   output: ProviderNativeCompactionOutputItem[];
+  providerReplayScopeId: ProviderReplayScopeId;
 }
 
 interface OpenAiNativeCompactionDependencies {
@@ -164,23 +171,35 @@ export async function compactOpenAiHistory(
 
   const promptCacheProjection = buildCodexDirectPromptCacheProjection(input);
   const instructions = buildProviderInstructions(input);
-  const body = {
-    model: policy.model,
-    input: buildResponseWireInput(input.history, {
-      providerId: policy.providerId,
-      model: policy.model,
-    }),
-    ...(instructions !== undefined ? { instructions } : {}),
-    ...(input.tools !== undefined && input.tools.length > 0
-      ? { tools: input.tools }
-      : {}),
-    parallel_tool_calls: policy.supportsParallelToolCalls,
-    reasoning: input.providerRequestOptions.reasoning,
-    prompt_cache_key: promptCacheProjection.wire.prompt_cache_key,
-    text: input.providerRequestOptions.text,
-  };
-  const compactUrl = `${resolveCodexResponsesUrl(deps.responsesUrl)}/compact`;
+  const responsesUrl = resolveCodexResponsesUrl(deps.responsesUrl);
+  const compactUrl = `${responsesUrl}/compact`;
+  let providerReplayScopeId: ProviderReplayScopeId | undefined;
   const payload = await requestOpenAiOAuthJson(input, deps, async (auth) => {
+    providerReplayScopeId = createProviderReplayScopeId({
+      providerId: policy.providerId,
+      accountId: auth.accountId,
+      endpoint: responsesUrl,
+    });
+    assertProviderReplayScope(
+      providerReplayScopeId,
+      input.providerReplayScopeId,
+    );
+    const body = {
+      model: policy.model,
+      input: buildResponseWireInput(input.history, {
+        providerId: policy.providerId,
+        model: policy.model,
+        providerReplayScopeId,
+      }),
+      ...(instructions !== undefined ? { instructions } : {}),
+      ...(input.tools !== undefined && input.tools.length > 0
+        ? { tools: input.tools }
+        : {}),
+      parallel_tool_calls: policy.supportsParallelToolCalls,
+      reasoning: input.providerRequestOptions.reasoning,
+      prompt_cache_key: promptCacheProjection.wire.prompt_cache_key,
+      text: input.providerRequestOptions.text,
+    };
     const headers = buildResponsesRequestHeaders({
       accessToken: auth.accessToken,
       accountId: auth.accountId,
@@ -196,7 +215,10 @@ export async function compactOpenAiHistory(
     return parseOpenAiOAuthJsonResponse(response, 'native compaction');
   });
 
-  return { output: readProviderNativeCompactionOutput(payload) };
+  return {
+    output: readProviderNativeCompactionOutput(payload),
+    providerReplayScopeId: requireProviderReplayScopeId(providerReplayScopeId),
+  };
 }
 
 export async function resolveGrokNativeCompactionPolicy(
@@ -255,20 +277,31 @@ export async function compactGrokHistory(
   }
 
   const instructions = buildProviderInstructions(input);
-  const body = {
-    model: model.wireModel,
-    input: [
-      ...(instructions === undefined
-        ? []
-        : [{ role: 'system', content: instructions }]),
-      ...buildResponseWireInput(input.history, {
-        providerId: model.providerId,
-        model: model.id,
-      }),
-    ],
-  };
   const compactUrl = `${model.baseUrl.replace(/\/+$/u, '')}/responses/compact`;
+  let providerReplayScopeId: ProviderReplayScopeId | undefined;
   const payload = await requestGrokOAuthJson(input, deps, async (auth) => {
+    providerReplayScopeId = createProviderReplayScopeId({
+      providerId: model.providerId,
+      accountId: auth.accountId,
+      endpoint: model.baseUrl,
+    });
+    assertProviderReplayScope(
+      providerReplayScopeId,
+      input.providerReplayScopeId,
+    );
+    const body = {
+      model: model.wireModel,
+      input: [
+        ...(instructions === undefined
+          ? []
+          : [{ role: 'system', content: instructions }]),
+        ...buildResponseWireInput(input.history, {
+          providerId: model.providerId,
+          model: model.id,
+          providerReplayScopeId,
+        }),
+      ],
+    };
     const headers = buildGrokOAuthResponsesHeaders({
       accessToken: auth.accessToken,
     });
@@ -283,7 +316,10 @@ export async function compactGrokHistory(
     return parseGrokOAuthJsonResponse(response, 'native compaction');
   });
 
-  return { output: readGrokProviderNativeCompactionOutput(payload) };
+  return {
+    output: readGrokProviderNativeCompactionOutput(payload),
+    providerReplayScopeId: requireProviderReplayScopeId(providerReplayScopeId),
+  };
 }
 
 export async function resolveProviderNativeCompactionPolicy(
@@ -353,21 +389,6 @@ function assertGrokNativeCompactionInput(
   }
 }
 
-function resolveCodexResponsesUrl(configuredUrl?: string): string {
-  const normalized = (
-    configuredUrl ??
-    process.env.GEULBAT_BACKEND_URL ??
-    DEFAULT_CODEX_RESPONSES_URL
-  ).replace(/\/+$/, '');
-  if (normalized.endsWith('/codex/responses')) {
-    return normalized;
-  }
-  if (normalized.endsWith('/codex')) {
-    return `${normalized}/responses`;
-  }
-  return `${normalized}/codex/responses`;
-}
-
 async function requestOpenAiOAuthJson(
   input: OpenAiNativeCompactionInput,
   deps: OpenAiNativeCompactionDependencies,
@@ -408,7 +429,10 @@ async function requestOpenAiOAuthJson(
 async function requestGrokOAuthJson(
   input: ProviderNativeCompactionInput,
   deps: GrokNativeCompactionDependencies,
-  request: (auth: { accessToken: string }) => Promise<unknown>,
+  request: (auth: {
+    accessToken: string;
+    accountId: string;
+  }) => Promise<unknown>,
 ): Promise<unknown> {
   let authRefreshAttempts = 0;
 

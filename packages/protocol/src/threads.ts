@@ -2,6 +2,8 @@ import { isThreadId, type ThreadId } from './ids.js';
 import {
   isProviderAuthProviderId,
   type ProviderAuthProviderId,
+  isProviderReplayScopeId,
+  type ProviderReplayScopeId,
 } from './provider-auth.js';
 import {
   isRunModelId,
@@ -129,6 +131,7 @@ export interface ProviderNativeCompactionEntryData {
   kind: 'provider_native';
   providerId: string;
   model: string;
+  replayScopeId?: ProviderReplayScopeId;
   output: ProviderNativeCompactionOutputItem[];
   tokensBefore: number;
   contextWindow: number;
@@ -292,6 +295,8 @@ export function isProviderNativeCompactionEntryData(
     value.providerId.trim() !== '' &&
     typeof value.model === 'string' &&
     value.model.trim() !== '' &&
+    (value.replayScopeId === undefined ||
+      isProviderReplayScopeId(value.replayScopeId)) &&
     Array.isArray(value.output) &&
     value.output.length > 0 &&
     value.output.every((item) => isRecord(item) && isJsonValue(item)) &&

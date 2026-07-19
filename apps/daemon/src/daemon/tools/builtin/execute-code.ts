@@ -28,7 +28,13 @@ const executeCodeArgsSchema = z.strictObject({
     .string()
     .min(1, 'code is required.')
     .describe(
-      'JavaScript or erasable TypeScript code to run inside the PTC lab Docker runtime. Type annotations, interfaces, and type aliases are supported; TSX and TypeScript syntax that requires transformation (such as enums, runtime namespaces, parameter properties, or decorators) are not. Use stdout or return a JSON-serializable value for compact results.',
+      'JavaScript or Node-native TypeScript for PTC Docker. Node transforms types, enums, runtime namespaces, and parameter properties without type checking; TSX, decorators, and tsconfig transforms are unsupported. CommonJS may return compact JSON; ESM must write stdout because top-level return is invalid.',
+    ),
+  moduleFormat: z
+    .enum(['commonjs', 'esm'])
+    .optional()
+    .describe(
+      'Omit for CommonJS require()/return. Use "esm" for static import/export and top-level await; installed packages resolve from this PTC session.',
     ),
   timeoutMs: z
     .number()
@@ -54,7 +60,7 @@ type ExecuteCodeArgs = z.output<typeof executeCodeArgsSchema>;
 export const executeCodeTool = defineZodTool({
   name: PTC_EXECUTE_CODE_TOOL_NAME,
   description:
-    'Run JavaScript or erasable TypeScript code inside the PTC lab Docker runtime. Type annotations, interfaces, and type aliases work without transpilation; TSX and TypeScript syntax that requires transformation do not. PTC has no direct host filesystem mount. Before depending on host tools, call geulbat.help() and check its callbacks.enabled field inside the program. Only when it is true may the program use pinned generated geulbat-sdk wrappers discovered from the tool library using the named CommonJS form, such as const { readFile } = require(\'geulbat-sdk/files/readFile\') or const { searchMemoryIndex } = require(\'geulbat-sdk/tools/search-memory-index\'); geulbat.callTool(name, args) remains the admitted low-level bridge. Generated wrappers return { kind: "inline", value: { ok: true, output: string } } for inline success, { kind: "inline", value: { ok: false, output: string, errorCode: string, error: string } } for inline failure, or { kind: "offloaded", outputRef: string, ... }. Validate result.kind and result.value.ok before reading or parsing result.value.output; wrapper results do not use status or content fields. When processing multiple callback requests, preserve each request path or name and report the failing request with its errorCode and error instead of collapsing failures into a generic message. For readFile, JSON.parse(result.value.output) yields the bounded read payload: require payload.hasMore === false before treating payload.content as a complete structured file. Relative callback file paths start from the user-selected run cwd; do not assume a repository cwd. If callbacks are disabled, do not infer that the host was inspected: return that operator callback transport policy is required. If the result has status "queued" or status "running" and a cellId, call wait with cell_id set to that cellId to observe admission, completion, or termination.',
+    'Run JavaScript or Node-native TypeScript in PTC Docker. Omit moduleFormat for CommonJS require()/return; use "esm" for static import/export and top-level await, writing results to stdout. Node transforms types, enums, namespaces, and parameter properties without type checking; TSX, decorators, and tsconfig transforms are unsupported. PTC has no direct host filesystem mount. Before depending on host tools, call geulbat.help() and check its callbacks.enabled field inside the program. Only when it is true may the program use pinned generated geulbat-sdk wrappers discovered from the tool library using the named CommonJS form, such as const { readFile } = require(\'geulbat-sdk/files/readFile\') or const { searchMemoryIndex } = require(\'geulbat-sdk/tools/search-memory-index\'); geulbat.callTool(name, args) remains the admitted low-level bridge. Low-level geulbat.callTool returns raw { ok, output, errorCode?, error? }, not the generated wrapper\'s kind/value envelope. Generated wrappers return { kind: "inline", value: { ok: true, output: string } } for inline success, { kind: "inline", value: { ok: false, output: string, errorCode: string, error: string } } for inline failure, or { kind: "offloaded", outputRef: string, ... }. Validate result.kind and result.value.ok before reading or parsing result.value.output; wrapper results do not use status or content fields. When processing multiple callback requests, preserve each request path or name and report the failing request with its errorCode and error instead of collapsing failures into a generic message. For readFile, JSON.parse(result.value.output) yields the bounded read payload: require payload.hasMore === false before treating payload.content as a complete structured file. Relative callback file paths start from the user-selected run cwd; do not assume a repository cwd. If callbacks are disabled, do not infer that the host was inspected: return that operator callback transport policy is required. If the result has status "queued" or status "running" and a cellId, call wait with cell_id set to that cellId to observe admission, completion, or termination.',
   argsSchema: executeCodeArgsSchema,
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
@@ -68,11 +74,12 @@ export const executeCodeTool = defineZodTool({
       'start ptc cell',
       'node code',
       'typescript code',
+      'typescript enum code',
       'exec cell',
     ],
     tags: ['ptc', 'code', 'execution'],
     whenToUse:
-      'Run JavaScript or erasable TypeScript code in the PTC execution environment.',
+      'Run JavaScript or Node-native TypeScript code in the PTC execution environment.',
     notFor: 'Generic shell commands or discovering tool names.',
   },
   async executeParsed(args: ExecuteCodeArgs, ctx) {
@@ -145,6 +152,9 @@ export const executeCodeTool = defineZodTool({
       invocationId: ctx.callId,
       request: {
         code: args.code,
+        ...(args.moduleFormat === undefined
+          ? {}
+          : { moduleFormat: args.moduleFormat }),
         ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
         ...(args['yield-time_ms'] !== undefined
           ? { yieldTimeMs: args['yield-time_ms'] }

@@ -101,11 +101,17 @@ void test('buildJsArtifactRuntimeDocument owns document assembly without persist
     document,
     /const RUNTIME_HOST_MESSAGE_KIND = 'geulbat\.artifact_runtime_host';/,
   );
-  assert.match(document, /const postRuntimeResize = \(\) =>/);
+  assert.match(document, /const measureRuntimeResize = \(\) =>/);
+  assert.match(document, /const postRuntimeResize = \(height\) =>/);
   assert.match(document, /action: 'resize'/);
   assert.doesNotMatch(document, /postMessage\([^)]*['"]\*['"]\)/);
   assert.match(document, /const installRuntimeResizeSync = \(\) =>/);
   assert.match(document, /ResizeObserver/);
+  assert.match(document, /const height = measureRuntimeResize\(\);/);
+  assert.match(
+    document,
+    /requestAnimationFrame\(\(\) => \{\s*runtimeResizeRafId = 0;\s*postRuntimeResize\(height\);/,
+  );
   assert.doesNotMatch(document, /MutationObserver/);
   assert.match(document, /const nativeFetch =/);
   assert.match(document, /const applyNetworkDefaults = \(init\) =>/);

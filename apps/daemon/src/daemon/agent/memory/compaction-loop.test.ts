@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { isProviderNativeCompactionEntryData } from '@geulbat/protocol/threads';
+import type { ProviderReplayScopeId } from '@geulbat/protocol/provider-auth';
 import type { ContextUsageUpdatedEventPayload } from '@geulbat/protocol/run-events';
 
 import { createProviderAuthRuntimeStore } from '../../auth/runtime-state.js';
@@ -31,6 +32,9 @@ const TEST_PROVIDER_REQUEST_OPTIONS: ProviderRequestOptions = {
   ...resolveProviderRequestOptions({}),
   model: 'gpt-test',
 };
+const TEST_REPLAY_SCOPE_ID = `sha256:${'c'.repeat(
+  64,
+)}` as ProviderReplayScopeId;
 
 void test('memory port uses exact response input usage and caches model policy across rounds', async () => {
   await withThread(async ({ workspaceRoot, threadId }) => {
@@ -59,6 +63,7 @@ void test('memory port uses exact response input usage and caches model policy a
         assert.equal(input.history, history);
         assert.equal(policy.thresholdTokens, 90);
         return {
+          providerReplayScopeId: TEST_REPLAY_SCOPE_ID,
           output: [
             {
               type: 'compaction',
@@ -155,6 +160,7 @@ void test('memory port applies the canonical Grok native policy at the approved 
         assert.equal(input.history, history);
         assert.equal(policy.providerId, 'grok_oauth');
         return {
+          providerReplayScopeId: TEST_REPLAY_SCOPE_ID,
           output: [
             {
               id: 'xai-compaction-id',
@@ -198,6 +204,7 @@ void test('memory port applies the canonical Grok native policy at the approved 
         kind: 'provider_native_compaction',
         providerId: 'grok_oauth',
         model: 'grok-4.5',
+        providerReplayScopeId: TEST_REPLAY_SCOPE_ID,
         output: [
           {
             id: 'xai-compaction-id',
@@ -281,6 +288,7 @@ void test('provider transition uses the source provider and commits only its por
           assert.equal(input.providerRequestOptions.providerId, 'grok_oauth');
           assert.equal(input.providerRequestOptions.model, 'grok-4.5');
           assert.equal(input.providerRequestOptions.reasoning.effort, 'high');
+          assert.equal(input.providerReplayScopeId, TEST_REPLAY_SCOPE_ID);
           assert.equal(input.tools?.length, 0);
           yield {
             type: 'text_delta',
@@ -298,8 +306,12 @@ void test('provider transition uses the source provider and commits only its por
           assert.deepEqual(providerTarget, {
             providerId: 'grok_oauth',
             model: 'grok-4.5',
+            replayScopeId: TEST_REPLAY_SCOPE_ID,
           });
           return [{ kind: 'user', text: 'continue this work' }];
+        },
+        async resolveReplayScope() {
+          return TEST_REPLAY_SCOPE_ID;
         },
       },
     );

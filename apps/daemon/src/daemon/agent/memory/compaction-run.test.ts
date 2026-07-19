@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import type { ProviderReplayScopeId } from '@geulbat/protocol/provider-auth';
 import type { BudgetProfile, ThreadMessage } from '@geulbat/protocol/threads';
 
 import {
@@ -24,6 +25,9 @@ import type { HistoryItem } from '../../llm/provider/wire/types.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 
 const TEST_TIMESTAMP = '2026-07-16T00:00:00.000Z';
+const TEST_REPLAY_SCOPE_ID = `sha256:${'d'.repeat(
+  64,
+)}` as ProviderReplayScopeId;
 const TEST_BUDGET_PROFILE: BudgetProfile = {
   model: 'test-model',
   contextWindow: 100,
@@ -324,6 +328,7 @@ void test('provider-native compaction appends an opaque checkpoint and replaces 
       contextWindow: 100,
       thresholdTokens: 90,
       compactHistory: async () => ({
+        providerReplayScopeId: TEST_REPLAY_SCOPE_ID,
         output: [
           {
             type: 'compaction',
@@ -343,6 +348,7 @@ void test('provider-native compaction appends an opaque checkpoint and replaces 
         kind: 'provider_native_compaction',
         providerId: 'openai_codex_direct',
         model: 'gpt-test',
+        providerReplayScopeId: TEST_REPLAY_SCOPE_ID,
         output: [
           {
             type: 'compaction',
@@ -372,6 +378,7 @@ void test('provider-native compaction leaves in-memory history untouched when tr
       compactHistory: async () => {
         await appendMessage(workspaceRoot, threadId, 'user', 'arrived');
         return {
+          providerReplayScopeId: TEST_REPLAY_SCOPE_ID,
           output: [
             {
               type: 'compaction',

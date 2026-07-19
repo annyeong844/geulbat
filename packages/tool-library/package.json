@@ -35,6 +35,10 @@
     "./search-ranking": {
       "types": "./dist/search-ranking.d.ts",
       "import": "./dist/search-ranking.js"
+    },
+    "./tool-output-recovery": {
+      "types": "./dist/tool-output-recovery.d.ts",
+      "import": "./dist/tool-output-recovery.js"
     }
   },
   "scripts": {

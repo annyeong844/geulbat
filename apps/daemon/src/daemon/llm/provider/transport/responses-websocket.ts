@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 
+import type { ProviderReplayScopeId } from '../../../runtime-contracts.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import {
   parseResponseEvents,
@@ -14,13 +15,13 @@ import type {
   ResponsesWebSocketReusePolicy,
   ResponsesWebSocketSessionStore,
 } from './responses-websocket-cache.js';
-import { resolveCodexWebSocketUrl } from './responses-websocket-url.js';
+import {
+  resolveCodexResponsesUrl,
+  resolveCodexWebSocketUrl,
+} from './responses-websocket-url.js';
 import { iterateWebSocketEvents } from './responses-websocket-stream.js';
 import type { HistoryItem, WireRequestBase } from '../wire/types.js';
 
-const BACKEND_URL =
-  process.env.GEULBAT_BACKEND_URL ??
-  'https://chatgpt.com/backend-api/codex/responses';
 const CODEX_WS_BETA_HEADER =
   process.env.GEULBAT_WS_BETA_HEADER ?? 'responses_websockets=2026-02-06';
 const RESPONSES_STREAM_IDLE_TIMEOUT_ENV =
@@ -67,6 +68,8 @@ type ResponsesWebSocketEventNormalizer = (
 
 interface ResponsesWebSocketStreamBase {
   headers: Headers;
+  historyProjection: 'normalized' | 'provider_output';
+  providerReplayScopeId?: ProviderReplayScopeId;
   webSocketUrl?: string;
   providerSessionId: string;
   webSocketReusePolicy: ResponsesWebSocketReusePolicy;
@@ -101,13 +104,18 @@ export async function streamResponsesOverWebSocket(
   input: ResponsesWebSocketStreamInput,
 ): Promise<ResponsesParseResult> {
   const webSocketUrl =
-    input.webSocketUrl ?? resolveCodexWebSocketUrl(BACKEND_URL);
+    input.webSocketUrl ?? resolveCodexWebSocketUrl(resolveCodexResponsesUrl());
   const headers =
     input.webSocketUrl === undefined
       ? buildCodexResponsesWebSocketHeaders(input.headers)
       : input.headers;
   const payload =
-    input.payload ?? buildResponseCreatePayload(input.body, input.history);
+    input.payload ??
+    buildResponseCreatePayload(
+      input.body,
+      input.history,
+      input.providerReplayScopeId,
+    );
   const idleTimeoutMs =
     input.idleTimeoutMs ?? resolveResponsesStreamIdleTimeoutMs();
   let socketHandle = await input.providerWebSocketSessions.acquireWebSocket(
@@ -164,8 +172,7 @@ export async function streamResponsesOverWebSocket(
           ? { onFunctionCallArgsDelta: input.onFunctionCallArgsDelta }
           : {}),
         idleTimeoutMs,
-        historyProjection:
-          input.body === undefined ? 'normalized' : 'provider_output',
+        historyProjection: input.historyProjection,
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
       },
     );

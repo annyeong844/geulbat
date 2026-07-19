@@ -198,8 +198,6 @@ function projectRunChannelRuntimeContext(
     homeStateRoot: daemonContext.homeStateRoot,
     childRuns: daemonContext.childRuns,
     fileStateCache: daemonContext.fileStateCache,
-    agentWorkflowRunner: daemonContext.agentWorkflowRunner,
-    agentWavePlanner: daemonContext.agentWavePlanner,
     imageGeneration: daemonContext.imageGeneration,
     videoGeneration: daemonContext.videoGeneration,
     memoryIndex: daemonContext.memoryIndex,

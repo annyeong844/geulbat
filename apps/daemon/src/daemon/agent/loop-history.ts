@@ -3,7 +3,9 @@ import type {
   HistoryUserAttachment,
   FunctionCall,
 } from '../llm/index.js';
+import type { ProviderReplayScopeId } from '../runtime-contracts.js';
 import type { ProviderRequestOptions } from '../llm/provider/provider-options.js';
+import { ProviderReplayScopeMismatchError } from '../llm/provider/provider-replay-scope.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import {
   appendTranscriptEntry,
@@ -22,6 +24,7 @@ import {
 } from '../sessions/provider-round-journal.js';
 import { isRecord, tryParseJsonRecord } from '../runtime-json.js';
 import {
+  assertAgentRunId,
   assertAgentThreadId,
   createAgentArtifactRefKey as createArtifactRefKey,
   type ThreadArtifactVersion,
@@ -35,7 +38,7 @@ import {
 export type ProviderHistoryTarget = Pick<
   ProviderRequestOptions,
   'providerId' | 'model'
->;
+> & { replayScopeId?: ProviderReplayScopeId };
 
 const logger = createLogger('agent/loop-history');
 
@@ -133,6 +136,7 @@ export async function loadExistingHistory(
     artifactVersionsByRef,
     attachmentsById,
     activeHistoryOverride,
+    providerTarget?.replayScopeId,
   );
 }
 
@@ -157,7 +161,7 @@ function buildProviderRoundAwareActiveHistory(args: {
     active.latestCompactionEntryId === undefined
       ? -1
       : (transcriptIndexById.get(active.latestCompactionEntryId) ?? -1);
-  const activeProviderRounds = args.providerRounds.filter((record) => {
+  const reachableProviderRounds = args.providerRounds.filter((record) => {
     const anchor = record.precedingTranscriptEntryId;
     if (anchor === null) {
       if (latestCompactionIndex >= 0) {
@@ -187,7 +191,7 @@ function buildProviderRoundAwareActiveHistory(args: {
     return anchorIndex > latestCompactionIndex;
   });
 
-  if (activeProviderRounds.length === 0) {
+  if (reachableProviderRounds.length === 0) {
     return buildHistoryFromTranscript(
       active.activeEntries,
       args.artifactVersionsByRef,
@@ -197,7 +201,7 @@ function buildProviderRoundAwareActiveHistory(args: {
   if (args.providerTarget === undefined) {
     throw new Error('provider round history target is required');
   }
-  for (const record of activeProviderRounds) {
+  for (const record of reachableProviderRounds) {
     if (
       record.providerId !== args.providerTarget.providerId ||
       record.model !== args.providerTarget.model
@@ -207,6 +211,14 @@ function buildProviderRoundAwareActiveHistory(args: {
       );
     }
   }
+  if (args.providerTarget.replayScopeId !== undefined) {
+    for (const record of reachableProviderRounds) {
+      if (record.replayScopeId !== args.providerTarget.replayScopeId) {
+        throw new ProviderReplayScopeMismatchError();
+      }
+    }
+  }
+  const activeProviderRounds = reachableProviderRounds;
 
   const coveredFunctionCallIds = new Set<string>();
   const providerMessageRunIds = new Set<string>();
@@ -313,7 +325,14 @@ function appendProviderRounds(
 ): void {
   for (const record of records) {
     history.push(
-      ...record.items.map((data) => ({ kind: 'backend_item', data }) as const),
+      ...record.items.map(
+        (data) =>
+          ({
+            kind: 'backend_item',
+            data,
+            providerReplayScopeId: record.replayScopeId,
+          }) as const,
+      ),
     );
   }
 }
@@ -410,17 +429,18 @@ export async function persistSingleInterjectToTranscript(
   runId: string,
   interject: PendingInterject,
 ): Promise<{ appended: boolean }> {
+  const sourceRunId = assertAgentRunId(runId);
   const entries = await readTranscriptEntries(workspaceRoot, threadId);
   const existing = entries.find(
     (entry) =>
       entry.metadata?.source === 'interject' &&
-      entry.metadata.sourceRunId === runId &&
+      entry.metadata.sourceRunId === sourceRunId &&
       entry.metadata.receivedSeq === interject.receivedSeq,
   );
   if (existing !== undefined) {
     if (existing.role !== 'user' || existing.content !== interject.text) {
       throw new Error(
-        `interject transcript identity conflict: ${runId}:${interject.receivedSeq}`,
+        `interject transcript identity conflict: ${sourceRunId}:${interject.receivedSeq}`,
       );
     }
     return { appended: false };
@@ -431,7 +451,7 @@ export async function persistSingleInterjectToTranscript(
     timestamp: new Date().toISOString(),
     metadata: {
       source: 'interject',
-      sourceRunId: runId,
+      sourceRunId,
       receivedSeq: interject.receivedSeq,
     },
   });

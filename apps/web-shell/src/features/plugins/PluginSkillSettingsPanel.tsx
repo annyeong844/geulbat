@@ -4,7 +4,7 @@ import type {
   PluginSkillListResponse,
   PluginSkillView,
 } from '@geulbat/protocol/plugins';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../../lib/error-message.js';
 
 import { listPluginSkills } from '../../lib/api/plugins.js';
 import { PluginIcon } from './PluginIcon.js';

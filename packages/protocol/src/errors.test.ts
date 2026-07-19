@@ -12,9 +12,10 @@ import {
   isNotFoundPathError,
 } from './errors.js';
 import type { PathApiError } from './errors.js';
+import { assertRunId, assertThreadId } from './ids.js';
 
-const THREAD_ID = '11111111-1111-4111-8111-111111111111';
-const RUN_ID = 'run-active-1';
+const THREAD_ID = assertThreadId('11111111-1111-4111-8111-111111111111');
+const RUN_ID = assertRunId('run-active-1');
 
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2

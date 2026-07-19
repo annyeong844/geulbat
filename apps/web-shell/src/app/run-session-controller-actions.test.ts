@@ -409,7 +409,7 @@ void test('degradeWidgetToolRequestAction returns the plain rejection when the p
 
   const rejection = {
     ok: false as const,
-    errorCode: 'approval_required',
+    errorCode: 'approval_required' as const,
     error: 'needs approval',
   };
   const result = await degradeWidgetToolRequestAction({

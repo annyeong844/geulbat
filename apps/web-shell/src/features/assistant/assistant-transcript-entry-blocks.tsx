@@ -38,6 +38,7 @@ export function RunTranscriptEntryBlock(props: {
   onAskUserAnswer?: (prompt: string) => Promise<void> | void;
   // 위젯 발 도구 호출(run.tool) 번역 콜백
   onWidgetToolRequest?: WidgetToolRequestHandler;
+  deferVisualizeRuntimeBoot?: boolean;
 }) {
   const {
     entry,
@@ -45,6 +46,7 @@ export function RunTranscriptEntryBlock(props: {
     onWidgetPrompt,
     onAskUserAnswer,
     onWidgetToolRequest,
+    deferVisualizeRuntimeBoot,
   } = props;
 
   switch (entry.kind) {
@@ -62,7 +64,12 @@ export function RunTranscriptEntryBlock(props: {
       if (entry.tool === VISUALIZE_TOOL_NAME && entry.argsText !== undefined) {
         return (
           <div className="transcript-message from-assistant">
-            <VisualizeStreamingWidget argsText={entry.argsText} />
+            <VisualizeStreamingWidget
+              argsText={entry.argsText}
+              {...(deferVisualizeRuntimeBoot !== undefined
+                ? { deferRuntimeBoot: deferVisualizeRuntimeBoot }
+                : {})}
+            />
           </div>
         );
       }
@@ -74,6 +81,9 @@ export function RunTranscriptEntryBlock(props: {
             <div className="transcript-message from-assistant">
               <VisualizeWidget
                 view={widgetView}
+                {...(deferVisualizeRuntimeBoot !== undefined
+                  ? { deferRuntimeBoot: deferVisualizeRuntimeBoot }
+                  : {})}
                 {...(onWidgetPrompt !== undefined ? { onWidgetPrompt } : {})}
                 {...(onWidgetToolRequest !== undefined
                   ? { onWidgetToolRequest }

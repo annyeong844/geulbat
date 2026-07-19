@@ -6,6 +6,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+import { PUBLIC_WEB_JSON_ECHO_PATH } from '@geulbat/protocol/public-web-fixtures';
+
 import { createDaemon } from './create-daemon.js';
 import { createDaemonContext } from './daemon/context.js';
 import { createRouteTestDaemonContext } from './test-support/http-routes.js';
@@ -236,6 +238,23 @@ void test('createDaemon does not mount shared browser routes', async () => {
   } finally {
     await closeServer(server);
     restoreEnv('GEULBAT_DEV_TOKEN', previousToken);
+  }
+});
+
+void test('createDaemon does not mount public web conformance fixtures by default', async () => {
+  const { app } = await createIsolatedDaemon();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await onceListening(server);
+    const port = (server.address() as AddressInfo).port;
+    const res = await fetch(
+      `http://127.0.0.1:${port}${PUBLIC_WEB_JSON_ECHO_PATH}?message=product-runtime`,
+    );
+
+    assert.equal(res.status, 404);
+  } finally {
+    await closeServer(server);
   }
 });
 

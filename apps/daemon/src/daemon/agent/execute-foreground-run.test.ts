@@ -4,6 +4,7 @@ import { appendFile, mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ArtifactRef } from '@geulbat/protocol/artifacts';
+import { isProviderNativeCompactionEntryData } from '@geulbat/protocol/threads';
 
 import { executeForegroundRun } from './execute-foreground-run.js';
 import type { AgentEvent } from './events.js';
@@ -1020,7 +1021,9 @@ void test('executeForegroundRun persists provider-native checkpoint before the n
     }),
     compactHistory: async (input) => {
       assert.equal(input.history.at(-1)?.kind, 'user');
+      assert.ok(input.providerReplayScopeId);
       return {
+        providerReplayScopeId: input.providerReplayScopeId,
         output: [
           {
             type: 'compaction',
@@ -1069,6 +1072,16 @@ void test('executeForegroundRun persists provider-native checkpoint before the n
     transcript.map((entry) => entry.role),
     ['user', 'compaction', 'assistant'],
   );
+  const compaction = transcript[1];
+  assert.equal(compaction?.role, 'compaction');
+  if (
+    compaction?.role !== 'compaction' ||
+    !isProviderNativeCompactionEntryData(compaction.compactionData)
+  ) {
+    return;
+  }
+  const replayScopeId = compaction.compactionData.replayScopeId;
+  assert.ok(replayScopeId);
   const restartedHistory = await loadInitialHistory(
     workspaceRoot,
     threadId,
@@ -1076,6 +1089,7 @@ void test('executeForegroundRun persists provider-native checkpoint before the n
     {
       providerId: 'openai_codex_direct',
       model: daemonContext.providerRequestOptions.model,
+      replayScopeId,
     },
   );
   assert.equal(restartedHistory[0]?.kind, 'provider_native_compaction');
@@ -1088,6 +1102,7 @@ void test('executeForegroundRun persists provider-native checkpoint before the n
         phase: 'final_answer',
         content: [{ type: 'output_text', text: 'assistant tail' }],
       },
+      providerReplayScopeId: replayScopeId,
     },
     { kind: 'user', text: 'next prompt' },
   ]);

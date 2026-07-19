@@ -24,6 +24,8 @@ export function useArtifactRuntimeFrameState(args: {
   runtimePayload: string;
   readyTimeoutMs: number;
   minFrameHeight?: number;
+  initialFrameHeight?: number;
+  onFrameHeightChange?: (height: number) => void;
   onGeneratedTextExportSnapshotChange?: (
     snapshot: GeneratedTextExportSnapshot | null,
   ) => void;
@@ -45,6 +47,8 @@ export function useArtifactRuntimeFrameState(args: {
     runtimePayload,
     readyTimeoutMs,
     minFrameHeight,
+    initialFrameHeight,
+    onFrameHeightChange,
     onGeneratedTextExportSnapshotChange,
     onGeneratedBinaryExportSnapshotChange,
     onAgentPromptRequest,
@@ -124,6 +128,8 @@ export function useArtifactRuntimeFrameState(args: {
       runtimeFrameRevision,
       readyTimeoutMs,
       ...(minFrameHeight !== undefined ? { minFrameHeight } : {}),
+      ...(initialFrameHeight !== undefined ? { initialFrameHeight } : {}),
+      ...(onFrameHeightChange !== undefined ? { onFrameHeightChange } : {}),
       ...(onGeneratedBinaryExportSnapshotChange !== undefined
         ? { onGeneratedBinaryExportSnapshotChange }
         : {}),

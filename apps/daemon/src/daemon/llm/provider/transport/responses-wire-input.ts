@@ -4,10 +4,13 @@ import type {
   WireRequestBase,
 } from '../wire/types.js';
 import { isRecord } from '../../../runtime-json.js';
+import type { ProviderReplayScopeId } from '../../../runtime-contracts.js';
+import { ProviderReplayScopeMismatchError } from '../provider-replay-scope.js';
 
 export function buildResponseCreatePayload(
   body: WireRequestBase,
   history: HistoryItem[],
+  providerReplayScopeId?: ProviderReplayScopeId,
 ): Record<string, unknown> {
   return {
     type: 'response.create',
@@ -15,6 +18,7 @@ export function buildResponseCreatePayload(
     input: buildResponseWireInput(history, {
       providerId: 'openai_codex_direct',
       model: body.model,
+      ...(providerReplayScopeId === undefined ? {} : { providerReplayScopeId }),
     }),
   };
 }
@@ -22,6 +26,7 @@ export function buildResponseCreatePayload(
 interface ProviderNativeHistoryTarget {
   providerId: string;
   model: string;
+  providerReplayScopeId?: ProviderReplayScopeId;
 }
 
 export function buildResponseWireInput(
@@ -74,18 +79,42 @@ export function buildResponseWireInput(
         ) {
           throw new ProviderNativeHistoryIncompatibleError();
         }
+        assertReplayScopeCompatible(
+          item.providerReplayScopeId,
+          providerNativeTarget.providerReplayScopeId,
+        );
         input.push(...item.output);
         break;
       case 'backend_item':
         if (!isRecord(item.data)) {
           throw new ProviderHistoryItemInvalidError();
         }
+        assertReplayScopeCompatible(
+          item.providerReplayScopeId,
+          providerNativeTarget?.providerReplayScopeId,
+        );
         input.push(item.data);
         break;
     }
   }
 
   return input;
+}
+
+function assertReplayScopeCompatible(
+  itemScope: ProviderReplayScopeId | null | undefined,
+  targetScope: ProviderReplayScopeId | undefined,
+): void {
+  // Undefined is reserved for current-process normalized/test history. Every
+  // persisted provider-native item is rehydrated with either its digest or
+  // explicit null, so durable replay cannot bypass this comparison.
+  if (
+    targetScope !== undefined &&
+    itemScope !== undefined &&
+    itemScope !== targetScope
+  ) {
+    throw new ProviderReplayScopeMismatchError();
+  }
 }
 
 function assertValidFunctionCallReplay(
@@ -98,7 +127,7 @@ function assertValidFunctionCallReplay(
       continue;
     }
     if (
-      providerNativeTarget?.providerId === 'openai_codex_direct' ||
+      providerNativeTarget !== undefined ||
       normalizedCallIds.has(item.callId)
     ) {
       throw new ProviderHistoryItemInvalidError();
@@ -108,17 +137,28 @@ function assertValidFunctionCallReplay(
 
   const providerCallIds = new Set<string>();
   for (const item of history) {
-    if (
-      item.kind !== 'backend_item' ||
-      !isRecord(item.data) ||
-      item.data['type'] !== 'function_call'
-    ) {
+    if (item.kind !== 'backend_item') {
       continue;
     }
+    if (!isRecord(item.data)) {
+      throw new ProviderHistoryItemInvalidError();
+    }
+    if (item.data['type'] !== 'function_call') {
+      continue;
+    }
+
+    const id = item.data['id'];
     const callId = item.data['call_id'];
+    const name = item.data['name'];
+    const callArguments = item.data['arguments'];
     if (
+      typeof id !== 'string' ||
+      id.trim() === '' ||
       typeof callId !== 'string' ||
       callId.trim() === '' ||
+      typeof name !== 'string' ||
+      name.trim() === '' ||
+      typeof callArguments !== 'string' ||
       normalizedCallIds.has(callId) ||
       providerCallIds.has(callId)
     ) {

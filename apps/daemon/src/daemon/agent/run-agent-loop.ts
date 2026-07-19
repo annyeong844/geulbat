@@ -4,6 +4,11 @@
  */
 
 import { runAgentLoopKernel } from '@geulbat/agent-loop/kernel';
+import {
+  isProviderReplayScopeId,
+  isRootRunState,
+  type ProviderReplayScopeId,
+} from '../runtime-contracts.js';
 
 import { createAgentEvent, type AgentEventEmitter } from './events.js';
 import {
@@ -48,11 +53,18 @@ import {
   formatToolLibraryProjectionFailureMessage,
 } from './loop-tool-library-projection.js';
 import { createAgentLoopToolRuntimePort } from './loop-tool-runtime-port.js';
-import { isRootRunState } from '../runtime-contracts.js';
 import {
   projectProviderRunSelection,
   resolveProviderRequestOptionsForRun,
 } from '../llm/provider/provider-options.js';
+import { resolveGrokOAuthModelDescriptor } from '../llm/provider/grok-oauth-transport.js';
+import {
+  normalizeProviderErrorCode,
+  sanitizeProviderErrorMessage,
+} from '../llm/provider/provider-error.js';
+import { resolveProviderReplayScopeForRun } from '../llm/provider/provider-replay-scope.js';
+import { resolveCodexResponsesUrl } from '../llm/provider/transport/responses-websocket-url.js';
+import { coerceGenericApiErrorCode } from '../error-codes.js';
 import { createAgentLoopMemoryPort } from './memory/compaction-loop.js';
 import type { RunCheckpointStore } from '../sessions/run-checkpoint-store.js';
 import { readTranscriptEntries } from '../sessions/transcript-log.js';
@@ -188,15 +200,56 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     lifecyclePort.settleAfterResult({ runState, result, signal });
     return result;
   }
-  const history = await historyPort.loadInitialHistory({
-    workspaceRoot: stateRoot,
-    threadId,
-    prompt,
-    providerTarget: {
-      providerId: providerRequestOptions.providerId,
-      model: providerRequestOptions.model,
-    },
-  });
+  let providerReplayScopeId: ProviderReplayScopeId | undefined;
+  if (callModelImpl === undefined && injectedModelRoundPort === undefined) {
+    try {
+      providerReplayScopeId = await resolveProviderReplayScopeForRun({
+        providerId: providerRequestOptions.providerId,
+        endpoint:
+          providerRequestOptions.providerId === 'grok_oauth'
+            ? resolveGrokOAuthModelDescriptor(providerRequestOptions.model)
+                .baseUrl
+            : resolveCodexResponsesUrl(),
+        providerAuthRuntime,
+      });
+    } catch (error: unknown) {
+      const code = normalizeProviderErrorCode(error);
+      const result = lifecyclePort.createTerminalFailure({
+        emit,
+        code: coerceGenericApiErrorCode(code, 'llm_auth_failed'),
+        message: sanitizeProviderErrorMessage(code),
+      });
+      lifecyclePort.settleAfterResult({ runState, result, signal });
+      return result;
+    }
+  }
+  let history: HistoryItem[];
+  try {
+    history = await historyPort.loadInitialHistory({
+      workspaceRoot: stateRoot,
+      threadId,
+      prompt,
+      providerTarget: {
+        providerId: providerRequestOptions.providerId,
+        model: providerRequestOptions.model,
+        ...(providerReplayScopeId === undefined
+          ? {}
+          : { replayScopeId: providerReplayScopeId }),
+      },
+    });
+  } catch (error: unknown) {
+    const code = normalizeProviderErrorCode(error);
+    if (code !== 'llm_auth_failed') {
+      throw error;
+    }
+    const result = lifecyclePort.createTerminalFailure({
+      emit,
+      code,
+      message: sanitizeProviderErrorMessage(code),
+    });
+    lifecyclePort.settleAfterResult({ runState, result, signal });
+    return result;
+  }
   const processRoundFunctionCalls = async (args: {
     round: number;
     functionCalls: readonly FunctionCall[];
@@ -289,6 +342,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
           providerWebSocketSessions: webSocketSessions,
           providerAuthRuntime,
           providerRequestOptions,
+          ...(providerReplayScopeId === undefined
+            ? {}
+            : { providerReplayScopeId }),
           emit,
           streamArgsToolNames,
         };
@@ -309,6 +365,34 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
           }
         }
         if (modelRound.ok) {
+          const providerItems = modelRound.value.itemsToAppend;
+          let roundReplayScopeId = providerReplayScopeId;
+          if (
+            providerItems !== undefined &&
+            providerItems.length > 0 &&
+            providerItems.every((item) => item.kind === 'backend_item')
+          ) {
+            const itemScopes = providerItems.map(
+              (item) => item.providerReplayScopeId,
+            );
+            const firstScope = itemScopes[0];
+            if (
+              !isProviderReplayScopeId(firstScope) ||
+              itemScopes.some((scope) => scope !== firstScope) ||
+              (providerReplayScopeId !== undefined &&
+                firstScope !== providerReplayScopeId)
+            ) {
+              return {
+                ok: false,
+                result: lifecyclePort.createTerminalFailure({
+                  emit,
+                  code: 'llm_auth_failed',
+                  message: sanitizeProviderErrorMessage('llm_auth_failed'),
+                }),
+              };
+            }
+            roundReplayScopeId = firstScope;
+          }
           const compaction = await memoryPort.compactAfterModelRound({
             workspaceRoot: stateRoot,
             threadId,
@@ -317,6 +401,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
             tools: toolDefs,
             providerAuthRuntime,
             providerRequestOptions,
+            ...(roundReplayScopeId === undefined
+              ? {}
+              : { providerReplayScopeId: roundReplayScopeId }),
             ...(modelRound.value.providerUsageTelemetry?.inputTokens !==
             undefined
               ? {
@@ -339,11 +426,11 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
               }),
             };
           }
-          const providerItems = modelRound.value.itemsToAppend;
           if (
             providerItems !== undefined &&
             providerItems.length > 0 &&
-            providerItems.every((item) => item.kind === 'backend_item')
+            providerItems.every((item) => item.kind === 'backend_item') &&
+            roundReplayScopeId !== undefined
           ) {
             const transcriptEntries = await readTranscriptEntries(
               stateRoot,
@@ -356,6 +443,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
               round,
               providerId: providerRequestOptions.providerId,
               model: providerRequestOptions.model,
+              replayScopeId: roundReplayScopeId,
               precedingTranscriptEntryId:
                 transcriptEntries.at(-1)?.entryId ?? null,
               items: providerItems.map((item) => item.data),

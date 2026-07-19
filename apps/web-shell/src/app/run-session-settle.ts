@@ -1,4 +1,4 @@
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../lib/error-message.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 

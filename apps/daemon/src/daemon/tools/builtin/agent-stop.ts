@@ -105,7 +105,7 @@ export const agentStopTool = defineParsedTool<AgentStopArgs>({
     }
 
     if (
-      !ctx.agentSpawnRuntime.activeRuns.abortTrackedRun(
+      !ctx.agentSpawnRuntime.activeRuns.abortRunSubtree(
         args.child_run_id,
         'explicit_stop',
       )

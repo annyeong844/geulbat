@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import type { ProviderReplayScopeId } from '@geulbat/protocol/provider-auth';
 import type {
   BudgetProfile,
   CompactionThreadMessage,
@@ -18,6 +19,9 @@ import {
 } from './compaction-rebuild.js';
 
 const TEST_TIMESTAMP = '2026-07-16T00:00:00.000Z';
+const TEST_REPLAY_SCOPE_ID = `sha256:${'e'.repeat(
+  64,
+)}` as ProviderReplayScopeId;
 const TEST_BUDGET_PROFILE: BudgetProfile = {
   model: 'test-model',
   contextWindow: 100,
@@ -68,6 +72,7 @@ function nativeCompaction(entryId: string): CompactionThreadMessage {
       kind: 'provider_native',
       providerId: 'openai_codex_direct',
       model: 'test-model',
+      replayScopeId: TEST_REPLAY_SCOPE_ID,
       output: [
         {
           type: 'compaction',
@@ -147,7 +152,14 @@ void test('provider-native rebuild replaces the prefix and keeps only post-check
   ];
 
   const active = getActiveTranscriptEntries(entries, 'thread');
-  const history = buildCompactionAwareHistory(entries, 'thread');
+  const history = buildCompactionAwareHistory(
+    entries,
+    'thread',
+    new Map(),
+    new Map(),
+    undefined,
+    TEST_REPLAY_SCOPE_ID,
+  );
 
   assert.equal(active.latestCompactionEntryId, 'native-checkpoint');
   assert.deepEqual(
@@ -159,6 +171,7 @@ void test('provider-native rebuild replaces the prefix and keeps only post-check
       kind: 'provider_native_compaction',
       providerId: 'openai_codex_direct',
       model: 'test-model',
+      providerReplayScopeId: TEST_REPLAY_SCOPE_ID,
       output: [
         {
           type: 'compaction',
@@ -168,6 +181,18 @@ void test('provider-native rebuild replaces the prefix and keeps only post-check
     },
     { kind: 'user', text: 'new tail' },
   ]);
+  assert.throws(
+    () =>
+      buildCompactionAwareHistory(
+        entries,
+        'thread',
+        new Map(),
+        new Map(),
+        undefined,
+        `sha256:${'f'.repeat(64)}` as ProviderReplayScopeId,
+      ),
+    /different authentication scope/u,
+  );
 });
 
 void test('provider-transition rebuild uses the portable summary and only the post-consent tail', () => {

@@ -16,7 +16,7 @@ import {
   isConflictStaleWriteError,
   type ConflictStaleWriteError,
 } from '@geulbat/protocol/errors';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../error-message.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import {
   ApiFetchError,

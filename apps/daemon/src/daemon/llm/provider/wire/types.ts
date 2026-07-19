@@ -1,5 +1,6 @@
 import type { DaemonArtifactCandidate } from '../../../artifact-candidate.js';
 import type { JsonValue } from '../../../runtime-json.js';
+import type { ProviderReplayScopeId } from '../../../runtime-contracts.js';
 
 export type ProviderArtifactCandidate = DaemonArtifactCandidate;
 export type ProviderNativeCompactionOutputItem = Record<string, JsonValue>;
@@ -26,9 +27,14 @@ export type HistoryItem =
       kind: 'provider_native_compaction';
       providerId: string;
       model: string;
+      providerReplayScopeId?: ProviderReplayScopeId | null;
       output: ProviderNativeCompactionOutputItem[];
     }
-  | { kind: 'backend_item'; data: unknown };
+  | {
+      kind: 'backend_item';
+      data: unknown;
+      providerReplayScopeId?: ProviderReplayScopeId | null;
+    };
 
 export interface FunctionCall {
   id: string;

@@ -20,6 +20,7 @@ import { testThreadId } from '../../../../test-support/thread-id.js';
 import { makeRunContext } from '../../../../test-support/run-context.js';
 import {
   PTC_EXECUTE_CODE_TOOL_NAME,
+  type PtcExecuteCodeModuleFormat,
   type PtcExecuteCodeRuntimeSdkProjection,
 } from './execute-code-runtime-contract.js';
 import { createPtcExecuteCodeRuntime } from './execute-code-runtime.js';
@@ -42,6 +43,29 @@ const TEST_CALLBACK_TRANSPORT_POLICY = Object.freeze({
   maxCallbacks: 20,
   callbackTimeoutMs: 30_000,
   maxResponseBytes: 8192,
+});
+
+void test('createPtcExecuteCodeRuntime rejects unknown module formats before opening runtime state', async () => {
+  const runtime = createPtcExecuteCodeRuntime();
+  try {
+    const result = await runtime.executeCode({
+      runContext: makeRunContext({
+        threadId: testThreadId(899),
+        stateRoot: '/unused/invalid-module-format',
+      }),
+      request: {
+        code: 'console.log("must not run")',
+        moduleFormat: 'amd' as PtcExecuteCodeModuleFormat,
+      },
+    });
+    assert.deepEqual(result, {
+      ok: false,
+      reasonCode: 'ptc_execute_code_invalid',
+      message: 'PTC execute_code module format is invalid',
+    });
+  } finally {
+    await runtime.closeAll();
+  }
 });
 
 void test('createPtcExecuteCodeRuntime delegates restart residue cleanup without starting a session', async () => {
@@ -95,6 +119,7 @@ void test('createPtcExecuteCodeRuntime runs model code through lab batch command
     join(tmpdir(), 'geulbat-ptc-execute-code-runtime-'),
   );
   const code = 'console.log("hello from execute_code; $(touch /host-owned)")';
+  const observedModuleInputTypes: string[] = [];
   const fixture = createPtcSessionDockerCommandFixture({
     policy: createPtcSessionDockerLocalBatchCommandPolicy(),
     containerId: 'container-agent-ptc-execute-code',
@@ -105,7 +130,12 @@ void test('createPtcExecuteCodeRuntime runs model code through lab batch command
         const command = invocation.args[4];
         assert.ok(typeof command === 'string');
         assert.match(command, /GEULBAT_PTC_RUNNER_B64/u);
-        assert.match(command, /--input-type=commonjs-typescript/u);
+        if (command.includes('--input-type=module-typescript')) {
+          observedModuleInputTypes.push('esm');
+        } else {
+          assert.match(command, /--input-type=commonjs-typescript/u);
+          observedModuleInputTypes.push('commonjs');
+        }
         assert.doesNotMatch(command, /touch \/host-owned/u);
         return {
           kind: 'exit',
@@ -153,6 +183,19 @@ void test('createPtcExecuteCodeRuntime runs model code through lab batch command
       helpAvailable: true,
       callbackToolCount: 0,
     });
+    const esmResult = await runtime.executeCode({
+      runContext: makeRunContext({
+        threadId: testThreadId(901),
+        stateRoot,
+      }),
+      request: {
+        code: "import { basename } from 'node:path'; process.stdout.write(basename('/tmp/esm'));",
+        moduleFormat: 'esm',
+        timeoutMs: 1234,
+      },
+    });
+    assert.equal(esmResult.ok, true);
+    assert.deepEqual(observedModuleInputTypes, ['commonjs', 'esm']);
     assert.equal(JSON.stringify(result).includes('container-agent'), false);
     assert.deepEqual(
       fixture.invocations

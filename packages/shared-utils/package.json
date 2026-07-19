@@ -8,10 +8,6 @@
     "dist/"
   ],
   "exports": {
-    "./error": {
-      "types": "./dist/error.d.ts",
-      "import": "./dist/error.js"
-    },
     "./identifier-naming": {
       "types": "./dist/identifier-naming.d.ts",
       "import": "./dist/identifier-naming.js"

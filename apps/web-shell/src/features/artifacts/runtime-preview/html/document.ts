@@ -1,24 +1,30 @@
 const ARTIFACT_RUNTIME_HTML_RESIZE_HELPER = String.raw`(() => {
   const MESSAGE_KIND = 'geulbat.artifact_runtime_host';
   const targetOrigin = window.__GEULBAT_PARENT_ORIGIN__;
-  const sendResize = () => {
+  let rafId = 0;
+  let lastSentHeight = -1;
+  const measureResize = () => {
     const docEl = document.documentElement;
     const body = document.body;
     // docEl/body의 client·scrollHeight는 뷰포트(현재 프레임 높이)와 결합돼
     // 한 번 커진 프레임이 다시 줄지 않는 래칫을 만든다 — 실제 콘텐츠
     // 높이(rect, body 스크롤 범위)만 보고한다.
-    const height = Math.max(
+    return Math.max(
       Math.ceil(docEl?.getBoundingClientRect?.().height ?? 0),
       Math.ceil(body?.getBoundingClientRect?.().height ?? 0),
       body?.scrollHeight ?? 0,
       body?.offsetHeight ?? 0,
     );
+  };
+  const sendResize = (height) => {
     if (
       window.parent &&
       window.parent !== window &&
       typeof targetOrigin === 'string' &&
-      targetOrigin.length > 0
+      targetOrigin.length > 0 &&
+      height !== lastSentHeight
     ) {
+      lastSentHeight = height;
       window.parent.postMessage(
         {
           kind: MESSAGE_KIND,
@@ -30,14 +36,18 @@ const ARTIFACT_RUNTIME_HTML_RESIZE_HELPER = String.raw`(() => {
     }
   };
 
-  let rafId = 0;
   const scheduleResize = () => {
     if (rafId !== 0) {
       return;
     }
+    // ResizeObserver/load/resize callbacks run after the browser has updated
+    // layout. Read the content size here, then keep the animation-frame
+    // callback write-only so mounting an iframe while scrolling cannot force a
+    // second synchronous layout inside rAF.
+    const height = measureResize();
     rafId = window.requestAnimationFrame(() => {
       rafId = 0;
-      sendResize();
+      sendResize(height);
     });
   };
 

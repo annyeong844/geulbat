@@ -38,7 +38,7 @@ type InstallPackagesArgs = z.output<typeof installPackagesArgsSchema>;
 export const installPackagesTool = defineZodTool({
   name: PTC_PACKAGE_INSTALL_TOOL_NAME,
   description:
-    'Install exact-version npm packages from the live registry into the PTC lab session. Installed packages become available to exec code through CommonJS require(). Requires the operator package-install opt-in; lifecycle scripts stay disabled.',
+    "Install npm packages from the live registry into this PTC lab session. The same session's exec can load them with CommonJS require() or explicit-ESM static imports. Requires the operator opt-in; lifecycle scripts stay disabled.",
   argsSchema: installPackagesArgsSchema,
   sideEffectLevel: 'write',
   mayMutateComputerFiles: false,
@@ -50,12 +50,13 @@ export const installPackagesTool = defineZodTool({
       'add dependency',
       'npm install',
       'install packages for exec',
+      'esm package import',
     ],
     tags: ['ptc', 'package', 'npm', 'install'],
     whenToUse:
-      'Install npm packages so later exec code can require() them in the same PTC session.',
+      'Install npm packages for CommonJS or explicit-ESM exec code in the same PTC session.',
     notFor:
-      'Version ranges or "latest" tags, pip/Playwright installs, or installing into the host filesystem.',
+      'URL/file/git/workspace specifiers, pip/Playwright installs, lifecycle scripts, or host installs.',
   },
   async executeParsed(args: InstallPackagesArgs, ctx) {
     if (!ctx.threadId || !ctx.stateRoot) {

@@ -89,6 +89,9 @@ export const TSGOLINT_PROJECTS = [
     targetPath: 'packages/shared-utils/src',
   },
   {
+    targetPath: 'packages/tool-sdk/src',
+  },
+  {
     targetPath: 'packages/tool-library/src',
   },
 ];

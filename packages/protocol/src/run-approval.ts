@@ -103,9 +103,19 @@ export interface ApprovalRequired {
   source?: ToolCallSourcePayload;
 }
 
+// Approval decisions are authority-bearing client commands. Unknown keys are
+// rejected so a misspelled or newer decision selector is never silently
+// interpreted as the older, narrower approval shape.
 export function isApprovalRequest(value: unknown): value is ApprovalRequest {
   return (
     isRecord(value) &&
+    hasOnlyKeys(value, [
+      'callId',
+      'runId',
+      'threadId',
+      'approved',
+      'grantScope',
+    ]) &&
     isString(value.callId) &&
     isString(value.runId) &&
     isRunId(value.runId) &&
@@ -116,6 +126,9 @@ export function isApprovalRequest(value: unknown): value is ApprovalRequest {
   );
 }
 
+// ApprovalRequired is a server projection. Keep it additive so older shells
+// can ignore future explanatory fields while still validating every field they
+// use to render and submit the decision.
 export function isApprovalRequired(value: unknown): value is ApprovalRequired {
   return (
     isRecord(value) &&
@@ -135,4 +148,11 @@ export function isApprovalRequired(value: unknown): value is ApprovalRequired {
 
 export function isApprovalResponse(value: unknown): value is ApprovalResponse {
   return isRecord(value) && isBoolean(value.ok);
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+): boolean {
+  return Object.keys(value).every((key) => allowedKeys.includes(key));
 }

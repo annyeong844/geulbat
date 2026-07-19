@@ -10,6 +10,8 @@ const DAEMON_READY_TIMEOUT_MS = 30_000;
 const DAEMON_READY_POLL_MS = 250;
 const MAX_CAPTURED_LOG_LINES = 80;
 const STOP_TIMEOUT_MS = 5_000;
+const PUBLIC_WEB_CONFORMANCE_FIXTURES_ENV_NAME =
+  'GEULBAT_PUBLIC_WEB_CONFORMANCE_FIXTURES';
 
 const PLAYWRIGHT_RUNTIME_LIBRARY_PACKAGES = {
   'libnspr4.so': 'libnspr4',
@@ -19,14 +21,26 @@ const PLAYWRIGHT_RUNTIME_LIBRARY_PACKAGES = {
 };
 
 export function startDaemon(args) {
-  const { repoRoot, logs, port, watch = false } = args;
+  const {
+    repoRoot,
+    logs,
+    port,
+    watch = false,
+    enablePublicWebConformanceFixtures = false,
+  } = args;
   const daemonArgs = watch
     ? ['--watch', '--import', 'tsx', 'src/index.ts']
     : ['--import', 'tsx', 'src/index.ts'];
+  const daemonEnvironment = { ...process.env };
+  if (enablePublicWebConformanceFixtures) {
+    daemonEnvironment[PUBLIC_WEB_CONFORMANCE_FIXTURES_ENV_NAME] = '1';
+  } else {
+    delete daemonEnvironment[PUBLIC_WEB_CONFORMANCE_FIXTURES_ENV_NAME];
+  }
   const daemon = spawn('node', daemonArgs, {
     cwd: path.join(repoRoot, 'apps', 'daemon'),
     env: {
-      ...process.env,
+      ...daemonEnvironment,
       GEULBAT_DEV_TOKEN:
         process.env['GEULBAT_DEV_TOKEN'] ?? DEFAULT_SMOKE_DEV_TOKEN,
       GEULBAT_REPO_ROOT: repoRoot,

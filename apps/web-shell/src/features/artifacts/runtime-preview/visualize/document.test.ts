@@ -15,6 +15,8 @@ void test('위젯 문서는 코드 조각을 투명 배경 본문에 담는다',
   assert.match(document, /\\u003Csvg viewBox=/);
   assert.match(document, /prefers-reduced-motion/);
   assert.match(document, /background: transparent/);
+  assert.match(document, /overflow: hidden/);
+  assert.match(document, /\.geulbat-visualize-root \* \{\s*min-width: 0/);
   assert.match(document, /<title>파이프라인<\/title>/);
   // 프리셋 클래스와 #arrow 마커가 미리 깔려 있어야 위젯 코드가 바로 쓴다
   assert.match(document, /\.th \{/);

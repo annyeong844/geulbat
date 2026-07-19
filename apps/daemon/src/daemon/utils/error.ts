@@ -1,4 +1,3 @@
-import { getErrorMessage } from '@geulbat/shared-utils/error';
 import {
   isErrorCode,
   isGenericApiErrorCode,
@@ -6,7 +5,18 @@ import {
   type GenericApiErrorCode,
 } from '../error-codes.js';
 
-export { getErrorMessage };
+export function getErrorMessage(
+  error: unknown,
+  fallback = 'unknown error',
+): string {
+  if (error instanceof Error && error.message.trim() !== '') {
+    return error.message;
+  }
+  if (typeof error === 'string' && error.trim() !== '') {
+    return error;
+  }
+  return fallback;
+}
 
 function readProperty(error: unknown, key: string): unknown {
   if (!error || typeof error !== 'object' || !(key in error)) {

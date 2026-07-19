@@ -22,10 +22,14 @@ function createTranscriptNode(args: {
   scrollHeight: number;
   clientHeight: number;
   animatedScrollCalls?: ScrollBehavior[];
+  scrollTopReads?: { current: number };
 }): TranscriptNode {
   let scrollTop = 0;
   return {
     get scrollTop() {
+      if (args.scrollTopReads) {
+        args.scrollTopReads.current += 1;
+      }
       return scrollTop;
     },
     set scrollTop(value) {
@@ -78,6 +82,42 @@ function TranscriptScrollProbe(props: {
     </div>
   );
 }
+
+void test('auto-follow records its pre-write target without a post-write scrollTop read', async () => {
+  const scrollTopReads = { current: 0 };
+  const transcriptNode = createTranscriptNode({
+    scrollHeight: 900,
+    clientHeight: 400,
+    scrollTopReads,
+  });
+  let renderer!: ReactTestRenderer;
+
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <TranscriptScrollProbe messageCount={1} onLayout={() => {}} />,
+      {
+        createNodeMock(element) {
+          const elementProps = element.props;
+          if (
+            typeof elementProps === 'object' &&
+            elementProps !== null &&
+            'data-node' in elementProps &&
+            elementProps['data-node'] === 'transcript'
+          ) {
+            return transcriptNode;
+          }
+          return {};
+        },
+      },
+    );
+  });
+
+  // TranscriptScrollProbe reads once to capture the committed layout. The
+  // auto-follow owner must not add another read after assigning scrollTop.
+  assert.equal(scrollTopReads.current, 1);
+
+  await act(async () => renderer.unmount());
+});
 
 void test('message lifecycle follows the transcript before the updated frame can paint', async () => {
   const animatedScrollCalls: ScrollBehavior[] = [];

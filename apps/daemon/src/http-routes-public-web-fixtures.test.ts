@@ -15,10 +15,10 @@ import {
   PUBLIC_WEB_REQUEST_IDENTITY_ECHO_PATH,
 } from '@geulbat/protocol/public-web-fixtures';
 
-import { withDaemonServer } from './test-support/http-routes.js';
+import { withPublicWebConformanceServer } from './test-support/http-routes.js';
 
 void test('public react bundle fixture entry route is unauthenticated and same-origin readable', async () => {
-  await withDaemonServer(async ({ port }) => {
+  await withPublicWebConformanceServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}${PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH}`,
     );
@@ -48,7 +48,7 @@ void test('public react bundle fixture entry route is unauthenticated and same-o
 });
 
 void test('public react bundle fixture chunk route exposes the multi-chunk counter app', async () => {
-  await withDaemonServer(async ({ port }) => {
+  await withPublicWebConformanceServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}${PUBLIC_WEB_REACT_BUNDLE_COUNTER_CHUNK_PATH}`,
     );
@@ -69,7 +69,7 @@ void test('public react bundle fixture chunk route exposes the multi-chunk count
 });
 
 void test('public react hello-card bundle fixture entry route is unauthenticated and script-loadable', async () => {
-  await withDaemonServer(async ({ port }) => {
+  await withPublicWebConformanceServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}${PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_ENTRY_PATH}`,
     );
@@ -92,7 +92,7 @@ void test('public react hello-card bundle fixture entry route is unauthenticated
 });
 
 void test('public react hello-card bundle fixture chunk route exposes a runnable hello-card app', async () => {
-  await withDaemonServer(async ({ port }) => {
+  await withPublicWebConformanceServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}${PUBLIC_WEB_REACT_BUNDLE_HELLO_CARD_CHUNK_PATH}`,
     );
@@ -114,7 +114,7 @@ void test('public react hello-card bundle fixture chunk route exposes a runnable
 });
 
 void test('public react runtime-dependencies bundle fixtures expose entry, module, and stylesheet assets', async () => {
-  await withDaemonServer(async ({ port }) => {
+  await withPublicWebConformanceServer(async ({ port }) => {
     const baseUrl = `http://127.0.0.1:${port}`;
 
     const entryRes = await fetch(
@@ -157,7 +157,7 @@ void test('public react runtime-dependencies bundle fixtures expose entry, modul
 });
 
 void test('public dom counter fixture route is unauthenticated and script-loadable', async () => {
-  await withDaemonServer(async ({ port }) => {
+  await withPublicWebConformanceServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}${PUBLIC_WEB_DOM_COUNTER_PATH}`,
     );
@@ -176,7 +176,7 @@ void test('public dom counter fixture route is unauthenticated and script-loadab
 });
 
 void test('public json echo fixture route is unauthenticated and same-origin readable', async () => {
-  await withDaemonServer(async ({ port }) => {
+  await withPublicWebConformanceServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}${PUBLIC_WEB_JSON_ECHO_PATH}?message=hello`,
     );
@@ -204,7 +204,7 @@ void test('public json echo fixture route is unauthenticated and same-origin rea
 });
 
 void test('public eventsource echo fixture route is unauthenticated and same-origin readable', async () => {
-  await withDaemonServer(async ({ port }) => {
+  await withPublicWebConformanceServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}${PUBLIC_WEB_EVENTSOURCE_ECHO_PATH}?message=stream`,
     );
@@ -228,7 +228,7 @@ void test('public eventsource echo fixture route is unauthenticated and same-ori
 });
 
 void test('public request identity echo fixture route exposes request identity fields', async () => {
-  await withDaemonServer(async ({ port }) => {
+  await withPublicWebConformanceServer(async ({ port }) => {
     const res = await requestTextFixture({
       port,
       path: PUBLIC_WEB_REQUEST_IDENTITY_ECHO_PATH,

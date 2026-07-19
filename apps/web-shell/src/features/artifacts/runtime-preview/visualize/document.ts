@@ -85,11 +85,24 @@ const VISUALIZE_WIDGET_STYLE = `
   body {
     margin: 0;
     padding: 0;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
     background: transparent;
     color: var(--text-primary);
   }
   .geulbat-visualize-root {
+    width: 100%;
+    max-width: 100%;
     padding: 2px;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .geulbat-visualize-root > * {
+    max-width: 100%;
+  }
+  .geulbat-visualize-root * {
+    min-width: 0;
   }
   .t {
     font-size: 13px;

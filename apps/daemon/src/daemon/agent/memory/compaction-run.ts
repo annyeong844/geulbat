@@ -11,6 +11,7 @@ import {
   type ProviderNativeCompactionOutputItem,
   type ProviderTransitionCompactionEntryData,
 } from '../contract.js';
+import type { ProviderReplayScopeId } from '../../runtime-contracts.js';
 import type { HistoryItem } from '../../llm/provider/wire/types.js';
 import {
   prepareContextCompaction,
@@ -209,6 +210,7 @@ export async function compactThreadContextNative(args: {
   thresholdTokens: number;
   compactHistory: () => Promise<{
     output: ProviderNativeCompactionOutputItem[];
+    providerReplayScopeId: ProviderReplayScopeId;
   }>;
   now?: () => Date;
 }): Promise<CompactThreadContextNativeResult> {
@@ -226,6 +228,7 @@ export async function compactThreadContextNative(args: {
     kind: 'provider_native' as const,
     providerId: args.providerId,
     model: args.model,
+    replayScopeId: compacted.providerReplayScopeId,
     output: compacted.output,
     tokensBefore: args.tokensBefore,
     contextWindow: args.contextWindow,
@@ -271,6 +274,7 @@ export async function compactThreadContextNative(args: {
     kind: 'provider_native_compaction',
     providerId: appended.compactionData.providerId,
     model: appended.compactionData.model,
+    providerReplayScopeId: appended.compactionData.replayScopeId ?? null,
     output: appended.compactionData.output,
   });
   return { kind: 'compacted', checkpoint: appended };

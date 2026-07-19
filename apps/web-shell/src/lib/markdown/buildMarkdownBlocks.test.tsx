@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
 
-import { buildMarkdownBlocks } from './buildMarkdownBlocks.js';
+import {
+  buildMarkdownBlocks,
+  prepareMarkdownBlocks,
+} from './buildMarkdownBlocks.js';
 
 (
   globalThis as typeof globalThis & {
@@ -107,6 +110,23 @@ void test('buildMarkdownBlocks preserves references across top-level blocks', ()
   assert.match(html, /title="공식"/);
   assert.match(html, /<blockquote>/);
   assert.doesNotMatch(html, /\[docs\]:/);
+});
+
+void test('prepared settled Markdown preserves semantic output across remounts', () => {
+  const renderCacheOwner = {};
+  const markdown = '**미리 준비한 답변**과 `cache()`';
+  prepareMarkdownBlocks(renderCacheOwner, markdown);
+
+  const first = renderToStaticMarkup(
+    <>{buildMarkdownBlocks(markdown, renderCacheOwner)}</>,
+  );
+  const second = renderToStaticMarkup(
+    <>{buildMarkdownBlocks(markdown, renderCacheOwner)}</>,
+  );
+
+  assert.equal(second, first);
+  assert.match(first, /<strong>미리 준비한 답변<\/strong>/);
+  assert.match(first, /rendered-markdown-code/);
 });
 
 void test('buildMarkdownBlocks preserves Markdown semantics across appended updates', async () => {

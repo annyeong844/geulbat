@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { version as esbuildVersion } from 'esbuild';
 import {
-  REACT_BUNDLE_INLINE_COMPILE_POLICY_VERSION,
   REACT_BUNDLE_RUNTIME_ABI_VERSION,
   REACT_BUNDLE_RUNTIME_REACT_MAJOR,
   REACT_BUNDLE_RUNTIME_SHIM_MAP_VERSION,
@@ -9,6 +8,10 @@ import {
 } from '@geulbat/protocol/react-bundle-inline-compile';
 
 const REACT_BUNDLE_BUNDLER_VERSION = `esbuild-${esbuildVersion}`;
+// Compiler admission and transform policy are daemon-owned execution details,
+// not part of the shell/daemon wire or runtime ABI surface.
+const REACT_BUNDLE_INLINE_COMPILE_POLICY_VERSION =
+  'react-inline-compile-policy-v1';
 
 export function createReactBundleInlineCacheKey(
   input: ReactBundleInlineCompileRequest['input'],

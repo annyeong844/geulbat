@@ -37,6 +37,8 @@ export function sanitizeProviderErrorMessage(code: string): string {
       return 'provider authentication failed';
     case 'llm_rate_limited':
       return 'provider rate limited';
+    case 'llm_overloaded':
+      return 'provider overloaded';
     case 'llm_context_length_exceeded':
       return 'context length exceeded';
     case 'llm_connect_timeout':
@@ -104,6 +106,9 @@ function readProviderMessageErrorCode(message: string): string | null {
   }
   if (message.includes('rate limit') || message.includes('rate_limit')) {
     return 'llm_rate_limited';
+  }
+  if (message.includes('currently at capacity')) {
+    return 'llm_overloaded';
   }
   if (isContextLengthMessage(message)) {
     return 'llm_context_length_exceeded';

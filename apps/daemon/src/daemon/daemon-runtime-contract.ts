@@ -11,8 +11,6 @@ import type { MemoryIndexStore } from './memory/build-index.js';
 import type { FileStateCache } from './utils/file-state-cache.js';
 import type { ChildRunRegistry } from './agent/runtime/child-run-registry.js';
 import type { ApprovalGate } from './agent/runtime/approval-gate.js';
-import type { AgentWorkflowRunner } from './agent/agent-workflow-runner.js';
-import type { AgentWavePlanner } from './agent/agent-wave-planner.js';
 import type { ResourceBudgetProvider } from './agent/resource-budget-provider.js';
 import type { SubagentAdmissionController } from './agent/subagent-concurrency.js';
 import type {
@@ -93,7 +91,7 @@ export interface PtcFixedEpochProbeRuntime {
 export interface AgentRuntimeServices {
   activeRuns: Pick<
     ActiveRunStore,
-    'abortTrackedRun' | 'finishRun' | 'tryStartRun'
+    'abortRunSubtree' | 'finishRun' | 'tryStartRun'
   >;
   approvalGrants: ApprovalGrantStore;
   approvalGate: Pick<ApprovalGate, 'waitForApproval'>;
@@ -112,8 +110,6 @@ export interface AgentRuntimeServices {
   childRuns: ChildRunRegistry;
   computerFileRoot?: string;
   fileStateCache: FileStateCache;
-  agentWorkflowRunner: AgentWorkflowRunner;
-  agentWavePlanner: AgentWavePlanner;
   imageGeneration: ImageGenerationRuntime;
   videoGeneration: VideoGenerationRuntime;
   memoryIndex: AgentMemoryIndex;

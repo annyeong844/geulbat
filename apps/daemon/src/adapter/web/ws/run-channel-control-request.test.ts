@@ -9,6 +9,8 @@ import { testThreadId } from '../../../test-support/thread-id.js';
 import {
   readRunApproveRequest,
   readRunCancelRequest,
+  readRunInterjectCancelRequest,
+  readRunInterjectFlushRequest,
   readRunInterjectRequest,
   readRunToolRequest,
 } from './run-channel-control-request.js';
@@ -145,6 +147,66 @@ void test('readRunInterjectRequest accepts a valid request without trimming text
   );
 });
 
+void test('full interject decoders reject unknown mutation fields', () => {
+  assert.equal(
+    readRunInterjectRequest({
+      ...interjectRequest(),
+      futureMode: 'replace',
+    }).ok,
+    false,
+  );
+  assert.equal(
+    readRunInterjectCancelRequest({
+      runId: RUN_ID,
+      receivedSeq: 1,
+      cancelAll: true,
+    }).ok,
+    false,
+  );
+  assert.equal(
+    readRunInterjectFlushRequest({ runId: RUN_ID, force: true }).ok,
+    false,
+  );
+});
+
+void test('readRunInterjectCancelRequest validates the opaque envelope body', () => {
+  assert.deepEqual(readRunInterjectCancelRequest(null), {
+    ok: false,
+    message: 'request must be an object',
+  });
+  assert.deepEqual(
+    readRunInterjectCancelRequest({ runId: 'bad run id', receivedSeq: 1 }),
+    { ok: false, message: 'runId is required' },
+  );
+  assert.deepEqual(
+    readRunInterjectCancelRequest({ runId: RUN_ID, receivedSeq: 0 }),
+    { ok: false, message: 'receivedSeq must be a positive integer' },
+  );
+  assert.deepEqual(
+    readRunInterjectCancelRequest({ runId: RUN_ID, receivedSeq: 1.5 }),
+    { ok: false, message: 'receivedSeq must be a positive integer' },
+  );
+  assert.deepEqual(
+    readRunInterjectCancelRequest({ runId: RUN_ID, receivedSeq: 1 }),
+    { ok: true, runId: RUN_ID, receivedSeq: 1 },
+  );
+});
+
+void test('readRunInterjectFlushRequest validates the opaque envelope body', () => {
+  assert.deepEqual(readRunInterjectFlushRequest(null), {
+    ok: false,
+    message: 'request must be an object',
+  });
+  assert.deepEqual(readRunInterjectFlushRequest({ runId: 'bad run id' }), {
+    ok: false,
+    message: 'runId is required',
+  });
+  assert.deepEqual(readRunInterjectFlushRequest({ runId: RUN_ID }), {
+    ok: true,
+    runId: RUN_ID,
+  });
+});
+
 void test('readRunToolRequest accepts a frame tool call with parent-injected context', () => {
   const threadId = testThreadId(90);
   const result = readRunToolRequest({
@@ -190,6 +252,10 @@ void test('readRunToolRequest rejects missing or malformed frame tool fields', (
   assert.equal(readRunToolRequest({ ...valid, frameRequestId: '' }).ok, false);
   assert.equal(
     readRunToolRequest({ ...valid, workingDirectory: 42 }).ok,
+    false,
+  );
+  assert.equal(
+    readRunToolRequest({ ...valid, approvalGranted: true }).ok,
     false,
   );
 });

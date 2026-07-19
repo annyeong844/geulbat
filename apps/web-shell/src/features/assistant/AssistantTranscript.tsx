@@ -138,7 +138,11 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
     >
       {/* ResizeObserver 대상 — iframe 아티팩트처럼 나중에 자라는 내용도
           바닥 따라가기가 유지되도록 내용 전체를 한 래퍼로 감싼다 */}
-      <div ref={contentRef} style={assistantStyles.transcriptContent}>
+      <div
+        ref={contentRef}
+        className="assistant-transcript-content"
+        style={assistantStyles.transcriptContent}
+      >
         <VirtualizedTranscriptRows
           scrollElementRef={transcriptRef}
           onVirtualizerUpdate={handleVirtualizerUpdate}
@@ -200,7 +204,7 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
             </button>
           </div>
         ) : null}
-        <div ref={bottomRef} />
+        <div ref={bottomRef} className="transcript-bottom-anchor" />
       </div>
       {/* ↓ 맨 아래로 — 바닥에서 떨어져 있을 때만. contentRef 밖(sticky)에
           두어 ResizeObserver 바닥 따라가기에 영향을 주지 않는다 */}

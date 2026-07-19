@@ -82,6 +82,23 @@ void test('readRunChannelClientMessage accepts run.interject envelopes without r
   assert.equal(result.message.type, 'run.interject');
 });
 
+void test('readRunChannelClientMessage preserves cancel and flush envelopes for second-stage decoding', () => {
+  for (const type of ['run.interject.cancel', 'run.interject.flush'] as const) {
+    const result = readRunChannelClientMessage({
+      type,
+      requestId: `req-${type}`,
+      request: {},
+    });
+
+    assert.equal(result.ok, true, type);
+    if (!result.ok) {
+      continue;
+    }
+    assert.equal(result.message.type, type);
+    assert.deepEqual(result.message.request, {});
+  }
+});
+
 void test('readRunChannelClientMessage rejects retired project ownership', () => {
   assert.deepEqual(
     readRunChannelClientMessage({

@@ -5,6 +5,7 @@ import {
   type PromptCacheIntent,
   type PromptCacheProjection,
 } from './provider-cache-projection.js';
+import type { ProviderReplayScopeId } from '../../runtime-contracts.js';
 import { isRecord } from '../../runtime-json.js';
 import { buildResponseWireInput } from './transport/responses-wire-input.js';
 import {
@@ -48,6 +49,7 @@ interface GrokOAuthResponsesHeaderInput {
 
 interface GrokOAuthResponsesBodyInput {
   model: GrokOAuthModelDescriptor;
+  providerReplayScopeId?: ProviderReplayScopeId;
   providerSessionId: string;
   history: HistoryItem[];
   instructions?: string;
@@ -179,6 +181,9 @@ export function buildGrokOAuthResponsesRequestBody(
     input: buildResponseWireInput(input.history, {
       providerId: input.model.providerId,
       model: input.model.id,
+      ...(input.providerReplayScopeId === undefined
+        ? {}
+        : { providerReplayScopeId: input.providerReplayScopeId }),
     }),
     reasoning: {
       effort: resolveGrokOAuthReasoningEffort(input.reasoningEffort),
@@ -225,7 +230,7 @@ export async function streamGrokOAuthResponses(
   input: GrokOAuthResponsesStreamInput,
   options: GrokOAuthResponsesStreamOptions,
 ): Promise<CallResult> {
-  return streamResponsesOverWebSocket({
+  const result = await streamResponsesOverWebSocket({
     webSocketUrl: buildGrokOAuthResponsesWebSocketUrl(input.model),
     payload: {
       type: 'response.create',
@@ -237,6 +242,7 @@ export async function streamGrokOAuthResponses(
         ? { conversationRoutingId: input.conversationRoutingId }
         : {}),
     }),
+    historyProjection: 'provider_output',
     providerSessionId: input.providerSessionId,
     webSocketReusePolicy: GROK_OAUTH_RESPONSES_WEBSOCKET_REUSE_POLICY,
     providerWebSocketSessions: input.providerWebSocketSessions,
@@ -253,6 +259,23 @@ export async function streamGrokOAuthResponses(
       ? { onFunctionCallArgsDelta: options.onFunctionCallArgsDelta }
       : {}),
   });
+  return {
+    ...result,
+    itemsToAppend: result.itemsToAppend.map(stripGrokSyntheticAssistantPhase),
+  };
+}
+
+function stripGrokSyntheticAssistantPhase(item: HistoryItem): HistoryItem {
+  if (
+    item.kind !== 'backend_item' ||
+    !isRecord(item.data) ||
+    item.data.type !== 'message' ||
+    item.data.phase !== 'final_answer'
+  ) {
+    return item;
+  }
+  const { phase: _syntheticPhase, ...data } = item.data;
+  return { ...item, data };
 }
 
 function isGrokOAuthModelLookupKey(

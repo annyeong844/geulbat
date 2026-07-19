@@ -148,7 +148,8 @@ export async function runPtcLabBatchCommandExecution(
   }
 
   const interpreter = args.interpreter ?? 'bash';
-  const start = (args.now ?? Date.now)();
+  const now = args.now ?? (() => performance.now());
+  const start = now();
   let runnerResult: PtcLabBatchCommandRunnerResult;
   try {
     runnerResult = await (args.runner ?? runDefaultDockerRunner)({
@@ -169,7 +170,7 @@ export async function runPtcLabBatchCommandExecution(
       'PTC lab batch command runner failed',
     );
   }
-  const durationMs = Math.max(0, (args.now ?? Date.now)() - start);
+  const durationMs = Math.max(0, now() - start);
 
   return await mapRunnerResult({
     runnerResult,

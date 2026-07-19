@@ -50,9 +50,11 @@ export function useAssistantTranscriptScrollState(args: {
       !autoScrollLockedRef.current ||
       isTranscriptNearBottom(transcript, scrollHeight);
     if (shouldFollow) {
-      scrollAssistantTranscript(transcript, scrollHeight, behavior);
-      lastProgrammaticScrollTopRef.current =
-        behavior === 'auto' ? transcript.scrollTop : null;
+      lastProgrammaticScrollTopRef.current = scrollAssistantTranscript(
+        transcript,
+        scrollHeight,
+        behavior,
+      );
       clearUnreadTranscriptState(
         autoScrollLockedRef,
         setHasUnreadStreamContent,
@@ -163,12 +165,14 @@ function scrollAssistantTranscript(
   transcript: HTMLDivElement,
   scrollHeight: number,
   behavior: ScrollBehavior,
-) {
+): number | null {
+  const targetScrollTop = Math.max(0, scrollHeight - transcript.clientHeight);
   if (behavior === 'auto') {
-    transcript.scrollTop = scrollHeight;
-    return;
+    transcript.scrollTop = targetScrollTop;
+    return targetScrollTop;
   }
-  transcript.scrollTo({ top: scrollHeight, behavior });
+  transcript.scrollTo({ top: targetScrollTop, behavior });
+  return null;
 }
 
 function clearUnreadTranscriptState(

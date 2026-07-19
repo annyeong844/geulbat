@@ -102,6 +102,17 @@ void test('exec description teaches the generated wrapper result envelope', () =
   assert.match(executeCodeTool.description, /do not assume a repository cwd/u);
 });
 
+void test('exec description separates the low-level callback result from the generated wrapper envelope', () => {
+  assert.match(
+    executeCodeTool.description,
+    /Low-level geulbat\.callTool returns raw.*ok.*output.*errorCode.*error/u,
+  );
+  assert.match(
+    executeCodeTool.description,
+    /not the generated wrapper's kind\/value envelope/u,
+  );
+});
+
 void test('exec surfaces capacity pressure as a queued cell handoff', async () => {
   const daemonContext = createDaemonContext();
   const ptcExecuteCode: PtcExecuteCodeRuntime = {
@@ -243,22 +254,32 @@ void test('public exec and wait expose explicit PTC cell scheduler metadata', ()
   assert.equal(waitTool.parallelBatchKind, 'ptc_cell');
 });
 
-void test('exec exposes timeoutMs plus yield-time_ms without aliases', async () => {
+void test('exec exposes moduleFormat, timeoutMs, and yield-time_ms without aliases', async () => {
   const rejectedSnakeCaseYieldKey = ['yield', 'time', 'ms'].join('_');
   const parameters = executeCodeTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(Object.keys(parameters.properties), [
     'code',
+    'moduleFormat',
     'timeoutMs',
     'yield-time_ms',
   ]);
   assert.deepEqual(parameters.required, ['code']);
+  const moduleFormatProperty = parameters.properties.moduleFormat as {
+    description?: string;
+    enum?: unknown[];
+  };
   const timeoutProperty = parameters.properties.timeoutMs as {
     description?: string;
   };
   const yieldTimeProperty = parameters.properties['yield-time_ms'] as {
     description?: string;
   };
+  assert.match(
+    moduleFormatProperty.description ?? '',
+    /static import.*top-level await/u,
+  );
+  assert.deepEqual(moduleFormatProperty.enum, ['commonjs', 'esm']);
   assert.match(
     timeoutProperty.description ?? '',
     /timeout_ms is not accepted/u,
@@ -272,6 +293,7 @@ void test('exec exposes timeoutMs plus yield-time_ms without aliases', async () 
   const result = await executeCodeTool.execute(
     {
       code: 'return 1',
+      module_format: 'esm',
       timeout_ms: 1_000,
       yield_time_ms: 1_000,
       yieldTimeMs: 1_000,
@@ -287,7 +309,10 @@ void test('exec exposes timeoutMs plus yield-time_ms without aliases', async () 
 
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'invalid_args');
-  assert.match(result.error ?? '', /unexpected keys: timeout_ms/u);
+  assert.match(
+    result.error ?? '',
+    /unexpected keys:.*module_format.*timeout_ms/u,
+  );
   assert.match(result.error ?? '', new RegExp(rejectedSnakeCaseYieldKey, 'u'));
   assert.match(result.error ?? '', /yieldTimeMs/u);
 });
@@ -312,12 +337,14 @@ void test('exec requires an agent runtime service before executing code', async 
 void test('exec returns compact runtime output without session identifiers', async () => {
   const daemonContext = createDaemonContext();
   let observedCode = '';
+  let observedModuleFormat: string | undefined;
   let observedYieldTimeMs = 0;
   let observedPlacementResourceSnapshotId: string | undefined;
   let observedSdkToolNames: string[] = [];
   const ptcExecuteCode: PtcExecuteCodeRuntime = {
     async executeCode(args) {
       observedCode = args.request.code;
+      observedModuleFormat = args.request.moduleFormat;
       observedYieldTimeMs = args.request.yieldTimeMs ?? 0;
       assert.equal(args.invocationId, 'call-execute-code-success');
       assert.equal(
@@ -376,7 +403,11 @@ void test('exec returns compact runtime output without session identifiers', asy
   });
 
   const result = await executeCodeTool.execute(
-    { code: 'return { answer: 42 }', 'yield-time_ms': 1_000 },
+    {
+      code: 'process.stdout.write(JSON.stringify({ answer: 42 }))',
+      moduleFormat: 'esm',
+      'yield-time_ms': 1_000,
+    },
     {
       callId: 'call-execute-code-success',
       stateRoot: '/workspace/home-state',
@@ -390,7 +421,11 @@ void test('exec returns compact runtime output without session identifiers', asy
   );
 
   assert.equal(result.ok, true);
-  assert.equal(observedCode, 'return { answer: 42 }');
+  assert.equal(
+    observedCode,
+    'process.stdout.write(JSON.stringify({ answer: 42 }))',
+  );
+  assert.equal(observedModuleFormat, 'esm');
   assert.equal(observedYieldTimeMs, 1_000);
   assert.equal(typeof observedPlacementResourceSnapshotId, 'string');
   assert.notEqual(observedPlacementResourceSnapshotId, '');

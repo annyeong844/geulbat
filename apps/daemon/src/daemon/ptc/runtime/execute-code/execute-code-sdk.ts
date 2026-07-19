@@ -1,5 +1,8 @@
+import { buildToolOutputCollectorRuntimeExpression } from '@geulbat/tool-library/tool-output-recovery';
+
 import {
   PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION,
+  type PtcExecuteCodeModuleFormat,
   type PtcExecuteCodeRuntimeSdkHelp,
   type PtcExecuteCodeRuntimeSdkHelpTool,
   type PtcExecuteCodeRuntimeSdkProjection,
@@ -12,7 +15,15 @@ export const PTC_EXECUTE_CODE_RESERVED_SDK_IMPORT_SPECIFIER =
 interface PtcExecuteCodeSdkHelpBundle {
   protocolVersion: typeof PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION;
   runtime: {
-    language: 'javascript_or_erasable_typescript';
+    language: 'javascript_or_node_native_typescript';
+    typescript: {
+      transform: 'node_experimental_transform_types';
+      typeChecking: false;
+      tsx: false;
+      decorators: false;
+      tsconfig: false;
+      moduleSystem: PtcExecuteCodeModuleFormat;
+    };
     executionSurface: 'node_via_lab_batch_command';
     sessionLifecycle: 'runtime_owned_reusable';
   };
@@ -24,6 +35,10 @@ interface PtcExecuteCodeSdkHelpBundle {
   helpers: {
     namespace: 'geulbat.tools';
     aliases: readonly PtcExecuteCodeSdkToolAlias[];
+    toolOutput?: {
+      namespace: 'geulbat.toolOutput';
+      readAllShape: 'geulbat.toolOutput.readAll({ outputRef, pageLimit })';
+    };
   };
   sdkProjection?: {
     sdkVersion: string;
@@ -63,6 +78,7 @@ const PTC_EXECUTE_CODE_SDK_TOOL_ALIASES: readonly PtcExecuteCodeSdkToolAlias[] =
 
 export function buildPtcExecuteCodeSdkHelpBundle(args: {
   callbacksEnabled: boolean;
+  moduleFormat?: PtcExecuteCodeModuleFormat;
   sdkHelp: PtcExecuteCodeRuntimeSdkHelp | undefined;
   sdkProjection?: PtcExecuteCodeRuntimeSdkProjection;
   storeMode?: 'batch_exec' | 'detached_cell';
@@ -74,7 +90,15 @@ export function buildPtcExecuteCodeSdkHelpBundle(args: {
   return {
     protocolVersion: PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION,
     runtime: {
-      language: 'javascript_or_erasable_typescript',
+      language: 'javascript_or_node_native_typescript',
+      typescript: {
+        transform: 'node_experimental_transform_types',
+        typeChecking: false,
+        tsx: false,
+        decorators: false,
+        tsconfig: false,
+        moduleSystem: args.moduleFormat ?? 'commonjs',
+      },
       executionSurface: 'node_via_lab_batch_command',
       sessionLifecycle: 'runtime_owned_reusable',
     },
@@ -88,6 +112,15 @@ export function buildPtcExecuteCodeSdkHelpBundle(args: {
       aliases: PTC_EXECUTE_CODE_SDK_TOOL_ALIASES.filter((alias) =>
         toolNames.has(alias.toolName),
       ),
+      ...(toolNames.has('read_tool_output')
+        ? {
+            toolOutput: {
+              namespace: 'geulbat.toolOutput' as const,
+              readAllShape:
+                'geulbat.toolOutput.readAll({ outputRef, pageLimit })' as const,
+            },
+          }
+        : {}),
     },
     ...(args.sdkProjection === undefined
       ? {}
@@ -124,10 +157,19 @@ export function buildPtcExecuteCodeGeulbatFacadeSource(args: {
   helpBundle: PtcExecuteCodeSdkHelpBundle;
 }): string {
   const store = args.helpBundle.store;
+  const toolOutput = args.helpBundle.helpers.toolOutput;
   const serializedHelp = JSON.stringify({
     ...args.helpBundle,
     runtimeSdkProjection: undefined,
   });
+  const geulbatFields = [
+    'sdkVersion: __geulbatHelp.protocolVersion',
+    'help: () => __geulbatClone(__geulbatHelp)',
+    'callTool: __geulbatCallTool',
+    'tools: Object.freeze(__geulbatTools)',
+    ...(toolOutput === undefined ? [] : ['toolOutput: __geulbatToolOutput']),
+    ...(store === undefined ? [] : ['store: __geulbatStore']),
+  ];
   return [
     `const __geulbatHelp = Object.freeze(${serializedHelp});`,
     'function __geulbatClone(value) { return JSON.parse(JSON.stringify(value)); }',
@@ -135,6 +177,7 @@ export function buildPtcExecuteCodeGeulbatFacadeSource(args: {
     'const __geulbatTools = {};',
     'for (const tool of __geulbatHelp.callbacks.tools) { Object.defineProperty(__geulbatTools, tool.name, { enumerable: true, value: (args = {}) => __geulbatCallTool(tool.name, args) }); }',
     'for (const alias of __geulbatHelp.helpers.aliases) { Object.defineProperty(__geulbatTools, alias.alias, { enumerable: true, value: (args = {}) => __geulbatCallTool(alias.toolName, args) }); }',
+    ...(toolOutput === undefined ? [] : [buildToolOutputRecoverySource()]),
     ...(store === undefined
       ? []
       : [
@@ -142,9 +185,32 @@ export function buildPtcExecuteCodeGeulbatFacadeSource(args: {
             callbackAvailable: args.callbackConfig !== undefined,
           }),
         ]),
-    store === undefined
-      ? 'const geulbat = Object.freeze({ sdkVersion: __geulbatHelp.protocolVersion, help: () => __geulbatClone(__geulbatHelp), callTool: __geulbatCallTool, tools: Object.freeze(__geulbatTools) });'
-      : 'const geulbat = Object.freeze({ sdkVersion: __geulbatHelp.protocolVersion, help: () => __geulbatClone(__geulbatHelp), callTool: __geulbatCallTool, tools: Object.freeze(__geulbatTools), store: __geulbatStore });',
+    `const geulbat = Object.freeze({ ${geulbatFields.join(', ')} });`,
+  ].join('\n');
+}
+
+function buildToolOutputRecoverySource(): string {
+  return [
+    `const __geulbatCollectToolOutputPages = ${buildToolOutputCollectorRuntimeExpression()};`,
+    'async function __geulbatReadToolOutputPage(request) {',
+    "  const result = await __geulbatCallTool('read_tool_output', request);",
+    '  if (result === null || typeof result !== "object" || result.ok !== true || typeof result.output !== "string") {',
+    '    const failure = result !== null && typeof result === "object" ? result : {};',
+    "    const error = new Error(typeof failure.error === 'string' ? failure.error : 'read_tool_output callback failed');",
+    "    error.errorCode = typeof failure.errorCode === 'string' ? failure.errorCode : 'ptc_tool_output_page_failed';",
+    '    throw error;',
+    '  }',
+    '  try {',
+    '    return JSON.parse(result.output);',
+    '  } catch {',
+    "    const error = new Error('read_tool_output callback returned invalid JSON');",
+    "    error.errorCode = 'ptc_tool_output_page_invalid';",
+    '    throw error;',
+    '  }',
+    '}',
+    'const __geulbatToolOutput = Object.freeze({',
+    '  readAll: (args = {}) => __geulbatCollectToolOutputPages({ outputRef: args?.outputRef, pageLimit: args?.pageLimit, readPage: __geulbatReadToolOutputPage }),',
+    '});',
   ].join('\n');
 }
 

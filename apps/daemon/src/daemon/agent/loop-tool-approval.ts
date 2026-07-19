@@ -2,7 +2,7 @@
 // - resolve approval target
 // - run preflight / auto-approve checks
 // - route prompt/wait handling when approval is required
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../utils/error.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import {
   assertAgentRunId as assertValidRunId,

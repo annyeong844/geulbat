@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 
 import type { RunToolResultPayload } from '@geulbat/protocol/run-channel';
 
@@ -12,6 +12,7 @@ import {
 import { readVisualizeStreamViewFromArgsText } from './visualize-widget-view.js';
 import { ArtifactRuntimeFrame } from '../runtime-frame/artifact-runtime-frame.js';
 import type { ArtifactRuntimeAgentToolIntent } from '../runtime-frame/artifact-runtime-frame-message-handler.js';
+import { MIN_INLINE_ARTIFACT_RUNTIME_FRAME_HEIGHT } from '../runtime-frame/artifact-runtime-frame-messages.js';
 import type { VisualizeWidgetView } from './visualize-widget-view.js';
 
 // visualize tool_call을 채팅 턴 안에 인라인으로 그리는 위젯. 아티팩트
@@ -29,6 +30,39 @@ export type WidgetToolRequestHandler = (
 // 라이브→정착 전환 등)마다 스트리밍을 다시 재생하면 렉과 깜빡임이 생기므로,
 // 같은 내용은 다음부터 즉시 렌더한다.
 const playedVisualizeStreams = new Set<string>();
+const visualizeFrameHeights = new Map<string, number>();
+let activeVisualizeStreamFrame: {
+  streamKey: string;
+  height: number;
+} | null = null;
+
+function buildVisualizeStreamKey(view: {
+  mode: 'svg' | 'html';
+  code: string;
+}): string {
+  return `${view.mode}::${view.code}`;
+}
+
+function VisualizeRuntimePlaceholder(props: { initialFrameHeight?: number }) {
+  const height = Math.max(
+    MIN_INLINE_ARTIFACT_RUNTIME_FRAME_HEIGHT,
+    props.initialFrameHeight ?? MIN_INLINE_ARTIFACT_RUNTIME_FRAME_HEIGHT,
+  );
+  return (
+    <div aria-hidden="true" className="visualize-widget" style={{ height }} />
+  );
+}
+
+// 스크롤 중 새 iframe 부트만 미룬다. 한 번 부트한 프레임을 다시
+// placeholder로 바꾸면 같은 위젯이 보이는 작은 스크롤에도 문서 전체가
+// 재로드되므로, 컴포넌트 수명 안에서는 부트 상태를 단조롭게 유지한다.
+function useVisualizeRuntimeBoot(canBootRuntime: boolean): boolean {
+  const hasBootedRef = useRef(canBootRuntime);
+  if (canBootRuntime) {
+    hasBootedRef.current = true;
+  }
+  return hasBootedRef.current;
+}
 
 // 실데이터 스트리밍이 끝까지 그린 내용을 재생 완료로 표시한다 — 완성본
 // 위젯이 클라이언트측 점진 렌더를 반복하지 않는다.
@@ -36,21 +70,31 @@ export function markVisualizeStreamPlayed(view: {
   mode: 'svg' | 'html';
   code: string;
 }): void {
-  playedVisualizeStreams.add(`${view.mode}::${view.code}`);
+  const streamKey = buildVisualizeStreamKey(view);
+  playedVisualizeStreams.add(streamKey);
+  if (activeVisualizeStreamFrame?.streamKey === streamKey) {
+    visualizeFrameHeights.set(streamKey, activeVisualizeStreamFrame.height);
+  }
 }
 
 // 실데이터 토큰 스트리밍 위젯 — tool_call_delta로 누적되는 인자 텍스트에서
 // code 프리픽스를 뽑아, 고정 수신 문서에 postMessage로 밀어 넣는다.
-// 프레임 문서는 제목이 바뀌지 않는 한 리로드되지 않는다.
-export function VisualizeStreamingWidget(props: { argsText: string }) {
-  const view = readVisualizeStreamViewFromArgsText(props.argsText);
-  const title = view?.title ?? null;
+// 프레임 문서는 제목과 무관하게 한 번만 부트한다.
+export function VisualizeStreamingWidget(props: {
+  argsText: string;
+  deferRuntimeBoot?: boolean;
+}) {
+  const { argsText, deferRuntimeBoot = false } = props;
+  const view = readVisualizeStreamViewFromArgsText(argsText);
+  const renderRuntime = useVisualizeRuntimeBoot(
+    view !== null && !deferRuntimeBoot,
+  );
   const runtimePayload = useMemo(
     () =>
       buildHtmlArtifactRuntimePayload(
-        buildVisualizeWidgetStreamDocument({ title }),
+        buildVisualizeWidgetStreamDocument({ title: null }),
       ),
-    [title],
+    [],
   );
   const sourceRef = useMemo(
     () =>
@@ -63,6 +107,22 @@ export function VisualizeStreamingWidget(props: { argsText: string }) {
     [],
   );
   const code = view?.code ?? '';
+  const streamKey = view === null ? null : buildVisualizeStreamKey(view);
+  const initialFrameHeight =
+    streamKey === null
+      ? undefined
+      : (visualizeFrameHeights.get(streamKey) ??
+        (activeVisualizeStreamFrame?.streamKey === streamKey
+          ? activeVisualizeStreamFrame.height
+          : undefined));
+  const handleFrameHeightChange = useCallback(
+    (height: number) => {
+      if (streamKey !== null) {
+        activeVisualizeStreamFrame = { streamKey, height };
+      }
+    },
+    [streamKey],
+  );
   const frameBroadcast = useMemo(
     () =>
       code === ''
@@ -81,6 +141,13 @@ export function VisualizeStreamingWidget(props: { argsText: string }) {
   if (view === null) {
     return null;
   }
+  if (!renderRuntime) {
+    return (
+      <VisualizeRuntimePlaceholder
+        {...(initialFrameHeight !== undefined ? { initialFrameHeight } : {})}
+      />
+    );
+  }
   return (
     <div className="visualize-widget">
       <ArtifactRuntimeFrame
@@ -91,6 +158,8 @@ export function VisualizeStreamingWidget(props: { argsText: string }) {
         sourceRef={sourceRef}
         variant="inline"
         frameBroadcast={frameBroadcast}
+        onFrameHeightChange={handleFrameHeightChange}
+        {...(initialFrameHeight !== undefined ? { initialFrameHeight } : {})}
       />
     </div>
   );
@@ -98,20 +167,32 @@ export function VisualizeStreamingWidget(props: { argsText: string }) {
 
 export function VisualizeWidget(props: {
   view: VisualizeWidgetView;
+  playback?: 'auto' | 'instant';
+  deferRuntimeBoot?: boolean;
   onWidgetPrompt?: (prompt: string) => Promise<void> | void;
   // 위젯 발 도구 호출 — 부모(컨트롤러)가 신뢰 threadId/workingDirectory를
   // 주입해 run.tool로 번역한다.
   onWidgetToolRequest?: WidgetToolRequestHandler;
 }) {
-  const { view, onWidgetPrompt, onWidgetToolRequest } = props;
-  const streamKey = `${view.mode}::${view.code}`;
+  const {
+    view,
+    playback = 'auto',
+    deferRuntimeBoot = false,
+    onWidgetPrompt,
+    onWidgetToolRequest,
+  } = props;
+  const renderRuntime = useVisualizeRuntimeBoot(!deferRuntimeBoot);
+  const streamKey = buildVisualizeStreamKey(view);
   // 마운트 시점에 이미 재생된 내용인지 고정 — 마운트 중에는 값이 바뀌지
   // 않아 iframe이 다시 로드되지 않고, 언마운트 시 재생 완료로 기록된다.
   const instant = useMemo(
-    () => playedVisualizeStreams.has(streamKey),
-    [streamKey],
+    () => playback === 'instant' || playedVisualizeStreams.has(streamKey),
+    [playback, streamKey],
   );
   useEffect(() => {
+    if (activeVisualizeStreamFrame?.streamKey === streamKey) {
+      activeVisualizeStreamFrame = null;
+    }
     return () => {
       playedVisualizeStreams.add(streamKey);
     };
@@ -148,6 +229,25 @@ export function VisualizeWidget(props: {
     },
     [onWidgetPrompt],
   );
+  const initialFrameHeight =
+    visualizeFrameHeights.get(streamKey) ??
+    (activeVisualizeStreamFrame?.streamKey === streamKey
+      ? activeVisualizeStreamFrame.height
+      : undefined);
+  const handleFrameHeightChange = useCallback(
+    (height: number) => {
+      visualizeFrameHeights.set(streamKey, height);
+    },
+    [streamKey],
+  );
+
+  if (!renderRuntime) {
+    return (
+      <VisualizeRuntimePlaceholder
+        {...(initialFrameHeight !== undefined ? { initialFrameHeight } : {})}
+      />
+    );
+  }
 
   return (
     <div className="visualize-widget">
@@ -158,6 +258,8 @@ export function VisualizeWidget(props: {
         runtimePayload={runtimePayload}
         sourceRef={sourceRef}
         variant="inline"
+        onFrameHeightChange={handleFrameHeightChange}
+        {...(initialFrameHeight !== undefined ? { initialFrameHeight } : {})}
         {...(onWidgetPrompt !== undefined
           ? {
               onAgentPromptRequest: handleAgentPromptRequest,

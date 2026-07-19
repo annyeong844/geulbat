@@ -8,6 +8,7 @@ import {
 
 import {
   AssistantMessageContent,
+  prepareAssistantMessageContent,
   splitMessageContentSegments,
 } from './assistant-message-content.js';
 
@@ -74,6 +75,22 @@ void test('AssistantMessageContent renders assistant prose as semantic GFM', () 
   assert.match(html, /rendered-markdown-table-scroll/);
   assert.match(html, /<table class="rendered-markdown-table">/);
   assert.doesNotMatch(html, /코드 복사/);
+});
+
+void test('AssistantMessageContent reuses message-owned prepared Markdown', () => {
+  const renderCacheOwner = {};
+  const content = ['준비된 본문', '', '**안전한 재마운트**'].join('\n');
+  prepareAssistantMessageContent(renderCacheOwner, content);
+
+  const html = renderToStaticMarkup(
+    <AssistantMessageContent
+      content={content}
+      renderCacheOwner={renderCacheOwner}
+    />,
+  );
+
+  assert.match(html, /<p>준비된 본문<\/p>/);
+  assert.match(html, /<strong>안전한 재마운트<\/strong>/);
 });
 
 void test('AssistantMessageContent keeps an unclosed streaming fence copyable', () => {

@@ -18,12 +18,13 @@ export const PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_RUN_ID =
   'ptc-cell-terminal-result' as const;
 export const PTC_EXECUTE_CODE_TRUST_CONTEXT_ID = PTC_EXECUTE_CODE_POLICY_ID;
 export const PTC_PACKAGE_INSTALL_TOOL_NAME = 'install_packages' as const;
-// Session-lifetime cumulative install prefix; exec reaches it through
-// NODE_PATH, CommonJS require() only (child spec §5.4).
+// Session-lifetime cumulative install prefix. CommonJS uses NODE_PATH while
+// explicit ESM execution starts from the prefix for standard package lookup.
 export const PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX =
   '/tmp/geulbat-packages' as const;
 export const PTC_EXECUTE_CODE_INSTALLED_PACKAGES_NODE_PATH =
   '/tmp/geulbat-packages/node_modules' as const;
+export type PtcExecuteCodeModuleFormat = 'commonjs' | 'esm';
 export const PTC_EXECUTE_CODE_CELL_EXEC_MIN_YIELD_MS = 1_000;
 export const PTC_EXECUTE_CODE_CELL_EXEC_MAX_YIELD_MS = 60_000;
 export const PTC_EXECUTE_CODE_CELL_WAIT_MIN_YIELD_MS = 1_000;
@@ -176,6 +177,7 @@ export type PtcExecuteCodeRuntimeFailureReason =
 
 interface PtcExecuteCodeRuntimeRequest {
   code: string;
+  moduleFormat?: PtcExecuteCodeModuleFormat;
   timeoutMs?: number;
   yieldTimeMs?: number;
 }
@@ -617,6 +619,7 @@ export function resolvePtcExecuteCodeWriteCallbackConfigFromEnv(
 // 같은 shape를 공유한다 (구 PtcExecuteCodePlacementRuntimeRequest 병합).
 export interface ValidatedExecuteCodeRequest {
   code: string;
+  moduleFormat?: PtcExecuteCodeModuleFormat;
   timeoutMs: number;
   yieldTimeMs?: number;
 }

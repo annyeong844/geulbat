@@ -63,6 +63,7 @@ export function TranscriptMessage(props: {
   onAskUserAnswer?: (prompt: string) => Promise<void> | void;
   // 위젯 발 도구 호출(run.tool) 번역 콜백
   onWidgetToolRequest?: WidgetToolRequestHandler;
+  deferVisualizeRuntimeBoot?: boolean;
   // 존재하면 아티팩트를 인라인으로 그리지 않고 참조 칩으로 두며, 클릭 시
   // 중앙 아티팩트 패널로 연다
   onOpenArtifact?: (artifact: ThreadArtifactVersion) => void;
@@ -77,6 +78,7 @@ export function TranscriptMessage(props: {
     onWidgetPrompt,
     onAskUserAnswer,
     onWidgetToolRequest,
+    deferVisualizeRuntimeBoot,
     onOpenArtifact,
   } = props;
   // 렌더마다 tool_call JSON을 다시 파싱해 view 객체(와 그 아래 위젯 문서
@@ -107,6 +109,7 @@ export function TranscriptMessage(props: {
             <TranscriptTextMessage
               messageRole="assistant"
               content={message.content}
+              renderCacheOwner={message}
               {...(actions !== undefined ? { actions } : {})}
             />
           ) : null}
@@ -143,6 +146,10 @@ export function TranscriptMessage(props: {
       <div className="transcript-message from-assistant">
         <VisualizeWidget
           view={visualizeWidgetView}
+          playback="instant"
+          {...(deferVisualizeRuntimeBoot !== undefined
+            ? { deferRuntimeBoot: deferVisualizeRuntimeBoot }
+            : {})}
           {...(onWidgetPrompt !== undefined ? { onWidgetPrompt } : {})}
           {...(onWidgetToolRequest !== undefined
             ? { onWidgetToolRequest }
@@ -204,6 +211,7 @@ export function TranscriptMessage(props: {
     <TranscriptTextMessage
       messageRole={message.role}
       content={message.content}
+      renderCacheOwner={message}
       attachments={readMessageAttachments(message)}
       {...(message.role === 'user' &&
       message.metadata?.origin === 'artifact_frame'
@@ -357,6 +365,7 @@ export function TranscriptTextMessage(props: {
   attachments?: ThreadMessageAttachment[];
   attachmentImageUrl?: (attachmentId: string) => string | null;
   actions?: TranscriptMessageActions;
+  renderCacheOwner?: object;
   // 아티팩트 프레임 발 턴 귀속 라벨 (back-channel 설계 가시성 불변식) —
   // 사용자가 직접 친 질문과 프레임이 올린 요청을 채팅에서 구분한다.
   originBadge?: string;
@@ -367,6 +376,7 @@ export function TranscriptTextMessage(props: {
     attachments = [],
     attachmentImageUrl,
     actions,
+    renderCacheOwner,
     originBadge,
   } = props;
   const [editing, setEditing] = useState(false);
@@ -429,7 +439,10 @@ export function TranscriptTextMessage(props: {
           <div style={assistantStyles.messageRole}>{messageRole}</div>
         ) : null}
         {messageRole === 'assistant' ? (
-          <AssistantMessageContent content={content} />
+          <AssistantMessageContent
+            content={content}
+            {...(renderCacheOwner !== undefined ? { renderCacheOwner } : {})}
+          />
         ) : (
           <pre style={assistantStyles.messageText}>{content}</pre>
         )}

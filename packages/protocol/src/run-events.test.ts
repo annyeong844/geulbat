@@ -57,6 +57,41 @@ function assertFixtureThreadId(value: string): ThreadId {
 const THREAD_ID = assertFixtureThreadId('11111111-1111-4111-8111-111111111111');
 const RUN_ID = assertFixtureRunId('run-event-1');
 
+void test('RunEvent envelope enforces producer sequence and timestamp contract', () => {
+  const event = {
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+    seq: 0,
+    type: 'run_ack',
+    ts: '2026-07-19T12:00:00.000Z',
+    payload: { runId: RUN_ID, threadId: THREAD_ID },
+  } as const;
+
+  assert.equal(isRunEvent(event), true);
+  assert.equal(isRunEvent({ ...event, seq: Number.MAX_SAFE_INTEGER }), true);
+
+  for (const seq of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(
+      isRunEvent({ ...event, seq }),
+      false,
+      `accepted invalid RunEvent sequence: ${seq}`,
+    );
+  }
+
+  for (const ts of [
+    'banana',
+    '2026-07-19T12:00:00Z',
+    '2026-07-19T12:00:00.000+00:00',
+    '2026-02-30T12:00:00.000Z',
+  ]) {
+    assert.equal(
+      isRunEvent({ ...event, ts }),
+      false,
+      `accepted invalid RunEvent timestamp: ${ts}`,
+    );
+  }
+});
+
 void test('context usage payloads require exact integer policy measurements', () => {
   const payload = {
     state: 'measured' as const,

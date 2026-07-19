@@ -13,7 +13,7 @@ import {
 } from '@geulbat/protocol/run-contract';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../../lib/error-message.js';
 
 import type {
   ContextUsageUpdatedEventPayload,

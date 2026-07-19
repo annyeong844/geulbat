@@ -121,6 +121,19 @@
   width: 100%;
 }
 
+/* Keep the visible bottom pinned while live content grows without forcing a
+   per-token layout read. Other children opt out so a user reading history is
+   not anchored to an arbitrary transcript row. The JS follower remains the
+   fallback for browsers that do not implement overflow anchoring. */
+.assistant-transcript-content > * {
+  overflow-anchor: none;
+}
+
+.assistant-transcript-content > .transcript-bottom-anchor {
+  min-height: 1px;
+  overflow-anchor: auto;
+}
+
 .transcript-virtual-row {
   position: absolute;
   top: 0;

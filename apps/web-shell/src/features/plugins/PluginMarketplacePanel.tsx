@@ -5,7 +5,7 @@ import type {
   PluginMarketplaceInstallRequest,
   PluginMarketplaceListResponse,
 } from '@geulbat/protocol/plugins';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../../lib/error-message.js';
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 

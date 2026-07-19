@@ -68,6 +68,9 @@ export function readRunInterjectRequest(request: unknown):
   if (!isRecord(request)) {
     return { ok: false, message: 'request must be an object' };
   }
+  if (!hasOnlyKeys(request, ['runId', 'text'])) {
+    return { ok: false, message: 'request contains unknown fields' };
+  }
   const { runId, text } = request;
   if (!isString(runId) || !isRunId(runId)) {
     return { ok: false, message: 'runId is required' };
@@ -85,6 +88,9 @@ export function readRunInterjectCancelRequest(
   | { ok: false; message: string } {
   if (!isRecord(request)) {
     return { ok: false, message: 'request must be an object' };
+  }
+  if (!hasOnlyKeys(request, ['runId', 'receivedSeq'])) {
+    return { ok: false, message: 'request contains unknown fields' };
   }
   const { runId, receivedSeq } = request;
   if (!isString(runId) || !isRunId(runId)) {
@@ -107,6 +113,18 @@ export function readRunToolRequest(
 ): { ok: true; value: RunToolRequest } | { ok: false; message: string } {
   if (!isRecord(request)) {
     return { ok: false, message: 'request must be an object' };
+  }
+  if (
+    !hasOnlyKeys(request, [
+      'threadId',
+      'toolName',
+      'args',
+      'scopeHandle',
+      'frameRequestId',
+      'workingDirectory',
+    ])
+  ) {
+    return { ok: false, message: 'request contains unknown fields' };
   }
   const { threadId, toolName, args, scopeHandle, frameRequestId } = request;
   if (!isString(threadId) || !isThreadId(threadId)) {
@@ -149,9 +167,19 @@ export function readRunInterjectFlushRequest(
   if (!isRecord(request)) {
     return { ok: false, message: 'request must be an object' };
   }
+  if (!hasOnlyKeys(request, ['runId'])) {
+    return { ok: false, message: 'request contains unknown fields' };
+  }
   const { runId } = request;
   if (!isString(runId) || !isRunId(runId)) {
     return { ok: false, message: 'runId is required' };
   }
   return { ok: true, runId };
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+): boolean {
+  return Object.keys(value).every((key) => allowedKeys.includes(key));
 }

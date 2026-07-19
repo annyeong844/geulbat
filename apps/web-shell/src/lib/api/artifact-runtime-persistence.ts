@@ -13,7 +13,7 @@ import type {
   ArtifactRuntimePersistenceSaveResponse,
   JsonValue,
 } from '@geulbat/protocol/runtime-persistence';
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../error-message.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 
 import { apiFetch, isApiOkResponse } from './client.js';

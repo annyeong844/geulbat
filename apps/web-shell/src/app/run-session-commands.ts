@@ -15,7 +15,7 @@ import {
   type RunSubagentModelRouting,
 } from '@geulbat/protocol/run-contract';
 
-import { getErrorMessage } from '@geulbat/shared-utils/error';
+import { getErrorMessage } from '../lib/error-message.js';
 import { createLogger } from '@geulbat/shared-utils/logger';
 import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
 import { apiFetch, isApiOkResponse } from '../lib/api/client.js';
