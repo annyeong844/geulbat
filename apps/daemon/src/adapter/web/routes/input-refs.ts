@@ -6,7 +6,7 @@ import {
   type InputRefRecoveryAction,
   type InputRefRecoveryResponse,
 } from '@geulbat/protocol/input-refs';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../../daemon/runtime-json.js';
 
 import { ARTIFACT_RUNTIME_STATE_INPUT_REF_STORE } from '../../../daemon/artifact-runtime-persistence/input-ref-store.js';
 import { FILE_BINARY_INPUT_REF_STORE } from '../../../daemon/files/binary-input-ref-store.js';

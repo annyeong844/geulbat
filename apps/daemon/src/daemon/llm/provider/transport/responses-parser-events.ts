@@ -1,6 +1,6 @@
 import { isRecord } from '../../../runtime-json.js';
 import type { HistoryItem } from '../wire/types.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { normalizeProviderUsageTelemetry } from '../provider-cache-telemetry.js';
 import type {
   AssistantDelta,

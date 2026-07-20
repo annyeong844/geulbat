@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { sha256StableJson } from '@geulbat/shared-utils/stable-json';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { sha256StableJson } from '@geulbat/content-identity/stable-json';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { isRecord, tryParseJson } from '../runtime-json.js';
 import { appendFile, mkdir, readFile, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';

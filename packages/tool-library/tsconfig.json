@@ -8,7 +8,7 @@
     "rootDir": "src",
     "composite": true
   },
-  "references": [{ "path": "../shared-utils" }],
+  "references": [{ "path": "../content-identity" }],
   "include": ["src/**/*"],
   "exclude": ["src/**/*.test.ts"]
 }

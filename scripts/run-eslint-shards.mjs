@@ -83,10 +83,16 @@ export const TSGOLINT_PROJECTS = [
     targetPath: 'packages/agent-loop/src',
   },
   {
+    targetPath: 'packages/artifact-runtime-policy/src',
+  },
+  {
+    targetPath: 'packages/content-identity/src',
+  },
+  {
     targetPath: 'packages/protocol/src',
   },
   {
-    targetPath: 'packages/shared-utils/src',
+    targetPath: 'packages/structured-logger/src',
   },
   {
     targetPath: 'packages/tool-sdk/src',

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { getErrorCode, getErrorMessage, isNotFoundError } from './error.js';
 
 type RenameLike = Pick<typeof fs, 'rename' | 'unlink'>;

@@ -8,7 +8,10 @@ import {
   getRunTranscriptEntryBaseKey,
   getThreadMessageBaseKey,
 } from './assistant-transcript-content.js';
-import { VirtualizedTranscriptRows } from './assistant-transcript-virtual-list.js';
+import {
+  extractTranscriptVirtualRange,
+  VirtualizedTranscriptRows,
+} from './assistant-transcript-virtual-list.js';
 import { Assistant } from './Assistant.js';
 
 (
@@ -43,6 +46,22 @@ void test('message render identity uses entryId instead of copying message conte
       tool: 'read_file',
       state: 'completed',
     }),
+  );
+});
+
+void test('virtual range retains gesture-owned visualize rows and the keyboard-focused row', () => {
+  assert.deepEqual(
+    extractTranscriptVirtualRange({
+      range: {
+        startIndex: 5,
+        endIndex: 7,
+        overscan: 1,
+        count: 20,
+      },
+      retainedIndexes: [9, 2],
+      focusedIndex: 15,
+    }),
+    [2, 4, 5, 6, 7, 8, 9, 15],
   );
 });
 

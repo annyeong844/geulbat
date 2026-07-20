@@ -1,9 +1,9 @@
 import type { Server } from 'node:http';
 import { WebSocketServer, type RawData } from 'ws';
-import { tryDecodeJson } from '@geulbat/protocol/runtime-utils';
+import { tryDecodeJson } from '../../../daemon/runtime-json.js';
 
 import { getErrorMessage } from '../../../daemon/utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { readConfiguredAllowedOrigins } from '#web/origin-policy.js';
 import { handleClientMessage } from './run-channel-dispatch.js';
 import type { RunChannelRuntimeContext } from './run-channel-runtime-context.js';

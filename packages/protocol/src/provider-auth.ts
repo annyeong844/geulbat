@@ -1,5 +1,5 @@
 import { isErrorCode, type ErrorCode } from './errors.js';
-import { isNumber, isRecord, isString } from './runtime-utils.js';
+import { isNumber, isRecord, isString } from './wire-value-guards.js';
 
 export const DEFAULT_PROVIDER_AUTH_PROVIDER_ID = 'openai_codex_direct' as const;
 

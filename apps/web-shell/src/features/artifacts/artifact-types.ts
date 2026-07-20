@@ -5,7 +5,7 @@ import type {
 } from '@geulbat/protocol/artifacts';
 import type { ReactBundleInlineCompileFailureCode } from '@geulbat/protocol/react-bundle-inline-compile';
 import { isThreadId, type ThreadId } from '@geulbat/protocol/ids';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../lib/json.js';
 import type { ReactNode } from 'react';
 import type { ArtifactDurabilitySourceAuthority } from './artifact-durability-source-authority.js';
 

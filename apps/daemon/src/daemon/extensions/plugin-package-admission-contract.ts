@@ -2,7 +2,7 @@
 // 최소 가드를 소유하고, plugin-store·marketplace 계열이 직접 import한다
 // (re-export 금지 정책). 이 모듈은 형제를 일절 import하지 않는다.
 
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isPluginRecord as isRecord } from './plugin-value-guards.js';
 
 export class PluginPackageAdmissionError extends Error {
   constructor(

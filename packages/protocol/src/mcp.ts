@@ -1,4 +1,4 @@
-import { isBoolean, isRecord, isString } from './runtime-utils.js';
+import { isBoolean, isRecord, isString } from './wire-value-guards.js';
 
 // The named schema version is the public contract owner, not an inline policy literal.
 // eslint-disable-next-line @typescript-eslint/no-magic-numbers

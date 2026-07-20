@@ -6,7 +6,7 @@ import {
 } from './credentials/store.js';
 import type { ProviderAuthRuntimeStore } from './runtime-state.js';
 import { getGenericApiErrorCode, getErrorMessage } from '../utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { INVALID_PROVIDER_CREDENTIAL_MESSAGE } from './shared.js';
 
 const logger = createLogger('provider-auth');

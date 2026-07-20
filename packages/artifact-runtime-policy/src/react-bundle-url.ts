@@ -1,6 +1,6 @@
-import { DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN } from './artifact-runtime-host.js';
-import { isPublicWebFixturePath } from './public-web-fixtures.js';
-import { isPublicGeneratedReactBundleInlinePath } from './react-bundle-inline-compile.js';
+import { DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN } from '@geulbat/protocol/artifact-runtime-host';
+import { isPublicWebFixturePath } from '@geulbat/protocol/public-web-fixtures';
+import { isPublicGeneratedReactBundleInlinePath } from '@geulbat/protocol/react-bundle-inline-compile';
 
 const SHELL_OWNED_RUNTIME_HOST = new URL(DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN);
 const IPV4_OCTET_COUNT = 4;

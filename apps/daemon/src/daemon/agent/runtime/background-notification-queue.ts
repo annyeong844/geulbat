@@ -1,5 +1,5 @@
 import type { ThreadId } from '../contract.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { createSignal, type Signal } from '../../utils/signal.js';
 import type { BackgroundChildResult } from '../../subagent-runtime-contracts.js';
 

@@ -32,14 +32,8 @@ function resolveToolExposure(tool: AnyTool): ToolExposure {
     sdkVisible: false,
     inCellCallable: false,
     directOnly: true,
-    approvalRequired: tool.requiresApproval,
     effectClass: 'exclusive',
   };
-  if (exposure.approvalRequired !== tool.requiresApproval) {
-    throw new Error(
-      `Tool exposure approval mismatch for ${tool.name}: exposure and execution metadata must agree`,
-    );
-  }
   if (exposure.directOnly && (exposure.sdkVisible || exposure.inCellCallable)) {
     throw new Error(
       `Tool exposure conflict for ${tool.name}: direct-only tools cannot be SDK-callable`,

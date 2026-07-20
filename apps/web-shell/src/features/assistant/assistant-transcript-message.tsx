@@ -1,7 +1,7 @@
 import { useMemo, useState, useSyncExternalStore } from 'react';
 import type { WidgetToolRequestHandler } from './visualize/visualize-widget.js';
 import type { RunRequest } from '@geulbat/protocol/run-contract';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../lib/json.js';
 import type { ThreadMessageAttachment } from '@geulbat/protocol/thread-metadata';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 

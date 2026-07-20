@@ -24,9 +24,9 @@ import {
   type PtcLabPolicyId,
 } from '../profile/lab-profile-contract.js';
 import type {
-  PtcDockerClientCommandInvocation,
-  PtcDockerClientCommandResult,
-} from '../../shared/process-command.js';
+  DockerClientCommandInvocation,
+  DockerClientCommandResult,
+} from '../../../docker-client-command.js';
 import { hashPtcStableJson } from '../../shared/stable-identity.js';
 import {
   PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
@@ -204,10 +204,35 @@ export type PtcSessionDockerResult<T> =
       diagnostics?: Record<string, string | number | boolean>;
     };
 
-export type PtcSessionDockerCommandResult = PtcDockerClientCommandResult;
+type PtcSessionDockerExitCommandResult = Extract<
+  DockerClientCommandResult,
+  { kind: 'exit' }
+>;
+type PtcSessionDockerCrashCommandResult = Extract<
+  DockerClientCommandResult,
+  { kind: 'crash' }
+>;
+type PtcSessionDockerTimeoutCommandResult = Extract<
+  DockerClientCommandResult,
+  { kind: 'timeout' }
+> & { processTerminated?: boolean };
+type PtcSessionDockerCancelledCommandResult = Extract<
+  DockerClientCommandResult,
+  { kind: 'cancelled' }
+> & { processTerminated?: boolean };
+type PtcSessionDockerOutputLimitCommandResult = Extract<
+  DockerClientCommandResult,
+  { kind: 'output_limit_exceeded' }
+> & { processTerminated?: boolean };
 
-export type PtcSessionDockerCommandInvocation =
-  PtcDockerClientCommandInvocation;
+export type PtcSessionDockerCommandResult =
+  | PtcSessionDockerExitCommandResult
+  | PtcSessionDockerTimeoutCommandResult
+  | PtcSessionDockerCancelledCommandResult
+  | PtcSessionDockerOutputLimitCommandResult
+  | PtcSessionDockerCrashCommandResult;
+
+export type PtcSessionDockerCommandInvocation = DockerClientCommandInvocation;
 
 export type PtcSessionDockerCommandRunner = (
   invocation: PtcSessionDockerCommandInvocation,

@@ -862,7 +862,6 @@ void test('exec callback handler enters long wait after admission and before slo
       sdkVisible: true,
       inCellCallable: true,
       directOnly: false,
-      approvalRequired: false,
       effectClass: 'readOnly',
     },
     parseArgs: () => ({ ok: true, value: {} }),
@@ -1020,7 +1019,6 @@ void test('exec callback surface predicate fails closed for incomplete or contra
       sdkVisible: true,
       inCellCallable: true,
       directOnly: false,
-      approvalRequired: false,
       effectClass: 'readOnly',
     },
   } as const;

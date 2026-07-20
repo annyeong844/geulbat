@@ -1,4 +1,4 @@
-import { isRecord, isString } from './runtime-utils.js';
+import { isRecord, isString } from './wire-value-guards.js';
 
 export type ToolCallSourcePayload =
   | { kind: 'agent_loop' }

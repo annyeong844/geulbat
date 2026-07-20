@@ -1,7 +1,7 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { DEV_TOKEN_HEADER_NAME } from '@geulbat/protocol/shell-auth';
 import { getErrorMessage } from '../../../daemon/utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 import { isValidDevToken } from './token.js';
 

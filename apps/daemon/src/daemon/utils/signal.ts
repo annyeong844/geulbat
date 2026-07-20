@@ -1,5 +1,5 @@
 import { getErrorMessage } from './error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 export interface Signal<Args extends unknown[]> {
   subscribe(listener: (...args: Args) => void): () => void;

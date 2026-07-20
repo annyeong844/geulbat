@@ -1,4 +1,4 @@
-import { isRecord, tryDecodeJson } from '@geulbat/protocol/runtime-utils';
+import { isRecord, tryDecodeJson } from '../../../runtime-json.js';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';

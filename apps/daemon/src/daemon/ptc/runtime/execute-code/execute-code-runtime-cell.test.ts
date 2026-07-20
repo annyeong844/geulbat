@@ -25,8 +25,8 @@ import type {
   DetachedProcessExitInfo,
   DetachedProcessHandle,
   DetachedProcessOutputSegment,
-  PtcDockerClientProcessInvocation,
-} from '../../shared/process-command.js';
+  ExecuteCodeCellProcessInvocation,
+} from './execute-code-cell-process.js';
 
 const PRIVATE_TEST_PATH = '/tmp/geulbat-private/.geulbat/ptc/private-token';
 const TEST_CALLBACK_TRANSPORT_POLICY = Object.freeze({
@@ -135,7 +135,7 @@ void test('createPtcExecuteCodeRuntime can complete through the enabled detached
   const runtimeRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-complete-runtime-'),
   );
-  const cellStarts: PtcDockerClientProcessInvocation[] = [];
+  const cellStarts: ExecuteCodeCellProcessInvocation[] = [];
   const fixture = createPtcSessionDockerCommandFixture({
     policy: createPtcSessionDockerLocalBatchCommandPolicy(),
     containerId: 'container-agent-ptc-execute-code-cell-complete',
@@ -1884,7 +1884,7 @@ void test('createPtcExecuteCodeRuntime caps initial cell yield by request timeou
     containerId: 'container-agent-ptc-execute-code-cell-yield-cap',
   });
   const exit = deferredExit();
-  const cellStarts: PtcDockerClientProcessInvocation[] = [];
+  const cellStarts: ExecuteCodeCellProcessInvocation[] = [];
   let terminated = false;
   const runtime = createPtcExecuteCodeRuntime({
     commandRunner: fixture.runner,

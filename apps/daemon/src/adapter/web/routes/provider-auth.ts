@@ -4,7 +4,7 @@ import type {
   ProviderAuthStatusResponse,
 } from '@geulbat/protocol/provider-auth';
 import { isProviderAuthProviderId } from '@geulbat/protocol/provider-auth';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../../daemon/runtime-json.js';
 import { Router } from 'express';
 
 import {
@@ -29,7 +29,7 @@ import {
   getAppErrorCode,
   getErrorMessage,
 } from '../../../daemon/utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import type { ProviderAuthRoutesContext } from './routes-context.js';
 import { requireAuth } from '#web/auth/require-auth.js';
 import { sendApiError } from '#web/response/send-api-error.js';

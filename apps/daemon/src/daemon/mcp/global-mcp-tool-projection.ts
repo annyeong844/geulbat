@@ -11,8 +11,8 @@ import type {
   JsonSchemaValidator,
 } from '@modelcontextprotocol/sdk/validation/types.js';
 import type { McpServerRegistration } from '@geulbat/protocol/mcp';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { isMcpRecord as isRecord } from './mcp-value-guards.js';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 import { defineParsedTool } from '../tools/parsed-tool.js';
 import { toolError } from '../tools/result.js';
@@ -165,7 +165,6 @@ export function createProjectedMcpTool(args: {
       sdkVisible: true,
       inCellCallable: true,
       directOnly: false,
-      approvalRequired: true,
       effectClass: 'hostStateMutation',
     },
     catalogSearchMetadata: {

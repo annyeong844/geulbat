@@ -1,4 +1,4 @@
-import { runPtcDockerClientCommand } from '../../shared/process-command.js';
+import { runDockerClientCommand } from '../../../docker-client-command.js';
 import type {
   PtcSessionDockerCommandInvocation,
   PtcSessionDockerCommandResult,
@@ -13,7 +13,7 @@ type PtcSessionDockerNonExitCommandResult = Exclude<
 export async function runPtcSessionDockerCommand(
   invocation: PtcSessionDockerCommandInvocation,
 ): Promise<PtcSessionDockerCommandResult> {
-  return await runPtcDockerClientCommand(invocation);
+  return await runDockerClientCommand(invocation);
 }
 
 export function mapPtcSessionDockerNonExitCommandResult<

@@ -9,9 +9,10 @@
     "check:artifact-runtime-sources": "node ./scripts/sync-artifact-runtime-sources.mjs --check",
     "smoke:react-bundle": "node --import tsx ./scripts/react-bundle-smoke.mjs",
     "smoke:public-web-conformance": "node --import tsx ./scripts/public-web-conformance-smoke.mjs",
+    "smoke:assistant-transcript": "node ./scripts/assistant-transcript-virtualization-smoke.mjs",
     "smoke:react-bundle:install-browser": "playwright install chromium",
     "dev": "node ../../scripts/run-with-local-dev-auth.mjs vite",
-    "build:deps": "tsc -b ../../packages/shared-utils/tsconfig.json ../../packages/protocol/tsconfig.json",
+    "build:deps": "tsc -b ../../packages/structured-logger/tsconfig.json ../../packages/protocol/tsconfig.json ../../packages/artifact-runtime-policy/tsconfig.json",
     "build:app": "npm run check:artifact-runtime-sources && tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && vite build",
     "build": "npm run build:deps && npm run build:app",
     "check:app": "npm run check:artifact-runtime-sources && tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
@@ -22,8 +23,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@geulbat/artifact-runtime-policy": "*",
     "@geulbat/protocol": "*",
-    "@geulbat/shared-utils": "*",
+    "@geulbat/structured-logger": "*",
     "@tanstack/react-virtual": "^3.14.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

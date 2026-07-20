@@ -1,7 +1,7 @@
 import {
   sha256StableJson,
   type StableJsonOptions,
-} from '@geulbat/shared-utils/stable-json';
+} from '@geulbat/content-identity/stable-json';
 
 export function hashPtcStableJson(
   value: unknown,

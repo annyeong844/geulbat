@@ -2,7 +2,7 @@ import type { PtcLabAdmittedProfile } from '../../lab/profile/lab-profile.js';
 import type {
   DetachedProcessExitInfo,
   DetachedProcessOutputSegment,
-} from '../../shared/process-command.js';
+} from './execute-code-cell-process.js';
 import { sanitizePtcOutput } from '../../shared/output-redaction.js';
 import type { PtcSessionEpochBridge } from '../../callback/session-epoch-bridge.js';
 import type { buildPtcExecuteCodeSdkHelpBundle } from './execute-code-sdk.js';

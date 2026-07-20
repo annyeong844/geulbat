@@ -16,7 +16,7 @@ void test('session-docker command owner does not own lifecycle, policy, or outpu
   const graph = await collectPtcStaticImportGraph(sourceUrl);
 
   assert.deepEqual(readPtcStaticImportSpecifiers(graph, sourceUrl), [
-    '../../shared/process-command.js',
+    '../../../docker-client-command.js',
     './session-docker-contract.js',
   ]);
   for (const forbiddenSource of [

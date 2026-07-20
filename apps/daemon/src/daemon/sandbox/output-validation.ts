@@ -1,4 +1,4 @@
-import { sha256Hex } from '@geulbat/shared-utils/sha256';
+import { sha256Hex } from '@geulbat/content-identity/sha256';
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { isSameOrDescendantPath } from '../files/normalize-path.js';

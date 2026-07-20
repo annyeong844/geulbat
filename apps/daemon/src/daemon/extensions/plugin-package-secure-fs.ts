@@ -1,4 +1,4 @@
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isPluginRecord as isRecord } from './plugin-value-guards.js';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { constants, lstat, open, readdir, realpath } from 'node:fs/promises';

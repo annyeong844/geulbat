@@ -1,4 +1,4 @@
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../../lib/json.js';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
 import type { RunTranscriptEntry } from '../../../lib/run-transcript-entry.js';

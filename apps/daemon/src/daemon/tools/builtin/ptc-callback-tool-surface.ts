@@ -96,7 +96,6 @@ export function isPtcExecuteCodeCallbackToolMetaAllowed(
     exposure?.sdkVisible === true &&
     exposure.inCellCallable &&
     !exposure.directOnly &&
-    exposure.approvalRequired === false &&
     exposure.effectClass === 'readOnly' &&
     meta.requiresApproval === false &&
     (meta.sideEffectLevel === 'none' || meta.sideEffectLevel === 'read') &&

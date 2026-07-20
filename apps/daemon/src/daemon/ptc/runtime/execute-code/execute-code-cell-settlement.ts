@@ -15,7 +15,7 @@ import type {
   DetachedProcessExitInfo,
   DetachedProcessHandle,
   DetachedProcessOutputSegment,
-} from '../../shared/process-command.js';
+} from './execute-code-cell-process.js';
 import type { buildPtcExecuteCodeSdkHelpBundle } from './execute-code-sdk.js';
 import type { createPtcExecuteCodeCellRegistry } from './execute-code-cell-registry.js';
 import type { PtcExecuteCodeCellTerminalResult } from './execute-code-cell-terminal-retention.js';

@@ -9,7 +9,7 @@ import type {
   McpServerRuntimeStatus,
   McpServerView,
 } from '@geulbat/protocol/mcp';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 import type { ToolRegistryStore } from '../tools/tool-registry-model.js';
 import { writeTextFileAtomically } from '../utils/atomic-file.js';

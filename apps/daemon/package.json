@@ -16,7 +16,7 @@
     "#web/origin-policy.js": "./src/adapter/web/origin-policy.ts"
   },
   "scripts": {
-    "build:deps": "tsc -b ../../packages/shared-utils/tsconfig.json ../../packages/protocol/tsconfig.json ../../packages/agent-loop/tsconfig.json ../../packages/tool-sdk/tsconfig.json ../../packages/tool-library/tsconfig.json",
+    "build:deps": "tsc -b ../../packages/structured-logger/tsconfig.json ../../packages/content-identity/tsconfig.json ../../packages/protocol/tsconfig.json ../../packages/artifact-runtime-policy/tsconfig.json ../../packages/agent-loop/tsconfig.json ../../packages/tool-sdk/tsconfig.json ../../packages/tool-library/tsconfig.json",
     "dev": "node ./scripts/dev-daemon-supervisor.mjs",
     "dev:checked": "node ./scripts/dev-precheck.mjs && node ./scripts/dev-daemon-supervisor.mjs",
     "dev:no-watch": "GEULBAT_DEV_NO_WATCH=1 node ./scripts/dev-daemon-supervisor.mjs",
@@ -62,8 +62,10 @@
   },
   "dependencies": {
     "@geulbat/agent-loop": "*",
+    "@geulbat/artifact-runtime-policy": "*",
+    "@geulbat/content-identity": "*",
     "@geulbat/protocol": "*",
-    "@geulbat/shared-utils": "*",
+    "@geulbat/structured-logger": "*",
     "@geulbat/tool-sdk": "*",
     "@geulbat/tool-library": "*",
     "@modelcontextprotocol/sdk": "^1.29.0",

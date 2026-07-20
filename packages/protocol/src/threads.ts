@@ -11,7 +11,7 @@ import {
   type RunModelId,
   type RunReasoningEffort,
 } from './run-contract.js';
-import { isRecord } from './runtime-utils.js';
+import { isRecord } from './wire-value-guards.js';
 import { isJsonValue, type JsonValue } from './runtime-persistence.js';
 import {
   isThreadArtifactVersion,

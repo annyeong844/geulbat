@@ -1,5 +1,4 @@
-import { stableStringify } from '@geulbat/shared-utils/stable-json';
-import { toPascalCase } from '@geulbat/shared-utils/identifier-naming';
+import { stableStringify } from '@geulbat/content-identity/stable-json';
 
 import {
   serializeToolLibraryProjectionManifestModule,
@@ -23,6 +22,7 @@ import {
   TOOL_LIBRARY_PROJECTION_MANIFEST_MODULE,
   TOOL_LIBRARY_PROJECTION_SEARCH_RUNTIME_MODULE,
 } from './projection-modules.js';
+import { toPascalCase } from './projection-naming.js';
 
 export const TOOL_LIBRARY_PROJECTION_GENERATOR_VERSION =
   'geulbat-tool-library-projection-v10';

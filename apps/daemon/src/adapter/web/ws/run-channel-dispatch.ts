@@ -1,5 +1,5 @@
 import type WebSocket from 'ws';
-import { tryDecodeJson } from '@geulbat/protocol/runtime-utils';
+import { tryDecodeJson } from '../../../daemon/runtime-json.js';
 import type { RunStartRequest } from '@geulbat/protocol/run-contract';
 import type { RunChannelClientMessage } from '@geulbat/protocol/run-channel';
 
@@ -29,7 +29,10 @@ import {
   recoverDurableRunsForSocket,
 } from './run-channel-start.js';
 import { readRunChannelClientMessage } from './validate-run-channel-message.js';
-import { createLogger, type LoggerContext } from '@geulbat/shared-utils/logger';
+import {
+  createLogger,
+  type LoggerContext,
+} from '@geulbat/structured-logger/logger';
 import { getErrorMessage } from '../../../daemon/utils/error.js';
 
 const logger = createLogger('run-channel/dispatch');

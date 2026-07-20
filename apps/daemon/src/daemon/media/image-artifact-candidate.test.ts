@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { parseImageArtifactPayload } from '@geulbat/protocol/artifacts';
-import { sha256Digest } from '@geulbat/shared-utils/sha256';
+import { sha256Digest } from '@geulbat/content-identity/sha256';
 import type { GeneratedImageCandidate } from './contract.js';
 import { buildImageArtifactCandidate } from './image-artifact-candidate.js';
 

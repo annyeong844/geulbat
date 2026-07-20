@@ -55,10 +55,24 @@ export default [
           ],
         },
         {
-          type: 'shared-utils',
+          type: 'artifact-runtime-policy',
           pattern: [
-            'packages/shared-utils/src/**',
-            'packages/shared-utils/dist/**',
+            'packages/artifact-runtime-policy/src/**',
+            'packages/artifact-runtime-policy/dist/**',
+          ],
+        },
+        {
+          type: 'content-identity',
+          pattern: [
+            'packages/content-identity/src/**',
+            'packages/content-identity/dist/**',
+          ],
+        },
+        {
+          type: 'structured-logger',
+          pattern: [
+            'packages/structured-logger/src/**',
+            'packages/structured-logger/dist/**',
           ],
         },
         {
@@ -132,6 +146,14 @@ export default [
           pattern: ['apps/web-shell/src/features/thread-list/**'],
         },
         { type: 'adapter-web', pattern: ['apps/daemon/src/adapter/web/**'] },
+        {
+          type: 'daemon-process-execution',
+          pattern: [
+            'apps/daemon/src/daemon/bounded-child-process.ts',
+            'apps/daemon/src/daemon/docker-client-command.ts',
+          ],
+          mode: 'full',
+        },
         {
           type: 'daemon-kernel',
           pattern: [
@@ -283,7 +305,6 @@ export default [
         {
           type: 'daemon-ptc-package-helpers',
           pattern: [
-            'apps/daemon/src/daemon/ptc/shared/process-command.ts',
             'apps/daemon/src/daemon/ptc/shared/record-shape.ts',
             'apps/daemon/src/daemon/ptc/shared/stable-identity.ts',
           ],
@@ -456,12 +477,17 @@ export default [
           default: 'disallow',
           rules: [
             { from: { type: 'agent-loop' }, allow: [] },
-            { from: { type: 'shared-utils' }, allow: [] },
+            {
+              from: { type: 'artifact-runtime-policy' },
+              allow: { to: { type: ['protocol'] } },
+            },
+            { from: { type: 'content-identity' }, allow: [] },
+            { from: { type: 'structured-logger' }, allow: [] },
             { from: { type: 'protocol' }, allow: [] },
             { from: { type: 'tool-sdk' }, allow: [] },
             {
               from: { type: 'tool-library' },
-              allow: { to: { type: ['shared-utils'] } },
+              allow: { to: { type: ['content-identity'] } },
             },
             {
               from: { type: 'web-shell-test' },
@@ -469,7 +495,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-entry',
                     'web-shell-app',
                     'web-shell-lib',
@@ -495,7 +521,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-app',
                     'web-shell-lib',
                   ],
@@ -508,7 +534,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-app',
                     'web-shell-lib',
                     'feature-approvals',
@@ -530,7 +556,9 @@ export default [
             {
               from: { type: 'web-shell-lib' },
               allow: {
-                to: { type: ['protocol', 'shared-utils', 'web-shell-lib'] },
+                to: {
+                  type: ['protocol', 'structured-logger', 'web-shell-lib'],
+                },
               },
             },
             {
@@ -539,7 +567,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-lib',
                     'feature-approvals',
                   ],
@@ -551,8 +579,9 @@ export default [
               allow: {
                 to: {
                   type: [
+                    'artifact-runtime-policy',
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-lib',
                     'feature-artifacts',
                   ],
@@ -565,7 +594,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-lib',
                     'feature-artifacts',
                     'feature-assistant',
@@ -576,13 +605,17 @@ export default [
             {
               from: { type: 'feature-browser-share' },
               allow: {
-                to: { type: ['protocol', 'shared-utils', 'web-shell-lib'] },
+                to: {
+                  type: ['protocol', 'structured-logger', 'web-shell-lib'],
+                },
               },
             },
             {
               from: { type: 'feature-browser-live-session' },
               allow: {
-                to: { type: ['protocol', 'shared-utils', 'web-shell-lib'] },
+                to: {
+                  type: ['protocol', 'structured-logger', 'web-shell-lib'],
+                },
               },
             },
             {
@@ -591,7 +624,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-lib',
                     'feature-editor',
                   ],
@@ -604,7 +637,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-lib',
                     'feature-mcp',
                   ],
@@ -617,7 +650,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-lib',
                     'feature-plugins',
                   ],
@@ -630,7 +663,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-lib',
                     'feature-project-selector',
                   ],
@@ -643,7 +676,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-lib',
                     'feature-computer-tree',
                   ],
@@ -656,7 +689,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-lib',
                     'feature-provider-auth',
                   ],
@@ -669,7 +702,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'web-shell-lib',
                     'feature-thread-list',
                   ],
@@ -681,10 +714,12 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'content-identity',
+                    'structured-logger',
                     'protocol',
                     'tool-sdk',
                     'adapter-web',
+                    'daemon-process-execution',
                     'daemon-kernel',
                     'daemon-composition',
                     'daemon-agent-contract',
@@ -715,7 +750,7 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'structured-logger',
                     'protocol',
                     'daemon-kernel',
                     'daemon-composition',
@@ -752,7 +787,7 @@ export default [
                 to: {
                   type: [
                     'agent-loop',
-                    'shared-utils',
+                    'structured-logger',
                     'daemon-kernel',
                     'daemon-agent-contract',
                     'daemon-agent-sandbox-ingress',
@@ -781,8 +816,10 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'content-identity',
+                    'structured-logger',
                     'protocol',
+                    'daemon-process-execution',
                     'daemon-kernel',
                     'daemon-composition',
                     'daemon-ptc-runtime-contract',
@@ -810,7 +847,7 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'structured-logger',
                     'protocol',
                     'daemon-tools',
                     'daemon-utils',
@@ -824,6 +861,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
+                    'daemon-process-execution',
                     'daemon-extensions',
                     'daemon-files',
                     'daemon-utils',
@@ -836,7 +874,8 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'content-identity',
+                    'structured-logger',
                     'daemon-auth',
                     'daemon-kernel',
                     'daemon-utils',
@@ -849,7 +888,8 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'content-identity',
+                    'structured-logger',
                     'protocol',
                     'daemon-media-contract',
                     'daemon-kernel',
@@ -874,7 +914,7 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'structured-logger',
                     'daemon-artifact-runtime-persistence-contract',
                     'daemon-kernel',
                     'daemon-composition',
@@ -896,7 +936,7 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'structured-logger',
                     'daemon-files-contract',
                     'daemon-kernel',
                     'daemon-composition',
@@ -910,7 +950,7 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'structured-logger',
                     'daemon-auth-contract',
                     'daemon-kernel',
                     'daemon-composition',
@@ -932,8 +972,11 @@ export default [
               allow: {
                 to: {
                   type: [
+                    'artifact-runtime-policy',
+                    'content-identity',
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
+                    'daemon-process-execution',
                     'daemon-network',
                     'daemon-sandbox',
                   ],
@@ -946,7 +989,7 @@ export default [
                 to: {
                   type: [
                     'protocol',
-                    'shared-utils',
+                    'structured-logger',
                     'daemon-react-bundle-inline',
                     'daemon-utils',
                   ],
@@ -958,7 +1001,8 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'content-identity',
+                    'structured-logger',
                     'daemon-files',
                     'daemon-network',
                     'daemon-utils',
@@ -1033,7 +1077,7 @@ export default [
               from: { type: 'daemon-ptc-package-helpers' },
               allow: {
                 to: {
-                  type: ['protocol', 'shared-utils'],
+                  type: ['content-identity', 'protocol', 'structured-logger'],
                 },
               },
             },
@@ -1041,7 +1085,7 @@ export default [
               from: { type: 'daemon-ptc-shared' },
               allow: {
                 to: {
-                  type: ['protocol', 'shared-utils'],
+                  type: ['content-identity', 'protocol', 'structured-logger'],
                 },
               },
             },
@@ -1219,6 +1263,7 @@ export default [
                     'daemon-ptc-lab-packages',
                     'daemon-ptc-lab-profile',
                     'daemon-ptc-lab-session',
+                    'daemon-process-execution',
                     'daemon-ptc-package-helpers',
                     'daemon-ptc-shared',
                   ],
@@ -1282,6 +1327,7 @@ export default [
                     'daemon-ptc-lab-profile',
                     'daemon-ptc-lab-session',
                     'daemon-ptc-lab-shell',
+                    'daemon-process-execution',
                     'daemon-ptc-package-helpers',
                     'daemon-ptc-runtime-contract',
                     'daemon-ptc-runtime-execute-code',
@@ -1322,7 +1368,7 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'structured-logger',
                     'daemon-kernel',
                     'daemon-composition',
                     'daemon-files',
@@ -1332,10 +1378,18 @@ export default [
               },
             },
             {
+              from: { type: 'daemon-process-execution' },
+              allow: {
+                to: {
+                  type: ['daemon-process-execution'],
+                },
+              },
+            },
+            {
               from: { type: 'daemon-kernel' },
               allow: {
                 to: {
-                  type: ['shared-utils', 'protocol', 'daemon-utils'],
+                  type: ['structured-logger', 'protocol', 'daemon-utils'],
                 },
               },
             },
@@ -1344,7 +1398,7 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'structured-logger',
                     'protocol',
                     'adapter-web',
                     'daemon-kernel',
@@ -1373,14 +1427,15 @@ export default [
             },
             {
               from: { type: 'daemon-utils' },
-              allow: { to: { type: ['shared-utils', 'daemon-kernel'] } },
+              allow: { to: { type: ['structured-logger', 'daemon-kernel'] } },
             },
             {
               from: { type: 'daemon-sessions' },
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'content-identity',
+                    'structured-logger',
                     'protocol',
                     'daemon-sessions-contract',
                     'daemon-kernel',
@@ -1412,7 +1467,7 @@ export default [
               allow: {
                 to: {
                   type: [
-                    'shared-utils',
+                    'structured-logger',
                     'protocol',
                     'adapter-web',
                     'daemon-kernel',
@@ -1432,6 +1487,18 @@ export default [
   {
     files: ['apps/web-shell/src/**/*.ts', 'apps/web-shell/src/**/*.tsx'],
     rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@geulbat/shared-utils', '@geulbat/shared-utils/*'],
+              message:
+                'The generic @geulbat/shared-utils owner is retired. Import the precise capability owner instead.',
+            },
+          ],
+        },
+      ],
       'no-restricted-syntax': [
         'error',
         {
@@ -1440,9 +1507,10 @@ export default [
             'Do not import the protocol root barrel in web-shell source code. Use protocol subpaths or the local protocol facade instead.',
         },
         {
-          selector: "ImportDeclaration[source.value='@geulbat/shared-utils']",
+          selector:
+            "ImportDeclaration[source.value='@geulbat/structured-logger']",
           message:
-            'Do not import the shared-utils root barrel in web-shell source code. Use shared-utils subpaths instead.',
+            'Do not import the structured-logger root barrel in web-shell source code. Use structured-logger subpaths instead.',
         },
         {
           selector: "ExportNamedDeclaration[source.value='@geulbat/protocol']",
@@ -1451,9 +1519,9 @@ export default [
         },
         {
           selector:
-            "ExportNamedDeclaration[source.value='@geulbat/shared-utils']",
+            "ExportNamedDeclaration[source.value='@geulbat/structured-logger']",
           message:
-            'Do not re-export the shared-utils root barrel in web-shell source code. Re-export shared-utils subpaths instead.',
+            'Do not re-export the structured-logger root barrel in web-shell source code. Re-export structured-logger subpaths instead.',
         },
         {
           selector: "ExportAllDeclaration[source.value='@geulbat/protocol']",
@@ -1462,9 +1530,9 @@ export default [
         },
         {
           selector:
-            "ExportAllDeclaration[source.value='@geulbat/shared-utils']",
+            "ExportAllDeclaration[source.value='@geulbat/structured-logger']",
           message:
-            'Do not re-export the shared-utils root barrel in web-shell source code. Re-export shared-utils subpaths instead.',
+            'Do not re-export the structured-logger root barrel in web-shell source code. Re-export structured-logger subpaths instead.',
         },
       ],
     },
@@ -1476,6 +1544,11 @@ export default [
         'error',
         {
           patterns: [
+            {
+              group: ['@geulbat/shared-utils', '@geulbat/shared-utils/*'],
+              message:
+                'The generic @geulbat/shared-utils owner is retired. Import the precise capability owner instead.',
+            },
             {
               group: ['**/auth/index.js', '**/files/index.js'],
               message:
@@ -1492,9 +1565,10 @@ export default [
             'Do not import the protocol root barrel in daemon source code. Use protocol subpaths instead.',
         },
         {
-          selector: "ImportDeclaration[source.value='@geulbat/shared-utils']",
+          selector:
+            "ImportDeclaration[source.value='@geulbat/structured-logger']",
           message:
-            'Do not import the shared-utils root barrel in daemon source code. Use shared-utils subpaths instead.',
+            'Do not import the structured-logger root barrel in daemon source code. Use structured-logger subpaths instead.',
         },
         {
           selector: "ExportNamedDeclaration[source.value='@geulbat/protocol']",
@@ -1503,9 +1577,9 @@ export default [
         },
         {
           selector:
-            "ExportNamedDeclaration[source.value='@geulbat/shared-utils']",
+            "ExportNamedDeclaration[source.value='@geulbat/structured-logger']",
           message:
-            'Do not re-export the shared-utils root barrel in daemon source code. Re-export shared-utils subpaths instead.',
+            'Do not re-export the structured-logger root barrel in daemon source code. Re-export structured-logger subpaths instead.',
         },
         {
           selector: "ExportAllDeclaration[source.value='@geulbat/protocol']",
@@ -1514,9 +1588,9 @@ export default [
         },
         {
           selector:
-            "ExportAllDeclaration[source.value='@geulbat/shared-utils']",
+            "ExportAllDeclaration[source.value='@geulbat/structured-logger']",
           message:
-            'Do not re-export the shared-utils root barrel in daemon source code. Re-export shared-utils subpaths instead.',
+            'Do not re-export the structured-logger root barrel in daemon source code. Re-export structured-logger subpaths instead.',
         },
       ],
     },
@@ -1528,6 +1602,18 @@ export default [
       sourceType: 'module',
     },
     rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@geulbat/shared-utils', '@geulbat/shared-utils/*'],
+              message:
+                'The generic @geulbat/shared-utils owner is retired. Import the precise capability owner instead.',
+            },
+          ],
+        },
+      ],
       'no-restricted-syntax': [
         'error',
         {
@@ -1536,9 +1622,10 @@ export default [
             'Do not import the protocol root barrel in app scripts. Use protocol subpaths instead.',
         },
         {
-          selector: "ImportDeclaration[source.value='@geulbat/shared-utils']",
+          selector:
+            "ImportDeclaration[source.value='@geulbat/structured-logger']",
           message:
-            'Do not import the shared-utils root barrel in app scripts. Use shared-utils subpaths instead.',
+            'Do not import the structured-logger root barrel in app scripts. Use structured-logger subpaths instead.',
         },
         {
           selector: "ExportNamedDeclaration[source.value='@geulbat/protocol']",
@@ -1547,9 +1634,9 @@ export default [
         },
         {
           selector:
-            "ExportNamedDeclaration[source.value='@geulbat/shared-utils']",
+            "ExportNamedDeclaration[source.value='@geulbat/structured-logger']",
           message:
-            'Do not re-export the shared-utils root barrel in app scripts. Re-export shared-utils subpaths instead.',
+            'Do not re-export the structured-logger root barrel in app scripts. Re-export structured-logger subpaths instead.',
         },
         {
           selector: "ExportAllDeclaration[source.value='@geulbat/protocol']",
@@ -1558,9 +1645,9 @@ export default [
         },
         {
           selector:
-            "ExportAllDeclaration[source.value='@geulbat/shared-utils']",
+            "ExportAllDeclaration[source.value='@geulbat/structured-logger']",
           message:
-            'Do not re-export the shared-utils root barrel in app scripts. Re-export shared-utils subpaths instead.',
+            'Do not re-export the structured-logger root barrel in app scripts. Re-export structured-logger subpaths instead.',
         },
       ],
     },
@@ -1927,8 +2014,9 @@ export default [
   },
   {
     files: [
+      'packages/artifact-runtime-policy/src/**/*.ts',
+      'packages/content-identity/src/**/*.ts',
       'packages/protocol/src/**/*.ts',
-      'packages/shared-utils/src/**/*.ts',
     ],
     rules: {
       'no-magic-numbers': 'off',

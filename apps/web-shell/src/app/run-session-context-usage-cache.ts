@@ -2,7 +2,7 @@ import {
   isContextUsageUpdatedEventPayload,
   type ContextUsageUpdatedEventPayload,
 } from '@geulbat/protocol/run-events';
-import { isRecord, tryParseJsonRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord, tryParseJsonRecord } from '../lib/json.js';
 
 const CONTEXT_USAGE_CACHE_KEY = 'geulbat.shell.context-usage.v1';
 const CONTEXT_USAGE_CACHE_VERSION = 1;

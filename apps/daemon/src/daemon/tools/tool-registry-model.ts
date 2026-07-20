@@ -124,7 +124,6 @@ export interface ToolExposure {
   sdkVisible: boolean;
   inCellCallable: boolean;
   directOnly: boolean;
-  approvalRequired: boolean;
   effectClass: HostToolEffect;
 }
 

@@ -8,7 +8,7 @@ import {
   isMcpStdioTransportConfig,
   type McpServerRegistration,
 } from '@geulbat/protocol/mcp';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isMcpRecord as isRecord } from './mcp-value-guards.js';
 
 import { getErrorMessage } from '../utils/error.js';
 import { McpServerConfigError } from './global-mcp-contract.js';

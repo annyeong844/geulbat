@@ -6,7 +6,7 @@ import {
   type ProviderStructuredOutput,
   type ProviderUsageTelemetry,
 } from '../llm/index.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import type { ToolDefinition } from '../tools/types.js';
 import type { AgentEventEmitter } from './events.js';
 import {

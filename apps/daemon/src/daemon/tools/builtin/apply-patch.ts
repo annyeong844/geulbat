@@ -56,7 +56,6 @@ export const applyPatchTool = defineZodTool({
     sdkVisible: false,
     inCellCallable: false,
     directOnly: true,
-    approvalRequired: true,
     effectClass: 'computerWrite',
   },
   catalogSearchMetadata: {

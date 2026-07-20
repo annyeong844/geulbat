@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import type { MemoryChunkRecord, MemoryManifest } from './types.js';
 import { resolveDerivedArtifactTarget } from '../files/file-platform.js';
 import { getErrorCode, getErrorMessage } from '../utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 const logger = createLogger('memory-index');
 

@@ -9,7 +9,7 @@ import {
   FileAccessError,
   StaleWriteError,
 } from '../../../daemon/files/file-domain-error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import {
   sendApiError,
   sendUnexpectedApiError,

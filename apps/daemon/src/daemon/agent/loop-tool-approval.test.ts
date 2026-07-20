@@ -382,7 +382,6 @@ void test('executeFunctionCall admits an SDK-visible no-effect callback from exe
         sdkVisible: true,
         inCellCallable: true,
         directOnly: false,
-        approvalRequired: false,
         effectClass: 'readOnly',
       },
       async executeParsed(_, ctx) {
@@ -1630,7 +1629,6 @@ void test('artifact_frame data_only dispatch runs an admitted read-only callback
         sdkVisible: true,
         inCellCallable: true,
         directOnly: false,
-        approvalRequired: false,
         effectClass: 'readOnly',
       },
       async executeParsed() {

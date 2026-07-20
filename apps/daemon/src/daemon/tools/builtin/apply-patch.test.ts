@@ -26,7 +26,6 @@ void test('apply_patch publishes only the patch text contract', () => {
     sdkVisible: false,
     inCellCallable: false,
     directOnly: true,
-    approvalRequired: true,
     effectClass: 'computerWrite',
   });
 });

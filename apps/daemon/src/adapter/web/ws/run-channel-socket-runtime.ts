@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
 import type { ThreadId } from '@geulbat/protocol/ids';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 import { mapBackgroundSubagentTerminalToRunEvent } from '../protocol/map-events.js';
 import { sendMessage, sendRunEvent } from './run-channel-socket.js';

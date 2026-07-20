@@ -1,4 +1,4 @@
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../lib/json.js';
 
 // CC식 diff 렌더용 뷰모델 — tool_call content(JSON)에서 파일 변경 도구의
 // 변경 내용을 추출한다. 대상: apply_patch(V4A 패치 텍스트)와

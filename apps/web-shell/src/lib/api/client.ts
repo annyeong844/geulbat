@@ -1,4 +1,4 @@
-import { tryParseJson } from '@geulbat/protocol/runtime-utils';
+import { tryParseJson } from '../json.js';
 
 import { buildShellAuthHeaders } from '../auth/shell-auth.js';
 

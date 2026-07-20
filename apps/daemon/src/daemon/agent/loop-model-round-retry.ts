@@ -1,4 +1,4 @@
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 import {
   coerceGenericApiErrorCode,

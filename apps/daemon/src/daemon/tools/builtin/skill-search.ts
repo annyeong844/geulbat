@@ -31,7 +31,6 @@ export const skillSearchTool = defineZodTool({
     sdkVisible: false,
     inCellCallable: false,
     directOnly: true,
-    approvalRequired: false,
     effectClass: 'readOnly',
   },
   catalogSearchMetadata: {

@@ -7,11 +7,12 @@ import { context as createEsbuildContext } from 'esbuild';
 const daemonRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const repoRoot = resolve(daemonRoot, '../..');
 const workspacePackagePattern =
-  /^@geulbat\/(agent-loop|protocol|shared-utils|tool-library)(\/.*)?$/;
+  /^@geulbat\/(agent-loop|content-identity|protocol|structured-logger|tool-library)(\/.*)?$/;
 const bundledWorkspacePackages = Object.freeze({
   'agent-loop': 'packages/agent-loop/src',
+  'content-identity': 'packages/content-identity/src',
   protocol: 'packages/protocol/src',
-  'shared-utils': 'packages/shared-utils/src',
+  'structured-logger': 'packages/structured-logger/src',
   'tool-library': 'packages/tool-library/src',
 });
 

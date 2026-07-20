@@ -117,6 +117,21 @@ const INITIAL_VIEWPORT_RECT = { width: 400, height: 800 };
 const TRANSCRIPT_ROW_OVERSCAN = 3;
 const TRANSCRIPT_ROW_ESTIMATE = 120;
 
+export function extractTranscriptVirtualRange(args: {
+  range: Range;
+  retainedIndexes: Iterable<number>;
+  focusedIndex: number | undefined;
+}): number[] {
+  const indexes = new Set(defaultRangeExtractor(args.range));
+  for (const index of args.retainedIndexes) {
+    indexes.add(index);
+  }
+  if (args.focusedIndex !== undefined) {
+    indexes.add(args.focusedIndex);
+  }
+  return [...indexes].sort((left, right) => left - right);
+}
+
 function useTranscriptScrollFrameActivity(
   scrollElementRef: React.RefObject<HTMLDivElement | null>,
 ) {
@@ -240,6 +255,7 @@ export const VirtualizedTranscriptRows = React.memo(
     // ordinary overscan range. This is gesture-scoped retention, not a
     // growing keep-alive cache.
     const retainedVisualizeRowKeysRef = useRef(new Set<string>());
+    const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
     const isScrollFrameActive =
       useTranscriptScrollFrameActivity(scrollElementRef);
     useEffect(() => {
@@ -299,6 +315,32 @@ export const VirtualizedTranscriptRows = React.memo(
         return next;
       });
     }, []);
+    const handleFocusCapture = useCallback(
+      (event: React.FocusEvent<HTMLDivElement>) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+        const rowElement = target.closest<HTMLElement>(
+          '[data-transcript-row-key]',
+        );
+        setFocusedRowKey(rowElement?.dataset.transcriptRowKey ?? null);
+      },
+      [],
+    );
+    const handleBlurCapture = useCallback(
+      (event: React.FocusEvent<HTMLDivElement>) => {
+        const nextTarget = event.relatedTarget;
+        if (
+          nextTarget instanceof Node &&
+          event.currentTarget.contains(nextTarget)
+        ) {
+          return;
+        }
+        setFocusedRowKey(null);
+      },
+      [],
+    );
     const scrollVirtualizer = useCallback(
       (
         offset: number,
@@ -319,17 +361,23 @@ export const VirtualizedTranscriptRows = React.memo(
       estimateSize: (index) => estimateTranscriptRowSize(rows[index]),
       getItemKey: (index) => rows[index]?.key ?? index,
       rangeExtractor: (range: Range) => {
-        const indexes = new Set(defaultRangeExtractor(range));
-        if (!isScrollFrameActive) {
-          return [...indexes];
-        }
-        for (const key of retainedVisualizeRowKeysRef.current) {
-          const index = rowIndexesByKey.get(key);
-          if (index !== undefined) {
-            indexes.add(index);
+        const retainedIndexes: number[] = [];
+        if (isScrollFrameActive) {
+          for (const key of retainedVisualizeRowKeysRef.current) {
+            const index = rowIndexesByKey.get(key);
+            if (index !== undefined) {
+              retainedIndexes.push(index);
+            }
           }
         }
-        return [...indexes].sort((left, right) => left - right);
+        return extractTranscriptVirtualRange({
+          range,
+          retainedIndexes,
+          focusedIndex:
+            focusedRowKey === null
+              ? undefined
+              : rowIndexesByKey.get(focusedRowKey),
+        });
       },
       overscan: TRANSCRIPT_ROW_OVERSCAN,
       anchorTo: 'end',
@@ -359,7 +407,12 @@ export const VirtualizedTranscriptRows = React.memo(
       directDomUpdatesMode: 'position',
     });
     return (
-      <div ref={virtualizer.containerRef} className="transcript-virtual-list">
+      <div
+        ref={virtualizer.containerRef}
+        className="transcript-virtual-list"
+        onFocusCapture={handleFocusCapture}
+        onBlurCapture={handleBlurCapture}
+      >
         {virtualizer.getVirtualItems().map((virtualRow) => {
           const row = rows[virtualRow.index];
           if (row === undefined) {
@@ -377,6 +430,7 @@ export const VirtualizedTranscriptRows = React.memo(
               key={virtualRow.key}
               ref={virtualizer.measureElement}
               data-index={virtualRow.index}
+              data-transcript-row-key={row.key}
               className="transcript-virtual-row"
             >
               <TranscriptVirtualRowContent

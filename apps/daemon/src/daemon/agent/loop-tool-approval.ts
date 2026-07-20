@@ -3,7 +3,7 @@
 // - run preflight / auto-approve checks
 // - route prompt/wait handling when approval is required
 import { getErrorMessage } from '../utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import {
   assertAgentRunId as assertValidRunId,
   isAgentTerminalRunStatus,
@@ -366,6 +366,13 @@ export async function resolveToolApprovalState(
     return { needsApproval: false, approvalGranted: false };
   }
 
+  const needsApproval = shouldRequireApproval(toolName, {
+    toolRegistry: runtime.toolRegistry,
+  });
+  if (!needsApproval) {
+    return { needsApproval: false, approvalGranted: false };
+  }
+
   const approvalClass =
     args.approvalClass ?? resolveApprovalClass(toolName, toolArgs);
   const approvalGrants =
@@ -388,15 +395,14 @@ export async function resolveToolApprovalState(
 
   try {
     const preflight = await collectPreflight(
+      toolName,
       runtime.executionContextBase,
       toolArgs,
     );
     return {
-      needsApproval: shouldRequireApproval(toolName, preflight, {
-        toolRegistry: runtime.toolRegistry,
-      }),
+      needsApproval: true,
       approvalGranted: false,
-      preflight,
+      ...(preflight === undefined ? {} : { preflight }),
     };
   } catch (error) {
     logger.warn('tool approval preflight failed; falling back to fail-closed', {
@@ -421,6 +427,7 @@ async function revalidateApprovedToolPreflight(args: {
   try {
     if (
       await isApprovalPreflightCurrent(
+        args.toolName,
         args.runtime.executionContextBase,
         args.toolArgs,
         preflight,

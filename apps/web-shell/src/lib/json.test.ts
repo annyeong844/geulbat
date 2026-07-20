@@ -2,15 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  isNumber,
+  isPlainRecord,
   isRecord,
+  isString,
   tryDecodeJson,
   tryParseJson,
   tryParseJsonRecord,
   tryParseJsonWithGuard,
-} from '@geulbat/protocol/runtime-utils';
+} from './json.js';
 
-void test('isRecord rejects arrays', () => {
+void test('JSON guards distinguish records and finite scalar values', () => {
+  class Example {}
+
+  assert.equal(isRecord({ ok: true }), true);
   assert.equal(isRecord([]), false);
+  assert.equal(isPlainRecord(Object.create(null)), true);
+  assert.equal(isPlainRecord(new Example()), false);
+  assert.equal(isString('value'), true);
+  assert.equal(isString(1), false);
+  assert.equal(isNumber(1), true);
+  assert.equal(isNumber(Number.NaN), false);
 });
 
 void test('tryParseJson returns parsed unknown value', () => {

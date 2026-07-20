@@ -10,7 +10,7 @@ import {
   isPluginMarketplaceInstallRequest,
   isPluginMarketplaceListResponse,
 } from '@geulbat/protocol/plugins';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isPluginRecord as isRecord } from './plugin-value-guards.js';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';

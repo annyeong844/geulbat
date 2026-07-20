@@ -1,6 +1,6 @@
 import type { RunId, ThreadId } from './ids.js';
 import { isRunId, isThreadId } from './ids.js';
-import { isBoolean, isRecord, isString } from './runtime-utils.js';
+import { isBoolean, isRecord, isString } from './wire-value-guards.js';
 import {
   isSideEffectLevel,
   type SideEffectLevel,

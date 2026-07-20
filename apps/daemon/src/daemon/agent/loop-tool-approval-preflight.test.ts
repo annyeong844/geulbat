@@ -157,7 +157,11 @@ void test('collectPreflight resolves explicit computer paths against the compute
   const computerPath = join(computerFileRoot, 'draft.md');
 
   assert.deepEqual(
-    await collectPreflight({ computerFileRoot }, { path: computerPath }),
+    await collectPreflight(
+      'write_file',
+      { computerFileRoot },
+      { path: computerPath },
+    ),
     {
       mutationTargets: [
         {
@@ -167,7 +171,20 @@ void test('collectPreflight resolves explicit computer paths against the compute
       ],
     },
   );
-  await assert.rejects(collectPreflight({}, { path: computerPath }));
+  await assert.rejects(
+    collectPreflight('write_file', {}, { path: computerPath }),
+  );
+});
+
+void test('collectPreflight ignores non-local tool path arguments', async () => {
+  assert.equal(
+    await collectPreflight(
+      'mcp__remote__read_object',
+      {},
+      { path: '/remote/object-key' },
+    ),
+    undefined,
+  );
 });
 
 void test('isApprovalPreflightCurrent rejects a parent symlink swap', async (t) => {
@@ -179,7 +196,12 @@ void test('isApprovalPreflightCurrent rejects a parent symlink swap', async (t) 
   await mkdir(linkedParent, { recursive: true });
   await mkdir(outsideRoot, { recursive: true });
   const toolArgs = { path: 'sub/draft.md' };
-  const preflight = await collectPreflight({ computerFileRoot }, toolArgs);
+  const preflight = await collectPreflight(
+    'manage_files',
+    { computerFileRoot },
+    toolArgs,
+  );
+  assert.ok(preflight);
 
   await rm(linkedParent, { recursive: true, force: true });
   if (!(await createSymlinkOrSkip(t, outsideRoot, linkedParent))) {
@@ -187,7 +209,12 @@ void test('isApprovalPreflightCurrent rejects a parent symlink swap', async (t) 
   }
 
   assert.equal(
-    await isApprovalPreflightCurrent({ computerFileRoot }, toolArgs, preflight),
+    await isApprovalPreflightCurrent(
+      'manage_files',
+      { computerFileRoot },
+      toolArgs,
+      preflight,
+    ),
     false,
   );
 });

@@ -1,5 +1,5 @@
 import type { RunToolResultPayload } from '@geulbat/protocol/run-channel';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../../lib/json.js';
 
 // 아티팩트/위젯 프레임 → 부모 back-channel (§geulbat artifact back-channel
 // design). 프레임은 데이터(text)만 보내고, 권한/컨텍스트(threadId, runId,

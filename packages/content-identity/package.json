@@ -1,5 +1,5 @@
 {
-  "name": "@geulbat/shared-utils",
+  "name": "@geulbat/content-identity",
   "version": "0.0.0",
   "license": "MIT",
   "private": true,
@@ -8,18 +8,6 @@
     "dist/"
   ],
   "exports": {
-    "./identifier-naming": {
-      "types": "./dist/identifier-naming.d.ts",
-      "import": "./dist/identifier-naming.js"
-    },
-    "./logger": {
-      "types": "./dist/logger.d.ts",
-      "import": "./dist/logger.js"
-    },
-    "./process-command": {
-      "types": "./dist/process-command.d.ts",
-      "import": "./dist/process-command.js"
-    },
     "./sha256": {
       "types": "./dist/sha256.d.ts",
       "import": "./dist/sha256.js"
@@ -32,7 +20,7 @@
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "test:files": "node ../../scripts/run-workspace-node-tests.mjs --workspace shared-utils --tsconfig ./tsconfig.test.json",
+    "test:files": "node ../../scripts/run-workspace-node-tests.mjs --workspace content-identity --tsconfig ./tsconfig.test.json",
     "test": "npm run test:files -- \"**/*.test.js\""
   },
   "devDependencies": {

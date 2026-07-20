@@ -5,7 +5,7 @@ import {
   isPlainRecord,
   isRecord,
   isString,
-} from './runtime-utils.js';
+} from './wire-value-guards.js';
 
 export type JsonValue =
   | null

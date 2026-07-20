@@ -1,4 +1,4 @@
-import { isPlainRecord, isString } from './runtime-utils.js';
+import { isPlainRecord, isString } from './wire-value-guards.js';
 
 export const PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX =
   '/public-generated/react-bundle-inline/';

@@ -1,4 +1,4 @@
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../../lib/json.js';
 
 import type { VisualizeWidgetView } from '../../artifacts/runtime-preview/visualize/document.js';
 

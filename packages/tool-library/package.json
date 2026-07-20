@@ -28,6 +28,10 @@
       "types": "./dist/projection-modules.d.ts",
       "import": "./dist/projection-modules.js"
     },
+    "./projection-naming": {
+      "types": "./dist/projection-naming.d.ts",
+      "import": "./dist/projection-naming.js"
+    },
     "./projection-signature": {
       "types": "./dist/projection-signature.d.ts",
       "import": "./dist/projection-signature.js"
@@ -48,7 +52,7 @@
     "test": "npm run test:files -- \"**/*.test.js\""
   },
   "dependencies": {
-    "@geulbat/shared-utils": "*"
+    "@geulbat/content-identity": "*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

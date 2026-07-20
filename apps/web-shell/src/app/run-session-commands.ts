@@ -16,7 +16,7 @@ import {
 } from '@geulbat/protocol/run-contract';
 
 import { getErrorMessage } from '../lib/error-message.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
 import { apiFetch, isApiOkResponse } from '../lib/api/client.js';
 import { deleteRunAttachmentBlob } from '../lib/api/files.js';

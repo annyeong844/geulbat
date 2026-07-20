@@ -14,7 +14,7 @@ import {
 import { join } from 'node:path';
 
 import type { RunAttachmentInput } from '@geulbat/protocol/run-contract';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 import {
   claimFileBinaryInputRefPath,

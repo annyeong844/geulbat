@@ -3,7 +3,7 @@ import {
   type DockerClientCommandInvocation,
   type DockerClientCommandResult,
   type DockerClientCommandRunner,
-} from '@geulbat/shared-utils/process-command';
+} from '../docker-client-command.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { joinDiagnostics } from './react-bundle-dependency-attempt-lifecycle.js';

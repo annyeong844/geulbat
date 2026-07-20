@@ -19,7 +19,7 @@ import {
   startProviderAuth,
 } from '../lib/api/provider-auth.js';
 import { ApiFetchError } from '../lib/api/client.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { reportVisibleAppError } from './error-reporting.js';
 
 export type ProviderAuthStatusByProvider = Record<

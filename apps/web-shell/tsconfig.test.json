@@ -9,8 +9,9 @@
     "types": ["node"]
   },
   "references": [
-    { "path": "../../packages/shared-utils" },
-    { "path": "../../packages/protocol" }
+    { "path": "../../packages/structured-logger" },
+    { "path": "../../packages/protocol" },
+    { "path": "../../packages/artifact-runtime-policy" }
   ],
   "include": ["src/**/*"],
   "exclude": []

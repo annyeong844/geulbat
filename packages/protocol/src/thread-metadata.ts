@@ -1,6 +1,6 @@
 import { isArtifactRef, type ArtifactRef } from './artifacts.js';
 import { isRunId, type RunId } from './ids.js';
-import { isRecord, isString } from './runtime-utils.js';
+import { isRecord, isString } from './wire-value-guards.js';
 
 const THREAD_MESSAGE_PHASES = ['commentary', 'final_answer'] as const;
 

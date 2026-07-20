@@ -18,9 +18,9 @@ import {
   PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
 } from '../../ptc/lab/session/session-docker-contract.js';
 import {
-  startPtcDockerClientProcess,
+  startExecuteCodeCellProcess,
   type DetachedProcessExitInfo,
-} from '../../ptc/shared/process-command.js';
+} from '../../ptc/runtime/execute-code/execute-code-cell-process.js';
 import { executeTool } from '../executor.js';
 import type { CallbackToolDispatcher } from '../types.js';
 import { executeCodeTool } from './execute-code.js';
@@ -124,7 +124,7 @@ void test('WO6-V3 removed search_memory_index stays usable through the pinned mu
           PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
         );
         events.push('process:start');
-        const started = startPtcDockerClientProcess({
+        const started = startExecuteCodeCellProcess({
           ...invocation,
           executable: '/bin/bash',
           args: [

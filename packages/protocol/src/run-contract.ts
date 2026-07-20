@@ -2,7 +2,7 @@ import type { RunId, ThreadId } from './ids.js';
 import { isPermissionMode, type PermissionMode } from './run-approval.js';
 import { isThreadId } from './ids.js';
 import type { ProviderAuthProviderId } from './provider-auth.js';
-import { isNumber, isRecord, isString } from './runtime-utils.js';
+import { isNumber, isRecord, isString } from './wire-value-guards.js';
 
 // 사고 수준 — provider의 reasoning effort와 같은 축. 셸과 daemon은 이
 // 계약만 공유하고 서로의 구현을 모른다.

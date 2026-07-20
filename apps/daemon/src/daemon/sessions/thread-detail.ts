@@ -8,7 +8,7 @@ import {
   type ThreadDetailResponse,
   type ThreadId,
 } from './contract.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 import { loadAllThreadArtifactVersions } from './artifact-store.js';
 import { artifactStoreFilePath, threadFilePath } from './paths.js';

@@ -24,6 +24,14 @@ const FILE_MUTATION_TOOL_NAMES = new Set([
   'manage_files',
 ]);
 
+const COMPUTER_FILE_PREFLIGHT_ARGUMENTS = new Map<
+  string,
+  readonly ApprovalPreflightTarget['argument'][]
+>([
+  ['write_file', ['path']],
+  ['manage_files', ['path', 'destination']],
+]);
+
 export function resolveApprovalClass(
   toolName: string,
   args?: Record<string, unknown>,
@@ -58,11 +66,17 @@ export function shouldAutoApprove(
 }
 
 export async function collectPreflight(
+  toolName: string,
   ctx: { computerFileRoot?: string; workingDirectory?: string },
   args: Record<string, unknown>,
-): Promise<ApprovalPreflight> {
+): Promise<ApprovalPreflight | undefined> {
+  const preflightArguments = COMPUTER_FILE_PREFLIGHT_ARGUMENTS.get(toolName);
+  if (preflightArguments === undefined) {
+    return undefined;
+  }
+
   const mutationTargets: ApprovalPreflightTarget[] = [];
-  for (const argument of ['path', 'destination'] as const) {
+  for (const argument of preflightArguments) {
     const inputPath = args[argument];
     if (typeof inputPath !== 'string') {
       continue;
@@ -82,11 +96,15 @@ export async function collectPreflight(
 }
 
 export async function isApprovalPreflightCurrent(
+  toolName: string,
   ctx: { computerFileRoot?: string; workingDirectory?: string },
   args: Record<string, unknown>,
   expected: ApprovalPreflight,
 ): Promise<boolean> {
-  const current = await collectPreflight(ctx, args);
+  const current = await collectPreflight(toolName, ctx, args);
+  if (current === undefined) {
+    return false;
+  }
   return (
     current.mutationTargets.length === expected.mutationTargets.length &&
     current.mutationTargets.every((target, index) => {
@@ -102,7 +120,6 @@ export async function isApprovalPreflightCurrent(
 
 export function shouldRequireApproval(
   toolName: string,
-  _preflight: ApprovalPreflight | undefined,
   options: {
     toolRegistry: ToolMetaReader;
   },

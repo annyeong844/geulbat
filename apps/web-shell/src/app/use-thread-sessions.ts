@@ -21,7 +21,7 @@ import {
   getThreads,
   ThreadDeleteConflictError,
 } from '../lib/api/threads.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { reportVisibleAppError } from './error-reporting.js';
 import { useThreadSessionSelection } from './use-thread-session-selection.js';
 const logger = createLogger('thread-sessions');

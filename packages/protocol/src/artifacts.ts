@@ -1,5 +1,5 @@
 import { isThreadId, type ThreadId } from './ids.js';
-import { isNumber, isRecord, isString } from './runtime-utils.js';
+import { isNumber, isRecord, isString } from './wire-value-guards.js';
 
 const ARTIFACT_RENDERERS = [
   'markdown',

@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path';
 
-import { stableStringify } from '@geulbat/shared-utils/stable-json';
+import { stableStringify } from '@geulbat/content-identity/stable-json';
 
 const TOOL_LIBRARY_PROJECTION_MANIFEST_MODULE_PREFIX =
   'export const projectionManifest = ';

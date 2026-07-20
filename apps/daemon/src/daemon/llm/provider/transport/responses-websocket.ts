@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 
 import type { ProviderReplayScopeId } from '../../../runtime-contracts.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import {
   parseResponseEvents,
   type ResponsesParseResult,

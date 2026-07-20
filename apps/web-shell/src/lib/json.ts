@@ -1,4 +1,4 @@
-export type JsonParseResult<T> = { ok: true; value: T } | { ok: false };
+type JsonParseResult<T> = { ok: true; value: T } | { ok: false };
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -20,10 +20,6 @@ export function isString(value: unknown): value is string {
 
 export function isNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
-}
-
-export function isBoolean(value: unknown): value is boolean {
-  return typeof value === 'boolean';
 }
 
 export function tryParseJson(text: string): JsonParseResult<unknown> {

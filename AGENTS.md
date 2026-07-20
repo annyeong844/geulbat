@@ -32,6 +32,8 @@ For source, config, test, or generated-runtime changes:
    - `npm run check -w apps/daemon`
    - `npm run check -w apps/web-shell`
    - `npm run check -w packages/agent-loop`
+   - `npm run check -w packages/artifact-runtime-policy`
+   - `npm run check -w packages/content-identity`
    - `npm run check -w packages/protocol`
 4. Run focused behavior tests with `GEULBAT_TEST_JOBS=1` where the test runner supports it.
 5. Run `git diff --check -- <changed-files...>`.

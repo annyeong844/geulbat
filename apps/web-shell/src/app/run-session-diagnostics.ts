@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 import { reportInternalAppError } from './error-reporting.js';
 import type { RunSessionStateAction } from './run-session-state-types.js';

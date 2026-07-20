@@ -1,8 +1,8 @@
 import { platform } from 'node:os';
 import {
-  runBoundedProcessCommand,
-  type BoundedProcessCommandResult,
-} from '@geulbat/shared-utils/process-command';
+  runBoundedChildProcess,
+  type BoundedChildProcessResult,
+} from '../../bounded-child-process.js';
 import { z } from 'zod';
 import { resolveSourceDirectoryTarget } from '../../files/file-platform.js';
 import { resolveComputerFileToolPath } from '../file-tool-root.js';
@@ -46,7 +46,7 @@ const execCommandArgsSchema = z.strictObject({
     ),
 });
 
-type ExecCommandStatus = BoundedProcessCommandResult['kind'];
+type ExecCommandStatus = BoundedChildProcessResult['kind'];
 
 interface ExecCommandOutput {
   command: string;
@@ -97,7 +97,7 @@ export const execCommandTool = defineZodTool({
     const cwd = await resolveExecCommandCwd(ctx, args.cwd);
     const shell = buildShellCommandInvocation(args.cmd);
     const startedAt = Date.now();
-    const result = await runBoundedProcessCommand({
+    const result = await runBoundedChildProcess({
       executable: shell.executable,
       args: shell.args,
       cwd,
@@ -158,7 +158,7 @@ function buildExecCommandOutput(args: {
   cwd: string;
   durationMs: number;
   maxOutputBytesPerStream: number | undefined;
-  result: BoundedProcessCommandResult;
+  result: BoundedChildProcessResult;
   timeoutMs: number | undefined;
 }): ExecCommandOutput {
   return {

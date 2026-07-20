@@ -5,21 +5,21 @@ import {
   toIdentifier,
   toKebabFileStem,
   toPascalCase,
-} from './identifier-naming.js';
+} from './projection-naming.js';
 
-void test('toKebabFileStem derives generated file stems', () => {
+void test('projection naming derives stable kebab file stems', () => {
   assert.equal(toKebabFileStem('fetch_url'), 'fetch-url');
   assert.equal(toKebabFileStem('readHTTPResponse'), 'read-httpresponse');
   assert.equal(toKebabFileStem(' apply patch! '), 'apply-patch');
 });
 
-void test('toIdentifier derives safe camel-case identifiers', () => {
+void test('projection naming derives safe identifiers with fallback', () => {
   assert.equal(toIdentifier('fetch_url', 'tool'), 'fetchUrl');
   assert.equal(toIdentifier('123 invalid', 'tool'), 'tool');
   assert.equal(toIdentifier('!!!', 'tool'), 'tool');
 });
 
-void test('toPascalCase derives safe type-name stems', () => {
+void test('projection naming derives PascalCase names', () => {
   assert.equal(toPascalCase('fetch_url'), 'FetchUrl');
   assert.equal(toPascalCase('apply-patch'), 'ApplyPatch');
   assert.equal(toPascalCase('!!!'), 'Tool');

@@ -11,11 +11,7 @@ import type {
   RunToolResultPayload,
 } from '@geulbat/protocol/run-channel';
 import type { RunStartRequest } from '@geulbat/protocol/run-contract';
-import {
-  isRecord,
-  isString,
-  tryParseJson,
-} from '@geulbat/protocol/runtime-utils';
+import { isRecord, isString, tryParseJson } from '../json.js';
 import { buildRunChannelAuthMessage } from '../auth/shell-auth.js';
 import {
   beginConnectionAttempt,

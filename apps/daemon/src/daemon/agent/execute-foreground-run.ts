@@ -22,7 +22,7 @@ import type { AgentInput } from './loop-types.js';
 import type { AgentResult } from './agent-result.js';
 import { createAgentEvent } from './events.js';
 import { getErrorMessage } from '../utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import type {
   ExecuteForegroundRunDeps,
   ResolvedExecuteForegroundRunDeps,

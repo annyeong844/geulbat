@@ -8,7 +8,7 @@ import type { ProviderAuthRuntimeStore } from './runtime-state.js';
 import { PROVIDER_AUTH_REFRESH_MARGIN_MS } from './bootstrap/config.js';
 import type { ErrorCode } from '../error-codes.js';
 import { getGenericApiErrorCode, getErrorMessage } from '../utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { initProviderAuth } from './init.js';
 import { requiresProviderReconnect } from './shared.js';
 

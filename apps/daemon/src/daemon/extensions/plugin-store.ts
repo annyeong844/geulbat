@@ -4,7 +4,7 @@ import type {
   PluginMarketplaceInstallationSourceView,
 } from '@geulbat/protocol/plugins';
 import { isPluginInstallRequest } from '@geulbat/protocol/plugins';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isPluginRecord as isRecord } from './plugin-value-guards.js';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, realpath, rename, rm } from 'node:fs/promises';
 import { isAbsolute, join, posix, win32 } from 'node:path';

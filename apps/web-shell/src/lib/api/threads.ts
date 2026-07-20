@@ -20,7 +20,7 @@ import {
   isConflictActiveRunError,
   type ConflictActiveRunError,
 } from '@geulbat/protocol/errors';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../json.js';
 import { ApiFetchError, apiFetch } from './client.js';
 
 export class ThreadDeleteConflictError extends Error {

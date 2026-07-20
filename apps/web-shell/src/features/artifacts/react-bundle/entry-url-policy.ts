@@ -1,7 +1,7 @@
 import {
   isReactBundleShellOwnedPrivilegedUrl,
   validateReactBundleRuntimeUrlPolicy,
-} from '@geulbat/protocol/react-bundle-runtime-url-policy';
+} from '@geulbat/artifact-runtime-policy/react-bundle-url';
 
 import type {
   ArtifactPolicyOrBootFailure,

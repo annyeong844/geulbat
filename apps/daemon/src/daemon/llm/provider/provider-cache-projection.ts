@@ -1,5 +1,5 @@
-import { sha256Hex } from '@geulbat/shared-utils/sha256';
-import { sha256StableJson } from '@geulbat/shared-utils/stable-json';
+import { sha256Hex } from '@geulbat/content-identity/sha256';
+import { sha256StableJson } from '@geulbat/content-identity/stable-json';
 import type { WireToolDefinition } from './wire/types.js';
 
 type ProviderCacheControl = 'none' | 'prompt_cache_key' | 'explicit_breakpoint';

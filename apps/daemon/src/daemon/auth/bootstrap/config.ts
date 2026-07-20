@@ -10,7 +10,7 @@ import {
 } from '../credentials/store.js';
 import { isRecord } from '../../runtime-json.js';
 import { getErrorMessage } from '../../utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const logger = createLogger('provider-auth');

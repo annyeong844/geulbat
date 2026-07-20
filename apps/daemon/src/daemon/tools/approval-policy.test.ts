@@ -71,26 +71,11 @@ void test('mutating tools require approval and unknown tools fail closed', () =>
   );
 
   const policyOptions = { toolRegistry };
-  assert.equal(
-    shouldRequireApproval('write_file', undefined, policyOptions),
-    true,
-  );
-  assert.equal(
-    shouldRequireApproval('apply_patch', undefined, policyOptions),
-    true,
-  );
-  assert.equal(
-    shouldRequireApproval('manage_files', undefined, policyOptions),
-    true,
-  );
-  assert.equal(
-    shouldRequireApproval('read_file', undefined, policyOptions),
-    false,
-  );
-  assert.equal(
-    shouldRequireApproval('unknown_tool', undefined, policyOptions),
-    true,
-  );
+  assert.equal(shouldRequireApproval('write_file', policyOptions), true);
+  assert.equal(shouldRequireApproval('apply_patch', policyOptions), true);
+  assert.equal(shouldRequireApproval('manage_files', policyOptions), true);
+  assert.equal(shouldRequireApproval('read_file', policyOptions), false);
+  assert.equal(shouldRequireApproval('unknown_tool', policyOptions), true);
 });
 
 void test('manage_files delete upgrades runtime side effect to destructive', () => {
@@ -144,10 +129,7 @@ void test('exec_command keeps destructive approval semantics', () => {
     resolveRuntimeSideEffectLevel('exec_command', {}, { toolRegistry }),
     'destructive',
   );
-  assert.equal(
-    shouldRequireApproval('exec_command', undefined, { toolRegistry }),
-    true,
-  );
+  assert.equal(shouldRequireApproval('exec_command', { toolRegistry }), true);
   // full_access: destructive도 자동 승인 (2026-07-12 소유자 결정)
   assert.equal(shouldAutoApprove(context, { approvalGrants }), true);
 });
@@ -174,7 +156,7 @@ void test('refresh_memory_index truthfully reports write effect and uses approva
     'write',
   );
   assert.equal(
-    shouldRequireApproval('refresh_memory_index', undefined, {
+    shouldRequireApproval('refresh_memory_index', {
       toolRegistry,
     }),
     true,
@@ -379,7 +361,7 @@ void test('approval policy can read tool metadata from an injected registry', ()
   );
 
   assert.equal(
-    shouldRequireApproval('local_registry_read_tool', undefined, {
+    shouldRequireApproval('local_registry_read_tool', {
       toolRegistry: store,
     }),
     false,

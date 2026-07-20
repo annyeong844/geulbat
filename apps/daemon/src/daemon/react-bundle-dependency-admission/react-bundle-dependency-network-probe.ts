@@ -1,11 +1,10 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { isPlainRecord } from '@geulbat/protocol/runtime-utils';
+import { isReactBundleDependencyPlainRecord as isPlainRecord } from './react-bundle-dependency-value-guards.js';
 import {
   sha256StableJson,
   stableStringify,
-} from '@geulbat/shared-utils/stable-json';
-import type { ProcessCommandResult } from '@geulbat/shared-utils/process-command';
+} from '@geulbat/content-identity/stable-json';
 import {
   REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID,
   REACT_BUNDLE_DEPENDENCY_NETWORK_POLICY,
@@ -19,7 +18,10 @@ import type {
   SandboxAttemptStore,
   SandboxOutputRef,
 } from '../sandbox/attempt-store.js';
-import { runReactBundleDependencyAttempt } from './react-bundle-dependency-attempt-lifecycle.js';
+import {
+  runReactBundleDependencyAttempt,
+  type ReactBundleDependencyAttemptProcessResult,
+} from './react-bundle-dependency-attempt-lifecycle.js';
 import {
   validateReactBundleDependencyPrepareRequest,
   type ReactBundleDependencyPrepareRequest,
@@ -154,7 +156,7 @@ export interface ReactBundleDependencyNetworkProbeSummary {
 }
 
 type NetworkProbeProcessExitResult = Extract<
-  ProcessCommandResult,
+  ReactBundleDependencyAttemptProcessResult,
   { kind: 'exit' }
 > & {
   expectedCandidateHash?: string;
@@ -162,7 +164,7 @@ type NetworkProbeProcessExitResult = Extract<
 
 type NetworkProbeProcessResult =
   | NetworkProbeProcessExitResult
-  | Exclude<ProcessCommandResult, { kind: 'exit' }>;
+  | Exclude<ReactBundleDependencyAttemptProcessResult, { kind: 'exit' }>;
 
 interface NetworkProbeProcessRunnerArgs {
   outputDir: string;

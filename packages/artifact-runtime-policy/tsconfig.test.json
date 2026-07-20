@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist-test",
+    "rootDir": "src",
+    "tsBuildInfoFile": "tsconfig.test.tsbuildinfo"
+  },
+  "references": [{ "path": "../protocol" }],
+  "include": ["src/**/*"],
+  "exclude": []
+}

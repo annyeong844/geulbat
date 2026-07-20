@@ -5,9 +5,9 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
-  buildAllowlistedProcessEnv,
-  runBoundedProcessCommand,
-} from '../utils/process-command.js';
+  buildAllowlistedChildProcessEnv,
+  runBoundedChildProcess,
+} from '../bounded-child-process.js';
 import { PluginMarketplaceStoreError } from './plugin-marketplace-contract.js';
 
 const GIT_REVISION_PATTERN = /^git:[a-f0-9]{40,64}$/u;
@@ -34,7 +34,7 @@ export async function acquirePluginMarketplaceGitRepository(args: {
   const hooksRoot = join(args.isolatedConfigRoot, 'hooks');
   await mkdir(hooksRoot, { recursive: true, mode: 0o700 });
   const env = {
-    ...buildAllowlistedProcessEnv(NETWORK_ENV_KEYS),
+    ...buildAllowlistedChildProcessEnv(NETWORK_ENV_KEYS),
     GCM_INTERACTIVE: 'Never',
     GIT_CONFIG_GLOBAL: join(args.isolatedConfigRoot, 'gitconfig'),
     GIT_CONFIG_NOSYSTEM: '1',
@@ -89,11 +89,11 @@ export async function readGitRevision(
   marketplaceId: string,
 ): Promise<string> {
   const env = {
-    ...buildAllowlistedProcessEnv([]),
+    ...buildAllowlistedChildProcessEnv([]),
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0',
   } satisfies NodeJS.ProcessEnv;
-  const result = await runBoundedProcessCommand({
+  const result = await runBoundedChildProcess({
     executable: 'git',
     args: ['-C', repositoryRoot, 'rev-parse', 'HEAD'],
     env,
@@ -119,7 +119,7 @@ async function runGit(
   env: NodeJS.ProcessEnv,
   failureMessage: string,
 ): Promise<void> {
-  const result = await runBoundedProcessCommand({
+  const result = await runBoundedChildProcess({
     executable: 'git',
     args: gitArgs,
     env,

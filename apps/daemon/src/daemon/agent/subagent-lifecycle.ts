@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import type { RunId, RunSubagentModelRouting } from './contract.js';
 
 import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';

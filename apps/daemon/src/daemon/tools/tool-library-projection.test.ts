@@ -2147,7 +2147,6 @@ function createProjectionTestTool(args: {
       sdkVisible: true,
       inCellCallable: true,
       directOnly: false,
-      approvalRequired: false,
       effectClass: 'readOnly',
     },
     catalogSearchMetadata: {

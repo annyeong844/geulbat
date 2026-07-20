@@ -17,7 +17,7 @@ import {
 } from './callback.js';
 import type { ProviderAuthBootstrapStore } from './session-store.js';
 import type { ProviderAuthRuntimeStore } from '../runtime-state.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 const logger = createLogger('provider-auth');
 

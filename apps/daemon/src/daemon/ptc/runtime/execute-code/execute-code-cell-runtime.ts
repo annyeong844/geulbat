@@ -14,7 +14,7 @@ import type {
   PtcSessionEpochBridgeCallbackPolicy,
   PtcSessionEpochBridgeFailureReason,
 } from '../../callback/session-epoch-bridge.js';
-import { startPtcDockerClientProcess } from '../../shared/process-command.js';
+import { startExecuteCodeCellProcess } from './execute-code-cell-process.js';
 import type { buildPtcExecuteCodeSdkHelpBundle } from './execute-code-sdk.js';
 import {
   PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS,
@@ -62,7 +62,7 @@ import {
 
 type CreatePtcExecuteCodeCellRegistry = typeof createPtcExecuteCodeCellRegistry;
 
-export type StartPtcExecuteCodeCellProcess = typeof startPtcDockerClientProcess;
+export type StartPtcExecuteCodeCellProcess = typeof startExecuteCodeCellProcess;
 
 interface PtcExecuteCodeValidatedRequest {
   code: string;
@@ -635,7 +635,7 @@ async function startPromotedCellProcess(args: {
   }
 
   const startedAtMs = Date.now();
-  const started = (runtimeArgs.startCellProcess ?? startPtcDockerClientProcess)(
+  const started = (runtimeArgs.startCellProcess ?? startExecuteCodeCellProcess)(
     {
       executable: runtimeArgs.dockerPath ?? 'docker',
       args: buildPtcLabBatchDockerExecArgs({

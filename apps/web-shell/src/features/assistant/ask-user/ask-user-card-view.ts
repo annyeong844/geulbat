@@ -1,4 +1,4 @@
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../../lib/json.js';
 
 // ask_user 도구 호출을 선택지 카드 뷰로 좁힌다 — visualize처럼 렌더
 // 원본은 tool_call args가 정본이다.

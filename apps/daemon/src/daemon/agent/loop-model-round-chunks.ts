@@ -1,5 +1,5 @@
 import { AGENT_ARTIFACT_START_PREFIX as ARTIFACT_START_PREFIX } from './contract.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 import type {
   FunctionCall,

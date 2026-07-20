@@ -1,4 +1,4 @@
-import { isRecord, tryParseJsonRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord, tryParseJsonRecord } from '../../runtime-json.js';
 import type { SearchFilesResult, SearchMatch } from './search-files-shared.js';
 import {
   fromRipgrepFsPath,

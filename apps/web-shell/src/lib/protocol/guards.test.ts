@@ -23,7 +23,6 @@ import {
 } from '@geulbat/protocol/provider-auth';
 import { isRunChannelServerMessage } from '@geulbat/protocol/run-channel';
 import { isJsonValue } from '@geulbat/protocol/runtime-persistence';
-import { isPlainRecord } from '@geulbat/protocol/runtime-utils';
 import {
   isThreadDeleteResponse,
   isThreadDetailResponse,
@@ -197,7 +196,7 @@ void test('API response guards accept protocol-shaped payloads', () => {
   }
 });
 
-void test('protocol runtime helper guards stay available through the web-shell facade', () => {
+void test('protocol persistence and identity guards accept valid values', () => {
   assert.equal(
     isPersistenceApiError({
       code: 'persistence_conflict',
@@ -214,16 +213,6 @@ void test('protocol runtime helper guards stay available through the web-shell f
     true,
   );
 
-  assert.equal(isPlainRecord({ ok: true }), true);
-  assert.equal(isPlainRecord(Object.create(null)), true);
-  assert.equal(isPlainRecord([]), false);
-  assert.equal(
-    isJsonValue({
-      ok: true,
-      nested: ['value', 1, false, null],
-    }),
-    true,
-  );
   assert.equal(
     isJsonValue({
       invalid: new Date(),

@@ -131,6 +131,10 @@ test('daemon development bundle resolves workspace packages from source', async 
       resolveWorkspacePackage({ path: '@geulbat/protocol/run-channel' }),
       { path: join(root, 'packages/protocol/src/run-channel.ts') },
     );
+    assert.deepEqual(
+      resolveWorkspacePackage({ path: '@geulbat/content-identity/sha256' }),
+      { path: join(root, 'packages/content-identity/src/sha256.ts') },
+    );
     const loadedSource = await loadSourceModule({ path: sourceModulePath });
     assert.equal(
       loadedSource.contents,

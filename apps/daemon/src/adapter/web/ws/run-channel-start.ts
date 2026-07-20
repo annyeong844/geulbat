@@ -30,7 +30,7 @@ import {
   assertThreadId as assertValidThreadId,
 } from '@geulbat/protocol/ids';
 import { getErrorMessage } from '../../../daemon/utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { sendError } from './run-channel-socket.js';
 import type { RunChannelRuntimeContext } from './run-channel-runtime-context.js';
 import {

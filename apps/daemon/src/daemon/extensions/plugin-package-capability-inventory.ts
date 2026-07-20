@@ -2,7 +2,7 @@ import type {
   PluginCapabilityKind,
   PluginCapabilityView,
 } from '@geulbat/protocol/plugins';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isPluginRecord as isRecord } from './plugin-value-guards.js';
 import { basename, posix } from 'node:path';
 
 import {

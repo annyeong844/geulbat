@@ -2,7 +2,7 @@ import {
   isNumber,
   isString,
   tryParseJsonWithGuard,
-} from '@geulbat/protocol/runtime-utils';
+} from '../../../lib/json.js';
 
 import {
   installArtifactRuntimePersistenceBootstrap,

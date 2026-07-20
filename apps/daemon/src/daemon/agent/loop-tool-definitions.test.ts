@@ -107,7 +107,6 @@ function createSdkOnlyRegistryTool(): RegisteredToolLike {
       sdkVisible: true,
       inCellCallable: true,
       directOnly: false,
-      approvalRequired: false,
       effectClass: 'readOnly',
     },
     parseArgs() {

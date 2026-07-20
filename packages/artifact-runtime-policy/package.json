@@ -1,0 +1,30 @@
+{
+  "name": "@geulbat/artifact-runtime-policy",
+  "version": "0.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist/"
+  ],
+  "exports": {
+    "./react-bundle-url": {
+      "types": "./dist/react-bundle-url.d.ts",
+      "import": "./dist/react-bundle-url.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test:files": "node ../../scripts/run-workspace-node-tests.mjs --workspace artifact-runtime-policy --tsconfig ./tsconfig.test.json",
+    "test": "npm run test:files -- \"**/*.test.js\""
+  },
+  "dependencies": {
+    "@geulbat/protocol": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}

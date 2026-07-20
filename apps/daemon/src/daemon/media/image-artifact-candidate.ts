@@ -1,4 +1,4 @@
-import { sha256Digest } from '@geulbat/shared-utils/sha256';
+import { sha256Digest } from '@geulbat/content-identity/sha256';
 import {
   IMAGE_ARTIFACT_PAYLOAD_SCHEMA_VERSION,
   type ImageArtifactPayloadV1,

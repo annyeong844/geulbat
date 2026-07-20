@@ -3,8 +3,8 @@
  * Ported from v1 with workspaceRoot per-call context.
  */
 
-import { isRecord } from '@geulbat/protocol/runtime-utils';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { isRecord } from '../runtime-json.js';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import type { ToolResolver } from './tool-registry-model.js';
 import type { ToolExecutionContext, ExecuteResult } from './types.js';
 import { toolError } from './result.js';

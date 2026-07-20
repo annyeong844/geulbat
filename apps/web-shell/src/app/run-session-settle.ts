@@ -1,5 +1,5 @@
 import { getErrorMessage } from '../lib/error-message.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 
 const runSettleLogger = createLogger('run-settle');

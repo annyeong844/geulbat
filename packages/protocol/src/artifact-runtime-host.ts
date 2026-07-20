@@ -1,4 +1,4 @@
-import { isNumber, isRecord, isString } from './runtime-utils.js';
+import { isNumber, isRecord, isString } from './wire-value-guards.js';
 
 export const ARTIFACT_RUNTIME_HOST_MESSAGE_KIND =
   'geulbat.artifact_runtime_host';

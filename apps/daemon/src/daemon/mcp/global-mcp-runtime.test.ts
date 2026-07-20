@@ -121,7 +121,6 @@ void test('global MCP keeps discovery lightweight and persists only explicitly i
         sdkVisible: true,
         inCellCallable: true,
         directOnly: false,
-        approvalRequired: true,
         effectClass: 'hostStateMutation',
       },
     });

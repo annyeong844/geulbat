@@ -37,7 +37,7 @@ import type {
   SubagentRunLauncher,
 } from '../daemon-runtime-contract.js';
 import { getErrorMessage } from '../utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import {
   buildChildLaunchPayload,
   buildChildLaunchRejected,

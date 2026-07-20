@@ -1,6 +1,6 @@
 import { isAbsolute, join } from 'node:path';
 
-import { sha256StableJson } from '@geulbat/shared-utils/stable-json';
+import { sha256StableJson } from '@geulbat/content-identity/stable-json';
 
 export {
   buildToolLibraryProjectionModuleImportSpecifier,

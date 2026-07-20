@@ -8,7 +8,7 @@ import { indexFilePath } from './paths.js';
 import { hasErrorCode } from '../utils/error.js';
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 const logger = createLogger('threads-index');
 

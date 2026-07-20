@@ -1,4 +1,4 @@
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../lib/json.js';
 
 // tool_result 표시용 뷰모델 — raw JSON 블롭 대신 접힌 헤더(도구명 + 상태 +
 // 한 줄 요약)와 펼침 본문(displayText/output, JSON이면 pretty print)으로

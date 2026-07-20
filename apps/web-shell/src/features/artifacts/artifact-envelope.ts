@@ -3,7 +3,7 @@ import {
   ARTIFACT_START_PREFIX,
   isArtifactRenderer,
 } from '@geulbat/protocol/artifacts';
-import { isRecord, tryParseJson } from '@geulbat/protocol/runtime-utils';
+import { isRecord, tryParseJson } from '../../lib/json.js';
 import type { ArtifactParseResult } from './artifact-types.js';
 
 export function parseArtifactEnvelope(raw: string): ArtifactParseResult {

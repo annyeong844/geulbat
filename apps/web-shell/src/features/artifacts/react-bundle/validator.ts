@@ -4,7 +4,7 @@ import {
   type ReactBundleRuntimeDependencies,
   type ReactBundleRuntimeManifest,
 } from '@geulbat/protocol/react-bundle-inline-compile';
-import { isPlainRecord } from '@geulbat/protocol/runtime-utils';
+import { isPlainRecord } from '../../../lib/json.js';
 
 import {
   validateReactBundleDependencyUrl,

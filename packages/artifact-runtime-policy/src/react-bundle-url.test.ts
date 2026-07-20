@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX } from './react-bundle-inline-compile.js';
+import { PUBLIC_GENERATED_REACT_BUNDLE_INLINE_PATH_PREFIX } from '@geulbat/protocol/react-bundle-inline-compile';
 import {
   PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH,
   PUBLIC_WEB_REACT_BUNDLE_RUNTIME_DEPENDENCIES_ENTRY_PATH,
-} from './public-web-fixtures.js';
+} from '@geulbat/protocol/public-web-fixtures';
 import {
   isReactBundleShellOwnedPrivilegedUrl,
   validateReactBundleRuntimeUrlPolicy,
-} from './react-bundle-runtime-url-policy.js';
+} from './react-bundle-url.js';
 
 void test('validateReactBundleRuntimeUrlPolicy accepts personal web-shell entry URL families', () => {
   for (const entryUrl of [

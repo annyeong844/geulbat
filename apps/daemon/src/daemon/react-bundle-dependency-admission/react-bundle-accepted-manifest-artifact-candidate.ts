@@ -3,9 +3,9 @@ import {
   isReactBundleRuntimeManifest,
   type ReactBundleRuntimeManifest,
 } from '@geulbat/protocol/react-bundle-inline-compile';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
-import { sha256Digest } from '@geulbat/shared-utils/sha256';
-import { stableStringify } from '@geulbat/shared-utils/stable-json';
+import { isReactBundleDependencyRecord as isRecord } from './react-bundle-dependency-value-guards.js';
+import { sha256Digest } from '@geulbat/content-identity/sha256';
+import { stableStringify } from '@geulbat/content-identity/stable-json';
 import type { ReactBundleRuntimeManifestAcceptanceResult } from './react-bundle-accepted-runtime-manifest.js';
 import { normalizeDependencyUrl } from './react-bundle-dependency-prepare.js';
 import { isOpaqueSandboxOutputEvidenceRef } from '../sandbox/output-validation.js';

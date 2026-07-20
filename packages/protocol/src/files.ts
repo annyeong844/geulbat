@@ -1,4 +1,4 @@
-import { isNumber, isRecord, isString } from './runtime-utils.js';
+import { isNumber, isRecord, isString } from './wire-value-guards.js';
 
 export interface ComputerFileBrowseShortcut {
   label: string;

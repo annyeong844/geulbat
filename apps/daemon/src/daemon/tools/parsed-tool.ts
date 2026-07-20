@@ -1,4 +1,4 @@
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../runtime-json.js';
 import { toolError } from './result.js';
 import type {
   ExecuteResult,

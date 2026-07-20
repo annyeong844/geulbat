@@ -1,5 +1,5 @@
 import { isRunId, type RunId } from './ids.js';
-import { isRecord, isString } from './runtime-utils.js';
+import { isRecord, isString } from './wire-value-guards.js';
 
 export interface CancelRequest {
   runId: RunId;

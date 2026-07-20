@@ -44,7 +44,6 @@ export const searchMemoryIndexTool = defineZodTool({
     sdkVisible: true,
     inCellCallable: true,
     directOnly: false,
-    approvalRequired: false,
     effectClass: 'readOnly',
   },
   catalogSearchMetadata: {

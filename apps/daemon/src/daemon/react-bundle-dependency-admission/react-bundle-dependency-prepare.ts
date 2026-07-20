@@ -1,21 +1,23 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { ReactBundleRuntimeDependencies } from '@geulbat/protocol/react-bundle-inline-compile';
 import {
   validateReactBundleRuntimeUrlPolicy,
   type ReactBundleRuntimeUrlPolicyFailureReason,
-} from '@geulbat/protocol/react-bundle-runtime-url-policy';
-import { isPlainRecord } from '@geulbat/protocol/runtime-utils';
-import type { ProcessCommandResult } from '@geulbat/shared-utils/process-command';
+} from '@geulbat/artifact-runtime-policy/react-bundle-url';
+import type { ReactBundleRuntimeDependencies } from '@geulbat/protocol/react-bundle-inline-compile';
+import { isReactBundleDependencyPlainRecord as isPlainRecord } from './react-bundle-dependency-value-guards.js';
 import {
   sha256StableJson,
   stableStringify,
-} from '@geulbat/shared-utils/stable-json';
+} from '@geulbat/content-identity/stable-json';
 import type {
   SandboxAttemptStore,
   SandboxOutputRef,
 } from '../sandbox/attempt-store.js';
-import { runReactBundleDependencyAttempt } from './react-bundle-dependency-attempt-lifecycle.js';
+import {
+  runReactBundleDependencyAttempt,
+  type ReactBundleDependencyAttemptProcessResult,
+} from './react-bundle-dependency-attempt-lifecycle.js';
 
 type ReactBundleExplicitDependencyRef =
   | {
@@ -91,7 +93,7 @@ export interface ReactBundleDependencyPrepareSummary {
 
 type DependencyPrepareCandidate = ReturnType<typeof buildCandidate>;
 
-type DependencyPrepareProcessResult = ProcessCommandResult;
+type DependencyPrepareProcessResult = ReactBundleDependencyAttemptProcessResult;
 
 interface DependencyPrepareProcessRunnerArgs {
   cwd: string;

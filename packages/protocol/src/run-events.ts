@@ -13,7 +13,12 @@ import {
   type RunReasoningEffort,
   type SubagentModelSelectionSource,
 } from './run-contract.js';
-import { isBoolean, isNumber, isRecord, isString } from './runtime-utils.js';
+import {
+  isBoolean,
+  isNumber,
+  isRecord,
+  isString,
+} from './wire-value-guards.js';
 import {
   isToolCallSourcePayload,
   type ToolCallSourcePayload,

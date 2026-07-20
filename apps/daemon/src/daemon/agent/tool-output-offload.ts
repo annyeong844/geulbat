@@ -1,5 +1,5 @@
 import { isRecord, tryParseJson } from '../runtime-json.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import type { FunctionCall } from '../llm/index.js';
 import type { RunContext } from '../run-context.js';
 import type { ExecuteResult } from '../tools/types.js';

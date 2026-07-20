@@ -1,4 +1,4 @@
-import { createLogger, type Logger } from '@geulbat/shared-utils/logger';
+import { createLogger, type Logger } from '@geulbat/structured-logger/logger';
 import { getErrorMessage } from './error.js';
 
 interface ProcessFatalLoggingTarget {

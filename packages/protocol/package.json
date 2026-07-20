@@ -36,10 +36,6 @@
       "types": "./dist/react-bundle-inline-compile.d.ts",
       "import": "./dist/react-bundle-inline-compile.js"
     },
-    "./react-bundle-runtime-url-policy": {
-      "types": "./dist/react-bundle-runtime-url-policy.d.ts",
-      "import": "./dist/react-bundle-runtime-url-policy.js"
-    },
     "./run-contract": {
       "types": "./dist/run-contract.d.ts",
       "import": "./dist/run-contract.js"
@@ -91,10 +87,6 @@
     "./runtime-persistence": {
       "types": "./dist/runtime-persistence.d.ts",
       "import": "./dist/runtime-persistence.js"
-    },
-    "./runtime-utils": {
-      "types": "./dist/runtime-utils.d.ts",
-      "import": "./dist/runtime-utils.js"
     }
   },
   "scripts": {

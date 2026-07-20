@@ -14,7 +14,7 @@ import type {
   JsonValue,
 } from '@geulbat/protocol/runtime-persistence';
 import { getErrorMessage } from '../error-message.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 import { apiFetch, isApiOkResponse } from './client.js';
 

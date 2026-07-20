@@ -12,7 +12,7 @@ import type {
   DetachedProcessExitInfo,
   DetachedProcessHandle,
   DetachedProcessOutputSegment,
-} from '../../shared/process-command.js';
+} from './execute-code-cell-process.js';
 
 const TEST_RUNNING_CELL_REAP_AFTER_MS = 600_000;
 

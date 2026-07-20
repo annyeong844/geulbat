@@ -6,7 +6,7 @@ import type {
   RunInterjectRequest,
   RunToolRequest,
 } from '@geulbat/protocol/run-channel';
-import { isRecord, isString } from '@geulbat/protocol/runtime-utils';
+import { isRecord, isString } from '../../../daemon/runtime-json.js';
 
 export function readRunCancelRequest(
   request: CancelRequest,

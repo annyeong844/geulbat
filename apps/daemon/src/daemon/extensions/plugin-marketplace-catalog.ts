@@ -9,7 +9,7 @@ import type {
   PluginMarketplaceEntryView,
   PluginMarketplaceSourceView,
 } from '@geulbat/protocol/plugins';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isPluginRecord as isRecord } from './plugin-value-guards.js';
 import { lstat } from 'node:fs/promises';
 import { join, posix } from 'node:path';
 

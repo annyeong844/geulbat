@@ -8,8 +8,9 @@
     "composite": true
   },
   "references": [
-    { "path": "../../packages/shared-utils" },
-    { "path": "../../packages/protocol" }
+    { "path": "../../packages/structured-logger" },
+    { "path": "../../packages/protocol" },
+    { "path": "../../packages/artifact-runtime-policy" }
   ],
   "include": ["src/**/*"],
   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test-support/**"]

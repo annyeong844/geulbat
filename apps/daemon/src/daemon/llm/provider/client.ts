@@ -18,7 +18,7 @@ import {
 import type { ProviderReplayScopeId } from '../../runtime-contracts.js';
 import { isRecord } from '../../runtime-json.js';
 import type { ProviderAuthRuntimeStore } from '../../auth/runtime-state.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { mergeAbortSignals } from '../../utils/abort.js';
 import { AsyncQueue } from './async-queue.js';
 import {

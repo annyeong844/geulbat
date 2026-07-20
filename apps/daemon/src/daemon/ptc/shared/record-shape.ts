@@ -1,7 +1,5 @@
-import { isRecord } from '@geulbat/protocol/runtime-utils';
-
 export function isPtcRecord(value: unknown): value is Record<string, unknown> {
-  return isRecord(value);
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 type DefinedPtcProps<T extends Record<string, unknown>> = {

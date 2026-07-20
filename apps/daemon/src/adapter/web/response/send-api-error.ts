@@ -2,7 +2,7 @@ import type { ErrorCode } from '@geulbat/protocol/errors';
 import type { ErrorRequestHandler, Response } from 'express';
 import { errorCodeToStatus } from '../../../daemon/error-codes.js';
 import { getErrorMessage } from '../../../daemon/utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 export function sendApiError(
   res: Response,

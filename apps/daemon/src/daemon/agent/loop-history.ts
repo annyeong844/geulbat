@@ -6,7 +6,7 @@ import type {
 import type { ProviderReplayScopeId } from '../runtime-contracts.js';
 import type { ProviderRequestOptions } from '../llm/provider/provider-options.js';
 import { ProviderReplayScopeMismatchError } from '../llm/provider/provider-replay-scope.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import {
   appendTranscriptEntry,
   readTranscriptEntries,

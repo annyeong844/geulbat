@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { sha256Hex } from '@geulbat/shared-utils/sha256';
+import { sha256Hex } from '@geulbat/content-identity/sha256';
 import { mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { joinWorkspaceGeulbatPath } from '../files/geulbat-internal-paths.js';

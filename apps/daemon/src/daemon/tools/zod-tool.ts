@@ -1,4 +1,4 @@
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../runtime-json.js';
 import type { SideEffectLevel } from '@geulbat/protocol/run-events';
 import { z } from 'zod';
 import type {

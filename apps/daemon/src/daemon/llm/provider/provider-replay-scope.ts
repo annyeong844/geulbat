@@ -1,4 +1,4 @@
-import { sha256StableJson } from '@geulbat/shared-utils/stable-json';
+import { sha256StableJson } from '@geulbat/content-identity/stable-json';
 
 import { getProviderAuth } from '../../auth/access.js';
 import type { ProviderAuthRuntimeStore } from '../../auth/runtime-state.js';

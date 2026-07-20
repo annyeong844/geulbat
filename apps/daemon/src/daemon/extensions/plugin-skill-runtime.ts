@@ -2,7 +2,7 @@ import {
   isPluginSkillLogicalPath,
   PLUGIN_SKILL_LOGICAL_ROOT,
 } from '@geulbat/protocol/plugins';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isPluginRecord as isRecord } from './plugin-value-guards.js';
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import { parseDocument } from 'yaml';

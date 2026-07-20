@@ -1,7 +1,7 @@
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
-import { sha256StableJson } from '@geulbat/shared-utils/stable-json';
+import { sha256StableJson } from '@geulbat/content-identity/stable-json';
 import type { ToolLibraryProjectionImportableModule } from '@geulbat/tool-library/projection-codec';
 import {
   buildToolLibraryProjectionFiles,

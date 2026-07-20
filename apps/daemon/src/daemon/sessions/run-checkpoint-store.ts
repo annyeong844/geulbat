@@ -34,7 +34,7 @@ import {
   type ProviderAuthProviderId,
 } from '@geulbat/protocol/provider-auth';
 import { isErrorEventPayload } from '@geulbat/protocol/run-events';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../runtime-json.js';
 
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';

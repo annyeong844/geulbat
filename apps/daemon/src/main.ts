@@ -13,7 +13,7 @@ import { getConfiguredDevToken } from './adapter/web/auth/token.js';
 import { createDaemonContext } from './daemon/context.js';
 import { readDaemonPort } from './daemon/port.js';
 import { getErrorMessage } from './daemon/utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { acquireDaemonInstanceAdmissionLock } from './daemon/daemon-instance-admission-lock.js';
 
 const PORT = readDaemonPort(process.env['PORT']);

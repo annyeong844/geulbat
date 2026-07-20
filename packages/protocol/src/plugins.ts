@@ -1,4 +1,4 @@
-import { isBoolean, isRecord, isString } from './runtime-utils.js';
+import { isBoolean, isRecord, isString } from './wire-value-guards.js';
 
 export const PLUGIN_SKILL_LOGICAL_ROOT = 'geulbat-skill' as const;
 

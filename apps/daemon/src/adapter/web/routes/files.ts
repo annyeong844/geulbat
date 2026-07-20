@@ -42,14 +42,14 @@ import {
 } from '#web/response/send-api-error.js';
 import { sendFilesRouteError } from '../protocol/map-errors.js';
 import { registerInputRefDeleteRoute } from './input-ref-routes.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import type {
   ComputerDirectorySelectionResponse,
   ComputerFileRoot,
   ComputerFileScopeResponse,
   FileBinaryInputRefResponse,
 } from '@geulbat/protocol/files';
-import { isRecord, isString } from '@geulbat/protocol/runtime-utils';
+import { isRecord, isString } from '../../../daemon/runtime-json.js';
 import type { ComputerFileScope } from '../../../daemon/files/computer-file-scope.js';
 
 type FilesRouteScopeArgs = {

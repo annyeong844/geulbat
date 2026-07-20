@@ -4,7 +4,7 @@
  */
 
 import { isRunId, isThreadId, type RunId, type ThreadId } from './ids.js';
-import { isRecord, isString } from './runtime-utils.js';
+import { isRecord, isString } from './wire-value-guards.js';
 
 export type ErrorCode =
   | 'persistence_unsupported'

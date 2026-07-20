@@ -17,7 +17,7 @@ import {
   getErrorMessage,
   isNotFoundError,
 } from '../../utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { writeTextFileAtomically } from '../../utils/atomic-file.js';
 import {
   DEFAULT_PROVIDER_AUTH_PROVIDER_ID,

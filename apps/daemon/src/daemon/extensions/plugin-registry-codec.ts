@@ -1,6 +1,6 @@
 import type { InstalledPluginView } from '@geulbat/protocol/plugins';
 import { isInstalledPluginView } from '@geulbat/protocol/plugins';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isPluginRecord as isRecord } from './plugin-value-guards.js';
 import { constants, lstat, open } from 'node:fs/promises';
 
 import { getErrorCode } from '../utils/error.js';

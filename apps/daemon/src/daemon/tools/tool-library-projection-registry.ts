@@ -5,7 +5,7 @@ import {
   toIdentifier,
   toKebabFileStem,
   toPascalCase,
-} from '@geulbat/shared-utils/identifier-naming';
+} from '@geulbat/tool-library/projection-naming';
 import { buildToolLibraryProjectionModuleImportSpecifier } from './tool-library-projection-path.js';
 import {
   cloneToolParameters,

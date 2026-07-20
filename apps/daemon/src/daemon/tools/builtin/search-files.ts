@@ -59,7 +59,6 @@ export const searchFilesTool = defineZodTool({
     sdkVisible: true,
     inCellCallable: true,
     directOnly: false,
-    approvalRequired: false,
     effectClass: 'readOnly',
   },
   catalogSearchMetadata: {

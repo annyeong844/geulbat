@@ -24,8 +24,16 @@ const PACKAGE_WORKSPACES = [
     name: '@geulbat/agent-loop',
   },
   {
-    manifestPath: 'packages/shared-utils/package.json',
-    name: '@geulbat/shared-utils',
+    manifestPath: 'packages/artifact-runtime-policy/package.json',
+    name: '@geulbat/artifact-runtime-policy',
+  },
+  {
+    manifestPath: 'packages/content-identity/package.json',
+    name: '@geulbat/content-identity',
+  },
+  {
+    manifestPath: 'packages/structured-logger/package.json',
+    name: '@geulbat/structured-logger',
   },
   {
     manifestPath: 'packages/protocol/package.json',
@@ -195,7 +203,11 @@ async function packWorkspacePackages(packDir, env) {
       '-w',
       'packages/agent-loop',
       '-w',
-      'packages/shared-utils',
+      'packages/artifact-runtime-policy',
+      '-w',
+      'packages/content-identity',
+      '-w',
+      'packages/structured-logger',
       '-w',
       'packages/protocol',
       '-w',
@@ -256,7 +268,17 @@ async function installPackedPackages(args) {
       readTarballPath(args.packedPackages, '@geulbat/agent-loop', args.packDir),
       readTarballPath(
         args.packedPackages,
-        '@geulbat/shared-utils',
+        '@geulbat/artifact-runtime-policy',
+        args.packDir,
+      ),
+      readTarballPath(
+        args.packedPackages,
+        '@geulbat/content-identity',
+        args.packDir,
+      ),
+      readTarballPath(
+        args.packedPackages,
+        '@geulbat/structured-logger',
         args.packDir,
       ),
       readTarballPath(args.packedPackages, '@geulbat/protocol', args.packDir),
@@ -318,8 +340,11 @@ async function validateInstalledRuntimeImports(args) {
       '-e',
       [
         "await import('@geulbat/agent-loop/kernel');",
+        "await import('@geulbat/artifact-runtime-policy/react-bundle-url');",
+        "await import('@geulbat/content-identity/sha256');",
+        "await import('@geulbat/content-identity/stable-json');",
         "await import('@geulbat/protocol/provider-auth');",
-        "await import('@geulbat/shared-utils/logger');",
+        "await import('@geulbat/structured-logger/logger');",
         "await import('@geulbat/tool-sdk');",
         "await import('./node_modules/@geulbat/daemon/dist/daemon/auth/bootstrap/config.js');",
       ].join(' '),

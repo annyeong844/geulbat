@@ -15,7 +15,7 @@ import {
   saveFile,
   type ManageFileOperation,
 } from '../lib/api/files.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 import { baseNameOf, parentDirOf, splitExtension } from '../lib/path-name.js';
 import { reportVisibleAppError } from './error-reporting.js';
 

@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
+import { buildDockerClientProcessEnv } from '../../../docker-client-command.js';
 
-export type ProcessOutputStreamName = 'stdout' | 'stderr';
+type ExecuteCodeCellOutputStreamName = 'stdout' | 'stderr';
 
-export interface ProcessOutputBufferPolicy {
+interface ExecuteCodeCellOutputBufferPolicy {
   maxBufferedBytesPerStream: number;
 }
 
@@ -23,7 +24,7 @@ export type DetachedProcessExitInfo =
       kind: 'output_limit_exceeded';
       exitCode: null;
       processTerminated: false;
-      stream: ProcessOutputStreamName;
+      stream: ExecuteCodeCellOutputStreamName;
       maxBufferedBytesPerStream: number;
     }
   | {
@@ -44,27 +45,26 @@ export interface DetachedProcessHandle {
   terminate(args: { graceMs: number }): void;
 }
 
-export interface StartBoundedProcessCommandInvocation {
+export interface ExecuteCodeCellProcessInvocation {
   executable: string;
   args: string[];
-  env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   redactionMarkers?: readonly string[];
   redactionReplacement?: string;
-  outputBufferPolicy?: ProcessOutputBufferPolicy;
+  outputBufferPolicy?: ExecuteCodeCellOutputBufferPolicy;
 }
 
-export type StartBoundedProcessCommandResult =
+type ExecuteCodeCellProcessStartResult =
   | { ok: true; handle: DetachedProcessHandle }
   | { ok: false; reasonCode: 'spawn_failed'; message: string };
 
-export function startBoundedProcessCommand(
-  invocation: StartBoundedProcessCommandInvocation,
-): StartBoundedProcessCommandResult {
+export function startExecuteCodeCellProcess(
+  invocation: ExecuteCodeCellProcessInvocation,
+): ExecuteCodeCellProcessStartResult {
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(invocation.executable, invocation.args, {
-      env: invocation.env,
+      env: buildDockerClientProcessEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (error) {
@@ -284,7 +284,7 @@ class DetachedOutputStream {
   constructor(args: {
     redactionMarkers: readonly string[];
     redactionReplacement: string | undefined;
-    outputBufferPolicy: ProcessOutputBufferPolicy | undefined;
+    outputBufferPolicy: ExecuteCodeCellOutputBufferPolicy | undefined;
   }) {
     this.#redactionMarkers = args.redactionMarkers.filter(
       (marker) => marker.length > 0,

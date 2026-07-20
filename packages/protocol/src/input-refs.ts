@@ -1,4 +1,4 @@
-import { isNumber, isRecord, isString } from './runtime-utils.js';
+import { isNumber, isRecord, isString } from './wire-value-guards.js';
 
 const INPUT_REF_KINDS = [
   'run_prompt',

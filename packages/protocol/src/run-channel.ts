@@ -4,7 +4,12 @@ import { isErrorCode, type ErrorCode } from './errors.js';
 import { isRunId, isThreadId, type ThreadId } from './ids.js';
 import { isRunEvent, type RunEvent } from './run-events.js';
 import { isRunStartRequest, type RunStartRequest } from './run-contract.js';
-import { isBoolean, isNumber, isRecord, isString } from './runtime-utils.js';
+import {
+  isBoolean,
+  isNumber,
+  isRecord,
+  isString,
+} from './wire-value-guards.js';
 
 interface RunAuthMessage {
   type: 'run.auth';

@@ -1,4 +1,4 @@
-import { sha256Hex } from '@geulbat/shared-utils/sha256';
+import { sha256Hex } from '@geulbat/content-identity/sha256';
 
 const PTC_SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
 

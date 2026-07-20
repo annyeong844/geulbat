@@ -8,7 +8,7 @@ import type {
   ArtifactRuntimePersistenceStateInputRefResponse,
   JsonValue,
 } from '@geulbat/protocol/runtime-persistence';
-import { isRecord } from '@geulbat/protocol/runtime-utils';
+import { isRecord } from '../../../daemon/runtime-json.js';
 import {
   clearArtifactRuntimePersistenceState,
   loadArtifactRuntimePersistenceState,
@@ -28,7 +28,7 @@ import {
   sendUnexpectedApiError,
 } from '#web/response/send-api-error.js';
 import { registerInputRefDeleteRoute } from './input-ref-routes.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 const logger = createLogger('web/artifact-runtime-persistence');
 
 export function createArtifactRuntimePersistenceRoutes(args: {

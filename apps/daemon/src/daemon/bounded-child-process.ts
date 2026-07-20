@@ -1,37 +1,27 @@
 import { spawn } from 'node:child_process';
-import type {
-  ProcessOutputBufferPolicy,
-  ProcessOutputStreamName,
-} from './process-command-detached.js';
-export {
-  startBoundedProcessCommand,
-  type DetachedProcessExitInfo,
-  type DetachedProcessHandle,
-  type DetachedProcessOutputSegment,
-  type ProcessOutputBufferPolicy,
-  type ProcessOutputStreamName,
-  type StartBoundedProcessCommandInvocation,
-  type StartBoundedProcessCommandResult,
-} from './process-command-detached.js';
 
-export type ProcessCommandResult =
-  | { kind: 'exit'; exitCode: number; stdout: string; stderr: string }
-  | { kind: 'timeout'; stdout: string; stderr: string }
-  | { kind: 'cancelled'; stdout: string; stderr: string }
-  | ProcessOutputLimitExceededCommandResult
-  | { kind: 'crash'; stdout: string; stderr: string };
+type BoundedChildProcessOutputStreamName = 'stdout' | 'stderr';
 
-export type BoundedProcessCommandResult = ProcessCommandResult;
-
-interface ProcessOutputLimitExceededCommandResult {
-  kind: 'output_limit_exceeded';
-  stdout: string;
-  stderr: string;
-  stream: ProcessOutputStreamName;
+interface BoundedChildProcessOutputBufferPolicy {
   maxBufferedBytesPerStream: number;
 }
 
-interface BoundedProcessCommandInvocation {
+export type BoundedChildProcessResult =
+  | { kind: 'exit'; exitCode: number; stdout: string; stderr: string }
+  | { kind: 'timeout'; stdout: string; stderr: string }
+  | { kind: 'cancelled'; stdout: string; stderr: string }
+  | BoundedChildProcessOutputLimitResult
+  | { kind: 'crash'; stdout: string; stderr: string };
+
+interface BoundedChildProcessOutputLimitResult {
+  kind: 'output_limit_exceeded';
+  stdout: string;
+  stderr: string;
+  stream: BoundedChildProcessOutputStreamName;
+  maxBufferedBytesPerStream: number;
+}
+
+interface BoundedChildProcessInvocation {
   executable: string;
   args: string[];
   cwd?: string;
@@ -39,34 +29,10 @@ interface BoundedProcessCommandInvocation {
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   cancelledStderr?: string;
-  outputBufferPolicy?: ProcessOutputBufferPolicy;
+  outputBufferPolicy?: BoundedChildProcessOutputBufferPolicy;
 }
 
-export type DockerClientCommandResult = ProcessCommandResult;
-
-export interface DockerClientCommandInvocation {
-  executable: string;
-  args: string[];
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  outputBufferPolicy?: ProcessOutputBufferPolicy;
-}
-
-export type DockerClientCommandRunner = (
-  invocation: DockerClientCommandInvocation,
-) => Promise<DockerClientCommandResult>;
-
-const DOCKER_CLIENT_ENV_KEYS = [
-  'DOCKER_API_VERSION',
-  'DOCKER_CERT_PATH',
-  'DOCKER_CONFIG',
-  'DOCKER_CONTEXT',
-  'DOCKER_HOST',
-  'DOCKER_TLS_VERIFY',
-  'DOCKER_BUILDKIT',
-] as const;
-
-export function buildAllowlistedProcessEnv(
+export function buildAllowlistedChildProcessEnv(
   keys: readonly string[],
   sourceEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
@@ -81,15 +47,9 @@ export function buildAllowlistedProcessEnv(
   };
 }
 
-export function buildDockerClientProcessEnv(
-  sourceEnv: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-  return buildAllowlistedProcessEnv(DOCKER_CLIENT_ENV_KEYS, sourceEnv);
-}
-
-export async function runBoundedProcessCommand(
-  invocation: BoundedProcessCommandInvocation,
-): Promise<BoundedProcessCommandResult> {
+export async function runBoundedChildProcess(
+  invocation: BoundedChildProcessInvocation,
+): Promise<BoundedChildProcessResult> {
   if (invocation.signal?.aborted) {
     return {
       kind: 'cancelled',
@@ -133,10 +93,10 @@ export async function runBoundedProcessCommand(
     let pendingTermination:
       | 'timeout'
       | 'cancelled'
-      | ProcessOutputLimitExceededCommandResult
+      | BoundedChildProcessOutputLimitResult
       | null = null;
 
-    const finish = (result: BoundedProcessCommandResult): void => {
+    const finish = (result: BoundedChildProcessResult): void => {
       if (settled) {
         return;
       }
@@ -149,7 +109,7 @@ export async function runBoundedProcessCommand(
     };
 
     const terminate = (
-      kind: 'timeout' | 'cancelled' | ProcessOutputLimitExceededCommandResult,
+      kind: 'timeout' | 'cancelled' | BoundedChildProcessOutputLimitResult,
     ): void => {
       if (settled || pendingTermination) {
         return;
@@ -159,7 +119,7 @@ export async function runBoundedProcessCommand(
       child.kill('SIGKILL');
     };
     const appendOutput = (
-      stream: ProcessOutputStreamName,
+      stream: BoundedChildProcessOutputStreamName,
       chunk: string,
     ): void => {
       const maxBufferedBytes =
@@ -238,23 +198,5 @@ export async function runBoundedProcessCommand(
       }
       finish({ kind: 'exit', exitCode: exitCode ?? 1, stdout, stderr });
     });
-  });
-}
-
-export async function runDockerClientCommand(
-  invocation: DockerClientCommandInvocation,
-): Promise<DockerClientCommandResult> {
-  return await runBoundedProcessCommand({
-    executable: invocation.executable,
-    args: invocation.args,
-    env: buildDockerClientProcessEnv(),
-    ...(invocation.timeoutMs === undefined
-      ? {}
-      : { timeoutMs: invocation.timeoutMs }),
-    ...(invocation.signal ? { signal: invocation.signal } : {}),
-    ...(invocation.outputBufferPolicy
-      ? { outputBufferPolicy: invocation.outputBufferPolicy }
-      : {}),
-    cancelledStderr: 'docker command cancelled',
   });
 }

@@ -1,4 +1,4 @@
-import { tryParseJsonRecord } from '@geulbat/protocol/runtime-utils';
+import { tryParseJsonRecord } from '../lib/json.js';
 import { useCallback, useRef, useState, type PointerEvent } from 'react';
 
 const PANEL_WIDTH_LIMITS = {

@@ -42,7 +42,6 @@ void test('manage_files outward parameters publish branch destination requiremen
     sdkVisible: false,
     inCellCallable: false,
     directOnly: true,
-    approvalRequired: true,
     effectClass: 'computerWrite',
   });
 });

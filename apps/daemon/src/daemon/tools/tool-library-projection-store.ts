@@ -9,7 +9,7 @@ import {
 } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 
-import { stableStringify } from '@geulbat/shared-utils/stable-json';
+import { stableStringify } from '@geulbat/content-identity/stable-json';
 
 import { getErrorCode } from '../utils/error.js';
 import {

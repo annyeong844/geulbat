@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getErrorMessage } from '../utils/error.js';
-import { createLogger } from '@geulbat/shared-utils/logger';
+import { createLogger } from '@geulbat/structured-logger/logger';
 
 import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
 import type { ErrorCode } from '../error-codes.js';

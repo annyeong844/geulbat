@@ -1,4 +1,3 @@
-import type { ProcessCommandResult } from '@geulbat/shared-utils/process-command';
 import type {
   SandboxAttemptCapabilityProjection,
   SandboxAttemptStore,
@@ -13,6 +12,19 @@ import { buildSandboxEnvironment } from '../sandbox/environment.js';
 import { importSandboxOutputEvidence } from '../sandbox/output-evidence-store.js';
 import { collectSandboxOutputRef } from '../sandbox/output-validation.js';
 
+export type ReactBundleDependencyAttemptProcessResult =
+  | { kind: 'exit'; exitCode: number; stdout: string; stderr: string }
+  | { kind: 'timeout'; stdout: string; stderr: string }
+  | { kind: 'cancelled'; stdout: string; stderr: string }
+  | {
+      kind: 'output_limit_exceeded';
+      stdout: string;
+      stderr: string;
+      stream: 'stdout' | 'stderr';
+      maxBufferedBytesPerStream: number;
+    }
+  | { kind: 'crash'; stdout: string; stderr: string };
+
 // react-bundle dependency admission의 공유 sandbox attempt 생명주기 harness.
 // probe/prepare 두 엔트리가 각자 복사해 갖고 있던 골격 — attempt 생성 →
 // sandbox root → env 구성 → 프로세스 실행 → terminal 판정 → 출력 수집 →
@@ -24,7 +36,7 @@ import { collectSandboxOutputRef } from '../sandbox/output-validation.js';
 // `failAttempt`를 통해 호출자가 소유한다.
 
 interface ReactBundleDependencyAttemptRunArgs<
-  ProcessResult extends ProcessCommandResult,
+  ProcessResult extends ReactBundleDependencyAttemptProcessResult,
   Candidate,
   Summary,
 > {
@@ -58,7 +70,7 @@ interface ReactBundleDependencyAttemptRunArgs<
 }
 
 export async function runReactBundleDependencyAttempt<
-  ProcessResult extends ProcessCommandResult,
+  ProcessResult extends ReactBundleDependencyAttemptProcessResult,
   Candidate,
   Summary,
 >(
@@ -122,7 +134,7 @@ export async function runReactBundleDependencyAttempt<
 }
 
 async function importAttemptOutput<
-  ProcessResult extends ProcessCommandResult,
+  ProcessResult extends ReactBundleDependencyAttemptProcessResult,
   Candidate,
   Summary,
 >(args: {
@@ -204,14 +216,14 @@ async function importAttemptOutput<
 
 // 제네릭 ProcessResult 유니온은 `.kind` 비교만으로는 Extract로 좁혀지지
 // 않아 전용 가드가 필요하다.
-function isExitProcessResult<ProcessResult extends ProcessCommandResult>(
-  result: ProcessResult,
-): result is Extract<ProcessResult, { kind: 'exit' }> {
+function isExitProcessResult<
+  ProcessResult extends ReactBundleDependencyAttemptProcessResult,
+>(result: ProcessResult): result is Extract<ProcessResult, { kind: 'exit' }> {
   return result.kind === 'exit';
 }
 
 function classifySandboxedProcessResult(
-  result: ProcessCommandResult,
+  result: ReactBundleDependencyAttemptProcessResult,
 ): SandboxTerminalStatus {
   switch (result.kind) {
     case 'exit':
