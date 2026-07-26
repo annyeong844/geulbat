@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  isComputerSessionEndMessage,
   isGoalCommandMessage,
   isRunAuthMessage,
   isRunCancelMessage,
@@ -41,7 +40,6 @@ void test('client authorization and mutation requests reject unknown intent fiel
       type: 'run.auth',
       requestId: 'auth-1',
       token: 'token',
-      computerSessionId: 'computer-session-1',
       runEventCursors: [
         {
           runId: '123e4567-e89b-42d3-a456-426614174001',
@@ -57,7 +55,6 @@ void test('client authorization and mutation requests reject unknown intent fiel
       type: 'run.auth',
       requestId: 'auth-1',
       token: 'token',
-      computerSessionId: 'computer-session-1',
       runEventCursors: [
         {
           runId: '123e4567-e89b-42d3-a456-426614174001',
@@ -72,7 +69,6 @@ void test('client authorization and mutation requests reject unknown intent fiel
       type: 'run.auth',
       requestId: 'auth-1',
       token: 'token',
-      computerSessionId: 'computer-session-1',
       audience: 'future-daemon',
     }),
     false,
@@ -82,6 +78,7 @@ void test('client authorization and mutation requests reject unknown intent fiel
       type: 'run.auth',
       requestId: 'auth-1',
       token: 'token',
+      computerSessionId: 'caller-must-not-select-this',
     }),
     false,
   );
@@ -93,18 +90,23 @@ void test('client authorization and mutation requests reject unknown intent fiel
     }),
     false,
   );
+});
+
+void test('run.auth.ok requires the host-issued computer session identity', () => {
   assert.equal(
-    isComputerSessionEndMessage({
-      type: 'computer.session.end',
-      requestId: 'computer-session-end-1',
+    isRunChannelServerMessage({
+      type: 'run.auth.ok',
+      requestId: 'auth-1',
+      ok: true,
+      computerSessionId: 'computer-session-host-issued',
     }),
     true,
   );
   assert.equal(
-    isComputerSessionEndMessage({
-      type: 'computer.session.end',
-      requestId: 'computer-session-end-1',
-      computerSessionId: 'must-come-from-authenticated-socket',
+    isRunChannelServerMessage({
+      type: 'run.auth.ok',
+      requestId: 'auth-1',
+      ok: true,
     }),
     false,
   );
@@ -240,12 +242,6 @@ void test('run.control interject ack requires integer receivedSeq and bufferDept
 
 void test('run.control accepts every declared action shape', () => {
   const messages = {
-    'computer.session.end': {
-      type: 'run.control',
-      requestId: 'computer-session-end-1',
-      action: 'computer.session.end',
-      ok: true,
-    },
     'run.cancel': {
       type: 'run.control',
       requestId: 'cancel-1',

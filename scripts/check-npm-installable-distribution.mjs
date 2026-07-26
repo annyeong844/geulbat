@@ -39,6 +39,11 @@ const PACKAGE_WORKSPACES = [
     xharnessRelease: true,
   },
   {
+    manifestPath: 'packages/daemon-lifecycle/package.json',
+    name: '@geulbat/daemon-lifecycle',
+    workspacePath: 'packages/daemon-lifecycle',
+  },
+  {
     manifestPath: 'packages/structured-logger/package.json',
     name: '@geulbat/structured-logger',
     workspacePath: 'packages/structured-logger',

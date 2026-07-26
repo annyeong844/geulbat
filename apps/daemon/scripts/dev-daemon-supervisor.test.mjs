@@ -139,6 +139,10 @@ test('daemon development bundle resolves workspace packages from source', async 
     assert.deepEqual(buildOptions.entryPoints, {
       index: entryPoint,
       'command-host': join(appRoot, 'src/command-host/main.ts'),
+      'daemon-lifecycle-worker': join(
+        root,
+        'packages/daemon-lifecycle/src/worker.ts',
+      ),
     });
     assert.deepEqual(buildOptions.external, ['@vscode/ripgrep', 'esbuild']);
     assert.deepEqual(
@@ -165,6 +169,12 @@ test('daemon development bundle resolves workspace packages from source', async 
       { path: join(root, 'apps/daemon/src/host.ts') },
     );
     assert.deepEqual(
+      resolveWorkspacePackage({ path: '@geulbat/daemon-lifecycle/client' }),
+      {
+        path: join(root, 'packages/daemon-lifecycle/src/client.ts'),
+      },
+    );
+    assert.deepEqual(
       resolveWorkspacePackage({
         path: '@geulbat/daemon/loop-implementation-admission',
       }),
@@ -182,6 +192,11 @@ test('daemon development bundle resolves workspace packages from source', async 
     assert.ok(
       getDaemonDevWatchRoots(root).includes(
         join(root, 'packages/artifact-runtime-policy/src'),
+      ),
+    );
+    assert.ok(
+      getDaemonDevWatchRoots(root).includes(
+        join(root, 'packages/daemon-lifecycle/src'),
       ),
     );
     const loadedSource = await loadSourceModule({ path: sourceModulePath });

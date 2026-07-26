@@ -46,6 +46,8 @@ import type {
  * 반복되지 않게 한다.
  */
 interface RunSessionRuntimeControls {
+  workingDirectory: string | null;
+  setWorkingDirectory: (workingDirectory: string | null) => void;
   permissionMode: PermissionMode;
   setPermissionMode: (mode: PermissionMode) => Promise<void>;
   planModeRequested: boolean;

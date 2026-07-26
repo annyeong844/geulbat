@@ -11,6 +11,13 @@ void test('search_memory_index declares replay-safe restart recovery', () => {
   assert.equal(searchMemoryIndexTool.recoveryStrategy, 'replay_safe');
 });
 
+void test('search_memory_index stays direct-hot while remaining SDK-visible', () => {
+  const exposure = searchMemoryIndexTool.exposure;
+  assert.ok(exposure);
+  assert.equal(exposure.directHot, true);
+  assert.equal(exposure.sdkVisible, true);
+});
+
 function createSearchMemoryIndexContext(
   sourceRoot: string,
   stateRoot = sourceRoot,

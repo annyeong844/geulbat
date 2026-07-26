@@ -1,8 +1,10 @@
 import {
   isApiError,
   isErrorCode,
+  isToolFailureDiagnostics,
   type ApiError,
   type ErrorCode,
+  type ToolFailureDiagnostics,
 } from './errors.js';
 import { isRunId, isThreadId, type RunId, type ThreadId } from './ids.js';
 import { isApprovalRequired, type ApprovalRequired } from './run-approval.js';
@@ -41,8 +43,10 @@ import {
 import {
   isAgentChildTerminalReason,
   isAgentChildTerminalState,
+  isSubagentResultReport,
   type AgentChildTerminalReason,
   type AgentChildTerminalState,
+  type SubagentResultReport,
 } from './subagent-terminal.js';
 
 export type { SideEffectLevel };
@@ -267,13 +271,26 @@ export type AgentWaitBlockedReason =
 interface AgentWaitToolRaw {
   ok: true;
   completed: Array<{
+    deliveryId?: string;
     childRunId: string;
     terminalState: AgentChildTerminalState;
     ok: boolean;
     reason?: AgentChildTerminalReason;
     result?: string;
     resultRef?: string;
+    resultDigest?: `sha256:${string}`;
+    resultReport?: SubagentResultReport;
+    parentRunId?: RunId;
+    childThreadId?: ThreadId;
+    subagentType?: SubagentType;
+    capabilities?: readonly SubagentCapability[];
+    toolSurface?: SubagentToolSurfaceProfile;
     runtime?: SubagentRuntimeDiagnostics;
+    completedAt?: string;
+    elapsedMs?: number;
+    usage?: RunUsageTotals;
+    modelId?: string;
+    reasoningEffort?: RunReasoningEffort;
   }>;
   pending: string[];
   blocked: Array<{
@@ -447,6 +464,7 @@ interface ToolResultFailureEventPayload<
   raw: unknown;
   errorCode: ErrorCode;
   error: string;
+  diagnostics?: ToolFailureDiagnostics;
 }
 
 export type ToolResultEventPayload<TTool extends string = string> =
@@ -573,6 +591,8 @@ interface SubagentTerminalEventPayload extends SubagentLifecycleDiagnostics {
   reason?: AgentChildTerminalReason;
   result: string;
   resultRef?: string;
+  resultDigest?: `sha256:${string}`;
+  completedAt?: string;
   // Drill-down telemetry: wall-clock lifetime and token usage of the child run.
   elapsedMs?: number;
   usage?: RunUsageTotals;
@@ -878,6 +898,8 @@ export function isAgentLaunchToolRaw(
 function isAgentWaitCompletedRecord(value: unknown): boolean {
   return (
     isRecord(value) &&
+    (value.deliveryId === undefined ||
+      (isString(value.deliveryId) && value.deliveryId.trim() !== '')) &&
     isString(value.childRunId) &&
     isAgentChildTerminalState(value.terminalState) &&
     isBoolean(value.ok) &&
@@ -886,7 +908,29 @@ function isAgentWaitCompletedRecord(value: unknown): boolean {
     (value.resultRef === undefined ||
       (isString(value.resultRef) && value.resultRef.trim() !== '')) &&
     (value.result !== undefined || value.resultRef !== undefined) &&
-    (value.runtime === undefined || isSubagentRuntimeDiagnostics(value.runtime))
+    (value.resultDigest === undefined ||
+      (isString(value.resultDigest) &&
+        /^sha256:[a-f0-9]{64}$/u.test(value.resultDigest))) &&
+    (value.resultReport === undefined ||
+      isSubagentResultReport(value.resultReport)) &&
+    (value.parentRunId === undefined ||
+      (isString(value.parentRunId) && isRunId(value.parentRunId))) &&
+    (value.childThreadId === undefined ||
+      (isString(value.childThreadId) && isThreadId(value.childThreadId))) &&
+    (value.subagentType === undefined
+      ? value.capabilities === undefined &&
+        value.toolSurface === undefined &&
+        (value.runtime === undefined ||
+          isSubagentRuntimeDiagnostics(value.runtime))
+      : isSubagentType(value.subagentType) &&
+        hasValidSubagentLifecycleDiagnostics(value)) &&
+    (value.completedAt === undefined ||
+      isCanonicalIsoTimestamp(value.completedAt)) &&
+    (value.elapsedMs === undefined || isNumber(value.elapsedMs)) &&
+    (value.usage === undefined || isRunUsageTotals(value.usage)) &&
+    (value.modelId === undefined || isString(value.modelId)) &&
+    (value.reasoningEffort === undefined ||
+      isRunReasoningEffort(value.reasoningEffort))
   );
 }
 
@@ -1051,12 +1095,18 @@ export function isToolResultEventPayload(
     return (
       value.errorCode === undefined &&
       value.error === undefined &&
+      value.diagnostics === undefined &&
       (!isToolResultRawOwner(value.tool) ||
         isToolResultRaw(value.tool, value.raw))
     );
   }
 
-  return isErrorCode(value.errorCode) && isString(value.error);
+  return (
+    isErrorCode(value.errorCode) &&
+    isString(value.error) &&
+    (value.diagnostics === undefined ||
+      isToolFailureDiagnostics(value.diagnostics))
+  );
 }
 
 export function isDoneEventPayload(value: unknown): value is DoneEventPayload {
@@ -1266,6 +1316,11 @@ export function isSubagentTerminalEventPayload(
     isString(value.result) &&
     (value.resultRef === undefined ||
       (isString(value.resultRef) && value.resultRef.trim() !== '')) &&
+    (value.resultDigest === undefined ||
+      (isString(value.resultDigest) &&
+        /^sha256:[a-f0-9]{64}$/u.test(value.resultDigest))) &&
+    (value.completedAt === undefined ||
+      isCanonicalIsoTimestamp(value.completedAt)) &&
     (value.reason === undefined || isAgentChildTerminalReason(value.reason)) &&
     (value.childThreadId === undefined ||
       (isString(value.childThreadId) && isThreadId(value.childThreadId))) &&

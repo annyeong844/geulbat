@@ -13,6 +13,7 @@ import {
   type ThreadDetailResponse,
   type ThreadId,
   type ThreadMessage,
+  type ThreadRunPreferences,
 } from './contract.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
 
@@ -58,6 +59,7 @@ export async function loadThreadDetailSnapshot(args: {
     checkpoint,
     providerRounds,
   );
+  const runPreferences = resolveThreadRunPreferences(checkpoint);
   const diagnostics = collectThreadDetailDiagnostics(messages, artifacts);
   emitThreadDetailDiagnostics(args.threadId, diagnostics);
   const publicMessages = projectProviderCommentaryMessages(
@@ -77,9 +79,32 @@ export async function loadThreadDetailSnapshot(args: {
     threadId: args.threadId,
     snapshotVersion,
     ...(activeModelId === undefined ? {} : { activeModelId }),
+    ...(runPreferences === undefined ? {} : { runPreferences }),
     messages: publicMessages,
     artifacts,
     ...(diagnostics ? { diagnostics } : {}),
+  };
+}
+
+function resolveThreadRunPreferences(
+  checkpoint: RunCheckpoint | null,
+): ThreadRunPreferences | undefined {
+  if (checkpoint === null) {
+    return undefined;
+  }
+  const request = checkpoint.request;
+  return {
+    workingDirectory: request.workingDirectory,
+    permissionMode: request.permissionMode,
+    ...(request.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: request.reasoningEffort }),
+    ...(request.serviceTier === undefined
+      ? {}
+      : { serviceTier: request.serviceTier }),
+    ...(request.subagentModelRouting === undefined
+      ? {}
+      : { subagentModelRouting: request.subagentModelRouting }),
   };
 }
 

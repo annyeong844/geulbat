@@ -481,6 +481,83 @@ void test('parseResponseEvents preserves a provider function call without invent
   ]);
 });
 
+void test('parseResponseEvents preserves hosted tool-search discovery before its function call', async () => {
+  const reasoningItem = {
+    id: 'rs_tool_search',
+    type: 'reasoning',
+    encrypted_content: 'opaque-tool-search-reasoning',
+  };
+  const toolSearchCallItem = {
+    id: 'tsc_1',
+    type: 'tool_search_call',
+    execution: 'server',
+    call_id: null,
+    status: 'completed',
+    arguments: { paths: ['search_memory_index'] },
+  };
+  const toolSearchOutputItem = {
+    id: 'tso_1',
+    type: 'tool_search_output',
+    execution: 'server',
+    call_id: null,
+    status: 'completed',
+    tools: [
+      {
+        type: 'function',
+        name: 'search_memory_index',
+        description: 'Search the memory index.',
+        defer_loading: true,
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+          required: ['query'],
+          additionalProperties: false,
+        },
+        strict: true,
+      },
+    ],
+  };
+  const functionCallItem = {
+    id: 'fc_tool_search',
+    type: 'function_call',
+    call_id: 'call_tool_search',
+    name: 'search_memory_index',
+    arguments: '{"query":"acceptance codeword"}',
+  };
+
+  const result = await parseResponseEvents(
+    toAsyncEvents(
+      [
+        reasoningItem,
+        toolSearchCallItem,
+        toolSearchOutputItem,
+        functionCallItem,
+      ].map((item, outputIndex) => ({
+        type: 'response.output_item.done',
+        output_index: outputIndex,
+        item,
+      })),
+    ),
+    undefined,
+    { historyProjection: 'provider_output' },
+  );
+
+  assert.deepEqual(result.itemsToAppend, [
+    { kind: 'backend_item', data: reasoningItem },
+    { kind: 'backend_item', data: toolSearchCallItem },
+    { kind: 'backend_item', data: toolSearchOutputItem },
+    { kind: 'backend_item', data: functionCallItem },
+  ]);
+  assert.deepEqual(result.functionCalls, [
+    {
+      id: 'fc_tool_search',
+      callId: 'call_tool_search',
+      name: 'search_memory_index',
+      arguments: '{"query":"acceptance codeword"}',
+    },
+  ]);
+});
+
 void test('parseResponseEvents does not publish a partial provider batch after failure', async () => {
   await assert.rejects(
     parseResponseEvents(

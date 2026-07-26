@@ -24,7 +24,12 @@ void test('handleRunAuth authenticates a socket and rejects duplicate auth', () 
   state.authTimeout = setTimeout(() => undefined, 60_000);
 
   try {
-    handleRunAuth(socket, 'auth-1', TEST_DEV_TOKEN);
+    handleRunAuth(
+      socket,
+      'auth-1',
+      TEST_DEV_TOKEN,
+      daemonContext.computerSessionId,
+    );
 
     assert.equal(state.authenticated, true);
     assert.equal(state.authTimeout, null);
@@ -32,9 +37,15 @@ void test('handleRunAuth authenticates a socket and rejects duplicate auth', () 
       type: 'run.auth.ok',
       requestId: 'auth-1',
       ok: true,
+      computerSessionId: daemonContext.computerSessionId,
     });
 
-    handleRunAuth(socket, 'auth-2', TEST_DEV_TOKEN);
+    handleRunAuth(
+      socket,
+      'auth-2',
+      TEST_DEV_TOKEN,
+      daemonContext.computerSessionId,
+    );
     assert.deepEqual(readLastSentMessage(socket), {
       type: 'run.error',
       requestId: 'auth-2',
@@ -56,7 +67,12 @@ void test('handleRunAuth authenticates sockets authorized during websocket upgra
   state.authTimeout = setTimeout(() => undefined, 60_000);
 
   try {
-    handleRunAuth(socket, 'auth-cookie-upgrade', 'cookie-auth');
+    handleRunAuth(
+      socket,
+      'auth-cookie-upgrade',
+      'cookie-auth',
+      daemonContext.computerSessionId,
+    );
 
     assert.equal(state.authenticated, true);
     assert.equal(state.authTimeout, null);
@@ -64,6 +80,7 @@ void test('handleRunAuth authenticates sockets authorized during websocket upgra
       type: 'run.auth.ok',
       requestId: 'auth-cookie-upgrade',
       ok: true,
+      computerSessionId: daemonContext.computerSessionId,
     });
   } finally {
     cleanupSocketState(socket, daemonContext);
@@ -79,7 +96,12 @@ void test('handleRunAuth closes unauthorized sockets for invalid auth tokens', (
   getSocketState(socket).remoteAddress = '127.0.0.31';
 
   try {
-    handleRunAuth(socket, 'auth-invalid', 'wrong-token-123456');
+    handleRunAuth(
+      socket,
+      'auth-invalid',
+      'wrong-token-123456',
+      daemonContext.computerSessionId,
+    );
 
     assert.deepEqual(readLastSentMessage(socket), {
       type: 'run.error',
@@ -107,7 +129,12 @@ void test('handleRunAuth rate limits repeated websocket auth failures from the s
     for (let index = 0; index < 8; index += 1) {
       const socket = createTestSocket();
       getSocketState(socket).remoteAddress = '127.0.0.41';
-      handleRunAuth(socket, `auth-invalid-${index}`, 'wrong-token-123456');
+      handleRunAuth(
+        socket,
+        `auth-invalid-${index}`,
+        'wrong-token-123456',
+        daemonContext.computerSessionId,
+      );
 
       assert.deepEqual(readLastSentMessage(socket), {
         type: 'run.error',
@@ -121,7 +148,12 @@ void test('handleRunAuth rate limits repeated websocket auth failures from the s
 
     const limitedSocket = createTestSocket();
     getSocketState(limitedSocket).remoteAddress = '127.0.0.41';
-    handleRunAuth(limitedSocket, 'auth-limited', 'wrong-token-123456');
+    handleRunAuth(
+      limitedSocket,
+      'auth-limited',
+      'wrong-token-123456',
+      daemonContext.computerSessionId,
+    );
 
     assert.deepEqual(readLastSentMessage(limitedSocket), {
       type: 'run.error',

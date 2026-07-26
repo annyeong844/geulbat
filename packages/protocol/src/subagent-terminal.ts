@@ -24,6 +24,12 @@ export type AgentChildTerminalReason =
   | 'sibling_error'
   | 'explicit_stop';
 
+export interface SubagentResultReport {
+  summary: string;
+  sourceResultRef: string;
+  sourceResultDigest: `sha256:${string}`;
+}
+
 export function isAgentChildTerminalState(
   value: unknown,
 ): value is AgentChildTerminalState {
@@ -44,5 +50,23 @@ export function isAgentChildTerminalReason(
     value === 'user_interrupt' ||
     value === 'sibling_error' ||
     value === 'explicit_stop'
+  );
+}
+
+export function isSubagentResultReport(
+  value: unknown,
+): value is SubagentResultReport {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'summary' in value &&
+    typeof value.summary === 'string' &&
+    value.summary.trim() !== '' &&
+    'sourceResultRef' in value &&
+    typeof value.sourceResultRef === 'string' &&
+    value.sourceResultRef.trim() !== '' &&
+    'sourceResultDigest' in value &&
+    typeof value.sourceResultDigest === 'string' &&
+    /^sha256:[a-f0-9]{64}$/u.test(value.sourceResultDigest)
   );
 }

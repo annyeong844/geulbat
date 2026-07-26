@@ -35,7 +35,7 @@ const TEST_INITIAL_YIELD_MS = 1_000;
 const TEST_RUNNING_CELL_REAP_AFTER_MS = 60_000;
 const TEST_CALLBACK_DELAY_MS = 1_200;
 
-void test('WO6-V3 removed search_memory_index stays usable through the pinned multi-tool SDK and detached wait', async () => {
+void test('WO6-V3 search_memory_index stays usable through the pinned multi-tool SDK and detached wait', async () => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-wo6-v1-computer-files-'),
   );
@@ -216,7 +216,7 @@ void test('WO6-V3 removed search_memory_index stays usable through the pinned mu
       .buildToolDefinitions({})
       .map((tool) => tool.name);
     assert.equal(directToolNames.includes('read_file'), true);
-    assert.equal(directToolNames.includes('search_memory_index'), false);
+    assert.equal(directToolNames.includes('search_memory_index'), true);
     const projection =
       await daemonContext.toolLibraryProjection.resolveProjection({
         stateRoot,

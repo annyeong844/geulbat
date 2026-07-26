@@ -2,6 +2,7 @@ import type {
   ApprovalClass,
   PermissionMode,
 } from '@geulbat/protocol/run-approval';
+import type { ToolFailureDiagnostics } from '@geulbat/protocol/errors';
 import type { ThreadId } from '@geulbat/protocol/ids';
 import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 import type { SideEffectLevel } from '@geulbat/protocol/run-events';
@@ -188,7 +189,13 @@ export function isAgentToolExecutionContext(
 
 export type ExecuteResult =
   | { ok: true; output: string; errorCode?: undefined; error?: undefined }
-  | { ok: false; output: string; errorCode: ErrorCode; error: string };
+  | {
+      ok: false;
+      output: string;
+      errorCode: ErrorCode;
+      error: string;
+      diagnostics?: ToolFailureDiagnostics;
+    };
 
 export interface CallbackToolDispatcher {
   dispatch(args: {

@@ -30,12 +30,16 @@
   --error: #ad4f42;
 
   --font-prose-serif:
-    'Noto Serif KR', 'Newsreader', 'NanumMyeongjo', 'Source Han Serif', serif;
+    'Noto Serif KR Variable', 'Noto Serif KR', 'NanumMyeongjo',
+    'Source Han Serif', serif;
   --font-prose-sans:
-    'Pretendard', 'SUIT', 'Inter', 'Apple SD Gothic Neo', sans-serif;
+    'Pretendard Variable', 'Pretendard', 'SUIT', 'Apple SD Gothic Neo',
+    system-ui, sans-serif;
   --font-ui-label:
-    'Pretendard', 'SUIT', 'Inter', 'Apple SD Gothic Neo', sans-serif;
-  --font-ui-mono: 'JetBrains Mono', 'D2Coding', monospace;
+    'Pretendard Variable', 'Pretendard', 'SUIT', 'Apple SD Gothic Neo',
+    system-ui, sans-serif;
+  --font-ui-mono:
+    'JetBrains Mono Variable', 'JetBrains Mono', 'D2Coding', monospace;
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -75,11 +79,6 @@ body {
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-}
-
-/* desktop min-width 1280px primary target (§3.7.1) */
-body {
-  min-width: 1280px;
 }
 
 ::-webkit-scrollbar {

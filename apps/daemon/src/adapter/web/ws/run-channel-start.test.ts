@@ -202,9 +202,21 @@ void test('executeRunRequest releases its managed run when loop admission reject
     });
     const toolCapabilityPolicy = capturedToolCapabilityPolicy;
     assert.ok(toolCapabilityPolicy);
+    const directHotRegistryNames =
+      toolCapabilityPolicy.allowedRegistryNames.filter(
+        (name) =>
+          runtimeContext.toolRegistry.getToolMeta(name)?.exposure.directHot ===
+          true,
+      );
     assert.deepEqual(
       toolCapabilityPolicy.directRegistryNames,
-      toolCapabilityPolicy.allowedRegistryNames,
+      directHotRegistryNames,
+    );
+    assert.deepEqual(
+      toolCapabilityPolicy.allowedRegistryNames.filter(
+        (name) => !toolCapabilityPolicy.directRegistryNames.includes(name),
+      ),
+      [],
     );
     assert.equal(toolCapabilityPolicy.writeCallbackEnabled, false);
     assert.equal(

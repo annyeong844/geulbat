@@ -9,6 +9,7 @@ import type {
   ToolLibraryProjectionPort,
 } from '../tools/tool-library-projection-port.js';
 import type { ToolRuntimeRegistry } from '../tools/tool-registry-model.js';
+import { createAgentLoopToolDefinitionPort } from './loop-tool-definitions.js';
 import type { AgentToolSurface } from './loop-types.js';
 
 interface ResolveAgentLoopToolLibraryProjectionArgs {
@@ -43,7 +44,10 @@ export function createAgentToolCapabilityPolicy(args: {
     args.toolSurface?.allowedRegistryNames ??
     args.registry.buildToolDefinitions().map((tool) => tool.name);
   const directRegistryNames =
-    args.toolSurface?.directRegistryNames ?? allowedRegistryNames;
+    args.toolSurface?.directRegistryNames ??
+    createAgentLoopToolDefinitionPort(args.registry)
+      .buildToolDefinitions({})
+      .map((tool) => tool.name);
   const callbackRegistryNames = resolvePtcExecuteCodeCallbackToolSurface({
     registry: args.registry,
     allowedRegistryNames,

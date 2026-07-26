@@ -13,7 +13,8 @@ import {
 } from './provider-transition-compaction.js';
 import {
   compactProviderNativeHistory,
-  resolveProviderNativeCompactionPolicy,
+  resolveProviderContextCapacityPolicy,
+  type ProviderContextCapacityPolicy,
   type ProviderNativeCompactionInput,
   type ProviderNativeCompactionPolicy,
 } from '../../llm/provider/provider-native-compaction.js';
@@ -142,7 +143,7 @@ export interface AgentLoopMemoryPort {
 }
 
 interface AgentLoopMemoryPortDependencies {
-  resolvePolicy: typeof resolveProviderNativeCompactionPolicy;
+  resolvePolicy: typeof resolveProviderContextCapacityPolicy;
   compactHistory: typeof compactProviderNativeHistory;
   compactThread: typeof compactThreadContextNative;
   prepareTransition?: typeof prepareProviderTransitionCompaction;
@@ -155,7 +156,7 @@ interface AgentLoopMemoryPortDependencies {
 
 const defaultAgentLoopMemoryPortDependencies: AgentLoopMemoryPortDependencies =
   {
-    resolvePolicy: resolveProviderNativeCompactionPolicy,
+    resolvePolicy: resolveProviderContextCapacityPolicy,
     compactHistory: compactProviderNativeHistory,
     compactThread: compactThreadContextNative,
     prepareTransition: prepareProviderTransitionCompaction,
@@ -170,6 +171,15 @@ Tool results in the prefix are already the model-visible digest/reference projec
 
 function createContextModelKey(options: ProviderRequestOptions): string {
   return `${options.providerId}\0${options.model}`;
+}
+
+function supportsProviderNativeCompaction(
+  policy: ProviderContextCapacityPolicy,
+): policy is ProviderNativeCompactionPolicy {
+  return (
+    policy.providerId === 'openai_codex_direct' ||
+    policy.providerId === 'grok_oauth'
+  );
 }
 
 function estimateInputTokens(
@@ -220,11 +230,11 @@ export function createAgentLoopMemoryPort(
 ): AgentLoopMemoryPort {
   const policyByModel = new Map<
     string,
-    Promise<ProviderNativeCompactionPolicy>
+    Promise<ProviderContextCapacityPolicy>
   >();
   const resolvedPolicyByModel = new Map<
     string,
-    ProviderNativeCompactionPolicy
+    ProviderContextCapacityPolicy
   >();
   const calibrationByModel = new Map<string, ContextUsageCalibration>();
   const exactInputTokensByRound = new WeakMap<
@@ -247,7 +257,7 @@ export function createAgentLoopMemoryPort(
 
   const resolvePolicy = async (
     context: AgentLoopMemoryRequestContext,
-  ): Promise<ProviderNativeCompactionPolicy> => {
+  ): Promise<ProviderContextCapacityPolicy> => {
     const modelKey = createContextModelKey(context.providerRequestOptions);
     let policyPromise = policyByModel.get(modelKey);
     if (policyPromise === undefined) {
@@ -560,11 +570,13 @@ export function createAgentLoopMemoryPort(
           admission =
             classification.kind === 'fitting'
               ? classification
-              : {
-                  ...classification,
-                  estimatedInputTokens,
-                  policy,
-                };
+              : supportsProviderNativeCompaction(policy)
+                ? {
+                    ...classification,
+                    estimatedInputTokens,
+                    policy,
+                  }
+                : { kind: 'unknown' };
           logger.info('provider request context admission evaluated', {
             providerId: policy.providerId,
             model: policy.model,
@@ -577,7 +589,25 @@ export function createAgentLoopMemoryPort(
             dominantPressureSource: measurement.dominantPressureSource,
             serializedBytesBySource: measurement.serializedBytesBySource,
           });
-          return classification.kind === 'fitting'
+          if (
+            classification.kind !== 'fitting' &&
+            !supportsProviderNativeCompaction(policy)
+          ) {
+            logger.warn(
+              'provider request reached the context pressure threshold without a native compaction path',
+              {
+                providerId: policy.providerId,
+                model: policy.model,
+                admission: classification.kind,
+                measurementQuality: contextUsage.quality,
+                inputTokens: estimatedInputTokens,
+                contextWindow: policy.contextWindow,
+                thresholdTokens: policy.thresholdTokens,
+              },
+            );
+          }
+          return classification.kind === 'fitting' ||
+            !supportsProviderNativeCompaction(policy)
             ? { kind: 'send' }
             : { kind: 'prepare', reason: classification.kind };
         },
@@ -725,19 +755,6 @@ export function createAgentLoopMemoryPort(
       });
     },
     async compactAfterModelRound(args) {
-      if (
-        args.providerRequestOptions.providerId !== 'openai_codex_direct' &&
-        args.providerRequestOptions.providerId !== 'grok_oauth'
-      ) {
-        if (!reportedUnsupportedProvider) {
-          logger.info(
-            'provider-native compaction is unavailable for the selected provider',
-            { providerId: args.providerRequestOptions.providerId },
-          );
-          reportedUnsupportedProvider = true;
-        }
-        return { kind: 'not_needed', reason: 'provider_not_supported' };
-      }
       if (args.inputTokens === undefined) {
         if (!reportedMissingUsage) {
           logger.info(
@@ -753,7 +770,7 @@ export function createAgentLoopMemoryPort(
       }
 
       const modelKey = createContextModelKey(args.providerRequestOptions);
-      let policy: ProviderNativeCompactionPolicy;
+      let policy: ProviderContextCapacityPolicy;
       try {
         policy = await resolvePolicy(args);
       } catch (error: unknown) {
@@ -805,6 +822,19 @@ export function createAgentLoopMemoryPort(
         });
       }
       args.contextBudgetRound.publish(contextUsage);
+      if (!supportsProviderNativeCompaction(policy)) {
+        if (!reportedUnsupportedProvider) {
+          logger.info(
+            'provider-native compaction is unavailable for the selected provider',
+            {
+              providerId: policy.providerId,
+              model: policy.model,
+            },
+          );
+          reportedUnsupportedProvider = true;
+        }
+        return { kind: 'not_needed', reason: 'provider_not_supported' };
+      }
       if (trigger.kind === 'under_threshold') {
         return { kind: 'not_needed', reason: 'under_threshold' };
       }

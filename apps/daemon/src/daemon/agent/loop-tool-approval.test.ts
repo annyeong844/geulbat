@@ -358,6 +358,17 @@ void test('planning workflow clamp blocks full_access write tools before trusted
   assert.equal(result.value.ok, false);
   assert.equal(result.value.errorCode, 'approval_required');
   assert.match(result.value.error ?? '', /PLAN_APPROVAL_REQUIRED/);
+  assert.match(result.value.error ?? '', /not the plan approval gate/u);
+  assert.deepEqual(result.value.ok ? undefined : result.value.diagnostics, {
+    phase: 'admission',
+    reasonCode: 'plan_approval_required',
+    retryHint:
+      'Approve and publish the exact current plan revision, then retry the tool.',
+    gate: {
+      kind: 'plan_approval',
+      effectivePermissionMode: 'full_access',
+    },
+  });
   assert.deepEqual(events, []);
 });
 

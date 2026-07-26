@@ -20,6 +20,7 @@ export const setThreadTitleTool = defineZodTool({
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'planning',
     searchHints: ['thread title', 'session title', 'rename thread', 'summary'],

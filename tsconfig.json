@@ -13,6 +13,7 @@
     "sourceMap": true
   },
   "references": [
+    { "path": "packages/daemon-lifecycle" },
     { "path": "packages/structured-logger" },
     { "path": "packages/content-identity" },
     { "path": "packages/protocol" },

@@ -139,6 +139,12 @@ export const execCommandTool = defineZodTool({
         return toolError(
           'execution_failed',
           'exec_command host runtime requires an agent thread context.',
+          {
+            phase: 'command_start',
+            reasonCode: 'agent_thread_context_missing',
+            retryHint:
+              'Retry exec_command from an active agent run with thread state available.',
+          },
         );
       }
       const started = await hostCommands.start({
@@ -169,6 +175,21 @@ export const execCommandTool = defineZodTool({
             ? 'execution_failed'
             : 'internal',
           started.message,
+          {
+            phase: 'command_start',
+            reasonCode: started.reasonCode,
+            ...(started.reasonCode === 'runtime_closed'
+              ? {
+                  retryHint:
+                    'Restart the daemon host command runtime, then retry the command.',
+                }
+              : started.reasonCode === 'session_capacity_exhausted'
+                ? {
+                    retryHint:
+                      'Wait for an existing command session to finish or stop it, then retry.',
+                  }
+                : {}),
+          },
         );
       }
       const result = await hostCommands.waitForInitialResult({
@@ -183,6 +204,16 @@ export const execCommandTool = defineZodTool({
         return toolError(
           result.reasonCode === 'not_found' ? 'not_found' : 'execution_failed',
           result.message,
+          {
+            phase: 'command_wait',
+            reasonCode: result.reasonCode,
+            ...(result.reasonCode === 'not_found'
+              ? {
+                  retryHint:
+                    'The command session no longer exists; start the command again.',
+                }
+              : {}),
+          },
         );
       }
       return {
@@ -201,6 +232,12 @@ export const execCommandTool = defineZodTool({
     return toolError(
       'execution_failed',
       'exec_command requires the daemon host command runtime.',
+      {
+        phase: 'command_start',
+        reasonCode: 'host_command_runtime_unavailable',
+        retryHint:
+          'Retry with the daemon host command runtime enabled and available.',
+      },
     );
   },
 });

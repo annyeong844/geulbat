@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -195,6 +196,8 @@ void test('thread background notification queue replays and acknowledges through
   const durableResult = {
     ...result,
     resultRef: `subagent-result:${result.deliveryId}`,
+    resultDigest:
+      `sha256:${createHash('sha256').update(result.result).digest('hex')}` as const,
   };
   let store = await createDaemonRuntimeStateStore({ homeStateRoot });
 

@@ -19,6 +19,24 @@ import {
   THREAD_ID_VALUE,
 } from '../test-support/run-session-fixtures.js';
 
+void test('starting a new chat clears the unowned draft lane and prior session error', () => {
+  const starting = reduceRunSessionState(createInitialRunSessionState(), {
+    type: 'run_start_requested',
+    threadId: null,
+  });
+  const failed = reduceRunSessionState(starting, {
+    type: 'session_error_recorded',
+    message: 'old websocket failure',
+  });
+  const fresh = reduceRunSessionState(failed, {
+    type: 'new_session_started',
+  });
+
+  assert.equal(fresh.newThreadRunLane?.phase, 'idle');
+  assert.equal(fresh.newThreadRunLane?.activeRunView.streamError, null);
+  assert.equal(fresh.sessionError, null);
+});
+
 void test('run usage updates land on the active run view and reset per run', () => {
   const initial = createInitialRunSessionState();
   const starting = reduceRunSessionState(initial, {

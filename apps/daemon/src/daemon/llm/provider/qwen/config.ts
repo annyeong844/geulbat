@@ -11,6 +11,10 @@ import {
 
 export const QWEN_TOKEN_PLAN_PROVIDER_ID = 'qwen_token_plan' as const;
 export const QWEN_3_8_MAX_PREVIEW_MODEL_ID = 'qwen3.8-max-preview' as const;
+export const QWEN_3_8_MAX_PREVIEW_CONTEXT_CAPACITY = {
+  contextWindow: 1_000_000,
+  thresholdTokens: 850_000,
+} as const;
 export const QWEN_TOKEN_PLAN_GLOBAL_BASE_URL =
   'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1';
 export const QWEN_TOKEN_PLAN_CHINA_BASE_URL =
@@ -33,6 +37,26 @@ export interface QwenTokenPlanConfig {
   chatCompletionsUrl: string;
   apiKey: string;
   credentialIdentity: string;
+}
+
+export interface QwenContextCapacityPolicy {
+  providerId: typeof QWEN_TOKEN_PLAN_PROVIDER_ID;
+  model: typeof QWEN_3_8_MAX_PREVIEW_MODEL_ID;
+  contextWindow: number;
+  thresholdTokens: number;
+}
+
+export function resolveQwenContextCapacityPolicy(
+  model: string,
+): QwenContextCapacityPolicy {
+  if (model !== QWEN_3_8_MAX_PREVIEW_MODEL_ID) {
+    throw new Error('Qwen context capacity is unavailable for this model');
+  }
+  return {
+    providerId: QWEN_TOKEN_PLAN_PROVIDER_ID,
+    model: QWEN_3_8_MAX_PREVIEW_MODEL_ID,
+    ...QWEN_3_8_MAX_PREVIEW_CONTEXT_CAPACITY,
+  };
 }
 
 export function resolveQwenTokenPlanConfig(args: {

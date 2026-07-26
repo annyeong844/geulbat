@@ -18,6 +18,7 @@ import type {
 } from './agent/subagent-concurrency.js';
 import type {
   BackgroundChildResult,
+  BackgroundChildResultInput,
   ResolvedChildModelPin,
   RunSubagentModelRouting,
   SubagentCapability,
@@ -134,7 +135,7 @@ export interface AgentRuntimeServices {
   backgroundNotifications: {
     enqueueThreadBackgroundResult(
       threadId: ThreadId,
-      result: BackgroundChildResult,
+      result: BackgroundChildResultInput,
     ): void;
     consumeThreadBackgroundResults(threadId: ThreadId): BackgroundChildResult[];
     readThreadBackgroundResults(threadId: ThreadId): BackgroundChildResult[];

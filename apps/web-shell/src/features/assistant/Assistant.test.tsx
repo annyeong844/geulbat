@@ -1838,7 +1838,10 @@ void test('assistant shows a live run status row while a run is active', () => {
     />,
   );
 
-  assert.equal(runningHtml.match(/run-status-row/g)?.length ?? 0, 1);
+  assert.equal(
+    runningHtml.match(/<div class="run-status-row/g)?.length ?? 0,
+    1,
+  );
   assert.match(runningHtml, /read_file 실행 중/);
 
   const idleHtml = renderToStaticMarkup(

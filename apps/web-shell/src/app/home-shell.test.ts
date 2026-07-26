@@ -8,6 +8,7 @@ import { makeApprovalRequiredFixture } from '../test-support/protocol-fixtures.j
 import {
   createHomeShellView,
   isShellCenterHidden,
+  resolveShellLayoutForWidth,
   type HomeShellProps,
 } from './home-shell.js';
 import { createHomeFilesInput } from './home-files-input.js';
@@ -117,6 +118,8 @@ function createThreadsStub(): HomeThreadsInput {
 
 function createRunSessionStub(): HomeRunSessionInput {
   return {
+    workingDirectory: null,
+    setWorkingDirectory: () => {},
     visibleThreadId: THREAD_ID,
     isRunStarting: false,
     isRunning: true,
@@ -183,6 +186,48 @@ void test('an open artifact temporarily reveals the center from chat-only layout
   assert.equal(isShellCenterHidden('chat-only', false), true);
   assert.equal(isShellCenterHidden('chat-only', true), false);
   assert.equal(isShellCenterHidden('no-tree', false), false);
+});
+
+void test('narrow viewports collapse existing shell panels without imposing horizontal scroll', () => {
+  const base = {
+    leftWidth: 260,
+    rightWidth: 400,
+    artifactSurfaceOpen: false,
+  };
+
+  assert.equal(
+    resolveShellLayoutForWidth({
+      ...base,
+      preferredMode: 'default',
+      viewportWidth: 1_200,
+    }),
+    'default',
+  );
+  assert.equal(
+    resolveShellLayoutForWidth({
+      ...base,
+      preferredMode: 'default',
+      viewportWidth: 1_000,
+    }),
+    'no-tree',
+  );
+  assert.equal(
+    resolveShellLayoutForWidth({
+      ...base,
+      preferredMode: 'default',
+      viewportWidth: 800,
+    }),
+    'chat-only',
+  );
+  assert.equal(
+    resolveShellLayoutForWidth({
+      ...base,
+      artifactSurfaceOpen: true,
+      preferredMode: 'default',
+      viewportWidth: 800,
+    }),
+    'editor-only',
+  );
 });
 
 void test('createHomeShellView composes panel views from files, threads, provider auth, and run session inputs', () => {

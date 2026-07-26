@@ -11,6 +11,8 @@ const THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000001');
 
 function createRunSessionViewModelStub(): RunSessionViewModel {
   return {
+    workingDirectory: '/workspace',
+    setWorkingDirectory: () => {},
     visibleThreadId: THREAD_ID,
     activeRunId: RUN_ID,
     isRunStarting: true,

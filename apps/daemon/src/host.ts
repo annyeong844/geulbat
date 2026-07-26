@@ -27,10 +27,11 @@ const logger = createLogger('daemon');
 export interface LaunchDaemonHostOptions {
   readonly agentLoopImplementationAdmission?: AgentLoopImplementationAdmission;
   readonly bundledCreatorPluginRoot?: string;
+  readonly computerSessionId: string;
 }
 
 export async function launchDaemonHost(
-  options: LaunchDaemonHostOptions = {},
+  options: LaunchDaemonHostOptions,
 ): Promise<void> {
   const port = readDaemonPort(process.env['PORT']);
   const host = process.env['HOST'] ?? '127.0.0.1';
@@ -50,6 +51,7 @@ export async function launchDaemonHost(
     logger.info('public web conformance fixtures enabled');
   }
   const daemonContext = createDaemonContext({
+    computerSessionId: options.computerSessionId,
     ...(options.agentLoopImplementationAdmission === undefined
       ? {}
       : {
@@ -97,7 +99,12 @@ export async function launchDaemonHost(
         daemonContext.provider.authCallbackServer.bindLifecycle(server);
       },
       listen: (listenArgs) => listenDaemonHttpServer(listenArgs),
-      closeForShutdown: (closeArgs) => closeDaemonForShutdown(closeArgs),
+      closeForShutdown: async (closeArgs) => {
+        daemonContext.approvalGate.clearComputerSessionRuntime(
+          daemonContext.computerSessionId,
+        );
+        await closeDaemonForShutdown(closeArgs);
+      },
       onBootPhase: logBootPhase,
     },
   });

@@ -46,6 +46,13 @@ export function reduceRunSessionState(
   state: RunSessionState,
   action: RunSessionStateAction,
 ): RunSessionState {
+  if (action.type === 'new_session_started') {
+    return {
+      ...state,
+      newThreadRunLane: createRunSessionLaneState(),
+      sessionError: null,
+    };
+  }
   if (action.type === 'new_thread_run_adopted') {
     if (state.newThreadRunLane?.activeRunView.threadId !== action.threadId) {
       return state;
@@ -143,6 +150,8 @@ function reduceSingleRunSessionState(
   action: RunSessionStateAction,
 ): RunSessionState {
   switch (action.type) {
+    case 'new_session_started':
+      return state;
     case 'new_thread_run_adopted':
       return state;
     case 'run_start_requested':

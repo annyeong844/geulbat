@@ -15,6 +15,12 @@ void test('useThreadSessionSelection applies only newer snapshots for the same t
       threadId: THREAD_ID,
       snapshotVersion: '2026-04-16T00:00:01.000Z',
       activeModelId: 'grok-4.5',
+      runPreferences: {
+        workingDirectory: '/workspace/thread-one',
+        permissionMode: 'full_access',
+        reasoningEffort: 'high',
+        subagentModelRouting: { mode: 'auto' },
+      },
       messages: [
         {
           entryId: 'entry-newer',
@@ -59,6 +65,12 @@ void test('useThreadSessionSelection applies only newer snapshots for the same t
   assert.equal(appliedStaleSnapshot, false);
   assert.equal(hook.result.current.selectedThreadId, THREAD_ID);
   assert.equal(hook.result.current.activeModelId, 'grok-4.5');
+  assert.deepEqual(hook.result.current.runPreferences, {
+    workingDirectory: '/workspace/thread-one',
+    permissionMode: 'full_access',
+    reasoningEffort: 'high',
+    subagentModelRouting: { mode: 'auto' },
+  });
   assert.deepEqual(hook.result.current.messages, [
     {
       entryId: 'entry-newer',
@@ -161,9 +173,23 @@ void test('useThreadSessionSelection clears selected thread state for deleted th
   await hook.run((current) => current.clearThreadSelectionState(THREAD_ID));
 
   assert.equal(hook.result.current.selectedThreadId, null);
+  assert.equal(hook.result.current.newSessionGeneration, 1);
   assert.equal(hook.result.current.activeModelId, null);
+  assert.equal(hook.result.current.runPreferences, null);
   assert.deepEqual(hook.result.current.messages, []);
   assert.deepEqual(hook.result.current.artifacts, []);
   assert.deepEqual(hook.result.current.subagentTerminalOutcomes, []);
+  hook.unmount();
+});
+
+void test('useThreadSessionSelection creates a distinct clean draft even when no thread is selected', async () => {
+  const hook = await renderHook(useThreadSessionSelection, undefined);
+
+  assert.equal(hook.result.current.newSessionGeneration, 0);
+  await hook.run((current) => current.startNewSession());
+  assert.equal(hook.result.current.newSessionGeneration, 1);
+  await hook.run((current) => current.startNewSession());
+  assert.equal(hook.result.current.newSessionGeneration, 2);
+  assert.equal(hook.result.current.runPreferences, null);
   hook.unmount();
 });

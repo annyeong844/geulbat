@@ -101,6 +101,7 @@ export interface VisibleRunState {
 type AssistantTextStreamTarget = 'transcript' | 'answer';
 
 export type RunSessionStateAction =
+  | { type: 'new_session_started' }
   | { type: 'run_start_requested'; threadId: string | null }
   | { type: 'run_started'; threadId: string; runId: string }
   | { type: 'new_thread_run_adopted'; threadId: string }

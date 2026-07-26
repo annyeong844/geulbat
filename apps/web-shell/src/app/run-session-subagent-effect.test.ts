@@ -153,6 +153,8 @@ void test('createSubagentActivityEffect preserves terminal deliveryId, reason, r
       reason: 'timeout',
       result: 'timed out',
       resultRef: 'subagent-result:delivery-1',
+      resultDigest: `sha256:${'a'.repeat(64)}`,
+      completedAt: '2026-04-18T00:00:02.000Z',
     },
   });
 
@@ -169,6 +171,8 @@ void test('createSubagentActivityEffect preserves terminal deliveryId, reason, r
       reason: 'timeout',
       result: 'timed out',
       resultRef: 'subagent-result:delivery-1',
+      resultDigest: `sha256:${'a'.repeat(64)}`,
+      completedAt: '2026-04-18T00:00:02.000Z',
     },
   });
 });
@@ -279,5 +283,6 @@ void test('createSubagentTerminalHistoryEntry restores persisted reason, runtime
     reason: 'daemon_restart',
     result: '재시작 전에 남긴 부분 결과',
     resultRef: 'subagent-result:delivery-history',
+    completedAt: '2026-04-18T00:00:03.000Z',
   });
 });

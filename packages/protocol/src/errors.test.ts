@@ -10,6 +10,7 @@ import {
   isGenericApiErrorCode,
   isInvalidPathError,
   isNotFoundPathError,
+  isToolFailureDiagnostics,
 } from './errors.js';
 import type { PathApiError } from './errors.js';
 import { assertRunId, assertThreadId } from './ids.js';
@@ -31,6 +32,39 @@ void test('isErrorCode accepts only canonical protocol error codes', () => {
   assert.equal(isErrorCode('provider_transition_required'), true);
   assert.equal(isErrorCode('provider_transition_preparation_failed'), true);
   assert.equal(isErrorCode('totally_new_error'), false);
+});
+
+void test('isToolFailureDiagnostics validates failure phase and effective plan gate state', () => {
+  assert.equal(
+    isToolFailureDiagnostics({
+      phase: 'admission',
+      reasonCode: 'plan_approval_required',
+      retryHint: 'Approve the current plan revision, then retry.',
+      gate: {
+        kind: 'plan_approval',
+        effectivePermissionMode: 'full_access',
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isToolFailureDiagnostics({
+      phase: 'unknown_phase',
+      reasonCode: 'plan_approval_required',
+    }),
+    false,
+  );
+  assert.equal(
+    isToolFailureDiagnostics({
+      phase: 'admission',
+      reasonCode: 'plan_approval_required',
+      gate: {
+        kind: 'plan_approval',
+        effectivePermissionMode: 'unknown_mode',
+      },
+    }),
+    false,
+  );
 });
 
 void test('isApiError rejects unknown error codes even when the shape looks valid', () => {

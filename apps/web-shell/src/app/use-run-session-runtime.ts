@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -34,14 +35,10 @@ import {
 import type {
   PrepareProviderTransitionRequest,
   ThreadDetailResponse,
+  ThreadRunPreferences,
 } from '@geulbat/protocol/threads';
-import { createLogger } from '@geulbat/structured-logger/logger';
 
 import { useRunSessionConnection } from './use-run-session-connection.js';
-import {
-  cachePermissionMode,
-  readCachedPermissionMode,
-} from './permission-mode-cache.js';
 import { createComputerTreeRefreshController } from './run-session-computer-tree-refresh.js';
 import type {
   ApprovalDecisionClient,
@@ -62,17 +59,11 @@ import {
 } from './run-session-state-reducer.js';
 import type { RunSessionStateAction } from './run-session-state-types.js';
 import { RunChannelClient } from '../lib/run-channel/client.js';
-import {
-  fetchPermissionMode,
-  savePermissionMode,
-} from '../lib/api/permission-mode.js';
 import { prepareThreadProviderTransition } from '../lib/api/threads.js';
 import {
   readStoredContextUsageByThread,
   storeContextUsageByThread,
 } from './run-session-context-usage-cache.js';
-
-const logger = createLogger('run-session-runtime');
 
 export interface RunSessionControllerClient
   extends
@@ -80,7 +71,6 @@ export interface RunSessionControllerClient
       RunChannelClient,
       | 'subscribe'
       | 'close'
-      | 'endComputerSession'
       | 'acknowledgeEvent'
       | 'interject'
       | 'cancelInterject'
@@ -105,6 +95,7 @@ interface RunStartedHandlerArgs {
   >;
   setSelectedThreadId: (threadId: string | null) => void;
   selectStartedThread: boolean;
+  adoptStartedThreadPreferences: (threadId: string) => void;
 }
 
 function useHandleRunStarted({
@@ -114,6 +105,7 @@ function useHandleRunStarted({
   computerTreeRefreshControllerRef,
   setSelectedThreadId,
   selectStartedThread,
+  adoptStartedThreadPreferences,
 }: RunStartedHandlerArgs) {
   return useCallback(
     (threadId: string, runId: string) => {
@@ -125,6 +117,7 @@ function useHandleRunStarted({
         runId,
       });
       if (selectStartedThread) {
+        adoptStartedThreadPreferences(threadId);
         setSelectedThreadId(threadId);
       }
       void loadThreads();
@@ -135,15 +128,18 @@ function useHandleRunStarted({
       loadThreads,
       computerTreeRefreshControllerRef,
       selectStartedThread,
+      adoptStartedThreadPreferences,
       setSelectedThreadId,
     ],
   );
 }
 
 interface UseRunSessionRuntimeArgs {
-  workingDirectory?: string;
   selectedFile: string | null;
   selectedThreadId: string | null;
+  newSessionGeneration: number;
+  activeModelId: RunModelId | null;
+  runPreferences: ThreadRunPreferences | null;
   loadThreads: () => Promise<void>;
   openFile: (path: string) => Promise<void>;
   appendOptimisticUserMessage: (
@@ -160,8 +156,6 @@ interface UseRunSessionRuntimeArgs {
   createClient?: () => RunSessionControllerClient;
   prepareStartRequest?: (request: RunRequest) => Promise<RunStartRequest>;
   prepareProviderTransitionRequest?: typeof prepareThreadProviderTransition;
-  readPermissionModeState?: typeof fetchPermissionMode;
-  writePermissionModeState?: typeof savePermissionMode;
 }
 
 // 뷰모델 입력에서 파생한다 — 손으로 베낀 목록이었을 때는 24개 필드가 두 곳에
@@ -172,10 +166,56 @@ type UseRunSessionRuntimeResult = Omit<
   'selectedThreadId'
 >;
 
+interface RunSessionPreferences {
+  workingDirectory: string | null;
+  permissionMode: PermissionMode;
+  planModeRequested: boolean;
+  planModeIntensity: PlanModeIntensity;
+  planModeDepth: PlanModeDepth;
+  modelId: RunModelId;
+  reasoningEffort: RunReasoningSelection;
+  serviceTier: RunServiceTier;
+  subagentModelRouting: RunSubagentModelRouting;
+}
+
+function createRunSessionPreferences(
+  activeModelId: RunModelId | null,
+  restored: ThreadRunPreferences | null,
+): RunSessionPreferences {
+  const modelId = activeModelId ?? DEFAULT_RUN_MODEL_ID;
+  const model = resolveRunModelDescriptor(modelId);
+  const restoredReasoningEffort = restored?.reasoningEffort;
+  const reasoningEffort =
+    restoredReasoningEffort !== undefined &&
+    model.reasoningEfforts.some((effort) => effort === restoredReasoningEffort)
+      ? restoredReasoningEffort
+      : model.defaultReasoningEffort;
+  const restoredServiceTier = restored?.serviceTier;
+  const serviceTier =
+    restoredServiceTier !== undefined &&
+    model.serviceTiers.some((tier) => tier === restoredServiceTier)
+      ? restoredServiceTier
+      : DEFAULT_RUN_SERVICE_TIER;
+  return {
+    workingDirectory: restored?.workingDirectory ?? null,
+    permissionMode: restored?.permissionMode ?? DEFAULT_PERMISSION_MODE,
+    planModeRequested: false,
+    planModeIntensity: 'visual',
+    planModeDepth: 'standard',
+    modelId,
+    reasoningEffort,
+    serviceTier,
+    subagentModelRouting:
+      restored?.subagentModelRouting ?? DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
+  };
+}
+
 export function useRunSessionRuntime({
-  workingDirectory,
   selectedFile,
   selectedThreadId,
+  newSessionGeneration,
+  activeModelId,
+  runPreferences,
   loadThreads,
   loadTree,
   openFile,
@@ -187,8 +227,6 @@ export function useRunSessionRuntime({
   createClient = () => new RunChannelClient(),
   prepareStartRequest,
   prepareProviderTransitionRequest = prepareThreadProviderTransition,
-  readPermissionModeState = fetchPermissionMode,
-  writePermissionModeState = savePermissionMode,
 }: UseRunSessionRuntimeArgs): UseRunSessionRuntimeResult {
   const [client] = useState(() => createClient());
   const computerTreeRefreshControllerRef = useRef(
@@ -213,95 +251,125 @@ export function useRunSessionRuntime({
       dispatch({ type: 'new_thread_run_adopted', threadId: selectedThreadId });
     }
   }, [selectedThreadId, state.newThreadRunLane]);
-  // 승인 모드는 세션을 넘어 유지한다 — 새로고침/재접속마다 basic으로
-  // 조용히 리셋되면 "전체 승인이 풀렸다"로 체감된다 (오너 결정 2026-07-23).
-  // durable 소유자는 daemon이다. 캐시된 값으로 첫 페인트만 채우고, 곧바로
-  // daemon 값으로 맞춘다.
-  const [permissionMode, setPermissionModeState] = useState<PermissionMode>(
-    () => readCachedPermissionMode(),
+  const sessionPreferenceKey =
+    selectedThreadId === null
+      ? `new:${newSessionGeneration}`
+      : `thread:${selectedThreadId}`;
+  const restoredPreferences = useMemo(
+    () => createRunSessionPreferences(activeModelId, runPreferences),
+    [activeModelId, runPreferences],
   );
-  const permissionModeTransportRef = useRef({
-    read: readPermissionModeState,
-    write: writePermissionModeState,
-  });
-  permissionModeTransportRef.current = {
-    read: readPermissionModeState,
-    write: writePermissionModeState,
-  };
-  const applyPermissionMode = useCallback((next: PermissionMode) => {
-    setPermissionModeState(next);
-    cachePermissionMode(next);
-  }, []);
-  const reconcilePermissionMode = useCallback(async () => {
-    try {
-      const state = await permissionModeTransportRef.current.read();
-      applyPermissionMode(state.permissionMode);
-    } catch (error: unknown) {
-      // daemon을 못 읽었으면 캐시 값을 진실로 승격하지 않는다. 안전한 기본값으로
-      // 내려두고 진단을 남긴다.
-      applyPermissionMode(DEFAULT_PERMISSION_MODE);
-      logger.warn(
-        'permission mode could not be read from the daemon; using the safe default:',
-        error,
-      );
-    }
-  }, [applyPermissionMode]);
-  useEffect(() => {
-    void reconcilePermissionMode();
-  }, [reconcilePermissionMode]);
+  const [preferencesBySession, setPreferencesBySession] = useState<
+    Map<string, RunSessionPreferences>
+  >(() => new Map());
+  const preferences =
+    preferencesBySession.get(sessionPreferenceKey) ?? restoredPreferences;
+  const updatePreferences = useCallback(
+    (
+      update: (current: RunSessionPreferences) => RunSessionPreferences,
+    ): void => {
+      setPreferencesBySession((current) => {
+        const next = new Map(current);
+        next.set(
+          sessionPreferenceKey,
+          update(current.get(sessionPreferenceKey) ?? restoredPreferences),
+        );
+        return next;
+      });
+    },
+    [restoredPreferences, sessionPreferenceKey],
+  );
+  const setWorkingDirectory = useCallback(
+    (workingDirectory: string | null) => {
+      updatePreferences((current) => ({ ...current, workingDirectory }));
+    },
+    [updatePreferences],
+  );
   const setPermissionMode = useCallback(
-    async (next: PermissionMode) => {
-      applyPermissionMode(next);
-      try {
-        const state = await permissionModeTransportRef.current.write(next);
-        applyPermissionMode(state.permissionMode);
-      } catch (error: unknown) {
-        logger.warn('permission mode could not be persisted:', error);
-        // 저장이 실패했으면 저장된 것처럼 두지 않고 소유자 값으로 되돌린다.
-        await reconcilePermissionMode();
-      }
+    async (permissionMode: PermissionMode) => {
+      updatePreferences((current) => ({ ...current, permissionMode }));
     },
-    [applyPermissionMode, reconcilePermissionMode],
+    [updatePreferences],
   );
-  // 계획 모드는 권한 방식과 다른 축이다 — 켜면 daemon이 그 run의 실행을
-  // 잠그고, 끄면 저장된 권한 방식이 그대로 다시 드러난다. 활성 워크플로우의
-  // 진실 소유자는 daemon이므로 이 값은 진입 요청일 뿐이다.
-  const [planModeRequested, setPlanModeRequested] = useState(false);
-  const [planModeIntensity, setPlanModeIntensity] =
-    useState<PlanModeIntensity>('visual');
-  const [planModeDepth, setPlanModeDepth] = useState<PlanModeDepth>('standard');
-  const [modelId, setModelIdState] = useState<RunModelId>(DEFAULT_RUN_MODEL_ID);
-  const [reasoningEffort, setReasoningEffortState] =
-    useState<RunReasoningSelection>('medium');
-  const [serviceTier, setServiceTier] = useState<RunServiceTier>(
-    DEFAULT_RUN_SERVICE_TIER,
+  const setPlanModeRequested = useCallback(
+    (planModeRequested: boolean) => {
+      updatePreferences((current) => ({ ...current, planModeRequested }));
+    },
+    [updatePreferences],
   );
-  const [subagentModelRouting, setSubagentModelRoutingState] =
-    useState<RunSubagentModelRouting>(DEFAULT_RUN_SUBAGENT_MODEL_ROUTING);
-  const setReasoningEffort = useCallback((effort: RunReasoningSelection) => {
-    setReasoningEffortState(effort);
-  }, []);
+  const setPlanModeIntensity = useCallback(
+    (planModeIntensity: PlanModeIntensity) => {
+      updatePreferences((current) => ({ ...current, planModeIntensity }));
+    },
+    [updatePreferences],
+  );
+  const setPlanModeDepth = useCallback(
+    (planModeDepth: PlanModeDepth) => {
+      updatePreferences((current) => ({ ...current, planModeDepth }));
+    },
+    [updatePreferences],
+  );
+  const setReasoningEffort = useCallback(
+    (reasoningEffort: RunReasoningSelection) => {
+      updatePreferences((current) => ({ ...current, reasoningEffort }));
+    },
+    [updatePreferences],
+  );
+  const setServiceTier = useCallback(
+    (serviceTier: RunServiceTier) => {
+      updatePreferences((current) => ({ ...current, serviceTier }));
+    },
+    [updatePreferences],
+  );
   const setSubagentModelRouting = useCallback(
-    (routing: RunSubagentModelRouting) => {
-      setSubagentModelRoutingState(routing);
+    (subagentModelRouting: RunSubagentModelRouting) => {
+      updatePreferences((current) => ({ ...current, subagentModelRouting }));
     },
-    [],
+    [updatePreferences],
   );
-  const setModelId = useCallback((nextModelId: RunModelId) => {
-    const model = resolveRunModelDescriptor(nextModelId);
-    setModelIdState(nextModelId);
-    setReasoningEffortState((current) =>
-      current === 'ultra' ||
-      model.reasoningEfforts.some((effort) => effort === current)
-        ? current
-        : model.defaultReasoningEffort,
-    );
-    setServiceTier((current) =>
-      model.serviceTiers.some((serviceTier) => serviceTier === current)
-        ? current
-        : DEFAULT_RUN_SERVICE_TIER,
-    );
-  }, []);
+  const setModelId = useCallback(
+    (modelId: RunModelId) => {
+      const model = resolveRunModelDescriptor(modelId);
+      updatePreferences((current) => ({
+        ...current,
+        modelId,
+        reasoningEffort:
+          current.reasoningEffort === 'ultra' ||
+          model.reasoningEfforts.some(
+            (effort) => effort === current.reasoningEffort,
+          )
+            ? current.reasoningEffort
+            : model.defaultReasoningEffort,
+        serviceTier: model.serviceTiers.some(
+          (tier) => tier === current.serviceTier,
+        )
+          ? current.serviceTier
+          : DEFAULT_RUN_SERVICE_TIER,
+      }));
+    },
+    [updatePreferences],
+  );
+  const adoptStartedThreadPreferences = useCallback(
+    (threadId: string) => {
+      setPreferencesBySession((current) => {
+        const next = new Map(current);
+        next.set(`thread:${threadId}`, preferences);
+        return next;
+      });
+    },
+    [preferences],
+  );
+  const {
+    workingDirectory,
+    permissionMode,
+    planModeRequested,
+    planModeIntensity,
+    planModeDepth,
+    modelId,
+    reasoningEffort,
+    serviceTier,
+    subagentModelRouting,
+  } = preferences;
   const prepareProviderTransition = useCallback(
     async (request: PrepareProviderTransitionRequest) => {
       if (selectedThreadId === null) {
@@ -334,6 +402,18 @@ export function useRunSessionRuntime({
     useRunSessionDiagnostics({
       dispatch,
     });
+  const previousSessionPreferenceKeyRef = useRef(sessionPreferenceKey);
+  useEffect(() => {
+    if (previousSessionPreferenceKeyRef.current === sessionPreferenceKey) {
+      return;
+    }
+    previousSessionPreferenceKeyRef.current = sessionPreferenceKey;
+    if (selectedThreadId === null) {
+      dispatch({ type: 'new_session_started' });
+      return;
+    }
+    clearSessionError();
+  }, [clearSessionError, selectedThreadId, sessionPreferenceKey]);
   const { settleRunSuccess, settleRunSyncFailure, settleRunError } =
     useRunSessionSettleHandlers({
       dispatch,
@@ -456,7 +536,7 @@ export function useRunSessionRuntime({
     reportSessionFailure,
     logCommandFailure,
     promptInputs: {
-      ...(workingDirectory !== undefined ? { workingDirectory } : {}),
+      ...(workingDirectory !== null ? { workingDirectory } : {}),
       modelId,
       selectedThreadId,
       permissionMode,
@@ -481,6 +561,7 @@ export function useRunSessionRuntime({
     loadThreads,
     computerTreeRefreshControllerRef,
     setSelectedThreadId,
+    adoptStartedThreadPreferences,
     selectStartedThread:
       selectedThreadId === null && state.newThreadRunLane?.phase === 'starting',
   });
@@ -501,6 +582,9 @@ export function useRunSessionRuntime({
   const dismissFollowupSuggestion = useCallback(() => {
     setFollowupSuggestion(null);
   }, []);
+  useEffect(() => {
+    setFollowupSuggestion(null);
+  }, [sessionPreferenceKey]);
 
   useRunSessionConnection({
     client,
@@ -523,6 +607,8 @@ export function useRunSessionRuntime({
     dismissFollowupSuggestion,
     planningWorkflow,
     goal,
+    workingDirectory,
+    setWorkingDirectory,
     permissionMode,
     setPermissionMode,
     planModeRequested,

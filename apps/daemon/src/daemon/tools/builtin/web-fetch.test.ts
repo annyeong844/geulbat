@@ -23,6 +23,9 @@ void test('fetch_url exposes scalar URL schema and read-only metadata', () => {
   assert.equal(tool.mayMutateComputerFiles, false);
   assert.equal(tool.recoveryStrategy, 'replay_safe');
   assert.equal(tool.parallelBatchKind, undefined);
+  assert.ok(tool.exposure);
+  assert.equal(tool.exposure.directHot, true);
+  assert.equal(tool.exposure.sdkVisible, true);
   const parameters = tool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(parameters.required, ['url']);

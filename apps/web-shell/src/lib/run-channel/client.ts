@@ -57,14 +57,10 @@ interface WebSocketLike {
 
 interface RunChannelClientOptions {
   getWebSocketUrl?: () => string;
-  buildAuthMessage?: (
-    requestId: string,
-    computerSessionId: string,
-  ) => RunChannelClientMessage;
+  buildAuthMessage?: (requestId: string) => RunChannelClientMessage;
   createWebSocket?: (url: string) => WebSocketLike;
   scheduleTask?: (callback: () => void, delayMs: number) => number;
   clearScheduledTask?: (handle: number) => void;
-  computerSessionId?: string;
 }
 
 const SOCKET_OPEN = 1;
@@ -125,13 +121,11 @@ export class RunChannelClient {
   private threadSubscriptions = new Set<ThreadId>();
   private connectionState: RunChannelConnectionState =
     createInitialRunChannelConnectionState();
-  private computerSessionEnded = false;
+  private computerSessionId: string | null = null;
 
   private readonly resolveWebSocketUrl: () => string;
-  private readonly computerSessionId: string;
   private readonly buildAuthMessage: (
     requestId: string,
-    computerSessionId: string,
   ) => RunChannelClientMessage;
   private readonly createSocket: (url: string) => WebSocketLike;
   private readonly scheduleTask: (
@@ -142,8 +136,6 @@ export class RunChannelClient {
 
   constructor(options: RunChannelClientOptions = {}) {
     this.resolveWebSocketUrl = options.getWebSocketUrl ?? getWebSocketUrl;
-    this.computerSessionId =
-      options.computerSessionId ?? globalThis.crypto.randomUUID();
     this.buildAuthMessage =
       options.buildAuthMessage ?? buildRunChannelAuthMessage;
     this.createSocket =
@@ -187,9 +179,6 @@ export class RunChannelClient {
   }
 
   async connect(): Promise<WebSocketLike> {
-    if (this.computerSessionEnded) {
-      throw new Error('computer session ended');
-    }
     if (this.socket && this.socket.readyState === SOCKET_OPEN) {
       return this.socket;
     }
@@ -529,22 +518,6 @@ export class RunChannelClient {
     return control.result;
   }
 
-  endComputerSession(): void {
-    if (this.computerSessionEnded) {
-      return;
-    }
-    this.computerSessionEnded = true;
-    if (this.socket?.readyState === SOCKET_OPEN) {
-      this.socket.send(
-        JSON.stringify({
-          type: 'computer.session.end',
-          requestId: createRequestId(),
-        } satisfies RunChannelClientMessage),
-      );
-    }
-    this.close();
-  }
-
   close(): void {
     this.clearReconnectTask();
     this.connectionState = markConnectionClosed(this.connectionState, true);
@@ -590,10 +563,7 @@ export class RunChannelClient {
   private handleSocketOpen(pending: PendingSocketConnection): void {
     pending.opened = true;
     this.connectionState = markAuthHandshakeStarted(this.connectionState);
-    const authMessage = this.buildAuthMessage(
-      pending.authRequestId,
-      this.computerSessionId,
-    );
+    const authMessage = this.buildAuthMessage(pending.authRequestId);
     const runEventCursors = Array.from(
       this.lastSeenEventSeqByRun,
       ([runId, seq]) => ({ runId, seq }),
@@ -685,6 +655,15 @@ export class RunChannelClient {
       message.type === 'run.auth.ok' &&
       message.requestId === pending.authRequestId
     ) {
+      if (
+        this.computerSessionId !== null &&
+        this.computerSessionId !== message.computerSessionId
+      ) {
+        this.rejectBeforeAuth(pending, 'computer session changed', false);
+        pending.socket.close();
+        return true;
+      }
+      this.computerSessionId = message.computerSessionId;
       pending.authenticated = true;
       pending.settled = true;
       if (this.pendingConnection === pending) {

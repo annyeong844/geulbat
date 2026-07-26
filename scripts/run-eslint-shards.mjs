@@ -96,6 +96,9 @@ export const TSGOLINT_PROJECTS = [
     targetPath: 'packages/content-identity/src',
   },
   {
+    targetPath: 'packages/daemon-lifecycle/src',
+  },
+  {
     targetPath: 'packages/protocol/src',
   },
   {

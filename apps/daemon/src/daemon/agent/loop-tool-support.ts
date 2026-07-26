@@ -108,6 +108,9 @@ function buildFunctionCallOutput(
     ok: false,
     errorCode: toolResult.errorCode,
     error: toolResult.error,
+    ...(toolResult.diagnostics === undefined
+      ? {}
+      : { diagnostics: toolResult.diagnostics }),
     ...(toolResult.output.length === 0 ? {} : { details: parsedResult }),
   });
 }
@@ -321,6 +324,9 @@ async function emitAndPersistToolResult(
       raw: parsedResult,
       errorCode,
       error,
+      ...(recordedToolResult.diagnostics === undefined
+        ? {}
+        : { diagnostics: recordedToolResult.diagnostics }),
       ...(sourcePayload ? { source: sourcePayload } : {}),
     });
 

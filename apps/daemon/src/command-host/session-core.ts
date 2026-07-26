@@ -350,6 +350,7 @@ export function createCommandSessionHost(
 
   function inlineEligible(entry: SessionEntry): boolean {
     return (
+      entry.streamMode !== 'protocol' &&
       entry.stdout.ring.totalBytes + entry.stderr.ring.totalBytes <=
         config.inlineMaxBytes &&
       entry.stdout.ring.omittedBytes === 0 &&

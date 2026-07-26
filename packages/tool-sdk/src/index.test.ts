@@ -101,7 +101,13 @@ void test('typed listFiles shares the explicit transport and strips private resu
     },
     async invoke(request) {
       assert.equal(request.publicTool, 'files.list');
-      assert.deepEqual(request.input, { path: '.', recursive: true });
+      assert.deepEqual(request.input, {
+        path: '.',
+        recursive: true,
+        maxDepth: 2,
+        excludeNames: ['node_modules', '.audit'],
+        entryTypes: ['directory'],
+      });
       return {
         ok: true,
         value: {
@@ -127,7 +133,12 @@ void test('typed listFiles shares the explicit transport and strips private resu
   });
 
   assert.equal((await client.connect()).ok, true);
-  const result = await client.listFiles({ recursive: true });
+  const result = await client.listFiles({
+    recursive: true,
+    maxDepth: 2,
+    excludeNames: ['node_modules', '.audit'],
+    entryTypes: ['directory'],
+  });
 
   assert.deepEqual(result, {
     ok: true,

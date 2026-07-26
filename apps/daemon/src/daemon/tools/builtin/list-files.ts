@@ -20,22 +20,55 @@ interface EntryInfo {
   type: 'file' | 'directory';
 }
 
-const listFilesArgsSchema = z.strictObject({
-  path: z
-    .string()
-    .min(1, 'path must not be empty.')
-    .refine((value) => value.trim().length > 0, {
-      message: 'path must not be empty.',
-    })
-    .optional()
-    .describe(
-      'A host directory resolved from the current directory, a verified read-only geulbat-sdk directory, or an opaque geulbat-skill ref returned by skill_search. Absolute paths may address any location readable by the daemon process.',
-    ),
-  recursive: z
-    .boolean()
-    .optional()
-    .describe('Whether to list files recursively. Defaults to false.'),
-});
+const listFilesArgsSchema = z
+  .strictObject({
+    path: z
+      .string()
+      .min(1, 'path must not be empty.')
+      .refine((value) => value.trim().length > 0, {
+        message: 'path must not be empty.',
+      })
+      .optional()
+      .describe(
+        'A host directory resolved from the current directory, a verified read-only geulbat-sdk directory, or an opaque geulbat-skill ref returned by skill_search. Absolute paths may address any location readable by the daemon process.',
+      ),
+    recursive: z
+      .boolean()
+      .optional()
+      .describe('Whether to list files recursively. Defaults to false.'),
+    maxDepth: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'Maximum returned depth when recursive is true. Direct children are depth 1. Omit for unbounded recursive traversal.',
+      ),
+    excludeNames: z
+      .array(
+        z
+          .string()
+          .min(1, 'excludeNames entries must not be empty.')
+          .refine((value) => value.trim().length > 0, {
+            message: 'excludeNames entries must not be empty.',
+          }),
+      )
+      .optional()
+      .describe(
+        'Exact entry basenames to omit at every depth, including their descendants.',
+      ),
+    entryTypes: z
+      .array(z.enum(['file', 'directory']))
+      .min(1, 'entryTypes must contain at least one entry type.')
+      .optional()
+      .describe(
+        'Entry types to return. Omit for both files and directories; use ["directory"] for a compact structural overview.',
+      ),
+  })
+  .refine((args) => args.maxDepth === undefined || args.recursive === true, {
+    path: ['maxDepth'],
+    message: 'maxDepth requires recursive to be true.',
+  });
 
 export const listFilesTool = defineZodTool({
   name: 'list_files',
@@ -68,6 +101,10 @@ export const listFilesTool = defineZodTool({
   async executeParsed(args, ctx) {
     const inputPath = args.path ?? '.';
     const recursive = args.recursive ?? false;
+    const excludedNames = new Set(args.excludeNames ?? []);
+    const includedTypes = new Set<EntryInfo['type']>(
+      args.entryTypes ?? ['file', 'directory'],
+    );
 
     try {
       const pluginSkillPath = await resolvePluginSkillDirectoryBrowsePath({
@@ -81,12 +118,21 @@ export const listFilesTool = defineZodTool({
       if (pluginSkillPath.kind === 'plugin_skill_directory') {
         const directory = pluginSkillPath.directory;
         const sourcePlugin = directory.skill.sourcePlugin;
+        const entries = directory.entries.filter((entry) =>
+          isListedEntrySelected({
+            basePath: directory.logicalPath,
+            entry,
+            maxDepth: args.maxDepth,
+            excludedNames,
+            includedTypes,
+          }),
+        );
         return {
           ok: true,
           output: JSON.stringify({
             path: directory.logicalPath,
-            total: directory.entries.length,
-            entries: directory.entries,
+            total: entries.length,
+            entries,
             source: 'plugin_skill',
             readOnly: true,
             skillRef: directory.skill.skillRef,
@@ -118,12 +164,21 @@ export const listFilesTool = defineZodTool({
             'The requested tool library directory is not projected',
           );
         }
+        const entries = projectionEntries.filter((entry) =>
+          isListedEntrySelected({
+            basePath: projectionPath.logicalPath,
+            entry,
+            maxDepth: args.maxDepth,
+            excludedNames,
+            includedTypes,
+          }),
+        );
         return {
           ok: true,
           output: JSON.stringify({
             path: projectionPath.logicalPath,
-            total: projectionEntries.length,
-            entries: projectionEntries,
+            total: entries.length,
+            entries,
             source: 'tool_library_projection',
             readOnly: true,
             sdkVersion: projectionPath.identity.sdkVersion,
@@ -143,9 +198,20 @@ export const listFilesTool = defineZodTool({
 
       if (rootTarget.exists) {
         if (recursive) {
-          await walkDirectory(rootTarget, entries);
+          await walkDirectory(
+            rootTarget,
+            entries,
+            excludedNames,
+            includedTypes,
+            args.maxDepth,
+          );
         } else {
-          await listSingleDir(rootTarget, entries);
+          await listSingleDir(
+            rootTarget,
+            entries,
+            excludedNames,
+            includedTypes,
+          );
         }
       }
 
@@ -165,6 +231,29 @@ export const listFilesTool = defineZodTool({
     }
   },
 });
+
+function isListedEntrySelected(args: {
+  basePath: string;
+  entry: EntryInfo;
+  maxDepth: number | undefined;
+  excludedNames: ReadonlySet<string>;
+  includedTypes: ReadonlySet<EntryInfo['type']>;
+}): boolean {
+  const prefix =
+    args.basePath === '.' || args.basePath.length === 0
+      ? ''
+      : `${args.basePath.replace(/\/$/u, '')}/`;
+  const relativePath = args.entry.path.startsWith(prefix)
+    ? args.entry.path.slice(prefix.length)
+    : args.entry.path;
+  const segments = relativePath.split('/').filter((segment) => segment !== '');
+  return (
+    segments.length > 0 &&
+    (args.maxDepth === undefined || segments.length <= args.maxDepth) &&
+    !segments.some((segment) => args.excludedNames.has(segment)) &&
+    args.includedTypes.has(args.entry.type)
+  );
+}
 
 function listProjectionDirectory(
   projectionPath: Extract<
@@ -222,22 +311,31 @@ function listProjectionDirectory(
 async function listSingleDir(
   target: SourceDirectoryTarget,
   results: EntryInfo[],
+  excludedNames: ReadonlySet<string>,
+  includedTypes: ReadonlySet<EntryInfo['type']>,
 ): Promise<void> {
   const dirEntries = await enumerateCanonicalChildren(target);
 
   for (const entry of dirEntries) {
+    if (excludedNames.has(entry.name)) {
+      continue;
+    }
     if (entry.type === 'directory') {
-      results.push({
-        name: entry.name,
-        path: entry.relativePath,
-        type: 'directory',
-      });
+      if (includedTypes.has('directory')) {
+        results.push({
+          name: entry.name,
+          path: entry.relativePath,
+          type: 'directory',
+        });
+      }
     } else {
-      results.push({
-        name: entry.name,
-        path: entry.relativePath,
-        type: 'file',
-      });
+      if (includedTypes.has('file')) {
+        results.push({
+          name: entry.name,
+          path: entry.relativePath,
+          type: 'file',
+        });
+      }
     }
   }
 }
@@ -246,7 +344,11 @@ async function listSingleDir(
 async function walkDirectory(
   target: SourceDirectoryTarget,
   results: EntryInfo[],
+  excludedNames: ReadonlySet<string>,
+  includedTypes: ReadonlySet<EntryInfo['type']>,
+  maxDepth: number | undefined,
   visitedDirectories: Set<string> = new Set(),
+  currentDepth = 1,
 ): Promise<void> {
   if (visitedDirectories.has(target.canonicalAbsolutePath)) {
     return;
@@ -255,30 +357,43 @@ async function walkDirectory(
   const dirEntries = await enumerateCanonicalChildren(target);
 
   for (const entry of dirEntries) {
+    if (excludedNames.has(entry.name)) {
+      continue;
+    }
     if (entry.type === 'directory') {
-      results.push({
-        name: entry.name,
-        path: entry.relativePath,
-        type: 'directory',
-      });
-      await walkDirectory(
-        {
-          ...target,
-          requestedRelativePath: entry.relativePath,
-          relativePath: entry.relativePath,
-          canonicalAbsolutePath: entry.canonicalAbsolutePath,
-          absolutePath: entry.canonicalAbsolutePath,
-          exists: true,
-        },
-        results,
-        visitedDirectories,
-      );
+      if (includedTypes.has('directory')) {
+        results.push({
+          name: entry.name,
+          path: entry.relativePath,
+          type: 'directory',
+        });
+      }
+      if (maxDepth === undefined || currentDepth < maxDepth) {
+        await walkDirectory(
+          {
+            ...target,
+            requestedRelativePath: entry.relativePath,
+            relativePath: entry.relativePath,
+            canonicalAbsolutePath: entry.canonicalAbsolutePath,
+            absolutePath: entry.canonicalAbsolutePath,
+            exists: true,
+          },
+          results,
+          excludedNames,
+          includedTypes,
+          maxDepth,
+          visitedDirectories,
+          currentDepth + 1,
+        );
+      }
     } else {
-      results.push({
-        name: entry.name,
-        path: entry.relativePath,
-        type: 'file',
-      });
+      if (includedTypes.has('file')) {
+        results.push({
+          name: entry.name,
+          path: entry.relativePath,
+          type: 'file',
+        });
+      }
     }
   }
 }

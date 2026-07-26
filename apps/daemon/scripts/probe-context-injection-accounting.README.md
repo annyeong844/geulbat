@@ -54,13 +54,13 @@ node --import tsx apps/daemon/scripts/probe-context-injection-accounting.mjs --j
 
 | 구성 요소                      |     바이트 |  비중 | 추정 토큰(4 B/tok) |
 | ------------------------------ | ---------: | ----: | -----------------: |
-| tool definitions (주입됨)      |     25,591 | 47.0% |             ~6,398 |
-| history (턴 + 도구 result)     |     15,472 | 28.4% |             ~3,868 |
-| instructions (시스템 프롬프트) |     13,108 | 24.1% |             ~3,277 |
-| envelope                       |        306 |  0.6% |                ~77 |
-| **합계**                       | **54,477** |  100% |        **~13,619** |
+| tool definitions (주입됨)      |     36,713 | 54.4% |             ~9,178 |
+| history (턴 + 도구 result)     |     15,472 | 22.9% |             ~3,868 |
+| instructions (시스템 프롬프트) |     14,955 | 22.2% |             ~3,739 |
+| envelope                       |        306 |  0.5% |                ~77 |
+| **합계**                       | **67,446** |  100% |        **~16,862** |
 
-지배 요인은 **도구 정의(48%)**. 단, `instructions + toolDefinitions`는
+지배 요인은 **도구 정의(54%)**. 단, `instructions + toolDefinitions`는
 `prompt_cache_key`로 캐시되는 **prefix material**
 (`codex-request.ts` `buildProviderVisiblePrefixMaterial`)이라, 여러 턴에 걸쳐
 사실상 **한 번만** 지불된다. 반면 **history(특히 도구 result)는 턴마다 누적**되는
@@ -69,10 +69,13 @@ result가 지배한다 — 그래서 아래 §3(오프로드)·§4(압축)가 �
 
 ### 2. 도구 호출부 (도구 정의 주입)
 
-- 등록 도구 **30**개 중 **28개만**(`directHot`) 요청에 주입. 지연 빌트인 2개:
-  `fetch_url`, `search_memory_index`. **모든 MCP 도구도 지연**된다.
-- 주입 스키마 = **25,591 B**, 전체 빌트인 주입 시 = 26,854 B (빌트인만으로는 절감이 작음).
-- 가장 무거운 스키마: `exec`(2.3 KiB), `manage_files`(1.9 KiB), `search_files`(1.8 KiB).
+- 등록 도구 **39**개 모두(`directHot`) 요청에 주입된다. `search_memory_index`,
+  `fetch_url`, `list_commands`는 각각의 direct/cold A/B에서 cold 경로가 더
+  비싸 직접 표면으로 돌아왔지만 SDK-visible 상태는 유지한다. **모든 MCP 도구는
+  계속 지연**된다.
+- 주입 스키마 = 전체 빌트인 스키마와 같은 **36,713 B**다.
+- 가장 무거운 스키마: `exec`(2.3 KiB), `write_stdin`(2.2 KiB),
+  `exec_command`(2.2 KiB), `manage_files`(1.9 KiB), `search_files`(1.8 KiB).
 
 **핵심(지연의 실효 절감)** — 지연된 도구는 요청 `tools`에 **아무것도 남기지 않는다**
 (요청측 대표 비용은 `tool_search` + `exec` 스키마뿐, 상수). 그래서 지연 풀이 커져도
@@ -80,11 +83,11 @@ result가 지배한다 — 그래서 아래 §3(오프로드)·§4(압축)가 �
 
 | 지연 MCP 도구 수 | 주입(불변) | 전량 주입 시 |     절감 |
 | ---------------: | ---------: | -----------: | -------: |
-|                0 |   25.0 KiB |     25.0 KiB |        0 |
-|               10 |   25.0 KiB |     32.2 KiB |  7.2 KiB |
-|               25 |   25.0 KiB |     43.1 KiB | 18.1 KiB |
-|               50 |   25.0 KiB |     61.2 KiB | 36.2 KiB |
-|              100 |   25.0 KiB |     97.5 KiB | 72.5 KiB |
+|                0 |   35.9 KiB |     35.9 KiB |        0 |
+|               10 |   35.9 KiB |     43.1 KiB |  7.2 KiB |
+|               25 |   35.9 KiB |     54.0 KiB | 18.1 KiB |
+|               50 |   35.9 KiB |     72.1 KiB | 36.2 KiB |
+|              100 |   35.9 KiB |    108.3 KiB | 72.5 KiB |
 
 → 요청측 도구 비용은 `O(directHot) + 상수`. 연결된 MCP/지연 도구 수와 **무관**하게 평평하다.
 

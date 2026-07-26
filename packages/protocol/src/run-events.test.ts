@@ -771,9 +771,24 @@ void test('subagent lifecycle payload guards preserve terminal metadata contract
       reason: 'daemon_restart',
       result: 'cancelled',
       resultRef: 'subagent-result:delivery-timeout',
+      resultDigest: `sha256:${'a'.repeat(64)}`,
+      completedAt: '2026-07-26T12:00:00.000Z',
       runtime,
     }),
     true,
+  );
+  assert.equal(
+    isSubagentTerminalEventPayload({
+      deliveryId: 'delivery-bad-digest',
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      subagentType: 'worker',
+      terminalState: 'failed',
+      ok: false,
+      result: 'failed',
+      resultDigest: 'sha256:not-a-digest',
+    }),
+    false,
   );
   assert.equal(
     isSubagentTerminalEventPayload({
@@ -898,6 +913,46 @@ void test('interject and tool result envelope guards preserve correlation invari
     isToolResultEventPayload({
       callId: 'call-1',
       step: 1,
+      tool: 'exec_command',
+      ok: false,
+      computerFilesMayHaveChanged: false,
+      displayText: 'blocked by plan approval',
+      raw: null,
+      errorCode: 'approval_required',
+      error: 'PLAN_APPROVAL_REQUIRED',
+      diagnostics: {
+        phase: 'admission',
+        reasonCode: 'plan_approval_required',
+        gate: {
+          kind: 'plan_approval',
+          effectivePermissionMode: 'full_access',
+        },
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isToolResultEventPayload({
+      callId: 'call-1',
+      step: 1,
+      tool: 'exec_command',
+      ok: false,
+      computerFilesMayHaveChanged: false,
+      displayText: 'failed',
+      raw: null,
+      errorCode: 'execution_failed',
+      error: 'failed',
+      diagnostics: {
+        phase: 'unknown_phase',
+        reasonCode: 'opaque_failure',
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isToolResultEventPayload({
+      callId: 'call-1',
+      step: 1,
       tool: 'read_file',
       ok: false,
       computerFilesMayHaveChanged: false,
@@ -978,6 +1033,12 @@ void test('subagent tool result guards accept owned success and rejection shapes
             terminalState: 'completed',
             ok: true,
             result: 'done',
+            resultReport: {
+              summary: 'compact handoff',
+              sourceResultRef: 'subagent-result:delivery-1',
+              sourceResultDigest:
+                'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+            },
           },
         ],
         pending: [],
@@ -997,6 +1058,27 @@ void test('subagent tool result guards accept owned success and rejection shapes
       },
     }),
     true,
+  );
+  assert.equal(
+    isAgentWaitToolRaw({
+      ok: true,
+      completed: [
+        {
+          childRunId: 'child-1',
+          terminalState: 'completed',
+          ok: true,
+          result: 'done',
+          resultReport: {
+            summary: 'compact handoff',
+            sourceResultRef: 'subagent-result:delivery-1',
+            sourceResultDigest: 'not-a-digest',
+          },
+        },
+      ],
+      pending: [],
+      blocked: [],
+    }),
+    false,
   );
   const rejectedSpawnRaw = {
     ok: false,
@@ -1667,17 +1749,67 @@ void test('subagent tool raw guards accept owned shapes and reject malformed raw
       ok: true,
       completed: [
         {
+          deliveryId: 'delivery-ref-only',
           childRunId: 'child-ref-only',
           terminalState: 'failed',
           ok: false,
           reason: 'provider_error',
           resultRef: 'subagent-result:delivery-ref-only',
+          resultDigest: `sha256:${'a'.repeat(64)}`,
+          parentRunId: RUN_ID,
+          childThreadId: THREAD_ID,
+          subagentType: 'worker',
+          capabilities: [],
+          toolSurface: 'worker',
+          completedAt: '2026-07-26T11:00:00.000Z',
+          elapsedMs: 1_250,
+          usage: {
+            inputTokens: 100,
+            outputTokens: 25,
+            cachedInputTokens: 10,
+          },
+          modelId: 'gpt-5.6-sol',
+          reasoningEffort: 'high',
         },
       ],
       pending: [],
       blocked: [],
     }),
     true,
+  );
+  assert.equal(
+    isAgentWaitToolRaw({
+      ok: true,
+      completed: [
+        {
+          deliveryId: ' ',
+          childRunId: 'child-bad-delivery',
+          terminalState: 'failed',
+          ok: false,
+          result: 'failed',
+        },
+      ],
+      pending: [],
+      blocked: [],
+    }),
+    false,
+  );
+  assert.equal(
+    isAgentWaitToolRaw({
+      ok: true,
+      completed: [
+        {
+          childRunId: 'child-ref-bad-digest',
+          terminalState: 'failed',
+          ok: false,
+          resultRef: 'subagent-result:delivery-bad-digest',
+          resultDigest: 'sha256:not-a-digest',
+        },
+      ],
+      pending: [],
+      blocked: [],
+    }),
+    false,
   );
   assert.equal(
     isAgentWaitToolRaw({

@@ -19,6 +19,10 @@ void test('createRunSessionViewModel combines visible projection with controller
 
   const viewModel = createRunSessionViewModel({
     selectedThreadId: THREAD_ID_VALUE,
+    workingDirectory: '/workspace',
+    setWorkingDirectory: () => {
+      seen.push('setWorkingDirectory');
+    },
     state: {
       phase: 'running',
       pendingStartThreadId: null,

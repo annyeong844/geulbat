@@ -72,7 +72,7 @@ export async function handleClientMessage(
         return;
       }
       try {
-        socketState.computerSessionId = message.computerSessionId;
+        socketState.computerSessionId = runtimeContext.computerSessionId;
         await recoverDurableRunsForSocket(
           socket,
           runtimeContext,
@@ -85,7 +85,12 @@ export async function handleClientMessage(
         if (!completeRunSocketAuthentication(socket)) {
           return;
         }
-        sendMessage(socket, { type: 'run.auth.ok', requestId, ok: true });
+        sendMessage(socket, {
+          type: 'run.auth.ok',
+          requestId,
+          ok: true,
+          computerSessionId: runtimeContext.computerSessionId,
+        });
         for (const threadId of message.threadSubscriptions ?? []) {
           await sendPlanningWorkflowSnapshot(socket, threadId, runtimeContext);
           await sendGoalSnapshot(socket, threadId, runtimeContext);
@@ -109,18 +114,6 @@ export async function handleClientMessage(
     }
 
     switch (message.type) {
-      case 'computer.session.end':
-        runtimeContext.approvalGate.clearComputerSessionRuntime(
-          socketState.computerSessionId,
-        );
-        sendMessage(socket, {
-          type: 'run.control',
-          requestId,
-          action: 'computer.session.end',
-          ok: true,
-        });
-        socket.close(1000, 'computer session ended');
-        return;
       case 'run.start':
         await dispatchRunStart({
           socket,
@@ -260,11 +253,6 @@ function buildDispatchLogContext(
 ): LoggerContext {
   switch (message.type) {
     case 'run.auth':
-      return {
-        messageType: message.type,
-        requestId: message.requestId,
-      };
-    case 'computer.session.end':
       return {
         messageType: message.type,
         requestId: message.requestId,

@@ -27,6 +27,7 @@ import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
 import { apiFetch, isApiOkResponse } from '../lib/api/client.js';
 import { deleteRunAttachmentBlob } from '../lib/api/files.js';
 import { getImageGenerationModelPref } from '../features/assistant/image-model-prefs.js';
+import { readGoalStartCommand } from '../features/assistant/goal-command.js';
 import {
   getVideoGenerationPref,
   type VideoGenerationPref,
@@ -203,14 +204,6 @@ export function buildPromptRunRequest({
         }
       : {}),
   };
-}
-
-function readGoalStartCommand(prompt: string): { objective: string } | null {
-  const match = /^\/goal\s+([\s\S]+)$/u.exec(prompt.trim());
-  const objective = match?.[1]?.trim();
-  return objective === undefined || objective.length === 0
-    ? null
-    : { objective };
 }
 
 // pref의 상세 옵션(길이·화면비·해상도)을 RunRequest.videoGenerationSettings

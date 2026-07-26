@@ -3,6 +3,7 @@ import { createLogger } from '@geulbat/structured-logger/logger';
 import { createSignal, type Signal } from '../../utils/signal.js';
 import type {
   BackgroundChildResult,
+  BackgroundChildResultInput,
   DurableSubagentTerminalOutcome,
   SubagentTerminalDeliveryStore,
 } from '../../subagent-runtime-contracts.js';
@@ -16,14 +17,18 @@ interface PendingBackgroundResults {
 function projectDurableOutcome(
   outcome: DurableSubagentTerminalOutcome,
 ): BackgroundChildResult {
-  return { ...outcome.result, resultRef: outcome.resultRef };
+  return {
+    ...outcome.result,
+    resultRef: outcome.resultRef,
+    resultDigest: outcome.resultDigest,
+  };
 }
 
 export interface BackgroundNotificationQueue {
   attachDurableStore(store: SubagentTerminalDeliveryStore): void;
   enqueueThreadBackgroundResult(
     threadId: ThreadId,
-    result: BackgroundChildResult,
+    result: BackgroundChildResultInput,
   ): void;
   consumeThreadBackgroundResults(threadId: ThreadId): BackgroundChildResult[];
   readThreadBackgroundResults(threadId: ThreadId): BackgroundChildResult[];
@@ -113,15 +118,21 @@ export function createThreadBackgroundNotificationQueue(): BackgroundNotificatio
           ?.emit(projectDurableOutcome(recorded.outcome));
         return;
       }
+      if (result.resultReportSummary !== undefined) {
+        throw new Error(
+          'durable subagent result storage is required for result reports',
+        );
+      }
+      const inMemoryResult: BackgroundChildResult = result;
       const pending = pendingByThread.get(key);
       if (pending) {
-        if (hasPendingDeliveryId(pending.results, result.deliveryId)) {
+        if (hasPendingDeliveryId(pending.results, inMemoryResult.deliveryId)) {
           return;
         }
-        pending.results.push(result);
+        pending.results.push(inMemoryResult);
       } else {
         pendingByThread.set(key, {
-          results: [result],
+          results: [inMemoryResult],
         });
       }
 
@@ -129,7 +140,7 @@ export function createThreadBackgroundNotificationQueue(): BackgroundNotificatio
       if (!signal) {
         return;
       }
-      signal.emit(result);
+      signal.emit(inMemoryResult);
     },
     consumeThreadBackgroundResults(threadId) {
       if (durableStore !== undefined) {

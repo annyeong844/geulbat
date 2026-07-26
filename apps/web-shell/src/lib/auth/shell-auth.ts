@@ -28,13 +28,11 @@ export function buildShellAuthHeaders(
 
 export function buildRunChannelAuthMessage(
   requestId: string,
-  computerSessionId: string,
   bootstrap: ShellAuthBootstrap = getShellAuthBootstrap(),
 ): RunChannelClientMessage {
   return {
     type: 'run.auth',
     requestId,
-    computerSessionId,
     token:
       bootstrap.mode === 'dev-token' && typeof bootstrap.token === 'string'
         ? bootstrap.token

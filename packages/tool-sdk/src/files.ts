@@ -21,6 +21,9 @@ export interface ReadFileOutput {
 export interface ListFilesInput {
   path?: string;
   recursive?: boolean;
+  maxDepth?: number;
+  excludeNames?: string[];
+  entryTypes?: Array<'file' | 'directory'>;
 }
 
 export interface ListFilesEntry {
@@ -156,6 +159,9 @@ export function readListFilesInput(
   }
   const path = value['path'];
   const recursive = value['recursive'];
+  const maxDepth = value['maxDepth'];
+  const excludeNames = value['excludeNames'];
+  const entryTypes = value['entryTypes'];
   if (
     path !== undefined &&
     (typeof path !== 'string' || path.trim().length === 0)
@@ -165,11 +171,46 @@ export function readListFilesInput(
   if (recursive !== undefined && typeof recursive !== 'boolean') {
     return { ok: false, message: 'recursive must be a boolean' };
   }
+  if (maxDepth !== undefined && !isPositiveSafeInteger(maxDepth)) {
+    return { ok: false, message: 'maxDepth must be a positive integer' };
+  }
+  if (maxDepth !== undefined && recursive !== true) {
+    return { ok: false, message: 'maxDepth requires recursive to be true' };
+  }
+  if (
+    excludeNames !== undefined &&
+    (!Array.isArray(excludeNames) ||
+      !excludeNames.every(
+        (entry) => typeof entry === 'string' && entry.trim().length > 0,
+      ))
+  ) {
+    return {
+      ok: false,
+      message: 'excludeNames must be an array of non-empty strings',
+    };
+  }
+  if (
+    entryTypes !== undefined &&
+    (!Array.isArray(entryTypes) ||
+      entryTypes.length === 0 ||
+      !entryTypes.every((entry) => entry === 'file' || entry === 'directory'))
+  ) {
+    return {
+      ok: false,
+      message:
+        'entryTypes must be a non-empty array containing file or directory',
+    };
+  }
   return {
     ok: true,
     value: {
       ...(path === undefined ? {} : { path }),
       ...(recursive === undefined ? {} : { recursive }),
+      ...(maxDepth === undefined ? {} : { maxDepth }),
+      ...(excludeNames === undefined ? {} : { excludeNames }),
+      ...(entryTypes === undefined
+        ? {}
+        : { entryTypes: [...entryTypes] as Array<'file' | 'directory'> }),
     },
   };
 }
@@ -180,6 +221,13 @@ export function encodeListFilesInput(
   return {
     path: input.path ?? '.',
     recursive: input.recursive ?? false,
+    ...(input.maxDepth === undefined ? {} : { maxDepth: input.maxDepth }),
+    ...(input.excludeNames === undefined
+      ? {}
+      : { excludeNames: [...input.excludeNames] }),
+    ...(input.entryTypes === undefined
+      ? {}
+      : { entryTypes: [...input.entryTypes] }),
   };
 }
 

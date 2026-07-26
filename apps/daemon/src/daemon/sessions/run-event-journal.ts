@@ -81,12 +81,14 @@ export function createRunEventJournalStore(args: {
   return {
     async read({ threadId, runId }) {
       const path = journalPath(root, threadId, runId);
-      const journal = await readJournal(threadId, runId);
-      journalStateByPath.set(path, {
-        exists: journal.exists,
-        eventCount: journal.events.length,
+      return await journalMutationSerial(path, async () => {
+        const journal = await readJournal(threadId, runId);
+        journalStateByPath.set(path, {
+          exists: journal.exists,
+          eventCount: journal.events.length,
+        });
+        return journal.events;
       });
-      return journal.events;
     },
     async readExisting({ threadId, runId }) {
       const journal = await readJournal(threadId, runId);

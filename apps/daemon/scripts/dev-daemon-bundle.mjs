@@ -7,12 +7,13 @@ import { context as createEsbuildContext } from 'esbuild';
 const daemonRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const repoRoot = resolve(daemonRoot, '../..');
 const workspacePackagePattern =
-  /^@geulbat\/(agent-loop|artifact-runtime-policy|content-identity|daemon|protocol|structured-logger|tool-library|xharness)(\/.*)?$/;
+  /^@geulbat\/(agent-loop|artifact-runtime-policy|content-identity|daemon|daemon-lifecycle|protocol|structured-logger|tool-library|xharness)(\/.*)?$/;
 const bundledWorkspacePackages = Object.freeze({
   'agent-loop': 'packages/agent-loop/src',
   'artifact-runtime-policy': 'packages/artifact-runtime-policy/src',
   'content-identity': 'packages/content-identity/src',
   daemon: 'apps/daemon/src',
+  'daemon-lifecycle': 'packages/daemon-lifecycle/src',
   protocol: 'packages/protocol/src',
   'structured-logger': 'packages/structured-logger/src',
   'tool-library': 'packages/tool-library/src',
@@ -109,6 +110,12 @@ export async function createDaemonDevBundleBuilder({
   // (apps/geulbat)도 굽고, 그때 appRoot는 그쪽을 가리킨다. 워커 소스는
   // 어느 앱을 굽든 언제나 apps/daemon에 있다.
   commandHostEntryPoint = join(root, 'apps/daemon/src/command-host/main.ts'),
+  // daemon lifecycle worker도 제품 프로세스와 독립된 IPC 프로세스다.
+  // 패키지 빌드의 worker.js와 같은 역할을 dev 번들 옆 mjs가 맡는다.
+  daemonLifecycleWorkerEntryPoint = join(
+    root,
+    'packages/daemon-lifecycle/src/worker.ts',
+  ),
   sourceRoots = getDaemonDevWatchRoots(root),
   createContext = createEsbuildContext,
   reportInfo = () => {},
@@ -122,6 +129,7 @@ export async function createDaemonDevBundleBuilder({
     entryPoints: {
       index: entryPoint,
       'command-host': commandHostEntryPoint,
+      'daemon-lifecycle-worker': daemonLifecycleWorkerEntryPoint,
     },
     bundle: true,
     external: ['@vscode/ripgrep', 'esbuild'],

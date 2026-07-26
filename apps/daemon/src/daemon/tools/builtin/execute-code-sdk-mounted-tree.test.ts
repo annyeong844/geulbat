@@ -17,7 +17,7 @@ const dockerTest =
   process.env.GEULBAT_RUN_DOCKER_E2E === '1' ? test : test.skip;
 
 void dockerTest(
-  'removed tool discovery and mounted SDK import share one pinned projection',
+  'direct-hot tool discovery and mounted SDK import share one pinned projection',
   async () => {
     const computerFileRoot = await mkdtemp(
       join(tmpdir(), 'geulbat-sdk-mounted-tree-computer-files-'),
@@ -102,7 +102,7 @@ void dockerTest(
       )
         .buildToolDefinitions({})
         .map((definition) => definition.name);
-      assert.equal(directNames.includes('search_memory_index'), false);
+      assert.equal(directNames.includes('search_memory_index'), true);
 
       const search = await executeTool(
         'tool_search',

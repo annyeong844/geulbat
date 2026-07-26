@@ -138,6 +138,7 @@ export const readToolOutputTool = defineZodTool({
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   exposure: {
     directHot: true,
     sdkVisible: true,

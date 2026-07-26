@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import {
   mkdir,
@@ -246,6 +246,7 @@ void test('authenticated thread detail restores acknowledged terminal worker his
           {
             ...terminalResult,
             resultRef: `subagent-result:${terminalResult.deliveryId}`,
+            resultDigest: `sha256:${createHash('sha256').update(terminalResult.result, 'utf8').digest('hex')}`,
           },
         ]);
       },

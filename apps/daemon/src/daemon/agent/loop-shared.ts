@@ -42,10 +42,16 @@ export function formatBackgroundResultNote(
   }
 
   const lines = ['Background child updates:'];
+  const preferDurableRefs = results.length > 1;
   for (const result of results) {
     const ok = result.terminalState === 'completed';
-    lines.push(`- type: ${result.subagentType}`);
+    lines.push(`- deliveryId: ${result.deliveryId}`);
+    lines.push(`  parentRunId: ${result.parentRunId}`);
+    lines.push(`  type: ${result.subagentType}`);
     lines.push(`  childRunId: ${result.childRunId}`);
+    if (result.childThreadId !== undefined) {
+      lines.push(`  childThreadId: ${result.childThreadId}`);
+    }
     lines.push(`  terminalState: ${result.terminalState}`);
     lines.push(`  completedAt: ${result.completedAt}`);
     if (result.reason !== undefined) {
@@ -54,8 +60,28 @@ export function formatBackgroundResultNote(
     if (result.resultRef !== undefined) {
       lines.push(`  resultRef: ${result.resultRef}`);
     }
+    if (result.resultDigest !== undefined) {
+      lines.push(`  resultDigest: ${result.resultDigest}`);
+    }
+    if (result.resultReport !== undefined) {
+      lines.push(`  reportSummary: ${result.resultReport.summary}`);
+      lines.push(
+        `  reportSourceResultRef: ${result.resultReport.sourceResultRef}`,
+      );
+      lines.push(
+        `  reportSourceResultDigest: ${result.resultReport.sourceResultDigest}`,
+      );
+    }
     lines.push(`  ok: ${ok ? 'true' : 'false'}`);
-    lines.push(`  result: ${result.result || '(empty)'}`);
+    if (preferDurableRefs && result.resultRef !== undefined) {
+      lines.push('  resultMode: refs');
+      lines.push(
+        '  result: omitted from this multi-child fan-in note; read resultRef with read_tool_output',
+      );
+    } else {
+      lines.push('  resultMode: inline');
+      lines.push(`  result: ${result.result || '(empty)'}`);
+    }
   }
   return lines.join('\n');
 }

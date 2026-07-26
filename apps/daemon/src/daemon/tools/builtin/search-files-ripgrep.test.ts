@@ -145,4 +145,17 @@ void test('buildRipgrepCloseError preserves non-cycle traversal failures', () =>
   assert.ok(error);
   assert.equal((error as Error & { code?: string }).code, 'execution_failed');
   assert.match(error.message, /Permission denied/u);
+  assert.deepEqual(
+    (
+      error as Error & {
+        toolFailureDiagnostics?: unknown;
+      }
+    ).toolFailureDiagnostics,
+    {
+      phase: 'content_scan',
+      reasonCode: 'ripgrep_exit_nonzero',
+      retryHint:
+        'Review the ripgrep diagnostic, then correct the pattern, include glob, or filesystem access before retrying.',
+    },
+  );
 });

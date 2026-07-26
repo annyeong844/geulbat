@@ -16,12 +16,19 @@ export function handleRunAuth(
   socket: WebSocket,
   requestId: string,
   token: string,
+  computerSessionId: string,
 ): void {
-  if (
-    authenticateRunSocket(socket, requestId, token) &&
-    completeRunSocketAuthentication(socket)
-  ) {
-    sendMessage(socket, { type: 'run.auth.ok', requestId, ok: true });
+  if (!authenticateRunSocket(socket, requestId, token)) {
+    return;
+  }
+  getSocketState(socket).computerSessionId = computerSessionId;
+  if (completeRunSocketAuthentication(socket)) {
+    sendMessage(socket, {
+      type: 'run.auth.ok',
+      requestId,
+      ok: true,
+      computerSessionId,
+    });
   }
 }
 

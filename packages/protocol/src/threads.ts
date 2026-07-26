@@ -3,13 +3,18 @@ import {
   isProviderReplayScopeId,
   type ProviderReplayScopeId,
 } from './provider-auth.js';
+import { isPermissionMode, type PermissionMode } from './run-approval.js';
 import {
   isRunModelId,
   isRunProviderId,
   isRunReasoningEffort,
+  isRunServiceTier,
+  isRunSubagentModelRouting,
   type RunModelId,
   type RunProviderId,
   type RunReasoningEffort,
+  type RunServiceTier,
+  type RunSubagentModelRouting,
 } from './run-contract.js';
 import { isCanonicalIsoTimestamp, isRecord } from './wire-value-guards.js';
 import { isJsonValue, type JsonValue } from './runtime-persistence.js';
@@ -74,6 +79,7 @@ interface ThreadDetailDiagnostics {
 export interface ThreadSubagentTerminalOutcome {
   deliveryId: string;
   resultRef?: string;
+  resultDigest?: `sha256:${string}`;
   parentRunId: RunId;
   childRunId: RunId;
   childThreadId?: ThreadId;
@@ -91,10 +97,19 @@ export interface ThreadSubagentTerminalOutcome {
   reasoningEffort?: RunReasoningEffort;
 }
 
+export interface ThreadRunPreferences {
+  workingDirectory: string;
+  permissionMode?: PermissionMode;
+  reasoningEffort?: RunReasoningEffort;
+  serviceTier?: RunServiceTier;
+  subagentModelRouting?: RunSubagentModelRouting;
+}
+
 export interface ThreadDetailResponse {
   threadId: ThreadId;
   snapshotVersion: string;
   activeModelId?: RunModelId;
+  runPreferences?: ThreadRunPreferences;
   messages: NonCompactionThreadMessage[];
   artifacts?: ThreadArtifactVersion[];
   diagnostics?: ThreadDetailDiagnostics;
@@ -580,6 +595,9 @@ export function isThreadSubagentTerminalOutcome(
     value.deliveryId.trim() === '' ||
     (value.resultRef !== undefined &&
       (typeof value.resultRef !== 'string' || value.resultRef.trim() === '')) ||
+    (value.resultDigest !== undefined &&
+      (typeof value.resultDigest !== 'string' ||
+        !/^sha256:[a-f0-9]{64}$/u.test(value.resultDigest))) ||
     typeof value.parentRunId !== 'string' ||
     !isRunId(value.parentRunId) ||
     typeof value.childRunId !== 'string' ||
@@ -635,6 +653,8 @@ export function isThreadDetailResponse(
     typeof value.snapshotVersion === 'string' &&
     value.snapshotVersion.trim() !== '' &&
     (value.activeModelId === undefined || isRunModelId(value.activeModelId)) &&
+    (value.runPreferences === undefined ||
+      isThreadRunPreferences(value.runPreferences)) &&
     Array.isArray(value.messages) &&
     value.messages.every(
       (message) => isThreadMessage(message) && message.role !== 'compaction',
@@ -647,6 +667,20 @@ export function isThreadDetailResponse(
     (value.subagentTerminalOutcomes === undefined ||
       (Array.isArray(value.subagentTerminalOutcomes) &&
         value.subagentTerminalOutcomes.every(isThreadSubagentTerminalOutcome)))
+  );
+}
+
+function isThreadRunPreferences(value: unknown): value is ThreadRunPreferences {
+  return (
+    isRecord(value) &&
+    typeof value.workingDirectory === 'string' &&
+    (value.permissionMode === undefined ||
+      isPermissionMode(value.permissionMode)) &&
+    (value.reasoningEffort === undefined ||
+      isRunReasoningEffort(value.reasoningEffort)) &&
+    (value.serviceTier === undefined || isRunServiceTier(value.serviceTier)) &&
+    (value.subagentModelRouting === undefined ||
+      isRunSubagentModelRouting(value.subagentModelRouting))
   );
 }
 

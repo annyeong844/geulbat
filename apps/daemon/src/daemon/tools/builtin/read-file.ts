@@ -42,6 +42,7 @@ export const readFileTool = defineZodTool({
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   resultProjection: {
     exactDurableRecovery: true,
     modelProjection: 'read_file_summary',

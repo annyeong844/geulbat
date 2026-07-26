@@ -13,7 +13,7 @@ void test('binds the default prompt behavior to one content-redacted identity', 
     componentId: 'geulbat.daemon.prompt-port',
     componentVersion: '5',
     behaviorDigest:
-      'sha256:387f9051b6557e4c89fef47695a7b1b2eb0005ccaf0a1af260227e822af140b8',
+      'sha256:2982cee53d2a085c66f9ada026544153f48de8288b19273918ab368dbb5113d2',
   });
   assert.equal(Object.isFrozen(AGENT_LOOP_PROMPT_COMPONENT_IDENTITY), true);
 });

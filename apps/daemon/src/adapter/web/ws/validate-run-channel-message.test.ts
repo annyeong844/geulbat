@@ -7,7 +7,6 @@ void test('readRunChannelClientMessage accepts valid run.auth payloads', () => {
     type: 'run.auth',
     requestId: 'req-auth',
     token: 'geulbat-dev-token',
-    computerSessionId: 'computer-session-validation',
   });
 
   assert.deepEqual(result, {
@@ -16,24 +15,19 @@ void test('readRunChannelClientMessage accepts valid run.auth payloads', () => {
       type: 'run.auth',
       requestId: 'req-auth',
       token: 'geulbat-dev-token',
-      computerSessionId: 'computer-session-validation',
     },
   });
 });
 
-void test('readRunChannelClientMessage accepts exact computer-session end messages', () => {
-  assert.deepEqual(
+void test('readRunChannelClientMessage rejects browser-owned computer session authority', () => {
+  assert.equal(
     readRunChannelClientMessage({
-      type: 'computer.session.end',
-      requestId: 'req-computer-session-end',
-    }),
-    {
-      ok: true,
-      message: {
-        type: 'computer.session.end',
-        requestId: 'req-computer-session-end',
-      },
-    },
+      type: 'run.auth',
+      requestId: 'req-auth',
+      token: 'geulbat-dev-token',
+      computerSessionId: 'caller-must-not-select-this',
+    }).ok,
+    false,
   );
   assert.equal(
     readRunChannelClientMessage({
@@ -234,7 +228,6 @@ void test('readRunChannelClientMessage rejects blank request ids centrally', () 
       type: 'run.auth',
       requestId: '   ',
       token: 'geulbat-dev-token',
-      computerSessionId: 'computer-session-validation',
     }),
     { ok: false, message: 'requestId is required' },
   );

@@ -1,16 +1,22 @@
 import { HomeShell } from './HomeShell.js';
-import { useAppShell } from './use-app-shell.js';
+import { useProviderAuthState } from './use-provider-auth-state.js';
 import './App.css';
 
 export function App() {
-  const appShell = useAppShell();
+  const providerAuth = useProviderAuthState();
 
   return (
     <>
-      <HomeShell {...appShell.homeProps} />
-      {appShell.providerAuthNotice ? (
+      <HomeShell
+        providerAuthStatuses={providerAuth.providerAuthStatuses}
+        providerAuthBusyProviderId={providerAuth.providerAuthBusyProviderId}
+        providerAuthErrors={providerAuth.providerAuthErrors}
+        onConnectProvider={providerAuth.handleConnectProvider}
+        onDisconnectProvider={providerAuth.handleDisconnectProvider}
+      />
+      {providerAuth.providerAuthNotice ? (
         <div className="app-toast" role="status" aria-live="polite">
-          {appShell.providerAuthNotice}
+          {providerAuth.providerAuthNotice}
         </div>
       ) : null}
     </>

@@ -67,6 +67,39 @@ void test('run event journal appends contiguous batches and survives recreation'
   );
 });
 
+void test('concurrent reads cannot rewind the append cursor', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-events-'));
+  const threadId = testThreadId(906);
+  const runId = assertSessionRunId('run-event-journal-concurrent-read');
+  const store = createRunEventJournalStore({ stateRoot });
+  const eventCount = 32;
+  const payload = 'x'.repeat(32 * 1024);
+
+  for (let seq = 0; seq < eventCount; seq += 1) {
+    await Promise.all([
+      store.append({
+        threadId,
+        runId,
+        events: [
+          {
+            seq,
+            event: {
+              type: 'commentary_delta',
+              payload: { text: payload },
+            },
+          },
+        ],
+      }),
+      store.read({ threadId, runId }),
+    ]);
+  }
+
+  assert.deepEqual(
+    (await store.read({ threadId, runId })).map(({ seq }) => seq),
+    Array.from({ length: eventCount }, (_, seq) => seq),
+  );
+});
+
 void test('run event journal round-trips an offloaded agent_wait tool result', async () => {
   // 2026-07-21 S0 회귀 잠금 — emit 경로가 오프로드 슬림 raw로 기록한
   // agent_wait tool_result를 재독(재접속 복구)이 거부하면, 그 저널은 영구

@@ -585,7 +585,7 @@ function ManuscriptEmptyState(props: {
   return (
     <div className="manuscript-empty">
       <div className="manuscript-empty-icon">✎</div>
-      <div className="manuscript-empty-title">폴더를 열어 시작하세요</div>
+      <div className="manuscript-empty-title">오늘의 글밭</div>
       <div className="manuscript-empty-actions" aria-label="시작 작업">
         <button
           type="button"

@@ -13,6 +13,7 @@ import type { RunModelId } from '@geulbat/protocol/run-contract';
 import type {
   ThreadDetailResponse,
   ThreadMessage,
+  ThreadRunPreferences,
   ThreadSubagentTerminalOutcome,
   ThreadSummary,
 } from '@geulbat/protocol/threads';
@@ -39,7 +40,9 @@ interface UseThreadSessionsResult {
   threads: ThreadSummary[];
   threadError: string | null;
   selectedThreadId: string | null;
+  newSessionGeneration: number;
   activeModelId: RunModelId | null;
+  runPreferences: ThreadRunPreferences | null;
   messages: ThreadMessage[];
   artifacts: ThreadArtifactVersion[];
   subagentTerminalOutcomes: ThreadSubagentTerminalOutcome[];
@@ -208,7 +211,9 @@ export function useThreadSessions(): UseThreadSessionsResult {
   const {
     selectedThreadId,
     setSelectedThreadId,
+    newSessionGeneration,
     activeModelId,
+    runPreferences,
     messages,
     artifacts,
     subagentTerminalOutcomes,
@@ -424,7 +429,9 @@ export function useThreadSessions(): UseThreadSessionsResult {
     threads,
     threadError,
     selectedThreadId,
+    newSessionGeneration,
     activeModelId,
+    runPreferences,
     messages,
     artifacts,
     subagentTerminalOutcomes,

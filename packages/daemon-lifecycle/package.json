@@ -1,0 +1,37 @@
+{
+  "name": "@geulbat/daemon-lifecycle",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist/"
+  ],
+  "exports": {
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    },
+    "./daemon-child": {
+      "types": "./dist/daemon-child.d.ts",
+      "import": "./dist/daemon-child.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test:files": "node ../../scripts/run-workspace-node-tests.mjs --workspace daemon-lifecycle --tsconfig ./tsconfig.test.json",
+    "test": "npm run test:files -- \"**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

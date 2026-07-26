@@ -224,7 +224,21 @@ export const searchFilesTool = defineZodTool({
         output: JSON.stringify({ ...source, ...rgResult }),
       };
     } catch (err: unknown) {
-      return catchToolError(err);
+      const failure = catchToolError(err);
+      if (failure.ok || failure.diagnostics !== undefined) {
+        return failure;
+      }
+      return {
+        ...failure,
+        diagnostics: {
+          phase: searchType === 'content' ? 'content_scan' : 'filename_scan',
+          reasonCode: 'search_failed',
+          retryHint:
+            searchType === 'content'
+              ? 'Check the search pattern, include glob, and path, then retry.'
+              : 'Check the filename glob and path, then retry.',
+        },
+      };
     }
   },
 });

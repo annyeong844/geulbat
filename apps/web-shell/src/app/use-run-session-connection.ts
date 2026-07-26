@@ -18,7 +18,7 @@ import { requestComputerTreeRefresh } from './run-session-computer-tree-refresh.
 
 interface RunSessionConnectionClient extends Pick<
   RunChannelClient,
-  'subscribe' | 'endComputerSession' | 'acknowledgeEvent'
+  'subscribe' | 'close' | 'acknowledgeEvent'
 > {
   connect(): Promise<unknown>;
 }
@@ -271,16 +271,9 @@ export function useRunSessionConnection({
         requestConnection();
       }
     };
-    const handlePageHide = (event: PageTransitionEvent) => {
-      if (!event.persisted) {
-        client.endComputerSession();
-      }
-    };
-
     requestConnection();
     pageDocument?.addEventListener('visibilitychange', handleVisibilityChange);
     pageWindow?.addEventListener('pageshow', requestConnection);
-    pageWindow?.addEventListener('pagehide', handlePageHide);
     return () => {
       disposed = true;
       pageDocument?.removeEventListener(
@@ -288,9 +281,8 @@ export function useRunSessionConnection({
         handleVisibilityChange,
       );
       pageWindow?.removeEventListener('pageshow', requestConnection);
-      pageWindow?.removeEventListener('pagehide', handlePageHide);
       streamBatchController.clearPendingStreamEffects();
-      client.endComputerSession();
+      client.close();
     };
   }, [client]);
 }

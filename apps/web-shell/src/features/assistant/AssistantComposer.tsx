@@ -53,6 +53,7 @@ import {
 import { ContextUsageRing } from './context-usage-ring.js';
 import { AssistantComposerApprovalMenu } from './assistant-composer-approval-menu.js';
 import { AssistantComposerModelMenu } from './assistant-composer-model-menu.js';
+import { readGoalStartCommand } from './goal-command.js';
 
 // 어시스턴트에게 보낼 첨부 — 업로드된 binary-input ref를 가리키고,
 // 전송 시 run 요청에 실려 모델 입력(이미지/파일 본문)으로 전달된다
@@ -153,6 +154,7 @@ export function AssistantComposer({
   imageProviderConnected = {},
 }: AssistantComposerProps) {
   const [input, setInput] = useState('');
+  const goalStartCommand = readGoalStartCommand(input);
   // 제안은 빈 입력에서만 보인다 — 사용자가 뭐라도 쓰기 시작하면 물러난다.
   const activeSuggestion =
     followupSuggestion !== null && followupSuggestion !== '' && input === ''
@@ -388,6 +390,16 @@ export function AssistantComposer({
       ) : null}
       {/* 입력과 컨트롤이 한 카드 — 질문 창이 아래 컨트롤 줄까지 이어진다 */}
       <div className="input-shell">
+        {goalStartCommand !== null ? (
+          <span
+            className="composer-goal-command-indicator"
+            role="status"
+            aria-label="목표 명령을 인식했어요. 목표로 실행합니다."
+          >
+            <span className="composer-goal-command-token">/goal</span>
+            <span className="composer-goal-command-label">목표로 실행</span>
+          </span>
+        ) : null}
         <textarea
           ref={inputRef}
           name="assistant-message"

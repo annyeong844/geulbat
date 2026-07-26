@@ -38,6 +38,7 @@ void test('sendMessage sends only while the websocket is open', () => {
       type: 'run.auth.ok',
       requestId: 'auth-ok',
       ok: true,
+      computerSessionId: daemonContext.computerSessionId,
     });
     assert.equal(socket.sentFrames.length, 1);
 
@@ -46,6 +47,7 @@ void test('sendMessage sends only while the websocket is open', () => {
       type: 'run.auth.ok',
       requestId: 'ignored',
       ok: true,
+      computerSessionId: daemonContext.computerSessionId,
     });
     assert.equal(socket.sentFrames.length, 1);
   } finally {
@@ -189,6 +191,7 @@ void test('ensureThreadBackgroundSubscription subscribes once and forwards backg
         terminalState: 'completed',
         result: 'done',
         resultRef: 'subagent-result:delivery-live',
+        resultDigest: `sha256:${'a'.repeat(64)}`,
         completedAt: '2026-03-30T00:00:00.000Z',
       },
     );
@@ -210,6 +213,8 @@ void test('ensureThreadBackgroundSubscription subscribes once and forwards backg
         ok: true,
         result: 'done',
         resultRef: 'subagent-result:delivery-live',
+        resultDigest: `sha256:${'a'.repeat(64)}`,
+        completedAt: '2026-03-30T00:00:00.000Z',
       });
     }
   } finally {

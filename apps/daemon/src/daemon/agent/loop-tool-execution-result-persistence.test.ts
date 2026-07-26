@@ -635,6 +635,11 @@ void test('failed tool_result keeps structured event raw while history and trans
       output: JSON.stringify(rawFailure),
       errorCode: 'execution_failed',
       error: 'structured failure',
+      diagnostics: {
+        phase: 'content_scan',
+        reasonCode: 'ripgrep_exit_nonzero',
+        retryHint: 'Correct the search pattern, then retry.',
+      },
     },
     computerFilesMayHaveChanged: false,
     runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
@@ -657,6 +662,11 @@ void test('failed tool_result keeps structured event raw while history and trans
     raw: rawFailure,
     errorCode: 'execution_failed',
     error: 'structured failure',
+    diagnostics: {
+      phase: 'content_scan',
+      reasonCode: 'ripgrep_exit_nonzero',
+      retryHint: 'Correct the search pattern, then retry.',
+    },
   });
 
   const liveOutput =
@@ -667,6 +677,11 @@ void test('failed tool_result keeps structured event raw while history and trans
       ok: false,
       errorCode: 'execution_failed',
       error: 'structured failure',
+      diagnostics: {
+        phase: 'content_scan',
+        reasonCode: 'ripgrep_exit_nonzero',
+        retryHint: 'Correct the search pattern, then retry.',
+      },
       details: rawFailure,
     }),
   );
@@ -727,6 +742,11 @@ void test('large failed tool_result stores exact diagnostics before one replay-s
       output: rawFailure,
       errorCode: 'execution_failed',
       error: 'command could not be started',
+      diagnostics: {
+        phase: 'command_start',
+        reasonCode: 'runtime_closed',
+        retryHint: 'Restart the command runtime, then retry.',
+      },
     },
     resultProjection: {
       exactDurableRecovery: true,
@@ -749,6 +769,11 @@ void test('large failed tool_result stores exact diagnostics before one replay-s
     ok?: boolean;
     errorCode?: string;
     error?: string;
+    diagnostics?: {
+      phase?: string;
+      reasonCode?: string;
+      retryHint?: string;
+    };
     details?: {
       ok?: boolean;
       offloaded?: boolean;
@@ -760,6 +785,11 @@ void test('large failed tool_result stores exact diagnostics before one replay-s
   assert.equal(failureEnvelope.ok, false);
   assert.equal(failureEnvelope.errorCode, 'execution_failed');
   assert.equal(failureEnvelope.error, 'command could not be started');
+  assert.deepEqual(failureEnvelope.diagnostics, {
+    phase: 'command_start',
+    reasonCode: 'runtime_closed',
+    retryHint: 'Restart the command runtime, then retry.',
+  });
   assert.equal(failureEnvelope.details?.ok, false);
   assert.equal(failureEnvelope.details?.offloaded, true);
   assert.equal(

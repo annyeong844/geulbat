@@ -66,6 +66,12 @@ export function buildRipgrepCloseError(args: {
       new Error(`ripgrep error (exit ${exitCode}): ${stderr.slice(0, 200)}`),
       {
         code: 'execution_failed',
+        toolFailureDiagnostics: {
+          phase: 'content_scan',
+          reasonCode: 'ripgrep_exit_nonzero',
+          retryHint:
+            'Review the ripgrep diagnostic, then correct the pattern, include glob, or filesystem access before retrying.',
+        },
       },
     );
   }

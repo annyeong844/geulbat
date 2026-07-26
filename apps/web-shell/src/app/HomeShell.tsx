@@ -29,6 +29,7 @@ import {
 import { getErrorMessage } from '../lib/error-message.js';
 import {
   isShellCenterHidden,
+  resolveShellLayoutForWidth,
   type HomeShellProps,
   type ShellLayoutModeId,
 } from './home-shell.js';
@@ -89,6 +90,19 @@ export function HomeShell(props: HomeShellProps) {
     requestEditorSurface,
   });
   const [layoutMode, setLayoutMode] = useState<ShellLayoutModeId>('default');
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === 'undefined'
+      ? Number.POSITIVE_INFINITY
+      : window.innerWidth,
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const handleResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
   // ↖으로 세션 관리를 열 때 중앙이 숨는 모드였다면, 그 모드를 기억했다가 닫을
   // 때 되돌린다. null이면 레이아웃을 건드리지 않았다는 뜻(복원하지 않음).
   const [preSessionLayout, setPreSessionLayout] =
@@ -107,19 +121,28 @@ export function HomeShell(props: HomeShellProps) {
     'editor'
   > | null>(null);
   // 채팅 모드에서는 중앙(에디터)이 내려가고 채팅이 그 자리를 차지한다
-  const centerHidden = isShellCenterHidden(
-    layoutMode,
+  const artifactSurfaceOpen =
     artifactSurface.artifactSurfaceMode !== null &&
-      artifactSurface.centerArtifact !== null,
+    artifactSurface.centerArtifact !== null;
+  const effectiveLayoutMode = resolveShellLayoutForWidth({
+    preferredMode: layoutMode,
+    viewportWidth,
+    leftWidth,
+    rightWidth,
+    artifactSurfaceOpen,
+  });
+  const centerHidden = isShellCenterHidden(
+    effectiveLayoutMode,
+    artifactSurfaceOpen,
   );
   const leftCollapsed =
-    layoutMode === 'no-tree' ||
-    layoutMode === 'editor-only' ||
-    layoutMode === 'chat-only';
+    effectiveLayoutMode === 'no-tree' ||
+    effectiveLayoutMode === 'editor-only' ||
+    effectiveLayoutMode === 'chat-only';
   const rightCollapsed =
     !centerHidden &&
-    (layoutMode === 'no-chat' ||
-      layoutMode === 'editor-only' ||
+    (effectiveLayoutMode === 'no-chat' ||
+      effectiveLayoutMode === 'editor-only' ||
       artifactSurface.artifactExpanded);
 
   // 세션 관리 화면 열기/닫기 — 중앙이 숨는 모드에서 열면 탐색기 접기로 나오고,
@@ -270,7 +293,7 @@ export function HomeShell(props: HomeShellProps) {
         </div>
       ) : null}
       <div
-        className={`shell layout-${layoutMode}`}
+        className={`shell layout-${effectiveLayoutMode}`}
         style={{ gridTemplateColumns: gridColumns }}
       >
         {/* ─── 좌측 — 파일 관리 (§2.2) ─── */}
@@ -364,7 +387,7 @@ export function HomeShell(props: HomeShellProps) {
           {rightCollapsed ? (
             <span className="panel-reopen right">
               <ShellLayoutMenu
-                mode={layoutMode}
+                mode={effectiveLayoutMode}
                 onSelect={setLayoutMode}
                 buttonClassName="panel-reopen-button"
               />
@@ -526,7 +549,7 @@ export function HomeShell(props: HomeShellProps) {
                 세션
               </button>
               <ShellLayoutMenu
-                mode={layoutMode}
+                mode={effectiveLayoutMode}
                 onSelect={setLayoutMode}
                 buttonClassName="rail-icon-button layout-cycle"
               />

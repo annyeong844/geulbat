@@ -33,6 +33,7 @@ void test('builtin registry leaves PTC exec cell tools without outer watchdog ti
 void test('builtin registry leaves host command tools without outer watchdog timeout', () => {
   const registry = createBuiltinToolRegistryStore();
 
+  assertToolHasNoWatchdogTimeout(registry, 'inspect_git');
   assertToolHasNoWatchdogTimeout(registry, 'exec_command');
   assertToolHasNoWatchdogTimeout(registry, 'write_stdin');
 });

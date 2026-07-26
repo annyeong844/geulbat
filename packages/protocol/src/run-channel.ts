@@ -39,14 +39,8 @@ interface RunAuthMessage {
   type: 'run.auth';
   requestId: string;
   token: string;
-  computerSessionId: string;
   runEventCursors?: RunEventReplayCursor[];
   threadSubscriptions?: ThreadId[];
-}
-
-interface ComputerSessionEndMessage {
-  type: 'computer.session.end';
-  requestId: string;
 }
 
 interface RunStartMessage {
@@ -173,7 +167,6 @@ export type RunToolResultPayload =
  */
 export type RunChannelClientMessage =
   | RunAuthMessage
-  | ComputerSessionEndMessage
   | RunStartMessage
   | RunCancelMessage
   | RunChildCancelMessage
@@ -191,6 +184,7 @@ interface RunAuthOkMessage {
   type: 'run.auth.ok';
   requestId: string;
   ok: true;
+  computerSessionId: string;
 }
 
 interface RunEventMessage {
@@ -235,13 +229,6 @@ interface RunApproveControlMessage {
   type: 'run.control';
   requestId: string;
   action: 'run.approve';
-  ok: true;
-}
-
-interface ComputerSessionEndControlMessage {
-  type: 'run.control';
-  requestId: string;
-  action: 'computer.session.end';
   ok: true;
 }
 
@@ -311,7 +298,6 @@ export type RunControlMessage =
   | RunCancelControlMessage
   | RunChildCancelControlMessage
   | RunApproveControlMessage
-  | ComputerSessionEndControlMessage
   | PlanWorkflowCommandControlMessage
   | GoalCommandControlMessage
   | RunInterjectControlMessage
@@ -347,15 +333,12 @@ export function isRunAuthMessage(value: unknown): value is RunAuthMessage {
       'type',
       'requestId',
       'token',
-      'computerSessionId',
       'runEventCursors',
       'threadSubscriptions',
     ]) &&
     value.type === 'run.auth' &&
     isString(value.requestId) &&
     isString(value.token) &&
-    isString(value.computerSessionId) &&
-    value.computerSessionId.trim().length > 0 &&
     (value.runEventCursors === undefined ||
       (Array.isArray(value.runEventCursors) &&
         value.runEventCursors.every(isRunEventReplayCursor))) &&
@@ -364,17 +347,6 @@ export function isRunAuthMessage(value: unknown): value is RunAuthMessage {
         value.threadSubscriptions.every(
           (threadId) => isString(threadId) && isThreadId(threadId),
         )))
-  );
-}
-
-export function isComputerSessionEndMessage(
-  value: unknown,
-): value is ComputerSessionEndMessage {
-  return (
-    isRecord(value) &&
-    hasOnlyKeys(value, ['type', 'requestId']) &&
-    value.type === 'computer.session.end' &&
-    isString(value.requestId)
   );
 }
 
@@ -581,7 +553,6 @@ type RunControlFieldGuardMap = {
 };
 
 const RUN_CONTROL_FIELD_GUARDS = {
-  'computer.session.end': {},
   'run.cancel': {},
   'run.child.cancel': {},
   'run.approve': {},
@@ -650,7 +621,12 @@ export function isRunChannelServerMessage(
 
   switch (value.type) {
     case 'run.auth.ok':
-      return isString(value.requestId) && value.ok === true;
+      return (
+        isString(value.requestId) &&
+        value.ok === true &&
+        isString(value.computerSessionId) &&
+        value.computerSessionId.trim().length > 0
+      );
     case 'run.event':
       return isRunEvent(value.event);
     case 'plan.workflow':

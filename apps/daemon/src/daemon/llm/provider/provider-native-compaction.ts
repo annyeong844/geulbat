@@ -19,6 +19,10 @@ import {
 } from './grok-oauth-transport.js';
 import { decideProviderRetryPolicy } from './provider-retry-policy.js';
 import {
+  resolveQwenContextCapacityPolicy,
+  type QwenContextCapacityPolicy,
+} from './qwen/index.js';
+import {
   assertProviderReplayScope,
   createProviderReplayScopeId,
   requireProviderReplayScopeId,
@@ -71,6 +75,10 @@ interface GrokNativeCompactionPolicy {
 export type ProviderNativeCompactionPolicy =
   | OpenAiNativeCompactionPolicy
   | GrokNativeCompactionPolicy;
+
+export type ProviderContextCapacityPolicy =
+  | ProviderNativeCompactionPolicy
+  | QwenContextCapacityPolicy;
 
 interface CompactOpenAiHistoryResult {
   output: ProviderNativeCompactionOutputItem[];
@@ -335,17 +343,21 @@ export async function compactGrokHistory(
   };
 }
 
-export async function resolveProviderNativeCompactionPolicy(
+export async function resolveProviderContextCapacityPolicy(
   input: ProviderNativeCompactionInput,
-): Promise<ProviderNativeCompactionPolicy> {
+): Promise<ProviderContextCapacityPolicy> {
   switch (input.providerRequestOptions.providerId) {
     case 'openai_codex_direct':
       return await resolveOpenAiNativeCompactionPolicy(input);
     case 'grok_oauth':
       return await resolveGrokNativeCompactionPolicy(input);
+    case 'qwen_token_plan':
+      return resolveQwenContextCapacityPolicy(
+        input.providerRequestOptions.model,
+      );
     default:
       throw new Error(
-        'provider-native compaction is not available for the selected provider',
+        'context capacity is unavailable for the selected provider',
       );
   }
 }

@@ -461,6 +461,9 @@ function withToolResultOutput(
         output,
         errorCode: toolResult.errorCode,
         error: toolResult.error,
+        ...(toolResult.diagnostics === undefined
+          ? {}
+          : { diagnostics: toolResult.diagnostics }),
       };
 }
 

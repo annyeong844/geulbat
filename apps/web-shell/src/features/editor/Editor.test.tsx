@@ -121,8 +121,9 @@ void test('Editor shows the empty state before a file is opened', () => {
     />,
   );
 
-  assert.match(html, /폴더를 열어 시작하세요/);
-  assert.match(html, /폴더 열기/);
+  assert.doesNotMatch(html, /폴더를 열어 시작하세요/);
+  assert.match(html, /오늘의 글밭/);
+  assert.match(html, />폴더 열기</);
   assert.match(html, /최근 파일/);
   assert.match(html, /roadmap\.md/);
   assert.match(html, /agent-notes\.md/);

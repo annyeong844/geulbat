@@ -206,6 +206,75 @@ void test('list_files includes hidden and ignored-looking host entries', async (
   );
 });
 
+void test('list_files bounds recursive depth and prunes caller-selected basenames', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-list-bounded-'),
+  );
+  await mkdir(join(computerFileRoot, 'src', 'deep'), { recursive: true });
+  await mkdir(join(computerFileRoot, 'node_modules', 'package'), {
+    recursive: true,
+  });
+  await mkdir(join(computerFileRoot, '.audit'), { recursive: true });
+  await writeFile(join(computerFileRoot, 'README.md'), 'overview\n', 'utf8');
+  await writeFile(
+    join(computerFileRoot, 'src', 'index.ts'),
+    'export {};\n',
+    'utf8',
+  );
+  await writeFile(
+    join(computerFileRoot, 'src', 'deep', 'nested.ts'),
+    'export {};\n',
+    'utf8',
+  );
+  await writeFile(
+    join(computerFileRoot, 'node_modules', 'package', 'index.js'),
+    'module.exports = {};\n',
+    'utf8',
+  );
+  await writeFile(join(computerFileRoot, '.audit', 'report.json'), '{}\n');
+
+  const result = await listFilesTool.execute(
+    {
+      recursive: true,
+      maxDepth: 2,
+      excludeNames: ['node_modules', '.audit'],
+      entryTypes: ['directory'],
+    },
+    { callId: 'call-list-bounded', computerFileRoot },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    entries: Array<{ path: string }>;
+  };
+  assert.deepEqual(
+    payload.entries.map((entry) => entry.path),
+    ['src', 'src/deep'],
+  );
+});
+
+void test('list_files rejects an empty entry type selection', async () => {
+  const result = await listFilesTool.execute(
+    { entryTypes: [] },
+    { callId: 'call-list-empty-entry-types', computerFileRoot: '/' },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /entryTypes/u);
+});
+
+void test('list_files requires recursive traversal when maxDepth is set', async () => {
+  const result = await listFilesTool.execute(
+    { recursive: false, maxDepth: 2 },
+    { callId: 'call-list-depth-without-recursive', computerFileRoot: '/' },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /maxDepth.*recursive/u);
+});
+
 void test('list_files follows a directory symlink regardless of its target name', async (t) => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-list-computer-'),

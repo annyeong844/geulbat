@@ -27,6 +27,7 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
     'fetch_url',
     'generate_image',
     'generate_video',
+    'inspect_git',
     'list_commands',
     'list_files',
     'manage_files',
@@ -38,6 +39,7 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
     'search_memory_index',
     'set_thread_title',
     'skill_search',
+    'submit_result_report',
     'suggest_followup',
     'tool_search',
     'update_goal',
@@ -59,6 +61,7 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
   assert.ok(registry.getTool('agent_wait'));
   assert.ok(registry.getTool('exec'));
   assert.ok(registry.getTool('exec_command'));
+  assert.ok(registry.getTool('inspect_git'));
   assert.equal(registry.getTool('execute_code'), undefined);
   assert.ok(registry.getTool('fetch_url'));
   assert.equal(registry.getTool('web_fetch'), undefined);
@@ -83,6 +86,7 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
   assert.ok(registry.getTool('search_memory_index'));
   assert.ok(registry.getTool('set_thread_title'));
   assert.ok(registry.getTool('skill_search'));
+  assert.ok(registry.getTool('submit_result_report'));
   assert.ok(registry.getTool('tool_search'));
   assert.ok(registry.getTool('wait'));
 });
@@ -121,6 +125,7 @@ void test('registry read paths expose eagerly registered builtin tools', () => {
   assert.ok(names.includes('write_file'));
   assert.ok(registry.getToolMeta('manage_files'));
   assert.ok(registry.getToolMeta('exec_command'));
+  assert.ok(registry.getToolMeta('inspect_git'));
 });
 
 void test('agent_spawn advertises subagent launch batching through tool metadata', () => {
@@ -145,10 +150,16 @@ void test('builtin result projection capabilities are registry-owned and indepen
     modelProjection: 'runtime_summary',
     snapshotFailure: 'inline',
   });
+  assert.deepEqual(registry.getToolMeta('inspect_git')?.resultProjection, {
+    exactDurableRecovery: true,
+    modelProjection: 'runtime_summary',
+    snapshotFailure: 'fail_closed',
+  });
   assert.deepEqual(registry.getToolMeta('read_file')?.resultProjection, {
     exactDurableRecovery: true,
     modelProjection: 'read_file_summary',
     snapshotFailure: 'fail_closed',
   });
   assert.equal(registry.getToolMeta('exec_command')?.requiresApproval, true);
+  assert.equal(registry.getToolMeta('inspect_git')?.requiresApproval, false);
 });

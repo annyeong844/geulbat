@@ -278,6 +278,7 @@ function projectRunChannelRuntimeContext(
     approvalGate: daemonContext.approvalGate,
     artifactFrameToolDispatch: daemonContext.artifactFrameToolDispatch,
     backgroundNotifications: daemonContext.backgroundNotifications,
+    computerSessionId: daemonContext.computerSessionId,
     liveRunEvents: daemonContext.liveRunEvents,
     runCheckpoints: daemonContext.runCheckpoints,
     planningWorkflows: daemonContext.planningWorkflows,

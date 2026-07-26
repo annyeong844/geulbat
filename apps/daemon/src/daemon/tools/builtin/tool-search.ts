@@ -79,6 +79,7 @@ export function createToolSearchTool(deps: {
     sideEffectLevel: 'none',
     mayMutateComputerFiles: false,
     requiresApproval: false,
+    recoveryStrategy: 'replay_safe',
     catalogSearchMetadata: {
       family: 'catalog',
       searchHints: ['find tool', 'search tools', 'tool catalog'],

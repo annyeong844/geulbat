@@ -22,21 +22,26 @@ const RUN_STATUS_VERBS = [
 
 const VERB_ROTATION_MS = 15_000;
 
+type RunStatusActivity = {
+  kind: 'tool' | 'context';
+  label: string;
+};
+
 // 지금 무엇을 하는지 힌트 — 마지막 활동 엔트리가 실행 중이면 그 이름을,
 // 끝났으면 모델 차례이므로 null(기본 문구만)을 돌려준다.
 export function resolveRunStatusActivity(
   entries: readonly RunTranscriptEntry[],
   providerRuntime: ProviderRuntimeStatusEventPayload | null = null,
-): string | null {
+): RunStatusActivity | null {
   const providerActivity =
     providerRuntime?.phase === 'auth_waiting'
-      ? '제공자 인증 갱신 대기'
+      ? { kind: 'context' as const, label: '제공자 인증 갱신 대기' }
       : providerRuntime?.phase === 'rate_limit_waiting'
-        ? '요청 제한 해제 대기'
+        ? { kind: 'context' as const, label: '요청 제한 해제 대기' }
         : providerRuntime?.phase === 'provider_waiting'
-          ? '모델 응답 대기'
+          ? { kind: 'context' as const, label: '모델 응답 대기' }
           : providerRuntime?.phase === 'provider_streaming'
-            ? '응답 생성 중'
+            ? { kind: 'context' as const, label: '응답 생성 중' }
             : null;
 
   for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -46,12 +51,12 @@ export function resolveRunStatusActivity(
     }
     if (entry.kind === 'tool_activity') {
       return entry.state === 'running'
-        ? `${entry.tool} 실행 중`
+        ? { kind: 'tool', label: entry.tool }
         : providerActivity;
     }
     if (entry.kind === 'subagent_activity') {
       return entry.state === 'spawned' || entry.state === 'approval_required'
-        ? '보조 작업 진행 중'
+        ? { kind: 'context', label: '보조 작업 진행 중' }
         : providerActivity;
     }
   }
@@ -92,26 +97,46 @@ export function RunStatusRow(props: {
     props.transcriptEntries,
     props.providerRuntime ?? null,
   );
+  const activeTool = activity?.kind === 'tool' ? activity.label : null;
   const usage = props.usageTotals ?? null;
-  const usageLabel = usage !== null ? ` · ${formatRunUsageMeta(usage)}` : '';
-  const activityAgeLabel =
+  const activityAge =
     props.providerRuntime === null || props.providerRuntime === undefined
-      ? ''
-      : ` · 활동 경과 ${formatElapsedDuration(
+      ? null
+      : `활동 경과 ${formatElapsedDuration(
           Math.max(0, nowMs - Date.parse(props.providerRuntime.observedAt)),
         )}`;
+  const metaItems = [
+    formatElapsedDuration(elapsedMs),
+    ...(activity?.kind === 'context' ? [activity.label] : []),
+    ...(activityAge === null ? [] : [activityAge]),
+    ...(usage === null ? [] : [formatRunUsageMeta(usage)]),
+  ];
 
   return (
-    <div className="run-status-row" role="status" aria-live="off">
+    <div
+      className={`run-status-row${
+        activeTool === null ? '' : ' run-status-row--tool-active'
+      }`}
+      role="status"
+      aria-live="off"
+    >
       <span className="run-status-glyph" aria-hidden="true">
         ✻
       </span>
-      <span>
-        {verb}… ({formatElapsedDuration(elapsedMs)}
-        {activity ? ` · ${activity}` : ''}
-        {activityAgeLabel}
-        {usageLabel})
-      </span>
+      <span className="run-status-verb">{verb}…</span>
+      {activeTool === null ? null : (
+        <span
+          className="run-status-active-tool"
+          aria-label={`${activeTool} 실행 중`}
+          title={`${activeTool} 실행 중`}
+        >
+          <span className="run-status-active-tool-sparkle" aria-hidden="true">
+            ✦
+          </span>
+          <span className="run-status-active-tool-name">{activeTool}</span>
+        </span>
+      )}
+      <span className="run-status-meta">{metaItems.join(' · ')}</span>
     </div>
   );
 }

@@ -47,7 +47,7 @@ function pump() {
   }
   process.exit(0);
 }
-pump();`;
+process.stdin.once('data', pump);`;
 
 async function readRssBytes(pid: number): Promise<number | undefined> {
   try {
@@ -123,7 +123,7 @@ void test('T4: a flood past a stalled subscriber stays bounded everywhere', asyn
     threadId: THREAD_ID,
     runId: 'run-load',
     callId: 'call-load',
-    stdinMode: 'closed',
+    stdinMode: 'open',
   });
   assert.equal(started.ok, true);
   if (!started.ok) {
@@ -147,6 +147,20 @@ void test('T4: a flood past a stalled subscriber stays bounded everywhere', asyn
   t.after(() => {
     stalled.socket.destroy();
   });
+
+  // subscriber가 실제로 멈춘 뒤에만 홍수를 시작한다. coverage 계측처럼 child
+  // 시작이 느린 환경에서도 attach 전 출력으로 테스트 계약을 우회하지 않는다.
+  const released = await runtime.interact({
+    stateRoot,
+    threadId: THREAD_ID,
+    outputRef: started.outputRef,
+    chars: 'start',
+    yieldTimeMs: 0,
+  });
+  assert.equal(released.ok, true);
+  if (!released.ok) {
+    return;
+  }
 
   // 홍수가 흐르는 동안 워커 RSS를 계속 지켜본다.
   let peakRss = baselineRss;

@@ -50,7 +50,7 @@ void test('useRunSessionConnection subscribes before connect so auth-time replay
         }
       };
     },
-    endComputerSession() {},
+    close() {},
   } satisfies RunSessionConnectionClient;
 
   const hook = await renderHook(useRunSessionConnection, {
@@ -100,8 +100,7 @@ void test('useRunSessionConnection connects on mount and retries immediately whe
   });
 
   let connectCount = 0;
-  let endComputerSessionCount = 0;
-  let computerSessionEnded = false;
+  let closeCount = 0;
   let hook: { unmount(): void } | undefined;
   const fakeClient = {
     async connect() {
@@ -113,12 +112,8 @@ void test('useRunSessionConnection connects on mount and retries immediately whe
     subscribe() {
       return () => {};
     },
-    endComputerSession() {
-      if (computerSessionEnded) {
-        return;
-      }
-      computerSessionEnded = true;
-      endComputerSessionCount += 1;
+    close() {
+      closeCount += 1;
     },
   } satisfies RunSessionConnectionClient;
 
@@ -148,7 +143,7 @@ void test('useRunSessionConnection connects on mount and retries immediately whe
     const cachedPageHide = new Event('pagehide');
     Object.defineProperty(cachedPageHide, 'persisted', { value: true });
     pageWindow.dispatchEvent(cachedPageHide);
-    assert.equal(endComputerSessionCount, 0);
+    assert.equal(closeCount, 0);
 
     pageWindow.dispatchEvent(new Event('pageshow'));
     assert.equal(connectCount, 3);
@@ -156,14 +151,14 @@ void test('useRunSessionConnection connects on mount and retries immediately whe
     const terminalPageHide = new Event('pagehide');
     Object.defineProperty(terminalPageHide, 'persisted', { value: false });
     pageWindow.dispatchEvent(terminalPageHide);
-    assert.equal(endComputerSessionCount, 1);
+    assert.equal(closeCount, 0);
 
     hook.unmount();
     hook = undefined;
     pageDocument.dispatchEvent(new Event('visibilitychange'));
     pageWindow.dispatchEvent(new Event('pageshow'));
     assert.equal(connectCount, 3);
-    assert.equal(endComputerSessionCount, 1);
+    assert.equal(closeCount, 1);
   } finally {
     hook?.unmount();
     if (previousDocument === undefined) {
@@ -183,7 +178,7 @@ void test('useRunSessionConnection keeps a single subscription across rerenders 
   let listener: ((message: RunChannelServerMessage) => void) | null = null;
   let subscribeCount = 0;
   let unsubscribeCount = 0;
-  let endComputerSessionCount = 0;
+  let closeCount = 0;
   const seen: string[] = [];
   const fakeClient = {
     async connect() {},
@@ -200,8 +195,8 @@ void test('useRunSessionConnection keeps a single subscription across rerenders 
         }
       };
     },
-    endComputerSession() {
-      endComputerSessionCount += 1;
+    close() {
+      closeCount += 1;
     },
   } satisfies RunSessionConnectionClient;
 
@@ -290,7 +285,7 @@ void test('useRunSessionConnection keeps a single subscription across rerenders 
 
   hook.unmount();
   assert.equal(unsubscribeCount, 1);
-  assert.equal(endComputerSessionCount, 1);
+  assert.equal(closeCount, 1);
 });
 
 void test('useRunSessionConnection reports Computer tree refresh failures', async () => {
@@ -310,7 +305,7 @@ void test('useRunSessionConnection reports Computer tree refresh failures', asyn
         }
       };
     },
-    endComputerSession() {},
+    close() {},
   } satisfies RunSessionConnectionClient;
 
   const hook = await renderHook(useRunSessionConnection, {
@@ -388,7 +383,7 @@ void test('useRunSessionConnection batches consecutive stream and display update
         }
       };
     },
-    endComputerSession() {},
+    close() {},
   } satisfies RunSessionConnectionClient;
 
   const hook = await renderHook(useRunSessionConnection, {
@@ -554,7 +549,7 @@ void test('useRunSessionConnection flushes pending stream text before settle eff
         }
       };
     },
-    endComputerSession() {},
+    close() {},
   } satisfies RunSessionConnectionClient;
 
   const hook = await renderHook(useRunSessionConnection, {
@@ -674,7 +669,7 @@ void test('useRunSessionConnection sequences terminal replay after snapshot sett
         }
       };
     },
-    endComputerSession() {},
+    close() {},
   } satisfies RunSessionConnectionClient;
 
   const hook = await renderHook(useRunSessionConnection, {

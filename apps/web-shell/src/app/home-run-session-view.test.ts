@@ -85,6 +85,8 @@ function createRunSessionViewModelStub(
     handleCancel: async () => {},
     stopChildRun: async () => {},
     ...overrides,
+    workingDirectory: overrides.workingDirectory ?? null,
+    setWorkingDirectory: overrides.setWorkingDirectory ?? (() => {}),
     goal: overrides.goal ?? null,
   };
 }
@@ -141,6 +143,7 @@ void test('createHomeRunSessionView derives assistant presentation props', () =>
       state: 'failed',
       reason: 'daemon_restart',
       result: 'partial history',
+      completedAt: '2026-07-23T10:00:00.000Z',
     },
   ]);
   assert.deepEqual(view.assistant.runState, {

@@ -154,6 +154,69 @@ void test('buildResponseWireInput replays opaque provider output before function
   ]);
 });
 
+void test('buildResponseWireInput replays hosted tool-search discovery before its function output', () => {
+  const toolSearchCallItem = {
+    id: 'tsc_1',
+    type: 'tool_search_call',
+    execution: 'server',
+    call_id: null,
+    status: 'completed',
+    arguments: { paths: ['search_memory_index'] },
+  };
+  const toolSearchOutputItem = {
+    id: 'tso_1',
+    type: 'tool_search_output',
+    execution: 'server',
+    call_id: null,
+    status: 'completed',
+    tools: [
+      {
+        type: 'function',
+        name: 'search_memory_index',
+        description: 'Search the memory index.',
+        defer_loading: true,
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+          required: ['query'],
+          additionalProperties: false,
+        },
+        strict: true,
+      },
+    ],
+  };
+  const functionCallItem = {
+    id: 'fc_tool_search',
+    type: 'function_call',
+    call_id: 'call_tool_search',
+    name: 'search_memory_index',
+    arguments: '{"query":"acceptance codeword"}',
+  };
+
+  assert.deepEqual(
+    buildResponseWireInput([
+      { kind: 'backend_item', data: toolSearchCallItem },
+      { kind: 'backend_item', data: toolSearchOutputItem },
+      { kind: 'backend_item', data: functionCallItem },
+      {
+        kind: 'function_call_output',
+        callId: 'call_tool_search',
+        output: '{"results":[]}',
+      },
+    ]),
+    [
+      toolSearchCallItem,
+      toolSearchOutputItem,
+      functionCallItem,
+      {
+        type: 'function_call_output',
+        call_id: 'call_tool_search',
+        output: '{"results":[]}',
+      },
+    ],
+  );
+});
+
 void test('buildResponseWireInput rejects persisted provider state from another replay scope', () => {
   const currentScope = `sha256:${'1'.repeat(64)}` as ProviderReplayScopeId;
   const otherScope = `sha256:${'2'.repeat(64)}` as ProviderReplayScopeId;

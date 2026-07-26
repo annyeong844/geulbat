@@ -56,7 +56,7 @@ const agentWaitParameters = {
     result_mode: {
       type: 'string',
       description:
-        'inline returns exact child result bodies and is the default. refs returns durable resultRef values without copying available SQLite-backed bodies into the coordinator context.',
+        'inline returns exact child result bodies. refs returns durable resultRef values plus digest and terminal provenance without copying available SQLite-backed bodies into the coordinator context. Omitted mode defaults to inline for one child and refs for multiple children.',
       enum: [...AGENT_WAIT_RESULT_MODES],
     },
   },
@@ -158,8 +158,9 @@ function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
 
       const ownerThreadId = ctx.threadId;
       const waitMode = args.wait_mode ?? 'snapshot';
-      const resultMode = args.result_mode ?? 'inline';
       const childRunIds = [...new Set(args.child_run_ids)];
+      const resultMode =
+        args.result_mode ?? (childRunIds.length > 1 ? 'refs' : 'inline');
       const services: AgentWaitServices = ctx.runtimeServices;
       const registry = services.childRuns;
       const launchRequestStore = services.subagent.launchRequests;
@@ -520,14 +521,36 @@ function projectDurableTerminalStatus(
 ) {
   const result = terminal.result;
   return {
+    deliveryId: result.deliveryId,
     childRunId: result.childRunId,
     terminalState: result.terminalState,
     ok: result.terminalState === 'completed',
     ...(result.reason === undefined ? {} : { reason: result.reason }),
     ...(resultMode === 'inline' ? { result: result.result } : {}),
+    parentRunId: result.parentRunId,
+    ...(result.childThreadId === undefined
+      ? {}
+      : { childThreadId: result.childThreadId }),
+    subagentType: result.subagentType,
+    ...(result.capabilities === undefined || result.toolSurface === undefined
+      ? {}
+      : {
+          capabilities: result.capabilities,
+          toolSurface: result.toolSurface,
+        }),
     ...(result.runtime === undefined ? {} : { runtime: result.runtime }),
+    completedAt: result.completedAt,
+    ...(result.elapsedMs === undefined ? {} : { elapsedMs: result.elapsedMs }),
+    ...(result.usage === undefined ? {} : { usage: result.usage }),
+    ...(result.modelId === undefined ? {} : { modelId: result.modelId }),
+    ...(result.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: result.reasoningEffort }),
     resultRef: terminal.resultRef,
     resultDigest: terminal.resultDigest,
+    ...(result.resultReport === undefined
+      ? {}
+      : { resultReport: result.resultReport }),
   };
 }
 

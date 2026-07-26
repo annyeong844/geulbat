@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   createApprovalGate,
   type ApprovalGate,
@@ -225,6 +227,7 @@ const TOOL_LIBRARY_PTC_REACHABLE_POLICY = Object.freeze({
 });
 
 interface DaemonContextOptions {
+  computerSessionId?: string | undefined;
   homeStateRoot?: string | undefined;
   hostCommands?: {
     inlineMaxBytes?: number;
@@ -276,6 +279,7 @@ export interface DaemonContext {
   backgroundNotifications: BackgroundNotificationQueue;
   childRuns: ChildRunRegistry;
   computerDirectoryPicker: ComputerDirectoryPicker;
+  computerSessionId: string;
   computerFileScope?: ComputerFileScope;
   computerFileRoot?: string;
   homeStateRoot: string;
@@ -737,6 +741,7 @@ export function createDaemonContext(
     backgroundNotifications,
     childRuns: createChildRunRegistry(),
     computerDirectoryPicker,
+    computerSessionId: options.computerSessionId ?? randomUUID(),
     ...(computerFileScope === undefined ? {} : { computerFileScope }),
     ...(computerFileRoot === undefined ? {} : { computerFileRoot }),
     homeStateRoot,

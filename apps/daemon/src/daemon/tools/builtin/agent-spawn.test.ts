@@ -568,6 +568,7 @@ void test('agent_spawn allows an explicitly PTC-enabled explorer to launch neste
 
   await nestedStarted;
   assert.deepEqual(capturedDirectRegistryNames, [
+    'inspect_git',
     'list_files',
     'read_file',
     'read_tool_output',
@@ -579,8 +580,10 @@ void test('agent_spawn allows an explicitly PTC-enabled explorer to launch neste
     'agent_stop',
     'agent_set_priority',
     'agent_retry',
+    'submit_result_report',
   ]);
   assert.deepEqual(capturedAllowedRegistryNames, [
+    'inspect_git',
     'list_files',
     'read_file',
     'read_tool_output',
@@ -592,6 +595,7 @@ void test('agent_spawn allows an explicitly PTC-enabled explorer to launch neste
     'agent_stop',
     'agent_set_priority',
     'agent_retry',
+    'submit_result_report',
   ]);
   assert.equal(capturedPromptProfile, 'explorer');
   assert.ok(capturedAllowedRegistryNames?.includes('agent_spawn'));
@@ -677,6 +681,7 @@ void test('agent_spawn keeps ordinary explorers on the typed read and orchestrat
     await delay(10);
   }
   const expectedToolNames = [
+    'inspect_git',
     'list_files',
     'read_file',
     'read_tool_output',
@@ -685,6 +690,7 @@ void test('agent_spawn keeps ordinary explorers on the typed read and orchestrat
     'agent_stop',
     'agent_set_priority',
     'agent_retry',
+    'submit_result_report',
   ];
   assert.deepEqual(capturedDirectRegistryNames, expectedToolNames);
   assert.deepEqual(capturedAllowedRegistryNames, expectedToolNames);
@@ -1443,6 +1449,7 @@ void test('agent_spawn carries one admitted child tool policy without the legacy
   assert.equal(capturedToolCapabilityPolicy, admittedToolCapabilityPolicy);
   assert.equal(capturedLegacyToolSurface, false);
   const expectedWorkerToolNames = [
+    'inspect_git',
     'list_files',
     'read_file',
     'read_tool_output',
@@ -1454,6 +1461,7 @@ void test('agent_spawn carries one admitted child tool policy without the legacy
     'agent_stop',
     'agent_set_priority',
     'agent_retry',
+    'submit_result_report',
   ].sort();
   assert.deepEqual(capturedDirectRegistryNames, expectedWorkerToolNames);
   assert.deepEqual(capturedAllowedRegistryNames, expectedWorkerToolNames);

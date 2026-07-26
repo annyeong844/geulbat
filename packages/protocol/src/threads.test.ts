@@ -46,6 +46,13 @@ void test('thread response guards validate Home thread identities without projec
       threadId: VALID_THREAD_ID,
       snapshotVersion: '2026-04-11T00:00:00.000Z',
       activeModelId: 'grok-4.5',
+      runPreferences: {
+        workingDirectory: '/workspace',
+        permissionMode: 'full_access',
+        reasoningEffort: 'high',
+        serviceTier: 'standard',
+        subagentModelRouting: { mode: 'auto' },
+      },
       messages: [],
       diagnostics: {
         unlinkedPersistedArtifactCount: 1,
@@ -67,6 +74,30 @@ void test('thread response guards validate Home thread identities without projec
       threadId: VALID_THREAD_ID,
       snapshotVersion: '2026-04-11T00:00:00.000Z',
       activeModelId: 'not-a-run-model',
+      messages: [],
+    }),
+    false,
+  );
+  assert.equal(
+    isThreadDetailResponse({
+      threadId: VALID_THREAD_ID,
+      snapshotVersion: '2026-04-11T00:00:00.000Z',
+      runPreferences: {
+        workingDirectory: '/workspace',
+        permissionMode: 'unbounded',
+      },
+      messages: [],
+    }),
+    false,
+  );
+  assert.equal(
+    isThreadDetailResponse({
+      threadId: VALID_THREAD_ID,
+      snapshotVersion: '2026-04-11T00:00:00.000Z',
+      runPreferences: {
+        workingDirectory: '/workspace',
+        reasoningEffort: 'unbounded',
+      },
       messages: [],
     }),
     false,
@@ -117,6 +148,7 @@ void test('thread detail validates durable terminal worker history diagnostics',
   const terminalOutcome = {
     deliveryId: 'delivery-worker-terminal',
     resultRef: 'subagent-result:delivery-worker-terminal',
+    resultDigest: `sha256:${'a'.repeat(64)}`,
     parentRunId: 'run-parent',
     childRunId: 'run-child-retry',
     childThreadId: VALID_THREAD_ID,
@@ -149,6 +181,13 @@ void test('thread detail validates durable terminal worker history diagnostics',
   };
 
   assert.equal(isThreadSubagentTerminalOutcome(terminalOutcome), true);
+  assert.equal(
+    isThreadSubagentTerminalOutcome({
+      ...terminalOutcome,
+      resultDigest: 'sha256:not-a-digest',
+    }),
+    false,
+  );
   assert.equal(
     isThreadSubagentTerminalOutcome({
       ...terminalOutcome,

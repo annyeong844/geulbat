@@ -729,6 +729,88 @@ void test('memory port reports unknown admission when policy or exact input usag
   ]);
 });
 
+void test('memory port resolves Qwen capacity and publishes exact usage without claiming native compaction', async () => {
+  const contextUsage: ContextUsageUpdatedEventPayload[] = [];
+  const qwenOptions = {
+    ...TEST_PROVIDER_REQUEST_OPTIONS,
+    providerId: 'qwen_token_plan' as const,
+    model: 'qwen3.8-max-preview',
+  };
+  const common = {
+    workspaceRoot: '/unused',
+    threadId: testThreadId(97),
+    history: [] as HistoryItem[],
+    systemPrompt: 'system',
+    tools: [],
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: qwenOptions,
+  };
+  const port = createAgentLoopMemoryPort();
+  const firstRound = port.beginContextBudgetRound({
+    ...common,
+    onContextUsage(snapshot) {
+      contextUsage.push(snapshot);
+    },
+  });
+
+  assert.deepEqual(
+    await firstRound.onProviderRequestPrepared(testRequestMeasurement(1_000)),
+    { kind: 'send' },
+  );
+  assert.deepEqual(
+    await port.compactAfterModelRound({
+      ...common,
+      contextBudgetRound: firstRound,
+      inputTokens: 500_000,
+    }),
+    {
+      kind: 'not_needed',
+      reason: 'provider_not_supported',
+    },
+  );
+  assert.deepEqual(contextUsage, [
+    {
+      state: 'measured',
+      quality: 'unknown',
+      modelId: 'qwen3.8-max-preview',
+      requestBytes: 1_000,
+      contextWindow: 1_000_000,
+      thresholdTokens: 850_000,
+    },
+    {
+      state: 'measured',
+      quality: 'exact',
+      modelId: 'qwen3.8-max-preview',
+      inputTokens: 500_000,
+      contextWindow: 1_000_000,
+      thresholdTokens: 850_000,
+      requestBytes: 1_000,
+    },
+  ]);
+
+  const nearPolicyRound = port.beginContextBudgetRound({
+    ...common,
+    onContextUsage(snapshot) {
+      contextUsage.push(snapshot);
+    },
+  });
+  assert.deepEqual(
+    await nearPolicyRound.onProviderRequestPrepared(
+      testRequestMeasurement(1_800),
+    ),
+    { kind: 'send' },
+  );
+  assert.deepEqual(contextUsage.at(-1), {
+    state: 'measured',
+    quality: 'estimated',
+    modelId: 'qwen3.8-max-preview',
+    inputTokens: 900_000,
+    contextWindow: 1_000_000,
+    thresholdTokens: 850_000,
+    requestBytes: 1_800,
+  });
+});
+
 void test('memory port keeps calibration and policy separate when the model changes', async () => {
   const contextUsage: ContextUsageUpdatedEventPayload[] = [];
   const port = createAgentLoopMemoryPort({

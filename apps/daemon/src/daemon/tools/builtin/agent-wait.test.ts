@@ -135,7 +135,10 @@ void test('agent_wait recovers an exact durable terminal outcome after the child
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-agent-wait-'));
   const ownerThreadId = testThreadId(112);
   const childRunId = testRunId('durable-terminal-child');
+  const parentRunId = testRunId('durable-terminal-parent');
+  const childThreadId = testThreadId(113);
   const deliveryId = 'delivery-agent-wait-recovery';
+  const resultReportSummary = '원문을 보존한 간결한 결과 보고';
   const store = await createDaemonRuntimeStateStore({
     homeStateRoot: stateRoot,
   });
@@ -143,15 +146,21 @@ void test('agent_wait recovers an exact durable terminal outcome after the child
     ownerThreadId,
     result: {
       deliveryId,
-      parentRunId: testRunId('durable-terminal-parent'),
+      parentRunId,
       childRunId,
-      childThreadId: testThreadId(113),
+      childThreadId,
       subagentType: 'worker',
       terminalState: 'completed',
       result: 'exact recovered child result',
+      resultReportSummary,
       completedAt: '2026-07-23T04:30:00.000Z',
     },
   });
+  const resultReport = {
+    summary: resultReportSummary,
+    sourceResultRef: recorded.outcome.resultRef,
+    sourceResultDigest: recorded.outcome.resultDigest,
+  };
   const daemonContext = createDaemonContext({
     subagentTerminalDeliveries: store,
   });
@@ -172,12 +181,18 @@ void test('agent_wait recovers an exact durable terminal outcome after the child
       ok: true,
       completed: [
         {
+          deliveryId,
           childRunId,
           terminalState: 'completed',
           ok: true,
           result: 'exact recovered child result',
+          parentRunId,
+          childThreadId,
+          subagentType: 'worker',
+          completedAt: '2026-07-23T04:30:00.000Z',
           resultRef: recorded.outcome.resultRef,
           resultDigest: sha256Digest('exact recovered child result'),
+          resultReport,
         },
       ],
       pending: [],
@@ -191,12 +206,18 @@ void test('agent_wait recovers an exact durable terminal outcome after the child
     assert.equal(joined.ok, true);
     assert.deepEqual(JSON.parse(joined.output).completed, [
       {
+        deliveryId,
         childRunId,
         terminalState: 'completed',
         ok: true,
         result: 'exact recovered child result',
+        parentRunId,
+        childThreadId,
+        subagentType: 'worker',
+        completedAt: '2026-07-23T04:30:00.000Z',
         resultRef: recorded.outcome.resultRef,
         resultDigest: sha256Digest('exact recovered child result'),
+        resultReport,
       },
     ]);
   } finally {
@@ -270,9 +291,14 @@ void test('agent_wait recovers a child retired while a blocking join is active',
     assert.equal(result.ok, true);
     assert.deepEqual(JSON.parse(result.output).completed, [
       {
+        deliveryId: 'delivery-agent-wait-terminal-race',
         childRunId,
         terminalState: 'completed',
         ok: true,
+        parentRunId: testRunId('durable-terminal-race-parent'),
+        childThreadId: testThreadId(118),
+        subagentType: 'explorer',
+        completedAt: '2026-07-23T14:00:00.000Z',
         resultRef: recorded.outcome.resultRef,
         resultDigest: sha256Digest(
           'result persisted while agent_wait is blocked',
@@ -301,9 +327,19 @@ void test('agent_wait returns a durable mixed-outcome result-ref bundle after re
       childRunId: completedChildRunId,
       childThreadId: testThreadId(115),
       subagentType: 'explorer',
+      capabilities: ['ptc'],
+      toolSurface: 'explorer_ptc',
       terminalState: 'completed',
       result: 'large completed body that should not enter fan-in',
       completedAt: '2026-07-23T13:00:00.000Z',
+      elapsedMs: 1_250,
+      usage: {
+        inputTokens: 1_000,
+        outputTokens: 250,
+        cachedInputTokens: 400,
+      },
+      modelId: 'gpt-5.6-sol',
+      reasoningEffort: 'high',
     },
   }).outcome;
   const failed = store.recordSubagentTerminalDelivery({
@@ -314,6 +350,8 @@ void test('agent_wait returns a durable mixed-outcome result-ref bundle after re
       childRunId: failedChildRunId,
       childThreadId: testThreadId(116),
       subagentType: 'worker',
+      capabilities: [],
+      toolSurface: 'worker',
       terminalState: 'failed',
       reason: 'provider_error',
       result: 'large failed body that should not enter fan-in',
@@ -335,7 +373,6 @@ void test('agent_wait returns a durable mixed-outcome result-ref bundle after re
     const result = await agentWaitTool.execute(
       {
         child_run_ids: [completedChildRunId, failedChildRunId],
-        result_mode: 'refs',
       },
       executionContext,
     );
@@ -345,19 +382,41 @@ void test('agent_wait returns a durable mixed-outcome result-ref bundle after re
       ok: true,
       completed: [
         {
+          deliveryId: 'delivery-durable-ref-completed',
           childRunId: completedChildRunId,
           terminalState: 'completed',
           ok: true,
+          parentRunId: testRunId('durable-ref-parent'),
+          childThreadId: testThreadId(115),
+          subagentType: 'explorer',
+          capabilities: ['ptc'],
+          toolSurface: 'explorer_ptc',
+          completedAt: '2026-07-23T13:00:00.000Z',
+          elapsedMs: 1_250,
+          usage: {
+            inputTokens: 1_000,
+            outputTokens: 250,
+            cachedInputTokens: 400,
+          },
+          modelId: 'gpt-5.6-sol',
+          reasoningEffort: 'high',
           resultRef: completed.resultRef,
           resultDigest: sha256Digest(
             'large completed body that should not enter fan-in',
           ),
         },
         {
+          deliveryId: 'delivery-durable-ref-failed',
           childRunId: failedChildRunId,
           terminalState: 'failed',
           ok: false,
           reason: 'provider_error',
+          parentRunId: testRunId('durable-ref-parent'),
+          childThreadId: testThreadId(116),
+          subagentType: 'worker',
+          capabilities: [],
+          toolSurface: 'worker',
+          completedAt: '2026-07-23T13:00:01.000Z',
           resultRef: failed.resultRef,
           resultDigest: sha256Digest(
             'large failed body that should not enter fan-in',

@@ -279,6 +279,9 @@ function publishBackgroundChildTerminalOutcome(args: {
         terminalState: outcome.terminalState,
         ...(outcome.terminalReason ? { reason: outcome.terminalReason } : {}),
         result: outcome.terminalResult,
+        ...(outcome.resultReportSummary === undefined
+          ? {}
+          : { resultReportSummary: outcome.resultReportSummary }),
         completedAt: new Date().toISOString(),
         ...(elapsedMs !== undefined ? { elapsedMs } : {}),
         ...(hasRunUsageTotals(usageTotals) ? { usage: usageTotals } : {}),

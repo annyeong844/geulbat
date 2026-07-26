@@ -7,6 +7,7 @@ import {
   buildQwenPromptCacheProjection,
   getQwenTokenPlanConnectionStatus,
   loadQwenTokenPlanConfig,
+  resolveQwenContextCapacityPolicy,
   resolveQwenTokenPlanConfig,
 } from './index.js';
 
@@ -25,6 +26,19 @@ void test('Qwen Token Plan defaults to the official global chat-completions endp
   );
   assert.match(config.credentialIdentity, /^[a-f0-9]{64}$/u);
   assert.equal(config.credentialIdentity.includes(apiKey), false);
+});
+
+void test('Qwen context capacity is explicit for the admitted preview model and rejects unknown models', () => {
+  assert.deepEqual(resolveQwenContextCapacityPolicy('qwen3.8-max-preview'), {
+    providerId: 'qwen_token_plan',
+    model: 'qwen3.8-max-preview',
+    contextWindow: 1_000_000,
+    thresholdTokens: 850_000,
+  });
+  assert.throws(
+    () => resolveQwenContextCapacityPolicy('qwen-future-model'),
+    /context capacity is unavailable/u,
+  );
 });
 
 void test('Qwen Token Plan accepts the official China base and trims one custom trailing slash', () => {

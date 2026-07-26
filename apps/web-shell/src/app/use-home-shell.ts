@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { createHomeShellView, type HomeShellProps } from './home-shell.js';
 import { createHomeFilesInput } from './home-files-input.js';
@@ -26,24 +26,31 @@ export function useHomeShell({
 }: HomeShellProps) {
   const files = useComputerFiles();
   const threads = useThreadSessions();
-  // cwd는 파일 권한이나 탐색 위치가 아니라, 상대 경로와 명령의 명시적
-  // 시작점이다. 사용자가 고르기 전에는 daemon의 Computer 홈 기본값을 쓴다.
-  const [workingDirectory, setWorkingDirectory] = useState<string | null>(null);
-  const workingDirectorySelectedRef = useRef(false);
   const navigateIntoBrowseDirectory = files.navigateInto;
-  useEffect(() => {
-    if (!workingDirectorySelectedRef.current && files.browseEnabled) {
-      setWorkingDirectory(files.browseStartPath);
-    }
-  }, [files.browseEnabled, files.browseStartPath]);
+  const runSession = useRunSession({
+    selectedFile: files.selectedFile,
+    selectedThreadId: threads.selectedThreadId,
+    newSessionGeneration: threads.newSessionGeneration,
+    activeModelId: threads.activeModelId,
+    runPreferences: threads.runPreferences,
+    loadThreads: threads.loadThreads,
+    loadTree: files.loadTree,
+    openFile: files.openFile,
+    appendOptimisticUserMessage: threads.appendOptimisticUserMessage,
+    trimMessagesForRegenerate: threads.trimMessagesForRegenerate,
+    setSelectedThreadId: threads.setSelectedThreadId,
+    openThreadForRunSettle: threads.openThreadForRunSettle,
+    applyThreadSnapshotForRunSettle: threads.applyThreadSnapshotForRunSettle,
+  });
+  const { workingDirectory, setWorkingDirectory } = runSession;
   const [directoryPreferences, setDirectoryPreferences] =
     useState<DirectoryPreferencesResponse>({
       workingDirectory: null,
       favorites: [],
       recents: [],
     });
-  // daemon이 기억한 작업 위치를 복원한다. 이게 없으면 daemon이 죽거나 브라우저를
-  // 새로 열 때마다 홈으로 돌아간다.
+  // daemon은 탐색 편의를 위한 최근/즐겨찾기만 복원한다. 실행 cwd는 채팅 세션
+  // 설정이라 전역 directory preference에서 복원하지 않는다.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -53,20 +60,15 @@ export function useHomeShell({
           return;
         }
         setDirectoryPreferences(preferences);
-        if (preferences.workingDirectory !== null) {
-          workingDirectorySelectedRef.current = true;
-          setWorkingDirectory(preferences.workingDirectory);
-          navigateIntoBrowseDirectory(preferences.workingDirectory);
-        }
       } catch (error: unknown) {
-        // 못 읽으면 daemon 홈에서 시작한다. 조용히 덮지 않고 남긴다.
+        // 못 읽어도 현재 세션 cwd는 안전한 기본값을 유지한다.
         logger.warn('directory preferences could not be read:', error);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [navigateIntoBrowseDirectory]);
+  }, []);
   const toggleFavoriteDirectory = useCallback(
     (path: string, pinned: boolean) => {
       void applyDirectoryPreference(pinned ? 'pin' : 'unpin', path)
@@ -79,18 +81,17 @@ export function useHomeShell({
   );
   const selectWorkingDirectory = useCallback(
     (path: string) => {
-      workingDirectorySelectedRef.current = true;
       setWorkingDirectory(path);
       navigateIntoBrowseDirectory(path);
-      // daemon이 cwd를 기억하고 최근 목록도 갱신한다. 자동 발견 경로 제외 판단도
-      // daemon 몫이다 — 셸이 그 목록을 복제하지 않는다.
+      // daemon preference의 select verb는 최근 경로 목록도 함께 갱신한다.
+      // 다음 새 세션의 cwd는 이 전역 편의값을 상속하지 않는다.
       void applyDirectoryPreference('select', path)
         .then(setDirectoryPreferences)
         .catch((error: unknown) => {
           logger.warn('working directory could not be persisted:', error);
         });
     },
-    [navigateIntoBrowseDirectory],
+    [navigateIntoBrowseDirectory, setWorkingDirectory],
   );
   const chooseWorkingDirectory = useCallback(async () => {
     const selection = await selectComputerDirectory(
@@ -107,26 +108,6 @@ export function useHomeShell({
       navigateIntoBrowseDirectory(selection.path);
     }
   }, [browseDirectoryPath, navigateIntoBrowseDirectory]);
-  const runSession = useRunSession({
-    ...(workingDirectory === null ? {} : { workingDirectory }),
-    selectedFile: files.selectedFile,
-    selectedThreadId: threads.selectedThreadId,
-    loadThreads: threads.loadThreads,
-    loadTree: files.loadTree,
-    openFile: files.openFile,
-    appendOptimisticUserMessage: threads.appendOptimisticUserMessage,
-    trimMessagesForRegenerate: threads.trimMessagesForRegenerate,
-    setSelectedThreadId: threads.setSelectedThreadId,
-    openThreadForRunSettle: threads.openThreadForRunSettle,
-    applyThreadSnapshotForRunSettle: threads.applyThreadSnapshotForRunSettle,
-  });
-  const { setModelId: setRunModelId } = runSession;
-  useEffect(() => {
-    if (threads.activeModelId !== null) {
-      setRunModelId(threads.activeModelId);
-    }
-  }, [setRunModelId, threads.activeModelId]);
-
   const shellView = createHomeShellView({
     providerAuthStatuses,
     providerAuthBusyProviderId,

@@ -166,6 +166,7 @@ void test('buildSystemPrompt includes tool and mutation recovery guidance', () =
     prompt,
     /Choose between dedicated typed tools and exec_command by semantic ownership and expected round\/result cost/,
   );
+  assert.match(prompt, /Use inspect_git for repository status/);
   assert.match(
     prompt,
     /independent read-only calls.*same model round.*execute them concurrently/,
@@ -270,6 +271,7 @@ void test('buildSystemPrompt gives subagents a compact role prompt and truthful 
   assert.match(explorerPrompt, /report the unavailable capability honestly/);
   assert.doesNotMatch(explorerPrompt, /root="(?:workspace|computer)"/);
   assert.match(explorerPrompt, /list_files for directory discovery/);
+  assert.match(explorerPrompt, /inspect_git for repository status/);
   assert.match(explorerPrompt, /Do not read an entire file as reconnaissance/);
   assert.match(explorerPrompt, /explicit offset and the required limit/);
   assert.match(explorerPrompt, /Continue independent work after spawning/);
@@ -278,6 +280,9 @@ void test('buildSystemPrompt gives subagents a compact role prompt and truthful 
     /explicit blocking wait_mode only when dependent/,
   );
   assert.match(explorerPrompt, /agent_stop on that child handle/);
+  assert.match(explorerPrompt, /submit_result_report/u);
+  assert.match(explorerPrompt, /complete plain-text result/u);
+  assert.match(explorerPrompt, /original result remains canonical/u);
   assert.doesNotMatch(explorerPrompt, /tool_search/);
   assert.doesNotMatch(explorerPrompt, /PTC exec tool/);
   assert.doesNotMatch(explorerPrompt, /PTC exec and wait tools/);
@@ -298,12 +303,18 @@ void test('buildSystemPrompt gives subagents a compact role prompt and truthful 
   );
   assert.match(workerPrompt, /Do not add another file-root selector/);
   assert.doesNotMatch(workerPrompt, /root="(?:workspace|computer)"/);
-  assert.match(workerPrompt, /dedicated list_files, read_file, search_files/);
+  assert.match(
+    workerPrompt,
+    /dedicated inspect_git, list_files, read_file, search_files/,
+  );
   assert.match(workerPrompt, /Do not read an entire file as reconnaissance/);
   assert.match(workerPrompt, /explicit offset and the required limit/);
   assert.match(workerPrompt, /Continue independent work after spawning/);
   assert.match(workerPrompt, /explicit blocking wait_mode only when dependent/);
   assert.match(workerPrompt, /agent_stop on that child handle/);
+  assert.match(workerPrompt, /submit_result_report/u);
+  assert.match(workerPrompt, /complete plain-text result/u);
+  assert.match(workerPrompt, /original result remains canonical/u);
   assert.doesNotMatch(workerPrompt, /tool_search/);
   assert.doesNotMatch(workerPrompt, /PTC exec tool/);
   assert.doesNotMatch(workerPrompt, /GEULBAT_ARTIFACT/);

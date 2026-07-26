@@ -3,10 +3,6 @@ import assert from 'node:assert/strict';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
-import type {
-  PermissionMode,
-  PermissionModeState,
-} from '@geulbat/protocol/run-approval';
 import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
 import type {
   RunStartRequest,
@@ -59,6 +55,9 @@ function createRunSessionArgs(
   return {
     selectedFile: null,
     selectedThreadId: null,
+    newSessionGeneration: 0,
+    activeModelId: null,
+    runPreferences: null,
     loadThreads: async () => {},
     loadTree: async () => {},
     openThreadForRunSettle: async () => null,
@@ -106,31 +105,7 @@ function createRunSessionArgs(
         : {}),
       promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
     }),
-    ...createPermissionModeTransport(),
     ...overrides,
-  };
-}
-
-/**
- * 승인 모드의 durable 소유자는 daemon이다. 훅 테스트에서는 HTTP 대신 같은 계약을
- * 지키는 in-memory 소유자를 물려서, 저장한 값이 다시 읽힐 때 그대로 나오게 한다.
- */
-function createPermissionModeTransport(
-  initial: PermissionMode = 'basic',
-): Pick<
-  UseRunSessionArgs,
-  'readPermissionModeState' | 'writePermissionModeState'
-> {
-  let stored: PermissionModeState = {
-    permissionMode: initial,
-    updatedAt: null,
-  };
-  return {
-    readPermissionModeState: async () => stored,
-    writePermissionModeState: async (permissionMode) => {
-      stored = { permissionMode, updatedAt: '2026-07-25T11:00:00.000Z' };
-      return stored;
-    },
   };
 }
 
@@ -167,10 +142,6 @@ function createRunSessionClientHarness(overrides?: {
       };
     },
     close() {
-      closeCalls += 1;
-      overrides?.close?.();
-    },
-    endComputerSession() {
       closeCalls += 1;
       overrides?.close?.();
     },
@@ -598,7 +569,6 @@ void test('useRunSession starts prompts through a stale callback with the latest
   const hook = await renderHook(
     useRunSession,
     createRunSessionArgs({
-      workingDirectory: 'home/user/novel-one',
       selectedFile: 'chapter-1.md',
       appendOptimisticUserMessage: (prompt: string) => {
         optimisticPrompts.push(prompt);
@@ -609,14 +579,20 @@ void test('useRunSession starts prompts through a stale callback with the latest
 
   const staleSendPrompt = hook.result.current.sendPrompt;
   await hook.run(async (current) => {
+    current.setWorkingDirectory('home/user/novel-one');
     await current.setPermissionMode('full_access');
     current.setServiceTier('fast');
   });
   await hook.rerender(
     createRunSessionArgs({
-      workingDirectory: 'home/user/Downloads',
       selectedFile: 'chapter-2.md',
       selectedThreadId: THREAD_ID_VALUE,
+      activeModelId: 'gpt-5.6-sol',
+      runPreferences: {
+        workingDirectory: 'home/user/Downloads',
+        serviceTier: 'fast',
+        subagentModelRouting: { mode: 'auto' },
+      },
       appendOptimisticUserMessage: (prompt: string) => {
         optimisticPrompts.push(prompt);
       },
@@ -632,7 +608,7 @@ void test('useRunSession starts prompts through a stale callback with the latest
       promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
       workingDirectory: 'home/user/Downloads',
       modelId: 'gpt-5.6-sol',
-      permissionMode: 'full_access',
+      permissionMode: 'basic',
       threadId: THREAD_ID_VALUE,
       serviceTier: 'fast',
       subagentModelRouting: { mode: 'auto' },
@@ -699,87 +675,140 @@ void test('useRunSession sends planModeRequested once plan mode is on', async ()
   hook.unmount();
 });
 
-void test('useRunSession adopts the permission mode the daemon already owns instead of the cached hint', async () => {
+void test('useRunSession restores saved runtime preferences for an existing chat session', async () => {
   const harness = createRunSessionClientHarness();
   const hook = await renderHook(
     useRunSession,
     createRunSessionArgs({
       createClient: harness.createClient,
-      ...createPermissionModeTransport('full_access'),
+      selectedThreadId: THREAD_ID_VALUE,
+      activeModelId: 'grok-4.5',
+      runPreferences: {
+        workingDirectory: 'home/user/projects/thread-one',
+        permissionMode: 'full_access',
+        reasoningEffort: 'high',
+        serviceTier: 'standard',
+        subagentModelRouting: {
+          mode: 'fixed',
+          choice: {
+            modelId: 'gpt-5.6-terra',
+            reasoningEffort: 'medium',
+          },
+        },
+      },
     }),
   );
 
+  assert.equal(
+    hook.result.current.workingDirectory,
+    'home/user/projects/thread-one',
+  );
   assert.equal(hook.result.current.permissionMode, 'full_access');
+  assert.equal(hook.result.current.modelId, 'grok-4.5');
+  assert.equal(hook.result.current.reasoningEffort, 'high');
+  assert.equal(hook.result.current.serviceTier, 'standard');
+  assert.deepEqual(hook.result.current.subagentModelRouting, {
+    mode: 'fixed',
+    choice: {
+      modelId: 'gpt-5.6-terra',
+      reasoningEffort: 'medium',
+    },
+  });
   hook.unmount();
 });
 
-void test('useRunSession persists a permission mode change to the daemon', async () => {
+void test('useRunSession remembers approval and runtime choices separately for each mounted chat session', async () => {
   const harness = createRunSessionClientHarness();
-  const written: PermissionMode[] = [];
-  let stored: PermissionModeState = {
-    permissionMode: 'basic',
-    updatedAt: null,
-  };
   const hook = await renderHook(
     useRunSession,
     createRunSessionArgs({
       createClient: harness.createClient,
-      readPermissionModeState: async () => stored,
-      writePermissionModeState: async (permissionMode) => {
-        written.push(permissionMode);
-        stored = { permissionMode, updatedAt: '2026-07-25T11:00:00.000Z' };
-        return stored;
+      selectedThreadId: THREAD_ID_VALUE,
+      activeModelId: 'gpt-5.6-sol',
+      runPreferences: {
+        workingDirectory: 'home/user/projects/thread-one',
       },
     }),
   );
 
   await hook.run(async (current) => {
+    current.setWorkingDirectory('home/user/projects/thread-one/chapters');
     await current.setPermissionMode('full_access');
+    current.setModelId('grok-4.5');
+    current.setReasoningEffort('high');
   });
+  await hook.rerender(
+    createRunSessionArgs({
+      createClient: harness.createClient,
+      selectedThreadId: OTHER_THREAD_ID_VALUE,
+      activeModelId: 'gpt-5.6-terra',
+      runPreferences: {
+        workingDirectory: 'home/user/projects/thread-two',
+      },
+    }),
+  );
+  assert.equal(
+    hook.result.current.workingDirectory,
+    'home/user/projects/thread-two',
+  );
+  assert.equal(hook.result.current.permissionMode, 'basic');
+  assert.equal(hook.result.current.modelId, 'gpt-5.6-terra');
 
-  assert.deepEqual(written, ['full_access']);
+  await hook.rerender(
+    createRunSessionArgs({
+      createClient: harness.createClient,
+      selectedThreadId: THREAD_ID_VALUE,
+      activeModelId: 'gpt-5.6-sol',
+      runPreferences: {
+        workingDirectory: 'home/user/projects/thread-one',
+      },
+    }),
+  );
+  assert.equal(
+    hook.result.current.workingDirectory,
+    'home/user/projects/thread-one/chapters',
+  );
   assert.equal(hook.result.current.permissionMode, 'full_access');
+  assert.equal(hook.result.current.modelId, 'grok-4.5');
+  assert.equal(hook.result.current.reasoningEffort, 'high');
   hook.unmount();
 });
 
-void test('useRunSession returns to the daemon-owned mode when persisting the change fails', async () => {
+void test('useRunSession resets runtime choices and a previous failure for a newly created chat session', async () => {
   const harness = createRunSessionClientHarness();
   const hook = await renderHook(
     useRunSession,
     createRunSessionArgs({
       createClient: harness.createClient,
-      readPermissionModeState: async () => ({
-        permissionMode: 'basic',
-        updatedAt: null,
-      }),
-      writePermissionModeState: async () => {
-        throw new Error('daemon unavailable');
+      prepareStartRequest: async () => {
+        throw new Error('run channel websocket connection failed');
       },
     }),
   );
 
   await hook.run(async (current) => {
+    current.setWorkingDirectory('home/user/projects/old-session');
     await current.setPermissionMode('full_access');
+    current.setModelId('grok-4.5');
+    current.setReasoningEffort('high');
+    await current.sendPrompt('old session request');
   });
-
-  // 저장이 실패했으면 켜진 것처럼 남지 않는다.
-  assert.equal(hook.result.current.permissionMode, 'basic');
-  hook.unmount();
-});
-
-void test('useRunSession falls back to the safe mode when the daemon mode cannot be read', async () => {
-  const harness = createRunSessionClientHarness();
-  const hook = await renderHook(
-    useRunSession,
-    createRunSessionArgs({
-      createClient: harness.createClient,
-      readPermissionModeState: async () => {
-        throw new Error('daemon unavailable');
-      },
-    }),
+  assert.match(
+    hook.result.current.streamError ?? '',
+    /run channel websocket connection failed/,
   );
 
+  await hook.rerender(
+    createRunSessionArgs({
+      createClient: harness.createClient,
+      newSessionGeneration: 1,
+    }),
+  );
+  assert.equal(hook.result.current.workingDirectory, null);
   assert.equal(hook.result.current.permissionMode, 'basic');
+  assert.equal(hook.result.current.modelId, 'gpt-5.6-sol');
+  assert.equal(hook.result.current.reasoningEffort, 'medium');
+  assert.equal(hook.result.current.streamError, null);
   hook.unmount();
 });
 

@@ -85,7 +85,6 @@ void test('run-channel decodes array-buffer and fragmented websocket messages', 
               type: 'run.auth',
               requestId,
               token: TEST_DEV_TOKEN,
-              computerSessionId: 'computer-session-websocket-test',
             });
 
             if (binaryType === 'arraybuffer') {
@@ -562,7 +561,6 @@ async function connectAuthenticatedSocket(
           type: 'run.auth',
           requestId,
           token: TEST_DEV_TOKEN,
-          computerSessionId: 'computer-session-websocket-test',
         }),
       );
     });
@@ -571,11 +569,14 @@ async function connectAuthenticatedSocket(
         type: string;
         requestId?: string;
         ok?: boolean;
+        computerSessionId?: string;
       };
       if (
         parsed.type === 'run.auth.ok' &&
         parsed.requestId === requestId &&
-        parsed.ok === true
+        parsed.ok === true &&
+        typeof parsed.computerSessionId === 'string' &&
+        parsed.computerSessionId.length > 0
       ) {
         resolve(socket);
       }

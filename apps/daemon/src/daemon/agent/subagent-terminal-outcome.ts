@@ -11,6 +11,7 @@ export interface ChildTerminalOutcome {
   terminalState: AgentChildTerminalState;
   terminalReason: AgentChildTerminalReason | null;
   terminalResult: string;
+  resultReportSummary?: string;
 }
 
 export function buildChildResultTerminalOutcome(args: {

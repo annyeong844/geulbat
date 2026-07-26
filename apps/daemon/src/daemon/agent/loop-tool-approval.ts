@@ -182,7 +182,17 @@ export async function executeFunctionCall(args: {
       ok: true,
       value: toolError(
         'approval_required',
-        `${PLAN_APPROVAL_REQUIRED}: tool "${functionCall.name}" cannot execute before the exact plan revision is approved and published`,
+        `${PLAN_APPROVAL_REQUIRED}: tool "${functionCall.name}" cannot execute before the exact plan revision is approved and published; effective permission mode "${runtime.approvalContext.permissionMode}" bypasses per-tool prompts, not the plan approval gate`,
+        {
+          phase: 'admission',
+          reasonCode: 'plan_approval_required',
+          retryHint:
+            'Approve and publish the exact current plan revision, then retry the tool.',
+          gate: {
+            kind: 'plan_approval',
+            effectivePermissionMode: runtime.approvalContext.permissionMode,
+          },
+        },
       ),
     };
   }

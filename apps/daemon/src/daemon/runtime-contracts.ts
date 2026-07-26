@@ -71,6 +71,7 @@ export interface ToolRunState {
   childRunIds: Set<RunId>;
   backgroundChildRunIds: Set<RunId>;
   backgroundChildLaunchReservationIds: Set<string>;
+  subagentResultReportSummary?: string;
 }
 
 export type RootToolRunState = ToolRunState & { parentRunId?: undefined };

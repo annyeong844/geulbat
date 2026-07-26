@@ -20,31 +20,8 @@ export function isPermissionMode(value: unknown): value is PermissionMode {
   );
 }
 
-/**
- * 승인 모드의 durable 기본값은 daemon이 소유한다. 클라이언트 저장소는 첫 페인트용
- * 표시 캐시일 뿐이라, 이 응답이 유일한 진실 소스다.
- */
+/** 실행 요청이 명시적인 권한 모드를 주지 않았을 때 사용하는 안전한 기본값. */
 export const DEFAULT_PERMISSION_MODE: PermissionMode = 'basic';
-
-export interface PermissionModeState {
-  permissionMode: PermissionMode;
-  /** 마지막으로 모드를 기록한 시각. 아직 기록이 없으면 null. */
-  updatedAt: string | null;
-}
-
-export function isPermissionModeState(
-  value: unknown,
-): value is PermissionModeState {
-  return (
-    isRecord(value) &&
-    isPermissionMode(value['permissionMode']) &&
-    (value['updatedAt'] === null || isString(value['updatedAt']))
-  );
-}
-
-export interface PermissionModeUpdateRequest {
-  permissionMode: PermissionMode;
-}
 
 export const APPROVAL_GRANT_SCOPES = ['once', 'run', 'session'] as const;
 export type ApprovalGrantScope = (typeof APPROVAL_GRANT_SCOPES)[number];

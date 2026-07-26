@@ -79,6 +79,31 @@ void test('search_files fails closed without the daemon host command runtime', a
   assert.match(result.error ?? '', /requires the daemon host command runtime/u);
 });
 
+void test('search_files preserves the content-scan reason and retry guidance', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-invalid-pattern-'),
+  );
+  await writeFile(join(computerFileRoot, 'needle.txt'), 'needle\n', 'utf8');
+
+  const result = await executeSearchFiles(
+    { pattern: '[' },
+    {
+      callId: 'call-search-invalid-pattern',
+      computerFileRoot,
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'execution_failed');
+  assert.match(result.error ?? '', /ripgrep error/u);
+  assert.deepEqual(result.ok ? undefined : result.diagnostics, {
+    phase: 'content_scan',
+    reasonCode: 'ripgrep_exit_nonzero',
+    retryHint:
+      'Review the ripgrep diagnostic, then correct the pattern, include glob, or filesystem access before retrying.',
+  });
+});
+
 void test('search_files follows a directory symlink anywhere on the host filesystem', async (t) => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-search-computer-'),

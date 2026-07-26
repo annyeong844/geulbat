@@ -28,6 +28,7 @@ import {
   type ThreadDetailResponse,
   type ThreadMessage,
   type ThreadMessageInput,
+  type ThreadRunPreferences,
   type ThreadSummary,
 } from '@geulbat/protocol/threads';
 export type {
@@ -44,6 +45,7 @@ export type {
   ThreadId,
   ThreadMessage,
   ThreadMessageInput,
+  ThreadRunPreferences,
   ThreadSummary,
 };
 

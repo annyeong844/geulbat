@@ -24,6 +24,14 @@ interface Listed {
   }>;
 }
 
+void test('list_commands stays direct-hot while remaining SDK-visible', () => {
+  const exposure = listCommandsTool.exposure;
+  assert.ok(exposure);
+  assert.equal(exposure.directHot, true);
+  assert.equal(exposure.sdkVisible, true);
+  assert.equal(exposure.inCellCallable, true);
+});
+
 async function makeFixture(t: {
   after(fn: () => Promise<void> | void): void;
 }): Promise<{ context: DaemonContext; stateRoot: string }> {

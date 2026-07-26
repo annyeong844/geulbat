@@ -4,6 +4,7 @@
  */
 
 import { isRunId, isThreadId, type RunId, type ThreadId } from './ids.js';
+import { isPermissionMode, type PermissionMode } from './run-approval.js';
 import { isRecord, isString } from './wire-value-guards.js';
 
 export type ErrorCode =
@@ -63,6 +64,26 @@ export type ErrorCode =
   | 'quota_exceeded'
   | 'invalid_image_response'
   | 'artifact_commit_failed';
+
+const TOOL_FAILURE_PHASES = [
+  'admission',
+  'command_start',
+  'command_wait',
+  'content_scan',
+  'filename_scan',
+] as const;
+
+export type ToolFailurePhase = (typeof TOOL_FAILURE_PHASES)[number];
+
+export interface ToolFailureDiagnostics {
+  phase: ToolFailurePhase;
+  reasonCode: string;
+  retryHint?: string;
+  gate?: {
+    kind: 'plan_approval';
+    effectivePermissionMode: PermissionMode;
+  };
+}
 
 export const ERROR_CODES = [
   'persistence_unsupported',
@@ -187,9 +208,35 @@ export type ApiError =
   | AlreadyExistsError;
 
 const ERROR_CODE_SET: ReadonlySet<string> = new Set(ERROR_CODES);
+const TOOL_FAILURE_PHASE_SET: ReadonlySet<string> = new Set(
+  TOOL_FAILURE_PHASES,
+);
 
 export function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === 'string' && ERROR_CODE_SET.has(value);
+}
+
+export function isToolFailureDiagnostics(
+  value: unknown,
+): value is ToolFailureDiagnostics {
+  if (
+    !isRecord(value) ||
+    !isString(value.phase) ||
+    !TOOL_FAILURE_PHASE_SET.has(value.phase) ||
+    !isString(value.reasonCode) ||
+    value.reasonCode.length === 0 ||
+    (value.retryHint !== undefined &&
+      (!isString(value.retryHint) || value.retryHint.length === 0))
+  ) {
+    return false;
+  }
+
+  return (
+    value.gate === undefined ||
+    (isRecord(value.gate) &&
+      value.gate.kind === 'plan_approval' &&
+      isPermissionMode(value.gate.effectivePermissionMode))
+  );
 }
 
 export function isGenericApiErrorCode(

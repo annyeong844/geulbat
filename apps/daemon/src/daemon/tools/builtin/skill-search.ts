@@ -26,6 +26,7 @@ export const skillSearchTool = defineZodTool({
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   exposure: {
     directHot: true,
     sdkVisible: false,

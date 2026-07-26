@@ -76,6 +76,7 @@ const AGENT_ORCHESTRATION_TOOL_NAMES = [
 ] as const;
 
 const EXPLORER_READ_TOOL_NAMES = [
+  'inspect_git',
   'list_files',
   'read_file',
   'read_tool_output',
@@ -85,6 +86,7 @@ const EXPLORER_READ_TOOL_NAMES = [
 const EXPLORER_DIRECT_TOOL_NAMES = [
   ...EXPLORER_READ_TOOL_NAMES,
   ...AGENT_ORCHESTRATION_TOOL_NAMES,
+  'submit_result_report',
 ] as const;
 
 const EXPLORER_PTC_DIRECT_TOOL_NAMES = [
@@ -92,9 +94,11 @@ const EXPLORER_PTC_DIRECT_TOOL_NAMES = [
   PTC_EXECUTE_CODE_TOOL_NAME,
   PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
   ...AGENT_ORCHESTRATION_TOOL_NAMES,
+  'submit_result_report',
 ] as const;
 
 const WORKER_DIRECT_TOOL_NAMES = [
+  'inspect_git',
   'list_files',
   'read_file',
   'read_tool_output',
@@ -103,6 +107,7 @@ const WORKER_DIRECT_TOOL_NAMES = [
   'apply_patch',
   'manage_files',
   ...AGENT_ORCHESTRATION_TOOL_NAMES,
+  'submit_result_report',
 ] as const;
 
 function resolveSubagentToolSurface(args: {
@@ -638,6 +643,13 @@ async function runBackgroundChild(args: {
       terminalReason,
     });
   } finally {
-    lifecycle.publishTerminalOutcome(terminalOutcome);
+    lifecycle.publishTerminalOutcome(
+      childRunState.subagentResultReportSummary === undefined
+        ? terminalOutcome
+        : {
+            ...terminalOutcome,
+            resultReportSummary: childRunState.subagentResultReportSummary,
+          },
+    );
   }
 }

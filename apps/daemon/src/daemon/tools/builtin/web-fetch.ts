@@ -42,7 +42,7 @@ export function createFetchUrlTool(
       snapshotFailure: 'fail_closed',
     },
     exposure: {
-      directHot: false,
+      directHot: true,
       sdkVisible: true,
       inCellCallable: true,
       directOnly: false,

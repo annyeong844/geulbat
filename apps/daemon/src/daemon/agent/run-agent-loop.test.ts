@@ -1114,6 +1114,12 @@ void test('runAgentLoop does not expose or invoke Goal completion verification i
           args.toolDefs.some((definition) => definition.name === 'update_goal'),
           false,
         );
+        assert.equal(
+          args.toolDefs.some(
+            (definition) => definition.name === 'submit_result_report',
+          ),
+          false,
+        );
         return {
           ok: true,
           value: {

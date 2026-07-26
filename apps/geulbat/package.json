@@ -36,6 +36,7 @@
   "dependencies": {
     "@geulbat/content-identity": "*",
     "@geulbat/daemon": "*",
+    "@geulbat/daemon-lifecycle": "*",
     "@geulbat/structured-logger": "*",
     "@geulbat/xharness": "*"
   },

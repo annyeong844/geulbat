@@ -1,4 +1,7 @@
 import { createRoot } from 'react-dom/client';
+import '@fontsource-variable/jetbrains-mono/wght.css';
+import '@fontsource-variable/noto-serif-kr/wght.css';
+import 'pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css';
 import { AppErrorBoundary } from './app/AppErrorBoundary';
 import { App } from './app/App';
 import { startUiResponsivenessObserver } from './app/ui-performance-diagnostics';

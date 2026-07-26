@@ -302,7 +302,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
           }),
     }),
   ].filter(
-    (definition) => goal !== undefined || definition.name !== 'update_goal',
+    (definition) =>
+      (goal !== undefined || definition.name !== 'update_goal') &&
+      (promptProfile !== 'root' || definition.name !== 'submit_result_report'),
   );
   if (
     goal !== undefined &&

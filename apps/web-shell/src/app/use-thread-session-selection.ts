@@ -3,6 +3,7 @@ import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { RunModelId } from '@geulbat/protocol/run-contract';
 import type {
   ThreadMessage,
+  ThreadRunPreferences,
   ThreadSubagentTerminalOutcome,
 } from '@geulbat/protocol/threads';
 import { isSilentUserMessage } from '../lib/silent-user-message.js';
@@ -11,6 +12,7 @@ interface ThreadSnapshotSelectionState {
   threadId: string;
   snapshotVersion: string;
   activeModelId?: RunModelId;
+  runPreferences?: ThreadRunPreferences;
   messages: ThreadMessage[];
   artifacts?: ThreadArtifactVersion[];
   subagentTerminalOutcomes?: ThreadSubagentTerminalOutcome[];
@@ -19,7 +21,9 @@ interface ThreadSnapshotSelectionState {
 interface UseThreadSessionSelectionResult {
   selectedThreadId: string | null;
   setSelectedThreadId: (threadId: string | null) => void;
+  newSessionGeneration: number;
   activeModelId: RunModelId | null;
+  runPreferences: ThreadRunPreferences | null;
   messages: ThreadMessage[];
   artifacts: ThreadArtifactVersion[];
   subagentTerminalOutcomes: ThreadSubagentTerminalOutcome[];
@@ -54,7 +58,10 @@ function createOptimisticThreadMessageId(index: number): string {
 
 export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [newSessionGeneration, setNewSessionGeneration] = useState(0);
   const [activeModelId, setActiveModelId] = useState<RunModelId | null>(null);
+  const [runPreferences, setRunPreferences] =
+    useState<ThreadRunPreferences | null>(null);
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [artifacts, setArtifacts] = useState<ThreadArtifactVersion[]>([]);
   const [subagentTerminalOutcomes, setSubagentTerminalOutcomes] = useState<
@@ -69,11 +76,10 @@ export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
         thread.snapshotVersion;
       setSelectedThreadId(thread.threadId);
       setActiveModelId(thread.activeModelId ?? null);
+      setRunPreferences(thread.runPreferences ?? null);
       setMessages(thread.messages);
       setArtifacts(thread.artifacts ?? []);
-      if (thread.subagentTerminalOutcomes !== undefined) {
-        setSubagentTerminalOutcomes(thread.subagentTerminalOutcomes);
-      }
+      setSubagentTerminalOutcomes(thread.subagentTerminalOutcomes ?? []);
     },
     [],
   );
@@ -154,8 +160,10 @@ export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
 
   // 새 세션 — thread 선택 해제. 다음 메시지가 새 thread를 연다.
   const startNewSession = useCallback(() => {
+    setNewSessionGeneration((current) => current + 1);
     setSelectedThreadId(null);
     setActiveModelId(null);
+    setRunPreferences(null);
     setMessages([]);
     setArtifacts([]);
     setSubagentTerminalOutcomes([]);
@@ -164,8 +172,10 @@ export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
   const clearThreadSelectionState = useCallback(
     (threadId: string) => {
       if (selectedThreadId === threadId) {
+        setNewSessionGeneration((current) => current + 1);
         setSelectedThreadId(null);
         setActiveModelId(null);
+        setRunPreferences(null);
         setMessages([]);
         setArtifacts([]);
         setSubagentTerminalOutcomes([]);
@@ -178,7 +188,9 @@ export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
   return {
     selectedThreadId,
     setSelectedThreadId,
+    newSessionGeneration,
     activeModelId,
+    runPreferences,
     messages,
     artifacts,
     subagentTerminalOutcomes,

@@ -15,6 +15,7 @@ import { executeCodeTool } from './execute-code.js';
 import { generateImageTool } from './image-generation.js';
 import { generateVideoTool } from './video-generation.js';
 import { installPackagesTool } from './install-packages.js';
+import { inspectGitTool } from './inspect-git.js';
 import { listFilesTool } from './list-files.js';
 import { manageFilesTool } from './manage-files.js';
 import { applyPatchTool } from './apply-patch.js';
@@ -31,6 +32,7 @@ import { proposePlanTool } from './propose-plan.js';
 import { updatePlanTool } from './update-plan.js';
 import { updateGoalTool } from './update-goal.js';
 import { setThreadTitleTool } from './set-thread-title.js';
+import { submitResultReportTool } from './submit-result-report.js';
 import { visualizeTool } from './visualize.js';
 import { waitTool } from './wait.js';
 import { fetchUrlTool } from './web-fetch.js';
@@ -56,6 +58,7 @@ function getCanonicalBuiltinTools(
     readFileTool,
     listFilesTool,
     searchFilesTool,
+    inspectGitTool,
     applyPatchTool,
     writeFileTool,
     manageFilesTool,
@@ -73,6 +76,7 @@ function getCanonicalBuiltinTools(
     agentRetryTool,
     agentStopTool,
     agentWaitTool,
+    submitResultReportTool,
     refreshMemoryIndexTool,
     searchMemoryIndexTool,
     writeMemoryNoteTool,

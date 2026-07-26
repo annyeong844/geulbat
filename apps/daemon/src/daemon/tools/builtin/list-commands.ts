@@ -22,11 +22,12 @@ export const listCommandsTool = defineZodTool({
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
   requiresApproval: false,
-  // 드물게 쓰는 복구용 도구다. 기본 표면(directHot)은 캐시 prefix 비용을
-  // 영구히 무는 자리이므로 여기 올리지 않고, tool_search로 찾게 둔다 —
-  // 그러라고 위의 searchHints가 있다.
+  recoveryStrategy: 'replay_safe',
+  // 드물지만 outputRef를 잃은 실행 중 세션에 다시 닿는 유일한 복구 경로다.
+  // 실제 direct/cold A/B에서 467 B를 아낀 cold discovery가 여러 번의 추측성
+  // exec와 4개 추가 model round를 만들었으므로, 복구 신뢰성을 위해 direct로 둔다.
   exposure: {
-    directHot: false,
+    directHot: true,
     sdkVisible: true,
     // 레지스트리 불변식: non-hot 도구는 완전한 SDK 도달성을 갖춰야 한다 —
     // hot에서 뺐으면 다른 길이 반드시 있어야 한다는 뜻이다.

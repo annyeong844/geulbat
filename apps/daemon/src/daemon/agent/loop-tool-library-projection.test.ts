@@ -25,13 +25,17 @@ void test('createAgentToolCapabilityPolicy canonicalizes the current direct and 
   assert.equal(policy.writeCallbackEnabled, false);
 
   const rootPolicy = createAgentToolCapabilityPolicy({ registry });
-  assert.deepEqual(
-    rootPolicy.directRegistryNames,
-    [...registry.getAllRegisteredToolNames()].sort(),
+  const allRegistryNames = [...registry.getAllRegisteredToolNames()].sort();
+  const directHotRegistryNames = allRegistryNames.filter(
+    (name) => registry.getToolMeta(name)?.exposure.directHot === true,
   );
+  assert.deepEqual(rootPolicy.directRegistryNames, directHotRegistryNames);
+  assert.deepEqual(rootPolicy.allowedRegistryNames, allRegistryNames);
   assert.deepEqual(
-    rootPolicy.allowedRegistryNames,
-    rootPolicy.directRegistryNames,
+    rootPolicy.allowedRegistryNames.filter(
+      (name) => !rootPolicy.directRegistryNames.includes(name),
+    ),
+    [],
   );
   assert.equal(
     rootPolicy.callbackRegistryNames.every((name) =>

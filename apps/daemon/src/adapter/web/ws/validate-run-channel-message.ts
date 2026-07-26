@@ -1,6 +1,5 @@
 import type { RunChannelClientMessage } from '@geulbat/protocol/run-channel';
 import {
-  isComputerSessionEndMessage,
   isPlanWorkflowCommandMessage,
   isGoalCommandMessage,
   isRunApproveMessage,
@@ -24,9 +23,6 @@ export function readRunChannelClientMessage(
   value: unknown,
 ): RunChannelClientMessageReadResult {
   if (isRunAuthMessage(value)) {
-    return readClientMessageWithRequestId(value);
-  }
-  if (isComputerSessionEndMessage(value)) {
     return readClientMessageWithRequestId(value);
   }
   if (isRunCancelMessage(value)) {

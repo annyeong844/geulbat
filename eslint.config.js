@@ -73,6 +73,13 @@ export default [
           ],
         },
         {
+          type: 'daemon-lifecycle',
+          pattern: [
+            'packages/daemon-lifecycle/src/**',
+            'packages/daemon-lifecycle/dist/**',
+          ],
+        },
+        {
           type: 'structured-logger',
           pattern: [
             'packages/structured-logger/src/**',
@@ -549,7 +556,12 @@ export default [
               from: { type: 'geulbat-product-test' },
               allow: {
                 to: {
-                  type: ['daemon-entry', 'geulbat-product', 'xharness'],
+                  type: [
+                    'daemon-entry',
+                    'daemon-lifecycle',
+                    'geulbat-product',
+                    'xharness',
+                  ],
                 },
               },
             },
@@ -560,6 +572,7 @@ export default [
                   type: [
                     'content-identity',
                     'daemon-entry',
+                    'daemon-lifecycle',
                     'structured-logger',
                     'xharness',
                   ],
@@ -595,6 +608,7 @@ export default [
               allow: { to: { type: ['protocol'] } },
             },
             { from: { type: 'content-identity' }, allow: [] },
+            { from: { type: 'daemon-lifecycle' }, allow: [] },
             { from: { type: 'structured-logger' }, allow: [] },
             { from: { type: 'protocol' }, allow: [] },
             { from: { type: 'tool-sdk' }, allow: [] },
@@ -1887,67 +1901,6 @@ export default [
               ],
               message:
                 'Import adapter/web cross-seam modules through the #web/* internal aliases.',
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    files: ['apps/web-shell/src/app/App.tsx'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [
-            {
-              name: './use-provider-auth-state.js',
-              message:
-                'Import app-level provider auth wiring through use-app-shell.js.',
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    files: ['apps/web-shell/src/app/app-shell.ts'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [
-            {
-              name: './use-provider-auth-state.js',
-              message:
-                'Keep app-shell pure; hook wiring belongs in use-app-shell.js.',
-            },
-            {
-              name: './App.js',
-              message:
-                'Keep app-shell pure; UI composition belongs in App.tsx.',
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    files: ['apps/web-shell/src/app/use-app-shell.ts'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [
-            {
-              name: './ProjectWorkspace.js',
-              message:
-                'Map app-level state through app-shell.js, not ProjectWorkspace directly.',
-            },
-            {
-              name: './project-workspace-shell.js',
-              message:
-                'App-level wiring should not depend on ProjectWorkspace shell internals.',
             },
           ],
         },

@@ -131,6 +131,53 @@ void test('T1: terminal-before-claim small output returns inline with zero disk 
   assert.equal(await directoryExists(paths.directory), false);
 });
 
+void test('terminal-before-claim protocol output remains pageable', async (t) => {
+  const fixture = await makeFixture(t);
+  const thread = threadId(9003);
+  const output = 'fast-protocol';
+  const started = await fixture.host.start(
+    startArgs(
+      fixture,
+      thread,
+      `process.stdout.write(${JSON.stringify(output)});`,
+      { owner: 'system', streamMode: 'protocol' },
+    ),
+  );
+  assert.equal(started.ok, true);
+  if (!started.ok) {
+    return;
+  }
+
+  const initial = await fixture.host.waitForInitialResult({
+    stateRoot: fixture.stateRoot,
+    outputRef: started.outputRef,
+  });
+  assert.equal(initial.ok, true);
+  if (!initial.ok) {
+    return;
+  }
+  assert.equal(initial.value.outputRef, started.outputRef);
+  assert.equal(initial.value.stdout, null);
+
+  const observed = await fixture.host.interact({
+    stateRoot: fixture.stateRoot,
+    threadId: thread,
+    owner: 'system',
+    outputRef: started.outputRef,
+    yieldTimeMs: 0,
+    page: {
+      stream: 'stdout',
+      offsetBytes: 0,
+      limitBytes: 1024,
+    },
+  });
+  assert.equal(observed.ok, true);
+  if (observed.ok) {
+    assert.equal(observed.value.page?.content, output);
+    assert.equal(observed.value.page?.nextOffsetBytes, null);
+  }
+});
+
 void test('T1: terminal-before-claim large output claims a durable tail artifact', async (t) => {
   const fixture = await makeFixture(t);
   const thread = threadId(9002);

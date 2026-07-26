@@ -25,8 +25,17 @@ void test('thread detail restores only a catalog model owned by the recorded pro
     threadId,
     request: {
       workingDirectory: '/workspace',
-      permissionMode: 'basic',
+      permissionMode: 'full_access',
       providerModel: { providerId: 'grok_oauth', model: 'grok-4.5' },
+      reasoningEffort: 'high',
+      serviceTier: 'standard',
+      subagentModelRouting: {
+        mode: 'fixed',
+        choice: {
+          modelId: 'gpt-5.6-terra',
+          reasoningEffort: 'medium',
+        },
+      },
     },
   });
   await appendProviderRound({
@@ -68,6 +77,19 @@ void test('thread detail restores only a catalog model owned by the recorded pro
   });
 
   assert.equal(detail.activeModelId, 'grok-4.5');
+  assert.deepEqual(detail.runPreferences, {
+    workingDirectory: '/workspace',
+    permissionMode: 'full_access',
+    reasoningEffort: 'high',
+    serviceTier: 'standard',
+    subagentModelRouting: {
+      mode: 'fixed',
+      choice: {
+        modelId: 'gpt-5.6-terra',
+        reasoningEffort: 'medium',
+      },
+    },
+  });
   assert.equal(mismatchedDetail.activeModelId, undefined);
   assert.equal(journalOnlyDetail.activeModelId, 'grok-4.5');
   assert.equal('providerModel' in detail, false);

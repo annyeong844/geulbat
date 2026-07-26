@@ -17,11 +17,13 @@ import {
 import {
   isAgentChildTerminalReason,
   isAgentChildTerminalState,
+  isSubagentResultReport,
 } from '@geulbat/protocol/subagent-terminal';
 
 import { isRecord } from './runtime-json.js';
 import type {
   BackgroundChildResult,
+  BackgroundChildResultInput,
   DurableSubagentTerminalOutcome,
   SubagentTerminalDeliveryRecord,
 } from './subagent-runtime-contracts.js';
@@ -31,12 +33,29 @@ export function recordSubagentTerminalDelivery(
   database: DatabaseSync,
   args: {
     ownerThreadId: ThreadId;
-    result: BackgroundChildResult;
+    result: BackgroundChildResultInput;
   },
   now: () => Date,
 ): SubagentTerminalDeliveryRecord {
   const ownerThreadId = assertThreadId(args.ownerThreadId);
-  const result = parseBackgroundChildResult(args.result);
+  const parsedResult = parseBackgroundChildResult(args.result);
+  const resultRef = buildSubagentTerminalResultRef(parsedResult.deliveryId);
+  const resultDigest = buildSubagentResultDigest(parsedResult.result);
+  const resultReportSummary = args.result.resultReportSummary;
+  if (resultReportSummary !== undefined && resultReportSummary.trim() === '') {
+    throw new Error('subagent result report summary is invalid');
+  }
+  const result: BackgroundChildResult =
+    resultReportSummary === undefined
+      ? parsedResult
+      : {
+          ...parsedResult,
+          resultReport: {
+            summary: resultReportSummary,
+            sourceResultRef: resultRef,
+            sourceResultDigest: resultDigest,
+          },
+        };
 
   return runImmediateTransaction(database, () =>
     recordSubagentTerminalDeliveryInTransaction(
@@ -356,7 +375,7 @@ function parseSubagentTerminalOutcomeRow(
       ? undefined
       : assertThreadId(row['childThreadId']);
   const result = parseBackgroundChildResult(JSON.parse(row['payloadJson']));
-  const resultDigest: `sha256:${string}` = `sha256:${createHash('sha256').update(result.result).digest('hex')}`;
+  const resultDigest = buildSubagentResultDigest(result.result);
   const terminalReason = row['terminalReason'];
   if (
     result.deliveryId !== row['deliveryId'] ||
@@ -367,7 +386,10 @@ function parseSubagentTerminalOutcomeRow(
     (result.reason ?? null) !== terminalReason ||
     result.completedAt !== row['completedAt'] ||
     Buffer.byteLength(result.result, 'utf8') !== row['resultBytes'] ||
-    row['resultRef'] !== buildSubagentTerminalResultRef(result.deliveryId)
+    row['resultRef'] !== buildSubagentTerminalResultRef(result.deliveryId) ||
+    (result.resultReport !== undefined &&
+      (result.resultReport.sourceResultRef !== row['resultRef'] ||
+        result.resultReport.sourceResultDigest !== resultDigest))
   ) {
     throw new Error('subagent terminal outcome metadata does not match body');
   }
@@ -412,7 +434,9 @@ export function parseBackgroundChildResult(
       (typeof value['modelId'] !== 'string' ||
         value['modelId'].trim() === '')) ||
     (value['reasoningEffort'] !== undefined &&
-      !isRunReasoningEffort(value['reasoningEffort']))
+      !isRunReasoningEffort(value['reasoningEffort'])) ||
+    (value['resultReport'] !== undefined &&
+      !isSubagentResultReport(value['resultReport']))
   ) {
     throw new Error('subagent terminal outcome body is invalid');
   }
@@ -467,7 +491,14 @@ export function parseBackgroundChildResult(
     ...(value['reasoningEffort'] === undefined
       ? {}
       : { reasoningEffort: value['reasoningEffort'] }),
+    ...(value['resultReport'] === undefined
+      ? {}
+      : { resultReport: { ...value['resultReport'] } }),
   };
+}
+
+function buildSubagentResultDigest(result: string): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(result).digest('hex')}`;
 }
 
 function buildSubagentTerminalResultRef(deliveryId: string): string {

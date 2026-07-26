@@ -39,6 +39,8 @@ interface SubagentActivityEntry {
   reason?: AgentChildTerminalReason;
   result?: string;
   resultRef?: string;
+  resultDigest?: `sha256:${string}`;
+  completedAt?: string;
   // Terminal-only drill-down telemetry from subagent_terminal.
   elapsedMs?: number;
   usage?: RunUsageTotals;

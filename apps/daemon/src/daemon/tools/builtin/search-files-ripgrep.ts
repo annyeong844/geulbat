@@ -341,7 +341,21 @@ async function runHostRoutedRipgrep(args: {
           ? 'ripgrep search was cancelled'
           : `ripgrep session failed: ${streamed.message}`,
       ),
-      { code: 'execution_failed' },
+      {
+        code: 'execution_failed',
+        toolFailureDiagnostics: {
+          phase: 'content_scan',
+          reasonCode: streamed.aborted
+            ? 'search_aborted'
+            : 'search_command_runtime_failed',
+          ...(streamed.aborted
+            ? {}
+            : {
+                retryHint:
+                  'Retry with a narrower path; if the failure repeats, check daemon command-host availability.',
+              }),
+        },
+      },
     );
   }
   // 세션이 상한·취소로 자식을 끝낸 경우는 직접 실행의 killed와 같은 뜻이다 —

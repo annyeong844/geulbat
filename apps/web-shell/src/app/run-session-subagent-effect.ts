@@ -17,25 +17,32 @@ interface RunSessionSubagentActivityEffect {
   entry: Extract<RunTranscriptEntry, { kind: 'subagent_activity' }>;
 }
 
-type TerminalSubagentActivitySource = Pick<
-  ThreadSubagentTerminalOutcome,
-  | 'deliveryId'
-  | 'parentRunId'
-  | 'childRunId'
-  | 'childThreadId'
-  | 'subagentType'
-  | 'capabilities'
-  | 'toolSurface'
-  | 'runtime'
-  | 'terminalState'
-  | 'reason'
-  | 'result'
-  | 'resultRef'
-  | 'elapsedMs'
-  | 'usage'
-  | 'modelId'
-  | 'reasoningEffort'
->;
+type TerminalSubagentActivitySource = Omit<
+  Pick<
+    ThreadSubagentTerminalOutcome,
+    | 'deliveryId'
+    | 'parentRunId'
+    | 'childRunId'
+    | 'childThreadId'
+    | 'subagentType'
+    | 'capabilities'
+    | 'toolSurface'
+    | 'runtime'
+    | 'terminalState'
+    | 'reason'
+    | 'result'
+    | 'resultRef'
+    | 'resultDigest'
+    | 'completedAt'
+    | 'elapsedMs'
+    | 'usage'
+    | 'modelId'
+    | 'reasoningEffort'
+  >,
+  'completedAt'
+> & {
+  completedAt?: string;
+};
 
 export function createSubagentTerminalHistoryEntry(
   outcome: ThreadSubagentTerminalOutcome,
@@ -159,6 +166,8 @@ function createTerminalSubagentActivityEntry(
     ...(source.reason ? { reason: source.reason } : {}),
     ...(source.result ? { result: source.result } : {}),
     ...(source.resultRef ? { resultRef: source.resultRef } : {}),
+    ...(source.resultDigest ? { resultDigest: source.resultDigest } : {}),
+    ...(source.completedAt ? { completedAt: source.completedAt } : {}),
     ...(source.elapsedMs !== undefined ? { elapsedMs: source.elapsedMs } : {}),
     ...(source.usage !== undefined ? { usage: source.usage } : {}),
     ...(source.modelId !== undefined ? { modelId: source.modelId } : {}),

@@ -259,6 +259,7 @@ void test('beginBackgroundChildLifecycle unloads the registry body after durable
       terminalState: 'completed',
       terminalReason: null,
       terminalResult: 'durable child body',
+      resultReportSummary: '원문을 가리키는 선택형 보고',
     });
 
     assert.equal(runtimeServices.childRuns.getChildRun(childRunId), undefined);
@@ -271,10 +272,19 @@ void test('beginBackgroundChildLifecycle unloads the registry body after durable
       pending?.resultRef,
       `subagent-result:${pending?.deliveryId ?? ''}`,
     );
-    assert.equal(
-      store.readSubagentTerminalOutcomeByChildRunId(childRunId)?.result.result,
-      'durable child body',
-    );
+    assert.deepEqual(pending?.resultReport, {
+      summary: '원문을 가리키는 선택형 보고',
+      sourceResultRef: pending?.resultRef,
+      sourceResultDigest: pending?.resultDigest,
+    });
+    const durableOutcome =
+      store.readSubagentTerminalOutcomeByChildRunId(childRunId);
+    assert.equal(durableOutcome?.result.result, 'durable child body');
+    assert.deepEqual(durableOutcome?.result.resultReport, {
+      summary: '원문을 가리키는 선택형 보고',
+      sourceResultRef: durableOutcome?.resultRef,
+      sourceResultDigest: durableOutcome?.resultDigest,
+    });
   } finally {
     store.close();
     await rm(stateRoot, { recursive: true, force: true });

@@ -15,6 +15,7 @@ import type {
 import type {
   AgentChildTerminalReason,
   AgentChildTerminalState,
+  SubagentResultReport,
 } from '@geulbat/protocol/subagent-terminal';
 import type { PermissionMode } from '@geulbat/protocol/run-approval';
 import {
@@ -376,6 +377,13 @@ export interface BackgroundChildResult {
   // Durable exact-result handle. Present after the runtime-state owner is
   // attached; legacy/in-memory producers remain valid without it.
   resultRef?: string;
+  // Digest of the exact terminal result body behind resultRef. It is derived by
+  // the durable store and projected to consumers; lifecycle producers do not
+  // supply it.
+  resultDigest?: `sha256:${string}`;
+  // Supplemental model-authored report. The durable store supplies the source
+  // address and digest; the exact result body remains canonical.
+  resultReport?: SubagentResultReport;
   parentRunId: RunId;
   childRunId: RunId;
   // Optional only for legacy producers; the lifecycle always fills it so the
@@ -396,6 +404,13 @@ export interface BackgroundChildResult {
   reasoningEffort?: RunReasoningEffort;
 }
 
+export type BackgroundChildResultInput = Omit<
+  BackgroundChildResult,
+  'resultReport'
+> & {
+  resultReportSummary?: string;
+};
+
 export interface DurableSubagentTerminalOutcome {
   ownerThreadId: ThreadId;
   resultRef: string;
@@ -411,7 +426,7 @@ export interface SubagentTerminalDeliveryRecord {
 export interface SubagentTerminalDeliveryStore {
   recordSubagentTerminalDelivery(args: {
     ownerThreadId: ThreadId;
-    result: BackgroundChildResult;
+    result: BackgroundChildResultInput;
   }): SubagentTerminalDeliveryRecord;
   readPendingSubagentTerminalDeliveries(
     ownerThreadId: ThreadId,

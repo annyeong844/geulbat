@@ -13,6 +13,8 @@ import {
   RunChannelClient,
 } from './client.js';
 
+const TEST_COMPUTER_SESSION_ID = 'computer-session-harness';
+
 class ManualScheduler {
   private nextId = 1;
   private tasks = new Map<number, { callback: () => void; delayMs: number }>();
@@ -144,9 +146,6 @@ function parseAuthRequestId(socket: FakeSocket): string {
     socket.sent[0] ?? 'null',
   ) as RunChannelClientMessage;
   assert.equal(authMessage.type, 'run.auth');
-  if (authMessage.type === 'run.auth') {
-    assert.equal(authMessage.computerSessionId, 'computer-session-harness');
-  }
   return authMessage.requestId;
 }
 
@@ -161,10 +160,9 @@ function createClientHarness(): {
   const messages: RunChannelServerMessage[] = [];
   const client = new RunChannelClient({
     getWebSocketUrl: () => 'ws://example.test/api/ws',
-    buildAuthMessage: (requestId, computerSessionId) => ({
+    buildAuthMessage: (requestId) => ({
       type: 'run.auth',
       requestId,
-      computerSessionId,
       token: 'test-token',
     }),
     createWebSocket: () => {
@@ -174,7 +172,6 @@ function createClientHarness(): {
     },
     scheduleTask: scheduler.schedule,
     clearScheduledTask: scheduler.clear,
-    computerSessionId: 'computer-session-harness',
   });
   client.subscribe((message) => {
     messages.push(message);
@@ -199,6 +196,7 @@ async function connectAuthenticatedClient(harness: {
     type: 'run.auth.ok',
     requestId: parseAuthRequestId(socket),
     ok: true,
+    computerSessionId: TEST_COMPUTER_SESSION_ID,
   });
   await connectPromise;
   return socket;
@@ -245,6 +243,7 @@ void test('RunChannelClient reconnects after unexpected authenticated close', as
     type: 'run.auth.ok',
     requestId: parseAuthRequestId(reconnectSocket),
     ok: true,
+    computerSessionId: TEST_COMPUTER_SESSION_ID,
   });
   await Promise.resolve();
 
@@ -284,6 +283,7 @@ void test('RunChannelClient restores active-run identity before auth completes a
     type: 'run.auth.ok',
     requestId: parseAuthRequestId(socket),
     ok: true,
+    computerSessionId: TEST_COMPUTER_SESSION_ID,
   });
   await connectPromise;
 
@@ -399,6 +399,7 @@ void test('RunChannelClient detaches stale socket listeners after reconnect', as
     type: 'run.auth.ok',
     requestId: parseAuthRequestId(liveSocket),
     ok: true,
+    computerSessionId: TEST_COMPUTER_SESSION_ID,
   });
   await Promise.resolve();
 
@@ -943,28 +944,24 @@ void test('RunChannelClient explicit close rejects and closes an in-flight conne
   assert.equal(harness.scheduler.size, 0);
 });
 
-void test('RunChannelClient ends its computer session before closing the transport', async () => {
+void test('RunChannelClient refuses a different host-issued session after reconnect', async () => {
   const harness = createClientHarness();
   const socket = await connectAuthenticatedClient(harness);
 
-  harness.client.endComputerSession();
+  socket.close();
+  harness.scheduler.runNext();
+  const reconnectSocket = getSocket(harness.sockets, 1);
+  reconnectSocket.emitOpen();
+  reconnectSocket.emitMessage({
+    type: 'run.auth.ok',
+    requestId: parseAuthRequestId(reconnectSocket),
+    ok: true,
+    computerSessionId: 'different-computer-session',
+  });
+  await Promise.resolve();
 
-  const message = JSON.parse(
-    socket.sent.at(-1) ?? 'null',
-  ) as RunChannelClientMessage;
-  assert.equal(message.type, 'computer.session.end');
-  if (message.type !== 'computer.session.end') {
-    return;
-  }
-  assert.equal(message.requestId.trim().length > 0, true);
-  assert.deepEqual(Object.keys(message).sort(), ['requestId', 'type']);
-  assert.equal(socket.readyState, 3);
+  assert.equal(reconnectSocket.readyState, 3);
   assert.equal(harness.scheduler.size, 0);
-
-  const sentAfterEnd = socket.sent.length;
-  harness.client.endComputerSession();
-  assert.equal(socket.sent.length, sentAfterEnd);
-  await assert.rejects(harness.client.connect(), /computer session ended/u);
 });
 
 void test('RunChannelClient transport close preserves its computer session', async () => {

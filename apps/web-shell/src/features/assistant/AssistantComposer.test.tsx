@@ -194,6 +194,46 @@ void test('Enter sends the current draft once and clears it after successful han
   await act(async () => renderer.unmount());
 });
 
+void test('/goal becomes visibly recognized only after an objective is present', async () => {
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = renderComposer({});
+  });
+  const textarea = renderer.root.findByProps({ name: 'assistant-message' });
+
+  act(() => {
+    textarea.props.onChange({ target: { value: '/goal' } });
+  });
+  assert.equal(
+    renderer.root.findAllByProps({
+      className: 'composer-goal-command-indicator',
+    }).length,
+    0,
+  );
+
+  act(() => {
+    textarea.props.onChange({
+      target: { value: '/goal package-lock.json 비대화 원인을 정리하기' },
+    });
+  });
+  const indicator = renderer.root.findByProps({
+    className: 'composer-goal-command-indicator',
+  });
+  assert.equal(
+    indicator.findByProps({ className: 'composer-goal-command-token' })
+      .children[0],
+    '/goal',
+  );
+  assert.match(
+    indicator
+      .findByProps({ className: 'composer-goal-command-label' })
+      .children.join(''),
+    /목표로 실행/u,
+  );
+
+  await act(async () => renderer.unmount());
+});
+
 void test('accepting a follow-up suggestion drafts it without sending and dismisses the suggestion', async () => {
   let dismissCount = 0;
   let sendCount = 0;

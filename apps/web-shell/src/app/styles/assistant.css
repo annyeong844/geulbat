@@ -261,6 +261,33 @@
   color: var(--on-surface-muted);
 }
 
+.composer-goal-command-indicator {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  margin-top: 7px;
+  padding: 3px 8px 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--secondary) 24%, transparent);
+  border-radius: var(--radius-full);
+  background: var(--secondary-soft);
+  color: var(--on-secondary-fixed-variant);
+  font-family: var(--font-ui-label);
+  line-height: 1;
+}
+
+.composer-goal-command-token {
+  color: var(--secondary);
+  font-size: 14.5px;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+}
+
+.composer-goal-command-label {
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
 .input-send {
   width: 32px;
   height: 32px;

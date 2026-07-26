@@ -15,7 +15,6 @@ import { createArtifactRuntimePersistenceRoutes } from './adapter/web/routes/art
 import { createRunInputRoutes } from './adapter/web/routes/run-inputs.js';
 import { createThreadsRoutes } from './adapter/web/routes/threads.js';
 import { createMcpRoutes } from './adapter/web/routes/mcp.js';
-import { createPermissionModeRoutes } from './adapter/web/routes/permission-mode.js';
 import { createProviderUsageRoutes } from './adapter/web/routes/provider-usage.js';
 import { createDirectoryPreferencesRoutes } from './adapter/web/routes/directory-preferences.js';
 import { createPluginRoutes } from './adapter/web/routes/plugins.js';
@@ -130,11 +129,6 @@ export async function createDaemon(options: DaemonOptions = {}) {
   );
   app.use(
     createRunInputRoutes({
-      homeStateRoot,
-    }),
-  );
-  app.use(
-    createPermissionModeRoutes({
       homeStateRoot,
     }),
   );

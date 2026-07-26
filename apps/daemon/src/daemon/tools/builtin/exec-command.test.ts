@@ -76,6 +76,12 @@ void test('exec_command fails closed when the daemon host runtime is absent', as
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'execution_failed');
   assert.match(result.error ?? '', /requires the daemon host command runtime/u);
+  assert.deepEqual(result.ok ? undefined : result.diagnostics, {
+    phase: 'command_start',
+    reasonCode: 'host_command_runtime_unavailable',
+    retryHint:
+      'Retry with the daemon host command runtime enabled and available.',
+  });
 });
 
 void test('exec_command yields a thread-bound durable result that write_stdin pages exactly', async (t) => {

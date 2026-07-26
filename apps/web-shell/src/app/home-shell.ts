@@ -21,6 +21,59 @@ export type ShellLayoutModeId =
   | 'chat-center'
   | 'chat-only';
 
+const SHELL_RESIZER_WIDTH = 6;
+const SHELL_CENTER_USABLE_WIDTH = 480;
+const SHELL_CHAT_USABLE_WIDTH = 320;
+
+export function resolveShellLayoutForWidth(args: {
+  preferredMode: ShellLayoutModeId;
+  viewportWidth: number;
+  leftWidth: number;
+  rightWidth: number;
+  artifactSurfaceOpen: boolean;
+}): ShellLayoutModeId {
+  const {
+    preferredMode,
+    viewportWidth,
+    leftWidth,
+    rightWidth,
+    artifactSurfaceOpen,
+  } = args;
+  const centerAndChatWidth =
+    SHELL_CENTER_USABLE_WIDTH + SHELL_RESIZER_WIDTH + rightWidth;
+  if (artifactSurfaceOpen && viewportWidth < centerAndChatWidth) {
+    return 'editor-only';
+  }
+
+  if (preferredMode === 'default') {
+    const fullShellWidth =
+      leftWidth +
+      SHELL_RESIZER_WIDTH * 2 +
+      SHELL_CENTER_USABLE_WIDTH +
+      rightWidth;
+    if (viewportWidth >= fullShellWidth) {
+      return 'default';
+    }
+    return viewportWidth >= centerAndChatWidth ? 'no-tree' : 'chat-only';
+  }
+  if (preferredMode === 'no-tree' && viewportWidth < centerAndChatWidth) {
+    return 'chat-only';
+  }
+  if (
+    preferredMode === 'no-chat' &&
+    viewportWidth < leftWidth + SHELL_RESIZER_WIDTH + SHELL_CENTER_USABLE_WIDTH
+  ) {
+    return 'editor-only';
+  }
+  if (
+    preferredMode === 'chat-center' &&
+    viewportWidth < leftWidth + SHELL_RESIZER_WIDTH + SHELL_CHAT_USABLE_WIDTH
+  ) {
+    return 'chat-only';
+  }
+  return preferredMode;
+}
+
 export function isShellCenterHidden(
   layoutMode: ShellLayoutModeId,
   artifactSurfaceOpen: boolean,

@@ -29,12 +29,7 @@ type RunChannelActiveRuns = AgentRuntimeServices['activeRuns'] &
   >;
 
 type RunChannelApprovalGate = AgentRuntimeServices['approvalGate'] &
-  Pick<
-    ApprovalGate,
-    | 'clearComputerSessionRuntime'
-    | 'hasApprovalDecisionAuthority'
-    | 'resolveApproval'
-  >;
+  Pick<ApprovalGate, 'hasApprovalDecisionAuthority' | 'resolveApproval'>;
 
 type RunChannelBackgroundNotifications =
   AgentRuntimeServices['backgroundNotifications'] &
@@ -63,6 +58,7 @@ export type RunChannelRuntimeContext = Omit<
   artifactFrameToolDispatch: RunChannelArtifactFrameToolDispatch;
   backgroundNotifications: RunChannelBackgroundNotifications;
   computerFileScope?: ComputerFileScope;
+  computerSessionId: string;
   homeStateRoot: string;
   liveRunEvents: LiveRunEventStore;
   runCheckpoints: RunCheckpointStore;
