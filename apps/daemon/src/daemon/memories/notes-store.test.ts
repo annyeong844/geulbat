@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import {
   appendMemoryNote,
@@ -52,13 +52,21 @@ void test('a written note is pending until it is archived', async () => {
   );
 });
 
-void test('notes never overwrite each other and stay in chronological order', async () => {
+void test('notes written in one wall-clock tick retain invocation order', async (t) => {
   const stateRoot = await makeStateRoot();
+  const fixedTimestampMs = Date.UTC(9999, 0, 1);
+  t.mock.method(Date, 'now', () => fixedTimestampMs);
 
-  const first = await appendMemoryNote(stateRoot, '첫 노트');
-  const second = await appendMemoryNote(stateRoot, '둘째 노트');
+  const [first, second] = await Promise.all([
+    appendMemoryNote(stateRoot, '첫 노트'),
+    appendMemoryNote(stateRoot, '둘째 노트'),
+  ]);
 
   assert.notEqual(first.path, second.path);
+  assert.deepEqual(
+    [first, second].map(({ path }) => basename(path).slice(0, 24)),
+    ['9999-01-01T00-00-00.000Z', '9999-01-01T00-00-00.001Z'],
+  );
   assert.deepEqual(
     (await listPendingMemoryNotes(stateRoot)).map((note) => note.text),
     ['첫 노트', '둘째 노트'],

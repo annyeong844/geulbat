@@ -20,6 +20,7 @@ const HISTORICAL_DIRECTORY_NAME = 'historical';
 const LEGACY_STATE_FILE_NAME = 'state.json';
 const SUMMARY_FILE_NAME = 'summary.md';
 const NOTE_FILE_EXTENSION = '.md';
+let lastAllocatedMemoryNoteTimestampMs = Number.NEGATIVE_INFINITY;
 
 /**
  * 통합을 부르는 미통합 노트 개수. 하나로 두 가지를 정한다 — 프롬프트가 상시로
@@ -64,7 +65,12 @@ export function memoryConsolidationIsDue(pendingNoteCount: number): boolean {
 }
 
 function createNoteFileName(): string {
-  const timestamp = new Date().toISOString().replaceAll(':', '-');
+  const timestampMs = Math.max(
+    Date.now(),
+    lastAllocatedMemoryNoteTimestampMs + 1,
+  );
+  lastAllocatedMemoryNoteTimestampMs = timestampMs;
+  const timestamp = new Date(timestampMs).toISOString().replaceAll(':', '-');
   return `${timestamp}-${randomBytes(4).toString('hex')}${NOTE_FILE_EXTENSION}`;
 }
 
@@ -79,8 +85,8 @@ export async function appendMemoryNote(
     });
   }
   const directory = resolveCurrentMemoryNotesDirectory(stateRoot);
-  await mkdir(directory, { recursive: true });
   const path = join(directory, createNoteFileName());
+  await mkdir(directory, { recursive: true });
   await writeFile(path, `${text}\n`, { encoding: 'utf8', flag: 'wx' });
   return { path };
 }
