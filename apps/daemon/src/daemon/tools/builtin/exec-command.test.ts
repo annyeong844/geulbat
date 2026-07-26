@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after } from 'node:test';
+import { removeCommandHostWorkspace } from '../../../test-support/command-host-workspace.js';
 import { testRunId } from '../../../test-support/run-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { createDaemonContext } from '../../context.js';
@@ -95,7 +96,7 @@ void test('exec_command yields a thread-bound durable result that write_stdin pa
   const threadId = testThreadId(1_006);
   t.after(async () => {
     await hostCommands.closeAll();
-    await rm(stateRoot, { recursive: true, force: true });
+    await removeCommandHostWorkspace(stateRoot);
   });
 
   const started = await execCommandTool.execute(

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { removeCommandHostWorkspace } from '../../../test-support/command-host-workspace.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { createDaemonContext, type DaemonContext } from '../../context.js';
 import { isToolObjectParameters } from '../types.js';
@@ -118,7 +119,7 @@ void test('write_stdin polls and pages the exact yielded host command', async (t
       });
     }
     await hostCommands.closeAll();
-    await rm(stateRoot, { recursive: true, force: true });
+    await removeCommandHostWorkspace(stateRoot);
   });
   const started = await hostCommands.start({
     executable: process.execPath,
@@ -199,7 +200,7 @@ void test('write_stdin rejects a continuation reference owned by another thread'
       );
     }
     await hostCommands.closeAll();
-    await rm(stateRoot, { recursive: true, force: true });
+    await removeCommandHostWorkspace(stateRoot);
   });
   const started = await hostCommands.start({
     executable: process.execPath,
