@@ -12,6 +12,9 @@ export type ProviderReasoningEffort =
   | 'xhigh'
   | 'max';
 type ProviderTextVerbosity = 'low' | 'medium' | 'high';
+// Protocol의 사용자 선택을 provider adapter가 받은 뒤 사용하는 로컬 wire
+// 의미다. daemon-llm은 protocol 패키지에 역의존하지 않는다.
+export type ProviderServiceTier = 'standard' | 'fast';
 
 export interface ProviderModelRoundRetryPolicy {
   llmConnectionLost: { maxRetries: number };
@@ -28,6 +31,7 @@ export interface ProviderModelRoundRetryPolicy {
 export interface ProviderRequestOptions {
   providerId: ProviderId;
   model: string;
+  serviceTier?: ProviderServiceTier;
   text: { verbosity: ProviderTextVerbosity };
   reasoning: { effort: ProviderReasoningEffort; summary: 'auto' };
   modelRoundRetry: ProviderModelRoundRetryPolicy;
@@ -55,6 +59,7 @@ type ProviderEnv = Partial<
     | 'GEULBAT_LLM_PROVIDER'
     | 'GEULBAT_CODEX_MODEL'
     | 'GEULBAT_GROK_MODEL'
+    | 'GEULBAT_QWEN_MODEL'
     | 'GEULBAT_CODEX_REASONING_EFFORT'
     | 'GEULBAT_CODEX_TEXT_VERBOSITY'
     | 'GEULBAT_CODEX_MODEL_ROUND_RETRY_CONNECTION_LOST_MAX_RETRIES'
@@ -219,6 +224,7 @@ export function resolveProviderRequestOptions(
   return {
     providerId,
     model: readProviderModel(env, providerId),
+    serviceTier: 'standard',
     text: {
       verbosity: readEnumValue(
         env,
@@ -246,6 +252,7 @@ export function projectProviderRunSelection(
   return {
     providerModel: { providerId: options.providerId, model: options.model },
     reasoningEffort: options.reasoning.effort,
+    serviceTier: options.serviceTier ?? 'standard',
   };
 }
 
@@ -254,11 +261,15 @@ export function resolveProviderRequestOptionsForRun(
   overrides: {
     providerModel?: Pick<ProviderRequestOptions, 'providerId' | 'model'>;
     reasoningEffort?: ProviderReasoningEffort;
+    serviceTier?: ProviderServiceTier;
   },
 ): ProviderRequestOptions {
   return {
     ...base,
     ...(overrides.providerModel ?? {}),
+    ...(overrides.serviceTier !== undefined
+      ? { serviceTier: overrides.serviceTier }
+      : {}),
     reasoning: {
       ...base.reasoning,
       ...(overrides.reasoningEffort !== undefined

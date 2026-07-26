@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  isComputerSessionEndMessage,
+  isGoalCommandMessage,
   isRunAuthMessage,
   isRunCancelMessage,
+  isRunChildCancelMessage,
   isRunChannelServerMessage,
   isRunEventAckEnvelope,
   isRunInterjectEnvelope,
@@ -38,6 +41,14 @@ void test('client authorization and mutation requests reject unknown intent fiel
       type: 'run.auth',
       requestId: 'auth-1',
       token: 'token',
+      computerSessionId: 'computer-session-1',
+      runEventCursors: [
+        {
+          runId: '123e4567-e89b-42d3-a456-426614174001',
+          seq: 7,
+        },
+      ],
+      threadSubscriptions: ['123e4567-e89b-42d3-a456-426614174020'],
     }),
     true,
   );
@@ -46,7 +57,31 @@ void test('client authorization and mutation requests reject unknown intent fiel
       type: 'run.auth',
       requestId: 'auth-1',
       token: 'token',
+      computerSessionId: 'computer-session-1',
+      runEventCursors: [
+        {
+          runId: '123e4567-e89b-42d3-a456-426614174001',
+          seq: -1,
+        },
+      ],
+    }),
+    false,
+  );
+  assert.equal(
+    isRunAuthMessage({
+      type: 'run.auth',
+      requestId: 'auth-1',
+      token: 'token',
+      computerSessionId: 'computer-session-1',
       audience: 'future-daemon',
+    }),
+    false,
+  );
+  assert.equal(
+    isRunAuthMessage({
+      type: 'run.auth',
+      requestId: 'auth-1',
+      token: 'token',
     }),
     false,
   );
@@ -55,6 +90,21 @@ void test('client authorization and mutation requests reject unknown intent fiel
       type: 'run.cancel',
       requestId: 'cancel-1',
       request: { runId: 'run-1', force: true },
+    }),
+    false,
+  );
+  assert.equal(
+    isComputerSessionEndMessage({
+      type: 'computer.session.end',
+      requestId: 'computer-session-end-1',
+    }),
+    true,
+  );
+  assert.equal(
+    isComputerSessionEndMessage({
+      type: 'computer.session.end',
+      requestId: 'computer-session-end-1',
+      computerSessionId: 'must-come-from-authenticated-socket',
     }),
     false,
   );
@@ -69,6 +119,63 @@ void test('opaque client envelopes remain additive before full request decoding'
       traceId: 'future-diagnostic-field',
     }),
     true,
+  );
+});
+
+void test('run.tool.output.delta validates live command output without a replay cursor', () => {
+  const message = {
+    type: 'run.tool.output.delta',
+    runId: '123e4567-e89b-42d3-a456-426614174001',
+    threadId: '123e4567-e89b-42d3-a456-426614174002',
+    payload: {
+      callId: 'call-exec',
+      tool: 'exec_command',
+      stream: 'stdout',
+      text: 'working',
+    },
+  };
+
+  assert.equal(isRunChannelServerMessage(message), true);
+  assert.equal(
+    isRunChannelServerMessage({
+      ...message,
+      payload: { ...message.payload, stream: 'terminal' },
+    }),
+    false,
+  );
+  assert.equal(
+    isRunChannelServerMessage({
+      ...message,
+      payload: { ...message.payload, text: 1 },
+    }),
+    false,
+  );
+});
+
+void test('run.child.cancel requires exact parent and child run identities', () => {
+  const message = {
+    type: 'run.child.cancel',
+    requestId: 'child-cancel-1',
+    request: {
+      parentRunId: '123e4567-e89b-42d3-a456-426614174001',
+      childRunId: '123e4567-e89b-42d3-a456-426614174002',
+    },
+  };
+
+  assert.equal(isRunChildCancelMessage(message), true);
+  assert.equal(
+    isRunChildCancelMessage({
+      ...message,
+      request: { ...message.request, parentRunId: '' },
+    }),
+    false,
+  );
+  assert.equal(
+    isRunChildCancelMessage({
+      ...message,
+      request: { ...message.request, force: true },
+    }),
+    false,
   );
 });
 
@@ -133,10 +240,22 @@ void test('run.control interject ack requires integer receivedSeq and bufferDept
 
 void test('run.control accepts every declared action shape', () => {
   const messages = {
+    'computer.session.end': {
+      type: 'run.control',
+      requestId: 'computer-session-end-1',
+      action: 'computer.session.end',
+      ok: true,
+    },
     'run.cancel': {
       type: 'run.control',
       requestId: 'cancel-1',
       action: 'run.cancel',
+      ok: true,
+    },
+    'run.child.cancel': {
+      type: 'run.control',
+      requestId: 'child-cancel-1',
+      action: 'run.child.cancel',
       ok: true,
     },
     'run.approve': {
@@ -144,6 +263,22 @@ void test('run.control accepts every declared action shape', () => {
       requestId: 'approve-1',
       action: 'run.approve',
       ok: true,
+    },
+    'plan.command': {
+      type: 'run.control',
+      requestId: 'plan-command-1',
+      action: 'plan.command',
+      ok: true,
+      commandKind: 'cancel',
+      snapshot: null,
+    },
+    'goal.command': {
+      type: 'run.control',
+      requestId: 'goal-command-1',
+      action: 'goal.command',
+      ok: true,
+      commandKind: 'cancel',
+      snapshot: null,
     },
     'run.interject': {
       type: 'run.control',
@@ -434,6 +569,53 @@ void test('run.control interject flush ack requires a boolean flushed field', ()
       action: 'run.interject.flush',
       ok: true,
       flushed: 'yes',
+    }),
+    false,
+  );
+});
+
+void test('Goal commands and aggregate Goal state use closed run-channel messages', () => {
+  const threadId = '11111111-1111-4111-8111-111111111111';
+  assert.equal(
+    isGoalCommandMessage({
+      type: 'goal.command',
+      requestId: 'goal-command-1',
+      request: {
+        kind: 'resume',
+        threadId,
+        goalId: 'goal-1',
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isRunChannelServerMessage({
+      type: 'goal.state',
+      threadId,
+      snapshot: {
+        goalId: 'goal-1',
+        threadId,
+        objective: 'Ship Goal mode',
+        state: 'verifying',
+        createdAt: '2026-07-26T00:00:00.000Z',
+        updatedAt: '2026-07-26T00:01:00.000Z',
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isRunChannelServerMessage({
+      type: 'goal.state',
+      threadId,
+      snapshot: {
+        goalId: 'goal-1',
+        threadId,
+        objective: 'Ship Goal mode',
+        state: 'completed',
+        createdAt: '2026-07-26T00:00:00.000Z',
+        updatedAt: '2026-07-26T00:01:00.000Z',
+        votes: [{ verdict: 'achieved' }],
+      },
     }),
     false,
   );

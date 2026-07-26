@@ -1,5 +1,5 @@
 import { mkdir, readFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { context as createEsbuildContext } from 'esbuild';
@@ -7,19 +7,31 @@ import { context as createEsbuildContext } from 'esbuild';
 const daemonRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const repoRoot = resolve(daemonRoot, '../..');
 const workspacePackagePattern =
-  /^@geulbat\/(agent-loop|content-identity|protocol|structured-logger|tool-library)(\/.*)?$/;
+  /^@geulbat\/(agent-loop|artifact-runtime-policy|content-identity|daemon|protocol|structured-logger|tool-library|xharness)(\/.*)?$/;
 const bundledWorkspacePackages = Object.freeze({
   'agent-loop': 'packages/agent-loop/src',
+  'artifact-runtime-policy': 'packages/artifact-runtime-policy/src',
   'content-identity': 'packages/content-identity/src',
+  daemon: 'apps/daemon/src',
   protocol: 'packages/protocol/src',
   'structured-logger': 'packages/structured-logger/src',
   'tool-library': 'packages/tool-library/src',
+  xharness: 'packages/xharness/src',
 });
-
+// Public daemon subpaths whose canonical source module does not sit at the
+// src/<subpath>.ts convention. Keep in sync with apps/daemon/package.json
+// exports so dev bundling and npm distribution resolve the same owner.
+const daemonSubpathSourceOverrides = Object.freeze({
+  'loop-implementation-admission': 'daemon/agent/loop-implementation-admission',
+  'process-fatal-logging': 'daemon/utils/process-fatal-logging',
+});
 export function getDaemonDevWatchRoots(root = repoRoot) {
   return [
-    join(root, 'apps/daemon/src'),
-    ...Object.values(bundledWorkspacePackages).map((path) => join(root, path)),
+    ...new Set(
+      ['apps/daemon/src', ...Object.values(bundledWorkspacePackages)].map(
+        (path) => join(root, path),
+      ),
+    ),
   ];
 }
 
@@ -40,8 +52,12 @@ function createWorkspaceSourcePlugin(root) {
         if (packageSourceRoot === undefined) {
           return undefined;
         }
+        const sourceModuleName =
+          packageName === 'daemon'
+            ? (daemonSubpathSourceOverrides[moduleName] ?? moduleName)
+            : moduleName;
         return {
-          path: join(root, packageSourceRoot, `${moduleName}.ts`),
+          path: join(root, packageSourceRoot, `${sourceModuleName}.ts`),
         };
       });
     },
@@ -85,20 +101,33 @@ function createPreserveSourceModuleUrlPlugin(sourceRoots) {
 export async function createDaemonDevBundleBuilder({
   root = repoRoot,
   appRoot = join(root, 'apps/daemon'),
+  entryPoint = join(appRoot, 'src/index.ts'),
+  // P7.5 §9.3 — command-host 워커는 별도 프로세스 엔트리다. dev 번들도 두
+  // 번째 엔트리를 내보내야 worker 모드를 dev에서 켤 수 있다.
+  //
+  // 경로는 `appRoot`가 아니라 `root` 기준이다: 이 번들러는 제품 앱
+  // (apps/geulbat)도 굽고, 그때 appRoot는 그쪽을 가리킨다. 워커 소스는
+  // 어느 앱을 굽든 언제나 apps/daemon에 있다.
+  commandHostEntryPoint = join(root, 'apps/daemon/src/command-host/main.ts'),
+  sourceRoots = getDaemonDevWatchRoots(root),
   createContext = createEsbuildContext,
   reportInfo = () => {},
 } = {}) {
-  const entryPath = join(appRoot, 'dist-dev/index.mjs');
-  const sourceRoots = getDaemonDevWatchRoots(root);
-  await mkdir(dirname(entryPath), { recursive: true });
+  const outputDirectory = join(appRoot, 'dist-dev');
+  const entryPath = join(outputDirectory, 'index.mjs');
+  await mkdir(outputDirectory, { recursive: true });
 
   const buildContext = await createContext({
     absWorkingDir: root,
-    entryPoints: [join(appRoot, 'src/index.ts')],
+    entryPoints: {
+      index: entryPoint,
+      'command-host': commandHostEntryPoint,
+    },
     bundle: true,
     external: ['@vscode/ripgrep', 'esbuild'],
     format: 'esm',
-    outfile: entryPath,
+    outdir: outputDirectory,
+    outExtension: { '.js': '.mjs' },
     platform: 'node',
     plugins: [
       createWorkspaceSourcePlugin(root),

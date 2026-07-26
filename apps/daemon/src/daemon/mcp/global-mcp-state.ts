@@ -32,6 +32,7 @@ import {
   assertRequestedToolName,
   type LiveMcpServer,
 } from './global-mcp-tool-projection.js';
+import { runDetached } from '../utils/run-detached.js';
 
 const logger = createLogger('global-mcp');
 
@@ -183,26 +184,30 @@ export function createGlobalMcpStateOwner<
     client: Client,
     reason: string,
   ): void {
-    void serialize(async () => {
-      const live = liveServers.get(serverId);
-      if (closed || live?.client !== client) {
-        return;
-      }
-      try {
-        await disconnect(serverId);
-        statuses.set(serverId, errorStatus(reason));
-      } catch (error: unknown) {
-        const cleanupError = getErrorMessage(error);
-        statuses.set(
-          serverId,
-          errorStatus(`${reason}; MCP process cleanup failed: ${cleanupError}`),
-        );
-        logger.warn('MCP client cleanup after disconnect failed:', {
-          serverId,
-          error: cleanupError,
-        });
-      }
-    });
+    runDetached('mcp/server-fault-cleanup', () =>
+      serialize(async () => {
+        const live = liveServers.get(serverId);
+        if (closed || live?.client !== client) {
+          return;
+        }
+        try {
+          await disconnect(serverId);
+          statuses.set(serverId, errorStatus(reason));
+        } catch (error: unknown) {
+          const cleanupError = getErrorMessage(error);
+          statuses.set(
+            serverId,
+            errorStatus(
+              `${reason}; MCP process cleanup failed: ${cleanupError}`,
+            ),
+          );
+          logger.warn('MCP client cleanup after disconnect failed:', {
+            serverId,
+            error: cleanupError,
+          });
+        }
+      }),
+    );
   }
 
   function handleToolListChanged(

@@ -78,6 +78,12 @@ void test('standby pool prewarms only to its bound and never reuses a claimed sl
     });
 
     await pool.refill(identity);
+    assert.deepEqual(pool.readPressureSnapshot(), {
+      state: 'open',
+      readySlotCount: 2,
+      refillInFlightCount: 0,
+      identityCount: 1,
+    });
     assert.equal(
       fixture.invocations.filter(
         (invocation) => invocation.args[0] === 'create',
@@ -91,6 +97,12 @@ void test('standby pool prewarms only to its bound and never reuses a claimed sl
     assert.ok(second);
     assert.notEqual(first.ephemeralBurstId, second.ephemeralBurstId);
     assert.equal(pool.claimReady(identity), undefined);
+    assert.deepEqual(pool.readPressureSnapshot(), {
+      state: 'open',
+      readySlotCount: 0,
+      refillInFlightCount: 0,
+      identityCount: 0,
+    });
 
     await fixture.manager.close(first);
     await fixture.manager.close(second);
@@ -102,6 +114,12 @@ void test('standby pool prewarms only to its bound and never reuses a claimed sl
     await fixture.manager.close(replacement);
 
     assert.deepEqual(await pool.close(), { ok: true, value: undefined });
+    assert.deepEqual(pool.readPressureSnapshot(), {
+      state: 'closed',
+      readySlotCount: 0,
+      refillInFlightCount: 0,
+      identityCount: 0,
+    });
     assert.deepEqual(await fixture.manager.closeAll(), {
       ok: true,
       value: undefined,
@@ -388,6 +406,15 @@ void test('placement claims a ready standby first and falls through cold when th
       const readySlotCount = ready === undefined ? 0 : 1;
       return { readySlotCount, reservedSlotCount: readySlotCount };
     },
+    readPressureSnapshot() {
+      const readySlotCount = ready === undefined ? 0 : 1;
+      return {
+        state: 'open',
+        readySlotCount,
+        refillInFlightCount: 0,
+        identityCount: readySlotCount,
+      } as const;
+    },
     async close() {
       return { ok: true, value: undefined } as const;
     },
@@ -448,7 +475,7 @@ void test('placement claims a ready standby first and falls through cold when th
   });
   const firstBurst = await coordinator.acquirePlacement({
     kind: 'batch_command',
-    ownerKind: 'root_main',
+    ownerKind: 'child',
     continuity: independent,
     callbackEffectPolicy,
     identity,
@@ -457,7 +484,7 @@ void test('placement claims a ready standby first and falls through cold when th
   });
   const secondBurst = await coordinator.acquirePlacement({
     kind: 'batch_command',
-    ownerKind: 'root_main',
+    ownerKind: 'child',
     continuity: independent,
     callbackEffectPolicy,
     identity,
@@ -477,15 +504,34 @@ void test('placement claims a ready standby first and falls through cold when th
     return;
   }
   assert.equal(firstBurst.value.provisioning, 'standbyRestore');
+  assert.equal(firstBurst.value.observation.reason, 'child_cold_burst');
   assert.equal(
     firstBurst.value.identity.ephemeralBurstId,
     readyIdentity.ephemeralBurstId,
   );
   assert.equal(secondBurst.value.provisioning, 'coldCreate');
+  assert.equal(secondBurst.value.observation.reason, 'child_cold_burst');
   assert.notEqual(
     secondBurst.value.identity.ephemeralBurstId,
     readyIdentity.ephemeralBurstId,
   );
+  assert.deepEqual(coordinator.readPressureSnapshot?.(), {
+    shutdownState: 'open',
+    activeWarmPlacementCount: 1,
+    retainedWarmPlacementCount: 1,
+    warmTransitionCount: 0,
+    activeBurstPlacementCount: 2,
+    coldCreateBurstPlacementCount: 1,
+    standbyRestoreBurstPlacementCount: 1,
+    burstCleanupCount: 0,
+    queuedWarmPlacementCount: 0,
+    queuedBurstPlacementCount: 0,
+    queuedBurstThreadCount: 0,
+    standbyPoolState: 'open',
+    standbyReadySlotCount: 0,
+    standbyRefillInFlightCount: 0,
+    standbyIdentityCount: 0,
+  });
 
   await coordinator.releasePlacement(firstBurst.value);
   await coordinator.releasePlacement(secondBurst.value);

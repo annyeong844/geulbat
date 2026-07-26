@@ -33,4 +33,10 @@ export type {
   ListFilesOutput,
   ReadFileInput,
   ReadFileOutput,
+  SearchFilesConsistency,
+  SearchFilesInput,
+  SearchFilesMatch,
+  SearchFilesOutput,
+  SearchFilesTotalRelation,
+  SearchFilesType,
 } from './files.js';

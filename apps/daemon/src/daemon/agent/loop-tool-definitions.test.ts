@@ -16,7 +16,9 @@ void test('default agent surface removes SDK-reachable long-tail tools while kee
   const names = port.buildToolDefinitions({}).map((tool) => tool.name);
 
   assert.deepEqual(names, [
+    'agent_retry',
     'agent_send_input',
+    'agent_set_priority',
     'agent_spawn',
     'agent_stop',
     'agent_wait',
@@ -25,22 +27,29 @@ void test('default agent surface removes SDK-reachable long-tail tools while kee
     'browser_navigate',
     'browser_page_load_evidence',
     'browser_text_evidence',
+    'cite_memory',
     PTC_EXECUTE_CODE_TOOL_NAME,
     'exec_command',
     'generate_image',
     'generate_video',
     'list_files',
     'manage_files',
+    'propose_plan',
     'read_file',
     'read_tool_output',
     'refresh_memory_index',
     'search_files',
+    'set_thread_title',
     'skill_search',
+    'suggest_followup',
     'tool_search',
+    'update_goal',
     'update_plan',
     'visualize',
     PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
     'write_file',
+    'write_memory_note',
+    'write_stdin',
   ]);
 });
 

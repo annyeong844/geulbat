@@ -4,6 +4,7 @@
 // - route prompt/wait handling when approval is required
 import { getErrorMessage } from '../utils/error.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
+import { PLAN_APPROVAL_REQUIRED } from '../planning-approval.js';
 import {
   assertAgentRunId as assertValidRunId,
   isAgentTerminalRunStatus,
@@ -63,7 +64,7 @@ import {
   AGENT_LOOP_TOOL_CALL_SOURCE,
   type ToolCallSource,
 } from './tool-call-source.js';
-
+import { isRecord } from '../runtime-json.js';
 const logger = createLogger('agent/tool-approval');
 
 export interface DeferredFunctionCallTerminalFailure {
@@ -124,7 +125,14 @@ export async function executeFunctionCall(args: {
     }) ??
     meta?.sideEffectLevel ??
     'write';
-  if (isPtcCodeVisible || isArtifactFrameDataOnly) {
+  // full_access(yolo) 모드의 PTC 콜백은 표면 allowlist를 우회한다 (오너 결정
+  // 2026-07-23): 셀 코드는 모델 작성이라 agent-loop와 같은 신뢰 등급이고,
+  // 모드가 이미 전면 위임이므로 destructive 도구(exec_command 등)도 셀에서
+  // 직행한다. 아티팩트 프레임은 외부 콘텐츠 구동이라 우회 대상이 아니다.
+  const bypassPtcSurfaceGate =
+    isPtcCodeVisible &&
+    runtime.approvalContext.permissionMode === 'full_access';
+  if ((isPtcCodeVisible && !bypassPtcSurfaceGate) || isArtifactFrameDataOnly) {
     // PTC 콜백과 아티팩트 프레임은 같은 runtime-소스 surface를 공유한다
     // (포크 금지): read-only 게이트 통과분 + write-callback이 켜져 있으면
     // 같은 write allowlist. 승인 필요 판정은 아래 approvalState가 그대로
@@ -162,7 +170,39 @@ export async function executeFunctionCall(args: {
       );
     }
   }
-  const approvalClass = resolveApprovalClass(functionCall.name, toolArgs);
+  if (
+    runtime.executionContextBase.planningWorkflow !== undefined &&
+    isBlockedDuringPlanning(
+      functionCall.name,
+      runtimeSideEffectLevel,
+      meta?.mayMutateComputerFiles === true,
+    )
+  ) {
+    return {
+      ok: true,
+      value: toolError(
+        'approval_required',
+        `${PLAN_APPROVAL_REQUIRED}: tool "${functionCall.name}" cannot execute before the exact plan revision is approved and published`,
+      ),
+    };
+  }
+  const requestedPlan = readUpdatePlanStructure(functionCall.name, toolArgs);
+  if (requestedPlan !== null) {
+    try {
+      await runtime.executionContextBase.runtimeServices?.planningWorkflows.assertPlanUpdateAllowed(
+        runtime.executionContextBase.threadId,
+        requestedPlan,
+      );
+    } catch (error: unknown) {
+      return {
+        ok: true,
+        value: toolError('approval_required', getErrorMessage(error)),
+      };
+    }
+  }
+  const approvalClass = resolveApprovalClass(functionCall.name, toolArgs, {
+    toolRegistry: runtime.toolRegistry,
+  });
   const approvalTarget = resolveApprovalTarget(
     runtime.approvalContext,
     runtime.executionContextBase.runId,
@@ -175,11 +215,11 @@ export async function executeFunctionCall(args: {
     approvalClass,
     sideEffectLevel: runtimeSideEffectLevel,
     runtime,
-    // Q5=(a): class-only grants accumulated from direct tool approvals are
-    // not eligible evidence for PTC nested writes; full_access remains the
-    // only auto-approval path for runtime-sourced (ptc_callback /
-    // artifact_frame) dispatch.
-    ...(isPtcCodeVisible || isArtifactFrameDataOnly
+    // 승인은 세션 단위 (오너 결정 2026-07-23, Q5=(a) 갱신): PTC 셀 코드는
+    // 모델이 작성하므로 agent-loop 직접 호출과 같은 신뢰 등급 — 세션/런
+    // grant를 중첩 콜백에도 인정한다. 아티팩트 프레임은 외부 콘텐츠가
+    // 구동하므로 저장된 grant를 무시하는 fail-closed를 유지한다.
+    ...(isArtifactFrameDataOnly
       ? { grantEligibility: 'full_access_only' }
       : {}),
   });
@@ -316,6 +356,68 @@ export async function executeFunctionCall(args: {
   };
 }
 
+const PLAN_MODE_DELEGATION_TOOL_NAMES = new Set([
+  'agent_spawn',
+  'agent_retry',
+  'agent_send_input',
+  'agent_set_priority',
+]);
+
+function isBlockedDuringPlanning(
+  toolName: string,
+  sideEffectLevel: SideEffectLevel,
+  mayMutateComputerFiles: boolean,
+): boolean {
+  return (
+    toolName === 'update_plan' ||
+    PLAN_MODE_DELEGATION_TOOL_NAMES.has(toolName) ||
+    mayMutateComputerFiles ||
+    sideEffectLevel === 'write' ||
+    sideEffectLevel === 'destructive'
+  );
+}
+
+function readUpdatePlanStructure(
+  toolName: string,
+  args: ToolCallArgs,
+): Array<{
+  id?: string;
+  step: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}> | null {
+  if (toolName !== 'update_plan' || !isUnknownArray(args['plan'])) {
+    return null;
+  }
+  const plan = args['plan'];
+  const result: Array<{
+    id?: string;
+    step: string;
+    status: 'pending' | 'in_progress' | 'completed';
+  }> = [];
+  for (const value of plan) {
+    if (
+      !isRecord(value) ||
+      typeof value.step !== 'string' ||
+      (value.status !== 'pending' &&
+        value.status !== 'in_progress' &&
+        value.status !== 'completed') ||
+      (value.id !== undefined && typeof value.id !== 'string')
+    ) {
+      return null;
+    }
+    result.push({
+      ...(typeof value.id === 'string' ? { id: value.id } : {}),
+      step: value.step,
+      status: value.status,
+    });
+  }
+  return result;
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
 function resolveApprovalTarget(
   approvalContext: AgentToolCallExecutionRuntime['approvalContext'],
   runId: string,
@@ -360,6 +462,12 @@ export async function resolveToolApprovalState(
       toolRegistry: runtime.toolRegistry,
     });
   if (!sideEffectLevel) {
+    // 메타를 못 찾은 도구는 fail-closed로 승인창을 띄우되, full_access(yolo)
+    // 모드는 예외 — 모드 자체가 전면 위임이므로 여기서도 자동 승인한다
+    // (오너 결정 2026-07-23).
+    if (runtime.approvalContext.permissionMode === 'full_access') {
+      return { needsApproval: false, approvalGranted: true };
+    }
     return { needsApproval: true, approvalGranted: false };
   }
   if (sideEffectLevel !== 'write' && sideEffectLevel !== 'destructive') {
@@ -374,7 +482,10 @@ export async function resolveToolApprovalState(
   }
 
   const approvalClass =
-    args.approvalClass ?? resolveApprovalClass(toolName, toolArgs);
+    args.approvalClass ??
+    resolveApprovalClass(toolName, toolArgs, {
+      toolRegistry: runtime.toolRegistry,
+    });
   const approvalGrants =
     args.grantEligibility === 'full_access_only'
       ? { hasApprovalGrant: () => false }
@@ -382,7 +493,7 @@ export async function resolveToolApprovalState(
   const autoApproved = shouldAutoApprove(
     {
       runId: approvalTarget.runId,
-      sessionId: runtime.approvalContext.sessionId,
+      computerSessionId: runtime.approvalContext.computerSessionId,
       approvalClass,
       sideEffectLevel,
       permissionMode: runtime.approvalContext.permissionMode,
@@ -503,6 +614,10 @@ async function waitForPtcCallbackApprovalDecision(
         sideEffectLevel: runtimeSideEffectLevel,
       });
     },
+    (permissionMode) => {
+      approvalContext.permissionMode = permissionMode;
+      runtime.executionContextBase.permissionMode = permissionMode;
+    },
   );
 }
 
@@ -564,6 +679,10 @@ export async function resolveApprovalDecision(
         argumentsPreview: toolArgs,
         sideEffectLevel: runtimeSideEffectLevel,
       });
+    },
+    (permissionMode) => {
+      approvalContext.permissionMode = permissionMode;
+      runtime.executionContextBase.permissionMode = permissionMode;
     },
   );
 
@@ -676,7 +795,7 @@ function buildApprovalGrantContext(
 ): ApprovalGrantContext {
   return {
     runId,
-    sessionId: approvalContext.sessionId,
+    computerSessionId: approvalContext.computerSessionId,
     approvalClass,
     sideEffectLevel,
     permissionMode: approvalContext.permissionMode,

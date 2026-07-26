@@ -41,6 +41,10 @@ export function sanitizeProviderErrorMessage(code: string): string {
       return 'provider overloaded';
     case 'llm_context_length_exceeded':
       return 'context length exceeded';
+    case 'llm_context_preparation_required':
+      return 'context preparation required';
+    case 'provider_transition_required':
+      return 'provider transition requires a portable context handoff';
     case 'llm_connect_timeout':
     case 'llm_idle_timeout':
       return 'provider request timed out';
@@ -118,4 +122,13 @@ function readProviderMessageErrorCode(message: string): string | null {
 
 function isContextLengthMessage(message: string): boolean {
   return message.includes('context') && message.includes('length');
+}
+
+export class ProviderReplayScopeMismatchError extends Error {
+  readonly llmCode = 'llm_auth_failed';
+
+  constructor() {
+    super('provider replay state belongs to a different authentication scope');
+    this.name = 'ProviderReplayScopeMismatchError';
+  }
 }

@@ -1,4 +1,5 @@
 import { posix as pathPosix } from 'node:path';
+import { readPtcPositiveIntegerEnv } from '../shared/positive-integer-env.js';
 import { isPtcRecord } from '../shared/record-shape.js';
 import {
   createPtcEpochCallbackChannel,
@@ -206,19 +207,7 @@ function readRequiredPtcCallbackPositiveIntegerEnv(
       `${name} is required when PTC callback transport policy is configured`,
     );
   }
-  return readPtcCallbackPositiveIntegerEnv(name, raw);
-}
-
-function readPtcCallbackPositiveIntegerEnv(name: string, raw: string): number {
-  const value = raw.trim();
-  if (!/^\d+$/u.test(value)) {
-    throw new Error(`invalid ${name}: ${value || 'empty'}`);
-  }
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new Error(`invalid ${name}: ${value}`);
-  }
-  return parsed;
+  return readPtcPositiveIntegerEnv(name, raw);
 }
 
 function callbackChannelFailureDiagnostics(

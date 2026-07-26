@@ -116,6 +116,7 @@ async function runAdmission<T>(
     throw new PluginPackageAdmissionError(
       'invalid_request',
       errorCode ? `${safeMessage} (${errorCode})` : safeMessage,
+      { cause: error },
     );
   }
 }

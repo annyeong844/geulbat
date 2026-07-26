@@ -29,8 +29,14 @@ async function startHarness(): Promise<MediaRouteHarness> {
     createThreadsRoutes({
       context: {
         homeStateRoot: root,
-        activeRuns: { getRunByThreadId: () => undefined },
-        backgroundNotifications: { clearThreadBackgroundResults() {} },
+        activeRuns: {
+          getRunByThreadId: () => undefined,
+          getRunByOwnerThread: () => undefined,
+        },
+        backgroundNotifications: {
+          clearThreadBackgroundResults() {},
+          readThreadBackgroundResultHistory: () => [],
+        },
         providerTransitionCompaction: {
           async prepare() {
             throw new Error('provider transition is outside this harness');

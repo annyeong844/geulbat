@@ -63,6 +63,52 @@ void test('execute_code SDK rejects callback calls when the response socket clos
   );
 });
 
+void test('execute_code SDK rejects a callback response for another request', async () => {
+  await withCallbackSocketServer(
+    (socket) => {
+      socket.setEncoding('utf8');
+      socket.once('data', (chunk) => {
+        const request = JSON.parse(String(chunk).trim()) as {
+          requestId: string;
+        };
+        socket.end(
+          `${JSON.stringify({
+            requestId: `${request.requestId}-other`,
+            ok: true,
+            result: 'forged-success',
+          })}\n`,
+        );
+      });
+    },
+    async (socketPath) => {
+      const geulbat = createGeulbatFacade(socketPath);
+
+      await assert.rejects(
+        geulbat.callTool('read_file', { path: 'note.txt' }),
+        /PTC callback response is invalid/u,
+      );
+    },
+  );
+});
+
+void test('execute_code SDK reports an unavailable callback host', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'geulbat-ptc-sdk-unavailable-'));
+  try {
+    const geulbat = createGeulbatFacade(join(root, 'missing.sock'));
+
+    await assert.rejects(
+      geulbat.callTool('read_file', { path: 'note.txt' }),
+      (error: unknown) => {
+        assert.ok(error && typeof error === 'object');
+        assert.equal('code' in error ? error.code : undefined, 'ENOENT');
+        return true;
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 void test('execute_code SDK does not open a callback socket when args serialization fails', async () => {
   let connectionCount = 0;
   const activeSockets = new Set<Socket>();

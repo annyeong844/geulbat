@@ -349,7 +349,9 @@ async function openArtifactDirectory(
   } catch (error: unknown) {
     await directory?.close().catch(() => {});
     if (position === 'root' && isNodeErrorCode(error, 'ENOENT')) {
-      throw new PtcArtifactOpenError('ptc_lab_artifact_workspace_unavailable');
+      throw new PtcArtifactOpenError('ptc_lab_artifact_workspace_unavailable', {
+        cause: error,
+      });
     }
     throw error;
   }
@@ -402,8 +404,9 @@ class PtcArtifactOpenError extends Error {
       | 'ptc_lab_artifact_file_unsupported'
       | 'ptc_lab_artifact_file_changed'
     >,
+    options?: ErrorOptions,
   ) {
-    super(reasonCode);
+    super(reasonCode, options);
   }
 }
 

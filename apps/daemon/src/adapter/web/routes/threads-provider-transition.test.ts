@@ -34,8 +34,12 @@ async function startHarness(args: {
             args.activeRunId === undefined
               ? undefined
               : { runId: testRunId(args.activeRunId) },
+          getRunByOwnerThread: () => undefined,
         },
-        backgroundNotifications: { clearThreadBackgroundResults() {} },
+        backgroundNotifications: {
+          clearThreadBackgroundResults() {},
+          readThreadBackgroundResultHistory: () => [],
+        },
         providerTransitionCompaction: { prepare: args.prepare },
       },
     }),
@@ -114,6 +118,47 @@ void test('provider-transition route prepares a cross-provider snapshot before a
   }
 });
 
+void test('provider-transition route prepares a portable snapshot for a same-provider model change', async () => {
+  const seen: Array<
+    Parameters<
+      ThreadsRoutesContext['providerTransitionCompaction']['prepare']
+    >[0]
+  > = [];
+  const harness = await startHarness({
+    async prepare(args) {
+      seen.push(args);
+      return { kind: 'compacted', compactionEntryId: 'entry-model-change' };
+    },
+  });
+  try {
+    const response = await fetch(
+      `${harness.baseUrl}/api/threads/${THREAD_ID}/provider-transition`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceModelId: 'gpt-5.6-sol',
+          targetModelId: 'gpt-5.6-luna',
+          reasoningEffort: 'high',
+        }),
+      },
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0]?.source, {
+      providerId: 'openai_codex_direct',
+      model: 'gpt-5.6-sol',
+    });
+    assert.deepEqual(seen[0]?.target, {
+      providerId: 'openai_codex_direct',
+      model: 'gpt-5.6-luna',
+    });
+  } finally {
+    await harness.close();
+  }
+});
+
 void test('provider-transition route refuses to compact while the thread has an active run', async () => {
   let prepareCalls = 0;
   const harness = await startHarness({
@@ -144,6 +189,42 @@ void test('provider-transition route refuses to compact while the thread has an 
       message: `thread ${THREAD_ID} has an active run`,
       threadId: THREAD_ID,
       activeRunId: testRunId('run-active'),
+    });
+  } finally {
+    await harness.close();
+  }
+});
+
+void test('provider-transition route returns a typed actionable preparation failure', async () => {
+  const harness = await startHarness({
+    async prepare() {
+      return {
+        kind: 'failed',
+        reason: 'provider_compaction_failed',
+        message: 'provider transition context preparation failed',
+      };
+    },
+  });
+  try {
+    const response = await fetch(
+      `${harness.baseUrl}/api/threads/${THREAD_ID}/provider-transition`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceModelId: 'grok-4.5',
+          targetModelId: 'gpt-5.6-sol',
+          reasoningEffort: 'high',
+        }),
+      },
+    );
+
+    assert.equal(response.status, 422);
+    assert.deepEqual(await response.json(), {
+      code: 'provider_transition_preparation_failed',
+      message:
+        'provider transition context preparation failed; retry, or continue with the selected model in a new thread',
+      reason: 'provider_compaction_failed',
     });
   } finally {
     await harness.close();

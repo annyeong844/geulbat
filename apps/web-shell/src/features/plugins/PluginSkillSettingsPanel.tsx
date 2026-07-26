@@ -91,13 +91,7 @@ export function PluginSkillSettingsPanel({
         aria-labelledby="installed-skill-title"
       >
         <header className="extension-section-heading">
-          <div>
-            <h2 id="installed-skill-title">설치됨</h2>
-            <p>
-              설치된 플러그인의 스킬만 필요할 때 읽고, 포함된 스크립트는
-              자동으로 실행하지 않습니다.
-            </p>
-          </div>
+          <h2 id="installed-skill-title">설치됨</h2>
           <span className="extension-count">
             {inventory?.skills.length ?? 0}
           </span>

@@ -6,36 +6,13 @@ import { listFilesTool } from './builtin/list-files.js';
 import { writeFileTool } from './builtin/write-file.js';
 import { createToolRegistryStore } from './registry.js';
 import { isToolObjectParameters, type AnyTool } from './types.js';
-
-function createTestTool(name: string): AnyTool {
-  return {
-    name,
-    description: 'test tool',
-    parameters: {
-      type: 'object',
-      properties: {},
-      required: [],
-      additionalProperties: false,
-    },
-    strict: true,
-    sideEffectLevel: 'none',
-    mayMutateComputerFiles: false,
-    timeoutMs: 1_000,
-    requiresApproval: false,
-    parseArgs() {
-      return { ok: true, value: {} };
-    },
-    async executeParsed() {
-      return { ok: true, output: name };
-    },
-  };
-}
+import { makeRegistrableTestTool } from '../../test-support/loop-tool-execution-test-support.js';
 
 void test('createToolRegistryStore isolates local registrations across instances', () => {
   const left = createToolRegistryStore({ builtins: [] });
   const right = createToolRegistryStore({ builtins: [] });
 
-  left.registerTool(createTestTool('left_only_tool'));
+  left.registerTool(makeRegistrableTestTool('left_only_tool'));
 
   assert.ok(left.getTool('left_only_tool'));
   assert.equal(right.getTool('left_only_tool'), undefined);
@@ -81,7 +58,7 @@ void test('createToolRegistryStore keeps strict=true only for fully-required sch
   const store = createToolRegistryStore({ builtins: [] });
 
   store.registerTool({
-    ...createTestTool('required_only_tool'),
+    ...makeRegistrableTestTool('required_only_tool'),
     parameters: {
       type: 'object',
       properties: {
@@ -113,7 +90,7 @@ void test('createToolRegistryStore does not publish strict=true for root oneOf s
   const store = createToolRegistryStore({ builtins: [] });
 
   store.registerTool({
-    ...createTestTool('branch_tool'),
+    ...makeRegistrableTestTool('branch_tool'),
     parameters: {
       oneOf: [
         {
@@ -142,7 +119,7 @@ void test('createToolRegistryStore does not publish strict=true for root anyOf s
   const store = createToolRegistryStore({ builtins: [] });
 
   store.registerTool({
-    ...createTestTool('branch_tool'),
+    ...makeRegistrableTestTool('branch_tool'),
     parameters: {
       anyOf: [
         {
@@ -183,11 +160,110 @@ void test('createToolRegistryStore returns tool snapshots instead of live builti
   assert.equal(again.parameters.required.includes('__mutated__'), false);
 });
 
+void test('createToolRegistryStore caches immutable execution and metadata views', () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool({
+    ...makeRegistrableTestTool('cached_execution_tool'),
+    streamsArgsDelta: true,
+    resultProjection: {
+      exactDurableRecovery: true,
+      modelProjection: 'runtime_summary',
+      snapshotFailure: 'inline',
+    },
+  });
+
+  const executionHandle = store.getToolExecutionHandle('cached_execution_tool');
+  assert.ok(executionHandle);
+  assert.strictEqual(
+    store.getToolExecutionHandle('cached_execution_tool'),
+    executionHandle,
+  );
+  assert.equal(Object.isFrozen(executionHandle), true);
+  assert.equal('parameters' in executionHandle, false);
+
+  const meta = store.getToolMeta('cached_execution_tool');
+  assert.ok(meta);
+  assert.strictEqual(store.getToolMeta('cached_execution_tool'), meta);
+  assert.equal(Object.isFrozen(meta), true);
+  assert.equal(Object.isFrozen(meta.exposure), true);
+  assert.equal(Object.isFrozen(meta.resultProjection), true);
+  assert.equal(meta.streamsArgsDelta, true);
+  assert.deepEqual(meta.resultProjection, {
+    exactDurableRecovery: true,
+    modelProjection: 'runtime_summary',
+    snapshotFailure: 'inline',
+  });
+});
+
+void test('createToolRegistryStore keeps one captured identity while later snapshots see replacements', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  let originalExecutions = 0;
+  let replacementExecutions = 0;
+  store.registerTool({
+    ...makeRegistrableTestTool('replaceable_tool'),
+    description: 'original tool',
+    async executeParsed() {
+      originalExecutions += 1;
+      return { ok: true, output: 'original' };
+    },
+  });
+  const captured = store.captureSnapshot();
+  const capturedHandle = captured.getToolExecutionHandle('replaceable_tool');
+  assert.equal(Object.isFrozen(captured), true);
+  assert.ok(capturedHandle);
+
+  assert.equal(store.unregisterTool('replaceable_tool'), true);
+  store.registerTool({
+    ...makeRegistrableTestTool('replaceable_tool'),
+    description: 'replacement tool',
+    sideEffectLevel: 'write',
+    requiresApproval: true,
+    async executeParsed() {
+      replacementExecutions += 1;
+      return { ok: true, output: 'replacement' };
+    },
+  });
+
+  assert.equal(
+    captured.buildToolDefinitions()[0]?.description,
+    'original tool',
+  );
+  assert.equal(
+    captured.getToolMeta('replaceable_tool')?.sideEffectLevel,
+    'none',
+  );
+  assert.equal(
+    captured.getToolMeta('replaceable_tool')?.requiresApproval,
+    false,
+  );
+  const parsed = capturedHandle.parseArgs({});
+  assert.equal(parsed.ok, true);
+  assert.equal(
+    (
+      await capturedHandle.executeParsed(
+        parsed.ok ? parsed.value : {},
+        undefined,
+      )
+    ).output,
+    'original',
+  );
+
+  const later = captured.captureSnapshot();
+  assert.equal(
+    later.buildToolDefinitions()[0]?.description,
+    'replacement tool',
+  );
+  assert.equal(later.getToolMeta('replaceable_tool')?.sideEffectLevel, 'write');
+  assert.equal(later.getToolMeta('replaceable_tool')?.requiresApproval, true);
+  assert.equal(originalExecutions, 1);
+  assert.equal(replacementExecutions, 0);
+});
+
 void test('createToolRegistryStore preserves receiver-aware tool methods in snapshots', async () => {
   let parseReceiver: unknown;
   let executeReceiver: unknown;
   const receiverAwareTool: AnyTool = {
-    ...createTestTool('receiver_aware_tool'),
+    ...makeRegistrableTestTool('receiver_aware_tool'),
     parseArgs() {
       parseReceiver = this;
       return { ok: true, value: {} };
@@ -217,7 +293,7 @@ void test('createToolRegistryStore preserves receiver-aware tool methods in snap
 
 void test('createToolRegistryStore unregisters one dynamic tool without affecting siblings', () => {
   const store = createToolRegistryStore({ builtins: [writeFileTool] });
-  store.registerTool(createTestTool('dynamic_tool'));
+  store.registerTool(makeRegistrableTestTool('dynamic_tool'));
 
   assert.equal(store.unregisterTool('dynamic_tool'), true);
   assert.equal(store.unregisterTool('dynamic_tool'), false);

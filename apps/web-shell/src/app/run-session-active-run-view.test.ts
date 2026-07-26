@@ -54,6 +54,36 @@ void test('activateCommittedArtifact preserves finalAnswerText and promotes comm
   });
 });
 
+void test('activateCommittedArtifact registers an image artifact without promoting it to the center pane', () => {
+  const initial = createEmptyActiveRunView(THREAD_ID);
+
+  const committed = activateCommittedArtifact(initial, THREAD_ID, {
+    artifactId: 'art_img',
+    version: 1,
+    parentVersion: null,
+    baseVersion: null,
+    renderer: 'image',
+    payload: JSON.stringify({
+      mimeType: 'image/png',
+      source: { type: 'inline_base64', dataBase64: 'aGk=' },
+      provenance: { prompt: '고양이' },
+    }),
+    digest: '이미지',
+    contentHash: 'hash-img',
+    createdAt: '2026-03-24T00:00:01.000Z',
+    createdByRunId: RUN_ID,
+    previewValidation: { ok: true },
+    title: null,
+    persistenceEpoch: 0,
+    sourceRef: null,
+  });
+
+  // 인라인 렌더 조회용으로는 등록되지만, 중앙 패널을 여는 active 승격은
+  // 일어나지 않는다 — 채팅 인라인과 중앙 창에 이중으로 뜨는 버그 방지.
+  assert.equal(committed.artifactsByRef['art_img::1']?.artifactId, 'art_img');
+  assert.equal(committed.activeArtifactRef, null);
+});
+
 void test('activateRunningRun clears pending approval state and records the acknowledged run', () => {
   const initial = {
     ...createEmptyActiveRunView(null),
@@ -104,12 +134,18 @@ void test('setRunErrorState clears the active run id and records the error messa
     }),
   };
 
-  const errored = setRunErrorState(initial, THREAD_ID, '[internal] failed');
+  const errored = setRunErrorState(
+    initial,
+    THREAD_ID,
+    'internal',
+    '[internal] failed',
+  );
 
   assert.equal(errored.threadId, THREAD_ID);
   assert.equal(errored.runId, null);
   assert.equal(errored.pendingApproval, null);
   assert.equal(errored.streamError, '[internal] failed');
+  assert.equal(errored.streamErrorCode, 'internal');
 });
 
 void test('setRunSyncFailedState preserves the active run id and records the sync failure', () => {
@@ -260,4 +296,52 @@ void test('appendSubagentActivityToActiveRun dedupes terminal replay entries by 
   const next = appendSubagentActivityToActiveRun(initial, entry);
 
   assert.equal(next, initial);
+});
+
+void test('appendSubagentActivityToActiveRun updates one child card across semantic phases', () => {
+  const initial = {
+    ...createEmptyActiveRunView(THREAD_ID),
+    transcriptEntries: [
+      {
+        kind: 'subagent_activity' as const,
+        childRunId: 'run-child-1',
+        childThreadId: THREAD_ID,
+        subagentType: 'worker' as const,
+        state: 'spawned' as const,
+        modelId: 'gpt-5.6-sol',
+      },
+    ],
+  };
+
+  const next = appendSubagentActivityToActiveRun(initial, {
+    kind: 'subagent_activity',
+    childRunId: 'run-child-1',
+    subagentType: 'worker',
+    state: 'spawned',
+    runtime: {
+      phase: 'tool_running',
+      observedAt: '2026-07-23T10:00:00.000Z',
+      lastTool: {
+        name: 'read_file',
+        callId: 'call-read-1',
+        state: 'running',
+      },
+      partialOutputAvailable: false,
+    },
+  });
+
+  assert.equal(next.transcriptEntries.length, 1);
+  assert.deepEqual(next.transcriptEntries[0], {
+    ...initial.transcriptEntries[0],
+    runtime: {
+      phase: 'tool_running',
+      observedAt: '2026-07-23T10:00:00.000Z',
+      lastTool: {
+        name: 'read_file',
+        callId: 'call-read-1',
+        state: 'running',
+      },
+      partialOutputAvailable: false,
+    },
+  });
 });

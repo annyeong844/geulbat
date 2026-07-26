@@ -1,19 +1,34 @@
 import { stat } from 'node:fs/promises';
 
 import {
+  isRunModelId,
+  resolveRunModelDescriptor,
+  type RunModelId,
+} from '@geulbat/protocol/run-contract';
+import {
   createSessionArtifactRefKey as createArtifactRefKey,
   readSessionActiveArtifactRefFromMetadata as readActiveArtifactRefFromMetadata,
   readSessionArtifactRefsFromMetadata as readArtifactRefsFromMetadata,
   type ThreadArtifactVersion,
   type ThreadDetailResponse,
   type ThreadId,
+  type ThreadMessage,
 } from './contract.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
 
 import { loadAllThreadArtifactVersions } from './artifact-store.js';
 import { artifactStoreFilePath, threadFilePath } from './paths.js';
+import {
+  readProviderRoundHistory,
+  type ProviderRoundJournalRecord,
+} from './provider-round-journal.js';
 import { readTranscriptEntries } from './transcript-log.js';
 import { loadThreadIndex } from './threads-index.js';
+import {
+  createRunCheckpointStore,
+  type RunCheckpoint,
+} from './run-checkpoint-store.js';
+import { isRecord } from '../runtime-json.js';
 import { isNotFoundError } from '../utils/error.js';
 
 const logger = createLogger('thread-detail');
@@ -26,19 +41,34 @@ interface ThreadDetailDiagnostics {
 export async function loadThreadDetailSnapshot(args: {
   workspaceRoot: string;
   threadId: ThreadId;
+  includeActiveRunCommentary?: boolean;
 }): Promise<ThreadDetailResponse> {
-  const messages = await readTranscriptEntries(
-    args.workspaceRoot,
-    args.threadId,
+  const [messages, artifacts, snapshotVersion, checkpoint, providerRounds] =
+    await Promise.all([
+      readTranscriptEntries(args.workspaceRoot, args.threadId),
+      loadAllThreadArtifactVersions(args.workspaceRoot, args.threadId),
+      resolveThreadSnapshotVersion(args),
+      createRunCheckpointStore({
+        stateRoot: args.workspaceRoot,
+      }).readThread(args.threadId),
+      readProviderRoundHistory(args.workspaceRoot, args.threadId),
+    ]);
+  const activeModelId = resolveThreadActiveModelId(
+    messages,
+    checkpoint,
+    providerRounds,
   );
-  const artifacts = await loadAllThreadArtifactVersions(
-    args.workspaceRoot,
-    args.threadId,
-  );
-  const snapshotVersion = await resolveThreadSnapshotVersion(args);
   const diagnostics = collectThreadDetailDiagnostics(messages, artifacts);
   emitThreadDetailDiagnostics(args.threadId, diagnostics);
-  const publicMessages = messages.filter(
+  const publicMessages = projectProviderCommentaryMessages(
+    messages,
+    providerRounds,
+    args.includeActiveRunCommentary === true
+      ? undefined
+      : checkpoint?.status === 'running'
+        ? checkpoint.runId
+        : undefined,
+  ).filter(
     (message): message is ThreadDetailResponse['messages'][number] =>
       message.role !== 'compaction',
   );
@@ -46,10 +76,206 @@ export async function loadThreadDetailSnapshot(args: {
   return {
     threadId: args.threadId,
     snapshotVersion,
+    ...(activeModelId === undefined ? {} : { activeModelId }),
     messages: publicMessages,
     artifacts,
     ...(diagnostics ? { diagnostics } : {}),
   };
+}
+
+function projectProviderCommentaryMessages(
+  messages: readonly ThreadMessage[],
+  providerRounds: readonly ProviderRoundJournalRecord[],
+  activeRunId: string | undefined,
+): ThreadMessage[] {
+  const persistedCommentaryRunIds = new Set(
+    messages.flatMap((message) =>
+      message.role === 'assistant' &&
+      message.metadata?.phase === 'commentary' &&
+      message.metadata.sourceRunId !== undefined
+        ? [message.metadata.sourceRunId]
+        : [],
+    ),
+  );
+  const messageEntryIds = new Set(messages.map((message) => message.entryId));
+  const projectedBeforeFirst: ThreadMessage[] = [];
+  const projectedByAnchor = new Map<string, ThreadMessage[]>();
+
+  for (const record of providerRounds) {
+    if (
+      record.runId === activeRunId ||
+      persistedCommentaryRunIds.has(record.runId)
+    ) {
+      continue;
+    }
+    const projected = record.items.flatMap((item, itemIndex) => {
+      const text = readProviderCommentaryText(item);
+      if (text === undefined) {
+        return [];
+      }
+      return [
+        {
+          entryId: `${record.threadId}:provider-commentary:${record.runId}:${record.round}:${itemIndex}`,
+          role: 'assistant' as const,
+          content: text,
+          timestamp: record.createdAt,
+          metadata: {
+            phase: 'commentary' as const,
+            sourceRunId: record.runId,
+          },
+        },
+      ];
+    });
+    if (projected.length === 0) {
+      continue;
+    }
+    const anchor = record.precedingTranscriptEntryId;
+    if (anchor === null) {
+      if (messages.length === 0) {
+        projectedBeforeFirst.push(...projected);
+      }
+      continue;
+    }
+    if (!messageEntryIds.has(anchor)) {
+      continue;
+    }
+    const existing = projectedByAnchor.get(anchor);
+    if (existing === undefined) {
+      projectedByAnchor.set(anchor, projected);
+    } else {
+      existing.push(...projected);
+    }
+  }
+
+  const result = [...projectedBeforeFirst];
+  for (const message of messages) {
+    result.push(message);
+    result.push(...(projectedByAnchor.get(message.entryId) ?? []));
+  }
+  return result;
+}
+
+function readProviderCommentaryText(item: unknown): string | undefined {
+  if (
+    !isRecord(item) ||
+    item['type'] !== 'message' ||
+    item['phase'] !== 'commentary' ||
+    !Array.isArray(item['content'])
+  ) {
+    return undefined;
+  }
+  let text = '';
+  for (const part of item['content']) {
+    if (
+      isRecord(part) &&
+      part['type'] === 'output_text' &&
+      typeof part['text'] === 'string'
+    ) {
+      text += part['text'];
+    }
+  }
+  return text.trim() === '' ? undefined : text;
+}
+
+interface ThreadActiveModelCandidate {
+  modelId: RunModelId;
+  selectedAt: string;
+}
+
+function resolveThreadActiveModelId(
+  messages: readonly ThreadMessage[],
+  checkpoint: RunCheckpoint | null,
+  providerRounds: readonly ProviderRoundJournalRecord[],
+): RunModelId | undefined {
+  const candidates: ThreadActiveModelCandidate[] = [];
+  const providerModel = checkpoint?.request.providerModel;
+  if (checkpoint !== null && providerModel !== undefined) {
+    appendThreadActiveModelCandidate(
+      candidates,
+      providerModel.providerId,
+      providerModel.model,
+      checkpoint.createdAt,
+    );
+  }
+
+  let latestCompactionIndex = -1;
+  const transcriptIndexById = new Map<string, number>();
+  messages.forEach((message, index) => {
+    transcriptIndexById.set(message.entryId, index);
+    if (message.role !== 'compaction') {
+      return;
+    }
+    latestCompactionIndex = index;
+    const data = message.compactionData;
+    if (!('kind' in data)) {
+      return;
+    }
+    if (data.kind === 'provider_native') {
+      appendThreadActiveModelCandidate(
+        candidates,
+        data.providerId,
+        data.model,
+        message.timestamp,
+      );
+      return;
+    }
+    appendThreadActiveModelCandidate(
+      candidates,
+      data.targetProviderId,
+      data.targetModel,
+      message.timestamp,
+    );
+  });
+
+  const latestCompactionEntryId =
+    latestCompactionIndex < 0
+      ? undefined
+      : messages[latestCompactionIndex]?.entryId;
+  for (const record of providerRounds) {
+    const anchor = record.precedingTranscriptEntryId;
+    const anchorIndex =
+      anchor === null ? undefined : transcriptIndexById.get(anchor);
+    const reachable =
+      anchor === latestCompactionEntryId ||
+      (anchor === null
+        ? latestCompactionIndex < 0
+        : anchorIndex !== undefined && anchorIndex > latestCompactionIndex);
+    if (!reachable) {
+      continue;
+    }
+    appendThreadActiveModelCandidate(
+      candidates,
+      record.providerId,
+      record.model,
+      record.createdAt,
+    );
+  }
+
+  let latest: ThreadActiveModelCandidate | undefined;
+  for (const candidate of candidates) {
+    if (
+      latest === undefined ||
+      candidate.selectedAt.localeCompare(latest.selectedAt) >= 0
+    ) {
+      latest = candidate;
+    }
+  }
+  return latest?.modelId;
+}
+
+function appendThreadActiveModelCandidate(
+  candidates: ThreadActiveModelCandidate[],
+  providerId: string,
+  model: string,
+  selectedAt: string,
+): void {
+  if (!isRunModelId(model)) {
+    return;
+  }
+  if (resolveRunModelDescriptor(model).providerId !== providerId) {
+    return;
+  }
+  candidates.push({ modelId: model, selectedAt });
 }
 
 async function resolveThreadSnapshotVersion(args: {

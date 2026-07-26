@@ -77,7 +77,7 @@ export async function handleRunTool(
     threadId,
     runId,
     workingDirectory,
-    approvalSessionId: socketState.approvalSessionId,
+    computerSessionId: socketState.computerSessionId,
     toolName,
     toolArgs,
     scopeHandle,

@@ -9,61 +9,58 @@ import {
 } from './approval-runtime-policy.js';
 import { createApprovalGrantStore } from './approval-grants.js';
 import { createToolRegistryStore } from './registry.js';
+import { createBuiltinToolRegistryStore } from './builtin/catalog.js';
+import {
+  mcpApprovalClass,
+  projectMcpToolName,
+} from '../mcp/global-mcp-tool-projection.js';
 import type { AnyTool } from './types.js';
+import { makeTestTool } from '../../test-support/loop-tool-execution-test-support.js';
 
-function makeTestTool(args: {
+// 승인 정책 테스트는 도구의 실행 동작에 관심이 없다. 도구 shape는 공용
+// 빌더 하나만 알게 두고, 여기서는 승인 판정에 필요한 값만 채운다 — AnyTool에
+// 필드가 늘어도 이 파일은 손대지 않는다.
+function makeApprovalPolicyTool(args: {
   name: string;
   sideEffectLevel: AnyTool['sideEffectLevel'];
   requiresApproval: boolean;
 }): AnyTool {
-  return {
+  return makeTestTool({
     name: args.name,
     description: 'test',
-    parameters: {
-      type: 'object',
-      properties: {},
-      required: [],
-      additionalProperties: false,
-    },
-    strict: true,
     sideEffectLevel: args.sideEffectLevel,
-    mayMutateComputerFiles: false,
-    timeoutMs: 1000,
     requiresApproval: args.requiresApproval,
-    parseArgs() {
-      return { ok: true, value: {} };
-    },
     async executeParsed() {
       return { ok: true, output: '' };
     },
-  };
+  });
 }
 
 void test('mutating tools require approval and unknown tools fail closed', () => {
   const toolRegistry = createToolRegistryStore({ builtins: [] });
   toolRegistry.registerTool(
-    makeTestTool({
+    makeApprovalPolicyTool({
       name: 'write_file',
       sideEffectLevel: 'write',
       requiresApproval: true,
     }),
   );
   toolRegistry.registerTool(
-    makeTestTool({
+    makeApprovalPolicyTool({
       name: 'apply_patch',
       sideEffectLevel: 'write',
       requiresApproval: true,
     }),
   );
   toolRegistry.registerTool(
-    makeTestTool({
+    makeApprovalPolicyTool({
       name: 'manage_files',
       sideEffectLevel: 'write',
       requiresApproval: true,
     }),
   );
   toolRegistry.registerTool(
-    makeTestTool({
+    makeApprovalPolicyTool({
       name: 'read_file',
       sideEffectLevel: 'none',
       requiresApproval: false,
@@ -81,7 +78,7 @@ void test('mutating tools require approval and unknown tools fail closed', () =>
 void test('manage_files delete upgrades runtime side effect to destructive', () => {
   const toolRegistry = createToolRegistryStore({ builtins: [] });
   toolRegistry.registerTool(
-    makeTestTool({
+    makeApprovalPolicyTool({
       name: 'manage_files',
       sideEffectLevel: 'write',
       requiresApproval: true,
@@ -110,7 +107,7 @@ void test('exec_command keeps destructive approval semantics', () => {
   const toolRegistry = createToolRegistryStore({ builtins: [] });
   const approvalGrants = createApprovalGrantStore();
   toolRegistry.registerTool(
-    makeTestTool({
+    makeApprovalPolicyTool({
       name: 'exec_command',
       sideEffectLevel: 'destructive',
       requiresApproval: true,
@@ -119,7 +116,7 @@ void test('exec_command keeps destructive approval semantics', () => {
 
   const context = {
     runId: 'run-exec-command',
-    sessionId: 'exec-command-session',
+    computerSessionId: 'exec-command-session',
     approvalClass: toApprovalClass('exec_command'),
     sideEffectLevel: 'destructive' as const,
     permissionMode: 'full_access' as const,
@@ -138,7 +135,7 @@ void test('refresh_memory_index truthfully reports write effect and uses approva
   const toolRegistry = createToolRegistryStore({ builtins: [] });
   const approvalGrants = createApprovalGrantStore();
   toolRegistry.registerTool(
-    makeTestTool({
+    makeApprovalPolicyTool({
       name: 'refresh_memory_index',
       sideEffectLevel: 'write',
       requiresApproval: true,
@@ -165,7 +162,7 @@ void test('refresh_memory_index truthfully reports write effect and uses approva
     shouldAutoApprove(
       {
         runId: 'run-refresh',
-        sessionId: 'refresh-session',
+        computerSessionId: 'refresh-session',
         approvalClass: toApprovalClass('refresh_memory_index'),
         sideEffectLevel: 'write',
         permissionMode: 'basic',
@@ -180,7 +177,7 @@ void test('refresh_memory_index truthfully reports write effect and uses approva
     shouldAutoApprove(
       {
         runId: 'run-refresh',
-        sessionId: 'refresh-session',
+        computerSessionId: 'refresh-session',
         approvalClass: toApprovalClass('refresh_memory_index'),
         sideEffectLevel: 'write',
         permissionMode: 'full_access',
@@ -194,23 +191,10 @@ void test('refresh_memory_index truthfully reports write effect and uses approva
 });
 
 void test('approval classes scope file mutations to Computer and split manage_files by operation', () => {
-  assert.equal(resolveApprovalClass('read_file'), 'read_file');
-  assert.equal(resolveApprovalClass('write_file'), 'write_file:computer');
-  assert.equal(
-    resolveApprovalClass('manage_files', { operation: 'delete' }),
-    'manage_files:delete:computer',
-  );
-  assert.equal(
-    resolveApprovalClass('manage_files', { operation: 'rename' }),
-    'manage_files:rename:computer',
-  );
-});
-
-void test('Computer file mutations retain truthful runtime effect levels', () => {
   const toolRegistry = createToolRegistryStore({ builtins: [] });
-  for (const name of ['write_file', 'apply_patch', 'manage_files']) {
+  for (const name of ['read_file', 'write_file', 'manage_files']) {
     toolRegistry.registerTool(
-      makeTestTool({
+      makeApprovalPolicyTool({
         name,
         sideEffectLevel: 'write',
         requiresApproval: true,
@@ -218,12 +202,112 @@ void test('Computer file mutations retain truthful runtime effect levels', () =>
     );
   }
 
-  assert.equal(resolveApprovalClass('write_file'), 'write_file:computer');
-  assert.equal(resolveApprovalClass('apply_patch'), 'apply_patch:computer');
   assert.equal(
-    resolveApprovalClass('manage_files', {
-      operation: 'move',
+    resolveApprovalClass('read_file', undefined, { toolRegistry }),
+    'read_file',
+  );
+  assert.equal(
+    resolveApprovalClass('write_file', undefined, { toolRegistry }),
+    'write_file:computer',
+  );
+  assert.equal(
+    resolveApprovalClass(
+      'manage_files',
+      { operation: 'delete' },
+      {
+        toolRegistry,
+      },
+    ),
+    'manage_files:delete:computer',
+  );
+  assert.equal(
+    resolveApprovalClass(
+      'manage_files',
+      { operation: 'rename' },
+      {
+        toolRegistry,
+      },
+    ),
+    'manage_files:rename:computer',
+  );
+});
+
+void test('every builtin tool resolves to a valid approval class', () => {
+  // 이 스위트가 오늘까지 놓친 것: `resolveApprovalClass`의 마지막 줄은 도구
+  // 이름을 그대로 클래스로 쓰는데, 그것이 통하는 이유는 내장 도구 이름이
+  // 우연히 슬러그이기 때문이지 규칙이 있어서가 아니었다. MCP 투영 이름이
+  // 그 가정을 깨자 런이 통째로 죽었다(승인 층까지 가는 테스트가 없었다).
+  //
+  // 그래서 여기서 카탈로그 전체를 훑는다. 이름이 슬러그이거나 클래스를
+  // 선언하거나 둘 중 하나여야 하고, 아니면 이 자리에서 걸린다.
+  const toolRegistry = createBuiltinToolRegistryStore();
+  const names = toolRegistry.getAllRegisteredToolNames();
+  assert.ok(names.length > 0, 'the builtin catalog is not empty');
+
+  const unresolvable = names.filter((name) => {
+    try {
+      resolveApprovalClass(name, {}, { toolRegistry });
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  assert.deepEqual(
+    unresolvable,
+    [],
+    'a tool whose name is not a slug must declare its approvalClass',
+  );
+});
+
+void test('a declared approval class wins over the tool name', () => {
+  // MCP 투영 이름은 내용 해시라 승인 클래스 문법을 만족하지 못한다. 도구가
+  // 스스로 클래스를 선언하면 이름은 승낙의 단위가 아니게 된다.
+  const toolRegistry = createToolRegistryStore({ builtins: [] });
+  const projectedName = projectMcpToolName('a'.repeat(32), 'placement_probe');
+  toolRegistry.registerTool({
+    ...makeApprovalPolicyTool({
+      name: projectedName,
+      sideEffectLevel: 'write',
+      requiresApproval: true,
     }),
+    approvalClass: mcpApprovalClass('a'.repeat(32)),
+  });
+
+  assert.equal(
+    resolveApprovalClass(projectedName, {}, { toolRegistry }),
+    `mcp:${'a'.repeat(32)}`,
+    'the grant is keyed on the server the user chose to install',
+  );
+});
+
+void test('Computer file mutations retain truthful runtime effect levels', () => {
+  const toolRegistry = createToolRegistryStore({ builtins: [] });
+  for (const name of ['write_file', 'apply_patch', 'manage_files']) {
+    toolRegistry.registerTool(
+      makeApprovalPolicyTool({
+        name,
+        sideEffectLevel: 'write',
+        requiresApproval: true,
+      }),
+    );
+  }
+
+  assert.equal(
+    resolveApprovalClass('write_file', undefined, { toolRegistry }),
+    'write_file:computer',
+  );
+  assert.equal(
+    resolveApprovalClass('apply_patch', undefined, { toolRegistry }),
+    'apply_patch:computer',
+  );
+  assert.equal(
+    resolveApprovalClass(
+      'manage_files',
+      { operation: 'move' },
+      {
+        toolRegistry,
+      },
+    ),
     'manage_files:move:computer',
   );
   assert.equal(
@@ -256,7 +340,7 @@ void test('legacy unscoped grants do not authorize Computer mutation classes', (
   const approvalGrants = createApprovalGrantStore();
   const legacyUnscopedContext = {
     runId: 'run-root-scope',
-    sessionId: 'root-scope-session',
+    computerSessionId: 'root-scope-session',
     approvalClass: toApprovalClass('write_file'),
     sideEffectLevel: 'write' as const,
     permissionMode: 'basic' as const,
@@ -274,11 +358,11 @@ void test('legacy unscoped grants do not authorize Computer mutation classes', (
   assert.equal(shouldAutoApprove(computerContext, { approvalGrants }), false);
 });
 
-void test('approval grants reuse only within an explicit run or connection session', () => {
+void test('approval grants reuse only within an explicit run or computer session', () => {
   const approvalGrants = createApprovalGrantStore();
   const context = {
     runId: 'run-grant-a',
-    sessionId: 'connection-session-a',
+    computerSessionId: 'computer-session-a',
     approvalClass: toApprovalClass('write_file:computer'),
     sideEffectLevel: 'write' as const,
     permissionMode: 'basic' as const,
@@ -291,7 +375,7 @@ void test('approval grants reuse only within an explicit run or connection sessi
     false,
   );
 
-  approvalGrants.clearApprovalSession(context.sessionId);
+  approvalGrants.clearComputerSession(context.computerSessionId);
   approvalGrants.registerApprovalGrant(context, 'session');
   assert.equal(
     approvalGrants.hasApprovalGrant({ ...context, runId: 'run-grant-b' }),
@@ -301,7 +385,7 @@ void test('approval grants reuse only within an explicit run or connection sessi
     approvalGrants.hasApprovalGrant({
       ...context,
       runId: 'run-grant-b',
-      sessionId: 'connection-session-b',
+      computerSessionId: 'computer-session-b',
     }),
     false,
   );
@@ -309,10 +393,10 @@ void test('approval grants reuse only within an explicit run or connection sessi
 
 void test('full_access auto-approves write and destructive; basic still prompts', () => {
   const approvalGrants = createApprovalGrantStore();
-  const sessionId = 'approval-session-test';
+  const computerSessionId = 'approval-session-test';
   const writeContext = {
     runId: 'run-write',
-    sessionId,
+    computerSessionId,
     approvalClass: toApprovalClass('write_file:computer'),
     sideEffectLevel: 'write' as const,
     permissionMode: 'full_access' as const,
@@ -324,7 +408,7 @@ void test('full_access auto-approves write and destructive; basic still prompts'
     sideEffectLevel: 'destructive' as const,
   };
 
-  approvalGrants.clearApprovalSession(sessionId);
+  approvalGrants.clearComputerSession(computerSessionId);
   assert.equal(
     shouldAutoApprove(writeContext, {
       approvalGrants,
@@ -338,6 +422,14 @@ void test('full_access auto-approves write and destructive; basic still prompts'
     }),
     true,
   );
+  // yolo: 효과 수준과 무관하게 전부 자동 승인 (오너 결정 2026-07-23)
+  assert.equal(
+    shouldAutoApprove(
+      { ...writeContext, sideEffectLevel: 'none' as const },
+      { approvalGrants },
+    ),
+    true,
+  );
 
   // basic 모드는 grant 없이는 여전히 승인창
   assert.equal(
@@ -347,13 +439,13 @@ void test('full_access auto-approves write and destructive; basic still prompts'
     ),
     false,
   );
-  approvalGrants.clearApprovalSession(sessionId);
+  approvalGrants.clearComputerSession(computerSessionId);
 });
 
 void test('approval policy can read tool metadata from an injected registry', () => {
   const store = createToolRegistryStore({ builtins: [] });
   store.registerTool(
-    makeTestTool({
+    makeApprovalPolicyTool({
       name: 'local_registry_read_tool',
       sideEffectLevel: 'none',
       requiresApproval: false,

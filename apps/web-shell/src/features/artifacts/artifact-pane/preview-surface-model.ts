@@ -31,18 +31,11 @@ export type ArtifactPanePreviewSurfaceModel =
 export function shouldUseArtifactPaneHookManagedPreview(
   viewModel: ArtifactPaneViewModel,
 ): boolean {
-  const parsed = viewModel.parsed;
-  return (
-    usesHookManagedArtifactPreview(parsed.renderer) &&
-    parsed.state === 'completed'
-  );
+  return usesHookManagedArtifactPreview(viewModel.artifact.renderer);
 }
 
 export function resolveArtifactPanePreviewSurfaceModel(args: {
   viewModel: ArtifactPaneViewModel;
-  canShowPreview: boolean;
-  supportsStreamingPreview: boolean;
-  isLiveStreamingArtifact: boolean;
   hookManagedPreviewSurface: ArtifactPreviewSurface | null;
   onGeneratedTextExportSnapshotChange?: (
     snapshot: GeneratedTextExportSnapshot | null,
@@ -53,25 +46,18 @@ export function resolveArtifactPanePreviewSurfaceModel(args: {
 }): ArtifactPanePreviewSurfaceModel {
   const {
     viewModel,
-    canShowPreview,
-    supportsStreamingPreview,
-    isLiveStreamingArtifact,
     hookManagedPreviewSurface,
     onGeneratedTextExportSnapshotChange,
     onGeneratedBinaryExportSnapshotChange,
   } = args;
-  if (!canShowPreview) {
-    return surfacePreviewModel(null);
-  }
-
-  const { parsed } = viewModel;
-  if (usesHookManagedArtifactPreview(parsed.renderer)) {
+  const { artifact } = viewModel;
+  if (usesHookManagedArtifactPreview(artifact.renderer)) {
     return surfacePreviewModel(hookManagedPreviewSurface);
   }
-  if (isStaticArtifactPreviewRenderer(parsed.renderer)) {
+  if (isStaticArtifactPreviewRenderer(artifact.renderer)) {
     const sourceThreadId = viewModel.sourceRef?.threadId;
     return surfacePreviewModel(
-      resolveStaticArtifactPreview(parsed.renderer, parsed.payload, {
+      resolveStaticArtifactPreview(artifact.renderer, artifact.payload, {
         // video 등 미디어 참조 렌더러의 스레드 스코프(§4.6) — 커밋 시
         // sourceRef가 항상 threadId를 갖는다
         ...(typeof sourceThreadId === 'string' && sourceThreadId !== ''
@@ -80,22 +66,18 @@ export function resolveArtifactPanePreviewSurfaceModel(args: {
       }),
     );
   }
-  if (!isDispatchedRuntimeArtifactPreviewRenderer(parsed.renderer)) {
+  if (!isDispatchedRuntimeArtifactPreviewRenderer(artifact.renderer)) {
     return surfacePreviewModel(null);
   }
 
   const supportsRuntimeGeneratedExports =
-    supportsRuntimeGeneratedExportSnapshots(parsed.renderer);
+    supportsRuntimeGeneratedExportSnapshots(artifact.renderer);
   return {
     kind: 'runtime',
-    renderer: parsed.renderer,
-    payload: parsed.payload,
+    renderer: artifact.renderer,
+    payload: artifact.payload,
     context: {
-      digest: parsed.digest,
-      state: parsed.state,
-      isStreamingPreview:
-        supportsStreamingPreview &&
-        (parsed.state === 'streaming' || isLiveStreamingArtifact),
+      digest: artifact.digest,
       sourceRef: viewModel.sourceRef,
       ...(supportsRuntimeGeneratedExports &&
       onGeneratedTextExportSnapshotChange !== undefined

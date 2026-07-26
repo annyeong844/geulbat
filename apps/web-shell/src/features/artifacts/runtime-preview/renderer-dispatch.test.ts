@@ -38,8 +38,6 @@ function createPreviewContext(
 ): ArtifactRuntimePreviewContext {
   return {
     digest: 'fixture',
-    state: 'completed',
-    isStreamingPreview: false,
     sourceRef: createResolvedSourceRef({
       workingDirectory: 'stories/sample',
       threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
@@ -73,27 +71,6 @@ void test('resolveArtifactRuntimePreview rejects unsafe html before rendering a 
   assert.equal(preview.kind, 'unavailable');
   assert.equal(preview.code, 'sanitize_rejected');
   assert.match(preview.detail, /javascript: URL/);
-});
-
-void test('resolveArtifactRuntimePreview keeps streaming html pending while style is still unclosed', () => {
-  const preview = resolveArtifactRuntimePreview({
-    renderer: 'html5',
-    payload:
-      '<!doctype html><html><head><style>body{color:red;}<body><section>hello</section></body></html>',
-    context: createPreviewContext({
-      digest: 'page',
-      state: 'streaming',
-      isStreamingPreview: true,
-      sourceRef: createResolvedSourceRef(),
-    }),
-    renderRuntimeFrame,
-  });
-
-  assert.equal(preview.kind, 'pending');
-  assert.equal(
-    preview.detail,
-    '안정적인 문서 본문이 들어오면 미리보기가 이어집니다.',
-  );
 });
 
 void test('resolveArtifactRuntimePreview keeps svg gradient/filter/fragment html5 fixtures rendered', () => {

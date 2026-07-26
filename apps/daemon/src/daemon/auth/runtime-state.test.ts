@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createProviderAuthRuntimeStore } from './runtime-state.js';
 
@@ -126,4 +129,49 @@ void test('createProviderAuthRuntimeStore isolates local caches across instances
   first.setHydratedProviderAuth(true);
   assert.equal(first.hasHydratedProviderAuth(), true);
   assert.equal(second.hasHydratedProviderAuth(), false);
+});
+
+void test('provider auth runtime uses one injected permission owner for persisted writes and delete rewrites', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'geulbat-auth-runtime-store-'));
+  const authFile = join(root, 'auth', 'provider.json');
+  const envKey = 'GEULBAT_PROVIDER_AUTH_FILE_PATH';
+  const previousAuthFile = process.env[envKey];
+  const hardenedPaths: string[] = [];
+  process.env[envKey] = authFile;
+
+  try {
+    const runtimeStore = createProviderAuthRuntimeStore({
+      async hardenPermissions(targetPath) {
+        hardenedPaths.push(targetPath);
+      },
+    });
+    await runtimeStore.persistProviderCredential({
+      accessToken: 'codex-token',
+      refreshToken: 'codex-refresh-token',
+      accountId: 'codex-account',
+      expiresAt: 123,
+    });
+    await runtimeStore.persistProviderCredential(
+      {
+        accessToken: 'grok-token',
+        refreshToken: 'grok-refresh-token',
+        accountId: 'grok-account',
+        expiresAt: 456,
+      },
+      'grok_oauth',
+    );
+    await runtimeStore.deletePersistedProviderCredential('grok_oauth');
+
+    assert.deepEqual(hardenedPaths, [authFile, authFile, authFile]);
+    const persisted = await readFile(authFile, 'utf8');
+    assert.match(persisted, /codex-token/u);
+    assert.doesNotMatch(persisted, /grok-token/u);
+  } finally {
+    if (previousAuthFile === undefined) {
+      delete process.env[envKey];
+    } else {
+      process.env[envKey] = previousAuthFile;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
 });

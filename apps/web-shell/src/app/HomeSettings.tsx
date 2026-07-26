@@ -1,13 +1,19 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type ComponentProps, type ReactNode } from 'react';
 
 import {
   McpServerPanel,
   type McpServerClient,
 } from '../features/mcp/McpServerPanel.js';
+import { ProviderAuthCard } from '../features/provider-auth/ProviderAuthCard.js';
+import { ProviderUsageCard } from '../features/provider-usage/ProviderUsageCard.js';
+import { fetchProviderUsage } from '../lib/api/provider-usage.js';
 
-type SettingsSection = 'mcp';
+type SettingsSection = 'providers' | 'usage' | 'mcp';
 
 interface HomeSettingsProps {
+  providerAuthCard: ComponentProps<typeof ProviderAuthCard>;
+  /** 사용량 조회 주입 — 테스트가 실제 네트워크 없이 상태를 잠근다. */
+  loadProviderUsage?: ComponentProps<typeof ProviderUsageCard>['loadUsage'];
   mcpDisabled?: boolean;
   mcpClient?: McpServerClient;
   onClose: () => void;
@@ -16,24 +22,30 @@ interface HomeSettingsProps {
 interface HomeCenterSurfaceProps {
   settingsOpen: boolean;
   extensionsOpen?: boolean;
+  sessionsOpen?: boolean;
   // 아티팩트 표면 — 설정이 닫혀 있고 artifact 노드가 있으면 편집기 대신
   // 중앙 넓은 화면을 아티팩트가 차지한다
   artifact?: ReactNode;
   editor: ReactNode;
   extensions?: ReactNode;
   settings: ReactNode;
+  sessions?: ReactNode;
 }
 
 export function HomeCenterSurface({
   settingsOpen,
   extensionsOpen = false,
+  sessionsOpen = false,
   artifact = null,
   editor,
   extensions = null,
   settings,
+  sessions = null,
 }: HomeCenterSurfaceProps) {
-  const artifactOpen = !settingsOpen && !extensionsOpen && artifact !== null;
-  const editorHidden = settingsOpen || extensionsOpen || artifactOpen;
+  const artifactOpen =
+    !settingsOpen && !extensionsOpen && !sessionsOpen && artifact !== null;
+  const editorHidden =
+    settingsOpen || extensionsOpen || sessionsOpen || artifactOpen;
   return (
     <>
       <div
@@ -45,26 +57,25 @@ export function HomeCenterSurface({
       </div>
       {settingsOpen ? settings : null}
       {extensionsOpen ? extensions : null}
+      {sessionsOpen ? sessions : null}
       {artifactOpen ? artifact : null}
     </>
   );
 }
 
 export function HomeSettings({
+  providerAuthCard,
+  loadProviderUsage = fetchProviderUsage,
   mcpDisabled = false,
   mcpClient,
   onClose,
 }: HomeSettingsProps) {
-  const [activeSection, setActiveSection] = useState<SettingsSection>('mcp');
+  const [activeSection, setActiveSection] =
+    useState<SettingsSection>('providers');
 
   return (
     <section className="home-settings" aria-label="설정">
       <header className="settings-header">
-        <div>
-          <span className="settings-eyebrow">글밭 홈</span>
-          <h1>설정</h1>
-          <p>확장 도구를 한곳에서 관리합니다.</p>
-        </div>
         <button
           type="button"
           className="settings-close"
@@ -80,6 +91,30 @@ export function HomeSettings({
         <nav className="settings-nav" aria-label="설정 메뉴">
           <button
             type="button"
+            className={activeSection === 'providers' ? 'active' : ''}
+            aria-label="AI 제공자 연결 설정"
+            aria-current={activeSection === 'providers' ? 'page' : undefined}
+            onClick={() => setActiveSection('providers')}
+          >
+            <span className="settings-nav-icon" aria-hidden="true">
+              ◉
+            </span>
+            <span>AI 제공자</span>
+          </button>
+          <button
+            type="button"
+            className={activeSection === 'usage' ? 'active' : ''}
+            aria-label="사용량 설정"
+            aria-current={activeSection === 'usage' ? 'page' : undefined}
+            onClick={() => setActiveSection('usage')}
+          >
+            <span className="settings-nav-icon" aria-hidden="true">
+              ▤
+            </span>
+            <span>사용량</span>
+          </button>
+          <button
+            type="button"
             className={activeSection === 'mcp' ? 'active' : ''}
             aria-label="MCP 서버 설정"
             aria-current={activeSection === 'mcp' ? 'page' : undefined}
@@ -93,6 +128,12 @@ export function HomeSettings({
         </nav>
 
         <div className="settings-page">
+          {activeSection === 'providers' ? (
+            <ProviderAuthCard {...providerAuthCard} />
+          ) : null}
+          {activeSection === 'usage' ? (
+            <ProviderUsageCard loadUsage={loadProviderUsage} />
+          ) : null}
           {activeSection === 'mcp' ? (
             <McpServerPanel
               disabled={mcpDisabled}

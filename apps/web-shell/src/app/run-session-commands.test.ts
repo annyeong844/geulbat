@@ -4,6 +4,7 @@ import type { CancelRequest } from '@geulbat/protocol/cancel';
 import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
 import {
   DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
+  type RunRequest,
   type RunStartRequest,
 } from '@geulbat/protocol/run-contract';
 
@@ -82,7 +83,11 @@ void test('buildPromptRunRequest carries only the explicitly selected command st
       modelId: 'gpt-5.6-sol',
       selectedThreadId: THREAD_ID_VALUE,
       permissionMode: 'basic',
+      planModeRequested: false,
+      planModeIntensity: 'visual',
+      planModeDepth: 'standard',
       reasoningEffort: 'medium',
+      serviceTier: 'fast',
       subagentModelRouting: DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
     }),
     {
@@ -92,6 +97,7 @@ void test('buildPromptRunRequest carries only the explicitly selected command st
       threadId: THREAD_ID,
       permissionMode: 'basic',
       reasoningEffort: 'medium',
+      serviceTier: 'fast',
       subagentModelRouting: { mode: 'auto' },
     },
   );
@@ -103,12 +109,35 @@ void test('buildPromptRunRequest omits cwd when no start directory was selected'
     modelId: 'gpt-5.6-sol',
     selectedThreadId: null,
     permissionMode: 'basic',
+    planModeRequested: false,
+    planModeIntensity: 'visual',
+    planModeDepth: 'standard',
     reasoningEffort: 'medium',
+    serviceTier: 'standard',
     subagentModelRouting: DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
   });
 
   assert.equal(request.workingDirectory, undefined);
   assert.equal(Object.hasOwn(request, 'workingDirectory'), false);
+});
+
+void test('/goal starts explicit Goal mode while preserving the typed command for display', () => {
+  const request = buildPromptRunRequest({
+    prompt: '/goal   Ship the verified Goal mode  ',
+    modelId: 'gpt-5.6-sol',
+    selectedThreadId: THREAD_ID_VALUE,
+    permissionMode: 'basic',
+    planModeRequested: false,
+    planModeIntensity: 'visual',
+    planModeDepth: 'standard',
+    reasoningEffort: 'medium',
+    serviceTier: 'standard',
+    subagentModelRouting: DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
+  });
+
+  assert.equal(request.prompt, 'Ship the verified Goal mode');
+  assert.equal(request.displayPrompt, '/goal   Ship the verified Goal mode  ');
+  assert.equal(request.goalModeRequested, true);
 });
 
 void test('buildPromptRunRequest preserves an explicitly selected Computer root', () => {
@@ -118,7 +147,11 @@ void test('buildPromptRunRequest preserves an explicitly selected Computer root'
     modelId: 'gpt-5.6-sol',
     selectedThreadId: null,
     permissionMode: 'basic',
+    planModeRequested: false,
+    planModeIntensity: 'visual',
+    planModeDepth: 'standard',
     reasoningEffort: 'medium',
+    serviceTier: 'standard',
     subagentModelRouting: DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
   });
 
@@ -135,7 +168,11 @@ void test('run request builders carry the saved default image model on every pat
       modelId: 'gpt-5.6-sol',
       selectedThreadId: THREAD_ID_VALUE,
       permissionMode: 'basic',
+      planModeRequested: false,
+      planModeIntensity: 'visual',
+      planModeDepth: 'standard',
       reasoningEffort: 'medium',
+      serviceTier: 'standard',
       subagentModelRouting: DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
     });
     assert.equal(
@@ -148,6 +185,7 @@ void test('run request builders carry the saved default image model on every pat
       request: { prompt: 'hello' },
       modelId: 'gpt-5.6-sol',
       permissionMode: 'basic',
+      serviceTier: 'standard',
       subagentModelRouting: DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
     });
     assert.equal(
@@ -161,6 +199,7 @@ void test('run request builders carry the saved default image model on every pat
       },
       modelId: 'gpt-5.6-sol',
       permissionMode: 'basic',
+      serviceTier: 'standard',
       subagentModelRouting: DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
     });
     assert.equal(explicit.imageGenerationModel, 'grok-imagine-image');
@@ -174,7 +213,11 @@ void test('run request builders carry the saved default image model on every pat
     modelId: 'gpt-5.6-sol',
     selectedThreadId: THREAD_ID_VALUE,
     permissionMode: 'basic',
+    planModeRequested: false,
+    planModeIntensity: 'visual',
+    planModeDepth: 'standard',
     reasoningEffort: 'medium',
+    serviceTier: 'standard',
     subagentModelRouting: DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
   });
   assert.equal(withoutPref.imageGenerationModel, undefined);
@@ -188,12 +231,14 @@ void test('buildRunStartRequest fills the default permission mode only when miss
       },
       modelId: 'gpt-5.6-sol',
       permissionMode: 'basic',
+      serviceTier: 'standard',
       subagentModelRouting: DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
     }),
     {
       prompt: 'hello',
       modelId: 'gpt-5.6-sol',
       permissionMode: 'basic',
+      serviceTier: 'standard',
       subagentModelRouting: { mode: 'auto' },
     },
   );
@@ -206,12 +251,14 @@ void test('buildRunStartRequest fills the default permission mode only when miss
       },
       modelId: 'gpt-5.6-sol',
       permissionMode: 'basic',
+      serviceTier: 'standard',
       subagentModelRouting: DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
     }),
     {
       prompt: 'hello',
       modelId: 'gpt-5.6-sol',
       permissionMode: 'full_access',
+      serviceTier: 'standard',
       subagentModelRouting: { mode: 'auto' },
     },
   );
@@ -272,7 +319,12 @@ void test('prepareRunStartRequest uploads prompt text and returns promptRef meta
     selection: { startLine: 1, endLine: 3, text: '# hello' },
     allowedPublicToolNames: ['read_file', 'write_file', 'apply_patch'],
     permissionMode: 'basic',
-    reasoningEffort: 'high',
+    modelId: 'gpt-5.6-luna',
+    reasoningEffort: 'ultra',
+    providerTransitionRecovery: {
+      sourceModelId: 'grok-4.5',
+      sourceReasoningEffort: 'high',
+    },
     subagentModelRouting: {
       mode: 'fixed',
       choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
@@ -296,7 +348,12 @@ void test('prepareRunStartRequest uploads prompt text and returns promptRef meta
     selection: { startLine: 1, endLine: 3, text: '# hello' },
     allowedPublicToolNames: ['read_file', 'write_file', 'apply_patch'],
     permissionMode: 'basic',
-    reasoningEffort: 'high',
+    modelId: 'gpt-5.6-luna',
+    reasoningEffort: 'ultra',
+    providerTransitionRecovery: {
+      sourceModelId: 'grok-4.5',
+      sourceReasoningEffort: 'high',
+    },
     subagentModelRouting: {
       mode: 'fixed',
       choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
@@ -456,6 +513,7 @@ void test('submitApprovalDecision clears approval after sending an allow decisio
     pending,
     approved: true,
     grantScope: 'session',
+    permissionMode: 'full_access',
   });
 
   assert.deepEqual(calls, ['approve']);
@@ -464,6 +522,7 @@ void test('submitApprovalDecision clears approval after sending an allow decisio
       pending,
       approved: true,
       grantScope: 'session',
+      permissionMode: 'full_access',
     }),
   ]);
   assert.deepEqual(result, { kind: 'approved' });
@@ -571,4 +630,61 @@ void test('cancelRunSession does not clear approval when there is nothing to can
 
   assert.deepEqual(calls, []);
   assert.deepEqual(result, { kind: 'noop' });
+});
+
+void test('prepareRunStartRequest forwards every request field except the inlined prompt', async () => {
+  // 이 함수는 필드를 손으로 하나씩 옮긴다. 새 필드를 더할 때 여기에 추가하는 것을
+  // 잊으면 셸이 만든 값이 조용히 버려진다 — planModeRequested가 실제로 그렇게
+  // 사라졌다. 그래서 누락을 값이 아니라 키 집합으로 잠근다.
+  const request: RunRequest = {
+    prompt: 'inlined prompt',
+    displayPrompt: 'shown prompt',
+    threadId: brandThreadId('11111111-1111-4111-8111-111111111111'),
+    workingDirectory: 'home/user/project',
+    modelId: 'gpt-5.6-sol',
+    currentFile: 'src/index.ts',
+    selection: { startLine: 1, endLine: 2, text: 'const a = 1;' },
+    allowedPublicToolNames: ['read_file'],
+    permissionMode: 'basic',
+    planModeRequested: true,
+    planModeIntensity: 'quiet',
+    planModeDepth: 'deep',
+    reasoningEffort: 'medium',
+    serviceTier: 'standard',
+    subagentModelRouting: { mode: 'auto' },
+    attachments: [{ name: 'a.png', contentRef: 'binary-input:a' }],
+    regenerate: true,
+    silentPrompt: true,
+    promptOrigin: 'artifact_frame',
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        ok: true,
+        promptRef: 'run-prompt-input:abc',
+        byteLength: 14,
+      }),
+      { headers: { 'content-type': 'application/json' } },
+    )) as typeof fetch;
+  try {
+    const prepared = await prepareRunStartRequest(request);
+    const dropped = Object.keys(request)
+      .filter((key) => key !== 'prompt')
+      .filter((key) => !Object.hasOwn(prepared, key));
+    assert.deepEqual(
+      dropped,
+      [],
+      `prepareRunStartRequest dropped: ${dropped.join(', ')}`,
+    );
+    // 프롬프트 본문은 참조로 바뀌어야 한다.
+    assert.equal(Object.hasOwn(prepared, 'prompt'), false);
+    assert.equal(
+      (prepared as { promptRef?: string }).promptRef,
+      'run-prompt-input:abc',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

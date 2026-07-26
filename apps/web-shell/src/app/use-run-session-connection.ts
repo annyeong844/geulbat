@@ -1,11 +1,16 @@
 import { useEffect, useRef, type MutableRefObject } from 'react';
+import type { ErrorCode } from '@geulbat/protocol/errors';
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
+import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
+import type { GoalSnapshot } from '@geulbat/protocol/goal';
 
 import type { RunChannelClient } from '../lib/run-channel/client.js';
 import type { RunSessionStateAction } from './run-session-state-types.js';
 import {
   adaptRunSessionMessage,
   handleRunSessionMessage,
+  shouldRefreshTreeAfterToolResult,
+  type RunSessionMessageEffect,
 } from './run-session-message-effects.js';
 import { createRunSessionStreamBatchController } from './run-session-stream-batch.js';
 import type { createComputerTreeRefreshController } from './run-session-computer-tree-refresh.js';
@@ -13,8 +18,10 @@ import { requestComputerTreeRefresh } from './run-session-computer-tree-refresh.
 
 interface RunSessionConnectionClient extends Pick<
   RunChannelClient,
-  'subscribe' | 'close' | 'acknowledgeEvent'
-> {}
+  'subscribe' | 'endComputerSession' | 'acknowledgeEvent'
+> {
+  connect(): Promise<unknown>;
+}
 
 interface UseRunSessionConnectionArgs {
   client: RunSessionConnectionClient;
@@ -24,13 +31,41 @@ interface UseRunSessionConnectionArgs {
   >;
   loadTree: () => Promise<void>;
   handleRunStarted: (threadId: string, runId: string) => void | Promise<void>;
-  handleRunSettledSuccess: (thread: ThreadDetailResponse) => Promise<void>;
+  handleRunSettledSuccess: (
+    thread: ThreadDetailResponse,
+    runId?: string,
+  ) => Promise<void>;
   handleRunSettleSyncFailed: (
     threadId: string,
     message: string,
+    runId?: string,
   ) => Promise<void>;
-  handleRunSettledError: (threadId: string, message: string) => Promise<void>;
+  handleFollowupSuggested?: ((prompt: string) => void) | undefined;
+  handlePlanningWorkflow?:
+    | ((threadId: string, snapshot: PlanningWorkflowSnapshot | null) => void)
+    | undefined;
+  handleGoal?:
+    | ((threadId: string, snapshot: GoalSnapshot | null) => void)
+    | undefined;
+  handleRunSettledError: (
+    threadId: string,
+    code: ErrorCode,
+    message: string,
+    runId?: string,
+  ) => Promise<void>;
   reportSessionFailure: (logContext: string, error: unknown) => void;
+}
+
+function isBatchableDisplayEffect(
+  effect: RunSessionMessageEffect,
+): effect is Extract<
+  RunSessionMessageEffect,
+  { kind: 'transcript_activity_added' | 'subagent_activity_added' }
+> {
+  return (
+    effect.kind === 'transcript_activity_added' ||
+    effect.kind === 'subagent_activity_added'
+  );
 }
 
 export function useRunSessionConnection({
@@ -42,6 +77,9 @@ export function useRunSessionConnection({
   handleRunSettledSuccess,
   handleRunSettleSyncFailed,
   handleRunSettledError,
+  handleFollowupSuggested,
+  handlePlanningWorkflow,
+  handleGoal,
   reportSessionFailure,
 }: UseRunSessionConnectionArgs) {
   const latestArgsRef = useRef<UseRunSessionConnectionArgs>({
@@ -53,6 +91,9 @@ export function useRunSessionConnection({
     handleRunSettledSuccess,
     handleRunSettleSyncFailed,
     handleRunSettledError,
+    handleFollowupSuggested,
+    handlePlanningWorkflow,
+    handleGoal,
     reportSessionFailure,
   });
   const dispatchRef = useRef<UseRunSessionConnectionArgs['dispatch']>(dispatch);
@@ -72,6 +113,9 @@ export function useRunSessionConnection({
       handleRunSettledSuccess,
       handleRunSettleSyncFailed,
       handleRunSettledError,
+      handleFollowupSuggested,
+      handlePlanningWorkflow,
+      handleGoal,
       reportSessionFailure,
     };
     dispatchRef.current = dispatch;
@@ -84,20 +128,24 @@ export function useRunSessionConnection({
     handleRunSettledSuccess,
     handleRunSettleSyncFailed,
     handleRunSettledError,
+    handleFollowupSuggested,
+    handlePlanningWorkflow,
+    handleGoal,
     reportSessionFailure,
   ]);
 
   useEffect(() => {
     const streamBatchController = streamBatchControllerRef.current;
-    return () => {
-      streamBatchController.clearPendingStreamEffects();
-      client.close();
-    };
-  }, [client]);
-
-  useEffect(() => {
-    const streamBatchController = streamBatchControllerRef.current;
     const runEventHandlingByRun = new Map<string, Promise<boolean>>();
+    const requestLatestComputerTreeRefresh = () => {
+      const latestArgs = latestArgsRef.current;
+      void requestComputerTreeRefresh(
+        latestArgs.computerTreeRefreshControllerRef.current,
+        latestArgs.loadTree,
+      ).catch((err: unknown) => {
+        latestArgs.reportSessionFailure('computer tree refresh failed', err);
+      });
+    };
     const unsubscribe = client.subscribe((message) => {
       const effect = adaptRunSessionMessage(message);
       if (!effect) {
@@ -111,28 +159,34 @@ export function useRunSessionConnection({
         streamBatchController.queueStreamedToolArgsEffect(effect);
         return;
       }
-
+      if (effect.kind === 'tool_output_streamed') {
+        streamBatchController.queueStreamedToolOutputEffect(effect);
+        return;
+      }
       const processMessage = async () => {
+        if (isBatchableDisplayEffect(effect)) {
+          if (
+            effect.kind === 'transcript_activity_added' &&
+            shouldRefreshTreeAfterToolResult(effect)
+          ) {
+            requestLatestComputerTreeRefresh();
+          }
+          streamBatchController.queueDisplayEffect(effect);
+          return;
+        }
         const latestArgs = latestArgsRef.current;
         streamBatchController.flushPendingStreamEffects();
         await handleRunSessionMessage({
           message,
           dispatch: dispatchRef.current,
-          requestComputerTreeRefresh: () => {
-            void requestComputerTreeRefresh(
-              latestArgs.computerTreeRefreshControllerRef.current,
-              latestArgs.loadTree,
-            ).catch((err: unknown) => {
-              latestArgs.reportSessionFailure(
-                'computer tree refresh failed',
-                err,
-              );
-            });
-          },
+          requestComputerTreeRefresh: requestLatestComputerTreeRefresh,
           handleRunStarted: latestArgs.handleRunStarted,
           handleRunSettledSuccess: latestArgs.handleRunSettledSuccess,
           handleRunSettleSyncFailed: latestArgs.handleRunSettleSyncFailed,
           handleRunSettledError: latestArgs.handleRunSettledError,
+          handleFollowupSuggested: latestArgs.handleFollowupSuggested,
+          handlePlanningWorkflow: latestArgs.handlePlanningWorkflow,
+          handleGoal: latestArgs.handleGoal,
         });
         if (
           message.type === 'run.event' &&
@@ -157,9 +211,7 @@ export function useRunSessionConnection({
       }
 
       const runId = message.event.runId;
-      const previousHandling =
-        runEventHandlingByRun.get(runId) ?? Promise.resolve(true);
-      const handled = previousHandling.then(async (previousSucceeded) => {
+      const continueRunEventHandling = async (previousSucceeded: boolean) => {
         if (!previousSucceeded) {
           return false;
         }
@@ -173,7 +225,12 @@ export function useRunSessionConnection({
           );
           return false;
         }
-      });
+      };
+      const previousHandling = runEventHandlingByRun.get(runId);
+      const handled =
+        previousHandling === undefined
+          ? continueRunEventHandling(true)
+          : previousHandling.then(continueRunEventHandling);
       runEventHandlingByRun.set(runId, handled);
 
       const terminal =
@@ -191,6 +248,49 @@ export function useRunSessionConnection({
       streamBatchController.clearPendingStreamEffects();
       runEventHandlingByRun.clear();
       unsubscribe();
+    };
+  }, [client]);
+
+  useEffect(() => {
+    const streamBatchController = streamBatchControllerRef.current;
+    const pageDocument = typeof document === 'undefined' ? null : document;
+    const pageWindow = typeof window === 'undefined' ? null : window;
+    let disposed = false;
+    const requestConnection = () => {
+      void client.connect().catch((error: unknown) => {
+        if (!disposed) {
+          latestArgsRef.current.reportSessionFailure(
+            'run channel connection failed',
+            error,
+          );
+        }
+      });
+    };
+    const handleVisibilityChange = () => {
+      if (pageDocument?.visibilityState === 'visible') {
+        requestConnection();
+      }
+    };
+    const handlePageHide = (event: PageTransitionEvent) => {
+      if (!event.persisted) {
+        client.endComputerSession();
+      }
+    };
+
+    requestConnection();
+    pageDocument?.addEventListener('visibilitychange', handleVisibilityChange);
+    pageWindow?.addEventListener('pageshow', requestConnection);
+    pageWindow?.addEventListener('pagehide', handlePageHide);
+    return () => {
+      disposed = true;
+      pageDocument?.removeEventListener(
+        'visibilitychange',
+        handleVisibilityChange,
+      );
+      pageWindow?.removeEventListener('pageshow', requestConnection);
+      pageWindow?.removeEventListener('pagehide', handlePageHide);
+      streamBatchController.clearPendingStreamEffects();
+      client.endComputerSession();
     };
   }, [client]);
 }

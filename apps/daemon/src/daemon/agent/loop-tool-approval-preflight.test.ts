@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -42,9 +42,21 @@ function makePreflightRuntime(args: {
         ? {}
         : { computerFileRoot: args.computerFileRoot }),
       memoryIndex: undefined,
-      agentSpawnRuntime: undefined,
+      runtimeServices: undefined,
     }),
   };
+}
+
+function makeUpdatePatch(path: string): string {
+  return [
+    '*** Begin Patch',
+    `*** Update File: ${path}`,
+    '@@',
+    '-before',
+    '+after',
+    '*** End Patch',
+    '',
+  ].join('\n');
 }
 
 void test('resolveToolApprovalState skips approval for read-only tools', async () => {
@@ -112,7 +124,7 @@ void test('resolveToolApprovalState auto-approves write tools in full_access mod
   });
 });
 
-void test('resolveToolApprovalState auto-approves computer writes in full_access mode', async () => {
+void test('resolveToolApprovalState auto-approves apply_patch in full_access mode', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-approval-'));
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-computer-approval-'),
@@ -124,10 +136,9 @@ void test('resolveToolApprovalState auto-approves computer writes in full_access
       runId: 'run-full-access-computer',
       threadId: testThreadId(65),
     },
-    toolName: 'write_file',
+    toolName: 'apply_patch',
     toolArgs: {
-      root: 'computer',
-      path: 'draft.md',
+      patch: makeUpdatePatch('draft.md'),
     },
     runtime: makePreflightRuntime({
       runId: 'run-full-access-computer',
@@ -148,6 +159,65 @@ void test('resolveToolApprovalState auto-approves computer writes in full_access
     needsApproval: false,
     approvalGranted: true,
   });
+});
+
+void test('resolveToolApprovalState records the canonical apply_patch target for basic approval', async (t) => {
+  const outerRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-apply-patch-approval-'),
+  );
+  t.after(() => rm(outerRoot, { recursive: true, force: true }));
+  const workspaceRoot = join(outerRoot, 'state');
+  const computerFileRoot = join(outerRoot, 'computer');
+  const externalRoot = join(outerRoot, 'external');
+  await mkdir(workspaceRoot, { recursive: true });
+  await mkdir(computerFileRoot, { recursive: true });
+  await mkdir(externalRoot, { recursive: true });
+  const targetPath = join(externalRoot, 'draft.md');
+  const patch = makeUpdatePatch(targetPath);
+  const toolRegistry = createBuiltinToolRegistryStore();
+
+  const result = await resolveToolApprovalState({
+    approvalTarget: {
+      runId: 'run-apply-patch-preflight',
+      threadId: testThreadId(66),
+    },
+    toolName: 'apply_patch',
+    toolArgs: { patch },
+    runtime: makePreflightRuntime({
+      runId: 'run-apply-patch-preflight',
+      runContext: makeRunContext({
+        threadId: testThreadId(66),
+        stateRoot: workspaceRoot,
+      }),
+      approvalContext: makeApprovalContext(),
+      approvalGrants: createApprovalGrantStore(),
+      toolRegistry,
+      computerFileRoot,
+    }),
+  });
+
+  assert.deepEqual(result, {
+    needsApproval: true,
+    approvalGranted: false,
+    preflight: {
+      mutationTargets: [
+        {
+          argument: 'patch',
+          canonicalTargetId: targetPath,
+        },
+      ],
+    },
+  });
+  assert.ok(result.preflight);
+  assert.equal(
+    await isApprovalPreflightCurrent(
+      'apply_patch',
+      { computerFileRoot },
+      { patch },
+      result.preflight,
+    ),
+    true,
+  );
 });
 
 void test('collectPreflight resolves explicit computer paths against the computer root', async () => {
@@ -184,6 +254,116 @@ void test('collectPreflight ignores non-local tool path arguments', async () => 
       { path: '/remote/object-key' },
     ),
     undefined,
+  );
+});
+
+void test('collectPreflight rejects malformed and multi-file apply_patch input through the canonical parser', async (t) => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-apply-patch-approval-'),
+  );
+  t.after(() => rm(computerFileRoot, { recursive: true, force: true }));
+  await assert.rejects(
+    collectPreflight(
+      'apply_patch',
+      { computerFileRoot },
+      { patch: 'not a patch' },
+    ),
+    /must start with \*\*\* Begin Patch/u,
+  );
+  await assert.rejects(
+    collectPreflight(
+      'apply_patch',
+      { computerFileRoot },
+      {
+        patch: [
+          '*** Begin Patch',
+          '*** Update File: first.md',
+          '@@',
+          '-before',
+          '+after',
+          '*** Update File: second.md',
+          '@@',
+          '-before',
+          '+after',
+          '*** End Patch',
+          '',
+        ].join('\n'),
+      },
+    ),
+    /requires exactly one file operation/u,
+  );
+});
+
+void test('isApprovalPreflightCurrent rejects an apply_patch file symlink swap', async (t) => {
+  const outerRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-apply-patch-file-swap-'),
+  );
+  t.after(() => rm(outerRoot, { recursive: true, force: true }));
+  const computerFileRoot = join(outerRoot, 'computer');
+  const firstTarget = join(outerRoot, 'first.md');
+  const secondTarget = join(outerRoot, 'second.md');
+  const linkedFile = join(computerFileRoot, 'draft.md');
+  await mkdir(computerFileRoot, { recursive: true });
+  await writeFile(firstTarget, 'before\n', 'utf8');
+  await writeFile(secondTarget, 'before\n', 'utf8');
+  if (!(await createSymlinkOrSkip(t, firstTarget, linkedFile))) {
+    return;
+  }
+  const toolArgs = { patch: makeUpdatePatch('draft.md') };
+  const preflight = await collectPreflight(
+    'apply_patch',
+    { computerFileRoot },
+    toolArgs,
+  );
+  assert.ok(preflight);
+
+  await rm(linkedFile);
+  if (!(await createSymlinkOrSkip(t, secondTarget, linkedFile))) {
+    return;
+  }
+
+  assert.equal(
+    await isApprovalPreflightCurrent(
+      'apply_patch',
+      { computerFileRoot },
+      toolArgs,
+      preflight,
+    ),
+    false,
+  );
+});
+
+void test('isApprovalPreflightCurrent rejects an apply_patch parent symlink swap', async (t) => {
+  const outerRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-apply-patch-parent-swap-'),
+  );
+  t.after(() => rm(outerRoot, { recursive: true, force: true }));
+  const computerFileRoot = join(outerRoot, 'computer');
+  const outsideRoot = join(outerRoot, 'outside');
+  const linkedParent = join(computerFileRoot, 'sub');
+  await mkdir(linkedParent, { recursive: true });
+  await mkdir(outsideRoot, { recursive: true });
+  const toolArgs = { patch: makeUpdatePatch('sub/draft.md') };
+  const preflight = await collectPreflight(
+    'apply_patch',
+    { computerFileRoot },
+    toolArgs,
+  );
+  assert.ok(preflight);
+
+  await rm(linkedParent, { recursive: true, force: true });
+  if (!(await createSymlinkOrSkip(t, outsideRoot, linkedParent))) {
+    return;
+  }
+
+  assert.equal(
+    await isApprovalPreflightCurrent(
+      'apply_patch',
+      { computerFileRoot },
+      toolArgs,
+      preflight,
+    ),
+    false,
   );
 });
 

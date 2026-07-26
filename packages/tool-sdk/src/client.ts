@@ -20,14 +20,19 @@ import {
 import {
   encodeListFilesInput,
   encodeReadFileInput,
+  encodeSearchFilesInput,
   parseListFilesOutput,
   parseReadFileOutput,
+  parseSearchFilesOutput,
   readListFilesInput,
   readReadFileInput,
+  readSearchFilesInput,
   type ListFilesInput,
   type ListFilesOutput,
   type ReadFileInput,
   type ReadFileOutput,
+  type SearchFilesInput,
+  type SearchFilesOutput,
 } from './files.js';
 
 export interface ToolSdkClient {
@@ -42,6 +47,10 @@ export interface ToolSdkClient {
     input: ListFilesInput,
     options?: ToolSdkCallOptions,
   ): Promise<ToolSdkResult<ListFilesOutput>>;
+  searchFiles(
+    input: SearchFilesInput,
+    options?: ToolSdkCallOptions,
+  ): Promise<ToolSdkResult<SearchFilesOutput>>;
 }
 
 export interface CreateToolSdkClientOptions {
@@ -228,6 +237,22 @@ export function createToolSdkClient(
         signal: callOptions.signal,
         validateOutput: (value) =>
           readTransportOutput(value, parseListFilesOutput),
+      });
+    },
+
+    async searchFiles(input, callOptions = {}) {
+      const parsedInput = readSearchFilesInput(input);
+      if (!parsedInput.ok) {
+        return failure('invalid_arguments', parsedInput.message);
+      }
+      return invokePublicTool({
+        publicTool: 'files.search',
+        input: encodeSearchFilesInput(parsedInput.value),
+        signal: callOptions.signal,
+        validateOutput: (value) =>
+          readTransportOutput(value, (candidate) =>
+            parseSearchFilesOutput(candidate, parsedInput.value),
+          ),
       });
     },
   };

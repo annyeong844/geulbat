@@ -1,13 +1,21 @@
 import { getToolLibraryProjectionIdentity } from '../tools/tool-library-projection-manifest.js';
+import {
+  createToolCapabilityPolicy,
+  type ToolCapabilityPolicy,
+} from '@geulbat/tool-library/tool-capability-policy';
+import { resolvePtcExecuteCodeCallbackToolSurface } from '../tools/builtin/ptc-callback-tool-surface.js';
 import type {
   ToolLibraryProjectionFailureDiagnostics,
   ToolLibraryProjectionPort,
 } from '../tools/tool-library-projection-port.js';
+import type { ToolRuntimeRegistry } from '../tools/tool-registry-model.js';
+import type { AgentToolSurface } from './loop-types.js';
 
 interface ResolveAgentLoopToolLibraryProjectionArgs {
   stateRoot: string;
   threadId: string;
   allowedRegistryNames?: readonly string[];
+  toolCapabilityPolicy?: ToolCapabilityPolicy;
 }
 
 type ResolveAgentLoopToolLibraryProjectionResult =
@@ -27,6 +35,28 @@ export interface AgentLoopToolLibraryProjectionPort {
   ): Promise<ResolveAgentLoopToolLibraryProjectionResult>;
 }
 
+export function createAgentToolCapabilityPolicy(args: {
+  registry: ToolRuntimeRegistry;
+  toolSurface?: AgentToolSurface;
+}): ToolCapabilityPolicy {
+  const allowedRegistryNames =
+    args.toolSurface?.allowedRegistryNames ??
+    args.registry.buildToolDefinitions().map((tool) => tool.name);
+  const directRegistryNames =
+    args.toolSurface?.directRegistryNames ?? allowedRegistryNames;
+  const callbackRegistryNames = resolvePtcExecuteCodeCallbackToolSurface({
+    registry: args.registry,
+    allowedRegistryNames,
+    writeCallbackEnabled: false,
+  }).callbackTools.map((tool) => tool.name);
+  return createToolCapabilityPolicy({
+    directRegistryNames,
+    allowedRegistryNames,
+    callbackRegistryNames,
+    writeCallbackEnabled: false,
+  });
+}
+
 export function createAgentLoopToolLibraryProjectionPort(
   projectionPort: Pick<ToolLibraryProjectionPort, 'resolveProjection'>,
 ): AgentLoopToolLibraryProjectionPort {
@@ -38,6 +68,9 @@ export function createAgentLoopToolLibraryProjectionPort(
         ...(args.allowedRegistryNames === undefined
           ? {}
           : { allowedRegistryNames: args.allowedRegistryNames }),
+        ...(args.toolCapabilityPolicy === undefined
+          ? {}
+          : { toolCapabilityPolicy: args.toolCapabilityPolicy }),
       });
       if (!result.ok) {
         return {

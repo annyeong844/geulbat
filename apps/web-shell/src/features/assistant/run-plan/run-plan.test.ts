@@ -6,6 +6,7 @@ import {
   readRunPlanFromToolArgs,
   readRunPlanFromToolCallContent,
   resolveLatestRunPlan,
+  resolveRunPlanHistory,
 } from './run-plan.js';
 
 function planCallMessage(
@@ -94,4 +95,94 @@ void test('라이브 계획이 없으면 settled의 최신 계획으로 폴백�
   });
 
   assert.deepEqual(plan, [{ step: '최신 계획', status: 'in_progress' }]);
+});
+
+void test('최종 답변으로 닫힌 계획은 다음 실행의 현재 계획으로 새지 않는다', () => {
+  const plan = resolveLatestRunPlan({
+    messages: [
+      planCallMessage(
+        [{ step: '이미 끝난 작업', status: 'completed' }],
+        'settled-plan',
+      ),
+      {
+        entryId: 'settled-answer',
+        role: 'assistant',
+        content: '완료했습니다.',
+        timestamp: '2026-07-17T09:01:00.000Z',
+        metadata: {
+          phase: 'final_answer',
+          sourceRunId: 'run-settled',
+        },
+      } as ThreadMessage,
+    ],
+    transcriptEntries: [],
+  });
+
+  assert.equal(plan, null);
+});
+
+void test('최종 답변이 먼저 나와도 미완료 계획은 백그라운드 작업이 끝날 때까지 남는다', () => {
+  const messages: ThreadMessage[] = [
+    planCallMessage(
+      [
+        { step: '평가자 회수', status: 'in_progress' },
+        { step: '최종 종합', status: 'pending' },
+      ],
+      'background-plan',
+    ),
+    {
+      entryId: 'early-answer',
+      role: 'assistant',
+      content: '평가자들은 계속 작업 중입니다.',
+      timestamp: '2026-07-17T09:01:00.000Z',
+      metadata: {
+        phase: 'final_answer',
+        sourceRunId: 'run-background',
+      },
+    } as ThreadMessage,
+  ];
+
+  assert.deepEqual(resolveRunPlanHistory(messages).pendingPlan, [
+    { step: '평가자 회수', status: 'in_progress' },
+    { step: '최종 종합', status: 'pending' },
+  ]);
+});
+
+void test('한 스레드의 여러 계획은 각각 뒤따르는 최종 답변 run에 귀속된다', () => {
+  const messages: ThreadMessage[] = [
+    planCallMessage([{ step: '첫 계획', status: 'completed' }], 'plan-1'),
+    {
+      entryId: 'answer-1',
+      role: 'assistant',
+      content: '첫 답변',
+      timestamp: '2026-07-17T09:01:00.000Z',
+      metadata: { phase: 'final_answer', sourceRunId: 'run-1' },
+    } as ThreadMessage,
+    {
+      entryId: 'user-2',
+      role: 'user',
+      content: '다음 작업',
+      timestamp: '2026-07-17T09:02:00.000Z',
+    },
+    planCallMessage([{ step: '둘째 계획', status: 'in_progress' }], 'plan-2'),
+    {
+      entryId: 'answer-2',
+      role: 'assistant',
+      content: '둘째 답변',
+      timestamp: '2026-07-17T09:03:00.000Z',
+      metadata: { phase: 'final_answer', sourceRunId: 'run-2' },
+    } as ThreadMessage,
+  ];
+
+  const history = resolveRunPlanHistory(messages);
+
+  assert.deepEqual(history.plansByRunId.get('run-1'), [
+    { step: '첫 계획', status: 'completed' },
+  ]);
+  assert.deepEqual(history.plansByRunId.get('run-2'), [
+    { step: '둘째 계획', status: 'in_progress' },
+  ]);
+  assert.deepEqual(history.pendingPlan, [
+    { step: '둘째 계획', status: 'in_progress' },
+  ]);
 });

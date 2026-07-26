@@ -1,7 +1,11 @@
 import React, { useMemo } from 'react';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
+import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 import type { RunRequest } from '@geulbat/protocol/run-contract';
-import type { RunUsageTotals } from '@geulbat/protocol/run-events';
+import type {
+  ProviderRuntimeStatusEventPayload,
+  RunUsageTotals,
+} from '@geulbat/protocol/run-events';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
 import { createArtifactsByRefMap } from '../artifacts/artifact-transcript-lookup.js';
@@ -20,21 +24,27 @@ import {
   VirtualizedTranscriptRows,
 } from './assistant-transcript-virtual-list.js';
 import { useAssistantTranscriptScrollState } from './use-assistant-transcript-scroll-state.js';
+import type { AskUserAnswerHandler } from './ask-user/ask-user-card.js';
 
 interface AssistantTranscriptProps {
+  threadId: string | null;
   messages: ThreadMessage[];
   artifacts: ThreadArtifactVersion[];
-  backgroundNotifications: Extract<
-    RunTranscriptEntry,
-    { kind: 'subagent_activity' }
-  >[];
   transcriptEntries: RunTranscriptEntry[];
+  // 과거 런의 서브에이전트 종료 카드 — 귀속할 최종 답변 메시지 entryId 별
+  // 묶음. settled 행 빌드에서 해당 메시지 바로 위에 그린다.
+  anchoredSubagentEntries?: ReadonlyMap<
+    string,
+    Extract<RunTranscriptEntry, { kind: 'subagent_activity' }>[]
+  >;
   finalAnswerText: string;
   activeArtifact: ThreadArtifactVersion | null;
+  planningWorkflowSnapshot?: PlanningWorkflowSnapshot | null;
   streamError: string | null;
   isRunning: boolean;
   // 실행 중 상태줄에 붙일 런 누적 토큰 사용량
   usageTotals?: RunUsageTotals | null;
+  providerRuntime?: ProviderRuntimeStatusEventPayload | null;
   onStartArtifactRun: (request: RunRequest) => Promise<void> | void;
   attachmentImageUrl?: (attachmentId: string) => string | null;
   // 존재하면 마지막 답변 액션에 ↻ 재시도를 붙인다 — 표시 조건은 Assistant가 판정
@@ -49,7 +59,8 @@ interface AssistantTranscriptProps {
   // visualize 위젯의 sendPrompt를 기존 전송 경로로 번역하는 콜백
   onWidgetPrompt?: (prompt: string) => Promise<void> | void;
   // ask_user 카드 답변 — 사용자 선택이므로 아티팩트 귀속 없이 전송한다
-  onAskUserAnswer?: (prompt: string) => Promise<void> | void;
+  onAskUserAnswer?: AskUserAnswerHandler;
+  answeredAskUserRequestKeys?: ReadonlySet<string>;
   // 위젯 발 도구 호출(run.tool) 번역 콜백
   onWidgetToolRequest?: WidgetToolRequestHandler;
   // 존재하면 아티팩트는 인라인 대신 참조 칩으로 남고 중앙 패널에서 열린다
@@ -57,15 +68,18 @@ interface AssistantTranscriptProps {
 }
 
 export const AssistantTranscript = React.memo(function AssistantTranscript({
+  threadId,
   messages,
   artifacts,
-  backgroundNotifications,
   transcriptEntries,
+  anchoredSubagentEntries,
   finalAnswerText,
   activeArtifact,
+  planningWorkflowSnapshot = null,
   streamError,
   isRunning,
   usageTotals = null,
+  providerRuntime = null,
   onStartArtifactRun,
   attachmentImageUrl,
   onRetryLastPrompt,
@@ -75,6 +89,7 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
   onOpenChildSession,
   onWidgetPrompt,
   onAskUserAnswer,
+  answeredAskUserRequestKeys,
   onWidgetToolRequest,
   onOpenArtifact,
 }: AssistantTranscriptProps) {
@@ -93,14 +108,7 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
       ),
     [transcriptEntries],
   );
-  const backgroundNotificationKeys = useMemo(
-    () =>
-      createStableOccurrenceKeys(
-        backgroundNotifications,
-        getRunTranscriptEntryBaseKey,
-      ),
-    [backgroundNotifications],
-  );
+  const transcriptVirtualizerIdentity = threadId ?? 'new-thread';
   const artifactsByRef = useMemo(
     () => createArtifactsByRefMap(artifacts),
     [artifacts],
@@ -112,18 +120,18 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
     hasUnreadStreamContent,
     isAwayFromBottom,
     handleTranscriptScroll,
-    handleVirtualizerUpdate,
+    shouldApplyVirtualizerScroll,
+    isProgrammaticTranscriptScroll,
     handleJumpToLatest,
   } = useAssistantTranscriptScrollState({
     isRunning,
     messageCount: messages.length,
-    backgroundNotificationCount: backgroundNotifications.length,
+    backgroundNotificationCount: 0,
     transcriptEntryCount: transcriptEntries.length,
     finalAnswerText,
     activeArtifactKey,
     streamError,
   });
-
   return (
     <div
       ref={transcriptRef}
@@ -143,14 +151,32 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
         className="assistant-transcript-content"
         style={assistantStyles.transcriptContent}
       >
+        {messages.length === 0 &&
+        transcriptEntries.length === 0 &&
+        finalAnswerText === '' &&
+        streamError === null &&
+        !isRunning ? (
+          <div className="assistant-empty">
+            <div className="assistant-empty-icon" aria-hidden="true">
+              ❝
+            </div>
+            <div className="assistant-empty-title">무엇을 도와드릴까요?</div>
+          </div>
+        ) : null}
         <VirtualizedTranscriptRows
+          key={transcriptVirtualizerIdentity}
           scrollElementRef={transcriptRef}
-          onVirtualizerUpdate={handleVirtualizerUpdate}
+          shouldApplyVirtualizerScroll={shouldApplyVirtualizerScroll}
+          isProgrammaticTranscriptScroll={isProgrammaticTranscriptScroll}
           messages={messages}
           messageKeys={messageKeys}
           transcriptEntries={transcriptEntries}
           transcriptEntryKeys={transcriptEntryKeys}
+          {...(anchoredSubagentEntries !== undefined
+            ? { anchoredSubagentEntries }
+            : {})}
           artifactsByRef={artifactsByRef}
+          planningWorkflowSnapshot={planningWorkflowSnapshot}
           isRunning={isRunning}
           onStartArtifactRun={onStartArtifactRun}
           {...(attachmentImageUrl !== undefined ? { attachmentImageUrl } : {})}
@@ -167,6 +193,9 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
           {...(onOpenChildSession !== undefined ? { onOpenChildSession } : {})}
           {...(onWidgetPrompt !== undefined ? { onWidgetPrompt } : {})}
           {...(onAskUserAnswer !== undefined ? { onAskUserAnswer } : {})}
+          {...(answeredAskUserRequestKeys !== undefined
+            ? { answeredAskUserRequestKeys }
+            : {})}
           {...(onWidgetToolRequest !== undefined
             ? { onWidgetToolRequest }
             : {})}
@@ -176,20 +205,19 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
         <AssistantTranscriptLiveTail
           finalAnswerText={finalAnswerText}
           activeArtifact={activeArtifact}
+          planningWorkflowSnapshot={planningWorkflowSnapshot}
           streamError={streamError}
-          backgroundNotifications={backgroundNotifications}
-          backgroundNotificationKeys={backgroundNotificationKeys}
           hasUnreadStreamContent={hasUnreadStreamContent}
           isRunning={isRunning}
           onStartArtifactRun={onStartArtifactRun}
           onJumpToLatest={handleJumpToLatest}
-          {...(onOpenChildSession !== undefined ? { onOpenChildSession } : {})}
           {...(onOpenArtifact !== undefined ? { onOpenArtifact } : {})}
         />
         {isRunning ? (
           <RunStatusRow
             transcriptEntries={transcriptEntries}
             usageTotals={usageTotals}
+            providerRuntime={providerRuntime}
           />
         ) : null}
         {onRetryLastPrompt !== undefined &&

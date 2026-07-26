@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 
 import { assertRunId, assertThreadId } from '@geulbat/protocol/ids';
 import { toApprovalClass } from '@geulbat/protocol/run-approval';
+import { createToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
 
 import { createRunCheckpointStore } from './run-checkpoint-store.js';
 
@@ -20,11 +21,36 @@ void test('run checkpoints survive store recreation and settle monotonically', a
     stateRoot,
     now: () => timestamps.shift() ?? '2026-07-18T00:00:02.000Z',
   });
+  const loopImplementation = {
+    implementationId: 'test.agent-loop',
+    contractVersion: '1',
+  };
+  const toolCapabilityPolicy = createToolCapabilityPolicy({
+    directRegistryNames: ['list_files'],
+    allowedRegistryNames: ['list_files', 'read_file'],
+    callbackRegistryNames: ['read_file'],
+    writeCallbackEnabled: false,
+  });
 
   const started = await store.startRun({
     runId,
     threadId,
-    request: { workingDirectory: '/workspace', permissionMode: 'basic' },
+    request: {
+      workingDirectory: '/workspace',
+      permissionMode: 'basic',
+      ultraReasoning: true,
+      loopImplementation,
+      serviceTier: 'fast',
+      providerModel: {
+        providerId: 'openai_codex_direct',
+        model: 'gpt-5.6-luna',
+      },
+      providerTransitionRecovery: {
+        sourceModelId: 'grok-4.5',
+        sourceReasoningEffort: 'high',
+      },
+      toolCapabilityPolicy,
+    },
   });
   assert.equal(started.ok, true);
   if (!started.ok) {
@@ -48,6 +74,22 @@ void test('run checkpoints survive store recreation and settle monotonically', a
   );
 
   const reloaded = createRunCheckpointStore({ stateRoot });
+  assert.deepEqual((await reloaded.readThread(threadId))?.request, {
+    workingDirectory: '/workspace',
+    permissionMode: 'basic',
+    ultraReasoning: true,
+    loopImplementation,
+    serviceTier: 'fast',
+    providerModel: {
+      providerId: 'openai_codex_direct',
+      model: 'gpt-5.6-luna',
+    },
+    providerTransitionRecovery: {
+      sourceModelId: 'grok-4.5',
+      sourceReasoningEffort: 'high',
+    },
+    toolCapabilityPolicy,
+  });
   assert.deepEqual(
     (await reloaded.listRunning()).map((checkpoint) => checkpoint.runId),
     [runId],
@@ -101,6 +143,90 @@ void test('run checkpoints survive store recreation and settle monotonically', a
   });
   assert.equal(duplicate.ok && !duplicate.changed, true);
   assert.deepEqual(await reloaded.listUnacknowledgedTerminal(), []);
+});
+
+void test('run checkpoints hydrate append-only event history without duplicating it in checkpoint JSON', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const store = createRunCheckpointStore({ stateRoot });
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  await store.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: '/workspace', permissionMode: 'basic' },
+  });
+  await store.appendRunEvents({
+    threadId,
+    runId,
+    events: [
+      {
+        seq: 0,
+        event: {
+          type: 'commentary_delta',
+          payload: { text: 'durable progress' },
+        },
+      },
+    ],
+  });
+
+  const reloaded = createRunCheckpointStore({ stateRoot });
+  assert.deepEqual((await reloaded.readThread(threadId))?.eventHistory, [
+    {
+      seq: 0,
+      event: {
+        type: 'commentary_delta',
+        payload: { text: 'durable progress' },
+      },
+    },
+  ]);
+  await reloaded.appendRunEvents({
+    threadId,
+    runId,
+    events: [
+      {
+        seq: 1,
+        event: {
+          type: 'commentary_delta',
+          payload: { text: 'recovered progress' },
+        },
+      },
+    ],
+  });
+  await reloaded.settleRun({
+    threadId,
+    runId,
+    terminal: {
+      eventCursor: 2,
+      event: {
+        type: 'done',
+        payload: { answer: 'done', ok: true },
+      },
+    },
+  });
+  await assert.rejects(
+    reloaded.appendRunEvents({
+      threadId,
+      runId,
+      events: [
+        {
+          seq: 2,
+          event: {
+            type: 'commentary_delta',
+            payload: { text: 'too late' },
+          },
+        },
+      ],
+    }),
+    /run checkpoint is terminal/u,
+  );
+  const checkpointJson = JSON.parse(
+    await readFile(
+      join(stateRoot, '.geulbat', 'run-checkpoints', `${threadId}.json`),
+      'utf8',
+    ),
+  ) as Record<string, unknown>;
+  assert.equal('eventHistory' in checkpointJson, false);
 });
 
 void test('pending interjects survive recreation and claim wins against cancellation', async (t) => {
@@ -250,7 +376,7 @@ void test('a running checkpoint rejects replacement by a different run', async (
   );
 });
 
-void test('approval pending and decision survive recreation without downgrading or changing identity', async (t) => {
+void test('approval decision atomically persists a current-run permission mode change', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
   t.after(async () => rm(stateRoot, { recursive: true, force: true }));
   const store = createRunCheckpointStore({ stateRoot });
@@ -301,6 +427,7 @@ void test('approval pending and decision survive recreation without downgrading 
     callId: 'call-durable-approval',
     decision: 'approved',
     grantScope: 'run',
+    permissionMode: 'full_access',
   });
   assert.equal(decided.ok && decided.changed, true);
   const duplicateDecision = await store.recordApprovalDecision({
@@ -309,6 +436,7 @@ void test('approval pending and decision survive recreation without downgrading 
     callId: 'call-durable-approval',
     decision: 'approved',
     grantScope: 'run',
+    permissionMode: 'full_access',
   });
   assert.equal(duplicateDecision.ok && !duplicateDecision.changed, true);
   assert.deepEqual(
@@ -316,12 +444,15 @@ void test('approval pending and decision survive recreation without downgrading 
       threadId,
       runId,
       callId: 'call-durable-approval',
-      decision: 'denied',
-      grantScope: 'once',
+      decision: 'approved',
+      grantScope: 'run',
+      permissionMode: 'basic',
     }),
     { ok: false, code: 'approval_conflict' },
   );
-  assert.deepEqual((await store.readThread(threadId))?.approvals, [
+  const checkpoint = await store.readThread(threadId);
+  assert.equal(checkpoint?.request.permissionMode, 'full_access');
+  assert.deepEqual(checkpoint?.approvals, [
     {
       status: 'decided',
       callId: 'call-durable-approval',
@@ -401,6 +532,157 @@ void test('legacy running checkpoints load with an empty durable interject queue
   );
 });
 
+void test('persisted loop implementation identity fails closed when its contract version is blank', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const root = join(stateRoot, '.geulbat', 'run-checkpoints');
+  await mkdir(root, { recursive: true });
+  await writeFile(
+    join(root, `${threadId}.json`),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      revision: 1,
+      status: 'running',
+      runId,
+      threadId,
+      request: {
+        workingDirectory: '/workspace',
+        permissionMode: 'basic',
+        loopImplementation: {
+          implementationId: 'test.loop',
+          contractVersion: ' ',
+        },
+      },
+      createdAt: '2026-07-18T00:00:00.000Z',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    })}\n`,
+    'utf8',
+  );
+
+  await assert.rejects(
+    createRunCheckpointStore({ stateRoot }).readThread(threadId),
+    /invalid recoverable agent loop implementation identity/u,
+  );
+});
+
+void test('persisted provider transition recovery fails closed without a cross-provider target', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const root = join(stateRoot, '.geulbat', 'run-checkpoints');
+  await mkdir(root, { recursive: true });
+  await writeFile(
+    join(root, `${threadId}.json`),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      revision: 1,
+      status: 'running',
+      runId,
+      threadId,
+      request: {
+        workingDirectory: '/workspace',
+        permissionMode: 'basic',
+        providerModel: {
+          providerId: 'openai_codex_direct',
+          model: 'gpt-5.6-luna',
+        },
+        providerTransitionRecovery: {
+          sourceModelId: 'gpt-5.6-sol',
+          sourceReasoningEffort: 'high',
+        },
+      },
+      createdAt: '2026-07-18T00:00:00.000Z',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    })}\n`,
+    'utf8',
+  );
+
+  await assert.rejects(
+    createRunCheckpointStore({ stateRoot }).readThread(threadId),
+    /invalid recoverable provider transition recovery/u,
+  );
+});
+
+void test('persisted Fast tier fails closed for a non-OpenAI provider', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const root = join(stateRoot, '.geulbat', 'run-checkpoints');
+  await mkdir(root, { recursive: true });
+  await writeFile(
+    join(root, `${threadId}.json`),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      revision: 1,
+      status: 'running',
+      runId,
+      threadId,
+      request: {
+        workingDirectory: '/workspace',
+        permissionMode: 'basic',
+        providerModel: {
+          providerId: 'grok_oauth',
+          model: 'grok-4.5',
+        },
+        serviceTier: 'fast',
+      },
+      createdAt: '2026-07-18T00:00:00.000Z',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    })}\n`,
+    'utf8',
+  );
+
+  await assert.rejects(
+    createRunCheckpointStore({ stateRoot }).readThread(threadId),
+    /invalid recoverable run request/u,
+  );
+});
+
+void test('recoverable checkpoints reject ambiguous legacy and explicit tool policy state', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const root = join(stateRoot, '.geulbat', 'run-checkpoints');
+  await mkdir(root, { recursive: true });
+  await writeFile(
+    join(root, `${threadId}.json`),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      revision: 1,
+      status: 'running',
+      runId,
+      threadId,
+      request: {
+        workingDirectory: '/workspace',
+        permissionMode: 'basic',
+        toolSurface: {
+          directRegistryNames: ['list_files'],
+          allowedRegistryNames: ['list_files', 'read_file'],
+        },
+        toolCapabilityPolicy: createToolCapabilityPolicy({
+          directRegistryNames: ['list_files'],
+          allowedRegistryNames: ['list_files', 'read_file'],
+          callbackRegistryNames: ['read_file'],
+          writeCallbackEnabled: false,
+        }),
+      },
+      createdAt: '2026-07-18T00:00:00.000Z',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    })}\n`,
+    'utf8',
+  );
+
+  await assert.rejects(
+    createRunCheckpointStore({ stateRoot }).readThread(threadId),
+    /cannot contain both toolSurface and toolCapabilityPolicy/u,
+  );
+});
+
 void test('corrupt checkpoint bytes fail closed instead of disappearing', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
   t.after(async () => rm(stateRoot, { recursive: true, force: true }));
@@ -410,4 +692,38 @@ void test('corrupt checkpoint bytes fail closed instead of disappearing', async 
   await writeFile(join(root, `${threadId}.json`), '{', 'utf8');
   const store = createRunCheckpointStore({ stateRoot });
   await assert.rejects(store.readThread(threadId), SyntaxError);
+});
+
+void test('run checkpoints persist the isolated Qwen provider model pin', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-run-checkpoint-qwen-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const store = createRunCheckpointStore({ stateRoot });
+
+  const started = await store.startRun({
+    runId,
+    threadId,
+    request: {
+      workingDirectory: '/workspace',
+      permissionMode: 'basic',
+      providerModel: {
+        providerId: 'qwen_token_plan',
+        model: 'qwen3.8-max-preview',
+      },
+      reasoningEffort: 'high',
+      serviceTier: 'standard',
+    },
+  });
+  assert.equal(started.ok, true);
+  assert.deepEqual(
+    (await createRunCheckpointStore({ stateRoot }).readThread(threadId))
+      ?.request.providerModel,
+    {
+      providerId: 'qwen_token_plan',
+      model: 'qwen3.8-max-preview',
+    },
+  );
 });

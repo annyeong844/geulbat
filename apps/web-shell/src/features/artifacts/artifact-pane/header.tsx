@@ -1,17 +1,13 @@
 import type { ReactNode } from 'react';
 
-import {
-  artifactPaneStyles,
-  getStateBadgeStyle,
-  getTabButtonStyle,
-} from './styles.js';
-import type { ArtifactSurfaceStateBadge, ArtifactTab } from './types.js';
+import { artifactPaneStyles, getTabButtonStyle } from './styles.js';
+import type { ArtifactTab } from './types.js';
 
 export interface ArtifactPaneHeaderProps {
   label: string;
-  surfaceStateBadge: ArtifactSurfaceStateBadge | null;
+  planRenderingLabel?: string;
+  planRenderingTitle?: string;
   tab: ArtifactTab;
-  canShowPreview: boolean;
   showApply: boolean;
   canApply: boolean;
   showExport: boolean;
@@ -28,9 +24,9 @@ export interface ArtifactPaneHeaderProps {
 
 export function ArtifactPaneHeader({
   label,
-  surfaceStateBadge,
+  planRenderingLabel,
+  planRenderingTitle,
   tab,
-  canShowPreview,
   showApply,
   canApply,
   showExport,
@@ -48,18 +44,15 @@ export function ArtifactPaneHeader({
     <div style={artifactPaneStyles.headerRow}>
       <div style={artifactPaneStyles.headerCopy}>
         <div style={artifactPaneStyles.label}>{label}</div>
-        {surfaceStateBadge ? (
-          <div style={artifactPaneStyles.metaRow}>
-            <span style={getStateBadgeStyle(surfaceStateBadge.tone)}>
-              {surfaceStateBadge.label}
-            </span>
-          </div>
-        ) : null}
+        {planRenderingLabel === undefined ? null : (
+          <code className="plan-rendering-stamp" title={planRenderingTitle}>
+            {planRenderingLabel}
+          </code>
+        )}
       </div>
       <div style={artifactPaneStyles.buttonRow}>
         <ArtifactTabButton
           active={tab === 'show'}
-          disabled={!canShowPreview}
           onClick={() => onSelectTab('show')}
         >
           보기

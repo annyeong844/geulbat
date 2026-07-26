@@ -93,7 +93,7 @@ export const generateImageTool = defineZodTool({
         'run context is required for generate_image.',
       );
     }
-    const runtime = ctx.agentSpawnRuntime?.imageGeneration;
+    const runtime = ctx.runtimeServices?.imageGeneration;
     if (!runtime) {
       return toolError(
         'execution_failed',

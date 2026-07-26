@@ -21,7 +21,6 @@ const transport: McpStdioTransportConfig = {
   envKeys: ['EXAMPLE_API_KEY'],
   connectionTimeoutMs: 5_000,
   requestTimeoutMs: 30_000,
-  shutdownGraceMs: 2_500,
 };
 
 const manualRegistration = {
@@ -95,7 +94,9 @@ void test('MCP guards reject private fields and incomplete ownership metadata', 
     isMcpStdioTransportConfig({ ...transport, cwd: '/private/plugin/root' }),
     false,
   );
-  for (const shutdownGraceMs of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+  // P7.6 §11.6 — `shutdownGraceMs`는 폐기됐다. 종료 유예는 프로세스를 든
+  // command-host 세션의 정책이고, 값이 어떻든 전송 설정으로 받지 않는다.
+  for (const shutdownGraceMs of [2_500, 0, -1, 1.5]) {
     assert.equal(
       isMcpStdioTransportConfig({ ...transport, shutdownGraceMs }),
       false,
@@ -222,6 +223,37 @@ void test('MCP disabled reasons are exact and confined to disabled runtime state
       advertisedToolCount: 1,
       availableToolNames: ['example_tool'],
       activeToolNames: ['missing_tool'],
+    }),
+    false,
+  );
+  assert.equal(
+    isMcpServerRuntimeStatus({
+      state: 'ready',
+      advertisedToolCount: 1,
+      availableToolNames: ['example_tool'],
+      activeToolNames: [],
+      restartReason:
+        'MCP session re-adoption failed: command-host session was not found',
+    }),
+    true,
+  );
+  assert.equal(
+    isMcpServerRuntimeStatus({
+      state: 'connecting',
+      advertisedToolCount: 0,
+      availableToolNames: [],
+      activeToolNames: [],
+      restartReason: 'must not appear before a successful fresh launch',
+    }),
+    false,
+  );
+  assert.equal(
+    isMcpServerRuntimeStatus({
+      state: 'ready',
+      advertisedToolCount: 0,
+      availableToolNames: [],
+      activeToolNames: [],
+      restartReason: '',
     }),
     false,
   );

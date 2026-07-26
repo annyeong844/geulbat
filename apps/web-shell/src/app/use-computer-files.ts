@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ConflictStaleWriteError } from '@geulbat/protocol/errors';
-import type { FileTreeNode } from '@geulbat/protocol/files';
+import type { ComputerFileScopeResponse } from '@geulbat/protocol/files';
 
 import { ApiFetchError, PreviewTooLargeError } from '../lib/api/client.js';
 import {
@@ -8,8 +8,6 @@ import {
   rawFileUrl,
   COMPUTER_FILE_API_SCOPE,
   FileSaveConflictError,
-  getComputerFileScope,
-  getFileTree,
   manageFile,
   readFile,
   saveFile,
@@ -18,6 +16,14 @@ import {
 import { createLogger } from '@geulbat/structured-logger/logger';
 import { baseNameOf, parentDirOf, splitExtension } from '../lib/path-name.js';
 import { reportVisibleAppError } from './error-reporting.js';
+import {
+  useComputerFileBrowser,
+  type ReportComputerFileErrorArgs,
+} from './use-computer-file-browser.js';
+import {
+  useComputerFileBuffers,
+  type ComputerFileMediaPreview,
+} from './use-computer-file-buffers.js';
 
 const logger = createLogger('computer-files');
 
@@ -27,30 +33,6 @@ const CREATE_ONLY_VERSION_TOKEN = '';
 import type { OpenFileTab } from '../features/editor/Editor.js';
 
 export type { OpenFileTab };
-
-// 파일 버퍼 하나 = 열린 탭 하나 (VSCode식 멀티 탭)
-interface FileBuffer {
-  path: string;
-  content: string;
-  versionToken: string;
-  isDirty: boolean;
-  lastSavedAt: number | null;
-  // 오피스 문서 추출본 — 읽기 전용, 저장 불가
-  extractedDocument?: 'docx' | 'xlsx' | 'hwpx';
-}
-
-interface ReportComputerFileErrorArgs {
-  logContext: string;
-  visiblePrefix: string;
-  error: unknown;
-}
-
-interface BinaryPreviewState {
-  path: string;
-  kind: 'image' | 'audio' | 'video' | 'unsupported';
-  url?: string;
-  byteSize?: number;
-}
 
 const AUDIO_FILE_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac']);
 const VIDEO_FILE_EXTENSIONS = new Set(['mp4', 'webm', 'ogv', 'mov']);
@@ -167,26 +149,6 @@ function reportComputerFileError({
   });
 }
 
-// lazy 트리 병합 — path 노드의 children을 새 하위 트리로 교체
-function mergeSubtree(
-  nodes: FileTreeNode[],
-  path: string,
-  children: FileTreeNode[],
-): FileTreeNode[] {
-  return nodes.map((node) => {
-    if (node.type !== 'directory') {
-      return node;
-    }
-    if (node.path === path) {
-      return { ...node, children };
-    }
-    if (path.startsWith(`${node.path}/`) && node.children) {
-      return { ...node, children: mergeSubtree(node.children, path, children) };
-    }
-    return node;
-  });
-}
-
 function buildConflictCopyPath(path: string): string {
   const parent = parentDirOf(path);
   const { base, ext } = splitExtension(baseNameOf(path));
@@ -195,200 +157,72 @@ function buildConflictCopyPath(path: string): string {
 }
 
 export function useComputerFiles(options?: {
-  initialComputerFileScope?: Awaited<ReturnType<typeof getComputerFileScope>>;
+  initialComputerFileScope?: ComputerFileScopeResponse;
 }) {
-  const [computerFileScope, setComputerFileScope] = useState<
-    Awaited<ReturnType<typeof getComputerFileScope>> | undefined
-  >(options?.initialComputerFileScope);
-  const [computerFileScopeError, setComputerFileScopeError] = useState<
-    string | null
-  >(null);
-  useEffect(() => {
-    if (options?.initialComputerFileScope !== undefined) {
-      return;
-    }
-    let active = true;
-    void getComputerFileScope()
-      .then((scope) => {
-        if (active) {
-          setComputerFileScope(scope);
-          setComputerFileScopeError(null);
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setComputerFileScopeError(
-            reportComputerFileError({
-              logContext: 'computer file scope failed',
-              visiblePrefix: '컴퓨터 파일 범위를 불러오지 못했습니다.',
-              error,
-            }),
-          );
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [options?.initialComputerFileScope]);
-  const browseEnabled = computerFileScope?.available === true;
-  const browseStartPath = browseEnabled
-    ? (computerFileScope.browseStartPath ?? '')
-    : '';
-  const browseShortcuts = browseEnabled
-    ? computerFileScope.browseShortcuts
-    : [];
-  const [browsePath, setBrowsePath] = useState(browseStartPath);
-  // Computer 파일 범위가 비동기로 늦게 도착한다 — 사용자가 아직 이동하지
-  // 않았다면 시작 위치(홈)를 뒤늦게라도 반영한다.
-  const browseTouchedRef = useRef(false);
-  useEffect(() => {
-    if (
-      browseEnabled &&
-      !browseTouchedRef.current &&
-      browseStartPath !== '' &&
-      browsePath === ''
-    ) {
-      browseEpochRef.current += 1;
-      setBrowsePath(browseStartPath);
-    }
-  }, [browseEnabled, browsePath, browseStartPath]);
-  // 탐색 위치가 바뀌면 이전 위치 기준으로 날아간 트리 응답은 무효 —
-  // 늦게 도착한 subtree/tree 응답이 새 트리를 덮어쓰는 race 방지
-  const browseEpochRef = useRef(0);
-  const [tree, setTree] = useState<FileTreeNode[]>([]);
-  const [treeError, setTreeError] = useState<string | null>(null);
-  const [buffers, setBuffers] = useState<FileBuffer[]>([]);
-  const [activePath, setActivePath] = useState<string | null>(null);
+  const {
+    tree,
+    treeError,
+    browseEnabled,
+    browsePath,
+    browseStartPath,
+    browseShortcuts,
+    refreshComputerFileScope,
+    loadTree,
+    loadSubtree,
+    navigateUp,
+    navigateInto,
+    reportTreeError,
+  } = useComputerFileBrowser({
+    initialComputerFileScope: options?.initialComputerFileScope,
+    reportError: reportComputerFileError,
+  });
+  const {
+    activePath,
+    activeTextBuffer,
+    binaryPreview,
+    recentFilePaths,
+    openFiles,
+    hasBuffer,
+    openTextBuffer,
+    replaceTextBuffer,
+    openMediaBuffer: openMediaFileBuffer,
+    activateBuffer,
+    closeBuffer,
+    patchTextBuffer,
+    removeRecentFile,
+    removeManagedPath,
+    remapManagedPath,
+  } = useComputerFileBuffers();
   const [saveConflict, setSaveConflict] =
     useState<ConflictStaleWriteError | null>(null);
   const [saving, setSaving] = useState(false);
   const [openingFile, setOpeningFile] = useState(false);
-  // 텍스트가 아닌 파일 미리보기 — 이미지/미디어는 raw로 렌더, 그 외는 안내
-  const [binaryPreview, setBinaryPreview] = useState<BinaryPreviewState | null>(
-    null,
-  );
   const openRequestSeqRef = useRef(0);
-  const replaceBinaryPreview = useCallback(
-    (next: BinaryPreviewState | null) => {
-      setBinaryPreview((prev) => {
-        if (prev?.url) {
-          URL.revokeObjectURL(prev.url);
-        }
-        return next;
-      });
-    },
-    [],
-  );
   const [editorError, setEditorError] = useState<string | null>(null);
 
-  const activeBuffer = buffers.find((buffer) => buffer.path === activePath);
-
-  const upsertBuffer = useCallback((next: FileBuffer) => {
-    setBuffers((prev) => {
-      const index = prev.findIndex((buffer) => buffer.path === next.path);
-      if (index < 0) {
-        return [...prev, next];
-      }
-      const copy = [...prev];
-      copy[index] = next;
-      return copy;
-    });
-  }, []);
-
-  const patchBuffer = useCallback(
-    (path: string, patch: Partial<FileBuffer>) => {
-      setBuffers((prev) =>
-        prev.map((buffer) =>
-          buffer.path === path ? { ...buffer, ...patch } : buffer,
-        ),
-      );
+  useEffect(
+    () => () => {
+      openRequestSeqRef.current += 1;
     },
     [],
   );
 
-  const loadTree = useCallback(async () => {
-    const epoch = browseEpochRef.current;
-    try {
-      // 얕게 먼저 그리고(넓은 root에서도 빠른 첫 페인트) 하위는 lazy 로딩
-      if (computerFileScope?.available !== true) {
-        return;
-      }
-      const res = await getFileTree(COMPUTER_FILE_API_SCOPE, {
-        depth: 1,
-        ...(browsePath !== '' ? { path: browsePath } : {}),
-      });
-      if (epoch !== browseEpochRef.current) {
-        return;
-      }
-      setTree(res.tree);
-      setTreeError(null);
-    } catch (err: unknown) {
-      setTreeError(
-        reportComputerFileError({
-          logContext: 'loadTree failed',
-          visiblePrefix: '파일 목록을 불러오지 못했습니다.',
-          error: err,
-        }),
-      );
-    }
-  }, [browsePath, computerFileScope]);
-
-  // 탐색 위치 이동 (↑ 상위 / 폴더로 진입)
-  const navigateUp = useCallback(() => {
-    if (!browseEnabled) {
-      return;
-    }
-    browseTouchedRef.current = true;
-    browseEpochRef.current += 1;
-    setBrowsePath((prev) => parentDirOf(prev));
-  }, [browseEnabled]);
-
-  const navigateInto = useCallback(
-    (path: string) => {
-      if (!browseEnabled) {
-        return;
-      }
-      browseTouchedRef.current = true;
-      browseEpochRef.current += 1;
-      setBrowsePath(path);
+  const openMediaBuffer = useCallback(
+    (path: string, media: ComputerFileMediaPreview) => {
+      openMediaFileBuffer(path, media);
+      setSaveConflict(null);
+      setEditorError(null);
     },
-    [browseEnabled],
+    [openMediaFileBuffer],
   );
-
-  // 폴더 펼침 시 하위 트리 lazy 로딩 (넓은 boundary root 대응)
-  const loadSubtree = useCallback(async (path: string) => {
-    const epoch = browseEpochRef.current;
-    try {
-      // depth 1 — 넓은 root(9p 마운트)에서 대형 폴더의 손자까지
-      // 프리페치하면 병합/렌더가 수 초씩 걸린다. 펼칠 때마다 한 층씩.
-      const res = await getFileTree(COMPUTER_FILE_API_SCOPE, {
-        path,
-        depth: 1,
-      });
-      if (epoch !== browseEpochRef.current) {
-        return;
-      }
-      setTree((prev) => mergeSubtree(prev, path, res.tree));
-    } catch (err: unknown) {
-      setTreeError(
-        reportComputerFileError({
-          logContext: 'loadSubtree failed',
-          visiblePrefix: `${path} 하위 목록을 불러오지 못했습니다.`,
-          error: err,
-        }),
-      );
-    }
-  }, []);
 
   const openUnsupportedPreview = useCallback(
     (path: string) => {
       openRequestSeqRef.current += 1;
-      replaceBinaryPreview({ path, kind: 'unsupported' });
-      setActivePath(null);
-      setEditorError(null);
+      openMediaBuffer(path, { kind: 'unsupported' });
       setOpeningFile(false);
     },
-    [replaceBinaryPreview],
+    [openMediaBuffer],
   );
 
   // binary_file 거부 파일 — 브라우저가 직접 렌더할 수 있는 이미지/미디어만
@@ -400,9 +234,7 @@ export function useComputerFiles(options?: {
         if (requestSeq !== openRequestSeqRef.current) {
           return;
         }
-        replaceBinaryPreview({ path, kind: 'unsupported' });
-        setActivePath(null);
-        setEditorError(null);
+        openMediaBuffer(path, { kind: 'unsupported' });
         return;
       }
       if (kind === 'audio' || kind === 'video') {
@@ -411,13 +243,10 @@ export function useComputerFiles(options?: {
         if (requestSeq !== openRequestSeqRef.current) {
           return;
         }
-        replaceBinaryPreview({
-          path,
+        openMediaBuffer(path, {
           kind,
           url: rawFileUrl(COMPUTER_FILE_API_SCOPE, path),
         });
-        setActivePath(null);
-        setEditorError(null);
         return;
       }
       try {
@@ -427,22 +256,13 @@ export function useComputerFiles(options?: {
           URL.revokeObjectURL(url);
           return;
         }
-        replaceBinaryPreview({
-          path,
-          kind,
-          url,
-          byteSize: blob.size,
-        });
-        setActivePath(null);
-        setEditorError(null);
+        openMediaBuffer(path, { kind, url, byteSize: blob.size });
       } catch (err: unknown) {
         if (requestSeq !== openRequestSeqRef.current) {
           return;
         }
         if (err instanceof PreviewTooLargeError) {
-          replaceBinaryPreview({ path, kind: 'unsupported' });
-          setActivePath(null);
-          setEditorError(null);
+          openMediaBuffer(path, { kind: 'unsupported' });
           return;
         }
         setEditorError(
@@ -454,16 +274,15 @@ export function useComputerFiles(options?: {
         );
       }
     },
-    [replaceBinaryPreview],
+    [openMediaBuffer],
   );
 
   const openComputerFile = useCallback(
     async (path: string) => {
       const requestSeq = (openRequestSeqRef.current += 1);
       // 이미 열린 탭이면 다시 읽지 않고 활성화만 — dirty buffer 보존
-      const existing = buffers.find((buffer) => buffer.path === path);
-      if (existing) {
-        setActivePath(path);
+      if (hasBuffer(path)) {
+        activateBuffer(path);
         setSaveConflict(null);
         setEditorError(null);
         setOpeningFile(false);
@@ -490,7 +309,7 @@ export function useComputerFiles(options?: {
         if (requestSeq !== openRequestSeqRef.current) {
           return;
         }
-        upsertBuffer({
+        openTextBuffer({
           path,
           content: res.content,
           versionToken: res.versionToken,
@@ -500,8 +319,6 @@ export function useComputerFiles(options?: {
             ? { extractedDocument: res.extractedDocument }
             : {}),
         });
-        setActivePath(path);
-        replaceBinaryPreview(null);
         setSaveConflict(null);
         setEditorError(null);
       } catch (err: unknown) {
@@ -526,11 +343,11 @@ export function useComputerFiles(options?: {
       }
     },
     [
-      buffers,
+      activateBuffer,
+      hasBuffer,
       openBinaryPreview,
+      openTextBuffer,
       openUnsupportedPreview,
-      replaceBinaryPreview,
-      upsertBuffer,
     ],
   );
 
@@ -541,30 +358,22 @@ export function useComputerFiles(options?: {
     [openComputerFile],
   );
 
-  const activateTab = useCallback((path: string) => {
-    setActivePath(path);
-    setSaveConflict(null);
-    setEditorError(null);
-  }, []);
-
-  const closeTab = useCallback(
+  const activateTab = useCallback(
     (path: string) => {
-      setBuffers((prev) => {
-        const index = prev.findIndex((buffer) => buffer.path === path);
-        if (index < 0) {
-          return prev;
-        }
-        const next = prev.filter((buffer) => buffer.path !== path);
-        if (activePath === path) {
-          const neighbor = next[Math.min(index, next.length - 1)];
-          setActivePath(neighbor ? neighbor.path : null);
-        }
-        return next;
-      });
+      activateBuffer(path);
       setSaveConflict(null);
       setEditorError(null);
     },
-    [activePath],
+    [activateBuffer],
+  );
+
+  const closeTab = useCallback(
+    (path: string) => {
+      closeBuffer(path);
+      setSaveConflict(null);
+      setEditorError(null);
+    },
+    [closeBuffer],
   );
 
   const handleContentChange = useCallback(
@@ -572,15 +381,15 @@ export function useComputerFiles(options?: {
       if (!activePath) {
         return;
       }
-      patchBuffer(activePath, { content, isDirty: true });
+      patchTextBuffer(activePath, { content, isDirty: true });
       setSaveConflict(null);
       setEditorError(null);
     },
-    [activePath, patchBuffer],
+    [activePath, patchTextBuffer],
   );
 
   const handleSave = useCallback(async () => {
-    if (!activeBuffer || saving) {
+    if (!activeTextBuffer || saving) {
       return;
     }
 
@@ -590,11 +399,11 @@ export function useComputerFiles(options?: {
     try {
       const res = await saveFile(
         COMPUTER_FILE_API_SCOPE,
-        activeBuffer.path,
-        activeBuffer.content,
-        activeBuffer.versionToken,
+        activeTextBuffer.path,
+        activeTextBuffer.content,
+        activeTextBuffer.versionToken,
       );
-      patchBuffer(activeBuffer.path, {
+      patchTextBuffer(activeTextBuffer.path, {
         versionToken: res.versionToken,
         isDirty: false,
         lastSavedAt: Date.now(),
@@ -607,14 +416,14 @@ export function useComputerFiles(options?: {
       setEditorError(
         reportComputerFileError({
           logContext: 'save failed',
-          visiblePrefix: `${activeBuffer.path} 저장에 실패했습니다.`,
+          visiblePrefix: `${activeTextBuffer.path} 저장에 실패했습니다.`,
           error: err,
         }),
       );
     } finally {
       setSaving(false);
     }
-  }, [activeBuffer, patchBuffer, saving]);
+  }, [activeTextBuffer, patchTextBuffer, saving]);
 
   // 새 파일 생성 — daemon save의 create-only sentinel 사용 (§3.1.2 새 파일)
   const createFile = useCallback(
@@ -627,29 +436,26 @@ export function useComputerFiles(options?: {
           CREATE_ONLY_VERSION_TOKEN,
         );
         await loadTree();
-        upsertBuffer({
+        openTextBuffer({
           path,
           content: '',
           versionToken: res.versionToken,
           isDirty: false,
           lastSavedAt: null,
         });
-        setActivePath(path);
         setSaveConflict(null);
         setEditorError(null);
         return true;
       } catch (err: unknown) {
-        setTreeError(
-          reportComputerFileError({
-            logContext: 'createFile failed',
-            visiblePrefix: `${path} 파일을 만들지 못했습니다.`,
-            error: err,
-          }),
-        );
+        reportTreeError({
+          logContext: 'createFile failed',
+          visiblePrefix: `${path} 파일을 만들지 못했습니다.`,
+          error: err,
+        });
         return false;
       }
     },
-    [loadTree, upsertBuffer],
+    [loadTree, openTextBuffer, reportTreeError],
   );
 
   // 트리 편집 ops — 열린 버퍼(탭)도 새 경로/삭제에 맞춰 정리한다
@@ -662,47 +468,26 @@ export function useComputerFiles(options?: {
       try {
         await manageFile(COMPUTER_FILE_API_SCOPE, operation, path, destination);
         if (operation === 'delete') {
-          setBuffers((prev) =>
-            prev.filter(
-              (buffer) =>
-                buffer.path !== path && !buffer.path.startsWith(`${path}/`),
-            ),
-          );
-          setActivePath((prev) =>
-            prev !== null && (prev === path || prev.startsWith(`${path}/`))
-              ? null
-              : prev,
-          );
+          removeManagedPath(path);
         }
         if (
           (operation === 'rename' || operation === 'move') &&
           destination !== undefined
         ) {
-          const remap = (bufferPath: string): string =>
-            bufferPath === path
-              ? destination
-              : bufferPath.startsWith(`${path}/`)
-                ? `${destination}${bufferPath.slice(path.length)}`
-                : bufferPath;
-          setBuffers((prev) =>
-            prev.map((buffer) => ({ ...buffer, path: remap(buffer.path) })),
-          );
-          setActivePath((prev) => (prev === null ? prev : remap(prev)));
+          remapManagedPath(path, destination);
         }
         await loadTree();
         return true;
       } catch (err: unknown) {
-        setTreeError(
-          reportComputerFileError({
-            logContext: `manage ${operation} failed`,
-            visiblePrefix: `${path} ${operation} 작업에 실패했습니다.`,
-            error: err,
-          }),
-        );
+        reportTreeError({
+          logContext: `manage ${operation} failed`,
+          visiblePrefix: `${path} ${operation} 작업에 실패했습니다.`,
+          error: err,
+        });
         return false;
       }
     },
-    [loadTree],
+    [loadTree, remapManagedPath, removeManagedPath, reportTreeError],
   );
 
   const handleConflictReload = useCallback(async () => {
@@ -712,7 +497,7 @@ export function useComputerFiles(options?: {
     setOpeningFile(true);
     try {
       const res = await readFile(COMPUTER_FILE_API_SCOPE, activePath);
-      upsertBuffer({
+      replaceTextBuffer({
         path: activePath,
         content: res.content,
         versionToken: res.versionToken,
@@ -732,13 +517,13 @@ export function useComputerFiles(options?: {
     } finally {
       setOpeningFile(false);
     }
-  }, [activePath, upsertBuffer]);
+  }, [activePath, replaceTextBuffer]);
 
   // "본문에 삽입" (§3.1.3) — plain editor에서는 caret을 알 수 없으므로
   // 문서 끝 append 전 confirm (§10.18 no-caret 규칙)
   const insertFileIntoActiveBuffer = useCallback(
     async (path: string) => {
-      if (!activeBuffer) {
+      if (!activeTextBuffer) {
         setEditorError('본문에 삽입하려면 먼저 문서를 열어야 합니다.');
         return;
       }
@@ -746,13 +531,13 @@ export function useComputerFiles(options?: {
         const res = await readFile(COMPUTER_FILE_API_SCOPE, path);
         if (
           !window.confirm(
-            `${activeBuffer.path} 문서 끝에 ${path} 내용을 추가할까요?`,
+            `${activeTextBuffer.path} 문서 끝에 ${path} 내용을 추가할까요?`,
           )
         ) {
           return;
         }
-        patchBuffer(activeBuffer.path, {
-          content: `${activeBuffer.content}\n\n${res.content}`,
+        patchTextBuffer(activeTextBuffer.path, {
+          content: `${activeTextBuffer.content}\n\n${res.content}`,
           isDirty: true,
         });
       } catch (err: unknown) {
@@ -765,7 +550,7 @@ export function useComputerFiles(options?: {
         );
       }
     },
-    [activeBuffer, patchBuffer],
+    [activeTextBuffer, patchTextBuffer],
   );
 
   // 현재 daemon-visible 내용을 buffer 교체 없이 조회 (§3.6.5 현재 파일 확인하기)
@@ -791,29 +576,28 @@ export function useComputerFiles(options?: {
   // 충돌 시 unsaved buffer를 새 파일로 저장 — 원본은 daemon state 유지,
   // force overwrite는 제공하지 않는다 (§3.6.5 / §10.20)
   const handleConflictSaveAsCopy = useCallback(async () => {
-    if (!activeBuffer || !saveConflict || saving) {
+    if (!activeTextBuffer || !saveConflict || saving) {
       return;
     }
 
-    const copyPath = buildConflictCopyPath(activeBuffer.path);
+    const copyPath = buildConflictCopyPath(activeTextBuffer.path);
     setSaving(true);
     setEditorError(null);
     try {
       const res = await saveFile(
         COMPUTER_FILE_API_SCOPE,
         copyPath,
-        activeBuffer.content,
+        activeTextBuffer.content,
         CREATE_ONLY_VERSION_TOKEN,
       );
       await loadTree();
-      upsertBuffer({
+      openTextBuffer({
         path: copyPath,
-        content: activeBuffer.content,
+        content: activeTextBuffer.content,
         versionToken: res.versionToken,
         isDirty: false,
         lastSavedAt: Date.now(),
       });
-      setActivePath(copyPath);
       setSaveConflict(null);
     } catch (err: unknown) {
       setEditorError(
@@ -826,33 +610,31 @@ export function useComputerFiles(options?: {
     } finally {
       setSaving(false);
     }
-  }, [activeBuffer, loadTree, saveConflict, saving, upsertBuffer]);
+  }, [activeTextBuffer, loadTree, openTextBuffer, saveConflict, saving]);
 
   return {
     tree,
-    treeError: treeError ?? computerFileScopeError,
+    treeError,
     binaryPreview,
-    extractedDocument: activeBuffer?.extractedDocument ?? null,
+    extractedDocument: activeTextBuffer?.extractedDocument ?? null,
     browseEnabled,
     browseShortcuts,
     browsePath,
     browseStartPath,
+    refreshComputerFileScope,
     navigateUp,
     navigateInto,
     selectedFile: activePath,
-    fileContent: activeBuffer?.content ?? '',
-    isDirty: activeBuffer?.isDirty ?? false,
+    recentFiles: recentFilePaths,
+    removeRecentFile,
+    fileContent: activeTextBuffer?.content ?? '',
+    isDirty: activeTextBuffer?.isDirty ?? false,
     saveConflict,
     editorError,
     saving,
     openingFile,
-    lastSavedAt: activeBuffer?.lastSavedAt ?? null,
-    openFiles: buffers.map(
-      (buffer): OpenFileTab => ({
-        path: buffer.path,
-        isDirty: buffer.isDirty,
-      }),
-    ),
+    lastSavedAt: activeTextBuffer?.lastSavedAt ?? null,
+    openFiles,
     loadTree,
     loadSubtree,
     openFile,

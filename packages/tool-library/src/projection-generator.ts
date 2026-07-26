@@ -25,7 +25,7 @@ import {
 import { toPascalCase } from './projection-naming.js';
 
 export const TOOL_LIBRARY_PROJECTION_GENERATOR_VERSION =
-  'geulbat-tool-library-projection-v10';
+  'geulbat-tool-library-projection-v11';
 
 export function buildToolLibraryProjectionImportableModules(args: {
   importSpecifier: string;
@@ -190,6 +190,7 @@ function buildCatalogModule(args: {
     sideEffectLevel: tool.sideEffectLevel,
     approvalClass: tool.approvalClass,
     mayMutateComputerFiles: tool.mayMutateComputerFiles,
+    resultDelivery: tool.resultDelivery,
     searchHints: tool.searchHints,
     tags: tool.tags,
     whenToUse: tool.whenToUse,
@@ -247,6 +248,10 @@ function buildIndexDeclarationModule(
     "  readonly sideEffectLevel: 'none' | 'read' | 'write' | 'destructive';",
     "  readonly approvalClass: 'approval_free' | 'approval_required';",
     '  readonly mayMutateComputerFiles: boolean;',
+    '  readonly resultDelivery: {',
+    '    readonly exactDurableRecovery: boolean;',
+    "    readonly modelVisibleForms: readonly ('inline' | 'summary_ref' | 'duplicate_ref')[];",
+    '  };',
     '  readonly searchHints: readonly string[];',
     '  readonly tags: readonly string[];',
     '  readonly whenToUse: string;',
@@ -318,6 +323,7 @@ function buildSignatureModule(
     sideEffectLevel: tool.sideEffectLevel,
     approvalClass: tool.approvalClass,
     mayMutateComputerFiles: tool.mayMutateComputerFiles,
+    resultDelivery: tool.resultDelivery,
     family: tool.family,
     searchHints: tool.searchHints,
     tags: tool.tags,
@@ -377,6 +383,12 @@ function buildSignatureDeclarationModule(
     `  readonly mayMutateComputerFiles: ${JSON.stringify(
       tool.mayMutateComputerFiles,
     )};`,
+    '  readonly resultDelivery: {',
+    `    readonly exactDurableRecovery: ${JSON.stringify(
+      tool.resultDelivery.exactDurableRecovery,
+    )};`,
+    "    readonly modelVisibleForms: readonly ('inline' | 'summary_ref' | 'duplicate_ref')[];",
+    '  };',
     `  readonly family: ${JSON.stringify(tool.family)};`,
     '  readonly searchHints: readonly string[];',
     '  readonly tags: readonly string[];',
@@ -466,9 +478,13 @@ function buildWrapperDeclarationModule(
   tool: ToolLibraryProjectionGeneratedTool,
 ): string {
   return [
+    'export type GeulbatInlineToolValue =',
+    '  | { ok: true; output: string }',
+    '  | { ok: false; output: string; errorCode: string; error: string };',
+    '',
     'export interface GeulbatInlineToolResult {',
     '  kind: "inline";',
-    '  value: unknown;',
+    '  value: GeulbatInlineToolValue;',
     '}',
     '',
     'export interface GeulbatOffloadedToolResult {',

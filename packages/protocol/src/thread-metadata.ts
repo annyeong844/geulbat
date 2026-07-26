@@ -1,5 +1,9 @@
 import { isArtifactRef, type ArtifactRef } from './artifacts.js';
 import { isRunId, type RunId } from './ids.js';
+import {
+  isApprovedPlanRef,
+  type PlanRenderingStamp,
+} from './planning-workflow.js';
 import { isRecord, isString } from './wire-value-guards.js';
 
 const THREAD_MESSAGE_PHASES = ['commentary', 'final_answer'] as const;
@@ -32,6 +36,7 @@ interface UserThreadMessageMetadata {
   sourceFile?: never;
   artifactRefs?: never;
   activeArtifactRef?: never;
+  planStamp?: never;
 }
 
 interface CommentaryThreadMessageMetadata {
@@ -44,6 +49,7 @@ interface CommentaryThreadMessageMetadata {
   origin?: never;
   artifactRefs?: never;
   activeArtifactRef?: never;
+  planStamp?: never;
 }
 
 export interface FinalAnswerThreadMessageMetadata {
@@ -52,6 +58,7 @@ export interface FinalAnswerThreadMessageMetadata {
   sourceFile?: string;
   artifactRefs?: ArtifactRef[];
   activeArtifactRef?: ArtifactRef;
+  planStamp?: PlanRenderingStamp;
   source?: never;
   hiddenPrompt?: never;
   silent?: never;
@@ -69,6 +76,7 @@ interface InterjectThreadMessageMetadata {
   sourceFile?: never;
   artifactRefs?: never;
   activeArtifactRef?: never;
+  planStamp?: never;
 }
 
 export type ThreadMessageMetadata =
@@ -94,6 +102,7 @@ const FINAL_ANSWER_METADATA_KEYS = [
   'sourceFile',
   'artifactRefs',
   'activeArtifactRef',
+  'planStamp',
 ] as const;
 const INTERJECT_METADATA_KEYS = [
   'source',
@@ -160,7 +169,8 @@ export function isThreadMessageMetadata(
     isOptionalRunId(value.sourceRunId) &&
     isOptionalString(value.sourceFile) &&
     isOptionalArtifactRefs(value.artifactRefs) &&
-    isOptionalArtifactRef(value.activeArtifactRef)
+    isOptionalArtifactRef(value.activeArtifactRef) &&
+    (value.planStamp === undefined || isApprovedPlanRef(value.planStamp))
   );
 }
 

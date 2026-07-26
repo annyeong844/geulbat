@@ -124,3 +124,15 @@ void test('artifact runtime revision is stable for the same canonical inputs', (
   );
   assert.match(revision, /^rev2-[0-9a-f]+-[0-9a-f]{32}$/);
 });
+
+void test('artifact runtime revision preserves the canonical rev2 hash for a long Unicode payload', () => {
+  const revision = createArtifactRuntimeFrameRevision({
+    renderer: 'html5',
+    runtimePayload: `가나다abc<svg>🐦${'x'.repeat(12_000)}`,
+    sourceIdentity: 'source-identity',
+    persistenceScopeKey: 'scope-key',
+    parentOrigin: 'http://127.0.0.1:5173',
+  });
+
+  assert.equal(revision, 'rev2-2f29-89389efdaac36c40154f3514e9e81241');
+});

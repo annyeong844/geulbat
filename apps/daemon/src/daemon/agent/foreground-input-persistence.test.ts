@@ -45,7 +45,7 @@ function makeDeps(
   };
 }
 
-void test('persistRequiredForegroundInput stores hidden prompt only when visible transcript prompt differs', async () => {
+void test('persistRequiredForegroundInput stores the hidden prompt while leaving a new title open', async () => {
   const threadId = testThreadId(1101);
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-input-'));
   const runContext = makeRunContext({
@@ -74,7 +74,7 @@ void test('persistRequiredForegroundInput stores hidden prompt only when visible
   const summaries = await loadThreadIndex(workspaceRoot);
   assert.equal(summaries.length, 1);
   assert.equal(summaries[0]?.threadId, threadId);
-  assert.equal(summaries[0]?.title, 'Visible display title');
+  assert.equal(summaries[0]?.title, undefined);
   assert.equal(summaries[0]?.messageCount, 1);
   assert.equal(summaries[0]?.lastUpdated, FIXED_NOW);
 });

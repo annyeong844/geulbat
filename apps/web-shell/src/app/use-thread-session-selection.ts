@@ -1,19 +1,28 @@
 import { useCallback, useRef, useState } from 'react';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
-import type { ThreadMessage } from '@geulbat/protocol/threads';
+import type { RunModelId } from '@geulbat/protocol/run-contract';
+import type {
+  ThreadMessage,
+  ThreadSubagentTerminalOutcome,
+} from '@geulbat/protocol/threads';
+import { isSilentUserMessage } from '../lib/silent-user-message.js';
 
 interface ThreadSnapshotSelectionState {
   threadId: string;
   snapshotVersion: string;
+  activeModelId?: RunModelId;
   messages: ThreadMessage[];
   artifacts?: ThreadArtifactVersion[];
+  subagentTerminalOutcomes?: ThreadSubagentTerminalOutcome[];
 }
 
 interface UseThreadSessionSelectionResult {
   selectedThreadId: string | null;
   setSelectedThreadId: (threadId: string | null) => void;
+  activeModelId: RunModelId | null;
   messages: ThreadMessage[];
   artifacts: ThreadArtifactVersion[];
+  subagentTerminalOutcomes: ThreadSubagentTerminalOutcome[];
   selectThreadSnapshot: (thread: ThreadSnapshotSelectionState) => void;
   applyThreadSnapshotForRunSettle: (
     thread: ThreadSnapshotSelectionState,
@@ -45,8 +54,12 @@ function createOptimisticThreadMessageId(index: number): string {
 
 export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [activeModelId, setActiveModelId] = useState<RunModelId | null>(null);
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [artifacts, setArtifacts] = useState<ThreadArtifactVersion[]>([]);
+  const [subagentTerminalOutcomes, setSubagentTerminalOutcomes] = useState<
+    ThreadSubagentTerminalOutcome[]
+  >([]);
   const latestSnapshotVersionByThreadRef = useRef<Record<string, string>>({});
   const optimisticMessageIndexRef = useRef(0);
 
@@ -55,8 +68,12 @@ export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
       latestSnapshotVersionByThreadRef.current[thread.threadId] =
         thread.snapshotVersion;
       setSelectedThreadId(thread.threadId);
+      setActiveModelId(thread.activeModelId ?? null);
       setMessages(thread.messages);
       setArtifacts(thread.artifacts ?? []);
+      if (thread.subagentTerminalOutcomes !== undefined) {
+        setSubagentTerminalOutcomes(thread.subagentTerminalOutcomes);
+      }
     },
     [],
   );
@@ -122,7 +139,7 @@ export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
       // silent user 턴(♻ 등 UI 발 자동 요청)은 화면의 질문이 아니다
       while (end > 0) {
         const message = prev[end - 1];
-        if (message?.role === 'user' && message.metadata?.silent !== true) {
+        if (message?.role === 'user' && !isSilentUserMessage(message)) {
           break;
         }
         end -= 1;
@@ -138,16 +155,20 @@ export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
   // 새 세션 — thread 선택 해제. 다음 메시지가 새 thread를 연다.
   const startNewSession = useCallback(() => {
     setSelectedThreadId(null);
+    setActiveModelId(null);
     setMessages([]);
     setArtifacts([]);
+    setSubagentTerminalOutcomes([]);
   }, []);
 
   const clearThreadSelectionState = useCallback(
     (threadId: string) => {
       if (selectedThreadId === threadId) {
         setSelectedThreadId(null);
+        setActiveModelId(null);
         setMessages([]);
         setArtifacts([]);
+        setSubagentTerminalOutcomes([]);
       }
       delete latestSnapshotVersionByThreadRef.current[threadId];
     },
@@ -157,8 +178,10 @@ export function useThreadSessionSelection(): UseThreadSessionSelectionResult {
   return {
     selectedThreadId,
     setSelectedThreadId,
+    activeModelId,
     messages,
     artifacts,
+    subagentTerminalOutcomes,
     selectThreadSnapshot,
     applyThreadSnapshotForRunSettle,
     appendOptimisticUserMessage,

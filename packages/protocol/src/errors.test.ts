@@ -28,6 +28,8 @@ type _ApiErrorPathVariantsAreExtractable = Expect<
 
 void test('isErrorCode accepts only canonical protocol error codes', () => {
   assert.equal(isErrorCode('internal'), true);
+  assert.equal(isErrorCode('provider_transition_required'), true);
+  assert.equal(isErrorCode('provider_transition_preparation_failed'), true);
   assert.equal(isErrorCode('totally_new_error'), false);
 });
 

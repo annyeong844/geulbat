@@ -12,13 +12,18 @@ import type { FileStateCache } from './utils/file-state-cache.js';
 import type { ChildRunRegistry } from './agent/runtime/child-run-registry.js';
 import type { ApprovalGate } from './agent/runtime/approval-gate.js';
 import type { ResourceBudgetProvider } from './agent/resource-budget-provider.js';
-import type { SubagentAdmissionController } from './agent/subagent-concurrency.js';
+import type {
+  SubagentAdmissionController,
+  SubagentLaunchPromotionController,
+} from './agent/subagent-concurrency.js';
 import type {
   BackgroundChildResult,
-  ProviderRunSelection,
   ResolvedChildModelPin,
   RunSubagentModelRouting,
+  SubagentCapability,
+  SubagentLaunchRequestStore,
   SubagentLaunchReservation,
+  SubagentTerminalDeliveryStore,
   SubagentType,
 } from './subagent-runtime-contracts.js';
 import type { AgentEvent, ToolRunState } from './runtime-contracts.js';
@@ -39,12 +44,10 @@ import type {
 import type { ToolLibraryProjectionPort } from './tools/tool-library-projection-port.js';
 import type { PluginSkillRuntime } from './extensions/plugin-skill-runtime.js';
 import type { RunCheckpointStore } from './sessions/run-checkpoint-store.js';
-
-export type {
-  ProviderRunSelection,
-  ResolvedChildModelPin,
-  RunSubagentModelRouting,
-};
+import type { PlanningWorkflowStore } from './sessions/planning-workflow-store.js';
+import type { GoalStore } from './sessions/goal-store.js';
+import type { AgentLoopMemoryPort } from './agent/memory/compaction-loop.js';
+import type { HostCommandRuntime } from '../command-host/contract.js';
 
 export type AgentMemoryIndex = Pick<
   MemoryIndexStore,
@@ -54,6 +57,7 @@ export type AgentMemoryIndex = Pick<
 export interface StartSubagentBackgroundRunArgs {
   task: string;
   subagentType: SubagentType;
+  capabilities: readonly SubagentCapability[];
   parentRunId: RunId;
   ownerThreadId: ThreadId;
   stateRoot: string;
@@ -61,14 +65,16 @@ export interface StartSubagentBackgroundRunArgs {
   parentRunState: ToolRunState;
   runtimeServices: AgentRuntimeServices;
   launchReservation?: SubagentLaunchReservation;
-  approvalSessionId?: string;
+  computerSessionId?: string;
   permissionMode?: PermissionMode;
+  ultraReasoning?: boolean;
   modelPin: ResolvedChildModelPin;
   subagentModelRouting: RunSubagentModelRouting;
   emitAgentEvent?: (event: AgentEvent) => void;
   timeoutMs?: number;
   childRunId?: RunId;
   childThreadId?: ThreadId;
+  durableLaunchRecorded?: true;
 }
 
 export interface SubagentRunLauncher {
@@ -88,7 +94,37 @@ export interface PtcFixedEpochProbeRuntime {
   }): Promise<PtcFixedEpochProbeRuntimeResult>;
 }
 
+export interface AgentRuntimeAgentServices {
+  loopMemory: AgentLoopMemoryPort;
+  resourceBudgetProvider: ResourceBudgetProvider;
+  reactBundleStructuredOutputIngressPolicy: ReactBundleStructuredOutputIngressPolicy;
+}
+
+interface AgentRuntimeProviderServices {
+  authRuntime: ProviderAuthRuntimeStore;
+  requestOptions: ProviderRequestOptions;
+  webSocketSessions: ResponsesWebSocketSessionStore;
+}
+
+export interface AgentRuntimePtcServices {
+  browserPageLoadEvidence: PtcBrowserPageLoadEvidenceRuntime;
+  browserTextEvidence: PtcBrowserTextEvidenceRuntime;
+  browserNavigate: PtcBrowserNavigateRuntime;
+  executeCode: PtcExecuteCodeRuntime;
+  packageInstall: PtcPackageInstallRuntime;
+  fixedProbe: PtcFixedEpochProbeRuntime;
+}
+
+export interface AgentRuntimeSubagentServices {
+  admission: SubagentAdmissionController;
+  launchPromotions?: SubagentLaunchPromotionController;
+  launchRequests?: SubagentLaunchRequestStore;
+  terminalDeliveries?: SubagentTerminalDeliveryStore;
+  runs: SubagentRunLauncher;
+}
+
 export interface AgentRuntimeServices {
+  agent: AgentRuntimeAgentServices;
   activeRuns: Pick<
     ActiveRunStore,
     'abortRunSubtree' | 'finishRun' | 'tryStartRun'
@@ -110,25 +146,28 @@ export interface AgentRuntimeServices {
   childRuns: ChildRunRegistry;
   computerFileRoot?: string;
   fileStateCache: FileStateCache;
+  hostCommands: HostCommandRuntime;
+  /**
+   * command-host 세션의 inline 결과 예산. 페이지 요청 상한이 이 값을 넘으면 세션이
+   * invalid_args로 거부하므로(§4.2), 도구가 스트림을 페이지로 읽을 때 필요하다.
+   * 조립이 호스트를 구성할 때 쓴 값을 그대로 넘긴다 — env를 다시 읽어 추정하지 않는다.
+   */
+  hostCommandInlineMaxBytes: number;
   imageGeneration: ImageGenerationRuntime;
   videoGeneration: VideoGenerationRuntime;
   memoryIndex: AgentMemoryIndex;
-  providerAuthRuntime: ProviderAuthRuntimeStore;
-  providerRequestOptions: ProviderRequestOptions;
-  providerWebSocketSessions: ResponsesWebSocketSessionStore;
+  provider: AgentRuntimeProviderServices;
+  ptc: AgentRuntimePtcServices;
   runCheckpoints: RunCheckpointStore;
-  reactBundleStructuredOutputIngressPolicy: ReactBundleStructuredOutputIngressPolicy;
-  resourceBudgetProvider: ResourceBudgetProvider;
-  ptcBrowserPageLoadEvidence: PtcBrowserPageLoadEvidenceRuntime;
-  ptcBrowserTextEvidence: PtcBrowserTextEvidenceRuntime;
-  ptcBrowserNavigate: PtcBrowserNavigateRuntime;
-  ptcExecuteCode: PtcExecuteCodeRuntime;
-  ptcPackageInstall: PtcPackageInstallRuntime;
-  ptcFixedProbe: PtcFixedEpochProbeRuntime;
+  planningWorkflows: PlanningWorkflowStore;
+  goals: GoalStore;
   pluginSkills: PluginSkillRuntime;
   sandboxAttempts: SandboxAttemptStore;
-  subagentAdmission: SubagentAdmissionController;
-  subagentRuns: SubagentRunLauncher;
+  subagent: AgentRuntimeSubagentServices;
+  threadIndex: Pick<
+    typeof import('./sessions/threads-index.js'),
+    'loadThreadIndex' | 'upsertThreadSummary'
+  >;
   toolLibraryProjection: ToolLibraryProjectionPort;
   toolRegistry: ToolRuntimeRegistry;
 }

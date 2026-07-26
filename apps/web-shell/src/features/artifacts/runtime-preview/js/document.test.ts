@@ -107,10 +107,26 @@ void test('buildJsArtifactRuntimeDocument owns document assembly without persist
   assert.doesNotMatch(document, /postMessage\([^)]*['"]\*['"]\)/);
   assert.match(document, /const installRuntimeResizeSync = \(\) =>/);
   assert.match(document, /ResizeObserver/);
-  assert.match(document, /const height = measureRuntimeResize\(\);/);
+  assert.match(document, /const measureObservedRuntimeResize = \(entries\) =>/);
+  assert.match(document, /new ResizeObserver\(\(entries\) =>/);
   assert.match(
     document,
-    /requestAnimationFrame\(\(\) => \{\s*runtimeResizeRafId = 0;\s*postRuntimeResize\(height\);/,
+    /queueRuntimeResize\(measureObservedRuntimeResize\(entries\)\)/,
+  );
+  assert.doesNotMatch(document, /new ResizeObserver\(scheduleRuntimeResize\)/);
+  assert.match(document, /const queueRuntimeResize = \(height\) =>/);
+  assert.match(document, /const measureAndQueueRuntimeResize = \(\) =>/);
+  assert.match(document, /const startRuntimeResizePublishing = \(\) =>/);
+  assert.match(document, /let runtimeResizeObserver = null;/);
+  assert.match(document, /runtimeResizeObserver\.disconnect\(\);/);
+  assert.doesNotMatch(document, /scheduleRuntimeResize/);
+  assert.doesNotMatch(
+    document,
+    /docEl\?\.getBoundingClientRect|body\?\.getBoundingClientRect/,
+  );
+  assert.match(
+    document,
+    /requestAnimationFrame\(\(\) => \{\s*runtimeResizeRafId = 0;\s*const height = runtimeResizePendingHeight;\s*runtimeResizePendingHeight = -1;\s*postRuntimeResize\(height\);/,
   );
   assert.doesNotMatch(document, /MutationObserver/);
   assert.match(document, /const nativeFetch =/);

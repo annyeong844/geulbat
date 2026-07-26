@@ -4,10 +4,12 @@ import {
   isDoneEventPayload,
   isErrorEventPayload,
   isInterjectAppliedEventPayload,
+  isProviderRuntimeStatusEventPayload,
   isRunAckEventPayload,
   isRunUsageTotals,
   isSubagentApprovalRequiredEventPayload,
   isSubagentSpawnedEventPayload,
+  isSubagentStatusEventPayload,
   isSubagentTerminalEventPayload,
   isThreadStatePersistedEventPayload,
   isThreadStatePersistFailedEventPayload,
@@ -17,6 +19,8 @@ import {
   isToolResultEventPayload,
 } from '@geulbat/protocol/run-events';
 import { isApprovalRequired as isProtocolApprovalRequired } from '@geulbat/protocol/run-approval';
+import { isPlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
+import { isGoalSnapshot } from '@geulbat/protocol/goal';
 import type {
   RunEvent,
   RunEventEnvelope,
@@ -26,16 +30,22 @@ import type { ThreadId } from '@geulbat/protocol/ids';
 import type {
   AgentEvent,
   AgentEventPayloadMap,
-  AgentEventType,
 } from '../../../daemon/agent/events.js';
+import type { RunEventAgentEvent } from '../../../daemon/runtime-contracts.js';
 type RunId = RunEvent['runId'];
 
+type RunEventAgentEventType = RunEventAgentEvent['type'];
+
 const agentEventPayloadGuards: {
-  [K in AgentEventType]: (value: unknown) => value is AgentEventPayloadMap[K];
+  [K in RunEventAgentEventType]: (
+    value: unknown,
+  ) => value is AgentEventPayloadMap[K];
 } = {
   run_ack: isRunAckEventPayload,
+  provider_status: isProviderRuntimeStatusEventPayload,
   commentary_delta: isTextDeltaEventPayload,
   final_answer_delta: isTextDeltaEventPayload,
+  artifact_stream_delta: isTextDeltaEventPayload,
   artifact_committed: isArtifactCommittedEventPayload,
   thread_state_persisted: isThreadStatePersistedEventPayload,
   thread_state_persist_failed: isThreadStatePersistFailedEventPayload,
@@ -44,12 +54,15 @@ const agentEventPayloadGuards: {
   tool_call_delta: isToolCallDeltaEventPayload,
   tool_result: isToolResultEventPayload,
   subagent_spawned: isSubagentSpawnedEventPayload,
+  subagent_status: isSubagentStatusEventPayload,
   subagent_terminal: isSubagentTerminalEventPayload,
   subagent_approval_required: isSubagentApprovalRequiredEventPayload,
   interject_applied: isInterjectAppliedEventPayload,
   approval_required: isProtocolApprovalRequired,
   usage_updated: isRunUsageTotals,
   context_usage_updated: isContextUsageUpdatedEventPayload,
+  planning_workflow_updated: isPlanningWorkflowSnapshot,
+  goal_updated: isGoalSnapshot,
   error: isErrorEventPayload,
 };
 
@@ -68,12 +81,19 @@ export function mapAgentEventToRunEvent(
   seq: number,
   agentEvent: AgentEvent,
 ): RunEvent {
+  if (agentEvent.type === 'tool_output_delta') {
+    throw new Error('transient agent events do not map to durable run events');
+  }
   switch (agentEvent.type) {
     case 'run_ack':
+      return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
+    case 'provider_status':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'commentary_delta':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'final_answer_delta':
+      return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
+    case 'artifact_stream_delta':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'artifact_committed':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
@@ -91,6 +111,8 @@ export function mapAgentEventToRunEvent(
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'subagent_spawned':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
+    case 'subagent_status':
+      return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'subagent_terminal':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'subagent_approval_required':
@@ -102,6 +124,10 @@ export function mapAgentEventToRunEvent(
     case 'usage_updated':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'context_usage_updated':
+      return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
+    case 'planning_workflow_updated':
+      return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
+    case 'goal_updated':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'error':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
@@ -125,7 +151,7 @@ export function mapBackgroundSubagentTerminalToRunEvent(
   );
 }
 
-function buildValidatedRunEvent<K extends AgentEventType>(
+function buildValidatedRunEvent<K extends RunEventAgentEventType>(
   runId: RunId,
   threadId: ThreadId,
   seq: number,
@@ -146,11 +172,11 @@ function buildValidatedRunEvent<K extends AgentEventType>(
   };
 }
 
-function buildRunEventFromAgentEvent<K extends AgentEventType>(
+function buildRunEventFromAgentEvent<K extends RunEventAgentEventType>(
   runId: RunId,
   threadId: ThreadId,
   seq: number,
-  agentEvent: Extract<AgentEvent, { type: K }>,
+  agentEvent: Extract<RunEventAgentEvent, { type: K }>,
 ): RunEventEnvelope<K> {
   return buildValidatedRunEvent(
     runId,

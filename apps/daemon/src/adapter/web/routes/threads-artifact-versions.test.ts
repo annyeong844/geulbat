@@ -27,8 +27,14 @@ async function startHarness(): Promise<RouteHarness> {
     createThreadsRoutes({
       context: {
         homeStateRoot: root,
-        activeRuns: { getRunByThreadId: () => undefined },
-        backgroundNotifications: { clearThreadBackgroundResults() {} },
+        activeRuns: {
+          getRunByThreadId: () => undefined,
+          getRunByOwnerThread: () => undefined,
+        },
+        backgroundNotifications: {
+          clearThreadBackgroundResults() {},
+          readThreadBackgroundResultHistory: () => [],
+        },
         providerTransitionCompaction: {
           prepare: async () => {
             throw new Error('not used in this test');

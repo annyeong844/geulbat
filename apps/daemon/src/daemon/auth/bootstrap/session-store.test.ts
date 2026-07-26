@@ -6,7 +6,7 @@ import {
   sanitizeProviderAuthMessage,
 } from './session-store.js';
 
-void test('bootstrap session store reuses the current pending session', () => {
+void test('bootstrap session store reuses only an unconsumed pending session', () => {
   const bootstrapStore = createProviderAuthBootstrapStore();
 
   bootstrapStore.setPendingProviderAuthSession({
@@ -27,6 +27,15 @@ void test('bootstrap session store reuses the current pending session', () => {
       ?.codeVerifier,
     'verifier-1',
   );
+
+  const consumed = bootstrapStore.markProviderAuthSessionConsumed('auth-1');
+  assert.equal(typeof consumed?.consumedAt, 'number');
+  assert.equal(bootstrapStore.getPendingProviderAuthSession(), null);
+  assert.equal(
+    bootstrapStore.resolvePendingProviderAuthSessionByState('state-1'),
+    null,
+  );
+  assert.equal(bootstrapStore.markProviderAuthSessionConsumed('auth-1'), null);
 });
 
 void test('bootstrap session store clears codeVerifier after terminal failure', () => {

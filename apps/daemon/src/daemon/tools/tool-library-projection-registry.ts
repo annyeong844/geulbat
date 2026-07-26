@@ -9,6 +9,7 @@ import {
 import { buildToolLibraryProjectionModuleImportSpecifier } from './tool-library-projection-path.js';
 import {
   cloneToolParameters,
+  describeToolResultDelivery,
   type ToolRegistryStore,
 } from './tool-registry-model.js';
 
@@ -85,6 +86,7 @@ export function resolveToolLibraryProjectionTools(
         ? 'approval_required'
         : 'approval_free',
       mayMutateComputerFiles: tool.mayMutateComputerFiles,
+      resultDelivery: describeToolResultDelivery(tool.resultProjection),
       family: metadata?.family ?? 'catalog',
       searchHints: [...(metadata?.searchHints ?? [])].sort(),
       tags: [...(metadata?.tags ?? [tool.sideEffectLevel])].sort(),
@@ -127,6 +129,10 @@ function toToolLibraryProjectionTool(
     sideEffectLevel: tool.sideEffectLevel,
     approvalClass: tool.approvalClass,
     mayMutateComputerFiles: tool.mayMutateComputerFiles,
+    resultDelivery: {
+      exactDurableRecovery: tool.resultDelivery.exactDurableRecovery,
+      modelVisibleForms: [...tool.resultDelivery.modelVisibleForms],
+    },
     family: tool.family,
     searchHints: tool.searchHints,
     tags: tool.tags,

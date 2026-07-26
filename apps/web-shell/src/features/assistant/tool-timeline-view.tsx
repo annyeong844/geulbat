@@ -1,5 +1,8 @@
 import { parseToolCallDiff } from './tool-call-diff.js';
-import { parseToolResultView } from './tool-result-view.js';
+import {
+  formatPtcToolActivityStatus,
+  parseToolResultView,
+} from './tool-result-view.js';
 import { ToolDiffBlock } from './assistant-transcript-message.js';
 import {
   readToolTimelineRequestBody,
@@ -41,8 +44,18 @@ export function ToolTimeline(props: {
 function ToolTimelineRow(props: { item: ToolTimelineItem }) {
   const { item } = props;
   const glyph = resolveToolTimelineGlyph(item);
+  const label =
+    item.ptcStatus === undefined
+      ? item.label
+      : `${item.label} · ${formatPtcToolActivityStatus(item.ptcStatus)}`;
   const stateGlyph =
-    item.state === 'running' ? '…' : item.state === 'failed' ? '!' : null;
+    item.ptcStatus === 'queued' || item.ptcStatus === 'running'
+      ? '…'
+      : item.state === 'running'
+        ? '…'
+        : item.state === 'failed'
+          ? '!'
+          : null;
   const requestBody = readToolTimelineRequestBody(item.toolCallContent);
   const requestDiff =
     item.toolCallContent !== null
@@ -52,8 +65,14 @@ function ToolTimelineRow(props: { item: ToolTimelineItem }) {
     item.toolResultContent !== null
       ? parseToolResultView(item.toolResultContent)
       : null;
+  const hasLiveOutput =
+    item.liveOutput !== null &&
+    (item.liveOutput.stdout.length > 0 || item.liveOutput.stderr.length > 0);
   const hasDetail =
-    requestDiff !== null || requestBody !== null || responseView !== null;
+    requestDiff !== null ||
+    requestBody !== null ||
+    responseView !== null ||
+    hasLiveOutput;
 
   if (!hasDetail) {
     return (
@@ -61,7 +80,7 @@ function ToolTimelineRow(props: { item: ToolTimelineItem }) {
         <span className="tool-timeline-glyph" aria-hidden="true">
           {glyph}
         </span>
-        <span className="tool-timeline-label">{item.label}</span>
+        <span className="tool-timeline-label">{label}</span>
         {stateGlyph !== null ? (
           <span
             className={`tool-timeline-state${
@@ -77,12 +96,15 @@ function ToolTimelineRow(props: { item: ToolTimelineItem }) {
   }
 
   return (
-    <details className="tool-timeline-item">
+    <details
+      className="tool-timeline-item"
+      open={item.state === 'running' && hasLiveOutput}
+    >
       <summary className="tool-timeline-row">
         <span className="tool-timeline-glyph" aria-hidden="true">
           {glyph}
         </span>
-        <span className="tool-timeline-label">{item.label}</span>
+        <span className="tool-timeline-label">{label}</span>
         {stateGlyph !== null ? (
           <span
             className={`tool-timeline-state${
@@ -116,6 +138,22 @@ function ToolTimelineRow(props: { item: ToolTimelineItem }) {
               {responseView.truncatedLineCount > 0
                 ? `\n… ${responseView.truncatedLineCount}줄 더 있음`
                 : ''}
+            </pre>
+          </div>
+        ) : null}
+        {item.liveOutput?.stdout ? (
+          <div className="tool-timeline-section">
+            <div className="tool-timeline-section-label">Live stdout</div>
+            <pre className="tool-timeline-section-body">
+              {item.liveOutput.stdout}
+            </pre>
+          </div>
+        ) : null}
+        {item.liveOutput?.stderr ? (
+          <div className="tool-timeline-section">
+            <div className="tool-timeline-section-label">Live stderr</div>
+            <pre className="tool-timeline-section-body">
+              {item.liveOutput.stderr}
             </pre>
           </div>
         ) : null}

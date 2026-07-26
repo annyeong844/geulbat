@@ -849,7 +849,7 @@ void test('bundled MCP inventory keeps unsupported entries inert and resolves on
   }
 });
 
-void test('plugin store rejects malformed, escaping, linked, colliding, and secret-bearing packages without partial publication', async (t) => {
+void test('plugin store rejects malformed manifests and Skill documents without partial publication', async () => {
   const fixture = await createFixture('refusals');
   const store = createPluginStore({ homeStateRoot: fixture.homeRoot });
 
@@ -902,6 +902,17 @@ void test('plugin store rejects malformed, escaping, linked, colliding, and secr
       });
       await assertRejectedWithoutPublication(store, fixture, directory);
     }
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+void test('plugin store rejects invalid MCP and app component declarations without partial publication', async () => {
+  const fixture = await createFixture('component-refusals');
+  const store = createPluginStore({ homeStateRoot: fixture.homeRoot });
+
+  try {
+    await store.initialize();
 
     const invalidInlineMcp = join(
       fixture.computerRoot,
@@ -1003,6 +1014,17 @@ void test('plugin store rejects malformed, escaping, linked, colliding, and secr
         invalidComponent.directory,
       );
     }
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+void test('plugin store rejects escaping paths, links, and case-fold collisions without partial publication', async (t) => {
+  const fixture = await createFixture('filesystem-refusals');
+  const store = createPluginStore({ homeStateRoot: fixture.homeRoot });
+
+  try {
+    await store.initialize();
 
     for (const [directory, declaredPath] of [
       ['parent-traversal', '../outside'],
@@ -1073,6 +1095,17 @@ void test('plugin store rejects malformed, escaping, linked, colliding, and secr
         'case-fold collision construction is unavailable on this filesystem',
       );
     }
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+void test('plugin store rejects secret-bearing packages and escaping source requests without partial publication', async () => {
+  const fixture = await createFixture('secret-and-source-refusals');
+  const store = createPluginStore({ homeStateRoot: fixture.homeRoot });
+
+  try {
+    await store.initialize();
 
     const inlineSecret = join(fixture.computerRoot, 'inline-secret');
     await writePluginPackage(inlineSecret, {

@@ -11,9 +11,11 @@ import {
   sanitizeOAuthWireDiscoveryEvent,
   sanitizeOAuthWireDiscoveryRequest,
 } from './responses-wire-discovery.js';
-import type {
-  ResponsesWebSocketReusePolicy,
-  ResponsesWebSocketSessionStore,
+import {
+  readRetryAfterMs,
+  type ResponsesWebSocketAdmissionObserver,
+  type ResponsesWebSocketReusePolicy,
+  type ResponsesWebSocketSessionStore,
 } from './responses-websocket-cache.js';
 import {
   resolveCodexResponsesUrl,
@@ -26,15 +28,14 @@ const CODEX_WS_BETA_HEADER =
   process.env.GEULBAT_WS_BETA_HEADER ?? 'responses_websockets=2026-02-06';
 const RESPONSES_STREAM_IDLE_TIMEOUT_ENV =
   'GEULBAT_LLM_STREAM_IDLE_TIMEOUT_MS' as const;
-const DEFAULT_RESPONSES_STREAM_IDLE_TIMEOUT_MS = 60_000;
 const logger = createLogger('responses-ws');
 
 export function resolveResponsesStreamIdleTimeoutMs(
   env: Record<string, string | undefined> = process.env,
-): number {
+): number | undefined {
   const raw = env[RESPONSES_STREAM_IDLE_TIMEOUT_ENV];
   if (raw === undefined || raw.trim() === '') {
-    return DEFAULT_RESPONSES_STREAM_IDLE_TIMEOUT_MS;
+    return undefined;
   }
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
@@ -49,6 +50,32 @@ export interface ResponsesWireDiscoverySink {
   recordRequest(snapshot: unknown): void;
   recordEvent(snapshot: unknown): void;
 }
+
+export interface ResponsesRequestMeasurement {
+  serializedBytes: number;
+  dominantPressureSource:
+    | 'history'
+    | 'instructions'
+    | 'tool_definitions'
+    | 'envelope';
+  serializedBytesBySource: {
+    history: number;
+    instructions: number;
+    toolDefinitions: number;
+    envelope: number;
+  };
+}
+
+type ResponsesRequestAdmissionDecision =
+  | { kind: 'send' }
+  | { kind: 'prepare'; reason: 'near_policy' | 'over_window' };
+
+export type ResponsesRequestPreparedHandler = (
+  measurement: ResponsesRequestMeasurement,
+) =>
+  | ResponsesRequestAdmissionDecision
+  | void
+  | Promise<ResponsesRequestAdmissionDecision | void>;
 
 type ResponsesWebSocketPayloadSource =
   | {
@@ -75,10 +102,12 @@ interface ResponsesWebSocketStreamBase {
   webSocketReusePolicy: ResponsesWebSocketReusePolicy;
   providerWebSocketSessions: Pick<
     ResponsesWebSocketSessionStore,
-    'acquireWebSocket'
+    'acquireWebSocket' | 'deferProviderRequests'
   >;
   signal?: AbortSignal;
   discoverySink?: ResponsesWireDiscoverySink;
+  onRequestPrepared?: ResponsesRequestPreparedHandler;
+  onAdmissionState?: ResponsesWebSocketAdmissionObserver;
   normalizeEvent?: ResponsesWebSocketEventNormalizer;
   completionEventTypes?: readonly string[];
   // 이벤트 사이 유휴 상한. 기본 60s는 챗 스트림 기준 — 이미지 생성처럼
@@ -118,18 +147,31 @@ export async function streamResponsesOverWebSocket(
     );
   const idleTimeoutMs =
     input.idleTimeoutMs ?? resolveResponsesStreamIdleTimeoutMs();
-  let socketHandle = await input.providerWebSocketSessions.acquireWebSocket(
-    webSocketUrl,
-    headers,
-    input.providerSessionId,
-    input.webSocketReusePolicy,
-    input.signal,
+  const serializedPayload = JSON.stringify(payload);
+  const admission = await input.onRequestPrepared?.(
+    measureResponsesRequest(payload, serializedPayload),
   );
-
+  if (admission?.kind === 'prepare') {
+    throw Object.assign(new Error('context preparation required'), {
+      llmCode: 'llm_context_preparation_required' as const,
+      preparationReason: admission.reason,
+    });
+  }
+  let socketHandle:
+    | Awaited<ReturnType<ResponsesWebSocketSessionStore['acquireWebSocket']>>
+    | undefined;
   let keepSessionSocket = true;
   let socketHandleReleased = false;
 
   try {
+    socketHandle = await input.providerWebSocketSessions.acquireWebSocket(
+      webSocketUrl,
+      headers,
+      input.providerSessionId,
+      input.webSocketReusePolicy,
+      input.signal,
+      input.onAdmissionState,
+    );
     input.discoverySink?.recordRequest(
       sanitizeOAuthWireDiscoveryRequest({
         headers,
@@ -151,10 +193,11 @@ export async function streamResponsesOverWebSocket(
         input.providerSessionId,
         input.webSocketReusePolicy,
         input.signal,
+        input.onAdmissionState,
       );
       socketHandleReleased = false;
     }
-    socketHandle.socket.send(JSON.stringify(payload));
+    socketHandle.socket.send(serializedPayload);
 
     const result = await parseResponseEvents(
       tapDiscoveryEvents(
@@ -171,7 +214,7 @@ export async function streamResponsesOverWebSocket(
         ...(input.onFunctionCallArgsDelta !== undefined
           ? { onFunctionCallArgsDelta: input.onFunctionCallArgsDelta }
           : {}),
-        idleTimeoutMs,
+        ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
         historyProjection: input.historyProjection,
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
       },
@@ -180,12 +223,61 @@ export async function streamResponsesOverWebSocket(
     return result;
   } catch (error: unknown) {
     keepSessionSocket = false;
+    const retryAfterMs = readRetryAfterMs(error);
+    if (retryAfterMs !== undefined) {
+      input.providerWebSocketSessions.deferProviderRequests?.(
+        webSocketUrl,
+        retryAfterMs,
+      );
+    }
     throw error;
   } finally {
-    if (!socketHandleReleased) {
+    if (socketHandle !== undefined && !socketHandleReleased) {
       socketHandle.release({ keep: keepSessionSocket });
     }
   }
+}
+
+function measureResponsesRequest(
+  payload: Record<string, unknown>,
+  serializedPayload: string,
+): ResponsesRequestMeasurement {
+  const serializedBytes = Buffer.byteLength(serializedPayload, 'utf8');
+  const history = measureSerializedValue(payload['input']);
+  const instructions = measureSerializedValue(payload['instructions']);
+  const toolDefinitions = measureSerializedValue(payload['tools']);
+  const envelope = Math.max(
+    0,
+    serializedBytes - history - instructions - toolDefinitions,
+  );
+  const dominantPressureSource = (
+    [
+      ['history', history],
+      ['instructions', instructions],
+      ['tool_definitions', toolDefinitions],
+      ['envelope', envelope],
+    ] as const
+  ).reduce((dominant, candidate) =>
+    candidate[1] > dominant[1] ? candidate : dominant,
+  )[0];
+
+  return {
+    serializedBytes,
+    dominantPressureSource,
+    serializedBytesBySource: {
+      history,
+      instructions,
+      toolDefinitions,
+      envelope,
+    },
+  };
+}
+
+function measureSerializedValue(value: unknown): number {
+  if (value === undefined) {
+    return 0;
+  }
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
 function buildCodexResponsesWebSocketHeaders(headers: Headers): Headers {

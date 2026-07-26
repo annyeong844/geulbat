@@ -54,16 +54,14 @@ void test('buildArtifactPaneControllerProps maps pane state into body props', ()
     viewModel,
     paneState: createPaneState({
       tab: 'source',
-      canShowPreview: false,
       runtimeUnavailableMessage: 'Canvas unavailable',
     }),
     exportState: createExportState(),
   });
 
   assert.equal(controller.exportPanelProps, null);
-  assert.equal(controller.bodyProps.parsed, viewModel.parsed);
+  assert.equal(controller.bodyProps.artifact, viewModel.artifact);
   assert.equal(controller.bodyProps.tab, 'source');
-  assert.equal(controller.bodyProps.canShowPreview, false);
   assert.equal(
     controller.bodyProps.runtimeUnavailableMessage,
     'Canvas unavailable',
@@ -75,10 +73,8 @@ function createPaneState(
 ): ArtifactPaneControllerPaneState {
   return {
     tab: 'show',
-    canShowPreview: true,
     showApply: true,
     canApply: true,
-    surfaceStateBadge: null,
     previewSurface: null,
     runtimeUnavailableMessage: null,
     handleSelectTab: () => {},

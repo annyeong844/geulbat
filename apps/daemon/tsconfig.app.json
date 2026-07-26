@@ -9,6 +9,7 @@
   },
   "references": [
     { "path": "../../packages/structured-logger" },
+    { "path": "../../packages/content-identity" },
     { "path": "../../packages/protocol" },
     { "path": "../../packages/artifact-runtime-policy" },
     { "path": "../../packages/agent-loop" },

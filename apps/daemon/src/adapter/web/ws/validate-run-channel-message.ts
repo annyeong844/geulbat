@@ -1,13 +1,18 @@
 import type { RunChannelClientMessage } from '@geulbat/protocol/run-channel';
 import {
+  isComputerSessionEndMessage,
+  isPlanWorkflowCommandMessage,
+  isGoalCommandMessage,
   isRunApproveMessage,
   isRunAuthMessage,
   isRunCancelMessage,
+  isRunChildCancelMessage,
   isRunEventAckEnvelope,
   isRunInterjectCancelEnvelope,
   isRunInterjectEnvelope,
   isRunInterjectFlushEnvelope,
   isRunStartMessage,
+  isRunThreadSubscribeMessage,
   isRunToolEnvelope,
 } from '@geulbat/protocol/run-channel';
 
@@ -21,10 +26,25 @@ export function readRunChannelClientMessage(
   if (isRunAuthMessage(value)) {
     return readClientMessageWithRequestId(value);
   }
+  if (isComputerSessionEndMessage(value)) {
+    return readClientMessageWithRequestId(value);
+  }
   if (isRunCancelMessage(value)) {
     return readClientMessageWithRequestId(value);
   }
+  if (isRunChildCancelMessage(value)) {
+    return readClientMessageWithRequestId(value);
+  }
+  if (isRunThreadSubscribeMessage(value)) {
+    return readClientMessageWithRequestId(value);
+  }
   if (isRunApproveMessage(value)) {
+    return readClientMessageWithRequestId(value);
+  }
+  if (isPlanWorkflowCommandMessage(value)) {
+    return readClientMessageWithRequestId(value);
+  }
+  if (isGoalCommandMessage(value)) {
     return readClientMessageWithRequestId(value);
   }
   if (isRunInterjectEnvelope(value)) {

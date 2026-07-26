@@ -16,9 +16,7 @@ import { HomeCenterSurface, HomeSettings } from './HomeSettings.js';
   }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-// 연결 상태 표시·재연결은 어시스턴트 타이틀 점이 담당한다 — 설정에는
-// 연결 탭이 더 이상 없다.
-void test('HomeSettings owns MCP administration without a connection tab', async () => {
+void test('HomeSettings owns provider authentication and MCP administration', async () => {
   let closeCount = 0;
   const client = emptyMcpClient();
   let renderer!: ReactTestRenderer;
@@ -26,6 +24,22 @@ void test('HomeSettings owns MCP administration without a connection tab', async
   await act(async () => {
     renderer = TestRenderer.create(
       <HomeSettings
+        providerAuthCard={{
+          statuses: {
+            openai_codex_direct: {
+              state: 'ready',
+              ready: true,
+            },
+            grok_oauth: null,
+          },
+          busyProviderId: null,
+          uiErrors: {
+            openai_codex_direct: null,
+            grok_oauth: null,
+          },
+          onConnect: () => {},
+          onDisconnect: () => {},
+        }}
         mcpClient={client}
         onClose={() => {
           closeCount += 1;
@@ -34,11 +48,18 @@ void test('HomeSettings owns MCP administration without a connection tab', async
     );
   });
 
-  assert.match(renderedText(renderer.root), /연결된 MCP 서버가 없습니다/);
-  assert.equal(
-    renderer.root.findAllByProps({ 'aria-label': '연결 설정' }).length,
-    0,
+  assert.match(renderedText(renderer.root), /AI 제공자 연결/);
+  assert.doesNotMatch(
+    renderedText(renderer.root),
+    /연결된 MCP 서버가 없습니다/,
   );
+
+  await act(async () => {
+    renderer.root
+      .findByProps({ 'aria-label': 'MCP 서버 설정' })
+      .props.onClick();
+  });
+  assert.match(renderedText(renderer.root), /연결된 MCP 서버가 없습니다/);
 
   act(() => {
     renderer.root.findByProps({ 'aria-label': '설정 닫기' }).props.onClick();

@@ -6,15 +6,18 @@ import type {
   BackgroundNotificationsByThread,
 } from './run-session-state-types.js';
 
+export { appendSubagentTranscriptEntry } from '../lib/run-transcript-entry.js';
+
 export function appendThreadNotification(
   notificationsByThread: BackgroundNotificationsByThread,
   threadId: string,
   entry: BackgroundNotificationEntry,
 ): BackgroundNotificationsByThread {
+  const currentThreadEntries = notificationsByThread[threadId] ?? [];
   if (
     entry.kind === 'subagent_activity' &&
     entry.deliveryId &&
-    (notificationsByThread[threadId] ?? []).some(
+    currentThreadEntries.some(
       (existing) =>
         existing.kind === 'subagent_activity' &&
         existing.deliveryId === entry.deliveryId,
@@ -22,10 +25,22 @@ export function appendThreadNotification(
   ) {
     return notificationsByThread;
   }
-  const nextThreadEntries = [
-    ...(notificationsByThread[threadId] ?? []),
-    entry,
-  ].slice(-10);
+  const existingChildIndex = currentThreadEntries.findIndex(
+    (existing) =>
+      existing.kind === 'subagent_activity' &&
+      entry.kind === 'subagent_activity' &&
+      existing.childRunId === entry.childRunId,
+  );
+  const nextThreadEntries =
+    existingChildIndex === -1
+      ? [...currentThreadEntries, entry]
+      : currentThreadEntries.map((existing, index) =>
+          index === existingChildIndex &&
+          existing.kind === 'subagent_activity' &&
+          entry.kind === 'subagent_activity'
+            ? { ...existing, ...entry }
+            : existing,
+        );
   return {
     ...notificationsByThread,
     [threadId]: nextThreadEntries,
@@ -65,21 +80,4 @@ export function appendApprovalRequestEntry(
       pendingApproval,
     },
   ];
-}
-
-export function appendSubagentTranscriptEntry(
-  entries: RunTranscriptEntry[],
-  entry: Extract<RunTranscriptEntry, { kind: 'subagent_activity' }>,
-): RunTranscriptEntry[] {
-  const alreadyPresent =
-    entry.deliveryId !== undefined &&
-    entries.some(
-      (existing) =>
-        existing.kind === 'subagent_activity' &&
-        existing.deliveryId === entry.deliveryId,
-    );
-  if (alreadyPresent) {
-    return entries;
-  }
-  return [...entries, entry];
 }

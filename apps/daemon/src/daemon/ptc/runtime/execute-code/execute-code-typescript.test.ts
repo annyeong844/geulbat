@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { makeRunContext } from '../../../../test-support/run-context.js';
-import { runPtcSessionDockerCommand } from '../../lab/session/session-docker-command.js';
+import { runHostRoutedDockerCommandForTest } from '../../../../test-support/host-routed-docker-command.js';
 import { buildNodeExecuteCodeCommand } from './execute-code-batch-runtime.js';
 import type { ValidatedExecuteCodeRequest } from './execute-code-runtime-contract.js';
 import { createPtcExecuteCodeRuntime } from './execute-code-runtime.js';
@@ -53,7 +53,7 @@ void test('execute_code runs JavaScript and Node-native TypeScript through the s
     sessionLifecycle: 'runtime_owned_reusable',
   });
 
-  const execution = await runPtcSessionDockerCommand({
+  const execution = await runHostRoutedDockerCommandForTest({
     executable: '/bin/bash',
     args: ['-c', command],
   });
@@ -74,7 +74,7 @@ void test('execute_code runs TypeScript syntax supported by the pinned Node tran
     'enum Direction { Left, Right }\nreturn Direction.Right;',
     { sdkHelpBundle },
   );
-  const execution = await runPtcSessionDockerCommand({
+  const execution = await runHostRoutedDockerCommandForTest({
     executable: '/bin/bash',
     args: ['-c', command],
   });
@@ -90,6 +90,9 @@ void test('execute_code runs TypeScript syntax supported by the pinned Node tran
 void test('execute_code runs explicit ESM TypeScript with static package imports and restores the caller cwd', async () => {
   const packageRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-esm-package-root-'),
+  );
+  const commandStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-esm-command-state-'),
   );
   const packageDirectory = join(
     packageRoot,
@@ -118,7 +121,7 @@ void test('execute_code runs explicit ESM TypeScript with static package imports
       sdkHelp: undefined,
       moduleFormat: 'esm',
     });
-    const originalCwd = process.cwd();
+    const originalCwd = commandStateRoot;
     const command = buildNodeExecuteCodeCommand(
       [
         "import { basename } from 'node:path';",
@@ -136,10 +139,13 @@ void test('execute_code runs explicit ESM TypeScript with static package imports
 
     assert.match(command, /--input-type=module-typescript/u);
     assert.doesNotMatch(command, /--input-type=commonjs-typescript/u);
-    const execution = await runPtcSessionDockerCommand({
-      executable: '/bin/bash',
-      args: ['-c', command],
-    });
+    const execution = await runHostRoutedDockerCommandForTest(
+      {
+        executable: '/bin/bash',
+        args: ['-c', command],
+      },
+      { stateRoot: commandStateRoot },
+    );
     assert.equal(execution.kind, 'exit');
     if (execution.kind !== 'exit') {
       return;
@@ -170,10 +176,13 @@ void test('execute_code runs explicit ESM TypeScript with static package imports
         moduleFormat: 'esm',
       },
     );
-    const beforeInstallExecution = await runPtcSessionDockerCommand({
-      executable: '/bin/bash',
-      args: ['-c', beforeInstallCommand],
-    });
+    const beforeInstallExecution = await runHostRoutedDockerCommandForTest(
+      {
+        executable: '/bin/bash',
+        args: ['-c', beforeInstallCommand],
+      },
+      { stateRoot: commandStateRoot },
+    );
     assert.equal(beforeInstallExecution.kind, 'exit');
     if (beforeInstallExecution.kind !== 'exit') {
       return;
@@ -187,6 +196,7 @@ void test('execute_code runs explicit ESM TypeScript with static package imports
     assert.equal(beforeInstallExecution.stderr, '');
   } finally {
     await rm(packageRoot, { recursive: true, force: true });
+    await rm(commandStateRoot, { recursive: true, force: true });
   }
 });
 
@@ -195,7 +205,7 @@ void test('execute_code keeps TSX outside the Node-native TypeScript boundary', 
     'const view = <section>unsupported</section>;\nreturn view;',
     { sdkHelpBundle },
   );
-  const execution = await runPtcSessionDockerCommand({
+  const execution = await runHostRoutedDockerCommandForTest({
     executable: '/bin/bash',
     args: ['-c', command],
   });

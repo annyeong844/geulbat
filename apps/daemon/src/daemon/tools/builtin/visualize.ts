@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  PLAN_APPROVAL_REQUIRED,
+  PLAN_REVISION_APPROVAL_REQUIRED,
+} from '../../planning-approval.js';
 import { toolError } from '../result.js';
 import { defineZodTool } from '../zod-tool.js';
 
@@ -18,6 +22,17 @@ const visualizeArgsSchema = z.strictObject({
     .string()
     .optional()
     .describe('Optional short accessible title for the widget.'),
+  planStamp: z
+    .strictObject({
+      workflowId: z.string().min(1),
+      planId: z.string().min(1),
+      revision: z.number().int().positive(),
+      digest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
+    })
+    .optional()
+    .describe(
+      'Exact daemon-issued rendering identity when this widget explains a canonical plan draft.',
+    ),
 });
 
 export const visualizeTool = defineZodTool({
@@ -39,10 +54,41 @@ export const visualizeTool = defineZodTool({
     notFor:
       'Persistent documents, dashboards, or apps the user will reopen, update, or share — use an artifact instead.',
   },
-  async executeParsed(args) {
+  async executeParsed(args, ctx) {
     const code = args.code.trim();
     if (code === '') {
       return toolError('execution_failed', 'visualize code must not be blank.');
+    }
+    if (
+      ctx.kind === 'agent' &&
+      ctx.planningWorkflow !== undefined &&
+      ctx.runtimeServices !== undefined
+    ) {
+      const current = await ctx.runtimeServices.planningWorkflows.readThread(
+        ctx.threadId,
+      );
+      if (
+        current?.state === 'awaiting_approval' &&
+        current.workflowId === ctx.planningWorkflow.workflowId
+      ) {
+        if (args.planStamp === undefined) {
+          return toolError(
+            'approval_required',
+            `${PLAN_APPROVAL_REQUIRED}: visualize must carry the daemon-issued plan rendering stamp`,
+          );
+        }
+        if (
+          args.planStamp.workflowId !== current.workflowId ||
+          args.planStamp.planId !== current.planId ||
+          args.planStamp.revision !== current.revision ||
+          args.planStamp.digest !== current.digest
+        ) {
+          return toolError(
+            'approval_required',
+            `${PLAN_REVISION_APPROVAL_REQUIRED}: visualize plan rendering stamp is not current`,
+          );
+        }
+      }
     }
     const mode = code.toLowerCase().startsWith('<svg') ? 'svg' : 'html';
     return {
@@ -53,6 +99,7 @@ export const visualizeTool = defineZodTool({
         ...(args.title !== undefined && args.title.trim() !== ''
           ? { title: args.title.trim() }
           : {}),
+        ...(args.planStamp === undefined ? {} : { planStamp: args.planStamp }),
       }),
     };
   },

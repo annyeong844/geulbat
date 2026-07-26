@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 
 import type { FunctionCall } from '../llm/index.js';
 import { commitThreadArtifactVersion } from '../sessions/artifact-store.js';
+import { appendProviderRound } from '../sessions/provider-round-journal.js';
 import {
   appendTranscriptEntry,
   readTranscriptEntries,
@@ -15,10 +16,12 @@ import {
   appendFunctionCallsToHistory,
   appendInterjectToHistory,
   createAgentLoopHistoryPort,
+  loadExistingHistory,
   loadInitialHistory,
   persistSingleInterjectToTranscript,
 } from './loop-history.js';
 import { testThreadId } from '../../test-support/thread-id.js';
+import { testRunId } from '../../test-support/run-id.js';
 
 void test('loadInitialHistory reuses a matching trailing user prompt from transcript', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-history-'));
@@ -92,6 +95,114 @@ void test('loadInitialHistory appends the current prompt when transcript tail do
     { kind: 'assistant', phase: 'final_answer', text: 'previous answer' },
     { kind: 'user', text: 'next prompt' },
   ]);
+});
+
+void test('loadExistingHistory replays provider reasoning from a retained pre-checkpoint tail after reconnect', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-history-'));
+  const threadId = testThreadId(45);
+  const runId = testRunId(45);
+  const replayScopeId = `sha256:${'a'.repeat(64)}` as const;
+
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: 'older request',
+    timestamp: '2026-03-30T00:00:00.000Z',
+  });
+  const covered = await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'assistant',
+    content: 'older answer',
+    timestamp: '2026-03-30T00:00:01.000Z',
+  });
+  const retained = await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: 'current request',
+    timestamp: '2026-03-30T00:00:02.000Z',
+  });
+  await appendProviderRound({
+    stateRoot: workspaceRoot,
+    threadId,
+    runId,
+    round: 0,
+    providerId: 'openai_codex_direct',
+    model: 'gpt-test',
+    replayScopeId,
+    precedingTranscriptEntryId: retained.entryId,
+    items: [
+      {
+        type: 'reasoning',
+        id: 'reasoning-45',
+        encrypted_content: 'encrypted-reasoning',
+      },
+      {
+        type: 'message',
+        id: 'message-45',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'retained answer' }],
+      },
+    ],
+    functionCalls: [],
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'assistant',
+    content: 'retained answer',
+    timestamp: '2026-03-30T00:00:03.000Z',
+    metadata: { phase: 'final_answer', sourceRunId: runId },
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'compaction',
+    content: '',
+    timestamp: '2026-03-30T00:00:04.000Z',
+    compactionData: {
+      kind: 'provider_native',
+      providerId: 'openai_codex_direct',
+      model: 'gpt-test',
+      replayScopeId,
+      output: [
+        {
+          type: 'compaction_summary',
+          encrypted_content: 'encrypted-checkpoint',
+        },
+      ],
+      tokensBefore: 9_000,
+      contextWindow: 10_000,
+      thresholdTokens: 9_000,
+      firstKeptEntryId: retained.entryId,
+      coveredThroughEntryId: covered.entryId,
+      historyBytesBefore: 10_000,
+      historyBytesAfter: 1_000,
+      evidence: [],
+      expandedEvidencePages: [],
+    },
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: 'future request',
+    timestamp: '2026-03-30T00:00:05.000Z',
+  });
+
+  const history = await loadExistingHistory(workspaceRoot, threadId, {
+    providerId: 'openai_codex_direct',
+    model: 'gpt-test',
+    replayScopeId,
+  });
+  assert.deepEqual(
+    history.map((item) => item.kind),
+    [
+      'provider_native_compaction',
+      'user',
+      'backend_item',
+      'backend_item',
+      'user',
+    ],
+  );
+  assert.equal(history[1]?.kind, 'user');
+  if (history[1]?.kind === 'user') {
+    assert.equal(history[1].text, 'current request');
+  }
+  assert.equal(history[4]?.kind, 'user');
+  if (history[4]?.kind === 'user') {
+    assert.equal(history[4].text, 'future request');
+  }
 });
 
 void test('loadInitialHistory rehydrates assistant artifact refs from the artifact store', async () => {

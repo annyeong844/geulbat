@@ -2,7 +2,14 @@ import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
 import { sha256StableJson } from '@geulbat/content-identity/stable-json';
-import type { ToolLibraryProjectionImportableModule } from '@geulbat/tool-library/projection-codec';
+import type {
+  ToolLibraryProjectionImportableModule,
+  ToolLibraryProjectionPin,
+} from '@geulbat/tool-library/projection-codec';
+import {
+  validateToolCapabilityPolicy,
+  type ToolCapabilityPolicy,
+} from '@geulbat/tool-library/tool-capability-policy';
 import {
   buildToolLibraryProjectionFiles,
   buildToolLibraryProjectionImportableModules,
@@ -30,6 +37,10 @@ import {
   hashableToolLibraryProjectionTool,
   resolveToolLibraryProjectionTools,
 } from './tool-library-projection-registry.js';
+import {
+  isPtcExecuteCodeCallbackToolMetaAllowed,
+  isPtcExecuteCodeWriteCallbackToolMetaAllowed,
+} from './builtin/ptc-callback-tool-surface.js';
 import type { ToolRegistryStore } from './tool-registry-model.js';
 import {
   pruneInvalidToolLibraryProjectionDirectories,
@@ -95,11 +106,47 @@ export function createToolLibraryProjectionPort(
   return {
     async resolveProjection(resolveArgs) {
       try {
+        if (
+          resolveArgs.allowedRegistryNames !== undefined &&
+          resolveArgs.toolCapabilityPolicy !== undefined
+        ) {
+          throw new Error(
+            'allowedRegistryNames and toolCapabilityPolicy cannot be supplied together',
+          );
+        }
+        const toolCapabilityPolicy =
+          resolveArgs.toolCapabilityPolicy === undefined
+            ? undefined
+            : validateToolCapabilityPolicy(resolveArgs.toolCapabilityPolicy);
+        if (toolCapabilityPolicy !== undefined) {
+          for (const name of toolCapabilityPolicy.callbackRegistryNames) {
+            const tool = args.registry.getTool(name);
+            if (tool === undefined) {
+              throw new Error(
+                `Tool capability policy includes an unknown callback tool: ${name}`,
+              );
+            }
+            const readCallbackAllowed = isPtcExecuteCodeCallbackToolMetaAllowed(
+              name,
+              tool,
+            );
+            const writeCallbackAllowed =
+              toolCapabilityPolicy.writeCallbackEnabled &&
+              isPtcExecuteCodeWriteCallbackToolMetaAllowed(name, tool);
+            if (!readCallbackAllowed && !writeCallbackAllowed) {
+              throw new Error(
+                `Tool capability policy includes a callback tool outside the callable surface: ${name}`,
+              );
+            }
+          }
+        }
         const requestedRegistryNames =
+          toolCapabilityPolicy?.callbackRegistryNames ??
           resolveArgs.allowedRegistryNames ??
           args.registry.getAllRegisteredToolNames();
         const allowedRegistryNames =
-          args.projectionPolicy === undefined
+          args.projectionPolicy === undefined ||
+          toolCapabilityPolicy !== undefined
             ? requestedRegistryNames
             : requestedRegistryNames.filter((name) => {
                 const tool = args.registry.getTool(name);
@@ -114,6 +161,7 @@ export function createToolLibraryProjectionPort(
                 );
               });
         const policyId =
+          toolCapabilityPolicy?.toolCapabilityPolicyId ??
           args.projectionPolicy?.policyId ??
           (resolveArgs.allowedRegistryNames === undefined
             ? 'registry_default'
@@ -147,6 +195,38 @@ export function createToolLibraryProjectionPort(
           importSpecifier: args.importSpecifier,
         });
         if (existing.kind === 'present') {
+          const requestedPolicyDiffersFromPin =
+            toolCapabilityPolicy !== undefined &&
+            (existing.pin.policyId !==
+              toolCapabilityPolicy.toolCapabilityPolicyId ||
+              existing.pin.allowedRegistryNames.length !==
+                toolCapabilityPolicy.callbackRegistryNames.length ||
+              existing.pin.allowedRegistryNames.some(
+                (name, index) =>
+                  name !== toolCapabilityPolicy.callbackRegistryNames[index],
+              ));
+          if (
+            requestedPolicyDiffersFromPin &&
+            !isLegacyProjectionPolicyTransition({
+              pinnedProjection: existing.pin,
+              requestedPolicy: toolCapabilityPolicy,
+              legacyPolicyId: args.projectionPolicy?.policyId,
+            })
+          ) {
+            return {
+              ok: false,
+              reason: 'projection_failed',
+              message:
+                'Pinned tool library projection does not match the requested tool capability policy',
+            };
+          }
+          if (requestedPolicyDiffersFromPin) {
+            return await writeAndVerifyToolLibraryProjection({
+              projection,
+              threadProjectionRootPath,
+              importSpecifier: args.importSpecifier,
+            });
+          }
           const pinnedProjectionCore = buildToolLibraryProjectionCore({
             registry: args.registry,
             allowedRegistryNames: existing.pin.allowedRegistryNames,
@@ -278,6 +358,26 @@ export function createToolLibraryProjectionPort(
       }
     },
   };
+}
+
+function isLegacyProjectionPolicyTransition(args: {
+  pinnedProjection: ToolLibraryProjectionPin;
+  requestedPolicy: ToolCapabilityPolicy | undefined;
+  legacyPolicyId: string | undefined;
+}): boolean {
+  const requestedPolicy = args.requestedPolicy;
+  if (
+    requestedPolicy === undefined ||
+    args.legacyPolicyId === undefined ||
+    args.pinnedProjection.policyId !== args.legacyPolicyId ||
+    args.pinnedProjection.allowedRegistryNames.length !==
+      requestedPolicy.callbackRegistryNames.length
+  ) {
+    return false;
+  }
+  return args.pinnedProjection.allowedRegistryNames.every(
+    (name, index) => name === requestedPolicy.callbackRegistryNames[index],
+  );
 }
 
 async function writeAndVerifyToolLibraryProjection(args: {

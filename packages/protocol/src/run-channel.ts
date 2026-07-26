@@ -1,9 +1,28 @@
 import { isApprovalRequest, type ApprovalRequest } from './run-approval.js';
 import { isCancelRequest, type CancelRequest } from './cancel.js';
 import { isErrorCode, type ErrorCode } from './errors.js';
-import { isRunId, isThreadId, type ThreadId } from './ids.js';
-import { isRunEvent, type RunEvent } from './run-events.js';
+import {
+  isGoalCommand,
+  isGoalSnapshot,
+  type GoalCommand,
+  type GoalSnapshot,
+} from './goal.js';
+import { isRunId, isThreadId, type RunId, type ThreadId } from './ids.js';
+import {
+  isRunEvent,
+  isToolOutputDeltaEventPayload,
+  type RunEvent,
+  type ToolOutputDeltaEventPayload,
+} from './run-events.js';
 import { isRunStartRequest, type RunStartRequest } from './run-contract.js';
+import {
+  isApprovedPlanRef,
+  isPlanningWorkflowSnapshot,
+  isPlanWorkflowCommand,
+  type ApprovedPlanRef,
+  type PlanningWorkflowSnapshot,
+  type PlanWorkflowCommand,
+} from './planning-workflow.js';
 import {
   isBoolean,
   isNumber,
@@ -11,10 +30,23 @@ import {
   isString,
 } from './wire-value-guards.js';
 
+export interface RunEventReplayCursor {
+  runId: RunEvent['runId'];
+  seq: number;
+}
+
 interface RunAuthMessage {
   type: 'run.auth';
   requestId: string;
   token: string;
+  computerSessionId: string;
+  runEventCursors?: RunEventReplayCursor[];
+  threadSubscriptions?: ThreadId[];
+}
+
+interface ComputerSessionEndMessage {
+  type: 'computer.session.end';
+  requestId: string;
 }
 
 interface RunStartMessage {
@@ -29,10 +61,43 @@ interface RunCancelMessage {
   request: CancelRequest;
 }
 
+export interface RunChildCancelRequest {
+  parentRunId: RunId;
+  childRunId: RunId;
+}
+
+interface RunChildCancelMessage {
+  type: 'run.child.cancel';
+  requestId: string;
+  request: RunChildCancelRequest;
+}
+
+export interface RunThreadSubscribeRequest {
+  threadId: ThreadId;
+}
+
+interface RunThreadSubscribeMessage {
+  type: 'run.thread.subscribe';
+  requestId: string;
+  request: RunThreadSubscribeRequest;
+}
+
 interface RunApproveMessage {
   type: 'run.approve';
   requestId: string;
   request: ApprovalRequest;
+}
+
+interface PlanWorkflowCommandMessage {
+  type: 'plan.command';
+  requestId: string;
+  request: PlanWorkflowCommand;
+}
+
+interface GoalCommandMessage {
+  type: 'goal.command';
+  requestId: string;
+  request: GoalCommand;
 }
 
 interface RunInterjectEnvelopeMessage {
@@ -108,9 +173,14 @@ export type RunToolResultPayload =
  */
 export type RunChannelClientMessage =
   | RunAuthMessage
+  | ComputerSessionEndMessage
   | RunStartMessage
   | RunCancelMessage
+  | RunChildCancelMessage
+  | RunThreadSubscribeMessage
   | RunApproveMessage
+  | PlanWorkflowCommandMessage
+  | GoalCommandMessage
   | RunInterjectEnvelopeMessage
   | RunInterjectCancelEnvelopeMessage
   | RunInterjectFlushEnvelopeMessage
@@ -128,10 +198,36 @@ interface RunEventMessage {
   event: RunEvent;
 }
 
+export interface PlanningWorkflowMessage {
+  type: 'plan.workflow';
+  threadId: ThreadId;
+  snapshot: PlanningWorkflowSnapshot | null;
+}
+
+export interface GoalStateMessage {
+  type: 'goal.state';
+  threadId: ThreadId;
+  snapshot: GoalSnapshot | null;
+}
+
+export interface RunToolOutputDeltaMessage {
+  type: 'run.tool.output.delta';
+  runId: RunId;
+  threadId: ThreadId;
+  payload: ToolOutputDeltaEventPayload;
+}
+
 interface RunCancelControlMessage {
   type: 'run.control';
   requestId: string;
   action: 'run.cancel';
+  ok: true;
+}
+
+interface RunChildCancelControlMessage {
+  type: 'run.control';
+  requestId: string;
+  action: 'run.child.cancel';
   ok: true;
 }
 
@@ -140,6 +236,32 @@ interface RunApproveControlMessage {
   requestId: string;
   action: 'run.approve';
   ok: true;
+}
+
+interface ComputerSessionEndControlMessage {
+  type: 'run.control';
+  requestId: string;
+  action: 'computer.session.end';
+  ok: true;
+}
+
+interface PlanWorkflowCommandControlMessage {
+  type: 'run.control';
+  requestId: string;
+  action: 'plan.command';
+  ok: true;
+  commandKind: PlanWorkflowCommand['kind'];
+  snapshot: PlanningWorkflowSnapshot | null;
+  approvedPlanRef?: ApprovedPlanRef;
+}
+
+interface GoalCommandControlMessage {
+  type: 'run.control';
+  requestId: string;
+  action: 'goal.command';
+  ok: true;
+  commandKind: GoalCommand['kind'];
+  snapshot: GoalSnapshot | null;
 }
 
 interface RunInterjectControlMessage {
@@ -187,7 +309,11 @@ interface RunEventAckControlMessage {
 
 export type RunControlMessage =
   | RunCancelControlMessage
+  | RunChildCancelControlMessage
   | RunApproveControlMessage
+  | ComputerSessionEndControlMessage
+  | PlanWorkflowCommandControlMessage
+  | GoalCommandControlMessage
   | RunInterjectControlMessage
   | RunInterjectCancelControlMessage
   | RunInterjectFlushControlMessage
@@ -205,6 +331,9 @@ interface RunErrorMessage {
 export type RunChannelServerMessage =
   | RunAuthOkMessage
   | RunEventMessage
+  | PlanningWorkflowMessage
+  | GoalStateMessage
+  | RunToolOutputDeltaMessage
   | RunControlMessage
   | RunErrorMessage;
 
@@ -214,10 +343,48 @@ export type RunChannelServerMessage =
 export function isRunAuthMessage(value: unknown): value is RunAuthMessage {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ['type', 'requestId', 'token']) &&
+    hasOnlyKeys(value, [
+      'type',
+      'requestId',
+      'token',
+      'computerSessionId',
+      'runEventCursors',
+      'threadSubscriptions',
+    ]) &&
     value.type === 'run.auth' &&
     isString(value.requestId) &&
-    isString(value.token)
+    isString(value.token) &&
+    isString(value.computerSessionId) &&
+    value.computerSessionId.trim().length > 0 &&
+    (value.runEventCursors === undefined ||
+      (Array.isArray(value.runEventCursors) &&
+        value.runEventCursors.every(isRunEventReplayCursor))) &&
+    (value.threadSubscriptions === undefined ||
+      (Array.isArray(value.threadSubscriptions) &&
+        value.threadSubscriptions.every(
+          (threadId) => isString(threadId) && isThreadId(threadId),
+        )))
+  );
+}
+
+export function isComputerSessionEndMessage(
+  value: unknown,
+): value is ComputerSessionEndMessage {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ['type', 'requestId']) &&
+    value.type === 'computer.session.end' &&
+    isString(value.requestId)
+  );
+}
+
+function isRunEventReplayCursor(value: unknown): value is RunEventReplayCursor {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ['runId', 'seq']) &&
+    isString(value.runId) &&
+    isRunId(value.runId) &&
+    isRunEventSequence(value.seq)
   );
 }
 
@@ -230,6 +397,37 @@ export function isRunCancelMessage(value: unknown): value is RunCancelMessage {
   );
 }
 
+export function isRunChildCancelMessage(
+  value: unknown,
+): value is RunChildCancelMessage {
+  return (
+    isRecord(value) &&
+    value.type === 'run.child.cancel' &&
+    isString(value.requestId) &&
+    isRecord(value.request) &&
+    hasOnlyKeys(value.request, ['parentRunId', 'childRunId']) &&
+    isString(value.request.parentRunId) &&
+    isRunId(value.request.parentRunId) &&
+    isString(value.request.childRunId) &&
+    isRunId(value.request.childRunId)
+  );
+}
+
+export function isRunThreadSubscribeMessage(
+  value: unknown,
+): value is RunThreadSubscribeMessage {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ['type', 'requestId', 'request']) &&
+    value.type === 'run.thread.subscribe' &&
+    isString(value.requestId) &&
+    isRecord(value.request) &&
+    hasOnlyKeys(value.request, ['threadId']) &&
+    isString(value.request.threadId) &&
+    isThreadId(value.request.threadId)
+  );
+}
+
 export function isRunApproveMessage(
   value: unknown,
 ): value is RunApproveMessage {
@@ -238,6 +436,30 @@ export function isRunApproveMessage(
     value.type === 'run.approve' &&
     isString(value.requestId) &&
     isApprovalRequest(value.request)
+  );
+}
+
+export function isPlanWorkflowCommandMessage(
+  value: unknown,
+): value is PlanWorkflowCommandMessage {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ['type', 'requestId', 'request']) &&
+    value.type === 'plan.command' &&
+    isString(value.requestId) &&
+    isPlanWorkflowCommand(value.request)
+  );
+}
+
+export function isGoalCommandMessage(
+  value: unknown,
+): value is GoalCommandMessage {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ['type', 'requestId', 'request']) &&
+    value.type === 'goal.command' &&
+    isString(value.requestId) &&
+    isGoalCommand(value.request)
   );
 }
 
@@ -359,8 +581,27 @@ type RunControlFieldGuardMap = {
 };
 
 const RUN_CONTROL_FIELD_GUARDS = {
+  'computer.session.end': {},
   'run.cancel': {},
+  'run.child.cancel': {},
   'run.approve': {},
+  'plan.command': {
+    commandKind: (value: unknown): value is PlanWorkflowCommand['kind'] =>
+      value === 'approve' ||
+      value === 'request_revision' ||
+      value === 'explain_visual' ||
+      value === 'cancel',
+    snapshot: (value: unknown): value is PlanningWorkflowSnapshot | null =>
+      value === null || isPlanningWorkflowSnapshot(value),
+    approvedPlanRef: (value: unknown): value is ApprovedPlanRef | undefined =>
+      value === undefined || isApprovedPlanRef(value),
+  },
+  'goal.command': {
+    commandKind: (value: unknown): value is GoalCommand['kind'] =>
+      value === 'pause' || value === 'resume' || value === 'cancel',
+    snapshot: (value: unknown): value is GoalSnapshot | null =>
+      value === null || isGoalSnapshot(value),
+  },
   'run.interject': {
     receivedSeq: (value: unknown): value is number =>
       isNumber(value) && Number.isInteger(value) && value > 0,
@@ -412,6 +653,30 @@ export function isRunChannelServerMessage(
       return isString(value.requestId) && value.ok === true;
     case 'run.event':
       return isRunEvent(value.event);
+    case 'plan.workflow':
+      return (
+        isString(value.threadId) &&
+        isThreadId(value.threadId) &&
+        (value.snapshot === null ||
+          (isPlanningWorkflowSnapshot(value.snapshot) &&
+            value.snapshot.threadId === value.threadId))
+      );
+    case 'goal.state':
+      return (
+        isString(value.threadId) &&
+        isThreadId(value.threadId) &&
+        (value.snapshot === null ||
+          (isGoalSnapshot(value.snapshot) &&
+            value.snapshot.threadId === value.threadId))
+      );
+    case 'run.tool.output.delta':
+      return (
+        isString(value.runId) &&
+        isRunId(value.runId) &&
+        isString(value.threadId) &&
+        isThreadId(value.threadId) &&
+        isToolOutputDeltaEventPayload(value.payload)
+      );
     case 'run.control': {
       if (
         !isString(value.requestId) ||

@@ -231,8 +231,9 @@ void test('resolveStaticArtifactPreview renders video manifests as an inline pla
     html,
     /\/api\/threads\/11111111-1111-4111-8111-111111111111\/media\//,
   );
-  // 저장은 선택 링크
-  assert.match(html, /download=/);
+  // 저장은 위치를 고르는 선택 버튼(OS 저장 대화상자) — 강제 다운로드 아님
+  assert.match(html, /artifact-media-save/);
+  assert.match(html, /저장/);
   // 인라인 base64 없음(D-V7)
   assert.doesNotMatch(html, /base64/);
 });

@@ -304,7 +304,9 @@ async function readJsonResponse(
       throw error;
     }
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`${profile.invalidJsonMessage}: ${detail}`);
+    throw new Error(`${profile.invalidJsonMessage}: ${detail}`, {
+      cause: error,
+    });
   }
 }
 

@@ -11,15 +11,30 @@ import {
   type RunId,
   type ThreadId,
 } from '@geulbat/protocol/ids';
+import type { GoalSnapshot } from '@geulbat/protocol/goal';
+import type {
+  RunUsageTotals,
+  SideEffectLevel,
+  ThreadStatePersistenceFailureDiagnostic,
+} from '@geulbat/protocol/run-events';
 import {
   isAgentChildTerminalState as isProtocolAgentChildTerminalState,
   type AgentChildTerminalState,
-  type RunUsageTotals,
-  type SideEffectLevel,
-  type ThreadStatePersistenceFailureDiagnostic,
-} from '@geulbat/protocol/run-events';
+} from '@geulbat/protocol/subagent-terminal';
 import type { PermissionMode } from '@geulbat/protocol/run-approval';
-import type { RunSubagentModelRouting } from '@geulbat/protocol/run-contract';
+import {
+  resolveRunModelDescriptor as resolveProtocolRunModelDescriptor,
+  type RunProviderTransitionRecovery,
+  type RunServiceTier,
+  type RunSubagentModelRouting,
+} from '@geulbat/protocol/run-contract';
+import type {
+  ApprovedPlanRef,
+  PlanDraftV1,
+  PlanModeDepth,
+  PlanModeIntensity,
+  PlanRenderingStamp,
+} from '@geulbat/protocol/planning-workflow';
 import {
   readArtifactRefsFromMetadata as readProtocolArtifactRefsFromMetadata,
   type ThreadMessageAttachment,
@@ -30,6 +45,8 @@ import {
   isProviderTransitionCompactionEntryData as isProtocolProviderTransitionCompactionEntryData,
   type BudgetProfile,
   type ProviderNativeCompactionEntryData,
+  type ProviderNativeCompactionEvidencePage,
+  type ProviderNativeCompactionEvidenceRef,
   type ProviderNativeCompactionOutputItem,
   type ProviderTransitionCompactionEntryData,
   type SummaryCompactionEntryData,
@@ -40,12 +57,22 @@ import {
 
 export type {
   ArtifactRef,
+  ApprovedPlanRef,
   BudgetProfile,
+  GoalSnapshot,
+  PlanDraftV1,
+  PlanModeDepth,
+  PlanModeIntensity,
+  PlanRenderingStamp,
   PermissionMode,
   ProviderNativeCompactionEntryData,
+  ProviderNativeCompactionEvidencePage,
+  ProviderNativeCompactionEvidenceRef,
   ProviderNativeCompactionOutputItem,
   ProviderTransitionCompactionEntryData,
   RunId,
+  RunProviderTransitionRecovery,
+  RunServiceTier,
   RunSubagentModelRouting,
   RunUsageTotals,
   SideEffectLevel,
@@ -70,6 +97,12 @@ export function isAgentProviderTransitionCompactionEntryData(
   value: unknown,
 ): value is ProviderTransitionCompactionEntryData {
   return isProtocolProviderTransitionCompactionEntryData(value);
+}
+
+export function resolveAgentRunModelDescriptor(
+  modelId: RunProviderTransitionRecovery['sourceModelId'],
+) {
+  return resolveProtocolRunModelDescriptor(modelId);
 }
 
 export const AGENT_ARTIFACT_START_PREFIX = ARTIFACT_START_PREFIX;

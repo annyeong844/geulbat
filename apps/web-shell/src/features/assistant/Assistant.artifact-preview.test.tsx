@@ -1,14 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
+import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
 
 import {
   createCommittedArtifact,
   createCommittedArtifactMessage,
   createCommittedArtifactSourceRef,
 } from '../../test-support/thread-artifact-fixtures.js';
+import { createAssistantProps } from '../../test-support/create-assistant-props.js';
 import { STATIC_ARTIFACT_PREVIEW_RESOURCE_POLICY } from '../artifacts/artifact-static-preview-registry.js';
 import { Assistant } from './Assistant.js';
+
+(
+  globalThis as typeof globalThis & {
+    IS_REACT_ACT_ENVIRONMENT?: boolean;
+  }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 void test('assistant renders code artifact preview through the static preview registry', () => {
   const artifact = createCommittedArtifact({
@@ -22,16 +30,14 @@ void test('assistant renders code artifact preview through the static preview re
   });
   const html = renderToStaticMarkup(
     <Assistant
-      messages={[createCommittedArtifactMessage(artifact)]}
-      artifacts={[artifact]}
-      backgroundNotifications={[]}
-      transcriptEntries={[]}
-      finalAnswerText=""
-      streamError={null}
-      isRunning={false}
-      onSend={() => {}}
-      onStartArtifactRun={() => {}}
-      onCancel={() => {}}
+      {...createAssistantProps({
+        conversation: {
+          messages: [createCommittedArtifactMessage(artifact)],
+        },
+        artifacts: {
+          versions: [artifact],
+        },
+      })}
     />,
   );
 
@@ -50,16 +56,14 @@ void test('assistant renders diff artifact preview through the static preview re
   });
   const html = renderToStaticMarkup(
     <Assistant
-      messages={[createCommittedArtifactMessage(artifact)]}
-      artifacts={[artifact]}
-      backgroundNotifications={[]}
-      transcriptEntries={[]}
-      finalAnswerText=""
-      streamError={null}
-      isRunning={false}
-      onSend={() => {}}
-      onStartArtifactRun={() => {}}
-      onCancel={() => {}}
+      {...createAssistantProps({
+        conversation: {
+          messages: [createCommittedArtifactMessage(artifact)],
+        },
+        artifacts: {
+          versions: [artifact],
+        },
+      })}
     />,
   );
 
@@ -83,16 +87,14 @@ void test('assistant renders table artifact preview through the static preview r
   });
   const html = renderToStaticMarkup(
     <Assistant
-      messages={[createCommittedArtifactMessage(artifact)]}
-      artifacts={[artifact]}
-      backgroundNotifications={[]}
-      transcriptEntries={[]}
-      finalAnswerText=""
-      streamError={null}
-      isRunning={false}
-      onSend={() => {}}
-      onStartArtifactRun={() => {}}
-      onCancel={() => {}}
+      {...createAssistantProps({
+        conversation: {
+          messages: [createCommittedArtifactMessage(artifact)],
+        },
+        artifacts: {
+          versions: [artifact],
+        },
+      })}
     />,
   );
 
@@ -124,16 +126,14 @@ void test('assistant falls back to raw access copy for oversized static artifact
   });
   const html = renderToStaticMarkup(
     <Assistant
-      messages={[createCommittedArtifactMessage(artifact)]}
-      artifacts={[artifact]}
-      backgroundNotifications={[]}
-      transcriptEntries={[]}
-      finalAnswerText=""
-      streamError={null}
-      isRunning={false}
-      onSend={() => {}}
-      onStartArtifactRun={() => {}}
-      onCancel={() => {}}
+      {...createAssistantProps({
+        conversation: {
+          messages: [createCommittedArtifactMessage(artifact)],
+        },
+        artifacts: {
+          versions: [artifact],
+        },
+      })}
     />,
   );
 
@@ -147,7 +147,7 @@ void test('assistant falls back to raw access copy for oversized static artifact
   assert.doesNotMatch(html, /hidden-large-static-token/);
 });
 
-void test('assistant renders html5 artifact inside a sandboxed iframe', () => {
+void test('assistant renders html5 artifact inside a sandboxed iframe', async () => {
   const artifact = createCommittedArtifact({
     artifactId: 'art_html5_1',
     renderer: 'html5',
@@ -157,33 +157,42 @@ void test('assistant renders html5 artifact inside a sandboxed iframe', () => {
       filePath: 'notes/preview.html',
     }),
   });
-  const html = renderToStaticMarkup(
-    <Assistant
-      messages={[createCommittedArtifactMessage(artifact)]}
-      artifacts={[artifact]}
-      backgroundNotifications={[]}
-      transcriptEntries={[]}
-      finalAnswerText=""
-      streamError={null}
-      isRunning={false}
-      onSend={() => {}}
-      onStartArtifactRun={() => {}}
-      onCancel={() => {}}
-    />,
-  );
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <Assistant
+        {...createAssistantProps({
+          conversation: {
+            messages: [createCommittedArtifactMessage(artifact)],
+          },
+          artifacts: {
+            versions: [artifact],
+          },
+        })}
+      />,
+    );
+  });
 
-  assert.match(html, /<iframe/);
-  assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
-  assert.match(
-    html,
-    /src="http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?[^"]*rev=/,
+  const iframe = renderer.root.findByType('iframe');
+  const renderedTree = JSON.stringify(renderer.toJSON());
+  assert.equal(
+    iframe.props.sandbox,
+    'allow-scripts allow-forms allow-same-origin',
   );
-  assert.doesNotMatch(html, />적용</);
-  assert.doesNotMatch(html, />내보내기</);
-  assert.doesNotMatch(html, /hidden-page-token/);
+  assert.match(
+    String(iframe.props.src),
+    /^http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?.*rev=/,
+  );
+  assert.doesNotMatch(renderedTree, /적용/);
+  assert.doesNotMatch(renderedTree, /내보내기/);
+  assert.doesNotMatch(renderedTree, /hidden-page-token/);
+
+  await act(async () => {
+    renderer.unmount();
+  });
 });
 
-void test('assistant renders js artifact inside a download-capable sandboxed iframe', () => {
+void test('assistant renders js artifact inside a download-capable sandboxed iframe', async () => {
   const artifact = createCommittedArtifact({
     artifactId: 'art_js_1',
     renderer: 'js',
@@ -194,33 +203,39 @@ void test('assistant renders js artifact inside a download-capable sandboxed ifr
       filePath: 'notes/preview.js',
     }),
   });
-  const html = renderToStaticMarkup(
-    <Assistant
-      messages={[createCommittedArtifactMessage(artifact)]}
-      artifacts={[artifact]}
-      backgroundNotifications={[]}
-      transcriptEntries={[]}
-      finalAnswerText=""
-      streamError={null}
-      isRunning={false}
-      onSend={() => {}}
-      onStartArtifactRun={() => {}}
-      onCancel={() => {}}
-    />,
-  );
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <Assistant
+        {...createAssistantProps({
+          conversation: {
+            messages: [createCommittedArtifactMessage(artifact)],
+          },
+          artifacts: {
+            versions: [artifact],
+          },
+        })}
+      />,
+    );
+  });
 
-  assert.match(html, /<iframe/);
-  assert.match(
-    html,
-    /sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"/,
+  const iframe = renderer.root.findByType('iframe');
+  const renderedTree = JSON.stringify(renderer.toJSON());
+  assert.equal(
+    iframe.props.sandbox,
+    'allow-scripts allow-forms allow-same-origin allow-downloads',
   );
   assert.match(
-    html,
-    /src="http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?[^"]*rev=/,
+    String(iframe.props.src),
+    /^http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?.*rev=/,
   );
-  assert.doesNotMatch(html, />적용</);
-  assert.doesNotMatch(html, />내보내기</);
-  assert.doesNotMatch(html, /hidden-js-token/);
+  assert.doesNotMatch(renderedTree, /적용/);
+  assert.doesNotMatch(renderedTree, /내보내기/);
+  assert.doesNotMatch(renderedTree, /hidden-js-token/);
+
+  await act(async () => {
+    renderer.unmount();
+  });
 });
 
 void test('assistant shows pending preview state for react_bundle manifests during SSR', () => {
@@ -236,16 +251,14 @@ void test('assistant shows pending preview state for react_bundle manifests duri
   });
   const html = renderToStaticMarkup(
     <Assistant
-      messages={[createCommittedArtifactMessage(artifact)]}
-      artifacts={[artifact]}
-      backgroundNotifications={[]}
-      transcriptEntries={[]}
-      finalAnswerText=""
-      streamError={null}
-      isRunning={false}
-      onSend={() => {}}
-      onStartArtifactRun={() => {}}
-      onCancel={() => {}}
+      {...createAssistantProps({
+        conversation: {
+          messages: [createCommittedArtifactMessage(artifact)],
+        },
+        artifacts: {
+          versions: [artifact],
+        },
+      })}
     />,
   );
 
@@ -269,16 +282,14 @@ void test('assistant shows a user-facing unavailable state for disallowed html5 
   });
   const html = renderToStaticMarkup(
     <Assistant
-      messages={[createCommittedArtifactMessage(artifact)]}
-      artifacts={[artifact]}
-      backgroundNotifications={[]}
-      transcriptEntries={[]}
-      finalAnswerText=""
-      streamError={null}
-      isRunning={false}
-      onSend={() => {}}
-      onStartArtifactRun={() => {}}
-      onCancel={() => {}}
+      {...createAssistantProps({
+        conversation: {
+          messages: [createCommittedArtifactMessage(artifact)],
+        },
+        artifacts: {
+          versions: [artifact],
+        },
+      })}
     />,
   );
 
@@ -303,16 +314,14 @@ void test('assistant shows a user-facing boot failure for empty js payloads', ()
   });
   const html = renderToStaticMarkup(
     <Assistant
-      messages={[createCommittedArtifactMessage(artifact)]}
-      artifacts={[artifact]}
-      backgroundNotifications={[]}
-      transcriptEntries={[]}
-      finalAnswerText=""
-      streamError={null}
-      isRunning={false}
-      onSend={() => {}}
-      onStartArtifactRun={() => {}}
-      onCancel={() => {}}
+      {...createAssistantProps({
+        conversation: {
+          messages: [createCommittedArtifactMessage(artifact)],
+        },
+        artifacts: {
+          versions: [artifact],
+        },
+      })}
     />,
   );
 
@@ -344,16 +353,14 @@ void test('assistant shows pending preview state for inline react bundle source 
   });
   const html = renderToStaticMarkup(
     <Assistant
-      messages={[createCommittedArtifactMessage(artifact)]}
-      artifacts={[artifact]}
-      backgroundNotifications={[]}
-      transcriptEntries={[]}
-      finalAnswerText=""
-      streamError={null}
-      isRunning={false}
-      onSend={() => {}}
-      onStartArtifactRun={() => {}}
-      onCancel={() => {}}
+      {...createAssistantProps({
+        conversation: {
+          messages: [createCommittedArtifactMessage(artifact)],
+        },
+        artifacts: {
+          versions: [artifact],
+        },
+      })}
     />,
   );
 
@@ -382,16 +389,17 @@ void test('assistant disables artifact apply and export actions while a run is a
   });
   const html = renderToStaticMarkup(
     <Assistant
-      messages={[createCommittedArtifactMessage(artifact)]}
-      artifacts={[artifact]}
-      backgroundNotifications={[]}
-      transcriptEntries={[]}
-      finalAnswerText=""
-      streamError={null}
-      isRunning={true}
-      onSend={() => {}}
-      onStartArtifactRun={() => {}}
-      onCancel={() => {}}
+      {...createAssistantProps({
+        conversation: {
+          messages: [createCommittedArtifactMessage(artifact)],
+        },
+        artifacts: {
+          versions: [artifact],
+        },
+        runState: {
+          isRunning: true,
+        },
+      })}
     />,
   );
 

@@ -627,6 +627,36 @@ void unixTest(
 );
 
 void unixTest(
+  'callback channel rejects a malformed handler result',
+  async () => {
+    await withTempRoot(async (root) => {
+      const channel = await createPtcEpochCallbackChannel({
+        rootDir: root,
+        handler: async () => ({ ok: 'yes', result: 'forged-success' }) as never,
+      });
+
+      try {
+        assert.deepEqual(
+          await sendFrame(channel.socketPath, {
+            requestId: 'req-malformed-handler-result',
+            token: channel.token,
+            kind: 'read_file',
+          }),
+          {
+            requestId: 'req-malformed-handler-result',
+            ok: false,
+            errorCode: 'callback_result_invalid',
+            message: 'PTC callback handler returned an invalid result',
+          },
+        );
+      } finally {
+        await channel.close();
+      }
+    });
+  },
+);
+
+void unixTest(
   'callback channel aborts handler signal when timeout is classified',
   async () => {
     await withTempRoot(async (root) => {

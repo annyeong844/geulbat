@@ -7,8 +7,10 @@ import { isRecord } from '../runtime-json.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
 import type { ToolResolver } from './tool-registry-model.js';
 import type { ToolExecutionContext, ExecuteResult } from './types.js';
+import { isAgentToolExecutionContext } from './types.js';
 import { toolError } from './result.js';
 import { createMergedAbortSignal } from '../utils/abort.js';
+import { withActivityScope } from '../utils/activity-scope.js';
 import { getErrorCode, getErrorMessage } from '../utils/error.js';
 import { isErrorCode, type ErrorCode } from '../error-codes.js';
 
@@ -31,6 +33,7 @@ const SAFE_TOOL_ERROR_CODES = new Set<ErrorCode>([
   'quota_exceeded',
   'invalid_image_response',
   'artifact_commit_failed',
+  'persistence_unavailable',
   'llm_auth_failed',
   'llm_rate_limited',
   // 동영상 폴링 상한/잡 만료(video-generation-open §4.4) — 메시지는
@@ -149,7 +152,32 @@ function isExecuteResult(value: unknown): value is ExecuteResult {
   return false;
 }
 
+/**
+ * 도구 실행은 데몬이 "남의 일"을 하는 가장 흔한 자리다. 여기서 활동 스코프를
+ * 열어 두면, 그 안에서 띄운 비동기가 나중에 프로세스를 죽이더라도 어느 run의
+ * 어느 도구였는지가 종료 기록에 남는다 (스코프는 실패를 잡지 않는다).
+ */
 export async function executeTool(
+  name: string,
+  args: unknown,
+  ctx: ToolExecutionContext,
+  options: {
+    toolRegistry?: ToolResolver;
+  },
+): Promise<ExecuteResult> {
+  return await withActivityScope(
+    {
+      toolName: name,
+      ...(ctx.callId === undefined ? {} : { callId: ctx.callId }),
+      ...(isAgentToolExecutionContext(ctx)
+        ? { runId: ctx.runId, threadId: ctx.threadId }
+        : {}),
+    },
+    async () => await executeToolWithinActivityScope(name, args, ctx, options),
+  );
+}
+
+async function executeToolWithinActivityScope(
   name: string,
   args: unknown,
   ctx: ToolExecutionContext,
@@ -160,7 +188,9 @@ export async function executeTool(
   if (!options.toolRegistry) {
     throw new Error('toolRegistry is required');
   }
-  const tool = options.toolRegistry.getTool(name);
+  const tool = options.toolRegistry.getToolExecutionHandle
+    ? options.toolRegistry.getToolExecutionHandle(name)
+    : options.toolRegistry.getTool(name);
 
   if (!tool) {
     return toolError('unknown_tool', `unknown tool: ${name}`);

@@ -29,7 +29,6 @@ void test('useArtifactPaneController owns pane/export coordination', async () =>
     label: 'Artifact',
     viewModel: createArtifactPaneViewModel(),
     isRunning: false,
-    isLiveStreamingArtifact: false,
     renderRuntimeFrame: runtimeFrame.renderRuntimeFrame,
     onStartArtifactRun: (request) => {
       startedRuns.push(request);
@@ -74,17 +73,13 @@ void test('useArtifactPaneController forwards runtime previews through the injec
   const hook = await renderHook(useArtifactPaneController, {
     label: 'Artifact',
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
         digest: 'controller-js-demo',
         payload: 'document.body.textContent = "controller";',
-        raw: 'document.body.textContent = "controller";',
       },
     }),
     isRunning: false,
-    isLiveStreamingArtifact: false,
     renderRuntimeFrame: runtimeFrame.renderRuntimeFrame,
   });
 

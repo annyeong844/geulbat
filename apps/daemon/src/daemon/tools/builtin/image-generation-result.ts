@@ -10,7 +10,7 @@ import {
 export function stringifyGenerateImageOutput(
   result: GenerateImageArtifactResult,
 ): string {
-  const { artifactVersion, provenance, asset } = result;
+  const { artifactVersion, provenance, asset, media } = result;
   return JSON.stringify({
     ok: true,
     artifactRef: `${artifactVersion.artifactId}@${artifactVersion.version}`,
@@ -24,7 +24,15 @@ export function stringifyGenerateImageOutput(
     ...(provenance.revisedPrompt !== undefined
       ? { revisedPrompt: provenance.revisedPrompt }
       : {}),
-    note: 'Image was committed as a thread artifact and is already visible to the user. Do not repeat the image content; reference it briefly.',
+    // 저장/내보내기 요청 시 media 스토어를 탐색하지 않도록 디스크 경로를
+    // 직접 알려준다(바이트/base64는 여전히 싣지 않는다).
+    ...(media !== null
+      ? { mediaRef: media.mediaRef, mediaFilePath: media.filePath }
+      : {}),
+    note:
+      media !== null
+        ? 'Image was committed as a thread artifact and is already visible to the user. Do not repeat the image content; reference it briefly. To save or export the image for the user, copy the file at mediaFilePath directly.'
+        : 'Image was committed as a thread artifact and is already visible to the user. Do not repeat the image content; reference it briefly.',
   });
 }
 

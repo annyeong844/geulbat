@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
+import { createCommandSessionHost } from '../../command-host/session-core.js';
 import type { ComputerFileScope } from '../files/computer-file-scope.js';
 import { createGlobalMcpRuntime } from '../mcp/global-mcp-runtime.js';
 import { createToolRegistryStore } from '../tools/registry.js';
@@ -27,9 +28,30 @@ void test('plugin stdio MCP uses the global owner and preserves server preferenc
   const sourceRoot = join(fixture.computerRoot, 'portable-mcp-plugin');
   await writePluginPackage(sourceRoot);
   const toolRegistry = createToolRegistryStore({ builtins: [] });
+  // P7.6 M4 — MCP 서버 프로세스는 command-host 세션이 소유한다. 플러그인
+  // 경로도 예외가 아니므로 이 테스트도 진짜 세션 호스트를 든다.
+  const hostCommands = createCommandSessionHost({
+    inlineMaxBytes: 64 * 1024,
+    tailRingBytes: 64 * 1024,
+  });
   const globalMcp = createGlobalMcpRuntime({
     homeStateRoot: fixture.homeRoot,
     toolRegistry,
+    hostCommands,
+    maxPageBytes: 32 * 1024,
+  });
+  const mcpSessionOutputRefs = new Map<string, string>();
+  globalMcp.attachSessionCoordinateStore({
+    readMcpSessionCoordinate(serverId) {
+      const outputRef = mcpSessionOutputRefs.get(serverId);
+      return outputRef === undefined ? undefined : { serverId, outputRef };
+    },
+    persistMcpSessionCoordinate({ serverId, outputRef }) {
+      mcpSessionOutputRefs.set(serverId, outputRef);
+    },
+    deleteMcpSessionCoordinate(serverId) {
+      mcpSessionOutputRefs.delete(serverId);
+    },
   });
   const pluginStore = createPluginStore({ homeStateRoot: fixture.homeRoot });
   const plugins = createMcpCoordinatedPluginStore({
@@ -117,6 +139,7 @@ void test('plugin stdio MCP uses the global owner and preserves server preferenc
     );
   } finally {
     await globalMcp.close().catch(() => undefined);
+    await hostCommands.closeAll();
     await rm(fixture.root, { recursive: true, force: true });
   }
 });

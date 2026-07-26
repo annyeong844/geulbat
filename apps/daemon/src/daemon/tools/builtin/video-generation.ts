@@ -87,7 +87,7 @@ export const generateVideoTool = defineZodTool({
         'run context is required for generate_video.',
       );
     }
-    const runtime = ctx.agentSpawnRuntime?.videoGeneration;
+    const runtime = ctx.runtimeServices?.videoGeneration;
     if (!runtime) {
       return toolError(
         'execution_failed',

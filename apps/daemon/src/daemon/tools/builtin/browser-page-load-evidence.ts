@@ -14,6 +14,13 @@ import {
   pickBrowserPageLoadEvidencePolicyOutputFields,
   stringifyBrowserEvidenceFailureOutput,
 } from './browser-summary-output.js';
+import type { AgentRuntimePtcServices } from '../../daemon-runtime-contract.js';
+
+// This tool depends only on its own PTC runtime; keep the declared
+// service surface that narrow.
+type BrowserPageLoadEvidenceToolServices = {
+  ptc: Pick<AgentRuntimePtcServices, 'browserPageLoadEvidence'>;
+};
 
 const browserPageLoadEvidenceArgsSchema = z.strictObject({
   url: z
@@ -65,7 +72,9 @@ export const browserPageLoadEvidenceTool = defineZodTool({
         'run context is required for browser_page_load_evidence.',
       );
     }
-    const runtime = ctx.agentSpawnRuntime?.ptcBrowserPageLoadEvidence;
+    const services: BrowserPageLoadEvidenceToolServices | undefined =
+      ctx.runtimeServices;
+    const runtime = services?.ptc.browserPageLoadEvidence;
     if (!runtime) {
       return toolError(
         'execution_failed',

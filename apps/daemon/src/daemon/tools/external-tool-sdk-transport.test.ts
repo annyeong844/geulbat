@@ -7,11 +7,14 @@ import test from 'node:test';
 import {
   TOOL_SDK_RELEASE,
   createToolSdkClient,
+  type ToolSdkJsonValue,
   type ToolSdkProjectionIdentity,
 } from '@geulbat/tool-sdk';
 
 import { createDaemonContext } from '../context.js';
 import { readFileTool } from './builtin/read-file.js';
+import { searchFilesTool } from './builtin/search-files.js';
+import { DAEMON_TOOL_SDK_PUBLIC_BINDINGS } from './external-tool-sdk-public-tools.js';
 import { createDaemonToolSdkTransport } from './external-tool-sdk-transport.js';
 import { createToolRegistryStore } from './registry.js';
 
@@ -93,6 +96,78 @@ void test('daemon transport maps files.read to the real registry and re-authenti
   assert.doesNotMatch(JSON.stringify(result), /read_file|computerFileRoot/);
 });
 
+void test('daemon transport keeps __proto__ as data instead of inherited tool arguments', async (t) => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-external-tool-sdk-prototype-'),
+  );
+  t.after(() => rm(computerFileRoot, { recursive: true, force: true }));
+  await writeFile(join(computerFileRoot, 'notes.txt'), 'private\n', 'utf8');
+  let observedInput:
+    | {
+        frozen: boolean;
+        hasOwnPath: boolean;
+        hasOwnProto: boolean;
+        inheritedPath: unknown;
+        prototypeIsNull: boolean;
+      }
+    | undefined;
+  const transport = createDaemonToolSdkTransport({
+    registry: createToolRegistryStore({ builtins: [readFileTool] }),
+    getProjectionIdentity: () => PROJECTION,
+    authority: {
+      async authenticate() {
+        return { ok: true as const, principal: 'consumer-1' };
+      },
+      async authorizeInvocation(options) {
+        observedInput = {
+          frozen: Object.isFrozen(options.input),
+          hasOwnPath: Object.hasOwn(options.input, 'path'),
+          hasOwnProto: Object.hasOwn(options.input, '__proto__'),
+          inheritedPath: options.input['path'],
+          prototypeIsNull: Object.getPrototypeOf(options.input) === null,
+        };
+        return {
+          ok: true as const,
+          context: {
+            callId: 'external-prototype-input',
+            computerFileRoot,
+          },
+        };
+      },
+    },
+  });
+  const input = JSON.parse(
+    '{"__proto__":{"path":"notes.txt","limit":1}}',
+  ) as Record<string, ToolSdkJsonValue>;
+
+  const result = await transport.invoke(
+    {
+      compatibility: {
+        packageVersion: TOOL_SDK_RELEASE.packageVersion,
+        apiVersion: TOOL_SDK_RELEASE.apiVersion,
+        transportProtocolVersion: TOOL_SDK_RELEASE.transportProtocolVersion,
+        runtimeCompatibility: TOOL_SDK_RELEASE.runtimeCompatibility,
+        projection: PROJECTION,
+      },
+      publicTool: 'files.read',
+      input,
+    },
+    { credential: { scheme: 'Bearer', value: 'valid-credential' } },
+  );
+
+  assert.deepEqual(observedInput, {
+    frozen: true,
+    hasOwnPath: false,
+    hasOwnProto: true,
+    inheritedPath: undefined,
+    prototypeIsNull: true,
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, 'invalid_arguments');
+  }
+});
+
 void test('daemon transport maps files.list through the real registry and sanitizes provenance', async (t) => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-external-tool-sdk-list-'),
@@ -138,6 +213,7 @@ void test('daemon transport maps files.list through the real registry and saniti
     assert.deepEqual(connection.value.publicTools, [
       'files.read',
       'files.list',
+      'files.search',
     ]);
   }
   const result = await client.listFiles({ path: '.', recursive: true });
@@ -160,6 +236,122 @@ void test('daemon transport maps files.list through the real registry and saniti
     JSON.stringify(result),
     /list_files|computerFileRoot|"root"|tool_library_projection/u,
   );
+});
+
+void test('daemon transport maps files.search through the real registry and publishes a stable DTO', async (t) => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-external-tool-sdk-search-'),
+  );
+  t.after(() => rm(computerFileRoot, { recursive: true, force: true }));
+  await writeFile(
+    join(computerFileRoot, 'notes.txt'),
+    'first line\nneedle line\n',
+    'utf8',
+  );
+  const daemonContext = createDaemonContext({
+    homeStateRoot: computerFileRoot,
+  });
+  t.after(async () => {
+    await daemonContext.hostCommands.closeAll();
+  });
+  let authenticationCount = 0;
+  let authorizationCount = 0;
+  const transport = createDaemonToolSdkTransport({
+    registry: createToolRegistryStore({ builtins: [searchFilesTool] }),
+    getProjectionIdentity: () => PROJECTION,
+    authority: {
+      async authenticate() {
+        authenticationCount += 1;
+        return { ok: true as const, principal: 'consumer-1' };
+      },
+      async authorizeInvocation(options) {
+        authorizationCount += 1;
+        assert.equal(options.publicTool, 'files.search');
+        return {
+          ok: true as const,
+          context: {
+            callId: `external-search-${authorizationCount}`,
+            computerFileRoot,
+            stateRoot: computerFileRoot,
+            runtimeServices: daemonContext,
+          },
+        };
+      },
+    },
+  });
+  const client = createToolSdkClient({
+    transport,
+    projection: PROJECTION,
+    credentialProvider: validCredentialProvider(),
+    requestedPublicTools: ['files.search'],
+  });
+
+  assert.equal((await client.connect()).ok, true);
+  const result = await client.searchFiles({
+    pattern: 'needle',
+    path: '.',
+    type: 'content',
+    include: '*.txt',
+    maxResults: 2,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) {
+    return;
+  }
+  assert.equal(result.value.path, '.');
+  assert.equal(result.value.type, 'content');
+  assert.equal(result.value.consistency, 'filesystem_snapshot');
+  assert.equal(result.value.total, 1);
+  assert.equal(result.value.totalRelation, 'exact');
+  assert.equal(result.value.truncated, false);
+  assert.equal(result.value.results.length, 1);
+  assert.equal(result.value.results[0]?.path, 'notes.txt');
+  assert.equal(result.value.results[0]?.line, 2);
+  assert.equal(authenticationCount, 2);
+  assert.equal(authorizationCount, 1);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /backend|acceleration|search_files|computerFileRoot|"root"|"query"/u,
+  );
+});
+
+void test('files.search public consistency follows the request rather than index acceleration metadata', () => {
+  const result = DAEMON_TOOL_SDK_PUBLIC_BINDINGS[
+    'files.search'
+  ].normalizeResult(
+    JSON.stringify({
+      path: '.',
+      backend: 'windows-search-index+ripgrep-files',
+      consistency: 'eventual_index',
+      query: 'filename',
+      total: 1,
+      truncated: false,
+      results: [{ path: 'geulbat.txt', line: 0, text: '' }],
+    }),
+    {
+      pattern: '*geulbat*',
+      path: '.',
+      type: 'filename',
+      consistency: 'filesystem_snapshot',
+    },
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    value: {
+      kind: 'inline',
+      value: {
+        path: '.',
+        type: 'filename',
+        consistency: 'filesystem_snapshot',
+        total: 1,
+        totalRelation: 'exact',
+        truncated: false,
+        results: [{ path: 'geulbat.txt', line: 0, text: '' }],
+      },
+    },
+  });
 });
 
 void test('registry admission is checked again after a successful handshake', async () => {

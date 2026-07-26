@@ -27,13 +27,9 @@ void test('deriveArtifactExportModel exposes static markdown exports through a t
 void test('deriveArtifactExportModel derives generated text placeholders from runtime snapshots', () => {
   const model = deriveArtifactExportModel({
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
-        digest: 'fixture',
         payload: 'console.log("hello");',
-        raw: 'console.log("hello");',
       },
       actions: {
         apply: { visible: false, enabled: false, reason: null },
@@ -66,18 +62,9 @@ void test('deriveArtifactExportModel derives generated text placeholders from ru
 void test('deriveArtifactExportModel exposes runtime generated text exports for react bundles through renderer capabilities', () => {
   const model = deriveArtifactExportModel({
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'react_bundle',
-        digest: 'fixture',
         payload: JSON.stringify({
-          files: {
-            'src/App.jsx': 'export default function App() { return null; }',
-          },
-          entry: 'src/App.jsx',
-        }),
-        raw: JSON.stringify({
           files: {
             'src/App.jsx': 'export default function App() { return null; }',
           },
@@ -114,13 +101,9 @@ void test('deriveArtifactExportModel exposes runtime generated text exports for 
 void test('deriveArtifactExportModel uses binary overwrite hint for generated binary exports', () => {
   const model = deriveArtifactExportModel({
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
-        digest: 'fixture',
         payload: 'console.log("hello");',
-        raw: 'console.log("hello");',
       },
       actions: {
         apply: { visible: false, enabled: false, reason: null },
@@ -152,13 +135,9 @@ void test('deriveArtifactExportModel uses binary overwrite hint for generated bi
 void test('deriveArtifactExportModel keeps runtime exports hidden without full artifact session authority', () => {
   const model = deriveArtifactExportModel({
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
-        digest: 'fixture',
         payload: 'console.log("hello");',
-        raw: 'console.log("hello");',
       },
       actions: {
         apply: { visible: false, enabled: false, reason: null },
@@ -193,13 +172,9 @@ void test('deriveArtifactExportModel keeps runtime exports hidden without full a
 void test('deriveArtifactExportModel keeps generated binary export closed while a host save is pending', () => {
   const model = deriveArtifactExportModel({
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
-        digest: 'fixture',
         payload: 'console.log("hello");',
-        raw: 'console.log("hello");',
       },
       actions: {
         apply: { visible: false, enabled: false, reason: null },
@@ -230,13 +205,9 @@ void test('deriveArtifactExportModel keeps generated binary export closed while 
 void test('deriveArtifactExportModel rejects malformed generated text snapshots instead of surfacing export controls', () => {
   const model = deriveArtifactExportModel({
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
-        digest: 'fixture',
         payload: 'console.log("hello");',
-        raw: 'console.log("hello");',
       },
       actions: {
         apply: { visible: false, enabled: false, reason: null },

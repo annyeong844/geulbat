@@ -384,6 +384,24 @@ export function readPtcExecuteCodePlacementPreflightRecord(
   return placement.preflight;
 }
 
+export interface PtcExecuteCodePlacementPressureSnapshot {
+  shutdownState: 'open' | 'closing' | 'closed';
+  activeWarmPlacementCount: number;
+  retainedWarmPlacementCount: number;
+  warmTransitionCount: number;
+  activeBurstPlacementCount: number;
+  coldCreateBurstPlacementCount: number;
+  standbyRestoreBurstPlacementCount: number;
+  burstCleanupCount: number;
+  queuedWarmPlacementCount: number;
+  queuedBurstPlacementCount: number;
+  queuedBurstThreadCount: number;
+  standbyPoolState: 'disabled' | 'open' | 'closing' | 'closed';
+  standbyReadySlotCount: number;
+  standbyRefillInFlightCount: number;
+  standbyIdentityCount: number;
+}
+
 export interface PtcExecuteCodePlacementCoordinator {
   acquirePlacement(
     args: PtcExecuteCodePlacementRequest,
@@ -393,6 +411,7 @@ export interface PtcExecuteCodePlacementCoordinator {
   ): MaybePromise<void | PtcExecuteCodePlacementReleaseResult>;
   reapPlacements?(): Promise<PtcExecuteCodePlacementReleaseResult>;
   refreshQueuedPlacements?(): void;
+  readPressureSnapshot?(): PtcExecuteCodePlacementPressureSnapshot;
   beginShutdown(): void;
   finishShutdown(): void;
 }

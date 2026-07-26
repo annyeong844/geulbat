@@ -1,8 +1,11 @@
 import type { GenericApiError } from '../error-codes.js';
 import {
+  deleteProviderAuthFile,
+  hardenProviderAuthFilePermissions,
   resolveProviderAuthCredentialProviderId,
   writeProviderAuthFile,
   type ProviderAuthCredentialProviderId,
+  type ProviderAuthFilePermissionHardener,
   type ProviderCredential,
 } from './credentials/store.js';
 
@@ -48,6 +51,9 @@ export interface ProviderAuthRuntimeStore {
     credential: ProviderCredential,
     providerId?: ProviderAuthCredentialProviderId,
   ): Promise<void>;
+  deletePersistedProviderCredential(
+    providerId?: ProviderAuthCredentialProviderId,
+  ): Promise<void>;
   clearProviderAuthRuntimeState(
     providerId?: ProviderAuthCredentialProviderId,
   ): void;
@@ -78,11 +84,17 @@ function cloneProviderAuthLoadError(
   return { ...error };
 }
 
-export function createProviderAuthRuntimeStore(): ProviderAuthRuntimeStore {
+export function createProviderAuthRuntimeStore(
+  options: {
+    hardenPermissions?: ProviderAuthFilePermissionHardener;
+  } = {},
+): ProviderAuthRuntimeStore {
   const providerStates = new Map<
     ProviderAuthCredentialProviderId,
     ProviderAuthRuntimeProviderState
   >();
+  const hardenPermissions =
+    options.hardenPermissions ?? hardenProviderAuthFilePermissions;
 
   return {
     hasHydratedProviderAuth(providerId) {
@@ -148,11 +160,18 @@ export function createProviderAuthRuntimeStore(): ProviderAuthRuntimeStore {
       await writeProviderAuthFile(
         credential,
         resolveProviderAuthCredentialProviderId(providerId),
+        hardenPermissions,
       );
       this.setCachedProviderCredential(credential, providerId);
       this.setCachedProviderAuthLoadError(null, providerId);
       this.setCachedProviderAuthRefreshError(null, providerId);
       this.setHydratedProviderAuth(true, providerId);
+    },
+    async deletePersistedProviderCredential(providerId) {
+      await deleteProviderAuthFile(
+        resolveProviderAuthCredentialProviderId(providerId),
+        hardenPermissions,
+      );
     },
     clearProviderAuthRuntimeState(providerId) {
       if (providerId === undefined) {

@@ -4,6 +4,8 @@ import { FileAccessError } from '../files/file-domain-error.js';
 import { normalizePath } from '../files/normalize-path.js';
 
 const WINDOWS_ABSOLUTE_PATH = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
+const LOCAL_WSL_UNC_PATH =
+  /^(?:\\\\|\/\/)(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)(?:[\\/](.*))?$/iu;
 
 interface ComputerFileToolContext {
   computerFileRoot?: string;
@@ -25,11 +27,16 @@ export function resolveComputerFileToolPath(
   inputPath: string,
 ): ComputerFileToolPath {
   const absoluteRoot = requireComputerFileRoot(ctx);
-  const candidatePath = isAbsolutePath(inputPath)
-    ? inputPath
+  const projectedInputPath = projectLocalWslUncPath(absoluteRoot, inputPath);
+  const projectedWorkingDirectory = projectLocalWslUncPath(
+    absoluteRoot,
+    ctx.workingDirectory ?? '',
+  );
+  const candidatePath = isAbsolutePath(projectedInputPath)
+    ? projectedInputPath
     : joinPortablePath(
-        normalizePath(absoluteRoot, ctx.workingDirectory ?? ''),
-        inputPath,
+        normalizePath(absoluteRoot, projectedWorkingDirectory),
+        projectedInputPath,
         absoluteRoot,
       );
 
@@ -38,6 +45,28 @@ export function resolveComputerFileToolPath(
     absoluteRoot,
     path: normalizePath(absoluteRoot, candidatePath),
   };
+}
+
+function projectLocalWslUncPath(
+  absoluteRoot: string,
+  inputPath: string,
+): string {
+  if (process.platform !== 'linux' || !posix.isAbsolute(absoluteRoot)) {
+    return inputPath;
+  }
+
+  const currentDistroName = process.env.WSL_DISTRO_NAME?.trim();
+  const match = LOCAL_WSL_UNC_PATH.exec(inputPath);
+  if (
+    !currentDistroName ||
+    !match ||
+    match[1]?.toLowerCase() !== currentDistroName.toLowerCase()
+  ) {
+    return inputPath;
+  }
+
+  const pathWithinDistro = match[2]?.replaceAll('\\', '/') ?? '';
+  return posix.resolve('/', pathWithinDistro);
 }
 
 function requireComputerFileRoot(ctx: ComputerFileToolContext): string {

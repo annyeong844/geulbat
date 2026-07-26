@@ -69,7 +69,7 @@ function buildAgentContext(args: {
     currentFile: undefined,
     selection: undefined,
     approvalGranted: false,
-    agentSpawnRuntime: {
+    runtimeServices: {
       ...daemonContext,
       videoGeneration: args.videoGeneration,
     },
@@ -78,7 +78,7 @@ function buildAgentContext(args: {
       args.events.push(event);
     },
     permissionMode: 'full_access' as const,
-    approvalSessionId: 'approval-session',
+    computerSessionId: 'approval-session',
   };
 }
 

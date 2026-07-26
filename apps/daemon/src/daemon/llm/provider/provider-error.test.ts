@@ -18,6 +18,14 @@ void test('sanitizeProviderErrorMessage removes raw provider details', () => {
     sanitizeProviderErrorMessage('internal'),
     'provider request failed',
   );
+  assert.equal(
+    sanitizeProviderErrorMessage('llm_context_preparation_required'),
+    'context preparation required',
+  );
+  assert.equal(
+    sanitizeProviderErrorMessage('provider_transition_required'),
+    'provider transition requires a portable context handoff',
+  );
 });
 
 void test('normalizeProviderErrorCode maps canonical provider auth app errors to llm_auth_failed', () => {

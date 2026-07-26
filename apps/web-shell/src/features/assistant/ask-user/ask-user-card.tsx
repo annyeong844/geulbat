@@ -1,12 +1,38 @@
+import { useState } from 'react';
+
 import type { AskUserCardView } from './ask-user-card-view.js';
+
+export interface AskUserAnswerRequest {
+  answer: string;
+  requestKey: string;
+}
+
+export type AskUserAnswerHandler = (
+  request: AskUserAnswerRequest,
+) => Promise<void> | void;
 
 // 선택지 질문 카드 — 옵션 클릭이 그 라벨을 사용자 메시지로 보낸다
 // (컴포저와 같은 전송 경로). 자유 답변은 늘 컴포저로 가능하다.
 export function AskUserCard(props: {
   view: AskUserCardView;
-  onAnswer?: (answer: string) => Promise<void> | void;
+  requestKey: string;
+  onAnswer?: AskUserAnswerHandler;
 }) {
-  const { view, onAnswer } = props;
+  const { view, requestKey, onAnswer } = props;
+  const [submitting, setSubmitting] = useState(false);
+
+  const submitAnswer = async (answer: string): Promise<void> => {
+    if (onAnswer === undefined || submitting) {
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onAnswer({ answer, requestKey });
+    } catch {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="ask-user-card">
       <div className="ask-user-question">{view.question}</div>
@@ -17,9 +43,9 @@ export function AskUserCard(props: {
             type="button"
             role="listitem"
             className="ask-user-option"
-            disabled={onAnswer === undefined}
+            disabled={onAnswer === undefined || submitting}
             onClick={() => {
-              void onAnswer?.(option.label);
+              void submitAnswer(option.label);
             }}
           >
             <span className="ask-user-option-index" aria-hidden="true">

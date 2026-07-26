@@ -2,8 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { ProviderReplayScopeId } from '@geulbat/protocol/provider-auth';
+import { normalizeProviderErrorCode } from '../provider-error.js';
 import type { HistoryItem } from '../wire/types.js';
-import { buildResponseWireInput } from './responses-wire-input.js';
+import {
+  buildResponseWireInput,
+  measureResponseWireFunctionCallOutputAppendBytes,
+  measureResponseWireInputBytes,
+  ProviderTransitionRequiredError,
+} from './responses-wire-input.js';
 
 void test('buildResponseWireInput sends user attachments as image and file content blocks', () => {
   const history: HistoryItem[] = [
@@ -249,6 +255,22 @@ void test('buildResponseWireInput keeps batched calls before call-ordered output
   );
 });
 
+void test('response wire measurement reports the exact appended tool-result bytes', () => {
+  const history: HistoryItem[] = [{ kind: 'user', text: 'measure this' }];
+  const result: Extract<HistoryItem, { kind: 'function_call_output' }> = {
+    kind: 'function_call_output',
+    callId: 'call-measure',
+    output: JSON.stringify({ text: 'quoted "value" and 한글' }),
+  };
+  const beforeBytes = measureResponseWireInputBytes(history);
+  const afterBytes = measureResponseWireInputBytes([...history, result]);
+
+  assert.equal(
+    measureResponseWireFunctionCallOutputAppendBytes(result),
+    afterBytes - beforeBytes,
+  );
+});
+
 void test('buildResponseWireInput rejects an invalid opaque provider history item', () => {
   assert.throws(
     () => buildResponseWireInput([{ kind: 'backend_item', data: 'invalid' }]),
@@ -297,7 +319,15 @@ void test('buildResponseWireInput rejects normalized function-call replay for re
         providerId: 'openai_codex_direct',
         model: 'gpt-test',
       }),
-    /provider history item is invalid/u,
+    (error: unknown) => {
+      assert.ok(error instanceof ProviderTransitionRequiredError);
+      assert.equal(error.code, 'provider_transition_required');
+      assert.equal(
+        normalizeProviderErrorCode(error),
+        'provider_transition_required',
+      );
+      return true;
+    },
   );
   assert.throws(
     () =>
@@ -305,7 +335,15 @@ void test('buildResponseWireInput rejects normalized function-call replay for re
         providerId: 'grok_oauth',
         model: 'grok-test',
       }),
-    /provider history item is invalid/u,
+    (error: unknown) => {
+      assert.ok(error instanceof ProviderTransitionRequiredError);
+      assert.equal(error.code, 'provider_transition_required');
+      assert.equal(
+        normalizeProviderErrorCode(error),
+        'provider_transition_required',
+      );
+      return true;
+    },
   );
 });
 

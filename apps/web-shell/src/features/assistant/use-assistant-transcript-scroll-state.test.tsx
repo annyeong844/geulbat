@@ -50,6 +50,7 @@ function createTranscriptNode(args: {
 function TranscriptScrollProbe(props: {
   messageCount: number;
   onLayout: (scrollTop: number) => void;
+  onProgrammaticScrollProbe?: (isProgrammatic: boolean) => void;
 }) {
   const { messageCount, onLayout } = props;
   const scrollState = useAssistantTranscriptScrollState({
@@ -76,8 +77,24 @@ function TranscriptScrollProbe(props: {
       <div ref={scrollState.bottomRef} data-node="bottom" />
       <button
         type="button"
-        data-node="virtualizer-update"
-        onClick={scrollState.handleVirtualizerUpdate}
+        data-node="virtualizer-scroll-permission"
+        data-enabled={scrollState.shouldApplyVirtualizerScroll()}
+      />
+      <button
+        type="button"
+        data-node="jump-to-latest"
+        onClick={scrollState.handleJumpToLatest}
+      />
+      <button
+        type="button"
+        data-node="programmatic-scroll-probe"
+        onClick={() =>
+          props.onProgrammaticScrollProbe?.(
+            scrollState.isProgrammaticTranscriptScroll(
+              scrollState.transcriptRef.current?.scrollTop ?? Number.NaN,
+            ),
+          )
+        }
       />
     </div>
   );
@@ -90,11 +107,18 @@ void test('auto-follow records its pre-write target without a post-write scrollT
     clientHeight: 400,
     scrollTopReads,
   });
+  const programmaticScrollClassifications: boolean[] = [];
   let renderer!: ReactTestRenderer;
 
   await act(async () => {
     renderer = TestRenderer.create(
-      <TranscriptScrollProbe messageCount={1} onLayout={() => {}} />,
+      <TranscriptScrollProbe
+        messageCount={1}
+        onLayout={() => {}}
+        onProgrammaticScrollProbe={(isProgrammatic) =>
+          programmaticScrollClassifications.push(isProgrammatic)
+        }
+      />,
       {
         createNodeMock(element) {
           const elementProps = element.props;
@@ -115,6 +139,14 @@ void test('auto-follow records its pre-write target without a post-write scrollT
   // TranscriptScrollProbe reads once to capture the committed layout. The
   // auto-follow owner must not add another read after assigning scrollTop.
   assert.equal(scrollTopReads.current, 1);
+  renderer.root
+    .findByProps({ 'data-node': 'programmatic-scroll-probe' })
+    .props.onClick();
+  transcriptNode.scrollTop = 499;
+  renderer.root
+    .findByProps({ 'data-node': 'programmatic-scroll-probe' })
+    .props.onClick();
+  assert.deepEqual(programmaticScrollClassifications, [true, false]);
 
   await act(async () => renderer.unmount());
 });
@@ -173,7 +205,7 @@ void test('message lifecycle follows the transcript before the updated frame can
   await act(async () => renderer.unmount());
 });
 
-void test('a delayed virtualizer scroll event cannot lock out a newer bottom layout', async () => {
+void test('a delayed auto-follow scroll event cannot lock out a newer bottom layout', async () => {
   const transcriptNode = createTranscriptNode({
     scrollHeight: 900,
     clientHeight: 400,
@@ -201,11 +233,6 @@ void test('a delayed virtualizer scroll event cannot lock out a newer bottom lay
   });
   assert.equal(transcriptNode.scrollTop, 500);
 
-  await act(async () => {
-    renderer.root
-      .findByProps({ 'data-node': 'virtualizer-update' })
-      .props.onClick();
-  });
   transcriptNode.scrollHeight = 1_200;
   await act(async () => {
     renderer.root.findByProps({ 'data-node': 'transcript' }).props.onScroll();
@@ -221,7 +248,7 @@ void test('a delayed virtualizer scroll event cannot lock out a newer bottom lay
   await act(async () => renderer.unmount());
 });
 
-void test('virtualizer updates preserve an explicit user scroll lock', async () => {
+void test('only history mode admits virtualizer correction writes', async () => {
   const transcriptNode = createTranscriptNode({
     scrollHeight: 1_200,
     clientHeight: 400,
@@ -248,22 +275,50 @@ void test('virtualizer updates preserve an explicit user scroll lock', async () 
     );
   });
   assert.equal(transcriptNode.scrollTop, 800);
+  assert.equal(
+    renderer.root.findByProps({
+      'data-node': 'virtualizer-scroll-permission',
+    }).props['data-enabled'],
+    false,
+  );
 
   transcriptNode.scrollTop = 250;
   await act(async () => {
     renderer.root.findByProps({ 'data-node': 'transcript' }).props.onScroll();
   });
+  assert.equal(
+    renderer.root.findByProps({
+      'data-node': 'virtualizer-scroll-permission',
+    }).props['data-enabled'],
+    true,
+  );
   transcriptNode.scrollHeight = 1_500;
   await act(async () => {
-    renderer.root
-      .findByProps({ 'data-node': 'virtualizer-update' })
-      .props.onClick();
     renderer.update(
       <TranscriptScrollProbe messageCount={2} onLayout={() => {}} />,
     );
   });
 
   assert.equal(transcriptNode.scrollTop, 250);
+  assert.equal(
+    renderer.root.findByProps({
+      'data-node': 'virtualizer-scroll-permission',
+    }).props['data-enabled'],
+    true,
+  );
+
+  await act(async () => {
+    renderer.root
+      .findByProps({ 'data-node': 'jump-to-latest' })
+      .props.onClick();
+  });
+  assert.equal(transcriptNode.scrollTop, 1_100);
+  assert.equal(
+    renderer.root.findByProps({
+      'data-node': 'virtualizer-scroll-permission',
+    }).props['data-enabled'],
+    false,
+  );
 
   await act(async () => renderer.unmount());
 });

@@ -14,7 +14,7 @@ import type {
   PtcSessionEpochBridgeCallbackPolicy,
   PtcSessionEpochBridgeFailureReason,
 } from '../../callback/session-epoch-bridge.js';
-import { startExecuteCodeCellProcess } from './execute-code-cell-process.js';
+import type { StartPtcExecuteCodeCellProcess } from './execute-code-cell-process.js';
 import type { buildPtcExecuteCodeSdkHelpBundle } from './execute-code-sdk.js';
 import {
   PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS,
@@ -61,8 +61,6 @@ import {
 } from './execute-code-placement-contract.js';
 
 type CreatePtcExecuteCodeCellRegistry = typeof createPtcExecuteCodeCellRegistry;
-
-export type StartPtcExecuteCodeCellProcess = typeof startExecuteCodeCellProcess;
 
 interface PtcExecuteCodeValidatedRequest {
   code: string;
@@ -159,7 +157,7 @@ interface RunExecuteCodeCellRuntimeAttemptArgs {
     threadId: string;
     cellId: PtcExecuteCodeCellId;
   }) => Promise<void> | void;
-  startCellProcess: StartPtcExecuteCodeCellProcess | undefined;
+  startCellProcess: StartPtcExecuteCodeCellProcess;
   store?: PtcExecuteCodeStore;
   finalizePlacement?: () => Promise<PtcExecuteCodePlacementReleaseResult>;
   finalizeStore?: (
@@ -635,27 +633,26 @@ async function startPromotedCellProcess(args: {
   }
 
   const startedAtMs = Date.now();
-  const started = (runtimeArgs.startCellProcess ?? startExecuteCodeCellProcess)(
-    {
-      executable: runtimeArgs.dockerPath ?? 'docker',
-      args: buildPtcLabBatchDockerExecArgs({
-        containerId: session.value.containerId,
-        interpreter: 'bash',
-        command: args.command,
-      }),
-      timeoutMs: runtimeArgs.request.timeoutMs,
-      redactionMarkers: sensitiveBridgeMarkers(args.bridge),
-      redactionReplacement: '[redacted:ptc-callback]',
-      ...(runtimeArgs.admission.labPolicy === undefined
-        ? {}
-        : {
-            outputBufferPolicy: {
-              maxBufferedBytesPerStream:
-                runtimeArgs.admission.labPolicy.shell.maxBufferedBytesPerStream,
-            },
-          }),
-    },
-  );
+  const started = await runtimeArgs.startCellProcess({
+    cellId: args.cellId,
+    executable: runtimeArgs.dockerPath ?? 'docker',
+    args: buildPtcLabBatchDockerExecArgs({
+      containerId: session.value.containerId,
+      interpreter: 'bash',
+      command: args.command,
+    }),
+    timeoutMs: runtimeArgs.request.timeoutMs,
+    redactionMarkers: sensitiveBridgeMarkers(args.bridge),
+    redactionReplacement: '[redacted:ptc-callback]',
+    ...(runtimeArgs.admission.labPolicy === undefined
+      ? {}
+      : {
+          outputBufferPolicy: {
+            maxBufferedBytesPerStream:
+              runtimeArgs.admission.labPolicy.shell.maxBufferedBytesPerStream,
+          },
+        }),
+  });
   if (!started.ok) {
     await runtimeArgs.closeCallbackBridge(args.bridge);
     return {

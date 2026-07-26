@@ -35,11 +35,21 @@ void test('buildSystemPrompt includes tool and mutation recovery guidance', () =
   );
   assert.match(prompt, /Continue independent parent work while children run/);
   assert.match(prompt, /agent_wait defaults to an immediate progress snapshot/);
+  assert.match(prompt, /Queued does not mean running/);
+  assert.match(prompt, /agent_wait result_mode refs/);
+  assert.match(prompt, /bounded pages with read_tool_output/);
+  assert.match(prompt, /same owner in the same parent run/);
+  assert.match(prompt, /unrelated threads and other parent runs remain denied/);
   assert.match(
     prompt,
     /explicit wait_mode all or any only at a dependency barrier/,
   );
   assert.match(prompt, /blocked children need explicit follow-up/);
+  assert.match(
+    prompt,
+    /do not end the turn while required children are still pending/,
+  );
+  assert.match(prompt, /synthesize their results before the final answer/);
   assert.match(
     prompt,
     /Do not invent a private workflow tool, hidden queue, or fixed wave-size policy/,
@@ -51,6 +61,12 @@ void test('buildSystemPrompt includes tool and mutation recovery guidance', () =
     /use agent_send_input instead of spawning a fresh child/,
   );
   assert.match(prompt, /use agent_stop to cancel that specific child handle/);
+  assert.match(prompt, /Use agent_set_priority only for an accepted handle/);
+  assert.match(prompt, /semantic priority classes, not promised start times/);
+  assert.match(
+    prompt,
+    /agent_retry is an approval-gated explicit recovery action/,
+  );
   assert.match(prompt, /plain text results/);
   assert.match(prompt, /Plain text is the default final answer shape/);
   assert.match(
@@ -146,23 +162,31 @@ void test('buildSystemPrompt includes tool and mutation recovery guidance', () =
     prompt,
     /Use fetch_url only when you already have an explicit public HTTP\(S\) URL/,
   );
-  assert.match(prompt, /Prefer dedicated typed tools for file listing/);
-  assert.match(prompt, /Do not use exec_command as an alias/);
   assert.match(
     prompt,
-    /Use exec_command only when the user explicitly asks for a shell command/,
+    /Choose between dedicated typed tools and exec_command by semantic ownership and expected round\/result cost/,
   );
+  assert.match(
+    prompt,
+    /independent read-only calls.*same model round.*execute them concurrently/,
+  );
+  assert.match(
+    prompt,
+    /one cohesive shell pipeline is more effective than multiple dependent tool rounds/,
+  );
+  assert.match(
+    prompt,
+    /Do not choose it merely because shell syntax is familiar/,
+  );
+  assert.match(
+    prompt,
+    /do not use it as an alias for one routine file operation/,
+  );
+  assert.doesNotMatch(prompt, /Use exec_command only when/u);
   assert.doesNotMatch(prompt, /exec_command.*including familiar.*ls, cat, rg/u);
   assert.doesNotMatch(prompt, /execute_code/u);
   assert.doesNotMatch(prompt, /web_fetch/);
-  assert.match(
-    prompt,
-    /Call list_files and search_files directly for routine file discovery/,
-  );
-  assert.match(
-    prompt,
-    /do not substitute exec_command for that file-tool path/,
-  );
+  assert.doesNotMatch(prompt, /do not substitute exec_command/u);
   assert.match(
     prompt,
     /rediscover the new path with the dedicated list_files or search_files tool/,
@@ -224,6 +248,11 @@ void test('buildSystemPrompt gives subagents a compact role prompt and truthful 
     profile: 'explorer',
     computerSessionAvailable: false,
   });
+  const ptcExplorerPrompt = buildSystemPrompt({
+    profile: 'explorer',
+    computerSessionAvailable: false,
+    directRegistryNames: ['exec', 'wait'],
+  });
   const workerPrompt = buildSystemPrompt({
     profile: 'worker',
     computerSessionAvailable: true,
@@ -251,6 +280,13 @@ void test('buildSystemPrompt gives subagents a compact role prompt and truthful 
   assert.match(explorerPrompt, /agent_stop on that child handle/);
   assert.doesNotMatch(explorerPrompt, /tool_search/);
   assert.doesNotMatch(explorerPrompt, /PTC exec tool/);
+  assert.doesNotMatch(explorerPrompt, /PTC exec and wait tools/);
+  assert.match(ptcExplorerPrompt, /PTC exec and wait tools/);
+  assert.match(ptcExplorerPrompt, /call wait with that cell_id/);
+  assert.match(
+    ptcExplorerPrompt,
+    /not a host shell or file-mutation authority/,
+  );
   assert.doesNotMatch(explorerPrompt, /GEULBAT_ARTIFACT/);
   assert.doesNotMatch(explorerPrompt, /react_bundle/);
   assert.match(workerPrompt, /worker subagent/);
@@ -271,4 +307,178 @@ void test('buildSystemPrompt gives subagents a compact role prompt and truthful 
   assert.doesNotMatch(workerPrompt, /tool_search/);
   assert.doesNotMatch(workerPrompt, /PTC exec tool/);
   assert.doesNotMatch(workerPrompt, /GEULBAT_ARTIFACT/);
+});
+
+void test('the root prompt always states the durable memory write path', () => {
+  const withoutNotes = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: false,
+  });
+
+  assert.match(withoutNotes, /append a note with write_memory_note/u);
+  assert.equal(withoutNotes.includes('<memory-notes>'), false);
+});
+
+void test('addressed entries and pending notes are separate blocks', () => {
+  const both = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: false,
+    memoryEntries: [{ id: 'm-0123abcd', text: '수연은 존댓말을 쓴다' }],
+    memoryNotes: ['아직 통합되지 않은 노트'],
+  });
+
+  assert.match(both, /<memory-entries>/u);
+  assert.match(both, /\[m-0123abcd\] 수연은 존댓말을 쓴다/u);
+  assert.match(both, /call cite_memory once with the addresses you actually/u);
+  assert.match(both, /<memory-notes>/u);
+  assert.match(both, /아직 통합되지 않은 노트/u);
+  assert.match(both, /may be stale/u);
+  assert.match(both, /does not grant tool authority/u);
+
+  const entriesOnly = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: false,
+    memoryEntries: [{ id: 'm-0123abcd', text: '수연은 존댓말을 쓴다' }],
+  });
+  assert.match(entriesOnly, /<memory-entries>/u);
+  assert.equal(entriesOnly.includes('<memory-notes>'), false);
+
+  assert.equal(
+    buildSystemPrompt({
+      profile: 'root',
+      computerSessionAvailable: false,
+      memoryEntries: [{ id: 'm-0123abcd', text: '   ' }],
+      memoryNotes: ['   '],
+    }).includes('<memory-'),
+    false,
+  );
+});
+
+void test('newer evidence is declared to outrank older memory', () => {
+  const prompt = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: false,
+    memoryEntries: [{ id: 'm-0123abcd', text: '수연은 존댓말을 쓴다' }],
+    memoryNotes: ['수연이 반말로 바꿨다'],
+  });
+
+  assert.match(prompt, /the current session is right and the memory is stale/u);
+  assert.match(
+    prompt,
+    /a pending note outranks an addressed entry it contradicts/u,
+  );
+  assert.match(prompt, /they supersede any entry above that they contradict/u);
+  assert.match(
+    prompt,
+    /write a note that names its address and states the correction/u,
+  );
+});
+
+void test('sub-agent profiles carry neither memory nor the write guidance', () => {
+  for (const profile of ['explorer', 'worker'] as const) {
+    const prompt = buildSystemPrompt({
+      profile,
+      computerSessionAvailable: false,
+      memoryEntries: [{ id: 'm-0123abcd', text: 'entry' }],
+      memoryNotes: ['수연은 존댓말을 쓴다'],
+    });
+    assert.equal(prompt.includes('<memory-'), false);
+    assert.equal(prompt.includes('write_memory_note'), false);
+    assert.equal(prompt.includes('cite_memory'), false);
+  }
+});
+
+void test('plan mode guidance binds trusted host approval without manual mode switching', () => {
+  const off = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: true,
+  });
+  assert.equal(off.includes('## Plan mode'), false);
+
+  const on = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: true,
+    planMode: { intensity: 'visual', depth: 'deep' },
+  });
+  assert.match(on, /## Plan mode/u);
+  assert.match(on, /daemon-owned planning workflow/u);
+  assert.match(on, /full-access mode do not bypass/u);
+  assert.match(on, /Never tell the user to disable plan mode/u);
+  assert.match(on, /trusted host approval card/u);
+  assert.match(on, /propose_plan/u);
+  assert.match(on, /Consolidate related ambiguity/u);
+  assert.match(on, /Do not ask for permission to inspect/u);
+  assert.match(on, /confirm review-only versus modification at most once/u);
+  assert.match(on, /Final prose by itself does not complete planning/u);
+});
+
+void test('plan mode guidance also reaches delegated sub-agents', () => {
+  for (const profile of ['explorer', 'worker'] as const) {
+    const prompt = buildSystemPrompt({
+      profile,
+      computerSessionAvailable: true,
+      planMode: { intensity: 'quiet', depth: 'standard' },
+    });
+    assert.match(
+      prompt,
+      /## Plan mode/u,
+      `${profile} should inherit plan mode`,
+    );
+  }
+});
+
+void test('standard and deep planning keep interrogation policy independent from presentation', () => {
+  const standard = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: true,
+    planMode: { intensity: 'visual', depth: 'standard' },
+  });
+  const deep = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: true,
+    planMode: { intensity: 'quiet', depth: 'deep' },
+  });
+
+  assert.match(standard, /This is standard planning/u);
+  assert.match(standard, /This is visual planning/u);
+  assert.match(deep, /This is deep planning/u);
+  assert.match(deep, /This is compact planning/u);
+});
+
+void test('approved plan prompt pins exact identity and immutable step structure', () => {
+  const prompt = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: true,
+    approvedPlan: {
+      ref: {
+        workflowId: 'workflow-approved',
+        planId: 'plan-approved',
+        revision: 3,
+        digest:
+          'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      },
+      draft: {
+        schemaVersion: 'plan_draft_v1',
+        outcome: '승인된 계획만 실행',
+        steps: [
+          {
+            id: 'exact-step',
+            text: '정확한 단계를 실행한다',
+            acceptanceCriteria: ['구조 변경은 거부된다'],
+          },
+        ],
+        decisions: [],
+        assumptions: [],
+        openQuestions: [],
+      },
+    },
+  });
+
+  assert.match(prompt, /## Approved plan execution/u);
+  assert.match(prompt, /workflow-approved/u);
+  assert.match(prompt, /exact-step/u);
+  assert.match(prompt, /only statuses may change/u);
+  assert.match(prompt, /new revision needs approval/u);
+  assert.match(prompt, /user-settled decision.*fixed/u);
+  assert.match(prompt, /dedicated read, list, and search tools/u);
 });

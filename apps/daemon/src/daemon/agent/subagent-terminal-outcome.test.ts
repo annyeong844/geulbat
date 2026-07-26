@@ -6,9 +6,13 @@ import {
   buildChildResultTerminalOutcome,
 } from './subagent-terminal-outcome.js';
 
+const activeChildSignal = new AbortController().signal;
+
 void test('buildChildResultTerminalOutcome completes successful child results', () => {
   assert.deepEqual(
     buildChildResultTerminalOutcome({
+      abortSignal: activeChildSignal,
+      isTimedOut: false,
       result: {
         ok: true,
         finalProse: 'child finished',
@@ -26,6 +30,8 @@ void test('buildChildResultTerminalOutcome completes successful child results', 
 void test('buildChildResultTerminalOutcome keeps visible failure output before fallback text', () => {
   assert.deepEqual(
     buildChildResultTerminalOutcome({
+      abortSignal: activeChildSignal,
+      isTimedOut: false,
       result: {
         ok: false,
         finalProse: 'child explained failure',
@@ -43,6 +49,8 @@ void test('buildChildResultTerminalOutcome keeps visible failure output before f
 void test('buildChildResultTerminalOutcome falls back for empty child failures', () => {
   assert.deepEqual(
     buildChildResultTerminalOutcome({
+      abortSignal: activeChildSignal,
+      isTimedOut: false,
       result: {
         ok: false,
         finalProse: '',
@@ -58,6 +66,8 @@ void test('buildChildResultTerminalOutcome falls back for empty child failures',
 
   assert.deepEqual(
     buildChildResultTerminalOutcome({
+      abortSignal: activeChildSignal,
+      isTimedOut: false,
       result: {
         ok: false,
         finalProse: '',
@@ -68,6 +78,28 @@ void test('buildChildResultTerminalOutcome falls back for empty child failures',
       terminalState: 'failed',
       terminalReason: 'child_error',
       terminalResult: 'sub-agent failed',
+    },
+  );
+});
+
+void test('buildChildResultTerminalOutcome preserves an explicit stop returned as a loop result', () => {
+  const explicitStop = new AbortController();
+  explicitStop.abort('explicit_stop');
+
+  assert.deepEqual(
+    buildChildResultTerminalOutcome({
+      abortSignal: explicitStop.signal,
+      isTimedOut: false,
+      result: {
+        ok: false,
+        finalProse: 'run cancelled',
+      },
+      terminalMessage: '',
+    }),
+    {
+      terminalState: 'cancelled',
+      terminalReason: 'explicit_stop',
+      terminalResult: 'run cancelled',
     },
   );
 });
@@ -83,6 +115,40 @@ void test('buildChildErrorTerminalOutcome classifies non-abort throws as child e
       terminalState: 'failed',
       terminalReason: 'child_error',
       terminalResult: 'sub-agent failed',
+    },
+  );
+});
+
+void test('terminal outcome builders preserve a classified infrastructure reason', () => {
+  assert.deepEqual(
+    buildChildResultTerminalOutcome({
+      abortSignal: activeChildSignal,
+      isTimedOut: false,
+      result: {
+        ok: false,
+        finalProse: 'provider rejected the child request',
+      },
+      terminalMessage: '',
+      terminalReason: 'provider_error',
+    }),
+    {
+      terminalState: 'failed',
+      terminalReason: 'provider_error',
+      terminalResult: 'provider rejected the child request',
+    },
+  );
+
+  assert.deepEqual(
+    buildChildErrorTerminalOutcome({
+      abortSignal: new AbortController().signal,
+      isTimedOut: false,
+      terminalMessage: 'runtime state store unavailable',
+      terminalReason: 'persistence_error',
+    }),
+    {
+      terminalState: 'failed',
+      terminalReason: 'persistence_error',
+      terminalResult: 'runtime state store unavailable',
     },
   );
 });
@@ -132,6 +198,24 @@ void test('buildChildErrorTerminalOutcome treats other abort reasons as user int
     {
       terminalState: 'cancelled',
       terminalReason: 'user_interrupt',
+      terminalResult: 'sub-agent cancelled',
+    },
+  );
+});
+
+void test('buildChildErrorTerminalOutcome preserves graceful daemon shutdown', () => {
+  const shutdown = new AbortController();
+  shutdown.abort('daemon_shutdown');
+
+  assert.deepEqual(
+    buildChildErrorTerminalOutcome({
+      abortSignal: shutdown.signal,
+      isTimedOut: false,
+      terminalMessage: '',
+    }),
+    {
+      terminalState: 'cancelled',
+      terminalReason: 'daemon_shutdown',
       terminalResult: 'sub-agent cancelled',
     },
   );

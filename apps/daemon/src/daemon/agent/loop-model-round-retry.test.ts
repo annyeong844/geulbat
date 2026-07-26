@@ -26,17 +26,59 @@ void test('decideModelRoundRetry retries eligible categories before semantic out
       sawSemanticChunk: false,
       policy: retryPolicy,
     }),
-    { delayMs: 125 },
+    { kind: 'retry', delayMs: 125 },
   );
 
-  assert.equal(
+  assert.deepEqual(
     decideModelRoundRetry({
       category: 'llm_rate_limited',
       attemptIndex: 0,
       sawSemanticChunk: true,
       policy: retryPolicy,
     }),
-    null,
+    { kind: 'terminal', reason: 'unsafe_after_output' },
+  );
+});
+
+void test('decideModelRoundRetry treats an explicitly configured idle timeout as a transient connection failure before output', () => {
+  assert.deepEqual(
+    decideModelRoundRetry({
+      category: 'llm_idle_timeout',
+      attemptIndex: 0,
+      sawSemanticChunk: false,
+      policy: retryPolicy,
+    }),
+    { kind: 'retry', delayMs: 125 },
+  );
+  assert.deepEqual(
+    decideModelRoundRetry({
+      category: 'llm_idle_timeout',
+      attemptIndex: 0,
+      sawSemanticChunk: true,
+      policy: retryPolicy,
+    }),
+    { kind: 'terminal', reason: 'unsafe_after_output' },
+  );
+});
+
+void test('decideModelRoundRetry distinguishes exhausted budget from an unavailable retry category', () => {
+  assert.deepEqual(
+    decideModelRoundRetry({
+      category: 'llm_rate_limited',
+      attemptIndex: retryPolicy.llmRateLimited.maxRetries,
+      sawSemanticChunk: false,
+      policy: retryPolicy,
+    }),
+    { kind: 'terminal', reason: 'exhausted' },
+  );
+  assert.deepEqual(
+    decideModelRoundRetry({
+      category: 'llm_auth_expired',
+      attemptIndex: 0,
+      sawSemanticChunk: false,
+      policy: retryPolicy,
+    }),
+    { kind: 'terminal', reason: 'unavailable' },
   );
 });
 

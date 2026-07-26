@@ -46,6 +46,16 @@ function makeTestCellConfig(initialYieldTimeMs: number) {
   } as const;
 }
 
+void test('createPtcExecuteCodeRuntime refuses an enabled cell lane without an external process owner', () => {
+  assert.throws(
+    () =>
+      createPtcExecuteCodeRuntime({
+        ptcCell: makeTestCellConfig(1),
+      }),
+    /requires an explicit external process starter/u,
+  );
+});
+
 void test('createPtcExecuteCodeRuntime leaves the cell registry dormant when ptcCell is disabled', async () => {
   const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-disabled-workspace-'),
@@ -221,6 +231,7 @@ void test('createPtcExecuteCodeRuntime commits detached-cell store callbacks bef
     containerId: 'container-agent-ptc-execute-code-cell-callback-source',
   });
   let observedCellId: string | undefined;
+  let expectedBridgeMarkers: readonly string[] | undefined;
   let callbackRound = 0;
   const runtime = createPtcExecuteCodeRuntime({
     callbackTransportPolicy: TEST_CALLBACK_TRANSPORT_POLICY,
@@ -263,28 +274,38 @@ void test('createPtcExecuteCodeRuntime commits detached-cell store callbacks bef
       if (!session.ok) {
         throw new Error('expected session');
       }
+      const bridge = {
+        containerId: session.value.containerId,
+        epochId: 'epoch-cell-callback-source',
+        token: 'token-cell-callback-source',
+        callbackSocketHostPath: join(
+          session.value.callbackRootHostPath,
+          'callback.sock',
+        ),
+        callbackSocketContainerPath: '/geulbat/callbacks/callback.sock',
+        session: session.value,
+        close: async () => {},
+      };
+      expectedBridgeMarkers = [
+        bridge.token,
+        bridge.callbackSocketContainerPath,
+        bridge.callbackSocketHostPath,
+      ];
       return {
         ok: true,
-        value: {
-          containerId: session.value.containerId,
-          epochId: 'epoch-cell-callback-source',
-          token: 'token-cell-callback-source',
-          callbackSocketHostPath: join(
-            session.value.callbackRootHostPath,
-            'callback.sock',
-          ),
-          callbackSocketContainerPath: '/geulbat/callbacks/callback.sock',
-          session: session.value,
-          close: async () => {},
-        },
+        value: bridge,
       };
     },
-    startCellProcess: () => ({
-      ok: true,
-      handle: makeDetachedHandle({
-        output: makeDetachedSegment({ stdout: 'cell completed\n' }),
-      }),
-    }),
+    startCellProcess: (invocation) => {
+      assert.deepEqual(invocation.redactionMarkers, expectedBridgeMarkers);
+      assert.equal(invocation.redactionReplacement, '[redacted:ptc-callback]');
+      return {
+        ok: true,
+        handle: makeDetachedHandle({
+          output: makeDetachedSegment({ stdout: 'cell completed\n' }),
+        }),
+      };
+    },
     ptcCell: makeTestCellConfig(60_000),
     runtimeRootForState: () => runtimeRoot,
     store: {
@@ -1057,6 +1078,9 @@ void test('createPtcExecuteCodeRuntime recovers a background terminal result aft
     restartedRuntime = createPtcExecuteCodeRuntime({
       cellTerminalResultStore,
       ptcCell: makeTestCellConfig(1),
+      startCellProcess: () => {
+        assert.fail('durable result recovery must not start a cell process');
+      },
     });
     const afterRestart = await restartedRuntime.waitForCell({
       runContext: { threadId, stateRoot },
@@ -2983,6 +3007,9 @@ void test('createPtcExecuteCodeRuntime closeAll shuts down the enabled cell regi
   const runtime = createPtcExecuteCodeRuntime({
     createCellRegistry: () => registry,
     ptcCell: makeTestCellConfig(1),
+    startCellProcess: () => {
+      assert.fail('closing an injected registry must not start a cell process');
+    },
   });
 
   assert.deepEqual(await runtime.closeAll(), { ok: true });

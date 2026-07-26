@@ -90,7 +90,13 @@ void test('browser_page_load_evidence returns page-load evidence without raw URL
 
       workingDirectory: 'project',
       threadId: testThreadId(952),
-      agentSpawnRuntime: { ...daemonContext, ptcBrowserPageLoadEvidence },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: {
+          ...daemonContext.ptc,
+          browserPageLoadEvidence: ptcBrowserPageLoadEvidence,
+        },
+      },
       approvalGranted: true,
     },
   );
@@ -156,7 +162,13 @@ void test('browser_page_load_evidence strips unsafe failure diagnostics from too
 
       workingDirectory: 'project',
       threadId: testThreadId(953),
-      agentSpawnRuntime: { ...daemonContext, ptcBrowserPageLoadEvidence },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: {
+          ...daemonContext.ptc,
+          browserPageLoadEvidence: ptcBrowserPageLoadEvidence,
+        },
+      },
       approvalGranted: true,
     },
   );

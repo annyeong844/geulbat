@@ -3,10 +3,13 @@ import { URL } from 'node:url';
 import WebSocket from 'ws';
 import type { ErrorCode } from '@geulbat/protocol/errors';
 import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
-import type { RunEvent } from '@geulbat/protocol/run-events';
+import type {
+  RunEvent,
+  ToolOutputDeltaEventPayload,
+} from '@geulbat/protocol/run-events';
 import type { ThreadId } from '@geulbat/protocol/ids';
 
-import type { AgentEvent } from '../../../daemon/agent/events.js';
+import type { RunEventAgentEvent } from '../../../daemon/runtime-contracts.js';
 import { mapAgentEventToRunEvent } from '../protocol/map-events.js';
 import { isAllowedBrowserOrigin } from '#web/origin-policy.js';
 
@@ -46,10 +49,24 @@ export function sendRunEvent(
   runId: RunEvent['runId'],
   threadId: ThreadId,
   seq: number,
-  agentEvent: AgentEvent,
+  agentEvent: RunEventAgentEvent,
 ): boolean {
   const event = mapAgentEventToRunEvent(runId, threadId, seq, agentEvent);
   return sendMessage(socket, { type: 'run.event', event });
+}
+
+export function sendToolOutputDelta(
+  socket: WebSocket,
+  runId: RunEvent['runId'],
+  threadId: ThreadId,
+  payload: ToolOutputDeltaEventPayload,
+): boolean {
+  return sendMessage(socket, {
+    type: 'run.tool.output.delta',
+    runId,
+    threadId,
+    payload,
+  });
 }
 
 export function closeUnauthorized(

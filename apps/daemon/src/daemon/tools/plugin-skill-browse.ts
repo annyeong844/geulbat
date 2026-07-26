@@ -29,7 +29,7 @@ export async function resolvePluginSkillFileBrowsePath(args: {
     return { kind: 'computer_path' };
   }
 
-  const runtime = args.ctx.agentSpawnRuntime?.pluginSkills;
+  const runtime = args.ctx.runtimeServices?.pluginSkills;
   if (runtime === undefined) {
     return {
       kind: 'failure',
@@ -59,7 +59,7 @@ export async function resolvePluginSkillDirectoryBrowsePath(args: {
     return { kind: 'computer_path' };
   }
 
-  const runtime = args.ctx.agentSpawnRuntime?.pluginSkills;
+  const runtime = args.ctx.runtimeServices?.pluginSkills;
   if (runtime === undefined) {
     return {
       kind: 'failure',

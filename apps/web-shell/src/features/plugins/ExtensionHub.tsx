@@ -141,7 +141,7 @@ export function ExtensionHub({
               aria-expanded={creatorMenuOpen}
               onClick={() => setCreatorMenuOpen((open) => !open)}
             >
-              만들기⌄
+              만들기
             </button>
             {creatorMenuOpen ? (
               <div className="extension-create-popover" role="menu">
@@ -184,8 +184,6 @@ export function ExtensionHub({
 
       <div className="extension-hub-scroll">
         <div className="extension-hub-intro">
-          <h1>{copy.title}</h1>
-          <p>{copy.description}</p>
           <label className="extension-search">
             <span aria-hidden="true">⌕</span>
             <span className="sr-only">{copy.searchPlaceholder}</span>

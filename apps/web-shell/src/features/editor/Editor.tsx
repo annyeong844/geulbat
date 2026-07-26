@@ -49,8 +49,12 @@ interface Props {
   saveConflict: ConflictStaleWriteError | null;
   readOnly?: boolean;
   openFiles?: OpenFileTab[];
+  recentFiles?: string[];
   onSelectFileTab?: (path: string) => void;
   onCloseFileTab?: (path: string) => void;
+  onOpenFolder?: () => Promise<void> | void;
+  onOpenRecentFile?: (path: string) => Promise<void> | void;
+  onRemoveRecentFile?: (path: string) => void;
   onChange: (content: string) => void;
   onSave: () => Promise<void> | void;
   onConflictReload: () => Promise<void> | void;
@@ -96,8 +100,12 @@ export function Editor({
   saveConflict,
   readOnly: daemonReadOnly = false,
   openFiles = [],
+  recentFiles = [],
   onSelectFileTab,
   onCloseFileTab,
+  onOpenFolder,
+  onOpenRecentFile,
+  onRemoveRecentFile,
   onChange,
   onSave,
   onConflictReload,
@@ -242,7 +250,10 @@ export function Editor({
 
   return (
     <>
-      {openFiles.length > 0 ? (
+      {/* 상단 크롬 띠(48px) — 파일이 열려 있을 때만. 빈 상태에서는 보여줄
+          정보가 없는 띠가 공간만 낭비하므로 띠와 선을 통째로 걷는다
+          (웰컴은 프레임 없는 무대, 문서 모드는 작업대). */}
+      {openFiles.length > 0 || filePath || hasCanvasTab ? (
         <div className="file-tabs" role="tablist" aria-label="열린 파일">
           {openFiles.map((tab, tabIndex) => (
             <div
@@ -275,144 +286,106 @@ export function Editor({
           ))}
         </div>
       ) : null}
-      <div className="manuscript-header">
-        <nav className="breadcrumb" aria-label="파일 경로">
-          {breadcrumbItems.map((item, index) => (
-            <BreadcrumbItem
-              key={`${item}-${index}`}
-              isLast={index === breadcrumbItems.length - 1}
-            >
-              {item}
-            </BreadcrumbItem>
-          ))}
-        </nav>
-
-        <div className="manuscript-meta-row">
-          <div className="manuscript-title">
-            {filePath ? fileName.replace(/\.[^.]+$/, '') : ''}
-          </div>
-          {filePath || artifactPill !== undefined ? (
-            <div className="manuscript-meta">
-              {filePath && viewMode === 'code' && !artifactActive ? (
-                // 코드 뷰어에는 서식 툴바(💾 포함)가 없다 — 저장 버튼을
-                // 헤더에 직접 둔다 (Ctrl+S도 동작).
-                <>
-                  <button
-                    type="button"
-                    className="pref-toggle"
-                    title="저장 (Ctrl+S)"
-                    disabled={readOnly || !isDirty || saving}
-                    onClick={() => void onSave()}
-                  >
-                    {saving ? '저장 중…' : '저장'}
-                  </button>
-                  <span className="meta-divider">·</span>
-                </>
-              ) : null}
-              {filePath ? (
-                <>
-                  <span>{wordCount.toLocaleString()} 단어</span>
-                  {saveStateLabel ? (
-                    <>
-                      <span className="meta-divider">·</span>
-                      <span
-                        className={[
-                          'save-state',
-                          saving ? 'saving' : '',
-                          saveFailed ? 'failed' : '',
-                        ]
-                          .filter(Boolean)
-                          .join(' ')}
-                      >
-                        <span className="save-state-dot" />
-                        <span>{saveStateLabel}</span>
-                        {saveFailed ? (
-                          <button type="button" onClick={() => void onSave()}>
-                            재시도
-                          </button>
-                        ) : null}
-                      </span>
-                    </>
+      {/* 제목+메타 줄 — 선 아래, 스크롤과 무관하게 고정. 빈 상태에선 없음.
+          미디어 탭은 탭·풋터가 이미 파일명을 보여주므로 제호 줄을 걷는다 */}
+      {(filePath && !binaryPreview) ||
+      artifactPill !== undefined ||
+      hasCanvasTab ? (
+        <div className="manuscript-header">
+          {/* 제호는 가운데(작품 축), 보기 토글은 우측 가장자리(도구 축).
+              단어 수·저장 상태는 우측 하단 상태 칩으로 이동했다. */}
+          <div className="manuscript-meta-row">
+            <div className="manuscript-title">
+              {filePath && !binaryPreview
+                ? fileName.replace(/\.[^.]+$/, '')
+                : ''}
+            </div>
+            {(filePath && !binaryPreview) || artifactPill !== undefined ? (
+              <div className="manuscript-meta">
+                <span className="manuscript-prefs">
+                  {/* 리치/코드 토글은 텍스트 문서 전용 — 미디어 탭에선 숨긴다 */}
+                  {!binaryPreview ? (
+                    <button
+                      type="button"
+                      className={`pref-toggle${!artifactActive && viewMode === 'rich' ? ' active' : ''}`}
+                      title="리치 에디터 — 본문 서체로 편집"
+                      onClick={() => selectViewMode('rich')}
+                    >
+                      리치 에디터
+                    </button>
                   ) : null}
-                  <span className="meta-divider">·</span>
-                </>
-              ) : null}
-              <span className="manuscript-prefs">
+                  {artifactPill !== undefined ? (
+                    <button
+                      type="button"
+                      className={`pref-toggle${artifactActive ? ' active' : ''}`}
+                      title={`아티팩트 — ${artifactPill.label}`}
+                      onClick={artifactPill.onOpen}
+                    >
+                      아티팩트
+                    </button>
+                  ) : null}
+                  {!binaryPreview ? (
+                    <button
+                      type="button"
+                      className={`pref-toggle${!artifactActive && viewMode === 'code' ? ' active' : ''}`}
+                      title="코드 뷰어 — 고정폭 서체, 줄바꿈 없음"
+                      onClick={() => selectViewMode('code')}
+                    >
+                      코드 뷰어
+                    </button>
+                  ) : null}
+                </span>
+              </div>
+            ) : null}
+          </div>
+
+          {hasCanvasTab ? (
+            <div className="mode-tabs">
+              <div className="mode-tab-list" role="tablist">
                 <button
                   type="button"
-                  className={`pref-toggle${!artifactActive && viewMode === 'rich' ? ' active' : ''}`}
-                  title="리치 에디터 — 본문 서체로 편집"
-                  onClick={() => selectViewMode('rich')}
+                  role="tab"
+                  aria-selected={activeTab === 'manuscript'}
+                  className={`mode-tab${activeTab === 'manuscript' ? ' active' : ''}`}
+                  onClick={() => setActiveTab('manuscript')}
                 >
-                  리치 에디터
+                  원고
                 </button>
-                {artifactPill !== undefined ? (
-                  <button
-                    type="button"
-                    className={`pref-toggle${artifactActive ? ' active' : ''}`}
-                    title={`아티팩트 — ${artifactPill.label}`}
-                    onClick={artifactPill.onOpen}
-                  >
-                    아티팩트
-                  </button>
-                ) : null}
                 <button
                   type="button"
-                  className={`pref-toggle${!artifactActive && viewMode === 'code' ? ' active' : ''}`}
-                  title="코드 뷰어 — 고정폭 서체, 줄바꿈 없음"
-                  onClick={() => selectViewMode('code')}
+                  role="tab"
+                  aria-selected={activeTab === 'canvas'}
+                  className={`mode-tab${activeTab === 'canvas' ? ' active' : ''}`}
+                  onClick={() => setActiveTab('canvas')}
                 >
-                  코드 뷰어
+                  캔버스
                 </button>
-              </span>
+              </div>
+              <button
+                type="button"
+                className="mode-tab-close"
+                aria-label="캔버스 닫기"
+                onClick={closeCanvasTab}
+              >
+                ✕
+              </button>
             </div>
           ) : null}
         </div>
-
-        {hasCanvasTab ? (
-          <div className="mode-tabs">
-            <div className="mode-tab-list" role="tablist">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'manuscript'}
-                className={`mode-tab${activeTab === 'manuscript' ? ' active' : ''}`}
-                onClick={() => setActiveTab('manuscript')}
-              >
-                원고
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'canvas'}
-                className={`mode-tab${activeTab === 'canvas' ? ' active' : ''}`}
-                onClick={() => setActiveTab('canvas')}
-              >
-                캔버스
-              </button>
-            </div>
-            <button
-              type="button"
-              className="mode-tab-close"
-              aria-label="캔버스 닫기"
-              onClick={closeCanvasTab}
-            >
-              ✕
-            </button>
-          </div>
-        ) : null}
-
-        {filePath && !openingFile && viewMode !== 'code' && !artifactActive ? (
-          <FormatToolbar
-            controller={formatToolbar}
-            isDirty={isDirty}
-            saving={saving}
-            onSave={onSave}
-          />
-        ) : null}
-      </div>
+      ) : null}
 
       <div className="manuscript-scroll">
+        {/* 걸치는 서식 툴바 — 시트 윗변에 반쯤 걸터앉고, 스크롤하면 상단에
+            붙어 따라온다 (세이지 소프트 알약) */}
+        {filePath &&
+        !binaryPreview &&
+        !openingFile &&
+        viewMode !== 'code' &&
+        !artifactActive ? (
+          <div className="format-toolbar-float">
+            <FormatToolbar controller={formatToolbar} />
+          </div>
+        ) : null}
         {/* Drop handlers only reject unsupported file drops; they do not make the article an interactive control. */}
         {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
         <article
@@ -421,6 +394,10 @@ export function Editor({
             viewMode === 'code' && !artifactActive ? 'code' : '',
             artifactActive ? 'artifact-mode' : '',
             dropRejected ? 'drop-rejected' : '',
+            // 빈 상태에서는 시트가 내용 높이만 차지하고 세로 중앙에 앉는다
+            !artifactActive && !filePath && !binaryPreview ? 'welcome' : '',
+            // 매체 미리보기 — 원고 여백(56px) 대신 얇은 사진 매트 여백
+            !artifactActive && binaryPreview ? 'media' : '',
           ]
             .filter(Boolean)
             .join(' ')}
@@ -483,12 +460,16 @@ export function Editor({
 
           {artifactActive ? (
             artifactSurface
+          ) : binaryPreview ? (
+            <BinaryPreviewViewer preview={binaryPreview} />
           ) : !filePath ? (
-            binaryPreview ? (
-              <BinaryPreviewViewer preview={binaryPreview} />
-            ) : (
-              <ManuscriptEmptyState />
-            )
+            <ManuscriptEmptyState
+              recentFiles={recentFiles}
+              disabled={daemonReadOnly}
+              onOpenFolder={onOpenFolder}
+              onOpenRecentFile={onOpenRecentFile}
+              onRemoveRecentFile={onRemoveRecentFile}
+            />
           ) : openingFile ? (
             <ManuscriptSkeleton />
           ) : activeTab === 'canvas' ? (
@@ -537,26 +518,122 @@ export function Editor({
           )}
         </article>
       </div>
+
+      {/* 우측 하단 상태 칩 — 모드 공통으로 [저장 · 단어 수 · 저장 상태].
+          상태와 그 해결 수단(저장)이 한 곳에 산다. 스크롤과 무관하게 고정. */}
+      {filePath && !binaryPreview && !artifactActive ? (
+        <div className="manuscript-status" role="status">
+          {/* 저장 버튼은 변경이 감지될 때만 나타난다 — 평소엔 단어 수만 조용히 */}
+          {(isDirty || saving) && !readOnly ? (
+            <>
+              <button
+                type="button"
+                className="pref-toggle"
+                title="저장 (Ctrl+S)"
+                disabled={!isDirty || saving}
+                onClick={() => void onSave()}
+              >
+                {saving ? '저장 중…' : '저장'}
+              </button>
+              <span className="meta-divider">·</span>
+            </>
+          ) : null}
+          <span>{wordCount.toLocaleString()} 단어</span>
+          {saveStateLabel ? (
+            <>
+              <span className="meta-divider">·</span>
+              <span
+                className={[
+                  'save-state',
+                  saving ? 'saving' : '',
+                  saveFailed ? 'failed' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                <span className="save-state-dot" />
+                <span>{saveStateLabel}</span>
+                {saveFailed ? (
+                  <button type="button" onClick={() => void onSave()}>
+                    재시도
+                  </button>
+                ) : null}
+              </span>
+            </>
+          ) : null}
+        </div>
+      ) : null}
     </>
   );
 }
 
-function BreadcrumbItem(props: { children: ReactNode; isLast: boolean }) {
-  return (
-    <>
-      <span className="breadcrumb-item">{props.children}</span>
-      {props.isLast ? null : <span className="breadcrumb-sep">›</span>}
-    </>
-  );
-}
+function ManuscriptEmptyState(props: {
+  recentFiles: string[];
+  disabled: boolean;
+  onOpenFolder?: (() => Promise<void> | void) | undefined;
+  onOpenRecentFile?: ((path: string) => Promise<void> | void) | undefined;
+  onRemoveRecentFile?: ((path: string) => void) | undefined;
+}) {
+  const {
+    recentFiles,
+    disabled,
+    onOpenFolder,
+    onOpenRecentFile,
+    onRemoveRecentFile,
+  } = props;
 
-function ManuscriptEmptyState() {
   return (
     <div className="manuscript-empty">
       <div className="manuscript-empty-icon">✎</div>
-      <div className="manuscript-empty-title">파일을 열어 시작하세요</div>
-      <div className="manuscript-empty-hint">
-        왼쪽 파일 트리에서 파일을 열거나, 새 파일을 만들어 시작하세요.
+      <div className="manuscript-empty-title">폴더를 열어 시작하세요</div>
+      <div className="manuscript-empty-actions" aria-label="시작 작업">
+        <button
+          type="button"
+          className="manuscript-empty-action primary"
+          disabled={disabled || onOpenFolder === undefined}
+          onClick={() => void onOpenFolder?.()}
+        >
+          <span className="empty-action-folder-icon" aria-hidden="true" />
+          폴더 열기
+        </button>
+      </div>
+      <div className="recent-files" aria-label="최근 파일">
+        <div className="recent-files-heading">최근 파일</div>
+        {recentFiles.length > 0 ? (
+          <div className="recent-file-grid">
+            {recentFiles.map((path) => (
+              <div key={path} className="recent-file-card">
+                <button
+                  type="button"
+                  className="recent-file-open"
+                  title={path}
+                  disabled={disabled || onOpenRecentFile === undefined}
+                  onClick={() => void onOpenRecentFile?.(path)}
+                >
+                  <span className="recent-file-icon" aria-hidden="true" />
+                  <span className="recent-file-copy">
+                    <strong>{baseNameOf(path)}</strong>
+                    <small>{path}</small>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="recent-file-remove"
+                  aria-label={`${path} 최근 파일 목록에서 제거`}
+                  title="최근 파일 목록에서 제거"
+                  disabled={onRemoveRecentFile === undefined}
+                  onClick={() => onRemoveRecentFile?.(path)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="recent-files-empty">
+            최근에 연 파일이 아직 없습니다.
+          </div>
+        )}
       </div>
     </div>
   );

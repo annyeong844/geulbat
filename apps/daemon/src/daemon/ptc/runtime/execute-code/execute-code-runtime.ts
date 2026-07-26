@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { admitPtcBoundedTimeoutMs } from '../../shared/lab-spine.js';
 import { createPtcLogger } from '../../shared/logger.js';
+import { readPtcPositiveIntegerEnv } from '../../shared/positive-integer-env.js';
 import { definedPtcProps } from '../../shared/record-shape.js';
 import {
   admitPtcExecutionProfile,
@@ -58,10 +59,8 @@ import {
   PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS,
   type PtcExecuteCodeCellRetainedResult,
 } from './execute-code-cell-terminal-retention.js';
-import {
-  runExecuteCodeCellRuntimeAttempt,
-  type StartPtcExecuteCodeCellProcess,
-} from './execute-code-cell-runtime.js';
+import { runExecuteCodeCellRuntimeAttempt } from './execute-code-cell-runtime.js';
+import type { StartPtcExecuteCodeCellProcess } from './execute-code-cell-process.js';
 import { waitForExecuteCodeCell } from './execute-code-cell-wait.js';
 import { summarizeWaitRetainedCell } from './execute-code-cell-summary.js';
 import { createPtcExecuteCodeRuntimeStateOwner } from './execute-code-runtime-owner.js';
@@ -70,12 +69,12 @@ import {
   PTC_EXECUTE_CODE_CELL_EXEC_MIN_YIELD_MS,
   PTC_EXECUTE_CODE_INSTALLED_PACKAGES_NODE_PATH,
   PTC_EXECUTE_CODE_TRUST_CONTEXT_ID,
+  isPtcExecuteCodeRuntimeCellTerminalStatus,
   stringifyPtcExecuteCodeWaitSummary,
   type PtcExecuteCodeCellId,
   type PtcExecuteCodeModuleFormat,
   type PtcExecuteCodeCellTerminalResultStore,
   type PtcExecuteCodePlacementResourceBudget,
-  type PtcExecuteCodeRuntimeCellTerminalStatus,
   type PtcExecuteCodeRuntime,
   type PtcExecuteCodeRuntimeCleanupResult,
   type PtcExecuteCodeRuntimeResult,
@@ -161,7 +160,7 @@ export interface CreatePtcExecuteCodeRuntimeOptions {
   createEpochBridge?: CreatePtcSessionEpochBridge;
   createCellRegistry?: CreatePtcExecuteCodeCellRegistry;
   startCellProcess?: StartPtcExecuteCodeCellProcess;
-  callbackTransportPolicy?: PtcSessionEpochBridgeCallbackPolicy;
+  callbackTransportPolicy?: PtcSessionEpochBridgeCallbackPolicy | undefined;
   cellTerminalResultStore?: PtcExecuteCodeCellTerminalResultStore;
   ptcCell?: PtcExecuteCodeCellRuntimeConfig;
   burstPlacement?: PtcExecuteCodeBurstPlacementConfig | undefined;
@@ -225,18 +224,18 @@ export function resolvePtcExecuteCodeCellRuntimeConfigFromEnv(
   if (initialYieldRaw !== undefined && runningReapRaw !== undefined) {
     return Object.freeze({
       enabled: true,
-      initialYieldTimeMs: readPtcCellIntegerEnv(
+      initialYieldTimeMs: readPtcPositiveIntegerEnv(
         PTC_EXECUTE_CODE_CELL_INITIAL_YIELD_MS_ENV,
         initialYieldRaw,
       ),
-      runningCellReapAfterMs: readPtcCellIntegerEnv(
+      runningCellReapAfterMs: readPtcPositiveIntegerEnv(
         PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV,
         runningReapRaw,
       ),
       terminalResultMemoryRetentionMs:
         terminalMemoryRetentionRaw === undefined
           ? PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS
-          : readPtcCellIntegerEnv(
+          : readPtcPositiveIntegerEnv(
               PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV,
               terminalMemoryRetentionRaw,
             ),
@@ -264,18 +263,6 @@ function readPtcCellBooleanEnv(name: string, raw: string): boolean {
     return false;
   }
   throw new Error(`invalid ${name}: ${value || 'empty'}`);
-}
-
-function readPtcCellIntegerEnv(name: string, raw: string): number {
-  const value = raw.trim();
-  if (!/^\d+$/u.test(value)) {
-    throw new Error(`invalid ${name}: ${value || 'empty'}`);
-  }
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new Error(`invalid ${name}: ${value}`);
-  }
-  return parsed;
 }
 
 function hasExplicitPtcExecuteCodeCallbackTransportPolicy(
@@ -341,6 +328,11 @@ export function createPtcExecuteCodeRuntime(
   }
   const ptcCellConfig =
     options.ptcCell?.enabled === true ? options.ptcCell : undefined;
+  if (ptcCellConfig !== undefined && options.startCellProcess === undefined) {
+    throw new Error(
+      'PTC execute_code cell requires an explicit external process starter',
+    );
+  }
   const terminalResultMemoryRetentionMs =
     ptcCellConfig?.terminalResultMemoryRetentionMs ??
     PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS;
@@ -410,7 +402,9 @@ export function createPtcExecuteCodeRuntime(
           });
           if (
             !summarized.ok ||
-            !isPtcExecuteCodeTerminalWaitStatus(summarized.value.status) ||
+            !isPtcExecuteCodeRuntimeCellTerminalStatus(
+              summarized.value.status,
+            ) ||
             !('exitCode' in summarized.value)
           ) {
             return undefined;
@@ -644,6 +638,12 @@ export function createPtcExecuteCodeRuntime(
       });
 
       if (ptcCellConfig !== undefined && cellRegistry !== undefined) {
+        const startCellProcess = options.startCellProcess;
+        if (startCellProcess === undefined) {
+          throw new Error(
+            'PTC execute_code cell process starter became unavailable',
+          );
+        }
         const runCellAttempt = (runtimeArgs?: {
           onRunningCellSettled?: Parameters<
             typeof runExecuteCodeCellRuntimeAttempt
@@ -684,7 +684,7 @@ export function createPtcExecuteCodeRuntime(
             sdkHelpBundle,
             sessionManager: stateRuntime.sessionManager,
             signal: args.signal,
-            startCellProcess: options.startCellProcess,
+            startCellProcess,
             ...(stateRuntime.store === undefined
               ? {}
               : { store: stateRuntime.store }),
@@ -876,17 +876,6 @@ export function createPtcExecuteCodeRuntime(
       return await runtimeState.closeAll(args);
     },
   };
-}
-
-function isPtcExecuteCodeTerminalWaitStatus(
-  value: unknown,
-): value is PtcExecuteCodeRuntimeCellTerminalStatus {
-  return (
-    value === 'completed' ||
-    value === 'terminated' ||
-    value === 'completed_with_cleanup_failure' ||
-    value === 'terminated_with_cleanup_failure'
-  );
 }
 
 function validateExecuteCodeRequest(

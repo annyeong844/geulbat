@@ -37,12 +37,6 @@ const stdioTransportSchema = z
       .positive()
       .max(Number.MAX_SAFE_INTEGER)
       .optional(),
-    shutdownGraceMs: z
-      .number()
-      .int()
-      .positive()
-      .max(Number.MAX_SAFE_INTEGER)
-      .optional(),
   })
   .strict();
 
@@ -88,9 +82,6 @@ export function createMcpRoutes(args: { globalMcp: GlobalMcpRuntime }): Router {
           ...(parsed.data.transport.requestTimeoutMs === undefined
             ? {}
             : { requestTimeoutMs: parsed.data.transport.requestTimeoutMs }),
-          ...(parsed.data.transport.shutdownGraceMs === undefined
-            ? {}
-            : { shutdownGraceMs: parsed.data.transport.shutdownGraceMs }),
         },
         ...(parsed.data.enabled === undefined
           ? {}

@@ -4,18 +4,23 @@ import type {
   RunToolResultPayload,
 } from '@geulbat/protocol/run-channel';
 
-import type { AgentRuntimeServices } from '../../../daemon/daemon-runtime-contract.js';
+import type {
+  AgentRuntimeAgentServices,
+  AgentRuntimeServices,
+} from '../../../daemon/daemon-runtime-contract.js';
 import type { ApprovalGate } from '../../../daemon/agent/runtime/approval-gate.js';
 import type { BackgroundNotificationQueue } from '../../../daemon/agent/runtime/background-notification-queue.js';
 import type { ActiveRunStore } from '../../../daemon/sessions/active-runs.js';
 import type { LiveRunEventStore } from '../../../daemon/sessions/live-run-events.js';
 import type { RunCheckpointStore } from '../../../daemon/sessions/run-checkpoint-store.js';
+import type { AgentLoopImplementationAdmission } from '../../../daemon/agent/loop-implementation-admission.js';
 import type { ComputerFileScope } from '../../../daemon/files/computer-file-scope.js';
 
 type RunChannelActiveRuns = AgentRuntimeServices['activeRuns'] &
   Pick<
     ActiveRunStore,
     | 'abortThreadTree'
+    | 'abortRunSubtree'
     | 'appendPendingInterject'
     | 'cancelPendingInterject'
     | 'requestPendingInterjectFlush'
@@ -26,9 +31,8 @@ type RunChannelActiveRuns = AgentRuntimeServices['activeRuns'] &
 type RunChannelApprovalGate = AgentRuntimeServices['approvalGate'] &
   Pick<
     ApprovalGate,
-    | 'clearApprovalSessionRuntime'
-    | 'hasPendingApprovalForSession'
-    | 'rebindApprovalSessionRuntime'
+    | 'clearComputerSessionRuntime'
+    | 'hasApprovalDecisionAuthority'
     | 'resolveApproval'
   >;
 
@@ -40,7 +44,7 @@ type RunChannelArtifactFrameToolDispatch = (args: {
   threadId: ThreadId;
   runId: string;
   workingDirectory: string;
-  approvalSessionId: string;
+  computerSessionId: string;
   toolName: RunToolRequest['toolName'];
   toolArgs: RunToolRequest['args'];
   scopeHandle: RunToolRequest['scopeHandle'];
@@ -49,8 +53,11 @@ type RunChannelArtifactFrameToolDispatch = (args: {
 
 export type RunChannelRuntimeContext = Omit<
   AgentRuntimeServices,
-  'activeRuns' | 'approvalGate' | 'backgroundNotifications'
+  'activeRuns' | 'agent' | 'approvalGate' | 'backgroundNotifications'
 > & {
+  agent: AgentRuntimeAgentServices & {
+    loopImplementationAdmission: AgentLoopImplementationAdmission;
+  };
   activeRuns: RunChannelActiveRuns;
   approvalGate: RunChannelApprovalGate;
   artifactFrameToolDispatch: RunChannelArtifactFrameToolDispatch;
@@ -68,10 +75,10 @@ export type RunChannelControlContext = Pick<
 
 export type RunChannelSubscriptionContext = Pick<
   RunChannelRuntimeContext,
-  'backgroundNotifications'
+  'backgroundNotifications' | 'childRuns'
 >;
 
 export type RunChannelSocketCleanupContext = Pick<
   RunChannelRuntimeContext,
-  'approvalGate' | 'liveRunEvents'
+  'liveRunEvents'
 >;

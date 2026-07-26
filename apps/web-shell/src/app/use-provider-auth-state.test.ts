@@ -124,6 +124,15 @@ void test('getProviderStatusObserveDelayMs waits until auth nears expiry, then p
     }),
     null,
   );
+  assert.equal(
+    getProviderStatusObserveDelayMs({
+      state: 'ready',
+      ready: false,
+      authSessionId: 'auth-bootstrap-ready',
+      expiresAt: 150_000,
+    }),
+    PROVIDER_AUTH_READY_POLL_MS,
+  );
 });
 
 void test('useProviderAuthState treats already-connected start conflicts as status sync, not UI error', async () => {
@@ -189,6 +198,46 @@ void test('useProviderAuthState skips startProviderAuth when the current status 
   hook.unmount();
 });
 
+void test('useProviderAuthState does not treat ready:false bootstrap state as already connected', async () => {
+  restoreDocument = installShellAuthDocument();
+  restoreWindow = installProviderAuthWindow();
+  const fetchMock = installFetchSequence(
+    () =>
+      jsonResponse({
+        state: 'ready',
+        ready: false,
+        authSessionId: 'auth-bootstrap-ready',
+        expiresAt: 2_000,
+      }),
+    () => jsonResponse({ state: 'missing', ready: false }),
+    () =>
+      jsonResponse({
+        authSessionId: 'auth-bootstrap-next',
+        authorizeUrl:
+          'https://auth.openai.com/oauth/authorize?response_type=code&client_id=test',
+        expiresAt: 3_000,
+        providerId: 'openai_codex_direct',
+      }),
+    () =>
+      jsonResponse({
+        state: 'ready',
+        ready: true,
+        expiresAt: 4_000,
+      }),
+  );
+  restoreFetch = fetchMock.restore;
+
+  const hook = await renderHook(useProviderAuthState, undefined);
+  await hook.flush();
+  await hook.run((current) => current.handleConnectProvider());
+
+  assert.equal(fetchMock.calls.length, 4);
+  assert.match(fetchMock.calls[2]?.url ?? '', /\/provider-auth\/start$/u);
+  assert.equal(hook.result.current.providerAuthNotice, null);
+  assert.equal(hook.result.current.providerAuthStatus?.ready, true);
+  hook.unmount();
+});
+
 void test('useProviderAuthState keeps the same status reference across identical pending polls', async () => {
   restoreDocument = installShellAuthDocument();
   let intervalCallback: (() => void) | null = null;
@@ -242,6 +291,116 @@ void test('useProviderAuthState keeps the same status reference across identical
 
   assert.equal(fetchMock.calls.length, 4);
   assert.equal(hook.result.current.providerAuthStatus, firstStatus);
+  hook.unmount();
+});
+
+void test('useProviderAuthState continues observing ready:false bootstrap state', async () => {
+  restoreDocument = installShellAuthDocument();
+  const timeoutCallbacks: Array<{
+    timeout: number | undefined;
+    callback: () => void;
+  }> = [];
+  restoreWindow = installProviderAuthWindow({
+    setTimeout(callback: TimerHandler, timeout?: number) {
+      if (typeof callback !== 'function') {
+        throw new Error('provider auth test expected timeout callback');
+      }
+      timeoutCallbacks.push({ timeout, callback: () => callback() });
+      return timeoutCallbacks.length;
+    },
+    clearTimeout() {
+      return;
+    },
+  });
+  const fetchMock = installFetchSequence(
+    () =>
+      jsonResponse({
+        state: 'ready',
+        ready: false,
+        authSessionId: 'auth-bootstrap-ready',
+        expiresAt: Date.now() + 60_000,
+      }),
+    () => jsonResponse({ state: 'missing', ready: false }),
+    () =>
+      jsonResponse({
+        state: 'ready',
+        ready: true,
+        expiresAt: Date.now() + 120_000,
+      }),
+    () => jsonResponse({ state: 'missing', ready: false }),
+  );
+  restoreFetch = fetchMock.restore;
+
+  const hook = await renderHook(useProviderAuthState, undefined);
+  await hook.flush();
+  const observeTimer = timeoutCallbacks.find(
+    (entry) => entry.timeout === PROVIDER_AUTH_READY_POLL_MS,
+  );
+  assert.ok(observeTimer);
+
+  await hook.run(async () => {
+    observeTimer.callback();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  assert.equal(fetchMock.calls.length, 4);
+  assert.equal(hook.result.current.providerAuthStatus?.ready, true);
+  hook.unmount();
+});
+
+void test('useProviderAuthState invalidates cached connected status when observation fails', async () => {
+  restoreDocument = installShellAuthDocument();
+  const timeoutCallbacks: Array<{
+    timeout: number | undefined;
+    callback: () => void;
+  }> = [];
+  restoreWindow = installProviderAuthWindow({
+    setTimeout(callback: TimerHandler, timeout?: number) {
+      if (typeof callback !== 'function') {
+        throw new Error('provider auth test expected timeout callback');
+      }
+      timeoutCallbacks.push({ timeout, callback: () => callback() });
+      return timeoutCallbacks.length;
+    },
+    clearTimeout() {
+      return;
+    },
+  });
+  const fetchMock = installFetchSequence(
+    () =>
+      jsonResponse({
+        state: 'ready',
+        ready: true,
+        expiresAt: Date.now() + 60_000,
+      }),
+    () => jsonResponse({ state: 'missing', ready: false }),
+    () => {
+      throw new Error('network down');
+    },
+    () => jsonResponse({ state: 'missing', ready: false }),
+  );
+  restoreFetch = fetchMock.restore;
+
+  const hook = await renderHook(useProviderAuthState, undefined);
+  await hook.flush();
+  assert.equal(hook.result.current.providerAuthStatus?.ready, true);
+  const observeTimer = timeoutCallbacks.find(
+    (entry) => entry.timeout === PROVIDER_AUTH_READY_POLL_MS,
+  );
+  assert.ok(observeTimer);
+
+  await hook.run(async () => {
+    observeTimer.callback();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  assert.equal(hook.result.current.providerAuthStatus, null);
+  assert.match(
+    hook.result.current.providerAuthError ?? '',
+    /Unable to load provider auth status\. network down/u,
+  );
   hook.unmount();
 });
 

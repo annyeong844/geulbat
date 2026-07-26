@@ -6,10 +6,24 @@ import type {
 } from '../../artifacts/artifact-types.js';
 import { buildCanonicalArtifactSourceRef } from '../../artifacts/artifact-source-ref.js';
 
-const ARTIFACT_RUNTIME_REVISION_HASH_MASK = (1n << 64n) - 1n;
-const ARTIFACT_RUNTIME_REVISION_HASH_PRIME = 1099511628211n;
-const ARTIFACT_RUNTIME_REVISION_HASH_OFFSET_A = 14695981039346656037n;
-const ARTIFACT_RUNTIME_REVISION_HASH_OFFSET_B = 7809847782465536322n;
+interface ArtifactRuntimeRevisionHash {
+  high: number;
+  low: number;
+}
+
+const UINT32_RANGE = 0x1_0000_0000;
+// FNV-1a 64-bit prime 0x00000100_000001b3, split into uint32 words.
+const ARTIFACT_RUNTIME_REVISION_HASH_PRIME_HIGH = 0x0000_0100;
+const ARTIFACT_RUNTIME_REVISION_HASH_PRIME_LOW = 0x0000_01b3;
+const ARTIFACT_RUNTIME_REVISION_HASH_OFFSET_A = {
+  high: 0xcbf2_9ce4,
+  low: 0x8422_2325,
+} satisfies ArtifactRuntimeRevisionHash;
+const ARTIFACT_RUNTIME_REVISION_HASH_OFFSET_B = {
+  high: 0x6c62_272e,
+  low: 0x07bb_0142,
+} satisfies ArtifactRuntimeRevisionHash;
+const ARTIFACT_RUNTIME_REVISION_HASH_WORD_HEX_LENGTH = 8;
 
 export function createArtifactRuntimeSourceIdentity(
   sourceRef: ArtifactSourceInputRef | ResolvedArtifactSourceRef,
@@ -66,31 +80,52 @@ export function createArtifactRuntimeFrameRevision(args: {
   return `rev2-${totalLength.toString(16)}-${formatArtifactRuntimeRevisionHash(forwardHash)}${formatArtifactRuntimeRevisionHash(reverseHash)}`;
 }
 
-function mixArtifactRuntimeRevisionHash(hash: bigint, value: string): bigint {
-  let next = hash;
+function mixArtifactRuntimeRevisionHash(
+  hash: ArtifactRuntimeRevisionHash,
+  value: string,
+): ArtifactRuntimeRevisionHash {
+  let high = hash.high;
+  let low = hash.low;
   for (let index = 0; index < value.length; index += 1) {
-    next ^= BigInt(value.charCodeAt(index));
-    next =
-      (next * ARTIFACT_RUNTIME_REVISION_HASH_PRIME) &
-      ARTIFACT_RUNTIME_REVISION_HASH_MASK;
+    low = (low ^ value.charCodeAt(index)) >>> 0;
+    const lowProduct = low * ARTIFACT_RUNTIME_REVISION_HASH_PRIME_LOW;
+    const carry = Math.floor(lowProduct / UINT32_RANGE);
+    high =
+      (Math.imul(high, ARTIFACT_RUNTIME_REVISION_HASH_PRIME_LOW) +
+        Math.imul(low, ARTIFACT_RUNTIME_REVISION_HASH_PRIME_HIGH) +
+        carry) >>>
+      0;
+    low = lowProduct >>> 0;
   }
-  return next;
+  return { high, low };
 }
 
 function mixArtifactRuntimeRevisionHashReverse(
-  hash: bigint,
+  hash: ArtifactRuntimeRevisionHash,
   value: string,
-): bigint {
-  let next = hash;
+): ArtifactRuntimeRevisionHash {
+  let high = hash.high;
+  let low = hash.low;
   for (let index = value.length - 1; index >= 0; index -= 1) {
-    next ^= BigInt(value.charCodeAt(index));
-    next =
-      (next * ARTIFACT_RUNTIME_REVISION_HASH_PRIME) &
-      ARTIFACT_RUNTIME_REVISION_HASH_MASK;
+    low = (low ^ value.charCodeAt(index)) >>> 0;
+    const lowProduct = low * ARTIFACT_RUNTIME_REVISION_HASH_PRIME_LOW;
+    const carry = Math.floor(lowProduct / UINT32_RANGE);
+    high =
+      (Math.imul(high, ARTIFACT_RUNTIME_REVISION_HASH_PRIME_LOW) +
+        Math.imul(low, ARTIFACT_RUNTIME_REVISION_HASH_PRIME_HIGH) +
+        carry) >>>
+      0;
+    low = lowProduct >>> 0;
   }
-  return next;
+  return { high, low };
 }
 
-function formatArtifactRuntimeRevisionHash(hash: bigint): string {
-  return hash.toString(16).padStart(16, '0');
+function formatArtifactRuntimeRevisionHash(
+  hash: ArtifactRuntimeRevisionHash,
+): string {
+  return `${hash.high
+    .toString(16)
+    .padStart(ARTIFACT_RUNTIME_REVISION_HASH_WORD_HEX_LENGTH, '0')}${hash.low
+    .toString(16)
+    .padStart(ARTIFACT_RUNTIME_REVISION_HASH_WORD_HEX_LENGTH, '0')}`;
 }

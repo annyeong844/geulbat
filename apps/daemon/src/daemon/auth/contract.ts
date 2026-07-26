@@ -3,7 +3,6 @@ import type {
   ProviderAuthProviderId,
   ProviderAuthStartResponse,
   ProviderAuthStatusResponse,
-  ProviderAuthStatusState,
 } from '@geulbat/protocol/provider-auth';
 export {
   DEFAULT_PROVIDER_AUTH_PROVIDER_ID,
@@ -16,5 +15,4 @@ export type {
   ProviderAuthProviderId,
   ProviderAuthStartResponse,
   ProviderAuthStatusResponse,
-  ProviderAuthStatusState,
 };

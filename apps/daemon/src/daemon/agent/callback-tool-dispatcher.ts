@@ -63,7 +63,11 @@ export function createCallbackToolDispatcher(args: {
         hostCallId,
         ...(cellId !== undefined ? { cellId } : {}),
         ...(mayMutateComputerFiles
-          ? { approvalClass: resolveApprovalClass(toolName, toolArgs) }
+          ? {
+              approvalClass: resolveApprovalClass(toolName, toolArgs, {
+                toolRegistry: runtime.toolRegistry,
+              }),
+            }
           : {}),
       };
       const functionCall: FunctionCall = {

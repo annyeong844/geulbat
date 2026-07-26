@@ -10,6 +10,13 @@ import {
 import type { ErrorCode } from '../../error-codes.js';
 import { toolError } from '../result.js';
 import { defineZodTool } from '../zod-tool.js';
+import type { AgentRuntimePtcServices } from '../../daemon-runtime-contract.js';
+
+// This tool depends only on its own PTC runtime; keep the declared
+// service surface that narrow.
+type WaitToolServices = {
+  ptc: Pick<AgentRuntimePtcServices, 'executeCode'>;
+};
 
 const waitArgsSchema = z.strictObject({
   cell_id: z
@@ -48,6 +55,11 @@ export const waitTool = defineZodTool({
   mayMutateComputerFiles: false,
   parallelBatchKind: 'ptc_cell',
   requiresApproval: false,
+  resultProjection: {
+    exactDurableRecovery: true,
+    modelProjection: 'runtime_summary',
+    snapshotFailure: 'inline',
+  },
   catalogSearchMetadata: {
     family: 'ptc',
     searchHints: ['wait cell', 'wait for output', 'cell output', 'poll exec'],
@@ -60,7 +72,8 @@ export const waitTool = defineZodTool({
     if (!ctx.threadId || !ctx.stateRoot) {
       return toolError('execution_failed', 'thread context is required.');
     }
-    const runtime = ctx.agentSpawnRuntime?.ptcExecuteCode;
+    const services: WaitToolServices | undefined = ctx.runtimeServices;
+    const runtime = services?.ptc.executeCode;
     if (!runtime) {
       return toolError('execution_failed', 'PTC exec runtime is required.');
     }

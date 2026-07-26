@@ -26,6 +26,7 @@ import { createRunInterjectBuffer } from './daemon/sessions/active-run-interject
 import { commitThreadArtifactVersion } from './daemon/sessions/artifact-store.js';
 import { appendTranscriptEntry } from './daemon/sessions/transcript-log.js';
 import { hasErrorCode } from './daemon/utils/error.js';
+import { createDaemonRuntimeStateStore } from './daemon/runtime-state-store.js';
 import { assertThreadId as assertValidThreadId } from '@geulbat/protocol/ids';
 import { isThreadBranchResponse } from '@geulbat/protocol/threads';
 import {
@@ -168,6 +169,91 @@ void test('authenticated threads routes return stored summaries and transcript d
     await restoreFileSnapshot(indexPath, indexSnapshot);
     await restoreFileSnapshot(transcriptPath, transcriptSnapshot);
     await restoreFileSnapshot(artifactPath, artifactSnapshot);
+  }
+});
+
+void test('authenticated thread detail restores acknowledged terminal worker history', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const stateRoot = daemonContext.homeStateRoot;
+  const ownerThreadId = assertValidThreadId(randomUUID());
+  const childThreadId = assertValidThreadId(randomUUID());
+  const transcriptPath = threadFilePath(stateRoot, ownerThreadId);
+  const runtimeStore = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  daemonContext.backgroundNotifications.attachDurableStore(runtimeStore);
+
+  await upsertThreadSummary(stateRoot, {
+    threadId: ownerThreadId,
+    title: 'Worker history',
+    lastUpdated: '2026-07-23T10:00:00.000Z',
+    messageCount: 0,
+  });
+  await mkdir(dirname(transcriptPath), { recursive: true });
+  await fsWriteFile(transcriptPath, '', 'utf8');
+
+  const terminalResult = {
+    deliveryId: 'delivery-thread-history',
+    parentRunId: testRunId('history-parent'),
+    childRunId: testRunId('history-child-retry'),
+    childThreadId,
+    subagentType: 'worker' as const,
+    capabilities: [] as const,
+    toolSurface: 'worker' as const,
+    runtime: {
+      phase: 'tool_running' as const,
+      observedAt: '2026-07-23T10:00:01.000Z',
+      lastTool: {
+        name: 'apply_patch',
+        callId: 'call-history-patch',
+        state: 'failed' as const,
+      },
+      partialOutputAvailable: true,
+      previousChildRunId: testRunId('history-child-original'),
+    },
+    terminalState: 'failed' as const,
+    reason: 'daemon_restart' as const,
+    result: '재시작 전에 남긴 부분 결과',
+    completedAt: '2026-07-23T10:00:02.000Z',
+  };
+  daemonContext.backgroundNotifications.enqueueThreadBackgroundResult(
+    ownerThreadId,
+    terminalResult,
+  );
+  daemonContext.backgroundNotifications.acknowledgeThreadBackgroundResults(
+    ownerThreadId,
+    [terminalResult.deliveryId],
+  );
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const res = await fetch(
+          `http://127.0.0.1:${port}/api/threads/${ownerThreadId}`,
+          { headers: authHeaders() },
+        );
+        assert.equal(res.status, 200);
+        const body = (await res.json()) as {
+          subagentTerminalOutcomes: Array<{
+            deliveryId: string;
+            resultRef: string;
+            runtime?: { previousChildRunId?: string };
+            reason?: string;
+            result: string;
+          }>;
+        };
+        assert.deepEqual(body.subagentTerminalOutcomes, [
+          {
+            ...terminalResult,
+            resultRef: `subagent-result:${terminalResult.deliveryId}`,
+          },
+        ]);
+      },
+      { daemonContext },
+    );
+  } finally {
+    runtimeStore.close();
+    await rm(dirname(stateRoot), { recursive: true, force: true });
   }
 });
 
@@ -905,6 +991,70 @@ void test('authenticated thread delete route rejects active run threads', async 
     );
   } finally {
     daemonContext.activeRuns.finishRun(threadId, runId);
+  }
+});
+
+void test('authenticated thread delete route rejects a surviving background child after its parent settles', async () => {
+  const daemonContext = createRouteTestDaemonContext();
+  const ownerThreadId = assertValidThreadId(randomUUID());
+  const childThreadId = assertValidThreadId(randomUUID());
+  const parentRunId = testRunId('delete-settled-parent');
+  const childRunId = testRunId('delete-active-child');
+
+  assert.deepEqual(
+    daemonContext.activeRuns.tryStartRun(ownerThreadId, {
+      runId: parentRunId,
+      threadId: ownerThreadId,
+      stateRoot: daemonContext.homeStateRoot,
+      workingDirectory: 'stories',
+      ownerThreadId,
+      abortController: new AbortController(),
+      interject: createRunInterjectBuffer(),
+      startedAt: '2026-07-22T00:00:00.000Z',
+    }),
+    { ok: true },
+  );
+  assert.deepEqual(
+    daemonContext.activeRuns.tryStartRun(childThreadId, {
+      runId: childRunId,
+      threadId: childThreadId,
+      stateRoot: daemonContext.homeStateRoot,
+      workingDirectory: 'stories',
+      ownerThreadId,
+      parentRunId,
+      abortController: new AbortController(),
+      interject: createRunInterjectBuffer(),
+      startedAt: '2026-07-22T00:00:01.000Z',
+    }),
+    { ok: true },
+  );
+  daemonContext.activeRuns.finishRun(ownerThreadId, parentRunId);
+
+  try {
+    await withAuthenticatedDaemonServer(
+      async ({ port }) => {
+        const res = await fetch(
+          `http://127.0.0.1:${port}/api/threads/${ownerThreadId}`,
+          {
+            method: 'DELETE',
+            headers: authHeaders(),
+          },
+        );
+
+        assert.equal(res.status, 409);
+        const body = (await res.json()) as {
+          code: string;
+          threadId: string;
+          activeRunId: string;
+        };
+        assert.equal(body.code, 'conflict_active_run');
+        assert.equal(body.threadId, ownerThreadId);
+        assert.equal(body.activeRunId, childRunId);
+      },
+      { daemonContext },
+    );
+  } finally {
+    daemonContext.activeRuns.finishRun(childThreadId, childRunId);
   }
 });
 

@@ -2,10 +2,18 @@ import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
 import type { ThreadId } from '@geulbat/protocol/ids';
+import type { RunEventReplayCursor } from '@geulbat/protocol/run-channel';
 import { createLogger } from '@geulbat/structured-logger/logger';
 
-import { mapBackgroundSubagentTerminalToRunEvent } from '../protocol/map-events.js';
-import { sendMessage, sendRunEvent } from './run-channel-socket.js';
+import {
+  mapAgentEventToRunEvent,
+  mapBackgroundSubagentTerminalToRunEvent,
+} from '../protocol/map-events.js';
+import {
+  sendMessage,
+  sendRunEvent,
+  sendToolOutputDelta,
+} from './run-channel-socket.js';
 import {
   cleanupSocketRuntimeState,
   clearSocketHeartbeatRuntime,
@@ -17,16 +25,22 @@ import type {
 } from './run-channel-runtime-context.js';
 import type { LiveRunEventSink } from '../../../daemon/sessions/live-run-events.js';
 import { getErrorMessage } from '../../../daemon/utils/error.js';
+import {
+  resolveSubagentToolSurfaceProfile,
+  type ChildRunSnapshot,
+} from '../../../daemon/subagent-runtime-contracts.js';
 
 const logger = createLogger('run-channel/heartbeat');
 
 // Runtime state owns per-socket authorization, subscriptions, and run cleanup.
 export interface RunChannelSocketState {
-  approvalSessionId: string;
+  computerSessionId: string;
   authenticated: boolean;
+  authenticationPending: boolean;
   upgradeAuthorized: boolean;
   remoteAddress: string | null;
   activeRunIds: Set<CancelRequest['runId']>;
+  ownedRunIds: Set<CancelRequest['runId']>;
   runStartInFlightRequestId: string | null;
   threadSeqByThread: Map<ThreadId, number>;
   threadUnsubscribes: Map<ThreadId, () => void>;
@@ -52,11 +66,15 @@ export function getSocketState(socket: WebSocket): RunChannelSocketState {
   }
 
   const next: RunChannelSocketState = {
-    approvalSessionId: randomUUID(),
+    // Provisional only. A valid run.auth replaces this before run recovery or
+    // binding, so socket lifetime never becomes approval authority.
+    computerSessionId: randomUUID(),
     authenticated: false,
+    authenticationPending: false,
     upgradeAuthorized: false,
     remoteAddress: null,
     activeRunIds: new Set<CancelRequest['runId']>(),
+    ownedRunIds: new Set<CancelRequest['runId']>(),
     runStartInFlightRequestId: null,
     threadSeqByThread: new Map<ThreadId, number>(),
     threadUnsubscribes: new Map<ThreadId, () => void>(),
@@ -151,6 +169,43 @@ export function nextSocketThreadSeq(
   return current;
 }
 
+function sendActiveChildStatus(
+  socket: WebSocket,
+  threadId: ThreadId,
+  child: ChildRunSnapshot,
+): void {
+  sendMessage(socket, {
+    type: 'run.event',
+    event: mapAgentEventToRunEvent(
+      child.parentRunId,
+      threadId,
+      nextSocketThreadSeq(socket, threadId),
+      {
+        type: 'subagent_status',
+        payload: {
+          parentRunId: child.parentRunId,
+          childRunId: child.childRunId,
+          childThreadId: child.childThreadId,
+          subagentType: child.subagentType,
+          ...(child.capabilities === undefined
+            ? {}
+            : {
+                capabilities: child.capabilities,
+                toolSurface: resolveSubagentToolSurfaceProfile({
+                  subagentType: child.subagentType,
+                  capabilities: child.capabilities,
+                }),
+              }),
+          modelId: child.modelPin.modelId,
+          reasoningEffort: child.modelPin.providerRunSelection.reasoningEffort,
+          selectionSource: child.modelPin.selectionSource,
+          runtime: child.runtime,
+        },
+      },
+    ),
+  });
+}
+
 export function ensureThreadBackgroundSubscription(
   socket: WebSocket,
   threadId: ThreadId,
@@ -161,7 +216,7 @@ export function ensureThreadBackgroundSubscription(
     return;
   }
 
-  const unsubscribe =
+  const unsubscribeBackgroundResults =
     subscriptionContext.backgroundNotifications.subscribeThreadBackgroundResults(
       threadId,
       (result) => {
@@ -179,10 +234,22 @@ export function ensureThreadBackgroundSubscription(
                 ? { childThreadId: result.childThreadId }
                 : {}),
               subagentType: result.subagentType,
+              ...(result.capabilities !== undefined
+                ? { capabilities: result.capabilities }
+                : {}),
+              ...(result.toolSurface !== undefined
+                ? { toolSurface: result.toolSurface }
+                : {}),
+              ...(result.runtime !== undefined
+                ? { runtime: result.runtime }
+                : {}),
               terminalState: result.terminalState,
               ok: result.terminalState === 'completed',
               ...(result.reason ? { reason: result.reason } : {}),
               result: result.result,
+              ...(result.resultRef === undefined
+                ? {}
+                : { resultRef: result.resultRef }),
               ...(result.elapsedMs !== undefined
                 ? { elapsedMs: result.elapsedMs }
                 : {}),
@@ -198,48 +265,110 @@ export function ensureThreadBackgroundSubscription(
         });
       },
     );
+  const unsubscribeActiveChildren =
+    subscriptionContext.childRuns.subscribeActiveChildRunUpdates(
+      threadId,
+      (child) => {
+        sendActiveChildStatus(socket, threadId, child);
+      },
+    );
 
-  state.threadUnsubscribes.set(threadId, unsubscribe);
+  state.threadUnsubscribes.set(threadId, () => {
+    unsubscribeBackgroundResults();
+    unsubscribeActiveChildren();
+  });
+
+  for (const child of subscriptionContext.childRuns.getActiveChildRunsByOwnerThread(
+    threadId,
+  )) {
+    sendMessage(socket, {
+      type: 'run.event',
+      event: mapAgentEventToRunEvent(
+        child.parentRunId,
+        threadId,
+        nextSocketThreadSeq(socket, threadId),
+        {
+          type: 'subagent_spawned',
+          payload: {
+            parentRunId: child.parentRunId,
+            childRunId: child.childRunId,
+            childThreadId: child.childThreadId,
+            subagentType: child.subagentType,
+            ...(child.capabilities === undefined
+              ? {}
+              : {
+                  capabilities: child.capabilities,
+                  toolSurface: resolveSubagentToolSurfaceProfile({
+                    subagentType: child.subagentType,
+                    capabilities: child.capabilities,
+                  }),
+                }),
+            modelId: child.modelPin.modelId,
+            reasoningEffort:
+              child.modelPin.providerRunSelection.reasoningEffort,
+            selectionSource: child.modelPin.selectionSource,
+            runtime: child.runtime,
+          },
+        },
+      ),
+    });
+  }
 }
 
 export function createSocketRunEventSink(socket: WebSocket): LiveRunEventSink {
-  return ({ runId, threadId, seq, event }) =>
-    sendRunEvent(socket, runId, threadId, seq, event);
+  const sink: LiveRunEventSink = (envelope) => {
+    const { runId, threadId, seq, event } = envelope;
+    const delivered = sendRunEvent(socket, runId, threadId, seq, event);
+    if (delivered && (event.type === 'done' || event.type === 'error')) {
+      getSocketState(socket).activeRunIds.delete(runId);
+    }
+    return delivered;
+  };
+  sink.transient = ({ runId, threadId, event }) =>
+    sendToolOutputDelta(socket, runId, threadId, event.payload);
+  return sink;
 }
 
-export function bindDetachedSocketRuns(
+export async function bindSocketRuns(
   socket: WebSocket,
   runtimeContext: RunChannelRuntimeContext,
-): number {
+  runEventCursors?: readonly RunEventReplayCursor[],
+): Promise<number> {
   const state = getSocketState(socket);
-  const rebound = runtimeContext.liveRunEvents.bindDetachedRuns({
-    ownerId: state.approvalSessionId,
+  const afterSeqByRun =
+    runEventCursors === undefined
+      ? undefined
+      : new Map(runEventCursors.map((cursor) => [cursor.runId, cursor.seq]));
+  const bound = await runtimeContext.liveRunEvents.bindRuns({
+    ownerId: state.computerSessionId,
     sink: createSocketRunEventSink(socket),
+    ...(afterSeqByRun === undefined ? {} : { afterSeqByRun }),
   });
-  const previousOwnerIds = new Set<string>();
-
-  for (const run of rebound) {
-    previousOwnerIds.add(run.previousOwnerId);
+  for (const run of bound) {
+    state.ownedRunIds.add(run.runId);
+    ensureThreadBackgroundSubscription(socket, run.threadId, runtimeContext);
     if (run.terminal) {
       continue;
     }
     state.activeRunIds.add(run.runId);
-    ensureThreadBackgroundSubscription(socket, run.threadId, runtimeContext);
   }
-  for (const previousOwnerId of previousOwnerIds) {
-    runtimeContext.approvalGate.rebindApprovalSessionRuntime(
-      previousOwnerId,
-      state.approvalSessionId,
+  for (const child of runtimeContext.childRuns.getActiveChildRuns()) {
+    state.ownedRunIds.add(child.parentRunId);
+    ensureThreadBackgroundSubscription(
+      socket,
+      child.ownerThreadId,
+      runtimeContext,
     );
   }
-  return rebound.length;
+  return bound.length;
 }
 
 export function socketOwnsRun(
   socket: WebSocket,
   runId: CancelRequest['runId'],
 ): boolean {
-  return getSocketState(socket).activeRunIds.has(runId);
+  const state = getSocketState(socket);
+  return state.activeRunIds.has(runId) || state.ownedRunIds.has(runId);
 }
 
 export function cleanupSocketState(

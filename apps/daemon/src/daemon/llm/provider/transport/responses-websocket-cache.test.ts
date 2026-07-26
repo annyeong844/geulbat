@@ -208,3 +208,569 @@ void test('responses websocket reuse expires the stale socket and reconnects on 
     clearTimeout(item.handle);
   }
 });
+
+void test('responses websocket session owner observes cached and temporary fan-out and closes every socket', async () => {
+  const sockets: ResponsesWebSocketSessionSocket[] = [];
+  const store = createResponsesWebSocketSessionStore({
+    async connectWebSocket() {
+      const socket = createFakeSocket();
+      sockets.push(socket);
+      return socket;
+    },
+  });
+
+  const cached = await store.acquireWebSocket(
+    'wss://api.example.test/v1/responses',
+    new Headers(),
+    'thread-a',
+    TEST_REUSE_POLICY,
+  );
+  const temporary = await store.acquireWebSocket(
+    'wss://api.example.test/v1/responses',
+    new Headers(),
+    'thread-a',
+    TEST_REUSE_POLICY,
+  );
+  const otherProvider = await store.acquireWebSocket(
+    'wss://api.other.test/v1/responses',
+    new Headers(),
+    'thread-b',
+    TEST_REUSE_POLICY,
+  );
+
+  assert.deepEqual(store.readPressureSnapshot(), {
+    openSocketCount: 3,
+    busySocketCount: 3,
+    temporarySocketCount: 1,
+    connectingSocketCount: 0,
+    cooldownWaiterCount: 0,
+    cooldownProbeCount: 0,
+    peakSocketCount: 3,
+    scopes: [
+      {
+        providerScope: 'wss://api.example.test',
+        providerSessionCount: 1,
+        openSocketCount: 2,
+        busySocketCount: 2,
+        temporarySocketCount: 1,
+        connectingSocketCount: 0,
+        cooldownRemainingMs: 0,
+        cooldownWaiterCount: 0,
+        cooldownProbeActive: false,
+      },
+      {
+        providerScope: 'wss://api.other.test',
+        providerSessionCount: 1,
+        openSocketCount: 1,
+        busySocketCount: 1,
+        temporarySocketCount: 0,
+        connectingSocketCount: 0,
+        cooldownRemainingMs: 0,
+        cooldownWaiterCount: 0,
+        cooldownProbeActive: false,
+      },
+    ],
+  });
+
+  cached.release({ keep: true });
+  temporary.release();
+  assert.deepEqual(
+    {
+      openSocketCount: store.readPressureSnapshot().openSocketCount,
+      busySocketCount: store.readPressureSnapshot().busySocketCount,
+      temporarySocketCount: store.readPressureSnapshot().temporarySocketCount,
+    },
+    { openSocketCount: 2, busySocketCount: 1, temporarySocketCount: 0 },
+  );
+
+  await store.closeAll();
+  assert.equal(store.readPressureSnapshot().openSocketCount, 0);
+  assert.equal(
+    sockets.every((socket) => socket.readyState === WebSocket.CLOSED),
+    true,
+  );
+  otherProvider.release({ keep: true });
+  await assert.rejects(
+    store.acquireWebSocket(
+      'wss://api.example.test/v1/responses',
+      new Headers(),
+      'thread-c',
+      TEST_REUSE_POLICY,
+    ),
+    /session store is closed/u,
+  );
+});
+
+void test('concurrent cold acquisitions keep one canonical cached socket and release the raced socket as temporary', async () => {
+  const pendingConnections: Array<{
+    resolve: (socket: ResponsesWebSocketSessionSocket) => void;
+    socket: ResponsesWebSocketSessionSocket;
+  }> = [];
+  let resolveBothPending: (() => void) | undefined;
+  const bothPending = new Promise<void>((resolve) => {
+    resolveBothPending = resolve;
+  });
+  const store = createResponsesWebSocketSessionStore({
+    connectWebSocket() {
+      const socket = createFakeSocket();
+      return new Promise<ResponsesWebSocketSessionSocket>((resolve) => {
+        pendingConnections.push({ resolve, socket });
+        if (pendingConnections.length === 2) {
+          resolveBothPending?.();
+        }
+      });
+    },
+  });
+
+  const firstPromise = store.acquireWebSocket(
+    'wss://api.example.test/v1/responses',
+    new Headers(),
+    'provider-session-a',
+    TEST_REUSE_POLICY,
+  );
+  const racedPromise = store.acquireWebSocket(
+    'wss://api.example.test/v1/responses',
+    new Headers(),
+    'provider-session-a',
+    TEST_REUSE_POLICY,
+  );
+
+  await bothPending;
+  assert.equal(pendingConnections.length, 2);
+  const firstPending = pendingConnections[0];
+  assert.ok(firstPending);
+  firstPending.resolve(firstPending.socket);
+  const first = await firstPromise;
+  const racedPending = pendingConnections[1];
+  assert.ok(racedPending);
+  racedPending.resolve(racedPending.socket);
+  const raced = await racedPromise;
+
+  assert.deepEqual(
+    {
+      openSocketCount: store.readPressureSnapshot().openSocketCount,
+      temporarySocketCount: store.readPressureSnapshot().temporarySocketCount,
+    },
+    { openSocketCount: 2, temporarySocketCount: 1 },
+  );
+
+  first.release({ keep: true });
+  raced.release({ keep: true });
+  assert.equal(raced.socket.readyState, WebSocket.CLOSED);
+  assert.deepEqual(
+    {
+      openSocketCount: store.readPressureSnapshot().openSocketCount,
+      temporarySocketCount: store.readPressureSnapshot().temporarySocketCount,
+    },
+    { openSocketCount: 1, temporarySocketCount: 0 },
+  );
+
+  const reused = await store.acquireWebSocket(
+    'wss://api.example.test/v1/responses',
+    new Headers(),
+    'provider-session-a',
+    TEST_REUSE_POLICY,
+  );
+  assert.equal(reused.reused, true);
+  assert.equal(reused.socket, first.socket);
+
+  reused.release();
+  await store.closeAll();
+});
+
+void test('responses websocket session owner aborts pending provider cooldown admission on shutdown', async () => {
+  let scheduledCallback: (() => void) | undefined;
+  let scheduledHandle: ReturnType<typeof setTimeout> | undefined;
+  let clearCalls = 0;
+  let resolveScheduled: (() => void) | undefined;
+  const scheduled = new Promise<void>((resolve) => {
+    resolveScheduled = resolve;
+  });
+  const store = createResponsesWebSocketSessionStore({
+    scheduleTimeout(callback) {
+      scheduledCallback = callback;
+      scheduledHandle = setTimeout(() => {}, 60_000);
+      scheduledHandle.unref();
+      resolveScheduled?.();
+      return scheduledHandle;
+    },
+    clearScheduledTimeout(handle) {
+      clearCalls += 1;
+      clearTimeout(handle);
+    },
+    async connectWebSocket() {
+      throw new Error('cooldown admission must settle before connecting');
+    },
+  });
+
+  store.deferProviderRequests('wss://api.example.test/v1/responses', 60_000);
+  const pending = store.acquireWebSocket(
+    'wss://api.example.test/v1/responses',
+    new Headers(),
+    'provider-session-a',
+    TEST_REUSE_POLICY,
+  );
+  await scheduled;
+
+  await store.closeAll();
+  const clearedOnShutdown = clearCalls > 0;
+  if (!clearedOnShutdown) {
+    scheduledCallback?.();
+  }
+  await assert.rejects(pending, /session store is closed/u);
+  assert.equal(clearedOnShutdown, true);
+});
+
+void test('provider cooldown admission reports its wait and removes a cancelled waiter without connecting', async () => {
+  const observations: string[] = [];
+  const controller = new AbortController();
+  let connectCalls = 0;
+  const store = createResponsesWebSocketSessionStore({
+    async connectWebSocket() {
+      connectCalls += 1;
+      return createFakeSocket();
+    },
+  });
+
+  store.deferProviderRequests('wss://api.example.test/v1/responses', 60_000);
+  const pending = store.acquireWebSocket(
+    'wss://api.example.test/v1/responses',
+    new Headers(),
+    'provider-session-a',
+    TEST_REUSE_POLICY,
+    controller.signal,
+    (observation) => observations.push(observation.state),
+  );
+  await Promise.resolve();
+
+  assert.deepEqual(observations, ['rate_limit_waiting']);
+  assert.equal(store.readPressureSnapshot().cooldownWaiterCount, 1);
+
+  controller.abort(new Error('user cancelled run'));
+  await assert.rejects(pending, /user cancelled run/u);
+  assert.equal(connectCalls, 0);
+  assert.equal(store.readPressureSnapshot().cooldownWaiterCount, 0);
+  assert.deepEqual(observations, ['rate_limit_waiting']);
+
+  await store.closeAll();
+});
+
+void test('responses websocket session owner aborts a pending cold connection on shutdown', async () => {
+  let rejectConnection: ((error: Error) => void) | undefined;
+  let resolveConnecting: (() => void) | undefined;
+  let observedShutdownAbort = false;
+  const connecting = new Promise<void>((resolve) => {
+    resolveConnecting = resolve;
+  });
+  const store = createResponsesWebSocketSessionStore({
+    connectWebSocket(_url, _headers, signal) {
+      return new Promise<ResponsesWebSocketSessionSocket>(
+        (_resolve, reject) => {
+          rejectConnection = reject;
+          const rejectForAbort = () => {
+            observedShutdownAbort = true;
+            reject(
+              signal?.reason instanceof Error
+                ? signal.reason
+                : new Error('connection aborted'),
+            );
+          };
+          if (signal?.aborted) {
+            rejectForAbort();
+          } else {
+            signal?.addEventListener('abort', rejectForAbort, { once: true });
+          }
+          resolveConnecting?.();
+        },
+      );
+    },
+  });
+
+  const pending = store.acquireWebSocket(
+    'wss://api.example.test/v1/responses',
+    new Headers(),
+    'provider-session-a',
+    TEST_REUSE_POLICY,
+  );
+  await connecting;
+  assert.equal(store.readPressureSnapshot().connectingSocketCount, 1);
+
+  await store.closeAll();
+  if (!observedShutdownAbort) {
+    rejectConnection?.(new Error('manual test release'));
+  }
+  await assert.rejects(pending);
+  assert.equal(observedShutdownAbort, true);
+  assert.equal(store.readPressureSnapshot().connectingSocketCount, 0);
+});
+
+void test('responses websocket session owner shares provider Retry-After admission across sibling sessions', async () => {
+  let nowMs = 1_000;
+  let connectCalls = 0;
+  const observations: string[] = [];
+  const scheduled: Array<{
+    callback: () => void;
+    delayMs: number;
+    handle: ReturnType<typeof setTimeout>;
+  }> = [];
+  const store = createResponsesWebSocketSessionStore({
+    now: () => nowMs,
+    scheduleTimeout(callback, delayMs) {
+      const handle = setTimeout(() => {}, 60_000);
+      handle.unref();
+      scheduled.push({ callback, delayMs, handle });
+      return handle;
+    },
+    clearScheduledTimeout: clearTimeout,
+    async connectWebSocket() {
+      connectCalls += 1;
+      return createFakeSocket();
+    },
+  });
+
+  store.deferProviderRequests('wss://api.example.test/v1/responses', 5_000);
+  const delayed = store.acquireWebSocket(
+    'wss://api.example.test/v2/responses',
+    new Headers(),
+    'sibling-thread',
+    TEST_REUSE_POLICY,
+    undefined,
+    (observation) => observations.push(observation.state),
+  );
+  await Promise.resolve();
+  assert.equal(connectCalls, 0);
+  assert.deepEqual(observations, ['rate_limit_waiting']);
+  assert.equal(scheduled[0]?.delayMs, 5_000);
+  assert.equal(
+    store.readPressureSnapshot().scopes[0]?.cooldownRemainingMs,
+    5_000,
+  );
+
+  const unrelated = await store.acquireWebSocket(
+    'wss://api.other.test/v1/responses',
+    new Headers(),
+    'other-thread',
+    TEST_REUSE_POLICY,
+  );
+  assert.equal(connectCalls, 1);
+
+  nowMs = 6_000;
+  scheduled[0]?.callback();
+  const admitted = await delayed;
+  assert.equal(connectCalls, 2);
+  assert.deepEqual(observations, ['rate_limit_waiting', 'admitted']);
+  assert.equal(
+    store
+      .readPressureSnapshot()
+      .scopes.find((scope) => scope.providerScope === 'wss://api.example.test')
+      ?.cooldownRemainingMs,
+    0,
+  );
+
+  admitted.release();
+  unrelated.release();
+  await store.closeAll();
+  for (const item of scheduled) {
+    clearTimeout(item.handle);
+  }
+});
+
+void test('responses websocket session owner admits one half-open probe after a shared provider cooldown', async () => {
+  let nowMs = 1_000;
+  let connectCalls = 0;
+  const scheduled: Array<{
+    callback: () => void;
+    delayMs: number;
+    handle: ReturnType<typeof setTimeout>;
+    active: boolean;
+  }> = [];
+  const store = createResponsesWebSocketSessionStore({
+    now: () => nowMs,
+    scheduleTimeout(callback, delayMs) {
+      const handle = setTimeout(() => {}, 60_000);
+      handle.unref();
+      const item = {
+        callback: () => {
+          item.active = false;
+          callback();
+        },
+        delayMs,
+        handle,
+        active: true,
+      };
+      scheduled.push(item);
+      return handle;
+    },
+    clearScheduledTimeout(handle) {
+      const item = scheduled.find((candidate) => candidate.handle === handle);
+      if (item) {
+        item.active = false;
+      }
+      clearTimeout(handle);
+    },
+    async connectWebSocket() {
+      connectCalls += 1;
+      return createFakeSocket();
+    },
+  });
+
+  store.deferProviderRequests('wss://api.example.test/v1/responses', 5_000);
+  const acquisitions = ['sibling-a', 'sibling-b', 'sibling-c'].map(
+    (providerSessionId) =>
+      store.acquireWebSocket(
+        'wss://api.example.test/v1/responses',
+        new Headers(),
+        providerSessionId,
+        TEST_REUSE_POLICY,
+      ),
+  );
+  await Promise.resolve();
+
+  assert.equal(
+    scheduled.filter((item) => item.active).length,
+    1,
+    'one provider cooldown must own one timer regardless of waiter count',
+  );
+  assert.equal(connectCalls, 0);
+  assert.deepEqual(
+    {
+      cooldownWaiterCount: store.readPressureSnapshot().cooldownWaiterCount,
+      cooldownProbeCount: store.readPressureSnapshot().cooldownProbeCount,
+    },
+    { cooldownWaiterCount: 3, cooldownProbeCount: 0 },
+  );
+
+  nowMs = 6_000;
+  scheduled.find((item) => item.active)?.callback();
+  const firstProbe = await acquisitions[0];
+  assert.ok(firstProbe);
+  assert.equal(
+    connectCalls,
+    1,
+    'cooldown expiry must admit one half-open probe',
+  );
+  assert.deepEqual(
+    {
+      cooldownWaiterCount: store.readPressureSnapshot().cooldownWaiterCount,
+      cooldownProbeCount: store.readPressureSnapshot().cooldownProbeCount,
+    },
+    { cooldownWaiterCount: 2, cooldownProbeCount: 1 },
+  );
+
+  store.deferProviderRequests('wss://api.example.test/v1/responses', 3_000);
+  firstProbe.release();
+  assert.equal(
+    connectCalls,
+    1,
+    'a probe that observes another Retry-After must keep siblings queued',
+  );
+
+  nowMs = 9_000;
+  scheduled.find((item) => item.active)?.callback();
+  const successfulProbe = await acquisitions[1];
+  assert.ok(successfulProbe);
+  assert.equal(connectCalls, 2);
+
+  successfulProbe.release();
+  const remaining = await acquisitions[2];
+  assert.ok(remaining);
+  assert.equal(
+    connectCalls,
+    3,
+    'a successful probe must release the remaining provider waiters',
+  );
+
+  remaining.release();
+  await store.closeAll();
+  for (const item of scheduled) {
+    clearTimeout(item.handle);
+  }
+});
+
+void test('responses websocket session owner re-arms cooldown when the half-open connection receives Retry-After', async () => {
+  let nowMs = 1_000;
+  let connectCalls = 0;
+  const scheduled: Array<{
+    callback: () => void;
+    handle: ReturnType<typeof setTimeout>;
+    active: boolean;
+  }> = [];
+  const store = createResponsesWebSocketSessionStore({
+    now: () => nowMs,
+    scheduleTimeout(callback) {
+      const handle = setTimeout(() => {}, 60_000);
+      handle.unref();
+      const item = {
+        callback: () => {
+          item.active = false;
+          callback();
+        },
+        handle,
+        active: true,
+      };
+      scheduled.push(item);
+      return handle;
+    },
+    clearScheduledTimeout(handle) {
+      const item = scheduled.find((candidate) => candidate.handle === handle);
+      if (item) {
+        item.active = false;
+      }
+      clearTimeout(handle);
+    },
+    async connectWebSocket() {
+      connectCalls += 1;
+      if (connectCalls === 1) {
+        throw Object.assign(new Error('WebSocket upgrade rejected'), {
+          retryAfterMs: 3_000,
+        });
+      }
+      return createFakeSocket();
+    },
+  });
+
+  store.deferProviderRequests('wss://api.example.test/v1/responses', 5_000);
+  const failedProbe = store.acquireWebSocket(
+    'wss://api.example.test/v1/responses',
+    new Headers(),
+    'sibling-a',
+    TEST_REUSE_POLICY,
+  );
+  const queuedSibling = store.acquireWebSocket(
+    'wss://api.example.test/v1/responses',
+    new Headers(),
+    'sibling-b',
+    TEST_REUSE_POLICY,
+  );
+  await Promise.resolve();
+
+  nowMs = 6_000;
+  scheduled.find((item) => item.active)?.callback();
+  await assert.rejects(failedProbe, /WebSocket upgrade rejected/u);
+  assert.deepEqual(
+    {
+      connectCalls,
+      cooldownWaiterCount: store.readPressureSnapshot().cooldownWaiterCount,
+      cooldownProbeCount: store.readPressureSnapshot().cooldownProbeCount,
+      cooldownRemainingMs:
+        store.readPressureSnapshot().scopes[0]?.cooldownRemainingMs,
+    },
+    {
+      connectCalls: 1,
+      cooldownWaiterCount: 1,
+      cooldownProbeCount: 0,
+      cooldownRemainingMs: 3_000,
+    },
+  );
+
+  nowMs = 9_000;
+  scheduled.find((item) => item.active)?.callback();
+  const recovered = await queuedSibling;
+  assert.equal(connectCalls, 2);
+
+  recovered.release();
+  await store.closeAll();
+  for (const item of scheduled) {
+    clearTimeout(item.handle);
+  }
+});

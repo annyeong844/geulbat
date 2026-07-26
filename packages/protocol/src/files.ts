@@ -1,4 +1,9 @@
-import { isNumber, isRecord, isString } from './wire-value-guards.js';
+import {
+  isCanonicalIsoTimestamp,
+  isNumber,
+  isRecord,
+  isString,
+} from './wire-value-guards.js';
 
 export interface ComputerFileBrowseShortcut {
   label: string;
@@ -192,5 +197,48 @@ export function isFileBinaryInputRefResponse(
     value.ok === true &&
     isString(value.contentRef) &&
     isNumber(value.byteLength)
+  );
+}
+
+/**
+ * 어디서 일하는지에 대한 사용자 선택. daemon이 소유한다.
+ * 자동 발견 경로는 선택기가 자기 항목으로 보여주므로 recents에 담기지 않는다.
+ */
+export interface DirectoryPreferenceEntry {
+  path: string;
+  at: string;
+}
+
+export interface DirectoryPreferencesResponse {
+  workingDirectory: string | null;
+  favorites: DirectoryPreferenceEntry[];
+  recents: DirectoryPreferenceEntry[];
+}
+
+function isDirectoryEntryList(
+  value: unknown,
+): value is DirectoryPreferenceEntry[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        isRecord(entry) &&
+        isString(entry.path) &&
+        entry.path.trim() !== '' &&
+        isCanonicalIsoTimestamp(entry.at),
+    )
+  );
+}
+
+export function isDirectoryPreferencesResponse(
+  value: unknown,
+): value is DirectoryPreferencesResponse {
+  return (
+    isRecord(value) &&
+    (value.workingDirectory === null ||
+      (isString(value.workingDirectory) &&
+        value.workingDirectory.trim() !== '')) &&
+    isDirectoryEntryList(value.favorites) &&
+    isDirectoryEntryList(value.recents)
   );
 }

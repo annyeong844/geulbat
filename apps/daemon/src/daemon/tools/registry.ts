@@ -1,12 +1,12 @@
 import { isRecord } from '../runtime-json.js';
+import type { ToolCatalogSearchMetadata, ToolExposure } from './types.js';
 import type {
-  AnyTool,
-  ToolCatalogSearchMetadata,
-  ToolExposure,
-} from './types.js';
-import type {
+  RegisteredToolLike,
   ToolDefinition,
+  ToolExecutionHandle,
+  ToolMeta,
   ToolObjectParameters,
+  ToolRegistrySnapshot,
   ToolRegistryStore,
 } from './tool-registry-model.js';
 import {
@@ -24,9 +24,15 @@ function cloneToolCatalogSearchMetadata(
   };
 }
 
-type NormalizedTool = AnyTool & { exposure: ToolExposure };
+type NormalizedTool = RegisteredToolLike & { exposure: ToolExposure };
 
-function resolveToolExposure(tool: AnyTool): ToolExposure {
+interface RegistryEntry {
+  tool: NormalizedTool;
+  executionHandle: ToolExecutionHandle;
+  meta: ToolMeta;
+}
+
+function resolveToolExposure(tool: RegisteredToolLike): ToolExposure {
   const exposure = tool.exposure ?? {
     directHot: true,
     sdkVisible: false,
@@ -55,7 +61,7 @@ function resolveToolExposure(tool: AnyTool): ToolExposure {
   return { ...exposure };
 }
 
-function cloneTool(tool: AnyTool): NormalizedTool {
+function cloneTool(tool: RegisteredToolLike): NormalizedTool {
   return {
     name: tool.name,
     description: tool.description,
@@ -68,9 +74,19 @@ function cloneTool(tool: AnyTool): NormalizedTool {
       : {}),
     ...(tool.timeoutMs !== undefined ? { timeoutMs: tool.timeoutMs } : {}),
     requiresApproval: tool.requiresApproval,
+    ...(tool.approvalClass === undefined
+      ? {}
+      : { approvalClass: tool.approvalClass }),
     exposure: resolveToolExposure(tool),
     ...(tool.recoveryStrategy
       ? { recoveryStrategy: tool.recoveryStrategy }
+      : {}),
+    ...(tool.resultProjection
+      ? { resultProjection: { ...tool.resultProjection } }
+      : {}),
+    ...(tool.streamsArgsDelta === true ? { streamsArgsDelta: true } : {}),
+    ...(tool.endsTurnAfterSuccess === true
+      ? { endsTurnAfterSuccess: true }
       : {}),
     ...(tool.catalogSearchMetadata
       ? {
@@ -84,7 +100,51 @@ function cloneTool(tool: AnyTool): NormalizedTool {
   };
 }
 
-function isProviderStrictCompatible(tool: AnyTool): boolean {
+function createRegistryEntry(tool: RegisteredToolLike): RegistryEntry {
+  const normalizedTool = cloneTool(tool);
+  const executionHandle: ToolExecutionHandle = Object.freeze({
+    ...(normalizedTool.timeoutMs === undefined
+      ? {}
+      : { timeoutMs: normalizedTool.timeoutMs }),
+    requiresApproval: normalizedTool.requiresApproval,
+    parseArgs: (raw) => normalizedTool.parseArgs(raw),
+    executeParsed: (args, ctx) => normalizedTool.executeParsed(args, ctx),
+  });
+  const meta: ToolMeta = Object.freeze({
+    sideEffectLevel: normalizedTool.sideEffectLevel,
+    mayMutateComputerFiles: normalizedTool.mayMutateComputerFiles,
+    ...(normalizedTool.parallelBatchKind
+      ? { parallelBatchKind: normalizedTool.parallelBatchKind }
+      : {}),
+    ...(normalizedTool.timeoutMs === undefined
+      ? {}
+      : { timeoutMs: normalizedTool.timeoutMs }),
+    requiresApproval: normalizedTool.requiresApproval,
+    ...(normalizedTool.approvalClass === undefined
+      ? {}
+      : { approvalClass: normalizedTool.approvalClass }),
+    exposure: Object.freeze({ ...normalizedTool.exposure }),
+    ...(normalizedTool.recoveryStrategy
+      ? { recoveryStrategy: normalizedTool.recoveryStrategy }
+      : {}),
+    ...(normalizedTool.resultProjection
+      ? {
+          resultProjection: Object.freeze({
+            ...normalizedTool.resultProjection,
+          }),
+        }
+      : {}),
+    ...(normalizedTool.streamsArgsDelta === true
+      ? { streamsArgsDelta: true }
+      : {}),
+    ...(normalizedTool.endsTurnAfterSuccess === true
+      ? { endsTurnAfterSuccess: true }
+      : {}),
+  });
+  return { tool: normalizedTool, executionHandle, meta };
+}
+
+function isProviderStrictCompatible(tool: RegisteredToolLike): boolean {
   if (!isToolObjectParameters(tool.parameters)) {
     return false;
   }
@@ -128,53 +188,24 @@ function isPropertySchemaStrictCompatible(schema: unknown): boolean {
   );
 }
 
-export function createToolRegistryStore(options?: {
-  builtins?: readonly AnyTool[];
-}): ToolRegistryStore {
-  const tools = new Map<string, NormalizedTool>();
-
-  for (const tool of options?.builtins ?? []) {
-    if (!tools.has(tool.name)) {
-      tools.set(tool.name, cloneTool(tool));
-    }
-  }
-
-  return {
-    registerTool(tool) {
-      if (tools.has(tool.name)) {
-        throw new Error(`Tool already registered: ${tool.name}`);
-      }
-      tools.set(tool.name, cloneTool(tool));
-    },
-
-    unregisterTool(name) {
-      return tools.delete(name);
-    },
+function createRegistrySnapshot(
+  tools: ReadonlyMap<string, RegistryEntry>,
+  captureSnapshot: () => ToolRegistrySnapshot,
+): ToolRegistrySnapshot {
+  const snapshot: ToolRegistrySnapshot = {
+    captureSnapshot,
 
     getTool(name) {
-      const tool = tools.get(name);
-      return tool ? cloneTool(tool) : undefined;
+      const entry = tools.get(name);
+      return entry ? cloneTool(entry.tool) : undefined;
+    },
+
+    getToolExecutionHandle(name) {
+      return tools.get(name)?.executionHandle;
     },
 
     getToolMeta(name) {
-      const tool = tools.get(name);
-      if (!tool) {
-        return null;
-      }
-      return {
-        sideEffectLevel: tool.sideEffectLevel,
-        mayMutateComputerFiles: tool.mayMutateComputerFiles,
-        ...(tool.parallelBatchKind
-          ? { parallelBatchKind: tool.parallelBatchKind }
-          : {}),
-        ...(tool.timeoutMs !== undefined ? { timeoutMs: tool.timeoutMs } : {}),
-        requiresApproval: tool.requiresApproval,
-        exposure: { ...tool.exposure },
-        ...(tool.recoveryStrategy
-          ? { recoveryStrategy: tool.recoveryStrategy }
-          : {}),
-        ...(tool.streamsArgsDelta === true ? { streamsArgsDelta: true } : {}),
-      };
+      return tools.get(name)?.meta ?? null;
     },
 
     getAllRegisteredToolNames() {
@@ -182,19 +213,20 @@ export function createToolRegistryStore(options?: {
     },
 
     buildToolDefinitions(options) {
-      const names = options?.names ?? [...tools.keys()].sort();
+      const names = [...(options?.names ?? tools.keys())].sort();
       const definitions: ToolDefinition[] = [];
 
-      for (const name of names.slice().sort()) {
-        const tool = tools.get(name);
-        if (!tool) {
+      for (const name of names) {
+        const entry = tools.get(name);
+        if (!entry) {
           continue;
         }
+        const { tool } = entry;
         definitions.push({
           type: 'function',
           name: tool.name,
           description: tool.description,
-          parameters: tool.parameters,
+          parameters: cloneToolParameters(tool.parameters),
           // Provider strict mode currently rejects object schemas that leave
           // any declared property out of `required`. Keep tool-local strict
           // intent, but only publish strict=true when the wire schema is
@@ -206,11 +238,44 @@ export function createToolRegistryStore(options?: {
       return definitions;
     },
   };
+  return Object.freeze(snapshot);
+}
+
+export function createToolRegistryStore(options?: {
+  builtins?: readonly RegisteredToolLike[];
+}): ToolRegistryStore {
+  const tools = new Map<string, RegistryEntry>();
+
+  for (const tool of options?.builtins ?? []) {
+    if (!tools.has(tool.name)) {
+      tools.set(tool.name, createRegistryEntry(tool));
+    }
+  }
+
+  const captureSnapshot = (): ToolRegistrySnapshot =>
+    createRegistrySnapshot(new Map(tools), captureSnapshot);
+  const liveRegistry = createRegistrySnapshot(tools, captureSnapshot);
+
+  return {
+    ...liveRegistry,
+
+    registerTool(tool) {
+      if (tools.has(tool.name)) {
+        throw new Error(`Tool already registered: ${tool.name}`);
+      }
+      tools.set(tool.name, createRegistryEntry(tool));
+    },
+
+    unregisterTool(name) {
+      return tools.delete(name);
+    },
+  };
 }
 
 export type {
   ToolExecutionRegistry,
   ToolMetaReader,
+  ToolRegistrySnapshot,
   ToolRegistryStore,
   ToolResolver,
   ToolRuntimeRegistry,

@@ -5,11 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { agentLoopKernelImplementation } from '@geulbat/agent-loop/kernel';
+
 import {
   rehydrateToolLibraryProjectionFromObserverSnapshot,
   type AgentLoopObserverDiagnostic,
   type AgentLoopObserverEvent,
   type AgentLoopObserverSnapshot,
+  type ToolResultObservation,
 } from './observer/agent-loop-observer.js';
 import type { AgentLoopHistoryPort } from './loop-history.js';
 import { runAgentLoop } from './run-agent-loop.js';
@@ -54,11 +57,16 @@ void test('runAgentLoop records a daemon-neutral observer snapshot and round tra
     modelFacingCatalogRef: 'geulbat-sdk://catalog',
     importSpecifier: '@geulbat/generated-tools',
   });
+  const loopImplementation = {
+    ...agentLoopKernelImplementation,
+    implementationId: 'test.agent-loop.observer',
+  };
 
   const result = await runAgentLoop({
     runId,
     runContext,
     prompt: 'do not expose this prompt body',
+    loopImplementation,
     toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
     runtimeServices: createDaemonContext(),
     toolLibraryProjectionPort: {
@@ -77,7 +85,7 @@ void test('runAgentLoop records a daemon-neutral observer snapshot and round tra
       },
     },
     approvalContext: makeApprovalContext({
-      sessionId: 'agent-loop-observer-session',
+      computerSessionId: 'agent-loop-observer-session',
     }),
     callModelImpl: createScriptedProviderCallModel([
       providerFinalAnswerRound('done'),
@@ -95,6 +103,11 @@ void test('runAgentLoop records a daemon-neutral observer snapshot and round tra
 
   assert.equal(result.ok, true);
   assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0]?.schemaVersion, 5);
+  assert.deepEqual(snapshots[0]?.loopImplementation, {
+    implementationId: loopImplementation.implementationId,
+    contractVersion: loopImplementation.contractVersion,
+  });
   assert.equal(snapshots[0]?.runId, runId);
   assert.equal(snapshots[0]?.threadId, threadId);
   assert.equal(snapshots[0]?.input.promptPort, 'default_prompt_port');
@@ -149,16 +162,59 @@ void test('runAgentLoop records a daemon-neutral observer snapshot and round tra
   });
   assert.deepEqual(
     observerEvents.map((event) => event.kind),
-    ['round_started', 'round_completed'],
+    [
+      'round_started',
+      'model_call_started',
+      'model_call_completed',
+      'structured_outputs_started',
+      'structured_outputs_completed',
+      'round_completed',
+    ],
   );
-  assert.deepEqual(observerEvents[1], {
-    schemaVersion: 1,
+  assert.deepEqual(observerEvents.slice(1, -1), [
+    {
+      schemaVersion: 3,
+      kind: 'model_call_started',
+      runId,
+      threadId,
+      round: 0,
+    },
+    {
+      schemaVersion: 3,
+      kind: 'model_call_completed',
+      runId,
+      threadId,
+      round: 0,
+      outcome: 'success',
+      functionCallCount: 0,
+      structuredOutputCount: 0,
+    },
+    {
+      schemaVersion: 3,
+      kind: 'structured_outputs_started',
+      runId,
+      threadId,
+      round: 0,
+      structuredOutputCount: 0,
+    },
+    {
+      schemaVersion: 3,
+      kind: 'structured_outputs_completed',
+      runId,
+      threadId,
+      round: 0,
+      outcome: 'none',
+    },
+  ]);
+  assert.deepEqual(observerEvents.at(-1), {
+    schemaVersion: 3,
     kind: 'round_completed',
     runId,
     threadId,
     round: 0,
     outcome: 'terminal',
     terminalOk: true,
+    terminalSource: 'natural',
   });
 
   const serializedTrace = JSON.stringify({ snapshots, observerEvents });
@@ -196,7 +252,7 @@ void test('runAgentLoop can build model prompts through an injected prompt port'
     currentFile: 'src/prompt-port.ts',
     runtimeServices: createDaemonContext(),
     approvalContext: makeApprovalContext({
-      sessionId: 'agent-loop-prompt-port-session',
+      computerSessionId: 'agent-loop-prompt-port-session',
     }),
     promptPort: {
       buildPromptBundle(args) {
@@ -282,7 +338,7 @@ void test('runAgentLoop can load initial history through an injected history por
     prompt: 'history port prompt',
     runtimeServices: createDaemonContext(),
     approvalContext: makeApprovalContext({
-      sessionId: 'agent-loop-history-port-session',
+      computerSessionId: 'agent-loop-history-port-session',
     }),
     historyPort: {
       async loadInitialHistory(args) {
@@ -343,9 +399,31 @@ void test('runAgentLoop can execute model rounds through an injected model-round
     prompt: 'model port prompt',
     runtimeServices: createDaemonContext(),
     approvalContext: makeApprovalContext({
-      sessionId: 'agent-loop-model-port-session',
+      computerSessionId: 'agent-loop-model-port-session',
     }),
     memoryPort: {
+      beginContextBudgetRound() {
+        return {
+          onProviderRequestPrepared() {},
+          async prepareBeforeModelRound() {
+            return {
+              kind: 'failed' as const,
+              message: 'not requested by this test',
+            };
+          },
+          getRequestBytes() {
+            return undefined;
+          },
+          getToolResultContextBudget() {
+            return {
+              kind: 'unknown',
+              modelKey: 'test\0test',
+              reason: 'usage_unavailable',
+            };
+          },
+          publish() {},
+        };
+      },
       async compactAfterModelRound() {
         return { kind: 'not_needed', reason: 'under_threshold' };
       },
@@ -413,7 +491,7 @@ void test('runAgentLoop settles through an injected lifecycle port', async () =>
     prompt: 'lifecycle port prompt',
     runtimeServices: createDaemonContext(),
     approvalContext: makeApprovalContext({
-      sessionId: 'agent-loop-lifecycle-port-session',
+      computerSessionId: 'agent-loop-lifecycle-port-session',
     }),
     lifecyclePort: {
       settleAfterResult(args) {
@@ -483,7 +561,7 @@ void test('runAgentLoop can build model tool definitions through an injected too
     },
     runtimeServices: createDaemonContext(),
     approvalContext: makeApprovalContext({
-      sessionId: 'agent-loop-tool-definition-port-session',
+      computerSessionId: 'agent-loop-tool-definition-port-session',
     }),
     toolDefinitionPort: {
       buildToolDefinitions(args) {
@@ -541,6 +619,7 @@ void test('runAgentLoop can process function calls through an injected tool-runt
     stateRoot: workspaceRoot,
   });
   const snapshots: AgentLoopObserverSnapshot[] = [];
+  const toolResultObservations: ToolResultObservation[] = [];
   const projectedDefinition: ToolDefinition = {
     type: 'function',
     name: 'projected_tool',
@@ -573,7 +652,7 @@ void test('runAgentLoop can process function calls through an injected tool-runt
     prompt: 'tool runtime port prompt',
     runtimeServices: createDaemonContext(),
     approvalContext: makeApprovalContext({
-      sessionId: 'agent-loop-tool-runtime-port-session',
+      computerSessionId: 'agent-loop-tool-runtime-port-session',
     }),
     toolDefinitionPort: {
       buildToolDefinitions() {
@@ -587,6 +666,20 @@ void test('runAgentLoop can process function calls through an injected tool-runt
           names: args.functionCalls.map((call) => call.name),
           runId: args.runId,
           threadId: args.runContext.threadId,
+        });
+        args.observeToolResult?.({
+          schemaVersion: 1,
+          runId,
+          threadId,
+          callId: projectedCall.callId,
+          toolName: projectedCall.name,
+          outcome: 'success',
+          elapsedMs: 4,
+          fullOutputBytes: 120,
+          modelVisibleBytes: 80,
+          parseQuality: 'structured_json',
+          projection: 'inline',
+          exactDurableRecovery: false,
         });
         return { ok: true, value: undefined };
       },
@@ -625,6 +718,9 @@ void test('runAgentLoop can process function calls through an injected tool-runt
         snapshots.push(snapshot);
       },
       recordEvent() {},
+      recordToolResult(observation) {
+        toolResultObservations.push(observation);
+      },
     },
     onEvent() {},
   });
@@ -645,6 +741,22 @@ void test('runAgentLoop can process function calls through an injected tool-runt
   assert.equal(snapshots.length, 1);
   assert.equal(snapshots[0]?.input.toolRuntimePort, 'injected');
   assert.equal(snapshots[0]?.loopPorts.toolRuntime, 'AgentLoopToolRuntimePort');
+  assert.deepEqual(toolResultObservations, [
+    {
+      schemaVersion: 1,
+      runId,
+      threadId,
+      callId: projectedCall.callId,
+      toolName: projectedCall.name,
+      outcome: 'success',
+      elapsedMs: 4,
+      fullOutputBytes: 120,
+      modelVisibleBytes: 80,
+      parseQuality: 'structured_json',
+      projection: 'inline',
+      exactDurableRecovery: false,
+    },
+  ]);
 });
 
 void test('runAgentLoop can process structured outputs through an injected structured-output port', async () => {
@@ -675,7 +787,7 @@ void test('runAgentLoop can process structured outputs through an injected struc
     prompt: 'structured output port prompt',
     runtimeServices: createDaemonContext(),
     approvalContext: makeApprovalContext({
-      sessionId: 'agent-loop-structured-output-port-session',
+      computerSessionId: 'agent-loop-structured-output-port-session',
     }),
     structuredOutputPort: {
       async processStructuredOutputs(args) {
@@ -765,7 +877,7 @@ void test('runAgentLoop materializes an importable default tool library projecti
       },
       runtimeServices,
       approvalContext: makeApprovalContext({
-        sessionId: 'agent-loop-tool-library-session',
+        computerSessionId: 'agent-loop-tool-library-session',
       }),
       callModelImpl: createScriptedProviderCallModel([
         providerFinalAnswerRound('done'),
@@ -951,7 +1063,7 @@ void test('runAgentLoop isolates throwing observer callbacks from run behavior',
     toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
     runtimeServices: createDaemonContext(),
     approvalContext: makeApprovalContext({
-      sessionId: 'agent-loop-observer-failure-session',
+      computerSessionId: 'agent-loop-observer-failure-session',
     }),
     callModelImpl: createScriptedProviderCallModel([
       providerFinalAnswerRound('done'),
@@ -973,11 +1085,27 @@ void test('runAgentLoop isolates throwing observer callbacks from run behavior',
   assert.equal(result.ok, true);
   assert.deepEqual(
     diagnostics.map((diagnostic) => diagnostic.operation),
-    ['record_snapshot', 'record_event', 'record_event'],
+    [
+      'record_snapshot',
+      'record_event',
+      'record_event',
+      'record_event',
+      'record_event',
+      'record_event',
+      'record_event',
+    ],
   );
   assert.deepEqual(
     diagnostics.map((diagnostic) => diagnostic.eventKind),
-    [undefined, 'round_started', 'round_completed'],
+    [
+      undefined,
+      'round_started',
+      'model_call_started',
+      'model_call_completed',
+      'structured_outputs_started',
+      'structured_outputs_completed',
+      'round_completed',
+    ],
   );
   const serializedDiagnostics = JSON.stringify(diagnostics);
   assert.equal(serializedDiagnostics.includes(workspaceRoot), false);
@@ -1019,7 +1147,7 @@ void test('runAgentLoop stops before model calls when tool library projection fa
       },
     },
     approvalContext: makeApprovalContext({
-      sessionId: 'agent-loop-observer-projection-failure-session',
+      computerSessionId: 'agent-loop-observer-projection-failure-session',
     }),
     async *callModelImpl() {
       modelCallCount += 1;

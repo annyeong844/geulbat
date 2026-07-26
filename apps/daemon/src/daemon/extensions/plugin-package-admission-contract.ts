@@ -8,8 +8,9 @@ export class PluginPackageAdmissionError extends Error {
   constructor(
     readonly code: 'invalid_request',
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'PluginPackageAdmissionError';
   }
 }

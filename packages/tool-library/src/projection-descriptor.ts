@@ -2,6 +2,7 @@ import type {
   ToolLibraryProjectionApprovalClass,
   ToolLibraryProjectionCatalogSearchFamily,
   ToolLibraryProjectionParameters,
+  ToolLibraryProjectionResultDelivery,
   ToolLibraryProjectionSideEffectLevel,
 } from './projection-descriptor-internal.js';
 
@@ -25,6 +26,7 @@ export interface ToolLibraryProjectionGeneratedTool {
   sideEffectLevel: ToolLibraryProjectionSideEffectLevel;
   approvalClass: ToolLibraryProjectionApprovalClass;
   mayMutateComputerFiles: boolean;
+  resultDelivery: ToolLibraryProjectionResultDelivery;
   family: ToolLibraryProjectionCatalogSearchFamily;
   searchHints: readonly string[];
   tags: readonly string[];

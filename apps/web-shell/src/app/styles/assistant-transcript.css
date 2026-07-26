@@ -1,0 +1,869 @@
+/* ─────────────────────────────────────
+   RIGHT — 어시스턴트 대화 본문 (메시지 행·도구/diff 블록·마크다운·코드)
+   assistant.css에서 분리 (2026-07-23). import 순서가 원본 순서를 대신한다.
+   ───────────────────────────────────── */
+/* 메시지 하단 액션 행 — 말풍선 "밖" 형제 요소. 답변은 항상 노출(좌),
+   질문은 hover 시에만 아이콘 두 개(우). 배경 없음(검은 띠 금지). */
+.transcript-message {
+  display: flex;
+  flex-direction: column;
+}
+
+.transcript-message.from-user {
+  align-items: flex-end;
+}
+
+.transcript-message.from-assistant {
+  align-items: flex-start;
+}
+
+.reasoning-disclosure {
+  width: 100%;
+  margin: 4px 0;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-sm);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface-variant);
+}
+
+.reasoning-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  color: var(--on-surface-muted);
+}
+
+.reasoning-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.reasoning-disclosure.live > summary {
+  color: var(--secondary);
+}
+
+.reasoning-disclosure-chevron {
+  display: inline-block;
+  font-size: 16px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform var(--transition-base);
+}
+
+.reasoning-disclosure[open] .reasoning-disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.reasoning-disclosure-content {
+  margin: 0;
+  padding: 2px 10px 10px 26px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-prose-serif);
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--on-surface-variant);
+}
+
+/* 아티팩트 프레임 발 턴 귀속 배지 — 사용자 직접 입력과 구분한다 */
+.message-origin-badge {
+  font-size: 11px;
+  color: var(--on-surface-muted);
+  margin-bottom: 2px;
+  user-select: none;
+}
+
+.message-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: 1px;
+}
+
+.message-actions.user-actions {
+  visibility: hidden;
+}
+
+.transcript-message:hover .message-actions.user-actions,
+.message-actions.user-actions:focus-within,
+.message-actions.user-actions.editing {
+  visibility: visible;
+}
+
+.message-action-button {
+  padding: 3px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-family: var(--font-ui-label);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--transition-base),
+    color var(--transition-base);
+}
+
+.message-action-button:hover {
+  background: var(--surface-container);
+  color: var(--primary);
+}
+
+.message-action-button.primary {
+  background: var(--secondary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.message-action-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 실행 중 상태줄 — hang처럼 보이지 않게 경과 시간과 현재 작업을 보여준다 */
+.run-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  font-family: var(--font-ui-label);
+  font-size: 12.5px;
+  color: var(--on-surface-muted);
+}
+
+.run-status-glyph {
+  color: var(--secondary);
+  animation: run-status-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes run-status-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+/* 대기 중 스티어 큐 — 입력창 위 CC식 행. 컴포저와 같은 읽기 컬럼으로
+   가운데 정렬해, 넓은 모니터에서 홀로 전체 폭으로 벌어지지 않게 한다. */
+.pending-steer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 4px;
+  width: 100%;
+  max-width: var(--reading-column, 760px);
+  margin-inline: auto;
+}
+
+.pending-steer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-container);
+  font-family: var(--font-ui-label);
+  font-size: 12.5px;
+  color: var(--on-surface-variant);
+}
+
+.pending-steer-glyph {
+  color: var(--on-surface-muted);
+  flex-shrink: 0;
+}
+
+.pending-steer-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-steer-hint {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--on-surface-muted);
+}
+
+.pending-steer-cancel {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.pending-steer-cancel:hover {
+  background: var(--surface-container-high);
+}
+
+.pending-steer-flush-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 10px;
+}
+
+.pending-steer-flush {
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  background: transparent;
+  font-family: var(--font-ui-label);
+  font-size: 11.5px;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.pending-steer-flush:hover {
+  background: var(--surface-container-high);
+}
+
+/* ⑂ 브랜치 성공 알림 — 새 스레드로 전환됐음을 명시 */
+.branch-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-container);
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  color: var(--on-surface-variant);
+}
+
+.branch-notice-text {
+  flex: 1;
+}
+
+.branch-notice-dismiss {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: 12px;
+  color: var(--on-surface-muted);
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.branch-notice-dismiss:hover {
+  background: var(--surface-container-high);
+}
+
+/* ↓ 맨 아래로 — 스크롤이 바닥에서 떨어져 있을 때 뜨는 플로팅 버튼 */
+.jump-to-bottom-row {
+  position: sticky;
+  bottom: 10px;
+  height: 0;
+  display: flex;
+  justify-content: center;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.jump-to-bottom {
+  pointer-events: auto;
+  width: 32px;
+  height: 32px;
+  margin-top: -36px;
+  border: 1px solid var(--surface-container-high);
+  border-radius: 50%;
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 18%);
+  transition: background var(--transition-base);
+}
+
+.jump-to-bottom:hover {
+  background: var(--surface-container-high);
+}
+
+/* CC식 도구 diff 블록 — apply_patch/write_file 호출의 파일 변경 표시 */
+.tool-diff {
+  margin: 4px 0;
+  border: 1px solid var(--surface-container-high);
+  border-radius: var(--radius-sm);
+  background: var(--surface-container-lowest);
+  overflow: hidden;
+}
+
+.tool-diff-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: none;
+  background: var(--surface-container);
+  font-family: var(--font-ui-label);
+  font-size: 11.5px;
+  color: var(--on-surface-variant);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.tool-diff-header:hover {
+  background: var(--surface-container-high);
+}
+
+.tool-diff-chevron {
+  flex-shrink: 0;
+  color: var(--on-surface-muted);
+}
+
+.tool-diff-path {
+  flex: 1;
+  font-family: var(--font-ui-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-diff-stats {
+  flex-shrink: 0;
+  color: var(--on-surface-muted);
+}
+
+.tool-diff-stats .added {
+  color: #3d7a44;
+}
+
+.tool-diff-stats .removed {
+  color: var(--error);
+}
+
+.tool-diff-body {
+  margin: 0;
+  padding: 6px 0;
+  overflow-x: auto;
+  font-family: var(--font-ui-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.tool-diff-line {
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.tool-diff-line.add {
+  background: rgb(61 122 68 / 12%);
+}
+
+.tool-diff-line.remove {
+  background: rgb(177 74 58 / 12%);
+}
+
+.tool-diff-line.hunk {
+  color: var(--on-surface-muted);
+}
+
+.tool-diff-line.truncated {
+  color: var(--on-surface-muted);
+  font-style: italic;
+}
+
+/* 도구 결과 블록 — diff 블록과 같은 껍데기를 공유 */
+.tool-result-status {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.tool-result-status.ok {
+  color: #3d7a44;
+}
+
+.tool-result-status.pending {
+  color: var(--on-surface-muted);
+}
+
+.tool-result-status.failed {
+  color: var(--error);
+}
+
+.tool-result-summary {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--on-surface-muted);
+}
+
+/* 질문 인라인 편집 */
+.message-edit-input {
+  width: 100%;
+  border: none;
+  outline: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  background: var(--surface-container-lowest);
+  color: var(--primary);
+  font-family: var(--font-ui-label);
+  font-size: 13.5px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+/* 어시스턴트 Markdown — Codex-style semantic prose + GFM tables */
+.message-markdown,
+.rendered-markdown {
+  width: 100%;
+  min-width: 0;
+}
+
+.rendered-markdown {
+  overflow-wrap: anywhere;
+}
+
+.rendered-markdown > :first-child {
+  margin-top: 0;
+}
+
+.rendered-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.rendered-markdown p {
+  margin: 0 0 0.75em;
+}
+
+.rendered-markdown h1,
+.rendered-markdown h2,
+.rendered-markdown h3,
+.rendered-markdown h4,
+.rendered-markdown h5,
+.rendered-markdown h6 {
+  margin: 1.15em 0 0.5em;
+  color: var(--primary);
+  font-family: var(--font-ui-label);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.rendered-markdown h1 {
+  font-size: 1.4em;
+}
+
+.rendered-markdown h2 {
+  font-size: 1.25em;
+}
+
+.rendered-markdown h3 {
+  font-size: 1.12em;
+}
+
+.rendered-markdown h4,
+.rendered-markdown h5,
+.rendered-markdown h6 {
+  font-size: 1em;
+}
+
+.rendered-markdown ul,
+.rendered-markdown ol {
+  margin: 0.45em 0 0.85em;
+  padding-left: 1.55em;
+}
+
+.rendered-markdown li + li {
+  margin-top: 0.25em;
+}
+
+.rendered-markdown li > p {
+  margin-bottom: 0.35em;
+}
+
+.rendered-markdown blockquote {
+  margin: 0.65em 0 0.9em;
+  padding: 0.65em 0.9em;
+  border-left: 3px solid var(--surface-container-high);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--surface-container-low);
+  color: var(--on-surface-variant);
+}
+
+.rendered-markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.rendered-markdown hr {
+  height: 0;
+  margin: 1.15em 0;
+  border: 0;
+  border-top: 1px solid var(--surface-container-high);
+}
+
+.rendered-markdown-link {
+  color: var(--secondary);
+  font-weight: 600;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.16em;
+}
+
+.rendered-markdown-link:hover {
+  color: var(--primary);
+}
+
+.rendered-markdown-code {
+  padding: 0.08em 0.35em;
+  border: 1px solid var(--surface-container-high);
+  border-radius: var(--radius-sm);
+  background: var(--surface-container-low);
+  font-family: var(--font-ui-mono);
+  font-size: 0.88em;
+  word-break: break-word;
+}
+
+.rendered-markdown-code-block {
+  margin: 0.65em 0 0.9em;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+  font-family: var(--font-ui-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.rendered-markdown-code-block .rendered-markdown-code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: inherit;
+  white-space: pre;
+}
+
+.rendered-markdown-table-scroll {
+  max-width: 100%;
+  margin: 0.7em 0 1em;
+  overflow-x: auto;
+  border: 1px solid var(--surface-container-high);
+  border-radius: var(--radius-md);
+  background: var(--surface-container-lowest);
+  box-shadow: var(--elev-card);
+}
+
+.rendered-markdown-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--on-surface-variant);
+  font-family: var(--font-ui-label);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.rendered-markdown-table th,
+.rendered-markdown-table td {
+  padding: 8px 10px;
+  border-right: 1px solid var(--surface-container-high);
+  border-bottom: 1px solid var(--surface-container-high);
+  text-align: left;
+  vertical-align: top;
+}
+
+.rendered-markdown-table th {
+  background: var(--surface-container-low);
+  color: var(--primary);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.rendered-markdown-table th:last-child,
+.rendered-markdown-table td:last-child {
+  border-right: 0;
+}
+
+.rendered-markdown-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.rendered-markdown-table tbody tr:hover {
+  background: var(--cream);
+}
+
+.rendered-markdown input[type='checkbox'] {
+  margin-right: 0.45em;
+  accent-color: var(--secondary);
+}
+
+.rendered-markdown-image-alt {
+  color: var(--on-surface-muted);
+  font-style: italic;
+}
+
+/* 코드 블록 — 헤더(언어 + 복사)와 본문 */
+.message-code-block {
+  margin: 6px 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-container);
+  overflow: hidden;
+}
+
+.message-code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 4px 12px;
+}
+
+.message-code-block-language {
+  font-family: var(--font-ui-mono);
+  font-size: 11px;
+  color: var(--on-surface-muted);
+}
+
+.message-code-copy-button {
+  padding: 3px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background var(--transition-base),
+    color var(--transition-base);
+}
+
+.message-code-copy-button:hover {
+  background: var(--surface-container-high);
+  color: var(--primary);
+}
+
+.message-code-block-body {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--font-ui-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--on-surface-variant);
+  white-space: pre;
+}
+
+/* 답변 다시 시도 — 마지막 답변 아래 보조 행 */
+.transcript-retry-row {
+  display: flex;
+  justify-content: flex-start;
+  margin: 2px 0 6px;
+}
+
+.transcript-retry-button {
+  padding: 4px 12px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.transcript-retry-button:hover {
+  background: var(--surface-container-high);
+}
+
+/* 보조 작업 카드 → 차일드 세션 드릴다운 */
+.tool-row-child-session-button {
+  margin: 4px 0 6px 24px;
+  padding: 3px 10px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+  font-family: var(--font-ui-label);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.tool-row-child-session-button:hover {
+  background: var(--surface-container-high);
+}
+
+.subagent-work-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 24px;
+}
+
+.subagent-work-actions .tool-row-child-session-button {
+  margin-left: 0;
+}
+
+.tool-row-child-session-button.danger {
+  color: var(--error);
+}
+
+.tool-row-child-session-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.subagent-work-stop-error {
+  margin: 0 10px 6px 24px;
+  color: var(--error);
+  font-size: 11px;
+}
+
+.child-session-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.child-session-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: color-mix(in srgb, var(--primary) 40%, transparent);
+  cursor: pointer;
+}
+
+.child-session-panel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(640px, calc(100vw - 48px));
+  max-height: min(72vh, 720px);
+  border-radius: var(--radius-lg);
+  background: var(--surface-container-lowest);
+  box-shadow: var(--elev-floating);
+  overflow: hidden;
+}
+
+.child-session-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--surface-container-high);
+}
+
+.child-session-title {
+  font-family: var(--font-ui-label);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.child-session-meta {
+  margin-top: 2px;
+  font-family: var(--font-ui-label);
+  font-size: 11px;
+  color: var(--on-surface-variant);
+  word-break: break-all;
+}
+
+.child-session-close {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+}
+
+.child-session-close:hover {
+  background: var(--surface-container-high);
+}
+
+.child-session-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  overflow-y: auto;
+}
+
+.child-session-notice {
+  padding: 16px 0;
+  text-align: center;
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  color: var(--on-surface-variant);
+}
+
+/* 동영상 설정 팝업(video-generation-open §3/D-V3) — 확대 오버레이 계열의
+   떠 있는 카드. 메뉴 서브패널이 아니라 전용 다이얼로그다(사용자 제안). */
+.video-settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 85;
+  background: rgba(50, 34, 20, 0.35);
+  backdrop-filter: blur(4px);
+  border: none;
+  cursor: pointer;
+}
+
+.video-settings-card {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 90;
+  width: min(360px, calc(100vw - 48px));
+  /* 이 카드는 화면 가운데에 transform으로 고정된다. 높이 예산이 없으면 내용이
+     길 때 위아래로 화면 밖까지 자라고, 그 부분은 스크롤로도 닿을 수 없다.
+     작은 노트북에서 다이얼로그가 깨지는 원인이 이것이다. 넘치면 카드가
+     스크롤한다. */
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  overflow-y: auto;
+  border-radius: var(--radius-lg);
+  background: var(--surface-container-lowest);
+  box-shadow: var(--elev-floating);
+}
+
+.video-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.video-settings-title {
+  font-family: var(--font-ui-label);
+  font-weight: 600;
+}
+
+.video-settings-close {
+  border: none;
+  background: transparent;
+  color: var(--on-surface-muted);
+  font: inherit;
+  cursor: pointer;
+  padding: 2px 6px;
+}

@@ -37,6 +37,7 @@ import {
   type PtcExecuteCodeCallbackRuntime,
 } from './execute-code-batch-runtime.js';
 import type { PtcLabBatchCommandExecutionSummary } from '../../lab/shell/lab-command-execution.js';
+import { runDetached } from '../../../utils/run-detached.js';
 
 type CreatePtcExecuteCodeCellRegistry = typeof createPtcExecuteCodeCellRegistry;
 
@@ -181,11 +182,13 @@ export function trackRunningCellCompletion(args: {
   let releaseOwnerAbort = () => {};
   if (ownerSignal !== undefined) {
     const closeOnOwnerAbort = () => {
-      void runtimeArgs.cellRegistry.closeCell({
-        threadId: runtimeArgs.identity.threadId,
-        cellId: args.started.cellId,
-        reason: 'run_abort',
-      });
+      runDetached('ptc/cell-close-on-abort', () =>
+        runtimeArgs.cellRegistry.closeCell({
+          threadId: runtimeArgs.identity.threadId,
+          cellId: args.started.cellId,
+          reason: 'run_abort',
+        }),
+      );
     };
     ownerSignal.addEventListener('abort', closeOnOwnerAbort, { once: true });
     releaseOwnerAbort = () => {
@@ -197,19 +200,21 @@ export function trackRunningCellCompletion(args: {
     }
   }
 
-  void recordCellCompletion({
-    cellRegistry: runtimeArgs.cellRegistry,
-    cellId: args.started.cellId,
-    handle: args.started.handle,
-    onSettled: async () => {
-      releaseOwnerAbort();
-      await runtimeArgs.onRunningCellSettled?.({
-        threadId: runtimeArgs.identity.threadId,
-        cellId: args.started.cellId,
-      });
-    },
-    threadId: runtimeArgs.identity.threadId,
-  });
+  runDetached('ptc/cell-completion-record', () =>
+    recordCellCompletion({
+      cellRegistry: runtimeArgs.cellRegistry,
+      cellId: args.started.cellId,
+      handle: args.started.handle,
+      onSettled: async () => {
+        releaseOwnerAbort();
+        await runtimeArgs.onRunningCellSettled?.({
+          threadId: runtimeArgs.identity.threadId,
+          cellId: args.started.cellId,
+        });
+      },
+      threadId: runtimeArgs.identity.threadId,
+    }),
+  );
 }
 
 async function waitForInitialCellWindow(args: {
@@ -256,7 +261,11 @@ async function waitForInitialCellWindow(args: {
     args.signal?.addEventListener('abort', onAbort, { once: true });
     timer = setTimeout(() => finish({ kind: 'yield' }), args.yieldTimeMs);
     timer.unref?.();
-    void args.handle.exit.then((exit) => finish({ kind: 'exit', exit }));
+    // exit 프로미스가 거절하면 여기서 끝난다 — 셀 하나의 실패가 데몬을
+    // 죽이지 않는다.
+    runDetached('ptc/cell-exit-settle', () =>
+      args.handle.exit.then((exit) => finish({ kind: 'exit', exit })),
+    );
   });
 }
 

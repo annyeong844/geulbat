@@ -181,6 +181,10 @@ async function applyUpdateFileOperation(
   });
 }
 
+export function parseSingleApplyPatchTargetPath(patch: string): string {
+  return parseSingleApplyPatchOperation(patch).path;
+}
+
 function parseSingleApplyPatchOperation(patch: string): ApplyPatchOperation {
   const operations = parseApplyPatchOperations(patch);
   if (operations.length !== 1) {

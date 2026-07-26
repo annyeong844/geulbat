@@ -5,22 +5,34 @@ import {
 } from '@geulbat/protocol/run-approval';
 
 interface ApprovalSummary {
+  // 대화체 한 줄 요약 — "폴더를 만들려고 해요" (승인 카드 전용)
   title: string;
+  // 명사형 짧은 라벨 — "폴더 만들기" (채팅 속 기록 줄 전용, 카드 제목과
+  // 문장이 겹쳐 "요청이 두 개?"로 읽히지 않게 어휘를 분리한다)
+  label: string;
+  // 대상(경로·명령 등) — 카드가 mono로 조용히 그린다
   detail: string | null;
 }
+
+// Computer 파일 변경 클래스는 ':computer' 접미사가 붙는다
+// (approval-runtime-policy). 요약은 접미사를 벗긴 기본 클래스로 매칭한다.
+const COMPUTER_CLASS_SUFFIX = ':computer';
 
 export function buildApprovalSummary(
   pending: ApprovalRequired,
 ): ApprovalSummary {
-  if (!isWellKnownApprovalClass(pending.approvalClass)) {
-    const path = readStringArg(pending.argumentsPreview, 'path');
+  const baseClass = pending.approvalClass.endsWith(COMPUTER_CLASS_SUFFIX)
+    ? pending.approvalClass.slice(0, -COMPUTER_CLASS_SUFFIX.length)
+    : pending.approvalClass;
+  if (!isWellKnownApprovalClass(baseClass)) {
     return {
-      title: `Run ${pending.toolName}`,
-      detail: path,
+      title: `${pending.toolName} 도구를 쓰려고 해요`,
+      label: pending.toolName,
+      detail: readStringArg(pending.argumentsPreview, 'path'),
     };
   }
 
-  return buildWellKnownApprovalSummary(pending, pending.approvalClass);
+  return buildWellKnownApprovalSummary(pending, baseClass);
 }
 
 function buildWellKnownApprovalSummary(
@@ -34,56 +46,62 @@ function buildWellKnownApprovalSummary(
   switch (approvalClass) {
     case 'write_file':
       return {
-        title: path ? `Write ${path}` : 'Write file',
-        detail: buildContentDetail(args),
+        title: '파일을 쓰려고 해요',
+        label: '파일 쓰기',
+        detail: path,
       };
     case 'apply_patch':
       return {
-        title: buildApplyPatchTitle(args),
-        detail: buildApplyPatchDetail(args),
+        title: '파일을 고치려고 해요',
+        label: '파일 수정',
+        detail: readApplyPatchTarget(readStringArg(args, 'patch') ?? ''),
       };
     case 'manage_files:create':
       return {
-        title: path ? `Create ${path}` : 'Create file',
-        detail: null,
+        title: '파일을 만들려고 해요',
+        label: '파일 만들기',
+        detail: path,
       };
     case 'manage_files:rename':
       return {
-        title:
-          path && destination
-            ? `Rename ${path} -> ${destination}`
-            : 'Rename path',
-        detail: null,
+        title: '이름을 바꾸려고 해요',
+        label: '이름 변경',
+        detail: path && destination ? `${path} → ${destination}` : path,
       };
     case 'manage_files:move':
       return {
-        title:
-          path && destination ? `Move ${path} -> ${destination}` : 'Move path',
-        detail: null,
+        title: '파일을 옮기려고 해요',
+        label: '파일 이동',
+        detail: path && destination ? `${path} → ${destination}` : path,
       };
     case 'manage_files:mkdir':
       return {
-        title: path ? `Create folder ${path}` : 'Create folder',
-        detail: null,
+        title: '폴더를 만들려고 해요',
+        label: '폴더 만들기',
+        detail: path,
       };
     case 'manage_files:delete':
       return {
-        title: path ? `Delete ${path}` : 'Delete path',
-        detail: null,
+        title: '삭제하려고 해요',
+        label: '삭제',
+        detail: path,
       };
     case 'manage_files':
       return {
-        title: path ? `Manage ${path}` : 'Manage path',
-        detail: null,
+        title: '파일을 정리하려고 해요',
+        label: '파일 정리',
+        detail: path,
       };
     case 'refresh_memory_index':
       return {
-        title: 'Rebuild computer file memory index',
+        title: '메모리 색인을 다시 만들려고 해요',
+        label: '메모리 색인 재구성',
         detail: null,
       };
     case 'exec_command':
       return {
-        title: 'Run shell command',
+        title: '명령을 실행하려고 해요',
+        label: '명령 실행',
         detail: readStringArg(args, 'cmd'),
       };
   }
@@ -95,44 +113,6 @@ function readStringArg(
 ): string | null {
   const value = args[key];
   return typeof value === 'string' && value.trim() !== '' ? value : null;
-}
-
-function buildContentDetail(
-  args: ApprovalRequired['argumentsPreview'],
-): string | null {
-  const content = readStringArg(args, 'content');
-  if (!content) {
-    return null;
-  }
-  const lineCount = content === '' ? 0 : content.split('\n').length;
-  return `${lineCount} line${lineCount === 1 ? '' : 's'} of content`;
-}
-
-function buildApplyPatchTitle(
-  args: ApprovalRequired['argumentsPreview'],
-): string {
-  const patch = readStringArg(args, 'patch');
-  const target = patch ? readApplyPatchTarget(patch) : null;
-  return target ? `Apply patch to ${target}` : 'Apply patch';
-}
-
-function buildApplyPatchDetail(
-  args: ApprovalRequired['argumentsPreview'],
-): string | null {
-  const patch = readStringArg(args, 'patch');
-  if (!patch) {
-    return null;
-  }
-  if (patch.includes('\n*** Add File: ')) {
-    return 'Add file';
-  }
-  if (patch.includes('\n*** Delete File: ')) {
-    return 'Unsupported delete patch';
-  }
-  if (patch.includes('\n*** Update File: ')) {
-    return 'Update file';
-  }
-  return 'Patch text';
 }
 
 function readApplyPatchTarget(patch: string): string | null {

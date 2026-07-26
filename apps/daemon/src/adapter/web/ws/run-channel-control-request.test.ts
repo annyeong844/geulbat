@@ -87,6 +87,22 @@ void test('readRunApproveRequest rejects invalid approval decision shape', () =>
     readRunApproveRequest(approvalRequest({ grantScope: 'thread' })),
     { ok: false, message: 'grantScope must be once, run, or session' },
   );
+  assert.deepEqual(
+    readRunApproveRequest(approvalRequest({ permissionMode: 'unrestricted' })),
+    {
+      ok: false,
+      message: 'permissionMode must be basic or full_access',
+    },
+  );
+  assert.deepEqual(
+    readRunApproveRequest(
+      approvalRequest({ approved: false, permissionMode: 'full_access' }),
+    ),
+    {
+      ok: false,
+      message: 'permissionMode can only accompany an approved decision',
+    },
+  );
 });
 
 void test('readRunApproveRequest accepts valid approval request', () => {
@@ -99,6 +115,23 @@ void test('readRunApproveRequest accepts valid approval request', () => {
       threadId: THREAD_ID,
       approved: true,
       grantScope: 'session',
+    },
+  );
+  assert.deepEqual(
+    readRunApproveRequest(
+      approvalRequest({
+        grantScope: 'session',
+        permissionMode: 'full_access',
+      }),
+    ),
+    {
+      ok: true,
+      callId: 'call-1',
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      approved: true,
+      grantScope: 'session',
+      permissionMode: 'full_access',
     },
   );
 });

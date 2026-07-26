@@ -9,11 +9,17 @@ import {
   isRunPromptInputRefResponse,
   type RunAttachmentInput,
   type RunModelId,
-  type RunReasoningEffort,
+  type RunProviderTransitionRecovery,
+  type RunReasoningSelection,
   type RunRequest,
+  type RunServiceTier,
   type RunStartRequest,
   type RunSubagentModelRouting,
 } from '@geulbat/protocol/run-contract';
+import type {
+  PlanModeDepth,
+  PlanModeIntensity,
+} from '@geulbat/protocol/planning-workflow';
 
 import { getErrorMessage } from '../lib/error-message.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
@@ -55,6 +61,7 @@ interface SubmitApprovalDecisionArgs {
   pending: ApprovalRequired;
   approved: boolean;
   grantScope: ApprovalGrantScope;
+  permissionMode?: PermissionMode;
 }
 
 interface CancelRunSessionArgs {
@@ -70,7 +77,14 @@ interface BuildPromptRunRequestArgs {
   modelId: RunModelId;
   selectedThreadId: string | null;
   permissionMode: PermissionMode;
-  reasoningEffort: RunReasoningEffort;
+  // 계획 모드 진입 요청 — 켜져 있으면 daemon이 이 run의 workspace 변경을
+  // 거부한다. 활성 워크플로우의 진실 소유자는 daemon이다.
+  planModeRequested: boolean;
+  planModeIntensity: PlanModeIntensity;
+  planModeDepth: PlanModeDepth;
+  reasoningEffort: RunReasoningSelection;
+  serviceTier: RunServiceTier;
+  providerTransitionRecovery?: RunProviderTransitionRecovery;
   subagentModelRouting: RunSubagentModelRouting;
   // 업로드된 사용자 첨부 — 모델에 이미지/파일 입력 블록으로 전달된다
   attachments?: RunAttachmentInput[];
@@ -84,6 +98,7 @@ interface BuildRunStartRequestArgs {
   request: RunRequest;
   modelId: RunModelId;
   permissionMode: PermissionMode;
+  serviceTier: RunServiceTier;
   subagentModelRouting: RunSubagentModelRouting;
 }
 
@@ -91,6 +106,7 @@ interface BuildApprovalDecisionRequestArgs {
   pending: ApprovalRequired;
   approved: boolean;
   grantScope: ApprovalGrantScope;
+  permissionMode?: PermissionMode;
 }
 
 type StartRunRequestCommandResult =
@@ -132,7 +148,12 @@ export function buildPromptRunRequest({
   modelId,
   selectedThreadId,
   permissionMode,
+  planModeRequested,
+  planModeIntensity,
+  planModeDepth,
   reasoningEffort,
+  serviceTier,
+  providerTransitionRecovery,
   subagentModelRouting,
   attachments,
   regenerate,
@@ -140,12 +161,30 @@ export function buildPromptRunRequest({
 }: BuildPromptRunRequestArgs): RunRequest {
   const imageGenerationModel = getImageGenerationModelPref();
   const videoGenerationPref = getVideoGenerationPref();
+  const goalStart = readGoalStartCommand(prompt);
   return {
-    prompt,
+    prompt: goalStart?.objective ?? prompt,
+    ...(goalStart === null
+      ? {}
+      : {
+          displayPrompt: prompt,
+          goalModeRequested: true,
+        }),
     ...(workingDirectory !== undefined ? { workingDirectory } : {}),
     modelId,
     permissionMode,
+    ...(planModeRequested === true
+      ? {
+          planModeRequested: true,
+          planModeIntensity,
+          planModeDepth,
+        }
+      : {}),
     reasoningEffort,
+    serviceTier,
+    ...(providerTransitionRecovery === undefined
+      ? {}
+      : { providerTransitionRecovery }),
     subagentModelRouting,
     ...(selectedThreadId ? { threadId: brandThreadId(selectedThreadId) } : {}),
     ...(attachments !== undefined && attachments.length > 0
@@ -164,6 +203,14 @@ export function buildPromptRunRequest({
         }
       : {}),
   };
+}
+
+function readGoalStartCommand(prompt: string): { objective: string } | null {
+  const match = /^\/goal\s+([\s\S]+)$/u.exec(prompt.trim());
+  const objective = match?.[1]?.trim();
+  return objective === undefined || objective.length === 0
+    ? null
+    : { objective };
 }
 
 // pref의 상세 옵션(길이·화면비·해상도)을 RunRequest.videoGenerationSettings
@@ -189,6 +236,7 @@ export function buildRunStartRequest({
   request,
   modelId,
   permissionMode,
+  serviceTier,
   subagentModelRouting,
 }: BuildRunStartRequestArgs): RunRequest {
   const imageGenerationModel =
@@ -206,6 +254,7 @@ export function buildRunStartRequest({
     ...request,
     modelId: request.modelId ?? modelId,
     permissionMode: request.permissionMode ?? permissionMode,
+    serviceTier: request.serviceTier ?? serviceTier,
     subagentModelRouting: request.subagentModelRouting ?? subagentModelRouting,
     ...(imageGenerationModel !== null && imageGenerationModel !== undefined
       ? { imageGenerationModel }
@@ -252,8 +301,23 @@ export async function prepareRunStartRequest(
     ...(request.permissionMode !== undefined
       ? { permissionMode: request.permissionMode }
       : {}),
+    ...(request.planModeRequested !== undefined
+      ? { planModeRequested: request.planModeRequested }
+      : {}),
+    ...(request.planModeIntensity !== undefined
+      ? { planModeIntensity: request.planModeIntensity }
+      : {}),
+    ...(request.planModeDepth !== undefined
+      ? { planModeDepth: request.planModeDepth }
+      : {}),
     ...(request.reasoningEffort !== undefined
       ? { reasoningEffort: request.reasoningEffort }
+      : {}),
+    ...(request.serviceTier !== undefined
+      ? { serviceTier: request.serviceTier }
+      : {}),
+    ...(request.providerTransitionRecovery !== undefined
+      ? { providerTransitionRecovery: request.providerTransitionRecovery }
       : {}),
     ...(request.subagentModelRouting !== undefined
       ? { subagentModelRouting: request.subagentModelRouting }
@@ -263,6 +327,15 @@ export async function prepareRunStartRequest(
       : {}),
     ...(request.regenerate !== undefined
       ? { regenerate: request.regenerate }
+      : {}),
+    // 이 두 필드가 빠져 있었다 — silentPrompt는 감사용 턴을 채팅에서 감추고,
+    // promptOrigin은 아티팩트 발 턴의 귀속을 각인한다. 여기서 탈락하면 조용한
+    // 턴이 그대로 보이고 프레임 발 턴이 사용자 발로 보인다(가시성 불변식 위반).
+    ...(request.silentPrompt !== undefined
+      ? { silentPrompt: request.silentPrompt }
+      : {}),
+    ...(request.promptOrigin !== undefined
+      ? { promptOrigin: request.promptOrigin }
       : {}),
     ...(request.imageGenerationModel !== undefined
       ? { imageGenerationModel: request.imageGenerationModel }
@@ -315,6 +388,7 @@ export function buildApprovalDecisionRequest({
   pending,
   approved,
   grantScope,
+  permissionMode,
 }: BuildApprovalDecisionRequestArgs): ApprovalRequest {
   return {
     callId: pending.callId,
@@ -322,6 +396,7 @@ export function buildApprovalDecisionRequest({
     threadId: pending.threadId,
     approved,
     grantScope,
+    ...(permissionMode === undefined ? {} : { permissionMode }),
   };
 }
 
@@ -366,6 +441,7 @@ export async function submitApprovalDecision({
   pending,
   approved,
   grantScope,
+  permissionMode,
 }: SubmitApprovalDecisionArgs): Promise<SubmitApprovalDecisionResult> {
   try {
     await client.approve(
@@ -373,6 +449,7 @@ export async function submitApprovalDecision({
         pending,
         approved,
         grantScope,
+        ...(permissionMode === undefined ? {} : { permissionMode }),
       }),
     );
     return approved ? { kind: 'approved' } : { kind: 'denied' };

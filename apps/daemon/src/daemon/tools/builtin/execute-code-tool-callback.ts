@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { validateToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
 import {
   PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_SDK_PROJECTION_MOUNT_POLICY_ID,
@@ -39,9 +40,28 @@ export function createPtcExecuteCodeCallbackBreakdown(): PtcExecuteCodeCallbackB
 export function createPtcExecuteCodeToolCallbackSurface(
   ctx: ToolExecutionContext,
 ): PtcExecuteCodeCallbackToolSurface | undefined {
-  const registry = ctx.agentSpawnRuntime?.toolRegistry;
+  const registry = ctx.runtimeServices?.toolRegistry;
   if (registry === undefined) {
     return undefined;
+  }
+
+  if (ctx.toolCapabilityPolicy !== undefined) {
+    const toolCapabilityPolicy = validateToolCapabilityPolicy(
+      ctx.toolCapabilityPolicy,
+    );
+    if (
+      ctx.toolLibraryProjectionIdentity?.policyId !==
+      toolCapabilityPolicy.toolCapabilityPolicyId
+    ) {
+      throw new Error(
+        'PTC callback tool capability policy does not match the mounted tool library projection',
+      );
+    }
+    return resolvePtcExecuteCodeCallbackToolSurface({
+      registry,
+      allowedRegistryNames: toolCapabilityPolicy.callbackRegistryNames,
+      writeCallbackEnabled: toolCapabilityPolicy.writeCallbackEnabled,
+    });
   }
 
   return resolvePtcExecuteCodeCallbackToolSurface({
@@ -61,7 +81,7 @@ export function createPtcExecuteCodeToolCallbackHandler(
     | undefined = createPtcExecuteCodeToolCallbackSurface(ctx),
   breakdown?: PtcExecuteCodeCallbackBreakdown,
 ): PtcExecuteCodeRuntimeToolCallbackHandler | undefined {
-  const registry = ctx.agentSpawnRuntime?.toolRegistry;
+  const registry = ctx.runtimeServices?.toolRegistry;
   if (registry === undefined || surface === undefined) {
     return undefined;
   }
@@ -180,7 +200,7 @@ export async function resolvePtcExecuteCodeToolSdkProjection(
   if (identity === undefined) {
     return { ok: true };
   }
-  const projectionPort = ctx.agentSpawnRuntime?.toolLibraryProjection;
+  const projectionPort = ctx.runtimeServices?.toolLibraryProjection;
   const threadId = ctx.threadId;
   const stateRoot = ctx.stateRoot;
   if (

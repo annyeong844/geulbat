@@ -4,14 +4,17 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
+import { createCommandSessionHost } from '../../command-host/session-core.js';
 import { executeTool } from '../tools/executor.js';
 import { createToolRegistryStore } from '../tools/registry.js';
 import {
   McpServerConfigError,
   McpServerNotFoundError,
   McpServerOwnershipError,
+  type McpSessionCoordinate,
+  type McpSessionCoordinateStore,
 } from './global-mcp-contract.js';
 import type { PluginMcpServerBinding } from './global-mcp-registration.js';
 import { createGlobalMcpRuntime } from './global-mcp-runtime.js';
@@ -23,15 +26,111 @@ const require = createRequire(import.meta.url);
 // concurrency gate below; successful startup still completes immediately.
 const MCP_CONCURRENT_STARTUP_TEST_TIMEOUT_MS = 30_000;
 
+// P7.6 §9 M4 — MCP 서버 프로세스는 command-host 세션이 소유하고, 데몬이 대신
+// 프로세스를 드는 갈래는 없다. 그래서 이 스위트의 모든 런타임은 진짜 세션
+// 호스트를 든다. 예산 값은 같은 디렉터리의 배치 테스트에서 가져왔다.
+//
+// 세션 출력은 `homeStateRoot` 아래에 쌓이므로, 임시 디렉터리를 지우기 전에
+// 그 런타임의 호스트를 닫아야 한다 — 안 그러면 세션 정리와 rm이 경합한다.
+const sessionHostByRuntime = new WeakMap<
+  ReturnType<typeof createGlobalMcpRuntime>,
+  ReturnType<typeof createCommandSessionHost>
+>();
+const testSessionHosts: Array<ReturnType<typeof createCommandSessionHost>> = [];
+
+function createTestMcpRuntime(args: {
+  homeStateRoot: string;
+  toolRegistry: ReturnType<typeof createToolRegistryStore>;
+  sessionCoordinates?: McpSessionCoordinateStore;
+}): ReturnType<typeof createGlobalMcpRuntime> {
+  const host = createCommandSessionHost({
+    inlineMaxBytes: 64 * 1024,
+    tailRingBytes: 64 * 1024,
+  });
+  testSessionHosts.push(host);
+  const runtime = createGlobalMcpRuntime({
+    homeStateRoot: args.homeStateRoot,
+    toolRegistry: args.toolRegistry,
+    hostCommands: host,
+    maxPageBytes: 32 * 1024,
+  });
+  runtime.attachSessionCoordinateStore(
+    args.sessionCoordinates ?? createInMemoryMcpSessionCoordinateStore(),
+  );
+  sessionHostByRuntime.set(runtime, host);
+  return runtime;
+}
+
+function createInMemoryMcpSessionCoordinateStore(): McpSessionCoordinateStore {
+  const coordinates = new Map<string, McpSessionCoordinate>();
+  return {
+    readMcpSessionCoordinate(serverId) {
+      const coordinate = coordinates.get(serverId);
+      return coordinate === undefined ? undefined : { ...coordinate };
+    },
+    persistMcpSessionCoordinate(coordinate) {
+      coordinates.set(coordinate.serverId, { ...coordinate });
+    },
+    deleteMcpSessionCoordinate(serverId) {
+      coordinates.delete(serverId);
+    },
+  };
+}
+
+async function closeTestMcpRuntime(
+  runtime: ReturnType<typeof createGlobalMcpRuntime> | undefined,
+): Promise<void> {
+  if (runtime === undefined) {
+    return;
+  }
+  await runtime.close().catch(() => undefined);
+  await sessionHostByRuntime.get(runtime)?.closeAll();
+}
+
+// 초기화 자체가 거부되는 런타임은 임시 디렉터리에 세션을 만들지 않아 개별
+// 정리 지점이 없다. 그래도 호스트 객체를 파일 밖으로 흘리지 않는다.
+after(async () => {
+  for (const host of testSessionHosts.splice(0)) {
+    await host.closeAll();
+  }
+});
+
+void test('global MCP fails closed without the daemon runtime-state coordinate store', async () => {
+  const homeStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-mcp-unbound-state-'),
+  );
+  const host = createCommandSessionHost({
+    inlineMaxBytes: 64 * 1024,
+    tailRingBytes: 64 * 1024,
+  });
+  testSessionHosts.push(host);
+  const runtime = createGlobalMcpRuntime({
+    homeStateRoot,
+    toolRegistry: createToolRegistryStore({ builtins: [] }),
+    hostCommands: host,
+    maxPageBytes: 32 * 1024,
+  });
+
+  try {
+    await assert.rejects(
+      runtime.initialize(),
+      /requires the daemon runtime-state store/u,
+    );
+  } finally {
+    await rm(homeStateRoot, { recursive: true, force: true });
+  }
+});
+
 void test('global MCP keeps discovery lightweight and persists only explicitly installed schemas', async () => {
   const homeStateRoot = await mkdtemp(join(tmpdir(), 'geulbat-mcp-home-'));
   const serverScript = join(homeStateRoot, 'echo-mcp-server.mjs');
   await writeFile(serverScript, createEchoMcpServerSource(), 'utf8');
   const firstRegistry = createToolRegistryStore({ builtins: [] });
-  const firstRuntime = createGlobalMcpRuntime({
+  const firstRuntime = createTestMcpRuntime({
     homeStateRoot,
     toolRegistry: firstRegistry,
   });
+  let secondRuntime: ReturnType<typeof createGlobalMcpRuntime> | undefined;
 
   try {
     await firstRuntime.initialize();
@@ -116,6 +215,9 @@ void test('global MCP keeps discovery lightweight and persists only explicitly i
       sideEffectLevel: 'write',
       mayMutateComputerFiles: true,
       requiresApproval: true,
+      // 승낙은 서버에 걸린다. 투영 이름은 내용 해시라 승인 클래스 문법을
+      // 만족하지 못하고, 애초에 사람이 "다시 묻지 않기"를 걸 단위가 아니다.
+      approvalClass: `mcp:${added.serverId}`,
       exposure: {
         directHot: false,
         sdkVisible: true,
@@ -124,6 +226,10 @@ void test('global MCP keeps discovery lightweight and persists only explicitly i
         effectClass: 'hostStateMutation',
       },
     });
+    assert.equal(
+      firstRegistry.getToolMeta(projectedName)?.resultProjection,
+      undefined,
+    );
     assert.deepEqual(
       firstRegistry.getTool(projectedName)?.catalogSearchMetadata,
       {
@@ -299,7 +405,7 @@ void test('global MCP keeps discovery lightweight and persists only explicitly i
     await firstRuntime.close();
 
     const secondRegistry = createToolRegistryStore({ builtins: [] });
-    const secondRuntime = createGlobalMcpRuntime({
+    secondRuntime = createTestMcpRuntime({
       homeStateRoot,
       toolRegistry: secondRegistry,
     });
@@ -315,9 +421,63 @@ void test('global MCP keeps discovery lightweight and persists only explicitly i
     await secondRuntime.removeServer(added.serverId);
     assert.deepEqual(secondRuntime.listServers(), []);
     assert.deepEqual(secondRegistry.getAllRegisteredToolNames(), []);
-    await secondRuntime.close();
   } finally {
-    await firstRuntime.close().catch(() => undefined);
+    await closeTestMcpRuntime(firstRuntime);
+    await closeTestMcpRuntime(secondRuntime);
+    await rm(homeStateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('global MCP records a fresh-launch reason when a persisted session cannot be re-adopted', async () => {
+  const homeStateRoot = await mkdtemp(join(tmpdir(), 'geulbat-mcp-restart-'));
+  const serverScript = join(homeStateRoot, 'echo-mcp-server.mjs');
+  await writeFile(serverScript, createEchoMcpServerSource(), 'utf8');
+  const sessionCoordinates = createInMemoryMcpSessionCoordinateStore();
+  const firstRuntime = createTestMcpRuntime({
+    homeStateRoot,
+    toolRegistry: createToolRegistryStore({ builtins: [] }),
+    sessionCoordinates,
+  });
+  let secondRuntime: ReturnType<typeof createGlobalMcpRuntime> | undefined;
+
+  try {
+    await firstRuntime.initialize();
+    const added = await firstRuntime.addServer({
+      name: 'Restarted echo server',
+      transport: {
+        kind: 'stdio',
+        command: process.execPath,
+        args: [serverScript],
+        envKeys: [],
+      },
+    });
+    assert.ok(sessionCoordinates.readMcpSessionCoordinate(added.serverId));
+    await firstRuntime.close();
+
+    sessionCoordinates.persistMcpSessionCoordinate({
+      serverId: added.serverId,
+      outputRef: 'missing-command-host-output',
+    });
+    secondRuntime = createTestMcpRuntime({
+      homeStateRoot,
+      toolRegistry: createToolRegistryStore({ builtins: [] }),
+      sessionCoordinates,
+    });
+    await secondRuntime.initialize();
+
+    const restarted = secondRuntime.listServers()[0];
+    assert.equal(restarted?.runtime.state, 'ready');
+    assert.match(
+      restarted?.runtime.restartReason ?? '',
+      /MCP session re-adoption failed/u,
+    );
+    assert.notEqual(
+      sessionCoordinates.readMcpSessionCoordinate(added.serverId)?.outputRef,
+      'missing-command-host-output',
+    );
+  } finally {
+    await closeTestMcpRuntime(firstRuntime);
+    await closeTestMcpRuntime(secondRuntime);
     await rm(homeStateRoot, { recursive: true, force: true });
   }
 });
@@ -326,7 +486,7 @@ void test('global MCP rejects a repeated tools/list cursor instead of polling fo
   const homeStateRoot = await mkdtemp(join(tmpdir(), 'geulbat-mcp-cursor-'));
   const serverScript = join(homeStateRoot, 'cursor-loop-mcp-server.mjs');
   await writeFile(serverScript, createCursorLoopMcpServerSource(), 'utf8');
-  const runtime = createGlobalMcpRuntime({
+  const runtime = createTestMcpRuntime({
     homeStateRoot,
     toolRegistry: createToolRegistryStore({ builtins: [] }),
   });
@@ -346,7 +506,7 @@ void test('global MCP rejects a repeated tools/list cursor instead of polling fo
     assert.equal(added.runtime.state, 'error');
     assert.match(added.runtime.error ?? '', /repeated a pagination cursor/u);
   } finally {
-    await runtime.close().catch(() => undefined);
+    await closeTestMcpRuntime(runtime);
     await rm(homeStateRoot, { recursive: true, force: true });
   }
 });
@@ -354,7 +514,7 @@ void test('global MCP rejects a repeated tools/list cursor instead of polling fo
 void test('global MCP persists environment key references without secret values', async () => {
   const homeStateRoot = await mkdtemp(join(tmpdir(), 'geulbat-mcp-env-'));
   const registry = createToolRegistryStore({ builtins: [] });
-  const runtime = createGlobalMcpRuntime({
+  const runtime = createTestMcpRuntime({
     homeStateRoot,
     toolRegistry: registry,
   });
@@ -382,7 +542,7 @@ void test('global MCP persists environment key references without secret values'
     assert.doesNotMatch(persisted, new RegExp(secret, 'u'));
   } finally {
     delete process.env[key];
-    await runtime.close().catch(() => undefined);
+    await closeTestMcpRuntime(runtime);
     await rm(homeStateRoot, { recursive: true, force: true });
   }
 });
@@ -394,7 +554,7 @@ void test('plugin MCP bindings preserve per-server preference while package elig
   await mkdir(pluginRoot, { recursive: true });
   await writeFile(serverScript, createEchoMcpServerSource(), 'utf8');
   const registry = createToolRegistryStore({ builtins: [] });
-  const runtime = createGlobalMcpRuntime({
+  const runtime = createTestMcpRuntime({
     homeStateRoot,
     toolRegistry: registry,
   });
@@ -502,7 +662,7 @@ void test('plugin MCP bindings preserve per-server preference while package elig
     assert.deepEqual(runtime.listServers(), []);
     assert.deepEqual(registry.getAllRegisteredToolNames(), []);
   } finally {
-    await runtime.close().catch(() => undefined);
+    await closeTestMcpRuntime(runtime);
     await rm(homeStateRoot, { recursive: true, force: true });
   }
 });
@@ -533,7 +693,7 @@ void test('global MCP migrates legacy manual registrations once and can reload t
     })}\n`,
     'utf8',
   );
-  const firstRuntime = createGlobalMcpRuntime({
+  const firstRuntime = createTestMcpRuntime({
     homeStateRoot,
     toolRegistry: createToolRegistryStore({ builtins: [] }),
   });
@@ -555,15 +715,15 @@ void test('global MCP migrates legacy manual registrations once and can reload t
     assert.deepEqual(migrated.servers?.[0]?.source, { kind: 'manual' });
     await firstRuntime.close();
 
-    secondRuntime = createGlobalMcpRuntime({
+    secondRuntime = createTestMcpRuntime({
       homeStateRoot,
       toolRegistry: createToolRegistryStore({ builtins: [] }),
     });
     await secondRuntime.initialize();
     assert.equal(secondRuntime.listServers()[0]?.source.kind, 'manual');
   } finally {
-    await firstRuntime.close().catch(() => undefined);
-    await secondRuntime?.close().catch(() => undefined);
+    await closeTestMcpRuntime(firstRuntime);
+    await closeTestMcpRuntime(secondRuntime);
     await rm(homeStateRoot, { recursive: true, force: true });
   }
 });
@@ -593,7 +753,7 @@ void test('global MCP rejects a persisted manual registration that collides with
       return { cwd: homeStateRoot };
     },
   };
-  const firstRuntime = createGlobalMcpRuntime({
+  const firstRuntime = createTestMcpRuntime({
     homeStateRoot,
     toolRegistry: createToolRegistryStore({ builtins: [] }),
   });
@@ -627,7 +787,7 @@ void test('global MCP rejects a persisted manual registration that collides with
       'utf8',
     );
 
-    secondRuntime = createGlobalMcpRuntime({
+    secondRuntime = createTestMcpRuntime({
       homeStateRoot,
       toolRegistry: createToolRegistryStore({ builtins: [] }),
     });
@@ -636,8 +796,8 @@ void test('global MCP rejects a persisted manual registration that collides with
       /conflicts with a manual registration/u,
     );
   } finally {
-    await firstRuntime.close().catch(() => undefined);
-    await secondRuntime?.close().catch(() => undefined);
+    await closeTestMcpRuntime(firstRuntime);
+    await closeTestMcpRuntime(secondRuntime);
     await rm(homeStateRoot, { recursive: true, force: true });
   }
 });
@@ -668,7 +828,7 @@ void test('global MCP refuses unknown persisted fields instead of accepting embe
     }),
     { encoding: 'utf8', flag: 'w' },
   );
-  const runtime = createGlobalMcpRuntime({
+  const runtime = createTestMcpRuntime({
     homeStateRoot,
     toolRegistry: createToolRegistryStore({ builtins: [] }),
   });
@@ -681,7 +841,61 @@ void test('global MCP refuses unknown persisted fields instead of accepting embe
         /invalid shape/u.test(error.message),
     );
   } finally {
-    await runtime.close().catch(() => undefined);
+    await closeTestMcpRuntime(runtime);
+    await rm(homeStateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('global MCP migrates away a retired shutdown grace instead of refusing the registry', async () => {
+  // P7.6 §11.6 — 종료 유예는 프로세스를 든 command-host 세션의 정책이 됐다.
+  // 이미 저장된 값은 데몬을 막지 않고(부팅 실패는 사용자 손해다) 읽는 자리에서
+  // 떼어낸 뒤, 다시 저장될 때 파일에서도 사라진다.
+  const homeStateRoot = await mkdtemp(join(tmpdir(), 'geulbat-mcp-retired-'));
+  const registryPath = join(homeStateRoot, '.geulbat', 'mcp-servers.json');
+  await mkdir(join(homeStateRoot, '.geulbat'), { recursive: true });
+  await writeFile(
+    registryPath,
+    JSON.stringify({
+      schemaVersion: 4,
+      servers: [
+        {
+          configVersion: 3,
+          serverId: 'server-with-retired-field',
+          name: 'Retired field server',
+          enabled: false,
+          installedToolNames: [],
+          source: { kind: 'manual' },
+          transport: {
+            kind: 'stdio',
+            command: 'node',
+            args: [],
+            envKeys: [],
+            requestTimeoutMs: 9_000,
+            shutdownGraceMs: 1_500,
+          },
+        },
+      ],
+    }),
+    { encoding: 'utf8', flag: 'w' },
+  );
+  const runtime = createTestMcpRuntime({
+    homeStateRoot,
+    toolRegistry: createToolRegistryStore({ builtins: [] }),
+  });
+
+  try {
+    await runtime.initialize();
+    const view = runtime.listServers()[0];
+    assert.equal(view?.serverId, 'server-with-retired-field');
+    // 나머지 설정은 그대로 남는다 — 떼어낸 것은 폐기된 필드 하나다.
+    assert.equal(view?.transport.requestTimeoutMs, 9_000);
+    assert.equal('shutdownGraceMs' in (view?.transport ?? {}), false);
+
+    const persisted = await readFile(registryPath, 'utf8');
+    assert.doesNotMatch(persisted, /shutdownGraceMs/u);
+    assert.match(persisted, /requestTimeoutMs/u);
+  } finally {
+    await closeTestMcpRuntime(runtime);
     await rm(homeStateRoot, { recursive: true, force: true });
   }
 });
@@ -733,7 +947,7 @@ void test('global MCP isolates invalid environment references and starts enabled
     }),
     'utf8',
   );
-  const runtime = createGlobalMcpRuntime({
+  const runtime = createTestMcpRuntime({
     homeStateRoot,
     toolRegistry: createToolRegistryStore({ builtins: [] }),
   });
@@ -755,18 +969,18 @@ void test('global MCP isolates invalid environment references and starts enabled
       'ready',
     );
   } finally {
-    await runtime.close().catch(() => undefined);
+    await closeTestMcpRuntime(runtime);
     await rm(homeStateRoot, { recursive: true, force: true });
   }
 });
 
 void test('global MCP enforces lifecycle guards and validates disabled server operations', async () => {
   const root = await mkdtemp(join(tmpdir(), 'geulbat-mcp-lifecycle-'));
-  const closedRuntime = createGlobalMcpRuntime({
+  const closedRuntime = createTestMcpRuntime({
     homeStateRoot: join(root, 'closed'),
     toolRegistry: createToolRegistryStore({ builtins: [] }),
   });
-  const runtime = createGlobalMcpRuntime({
+  const runtime = createTestMcpRuntime({
     homeStateRoot: join(root, 'active'),
     toolRegistry: createToolRegistryStore({ builtins: [] }),
   });
@@ -831,17 +1045,6 @@ void test('global MCP enforces lifecycle guards and validates disabled server op
           requestTimeoutMs: 1.5,
         },
       },
-      {
-        name: 'Invalid shutdown timeout',
-        enabled: false,
-        transport: {
-          kind: 'stdio' as const,
-          command: 'node',
-          args: [],
-          envKeys: [],
-          shutdownGraceMs: Number.MAX_SAFE_INTEGER + 1,
-        },
-      },
     ]) {
       await assert.rejects(
         runtime.addServer(request),
@@ -859,7 +1062,6 @@ void test('global MCP enforces lifecycle guards and validates disabled server op
         envKeys: ['PATH', 'PATH'],
         connectionTimeoutMs: 1_000,
         requestTimeoutMs: 2_000,
-        shutdownGraceMs: 3_000,
       },
     });
     assert.equal(added.name, 'Disabled server');
@@ -908,8 +1110,8 @@ void test('global MCP enforces lifecycle guards and validates disabled server op
     await runtime.close();
     assert.throws(() => runtime.listServers(), /runtime is closed/u);
   } finally {
-    await runtime.close().catch(() => undefined);
-    await closedRuntime.close().catch(() => undefined);
+    await closeTestMcpRuntime(runtime);
+    await closeTestMcpRuntime(closedRuntime);
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -965,7 +1167,7 @@ void test('global MCP migrates v2 and v3 registries without losing installed too
           servers: [fixture.registration],
         })}\n`,
       );
-      const runtime = createGlobalMcpRuntime({
+      const runtime = createTestMcpRuntime({
         homeStateRoot,
         toolRegistry: createToolRegistryStore({ builtins: [] }),
       });
@@ -989,7 +1191,7 @@ void test('global MCP migrates v2 and v3 registries without losing installed too
           fixture.installedToolNames,
         );
       } finally {
-        await runtime.close().catch(() => undefined);
+        await closeTestMcpRuntime(runtime);
       }
     }
   } finally {
@@ -1005,7 +1207,7 @@ void test('global MCP rejects malformed and duplicate persisted registries', asy
   try {
     await writeFile(registryPath, '{not-json');
     await assert.rejects(
-      createGlobalMcpRuntime({
+      createTestMcpRuntime({
         homeStateRoot: root,
         toolRegistry: createToolRegistryStore({ builtins: [] }),
       }).initialize(),
@@ -1033,7 +1235,7 @@ void test('global MCP rejects malformed and duplicate persisted registries', asy
       JSON.stringify({ schemaVersion: 4, servers: [duplicate, duplicate] }),
     );
     await assert.rejects(
-      createGlobalMcpRuntime({
+      createTestMcpRuntime({
         homeStateRoot: root,
         toolRegistry: createToolRegistryStore({ builtins: [] }),
       }).initialize(),
@@ -1056,7 +1258,7 @@ void test('global MCP rejects malformed and duplicate persisted registries', asy
       }),
     );
     await assert.rejects(
-      createGlobalMcpRuntime({
+      createTestMcpRuntime({
         homeStateRoot: root,
         toolRegistry: createToolRegistryStore({ builtins: [] }),
       }).initialize(),
@@ -1094,11 +1296,11 @@ void test('global MCP rejects duplicate plugin bindings and tolerates empty plug
       return { cwd: root };
     },
   };
-  const duplicateRuntime = createGlobalMcpRuntime({
+  const duplicateRuntime = createTestMcpRuntime({
     homeStateRoot: join(root, 'duplicate'),
     toolRegistry: createToolRegistryStore({ builtins: [] }),
   });
-  const runtime = createGlobalMcpRuntime({
+  const runtime = createTestMcpRuntime({
     homeStateRoot: join(root, 'empty'),
     toolRegistry: createToolRegistryStore({ builtins: [] }),
   });
@@ -1113,8 +1315,8 @@ void test('global MCP rejects duplicate plugin bindings and tolerates empty plug
     await runtime.removePluginServers(source.installationId);
     assert.deepEqual(runtime.listServers(), []);
   } finally {
-    await duplicateRuntime.close().catch(() => undefined);
-    await runtime.close().catch(() => undefined);
+    await closeTestMcpRuntime(duplicateRuntime);
+    await closeTestMcpRuntime(runtime);
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -42,7 +42,7 @@ export async function recoverPendingReplaySafeToolCalls(args: {
   const { agentInput } = args;
   const { runContext, runtimeServices } = agentInput;
   const providerRequestOptions = resolveProviderRequestOptionsForRun(
-    runtimeServices.providerRequestOptions,
+    runtimeServices.provider.requestOptions,
     {
       ...(agentInput.providerModel === undefined
         ? {}
@@ -171,11 +171,10 @@ export async function recoverPendingReplaySafeToolCalls(args: {
         pending.functionCall.name === PTC_PACKAGE_INSTALL_TOOL_NAME,
     );
     if (pendingPtcRuntimeCall) {
-      const cleanup = await runtimeServices.ptcExecuteCode.reapRestartResidue?.(
-        {
+      const cleanup =
+        await runtimeServices.ptc.executeCode.reapRestartResidue?.({
           stateRoot: runContext.stateRoot,
-        },
-      );
+        });
       if (cleanup === undefined) {
         throw new Error('PTC restart residue cleanup is unavailable');
       }
@@ -201,6 +200,7 @@ export async function recoverPendingReplaySafeToolCalls(args: {
         : {
             allowedRegistryNames: agentInput.toolSurface.allowedRegistryNames,
           }),
+      ultraReasoning: agentInput.ultraReasoning ?? false,
       ...(agentInput.subagentModelRouting === undefined
         ? {}
         : { subagentModelRouting: agentInput.subagentModelRouting }),
@@ -209,7 +209,7 @@ export async function recoverPendingReplaySafeToolCalls(args: {
         : { computerFileRoot: runtimeServices.computerFileRoot }),
       fileStateCache: runtimeServices.fileStateCache,
       memoryIndex: runtimeServices.memoryIndex,
-      agentSpawnRuntime: runtimeServices,
+      runtimeServices: runtimeServices,
     });
     const runtime = buildToolCallExecutionRuntime({
       approvalContext: agentInput.approvalContext,

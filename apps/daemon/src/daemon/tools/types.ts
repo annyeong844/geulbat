@@ -1,15 +1,22 @@
-import type { PermissionMode } from '@geulbat/protocol/run-approval';
+import type {
+  ApprovalClass,
+  PermissionMode,
+} from '@geulbat/protocol/run-approval';
 import type { ThreadId } from '@geulbat/protocol/ids';
+import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 import type { SideEffectLevel } from '@geulbat/protocol/run-events';
 import type { ToolLibraryProjectionIdentity } from '@geulbat/tool-library/projection-codec';
+import type { ToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
 import type { ErrorCode } from '../error-codes.js';
 import type { AgentEvent, ToolRunState } from '../runtime-contracts.js';
 import type {
   AgentMemoryIndex,
   AgentRuntimeServices,
+} from '../daemon-runtime-contract.js';
+import type {
   ProviderRunSelection,
   RunSubagentModelRouting,
-} from '../daemon-runtime-contract.js';
+} from '../subagent-runtime-contracts.js';
 import type { FileStateCache } from '../utils/file-state-cache.js';
 import type {
   ParallelToolBatchKind,
@@ -17,15 +24,9 @@ import type {
   ToolExposure,
   ToolParameters,
   ToolRecoveryStrategy,
+  ToolResultProjectionCapability,
 } from './tool-registry-model.js';
 
-export type { PermissionMode } from '@geulbat/protocol/run-approval';
-export type {
-  ProviderRunSelection,
-  ResolvedChildModelPin,
-  RunSubagentModelRouting,
-  SubagentRunLauncher,
-} from '../daemon-runtime-contract.js';
 export {
   isToolAnyOfParameters,
   isToolObjectParameters,
@@ -42,6 +43,10 @@ export type {
   ToolMeta,
   ToolParameters,
   ToolRecoveryStrategy,
+  ToolResultDelivery,
+  ToolResultModelVisibleForm,
+  ToolResultProjectionCapability,
+  ToolResultProjectionKind,
 } from './tool-registry-model.js';
 
 interface ToolSelection {
@@ -49,6 +54,8 @@ interface ToolSelection {
   endLine: number;
   text: string;
 }
+
+type PlanningWorkflowRunBinding = Pick<PlanningWorkflowSnapshot, 'workflowId'>;
 
 interface ToolExecutionCoreContext {
   callId: string;
@@ -66,8 +73,9 @@ interface ToolExecutionCoreContext {
 
 interface ToolExecutionRunContext {
   approvalGranted?: boolean;
-  approvalSessionId?: string;
+  computerSessionId?: string;
   allowedRegistryNames?: readonly string[];
+  toolCapabilityPolicy?: ToolCapabilityPolicy;
   permissionMode?: PermissionMode;
   threadId?: ThreadId;
   runId?: string;
@@ -75,13 +83,20 @@ interface ToolExecutionRunContext {
   stateRoot?: string;
   workingDirectory?: string;
   runState?: ToolRunState;
+  interjectBuffer?: ToolInterjectFlushSubscription;
   resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;
   toolLibraryProjectionIdentity?: ToolLibraryProjectionIdentity;
   // Exact provider identity of the run executing this tool. Child routing
   // inherits it only when neither the user nor the model selects another model.
   providerRunSelection?: ProviderRunSelection;
+  ultraReasoning?: boolean;
   subagentModelRouting?: RunSubagentModelRouting;
+  planningWorkflow?: PlanningWorkflowRunBinding;
   emitAgentEvent?: (event: AgentEvent) => void;
+}
+
+interface ToolInterjectFlushSubscription {
+  subscribeFlush(listener: () => void): () => void;
 }
 
 export interface ToolExecutionResourceSnapshotRef {
@@ -91,7 +106,7 @@ export interface ToolExecutionResourceSnapshotRef {
 interface ToolExecutionServices {
   fileStateCache?: FileStateCache;
   memoryIndex?: AgentMemoryIndex;
-  agentSpawnRuntime?: AgentRuntimeServices;
+  runtimeServices?: AgentRuntimeServices;
   callbackToolDispatcher?: CallbackToolDispatcher;
 }
 
@@ -109,15 +124,16 @@ export type AgentToolExecutionContext = Omit<
   ToolExecutionCoreContext,
   'signal' | 'runSignal' | 'currentFile' | 'selection'
 > &
-  Omit<ToolExecutionServices, 'memoryIndex' | 'agentSpawnRuntime'> & {
+  Omit<ToolExecutionServices, 'memoryIndex' | 'runtimeServices'> & {
     kind: 'agent';
     signal: AbortSignal | undefined;
     runSignal: AbortSignal | undefined;
     currentFile: string | undefined;
     selection: ToolSelection | undefined;
     approvalGranted: boolean;
-    approvalSessionId: string;
+    computerSessionId: string;
     allowedRegistryNames?: readonly string[];
+    toolCapabilityPolicy?: ToolCapabilityPolicy;
     permissionMode: PermissionMode;
     threadId: ThreadId;
     runId: string;
@@ -125,13 +141,16 @@ export type AgentToolExecutionContext = Omit<
     stateRoot: string;
     workingDirectory: string;
     runState: ToolRunState | undefined;
+    interjectBuffer?: ToolInterjectFlushSubscription;
     resourceSnapshotRef?: ToolExecutionResourceSnapshotRef;
     toolLibraryProjectionIdentity?: ToolLibraryProjectionIdentity;
     providerRunSelection?: ProviderRunSelection;
+    ultraReasoning?: boolean;
     subagentModelRouting?: RunSubagentModelRouting;
+    planningWorkflow?: PlanningWorkflowRunBinding;
     emitAgentEvent: (event: AgentEvent) => void;
     memoryIndex: AgentMemoryIndex | undefined;
-    agentSpawnRuntime: AgentRuntimeServices | undefined;
+    runtimeServices: AgentRuntimeServices | undefined;
   };
 
 export type ToolExecutionContext =
@@ -191,13 +210,26 @@ export interface ToolDescriptor {
   parallelBatchKind?: ParallelToolBatchKind;
   timeoutMs?: number;
   requiresApproval: boolean;
+  /**
+   * 승낙(grant)이 걸리는 단위 — "이 종류는 다시 묻지 마"의 그 종류다.
+   *
+   * 생략하면 도구 이름이 곧 클래스다. 내장 도구는 이름 자체가 승인 클래스
+   * 문법(소문자 슬러그)을 만족하므로 그것으로 충분하다. 그러나 그것은 규칙이
+   * 아니라 우연이므로, 이름이 그 문법을 만족하지 않는 도구는 **반드시**
+   * 선언해야 한다 — MCP 투영 이름처럼 내용 해시로 만들어진 이름은 애초에
+   * 사람이 승낙을 걸 단위가 아니다.
+   */
+  approvalClass?: ApprovalClass;
   // The registry supplies a conservative direct-only value when a local or
   // test tool has not opted into the SDK/callback routing contract.
   exposure?: ToolExposure;
   recoveryStrategy?: ToolRecoveryStrategy;
+  resultProjection?: ToolResultProjectionCapability;
   // 도구 인자 스트리밍 opt-in — provider args 델타가 tool_call_delta로
   // 클라이언트까지 흐른다 (visualize 실시간 렌더)
   streamsArgsDelta?: boolean;
+  // 성공한 호출 결과를 기록한 뒤 추가 모델 라운드 없이 현재 턴을 닫는다.
+  endsTurnAfterSuccess?: boolean;
   catalogSearchMetadata?: ToolCatalogSearchMetadata;
 }
 

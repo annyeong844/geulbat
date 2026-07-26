@@ -1,6 +1,5 @@
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -9,11 +8,10 @@ import {
 
 // 트랜스크립트 하단 자동 추종.
 //
-// 핵심 계약 — 고빈도 스트리밍 높이 변화는 레이아웃 이후 ResizeObserver가
-// 추종한다. 질문 append·run 시작/종료 같은 저빈도 생명주기 전환만 layout
-// effect에서 한 번 맞춰, 이전 scrollTop이 한 프레임 보였다가 보정되는
-// 깜빡임을 막는다. requestAnimationFrame으로 미루면 다음 프레임 레이아웃
-// 전에 scrollHeight를 읽어 스트리밍마다 강제 리플로우가 생길 수 있다.
+// 핵심 계약 — ResizeObserver를 layout effect에서 paint 전에 연결하되,
+// 실제 높이 읽기와 바닥 추종은 브라우저가 레이아웃을 끝낸 RO callback이
+// 맡는다. requestAnimationFrame이나 render lifecycle에서 scrollHeight를
+// 읽어 강제 리플로우를 만들지 않는다.
 export function useAssistantTranscriptScrollState(args: {
   isRunning: boolean;
   messageCount: number;
@@ -35,7 +33,7 @@ export function useAssistantTranscriptScrollState(args: {
   const bottomRef = useRef<HTMLDivElement>(null);
   const autoScrollLockedRef = useRef(false);
   // DOM API로 만든 scroll event도 isTrusted=true이므로 출처를 이벤트에서
-  // 추론할 수 없다. 두 scroll owner가 마지막으로 실제 적용한 위치를 기록해
+  // 추론할 수 없다. transcript owner가 마지막으로 실제 적용한 위치를 기록해
   // 지연 도착한 내부 이벤트와 새 사용자 이동을 구분한다.
   const lastProgrammaticScrollTopRef = useRef<number | null>(null);
 
@@ -70,7 +68,7 @@ export function useAssistantTranscriptScrollState(args: {
   // entry 개수 변화 없이 내용 높이만 자라는 경우(iframe 아티팩트 로드,
   // tool row expand 등)에도 바닥을 따라가야 한다. RO 콜백은 레이아웃 이후
   // 시점이라 여기서의 동기 추종은 리플로우를 강제하지 않는다.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const content = contentRef.current;
     if (!content || typeof ResizeObserver === 'undefined') {
       return;
@@ -80,14 +78,14 @@ export function useAssistantTranscriptScrollState(args: {
     return () => observer.disconnect();
   }, [syncContentLayout]);
 
-  // 고빈도 스트리밍 신호(finalAnswerText·transcriptEntryCount·
-  // backgroundNotificationCount)는 일부러 deps에서 뺀다. 이들은 전부
-  // contentRef 높이를 키우므로 위 ResizeObserver가 레이아웃 이후 시점에
-  // 팔로우한다. 저빈도 전환은 첫 페인트 전에 맞춰야 하므로 layout effect가
-  // 소유한다. 자동 추종은 애니메이션하지 않고 즉시 맞춘다. smooth는 사용자가
-  // 직접 ↓ 버튼을 누른 경우에만 쓴다. 이 경로를 스트림 delta마다 호출하지
-  // 않는 것이 성능 계약이다.
+  // 지원 브라우저에서는 위 RO가 모든 content 높이 변화를 맡는다. 이 effect는
+  // ResizeObserver가 없는 환경의 기존 동작만 보존하며, 지원 브라우저에서는
+  // DOM geometry를 읽지 않는다. 고빈도 스트리밍 신호는 content 높이 변화로
+  // 관찰되므로 deps에서 제외한다.
   useLayoutEffect(() => {
+    if (typeof ResizeObserver !== 'undefined') {
+      return;
+    }
     syncContentLayout('auto');
   }, [
     messageCount,
@@ -97,16 +95,14 @@ export function useAssistantTranscriptScrollState(args: {
     syncContentLayout,
   ]);
 
-  // end-anchored virtualizer도 같은 scroll element를 조정한다. TanStack의
-  // scrollToFn write 직후 이 callback으로 최종 판정을 owner에게 돌려주면,
-  // 초기 offset과 질문 append가 한 프레임 위로 보였다가 보정되지 않는다.
-  const handleVirtualizerUpdate = useCallback(() => {
-    const transcript = transcriptRef.current;
-    if (transcript) {
-      lastProgrammaticScrollTopRef.current = transcript.scrollTop;
-    }
-    syncContentLayout('auto');
-  }, [syncContentLayout]);
+  const shouldApplyVirtualizerScroll = useCallback(
+    () => autoScrollLockedRef.current,
+    [],
+  );
+  const isProgrammaticTranscriptScroll = useCallback(
+    (offset: number) => lastProgrammaticScrollTopRef.current === offset,
+    [],
+  );
 
   const handleTranscriptScroll = () => {
     const transcript = transcriptRef.current;
@@ -149,7 +145,8 @@ export function useAssistantTranscriptScrollState(args: {
     hasUnreadStreamContent,
     isAwayFromBottom,
     handleTranscriptScroll,
-    handleVirtualizerUpdate,
+    shouldApplyVirtualizerScroll,
+    isProgrammaticTranscriptScroll,
     handleJumpToLatest,
   };
 }

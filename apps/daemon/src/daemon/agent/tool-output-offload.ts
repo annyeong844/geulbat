@@ -3,17 +3,27 @@ import { createLogger } from '@geulbat/structured-logger/logger';
 import type { FunctionCall } from '../llm/index.js';
 import type { RunContext } from '../run-context.js';
 import type { ExecuteResult } from '../tools/types.js';
+import type {
+  ToolResultProjectionCapability,
+  ToolResultProjectionKind,
+} from '../tools/tool-registry-model.js';
 import {
   buildToolOutputRef,
   buildToolOutputSnapshot,
   type ToolOutputSnapshot,
   writeToolOutputSnapshot,
 } from '../files/tool-output-store.js';
+import { parseHostCommandOutputRef } from '../host-command-output-store.js';
 import {
   PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_RUN_ID,
   PTC_EXECUTE_CODE_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,
 } from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
+import type {
+  ToolResultObservation,
+  ToolResultParseQuality,
+  ToolResultProjectionOutcome,
+} from './observer/agent-loop-observer.js';
 
 const logger = createLogger('tool-output-offload');
 
@@ -48,8 +58,60 @@ interface ToolOutputOffloadArgs {
   runContext: Pick<RunContext, 'threadId' | 'stateRoot'>;
   runId: string;
   projectionPolicy?: ToolOutputProjectionPolicy;
+  projectionRound?: ToolOutputProjectionRound;
+  measureModelVisibleResultBytes?: (toolResult: ExecuteResult) => number;
+  observeToolResult?: (observation: ToolResultObservation) => void;
+  elapsedMs?: number | null;
+  resultProjection?: ToolResultProjectionCapability;
   toolOutputRecoveryAvailable?: boolean;
   toolResult: ExecuteResult;
+}
+
+interface PriorProjectedToolOutput {
+  callId: string;
+  outputRef: string;
+}
+
+export interface ToolOutputProjectionRound {
+  findExactDuplicate(output: string): PriorProjectedToolOutput | undefined;
+  getInlineShareBytes(): number;
+  recordVisibleResult(args: {
+    fullOutput: string;
+    modelVisibleBytes: number;
+    outputRef?: string;
+    callId: string;
+  }): void;
+}
+
+export function createToolOutputProjectionRound(args: {
+  availableModelVisibleBytes: number | undefined;
+  resultCount: number;
+}): ToolOutputProjectionRound {
+  let remainingModelVisibleBytes = args.availableModelVisibleBytes ?? 0;
+  let remainingResultCount = args.resultCount;
+  const firstOutputByExactBody = new Map<string, PriorProjectedToolOutput>();
+
+  return {
+    findExactDuplicate(output) {
+      return firstOutputByExactBody.get(output);
+    },
+    getInlineShareBytes() {
+      if (remainingResultCount <= 0) {
+        return 0;
+      }
+      return Math.floor(remainingModelVisibleBytes / remainingResultCount);
+    },
+    recordVisibleResult({ fullOutput, modelVisibleBytes, outputRef, callId }) {
+      remainingModelVisibleBytes = Math.max(
+        0,
+        remainingModelVisibleBytes - modelVisibleBytes,
+      );
+      remainingResultCount = Math.max(0, remainingResultCount - 1);
+      if (outputRef !== undefined && !firstOutputByExactBody.has(fullOutput)) {
+        firstOutputByExactBody.set(fullOutput, { callId, outputRef });
+      }
+    },
+  };
 }
 
 type ToolOutputFileRoot = Extract<
@@ -60,7 +122,7 @@ type ToolOutputFileRoot = Extract<
 interface SearchFilesSlimOutput {
   ok: true;
   offloaded: true;
-  tool: 'search_files';
+  tool: string;
   callId: string;
   outputRef: string;
   summary: string;
@@ -68,12 +130,22 @@ interface SearchFilesSlimOutput {
   fullOutputChars: number;
   root: ToolOutputFileRoot | null;
   path: string | null;
+  total: number | null;
+  truncated: boolean | null;
+  recoveryTool: 'read_tool_output';
+  previewResults: Array<{
+    path: string;
+    line: number;
+    text: string;
+  }>;
+  previewResultCount: number;
+  previewHasMore: boolean;
 }
 
 interface SearchMemoryIndexSlimOutput {
   ok: true;
   offloaded: true;
-  tool: 'search_memory_index';
+  tool: string;
   callId: string;
   outputRef: string;
   summary: string;
@@ -86,7 +158,7 @@ interface SearchMemoryIndexSlimOutput {
 interface FetchUrlSlimOutput {
   ok: true;
   offloaded: true;
-  tool: 'fetch_url';
+  tool: string;
   callId: string;
   outputRef: string;
   summary: string;
@@ -102,7 +174,7 @@ interface FetchUrlSlimOutput {
 interface ListFilesSlimOutput {
   ok: true;
   offloaded: true;
-  tool: 'list_files';
+  tool: string;
   callId: string;
   outputRef: string;
   summary: string;
@@ -111,12 +183,41 @@ interface ListFilesSlimOutput {
   root: ToolOutputFileRoot | null;
   path: string | null;
   total: number | null;
+  recoveryTool: 'read_tool_output';
+  previewEntries: Array<{
+    name: string;
+    path: string;
+    type: 'file' | 'directory';
+  }>;
+  previewEntryCount: number;
+  previewHasMore: boolean;
+}
+
+interface ReadFileSlimOutput {
+  ok: true;
+  offloaded: true;
+  tool: string;
+  callId: string;
+  outputRef: string;
+  summary: string;
+  fullOutputBytes: number;
+  fullOutputChars: number;
+  recoveryTool: 'read_tool_output';
+  root: ToolOutputFileRoot | null;
+  path: string | null;
+  versionToken: string | null;
+  totalLines: number | null;
+  pageLimit: number | null;
+  startLine: number | null;
+  endLine: number | null;
+  hasMore: boolean | null;
+  nextOffset: number | null;
 }
 
 interface RecoverableSlimOutput {
   ok: true;
   offloaded: true;
-  tool: 'exec' | 'wait' | 'exec_command';
+  tool: string;
   callId: string;
   outputRef: string;
   summary: string;
@@ -127,6 +228,8 @@ interface RecoverableSlimOutput {
   status?: string;
   cellId?: string;
   exitCode?: number | null;
+  durationMs?: number | null;
+  firstOutputAfterMs?: number | null;
   remediation?: string;
   outputLimitExceeded?: {
     stream: string | null;
@@ -134,45 +237,100 @@ interface RecoverableSlimOutput {
   } | null;
 }
 
+interface DuplicateSlimOutput {
+  offloaded: true;
+  duplicate: true;
+  tool: string;
+  callId: string;
+  outputRef: string;
+  duplicateOfCallId: string;
+  duplicateOfOutputRef: string;
+  summary: string;
+  fullOutputBytes: number;
+  fullOutputChars: number;
+}
+
 export async function maybeOffloadToolResult(
   args: ToolOutputOffloadArgs,
 ): Promise<ExecuteResult> {
   const { functionCall, runContext, runId, toolResult } = args;
-  if (!toolResult.ok) {
-    return toolResult;
-  }
-
-  const recoveryAvailable = args.toolOutputRecoveryAvailable ?? true;
-  const wantsOffload = shouldOffloadToolOutput(functionCall.name);
-  const wantsRecoverableOffload = shouldOffloadRecoverableToolOutput(
-    functionCall.name,
-  );
-  const shouldOffload = wantsOffload && recoveryAvailable;
-  const shouldOffloadRecoverable = wantsRecoverableOffload && recoveryAvailable;
-  if (!shouldOffload && !shouldOffloadRecoverable) {
-    return toolResult;
-  }
-
+  const fullOutputBytes = Buffer.byteLength(toolResult.output, 'utf8');
   const parsedOutput = tryParseJson(toolResult.output);
+  const projectionRound = args.projectionRound;
+  const measureModelVisibleResultBytes = args.measureModelVisibleResultBytes;
   if (
-    hasExistingWaitRecoveryRef({
-      toolName: functionCall.name,
-      parsedOutput,
-      threadId: runContext.threadId,
-    })
+    (projectionRound !== undefined || args.observeToolResult !== undefined) &&
+    measureModelVisibleResultBytes === undefined
   ) {
-    return toolResult;
+    throw new Error(
+      'tool output projection feedback requires a model-visible byte measurer',
+    );
+  }
+  const finish = (
+    result: ExecuteResult,
+    projection: ToolResultProjectionOutcome,
+    outputRef?: string,
+  ): ExecuteResult => {
+    const modelVisibleBytes = measureModelVisibleResultBytes?.(result);
+    if (projectionRound !== undefined && modelVisibleBytes !== undefined) {
+      projectionRound.recordVisibleResult({
+        fullOutput: toolResult.output,
+        modelVisibleBytes,
+        ...(outputRef === undefined ? {} : { outputRef }),
+        callId: functionCall.callId,
+      });
+    }
+    if (
+      args.observeToolResult !== undefined &&
+      modelVisibleBytes !== undefined
+    ) {
+      args.observeToolResult({
+        schemaVersion: 1,
+        runId,
+        threadId: runContext.threadId,
+        callId: functionCall.callId,
+        toolName: functionCall.name,
+        outcome: result.ok ? 'success' : 'failure',
+        elapsedMs: args.elapsedMs ?? null,
+        fullOutputBytes,
+        modelVisibleBytes,
+        parseQuality: classifyToolResultParseQuality(
+          toolResult.output,
+          parsedOutput,
+        ),
+        projection,
+        exactDurableRecovery:
+          args.resultProjection?.exactDurableRecovery === true,
+      });
+    }
+    return result;
+  };
+  const recoveryAvailable = args.toolOutputRecoveryAvailable ?? true;
+  const resultProjection = args.resultProjection;
+  if (resultProjection === undefined || !recoveryAvailable) {
+    return finish(toolResult, 'inline');
   }
 
   const projectionPolicy =
     args.projectionPolicy ?? PROCESS_TOOL_OUTPUT_PROJECTION_POLICY;
-  if (
-    Buffer.byteLength(toolResult.output, 'utf8') <=
-    projectionPolicy.inlineMaxBytes
-  ) {
-    return toolResult;
+  const exceedsIndividualInlineBudget =
+    fullOutputBytes > projectionPolicy.inlineMaxBytes;
+  if (projectionRound === undefined && !exceedsIndividualInlineBudget) {
+    return finish(toolResult, 'inline');
   }
 
+  const existingRecoveryRef = readExistingDurableRecoveryRef({
+    toolName: functionCall.name,
+    parsedOutput,
+    threadId: runContext.threadId,
+  });
+  if (existingRecoveryRef !== undefined) {
+    return finish(toolResult, 'existing_ref', existingRecoveryRef);
+  }
+
+  const priorExactDuplicate = projectionRound?.findExactDuplicate(
+    toolResult.output,
+  );
   const outputRef = buildToolOutputRef({
     callId: functionCall.callId,
     runId,
@@ -194,6 +352,52 @@ export async function maybeOffloadToolResult(
     ...(source ? { source } : {}),
   });
 
+  const projectedInlineShareBytes = projectionRound?.getInlineShareBytes();
+  const fitsProjectedOutput =
+    projectedInlineShareBytes !== undefined &&
+    measureModelVisibleResultBytes !== undefined
+      ? (output: ListFilesSlimOutput | SearchFilesSlimOutput) => {
+          const serializedOutput = JSON.stringify({
+            ...output,
+            ok: toolResult.ok,
+          });
+          return (
+            Buffer.byteLength(serializedOutput, 'utf8') <=
+              projectionPolicy.inlineMaxBytes &&
+            measureModelVisibleResultBytes(
+              withToolResultOutput(toolResult, serializedOutput),
+            ) <= projectedInlineShareBytes
+          );
+        }
+      : undefined;
+  const projectedOutput = JSON.stringify({
+    ...(priorExactDuplicate === undefined
+      ? buildSlimOutput(
+          snapshot,
+          resultProjection.modelProjection,
+          fitsProjectedOutput,
+        )
+      : buildDuplicateSlimOutput(snapshot, priorExactDuplicate)),
+    ok: toolResult.ok,
+  });
+  const projectedToolResult = withToolResultOutput(toolResult, projectedOutput);
+  const fullModelVisibleBytes = measureModelVisibleResultBytes?.(toolResult);
+  const projectedModelVisibleBytes =
+    measureModelVisibleResultBytes?.(projectedToolResult);
+  const aggregatePrefersProjection =
+    projectionRound !== undefined &&
+    fullModelVisibleBytes !== undefined &&
+    projectedModelVisibleBytes !== undefined &&
+    fullModelVisibleBytes > projectionRound.getInlineShareBytes() &&
+    projectedModelVisibleBytes < fullModelVisibleBytes;
+  const shouldProject =
+    priorExactDuplicate !== undefined ||
+    exceedsIndividualInlineBudget ||
+    aggregatePrefersProjection;
+  if (!shouldProject) {
+    return finish(toolResult, 'inline');
+  }
+
   try {
     await writeToolOutputSnapshot({
       stateRoot: runContext.stateRoot,
@@ -206,27 +410,85 @@ export async function maybeOffloadToolResult(
       threadId: runContext.threadId,
       toolName: functionCall.name,
     });
-    if (shouldOffloadRecoverableToolOutput(functionCall.name)) {
-      return {
-        ok: true,
-        output: buildRecoverableInlineFallback(
-          toolResult.output,
-          functionCall.name,
-        ),
-      };
+    if (resultProjection.snapshotFailure === 'inline') {
+      const output = buildSnapshotFailureInlineFallback(
+        toolResult.output,
+        functionCall.name,
+      );
+      return finish(
+        withToolResultOutput(toolResult, output),
+        'snapshot_failed_inline',
+      );
     }
-    return {
-      ok: false,
-      output: '',
-      errorCode: 'internal',
-      error:
-        'failed to offload tool output snapshot; full output was not recorded.',
-    };
+    if (!toolResult.ok) {
+      return finish(
+        {
+          ...toolResult,
+          output: buildSnapshotFailureInlineFallback(
+            toolResult.output,
+            functionCall.name,
+          ),
+        },
+        'snapshot_failed_inline',
+      );
+    }
+    return finish(
+      {
+        ok: false,
+        output: '',
+        errorCode: 'internal',
+        error:
+          'failed to offload tool output snapshot; full output was not recorded.',
+      },
+      'snapshot_failed',
+    );
   }
+  return finish(
+    projectedToolResult,
+    priorExactDuplicate === undefined ? 'summary_ref' : 'duplicate_ref',
+    outputRef,
+  );
+}
 
+function withToolResultOutput(
+  toolResult: ExecuteResult,
+  output: string,
+): ExecuteResult {
+  return toolResult.ok
+    ? { ok: true, output }
+    : {
+        ok: false,
+        output,
+        errorCode: toolResult.errorCode,
+        error: toolResult.error,
+      };
+}
+
+function classifyToolResultParseQuality(
+  output: string,
+  parsedOutput: ReturnType<typeof tryParseJson>,
+): ToolResultParseQuality {
+  if (output.length === 0) {
+    return 'empty';
+  }
+  return parsedOutput.ok ? 'structured_json' : 'opaque_text';
+}
+
+function buildDuplicateSlimOutput(
+  snapshot: ToolOutputSnapshot,
+  prior: PriorProjectedToolOutput,
+): DuplicateSlimOutput {
   return {
-    ok: true,
-    output: JSON.stringify(buildSlimOutput(snapshot)),
+    offloaded: true,
+    duplicate: true,
+    tool: snapshot.toolName,
+    callId: snapshot.callId,
+    outputRef: snapshot.outputRef,
+    duplicateOfCallId: prior.callId,
+    duplicateOfOutputRef: prior.outputRef,
+    summary: `${snapshot.toolName} returned the exact same result body as call ${prior.callId}. The complete result remains available through this call's outputRef.`,
+    fullOutputBytes: snapshot.fullOutputBytes,
+    fullOutputChars: snapshot.fullOutputChars,
   };
 }
 
@@ -253,9 +515,9 @@ function readPositiveIntegerEnv(
   return parsed;
 }
 
-function buildRecoverableInlineFallback(
+function buildSnapshotFailureInlineFallback(
   output: string,
-  tool: RecoverableSlimOutput['tool'],
+  tool: string,
 ): string {
   const parsed = tryParseJson(output);
   const record = parsed.ok && isRecord(parsed.value) ? parsed.value : null;
@@ -274,45 +536,53 @@ function buildRecoverableInlineFallback(
   });
 }
 
-function shouldOffloadToolOutput(toolName: string): boolean {
-  return (
-    toolName === 'search_files' ||
-    toolName === 'search_memory_index' ||
-    toolName === 'fetch_url' ||
-    toolName === 'list_files'
-  );
-}
-
-function shouldOffloadRecoverableToolOutput(
-  toolName: string,
-): toolName is RecoverableSlimOutput['tool'] {
-  return (
-    toolName === 'exec' || toolName === 'wait' || toolName === 'exec_command'
-  );
-}
-
-function hasExistingWaitRecoveryRef(args: {
+function readExistingDurableRecoveryRef(args: {
   toolName: string;
   parsedOutput: ReturnType<typeof tryParseJson>;
   threadId: string;
-}): boolean {
-  if (
-    args.toolName !== 'wait' ||
-    !args.parsedOutput.ok ||
-    !isRecord(args.parsedOutput.value)
-  ) {
-    return false;
+}): string | undefined {
+  if (!args.parsedOutput.ok || !isRecord(args.parsedOutput.value)) {
+    return undefined;
   }
   const output = args.parsedOutput.value;
-  if (typeof output.cellId !== 'string') {
-    return false;
+  const waitRef = readExistingWaitRecoveryRef({
+    toolName: args.toolName,
+    output,
+    threadId: args.threadId,
+  });
+  if (waitRef !== undefined) {
+    return waitRef;
+  }
+  const candidate =
+    args.toolName === 'exec_command'
+      ? readStringField(output, 'outputRef')
+      : args.toolName === 'write_stdin' && isRecord(output.snapshot)
+        ? readStringField(output.snapshot, 'outputRef')
+        : undefined;
+  if (candidate === undefined) {
+    return undefined;
+  }
+  const parsedRef = parseHostCommandOutputRef(candidate);
+  return parsedRef.ok && parsedRef.threadId === args.threadId
+    ? candidate
+    : undefined;
+}
+
+function readExistingWaitRecoveryRef(args: {
+  toolName: string;
+  output: Record<string, unknown>;
+  threadId: string;
+}): string | undefined {
+  if (args.toolName !== 'wait' || typeof args.output.cellId !== 'string') {
+    return undefined;
   }
   const expectedOutputRef = buildToolOutputRef({
     threadId: args.threadId,
     runId: PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_RUN_ID,
-    callId: output.cellId,
+    callId: args.output.cellId,
   });
-  return (
+  const output = args.output;
+  const valid =
     output.kind === 'ptc_execute_code_cell_wait' &&
     output.capabilityId === PTC_EXECUTE_CODE_TOOL_NAME &&
     output.policyId === PTC_EXECUTE_CODE_POLICY_ID &&
@@ -332,8 +602,8 @@ function hasExistingWaitRecoveryRef(args: {
     output.fullOutputBytes >= 0 &&
     typeof output.fullOutputChars === 'number' &&
     Number.isSafeInteger(output.fullOutputChars) &&
-    output.fullOutputChars >= 0
-  );
+    output.fullOutputChars >= 0;
+  return valid ? expectedOutputRef : undefined;
 }
 
 function readToolOutputSource(
@@ -413,30 +683,35 @@ function readToolOutputFileRoot(
 
 function buildSlimOutput(
   snapshot: ToolOutputSnapshot,
+  projection: ToolResultProjectionKind,
+  fitsProjectedOutput?: (
+    output: ListFilesSlimOutput | SearchFilesSlimOutput,
+  ) => boolean,
 ):
   | SearchFilesSlimOutput
   | SearchMemoryIndexSlimOutput
   | FetchUrlSlimOutput
   | ListFilesSlimOutput
+  | ReadFileSlimOutput
   | RecoverableSlimOutput {
-  if (shouldOffloadRecoverableToolOutput(snapshot.toolName)) {
-    return buildRecoverableSlimOutput(snapshot, snapshot.toolName);
+  switch (projection) {
+    case 'fetch_url_summary':
+      return buildFetchUrlSlimOutput(snapshot);
+    case 'list_files_summary':
+      return buildListFilesSlimOutput(snapshot, fitsProjectedOutput);
+    case 'read_file_summary':
+      return buildReadFileSlimOutput(snapshot);
+    case 'runtime_summary':
+      return buildRecoverableSlimOutput(snapshot);
+    case 'search_memory_index_summary':
+      return buildSearchMemoryIndexSlimOutput(snapshot);
+    case 'search_files_summary':
+      return buildSearchFilesSlimOutput(snapshot, fitsProjectedOutput);
   }
-  if (snapshot.toolName === 'fetch_url') {
-    return buildFetchUrlSlimOutput(snapshot);
-  }
-  if (snapshot.toolName === 'list_files') {
-    return buildListFilesSlimOutput(snapshot);
-  }
-  if (snapshot.toolName === 'search_memory_index') {
-    return buildSearchMemoryIndexSlimOutput(snapshot);
-  }
-  return buildSearchFilesSlimOutput(snapshot);
 }
 
 function buildRecoverableSlimOutput(
   snapshot: ToolOutputSnapshot,
-  tool: RecoverableSlimOutput['tool'],
 ): RecoverableSlimOutput {
   const parsed = tryParseJson(snapshot.output);
   const record = parsed.ok && isRecord(parsed.value) ? parsed.value : null;
@@ -445,15 +720,20 @@ function buildRecoverableSlimOutput(
   const cellId = readStringField(record, 'cellId');
   const remediation = readStringField(record, 'remediation');
   const exitCode = readNullableNumberField(record, 'exitCode');
+  const durationMs = readNullableNumberField(record, 'durationMs');
+  const firstOutputAfterMs = readNullableNumberField(
+    record,
+    'firstOutputAfterMs',
+  );
   const outputLimitExceeded = readOutputLimitExceeded(record);
 
   return {
     ok: true,
     offloaded: true,
-    tool,
+    tool: snapshot.toolName,
     callId: snapshot.callId,
     outputRef: snapshot.outputRef,
-    summary: buildRecoverableSummary(tool, record),
+    summary: buildRecoverableSummary(snapshot.toolName, record),
     fullOutputBytes: snapshot.fullOutputBytes,
     fullOutputChars: snapshot.fullOutputChars,
     recoveryTool: 'read_tool_output',
@@ -461,6 +741,8 @@ function buildRecoverableSlimOutput(
     ...(status === undefined ? {} : { status }),
     ...(cellId === undefined ? {} : { cellId }),
     ...(exitCode === undefined ? {} : { exitCode }),
+    ...(durationMs === undefined ? {} : { durationMs }),
+    ...(firstOutputAfterMs === undefined ? {} : { firstOutputAfterMs }),
     ...(remediation === undefined ? {} : { remediation }),
     ...(outputLimitExceeded === undefined ? {} : { outputLimitExceeded }),
   };
@@ -494,7 +776,7 @@ function readOutputLimitExceeded(
 }
 
 function buildRecoverableSummary(
-  tool: RecoverableSlimOutput['tool'],
+  tool: string,
   record: Record<string, unknown> | null,
 ): string {
   const status = readStringField(record, 'status');
@@ -511,6 +793,21 @@ function buildRecoverableSummary(
   if (tool === 'exec_command' && status !== undefined) {
     return `exec_command finished with status ${status}${formatExitCode(exitCode)}. ${exactRecovery}`;
   }
+  const completed = record?.['completed'];
+  const pending = record?.['pending'];
+  const blocked = record?.['blocked'];
+  const launches = record?.['launches'];
+  if (
+    tool === 'agent_wait' &&
+    Array.isArray(completed) &&
+    Array.isArray(pending) &&
+    Array.isArray(blocked)
+  ) {
+    const launchSummary = Array.isArray(launches)
+      ? ` Durable launch status covers ${launches.length} handles, including ${launches.filter((launch) => isRecord(launch) && launch.launchState === 'queued').length} queued and ${launches.filter((launch) => isRecord(launch) && launch.launchState === 'starting').length} starting.`
+      : '';
+    return `agent_wait returned ${completed.length} completed, ${pending.length} pending, and ${blocked.length} blocked child runs.${launchSummary} ${exactRecovery}`;
+  }
   return `${tool} returned a durable output snapshot. ${exactRecovery}`;
 }
 
@@ -522,21 +819,77 @@ function formatExitCode(exitCode: number | null | undefined): string {
 
 function buildSearchFilesSlimOutput(
   snapshot: ToolOutputSnapshot,
+  fitsProjectedOutput?: (output: SearchFilesSlimOutput) => boolean,
 ): SearchFilesSlimOutput {
   const parsed = tryParseJson(snapshot.output);
   const record = parsed.ok && isRecord(parsed.value) ? parsed.value : null;
-  return {
+  const results = record?.['results'];
+  const total =
+    record && typeof record.total === 'number' ? record.total : null;
+  const buildOutput = (
+    previewResults: SearchFilesSlimOutput['previewResults'],
+  ): SearchFilesSlimOutput => ({
     ok: true,
     offloaded: true,
-    tool: 'search_files',
+    tool: snapshot.toolName,
     callId: snapshot.callId,
     outputRef: snapshot.outputRef,
-    summary: buildSearchFilesSummary(record),
+    summary: buildSearchFilesSummary(record, previewResults.length),
     fullOutputBytes: snapshot.fullOutputBytes,
     fullOutputChars: snapshot.fullOutputChars,
     root: readToolOutputFileRoot(record) ?? null,
     path: readStringField(record, 'path') ?? null,
-  };
+    total,
+    truncated:
+      record && typeof record.truncated === 'boolean' ? record.truncated : null,
+    recoveryTool: 'read_tool_output',
+    previewResults,
+    previewResultCount: previewResults.length,
+    previewHasMore:
+      Array.isArray(results) && results.length > previewResults.length,
+  });
+  const emptyOutput = buildOutput([]);
+  if (fitsProjectedOutput === undefined || !Array.isArray(results)) {
+    return emptyOutput;
+  }
+
+  let previewResults: SearchFilesSlimOutput['previewResults'] = [];
+  for (const result of results) {
+    const previewResult = readSearchFilesPreviewResult(result);
+    if (previewResult === null) {
+      break;
+    }
+    const candidateResults = [...previewResults, previewResult];
+    const candidate = buildOutput(candidateResults);
+    if (!fitsProjectedOutput(candidate)) {
+      break;
+    }
+    previewResults = candidateResults;
+  }
+  return previewResults.length === 0
+    ? emptyOutput
+    : buildOutput(previewResults);
+}
+
+function readSearchFilesPreviewResult(
+  result: unknown,
+): SearchFilesSlimOutput['previewResults'][number] | null {
+  if (!isRecord(result)) {
+    return null;
+  }
+  const path = result['path'];
+  const line = result['line'];
+  const text = result['text'];
+  if (
+    typeof path !== 'string' ||
+    typeof line !== 'number' ||
+    !Number.isSafeInteger(line) ||
+    line < 0 ||
+    typeof text !== 'string'
+  ) {
+    return null;
+  }
+  return { path, line, text };
 }
 
 function buildSearchMemoryIndexSlimOutput(
@@ -547,7 +900,7 @@ function buildSearchMemoryIndexSlimOutput(
   return {
     ok: true,
     offloaded: true,
-    tool: 'search_memory_index',
+    tool: snapshot.toolName,
     callId: snapshot.callId,
     outputRef: snapshot.outputRef,
     summary: buildSearchMemoryIndexSummary(record),
@@ -572,7 +925,7 @@ function buildFetchUrlSlimOutput(
   return {
     ok: true,
     offloaded: true,
-    tool: 'fetch_url',
+    tool: snapshot.toolName,
     callId: snapshot.callId,
     outputRef: snapshot.outputRef,
     summary: buildFetchUrlSummary(record),
@@ -591,25 +944,129 @@ function buildFetchUrlSlimOutput(
 
 function buildListFilesSlimOutput(
   snapshot: ToolOutputSnapshot,
+  fitsProjectedOutput?: (output: ListFilesSlimOutput) => boolean,
 ): ListFilesSlimOutput {
   const parsed = tryParseJson(snapshot.output);
   const record = parsed.ok && isRecord(parsed.value) ? parsed.value : null;
-  return {
+  const entries = record?.['entries'];
+  const total =
+    record && typeof record.total === 'number' ? record.total : null;
+  const buildOutput = (
+    previewEntries: ListFilesSlimOutput['previewEntries'],
+  ): ListFilesSlimOutput => ({
     ok: true,
     offloaded: true,
-    tool: 'list_files',
+    tool: snapshot.toolName,
     callId: snapshot.callId,
     outputRef: snapshot.outputRef,
-    summary: buildListFilesSummary(record),
+    summary: buildListFilesSummary(record, previewEntries.length),
     fullOutputBytes: snapshot.fullOutputBytes,
     fullOutputChars: snapshot.fullOutputChars,
     root: readToolOutputFileRoot(record) ?? null,
     path: record && typeof record.path === 'string' ? record.path : null,
-    total: record && typeof record.total === 'number' ? record.total : null,
+    total,
+    recoveryTool: 'read_tool_output',
+    previewEntries,
+    previewEntryCount: previewEntries.length,
+    previewHasMore:
+      total === null
+        ? Array.isArray(entries) && entries.length > previewEntries.length
+        : total > previewEntries.length,
+  });
+  const emptyOutput = buildOutput([]);
+  if (fitsProjectedOutput === undefined || !Array.isArray(entries)) {
+    return emptyOutput;
+  }
+
+  let previewEntries: ListFilesSlimOutput['previewEntries'] = [];
+  for (const entry of entries) {
+    const previewEntry = readListFilesPreviewEntry(entry);
+    if (previewEntry === null) {
+      break;
+    }
+    const candidateEntries = [...previewEntries, previewEntry];
+    const candidate = buildOutput(candidateEntries);
+    if (!fitsProjectedOutput(candidate)) {
+      break;
+    }
+    previewEntries = candidateEntries;
+  }
+  return previewEntries.length === 0
+    ? emptyOutput
+    : buildOutput(previewEntries);
+}
+
+function readListFilesPreviewEntry(
+  entry: unknown,
+): ListFilesSlimOutput['previewEntries'][number] | null {
+  if (!isRecord(entry)) {
+    return null;
+  }
+  const name = entry['name'];
+  const path = entry['path'];
+  const type = entry['type'];
+  if (
+    typeof name !== 'string' ||
+    typeof path !== 'string' ||
+    (type !== 'file' && type !== 'directory')
+  ) {
+    return null;
+  }
+  return { name, path, type };
+}
+
+function buildReadFileSlimOutput(
+  snapshot: ToolOutputSnapshot,
+): ReadFileSlimOutput {
+  const parsed = tryParseJson(snapshot.output);
+  const record = parsed.ok && isRecord(parsed.value) ? parsed.value : null;
+  const hasMore = record?.['hasMore'];
+  return {
+    ok: true,
+    offloaded: true,
+    tool: snapshot.toolName,
+    callId: snapshot.callId,
+    outputRef: snapshot.outputRef,
+    summary: buildReadFileSummary(record),
+    fullOutputBytes: snapshot.fullOutputBytes,
+    fullOutputChars: snapshot.fullOutputChars,
+    recoveryTool: 'read_tool_output',
+    root: readToolOutputFileRoot(record) ?? null,
+    path: readStringField(record, 'path') ?? null,
+    versionToken: readStringField(record, 'versionToken') ?? null,
+    totalLines: readNullableNumberField(record, 'totalLines') ?? null,
+    pageLimit: readNullableNumberField(record, 'pageLimit') ?? null,
+    startLine: readNullableNumberField(record, 'startLine') ?? null,
+    endLine: readNullableNumberField(record, 'endLine') ?? null,
+    hasMore: typeof hasMore === 'boolean' ? hasMore : null,
+    nextOffset: readNullableNumberField(record, 'nextOffset') ?? null,
   };
 }
 
-function buildListFilesSummary(record: Record<string, unknown> | null): string {
+function buildReadFileSummary(record: Record<string, unknown> | null): string {
+  const path = readStringField(record, 'path') ?? 'the requested path';
+  const totalLines = readNullableNumberField(record, 'totalLines');
+  const startLine = readNullableNumberField(record, 'startLine');
+  const endLine = readNullableNumberField(record, 'endLine');
+  const nextOffset = readNullableNumberField(record, 'nextOffset');
+  const hasMore = record?.['hasMore'];
+  const pageDescription =
+    typeof totalLines === 'number' &&
+    typeof startLine === 'number' &&
+    typeof endLine === 'number'
+      ? `lines ${startLine}-${endLine} of ${totalLines}`
+      : 'a bounded page';
+  const continuation =
+    hasMore === true && typeof nextOffset === 'number'
+      ? ` The source has more lines at nextOffset ${nextOffset}.`
+      : '';
+  return `read_file returned ${pageDescription} for ${path}. Exact page output is available through read_tool_output with explicit offset and limit.${continuation}`;
+}
+
+function buildListFilesSummary(
+  record: Record<string, unknown> | null,
+  previewEntryCount: number,
+): string {
   if (!record) {
     return 'list_files returned a large listing. Full output was written to the tool output snapshot.';
   }
@@ -619,7 +1076,11 @@ function buildListFilesSummary(record: Record<string, unknown> | null): string {
     typeof record.total === 'number'
       ? `${record.total} ${record.total === 1 ? 'entry' : 'entries'}`
       : 'a large listing';
-  return `list_files returned ${total} for ${path}. Full output was written to the tool output snapshot.`;
+  const preview =
+    previewEntryCount > 0
+      ? ` The first ${previewEntryCount} ${previewEntryCount === 1 ? 'entry is' : 'entries are'} included in previewEntries.`
+      : '';
+  return `list_files returned ${total} for ${path}.${preview} Full output was written to the tool output snapshot.`;
 }
 
 function buildFetchUrlSummary(record: Record<string, unknown> | null): string {
@@ -647,7 +1108,10 @@ function buildSearchMemoryIndexSummary(
   return `search_memory_index returned ${total}.${stale} Full output was written to the tool output snapshot.`;
 }
 
-function buildSearchFilesSummary(value: unknown): string {
+function buildSearchFilesSummary(
+  value: unknown,
+  previewResultCount: number,
+): string {
   if (!isRecord(value)) {
     return 'search_files returned a large result. Full output was written to the tool output snapshot.';
   }
@@ -662,5 +1126,9 @@ function buildSearchFilesSummary(value: unknown): string {
     ? ` The snapshot records ${value.results.length} result ${value.results.length === 1 ? 'entry' : 'entries'}.`
     : '';
   const truncatedLabel = truncated ? ' The search result was truncated.' : '';
-  return `search_files returned ${countLabel}.${truncatedLabel}${recordedLabel} Full output was written to the tool output snapshot.`;
+  const previewLabel =
+    previewResultCount > 0
+      ? ` The first ${previewResultCount} ${previewResultCount === 1 ? 'result is' : 'results are'} included in previewResults.`
+      : '';
+  return `search_files returned ${countLabel}.${truncatedLabel}${recordedLabel}${previewLabel} Full output was written to the tool output snapshot.`;
 }

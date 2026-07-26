@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { access } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import { createCommandSessionHost } from '../../../command-host/session-core.js';
 import {
   fromRipgrepFsPath,
   toWorkspaceRelativeSearchPath,
@@ -28,29 +30,28 @@ void test('resolveRipgrepPath prefers a Windows-native binary for a WSL drive', 
     t.skip('Windows interop is unavailable');
     return;
   }
-  const windowsCandidates = await new Promise<string[]>((resolve) => {
-    execFile(
-      whereExecutable,
-      ['rg.exe'],
-      { encoding: 'utf8' },
-      (error, stdout) => {
-        resolve(
-          error
-            ? []
-            : stdout
-                .split(/\r?\n/u)
-                .map((line) => line.trim())
-                .filter((line) => line.length > 0),
-        );
-      },
-    );
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-rg-resolve-host-'));
+  const pageLimitBytes = 4096;
+  const hostCommands = createCommandSessionHost({
+    inlineMaxBytes: pageLimitBytes,
+    tailRingBytes: pageLimitBytes,
   });
-  if (windowsCandidates.length === 0) {
+  t.after(async () => {
+    await hostCommands.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
+  });
+
+  let rgPath: string;
+  try {
+    rgPath = await resolveRipgrepPath('/mnt/c/Users/user', {
+      hostCommands,
+      stateRoot,
+      pageLimitBytes,
+    });
+  } catch {
     t.skip('Windows ripgrep is unavailable');
     return;
   }
-
-  const rgPath = await resolveRipgrepPath('/mnt/c/Users/user');
 
   assert.match(rgPath, /\.exe$/iu);
   await access(rgPath);

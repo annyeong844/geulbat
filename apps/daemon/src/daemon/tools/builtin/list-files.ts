@@ -45,6 +45,11 @@ export const listFilesTool = defineZodTool({
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  resultProjection: {
+    exactDurableRecovery: true,
+    modelProjection: 'list_files_summary',
+    snapshotFailure: 'fail_closed',
+  },
   exposure: {
     directHot: true,
     sdkVisible: true,
@@ -57,7 +62,7 @@ export const listFilesTool = defineZodTool({
     searchHints: ['ls folder', 'list directory', 'show files', 'tree'],
     tags: ['file', 'directory', 'computer'],
     whenToUse:
-      'Explore a filesystem, geulbat-sdk, or bundled/installed plugin skill directory.',
+      'Explore a filesystem, geulbat-sdk, or bundled/installed plugin skill directory with structured entries and no shell startup.',
     notFor: 'Reading file contents or text search.',
   },
   async executeParsed(args, ctx) {

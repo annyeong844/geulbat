@@ -1,34 +1,25 @@
+import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
+
 import { artifactPaneStyles, getArtifactBodyStyle } from './styles.js';
-import type {
-  ArtifactParseResult,
-  ArtifactPreviewSurface as ResolvedArtifactPreviewSurface,
-} from '../artifact-types.js';
+import type { ArtifactPreviewSurface as ResolvedArtifactPreviewSurface } from '../artifact-types.js';
 import type { ArtifactTab } from './types.js';
 
 export interface ArtifactPaneBodyProps {
-  parsed: Extract<ArtifactParseResult, { kind: 'artifact' }>;
+  artifact: ThreadArtifactVersion;
   tab: ArtifactTab;
-  canShowPreview: boolean;
   previewSurface: ResolvedArtifactPreviewSurface | null;
   runtimeUnavailableMessage: string | null;
 }
 
 export function ArtifactPaneBody({
-  parsed,
+  artifact,
   tab,
-  canShowPreview,
   previewSurface,
   runtimeUnavailableMessage,
 }: ArtifactPaneBodyProps) {
   return (
     <>
-      {parsed.state === 'fallback' ? (
-        <div style={artifactPaneStyles.fallbackBanner}>
-          이 아티팩트는 미리보기를 바로 열 수 없어 원본을 보여주고 있습니다.
-        </div>
-      ) : null}
-
-      {tab === 'show' && canShowPreview && previewSurface ? (
+      {tab === 'show' && previewSurface ? (
         <div
           className="artifact-preview-surface"
           style={artifactPaneStyles.previewContainer}
@@ -39,9 +30,7 @@ export function ArtifactPaneBody({
           />
         </div>
       ) : (
-        <pre style={getArtifactBodyStyle('source')}>
-          {parsed.payload.trim().length > 0 ? parsed.payload : parsed.raw}
-        </pre>
+        <pre style={getArtifactBodyStyle('source')}>{artifact.payload}</pre>
       )}
     </>
   );

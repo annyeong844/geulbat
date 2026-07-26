@@ -43,7 +43,7 @@ export const skillSearchTool = defineZodTool({
       'Executing scripts, activating unavailable tool dependencies, or granting plugin authority.',
   },
   async executeParsed(args, ctx) {
-    const runtime = ctx.agentSpawnRuntime?.pluginSkills;
+    const runtime = ctx.runtimeServices?.pluginSkills;
     if (runtime === undefined) {
       return toolError('execution_failed', 'Plugin skill runtime is required.');
     }

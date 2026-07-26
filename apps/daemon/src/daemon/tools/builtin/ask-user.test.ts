@@ -11,11 +11,13 @@ void test('ask_user는 question과 options 스키마를 노출한다', () => {
   assert.deepEqual(parameters.required, ['question', 'options']);
   assert.equal(askUserTool.sideEffectLevel, 'none');
   assert.equal(askUserTool.requiresApproval, false);
+  assert.equal(askUserTool.endsTurnAfterSuccess, true);
 });
 
 void test('builtin registry가 ask_user를 노출한다', () => {
   const registry = createBuiltinToolRegistryStore();
   assert.ok(registry.getTool('ask_user'));
+  assert.equal(registry.getToolMeta('ask_user')?.endsTurnAfterSuccess, true);
 });
 
 void test('질문과 옵션 수를 확인 응답으로 돌려준다', async () => {

@@ -17,6 +17,19 @@ export function handleRunAuth(
   requestId: string,
   token: string,
 ): void {
+  if (
+    authenticateRunSocket(socket, requestId, token) &&
+    completeRunSocketAuthentication(socket)
+  ) {
+    sendMessage(socket, { type: 'run.auth.ok', requestId, ok: true });
+  }
+}
+
+export function authenticateRunSocket(
+  socket: WebSocket,
+  requestId: string,
+  token: string,
+): boolean {
   const socketState = getSocketState(socket);
 
   if (socketState.authenticated) {
@@ -27,7 +40,17 @@ export function handleRunAuth(
       'conflict',
       'socket already authenticated',
     );
-    return;
+    return false;
+  }
+  if (socketState.authenticationPending) {
+    sendError(
+      socket,
+      requestId,
+      409,
+      'conflict',
+      'socket authentication already in progress',
+    );
+    return false;
   }
 
   if (
@@ -44,18 +67,36 @@ export function handleRunAuth(
         'too many authentication failures; retry later',
       );
       socket.close(1008, 'rate_limited');
-      return;
+      return false;
     }
     closeUnauthorized(socket, requestId, 'invalid websocket auth token');
-    return;
+    return false;
   }
 
-  socketState.authenticated = true;
+  socketState.authenticationPending = true;
   clearShellAuthFailures(socketState.remoteAddress);
   if (socketState.authTimeout) {
     clearTimeout(socketState.authTimeout);
     socketState.authTimeout = null;
   }
 
-  sendMessage(socket, { type: 'run.auth.ok', requestId, ok: true });
+  return true;
+}
+
+export function completeRunSocketAuthentication(socket: WebSocket): boolean {
+  const socketState = getSocketState(socket);
+  socketState.authenticationPending = false;
+  if (socketState.closed) {
+    return false;
+  }
+  socketState.authenticated = true;
+  return true;
+}
+
+export function abortRunSocketAuthentication(socket: WebSocket): void {
+  const socketState = getSocketState(socket);
+  socketState.authenticationPending = false;
+  if (!socketState.closed) {
+    socket.close(1011, 'authentication synchronization failed');
+  }
 }

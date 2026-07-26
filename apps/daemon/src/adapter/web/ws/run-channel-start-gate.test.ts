@@ -7,26 +7,20 @@ import { testRunId } from '../../../test-support/run-id.js';
 
 type RunStartGateState = Parameters<typeof claimSocketRunStart>[0];
 
-void test('claimSocketRunStart rejects when the socket already owns an active run', () => {
-  const state: RunStartGateState = {
+void test('claimSocketRunStart allows another thread while the socket owns an active run', () => {
+  const state = {
     activeRunIds: new Set<CancelRequest['runId']>([testRunId(1)]),
     runStartInFlightRequestId: null,
   };
 
   const result = claimSocketRunStart(state, 'request-1');
 
-  assert.deepEqual(result, {
-    ok: false,
-    status: 409,
-    code: 'conflict_active_run',
-    message: 'socket already has an active run',
-  });
-  assert.equal(state.runStartInFlightRequestId, null);
+  assert.equal(result.ok, true);
+  assert.equal(state.runStartInFlightRequestId, 'request-1');
 });
 
 void test('claimSocketRunStart rejects when another run.start is already in flight', () => {
   const state: RunStartGateState = {
-    activeRunIds: new Set<CancelRequest['runId']>(),
     runStartInFlightRequestId: 'request-in-flight',
   };
 
@@ -36,14 +30,13 @@ void test('claimSocketRunStart rejects when another run.start is already in flig
     ok: false,
     status: 409,
     code: 'conflict_active_run',
-    message: 'socket already has an active run',
+    message: 'socket already has a run.start request in flight',
   });
   assert.equal(state.runStartInFlightRequestId, 'request-in-flight');
 });
 
 void test('claimSocketRunStart claims the socket and only releases the matching request', () => {
   const state: RunStartGateState = {
-    activeRunIds: new Set<CancelRequest['runId']>(),
     runStartInFlightRequestId: null,
   };
 

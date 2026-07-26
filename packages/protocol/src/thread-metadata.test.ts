@@ -159,6 +159,12 @@ void test('thread message metadata accepts final-answer artifact refs', () => {
     sourceFile: 'episodes/ch01.md',
     artifactRefs: [{ artifactId: 'art_1', version: 1 }],
     activeArtifactRef: { artifactId: 'art_1', version: 1 },
+    planStamp: {
+      workflowId: 'workflow-1',
+      planId: 'plan-1',
+      revision: 2,
+      digest: `sha256:${'b'.repeat(64)}`,
+    },
   };
 
   assert.equal(isThreadMessageMetadata(metadata), true);
@@ -170,6 +176,30 @@ void test('thread message metadata accepts final-answer artifact refs', () => {
     artifactId: 'art_1',
     version: 1,
   });
+});
+
+void test('thread message metadata keeps plan stamps on final answers only', () => {
+  const planStamp = {
+    workflowId: 'workflow-1',
+    planId: 'plan-1',
+    revision: 2,
+    digest: `sha256:${'b'.repeat(64)}`,
+  } as const;
+  assert.equal(
+    isThreadMessageMetadata({ phase: 'final_answer', planStamp }),
+    true,
+  );
+  assert.equal(
+    isThreadMessageMetadata({ phase: 'commentary', planStamp }),
+    false,
+  );
+  assert.equal(
+    isThreadMessageMetadata({
+      phase: 'final_answer',
+      planStamp: { ...planStamp, revision: 0 },
+    }),
+    false,
+  );
 });
 
 void test('thread message metadata accepts artifact_frame origin on user turns only', () => {

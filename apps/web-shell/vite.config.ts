@@ -140,6 +140,21 @@ export default defineConfig(({ mode }) => {
     env.VITE_GEULBAT_DEV_TOKEN ??
     process.env.GEULBAT_DEV_TOKEN ??
     '';
+  const configuredDaemonOrigin =
+    process.env.VITE_GEULBAT_DAEMON_ORIGIN ??
+    env.VITE_GEULBAT_DAEMON_ORIGIN ??
+    'http://127.0.0.1:3456';
+  const daemonOriginUrl = new URL(configuredDaemonOrigin);
+  if (
+    !['http:', 'https:'].includes(daemonOriginUrl.protocol) ||
+    daemonOriginUrl.username !== '' ||
+    daemonOriginUrl.password !== '' ||
+    daemonOriginUrl.pathname !== '/' ||
+    daemonOriginUrl.search !== '' ||
+    daemonOriginUrl.hash !== ''
+  ) {
+    throw new Error('VITE_GEULBAT_DAEMON_ORIGIN must be a bare HTTP(S) origin');
+  }
 
   return {
     plugins: [
@@ -166,7 +181,7 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         '/api': {
-          target: 'http://127.0.0.1:3456',
+          target: daemonOriginUrl.origin,
           changeOrigin: true,
           ws: true,
         },

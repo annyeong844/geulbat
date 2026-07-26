@@ -6,6 +6,21 @@ import {
 import { isRunId, type RunId } from '@geulbat/protocol/ids';
 import { toolError } from '../result.js';
 import { isAgentChildTerminalState } from '../../subagent-runtime-contracts.js';
+import type {
+  AgentRuntimeServices,
+  AgentRuntimeSubagentServices,
+} from '../../daemon-runtime-contract.js';
+
+// Stopping a child touches run abort, the child registry, and the durable
+// subagent launch/terminal stores — declare exactly that surface.
+type AgentStopServices = {
+  activeRuns: AgentRuntimeServices['activeRuns'];
+  childRuns: AgentRuntimeServices['childRuns'];
+  subagent: Pick<
+    AgentRuntimeSubagentServices,
+    'launchPromotions' | 'launchRequests' | 'terminalDeliveries'
+  >;
+};
 
 interface AgentStopArgs {
   child_run_id: RunId;
@@ -14,7 +29,7 @@ interface AgentStopArgs {
 interface AgentStopResult {
   ok: true;
   childRunId: RunId;
-  stopState: 'stopping' | 'already_terminal';
+  stopState: 'stopping' | 'already_terminal' | 'cancelled_before_start';
 }
 
 const agentStopParameters = {
@@ -62,7 +77,7 @@ function buildStopResult(result: AgentStopResult) {
 export const agentStopTool = defineParsedTool<AgentStopArgs>({
   name: 'agent_stop',
   description:
-    'Request cancellation for a running child handle. Terminal children are returned as already_terminal.',
+    'Cancel a durably queued child before start or request cancellation for a running child handle. Terminal children are returned as already_terminal.',
   parameters: agentStopParameters,
   strict: true,
   sideEffectLevel: 'none',
@@ -72,22 +87,128 @@ export const agentStopTool = defineParsedTool<AgentStopArgs>({
     family: 'agent',
     searchHints: ['stop agent', 'cancel subagent', 'terminate agent'],
     tags: ['agent', 'subagent', 'cancel'],
-    whenToUse: 'Stop an existing subagent run.',
+    whenToUse: 'Cancel a queued or active subagent handle.',
     notFor: 'Waiting for a subagent to finish normally.',
   },
   parseArgs: parseAgentStopArgs,
   async executeParsed(args, ctx) {
-    if (!ctx.threadId || !ctx.runId || !ctx.agentSpawnRuntime) {
+    if (!ctx.threadId || !ctx.runId || !ctx.runtimeServices) {
       return toolError('execution_failed', 'agent_stop requires agent runtime');
     }
+    const services: AgentStopServices = ctx.runtimeServices;
 
-    const childRecord = ctx.agentSpawnRuntime.childRuns.getChildRun(
-      args.child_run_id,
-    );
+    const childRecord = services.childRuns.getChildRun(args.child_run_id);
     if (!childRecord) {
+      const launchRequestStore = services.subagent.launchRequests;
+      if (launchRequestStore === undefined) {
+        return toolError(
+          'invalid_args',
+          `unknown child run: ${args.child_run_id}`,
+        );
+      }
+      let durableRequest;
+      try {
+        durableRequest =
+          launchRequestStore.readSubagentLaunchRequestByChildRunId(
+            args.child_run_id,
+          );
+      } catch {
+        return toolError(
+          'persistence_unavailable',
+          'agent launch status could not be read',
+        );
+      }
+      if (durableRequest === undefined) {
+        return toolError(
+          'invalid_args',
+          `unknown child run: ${args.child_run_id}`,
+        );
+      }
+      if (durableRequest.ownerThreadId !== ctx.threadId) {
+        return toolError(
+          'invalid_args',
+          `child run does not belong to current owner thread: ${args.child_run_id}`,
+        );
+      }
+      if (durableRequest.launchState === 'queued') {
+        try {
+          durableRequest = launchRequestStore.cancelQueuedSubagentLaunchRequest(
+            {
+              childRunId: args.child_run_id,
+              ownerThreadId: ctx.threadId,
+            },
+          );
+        } catch {
+          return toolError(
+            'persistence_unavailable',
+            'queued agent launch could not be cancelled',
+          );
+        }
+        if (durableRequest.launchState === 'cancelled') {
+          services.subagent.launchPromotions?.forgetLaunch(args.child_run_id);
+          return buildStopResult({
+            ok: true,
+            childRunId: args.child_run_id,
+            stopState: 'cancelled_before_start',
+          });
+        }
+      }
+      if (
+        durableRequest.launchState === 'cancelled' ||
+        durableRequest.launchState === 'failed_to_start'
+      ) {
+        return buildStopResult({
+          ok: true,
+          childRunId: args.child_run_id,
+          stopState: 'already_terminal',
+        });
+      }
+      if (
+        services.activeRuns.abortRunSubtree(args.child_run_id, 'explicit_stop')
+      ) {
+        return buildStopResult({
+          ok: true,
+          childRunId: args.child_run_id,
+          stopState: 'stopping',
+        });
+      }
+      if (durableRequest.launchState === 'started') {
+        const terminalDeliveryStore = services.subagent.terminalDeliveries;
+        if (terminalDeliveryStore !== undefined) {
+          let durableTerminal;
+          try {
+            durableTerminal =
+              terminalDeliveryStore.readSubagentTerminalOutcomeByChildRunId(
+                args.child_run_id,
+              );
+          } catch {
+            return toolError(
+              'persistence_unavailable',
+              'agent terminal result could not be read',
+            );
+          }
+          if (durableTerminal !== undefined) {
+            if (durableTerminal.ownerThreadId !== ctx.threadId) {
+              return toolError(
+                'invalid_args',
+                `child run does not belong to current owner thread: ${args.child_run_id}`,
+              );
+            }
+            return buildStopResult({
+              ok: true,
+              childRunId: args.child_run_id,
+              stopState: 'already_terminal',
+            });
+          }
+        }
+        return toolError(
+          'execution_failed',
+          `child launch is durably started but its active runtime handle is unavailable: ${args.child_run_id}`,
+        );
+      }
       return toolError(
-        'invalid_args',
-        `unknown child run: ${args.child_run_id}`,
+        'execution_failed',
+        `child launch is ${durableRequest.launchState}; retry cancellation after the start transition settles: ${args.child_run_id}`,
       );
     }
     if (childRecord.ownerThreadId !== ctx.threadId) {
@@ -105,10 +226,7 @@ export const agentStopTool = defineParsedTool<AgentStopArgs>({
     }
 
     if (
-      !ctx.agentSpawnRuntime.activeRuns.abortRunSubtree(
-        args.child_run_id,
-        'explicit_stop',
-      )
+      !services.activeRuns.abortRunSubtree(args.child_run_id, 'explicit_stop')
     ) {
       return toolError(
         'execution_failed',

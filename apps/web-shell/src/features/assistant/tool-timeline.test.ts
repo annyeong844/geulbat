@@ -90,6 +90,68 @@ void test('라이브 엔트리는 같은 도구의 실행 중 행을 완료 상�
   assert.equal(items[1]!.state, 'running');
 });
 
+void test('라이브 명령 출력과 완료 상태는 같은 도구여도 callId로 정확히 짝지어진다', () => {
+  const items = buildLiveToolTimelineItems([
+    {
+      kind: 'tool_activity',
+      tool: 'exec_command',
+      state: 'running',
+      callId: 'call-one',
+      output: { stdout: 'one', stderr: '' },
+    },
+    {
+      kind: 'tool_activity',
+      tool: 'exec_command',
+      state: 'running',
+      callId: 'call-two',
+      output: { stdout: 'two', stderr: 'warning' },
+    },
+    {
+      kind: 'tool_activity',
+      tool: 'exec_command',
+      state: 'completed',
+      callId: 'call-two',
+    },
+    {
+      kind: 'tool_activity',
+      tool: 'exec_command',
+      state: 'failed',
+      callId: 'call-one',
+    },
+  ]);
+
+  assert.equal(items.length, 2);
+  assert.equal(items[0]!.state, 'failed');
+  assert.deepEqual(items[0]!.liveOutput, { stdout: 'one', stderr: '' });
+  assert.equal(items[1]!.state, 'completed');
+  assert.deepEqual(items[1]!.liveOutput, {
+    stdout: 'two',
+    stderr: 'warning',
+  });
+});
+
+void test('PTC 타임라인은 대기 뒤의 최종 실행 상태를 보존한다', () => {
+  const items = buildLiveToolTimelineItems([
+    { kind: 'tool_activity', tool: 'exec', state: 'running' },
+    {
+      kind: 'tool_activity',
+      tool: 'exec',
+      state: 'completed',
+      ptcStatus: 'queued',
+    },
+    { kind: 'tool_activity', tool: 'wait', state: 'running' },
+    {
+      kind: 'tool_activity',
+      tool: 'wait',
+      state: 'completed',
+      ptcStatus: 'completed',
+    },
+  ]);
+
+  assert.equal(items[0]?.ptcStatus, 'queued');
+  assert.equal(items[1]?.ptcStatus, 'completed');
+});
+
 void test('그룹 헤더는 명령/도구 수를 나눠 말한다', () => {
   const items = buildLiveToolTimelineItems([
     { kind: 'tool_activity', tool: 'exec_command', state: 'completed' },

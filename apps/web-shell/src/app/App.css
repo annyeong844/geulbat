@@ -1,10 +1,20 @@
-/* Modern Heritage / Curated Desk — P7 shell styles.
+/* Sage Editorial Workspace — P7 shell styles.
    영역별 파일로 분할 (v1.1 checklist: 파일 크기/응집도).
-   Source of truth: docs/current/spec/phase7-shell-redesign/DESIGN.md */
+   Source of truth: docs/current/spec/phase7-shell-redesign/DESIGN.md
+
+   import 순서 = 캐스케이드 순서. 분리된 파일(format-toolbar/media-viewer,
+   artifact-editor, assistant-transcript/cards)은 원본 파일에서 잘려 나온
+   순서 그대로 뒤따라야 한다 — 순서를 바꾸면 동일 특이성 규칙이 뒤집힌다. */
 @import './styles/tokens.css';
 @import './styles/shell.css';
 @import './styles/rail.css';
 @import './styles/editor.css';
+@import './styles/format-toolbar.css';
+@import './styles/media-viewer.css';
 @import './styles/settings.css';
+@import './styles/extensions.css';
+@import './styles/artifact-editor.css';
 @import './styles/assistant.css';
-@import './styles/legacy.css';
+@import './styles/assistant-transcript.css';
+@import './styles/assistant-cards.css';
+@import './styles/session-manager.css';

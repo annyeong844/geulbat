@@ -45,13 +45,9 @@ void test('useArtifactExportState submits static markdown exports through a top-
 void test('useArtifactExportState derives generated text export placeholders from runtime snapshots', async () => {
   const hook = await renderHook(useArtifactExportState, {
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
-        digest: 'fixture',
         payload: 'console.log("hello");',
-        raw: 'console.log("hello");',
       },
       actions: {
         apply: { visible: false, enabled: false, reason: null },
@@ -86,13 +82,9 @@ void test('useArtifactExportState derives generated text export placeholders fro
 void test('useArtifactExportState keeps runtime export hidden when artifact session authority is incomplete', async () => {
   const hook = await renderHook(useArtifactExportState, {
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
-        digest: 'fixture',
         payload: 'console.log("hello");',
-        raw: 'console.log("hello");',
       },
       actions: {
         apply: { visible: false, enabled: false, reason: null },
@@ -129,13 +121,9 @@ void test('useArtifactExportState remembers successful binary exports and only o
     [];
   const hook = await renderHook(useArtifactExportState, {
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
-        digest: 'fixture',
         payload: 'console.log("hello");',
-        raw: 'console.log("hello");',
       },
       actions: {
         apply: { visible: false, enabled: false, reason: null },
@@ -199,13 +187,9 @@ void test('useArtifactExportState remembers successful binary exports and only o
 void test('useArtifactExportState clears remembered binary overwrite state after a conflict', async () => {
   const hook = await renderHook(useArtifactExportState, {
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
-        digest: 'fixture',
         payload: 'console.log("hello");',
-        raw: 'console.log("hello");',
       },
       actions: {
         apply: { visible: false, enabled: false, reason: null },
@@ -265,13 +249,9 @@ void test('useArtifactExportState clears remembered binary overwrite state after
 
 void test('useArtifactExportState resets export state when the artifact session changes', async () => {
   const initialViewModel = createArtifactPaneViewModel({
-    parsed: {
-      kind: 'artifact',
-      state: 'completed',
+    artifact: {
       renderer: 'js',
-      digest: 'fixture',
       payload: 'console.log("hello");',
-      raw: 'console.log("hello");',
     },
     actions: {
       apply: { visible: false, enabled: false, reason: null },
@@ -304,9 +284,10 @@ void test('useArtifactExportState resets export state when the artifact session 
   await hook.rerender({
     viewModel: createArtifactPaneViewModel({
       ...initialViewModel,
-      sourceRef: {
-        ...initialViewModel.sourceRef,
-        messageTimestamp: '2026-04-04T00:01:00.000Z',
+      artifact: {
+        ...initialViewModel.artifact,
+        version: initialViewModel.artifact.version + 1,
+        parentVersion: initialViewModel.artifact.version,
       },
     }),
     isRunning: false,
@@ -340,13 +321,9 @@ void test('useArtifactExportState refuses to open static export controls when no
 void test('useArtifactExportState clears remembered binary overwrite state when text snapshots replace binary exports', async () => {
   const hook = await renderHook(useArtifactExportState, {
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
-        digest: 'fixture',
         payload: 'console.log("hello");',
-        raw: 'console.log("hello");',
       },
       actions: {
         apply: { visible: false, enabled: false, reason: null },
@@ -402,14 +379,10 @@ void test('useArtifactExportState clears remembered binary overwrite state when 
 void test('useArtifactExportState keeps runtime snapshot callback identities stable for the same artifact session', async () => {
   const hook = await renderHook(useArtifactExportState, {
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'react_bundle',
-        digest: 'fixture',
         payload:
           '{"entryUrl":"http://127.0.0.1:1455/public-generated/react-bundle-inline/hash/entry.js"}',
-        raw: '{"entryUrl":"http://127.0.0.1:1455/public-generated/react-bundle-inline/hash/entry.js"}',
       },
     }),
     isRunning: false,
@@ -422,14 +395,10 @@ void test('useArtifactExportState keeps runtime snapshot callback identities sta
 
   await hook.rerender({
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'react_bundle',
-        digest: 'fixture',
         payload:
           '{"entryUrl":"http://127.0.0.1:1455/public-generated/react-bundle-inline/hash/entry.js"}',
-        raw: '{"entryUrl":"http://127.0.0.1:1455/public-generated/react-bundle-inline/hash/entry.js"}',
       },
     }),
     isRunning: false,

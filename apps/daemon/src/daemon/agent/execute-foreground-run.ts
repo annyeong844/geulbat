@@ -3,9 +3,10 @@ import {
   readTranscriptEntries,
   replaceTranscriptEntries,
 } from '../sessions/transcript-log.js';
-import type {
-  ArtifactRef,
-  ThreadStatePersistenceFailureDiagnostic,
+import {
+  isAgentProviderTransitionCompactionEntryData,
+  type ArtifactRef,
+  type ThreadStatePersistenceFailureDiagnostic,
 } from './contract.js';
 import {
   commitThreadArtifactUpdateVersion,
@@ -22,6 +23,7 @@ import type { AgentInput } from './loop-types.js';
 import type { AgentResult } from './agent-result.js';
 import { createAgentEvent } from './events.js';
 import { getErrorMessage } from '../utils/error.js';
+import { withActivityScope } from '../utils/activity-scope.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
 import type {
   ExecuteForegroundRunDeps,
@@ -95,8 +97,10 @@ function resolveExecuteForegroundRunDeps(
 async function truncateThreadForRegenerate(args: {
   workspaceRoot: string;
   threadId: string;
+  transcriptPrompt: string;
+  providerModel?: NonNullable<AgentInput['providerModel']>;
   deps: ResolvedExecuteForegroundRunDeps;
-}): Promise<void> {
+}): Promise<boolean> {
   const entries = await args.deps.readTranscriptEntries(
     args.workspaceRoot,
     args.threadId,
@@ -114,16 +118,45 @@ async function truncateThreadForRegenerate(args: {
     }
   }
   if (lastUserIndex < 0) {
-    return;
+    return false;
+  }
+  const lastUserEntry = entries[lastUserIndex];
+  const latestEntry = entries.at(-1);
+  if (
+    lastUserEntry?.role === 'user' &&
+    lastUserEntry.content === args.transcriptPrompt &&
+    latestEntry?.role === 'compaction' &&
+    isAgentProviderTransitionCompactionEntryData(latestEntry.compactionData) &&
+    latestEntry.compactionData.firstKeptEntryId === lastUserEntry.entryId &&
+    args.providerModel?.providerId ===
+      latestEntry.compactionData.targetProviderId &&
+    args.providerModel.model === latestEntry.compactionData.targetModel
+  ) {
+    return true;
   }
   await args.deps.replaceTranscriptEntries(
     args.workspaceRoot,
     args.threadId,
     entries.slice(0, lastUserIndex),
   );
+  return false;
 }
 
 export async function executeForegroundRun(
+  args: ExecuteForegroundRunArgs,
+): Promise<AgentResult> {
+  // run 전체가 활동 스코프 안에서 돈다 — 도구 밖(프로바이더 스트리밍·압축
+  // 같은 곳)에서 프로세스가 죽어도 어느 run이었는지가 종료 기록에 남는다.
+  return await withActivityScope(
+    {
+      runId: args.agentInput.runId,
+      threadId: args.agentInput.runContext.threadId,
+    },
+    async () => await executeForegroundRunWithinActivityScope(args),
+  );
+}
+
+async function executeForegroundRunWithinActivityScope(
   args: ExecuteForegroundRunArgs,
 ): Promise<AgentResult> {
   const { agentInput, transcriptPrompt } = args;
@@ -181,17 +214,33 @@ export async function executeForegroundRun(
         }),
     };
 
-    if (args.resumeModelPrompt === undefined && args.regenerate) {
-      await truncateThreadForRegenerate({
-        workspaceRoot: runContext.stateRoot,
-        threadId: runContext.threadId,
-        deps,
-      });
-    }
+    const reusePersistedProviderTransitionInput =
+      args.resumeModelPrompt === undefined && args.regenerate
+        ? await truncateThreadForRegenerate({
+            workspaceRoot: runContext.stateRoot,
+            threadId: runContext.threadId,
+            transcriptPrompt,
+            ...(agentInput.providerModel === undefined
+              ? {}
+              : { providerModel: agentInput.providerModel }),
+            deps,
+          })
+        : false;
 
-    // Pre-run transcript persistence is required. If the user prompt cannot be
-    // recorded, the run should not start because future replay/history would diverge.
-    if (args.resumeModelPrompt === undefined) {
+    if (
+      args.resumeModelPrompt === undefined &&
+      reusePersistedProviderTransitionInput
+    ) {
+      agentInput.runtimeServices.backgroundNotifications.acknowledgeThreadBackgroundResults(
+        runContext.threadId,
+        pendingBackgroundResults.map((result) => result.deliveryId),
+      );
+      await args.onInputPersisted?.(loopAgentInput.prompt);
+    } else if (args.resumeModelPrompt === undefined) {
+      // Pre-run transcript persistence is required. If the user prompt cannot
+      // be recorded, the run should not start because future replay/history
+      // would diverge. A matching provider-transition checkpoint already owns
+      // the exact prompt and is handled above without duplicating or deleting it.
       await persistRequiredForegroundInput({
         agentInput: loopAgentInput,
         transcriptPrompt,
@@ -239,15 +288,12 @@ export async function executeForegroundRun(
 
     const result = await runAgentLoop(observedLoopAgentInput);
 
-    if (
-      result.ok &&
-      (result.finalProse ||
-        result.artifactCandidate ||
-        toolCommittedArtifactRefs.length > 0)
-    ) {
+    if (result.ok) {
       // Post-run persistence is best-effort. The UI already observed the final
-      // model result, so a storage failure should not retroactively turn the run
-      // into an internal error.
+      // model/tool result, so a storage failure should not retroactively turn
+      // the run into an internal error. Turn-ending tools such as ask_user have
+      // no assistant prose, but still need the canonical settled snapshot so
+      // the shell stops routing the next answer into the completed run.
       await persistSuccessfulForegroundOutput({
         agentInput,
         transcriptPrompt,

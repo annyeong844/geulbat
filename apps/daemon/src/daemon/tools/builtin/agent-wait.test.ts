@@ -1,32 +1,378 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { sha256Digest } from '@geulbat/content-identity/sha256';
 import { AGENT_WAIT_APPROVAL_BLOCKED_REASON } from '@geulbat/protocol/run-events';
 
 import { waitForAgentChildren } from '../agent-child-wait.js';
 import { agentWaitTool } from './agent-wait.js';
 import { createDaemonContext } from '../../context.js';
+import { createDaemonRuntimeStateStore } from '../../runtime-state-store.js';
 import { createChildRunRegistry } from '../../agent/runtime/child-run-registry.js';
+import { createRunState } from '../../agent/runtime/run-state.js';
+import {
+  pushPendingInterject,
+  requestInterjectFlush,
+} from '../../sessions/active-run-interject-buffer.js';
 import { testRunId } from '../../../test-support/run-id.js';
-import { TEST_CHILD_MODEL_REGISTRATION } from '../../../test-support/subagent-model-routing.js';
+import { makeRunContext } from '../../../test-support/run-context.js';
+import {
+  TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+  TEST_CHILD_MODEL_REGISTRATION,
+  TEST_INHERITED_SOL_MODEL_PIN,
+} from '../../../test-support/subagent-model-routing.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import type { ThreadId } from '@geulbat/protocol/ids';
 
-function createWaitContext(args?: { runId?: string; threadId?: ThreadId }) {
-  const daemonContext = createDaemonContext();
+function createWaitContext(args?: {
+  daemonContext?: ReturnType<typeof createDaemonContext>;
+  runId?: string;
+  threadId?: ThreadId;
+}) {
+  const daemonContext = args?.daemonContext ?? createDaemonContext();
   const threadId = args?.threadId ?? testThreadId(1);
+  const runId = args?.runId ?? testRunId('parent-run');
+  const runState = createRunState({
+    runId,
+    runContext: makeRunContext({ threadId }),
+  });
   return {
     daemonContext,
+    runState,
     executionContext: {
       callId: 'call-wait',
       workspaceRoot: '/tmp/workspace',
-      runId: args?.runId ?? 'parent-run',
+      runId,
       threadId,
-      agentSpawnRuntime: daemonContext,
+      runtimeServices: daemonContext,
+      runState,
+      interjectBuffer: runState.interject,
       signal: new AbortController().signal,
     },
   };
 }
+
+void test('agent_wait snapshot projects a durably queued handle before a runtime child exists', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-agent-wait-'));
+  const ownerThreadId = testThreadId(110);
+  const store = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+    now: () => new Date('2026-07-23T04:00:00.000Z'),
+  });
+  const daemonContext = createDaemonContext({
+    subagentLaunchRequests: store,
+  });
+
+  try {
+    const [queued] = store.enqueueSubagentLaunchBatch([
+      {
+        toolCallId: 'call-queued-wait',
+        task: 'wait in durable queue',
+        subagentType: 'explorer',
+        capabilities: [],
+        parentRunId: testRunId('queued-wait-parent'),
+        ownerThreadId,
+        stateRoot,
+        workingDirectory: stateRoot,
+        modelPin: TEST_INHERITED_SOL_MODEL_PIN,
+        subagentModelRouting: TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+      },
+    ]);
+    assert.ok(queued);
+    const { executionContext } = createWaitContext({
+      daemonContext,
+      threadId: ownerThreadId,
+      runId: testRunId('queued-wait-observer'),
+    });
+
+    const result = await agentWaitTool.execute(
+      { child_run_ids: [queued.childRunId] },
+      executionContext,
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(JSON.parse(result.output), {
+      ok: true,
+      completed: [],
+      pending: [],
+      blocked: [],
+      launches: [
+        {
+          childRunId: queued.childRunId,
+          childThreadId: queued.childThreadId,
+          launchState: 'queued',
+          priorityClass: 'normal',
+          enqueueOrder: queued.enqueueOrder,
+          createdAt: queued.createdAt,
+          updatedAt: queued.updatedAt,
+          runtime: queued.runtime,
+        },
+      ],
+    });
+
+    const foreignContext = createWaitContext({
+      daemonContext,
+      threadId: testThreadId(111),
+      runId: testRunId('queued-wait-foreign'),
+    }).executionContext;
+    const foreignResult = await agentWaitTool.execute(
+      { child_run_ids: [queued.childRunId] },
+      foreignContext,
+    );
+    assert.equal(foreignResult.ok, false);
+    assert.equal(foreignResult.errorCode, 'invalid_args');
+    assert.match(foreignResult.error ?? '', /does not belong/u);
+  } finally {
+    store.close();
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('agent_wait recovers an exact durable terminal outcome after the child registry is lost', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-agent-wait-'));
+  const ownerThreadId = testThreadId(112);
+  const childRunId = testRunId('durable-terminal-child');
+  const deliveryId = 'delivery-agent-wait-recovery';
+  const store = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  const recorded = store.recordSubagentTerminalDelivery({
+    ownerThreadId,
+    result: {
+      deliveryId,
+      parentRunId: testRunId('durable-terminal-parent'),
+      childRunId,
+      childThreadId: testThreadId(113),
+      subagentType: 'worker',
+      terminalState: 'completed',
+      result: 'exact recovered child result',
+      completedAt: '2026-07-23T04:30:00.000Z',
+    },
+  });
+  const daemonContext = createDaemonContext({
+    subagentTerminalDeliveries: store,
+  });
+
+  try {
+    const { executionContext } = createWaitContext({
+      daemonContext,
+      threadId: ownerThreadId,
+      runId: testRunId('durable-terminal-observer'),
+    });
+
+    const snapshot = await agentWaitTool.execute(
+      { child_run_ids: [childRunId] },
+      executionContext,
+    );
+    assert.equal(snapshot.ok, true);
+    assert.deepEqual(JSON.parse(snapshot.output), {
+      ok: true,
+      completed: [
+        {
+          childRunId,
+          terminalState: 'completed',
+          ok: true,
+          result: 'exact recovered child result',
+          resultRef: recorded.outcome.resultRef,
+          resultDigest: sha256Digest('exact recovered child result'),
+        },
+      ],
+      pending: [],
+      blocked: [],
+    });
+
+    const joined = await agentWaitTool.execute(
+      { child_run_ids: [childRunId], wait_mode: 'all' },
+      executionContext,
+    );
+    assert.equal(joined.ok, true);
+    assert.deepEqual(JSON.parse(joined.output).completed, [
+      {
+        childRunId,
+        terminalState: 'completed',
+        ok: true,
+        result: 'exact recovered child result',
+        resultRef: recorded.outcome.resultRef,
+        resultDigest: sha256Digest('exact recovered child result'),
+      },
+    ]);
+  } finally {
+    store.close();
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('agent_wait recovers a child retired while a blocking join is active', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-agent-wait-'));
+  const ownerThreadId = testThreadId(117);
+  const childRunId = testRunId('durable-terminal-race-child');
+  const store = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  const daemonContext = createDaemonContext({
+    subagentTerminalDeliveries: store,
+  });
+  daemonContext.childRuns.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    childRunId,
+    childThreadId: testThreadId(118),
+    parentRunId: testRunId('durable-terminal-race-parent'),
+    ownerThreadId,
+    subagentType: 'explorer',
+  });
+
+  try {
+    const { executionContext } = createWaitContext({
+      daemonContext,
+      threadId: ownerThreadId,
+      runId: testRunId('durable-terminal-race-observer'),
+    });
+    const joined = agentWaitTool.execute(
+      {
+        child_run_ids: [childRunId],
+        wait_mode: 'all',
+        result_mode: 'refs',
+      },
+      executionContext,
+    );
+    await delay(0);
+
+    daemonContext.childRuns.markChildTerminal({
+      childRunId,
+      terminalState: 'completed',
+      result: 'result persisted while agent_wait is blocked',
+    });
+    const recorded = store.recordSubagentTerminalDelivery({
+      ownerThreadId,
+      result: {
+        deliveryId: 'delivery-agent-wait-terminal-race',
+        parentRunId: testRunId('durable-terminal-race-parent'),
+        childRunId,
+        childThreadId: testThreadId(118),
+        subagentType: 'explorer',
+        terminalState: 'completed',
+        result: 'result persisted while agent_wait is blocked',
+        completedAt: '2026-07-23T14:00:00.000Z',
+      },
+    });
+    assert.equal(
+      daemonContext.childRuns.claimTerminalChildRuns({
+        ownerThreadId,
+        childRunIds: [childRunId],
+      }),
+      1,
+    );
+
+    const result = await joined;
+    assert.equal(result.ok, true);
+    assert.deepEqual(JSON.parse(result.output).completed, [
+      {
+        childRunId,
+        terminalState: 'completed',
+        ok: true,
+        resultRef: recorded.outcome.resultRef,
+        resultDigest: sha256Digest(
+          'result persisted while agent_wait is blocked',
+        ),
+      },
+    ]);
+  } finally {
+    store.close();
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('agent_wait returns a durable mixed-outcome result-ref bundle after reopen', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-agent-wait-'));
+  const ownerThreadId = testThreadId(114);
+  let store = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  const completedChildRunId = testRunId('durable-ref-completed');
+  const failedChildRunId = testRunId('durable-ref-failed');
+  const completed = store.recordSubagentTerminalDelivery({
+    ownerThreadId,
+    result: {
+      deliveryId: 'delivery-durable-ref-completed',
+      parentRunId: testRunId('durable-ref-parent'),
+      childRunId: completedChildRunId,
+      childThreadId: testThreadId(115),
+      subagentType: 'explorer',
+      terminalState: 'completed',
+      result: 'large completed body that should not enter fan-in',
+      completedAt: '2026-07-23T13:00:00.000Z',
+    },
+  }).outcome;
+  const failed = store.recordSubagentTerminalDelivery({
+    ownerThreadId,
+    result: {
+      deliveryId: 'delivery-durable-ref-failed',
+      parentRunId: testRunId('durable-ref-parent'),
+      childRunId: failedChildRunId,
+      childThreadId: testThreadId(116),
+      subagentType: 'worker',
+      terminalState: 'failed',
+      reason: 'provider_error',
+      result: 'large failed body that should not enter fan-in',
+      completedAt: '2026-07-23T13:00:01.000Z',
+    },
+  }).outcome;
+  store.close();
+  store = await createDaemonRuntimeStateStore({ homeStateRoot: stateRoot });
+  const daemonContext = createDaemonContext({
+    subagentTerminalDeliveries: store,
+  });
+
+  try {
+    const { executionContext } = createWaitContext({
+      daemonContext,
+      threadId: ownerThreadId,
+      runId: testRunId('durable-ref-observer'),
+    });
+    const result = await agentWaitTool.execute(
+      {
+        child_run_ids: [completedChildRunId, failedChildRunId],
+        result_mode: 'refs',
+      },
+      executionContext,
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(JSON.parse(result.output), {
+      ok: true,
+      completed: [
+        {
+          childRunId: completedChildRunId,
+          terminalState: 'completed',
+          ok: true,
+          resultRef: completed.resultRef,
+          resultDigest: sha256Digest(
+            'large completed body that should not enter fan-in',
+          ),
+        },
+        {
+          childRunId: failedChildRunId,
+          terminalState: 'failed',
+          ok: false,
+          reason: 'provider_error',
+          resultRef: failed.resultRef,
+          resultDigest: sha256Digest(
+            'large failed body that should not enter fan-in',
+          ),
+        },
+      ],
+      pending: [],
+      blocked: [],
+    });
+    assert.doesNotMatch(result.output, /large .* body/u);
+  } finally {
+    store.close();
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
 
 void test('agent_wait returns completed children immediately', async () => {
   const { daemonContext, executionContext } = createWaitContext();
@@ -413,6 +759,47 @@ void test('agent_wait wait_mode all blocks until every child is terminal', async
       result: 'child two cancelled',
     },
   ]);
+});
+
+void test('agent_wait releases a blocking join when the user requests immediate interject delivery', async () => {
+  const { daemonContext, executionContext, runState } = createWaitContext();
+  const childRunId = testRunId('child-interject-flush');
+  daemonContext.childRuns.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    childRunId,
+    childThreadId: testThreadId(87),
+    parentRunId: testRunId('parent-run'),
+    ownerThreadId: executionContext.threadId,
+    subagentType: 'explorer',
+  });
+
+  const waiting = agentWaitTool.execute(
+    { child_run_ids: [childRunId], wait_mode: 'all' },
+    executionContext,
+  );
+  await delay(0);
+  pushPendingInterject(runState.interject, '지금 방향을 바꿔 주세요.');
+  assert.equal(requestInterjectFlush(runState.interject), true);
+
+  const fallbackTerminal = setTimeout(() => {
+    daemonContext.childRuns.markChildTerminal({
+      childRunId,
+      terminalState: 'completed',
+      result: 'late completion',
+    });
+  }, 30);
+  const result = await waiting;
+  clearTimeout(fallbackTerminal);
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    completed: unknown[];
+    pending: string[];
+    blocked: unknown[];
+  };
+  assert.deepEqual(payload.completed, []);
+  assert.deepEqual(payload.pending, [childRunId]);
+  assert.deepEqual(payload.blocked, []);
 });
 
 void test('waitForAgentChildren exposes the same wait owner without a tool wrapper', async () => {

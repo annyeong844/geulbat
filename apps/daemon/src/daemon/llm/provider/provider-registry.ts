@@ -1,14 +1,15 @@
-import {
-  DEFAULT_PROVIDER_AUTH_CREDENTIAL_PROVIDER_ID,
-  type ProviderAuthCredentialProviderId,
-} from '../../auth/credentials/store.js';
+import type { RunProviderId } from '../../runtime-contracts.js';
+import { DEFAULT_PROVIDER_AUTH_CREDENTIAL_PROVIDER_ID } from '../../auth/credentials/store.js';
 
-export type ProviderId = ProviderAuthCredentialProviderId;
+export type ProviderId = RunProviderId;
 
 interface ProviderRegistryEntry {
   id: ProviderId;
   defaultModel: string;
-  modelEnvKey: 'GEULBAT_CODEX_MODEL' | 'GEULBAT_GROK_MODEL';
+  modelEnvKey:
+    | 'GEULBAT_CODEX_MODEL'
+    | 'GEULBAT_GROK_MODEL'
+    | 'GEULBAT_QWEN_MODEL';
 }
 
 export const DEFAULT_PROVIDER_ID: ProviderId =
@@ -24,6 +25,11 @@ const PROVIDER_REGISTRY = {
     id: 'grok_oauth',
     defaultModel: 'grok-4.5',
     modelEnvKey: 'GEULBAT_GROK_MODEL',
+  },
+  qwen_token_plan: {
+    id: 'qwen_token_plan',
+    defaultModel: 'qwen3.8-max-preview',
+    modelEnvKey: 'GEULBAT_QWEN_MODEL',
   },
 } as const satisfies Record<ProviderId, ProviderRegistryEntry>;
 

@@ -1,17 +1,11 @@
 import assert from 'node:assert/strict';
-import {
-  access,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
+import { createToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
 import { createBuiltinToolRegistryStore } from './builtin/catalog.js';
 import {
   buildToolSearchCatalog,
@@ -19,15 +13,9 @@ import {
   type ToolSearchCatalogCard,
 } from './builtin/tool-search.js';
 import { createToolRegistryStore } from './registry.js';
-import {
-  buildToolLibraryProjection,
-  createToolLibraryProjectionPort,
-} from './tool-library-projection.js';
+import { buildToolLibraryProjection } from './tool-library-projection.js';
 import { buildToolSignatureRef } from '@geulbat/tool-library/projection-signature';
-import type {
-  BuildToolLibraryProjectionArgs,
-  ToolLibraryProjection,
-} from './tool-library-projection-port.js';
+import type { BuildToolLibraryProjectionArgs } from './tool-library-projection-port.js';
 import {
   getToolLibraryProjectionManifest,
   getToolLibraryProjectionIdentity,
@@ -37,26 +25,17 @@ import {
   getToolLibraryProjectionMount,
   resolveToolLibraryProjectionMountedModule,
 } from './tool-library-projection-mount.js';
-import {
-  readVerifiedToolLibraryProjectionMount,
-  writeToolLibraryProjectionFiles,
-} from './tool-library-projection-store.js';
+import { readVerifiedToolLibraryProjectionMount } from './tool-library-projection-store.js';
 import {
   isToolObjectParameters,
   type AnyTool,
   type ToolParameters,
 } from './types.js';
-
-const BASE_PROJECTION_ARGS = {
-  sdkVersion: 'sdk-test-v1',
-  sourceRegistryVersion: 'registry-test-v1',
-  policyId: 'test-readonly-policy',
-  runtimeCompatibilityRange: 'daemon-test-runtime',
-  rootPath: '/private/geulbat/generated-tools',
-  catalogPath: '/private/geulbat/generated-tools/catalog.js',
-  modelFacingCatalogRef: 'geulbat-sdk://catalog',
-  importSpecifier: '@geulbat/generated-tools',
-} as const;
+import {
+  BASE_PROJECTION_ARGS,
+  createTestProjectionPort,
+  pathExists,
+} from '../../test-support/tool-library-projection.js';
 
 void test('buildToolLibraryProjection materializes a one-tool SDK surface from the registry', () => {
   const projection = buildTestProjection({
@@ -101,6 +80,10 @@ void test('buildToolLibraryProjection materializes a one-tool SDK surface from t
   assert.equal(tool.argsTypeName, 'ReadFileArgs');
   assert.equal(tool.family, 'file');
   assert.equal(tool.approvalClass, 'approval_free');
+  assert.deepEqual(tool.resultDelivery, {
+    exactDurableRecovery: true,
+    modelVisibleForms: ['inline', 'summary_ref', 'duplicate_ref'],
+  });
   assert.equal(isToolObjectParameters(tool.parameters), true);
 
   assert.deepEqual(
@@ -411,35 +394,6 @@ void test('getToolLibraryProjectionIdentity omits host paths and generated conte
   ]);
 });
 
-void test('writeToolLibraryProjectionFiles writes generated SDK files under the projection root', async () => {
-  const rootPath = await mkdtemp(join(tmpdir(), 'geulbat-tool-library-'));
-  try {
-    const projection = buildToolLibraryProjection({
-      ...BASE_PROJECTION_ARGS,
-      registry: createBuiltinToolRegistryStore(),
-      allowedRegistryNames: ['read_file'],
-      rootPath,
-      catalogPath: join(rootPath, 'catalog.js'),
-    });
-
-    const result = await writeToolLibraryProjectionFiles(projection);
-
-    assert.deepEqual(result, {
-      rootPath,
-      writtenFiles: projection.files.map((file) => file.path),
-    });
-
-    for (const file of projection.files) {
-      assert.equal(
-        await readFile(join(rootPath, ...file.path.split('/')), 'utf8'),
-        file.content,
-      );
-    }
-  } finally {
-    await rm(rootPath, { recursive: true, force: true });
-  }
-});
-
 void test('createToolLibraryProjectionPort writes a pinned projection under the runtime root', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-library-'));
   try {
@@ -543,6 +497,125 @@ void test('createToolLibraryProjectionPort writes a pinned projection under the 
       ),
       false,
     );
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createToolLibraryProjectionPort binds an explicit callback surface to its policy identity', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-capability-policy-'),
+  );
+  const firstPolicy = createToolCapabilityPolicy({
+    directRegistryNames: [],
+    allowedRegistryNames: ['list_files', 'read_file'],
+    callbackRegistryNames: ['read_file'],
+    writeCallbackEnabled: false,
+  });
+  const changedPolicy = createToolCapabilityPolicy({
+    directRegistryNames: [],
+    allowedRegistryNames: ['list_files', 'read_file'],
+    callbackRegistryNames: ['list_files'],
+    writeCallbackEnabled: false,
+  });
+  try {
+    const runtime = createTestProjectionPort();
+    const first = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-capability-policy',
+      toolCapabilityPolicy: firstPolicy,
+    });
+    assert.equal(first.ok, true);
+    if (!first.ok) {
+      assert.fail('expected explicit capability policy projection to resolve');
+    }
+    assert.equal(first.pin.policyId, firstPolicy.toolCapabilityPolicyId);
+    assert.deepEqual(first.pin.allowedRegistryNames, ['read_file']);
+
+    const changed = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-capability-policy',
+      toolCapabilityPolicy: changedPolicy,
+    });
+    assert.deepEqual(changed, {
+      ok: false,
+      reason: 'projection_failed',
+      message:
+        'Pinned tool library projection does not match the requested tool capability policy',
+    });
+
+    const outsideCallbackSurface = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-invalid-capability-policy',
+      toolCapabilityPolicy: createToolCapabilityPolicy({
+        directRegistryNames: [],
+        allowedRegistryNames: ['exec_command'],
+        callbackRegistryNames: ['exec_command'],
+        writeCallbackEnabled: true,
+      }),
+    });
+    assert.equal(outsideCallbackSurface.ok, false);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createToolLibraryProjectionPort transitions one matching legacy thread pin to an explicit policy', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-policy-transition-'),
+  );
+  const projectionPolicy = { policyId: 'legacy-read-callback-policy' };
+  const explicitPolicy = createToolCapabilityPolicy({
+    directRegistryNames: ['list_files'],
+    allowedRegistryNames: ['list_files', 'read_file'],
+    callbackRegistryNames: ['read_file'],
+    writeCallbackEnabled: false,
+  });
+  try {
+    const runtime = createTestProjectionPort({ projectionPolicy });
+    const legacy = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-legacy-policy-transition',
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(legacy.ok, true);
+    if (!legacy.ok) {
+      assert.fail('expected legacy projection to resolve');
+    }
+    assert.equal(legacy.pin.policyId, projectionPolicy.policyId);
+
+    const transitioned = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-legacy-policy-transition',
+      toolCapabilityPolicy: explicitPolicy,
+    });
+    assert.equal(transitioned.ok, true);
+    if (!transitioned.ok) {
+      assert.fail('expected matching legacy projection to transition');
+    }
+    assert.equal(
+      transitioned.pin.policyId,
+      explicitPolicy.toolCapabilityPolicyId,
+    );
+    assert.deepEqual(transitioned.pin.allowedRegistryNames, ['read_file']);
+
+    const mismatchedLegacy = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-legacy-policy-mismatch',
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(mismatchedLegacy.ok, true);
+    const mismatched = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-legacy-policy-mismatch',
+      toolCapabilityPolicy: createToolCapabilityPolicy({
+        directRegistryNames: ['list_files'],
+        allowedRegistryNames: ['list_files'],
+        callbackRegistryNames: ['list_files'],
+        writeCallbackEnabled: false,
+      }),
+    });
+    assert.equal(mismatched.ok, false);
   } finally {
     await rm(stateRoot, { recursive: true, force: true });
   }
@@ -1416,268 +1489,6 @@ void test('generated catalog search results resolve to narrow signature descript
   }
 });
 
-void test('readVerifiedToolLibraryProjectionMount rejects a stale pinned manifest', async () => {
-  const threadProjectionRootPath = await mkdtemp(
-    join(tmpdir(), 'geulbat-tool-library-pinned-manifest-'),
-  );
-  try {
-    const preliminaryProjection = buildToolLibraryProjection({
-      ...BASE_PROJECTION_ARGS,
-      registry: createBuiltinToolRegistryStore(),
-      allowedRegistryNames: ['read_file'],
-      rootPath: join(threadProjectionRootPath, 'preliminary'),
-      catalogPath: join(threadProjectionRootPath, 'preliminary', 'catalog.js'),
-    });
-    const projectionRootPath = join(
-      threadProjectionRootPath,
-      getToolLibraryProjectionPin(preliminaryProjection).projectionDirectory,
-    );
-    const projection = buildToolLibraryProjection({
-      ...BASE_PROJECTION_ARGS,
-      registry: createBuiltinToolRegistryStore(),
-      allowedRegistryNames: ['read_file'],
-      rootPath: projectionRootPath,
-      catalogPath: join(projectionRootPath, 'catalog.js'),
-    });
-    await writeToolLibraryProjectionFiles(projection);
-    const expectedPin = getToolLibraryProjectionPin(projection);
-    await writeFile(
-      join(threadProjectionRootPath, 'projection-pin.json'),
-      `${JSON.stringify(expectedPin)}\n`,
-      'utf8',
-    );
-    await writeFile(
-      join(projectionRootPath, 'manifest.js'),
-      `export const projectionManifest = ${JSON.stringify({
-        ...getToolLibraryProjectionManifest(projection),
-        policyId: 'stale-policy',
-      })};\n`,
-      'utf8',
-    );
-
-    assert.deepEqual(
-      await readVerifiedToolLibraryProjectionMount({
-        threadProjectionRootPath,
-        expectedPin,
-        importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-      }),
-      {
-        ok: false,
-        reason: 'manifest_mismatch',
-        message:
-          'Tool library projection manifest does not match expected projection',
-      },
-    );
-  } finally {
-    await rm(threadProjectionRootPath, { recursive: true, force: true });
-  }
-});
-
-void test('readVerifiedToolLibraryProjectionMount verifies an expected pin after the thread pointer moves', async () => {
-  const threadProjectionRootPath = await mkdtemp(
-    join(tmpdir(), 'geulbat-tool-library-pinned-pointer-moved-'),
-  );
-  try {
-    const firstPreliminaryProjection = buildToolLibraryProjection({
-      ...BASE_PROJECTION_ARGS,
-      registry: createBuiltinToolRegistryStore(),
-      allowedRegistryNames: ['read_file'],
-      rootPath: join(threadProjectionRootPath, 'first-preliminary'),
-      catalogPath: join(
-        threadProjectionRootPath,
-        'first-preliminary',
-        'catalog.js',
-      ),
-    });
-    const firstProjectionRootPath = join(
-      threadProjectionRootPath,
-      getToolLibraryProjectionPin(firstPreliminaryProjection)
-        .projectionDirectory,
-    );
-    const firstProjection = buildToolLibraryProjection({
-      ...BASE_PROJECTION_ARGS,
-      registry: createBuiltinToolRegistryStore(),
-      allowedRegistryNames: ['read_file'],
-      rootPath: firstProjectionRootPath,
-      catalogPath: join(firstProjectionRootPath, 'catalog.js'),
-    });
-    await writeToolLibraryProjectionFiles(firstProjection);
-    const firstPin = getToolLibraryProjectionPin(firstProjection);
-
-    const secondPreliminaryProjection = buildToolLibraryProjection({
-      ...BASE_PROJECTION_ARGS,
-      registry: createBuiltinToolRegistryStore(),
-      allowedRegistryNames: ['fetch_url'],
-      rootPath: join(threadProjectionRootPath, 'second-preliminary'),
-      catalogPath: join(
-        threadProjectionRootPath,
-        'second-preliminary',
-        'catalog.js',
-      ),
-    });
-    const secondProjectionRootPath = join(
-      threadProjectionRootPath,
-      getToolLibraryProjectionPin(secondPreliminaryProjection)
-        .projectionDirectory,
-    );
-    const secondProjection = buildToolLibraryProjection({
-      ...BASE_PROJECTION_ARGS,
-      registry: createBuiltinToolRegistryStore(),
-      allowedRegistryNames: ['fetch_url'],
-      rootPath: secondProjectionRootPath,
-      catalogPath: join(secondProjectionRootPath, 'catalog.js'),
-    });
-    await writeToolLibraryProjectionFiles(secondProjection);
-    const secondPin = getToolLibraryProjectionPin(secondProjection);
-    await writeFile(
-      join(threadProjectionRootPath, 'projection-pin.json'),
-      `${JSON.stringify(secondPin)}\n`,
-      'utf8',
-    );
-
-    const firstMountResult = await readVerifiedToolLibraryProjectionMount({
-      threadProjectionRootPath,
-      expectedPin: firstPin,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
-    assert.equal(firstMountResult.ok, true);
-    if (!firstMountResult.ok) {
-      assert.fail('expected old expected pin to verify after pointer moved');
-    }
-    assert.equal(
-      firstMountResult.mount.projectionRootPath,
-      firstProjection.rootPath,
-    );
-    assert.deepEqual(firstMountResult.pin, firstPin);
-  } finally {
-    await rm(threadProjectionRootPath, { recursive: true, force: true });
-  }
-});
-
-void test('readVerifiedToolLibraryProjectionMount rejects stored pin module drift without an expected pin', async () => {
-  const threadProjectionRootPath = await mkdtemp(
-    join(tmpdir(), 'geulbat-tool-library-pinned-module-drift-'),
-  );
-  try {
-    const preliminaryProjection = buildToolLibraryProjection({
-      ...BASE_PROJECTION_ARGS,
-      registry: createBuiltinToolRegistryStore(),
-      allowedRegistryNames: ['read_file'],
-      rootPath: join(threadProjectionRootPath, 'preliminary'),
-      catalogPath: join(threadProjectionRootPath, 'preliminary', 'catalog.js'),
-    });
-    const projectionRootPath = join(
-      threadProjectionRootPath,
-      getToolLibraryProjectionPin(preliminaryProjection).projectionDirectory,
-    );
-    const projection = buildToolLibraryProjection({
-      ...BASE_PROJECTION_ARGS,
-      registry: createBuiltinToolRegistryStore(),
-      allowedRegistryNames: ['read_file'],
-      rootPath: projectionRootPath,
-      catalogPath: join(projectionRootPath, 'catalog.js'),
-    });
-    await writeToolLibraryProjectionFiles(projection);
-    const pin = getToolLibraryProjectionPin(projection);
-    await writeFile(
-      join(threadProjectionRootPath, 'projection-pin.json'),
-      `${JSON.stringify({
-        ...pin,
-        catalogModule: 'stale-catalog.js',
-      })}\n`,
-      'utf8',
-    );
-
-    assert.deepEqual(
-      await readVerifiedToolLibraryProjectionMount({
-        threadProjectionRootPath,
-        importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-      }),
-      {
-        ok: false,
-        reason: 'pin_mismatch',
-        message: 'Tool library projection pin does not match pinned manifest',
-      },
-    );
-  } finally {
-    await rm(threadProjectionRootPath, { recursive: true, force: true });
-  }
-});
-
-void test('readVerifiedToolLibraryProjectionMount rehydrates from observer projection identity', async () => {
-  const stateRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-tool-library-replay-identity-'),
-  );
-  try {
-    const runtime = createTestProjectionPort();
-    const result = await runtime.resolveProjection({
-      stateRoot,
-      threadId: 'thread-runtime-test',
-      allowedRegistryNames: ['read_file'],
-    });
-    assert.equal(result.ok, true);
-    if (!result.ok) {
-      assert.fail('expected projection port to resolve');
-    }
-
-    const expectedIdentity = getToolLibraryProjectionIdentity(result.pin);
-    const mountResult = await readVerifiedToolLibraryProjectionMount({
-      threadProjectionRootPath: dirname(result.projection.rootPath),
-      expectedIdentity,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
-
-    assert.equal(mountResult.ok, true);
-    if (!mountResult.ok) {
-      assert.fail('expected projection mount verification to pass');
-    }
-    assert.deepEqual(getToolLibraryProjectionIdentity(mountResult.mount), {
-      sdkVersion: expectedIdentity.sdkVersion,
-      sdkProjectionHash: expectedIdentity.sdkProjectionHash,
-      policyId: expectedIdentity.policyId,
-    });
-  } finally {
-    await rm(stateRoot, { recursive: true, force: true });
-  }
-});
-
-void test('readVerifiedToolLibraryProjectionMount rejects replay identity mismatch', async () => {
-  const stateRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-tool-library-replay-identity-mismatch-'),
-  );
-  try {
-    const runtime = createTestProjectionPort();
-    const result = await runtime.resolveProjection({
-      stateRoot,
-      threadId: 'thread-runtime-test',
-      allowedRegistryNames: ['read_file'],
-    });
-    assert.equal(result.ok, true);
-    if (!result.ok) {
-      assert.fail('expected projection port to resolve');
-    }
-
-    assert.deepEqual(
-      await readVerifiedToolLibraryProjectionMount({
-        threadProjectionRootPath: dirname(result.projection.rootPath),
-        expectedIdentity: {
-          ...getToolLibraryProjectionIdentity(result.pin),
-          policyId: 'stale-policy',
-        },
-        importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-      }),
-      {
-        ok: false,
-        reason: 'projection_identity_mismatch',
-        message:
-          'Tool library projection identity does not match expected replay projection',
-      },
-    );
-  } finally {
-    await rm(stateRoot, { recursive: true, force: true });
-  }
-});
-
 void test('createToolLibraryProjectionPort rehydrates pinned projection through daemon-owned port', async () => {
   const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-tool-library-runtime-rehydrate-'),
@@ -1748,342 +1559,6 @@ void test('createToolLibraryProjectionPort rejects stale rehydration identity', 
     await rm(stateRoot, { recursive: true, force: true });
   }
 });
-
-void test('readVerifiedToolLibraryProjectionMount rejects import specifier mismatch', async () => {
-  const stateRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-tool-library-mount-mismatch-'),
-  );
-  try {
-    const runtime = createTestProjectionPort();
-    const result = await runtime.resolveProjection({
-      stateRoot,
-      threadId: 'thread-runtime-test',
-      allowedRegistryNames: ['read_file'],
-    });
-    assert.equal(result.ok, true);
-    if (!result.ok) {
-      assert.fail('expected projection port to resolve');
-    }
-
-    assert.deepEqual(
-      await readVerifiedToolLibraryProjectionMount({
-        threadProjectionRootPath: dirname(result.projection.rootPath),
-        expectedPin: result.pin,
-        importSpecifier: '@geulbat/other-tools',
-      }),
-      {
-        ok: false,
-        reason: 'import_specifier_mismatch',
-        message:
-          'Tool library projection import specifier does not match expected runtime mount',
-      },
-    );
-  } finally {
-    await rm(stateRoot, { recursive: true, force: true });
-  }
-});
-
-void test('readVerifiedToolLibraryProjectionMount rejects missing mount files', async () => {
-  const stateRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-tool-library-mount-missing-'),
-  );
-  try {
-    const runtime = createTestProjectionPort();
-    const result = await runtime.resolveProjection({
-      stateRoot,
-      threadId: 'thread-runtime-test',
-      allowedRegistryNames: ['read_file'],
-    });
-    assert.equal(result.ok, true);
-    if (!result.ok) {
-      assert.fail('expected projection port to resolve');
-    }
-    await rm(join(result.projection.rootPath, 'index.js'));
-
-    const mountResult = await readVerifiedToolLibraryProjectionMount({
-      threadProjectionRootPath: dirname(result.projection.rootPath),
-      expectedPin: result.pin,
-      importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    });
-    assert.equal(mountResult.ok, false);
-    if (mountResult.ok) {
-      assert.fail('expected projection mount verification to fail');
-    }
-    assert.equal(mountResult.reason, 'mount_file_missing');
-    assert.equal(
-      mountResult.message,
-      'Tool library projection mount file could not be read',
-    );
-    assert.equal(mountResult.message.includes(stateRoot), false);
-  } finally {
-    await rm(stateRoot, { recursive: true, force: true });
-  }
-});
-
-void test('resolveToolLibraryProjectionMountedModule resolves only owned generated modules', async () => {
-  const stateRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-tool-library-mounted-module-'),
-  );
-  try {
-    const runtime = createTestProjectionPort();
-    const result = await runtime.resolveProjection({
-      stateRoot,
-      threadId: 'thread-runtime-test',
-      allowedRegistryNames: ['read_file'],
-    });
-    assert.equal(result.ok, true);
-    if (!result.ok) {
-      assert.fail('expected projection port to resolve');
-    }
-    const tool = result.projection.tools[0];
-    assert.ok(tool);
-
-    assert.deepEqual(
-      resolveToolLibraryProjectionMountedModule({
-        mount: result.mount,
-        specifier: '@geulbat/generated-tools',
-      }),
-      {
-        ok: true,
-        module: {
-          specifier: '@geulbat/generated-tools',
-          filePath: result.mount.indexModulePath,
-          role: 'index',
-        },
-      },
-    );
-    assert.deepEqual(
-      resolveToolLibraryProjectionMountedModule({
-        mount: result.mount,
-        specifier: '@geulbat/generated-tools/catalog',
-      }),
-      {
-        ok: true,
-        module: {
-          specifier: '@geulbat/generated-tools/catalog',
-          filePath: result.mount.catalogModulePath,
-          role: 'catalog',
-        },
-      },
-    );
-    assert.deepEqual(
-      resolveToolLibraryProjectionMountedModule({
-        mount: result.mount,
-        specifier: '@geulbat/generated-tools/search',
-      }),
-      {
-        ok: true,
-        module: {
-          specifier: '@geulbat/generated-tools/search',
-          filePath: result.mount.searchModulePath,
-          role: 'search',
-        },
-      },
-    );
-    assert.deepEqual(
-      resolveToolLibraryProjectionMountedModule({
-        mount: result.mount,
-        specifier: '@geulbat/generated-tools/search-runtime',
-      }),
-      {
-        ok: true,
-        module: {
-          specifier: '@geulbat/generated-tools/search-runtime',
-          filePath: result.mount.searchRuntimeModulePath,
-          role: 'search_runtime',
-        },
-      },
-    );
-    assert.deepEqual(
-      resolveToolLibraryProjectionMountedModule({
-        mount: result.mount,
-        specifier: '@geulbat/generated-tools/manifest',
-      }),
-      {
-        ok: true,
-        module: {
-          specifier: '@geulbat/generated-tools/manifest',
-          filePath: result.mount.manifestModulePath,
-          role: 'manifest',
-        },
-      },
-    );
-    assert.deepEqual(
-      resolveToolLibraryProjectionMountedModule({
-        mount: result.mount,
-        specifier: '@geulbat/generated-tools/index.d.ts',
-      }),
-      {
-        ok: true,
-        module: {
-          specifier: '@geulbat/generated-tools/index.d.ts',
-          filePath: result.mount.indexDeclarationPath,
-          role: 'index_declaration',
-        },
-      },
-    );
-    assert.deepEqual(
-      resolveToolLibraryProjectionMountedModule({
-        mount: result.mount,
-        specifier: '@geulbat/generated-tools/signatures/read-file',
-      }),
-      {
-        ok: true,
-        module: {
-          specifier: '@geulbat/generated-tools/signatures/read-file',
-          filePath: join(result.mount.projectionRootPath, tool.signatureModule),
-          role: 'signature',
-        },
-      },
-    );
-    assert.deepEqual(
-      resolveToolLibraryProjectionMountedModule({
-        mount: result.mount,
-        specifier: '@geulbat/generated-tools/signatures/read-file.d.ts',
-      }),
-      {
-        ok: true,
-        module: {
-          specifier: '@geulbat/generated-tools/signatures/read-file.d.ts',
-          filePath: join(
-            result.mount.projectionRootPath,
-            tool.signatureDeclarationModule,
-          ),
-          role: 'signature_declaration',
-        },
-      },
-    );
-    assert.deepEqual(
-      resolveToolLibraryProjectionMountedModule({
-        mount: result.mount,
-        specifier: '@geulbat/generated-tools/files/readFile',
-      }),
-      {
-        ok: true,
-        module: {
-          specifier: '@geulbat/generated-tools/files/readFile',
-          filePath: join(result.mount.projectionRootPath, tool.wrapperModule),
-          role: 'wrapper',
-        },
-      },
-    );
-    assert.deepEqual(
-      resolveToolLibraryProjectionMountedModule({
-        mount: result.mount,
-        specifier: '@geulbat/generated-tools/files/readFile.d.ts',
-      }),
-      {
-        ok: true,
-        module: {
-          specifier: '@geulbat/generated-tools/files/readFile.d.ts',
-          filePath: join(
-            result.mount.projectionRootPath,
-            tool.wrapperDeclarationModule,
-          ),
-          role: 'wrapper_declaration',
-        },
-      },
-    );
-  } finally {
-    await rm(stateRoot, { recursive: true, force: true });
-  }
-});
-
-void test('resolveToolLibraryProjectionMountedModule rejects aliases and traversal-shaped subpaths', async () => {
-  const stateRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-tool-library-mounted-module-reject-'),
-  );
-  try {
-    const runtime = createTestProjectionPort();
-    const result = await runtime.resolveProjection({
-      stateRoot,
-      threadId: 'thread-runtime-test',
-      allowedRegistryNames: ['read_file'],
-    });
-    assert.equal(result.ok, true);
-    if (!result.ok) {
-      assert.fail('expected projection port to resolve');
-    }
-
-    for (const specifier of [
-      '@geulbat/other-tools',
-      '@geulbat/generated-tools/',
-      '@geulbat/generated-tools/../catalog',
-      '@geulbat/generated-tools/catalog.js',
-      '@geulbat/generated-tools/search-runtime.js',
-      '@geulbat/generated-tools/files/readFile.js',
-      '@geulbat/generated-tools/signatures/read_file',
-      '@geulbat/generated-tools/tools/missing-tool',
-    ]) {
-      const resolved = resolveToolLibraryProjectionMountedModule({
-        mount: result.mount,
-        specifier,
-      });
-      assert.equal(resolved.ok, false);
-      if (resolved.ok) {
-        assert.fail(`expected ${specifier} to be rejected`);
-      }
-      assert.equal(resolved.reason, 'module_not_mounted');
-      assert.equal(
-        resolved.message,
-        'Tool library projection module is not mounted',
-      );
-      assert.equal(resolved.message.includes(stateRoot), false);
-    }
-  } finally {
-    await rm(stateRoot, { recursive: true, force: true });
-  }
-});
-
-void test('writeToolLibraryProjectionFiles rejects unsafe generated file paths', async () => {
-  const parentPath = await mkdtemp(join(tmpdir(), 'geulbat-tool-library-'));
-  const rootPath = join(parentPath, 'sdk');
-  const outsidePath = join(parentPath, 'escape.ts');
-  try {
-    await mkdir(rootPath);
-
-    const projection = {
-      rootPath,
-      files: [
-        {
-          path: '../escape.ts',
-          role: 'wrapper',
-          content: 'export {};\n',
-        },
-      ],
-    } satisfies Pick<ToolLibraryProjection, 'rootPath' | 'files'>;
-
-    await assert.rejects(
-      () => writeToolLibraryProjectionFiles(projection),
-      /Invalid tool library projection file path: \.\.\/escape\.ts/u,
-    );
-    assert.equal(await pathExists(outsidePath), false);
-  } finally {
-    await rm(parentPath, { recursive: true, force: true });
-  }
-});
-
-function createTestProjectionPort(
-  overrides: Partial<
-    Pick<
-      Parameters<typeof createToolLibraryProjectionPort>[0],
-      'registry' | 'runtimeRootForState' | 'projectionPolicy'
-    >
-  > = {},
-) {
-  return createToolLibraryProjectionPort({
-    registry: createBuiltinToolRegistryStore(),
-    runtimeRootForState(root) {
-      return join(root, '.geulbat', 'tool-library', 'projections');
-    },
-    sdkVersion: BASE_PROJECTION_ARGS.sdkVersion,
-    sourceRegistryVersion: BASE_PROJECTION_ARGS.sourceRegistryVersion,
-    runtimeCompatibilityRange: BASE_PROJECTION_ARGS.runtimeCompatibilityRange,
-    modelFacingCatalogRef: BASE_PROJECTION_ARGS.modelFacingCatalogRef,
-    importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
-    ...overrides,
-  });
-}
 
 function buildTestProjection(
   overrides: Pick<
@@ -2163,15 +1638,6 @@ function createProjectionTestTool(args: {
       return { ok: true, output: '{}' };
     },
   };
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function containsStringValue(value: unknown, needle: string): boolean {

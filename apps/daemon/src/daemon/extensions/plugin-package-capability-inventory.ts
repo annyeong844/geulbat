@@ -172,7 +172,11 @@ async function inventoryPluginSkills(args: {
       );
     } catch (error: unknown) {
       if (error instanceof PluginSkillDocumentError) {
-        throw new PluginPackageAdmissionError('invalid_request', error.message);
+        throw new PluginPackageAdmissionError(
+          'invalid_request',
+          error.message,
+          { cause: error },
+        );
       }
       throw error;
     }

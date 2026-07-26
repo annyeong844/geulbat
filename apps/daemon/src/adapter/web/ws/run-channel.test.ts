@@ -85,6 +85,7 @@ void test('run-channel decodes array-buffer and fragmented websocket messages', 
               type: 'run.auth',
               requestId,
               token: TEST_DEV_TOKEN,
+              computerSessionId: 'computer-session-websocket-test',
             });
 
             if (binaryType === 'arraybuffer') {
@@ -202,13 +203,14 @@ void test('run-channel preserves requestId when working-directory admission thro
   );
 });
 
-void test('run-channel rejects control messages from a socket that does not own the run', async (t) => {
+void test('run-channel rejects control messages without matching authority', async (t) => {
   const cases = [
     {
       label: 'cancel',
       runId: assertValidRunId('run-owned-by-other-socket'),
       threadId: testThreadId(1),
       requestId: 'cancel-req',
+      expectedMessage: /socket does not own run/u,
       buildMessage: (runId: string) => ({
         type: 'run.cancel',
         requestId: 'cancel-req',
@@ -220,6 +222,7 @@ void test('run-channel rejects control messages from a socket that does not own 
       runId: assertValidRunId('run-owned-by-first-socket'),
       threadId: testThreadId(2),
       requestId: 'approve-req',
+      expectedMessage: /computer session does not own approval/u,
       buildMessage: (runId: string, threadId: string) => ({
         type: 'run.approve',
         requestId: 'approve-req',
@@ -257,7 +260,7 @@ void test('run-channel rejects control messages from a socket that does not own 
             );
 
             assert.equal(response.code, 'access_denied');
-            assert.match(response.message, /socket does not own run/);
+            assert.match(response.message, testCase.expectedMessage);
           } finally {
             owner.close();
             other.close();
@@ -559,6 +562,7 @@ async function connectAuthenticatedSocket(
           type: 'run.auth',
           requestId,
           token: TEST_DEV_TOKEN,
+          computerSessionId: 'computer-session-websocket-test',
         }),
       );
     });

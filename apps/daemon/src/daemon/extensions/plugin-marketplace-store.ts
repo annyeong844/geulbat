@@ -30,6 +30,7 @@ import { createMarketplaceCatalogStateOwner } from './plugin-marketplace-state.j
 import {
   acquirePluginMarketplaceGitRepository,
   readGitRevision,
+  type PluginMarketplaceCommandRunner,
 } from './plugin-marketplace-git.js';
 import { readTextFileNoFollow } from './plugin-marketplace-fs.js';
 import {
@@ -88,6 +89,11 @@ export interface PluginMarketplaceStore {
 export function createPluginMarketplaceStore(args: {
   homeStateRoot: string;
   acquireGitRepository?: PluginMarketplaceGitAcquirer;
+  /**
+   * git 자식을 어디서 낳는가 (P7.6 item 3). 데몬 조립은 command-host
+   * 실행기를 넘긴다. 미지정 상태에서 Git이 필요하면 명시적으로 실패한다.
+   */
+  runCommand?: PluginMarketplaceCommandRunner;
 }): PluginMarketplaceStore {
   const extensionsRoot = join(args.homeStateRoot, 'extensions');
   const marketplacesRoot = join(extensionsRoot, 'marketplaces');
@@ -98,7 +104,14 @@ export function createPluginMarketplaceStore(args: {
     persistSources: (sources) => persist(sources),
   });
   const acquireGitSource =
-    args.acquireGitRepository ?? acquirePluginMarketplaceGitRepository;
+    args.acquireGitRepository ??
+    ((acquireArgs) =>
+      acquirePluginMarketplaceGitRepository({
+        ...acquireArgs,
+        ...(args.runCommand === undefined
+          ? {}
+          : { runCommand: args.runCommand }),
+      }));
 
   async function ensureManagedRoots(): Promise<void> {
     await mkdir(sourcesRoot, { recursive: true, mode: 0o700 });
@@ -140,6 +153,7 @@ export function createPluginMarketplaceStore(args: {
     const revision = await readGitRevision(
       repositoryRoot,
       source.marketplaceId,
+      args.runCommand,
     );
     if (revision !== source.resolvedRevision) {
       throw new PluginMarketplaceStoreError(
@@ -210,6 +224,7 @@ export function createPluginMarketplaceStore(args: {
       const resolvedRevision = await readGitRevision(
         stageRepositoryRoot,
         marketplaceId,
+        args.runCommand,
       );
       const now = new Date().toISOString();
       const staged = await inspectMarketplaceRepository({

@@ -10,6 +10,7 @@ import { isRecord } from '../../runtime-json.js';
 import { buildResponseWireInput } from './transport/responses-wire-input.js';
 import {
   streamResponsesOverWebSocket,
+  type ResponsesRequestPreparedHandler,
   type ResponsesWireDiscoverySink,
 } from './transport/responses-websocket.js';
 import type {
@@ -17,6 +18,7 @@ import type {
   FunctionCallArgsDelta,
 } from './transport/responses-parser-shared.js';
 import type {
+  ResponsesWebSocketAdmissionObserver,
   ResponsesWebSocketReusePolicy,
   ResponsesWebSocketSessionStore,
 } from './transport/responses-websocket-cache.js';
@@ -66,6 +68,8 @@ interface GrokOAuthResponsesStreamInput extends GrokOAuthResponsesBodyInput {
   >;
   signal?: AbortSignal;
   discoverySink?: ResponsesWireDiscoverySink;
+  onRequestPrepared?: ResponsesRequestPreparedHandler;
+  onAdmissionState?: ResponsesWebSocketAdmissionObserver;
   conversationRoutingId?: string;
 }
 
@@ -250,6 +254,12 @@ export async function streamGrokOAuthResponses(
     completionEventTypes: ['response.completed'],
     ...(input.discoverySink !== undefined
       ? { discoverySink: input.discoverySink }
+      : {}),
+    ...(input.onRequestPrepared !== undefined
+      ? { onRequestPrepared: input.onRequestPrepared }
+      : {}),
+    ...(input.onAdmissionState !== undefined
+      ? { onAdmissionState: input.onAdmissionState }
       : {}),
     ...(input.signal !== undefined ? { signal: input.signal } : {}),
     ...(options.onAssistantDelta !== undefined

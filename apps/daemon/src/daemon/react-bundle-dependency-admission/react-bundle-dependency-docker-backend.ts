@@ -15,8 +15,6 @@ export type DockerCommandInvocation = DockerClientCommandInvocation;
 
 type DockerCommandRunner = DockerClientCommandRunner;
 
-export { runDockerCommand };
-
 export interface DockerMetadataProbeCommandInvocation extends DockerCommandInvocation {
   writeOutput(relativePath: string, content: string): Promise<void>;
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  classifyContextRequestAdmission,
   evaluateContextCompactionTrigger,
   resolveActiveContextBoundary,
   selectContextCompactionPrefix,
@@ -169,6 +170,10 @@ void test('the trigger uses only the host-supplied request count and threshold',
   assert.deepEqual(evaluateContextCompactionTrigger(90, TEST_BUDGET), {
     kind: 'threshold_reached',
   });
+  assert.deepEqual(evaluateContextCompactionTrigger(Number.NaN, TEST_BUDGET), {
+    kind: 'invalid',
+    reason: 'current_request_tokens_not_safe_integer',
+  });
 
   const nativeBudget: ContextCompactionTriggerBudget = {
     contextWindow: TEST_BUDGET.contextWindow,
@@ -178,6 +183,45 @@ void test('the trigger uses only the host-supplied request count and threshold',
   assert.deepEqual(evaluateContextCompactionTrigger(90, nativeBudget), {
     kind: 'threshold_reached',
   });
+});
+
+void test('request admission uses the configured threshold and context window', () => {
+  const budget: ContextCompactionTriggerBudget = {
+    contextWindow: TEST_BUDGET.contextWindow,
+    reserveTokens: TEST_BUDGET.reserveTokens,
+    thresholdTokens: TEST_BUDGET.thresholdTokens,
+  };
+
+  assert.deepEqual(classifyContextRequestAdmission(89, budget), {
+    kind: 'fitting',
+  });
+  assert.deepEqual(classifyContextRequestAdmission(90, budget), {
+    kind: 'near_policy',
+  });
+  assert.deepEqual(classifyContextRequestAdmission(100, budget), {
+    kind: 'near_policy',
+  });
+  assert.deepEqual(classifyContextRequestAdmission(101, budget), {
+    kind: 'over_window',
+  });
+});
+
+void test('request admission rejects invalid measurements and budgets', () => {
+  assert.deepEqual(classifyContextRequestAdmission(Number.NaN, TEST_BUDGET), {
+    kind: 'invalid',
+    reason: 'current_request_tokens_not_safe_integer',
+  });
+  assert.deepEqual(
+    classifyContextRequestAdmission(10, {
+      contextWindow: 100,
+      reserveTokens: 20,
+      thresholdTokens: 90,
+    }),
+    {
+      kind: 'invalid',
+      reason: 'threshold_and_reserve_exceed_context_window',
+    },
+  );
 });
 
 void test('prefix selection keeps the newest items within the explicit budget', () => {
@@ -214,7 +258,7 @@ void test('an atomic retained unit is never split to make the numbers fit', () =
   );
 });
 
-void test('unsafe host token counts fail closed', () => {
+void test('unsafe item and retained-budget token counts report distinct causes', () => {
   assert.deepEqual(
     selectContextCompactionPrefix(
       [{ tokenCount: Number.NaN, canStartRetainedTail: true }],
@@ -224,6 +268,25 @@ void test('unsafe host token counts fail closed', () => {
       kind: 'invalid',
       reason: 'item_token_count_not_safe_integer',
       itemIndex: 0,
+    },
+  );
+  assert.deepEqual(
+    selectContextCompactionPrefix(
+      [{ tokenCount: 10, canStartRetainedTail: true }],
+      Number.NaN,
+    ),
+    {
+      kind: 'invalid',
+      reason: 'keep_recent_tokens_not_safe_integer',
+    },
+  );
+});
+
+void test('an empty transcript has no summarizable prefix', () => {
+  assert.deepEqual(
+    selectContextCompactionPrefix([], TEST_BUDGET.keepRecentTokens),
+    {
+      kind: 'no_summarizable_prefix',
     },
   );
 });

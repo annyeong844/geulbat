@@ -40,6 +40,22 @@ void test('mapAgentEventToRunEvent maps valid tool_result payloads', () => {
   assert.equal(event.payload.computerFilesMayHaveChanged, false);
 });
 
+void test('mapAgentEventToRunEvent preserves provider admission status', () => {
+  const event = mapAgentEventToRunEvent(RUN_ID, THREAD_ID, 2, {
+    type: 'provider_status',
+    payload: {
+      phase: 'rate_limit_waiting',
+      observedAt: '2026-07-23T11:30:01.000Z',
+    },
+  });
+
+  assert.equal(event.type, 'provider_status');
+  assert.deepEqual(event.payload, {
+    phase: 'rate_limit_waiting',
+    observedAt: '2026-07-23T11:30:01.000Z',
+  });
+});
+
 void test('mapAgentEventToRunEvent throws on invalid internal payloads', () => {
   const invalidEvent = {
     type: 'run_ack',
@@ -108,6 +124,7 @@ void test('mapAgentEventToRunEvent maps exact context usage snapshots', () => {
     type: 'context_usage_updated',
     payload: {
       state: 'measured',
+      quality: 'exact',
       modelId: 'gpt-5.6-sol',
       inputTokens: 122_400,
       contextWindow: 272_000,
@@ -116,6 +133,9 @@ void test('mapAgentEventToRunEvent maps exact context usage snapshots', () => {
   });
 
   assert.equal(event.type, 'context_usage_updated');
+  if (event.payload.quality === 'unknown') {
+    assert.fail('exact context usage was mapped as unknown');
+  }
   assert.equal(event.payload.inputTokens, 122_400);
   assert.equal(event.payload.thresholdTokens, 244_800);
 });
@@ -133,6 +153,7 @@ void test('mapBackgroundSubagentTerminalToRunEvent maps valid payloads', () => {
       terminalState: 'failed' as const,
       ok: true,
       result: 'child done',
+      resultRef: 'subagent-result:delivery-1',
     },
   );
 
@@ -147,6 +168,7 @@ void test('mapBackgroundSubagentTerminalToRunEvent maps valid payloads', () => {
   assert.equal(event.payload.ok, true);
   assert.equal(event.payload.terminalState, 'failed');
   assert.equal(event.payload.result, 'child done');
+  assert.equal(event.payload.resultRef, 'subagent-result:delivery-1');
 });
 
 void test('mapBackgroundSubagentTerminalToRunEvent throws on invalid payloads', () => {

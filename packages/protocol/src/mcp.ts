@@ -11,7 +11,6 @@ export interface McpStdioTransportConfig {
   envKeys: string[];
   connectionTimeoutMs?: number;
   requestTimeoutMs?: number;
-  shutdownGraceMs?: number;
 }
 
 export type McpServerSource =
@@ -49,6 +48,8 @@ export interface McpServerRuntimeStatus {
   activeToolNames: string[];
   error?: string;
   disabledReason?: McpServerDisabledReason;
+  /** 실패한 재입양을 새 서버 시작으로 강등한 이유. 성공 상태에서도 숨기지 않는다. */
+  restartReason?: string;
 }
 
 export interface McpServerView extends McpServerRegistration {
@@ -96,15 +97,13 @@ export function isMcpStdioTransportConfig(
       'envKeys',
       'connectionTimeoutMs',
       'requestTimeoutMs',
-      'shutdownGraceMs',
     ]) &&
     value.kind === 'stdio' &&
     isNonEmptyString(value.command) &&
     isStringArray(value.args) &&
     isStringArray(value.envKeys) &&
     isOptionalPositiveSafeInteger(value.connectionTimeoutMs) &&
-    isOptionalPositiveSafeInteger(value.requestTimeoutMs) &&
-    isOptionalPositiveSafeInteger(value.shutdownGraceMs)
+    isOptionalPositiveSafeInteger(value.requestTimeoutMs)
   );
 }
 
@@ -181,6 +180,7 @@ export function isMcpServerRuntimeStatus(
       'activeToolNames',
       'error',
       'disabledReason',
+      'restartReason',
     ]) ||
     !isMcpServerConnectionState(value.state) ||
     typeof value.advertisedToolCount !== 'number' ||
@@ -193,7 +193,11 @@ export function isMcpServerRuntimeStatus(
     (value.disabledReason !== undefined &&
       ((value.disabledReason !== 'server-disabled' &&
         value.disabledReason !== 'plugin-disabled') ||
-        value.state !== 'disabled'))
+        value.state !== 'disabled')) ||
+    (value.restartReason !== undefined &&
+      (!isString(value.restartReason) ||
+        value.restartReason.length === 0 ||
+        value.state !== 'ready'))
   ) {
     return false;
   }

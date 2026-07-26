@@ -20,6 +20,7 @@ import {
   type ImageGenerationProviderId,
   type ImageGenerationRuntime,
 } from './contract.js';
+import { acquireGenerationProviderAuthOrFailClosed } from './generation-provider-auth.js';
 import { buildImageArtifactCandidate } from './image-artifact-candidate.js';
 import { withImageGenerationRequestDefaults } from './image-generation-request-defaults.js';
 import { generateImageViaCodexResponses } from './providers/codex-image-provider.js';
@@ -150,25 +151,6 @@ async function generateWithAuthRetry(
   }
 }
 
-// 인증 수급 실패(미연결·리프레시 불가)를 이미지 생성 실패 분류로 래핑한다.
-// 사용자가 고른 프로바이더가 사용 불가면 여기서 명시적으로 끝난다 — 다른
-// 프로바이더로 자동 폴백하지 않는다(§4.2).
-async function acquireProviderAuthOrFailClosed<T>(
-  providerId: ImageGenerationProviderId,
-  acquire: () => Promise<T>,
-): Promise<T> {
-  try {
-    return await acquire();
-  } catch (error: unknown) {
-    throw new ImageGenerationError({
-      surface: 'provider_auth',
-      reasonCode: 'provider_not_connected',
-      message: `image provider ${providerId} is not connected or its credential is unavailable`,
-      cause: error,
-    });
-  }
-}
-
 async function generateImageOnce(
   input: GenerateImageArtifactInput,
   deps: ImageGenerationRuntimeDeps,
@@ -178,13 +160,16 @@ async function generateImageOnce(
   const getAuth = deps.getProviderAuthImpl ?? getProviderAuth;
 
   if (providerId === 'grok_oauth') {
-    const auth = await acquireProviderAuthOrFailClosed('grok_oauth', () =>
-      getAuth({
-        providerId: 'grok_oauth',
-        allowRefresh: options.allowRefresh,
-        runtimeStore: deps.providerAuthRuntime,
-      }),
-    );
+    const auth = await acquireGenerationProviderAuthOrFailClosed({
+      mediaKind: 'image',
+      providerId: 'grok_oauth',
+      acquire: () =>
+        getAuth({
+          providerId: 'grok_oauth',
+          allowRefresh: options.allowRefresh,
+          runtimeStore: deps.providerAuthRuntime,
+        }),
+    });
     const generate = deps.generateViaGrokImpl ?? generateImageViaGrok;
     return generate({
       request: input.request,
@@ -194,15 +179,16 @@ async function generateImageOnce(
     });
   }
 
-  const auth = await acquireProviderAuthOrFailClosed(
-    'openai_codex_direct',
-    () =>
+  const auth = await acquireGenerationProviderAuthOrFailClosed({
+    mediaKind: 'image',
+    providerId: 'openai_codex_direct',
+    acquire: () =>
       getAuth({
         providerId: 'openai_codex_direct',
         allowRefresh: options.allowRefresh,
         runtimeStore: deps.providerAuthRuntime,
       }),
-  );
+  });
   const generate = deps.generateViaCodexImpl ?? generateImageViaCodexResponses;
   return generate({
     request: input.request,
@@ -307,6 +293,12 @@ async function commitGeneratedImageCandidate(
     });
   }
 
+  const mediaFilePath = resolveThreadMediaFilePath({
+    workspaceRoot: input.stateRoot,
+    threadId: input.threadId,
+    mediaRef: written.mediaRef,
+  });
+
   return {
     artifactVersion: {
       ...committed.version,
@@ -320,6 +312,10 @@ async function commitGeneratedImageCandidate(
       byteLength: candidate.asset.byteLength,
       digest: candidate.asset.digest,
     },
+    media:
+      mediaFilePath === null
+        ? null
+        : { mediaRef: written.mediaRef, filePath: mediaFilePath },
   };
 }
 

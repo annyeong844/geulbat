@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PTC_PACKAGE_INSTALL_TEST_PRIVATE_PATH } from '../../../../test-support/ptc-package-install.js';
+import { runHostRoutedDockerCommandForTest } from '../../../../test-support/host-routed-docker-command.js';
 import {
   PTC_PACKAGE_INSTALL_TEST_CACHE_TELEMETRY_POLICY_ID,
   createAdmittedNpmLabPolicy,
@@ -281,19 +282,25 @@ void test('runDefaultPackageInstallRunner maps only the package install workdir 
   const markerScript = `process.stderr.write(${JSON.stringify(
     `${PTC_LAB_PACKAGE_INSTALL_WORKDIR_EXISTS_MARKER}\n`,
   )}); process.exit(${PTC_LAB_PACKAGE_INSTALL_WORKDIR_EXISTS_EXIT_CODE});`;
-  const markerResult = await runDefaultPackageInstallRunner({
-    executable: process.execPath,
-    args: ['-e', markerScript],
-    timeoutMs: 1000,
-  });
+  const markerResult = await runDefaultPackageInstallRunner(
+    {
+      executable: process.execPath,
+      args: ['-e', markerScript],
+      timeoutMs: 1000,
+    },
+    runHostRoutedDockerCommandForTest,
+  );
   assert.equal(markerResult.kind, 'workdir_exists');
 
   const plainScript = `process.stderr.write('npm exited 73\\n'); process.exit(${PTC_LAB_PACKAGE_INSTALL_WORKDIR_EXISTS_EXIT_CODE});`;
-  const plainResult = await runDefaultPackageInstallRunner({
-    executable: process.execPath,
-    args: ['-e', plainScript],
-    timeoutMs: 1000,
-  });
+  const plainResult = await runDefaultPackageInstallRunner(
+    {
+      executable: process.execPath,
+      args: ['-e', plainScript],
+      timeoutMs: 1000,
+    },
+    runHostRoutedDockerCommandForTest,
+  );
   assert.equal(plainResult.kind, 'exit');
   assert.equal(plainResult.kind === 'exit' ? plainResult.exitCode : 0, 73);
 });

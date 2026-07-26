@@ -78,7 +78,7 @@ void test('restart recovery automatically replays a declared replay-safe tool on
       prompt: 'unused during recovery',
       runtimeServices: daemonContext,
       approvalContext: {
-        sessionId: 'replacement-session',
+        computerSessionId: 'replacement-session',
         permissionMode: 'basic',
       },
       onEvent() {},
@@ -140,8 +140,8 @@ void test('restart recovery settles a journaled pre-transcript call before the n
     threadId,
     runId,
     round: 0,
-    providerId: daemonContext.providerRequestOptions.providerId,
-    model: daemonContext.providerRequestOptions.model,
+    providerId: daemonContext.provider.requestOptions.providerId,
+    model: daemonContext.provider.requestOptions.model,
     replayScopeId,
     precedingTranscriptEntryId: user.entryId,
     items: [rawFunctionCall],
@@ -167,7 +167,7 @@ void test('restart recovery settles a journaled pre-transcript call before the n
       prompt: 'unused during recovery',
       runtimeServices: daemonContext,
       approvalContext: {
-        sessionId: 'replacement-session',
+        computerSessionId: 'replacement-session',
         permissionMode: 'basic',
       },
       onEvent() {},
@@ -194,7 +194,7 @@ void test('restart recovery settles a journaled pre-transcript call before the n
     prompt: recovered.modelPrompt,
     runtimeServices: daemonContext,
     approvalContext: {
-      sessionId: 'replacement-session',
+      computerSessionId: 'replacement-session',
       permissionMode: 'basic',
     },
     historyPort: {
@@ -343,7 +343,7 @@ void test('restart recovery re-emits a durable pending approval before executing
       prompt: 'unused during recovery',
       runtimeServices: afterRestart,
       approvalContext: {
-        sessionId: 'replacement-session',
+        computerSessionId: 'replacement-session',
         permissionMode: 'basic',
       },
       onEvent(event) {
@@ -461,7 +461,7 @@ void test('restart recovery honors a durable approval decision without re-prompt
       prompt: 'unused during recovery',
       runtimeServices: afterRestart,
       approvalContext: {
-        sessionId: 'replacement-session',
+        computerSessionId: 'replacement-session',
         permissionMode: 'basic',
       },
       onEvent(event) {
@@ -530,7 +530,7 @@ void test('restart recovery never blindly replays a tool without a matching stra
       prompt: 'unused during recovery',
       runtimeServices: daemonContext,
       approvalContext: {
-        sessionId: 'replacement-session',
+        computerSessionId: 'replacement-session',
         permissionMode: 'basic',
       },
       onEvent() {},
@@ -553,7 +553,7 @@ void test('restart recovery reaps prior PTC runtime residue before settling an i
   const runId = assertRunId(randomUUID());
   const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
   const reapedStateRoots: string[] = [];
-  daemonContext.ptcExecuteCode.reapRestartResidue = async (args) => {
+  daemonContext.ptc.executeCode.reapRestartResidue = async (args) => {
     reapedStateRoots.push(args.stateRoot);
     return { ok: true };
   };
@@ -585,7 +585,7 @@ void test('restart recovery reaps prior PTC runtime residue before settling an i
       prompt: 'unused during recovery',
       runtimeServices: daemonContext,
       approvalContext: {
-        sessionId: 'replacement-session',
+        computerSessionId: 'replacement-session',
         permissionMode: 'basic',
       },
       onEvent() {},

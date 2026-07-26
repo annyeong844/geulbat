@@ -18,34 +18,19 @@ import {
 
 import { readToolOutputSnapshot } from '../files/tool-output-store.js';
 import { executeTool } from './executor.js';
+import {
+  DAEMON_TOOL_SDK_PUBLIC_BINDINGS,
+  readDaemonToolSdkPublicBindingForInternalTool,
+  type DaemonToolSdkPublicBinding,
+  type DaemonToolSdkPublicInlineResult,
+} from './external-tool-sdk-public-tools.js';
 import type { ToolRegistryStore } from './tool-registry-model.js';
 import type { ExecuteResult, ToolExecutionContext } from './types.js';
-
-type PublicToolInlineResult = ToolSdkResult<{
-  kind: 'inline';
-  value: ToolSdkJsonValue;
-}>;
 
 type PublicToolResult = ToolSdkResult<
   | { kind: 'inline'; value: ToolSdkJsonValue }
   | { kind: 'offloaded'; outputRef: string }
 >;
-
-interface PublicToolBinding {
-  internalTool: string;
-  normalizeResult(output: string): PublicToolInlineResult;
-}
-
-const PUBLIC_TOOL_BINDINGS = {
-  'files.read': {
-    internalTool: 'read_file',
-    normalizeResult: normalizeReadFileResult,
-  },
-  'files.list': {
-    internalTool: 'list_files',
-    normalizeResult: normalizeListFilesResult,
-  },
-} satisfies Record<ToolSdkPublicTool, PublicToolBinding>;
 
 const PUBLIC_TOOL_NAMES = new Set<string>(TOOL_SDK_PUBLIC_TOOLS);
 
@@ -189,7 +174,7 @@ export function createDaemonToolSdkTransport<Principal>(
           'The requested public tool is not currently admitted',
         );
       }
-      const binding = PUBLIC_TOOL_BINDINGS[publicTool];
+      const binding = DAEMON_TOOL_SDK_PUBLIC_BINDINGS[publicTool];
 
       let admission: DaemonToolSdkInvocationAdmission;
       try {
@@ -280,7 +265,7 @@ async function recoverDaemonToolSdkOutput<Principal>(args: {
   context: ToolSdkTransportContext;
   options: CreateDaemonToolSdkTransportOptions<Principal>;
   request: ToolSdkOutputRecoveryRequest;
-}): Promise<PublicToolInlineResult> {
+}): Promise<DaemonToolSdkPublicInlineResult> {
   const getProjectionIdentity = args.options.getProjectionIdentity.bind(
     args.options,
   );
@@ -394,7 +379,7 @@ async function recoverDaemonToolSdkOutput<Principal>(args: {
     return compatibilityFailure;
   }
 
-  const publicBinding = readPublicBindingForInternalTool(
+  const publicBinding = readDaemonToolSdkPublicBindingForInternalTool(
     snapshotResult.value.toolName,
   );
   if (
@@ -413,14 +398,17 @@ async function recoverDaemonToolSdkOutput<Principal>(args: {
 }
 
 async function projectInvocationResult(args: {
-  binding: PublicToolBinding;
+  binding: DaemonToolSdkPublicBinding;
   context: ToolExecutionContext;
   input: Readonly<Record<string, ToolSdkJsonValue>>;
   internalTool: string;
   offloadResult: DaemonToolSdkOutputOffloader | undefined;
   result: Extract<ExecuteResult, { ok: true }>;
 }): Promise<PublicToolResult> {
-  const normalized = args.binding.normalizeResult(args.result.output);
+  const normalized = args.binding.normalizeResult(
+    args.result.output,
+    args.input,
+  );
   if (!normalized.ok || args.offloadResult === undefined) {
     return normalized;
   }
@@ -467,19 +455,6 @@ async function projectInvocationResult(args: {
     ok: true,
     value: { kind: 'offloaded', outputRef },
   };
-}
-
-function readPublicBindingForInternalTool(toolName: string): {
-  publicTool: ToolSdkPublicTool;
-  binding: PublicToolBinding;
-} | null {
-  for (const publicTool of TOOL_SDK_PUBLIC_TOOLS) {
-    const binding = PUBLIC_TOOL_BINDINGS[publicTool];
-    if (binding.internalTool === toolName) {
-      return { publicTool, binding };
-    }
-  }
-  return null;
 }
 
 async function authenticate<Principal>(
@@ -639,7 +614,7 @@ function isPublicToolCurrentlyAdmitted(
   registry: Pick<ToolRegistryStore, 'getTool' | 'getToolMeta'>,
   publicTool: ToolSdkPublicTool,
 ): boolean {
-  const binding = PUBLIC_TOOL_BINDINGS[publicTool];
+  const binding = DAEMON_TOOL_SDK_PUBLIC_BINDINGS[publicTool];
   const tool = registry.getTool(binding.internalTool);
   const meta = registry.getToolMeta(binding.internalTool);
   return (
@@ -660,102 +635,6 @@ function applyInvocationSignal(
   return signal === undefined
     ? context
     : { ...context, signal, runSignal: signal };
-}
-
-function normalizeReadFileResult(
-  output: string,
-): ToolSdkResult<{ kind: 'inline'; value: ToolSdkJsonValue }> {
-  const parsed = readToolResultObject(output);
-  if (!parsed.ok) {
-    return parsed;
-  }
-  const value = parsed.value;
-  const path = value['path'];
-  const content = value['content'];
-  const versionToken = value['versionToken'];
-  const totalLines = value['totalLines'];
-  const pageLimit = value['pageLimit'];
-  const startLine = value['startLine'];
-  const endLine = value['endLine'];
-  const hasMore = value['hasMore'];
-  const nextOffset = value['nextOffset'];
-  if (
-    typeof path !== 'string' ||
-    typeof content !== 'string' ||
-    typeof versionToken !== 'string' ||
-    !isNonNegativeSafeInteger(totalLines) ||
-    !isPositiveSafeInteger(pageLimit) ||
-    !isPositiveSafeInteger(startLine) ||
-    !isNonNegativeSafeInteger(endLine) ||
-    typeof hasMore !== 'boolean' ||
-    (nextOffset !== null && !isNonNegativeSafeInteger(nextOffset))
-  ) {
-    return invalidToolResult();
-  }
-  return {
-    ok: true,
-    value: {
-      kind: 'inline',
-      value: {
-        path,
-        content,
-        versionToken,
-        totalLines,
-        pageLimit,
-        startLine,
-        endLine,
-        hasMore,
-        nextOffset,
-      },
-    },
-  };
-}
-
-function normalizeListFilesResult(output: string): PublicToolInlineResult {
-  const parsed = readToolResultObject(output);
-  if (!parsed.ok) {
-    return parsed;
-  }
-  const value = parsed.value;
-  const path = value['path'];
-  const total = value['total'];
-  const rawEntries = value['entries'];
-  if (
-    typeof path !== 'string' ||
-    !isNonNegativeSafeInteger(total) ||
-    !Array.isArray(rawEntries) ||
-    rawEntries.length !== total
-  ) {
-    return invalidToolResult();
-  }
-  const entries: Array<{
-    name: string;
-    path: string;
-    type: 'file' | 'directory';
-  }> = [];
-  for (const rawEntry of rawEntries) {
-    if (!isRecord(rawEntry)) {
-      return invalidToolResult();
-    }
-    const name = rawEntry['name'];
-    const entryPath = rawEntry['path'];
-    const type = rawEntry['type'];
-    if (
-      typeof name !== 'string' ||
-      typeof entryPath !== 'string' ||
-      (type !== 'file' && type !== 'directory')
-    ) {
-      return invalidToolResult();
-    }
-    entries.push({ name, path: entryPath, type });
-  }
-  return {
-    ok: true,
-    value: {
-      kind: 'inline',
-      value: { path, total, entries },
-    },
-  };
 }
 
 function readToolResultObject(
@@ -901,7 +780,7 @@ function cloneJsonValue(
   if (Object.getOwnPropertySymbols(value).length > 0) {
     return { ok: false };
   }
-  const output: Record<string, ToolSdkJsonValue> = {};
+  const output = Object.create(null) as Record<string, ToolSdkJsonValue>;
   for (const [key, entry] of Object.entries(value)) {
     const cloned = cloneJsonValue(entry, ancestors);
     if (!cloned.ok) {
@@ -921,14 +800,6 @@ function isJsonObjectValue(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && typeof value === 'number' && value >= 0;
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && typeof value === 'number' && value > 0;
 }
 
 function isAborted(signal: AbortSignal | undefined): boolean {

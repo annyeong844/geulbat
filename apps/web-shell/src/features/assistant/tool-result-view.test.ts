@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseToolResultView } from './tool-result-view.js';
+import {
+  parseToolResultView,
+  readPtcToolActivityStatus,
+} from './tool-result-view.js';
 
 function toolResultContent(fields: Record<string, unknown>): string {
   return JSON.stringify({
@@ -56,6 +59,75 @@ void test('parseToolResultView surfaces the error message for failures', () => {
   assert.ok(view);
   assert.equal(view.ok, false);
   assert.equal(view.summary, 'computer session root is unavailable');
+});
+
+void test('PTC tool results distinguish resource admission from execution state', () => {
+  const queuedOutput = JSON.stringify({
+    kind: 'ptc_execute_code_cell_queued',
+    status: 'queued',
+    cellId: 'ptc_cell_queued',
+  });
+  const queuedView = parseToolResultView(
+    toolResultContent({ tool: 'exec', ok: true, displayText: queuedOutput }),
+  );
+  assert.ok(queuedView);
+  assert.equal(queuedView.ptcStatus, 'queued');
+  assert.equal(queuedView.summary, 'PTC 리소스 대기 중');
+
+  const resourceFailure = JSON.stringify({
+    kind: 'ptc_execute_code_error',
+    reasonCode: 'resource_budget_insufficient',
+    message: 'resource budget is insufficient',
+  });
+  const rejectedView = parseToolResultView(
+    toolResultContent({
+      tool: 'exec',
+      ok: false,
+      displayText: 'resource budget is insufficient',
+      output: JSON.stringify({
+        ok: false,
+        errorCode: 'execution_failed',
+        error: 'resource budget is insufficient',
+        details: JSON.parse(resourceFailure),
+      }),
+      errorCode: 'execution_failed',
+      error: 'resource budget is insufficient',
+    }),
+  );
+  assert.ok(rejectedView);
+  assert.equal(rejectedView.ptcStatus, 'resource_budget_insufficient');
+  assert.equal(rejectedView.summary, 'PTC 리소스 부족');
+
+  assert.equal(
+    readPtcToolActivityStatus({
+      tool: 'exec',
+      ok: false,
+      text: resourceFailure,
+    }),
+    'resource_budget_insufficient',
+  );
+  assert.equal(
+    readPtcToolActivityStatus({
+      tool: 'read_file',
+      ok: false,
+      text: resourceFailure,
+    }),
+    undefined,
+  );
+
+  const completedWait = parseToolResultView(
+    toolResultContent({
+      tool: 'wait',
+      ok: true,
+      displayText: JSON.stringify({
+        kind: 'ptc_execute_code_cell_wait',
+        status: 'completed',
+        cellId: 'ptc_cell_queued',
+      }),
+    }),
+  );
+  assert.equal(completedWait?.ptcStatus, 'completed');
+  assert.equal(completedWait?.summary, 'PTC 실행 완료');
 });
 
 void test('parseToolResultView truncates long bodies and falls back on malformed content', () => {

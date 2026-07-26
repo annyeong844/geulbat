@@ -6,14 +6,13 @@ import {
   useRef,
   useState,
   type DragEvent,
-  type KeyboardEvent,
   type MouseEvent,
   type RefObject,
 } from 'react';
 import type { FileTreeNode } from '@geulbat/protocol/files';
 
 import type { ManageFileOperation } from '../../lib/api/files.js';
-import { baseNameOf, parentDirOf } from '../../lib/path-name.js';
+import { baseNameOf, buildPathBreadcrumbs } from '../../lib/path-name.js';
 import {
   flattenVisibleTree,
   isCanvasEligibleFileName,
@@ -23,6 +22,10 @@ import {
   TreeContextMenu,
   type TreeContextMenuState,
 } from './TreeContextMenu.js';
+import { useTreeDragDrop } from './use-tree-drag-drop.js';
+import { useTreeMutations } from './use-tree-mutations.js';
+import { useTreeSelection } from './use-tree-selection.js';
+import { useTreeVirtualScroll } from './use-tree-virtual-scroll.js';
 
 interface Props {
   tree: FileTreeNode[];
@@ -32,6 +35,8 @@ interface Props {
   browsePath?: string;
   browseStartPath?: string;
   browseShortcuts?: Array<{ label: string; path: string }>;
+  /** 사용자가 직접 고정한 폴더 — 자동 발견 경로보다 먼저 보인다. */
+  favoriteDirectories?: ReadonlyArray<{ path: string }>;
   onNavigateUp?: () => void;
   onNavigateInto?: (path: string) => void;
   onLoad: () => Promise<void> | void;
@@ -46,10 +51,9 @@ interface Props {
   onInsertIntoManuscript?: (path: string) => Promise<void> | void;
 }
 
-type CreateKind = 'file' | 'folder';
+type QuickAccessIconKind = 'home' | 'computer' | 'drive' | 'folder';
 
-const TREE_ROW_HEIGHT = 26;
-const TREE_DRAG_MIME = 'application/x-geulbat-tree-path';
+const TREE_ROW_HEIGHT = 32;
 
 /**
  * 좌측 탐색기 — VSCode/윈도우 탐색기 패턴의 user file ops shell input path
@@ -64,6 +68,7 @@ export function ComputerTree({
   browsePath = '',
   browseStartPath = '',
   browseShortcuts = [],
+  favoriteDirectories = [],
   onNavigateUp,
   onNavigateInto,
   onLoad,
@@ -74,38 +79,15 @@ export function ComputerTree({
   onInsertIntoManuscript,
 }: Props) {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
-  const [focusedPath, setFocusedPath] = useState<string | null>(null);
-  const [multiSelectedPaths, setMultiSelectedPaths] = useState<Set<string>>(
-    new Set(),
-  );
   const [contextMenu, setContextMenu] = useState<TreeContextMenuState | null>(
     null,
   );
   const [shellToast, setShellToast] = useState<string | null>(null);
-  const [creating, setCreating] = useState<{
-    directory: string;
-    kind: CreateKind;
-  } | null>(null);
-  const [createName, setCreateName] = useState('');
-  const [renamingPath, setRenamingPath] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState('');
-  const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(
-    null,
-  );
-  const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const editInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     void onLoad();
   }, [onLoad]);
-
-  useEffect(() => {
-    if (creating !== null || renamingPath !== null) {
-      editInputRef.current?.focus();
-      editInputRef.current?.select();
-    }
-  }, [creating, renamingPath]);
 
   useEffect(() => {
     return () => {
@@ -115,56 +97,13 @@ export function ComputerTree({
     };
   }, []);
 
-  // 가상 스크롤 — 보이는 행만 DOM에 그린다 (대형 폴더 네이티브급)
-  const treeScrollRef = useRef<HTMLDivElement | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(600);
-  const scrollFrameRef = useRef<number | null>(null);
-  const handleTreeScroll = useCallback(() => {
-    if (scrollFrameRef.current !== null) {
-      return;
-    }
-    scrollFrameRef.current = requestAnimationFrame(() => {
-      scrollFrameRef.current = null;
-      setScrollTop(treeScrollRef.current?.scrollTop ?? 0);
-    });
-  }, []);
-  useEffect(() => {
-    const el = treeScrollRef.current;
-    if (!el) {
-      return;
-    }
-    const observer = new ResizeObserver(() => {
-      setViewportHeight(el.clientHeight);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-  useEffect(() => {
-    return () => {
-      if (scrollFrameRef.current !== null) {
-        cancelAnimationFrame(scrollFrameRef.current);
-      }
-    };
-  }, []);
-
   const rows = useMemo(
     () => flattenVisibleTree(tree, expandedPaths),
     [tree, expandedPaths],
   );
 
-  const visibleWindow = useMemo(() => {
-    const overscan = 12;
-    const start = Math.max(
-      0,
-      Math.floor(scrollTop / TREE_ROW_HEIGHT) - overscan,
-    );
-    const end = Math.min(
-      rows.length,
-      Math.ceil((scrollTop + viewportHeight) / TREE_ROW_HEIGHT) + overscan,
-    );
-    return { start, end, rows: rows.slice(start, end) };
-  }, [rows, scrollTop, viewportHeight]);
+  const { treeScrollRef, visibleWindow, handleTreeScroll } =
+    useTreeVirtualScroll(rows, TREE_ROW_HEIGHT);
 
   const showShellToast = useCallback((message: string) => {
     setShellToast(message);
@@ -218,200 +157,63 @@ export function ComputerTree({
     [onSelect, toggleFolder],
   );
 
-  const startCreate = useCallback((directory: string, kind: CreateKind) => {
-    setCreating({ directory, kind });
-    setCreateName('');
-    setContextMenu(null);
-    if (directory !== '') {
-      setExpandedPaths((prev) => new Set(prev).add(directory));
-    }
+  const expandDirectory = useCallback((directory: string) => {
+    setExpandedPaths((prev) => new Set(prev).add(directory));
   }, []);
-
-  const commitCreate = useCallback(async () => {
-    const pending = creating;
-    const name = createName.trim();
-    setCreating(null);
-    if (!pending || !name) {
-      return;
-    }
-    const path =
-      pending.directory === '' ? name : `${pending.directory}/${name}`;
-    const created =
-      pending.kind === 'file'
-        ? await onCreateFile(path)
-        : await onManageEntry('mkdir', path);
-    if (created) {
-      showShellToast(
-        pending.kind === 'file'
-          ? `${name} 파일을 만들었습니다.`
-          : `${name} 폴더를 만들었습니다.`,
-      );
-    }
-  }, [createName, creating, onCreateFile, onManageEntry, showShellToast]);
-
-  const startRename = useCallback((path: string) => {
-    setRenamingPath(path);
-    setRenameValue(baseNameOf(path));
-    setContextMenu(null);
-  }, []);
-
-  const commitRename = useCallback(async () => {
-    const path = renamingPath;
-    const nextName = renameValue.trim();
-    setRenamingPath(null);
-    if (!path || !nextName || nextName === baseNameOf(path)) {
-      return;
-    }
-    const parent = parentDirOf(path);
-    const destination = parent === '' ? nextName : `${parent}/${nextName}`;
-    const renamed = await onManageEntry('rename', path, destination);
-    if (renamed) {
-      showShellToast(`${nextName}(으)로 이름을 바꿨습니다.`);
-    }
-  }, [onManageEntry, renameValue, renamingPath, showShellToast]);
-
-  const requestDelete = useCallback((path: string) => {
-    setConfirmDeletePath(path);
-    setContextMenu(null);
-  }, []);
-
-  const commitDelete = useCallback(async () => {
-    const path = confirmDeletePath;
-    setConfirmDeletePath(null);
-    if (!path) {
-      return;
-    }
-    const deleted = await onManageEntry('delete', path);
-    if (deleted) {
-      showShellToast(`${baseNameOf(path)}을(를) 삭제했습니다.`);
-    }
-  }, [confirmDeletePath, onManageEntry, showShellToast]);
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const {
+    creating,
+    createName,
+    setCreateName,
+    renamingPath,
+    renameValue,
+    setRenameValue,
+    confirmDeletePath,
+    setConfirmDeletePath,
+    editInputRef,
+    startCreate,
+    commitCreate,
+    cancelCreate,
+    startRename,
+    commitRename,
+    cancelRename,
+    requestDelete,
+    commitDelete,
+  } = useTreeMutations({
+    onCreateFile,
+    onManageEntry,
+    showToast: showShellToast,
+    closeContextMenu,
+    expandDirectory,
+  });
 
   const handleInsertIntoManuscript = useCallback(
     (path: string) => {
-      setContextMenu(null);
+      closeContextMenu();
       if (onInsertIntoManuscript) {
         void onInsertIntoManuscript(path);
       } else {
         showShellToast('열린 문서가 있어야 본문에 삽입할 수 있습니다.');
       }
     },
-    [onInsertIntoManuscript, showShellToast],
+    [closeContextMenu, onInsertIntoManuscript, showShellToast],
   );
 
-  const handleRowClick = useCallback(
-    (row: FlatTreeRow, event: MouseEvent) => {
-      setFocusedPath(row.node.path);
-      // multi-select — selection visual + navigation까지만 (§3.1.2 / §10.16)
-      if (event.metaKey || event.ctrlKey) {
-        setMultiSelectedPaths((prev) => {
-          const next = new Set(prev);
-          if (next.has(row.node.path)) {
-            next.delete(row.node.path);
-          } else {
-            next.add(row.node.path);
-          }
-          return next;
-        });
-        return;
-      }
-      if (event.shiftKey && focusedPath !== null) {
-        const anchorIndex = rows.findIndex((r) => r.node.path === focusedPath);
-        const targetIndex = rows.findIndex(
-          (r) => r.node.path === row.node.path,
-        );
-        if (anchorIndex >= 0 && targetIndex >= 0) {
-          const [from, to] =
-            anchorIndex <= targetIndex
-              ? [anchorIndex, targetIndex]
-              : [targetIndex, anchorIndex];
-          setMultiSelectedPaths(
-            new Set(rows.slice(from, to + 1).map((r) => r.node.path)),
-          );
-          return;
-        }
-      }
-      setMultiSelectedPaths(new Set());
-      activateRow(row);
-    },
-    [activateRow, focusedPath, rows],
-  );
-
-  const handleTreeKeyDown = useCallback(
-    (event: KeyboardEvent) => {
-      if (creating !== null || renamingPath !== null) {
-        return;
-      }
-      const focusedIndex = rows.findIndex((r) => r.node.path === focusedPath);
-      const focusedRow = focusedIndex >= 0 ? rows[focusedIndex] : undefined;
-
-      switch (event.key) {
-        case 'ArrowDown': {
-          event.preventDefault();
-          const next = rows[Math.min(focusedIndex + 1, rows.length - 1)];
-          if (next) {
-            setFocusedPath(next.node.path);
-          }
-          break;
-        }
-        case 'ArrowUp': {
-          event.preventDefault();
-          const next = rows[Math.max(focusedIndex - 1, 0)];
-          if (next) {
-            setFocusedPath(next.node.path);
-          }
-          break;
-        }
-        case 'ArrowRight': {
-          event.preventDefault();
-          if (focusedRow?.node.type === 'directory' && !focusedRow.isExpanded) {
-            toggleFolder(focusedRow.node.path);
-          }
-          break;
-        }
-        case 'ArrowLeft': {
-          event.preventDefault();
-          if (focusedRow?.node.type === 'directory' && focusedRow.isExpanded) {
-            toggleFolder(focusedRow.node.path);
-          }
-          break;
-        }
-        case 'Enter': {
-          event.preventDefault();
-          if (focusedRow) {
-            activateRow(focusedRow);
-          }
-          break;
-        }
-        case 'F2': {
-          event.preventDefault();
-          if (focusedRow && focusedRow.node.type !== 'truncated') {
-            startRename(focusedRow.node.path);
-          }
-          break;
-        }
-        case 'Delete': {
-          event.preventDefault();
-          if (focusedRow && focusedRow.node.type !== 'truncated') {
-            requestDelete(focusedRow.node.path);
-          }
-          break;
-        }
-        default:
-          break;
-      }
-    },
-    [
-      activateRow,
-      creating,
-      focusedPath,
-      renamingPath,
-      requestDelete,
-      rows,
-      startRename,
-      toggleFolder,
-    ],
-  );
+  const isEditing = creating !== null || renamingPath !== null;
+  const {
+    focusedPath,
+    setFocusedPath,
+    multiSelectedPaths,
+    handleRowClick,
+    handleTreeKeyDown,
+  } = useTreeSelection({
+    rows,
+    isEditing,
+    activateRow,
+    toggleFolder,
+    startRename,
+    requestDelete,
+  });
 
   const handleContextMenu = useCallback(
     (row: FlatTreeRow, event: MouseEvent) => {
@@ -422,10 +224,8 @@ export function ComputerTree({
       setFocusedPath(row.node.path);
       setContextMenu({ x: event.clientX, y: event.clientY, row });
     },
-    [],
+    [setFocusedPath],
   );
-
-  const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -440,50 +240,17 @@ export function ComputerTree({
     };
   }, [closeContextMenu, contextMenu]);
 
-  // 트리 안 drag-and-drop 이동 (§3.1.2)
-  const handleDragStart = useCallback((row: FlatTreeRow, event: DragEvent) => {
-    event.dataTransfer.setData(TREE_DRAG_MIME, row.node.path);
-    event.dataTransfer.effectAllowed = 'move';
-  }, []);
-
-  const handleDragOver = useCallback((row: FlatTreeRow, event: DragEvent) => {
-    if (
-      row.node.type !== 'directory' ||
-      !event.dataTransfer.types.includes(TREE_DRAG_MIME)
-    ) {
-      return;
-    }
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    setDropTargetPath(row.node.path);
-  }, []);
-
-  const handleDrop = useCallback(
-    (row: FlatTreeRow, event: DragEvent) => {
-      event.preventDefault();
-      setDropTargetPath(null);
-      const source = event.dataTransfer.getData(TREE_DRAG_MIME);
-      if (!source || row.node.type !== 'directory') {
-        return;
-      }
-      const destinationDir = row.node.path;
-      if (
-        source === destinationDir ||
-        destinationDir.startsWith(`${source}/`) ||
-        parentDirOf(source) === destinationDir
-      ) {
-        return;
-      }
-      const destination = `${destinationDir}/${baseNameOf(source)}`;
-      void onManageEntry('move', source, destination).then((moved) => {
-        if (moved) {
-          setExpandedPaths((prev) => new Set(prev).add(destinationDir));
-          showShellToast(`${baseNameOf(source)}을(를) 옮겼습니다.`);
-        }
-      });
-    },
-    [onManageEntry, showShellToast],
-  );
+  const {
+    dropTargetPath,
+    handleDragStart,
+    handleDragOver,
+    handleDrop,
+    clearDropTarget,
+  } = useTreeDragDrop({
+    onManageEntry,
+    showToast: showShellToast,
+    expandDirectory,
+  });
 
   return (
     <section className="computer-tree">
@@ -540,22 +307,47 @@ export function ComputerTree({
         </span>
       </div>
       {browseEnabled ? (
-        <nav className="quick-access" aria-label="바로가기">
-          {buildQuickAccessLinks(browseStartPath, browseShortcuts).map(
-            (link) => (
+        <nav className="rail-browse-breadcrumbs" aria-label="현재 폴더 경로">
+          {buildPathBreadcrumbs(browsePath).map((breadcrumb, index) => (
+            <span key={breadcrumb.path || '(root)'}>
+              {index > 0 ? <span aria-hidden="true">/</span> : null}
               <button
-                key={link.path || '(root)'}
                 type="button"
-                className={`quick-access-item${
-                  browsePath === link.path ? ' active' : ''
-                }`}
-                onClick={() => onNavigateInto?.(link.path)}
+                aria-label={`경로로 이동: ${breadcrumb.label}`}
+                disabled={breadcrumb.path === browsePath}
+                onClick={() => onNavigateInto?.(breadcrumb.path)}
               >
-                <span className="quick-access-icon">{link.icon}</span>
-                {link.label}
+                {breadcrumb.label}
               </button>
-            ),
-          )}
+            </span>
+          ))}
+        </nav>
+      ) : null}
+      {browseEnabled ? (
+        <nav className="quick-access" aria-label="빠른 위치">
+          <span className="quick-access-heading" aria-hidden="true">
+            빠른 위치
+          </span>
+          {buildQuickAccessLinks(
+            browseStartPath,
+            browseShortcuts,
+            favoriteDirectories,
+          ).map((link) => (
+            <button
+              key={link.path || '(root)'}
+              type="button"
+              className={`quick-access-item${
+                browsePath === link.path ? ' active' : ''
+              }`}
+              onClick={() => onNavigateInto?.(link.path)}
+            >
+              <span
+                className={`quick-access-icon ${link.icon}`}
+                aria-hidden="true"
+              />
+              {link.label}
+            </button>
+          ))}
         </nav>
       ) : null}
       {uiError ? (
@@ -592,8 +384,13 @@ export function ComputerTree({
           }
           onChange={setCreateName}
           onCommit={() => void commitCreate()}
-          onCancel={() => setCreating(null)}
+          onCancel={cancelCreate}
         />
+      ) : null}
+      {browseEnabled ? (
+        <div className="current-directory-heading" aria-hidden="true">
+          현재 폴더
+        </div>
       ) : null}
       {rows.length === 0 && creating === null && !browseEnabled ? (
         <p className="tree-empty">아직 파일이 없습니다</p>
@@ -602,7 +399,7 @@ export function ComputerTree({
           ref={treeScrollRef}
           className="tree"
           role="tree"
-          aria-label="파일 트리"
+          aria-label={browseEnabled ? '현재 폴더 내용' : '파일 트리'}
           tabIndex={0}
           onKeyDown={handleTreeKeyDown}
           onScroll={handleTreeScroll}
@@ -618,7 +415,7 @@ export function ComputerTree({
                   placeholder="새 이름"
                   onChange={setRenameValue}
                   onCommit={() => void commitRename()}
-                  onCancel={() => setRenamingPath(null)}
+                  onCancel={cancelRename}
                 />
               ) : (
                 <TreeRow
@@ -633,7 +430,7 @@ export function ComputerTree({
                   onContextMenu={handleContextMenu}
                   onDragStart={handleDragStart}
                   onDragOver={handleDragOver}
-                  onDragLeave={() => setDropTargetPath(null)}
+                  onDragLeave={clearDropTarget}
                   onDrop={handleDrop}
                 />
               )}
@@ -647,7 +444,7 @@ export function ComputerTree({
                   }
                   onChange={setCreateName}
                   onCommit={() => void commitCreate()}
-                  onCancel={() => setCreating(null)}
+                  onCancel={cancelCreate}
                 />
               ) : null}
             </div>
@@ -755,12 +552,15 @@ const TreeRow = memo(function TreeRow(props: {
       ) : (
         <span className="tree-disclosure" />
       )}
-      <span className="tree-icon">
-        {isFolder ? '▣' : isTruncated ? '…' : '≡'}
-      </span>
+      <span
+        className={`tree-icon ${
+          isFolder ? 'folder' : isTruncated ? 'truncated' : 'file'
+        }`}
+        aria-hidden="true"
+      />
       <span
         className="tree-node-label"
-        title={isTruncated ? node.message : undefined}
+        title={isTruncated ? node.message : node.name}
       >
         {node.name}
       </span>
@@ -782,10 +582,10 @@ function TreeEditInput(props: {
   return (
     <div className="tree-node" style={{ paddingLeft: 16 + depth * 18 }}>
       <span className="tree-disclosure" />
-      <span className="tree-icon">≡</span>
+      <span className="tree-icon file" aria-hidden="true" />
       <input
         ref={inputRef}
-        className="project-registry-input"
+        className="tree-entry-input"
         name="computer-tree-entry-name"
         value={value}
         placeholder={placeholder}
@@ -806,34 +606,59 @@ function TreeEditInput(props: {
   );
 }
 
-// 탐색기 사이드바 바로가기 — daemon이 실제 디스크에서 존재를 확인해
-// 내려준 목록(browseShortcuts)만 표시한다. 홈과 루트는 셸이 앞뒤로 더한다.
-const SHORTCUT_ICONS: Record<string, string> = {
-  홈: '🏠',
-  '바탕 화면': '🖥',
-  다운로드: '⬇',
-  문서: '📄',
-  사진: '🖼',
-  음악: '♪',
-  동영상: '🎬',
-  컴퓨터: '💻',
-};
-
 function buildQuickAccessLinks(
   browseStartPath: string,
   browseShortcuts: Array<{ label: string; path: string }>,
-): Array<{ label: string; path: string; icon: string }> {
-  const links: Array<{ label: string; path: string; icon: string }> = [];
+  favoriteDirectories: ReadonlyArray<{ path: string }> = [],
+): Array<{ label: string; path: string; icon: QuickAccessIconKind }> {
+  const links: Array<{
+    label: string;
+    path: string;
+    icon: QuickAccessIconKind;
+  }> = [];
+  const seenPaths = new Set<string>();
+  const append = (link: {
+    label: string;
+    path: string;
+    icon: QuickAccessIconKind;
+  }) => {
+    if (!seenPaths.has(link.path)) {
+      seenPaths.add(link.path);
+      links.push(link);
+    }
+  };
   if (browseStartPath) {
-    links.push({ label: '홈', path: browseStartPath, icon: '🏠' });
+    append({ label: '홈', path: browseStartPath, icon: 'home' });
   }
-  for (const shortcut of browseShortcuts) {
-    links.push({
-      label: shortcut.label,
-      path: shortcut.path,
-      icon: SHORTCUT_ICONS[shortcut.label] ?? '📁',
+  // 사용자가 직접 고정한 것이 자동 발견 경로보다 먼저 온다.
+  for (const favorite of favoriteDirectories) {
+    append({
+      label: quickAccessLeafLabel(favorite.path),
+      path: favorite.path,
+      icon: 'folder',
     });
   }
-  links.push({ label: '컴퓨터', path: '', icon: '💻' });
+  for (const shortcut of browseShortcuts) {
+    append({
+      label: shortcut.label,
+      path: shortcut.path,
+      icon:
+        shortcut.path === ''
+          ? 'computer'
+          : /\([A-Z]:\)$/u.test(shortcut.label)
+            ? 'drive'
+            : 'folder',
+    });
+  }
+  append({ label: '컴퓨터', path: '', icon: 'computer' });
   return links;
+}
+
+/** 빠른 위치 줄 이름 — 전체 경로는 길어서 마지막 조각을 쓴다. */
+function quickAccessLeafLabel(path: string): string {
+  const leaf = path
+    .split('/')
+    .filter((segment) => segment !== '')
+    .at(-1);
+  return leaf ?? path;
 }

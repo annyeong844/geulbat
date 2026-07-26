@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
+import type { ErrorCode } from '@geulbat/protocol/errors';
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 
 import {
@@ -34,14 +35,15 @@ export function useRunSessionSettleHandlers({
   }, [selectedFile]);
 
   const settleRunSuccess = useCallback(
-    async (thread: ThreadDetailResponse) => {
+    async (thread: ThreadDetailResponse, runId?: string) => {
       const applied = applyThreadSnapshotForRunSettle(thread);
-      if (!applied) {
-        return;
-      }
-      dispatch({ type: 'run_settled_success' });
+      dispatch({
+        type: 'run_settled_success',
+        ...(runId === undefined ? {} : { runId }),
+        threadId: thread.threadId,
+      });
       const results = await settleRunFollowUpEffects({
-        selectedFile: latestSelectedFileRef.current,
+        selectedFile: applied ? latestSelectedFileRef.current : null,
         loadThreads,
         openFile,
       });
@@ -51,9 +53,10 @@ export function useRunSessionSettleHandlers({
   );
 
   const settleRunSyncFailure = useCallback(
-    async (threadId: string, message: string) => {
+    async (threadId: string, message: string, runId?: string) => {
       dispatch({
         type: 'run_settle_sync_failed',
+        ...(runId === undefined ? {} : { runId }),
         threadId,
         message,
       });
@@ -68,8 +71,19 @@ export function useRunSessionSettleHandlers({
   );
 
   const settleRunError = useCallback(
-    async (threadId: string, errMsg: string) => {
-      dispatch({ type: 'run_settled_error', threadId, message: errMsg });
+    async (
+      threadId: string,
+      code: ErrorCode,
+      errMsg: string,
+      runId?: string,
+    ) => {
+      dispatch({
+        type: 'run_settled_error',
+        ...(runId === undefined ? {} : { runId }),
+        threadId,
+        code,
+        message: `[${code}] ${errMsg}`,
+      });
       const results = await settleRunEffects({
         threadId,
         selectedFile: null,

@@ -1,4 +1,5 @@
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
+import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 import type { RunRequest } from '@geulbat/protocol/run-contract';
 
 import { createCommittedArtifactPaneViewModel } from '../artifact-pane-view-model.js';
@@ -14,22 +15,31 @@ interface CommittedArtifactPaneProps {
   artifact: ThreadArtifactVersion;
   isRunning: boolean;
   renderRuntimeFrame: RenderArtifactRuntimeFrame;
+  planningWorkflowSnapshot?: PlanningWorkflowSnapshot | null;
   onStartArtifactRun?: (request: RunRequest) => Promise<void> | void;
 }
 
 type ArtifactPaneProps = Omit<UseArtifactPaneControllerArgs, 'viewModel'>;
 
 export function CommittedArtifactPane(props: CommittedArtifactPaneProps) {
-  const { label, artifact, isRunning, renderRuntimeFrame, onStartArtifactRun } =
-    props;
-  const viewModel = createCommittedArtifactPaneViewModel(artifact);
+  const {
+    label,
+    artifact,
+    isRunning,
+    renderRuntimeFrame,
+    planningWorkflowSnapshot,
+    onStartArtifactRun,
+  } = props;
+  const viewModel = createCommittedArtifactPaneViewModel(
+    artifact,
+    planningWorkflowSnapshot,
+  );
 
   return (
     <ArtifactPane
       label={label}
       viewModel={viewModel}
       isRunning={isRunning}
-      isLiveStreamingArtifact={false}
       renderRuntimeFrame={renderRuntimeFrame}
       {...(onStartArtifactRun !== undefined ? { onStartArtifactRun } : {})}
     />

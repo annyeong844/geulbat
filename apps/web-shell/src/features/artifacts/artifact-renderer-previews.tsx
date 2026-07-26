@@ -1,8 +1,66 @@
+import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type {
   ImageArtifactPayloadV1,
   VideoArtifactPayloadV1,
 } from '@geulbat/protocol/artifacts';
+
+import { saveBlobToLocalFile } from '../../lib/save-local-file.js';
+
+// 저장 파일명 제안용 — mimeType에서 확장자를 뽑는다
+const MEDIA_FILE_EXTENSIONS: Record<string, string> = {
+  'video/mp4': 'mp4',
+  'video/webm': 'webm',
+  'video/quicktime': 'mov',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+};
+
+function mediaFileExtensionOf(mimeType: string): string {
+  return MEDIA_FILE_EXTENSIONS[mimeType] ?? mimeType.split('/')[1] ?? 'bin';
+}
+
+// 미디어 저장 버튼 — OS 저장 대화상자로 위치를 고른다(다운로드 폴더 강제
+// 금지). 브라우저가 미지원이면 제안 파일명으로 기본 다운로드 폴백.
+function MediaSaveButton(props: { mediaUrl: string; suggestedName: string }) {
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'failed'>(
+    'idle',
+  );
+  const handleSave = async () => {
+    setSaveState('saving');
+    try {
+      const response = await fetch(props.mediaUrl);
+      if (!response.ok) {
+        throw new Error(`media fetch failed: HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      await saveBlobToLocalFile({
+        suggestedName: props.suggestedName,
+        blob,
+      });
+      setSaveState('idle');
+    } catch {
+      setSaveState('failed');
+    }
+  };
+  return (
+    <button
+      type="button"
+      className="artifact-editor-action artifact-media-save"
+      title="위치를 골라 저장"
+      disabled={saveState === 'saving'}
+      onClick={() => void handleSave()}
+    >
+      {saveState === 'saving'
+        ? '저장 중…'
+        : saveState === 'failed'
+          ? '저장 실패 — 다시 시도'
+          : '저장'}
+    </button>
+  );
+}
 
 // renderer preview — Modern Heritage 토큰만 참조 (색상 리터럴 금지)
 const artifactRendererPreviewStyles = {
@@ -78,31 +136,6 @@ const artifactRendererPreviewStyles = {
   },
 } satisfies Record<string, CSSProperties>;
 
-const imagePreviewStyles = {
-  wrap: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-    borderRadius: 8,
-    background: 'var(--surface-container-lowest)',
-    boxShadow: 'var(--elev-card)',
-    padding: 12,
-  },
-  image: {
-    maxWidth: '100%',
-    height: 'auto',
-    borderRadius: 6,
-    alignSelf: 'center',
-  },
-  caption: {
-    fontSize: 12,
-    lineHeight: 1.5,
-    color: 'var(--on-surface-muted)',
-    fontFamily: 'var(--font-ui-label)',
-    wordBreak: 'break-word',
-  },
-} satisfies Record<string, CSSProperties>;
-
 export function renderCodeArtifactPreview(payload: string): ReactNode {
   return <pre style={artifactRendererPreviewStyles.codePreview}>{payload}</pre>;
 }
@@ -124,18 +157,33 @@ export function renderImageArtifactPreview(
   if (src === null) {
     // thread_media인데 스레드 스코프를 모르면 잘못된 URL 대신 캡션만
     return (
-      <figure style={imagePreviewStyles.wrap}>
-        <figcaption style={imagePreviewStyles.caption}>
-          {caption} — {provenance.model}
+      <figure className="artifact-media-figure">
+        <figcaption className="artifact-media-footer">
+          <span className="artifact-media-meta">
+            {caption} — {provenance.model}
+          </span>
         </figcaption>
       </figure>
     );
   }
   return (
-    <figure style={imagePreviewStyles.wrap}>
-      <img style={imagePreviewStyles.image} src={src} alt={provenance.prompt} />
-      <figcaption style={imagePreviewStyles.caption}>
-        {caption} — {provenance.model}
+    <figure className="artifact-media-figure">
+      <div className="artifact-media-stage">
+        <img
+          className="artifact-media-image"
+          src={src}
+          alt={provenance.prompt}
+        />
+      </div>
+      <figcaption className="artifact-media-footer">
+        <details className="artifact-media-prompt">
+          <summary title="프롬프트 펼치기/접기">{caption}</summary>
+        </details>
+        <span className="artifact-media-meta">{provenance.model}</span>
+        <MediaSaveButton
+          mediaUrl={src}
+          suggestedName={`이미지.${mediaFileExtensionOf(manifest.mimeType)}`}
+        />
       </figcaption>
     </figure>
   );
@@ -143,26 +191,8 @@ export function renderImageArtifactPreview(
 
 // 동영상 미리보기(video-generation-open §3/D-V6) — 인라인 재생이 1급이고
 // 저장은 선택 링크다. 바이트는 인증 media 라우트가 Range로 스트리밍한다.
-const videoPreviewStyles = {
-  video: {
-    maxWidth: '100%',
-    height: 'auto',
-    borderRadius: 6,
-    alignSelf: 'center',
-  },
-  captionRow: {
-    display: 'flex',
-    alignItems: 'baseline',
-    gap: 10,
-  },
-  saveLink: {
-    fontSize: 12,
-    color: 'var(--on-surface-muted)',
-    whiteSpace: 'nowrap',
-    textDecoration: 'underline',
-  },
-} satisfies Record<string, CSSProperties>;
-
+// 감상 표면 문법: 웜 블랙 스테이지에 크게, 프롬프트는 풋터에서 한 줄로
+// 접혀 있다가 클릭하면 펼쳐진다.
 // VideoArtifactPayloadV1 owns a media reference but no caption-track reference.
 // Do not add an empty track that would falsely claim captions are available.
 /* oxlint-disable jsx-a11y/media-has-caption */
@@ -177,30 +207,27 @@ export function renderVideoArtifactPreview(
       ? ` · ${manifest.durationSeconds}초`
       : '';
   return (
-    <figure style={imagePreviewStyles.wrap}>
-      <video
-        style={videoPreviewStyles.video}
-        src={mediaUrl}
-        controls
-        preload="metadata"
-      />
-      <figcaption
-        style={{
-          ...imagePreviewStyles.caption,
-          ...videoPreviewStyles.captionRow,
-        }}
-      >
-        <span>
-          {provenance.prompt} — {provenance.model}
+    <figure className="artifact-media-figure">
+      <div className="artifact-media-stage dark">
+        <video
+          className="artifact-media-video"
+          src={mediaUrl}
+          controls
+          preload="metadata"
+        />
+      </div>
+      <figcaption className="artifact-media-footer">
+        <details className="artifact-media-prompt">
+          <summary title="프롬프트 펼치기/접기">{provenance.prompt}</summary>
+        </details>
+        <span className="artifact-media-meta">
+          {provenance.model}
           {durationLabel}
         </span>
-        <a
-          style={videoPreviewStyles.saveLink}
-          href={mediaUrl}
-          download={manifest.source.mediaRef}
-        >
-          저장
-        </a>
+        <MediaSaveButton
+          mediaUrl={mediaUrl}
+          suggestedName={`동영상.${mediaFileExtensionOf(manifest.mimeType)}`}
+        />
       </figcaption>
     </figure>
   );

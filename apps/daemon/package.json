@@ -9,6 +9,36 @@
     "creator-plugin/",
     "provider-auth.config.json"
   ],
+  "exports": {
+    "./bootstrap-entry": {
+      "types": "./dist/bootstrap-entry.d.ts",
+      "import": "./dist/bootstrap-entry.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "import": "./dist/host.js"
+    },
+    "./loop-implementation-admission": {
+      "types": "./dist/daemon/agent/loop-implementation-admission.d.ts",
+      "import": "./dist/daemon/agent/loop-implementation-admission.js"
+    },
+    "./home-state-root": {
+      "types": "./dist/home-state-root.d.ts",
+      "import": "./dist/home-state-root.js"
+    },
+    "./process-fatal-logging": {
+      "types": "./dist/daemon/utils/process-fatal-logging.d.ts",
+      "import": "./dist/daemon/utils/process-fatal-logging.js"
+    },
+    "./prompt-component-identity": {
+      "types": "./dist/prompt-component-identity.d.ts",
+      "import": "./dist/prompt-component-identity.js"
+    },
+    "./run-evidence": {
+      "types": "./dist/run-evidence.d.ts",
+      "import": "./dist/run-evidence.js"
+    }
+  },
   "imports": {
     "#web/auth/*.js": "./src/adapter/web/auth/*.ts",
     "#web/request/*.js": "./src/adapter/web/request/*.ts",
@@ -22,7 +52,9 @@
     "dev:no-watch": "GEULBAT_DEV_NO_WATCH=1 node ./scripts/dev-daemon-supervisor.mjs",
     "dev:dist": "GEULBAT_DEV_USE_DIST=1 GEULBAT_DEV_NO_WATCH=1 node ./scripts/dev-daemon-supervisor.mjs",
     "discover:oauth-wire": "node --import tsx ./scripts/collect-oauth-structured-output-wire-evidence.mjs",
+    "probe:context-injection-accounting": "node --import tsx ./scripts/probe-context-injection-accounting.mjs",
     "probe:grok-cache": "node --import tsx ./scripts/probe-grok-prompt-cache.mjs",
+    "probe:tool-result-cache-context": "node --import tsx ./scripts/probe-tool-result-cache-context.mjs",
     "reset:single-home": "node ./scripts/reset-single-home-state.mjs --root ../..",
     "test:single-home-reset": "node --test ./scripts/reset-single-home-state.test.mjs",
     "build:app": "tsc -b tsconfig.app.json && node ./scripts/sync-package-imports.mjs dist",
@@ -70,7 +102,6 @@
     "@geulbat/tool-library": "*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/ripgrep": "^1.17.1",
-    "cross-spawn": "^7.0.6",
     "esbuild": "^0.28.1",
     "express": "^5.0.1",
     "ws": "^8.21.0",
@@ -78,7 +109,6 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/cross-spawn": "^6.0.6",
     "@types/express": "^5.0.0",
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.1",

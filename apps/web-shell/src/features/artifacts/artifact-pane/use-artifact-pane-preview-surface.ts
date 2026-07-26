@@ -18,9 +18,6 @@ import type {
 export function useArtifactPanePreviewSurface(args: {
   viewModel: ArtifactPaneViewModel;
   artifactSessionKey: string;
-  canShowPreview: boolean;
-  supportsStreamingPreview: boolean;
-  isLiveStreamingArtifact: boolean;
   renderRuntimeFrame: RenderArtifactRuntimeFrame;
   onGeneratedTextExportSnapshotChange?: (
     snapshot: GeneratedTextExportSnapshot | null,
@@ -32,16 +29,13 @@ export function useArtifactPanePreviewSurface(args: {
   const {
     viewModel,
     artifactSessionKey,
-    canShowPreview,
-    supportsStreamingPreview,
-    isLiveStreamingArtifact,
     renderRuntimeFrame,
     onGeneratedTextExportSnapshotChange,
     onGeneratedBinaryExportSnapshotChange,
   } = args;
   const hookManagedPreviewSurface = useReactBundleInlineCompilePreviewSurface({
     enabled: shouldUseArtifactPaneHookManagedPreview(viewModel),
-    payload: viewModel.parsed.payload,
+    payload: viewModel.artifact.payload,
     artifactSessionKey,
     sourceRef: viewModel.sourceRef,
     renderRuntimeFrame,
@@ -55,9 +49,6 @@ export function useArtifactPanePreviewSurface(args: {
 
   const previewSurfaceModel = resolveArtifactPanePreviewSurfaceModel({
     viewModel,
-    canShowPreview,
-    supportsStreamingPreview,
-    isLiveStreamingArtifact,
     hookManagedPreviewSurface,
     ...(onGeneratedTextExportSnapshotChange !== undefined
       ? { onGeneratedTextExportSnapshotChange }

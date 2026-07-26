@@ -1,0 +1,47 @@
+{
+  "name": "@geulbat/product",
+  "version": "0.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist/"
+  ],
+  "exports": {
+    "./cli-support": {
+      "types": "./dist/product-xharness-cli-support.d.ts",
+      "import": "./dist/product-xharness-cli-support.js"
+    },
+    "./immutable-publication": {
+      "types": "./dist/product-xharness-immutable-publication.d.ts",
+      "import": "./dist/product-xharness-immutable-publication.js"
+    },
+    "./tool-policy-promotion": {
+      "types": "./dist/product-xharness-tool-policy-promotion.d.ts",
+      "import": "./dist/product-xharness-tool-policy-promotion.js"
+    }
+  },
+  "scripts": {
+    "build:deps": "npm --prefix ../.. run build:packages && npm --prefix ../daemon run build:app",
+    "build:app": "tsc -b tsconfig.app.json",
+    "build": "npm run build:deps && npm run build:app",
+    "check:app": "tsc --noEmit -p tsconfig.app.json",
+    "check": "npm run build:deps && npm run check:app",
+    "dev": "node ./scripts/dev-geulbat.mjs",
+    "test:files": "node ../../scripts/run-workspace-node-tests.mjs --workspace geulbat --tsconfig ./tsconfig.test.json",
+    "test:app": "npm run test:files -- \"**/*.test.js\"",
+    "test": "npm run build:deps && npm run test:app",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@geulbat/content-identity": "*",
+    "@geulbat/daemon": "*",
+    "@geulbat/structured-logger": "*",
+    "@geulbat/xharness": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}

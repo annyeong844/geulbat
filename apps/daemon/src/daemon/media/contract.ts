@@ -117,6 +117,9 @@ export interface GenerateImageArtifactResult {
   artifactVersion: ThreadArtifactVersion;
   provenance: GeneratedImageProvenance;
   asset: Pick<GeneratedImageAsset, 'mimeType' | 'byteLength' | 'digest'>;
+  // 디스크에 커밋된 media 파일 참조 — 모델이 "사진 폴더에 저장" 같은 요청을
+  // media 스토어 탐색 없이 파일 복사 한 번으로 처리할 수 있게 한다.
+  media: { mediaRef: string; filePath: string } | null;
 }
 
 // run 시작 시 적용되는 요청 스코프 기본값(image-generation-open §4.3) —

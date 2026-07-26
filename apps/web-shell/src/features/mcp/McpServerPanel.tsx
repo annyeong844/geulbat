@@ -169,9 +169,7 @@ export function McpServerPanel({
     <section className="mcp-panel" aria-labelledby="mcp-settings-title">
       <header className="settings-page-heading">
         <div>
-          <span className="settings-eyebrow">확장 도구</span>
           <h2 id="mcp-settings-title">MCP 서버</h2>
-          <p>글밭 홈에서 사용할 도구 서버와 연결 상태를 관리합니다.</p>
         </div>
         <button
           type="button"
@@ -184,7 +182,7 @@ export function McpServerPanel({
             setShowCreate((visible) => !visible);
           }}
         >
-          {showCreate ? '추가 취소' : '+ 서버 추가'}
+          {showCreate ? '추가 취소' : '서버 추가'}
         </button>
       </header>
 
@@ -247,7 +245,6 @@ function McpServerCreateForm({
   const [envKeys, setEnvKeys] = useState('');
   const [connectionTimeoutMs, setConnectionTimeoutMs] = useState('');
   const [requestTimeoutMs, setRequestTimeoutMs] = useState('');
-  const [shutdownGraceMs, setShutdownGraceMs] = useState('');
   const [enabled, setEnabled] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
@@ -257,14 +254,12 @@ function McpServerCreateForm({
     const trimmedCommand = command.trim();
     const parsedConnectionTimeoutMs = parseOptionalTimeout(connectionTimeoutMs);
     const parsedRequestTimeoutMs = parseOptionalTimeout(requestTimeoutMs);
-    const parsedShutdownGraceMs = parseOptionalTimeout(shutdownGraceMs);
     if (
       !trimmedName ||
       !trimmedCommand ||
       submitting ||
       parsedConnectionTimeoutMs === null ||
-      parsedRequestTimeoutMs === null ||
-      parsedShutdownGraceMs === null
+      parsedRequestTimeoutMs === null
     ) {
       return;
     }
@@ -284,9 +279,6 @@ function McpServerCreateForm({
           ...(parsedRequestTimeoutMs === undefined
             ? {}
             : { requestTimeoutMs: parsedRequestTimeoutMs }),
-          ...(parsedShutdownGraceMs === undefined
-            ? {}
-            : { shutdownGraceMs: parsedShutdownGraceMs }),
         },
       });
     } finally {
@@ -362,18 +354,6 @@ function McpServerCreateForm({
             disabled={disabled || submitting}
             placeholder="SDK 요청 기본값"
             onChange={(event) => setRequestTimeoutMs(event.currentTarget.value)}
-          />
-        </label>
-        <label>
-          <span>종료 단계 대기시간 · 밀리초</span>
-          <input
-            type="number"
-            min="1"
-            step="1"
-            value={shutdownGraceMs}
-            disabled={disabled || submitting}
-            placeholder="기본 2000ms"
-            onChange={(event) => setShutdownGraceMs(event.currentTarget.value)}
           />
         </label>
       </details>

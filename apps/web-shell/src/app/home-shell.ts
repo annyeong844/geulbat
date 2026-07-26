@@ -92,6 +92,7 @@ export function createHomeShellView({
   const runSessionView = createHomeRunSessionView({
     messages: threads.messages,
     artifacts: threads.artifacts,
+    subagentTerminalOutcomes: threads.subagentTerminalOutcomes,
     branchFromMessage: threads.branchThreadFromEntry,
     editPastUserPrompt,
     branchNotice: threads.branchNotice,
@@ -129,6 +130,11 @@ export function createHomeShellView({
       startNewSession: threads.startNewSession,
     }),
     centerPanelView: createHomeCenterPanelView({
+      providerAuthStatuses,
+      providerAuthBusyProviderId,
+      providerAuthErrors,
+      onConnectProvider,
+      onDisconnectProvider,
       selectedFile: files.selectedFile,
       extractedDocument: files.extractedDocument,
       binaryPreview: files.binaryPreview,
@@ -149,13 +155,9 @@ export function createHomeShellView({
       inspectCurrentFile: files.inspectCurrentFile,
     }),
     rightPanelView: createHomeRightPanelView({
-      providerAuthStatuses,
-      providerAuthBusyProviderId,
-      providerAuthErrors,
-      onConnectProvider,
-      onDisconnectProvider,
       assistant: runSessionView.assistant,
       approvalPanel: runSessionView.approvalPanel,
+      streamingArtifactText: runSessionView.streamingArtifactText,
     }),
   };
 }

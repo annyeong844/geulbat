@@ -1,0 +1,839 @@
+/* ─────────────────────────────────────
+   RIGHT — 어시스턴트 활동 카드 (사이드바 행·아티팩트 칩·타임라인·플랜·질문)
+   assistant.css에서 분리 (2026-07-23). import 순서가 원본 순서를 대신한다.
+   ───────────────────────────────────── */
+/* 사이드바 행 — 햄버거는 평소 숨고 행 호버/포커스 때만 드러난다 */
+.thread-row-menu-anchor {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.thread-row-menu-button {
+  border: none;
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.thread-row:hover .thread-row-menu-button,
+.thread-row:focus-within .thread-row-menu-button,
+.thread-row-menu-button[aria-expanded='true'] {
+  opacity: 1;
+}
+
+.thread-row-menu-button:hover {
+  background: var(--surface-container);
+  color: var(--on-surface);
+}
+
+.video-settings-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+}
+
+.video-settings-detail.disabled {
+  opacity: 0.45;
+}
+
+.video-settings-detail-label {
+  font-size: 13px;
+}
+
+.video-settings-detail-hint {
+  font-size: 11px;
+  color: var(--on-surface-muted);
+}
+
+.video-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.video-settings-save {
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 6px 16px;
+  background: var(--primary);
+  color: var(--on-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.video-settings-save:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.provider-transition-card {
+  gap: 12px;
+}
+
+.provider-transition-card h2,
+.provider-transition-card p {
+  margin: 0;
+}
+
+.provider-transition-description {
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.provider-transition-error {
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.provider-transition-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.provider-transition-cancel {
+  border: 1px solid var(--outline-variant, rgba(0, 0, 0, 0.15));
+  border-radius: var(--radius-md);
+  padding: 6px 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.provider-transition-cancel:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.video-settings-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.video-settings-chip {
+  border: 1px solid var(--outline-variant, rgba(0, 0, 0, 0.15));
+  border-radius: var(--radius-full);
+  padding: 3px 10px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.video-settings-chip.active {
+  background: var(--primary);
+  color: var(--on-primary);
+  border-color: var(--primary);
+}
+
+.video-settings-chip:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* ─────────────────────────────────────
+   ARTIFACT — 채팅 속 참조 칩 (본문은 중앙 패널이 렌더)
+   ───────────────────────────────────── */
+.artifact-reference-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--surface-container-high);
+  border-radius: var(--radius-md);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: box-shadow var(--transition-base);
+}
+
+.artifact-reference-chip:hover {
+  box-shadow: var(--elev-card);
+}
+
+.artifact-reference-icon {
+  flex: none;
+  font-size: 16px;
+  color: var(--tertiary);
+}
+
+.artifact-reference-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.artifact-reference-title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-reference-meta {
+  color: var(--on-surface-muted);
+  font-size: 11px;
+}
+
+.artifact-reference-open {
+  flex: none;
+  color: var(--on-surface-variant);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* visualize 인라인 위젯 — 채팅에 녹아드는 투명 표면 */
+.visualize-widget {
+  width: 100%;
+}
+
+.plan-rendering-stamp {
+  display: block;
+  margin-block-end: 6px;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+}
+
+/* ─────────────────────────────────────
+   TOOL TIMELINE — 도구 활동 타임라인 (디자인개편 참조안)
+   아이콘 행 + 세로 연결선, 펼치면 Request/Response 카드
+   ───────────────────────────────────── */
+.tool-timeline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0 4px 4px;
+}
+
+.tool-timeline::before {
+  content: '';
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 13px;
+  width: 1px;
+  background: var(--surface-container-high);
+}
+
+.tool-timeline-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+  line-height: 1.5;
+  list-style: none;
+  cursor: default;
+}
+
+.tool-timeline-item > summary.tool-timeline-row {
+  cursor: pointer;
+}
+
+.tool-timeline-item > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-timeline-glyph {
+  z-index: 1;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--surface-container-high);
+  border-radius: var(--radius-full);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface-muted);
+  font-size: 10px;
+}
+
+.tool-timeline-glyph.done {
+  color: var(--secondary);
+}
+
+.tool-timeline-glyph.failed,
+.tool-timeline-state.failed {
+  color: var(--error);
+}
+
+.tool-timeline-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-timeline-state {
+  flex: none;
+  color: var(--on-surface-muted);
+}
+
+.tool-timeline-chevron {
+  flex: none;
+  margin-left: auto;
+  color: var(--on-surface-muted);
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity var(--transition-base);
+}
+
+.tool-timeline-item > summary:hover .tool-timeline-chevron,
+.tool-timeline-item[open] > summary .tool-timeline-chevron {
+  opacity: 1;
+}
+
+.tool-timeline-terminal .tool-timeline-label {
+  color: var(--on-surface-muted);
+}
+
+.tool-timeline-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 6px 8px 34px;
+  padding: 12px 14px;
+  border: 1px solid var(--surface-container);
+  border-radius: var(--radius-md);
+  background: var(--surface-container-lowest);
+}
+
+.tool-timeline-section-label {
+  margin-bottom: 4px;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tool-timeline-section-body {
+  margin: 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  background: var(--surface-container-low);
+  color: var(--on-surface);
+  font: 12px/1.6 var(--font-ui-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ─────────────────────────────────────
+   RUN PLAN — 진행 상황 체크리스트 (update_plan 파생)
+   ───────────────────────────────────── */
+.run-plan-card {
+  margin: 0 12px 8px;
+  border: 1px solid var(--surface-container-high);
+  border-radius: var(--radius-md);
+  background: var(--surface-container-lowest);
+}
+
+.run-plan-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  list-style: none;
+}
+
+.run-plan-summary::-webkit-details-marker {
+  display: none;
+}
+
+.run-plan-count {
+  color: var(--on-surface-muted);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-plan-chevron {
+  margin-left: auto;
+  color: var(--on-surface-muted);
+  font-size: 10px;
+}
+
+.run-plan-list {
+  margin: 0;
+  padding: 0 12px 10px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.run-plan-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--on-surface);
+}
+
+.run-plan-glyph {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--on-surface-muted);
+}
+
+.run-plan-item.completed .run-plan-glyph {
+  color: var(--secondary);
+}
+
+.run-plan-item.completed .run-plan-step {
+  color: var(--on-surface-muted);
+  text-decoration: line-through;
+}
+
+.run-plan-item.in_progress .run-plan-step {
+  font-weight: 600;
+}
+
+/* ─────────────────────────────────────
+   SUBAGENT — 보조 작업 카드 + 진행 도트
+   ───────────────────────────────────── */
+.subagent-work-card {
+  margin: 4px 0;
+  border: 1px solid var(--surface-container-high);
+  border-radius: var(--radius-md);
+  background: var(--surface-container-lowest);
+}
+
+.subagent-work-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  list-style: none;
+}
+
+.subagent-work-summary::-webkit-details-marker {
+  display: none;
+}
+
+.subagent-work-group-toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+}
+
+.subagent-work-group-detail {
+  display: grid;
+  gap: 4px;
+  padding: 0 8px 8px;
+}
+
+.subagent-work-group-detail .subagent-work-card {
+  margin: 0;
+}
+
+.subagent-state-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--on-surface-muted);
+}
+
+.subagent-state-dot.spawned {
+  background: var(--tertiary);
+}
+
+.subagent-state-dot.completed {
+  background: var(--secondary);
+}
+
+.subagent-state-dot.failed,
+.subagent-state-dot.cancelled {
+  background: var(--error);
+}
+
+.subagent-work-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-work-chevron {
+  margin-left: auto;
+  color: var(--on-surface-muted);
+  font-size: 10px;
+}
+
+.subagent-work-detail {
+  padding: 0 12px 10px;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ─────────────────────────────────────
+   ASK USER — 선택지 질문 카드 (참조안 이미지 5·13)
+   ───────────────────────────────────── */
+.ask-user-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--surface-container-high);
+  border-radius: var(--radius-md);
+  background: var(--surface-container-lowest);
+}
+
+.ask-user-question {
+  color: var(--on-surface);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.ask-user-options {
+  display: flex;
+  flex-direction: column;
+}
+
+.ask-user-option {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 8px;
+  border: 0;
+  border-top: 1px solid var(--surface-container-low);
+  background: transparent;
+  color: var(--on-surface);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ask-user-option:first-child {
+  border-top: 0;
+}
+
+.ask-user-option:hover:enabled {
+  background: var(--surface-container-low);
+  border-radius: var(--radius-sm);
+}
+
+.ask-user-option:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.ask-user-option-index {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--surface-container-low);
+  color: var(--on-surface-variant);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ask-user-option-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ask-user-option-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ask-user-option-description {
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+.ask-user-hint {
+  color: var(--on-surface-muted);
+  font-size: 11.5px;
+}
+
+/* ─────────────────────────────────────
+   APPROVAL — 승인 요청 카드 (ask-user 카드와 같은 문법)
+   행동이 필요한 표면이므로 활동 선반과 같은 세이지 표면을 쓴다.
+   ───────────────────────────────────── */
+.approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--reading-column, 760px);
+  margin: 8px auto 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-lg);
+  background: var(--secondary-surface);
+}
+
+.approval-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.approval-card-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--secondary);
+  box-shadow: 0 0 0 3px var(--secondary-soft);
+}
+
+.approval-card-title {
+  color: var(--on-surface);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.approval-card-level {
+  flex: none;
+  padding: 2px 9px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.approval-card-level.read,
+.approval-card-level.none {
+  background: var(--secondary-soft);
+  color: var(--on-secondary-fixed-variant);
+}
+
+.approval-card-level.write {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.approval-card-level.destructive {
+  background: rgba(173, 79, 66, 0.14);
+  color: var(--error);
+}
+
+.approval-card-target {
+  display: block;
+  padding: 8px 11px;
+  overflow-x: auto;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-sm);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface-variant);
+  font: 12px/1.6 var(--font-ui-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.approval-card-scope {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.approval-card-scope-label {
+  margin-right: 2px;
+  color: var(--on-surface-muted);
+  font-size: 11.5px;
+}
+
+.approval-scope-chip {
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-full);
+  padding: 3px 12px;
+  background: transparent;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.approval-scope-chip.active {
+  background: var(--secondary-soft);
+  border-color: var(--secondary);
+  color: var(--on-secondary-fixed-variant);
+  font-weight: 600;
+}
+
+.approval-scope-chip:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.approval-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.approval-allow-button {
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 7px 20px;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity var(--transition-base);
+}
+
+.approval-allow-button:hover:enabled {
+  opacity: 0.88;
+}
+
+.approval-deny-button {
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 7px 14px;
+  background: transparent;
+  color: var(--error);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.approval-deny-button:hover:enabled {
+  background: var(--surface-container-low);
+}
+
+.approval-allow-all-button {
+  margin-left: auto;
+  border: none;
+  padding: 4px 2px;
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.approval-allow-all-button:hover:enabled {
+  color: var(--on-surface-variant);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.approval-allow-button:disabled,
+.approval-deny-button:disabled,
+.approval-allow-all-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.approval-advanced > summary {
+  color: var(--on-surface-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.approval-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.approval-advanced > summary::before {
+  content: '▸ ';
+  font-size: 10px;
+}
+
+.approval-advanced[open] > summary::before {
+  content: '▾ ';
+}
+
+.approval-advanced-class {
+  margin: 8px 0 6px;
+  color: var(--on-surface-muted);
+  font-size: 11.5px;
+}
+
+.approval-advanced-preview {
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  max-height: 140px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-container-lowest);
+  border: 1px solid var(--outline-variant);
+  color: var(--on-surface-variant);
+  font: 11.5px/1.6 var(--font-ui-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 현재 화면의 TODO + 보조 작업 — 컴포저 위 단일 flow 선반 */
+.assistant-activity-shelf {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 6px;
+  /* 대화(도구 행·본문)를 지나치게 가리지 않도록 상한을 낮게 잡는다 —
+     넘치는 내용은 셸프 내부 스크롤로 */
+  max-height: min(30vh, 280px);
+  margin: 0 12px 8px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-lg);
+  background: var(--secondary-surface);
+  overscroll-behavior: contain;
+}
+
+.assistant-activity-shelf > .run-plan-card,
+.assistant-activity-shelf > .subagent-work-card {
+  flex: none;
+  margin: 0;
+}
+
+.assistant-activity-shelf:empty {
+  display: none;
+}
+
+.working-directory-selection-error {
+  margin: 0 12px 8px;
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.45;
+}

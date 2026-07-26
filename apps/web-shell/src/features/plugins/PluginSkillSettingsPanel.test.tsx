@@ -91,7 +91,7 @@ void test('plugin skill settings shows provenance, invocation policy, and runtim
   assert.match(text, /library-research/);
   assert.match(text, /필요한 도구 없음/);
   assert.match(text, /broken-tools 플러그인/);
-  assert.match(text, /포함된 스크립트는 자동으로 실행하지 않습니다/);
+  assert.doesNotMatch(text, /포함된 스크립트는 자동으로 실행하지 않습니다/);
 
   act(() => renderer.unmount());
 });

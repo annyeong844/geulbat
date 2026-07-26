@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { copyFile } from 'node:fs/promises';
 import process from 'node:process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +23,6 @@ export const FULL_LINT_PATTERNS = [
   '.rustlike/*.mjs',
 ];
 
-const FULL_LINT_SEED_CACHE = '.eslintcache.full.seed';
 const TSGOLINT_ADAPTER = 'tsgolint';
 
 export const TSGOLINT_EXPECTED_RULE_IDS = [
@@ -77,10 +75,19 @@ export const TSGOLINT_PROJECTS = [
     targetPath: 'apps/daemon/src',
   },
   {
+    targetPath: 'apps/geulbat/src',
+  },
+  {
+    targetPath: 'apps/geulbat-lab/src',
+  },
+  {
     targetPath: 'apps/web-shell/src',
   },
   {
     targetPath: 'packages/agent-loop/src',
+  },
+  {
+    targetPath: 'packages/xharness/src',
   },
   {
     targetPath: 'packages/artifact-runtime-policy/src',
@@ -119,6 +126,16 @@ export const LINT_SHARDS = [
       'apps/daemon/src/**/*.test.ts',
       'apps/daemon/src/test-support/**/*.ts',
     ],
+  },
+  {
+    name: 'geulbat-product',
+    cacheLocation: '.eslintcache.full.geulbat-product',
+    patterns: ['apps/geulbat/src/**/*.ts'],
+  },
+  {
+    name: 'geulbat-lab',
+    cacheLocation: '.eslintcache.full.geulbat-lab',
+    patterns: ['apps/geulbat-lab/src/**/*.ts'],
   },
   {
     name: 'web-shell',
@@ -312,41 +329,26 @@ async function runEslintProcesses(processes, { cwd, env }) {
   }
 }
 
-async function runEslintShards(
+export async function runEslintShards(
   shards = LINT_SHARDS,
   {
     cwd = process.cwd(),
     env = process.env,
-    seedCacheLocation = FULL_LINT_SEED_CACHE,
+    runProcesses = runEslintProcesses,
   } = {},
 ) {
   if (!requiresLintSeed(shards, { cwd })) {
-    return runEslintProcesses(shards, { cwd, env });
+    return runProcesses(shards, { cwd, env });
   }
 
-  console.log(
-    'lint -> building cold cache without mounted-filesystem contention',
-  );
-  const results = await runEslintProcesses(
-    [
-      {
-        name: 'cold-seed',
-        cacheLocation: seedCacheLocation,
-        patterns: FULL_LINT_PATTERNS,
-      },
-    ],
-    { cwd, env },
-  );
-  const seedCache = resolve(cwd, seedCacheLocation);
-  if (
-    existsSync(seedCache) &&
-    results.every((result) => result.error === undefined)
-  ) {
-    await Promise.all(
-      shards.map((shard) =>
-        copyFile(seedCache, resolve(cwd, shard.cacheLocation)),
-      ),
-    );
+  console.log('lint -> building cold shard caches sequentially');
+  const results = [];
+  for (const shard of shards) {
+    const shardResults = await runProcesses([shard], { cwd, env });
+    results.push(...shardResults);
+    if (shardResults.some((result) => result.code !== 0)) {
+      break;
+    }
   }
   return results;
 }
@@ -379,9 +381,6 @@ async function main(
       runEslintShards(eslintShards, {
         cwd,
         env: eslintEnv,
-        seedCacheLocation: typedAdapter
-          ? `${FULL_LINT_SEED_CACHE}.${typedAdapter}`
-          : FULL_LINT_SEED_CACHE,
       }),
     ]);
   } catch (error) {

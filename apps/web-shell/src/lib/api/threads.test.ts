@@ -7,6 +7,7 @@ import {
   branchThread,
   deleteThread,
   prepareThreadProviderTransition,
+  ProviderTransitionPreparationError,
   ThreadDeleteConflictError,
 } from './threads.js';
 
@@ -120,6 +121,43 @@ void test('prepareThreadProviderTransition posts the source selection before acc
   if (response.status === 'compacted') {
     assert.equal(response.compactionEntryId, 'entry-8');
   }
+});
+
+void test('prepareThreadProviderTransition exposes a typed sanitized preparation failure', async (t) => {
+  installApiTestBootstrap(
+    t,
+    async () =>
+      new Response(
+        JSON.stringify({
+          code: 'provider_transition_preparation_failed',
+          message:
+            'provider transition context preparation failed; retry, or continue with the selected model in a new thread',
+          reason: 'provider_compaction_failed',
+        }),
+        {
+          status: 422,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+  );
+
+  await assert.rejects(
+    () =>
+      prepareThreadProviderTransition('00000000-0000-4000-8000-000000000001', {
+        sourceModelId: 'grok-4.5',
+        targetModelId: 'gpt-5.6-sol',
+        reasoningEffort: 'high',
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof ProviderTransitionPreparationError);
+      assert.equal(error.code, 'provider_transition_preparation_failed');
+      assert.equal(error.reason, 'provider_compaction_failed');
+      assert.match(error.message, /retry, or continue/u);
+      assert.doesNotMatch(error.message, /^API 422:/u);
+      assert.ok(error.cause instanceof ApiFetchError);
+      return true;
+    },
+  );
 });
 
 void test('deleteThread preserves unrelated api fetch failures', async (t) => {

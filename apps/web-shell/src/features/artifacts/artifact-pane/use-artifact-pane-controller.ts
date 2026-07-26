@@ -13,7 +13,6 @@ export interface UseArtifactPaneControllerArgs {
   label: string;
   viewModel: ArtifactPaneViewModel;
   isRunning: boolean;
-  isLiveStreamingArtifact: boolean;
   renderRuntimeFrame: RenderArtifactRuntimeFrame;
   onStartArtifactRun?: (request: RunRequest) => Promise<void> | void;
 }

@@ -3,16 +3,19 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { RunId } from '@geulbat/protocol/ids';
+import { assertRunId, type RunId } from '@geulbat/protocol/ids';
 import { toApprovalClass } from '@geulbat/protocol/run-approval';
 import WebSocket from 'ws';
 
 import { rejectUpgrade, sendMessage } from './run-channel-socket.js';
 import {
+  bindSocketRuns,
   cleanupSocketState,
+  createSocketRunEventSink,
   ensureThreadBackgroundSubscription,
   getSocketState,
   nextSocketThreadSeq,
+  socketOwnsRun,
   trackSocketMessageDispatch,
 } from './run-channel-socket-runtime.js';
 import {
@@ -24,6 +27,7 @@ import { createDaemonContext } from '../../../daemon/context.js';
 import { makeRunContext } from '../../../test-support/run-context.js';
 import { testRunId } from '../../../test-support/run-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
+import { TEST_CHILD_MODEL_REGISTRATION } from '../../../test-support/subagent-model-routing.js';
 
 void test('sendMessage sends only while the websocket is open', () => {
   const socket = createTestSocket();
@@ -44,6 +48,102 @@ void test('sendMessage sends only while the websocket is open', () => {
       ok: true,
     });
     assert.equal(socket.sentFrames.length, 1);
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('socket run event sink sends transient output without a cursor', () => {
+  const socket = createTestSocket();
+  const runId = assertRunId('123e4567-e89b-42d3-a456-426614174021');
+  const threadId = testThreadId(21);
+  const sink = createSocketRunEventSink(socket);
+
+  assert.equal(
+    sink.transient?.({
+      runId,
+      threadId,
+      event: {
+        type: 'tool_output_delta',
+        payload: {
+          callId: 'call-exec',
+          tool: 'exec_command',
+          stream: 'stderr',
+          text: 'still running',
+        },
+      },
+    }),
+    true,
+  );
+  assert.deepEqual(readLastSentMessage(socket), {
+    type: 'run.tool.output.delta',
+    runId,
+    threadId,
+    payload: {
+      callId: 'call-exec',
+      tool: 'exec_command',
+      stream: 'stderr',
+      text: 'still running',
+    },
+  });
+});
+
+void test('socket run event delivery releases active delivery but retains socket ownership after terminal', () => {
+  const socket = createTestSocket();
+  const daemonContext = createDaemonContext();
+  const state = getSocketState(socket);
+  const runId = testRunId('terminal-delivery-owner');
+  const threadId = testThreadId(20);
+  const sink = createSocketRunEventSink(socket);
+  state.activeRunIds.add(runId);
+  state.ownedRunIds.add(runId);
+
+  try {
+    assert.equal(
+      sink({
+        runId,
+        threadId,
+        seq: 0,
+        event: {
+          type: 'commentary_delta',
+          payload: { text: 'still running' },
+        },
+      }),
+      true,
+    );
+    assert.equal(state.activeRunIds.has(runId), true);
+
+    assert.equal(
+      sink({
+        runId,
+        threadId,
+        seq: 1,
+        event: {
+          type: 'done',
+          payload: { answer: 'finished', ok: true },
+        },
+      }),
+      true,
+    );
+    assert.equal(state.activeRunIds.has(runId), false);
+    assert.equal(state.ownedRunIds.has(runId), true);
+    assert.equal(socketOwnsRun(socket, runId), true);
+
+    state.activeRunIds.add(runId);
+    socket.readyState = WebSocket.CLOSING;
+    assert.equal(
+      sink({
+        runId,
+        threadId,
+        seq: 2,
+        event: {
+          type: 'error',
+          payload: { code: 'internal', message: 'not delivered' },
+        },
+      }),
+      false,
+    );
+    assert.equal(state.activeRunIds.has(runId), true);
   } finally {
     cleanupSocketState(socket, daemonContext);
   }
@@ -84,8 +184,11 @@ void test('ensureThreadBackgroundSubscription subscribes once and forwards backg
         parentRunId,
         childRunId,
         subagentType: 'explorer',
+        capabilities: ['ptc'],
+        toolSurface: 'explorer_ptc',
         terminalState: 'completed',
         result: 'done',
+        resultRef: 'subagent-result:delivery-live',
         completedAt: '2026-03-30T00:00:00.000Z',
       },
     );
@@ -101,10 +204,151 @@ void test('ensureThreadBackgroundSubscription subscribes once and forwards backg
         parentRunId,
         childRunId,
         subagentType: 'explorer',
+        capabilities: ['ptc'],
+        toolSurface: 'explorer_ptc',
         terminalState: 'completed',
         ok: true,
         result: 'done',
+        resultRef: 'subagent-result:delivery-live',
       });
+    }
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('bindSocketRuns restores active background children even after their parent run settled', async () => {
+  const socket = createTestSocket();
+  const daemonContext = createDaemonContext();
+  const ownerThreadId = testThreadId(226);
+  const childThreadId = testThreadId(227);
+  const parentRunId = testRunId('parent-settled-before-reconnect');
+  const childRunId = testRunId('child-still-running-after-reconnect');
+
+  daemonContext.childRuns.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    parentRunId,
+    ownerThreadId,
+    childRunId,
+    childThreadId,
+    subagentType: 'explorer',
+    capabilities: ['ptc'],
+  });
+  const childRuntime = daemonContext.childRuns.getChildRun(childRunId)?.runtime;
+  assert.ok(childRuntime);
+
+  try {
+    assert.equal(await bindSocketRuns(socket, daemonContext), 0);
+    assert.equal(
+      getSocketState(socket).threadUnsubscribes.has(ownerThreadId),
+      true,
+    );
+    assert.equal(socketOwnsRun(socket, parentRunId), true);
+
+    const message = readLastSentMessage(socket);
+    assert.equal(message?.type, 'run.event');
+    if (message?.type === 'run.event') {
+      assert.equal(message.event.type, 'subagent_spawned');
+      assert.equal(message.event.runId, parentRunId);
+      assert.equal(message.event.threadId, ownerThreadId);
+      assert.deepEqual(message.event.payload, {
+        parentRunId,
+        childRunId,
+        childThreadId,
+        subagentType: 'explorer',
+        capabilities: ['ptc'],
+        toolSurface: 'explorer_ptc',
+        modelId: 'gpt-5.6-sol',
+        reasoningEffort: 'medium',
+        selectionSource: 'inherited',
+        runtime: childRuntime,
+      });
+    }
+
+    daemonContext.childRuns.updateChildRuntime({
+      childRunId,
+      runtime: {
+        phase: 'tool_running',
+        observedAt: '2026-07-23T10:28:00.000Z',
+        lastTool: {
+          name: 'read_file',
+          callId: 'call-read-1',
+          state: 'running',
+        },
+        partialOutputAvailable: false,
+      },
+    });
+    const statusMessage = readLastSentMessage(socket);
+    assert.equal(statusMessage?.type, 'run.event');
+    if (statusMessage?.type === 'run.event') {
+      assert.equal(statusMessage.event.type, 'subagent_status');
+      if (statusMessage.event.type === 'subagent_status') {
+        assert.deepEqual(statusMessage.event.payload.runtime, {
+          phase: 'tool_running',
+          observedAt: '2026-07-23T10:28:00.000Z',
+          lastTool: {
+            name: 'read_file',
+            callId: 'call-read-1',
+            state: 'running',
+          },
+          partialOutputAvailable: false,
+        });
+        assert.equal(statusMessage.event.payload.modelId, 'gpt-5.6-sol');
+      }
+    }
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('bindSocketRuns replays a pending terminal child result when only the settled parent can identify its thread', async () => {
+  const socket = createTestSocket();
+  const daemonContext = createDaemonContext();
+  const ownerThreadId = testThreadId(228);
+  const parentRunId = testRunId('settled-parent-terminal-child-replay');
+  const childRunId = testRunId('interrupted-child-after-daemon-restart');
+  const previousOwnerId = 'socket-before-daemon-restart';
+
+  daemonContext.liveRunEvents.startRun({
+    runId: parentRunId,
+    threadId: ownerThreadId,
+    ownerId: previousOwnerId,
+    sink: () => true,
+    async persistRunEvents() {},
+  });
+  daemonContext.liveRunEvents.detachOwner(previousOwnerId);
+  daemonContext.liveRunEvents.finishRun(parentRunId);
+  daemonContext.backgroundNotifications.enqueueThreadBackgroundResult(
+    ownerThreadId,
+    {
+      deliveryId: 'delivery-after-daemon-restart',
+      parentRunId,
+      childRunId,
+      subagentType: 'worker',
+      terminalState: 'failed',
+      reason: 'child_error',
+      result: 'daemon restarted while the child was running',
+      completedAt: '2026-07-23T08:42:59.000Z',
+    },
+  );
+
+  try {
+    assert.equal(await bindSocketRuns(socket, daemonContext), 1);
+    assert.equal(socketOwnsRun(socket, parentRunId), true);
+
+    const message = readLastSentMessage(socket);
+    assert.equal(message?.type, 'run.event');
+    if (
+      message?.type === 'run.event' &&
+      message.event.type === 'subagent_terminal'
+    ) {
+      assert.equal(
+        message.event.payload.deliveryId,
+        'delivery-after-daemon-restart',
+      );
+      assert.equal(message.event.payload.parentRunId, parentRunId);
+      assert.equal(message.event.payload.childRunId, childRunId);
+      assert.equal(message.event.payload.terminalState, 'failed');
     }
   } finally {
     cleanupSocketState(socket, daemonContext);
@@ -128,6 +372,7 @@ void test('ensureThreadBackgroundSubscription can use an injected background que
         subagentType: 'explorer',
         terminalState: 'completed',
         result: 'done',
+        resultRef: 'subagent-result:delivery-local',
         completedAt: '2026-03-30T00:00:00.000Z',
       },
     );
@@ -139,6 +384,10 @@ void test('ensureThreadBackgroundSubscription can use an injected background que
       if (message.event.type === 'subagent_terminal') {
         assert.equal(message.event.payload.deliveryId, 'delivery-local');
         assert.equal(message.event.payload.childRunId, childRunId);
+        assert.equal(
+          message.event.payload.resultRef,
+          'subagent-result:delivery-local',
+        );
       }
     }
   } finally {
@@ -182,7 +431,7 @@ void test('ensureThreadBackgroundSubscription replays pending background results
   }
 });
 
-void test('cleanupSocketState clears socket-local state and detaches active run delivery', () => {
+void test('cleanupSocketState clears socket-local state and detaches active run delivery', async () => {
   const socket = createTestSocket();
   const daemonContext = createDaemonContext();
   const threadId = testThreadId(24);
@@ -204,11 +453,13 @@ void test('cleanupSocketState clears socket-local state and detaches active run 
   });
   assert.equal(startResult.ok, true);
   state.activeRunIds.add(runId);
+  state.ownedRunIds.add(runId);
   daemonContext.liveRunEvents.startRun({
     runId,
     threadId,
-    ownerId: state.approvalSessionId,
+    ownerId: state.computerSessionId,
     sink: () => true,
+    async persistRunEvents() {},
   });
   ensureThreadBackgroundSubscription(socket, threadId, daemonContext);
   nextSocketThreadSeq(socket, threadId);
@@ -224,8 +475,9 @@ void test('cleanupSocketState clears socket-local state and detaches active run 
     assert.equal(state.awaitingPong, false);
 
     const nextState = getSocketState(socket);
-    assert.notEqual(nextState.approvalSessionId, state.approvalSessionId);
+    assert.notEqual(nextState.computerSessionId, state.computerSessionId);
     assert.equal(nextState.activeRunIds.size, 0);
+    assert.equal(nextState.ownedRunIds.size, 0);
 
     assert.deepEqual(
       daemonContext.liveRunEvents.publishRunEvent(runId, {
@@ -236,7 +488,7 @@ void test('cleanupSocketState clears socket-local state and detaches active run 
     );
     const deliveredSeqs: number[] = [];
     assert.deepEqual(
-      daemonContext.liveRunEvents.bindDetachedRuns({
+      await daemonContext.liveRunEvents.bindRuns({
         ownerId: 'replacement-socket-session',
         sink: (envelope) => {
           deliveredSeqs.push(envelope.seq);
@@ -247,7 +499,7 @@ void test('cleanupSocketState clears socket-local state and detaches active run 
         {
           runId,
           threadId,
-          previousOwnerId: state.approvalSessionId,
+          previousOwnerId: state.computerSessionId,
           terminal: false,
         },
       ],
@@ -377,7 +629,7 @@ void test('cleanupSocketState clears local runtime stores while preserving the a
   }
 });
 
-void test('cleanupSocketState clears approval session runtime state', async () => {
+void test('cleanupSocketState keeps pending approvals resolvable after reconnect', async () => {
   const socket = createTestSocket();
   const daemonContext = createDaemonContext({
     homeStateRoot: await mkdtemp(join(tmpdir(), 'geulbat-socket-approval-')),
@@ -390,23 +642,30 @@ void test('cleanupSocketState clears approval session runtime state', async () =
     threadId,
     request: { workingDirectory: 'stories', permissionMode: 'basic' },
   });
+  let notifyPending = () => undefined as void;
+  const pendingRecorded = new Promise<void>((resolve) => {
+    notifyPending = resolve;
+  });
   const wait = daemonContext.approvalGate.waitForApproval(
     'call-socket-cleanup',
     runId,
     threadId,
     {
       runId,
-      sessionId: state.approvalSessionId,
+      computerSessionId: state.computerSessionId,
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
       permissionMode: 'basic',
     },
     new AbortController().signal,
+    () => notifyPending(),
   );
+  await pendingRecorded;
 
+  // 소켓이 끊겨도 승인 대기/grant는 세션 소유라 살아남는다 — 재연결한
+  // 소켓이 그대로 결정을 내릴 수 있어야 한다 (오너 결정 2026-07-23).
   cleanupSocketState(socket, daemonContext);
 
-  assert.equal(await wait, 'aborted');
   assert.equal(
     await daemonContext.approvalGate.resolveApproval(
       'call-socket-cleanup',
@@ -414,8 +673,9 @@ void test('cleanupSocketState clears approval session runtime state', async () =
       threadId,
       'approved',
     ),
-    'not_found',
+    'resolved',
   );
+  assert.equal(await wait, 'approved');
   cleanupSocketState(socket, daemonContext);
 });
 

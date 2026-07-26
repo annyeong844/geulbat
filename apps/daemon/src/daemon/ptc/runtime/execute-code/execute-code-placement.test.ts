@@ -177,6 +177,23 @@ void test('createPtcExecuteCodePlacementCoordinator keeps warm session dependenc
   } as const;
 
   const coordinator = createPtcExecuteCodePlacementCoordinator();
+  assert.deepEqual(coordinator.readPressureSnapshot?.(), {
+    shutdownState: 'open',
+    activeWarmPlacementCount: 0,
+    retainedWarmPlacementCount: 0,
+    warmTransitionCount: 0,
+    activeBurstPlacementCount: 0,
+    coldCreateBurstPlacementCount: 0,
+    standbyRestoreBurstPlacementCount: 0,
+    burstCleanupCount: 0,
+    queuedWarmPlacementCount: 0,
+    queuedBurstPlacementCount: 0,
+    queuedBurstThreadCount: 0,
+    standbyPoolState: 'disabled',
+    standbyReadySlotCount: 0,
+    standbyRefillInFlightCount: 0,
+    standbyIdentityCount: 0,
+  });
   const placementResult = await coordinator.acquirePlacement({
     kind: 'batch_command',
     ownerKind: 'root_main',
@@ -225,7 +242,23 @@ void test('createPtcExecuteCodePlacementCoordinator keeps warm session dependenc
   assert.equal(placement.identity, identity);
   assert.equal(placement.sessionManager, sessionManager);
   assert.equal(placement.batchRunner, batchRunner);
+  assert.equal(
+    coordinator.readPressureSnapshot?.().activeWarmPlacementCount,
+    1,
+  );
+  assert.equal(
+    coordinator.readPressureSnapshot?.().retainedWarmPlacementCount,
+    1,
+  );
   await coordinator.releasePlacement(placement);
+  assert.equal(
+    coordinator.readPressureSnapshot?.().activeWarmPlacementCount,
+    0,
+  );
+  assert.equal(
+    coordinator.readPressureSnapshot?.().retainedWarmPlacementCount,
+    1,
+  );
 
   const independent = classifyPtcExecuteCodePlacementContinuity({
     independenceProof: { reason: 'self_contained' },
@@ -271,6 +304,26 @@ void test('createPtcExecuteCodePlacementCoordinator keeps warm session dependenc
     reason: 'burst_not_enabled_yet',
   });
   await coordinator.releasePlacement(cellPlacement);
+  coordinator.beginShutdown();
+  assert.equal(coordinator.readPressureSnapshot?.().shutdownState, 'closing');
+  coordinator.finishShutdown();
+  assert.deepEqual(coordinator.readPressureSnapshot?.(), {
+    shutdownState: 'closed',
+    activeWarmPlacementCount: 0,
+    retainedWarmPlacementCount: 0,
+    warmTransitionCount: 0,
+    activeBurstPlacementCount: 0,
+    coldCreateBurstPlacementCount: 0,
+    standbyRestoreBurstPlacementCount: 0,
+    burstCleanupCount: 0,
+    queuedWarmPlacementCount: 0,
+    queuedBurstPlacementCount: 0,
+    queuedBurstThreadCount: 0,
+    standbyPoolState: 'disabled',
+    standbyReadySlotCount: 0,
+    standbyRefillInFlightCount: 0,
+    standbyIdentityCount: 0,
+  });
 });
 
 void test('warm placement owns one active main lease globally and rejects a second thread visibly', async () => {

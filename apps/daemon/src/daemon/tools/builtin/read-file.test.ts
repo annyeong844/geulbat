@@ -143,6 +143,36 @@ void test('read_file explicit pages preserve full-file versionToken', async () =
   assert.equal(pagePayload.versionToken, firstPagePayload.versionToken);
 });
 
+void test('read_file exposes a new versionToken when the file changes between pages', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-read-tool-version-change-'),
+  );
+  const filePath = join(computerFileRoot, 'hello.txt');
+  await writeFile(filePath, 'a\nb\nc\n', 'utf8');
+
+  const firstPageResult = await readFileTool.execute(
+    { path: 'hello.txt', offset: 0, limit: 1 },
+    { callId: 'call-read-version-before', computerFileRoot },
+  );
+  await writeFile(filePath, 'a\nchanged\nc\n', 'utf8');
+  const secondPageResult = await readFileTool.execute(
+    { path: 'hello.txt', offset: 1, limit: 1 },
+    { callId: 'call-read-version-after', computerFileRoot },
+  );
+
+  assert.equal(firstPageResult.ok, true);
+  assert.equal(secondPageResult.ok, true);
+  const firstPage = JSON.parse(firstPageResult.output) as {
+    versionToken: string;
+  };
+  const secondPage = JSON.parse(secondPageResult.output) as {
+    content: string;
+    versionToken: string;
+  };
+  assert.equal(secondPage.content, 'changed\n');
+  assert.notEqual(secondPage.versionToken, firstPage.versionToken);
+});
+
 void test('read_file infers the computer root for an admitted absolute path', async () => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-read-computer-'),
@@ -167,6 +197,43 @@ void test('read_file infers the computer root for an admitted absolute path', as
   assert.equal(payload.root, 'computer');
   assert.equal(payload.path, 'outside.txt');
   assert.equal(payload.content, 'computer file\n');
+});
+
+void test('read_file accepts a local WSL UNC alias for a host file', async (t) => {
+  const previousDistroName = process.env.WSL_DISTRO_NAME;
+  t.after(() => {
+    if (previousDistroName === undefined) {
+      delete process.env.WSL_DISTRO_NAME;
+    } else {
+      process.env.WSL_DISTRO_NAME = previousDistroName;
+    }
+  });
+  process.env.WSL_DISTRO_NAME = 'GeulbatTest';
+
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-read-computer-'),
+  );
+  const absolutePath = join(computerFileRoot, 'unc-file.txt');
+  const uncPath = `\\\\wsl.localhost\\GeulbatTest${absolutePath.replaceAll('/', '\\')}`;
+  await writeFile(absolutePath, 'wsl unc file\n', 'utf8');
+
+  const result = await readFileTool.execute(
+    { path: uncPath, limit: 1 },
+    {
+      callId: 'call-read-computer-wsl-unc',
+      computerFileRoot: '/',
+    },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    root: string;
+    path: string;
+    content: string;
+  };
+  assert.equal(payload.root, 'computer');
+  assert.equal(payload.path, absolutePath.slice(1));
+  assert.equal(payload.content, 'wsl unc file\n');
 });
 
 void test('read_file fails closed when the computer root is unavailable', async () => {

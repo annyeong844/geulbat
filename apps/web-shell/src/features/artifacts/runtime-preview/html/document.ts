@@ -2,6 +2,7 @@ const ARTIFACT_RUNTIME_HTML_RESIZE_HELPER = String.raw`(() => {
   const MESSAGE_KIND = 'geulbat.artifact_runtime_host';
   const targetOrigin = window.__GEULBAT_PARENT_ORIGIN__;
   let rafId = 0;
+  let pendingHeight = -1;
   let lastSentHeight = -1;
   const measureResize = () => {
     const docEl = document.documentElement;
@@ -15,6 +16,26 @@ const ARTIFACT_RUNTIME_HTML_RESIZE_HELPER = String.raw`(() => {
       body?.scrollHeight ?? 0,
       body?.offsetHeight ?? 0,
     );
+  };
+  const measureObservedResize = (entries) => {
+    let observedHeight = 0;
+    for (const entry of entries) {
+      if (
+        entry.target !== document.documentElement &&
+        entry.target !== document.body
+      ) {
+        continue;
+      }
+      const borderBoxSize = entry.borderBoxSize;
+      const borderBox = Array.isArray(borderBoxSize)
+        ? borderBoxSize[0]
+        : borderBoxSize;
+      observedHeight = Math.max(
+        observedHeight,
+        Math.ceil(borderBox?.blockSize ?? entry.contentRect?.height ?? 0),
+      );
+    }
+    return observedHeight;
   };
   const sendResize = (height) => {
     if (
@@ -36,34 +57,39 @@ const ARTIFACT_RUNTIME_HTML_RESIZE_HELPER = String.raw`(() => {
     }
   };
 
-  const scheduleResize = () => {
+  const queueResize = (height) => {
+    pendingHeight = height;
     if (rafId !== 0) {
       return;
     }
-    // ResizeObserver/load/resize callbacks run after the browser has updated
-    // layout. Read the content size here, then keep the animation-frame
-    // callback write-only so mounting an iframe while scrolling cannot force a
-    // second synchronous layout inside rAF.
-    const height = measureResize();
     rafId = window.requestAnimationFrame(() => {
       rafId = 0;
+      const height = pendingHeight;
+      pendingHeight = -1;
       sendResize(height);
     });
   };
+  const measureAndQueueResize = () => {
+    queueResize(measureResize());
+  };
 
   if (typeof ResizeObserver === 'function') {
-    const resizeObserver = new ResizeObserver(scheduleResize);
+    // ResizeObserver entries already carry the browser's completed layout.
+    // Consume that snapshot instead of forcing another synchronous layout read
+    // while the runtime document is mounting.
+    const resizeObserver = new ResizeObserver((entries) => {
+      queueResize(measureObservedResize(entries));
+    });
     resizeObserver.observe(document.documentElement);
     if (document.body) {
       resizeObserver.observe(document.body);
     }
+  } else {
+    window.addEventListener('load', measureAndQueueResize);
+    window.addEventListener('resize', measureAndQueueResize);
+    window.setTimeout(measureAndQueueResize, 0);
+    window.setTimeout(measureAndQueueResize, 120);
   }
-
-  window.addEventListener('load', scheduleResize);
-  window.addEventListener('resize', scheduleResize);
-  window.setTimeout(scheduleResize, 0);
-  window.setTimeout(scheduleResize, 120);
-  scheduleResize();
 })();`;
 
 // 프레임 → 부모 back-channel helper. scopeHandle과 parentOrigin은 호스트

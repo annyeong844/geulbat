@@ -86,7 +86,6 @@ void test('records long animation frame evidence with the slowest script source 
   assert.equal(observer, latestObserver);
   assert.deepEqual(latestObserver?.observedOptions, {
     type: 'long-animation-frame',
-    buffered: true,
   });
 
   latestObserver?.emit([
@@ -94,8 +93,8 @@ void test('records long animation frame evidence with the slowest script source 
       name: 'self',
       entryType: 'long-animation-frame',
       startTime: 12.4,
-      duration: 97.6,
-      blockingDuration: 47.2,
+      duration: 197.6,
+      blockingDuration: 147.2,
       scripts: [
         { duration: 12, sourceURL: 'http://localhost:5173/src/fast.ts?t=1' },
         {
@@ -112,10 +111,12 @@ void test('records long animation frame evidence with the slowest script source 
     {
       message: 'browser long-animation-frame',
       detail: {
+        observedEntryCount: 1,
+        reportedEntryCount: 1,
         name: 'self',
         startTimeMs: 12,
-        durationMs: 98,
-        blockingDurationMs: 47,
+        durationMs: 198,
+        blockingDurationMs: 147,
         scriptCount: 2,
         topScript: {
           durationMs: 69,
@@ -126,6 +127,96 @@ void test('records long animation frame evidence with the slowest script source 
       },
     },
   ]);
+});
+
+void test('reports only the most input-blocking long animation frame from one observer delivery', () => {
+  resetObserver(['long-animation-frame']);
+  const warnings: Array<{ message: string; detail: unknown }> = [];
+  startUiResponsivenessObserver({
+    Observer: CapturingPerformanceObserver,
+    logger: {
+      warn(message, detail) {
+        warnings.push({ message, detail });
+      },
+    },
+  });
+
+  latestObserver?.emit([
+    performanceEntry({
+      name: 'non-blocking',
+      entryType: 'long-animation-frame',
+      startTime: 10,
+      duration: 180,
+      blockingDuration: 0,
+      scripts: [],
+    }),
+    performanceEntry({
+      name: 'less-blocking',
+      entryType: 'long-animation-frame',
+      startTime: 20,
+      duration: 212,
+      blockingDuration: 112,
+      scripts: [],
+    }),
+    performanceEntry({
+      name: 'most-blocking',
+      entryType: 'long-animation-frame',
+      startTime: 30,
+      duration: 228,
+      blockingDuration: 128,
+      scripts: [],
+    }),
+  ]);
+
+  assert.deepEqual(warnings, [
+    {
+      message: 'browser long-animation-frame',
+      detail: {
+        observedEntryCount: 3,
+        reportedEntryCount: 2,
+        name: 'most-blocking',
+        startTimeMs: 30,
+        durationMs: 228,
+        blockingDurationMs: 128,
+        scriptCount: 0,
+        topScript: undefined,
+      },
+    },
+  ]);
+});
+
+void test('does not warn for long animation frames with low input-blocking time', () => {
+  resetObserver(['long-animation-frame']);
+  const warnings: string[] = [];
+  startUiResponsivenessObserver({
+    Observer: CapturingPerformanceObserver,
+    logger: {
+      warn(message) {
+        warnings.push(message);
+      },
+    },
+  });
+
+  latestObserver?.emit([
+    performanceEntry({
+      name: 'non-blocking',
+      entryType: 'long-animation-frame',
+      startTime: 10,
+      duration: 73,
+      blockingDuration: 0,
+      scripts: [],
+    }),
+    performanceEntry({
+      name: 'barely-blocking',
+      entryType: 'long-animation-frame',
+      startTime: 20,
+      duration: 118,
+      blockingDuration: 9,
+      scripts: [],
+    }),
+  ]);
+
+  assert.deepEqual(warnings, []);
 });
 
 void test('falls back to long tasks when long animation frames are unavailable', () => {
@@ -142,17 +233,39 @@ void test('falls back to long tasks when long animation frames are unavailable',
 
   assert.deepEqual(latestObserver?.observedOptions, {
     type: 'longtask',
-    buffered: true,
   });
   latestObserver?.emit([
     performanceEntry({
       name: 'self',
       entryType: 'longtask',
       startTime: 1,
-      duration: 52,
+      duration: 152,
     }),
   ]);
   assert.deepEqual(warnings, ['browser longtask']);
+});
+
+void test('does not warn for fallback long tasks below the actionable threshold', () => {
+  resetObserver(['longtask']);
+  const warnings: string[] = [];
+  startUiResponsivenessObserver({
+    Observer: CapturingPerformanceObserver,
+    logger: {
+      warn(message) {
+        warnings.push(message);
+      },
+    },
+  });
+
+  latestObserver?.emit([
+    performanceEntry({
+      name: 'self',
+      entryType: 'longtask',
+      startTime: 1,
+      duration: 68,
+    }),
+  ]);
+  assert.deepEqual(warnings, []);
 });
 
 void test('stays inactive when the browser exposes neither responsiveness entry type', () => {

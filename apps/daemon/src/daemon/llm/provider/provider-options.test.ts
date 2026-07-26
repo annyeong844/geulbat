@@ -25,6 +25,7 @@ void test('resolveProviderRequestOptions returns daemon-local provider defaults'
     model: 'gpt-5.6-sol',
     text: { verbosity: 'medium' },
     reasoning: { effort: 'medium', summary: 'auto' },
+    serviceTier: 'standard',
     modelRoundRetry: defaultModelRoundRetry,
   });
 });
@@ -48,6 +49,7 @@ void test('resolveProviderRequestOptions trims configured provider options', () 
       model: 'gpt-5.4',
       text: { verbosity: 'high' },
       reasoning: { effort: 'xhigh', summary: 'auto' },
+      serviceTier: 'standard',
       modelRoundRetry: {
         llmConnectionLost: { maxRetries: 4 },
         llmOverloaded: { maxRetries: 5 },
@@ -83,6 +85,7 @@ void test('resolveProviderRequestOptions selects Grok OAuth provider and model f
       model: 'grok-custom',
       text: { verbosity: 'medium' },
       reasoning: { effort: 'medium', summary: 'auto' },
+      serviceTier: 'standard',
       modelRoundRetry: defaultModelRoundRetry,
     },
   );
@@ -95,6 +98,22 @@ void test('resolveProviderRequestOptions uses the Grok registry default when pro
   );
 });
 
+void test('resolveProviderRequestOptions selects the isolated Qwen Token Plan provider', () => {
+  assert.deepEqual(
+    resolveProviderRequestOptions({
+      GEULBAT_LLM_PROVIDER: 'qwen_token_plan',
+      GEULBAT_QWEN_MODEL: ' qwen3.8-max-preview ',
+    }),
+    {
+      providerId: 'qwen_token_plan',
+      model: 'qwen3.8-max-preview',
+      text: { verbosity: 'medium' },
+      reasoning: { effort: 'medium', summary: 'auto' },
+      serviceTier: 'standard',
+      modelRoundRetry: defaultModelRoundRetry,
+    },
+  );
+});
 void test('resolveProviderRequestOptionsForRun projects the selected model owner and reasoning override', () => {
   assert.deepEqual(
     resolveProviderRequestOptionsForRun(
@@ -115,6 +134,7 @@ void test('resolveProviderRequestOptionsForRun projects the selected model owner
       model: 'grok-4.5',
       text: { verbosity: 'medium' },
       reasoning: { effort: 'high', summary: 'auto' },
+      serviceTier: 'standard',
       modelRoundRetry: defaultModelRoundRetry,
     },
   );
@@ -134,8 +154,22 @@ void test('resolveProviderRequestOptionsForRun preserves configured model when p
       model: 'grok-custom',
       text: { verbosity: 'medium' },
       reasoning: { effort: 'xhigh', summary: 'auto' },
+      serviceTier: 'standard',
       modelRoundRetry: defaultModelRoundRetry,
     },
+  );
+});
+
+void test('resolveProviderRequestOptionsForRun pins the selected Fast tier', () => {
+  assert.equal(
+    resolveProviderRequestOptionsForRun(resolveProviderRequestOptions({}), {
+      providerModel: {
+        providerId: 'openai_codex_direct',
+        model: 'gpt-5.6-terra',
+      },
+      serviceTier: 'fast',
+    }).serviceTier,
+    'fast',
   );
 });
 
@@ -150,6 +184,32 @@ void test('automatic child routing selects a requested heterogeneous model with 
           model: 'gpt-5.6-sol',
         },
         reasoningEffort: 'xhigh',
+        serviceTier: 'fast',
+      },
+    }),
+    {
+      ok: true,
+      pin: {
+        modelId: 'grok-4.5',
+        providerRunSelection: {
+          providerModel: { providerId: 'grok_oauth', model: 'grok-4.5' },
+          reasoningEffort: 'high',
+          serviceTier: 'standard',
+        },
+        selectionSource: 'model_selected',
+      },
+    },
+  );
+});
+
+void test('ultra child routing clamps every selected model to its catalog maximum', () => {
+  assert.deepEqual(
+    resolveChildModelPin({
+      ultraReasoning: true,
+      routing: { mode: 'auto' },
+      requestedChoice: {
+        modelId: 'grok-4.5',
+        reasoningEffort: 'low',
       },
     }),
     {
@@ -161,6 +221,33 @@ void test('automatic child routing selects a requested heterogeneous model with 
           reasoningEffort: 'high',
         },
         selectionSource: 'model_selected',
+      },
+    },
+  );
+  assert.deepEqual(
+    resolveChildModelPin({
+      ultraReasoning: true,
+      routing: { mode: 'auto' },
+      inheritedSelection: {
+        providerModel: {
+          providerId: 'qwen_token_plan',
+          model: 'qwen3.8-max-preview',
+        },
+        reasoningEffort: 'medium',
+      },
+    }),
+    {
+      ok: true,
+      pin: {
+        modelId: 'qwen3.8-max-preview',
+        providerRunSelection: {
+          providerModel: {
+            providerId: 'qwen_token_plan',
+            model: 'qwen3.8-max-preview',
+          },
+          reasoningEffort: 'max',
+        },
+        selectionSource: 'inherited',
       },
     },
   );
@@ -218,6 +305,14 @@ void test('fixed child routing lets the model choose effort only when the user l
         modelId: 'gpt-5.6-terra',
         reasoningEffort: 'high',
       },
+      inheritedSelection: {
+        providerModel: {
+          providerId: 'openai_codex_direct',
+          model: 'gpt-5.6-sol',
+        },
+        reasoningEffort: 'xhigh',
+        serviceTier: 'fast',
+      },
     }),
     {
       ok: true,
@@ -229,6 +324,7 @@ void test('fixed child routing lets the model choose effort only when the user l
             model: 'gpt-5.6-terra',
           },
           reasoningEffort: 'high',
+          serviceTier: 'fast',
         },
         selectionSource: 'user_fixed',
       },

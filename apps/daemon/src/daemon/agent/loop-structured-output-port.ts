@@ -1,5 +1,10 @@
-import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
+import type {
+  AgentRuntimeAgentServices,
+  AgentRuntimePtcServices,
+  AgentRuntimeServices,
+} from '../daemon-runtime-contract.js';
 import type { FunctionCall, ProviderStructuredOutput } from '../llm/index.js';
+import { createReactBundleDockerCommandRunner } from '../react-bundle-docker-command-runner.js';
 import type { RunContext } from '../run-context.js';
 import type { AgentResult } from './agent-result.js';
 import {
@@ -26,8 +31,21 @@ export interface AgentLoopStructuredOutputPort {
   ): Promise<AgentLoopStructuredOutputResult>;
 }
 
+// Structured-output routing reads the fixed-probe runtime, the sandbox
+// attempt store, and the react-bundle ingress policy — declare exactly that
+// surface instead of the full runtime bag.
+interface AgentLoopStructuredOutputServices {
+  agent: Pick<
+    AgentRuntimeAgentServices,
+    'reactBundleStructuredOutputIngressPolicy'
+  >;
+  ptc: Pick<AgentRuntimePtcServices, 'fixedProbe'>;
+  sandboxAttempts: AgentRuntimeServices['sandboxAttempts'];
+  hostCommands: AgentRuntimeServices['hostCommands'];
+}
+
 export function createAgentLoopStructuredOutputPort(
-  runtimeServices: AgentRuntimeServices,
+  runtimeServices: AgentLoopStructuredOutputServices,
 ): AgentLoopStructuredOutputPort {
   return {
     async processStructuredOutputs(args) {
@@ -40,7 +58,7 @@ export function createAgentLoopStructuredOutputPort(
         firstStructuredOutput?.kind === PTC_FIXED_PROBE_STRUCTURED_OUTPUT_KIND
           ? await runPtcFixedProbeStructuredOutputCaller({
               runContext: args.runContext,
-              runtime: runtimeServices.ptcFixedProbe,
+              runtime: runtimeServices.ptc.fixedProbe,
               structuredOutputs: args.structuredOutputs,
               functionCalls: args.functionCalls,
               ...(args.signal === undefined ? {} : { signal: args.signal }),
@@ -51,7 +69,11 @@ export function createAgentLoopStructuredOutputPort(
               structuredOutputs: args.structuredOutputs,
               functionCalls: args.functionCalls,
               ingressPolicy:
-                runtimeServices.reactBundleStructuredOutputIngressPolicy,
+                runtimeServices.agent.reactBundleStructuredOutputIngressPolicy,
+              dockerCommandRunner: createReactBundleDockerCommandRunner({
+                hostCommands: runtimeServices.hostCommands,
+                stateRoot: args.runContext.stateRoot,
+              }),
               ...(args.signal === undefined ? {} : { signal: args.signal }),
             });
 

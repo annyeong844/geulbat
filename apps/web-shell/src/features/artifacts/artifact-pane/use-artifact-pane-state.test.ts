@@ -27,17 +27,13 @@ void test('useArtifactPaneState coordinates pane tab and apply handoff', async (
   const runtimeFrame = createRuntimeFrameRecorder();
   const hook = await renderHook(useArtifactPaneState, {
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'markdown',
         digest: 'markdown-demo',
         payload: 'hello artifact',
-        raw: 'hello artifact',
       },
     }),
     isRunning: false,
-    isLiveStreamingArtifact: false,
     renderRuntimeFrame: runtimeFrame.renderRuntimeFrame,
     onStartArtifactRun: (request) => {
       startedRuns.push(request);
@@ -45,7 +41,6 @@ void test('useArtifactPaneState coordinates pane tab and apply handoff', async (
   });
 
   assert.equal(hook.result.current.tab, 'show');
-  assert.equal(hook.result.current.canShowPreview, true);
   assert.equal(hook.result.current.showApply, true);
   assert.equal(hook.result.current.canApply, true);
 
@@ -67,17 +62,13 @@ void test('useArtifactPaneState forwards runtime previews through the injected f
   const runtimeFrame = createRuntimeFrameRecorder();
   const hook = await renderHook(useArtifactPaneState, {
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
         digest: 'js-demo',
         payload: 'document.body.textContent = "state";',
-        raw: 'document.body.textContent = "state";',
       },
     }),
     isRunning: false,
-    isLiveStreamingArtifact: false,
     renderRuntimeFrame: runtimeFrame.renderRuntimeFrame,
   });
 

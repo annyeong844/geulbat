@@ -28,7 +28,12 @@ void test('createRunSessionViewModel combines visible projection with controller
         transcriptEntries: [{ kind: 'assistant_text', text: 'commentary' }],
         finalAnswerText: 'final',
         pendingApproval,
+        providerRuntime: {
+          phase: 'rate_limit_waiting',
+          observedAt: '2026-07-23T11:00:00.000Z',
+        },
         streamError: '[internal] failed',
+        streamErrorCode: 'internal',
       },
       sessionError: null,
       backgroundNotificationsByThread: {
@@ -53,14 +58,25 @@ void test('createRunSessionViewModel combines visible projection with controller
     },
     permissionMode: 'full_access',
     modelId: 'grok-4.5',
-    reasoningEffort: 'medium',
+    reasoningEffort: 'ultra',
+    serviceTier: 'standard',
     subagentModelRouting: {
       mode: 'fixed',
       choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
     },
-    setPermissionMode: () => {
+    setPermissionMode: async () => {
       seen.push('setPermissionMode');
     },
+    planModeRequested: false,
+    setPlanModeRequested: () => {},
+    planModeIntensity: 'visual',
+    setPlanModeIntensity: () => {},
+    planModeDepth: 'standard',
+    setPlanModeDepth: () => {},
+    planningWorkflow: null,
+    goal: null,
+    followupSuggestion: null,
+    dismissFollowupSuggestion: () => {},
     setModelId: () => {
       seen.push('setModelId');
     },
@@ -68,11 +84,17 @@ void test('createRunSessionViewModel combines visible projection with controller
       seen.push('prepareProviderTransition');
     },
     setReasoningEffort: () => {},
+    setServiceTier: () => {
+      seen.push('setServiceTier');
+    },
     setSubagentModelRouting: () => {
       seen.push('setSubagentModelRouting');
     },
     sendPrompt: async () => {
       seen.push('sendPrompt');
+    },
+    sendPromptAsNewTurn: async () => {
+      seen.push('sendPromptAsNewTurn');
     },
     sendWidgetPrompt: async () => {
       seen.push('sendWidgetPrompt');
@@ -102,6 +124,9 @@ void test('createRunSessionViewModel combines visible projection with controller
     handleCancel: async () => {
       seen.push('handleCancel');
     },
+    stopChildRun: async () => {
+      seen.push('stopChildRun');
+    },
   });
 
   assert.equal(viewModel.visibleThreadId, THREAD_ID_VALUE);
@@ -114,8 +139,17 @@ void test('createRunSessionViewModel combines visible projection with controller
   assert.equal(viewModel.finalAnswerText, 'final');
   assert.equal(viewModel.pendingApproval?.threadId, THREAD_ID_VALUE);
   assert.equal(viewModel.modelId, 'grok-4.5');
-  assert.equal(viewModel.contextUsage?.inputTokens, 212_500);
+  assert.equal(viewModel.serviceTier, 'standard');
+  if (
+    viewModel.contextUsage === null ||
+    viewModel.contextUsage.quality === 'unknown'
+  ) {
+    assert.fail('expected known context usage');
+  }
+  assert.equal(viewModel.contextUsage.inputTokens, 212_500);
   assert.equal(viewModel.streamError, '[internal] failed');
+  assert.equal(viewModel.streamErrorCode, 'internal');
+  assert.equal(viewModel.providerRuntime?.phase, 'rate_limit_waiting');
   assert.deepEqual(viewModel.backgroundNotifications, [
     {
       kind: 'subagent_activity',
@@ -125,9 +159,14 @@ void test('createRunSessionViewModel combines visible projection with controller
     },
   ]);
 
-  viewModel.setPermissionMode('basic');
+  await viewModel.setPermissionMode('basic');
   viewModel.setModelId('gpt-5.6-sol');
-  await viewModel.prepareProviderTransition('gpt-5.6-sol');
+  viewModel.setServiceTier('fast');
+  await viewModel.prepareProviderTransition({
+    sourceModelId: 'grok-4.5',
+    targetModelId: 'gpt-5.6-sol',
+    reasoningEffort: 'medium',
+  });
   await viewModel.sendPrompt('prompt');
   await viewModel.startRunRequest({
     prompt: 'prompt',
@@ -135,15 +174,21 @@ void test('createRunSessionViewModel combines visible projection with controller
   await viewModel.handleApprove(pendingApproval, 'session');
   await viewModel.handleDeny(pendingApproval);
   await viewModel.handleCancel();
+  await viewModel.stopChildRun({
+    parentRunId: 'run-parent',
+    childRunId: 'run-child',
+  });
 
   assert.deepEqual(seen, [
     'setPermissionMode',
     'setModelId',
+    'setServiceTier',
     'prepareProviderTransition',
     'sendPrompt',
     'startRunRequest',
     'handleApprove',
     'handleDeny',
     'handleCancel',
+    'stopChildRun',
   ]);
 });

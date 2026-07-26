@@ -1,6 +1,7 @@
 import { createArtifactRefKey } from '@geulbat/protocol/artifacts';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ApprovalRequired } from '@geulbat/protocol/run-approval';
+import type { ErrorCode } from '@geulbat/protocol/errors';
 import type { RunTranscriptEntry } from '../lib/run-transcript-entry.js';
 
 import {
@@ -22,6 +23,8 @@ export function activateRunningRun(
     ...clearPendingApprovalState(activeRunView),
     threadId,
     runId,
+    // 이전 런의 미커밋 라이브 아티팩트 스트림은 새 런과 무관하다
+    streamingArtifactText: '',
   };
 }
 
@@ -42,7 +45,12 @@ export function activateCommittedArtifact(
       ...activeRunView.artifactsByRef,
       [createArtifactRefKey(artifactRef)]: artifact,
     },
-    activeArtifactRef: artifactRef,
+    // 이미지 아티팩트는 채팅 인라인 삽화다(inline-image-artifact.tsx) —
+    // active로 승격하면 중앙 아티팩트 패널이 자동으로 열려 같은 그림이
+    // 두 번 뜬다. 조회용 등록만 하고 승격은 건너뛴다.
+    ...(artifact.renderer === 'image'
+      ? {}
+      : { activeArtifactRef: artifactRef }),
   };
 }
 
@@ -54,12 +62,14 @@ export function clearPendingApprovalState(
     pendingApproval: null,
     pendingApprovals: [],
     streamError: null,
+    streamErrorCode: null,
   };
 }
 
 export function setRunErrorState(
   activeRunView: ActiveRunViewState,
   threadId: string | null,
+  code: ErrorCode | null,
   message: string,
 ): ActiveRunViewState {
   return {
@@ -69,6 +79,7 @@ export function setRunErrorState(
     pendingApproval: null,
     pendingApprovals: [],
     streamError: message,
+    streamErrorCode: code,
   };
 }
 
@@ -83,6 +94,7 @@ export function setRunSyncFailedState(
     pendingApproval: null,
     pendingApprovals: [],
     streamError: message,
+    streamErrorCode: null,
   };
 }
 
@@ -176,6 +188,7 @@ export function clearResolvedPendingApproval(
     pendingApproval: pendingApprovals[0] ?? null,
     pendingApprovals,
     streamError: null,
+    streamErrorCode: null,
   };
 }
 

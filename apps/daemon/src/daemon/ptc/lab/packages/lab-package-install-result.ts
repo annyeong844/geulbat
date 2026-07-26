@@ -5,6 +5,7 @@ import {
   mapPtcSessionDockerNonExitCommandResult,
   runPtcSessionDockerCommand,
 } from '../session/session-docker-command.js';
+import type { PtcSessionDockerCommandRunner } from '../session/session-docker-contract.js';
 import {
   PTC_LAB_PACKAGE_INSTALL_WORKDIR_EXISTS_EXIT_CODE,
   PTC_LAB_PACKAGE_INSTALL_WORKDIR_EXISTS_MARKER,
@@ -25,8 +26,9 @@ import {
 
 export async function runDefaultPackageInstallRunner(
   invocation: PtcLabPackageInstallRunnerInvocation,
+  commandRunner: PtcSessionDockerCommandRunner = runPtcSessionDockerCommand,
 ): Promise<PtcLabPackageInstallRunnerResult> {
-  const result = await runPtcSessionDockerCommand(invocation);
+  const result = await commandRunner(invocation);
   if (result.kind === 'exit') {
     if (
       result.exitCode === PTC_LAB_PACKAGE_INSTALL_WORKDIR_EXISTS_EXIT_CODE &&

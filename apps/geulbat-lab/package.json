@@ -1,0 +1,27 @@
+{
+  "name": "@geulbat/product-lab",
+  "version": "0.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:deps": "npm --prefix ../.. run build:packages && npm --prefix ../geulbat run build:app",
+    "build:app": "tsc -b tsconfig.app.json",
+    "build": "npm run build:deps && npm run build:app",
+    "check:app": "tsc --noEmit -p tsconfig.app.json",
+    "check": "npm run build:deps && npm run check:app",
+    "test:files": "node ../../scripts/run-workspace-node-tests.mjs --workspace geulbat-lab --tsconfig ./tsconfig.test.json",
+    "test:app": "npm run test:files -- \"**/*.test.js\"",
+    "test": "npm run build:deps && npm run test:app"
+  },
+  "dependencies": {
+    "@geulbat/content-identity": "*",
+    "@geulbat/product": "*",
+    "@geulbat/xharness": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}

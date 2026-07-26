@@ -1,21 +1,197 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { agentLoopKernelImplementation } from '@geulbat/agent-loop/kernel';
+import type { ToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
+
 import { agentSpawnTool, createAgentSpawnTool } from './agent-spawn.js';
 import { createSubagentRunLauncher } from '../../agent/subagent-support.js';
-import { createDaemonContext } from '../../context.js';
+import { createAgentLoopImplementationAdmission } from '../../agent/loop-implementation-admission.js';
+import { createDaemonContext as createBaseDaemonContext } from '../../context.js';
 import { createRunState } from '../../agent/runtime/run-state.js';
 import { threadFilePath } from '../../sessions/paths.js';
 import { testRunId } from '../../../test-support/run-id.js';
 import { makeRunContext } from '../../../test-support/run-context.js';
 import { TEST_INHERITED_SOL_MODEL_PIN } from '../../../test-support/subagent-model-routing.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
-import { assertRunId } from '@geulbat/protocol/ids';
+import { assertRunId, assertThreadId } from '@geulbat/protocol/ids';
 import { isToolObjectParameters } from '../types.js';
+import type {
+  DurableSubagentLaunchRequest,
+  SubagentLaunchRequestStore,
+} from '../../subagent-runtime-contracts.js';
+
+function createDaemonContext(
+  options: Parameters<typeof createBaseDaemonContext>[0] = {},
+): ReturnType<typeof createBaseDaemonContext> {
+  return createBaseDaemonContext({
+    ...options,
+    subagentLaunchRequests: createTestSubagentLaunchRequestStore(),
+  });
+}
+
+function createTestSubagentLaunchRequestStore(): SubagentLaunchRequestStore {
+  const requests = new Map<string, DurableSubagentLaunchRequest>();
+  let enqueueOrder = 0;
+  const keyOf = (parentRunId: string, toolCallId: string) =>
+    `${parentRunId}\u0000${toolCallId}`;
+  const update = (
+    childRunId: string,
+    launchState: DurableSubagentLaunchRequest['launchState'],
+    failureReason: string | null,
+  ): void => {
+    const current = [...requests.values()].find(
+      (request) => request.childRunId === childRunId,
+    );
+    assert.ok(current, `expected durable launch request ${childRunId}`);
+    requests.set(keyOf(current.parentRunId, current.toolCallId), {
+      ...current,
+      launchState,
+      deferReason: null,
+      failureReason,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  return {
+    enqueueSubagentLaunchBatch(inputs) {
+      const batchId = inputs.length > 1 ? randomUUID() : null;
+      return inputs.map((input, batchPosition) => {
+        const timestamp = new Date().toISOString();
+        const request: DurableSubagentLaunchRequest = {
+          enqueueOrder: (enqueueOrder += 1),
+          childRunId: assertRunId(randomUUID()),
+          childThreadId: assertThreadId(randomUUID()),
+          previousChildRunId: null,
+          parentRunId: input.parentRunId,
+          ownerThreadId: input.ownerThreadId,
+          toolCallId: input.toolCallId,
+          batchId,
+          batchPosition,
+          launchState: 'queued',
+          priorityClass: 'normal',
+          deferReason: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          failureReason: null,
+          runtime: {
+            phase: 'queued',
+            observedAt: timestamp,
+            partialOutputAvailable: false,
+          },
+        };
+        requests.set(keyOf(input.parentRunId, input.toolCallId), request);
+        return request;
+      });
+    },
+    readSubagentLaunchRequest({ parentRunId, toolCallId }) {
+      return requests.get(keyOf(parentRunId, toolCallId));
+    },
+    readSubagentLaunchRequestByChildRunId(childRunId) {
+      return [...requests.values()].find(
+        (request) => request.childRunId === childRunId,
+      );
+    },
+    readQueuedSubagentLaunchRequests() {
+      const priorityOrder = { high: 0, normal: 1, low: 2 } as const;
+      return [...requests.values()]
+        .filter((request) => request.launchState === 'queued')
+        .sort(
+          (left, right) =>
+            priorityOrder[left.priorityClass] -
+              priorityOrder[right.priorityClass] ||
+            left.enqueueOrder - right.enqueueOrder,
+        );
+    },
+    markSubagentLaunchDeferredBatch({ childRunIds, deferReason }) {
+      return childRunIds.map((childRunId) => {
+        const current = [...requests.values()].find(
+          (request) => request.childRunId === childRunId,
+        );
+        assert.ok(current);
+        assert.equal(current.launchState, 'queued');
+        const updated = {
+          ...current,
+          deferReason,
+          updatedAt: new Date().toISOString(),
+        };
+        requests.set(keyOf(current.parentRunId, current.toolCallId), updated);
+        return updated;
+      });
+    },
+    cancelQueuedSubagentLaunchRequest({ childRunId, ownerThreadId }) {
+      const current = [...requests.values()].find(
+        (request) => request.childRunId === childRunId,
+      );
+      assert.ok(current);
+      assert.equal(current.ownerThreadId, ownerThreadId);
+      if (current.launchState === 'queued') {
+        update(childRunId, 'cancelled', null);
+      }
+      const updated = [...requests.values()].find(
+        (request) => request.childRunId === childRunId,
+      );
+      assert.ok(updated);
+      return updated;
+    },
+    updateQueuedSubagentLaunchPriority({
+      childRunId,
+      ownerThreadId,
+      priorityClass,
+    }) {
+      const current = [...requests.values()].find(
+        (request) => request.childRunId === childRunId,
+      );
+      assert.ok(current);
+      assert.equal(current.ownerThreadId, ownerThreadId);
+      if (
+        current.launchState === 'queued' &&
+        current.priorityClass !== priorityClass
+      ) {
+        requests.set(keyOf(current.parentRunId, current.toolCallId), {
+          ...current,
+          priorityClass,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      const updated = [...requests.values()].find(
+        (request) => request.childRunId === childRunId,
+      );
+      assert.ok(updated);
+      return updated;
+    },
+    retryInterruptedSubagentLaunch() {
+      throw new Error(
+        'agent_spawn test store does not retry interrupted launches',
+      );
+    },
+    markSubagentLaunchStarting(childRunId) {
+      update(childRunId, 'starting', null);
+    },
+    markSubagentLaunchStarted(childRunId) {
+      update(childRunId, 'started', null);
+    },
+    markSubagentLaunchFailedToStart({ childRunId, reason }) {
+      update(childRunId, 'failed_to_start', reason);
+    },
+    recordSubagentRuntimeObservation({ childRunId, runtime }) {
+      const current = [...requests.values()].find(
+        (request) => request.childRunId === childRunId,
+      );
+      assert.ok(current);
+      requests.set(keyOf(current.parentRunId, current.toolCallId), {
+        ...current,
+        runtime,
+        updatedAt: runtime.observedAt,
+      });
+    },
+  };
+}
 
 void test('agent_spawn outward parameters omit compatibility-only mode', () => {
   const parameters = agentSpawnTool.parameters;
@@ -23,6 +199,7 @@ void test('agent_spawn outward parameters omit compatibility-only mode', () => {
   assert.deepEqual(Object.keys(parameters.properties), [
     'task',
     'subagent_type',
+    'capabilities',
     'model_id',
     'reasoning_effort',
   ]);
@@ -135,6 +312,52 @@ void test('agent_spawn rejects reasoning_effort without model_id', async () => {
   assert.match(result.error ?? '', /reasoning_effort requires model_id/);
 });
 
+void test('agent_spawn rejects recursive launch from a non-Ultra child', async () => {
+  const threadId = testThreadId(79);
+  const daemonContext = createDaemonContext();
+  const childRunState = createRunState({
+    runId: 'standard-child',
+    runContext: makeRunContext({
+      threadId,
+      stateRoot: '/tmp/home-state',
+    }),
+    parentRunId: 'root-run',
+  });
+
+  const result = await agentSpawnTool.execute(
+    {
+      task: 'delegate again',
+      subagent_type: 'explorer',
+    },
+    {
+      kind: 'agent',
+      ultraReasoning: false,
+      runOwnerKind: 'child',
+      callId: 'call-standard-recursive',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      stateRoot: '/tmp/home-state',
+      workingDirectory: '/tmp/home-state',
+      threadId,
+      runId: 'standard-child',
+      runState: childRunState,
+      signal: new AbortController().signal,
+      runSignal: new AbortController().signal,
+      currentFile: undefined,
+      selection: undefined,
+      approvalGranted: false,
+      permissionMode: 'basic',
+      memoryIndex: undefined,
+      emitAgentEvent: () => {},
+      runtimeServices: daemonContext,
+      computerSessionId: 'standard-child-session',
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /only with Ultra reasoning/);
+});
+
 void test('agent_spawn fixed routing rejects a conflicting model request', async () => {
   const threadId = testThreadId(80);
   const parentRunId = testRunId('fixed-model-conflict-parent');
@@ -167,8 +390,8 @@ void test('agent_spawn fixed routing rejects a conflicting model request', async
       }),
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
-      agentSpawnRuntime: daemonContext,
-      approvalSessionId: 'fixed-routing-session',
+      runtimeServices: daemonContext,
+      computerSessionId: 'fixed-routing-session',
       providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
       subagentModelRouting: {
         mode: 'fixed',
@@ -221,8 +444,8 @@ void test('agent_spawn automatic routing selects Grok with its default effort', 
       }),
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
-      agentSpawnRuntime: daemonContext,
-      approvalSessionId: 'automatic-routing-session',
+      runtimeServices: daemonContext,
+      computerSessionId: 'automatic-routing-session',
       providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
       subagentModelRouting: { mode: 'auto' },
     },
@@ -262,7 +485,7 @@ void test('agent_spawn automatic routing selects Grok with its default effort', 
   });
 });
 
-void test('agent_spawn allows child runs to launch nested helper agents', async () => {
+void test('agent_spawn allows an explicitly PTC-enabled explorer to launch nested helper agents', async () => {
   const childThreadId = testThreadId(1);
   const daemonContext = createDaemonContext();
   const childRunState = createRunState({
@@ -306,18 +529,29 @@ void test('agent_spawn allows child runs to launch nested helper agents', async 
     {
       task: 'read files',
       subagent_type: 'explorer',
+      capabilities: ['ptc'],
     },
     {
+      kind: 'agent',
+      ultraReasoning: true,
+      runOwnerKind: 'child',
       callId: 'call-2',
       providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
       stateRoot: '/tmp/home-state',
+      workingDirectory: '/tmp/home-state',
       threadId: childThreadId,
       runId: 'child-run',
       runState: childRunState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
-      agentSpawnRuntime: daemonContext,
-      approvalSessionId: 'nested-helper-session',
+      currentFile: undefined,
+      selection: undefined,
+      approvalGranted: false,
+      permissionMode: 'basic',
+      memoryIndex: undefined,
+      emitAgentEvent: () => {},
+      runtimeServices: daemonContext,
+      computerSessionId: 'nested-helper-session',
     },
   );
 
@@ -343,6 +577,8 @@ void test('agent_spawn allows child runs to launch nested helper agents', async 
     'agent_spawn',
     'agent_wait',
     'agent_stop',
+    'agent_set_priority',
+    'agent_retry',
   ]);
   assert.deepEqual(capturedAllowedRegistryNames, [
     'list_files',
@@ -354,6 +590,8 @@ void test('agent_spawn allows child runs to launch nested helper agents', async 
     'agent_spawn',
     'agent_wait',
     'agent_stop',
+    'agent_set_priority',
+    'agent_retry',
   ]);
   assert.equal(capturedPromptProfile, 'explorer');
   assert.ok(capturedAllowedRegistryNames?.includes('agent_spawn'));
@@ -386,6 +624,89 @@ void test('agent_spawn allows child runs to launch nested helper agents', async 
     daemonContext.childRuns.getChildRun(nestedChildRunId)?.status,
     'completed',
   );
+  assert.deepEqual(
+    daemonContext.childRuns.getChildRun(nestedChildRunId)?.capabilities,
+    ['ptc'],
+  );
+});
+
+void test('agent_spawn keeps ordinary explorers on the typed read and orchestration surface', async () => {
+  const threadId = testThreadId(101);
+  const daemonContext = createDaemonContext();
+  const parentState = createRunState({
+    runId: 'top-run-typed-explorer',
+    runContext: makeRunContext({
+      threadId,
+      stateRoot: '/tmp/home-state',
+    }),
+  });
+  let capturedDirectRegistryNames: readonly string[] | undefined;
+  let capturedAllowedRegistryNames: readonly string[] | undefined;
+  const testAgentSpawnTool = createAgentSpawnTool({
+    startBackgroundRun: createSubagentRunLauncher({
+      runAgentLoop: async (input) => {
+        capturedDirectRegistryNames = input.toolSurface?.directRegistryNames;
+        capturedAllowedRegistryNames = input.toolSurface?.allowedRegistryNames;
+        return { ok: true, finalProse: 'typed explorer complete' };
+      },
+    }).startBackgroundRun,
+  });
+
+  const result = await testAgentSpawnTool.execute(
+    { task: 'inspect files', subagent_type: 'explorer' },
+    {
+      callId: 'call-typed-explorer',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      stateRoot: '/tmp/home-state',
+      threadId,
+      runId: 'top-run-typed-explorer',
+      runState: parentState,
+      signal: new AbortController().signal,
+      runSignal: new AbortController().signal,
+      runtimeServices: daemonContext,
+      computerSessionId: 'typed-explorer-session',
+    },
+  );
+
+  assert.equal(result.ok, true);
+  for (
+    let attempt = 0;
+    attempt < 50 && !capturedDirectRegistryNames;
+    attempt += 1
+  ) {
+    await delay(10);
+  }
+  const expectedToolNames = [
+    'list_files',
+    'read_file',
+    'read_tool_output',
+    'search_files',
+    'agent_wait',
+    'agent_stop',
+    'agent_set_priority',
+    'agent_retry',
+  ];
+  assert.deepEqual(capturedDirectRegistryNames, expectedToolNames);
+  assert.deepEqual(capturedAllowedRegistryNames, expectedToolNames);
+});
+
+void test('agent_spawn rejects PTC capability on worker children', async () => {
+  const result = await agentSpawnTool.execute(
+    {
+      task: 'rewrite file',
+      subagent_type: 'worker',
+      capabilities: ['ptc'],
+    },
+    {
+      callId: 'call-worker-ptc-rejected',
+      signal: new AbortController().signal,
+      runSignal: new AbortController().signal,
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'invalid_args');
+  assert.match(result.error ?? '', /only to explorer/u);
 });
 
 void test('agent_spawn rejects worker spawn when approval routing is unavailable', async () => {
@@ -418,7 +739,7 @@ void test('agent_spawn rejects worker spawn when approval routing is unavailable
   assert.match(result.error ?? '', /approval event routing/);
 });
 
-void test('agent_spawn fails closed when the connection approval session is unavailable', async () => {
+void test('agent_spawn fails closed when the computer session is unavailable', async () => {
   const threadId = testThreadId(40);
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
@@ -446,7 +767,7 @@ void test('agent_spawn fails closed when the connection approval session is unav
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
-      agentSpawnRuntime: daemonContext,
+      runtimeServices: daemonContext,
     },
   );
 
@@ -460,8 +781,65 @@ void test('agent_spawn fails closed when the connection approval session is unav
   assert.equal(payload.ok, false);
   assert.equal(payload.launchState, 'rejected');
   assert.equal(payload.errorCode, 'execution_failed');
-  assert.match(payload.error, /approval session is unavailable/u);
+  assert.match(payload.error, /computer session is unavailable/u);
   assert.equal(childLoopCalled, false);
+});
+
+void test('agent_spawn rejects incompatible loop contracts before child run admission', async () => {
+  const threadId = testThreadId(41);
+  const daemonContext = createDaemonContext();
+  const parentState = createRunState({
+    runId: 'top-run-incompatible-child-loop',
+    runContext: makeRunContext({ threadId, stateRoot: '/tmp/home-state' }),
+  });
+  const incompatible = {
+    ...agentLoopKernelImplementation,
+    implementationId: 'test.incompatible-child-loop',
+    contractVersion: '2',
+  };
+  let childLoopCalled = false;
+  const testAgentSpawnTool = createAgentSpawnTool({
+    startBackgroundRun: createSubagentRunLauncher({
+      loopImplementationAdmission: createAgentLoopImplementationAdmission({
+        additionalImplementations: [incompatible],
+        selectImplementationId: () => incompatible.implementationId,
+      }),
+      runAgentLoop: async () => {
+        childLoopCalled = true;
+        return { ok: true, finalProse: 'must not run' };
+      },
+    }).startBackgroundRun,
+  });
+
+  const result = await testAgentSpawnTool.execute(
+    { task: 'inspect files', subagent_type: 'explorer' },
+    {
+      callId: 'call-incompatible-child-loop',
+      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+      stateRoot: '/tmp/home-state',
+      threadId,
+      runId: 'top-run-incompatible-child-loop',
+      runState: parentState,
+      signal: new AbortController().signal,
+      runSignal: new AbortController().signal,
+      runtimeServices: daemonContext,
+      computerSessionId: 'incompatible-child-loop-session',
+    },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    ok: boolean;
+    launchState: string;
+    errorCode: string;
+    error: string;
+  };
+  assert.equal(payload.ok, false);
+  assert.equal(payload.launchState, 'rejected');
+  assert.equal(payload.errorCode, 'execution_failed');
+  assert.match(payload.error, /contract is incompatible/u);
+  assert.equal(childLoopCalled, false);
+  assert.deepEqual([...parentState.backgroundChildRunIds], []);
 });
 
 void test('agent_spawn returns launch-only ack and tracks child state in the registry', async () => {
@@ -506,8 +884,8 @@ void test('agent_spawn returns launch-only ack and tracks child state in the reg
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
-      agentSpawnRuntime: daemonContext,
-      approvalSessionId: 'background-launch-session',
+      runtimeServices: daemonContext,
+      computerSessionId: 'background-launch-session',
     },
   );
 
@@ -589,8 +967,8 @@ void test('agent_spawn logs child loop throws before publishing terminal failure
         runState: parentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
-        agentSpawnRuntime: daemonContext,
-        approvalSessionId: 'throw-log-session',
+        runtimeServices: daemonContext,
+        computerSessionId: 'throw-log-session',
       },
     );
 
@@ -680,8 +1058,8 @@ void test('agent_spawn uses child error event messages as terminal child results
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
-      agentSpawnRuntime: daemonContext,
-      approvalSessionId: 'child-error-event-session',
+      runtimeServices: daemonContext,
+      computerSessionId: 'child-error-event-session',
     },
   );
 
@@ -753,8 +1131,8 @@ void test('agent_spawn preserves child success when assistant transcript persist
         runState: parentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
-        agentSpawnRuntime: daemonContext,
-        approvalSessionId: 'transcript-failure-session',
+        runtimeServices: daemonContext,
+        computerSessionId: 'transcript-failure-session',
       },
     );
 
@@ -851,8 +1229,8 @@ void test('agent_spawn catches async publish failures without leaking unhandled 
         runState: parentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
-        agentSpawnRuntime: daemonContext,
-        approvalSessionId: 'publish-failure-session',
+        runtimeServices: daemonContext,
+        computerSessionId: 'publish-failure-session',
       },
     );
 
@@ -922,8 +1300,8 @@ void test('agent_spawn keeps terminal notification independent from registry pub
         runState: parentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
-        agentSpawnRuntime: daemonContext,
-        approvalSessionId: 'registry-publish-failure-session',
+        runtimeServices: daemonContext,
+        computerSessionId: 'registry-publish-failure-session',
       },
     );
 
@@ -959,7 +1337,7 @@ void test('agent_spawn keeps terminal notification independent from registry pub
   }
 });
 
-void test('agent_spawn lets child worker inherit parent permission mode while reusing the parent approval session', async () => {
+void test('agent_spawn carries one admitted child tool policy without the legacy surface', async () => {
   const threadId = testThreadId(7);
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
@@ -971,7 +1349,7 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
   });
   let capturedApprovalContext:
     | {
-        sessionId: string;
+        computerSessionId: string;
         permissionMode: 'basic' | 'full_access';
         ownerRunId?: string;
         ownerThreadId?: string;
@@ -979,16 +1357,38 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
     | undefined;
   let capturedDirectRegistryNames: readonly string[] | undefined;
   let capturedAllowedRegistryNames: readonly string[] | undefined;
+  let admittedToolCapabilityPolicy: ToolCapabilityPolicy | undefined;
+  let capturedToolCapabilityPolicy: ToolCapabilityPolicy | undefined;
+  let capturedLegacyToolSurface = false;
   let releaseChild!: () => void;
   const childStarted = new Promise<void>((resolve) => {
     releaseChild = resolve;
   });
+  const baseAdmission = createAgentLoopImplementationAdmission();
   const testAgentSpawnTool = createAgentSpawnTool({
     startBackgroundRun: createSubagentRunLauncher({
+      loopImplementationAdmission: {
+        async admitRun(input) {
+          const selected = await baseAdmission.admitRun(input);
+          if (!selected.ok) {
+            return selected;
+          }
+          assert.ok(input.toolCapabilityPolicy);
+          admittedToolCapabilityPolicy = input.toolCapabilityPolicy;
+          return {
+            ...selected,
+            toolCapabilityPolicy: input.toolCapabilityPolicy,
+          };
+        },
+      },
       runAgentLoop: async (input) => {
         capturedApprovalContext = input.approvalContext;
-        capturedDirectRegistryNames = input.toolSurface?.directRegistryNames;
-        capturedAllowedRegistryNames = input.toolSurface?.allowedRegistryNames;
+        capturedToolCapabilityPolicy = input.toolCapabilityPolicy;
+        capturedLegacyToolSurface = input.toolSurface !== undefined;
+        capturedDirectRegistryNames =
+          input.toolCapabilityPolicy?.directRegistryNames;
+        capturedAllowedRegistryNames =
+          input.toolCapabilityPolicy?.allowedRegistryNames;
         await childStarted;
         return {
           ok: true,
@@ -1019,11 +1419,11 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
       currentFile: undefined,
       selection: undefined,
       approvalGranted: false,
-      agentSpawnRuntime: daemonContext,
+      runtimeServices: daemonContext,
       memoryIndex: undefined,
       emitAgentEvent: () => {},
       permissionMode: 'full_access',
-      approvalSessionId: 'parent-approval-session',
+      computerSessionId: 'parent-approval-session',
     },
   );
 
@@ -1035,11 +1435,13 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
     await delay(10);
   }
   assert.deepEqual(capturedApprovalContext, {
-    sessionId: 'parent-approval-session',
+    computerSessionId: 'parent-approval-session',
     permissionMode: 'full_access',
     ownerRunId: 'top-run-worker',
     ownerThreadId: threadId,
   });
+  assert.equal(capturedToolCapabilityPolicy, admittedToolCapabilityPolicy);
+  assert.equal(capturedLegacyToolSurface, false);
   const expectedWorkerToolNames = [
     'list_files',
     'read_file',
@@ -1048,10 +1450,11 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
     'write_file',
     'apply_patch',
     'manage_files',
-    'agent_spawn',
     'agent_wait',
     'agent_stop',
-  ];
+    'agent_set_priority',
+    'agent_retry',
+  ].sort();
   assert.deepEqual(capturedDirectRegistryNames, expectedWorkerToolNames);
   assert.deepEqual(capturedAllowedRegistryNames, expectedWorkerToolNames);
   assert.equal(capturedDirectRegistryNames?.includes('exec_command'), false);
@@ -1064,7 +1467,7 @@ void test('agent_spawn lets child worker inherit parent permission mode while re
   }
 });
 
-void test('agent_spawn allows four concurrent worker children under the default policy', async () => {
+void test('agent_spawn starts three Ultra worker children and queues the fourth', async () => {
   const threadId = testThreadId(88);
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
@@ -1079,6 +1482,7 @@ void test('agent_spawn allows four concurrent worker children under the default 
     releaseChildren = resolve;
   });
   let startedChildren = 0;
+  const readStartedChildren = (): number => startedChildren;
   const testAgentSpawnTool = createAgentSpawnTool({
     startBackgroundRun: createSubagentRunLauncher({
       runAgentLoop: async () => {
@@ -1116,11 +1520,12 @@ void test('agent_spawn allows four concurrent worker children under the default 
           currentFile: undefined,
           selection: undefined,
           approvalGranted: false,
-          agentSpawnRuntime: daemonContext,
+          runtimeServices: daemonContext,
           memoryIndex: undefined,
           emitAgentEvent: () => {},
           permissionMode: 'basic',
-          approvalSessionId: 'parent-four-workers-session',
+          ultraReasoning: true,
+          computerSessionId: 'parent-four-workers-session',
         },
       ),
     ),
@@ -1145,30 +1550,38 @@ void test('agent_spawn allows four concurrent worker children under the default 
     true,
   );
   assert.equal(
-    payloads.every((payload) => payload.launchState === 'started'),
-    true,
+    payloads.filter((payload) => payload.launchState === 'started').length,
+    3,
   );
-  assert.equal(getBackgroundChildCount(), 4);
+  assert.equal(
+    payloads.filter((payload) => payload.launchState === 'queued').length,
+    1,
+  );
+  assert.equal(getBackgroundChildCount(), 3);
 
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (startedChildren === 4) {
+    if (readStartedChildren() === 3) {
       break;
     }
     await delay(10);
   }
-  assert.equal(startedChildren, 4);
+  assert.equal(readStartedChildren(), 3);
 
   releaseChildren();
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (getBackgroundChildCount() === 0) {
+    if (
+      Number(readStartedChildren()) === 4 &&
+      getBackgroundChildCount() === 0
+    ) {
       break;
     }
     await delay(10);
   }
+  assert.equal(readStartedChildren(), 4);
   assert.equal(getBackgroundChildCount(), 0);
 });
 
-void test('agent_spawn default policy admits launch with existing active children', async () => {
+void test('agent_spawn Ultra policy queues launch when existing active children exceed capacity', async () => {
   const threadId = testThreadId(8);
   const daemonContext = createDaemonContext();
   const parentState = createRunState({
@@ -1204,16 +1617,26 @@ void test('agent_spawn default policy admits launch with existing active childre
       subagent_type: 'explorer',
     },
     {
+      kind: 'agent',
+      runOwnerKind: 'root_main',
       callId: 'call-cap',
       providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
       stateRoot: '/tmp/home-state',
+      workingDirectory: 'workspace',
       threadId,
       runId: 'top-run-cap',
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
-      agentSpawnRuntime: daemonContext,
-      approvalSessionId: 'default-policy-session',
+      currentFile: undefined,
+      selection: undefined,
+      approvalGranted: false,
+      runtimeServices: daemonContext,
+      memoryIndex: undefined,
+      emitAgentEvent: () => {},
+      permissionMode: 'basic',
+      ultraReasoning: true,
+      computerSessionId: 'default-policy-session',
     },
   );
 
@@ -1224,12 +1647,12 @@ void test('agent_spawn default policy admits launch with existing active childre
     childRunId?: string;
   };
   assert.equal(payload.ok, true);
-  assert.equal(payload.launchState, 'started');
+  assert.equal(payload.launchState, 'queued');
   assert.equal(typeof payload.childRunId, 'string');
-  assert.equal(launched, true);
+  assert.equal(launched, false);
 });
 
-void test('agent_spawn applies daemon-owned subagent concurrency policy', async () => {
+void test('agent_spawn durably queues a launch blocked by daemon-owned capacity', async () => {
   const threadId = testThreadId(18);
   const daemonContext = createDaemonContext({
     subagentConcurrencyPolicy: {
@@ -1259,8 +1682,8 @@ void test('agent_spawn applies daemon-owned subagent concurrency policy', async 
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
-      agentSpawnRuntime: daemonContext,
-      approvalSessionId: 'policy-cap-session',
+      runtimeServices: daemonContext,
+      computerSessionId: 'policy-cap-session',
     },
   );
 
@@ -1268,13 +1691,15 @@ void test('agent_spawn applies daemon-owned subagent concurrency policy', async 
   const payload = JSON.parse(result.output) as {
     ok: boolean;
     launchState: string;
-    errorCode: string;
-    effectiveMax: number;
+    childRunId?: string;
+    childThreadId?: string;
+    deferReason?: string;
   };
-  assert.equal(payload.ok, false);
-  assert.equal(payload.launchState, 'rejected');
-  assert.equal(payload.errorCode, 'too_many_child_runs');
-  assert.equal(payload.effectiveMax, 1);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.launchState, 'queued');
+  assert.equal(payload.deferReason, 'configured_capacity');
+  assert.equal(typeof payload.childRunId, 'string');
+  assert.equal(typeof payload.childThreadId, 'string');
 });
 
 void test('agent_spawn reports timeout separately from user_interrupt', async () => {
@@ -1320,8 +1745,8 @@ void test('agent_spawn reports timeout separately from user_interrupt', async ()
       runState: parentState,
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
-      agentSpawnRuntime: daemonContext,
-      approvalSessionId: 'timeout-session',
+      runtimeServices: daemonContext,
+      computerSessionId: 'timeout-session',
     },
   );
 

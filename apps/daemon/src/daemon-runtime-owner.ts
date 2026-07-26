@@ -1,6 +1,11 @@
 import type { RunChannelRuntimeContext } from './adapter/web/ws/run-channel-runtime-context.js';
 import type { DaemonRuntimeSessionClosers } from './daemon-server-lifecycle.js';
 import type { DaemonContext } from './daemon/context.js';
+import type { DaemonRuntimeStateStore } from './daemon/runtime-state-store.js';
+import {
+  createSubagentLaunchPromotionController,
+  type SubagentLaunchPromotionController,
+} from './daemon/agent/subagent-concurrency.js';
 
 // Daemon lifecycle state owner — state-owner 트랙의 마지막 슬라이스.
 // DaemonContext는 composition container로 유지하고(무변경), 이 owner는
@@ -29,7 +34,9 @@ type DaemonRuntimePhase =
 
 type DaemonRuntimeBootPhase =
   | 'admission-lock'
+  | 'runtime-state'
   | 'provider-auth'
+  | 'durable-run-recovery'
   | 'create-daemon'
   | 'listen';
 
@@ -41,7 +48,13 @@ interface DaemonRuntimeOwnerPolicies<App, Server, SocketServer> {
   acquireAdmissionLock(args: {
     stateRoot: string;
   }): Promise<DaemonRuntimeAdmissionLock>;
+  openRuntimeStateStore(args: {
+    homeStateRoot: string;
+  }): Promise<DaemonRuntimeStateStore>;
   initProviderAuth(): Promise<void>;
+  recoverDurableRunsAtStartup(
+    runtimeContext: RunChannelRuntimeContext,
+  ): Promise<void>;
   createApp(): Promise<App>;
   createHttpServer(app: App): Server;
   attachWebSockets(args: {
@@ -66,7 +79,7 @@ interface DaemonRuntimeOwner {
     host: string;
     /** listen 직전 훅 — 엔트리가 signal 핸들러 등록 지점을 보존한다. */
     beforeListen?: () => void;
-  }): Promise<void>;
+  }): Promise<RunChannelRuntimeContext>;
   shutdown(args?: { signal?: AbortSignal }): Promise<void>;
 }
 
@@ -77,6 +90,8 @@ export function createDaemonRuntimeOwner<App, Server, SocketServer>(args: {
   const { daemonContext, policies } = args;
   let phase: DaemonRuntimePhase = 'created';
   let admissionLock: DaemonRuntimeAdmissionLock | undefined;
+  let runtimeStateStore: DaemonRuntimeStateStore | undefined;
+  let subagentLaunchPromotions: SubagentLaunchPromotionController | undefined;
   let server: Server | undefined;
   let webSocketServers: readonly SocketServer[] = [];
   let shutdownPromise: Promise<void> | undefined;
@@ -99,15 +114,42 @@ export function createDaemonRuntimeOwner<App, Server, SocketServer>(args: {
       admissionLock = lock;
       policies.onBootPhase?.('admission-lock');
       try {
+        const openedRuntimeStateStore = await policies.openRuntimeStateStore({
+          homeStateRoot: daemonContext.homeStateRoot,
+        });
+        runtimeStateStore = openedRuntimeStateStore;
+        daemonContext.globalMcp.attachSessionCoordinateStore(
+          openedRuntimeStateStore,
+        );
+        const promotionController =
+          daemonContext.subagent.launchRequests === openedRuntimeStateStore &&
+          daemonContext.subagent.launchPromotions !== undefined
+            ? daemonContext.subagent.launchPromotions
+            : createSubagentLaunchPromotionController({
+                admission: daemonContext.subagent.admission,
+                launchRequests: openedRuntimeStateStore,
+              });
+        subagentLaunchPromotions = promotionController;
+        daemonContext.backgroundNotifications.attachDurableStore(
+          openedRuntimeStateStore,
+        );
+        const runtimeContext = projectRunChannelRuntimeContext(
+          daemonContext,
+          openedRuntimeStateStore,
+          promotionController,
+        );
+        policies.onBootPhase?.('runtime-state');
         await policies.initProviderAuth();
         policies.onBootPhase?.('provider-auth');
+        await policies.recoverDurableRunsAtStartup(runtimeContext);
+        policies.onBootPhase?.('durable-run-recovery');
         const app = await policies.createApp();
         policies.onBootPhase?.('create-daemon');
         const startedServer = policies.createHttpServer(app);
         server = startedServer;
         webSocketServers = policies.attachWebSockets({
           server: startedServer,
-          runtimeContext: projectRunChannelRuntimeContext(daemonContext),
+          runtimeContext,
         });
         policies.bindProviderAuthCallback(startedServer);
         startArgs.beforeListen?.();
@@ -118,9 +160,43 @@ export function createDaemonRuntimeOwner<App, Server, SocketServer>(args: {
         });
         policies.onBootPhase?.('listen');
         phase = 'running';
+        return runtimeContext;
       } catch (error: unknown) {
         phase = 'closed';
-        await lock.release();
+        const cleanupFailures: Error[] = [];
+        if (subagentLaunchPromotions !== undefined) {
+          try {
+            await subagentLaunchPromotions.close();
+          } catch (closeError: unknown) {
+            cleanupFailures.push(
+              new Error('subagentLaunchPromotions:threw', {
+                cause: closeError,
+              }),
+            );
+          }
+        }
+        if (runtimeStateStore !== undefined) {
+          try {
+            runtimeStateStore.close();
+          } catch (closeError: unknown) {
+            cleanupFailures.push(
+              new Error('runtimeStateStore:threw', { cause: closeError }),
+            );
+          }
+        }
+        try {
+          await lock.release();
+        } catch (releaseError: unknown) {
+          cleanupFailures.push(
+            new Error('admissionLock:threw', { cause: releaseError }),
+          );
+        }
+        if (cleanupFailures.length > 0) {
+          throw new AggregateError(
+            [error, ...cleanupFailures],
+            'daemon runtime startup failed and cleanup was incomplete',
+          );
+        }
         throw error;
       }
     },
@@ -133,10 +209,14 @@ export function createDaemonRuntimeOwner<App, Server, SocketServer>(args: {
         return;
       }
       const lock = admissionLock;
+      const stateStore = runtimeStateStore;
+      const promotionController = subagentLaunchPromotions;
       const startedServer = server;
       if (
         phase !== 'running' ||
         lock === undefined ||
+        stateStore === undefined ||
+        promotionController === undefined ||
         startedServer === undefined
       ) {
         throw new Error('daemon runtime owner is not running');
@@ -146,7 +226,11 @@ export function createDaemonRuntimeOwner<App, Server, SocketServer>(args: {
         try {
           await policies.closeForShutdown({
             admissionLock: lock,
-            runtimeSessions: daemonRuntimeSessionClosers(daemonContext),
+            runtimeSessions: daemonRuntimeSessionClosers(
+              daemonContext,
+              stateStore,
+              promotionController,
+            ),
             server: startedServer,
             webSocketServers,
             ...(shutdownArgs?.signal === undefined
@@ -167,21 +251,28 @@ export function createDaemonRuntimeOwner<App, Server, SocketServer>(args: {
 // daemon-server-lifecycle의 closer 계약에 함께 추가한다.
 function daemonRuntimeSessionClosers(
   daemonContext: DaemonContext,
+  runtimeStateStore: DaemonRuntimeStateStore,
+  subagentLaunchPromotions: SubagentLaunchPromotionController,
 ): DaemonRuntimeSessionClosers {
   return {
+    activeRuns: daemonContext.activeRuns,
     computerDirectoryPicker: daemonContext.computerDirectoryPicker,
     globalMcp: daemonContext.globalMcp,
-    ptcBrowserPageLoadEvidence: daemonContext.ptcBrowserPageLoadEvidence,
-    ptcBrowserTextEvidence: daemonContext.ptcBrowserTextEvidence,
-    ptcBrowserNavigate: daemonContext.ptcBrowserNavigate,
-    ptcExecuteCode: daemonContext.ptcExecuteCode,
+    hostCommands: daemonContext.hostCommands,
+    provider: daemonContext.provider,
+    ptc: daemonContext.ptc,
+    subagentLaunchPromotions,
+    runtimeStateStore,
   };
 }
 
 function projectRunChannelRuntimeContext(
   daemonContext: DaemonContext,
+  runtimeStateStore: DaemonRuntimeStateStore,
+  subagentLaunchPromotions: SubagentLaunchPromotionController,
 ): RunChannelRuntimeContext {
   return {
+    agent: daemonContext.agent,
     activeRuns: daemonContext.activeRuns,
     approvalGrants: daemonContext.approvalGrants,
     approvalGate: daemonContext.approvalGate,
@@ -189,6 +280,8 @@ function projectRunChannelRuntimeContext(
     backgroundNotifications: daemonContext.backgroundNotifications,
     liveRunEvents: daemonContext.liveRunEvents,
     runCheckpoints: daemonContext.runCheckpoints,
+    planningWorkflows: daemonContext.planningWorkflows,
+    goals: daemonContext.goals,
     ...(daemonContext.computerFileScope !== undefined
       ? { computerFileScope: daemonContext.computerFileScope }
       : {}),
@@ -196,27 +289,25 @@ function projectRunChannelRuntimeContext(
       ? { computerFileRoot: daemonContext.computerFileRoot }
       : {}),
     homeStateRoot: daemonContext.homeStateRoot,
+    hostCommands: daemonContext.hostCommands,
+    hostCommandInlineMaxBytes: daemonContext.hostCommandInlineMaxBytes,
     childRuns: daemonContext.childRuns,
     fileStateCache: daemonContext.fileStateCache,
     imageGeneration: daemonContext.imageGeneration,
     videoGeneration: daemonContext.videoGeneration,
     memoryIndex: daemonContext.memoryIndex,
-    providerAuthRuntime: daemonContext.providerAuthRuntime,
-    providerRequestOptions: daemonContext.providerRequestOptions,
-    providerWebSocketSessions: daemonContext.providerWebSocketSessions,
-    reactBundleStructuredOutputIngressPolicy:
-      daemonContext.reactBundleStructuredOutputIngressPolicy,
-    resourceBudgetProvider: daemonContext.resourceBudgetProvider,
-    ptcBrowserPageLoadEvidence: daemonContext.ptcBrowserPageLoadEvidence,
-    ptcBrowserTextEvidence: daemonContext.ptcBrowserTextEvidence,
-    ptcBrowserNavigate: daemonContext.ptcBrowserNavigate,
-    ptcExecuteCode: daemonContext.ptcExecuteCode,
-    ptcPackageInstall: daemonContext.ptcPackageInstall,
-    ptcFixedProbe: daemonContext.ptcFixedProbe,
+    provider: daemonContext.provider,
+    ptc: daemonContext.ptc,
     pluginSkills: daemonContext.pluginSkills,
     sandboxAttempts: daemonContext.sandboxAttempts,
-    subagentAdmission: daemonContext.subagentAdmission,
-    subagentRuns: daemonContext.subagentRuns,
+    subagent: {
+      admission: daemonContext.subagent.admission,
+      launchPromotions: subagentLaunchPromotions,
+      launchRequests: runtimeStateStore,
+      terminalDeliveries: runtimeStateStore,
+      runs: daemonContext.subagent.runs,
+    },
+    threadIndex: daemonContext.threadIndex,
     toolLibraryProjection: daemonContext.toolLibraryProjection,
     toolRegistry: daemonContext.toolRegistry,
   };

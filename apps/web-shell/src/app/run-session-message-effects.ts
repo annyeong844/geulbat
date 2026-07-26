@@ -1,15 +1,19 @@
 import type {
   ArtifactCommittedEventPayload,
   ContextUsageUpdatedEventPayload,
+  ProviderRuntimeStatusEventPayload,
   RunUsageTotals,
   ToolResultEventPayload,
 } from '@geulbat/protocol/run-events';
 import type { ApprovalRequired } from '@geulbat/protocol/run-approval';
 import type { ErrorCode } from '@geulbat/protocol/errors';
 import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
+import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
+import type { GoalSnapshot } from '@geulbat/protocol/goal';
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 import { ASK_USER_TOOL_NAME } from '../features/assistant/ask-user/ask-user-card-view.js';
 import { UPDATE_PLAN_TOOL_NAME } from '../features/assistant/run-plan/run-plan.js';
+import { readPtcToolActivityStatus } from '../features/assistant/tool-result-view.js';
 import {
   readVisualizeWidgetViewFromToolArgs,
   VISUALIZE_TOOL_NAME,
@@ -41,6 +45,9 @@ export type RunSessionMessageEffect =
       threadId: string;
       artifact: ArtifactCommittedEventPayload;
     }
+  // 아티팩트 전용 답변의 봉투 텍스트 라이브 스트림 — 채팅 대신 중앙
+  // 아티팩트 창이 생성 과정을 실시간으로 그린다.
+  | { kind: 'artifact_text_streamed'; threadId: string; text: string }
   | {
       kind: 'transcript_activity_added';
       threadId: string;
@@ -50,6 +57,7 @@ export type RunSessionMessageEffect =
             kind: 'tool_activity';
             tool: string;
             state: 'running';
+            callId: string;
             // 호출 인자가 곧 렌더 원본인 도구(visualize, update_plan)만
             // 실어 온다
             args?: Record<string, unknown>;
@@ -58,6 +66,7 @@ export type RunSessionMessageEffect =
             kind: 'tool_activity';
             tool: string;
             state: 'completed' | 'failed';
+            callId: string;
           };
       computerFilesMayHaveChanged: boolean;
     }
@@ -69,16 +78,50 @@ export type RunSessionMessageEffect =
       argsDelta: string;
     }
   | {
+      kind: 'tool_output_streamed';
+      threadId: string;
+      callId: string;
+      tool: string;
+      stream: 'stdout' | 'stderr';
+      text: string;
+    }
+  | {
       kind: 'approval_requested';
       threadId: string;
       pendingApproval: ApprovalRequired;
     }
-  | { kind: 'steer_applied'; threadId: string; receivedSeqs: number[] }
-  | { kind: 'usage_updated'; threadId: string; usage: RunUsageTotals }
+  | {
+      kind: 'steer_applied';
+      runId: string;
+      threadId: string;
+      receivedSeqs: number[];
+    }
+  | {
+      kind: 'usage_updated';
+      runId: string;
+      threadId: string;
+      usage: RunUsageTotals;
+    }
   | {
       kind: 'context_usage_updated';
       threadId: string;
       contextUsage: ContextUsageUpdatedEventPayload;
+    }
+  | {
+      kind: 'provider_runtime_updated';
+      runId: string;
+      threadId: string;
+      providerRuntime: ProviderRuntimeStatusEventPayload;
+    }
+  | {
+      kind: 'planning_workflow_updated';
+      threadId: string;
+      snapshot: PlanningWorkflowSnapshot | null;
+    }
+  | {
+      kind: 'goal_updated';
+      threadId: string;
+      snapshot: GoalSnapshot | null;
     }
   | {
       kind: 'run_terminal';
@@ -87,14 +130,20 @@ export type RunSessionMessageEffect =
       ok: boolean;
     }
   | ReturnType<typeof createSubagentActivityEffect>
-  | { kind: 'settle_run_success'; thread: ThreadDetailResponse }
+  | {
+      kind: 'settle_run_success';
+      runId: string;
+      thread: ThreadDetailResponse;
+    }
   | {
       kind: 'settle_run_sync_failed';
+      runId: string;
       threadId: string;
       message: string;
     }
   | {
       kind: 'settle_run_error';
+      runId: string;
       threadId: string;
       code: ErrorCode;
       message: string;
@@ -104,17 +153,37 @@ interface RunSessionMessageEffectHandlers {
   dispatch: (action: RunSessionStateAction) => void;
   requestComputerTreeRefresh: () => void;
   handleRunStarted: (threadId: string, runId: string) => void | Promise<void>;
-  handleRunSettledSuccess: (thread: ThreadDetailResponse) => Promise<void>;
+  handleRunSettledSuccess: (
+    thread: ThreadDetailResponse,
+    runId?: string,
+  ) => Promise<void>;
   handleRunSettleSyncFailed: (
     threadId: string,
     message: string,
+    runId?: string,
   ) => Promise<void>;
-  handleRunSettledError: (threadId: string, message: string) => Promise<void>;
+  handleRunSettledError: (
+    threadId: string,
+    code: ErrorCode,
+    message: string,
+    runId?: string,
+  ) => Promise<void>;
+  handlePlanningWorkflow?:
+    | ((threadId: string, snapshot: PlanningWorkflowSnapshot | null) => void)
+    | undefined;
+  handleGoal?:
+    | ((threadId: string, snapshot: GoalSnapshot | null) => void)
+    | undefined;
 }
 
 interface HandleRunSessionMessageArgs extends RunSessionMessageEffectHandlers {
   message: RunChannelServerMessage;
+  /** 다음 걸음 제안이 도착했을 때. 저장하지 않고 컴포저에만 띄운다. */
+  handleFollowupSuggested?: ((prompt: string) => void) | undefined;
 }
+
+/** 제안 도구 이름 — daemon builtin과 같은 문자열이어야 한다. */
+const SUGGEST_FOLLOWUP_TOOL_NAME = 'suggest_followup';
 
 export function adaptRunSessionMessage(
   message: RunChannelServerMessage,
@@ -124,6 +193,33 @@ export function adaptRunSessionMessage(
       kind: 'run_transport_error',
       code: message.code,
       message: message.message,
+    };
+  }
+
+  if (message.type === 'run.tool.output.delta') {
+    return {
+      kind: 'tool_output_streamed',
+      threadId: message.threadId,
+      callId: message.payload.callId,
+      tool: message.payload.tool,
+      stream: message.payload.stream,
+      text: message.payload.text,
+    };
+  }
+
+  if (message.type === 'plan.workflow') {
+    return {
+      kind: 'planning_workflow_updated',
+      threadId: message.threadId,
+      snapshot: message.snapshot,
+    };
+  }
+
+  if (message.type === 'goal.state') {
+    return {
+      kind: 'goal_updated',
+      threadId: message.threadId,
+      snapshot: message.snapshot,
     };
   }
 
@@ -152,14 +248,22 @@ export function adaptRunSessionMessage(
         threadId: event.threadId,
         artifact: event.payload,
       };
+    case 'artifact_stream_delta':
+      return {
+        kind: 'artifact_text_streamed',
+        threadId: event.threadId,
+        text: event.payload.text,
+      };
     case 'thread_state_persisted':
       return {
         kind: 'settle_run_success',
+        runId: event.runId,
         thread: event.payload,
       };
     case 'thread_state_persist_failed':
       return {
         kind: 'settle_run_sync_failed',
+        runId: event.runId,
         threadId: event.threadId,
         message: event.payload.message,
       };
@@ -199,6 +303,7 @@ export function adaptRunSessionMessage(
           kind: 'tool_activity',
           tool: event.payload.tool,
           state: 'running',
+          callId: event.payload.callId,
           ...(event.payload.tool === VISUALIZE_TOOL_NAME ||
           event.payload.tool === UPDATE_PLAN_TOOL_NAME ||
           event.payload.tool === ASK_USER_TOOL_NAME
@@ -219,7 +324,13 @@ export function adaptRunSessionMessage(
         tool: event.payload.tool,
         argsDelta: event.payload.argsDelta,
       };
-    case 'tool_result':
+    case 'tool_result': {
+      const ptcStatus = readPtcToolActivityStatus({
+        tool: event.payload.tool,
+        ok: event.payload.ok,
+        text: event.payload.displayText,
+        raw: event.payload.raw,
+      });
       return {
         kind: 'transcript_activity_added',
         threadId: event.threadId,
@@ -227,9 +338,12 @@ export function adaptRunSessionMessage(
           kind: 'tool_activity',
           tool: event.payload.tool,
           state: event.payload.ok ? 'completed' : 'failed',
+          callId: event.payload.callId,
+          ...(ptcStatus !== undefined ? { ptcStatus } : {}),
         },
         computerFilesMayHaveChanged: event.payload.computerFilesMayHaveChanged,
       };
+    }
     case 'approval_required':
       return {
         kind: 'approval_requested',
@@ -238,6 +352,8 @@ export function adaptRunSessionMessage(
       };
     case 'subagent_spawned':
       return createSubagentActivityEffect(event);
+    case 'subagent_status':
+      return createSubagentActivityEffect(event);
     case 'subagent_approval_required':
       return createSubagentActivityEffect(event);
     case 'subagent_terminal':
@@ -245,12 +361,14 @@ export function adaptRunSessionMessage(
     case 'interject_applied':
       return {
         kind: 'steer_applied',
+        runId: event.runId,
         threadId: event.threadId,
         receivedSeqs: event.payload.receivedSeqs,
       };
     case 'usage_updated':
       return {
         kind: 'usage_updated',
+        runId: event.runId,
         threadId: event.threadId,
         usage: event.payload,
       };
@@ -259,6 +377,25 @@ export function adaptRunSessionMessage(
         kind: 'context_usage_updated',
         threadId: event.threadId,
         contextUsage: event.payload,
+      };
+    case 'planning_workflow_updated':
+      return {
+        kind: 'planning_workflow_updated',
+        threadId: event.threadId,
+        snapshot: event.payload,
+      };
+    case 'goal_updated':
+      return {
+        kind: 'goal_updated',
+        threadId: event.threadId,
+        snapshot: event.payload,
+      };
+    case 'provider_status':
+      return {
+        kind: 'provider_runtime_updated',
+        runId: event.runId,
+        threadId: event.threadId,
+        providerRuntime: event.payload,
       };
     case 'done':
       return {
@@ -270,11 +407,29 @@ export function adaptRunSessionMessage(
     case 'error':
       return {
         kind: 'settle_run_error',
+        runId: event.runId,
         threadId: event.threadId,
         code: event.payload.code,
         message: event.payload.message,
       };
   }
+}
+
+/**
+ * suggest_followup 호출에서 제안 문구를 읽는다. 제안은 저장하지 않는 그 턴의
+ * 표시값이고, 도구 호출 자체는 평소처럼 전사에 남는다 — 숨기지 않는다.
+ */
+export function readFollowupSuggestion(
+  message: RunChannelServerMessage,
+): string | null {
+  if (message.type !== 'run.event' || message.event.type !== 'tool_call') {
+    return null;
+  }
+  if (message.event.payload.tool !== SUGGEST_FOLLOWUP_TOOL_NAME) {
+    return null;
+  }
+  const prompt = message.event.payload.args['prompt'];
+  return typeof prompt === 'string' && prompt.trim() !== '' ? prompt : null;
 }
 
 export function shouldRefreshTreeAfterToolResult(
@@ -291,7 +446,15 @@ export async function handleRunSessionMessage({
   handleRunSettledSuccess,
   handleRunSettleSyncFailed,
   handleRunSettledError,
+  handleFollowupSuggested,
+  handlePlanningWorkflow,
+  handleGoal,
 }: HandleRunSessionMessageArgs): Promise<void> {
+  const suggestion = readFollowupSuggestion(message);
+  if (suggestion !== null) {
+    handleFollowupSuggested?.(suggestion);
+  }
+
   const effect = adaptRunSessionMessage(message);
   if (!effect) {
     return;
@@ -305,6 +468,8 @@ export async function handleRunSessionMessage({
     handleRunSettledSuccess,
     handleRunSettleSyncFailed,
     handleRunSettledError,
+    handlePlanningWorkflow,
+    handleGoal,
   });
 }
 
@@ -316,6 +481,8 @@ async function applyRunSessionMessageEffect({
   handleRunSettledSuccess,
   handleRunSettleSyncFailed,
   handleRunSettledError,
+  handlePlanningWorkflow,
+  handleGoal,
 }: RunSessionMessageEffectHandlers & {
   effect: RunSessionMessageEffect;
 }): Promise<void> {
@@ -323,6 +490,7 @@ async function applyRunSessionMessageEffect({
     case 'run_transport_error':
       dispatch({
         type: 'run_transport_error',
+        code: effect.code,
         message: `[${effect.code}] ${effect.message}`,
       });
       return;
@@ -342,6 +510,13 @@ async function applyRunSessionMessageEffect({
         type: 'artifact_activated',
         threadId: effect.threadId,
         artifact: effect.artifact,
+      });
+      return;
+    case 'artifact_text_streamed':
+      dispatch({
+        type: 'artifact_text_streamed',
+        threadId: effect.threadId,
+        text: effect.text,
       });
       return;
     case 'transcript_activity_added':
@@ -366,6 +541,16 @@ async function applyRunSessionMessageEffect({
         argsDelta: effect.argsDelta,
       });
       return;
+    case 'tool_output_streamed':
+      dispatch({
+        type: 'tool_output_streamed',
+        threadId: effect.threadId,
+        callId: effect.callId,
+        tool: effect.tool,
+        stream: effect.stream,
+        text: effect.text,
+      });
+      return;
     case 'approval_requested':
       dispatch({
         type: 'approval_requested',
@@ -376,6 +561,7 @@ async function applyRunSessionMessageEffect({
     case 'steer_applied':
       dispatch({
         type: 'steer_applied',
+        runId: effect.runId,
         threadId: effect.threadId,
         receivedSeqs: effect.receivedSeqs,
       });
@@ -383,6 +569,7 @@ async function applyRunSessionMessageEffect({
     case 'usage_updated':
       dispatch({
         type: 'run_usage_updated',
+        runId: effect.runId,
         threadId: effect.threadId,
         usage: effect.usage,
       });
@@ -393,6 +580,20 @@ async function applyRunSessionMessageEffect({
         threadId: effect.threadId,
         contextUsage: effect.contextUsage,
       });
+      return;
+    case 'provider_runtime_updated':
+      dispatch({
+        type: 'provider_runtime_updated',
+        runId: effect.runId,
+        threadId: effect.threadId,
+        providerRuntime: effect.providerRuntime,
+      });
+      return;
+    case 'planning_workflow_updated':
+      handlePlanningWorkflow?.(effect.threadId, effect.snapshot);
+      return;
+    case 'goal_updated':
+      handleGoal?.(effect.threadId, effect.snapshot);
       return;
     case 'run_terminal':
       dispatch({
@@ -410,15 +611,21 @@ async function applyRunSessionMessageEffect({
       });
       return;
     case 'settle_run_success':
-      await handleRunSettledSuccess(effect.thread);
+      await handleRunSettledSuccess(effect.thread, effect.runId);
       return;
     case 'settle_run_sync_failed':
-      await handleRunSettleSyncFailed(effect.threadId, effect.message);
+      await handleRunSettleSyncFailed(
+        effect.threadId,
+        effect.message,
+        effect.runId,
+      );
       return;
     case 'settle_run_error':
       await handleRunSettledError(
         effect.threadId,
-        `[${effect.code}] ${effect.message}`,
+        effect.code,
+        effect.message,
+        effect.runId,
       );
       return;
   }

@@ -24,6 +24,7 @@ void test('typed readFile uses an explicit transport and omits host-private fiel
       assert.deepEqual(request.requestedPublicTools, [
         'files.read',
         'files.list',
+        'files.search',
       ]);
       return acceptHandshake(request, ['tool.invoke']);
     },
@@ -174,6 +175,111 @@ void test('listFiles rejects a malformed transport result instead of replaying a
   if (!result.ok) {
     assert.equal(result.error.code, 'invalid_transport_response');
   }
+});
+
+void test('typed searchFiles preserves requested consistency and strips backend details', async () => {
+  const transport: ToolSdkTransport = {
+    async handshake(request) {
+      return acceptHandshake(request, ['tool.invoke']);
+    },
+    async invoke(request) {
+      assert.equal(request.publicTool, 'files.search');
+      assert.deepEqual(request.input, {
+        pattern: '*geulbat*',
+        path: 'C:\\Workspace\\geulbat',
+        type: 'filename',
+        consistency: 'eventual_index',
+        maxResults: 2,
+      });
+      return {
+        ok: true,
+        value: {
+          kind: 'inline',
+          value: {
+            path: 'C:/Workspace/geulbat',
+            type: 'filename',
+            consistency: 'eventual_index',
+            total: 2,
+            totalRelation: 'lower_bound',
+            truncated: true,
+            results: [
+              { path: 'Geulbat/app.exe', line: 0, text: '' },
+              { path: 'projects/geulbat', line: 0, text: '' },
+            ],
+            backend: 'windows-search-index',
+            internalBinding: 'search_files',
+            root: 'computer',
+          },
+        },
+      };
+    },
+  };
+  const client = createToolSdkClient({
+    transport,
+    projection: PROJECTION,
+    credentialProvider: staticCredentialProvider(),
+  });
+
+  assert.equal((await client.connect()).ok, true);
+  const result = await client.searchFiles({
+    pattern: '*geulbat*',
+    path: 'C:\\Workspace\\geulbat',
+    type: 'filename',
+    consistency: 'eventual_index',
+    maxResults: 2,
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    value: {
+      path: 'C:/Workspace/geulbat',
+      type: 'filename',
+      consistency: 'eventual_index',
+      total: 2,
+      totalRelation: 'lower_bound',
+      truncated: true,
+      results: [
+        { path: 'Geulbat/app.exe', line: 0, text: '' },
+        { path: 'projects/geulbat', line: 0, text: '' },
+      ],
+    },
+  });
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /backend|internalBinding|"root"|search_files/u,
+  );
+});
+
+void test('searchFiles rejects invalid eventual-index combinations before invocation', async () => {
+  let invocationCount = 0;
+  const transport: ToolSdkTransport = {
+    async handshake(request) {
+      return acceptHandshake(request, ['tool.invoke']);
+    },
+    async invoke() {
+      invocationCount += 1;
+      throw new Error('invalid search input reached the transport');
+    },
+  };
+  const client = createToolSdkClient({
+    transport,
+    projection: PROJECTION,
+    credentialProvider: staticCredentialProvider(),
+  });
+
+  assert.equal((await client.connect()).ok, true);
+  const result = await client.searchFiles({
+    pattern: 'needle',
+    consistency: 'eventual_index',
+    type: 'content',
+    maxResults: 1,
+  });
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, 'invalid_arguments');
+  }
+  assert.equal(invocationCount, 0);
 });
 
 void test('offloaded output is recovered only through a negotiated transport capability', async () => {

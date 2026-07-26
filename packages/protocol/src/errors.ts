@@ -42,6 +42,8 @@ export type ErrorCode =
   | 'llm_rate_limited'
   | 'llm_auth_failed'
   | 'llm_context_length_exceeded'
+  | 'provider_transition_required'
+  | 'provider_transition_preparation_failed'
   | 'rate_limited'
   | 'invalid_path'
   | 'already_exists'
@@ -98,6 +100,8 @@ export const ERROR_CODES = [
   'llm_rate_limited',
   'llm_auth_failed',
   'llm_context_length_exceeded',
+  'provider_transition_required',
+  'provider_transition_preparation_failed',
   'rate_limited',
   'invalid_path',
   'already_exists',

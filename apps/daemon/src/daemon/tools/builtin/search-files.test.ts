@@ -1,11 +1,47 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtempSync } from 'node:fs';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSymlinkOrSkip } from '../../../test-support/symlink-test.js';
+import { createDaemonContext } from '../../context.js';
 import { isToolObjectParameters } from '../types.js';
 import { searchFilesTool } from './search-files.js';
+
+const previousComputerSessionDisabled =
+  process.env['GEULBAT_COMPUTER_SESSION_DISABLED'];
+const previousCommandHostMode = process.env['GEULBAT_COMMAND_HOST'];
+process.env['GEULBAT_COMPUTER_SESSION_DISABLED'] = '1';
+process.env['GEULBAT_COMMAND_HOST'] = 'inline';
+const searchFilesStateRoot = mkdtempSync(
+  join(tmpdir(), 'geulbat-search-command-state-'),
+);
+const searchFilesRuntime = createDaemonContext({
+  homeStateRoot: searchFilesStateRoot,
+});
+if (previousComputerSessionDisabled === undefined) {
+  delete process.env['GEULBAT_COMPUTER_SESSION_DISABLED'];
+} else {
+  process.env['GEULBAT_COMPUTER_SESSION_DISABLED'] =
+    previousComputerSessionDisabled;
+}
+if (previousCommandHostMode === undefined) {
+  delete process.env['GEULBAT_COMMAND_HOST'];
+} else {
+  process.env['GEULBAT_COMMAND_HOST'] = previousCommandHostMode;
+}
+after(async () => {
+  await searchFilesRuntime.hostCommands.closeAll();
+  await rm(searchFilesStateRoot, { recursive: true, force: true });
+});
+
+const executeSearchFiles: typeof searchFilesTool.execute = (args, ctx) =>
+  searchFilesTool.execute(args, {
+    ...ctx,
+    stateRoot: ctx.stateRoot ?? searchFilesStateRoot,
+    runtimeServices: searchFilesRuntime,
+  });
 
 void test('search_files projects parser-owned scalar constraints into tool parameters', () => {
   const parameters = searchFilesTool.parameters;
@@ -15,7 +51,32 @@ void test('search_files projects parser-owned scalar constraints into tool param
     description:
       'Glob pattern to include files (e.g. "*.ts") or exclude them with a leading "!" (e.g. "!**/*.test.ts").',
   });
+  assert.deepEqual(parameters.properties.consistency, {
+    type: 'string',
+    enum: ['filesystem_snapshot', 'eventual_index'],
+    description:
+      'Filename-search consistency. The default filesystem_snapshot scans the exposed filesystem for an exact total. eventual_index performs fast bounded basename-glob discovery through Windows Search, requires maxResults, and may omit new or unindexed files.',
+  });
   assert.equal(parameters.properties.root, undefined);
+});
+
+void test('search_files fails closed without the daemon host command runtime', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-no-host-runtime-'),
+  );
+  await writeFile(join(computerFileRoot, 'needle.txt'), 'needle\n', 'utf8');
+
+  const result = await searchFilesTool.execute(
+    { pattern: 'needle' },
+    {
+      callId: 'call-search-no-host-runtime',
+      computerFileRoot,
+      stateRoot: computerFileRoot,
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? '', /requires the daemon host command runtime/u);
 });
 
 void test('search_files follows a directory symlink anywhere on the host filesystem', async (t) => {
@@ -32,7 +93,7 @@ void test('search_files follows a directory symlink anywhere on the host filesys
     return;
   }
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'hello', path: 'linked-dir' },
     { callId: 'call-search-1', computerFileRoot },
   );
@@ -54,7 +115,7 @@ void test('search_files follows a directory symlink regardless of its target nam
     return;
   }
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'secret history', path: 'history-link' },
     {
       callId: 'call-search-computer-reserved-symlink',
@@ -82,11 +143,11 @@ void test('search_files follows directory symlinks nested below the selected roo
     return;
   }
 
-  const contentResult = await searchFilesTool.execute(
+  const contentResult = await executeSearchFiles(
     { pattern: 'nested-symlink-marker' },
     { callId: 'call-search-nested-symlink-content', computerFileRoot },
   );
-  const filenameResult = await searchFilesTool.execute(
+  const filenameResult = await executeSearchFiles(
     { pattern: '**/needle.txt', type: 'filename' },
     { callId: 'call-search-nested-symlink-filename', computerFileRoot },
   );
@@ -123,11 +184,11 @@ void test('search_files stops symlink cycles without losing reachable matches', 
     return;
   }
 
-  const contentResult = await searchFilesTool.execute(
+  const contentResult = await executeSearchFiles(
     { pattern: 'cycle-safe-marker' },
     { callId: 'call-search-cycle-content', computerFileRoot },
   );
-  const filenameResult = await searchFilesTool.execute(
+  const filenameResult = await executeSearchFiles(
     { pattern: '**/needle.txt', type: 'filename' },
     { callId: 'call-search-cycle-filename', computerFileRoot },
   );
@@ -169,7 +230,7 @@ void test('search_files accepts a valid include glob longer than 256 characters'
     'utf8',
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     {
       pattern: '**/needle.txt',
       type: 'filename',
@@ -193,7 +254,7 @@ void test('search_files rejects unexpected keys instead of ignoring them', async
     join(tmpdir(), 'geulbat-search-extra-'),
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'hello', extra: true },
     { callId: 'call-search-extra', computerFileRoot },
   );
@@ -208,7 +269,7 @@ void test('search_files rejects an empty path instead of treating it as root', a
     join(tmpdir(), 'geulbat-search-empty-path-'),
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'needle', path: '' },
     { callId: 'call-search-empty-path', computerFileRoot },
   );
@@ -219,7 +280,7 @@ void test('search_files rejects an empty path instead of treating it as root', a
 });
 
 void test('search_files rejects blank path at the parser boundary', async () => {
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'needle', path: '   ' },
     { callId: 'call-search-blank-path', computerFileRoot: '/computer' },
   );
@@ -262,7 +323,7 @@ void test('search_files applies a leading ! include glob as an exclusion', async
       },
     ],
   ] as const) {
-    const result = await searchFilesTool.execute(args, {
+    const result = await executeSearchFiles(args, {
       callId,
       computerFileRoot,
     });
@@ -284,7 +345,7 @@ void test('search_files rejects non-positive or fractional maxResults at the par
   );
 
   for (const maxResults of [0, -1, 1.5]) {
-    const result = await searchFilesTool.execute(
+    const result = await executeSearchFiles(
       { pattern: 'hello', maxResults },
       { callId: `call-search-max-results-${maxResults}`, computerFileRoot },
     );
@@ -292,6 +353,48 @@ void test('search_files rejects non-positive or fractional maxResults at the par
     assert.equal(result.ok, false);
     assert.equal(result.errorCode, 'invalid_args');
     assert.match(result.error ?? '', /maxResults.*positive integer/);
+  }
+});
+
+void test('search_files requires an explicit bounded filename request for eventual-index consistency', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-index-contract-'),
+  );
+
+  for (const [callId, args, message] of [
+    [
+      'call-search-index-content',
+      { pattern: 'geulbat', consistency: 'eventual_index' as const },
+      /eventual_index.*filename/u,
+    ],
+    [
+      'call-search-index-unbounded',
+      {
+        pattern: '*geulbat*',
+        type: 'filename' as const,
+        consistency: 'eventual_index' as const,
+      },
+      /eventual_index.*maxResults/u,
+    ],
+    [
+      'call-search-index-include',
+      {
+        pattern: '*geulbat*',
+        type: 'filename' as const,
+        consistency: 'eventual_index' as const,
+        maxResults: 50,
+        include: '**/*.json',
+      },
+      /eventual_index.*include/u,
+    ],
+  ] as const) {
+    const result = await executeSearchFiles(args, {
+      callId,
+      computerFileRoot,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'invalid_args');
+    assert.match(result.error ?? '', message);
   }
 });
 
@@ -307,7 +410,7 @@ void test('search_files supports filename mode', async () => {
     'utf8',
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: '**/*.md', type: 'filename' },
     { callId: 'call-search-3', computerFileRoot },
   );
@@ -342,7 +445,7 @@ void test('search_files filename mode includes hidden and ignored-looking paths'
     'utf8',
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: '**/*', type: 'filename' },
     { callId: 'call-search-hidden-filename', computerFileRoot },
   );
@@ -365,7 +468,7 @@ void test('search_files filename mode treats **/ as matching authority-root file
   await writeFile(join(computerFileRoot, 'hello.txt'), 'hello\n', 'utf8');
   await writeFile(join(computerFileRoot, 'docs', 'note.txt'), 'note\n', 'utf8');
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: '**/*.txt', type: 'filename' },
     { callId: 'call-search-root-txt', computerFileRoot },
   );
@@ -400,7 +503,7 @@ void test('search_files filename mode returns all matches when maxResults is omi
     ),
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'needle-*.txt', type: 'filename' },
     { callId: 'call-search-filename-all', computerFileRoot },
   );
@@ -431,7 +534,7 @@ void test('search_files filename mode keeps accurate totals with explicit maxRes
     ),
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'limited-*.txt', type: 'filename', maxResults: 2 },
     { callId: 'call-search-filename-limited', computerFileRoot },
   );
@@ -458,7 +561,7 @@ void test('search_files content mode uses the bundled ripgrep backend', async ()
     'utf8',
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'hello content search' },
     { callId: 'call-search-4', computerFileRoot },
   );
@@ -489,7 +592,7 @@ void test('search_files infers the computer root for an admitted absolute path',
     'utf8',
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'outside content search', path: outsideDir },
     {
       callId: 'call-search-computer-absolute',
@@ -512,6 +615,51 @@ void test('search_files infers the computer root for an admitted absolute path',
       text: 'outside content search',
     },
   ]);
+});
+
+void test('search_files accepts a local WSL UNC alias for a host directory', async (t) => {
+  const previousDistroName = process.env.WSL_DISTRO_NAME;
+  t.after(() => {
+    if (previousDistroName === undefined) {
+      delete process.env.WSL_DISTRO_NAME;
+    } else {
+      process.env.WSL_DISTRO_NAME = previousDistroName;
+    }
+  });
+  process.env.WSL_DISTRO_NAME = 'GeulbatTest';
+
+  const searchDirectory = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-computer-'),
+  );
+  const uncPath = `\\\\wsl.localhost\\GeulbatTest${searchDirectory.replaceAll('/', '\\')}`;
+  await writeFile(join(searchDirectory, 'unc-note.md'), 'unc search\n', 'utf8');
+
+  const result = await executeSearchFiles(
+    {
+      pattern: '**/unc-note.md',
+      path: uncPath,
+      type: 'filename',
+      maxResults: 50,
+    },
+    {
+      callId: 'call-search-computer-wsl-unc',
+      computerFileRoot: '/',
+    },
+  );
+
+  assert.equal(result.ok, true);
+  const payload = JSON.parse(result.output) as {
+    root: string;
+    path: string;
+    results: Array<{ path: string }>;
+  };
+  const relativeSearchDirectory = searchDirectory.slice(1);
+  assert.equal(payload.root, 'computer');
+  assert.equal(payload.path, relativeSearchDirectory);
+  assert.deepEqual(
+    payload.results.map((entry) => entry.path),
+    [`${relativeSearchDirectory}/unc-note.md`],
+  );
 });
 
 void test('search_files content mode includes hidden configuration files under the selected root', async () => {
@@ -551,7 +699,7 @@ void test('search_files content mode includes hidden configuration files under t
     'utf8',
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     {
       pattern: 'computer-secret-marker',
       path: 'project',
@@ -591,7 +739,7 @@ void test('search_files content mode returns all matches when maxResults is omit
     'utf8',
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'needle-all-' },
     { callId: 'call-search-content-all', computerFileRoot },
   );
@@ -620,7 +768,7 @@ void test('search_files content mode keeps accurate totals with explicit maxResu
     'utf8',
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'limited-needle', maxResults: 1 },
     { callId: 'call-search-content-limited', computerFileRoot },
   );
@@ -648,7 +796,7 @@ void test('search_files content mode preserves full matching line text', async (
     'utf8',
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'needle-long-line' },
     { callId: 'call-search-content-long-line', computerFileRoot },
   );
@@ -671,7 +819,7 @@ void test('search_files content mode evaluates the documented regular expression
     'utf8',
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: 'regex-(one|two)' },
     { callId: 'call-search-content-regex', computerFileRoot },
   );
@@ -699,7 +847,7 @@ void test('search_files content mode treats dash-prefixed patterns as literals',
     'utf8',
   );
 
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { pattern: '--literal-needle' },
     { callId: 'call-search-dash-pattern', computerFileRoot },
   );
@@ -719,7 +867,7 @@ void test('search_files content mode treats dash-prefixed patterns as literals',
 });
 
 void test('search_files rejects the removed legacy root selector', async () => {
-  const result = await searchFilesTool.execute(
+  const result = await executeSearchFiles(
     { root: 'workspace', pattern: 'read_file', path: 'geulbat-sdk' },
     { callId: 'call-search-legacy-root', computerFileRoot: '/computer' },
   );

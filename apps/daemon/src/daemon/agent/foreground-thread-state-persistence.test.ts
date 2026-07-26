@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -28,8 +28,11 @@ import {
   loadThreadIndex,
   upsertThreadSummary,
 } from '../sessions/threads-index.js';
+import { appendProviderRound } from '../sessions/provider-round-journal.js';
+import { createRunCheckpointStore } from '../sessions/run-checkpoint-store.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
 import { makeRunContext } from '../../test-support/run-context.js';
+import { testRunId } from '../../test-support/run-id.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 
 const FIXED_NOW = '2026-04-02T00:00:00.000Z';
@@ -58,6 +61,7 @@ function makeDeps(
 function makeAgentInput(args: {
   workspaceRoot: string;
   threadId: ReturnType<typeof testThreadId>;
+  runId?: AgentInput['runId'];
   events: AgentEvent[];
 }): AgentInput {
   const runContext = makeRunContext({
@@ -65,7 +69,7 @@ function makeAgentInput(args: {
     threadId: args.threadId,
   });
   return {
-    runId: 'run-foreground-thread-state',
+    runId: args.runId ?? 'run-foreground-thread-state',
     runContext,
     prompt: 'prompt',
     runtimeServices: createDaemonContext(),
@@ -133,4 +137,100 @@ void test('persistSuccessfulForegroundOutput emits thread-state failure diagnost
   ]);
   const summaries = await loadThreadIndex(workspaceRoot);
   assert.equal(summaries[0]?.title, 'Visible title');
+});
+
+void test('persistSuccessfulForegroundOutput hands active commentary from live state to the settled snapshot', async (t) => {
+  const threadId = testThreadId(1302);
+  const runId = testRunId(1302);
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-fg-thread-commentary-'),
+  );
+  t.after(async () => rm(workspaceRoot, { recursive: true, force: true }));
+  const events: AgentEvent[] = [];
+  const checkpointStore = createRunCheckpointStore({
+    stateRoot: workspaceRoot,
+  });
+  await checkpointStore.startRun({
+    threadId,
+    runId,
+    request: {
+      workingDirectory: workspaceRoot,
+      permissionMode: 'basic',
+      providerModel: {
+        providerId: 'qwen_token_plan',
+        model: 'qwen3.8-max-preview',
+      },
+    },
+  });
+  const userMessage = await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: 'Please reason before answering.',
+    timestamp: '2026-07-26T00:00:00.000Z',
+  });
+  await appendProviderRound({
+    stateRoot: workspaceRoot,
+    threadId,
+    runId,
+    round: 0,
+    providerId: 'qwen_token_plan',
+    model: 'qwen3.8-max-preview',
+    replayScopeId: null,
+    precedingTranscriptEntryId: userMessage.entryId,
+    items: [
+      {
+        type: 'message',
+        id: 'qwen-settle-commentary',
+        role: 'assistant',
+        status: 'completed',
+        phase: 'commentary',
+        content: [
+          {
+            type: 'output_text',
+            text: 'Reasoning retained at the ownership handoff.',
+            annotations: [],
+          },
+        ],
+      },
+    ],
+    functionCalls: [],
+    now: () => '2026-07-26T00:00:01.000Z',
+  });
+
+  await persistSuccessfulForegroundOutput({
+    agentInput: makeAgentInput({
+      workspaceRoot,
+      threadId,
+      runId,
+      events,
+    }),
+    transcriptPrompt: 'Visible title',
+    result: {
+      ok: true,
+      finalProse: 'Settled answer.',
+    },
+    deps: makeDeps(),
+    persistenceDiagnostics: [],
+  });
+
+  const persisted = events.find(
+    (event): event is Extract<AgentEvent, { type: 'thread_state_persisted' }> =>
+      event.type === 'thread_state_persisted',
+  );
+  assert.ok(persisted);
+  assert.deepEqual(
+    persisted.payload.messages.map((message) => [
+      message.role,
+      message.content,
+      message.metadata?.phase,
+    ]),
+    [
+      ['user', 'Please reason before answering.', undefined],
+      [
+        'assistant',
+        'Reasoning retained at the ownership handoff.',
+        'commentary',
+      ],
+      ['assistant', 'Settled answer.', 'final_answer'],
+    ],
+  );
 });

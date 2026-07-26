@@ -1,0 +1,243 @@
+/* ─────────────────────────────────────
+   CENTER — 에디터 표면의 아티팩트 보기 모드
+   (리치 에디터 | 아티팩트 | 코드 뷰어 토글의 보기 모드 — 원고 시트
+   자리에서 렌더된다. 콘텐츠가 주인공이 되도록 크롬은 얇은 툴바 한 줄만.)
+   ───────────────────────────────────── */
+.manuscript-sheet.artifact-mode {
+  max-width: min(1120px, 100%);
+  padding: 16px 20px 20px;
+}
+
+.artifact-editor-surface {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: 10px;
+}
+
+.artifact-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 0;
+}
+
+/* 클로드식 [👁 | </>] 아이콘 토글 */
+.artifact-editor-mode-toggle {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-full);
+  background: var(--surface-container-low);
+}
+
+.artifact-editor-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.artifact-editor-icon-button:hover:not(:disabled),
+.artifact-editor-icon-button.active {
+  background: var(--surface-container);
+  color: var(--primary);
+}
+
+.artifact-editor-icon-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 넓은 모드(채팅 접힘·에디터만·아티팩트 확대)에서는 리치 에디터·코드
+   뷰어·아티팩트 시트가 중앙을 가득 쓴다 — 빈 화면만 넓어지던 답답함 해소 */
+.manuscript.artifact-expanded .manuscript-sheet,
+.shell.layout-no-chat .manuscript-sheet,
+.shell.layout-editor-only .manuscript-sheet {
+  max-width: none;
+}
+
+.artifact-editor-title {
+  overflow: hidden;
+  color: var(--primary);
+  font-family: var(--font-prose-serif);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-editor-meta {
+  flex: none;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+}
+
+/* 버전 스테퍼 — ← v2/3 → 를 meta 줄 안에 인라인으로 배치 */
+.artifact-editor-version-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.artifact-editor-icon-button.version-step {
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.artifact-editor-icon-button.version-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.artifact-editor-toolbar-spacer {
+  flex: 1;
+}
+
+.artifact-editor-action {
+  flex: none;
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 5px 12px;
+  background: transparent;
+  color: var(--on-surface-variant);
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.artifact-editor-action:hover:not(:disabled) {
+  background: var(--surface-container);
+  color: var(--primary);
+}
+
+.artifact-editor-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.artifact-editor-error {
+  color: var(--error, #b3261e);
+  font-size: 12px;
+}
+
+/* 렌더 본문 — 표면을 꽉 채운다 (iframe 프레임은 내부에서 자기 높이 보고) */
+.artifact-editor-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 420px;
+}
+
+.artifact-editor-body .artifact-preview-surface {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 원문 코드 영역(.code-area)은 editor.css의 줄 번호 코드 영역을 공유한다 */
+.artifact-editor-surface .code-area {
+  min-height: 420px;
+}
+
+/* ─────────────────────────────────────
+   미디어 아티팩트 프리뷰 — 감상 표면. 파일 뷰어의 스테이지/풋터 문법을
+   그대로 잇는다: 동영상은 웜 블랙 매트, 이미지는 종이 위에, 프롬프트는
+   풋터에서 한 줄로 접혀 있다가 클릭하면 펼쳐진다.
+   ───────────────────────────────────── */
+.artifact-media-figure {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+}
+
+.artifact-media-stage {
+  flex: 1;
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: calc(var(--radius-lg) - 8px);
+  overflow: hidden;
+}
+
+/* 필름 매트 — 파일 뷰어의 비디오 스테이지와 같은 웜 블랙 */
+.artifact-media-stage.dark {
+  background: color-mix(in srgb, var(--primary) 55%, black);
+}
+
+.artifact-media-video {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+
+.artifact-media-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+}
+
+.artifact-media-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid
+    color-mix(in srgb, var(--outline-variant) 55%, transparent);
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  color: var(--on-surface-muted);
+}
+
+.artifact-media-prompt {
+  flex: 1;
+  min-width: 0;
+}
+
+.artifact-media-prompt summary {
+  cursor: pointer;
+  list-style: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-media-prompt summary::-webkit-details-marker {
+  display: none;
+}
+
+.artifact-media-prompt[open] summary {
+  white-space: normal;
+  line-height: 1.5;
+}
+
+.artifact-media-meta {
+  flex-shrink: 0;
+  font-feature-settings: 'tnum';
+}
+
+/* 저장은 밑줄 링크가 아니라 눈에 띄는 액션 버튼 — 모양은
+   artifact-editor-action이 담당하고 여기서는 배치만 잡는다 */
+.artifact-media-save {
+  flex-shrink: 0;
+  white-space: nowrap;
+}

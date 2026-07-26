@@ -10,9 +10,9 @@ import {
   PTC_EXECUTE_CODE_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,
   PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
+  isPtcExecuteCodeRuntimeCellTerminalStatus,
   type PtcExecuteCodeCellId,
   type PtcExecuteCodeCellTerminalResultStore,
-  type PtcExecuteCodeRuntimeCellTerminalStatus,
 } from './ptc/runtime/execute-code/execute-code-runtime-contract.js';
 
 export function createPtcExecuteCodeCellTerminalResultStore(): PtcExecuteCodeCellTerminalResultStore {
@@ -71,7 +71,7 @@ export function createPtcExecuteCodeCellTerminalResultStore(): PtcExecuteCodeCel
         parsed.value.policyId !== PTC_EXECUTE_CODE_POLICY_ID ||
         parsed.value.executionSurface !== 'node_via_lab_detached_cell' ||
         parsed.value.cellId !== args.cellId ||
-        !isPtcExecuteCodeTerminalWaitStatus(parsed.value.status) ||
+        !isPtcExecuteCodeRuntimeCellTerminalStatus(parsed.value.status) ||
         (parsed.value.exitCode !== null &&
           typeof parsed.value.exitCode !== 'number') ||
         typeof parsed.value.stdout !== 'string' ||
@@ -106,15 +106,4 @@ function buildPtcExecuteCodeCellTerminalResultOutputRef(args: {
     runId: PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_RUN_ID,
     callId: args.cellId,
   });
-}
-
-function isPtcExecuteCodeTerminalWaitStatus(
-  value: unknown,
-): value is PtcExecuteCodeRuntimeCellTerminalStatus {
-  return (
-    value === 'completed' ||
-    value === 'terminated' ||
-    value === 'completed_with_cleanup_failure' ||
-    value === 'terminated_with_cleanup_failure'
-  );
 }

@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatSubagentModelMeta, formatRunModelLabel } from './model-copy.js';
+import {
+  RUN_MODEL_TAGLINES,
+  formatSubagentModelMeta,
+  formatRunModelLabel,
+} from './model-copy.js';
 
 void test('formatSubagentModelMeta renders model label with reasoning effort', () => {
   assert.equal(
@@ -17,4 +21,15 @@ void test('formatSubagentModelMeta renders model label with reasoning effort', (
 
 void test('formatRunModelLabel falls back to the raw id for unknown models', () => {
   assert.equal(formatRunModelLabel('mystery-model'), 'mystery-model');
+});
+
+void test('Qwen preview model copy is available to model pickers', () => {
+  assert.equal(
+    formatRunModelLabel('qwen3.8-max-preview'),
+    'Qwen3.8 Max Preview',
+  );
+  assert.equal(
+    RUN_MODEL_TAGLINES['qwen3.8-max-preview'],
+    '긴 맥락과 깊은 사고가 필요할 때',
+  );
 });

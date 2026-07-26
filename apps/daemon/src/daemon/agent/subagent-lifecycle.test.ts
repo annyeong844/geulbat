@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { createDaemonContext } from '../context.js';
@@ -10,11 +13,13 @@ import { testThreadId } from '../../test-support/thread-id.js';
 import type { AgentEvent } from '../runtime-contracts.js';
 import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
 import type {
+  SubagentCapability,
   SubagentLaunchReservation,
   SubagentType,
 } from '../subagent-runtime-contracts.js';
 import { createRunState } from './runtime/run-state.js';
 import { beginBackgroundChildLifecycle } from './subagent-lifecycle.js';
+import { createDaemonRuntimeStateStore } from '../runtime-state-store.js';
 
 function startTestBackgroundChildLifecycle(args: {
   testLabel: string;
@@ -23,7 +28,9 @@ function startTestBackgroundChildLifecycle(args: {
   parentRunId: string;
   childRunId: string;
   subagentType?: SubagentType;
+  capabilities?: readonly SubagentCapability[];
   timeoutMs?: number;
+  durableLaunchRecorded?: true;
   launchReservation?: SubagentLaunchReservation;
   emitAgentEvent?: (event: AgentEvent) => void;
   finish?: () => void;
@@ -68,6 +75,7 @@ function startTestBackgroundChildLifecycle(args: {
 
   const lifecycle = beginBackgroundChildLifecycle({
     subagentType: args.subagentType ?? 'worker',
+    capabilities: args.capabilities ?? [],
     parentRunId,
     ownerThreadId,
     startedChildRun: {
@@ -82,6 +90,9 @@ function startTestBackgroundChildLifecycle(args: {
     ...TEST_CHILD_MODEL_REGISTRATION,
     emitAgentEvent,
     ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+    ...(args.durableLaunchRecorded === true
+      ? { durableLaunchRecorded: true }
+      : {}),
   });
 
   return {
@@ -132,6 +143,8 @@ function assertLifecycleErrorLog(
 }
 
 void test('beginBackgroundChildLifecycle registers child run and terminal publication cleans parent handles', () => {
+  let activateCount = 0;
+  let activatedChildRunState: object | undefined;
   let releaseCount = 0;
   const {
     runtimeServices,
@@ -140,6 +153,7 @@ void test('beginBackgroundChildLifecycle registers child run and terminal public
     parentRunId,
     childRunId,
     parentRunState,
+    childRunState,
     lifecycle,
     emittedEvents,
     getFinishCount,
@@ -150,7 +164,12 @@ void test('beginBackgroundChildLifecycle registers child run and terminal public
     parentRunId: 'lifecycle-parent',
     childRunId: 'lifecycle-child',
     subagentType: 'explorer',
+    capabilities: ['ptc'],
     launchReservation: {
+      activate(runState) {
+        activateCount += 1;
+        activatedChildRunState = runState;
+      },
       release() {
         releaseCount += 1;
       },
@@ -158,7 +177,9 @@ void test('beginBackgroundChildLifecycle registers child run and terminal public
     timeoutMs: 60_000,
   });
 
-  assert.equal(releaseCount, 1);
+  assert.equal(activateCount, 1);
+  assert.equal(activatedChildRunState, childRunState);
+  assert.equal(releaseCount, 0);
   assert.equal(parentRunState.childRunIds.has(childRunId), true);
   assert.equal(parentRunState.backgroundChildRunIds.has(childRunId), true);
   assert.equal(
@@ -173,9 +194,12 @@ void test('beginBackgroundChildLifecycle registers child run and terminal public
         childRunId,
         childThreadId,
         subagentType: 'explorer',
+        capabilities: ['ptc'],
+        toolSurface: 'explorer_ptc',
         modelId: 'gpt-5.6-sol',
         reasoningEffort: 'medium',
         selectionSource: 'inherited',
+        runtime: runtimeServices.childRuns.getChildRun(childRunId)?.runtime,
       },
     },
   ]);
@@ -186,6 +210,7 @@ void test('beginBackgroundChildLifecycle registers child run and terminal public
     terminalResult: 'child done',
   });
 
+  assert.equal(releaseCount, 1);
   assert.equal(getFinishCount(), 1);
   assert.equal(parentRunState.childRunIds.has(childRunId), false);
   assert.equal(parentRunState.backgroundChildRunIds.has(childRunId), false);
@@ -199,11 +224,130 @@ void test('beginBackgroundChildLifecycle registers child run and terminal public
     );
   assert.equal(backgroundResult?.parentRunId, parentRunId);
   assert.equal(backgroundResult?.childRunId, childRunId);
+  assert.deepEqual(backgroundResult?.capabilities, ['ptc']);
+  assert.equal(backgroundResult?.toolSurface, 'explorer_ptc');
   assert.equal(backgroundResult?.terminalState, 'completed');
   assert.equal(backgroundResult?.result, 'child done');
   // No model rounds ran, so no usage rides on the terminal record.
   assert.equal(backgroundResult?.usage, undefined);
   assert.equal(typeof backgroundResult?.elapsedMs, 'number');
+});
+
+void test('beginBackgroundChildLifecycle unloads the registry body after durable terminal publication', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-lifecycle-terminal-'),
+  );
+  const store = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  const runtimeServices = createDaemonContext({
+    homeStateRoot: stateRoot,
+    subagentTerminalDeliveries: store,
+  });
+  const { lifecycle, childRunId, ownerThreadId } =
+    startTestBackgroundChildLifecycle({
+      testLabel: 'subagent-lifecycle-durable-terminal',
+      ownerThreadId: 69,
+      childThreadId: 70,
+      parentRunId: 'lifecycle-durable-terminal-parent',
+      childRunId: 'lifecycle-durable-terminal-child',
+      runtimeServices,
+    });
+
+  try {
+    lifecycle.publishTerminalOutcome({
+      terminalState: 'completed',
+      terminalReason: null,
+      terminalResult: 'durable child body',
+    });
+
+    assert.equal(runtimeServices.childRuns.getChildRun(childRunId), undefined);
+    const [pending] =
+      runtimeServices.backgroundNotifications.readThreadBackgroundResults(
+        ownerThreadId,
+      );
+    assert.equal(pending?.result, 'durable child body');
+    assert.equal(
+      pending?.resultRef,
+      `subagent-result:${pending?.deliveryId ?? ''}`,
+    );
+    assert.equal(
+      store.readSubagentTerminalOutcomeByChildRunId(childRunId)?.result.result,
+      'durable child body',
+    );
+  } finally {
+    store.close();
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('beginBackgroundChildLifecycle durably marks started after registration and before spawn emission', () => {
+  const order: string[] = [];
+  let runtimeServices: AgentRuntimeServices;
+  runtimeServices = createDaemonContext({
+    subagentLaunchRequests: {
+      enqueueSubagentLaunchBatch() {
+        throw new Error('not used by lifecycle test');
+      },
+      readSubagentLaunchRequest() {
+        return undefined;
+      },
+      readSubagentLaunchRequestByChildRunId() {
+        return undefined;
+      },
+      readQueuedSubagentLaunchRequests() {
+        return [];
+      },
+      markSubagentLaunchDeferredBatch() {
+        throw new Error('not used by lifecycle test');
+      },
+      cancelQueuedSubagentLaunchRequest() {
+        throw new Error('not used by lifecycle test');
+      },
+      updateQueuedSubagentLaunchPriority() {
+        throw new Error('not used by lifecycle test');
+      },
+      retryInterruptedSubagentLaunch() {
+        throw new Error('not used by lifecycle test');
+      },
+      markSubagentLaunchStarting() {
+        throw new Error('not used by lifecycle test');
+      },
+      markSubagentLaunchStarted(childRunId) {
+        assert.equal(
+          runtimeServices.childRuns.getChildRun(childRunId)?.status,
+          'running',
+        );
+        order.push('durable-started');
+      },
+      markSubagentLaunchFailedToStart() {
+        throw new Error('not used by lifecycle test');
+      },
+      recordSubagentRuntimeObservation() {
+        order.push('runtime-observed');
+      },
+    },
+  });
+
+  startTestBackgroundChildLifecycle({
+    testLabel: 'durable-started-order',
+    ownerThreadId: 161,
+    childThreadId: 162,
+    parentRunId: 'durable-lifecycle-parent',
+    childRunId: 'durable-lifecycle-child',
+    runtimeServices,
+    durableLaunchRecorded: true,
+    emitAgentEvent(event) {
+      assert.equal(event.type, 'subagent_spawned');
+      order.push('spawn-emitted');
+    },
+  });
+
+  assert.deepEqual(order, [
+    'durable-started',
+    'runtime-observed',
+    'spawn-emitted',
+  ]);
 });
 
 void test('publishTerminalOutcome carries the child run usage totals for drill-down', () => {
@@ -313,6 +457,7 @@ void test('beginBackgroundChildLifecycle cleans parent handles when daemon child
         childRunId: 'lifecycle-registry-failure-child',
         runtimeServices,
         launchReservation: {
+          activate() {},
           release() {
             releaseCount += 1;
           },
@@ -354,6 +499,7 @@ void test('beginBackgroundChildLifecycle cleans lifecycle state when spawn event
       childRunId: 'lifecycle-emit-failure-child',
       runtimeServices,
       launchReservation: {
+        activate() {},
         release() {
           releaseCount += 1;
         },

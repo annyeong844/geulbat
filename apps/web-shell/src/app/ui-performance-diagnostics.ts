@@ -18,6 +18,10 @@ interface ResponsivenessPerformanceEntry extends PerformanceEntry {
 
 const logger = createLogger('ui-performance');
 
+// Chrome's LoAF reporting guidance uses blocking time above 100 ms as an
+// actionable field-reporting threshold, below the 200 ms "good" INP boundary.
+const UI_RESPONSIVENESS_WARNING_THRESHOLD_MS = 100;
+
 function roundDuration(durationMs: number): number {
   return Math.max(0, Math.round(durationMs));
 }
@@ -88,26 +92,49 @@ export function startUiResponsivenessObserver(
   let observer: PerformanceObserver | null = null;
   try {
     observer = new Observer((list) => {
-      for (const entry of list.getEntries() as ResponsivenessPerformanceEntry[]) {
-        performanceLogger.warn(`browser ${entryType}`, {
-          name: entry.name,
-          startTimeMs: roundDuration(entry.startTime),
-          durationMs: roundDuration(entry.duration),
-          blockingDurationMs:
-            typeof entry.blockingDuration === 'number'
-              ? roundDuration(entry.blockingDuration)
-              : undefined,
-          scriptCount: Array.isArray(entry.scripts)
-            ? entry.scripts.length
-            : undefined,
-          topScript: getTopLongAnimationFrameScript(
-            entry.scripts,
-            locationHref,
-          ),
-        });
+      const entries = list.getEntries() as ResponsivenessPerformanceEntry[];
+      let reportedEntryCount = 0;
+      let representativeEntry: ResponsivenessPerformanceEntry | undefined;
+      let representativeScore = 0;
+      for (const entry of entries) {
+        const blockingDuration = entry.blockingDuration;
+        const score =
+          entryType === 'long-animation-frame' &&
+          typeof blockingDuration === 'number'
+            ? blockingDuration
+            : entry.duration;
+        if (score <= UI_RESPONSIVENESS_WARNING_THRESHOLD_MS) {
+          continue;
+        }
+        reportedEntryCount += 1;
+        if (representativeEntry === undefined || score > representativeScore) {
+          representativeEntry = entry;
+          representativeScore = score;
+        }
       }
+      if (representativeEntry === undefined) {
+        return;
+      }
+      performanceLogger.warn(`browser ${entryType}`, {
+        observedEntryCount: entries.length,
+        reportedEntryCount,
+        name: representativeEntry.name,
+        startTimeMs: roundDuration(representativeEntry.startTime),
+        durationMs: roundDuration(representativeEntry.duration),
+        blockingDurationMs:
+          typeof representativeEntry.blockingDuration === 'number'
+            ? roundDuration(representativeEntry.blockingDuration)
+            : undefined,
+        scriptCount: Array.isArray(representativeEntry.scripts)
+          ? representativeEntry.scripts.length
+          : undefined,
+        topScript: getTopLongAnimationFrameScript(
+          representativeEntry.scripts,
+          locationHref,
+        ),
+      });
     });
-    observer.observe({ type: entryType, buffered: true });
+    observer.observe({ type: entryType });
     return observer;
   } catch (error: unknown) {
     observer?.disconnect();

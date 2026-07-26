@@ -11,6 +11,7 @@ import {
   buildCodexDirectPromptCacheProjection,
   buildProviderInstructions,
   buildResponsesRequestHeaders,
+  resolveCodexWireServiceTier,
 } from './codex-request.js';
 import {
   buildGrokOAuthResponsesHeaders,
@@ -22,9 +23,13 @@ import {
   createProviderReplayScopeId,
   requireProviderReplayScopeId,
 } from './provider-replay-scope.js';
+import { normalizeProviderUsageTelemetry } from './provider-cache-telemetry.js';
 import { buildResponseWireInput } from './transport/responses-wire-input.js';
 import { resolveCodexResponsesUrl } from './transport/responses-websocket-url.js';
-import type { ProviderNativeCompactionOutputItem } from './wire/types.js';
+import type {
+  ProviderNativeCompactionOutputItem,
+  ProviderUsageTelemetry,
+} from './wire/types.js';
 
 const CODEX_AUTO_COMPACT_CONTEXT_NUMERATOR = 9;
 const CODEX_AUTO_COMPACT_CONTEXT_DENOMINATOR = 10;
@@ -70,6 +75,7 @@ export type ProviderNativeCompactionPolicy =
 interface CompactOpenAiHistoryResult {
   output: ProviderNativeCompactionOutputItem[];
   providerReplayScopeId: ProviderReplayScopeId;
+  providerUsageTelemetry?: ProviderUsageTelemetry;
 }
 
 interface OpenAiNativeCompactionDependencies {
@@ -197,6 +203,9 @@ export async function compactOpenAiHistory(
         : {}),
       parallel_tool_calls: policy.supportsParallelToolCalls,
       reasoning: input.providerRequestOptions.reasoning,
+      service_tier: resolveCodexWireServiceTier(
+        input.providerRequestOptions.serviceTier,
+      ),
       prompt_cache_key: promptCacheProjection.wire.prompt_cache_key,
       text: input.providerRequestOptions.text,
     };
@@ -215,9 +224,11 @@ export async function compactOpenAiHistory(
     return parseOpenAiOAuthJsonResponse(response, 'native compaction');
   });
 
+  const providerUsageTelemetry = readProviderNativeCompactionUsage(payload);
   return {
     output: readProviderNativeCompactionOutput(payload),
     providerReplayScopeId: requireProviderReplayScopeId(providerReplayScopeId),
+    ...(providerUsageTelemetry === undefined ? {} : { providerUsageTelemetry }),
   };
 }
 
@@ -316,9 +327,11 @@ export async function compactGrokHistory(
     return parseGrokOAuthJsonResponse(response, 'native compaction');
   });
 
+  const providerUsageTelemetry = readProviderNativeCompactionUsage(payload);
   return {
     output: readGrokProviderNativeCompactionOutput(payload),
     providerReplayScopeId: requireProviderReplayScopeId(providerReplayScopeId),
+    ...(providerUsageTelemetry === undefined ? {} : { providerUsageTelemetry }),
   };
 }
 
@@ -571,6 +584,14 @@ function readGrokModelContextWindow(
     throw new Error('Grok model descriptor returned an invalid context length');
   }
   return contextWindow;
+}
+
+function readProviderNativeCompactionUsage(
+  payload: unknown,
+): ProviderUsageTelemetry | undefined {
+  return isJsonRecord(payload)
+    ? normalizeProviderUsageTelemetry(payload['usage'])
+    : undefined;
 }
 
 function readProviderNativeCompactionOutput(

@@ -4,8 +4,9 @@ import type { ThreadId } from '@geulbat/protocol/ids';
 import type { RunChannelSocketCleanupContext } from './run-channel-runtime-context.js';
 
 interface RunChannelCleanupSocketState {
-  approvalSessionId: string;
+  computerSessionId: string;
   activeRunIds: Set<CancelRequest['runId']>;
+  ownedRunIds: Set<CancelRequest['runId']>;
   runStartInFlightRequestId: string | null;
   threadSeqByThread: Map<ThreadId, number>;
   threadUnsubscribes: Map<ThreadId, () => void>;
@@ -37,8 +38,9 @@ export function cleanupSocketRuntimeState(
   cleanupContext: RunChannelSocketCleanupContext,
 ): void {
   const {
-    approvalSessionId,
+    computerSessionId,
     activeRunIds,
+    ownedRunIds,
     authTimeout,
     threadUnsubscribes,
     threadSeqByThread,
@@ -47,16 +49,16 @@ export function cleanupSocketRuntimeState(
     clearTimeout(authTimeout);
   }
   clearSocketHeartbeatRuntime(state);
-  if (activeRunIds.size > 0) {
-    cleanupContext.liveRunEvents.detachOwner(approvalSessionId);
-  } else {
-    cleanupContext.approvalGate.clearApprovalSessionRuntime(approvalSessionId);
-  }
+  // 승인 grant/대기 상태는 소켓이 아니라 명시적 computer session의
+  // 소유다. 같은 computerSessionId를 제시한 재연결만 이어받을 수 있으므로
+  // close 시점에는 이벤트 sink만 떼고 승인 상태는 남긴다.
+  cleanupContext.liveRunEvents.detachOwner(computerSessionId);
   for (const unsubscribe of threadUnsubscribes.values()) {
     unsubscribe();
   }
   threadUnsubscribes.clear();
   threadSeqByThread.clear();
   activeRunIds.clear();
+  ownedRunIds.clear();
   state.runStartInFlightRequestId = null;
 }

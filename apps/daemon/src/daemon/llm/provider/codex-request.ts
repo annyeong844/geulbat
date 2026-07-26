@@ -27,6 +27,12 @@ type CodexDirectPromptCacheProjection = PromptCacheProjection & {
   };
 };
 
+export function resolveCodexWireServiceTier(
+  serviceTier: ProviderRequestOptions['serviceTier'],
+): 'default' | 'priority' {
+  return serviceTier === 'fast' ? 'priority' : 'default';
+}
+
 export function buildResponsesRequestBody(
   input: ProviderPromptInput,
   promptCacheProjection: CodexDirectPromptCacheProjection,
@@ -35,6 +41,7 @@ export function buildResponsesRequestBody(
   const instructions = buildProviderInstructions(input);
   const body: WireRequestBase = {
     model: requestOptions.model,
+    service_tier: resolveCodexWireServiceTier(requestOptions.serviceTier),
     store: false,
     stream: true,
     text: requestOptions.text,

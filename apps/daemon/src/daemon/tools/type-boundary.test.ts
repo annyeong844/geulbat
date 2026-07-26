@@ -156,7 +156,7 @@ type _AgentContextUsesExplicitKind = Expect<
   Equal<AgentToolExecutionContext['kind'], 'agent'>
 >;
 type _StandaloneContextStillAllowsOptionalApprovalSession = Expect<
-  Equal<StandaloneToolExecutionContext['approvalSessionId'], string | undefined>
+  Equal<StandaloneToolExecutionContext['computerSessionId'], string | undefined>
 >;
 type _StandaloneContextAllowsOptionalComputerFileRoot = Expect<
   Equal<StandaloneToolExecutionContext['computerFileRoot'], string | undefined>
@@ -217,7 +217,7 @@ void test('agent tool execution context guard uses explicit context kind', () =>
     workingDirectory: '/tmp/type-boundary',
     computerFileRoot: '/tmp/computer-session',
     approvalGranted: true,
-    approvalSessionId: 'approval-session',
+    computerSessionId: 'approval-session',
     permissionMode: 'basic',
     threadId: THREAD_ID,
     runId: 'run-1',
@@ -235,14 +235,14 @@ void test('agent tool execution context guard uses explicit context kind', () =>
       computerFileRoot: '/tmp/computer-session',
       currentFile: undefined,
       selection: undefined,
-      approvalSessionId: 'approval-session',
+      computerSessionId: 'approval-session',
       permissionMode: 'basic',
       threadId: THREAD_ID,
       runId: 'run-1',
       runState: undefined,
       emitAgentEvent: () => undefined,
       memoryIndex: undefined,
-      agentSpawnRuntime: undefined,
+      runtimeServices: undefined,
     },
     callId: 'call-agent',
     approvalGranted: true,

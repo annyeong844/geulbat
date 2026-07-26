@@ -4,15 +4,21 @@ import test from 'node:test';
 import {
   IMAGE_GENERATION_MODEL_CATALOG,
   RUN_MODEL_CATALOG,
+  RUN_REASONING_EFFORTS,
   VIDEO_GENERATION_MODEL_CATALOG,
   isImageGenerationModelId,
   isRunPromptInputRefResponse,
+  isRunProviderId,
+  isRunReasoningSelection,
   isRunRequest,
   isRunStartRequest,
   isRunSubagentModelRouting,
   isVideoGenerationModelId,
   isVideoGenerationSettings,
   resolveImageGenerationModelDescriptor,
+  resolveMaximumReasoningEffort,
+  resolveRunModelDescriptor,
+  resolveRunReasoningSelection,
   resolveVideoGenerationModelDescriptor,
 } from './run-contract.js';
 
@@ -33,6 +39,70 @@ void test('isRunRequest accepts an optional working directory and rejects projec
       prompt: 'hello',
       projectId: 'workspace',
       threadId: VALID_THREAD_ID,
+    }),
+    false,
+  );
+});
+
+void test('plan mode requests require explicit presentation and depth', () => {
+  assert.equal(
+    isRunRequest({
+      prompt: 'plan this',
+      planModeRequested: true,
+      planModeIntensity: 'quiet',
+      planModeDepth: 'deep',
+    }),
+    true,
+  );
+  assert.equal(
+    isRunRequest({ prompt: 'plan this', planModeRequested: true }),
+    false,
+  );
+  assert.equal(
+    isRunRequest({ prompt: 'do this', planModeIntensity: 'visual' }),
+    false,
+  );
+  assert.equal(
+    isRunRequest({
+      prompt: 'plan this',
+      planModeRequested: true,
+      planModeIntensity: 'visual',
+    }),
+    false,
+  );
+  assert.equal(
+    isRunRequest({ prompt: 'do this', planModeDepth: 'standard' }),
+    false,
+  );
+});
+
+void test('run service tier accepts Fast only for a model that advertises it', () => {
+  assert.equal(
+    isRunRequest({
+      prompt: 'hello',
+      modelId: 'gpt-5.6-sol',
+      serviceTier: 'fast',
+    }),
+    true,
+  );
+  assert.equal(
+    isRunRequest({
+      prompt: 'hello',
+      modelId: 'grok-4.5',
+      serviceTier: 'fast',
+    }),
+    false,
+  );
+  assert.equal(isRunRequest({ prompt: 'hello', serviceTier: 'fast' }), false);
+  assert.equal(
+    isRunRequest({ prompt: 'hello', serviceTier: 'standard' }),
+    true,
+  );
+  assert.equal(
+    isRunRequest({
+      prompt: 'hello',
+      modelId: 'gpt-5.6-sol',
+      serviceTier: 'turbo',
     }),
     false,
   );
@@ -166,6 +236,52 @@ void test('isRunRequest accepts the regenerate flag only as a boolean', () => {
   );
 });
 
+void test('provider transition recovery requires an explicit cross-provider source grant', () => {
+  assert.equal(
+    isRunRequest({
+      prompt: 'continue',
+      modelId: 'gpt-5.6-luna',
+      providerTransitionRecovery: {
+        sourceModelId: 'grok-4.5',
+        sourceReasoningEffort: 'high',
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isRunRequest({
+      prompt: 'continue',
+      modelId: 'gpt-5.6-luna',
+      providerTransitionRecovery: {
+        sourceModelId: 'gpt-5.6-sol',
+        sourceReasoningEffort: 'medium',
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isRunRequest({
+      prompt: 'continue',
+      providerTransitionRecovery: {
+        sourceModelId: 'grok-4.5',
+        sourceReasoningEffort: 'high',
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isRunRequest({
+      prompt: 'continue',
+      modelId: 'gpt-5.6-luna',
+      providerTransitionRecovery: {
+        sourceModelId: 'grok-4.5',
+        sourceReasoningEffort: 'xhigh',
+      },
+    }),
+    false,
+  );
+});
+
 void test('run requests accept only the canonical public tool-name field', () => {
   assert.equal(
     isRunStartRequest({
@@ -268,6 +384,60 @@ void test('isRunStartRequest rejects retired browserContextShare requests loudly
   );
 });
 
+void test('run provider ids include the isolated Qwen model route', () => {
+  assert.equal(isRunProviderId('openai_codex_direct'), true);
+  assert.equal(isRunProviderId('grok_oauth'), true);
+  assert.equal(isRunProviderId('qwen_token_plan'), true);
+  assert.equal(isRunProviderId('qwen_oauth'), false);
+});
+
+void test('Qwen exposes the unified effort ladder while keeping mandatory thinking', () => {
+  const qwen = resolveRunModelDescriptor('qwen3.8-max-preview');
+  assert.deepEqual(qwen.reasoningEfforts, RUN_REASONING_EFFORTS);
+  assert.equal(qwen.defaultReasoningEffort, 'high');
+});
+
+void test('Ultra is a closed reasoning-strength selection, not an agent mode', () => {
+  assert.equal(isRunReasoningSelection('medium'), true);
+  assert.equal(isRunReasoningSelection('ultra'), true);
+  assert.equal(isRunReasoningSelection('standard'), false);
+  assert.equal(
+    isRunStartRequest({
+      prompt: 'hello',
+      reasoningEffort: 'ultra',
+    }),
+    true,
+  );
+  assert.equal(
+    isRunStartRequest({
+      prompt: 'hello',
+      reasoningEffort: 'recursive',
+    }),
+    false,
+  );
+});
+
+void test('maximum reasoning effort follows each model catalog entry', () => {
+  assert.equal(resolveMaximumReasoningEffort('gpt-5.6-sol'), 'max');
+  assert.equal(resolveMaximumReasoningEffort('grok-4.5'), 'high');
+  assert.equal(resolveMaximumReasoningEffort('qwen3.8-max-preview'), 'max');
+});
+
+void test('Ultra resolves to each model maximum while preserving its semantic intent', () => {
+  assert.deepEqual(resolveRunReasoningSelection('grok-4.5', 'ultra'), {
+    reasoningEffort: 'high',
+    ultraReasoning: true,
+  });
+  assert.deepEqual(resolveRunReasoningSelection('gpt-5.6-sol', 'ultra'), {
+    reasoningEffort: 'max',
+    ultraReasoning: true,
+  });
+  assert.deepEqual(resolveRunReasoningSelection('grok-4.5', 'high'), {
+    reasoningEffort: 'high',
+    ultraReasoning: false,
+  });
+});
+
 void test('run model catalog owns current model-to-provider projection', () => {
   assert.deepEqual(
     RUN_MODEL_CATALOG.map(({ id, providerId }) => ({ id, providerId })),
@@ -276,6 +446,7 @@ void test('run model catalog owns current model-to-provider projection', () => {
       { id: 'gpt-5.6-terra', providerId: 'openai_codex_direct' },
       { id: 'gpt-5.6-luna', providerId: 'openai_codex_direct' },
       { id: 'grok-4.5', providerId: 'grok_oauth' },
+      { id: 'qwen3.8-max-preview', providerId: 'qwen_token_plan' },
     ],
   );
 });
@@ -331,6 +502,31 @@ void test('isRunPromptInputRefResponse validates upload responses', () => {
     isRunPromptInputRefResponse({
       ok: true,
       promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
+    }),
+    false,
+  );
+});
+
+void test('Goal entry and daemon-issued resume references are mutually exclusive', () => {
+  assert.equal(
+    isRunRequest({
+      prompt: 'Ship Goal mode',
+      goalModeRequested: true,
+    }),
+    true,
+  );
+  assert.equal(
+    isRunRequest({
+      prompt: 'Continue Goal mode',
+      goalRef: { goalId: 'goal-1' },
+    }),
+    true,
+  );
+  assert.equal(
+    isRunRequest({
+      prompt: 'Conflicting Goal handoff',
+      goalModeRequested: true,
+      goalRef: { goalId: 'goal-1' },
     }),
     false,
   );

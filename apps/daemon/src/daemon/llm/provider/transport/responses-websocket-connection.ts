@@ -1,3 +1,4 @@
+import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 
 import { getErrorMessage } from '../../../utils/error.js';
@@ -77,6 +78,19 @@ export async function connectWebSocket(
       reject(extractWebSocketCloseError(event));
     };
 
+    const onUnexpectedResponse = (
+      _request: ClientRequest,
+      response: IncomingMessage,
+    ) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      response.resume();
+      reject(createUnexpectedResponseError(response));
+    };
+
     const onAbort = () => {
       if (settled) {
         return;
@@ -94,6 +108,7 @@ export async function connectWebSocket(
       socket.off('open', onOpen);
       socket.off('error', onError);
       socket.off('close', onClose);
+      socket.off('unexpected-response', onUnexpectedResponse);
       signal?.removeEventListener('abort', onAbort);
     };
 
@@ -114,8 +129,47 @@ export async function connectWebSocket(
     socket.on('open', onOpen);
     socket.on('error', onError);
     socket.on('close', onClose);
+    socket.on('unexpected-response', onUnexpectedResponse);
     signal?.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+function createUnexpectedResponseError(response: IncomingMessage): Error {
+  const status = response.statusCode;
+  const retryAfterMs = parseRetryAfterMs(
+    response.headers['retry-after'],
+    Date.now(),
+  );
+  return Object.assign(
+    new Error(
+      status === undefined
+        ? 'WebSocket upgrade rejected'
+        : `Unexpected server response: ${status}`,
+    ),
+    {
+      ...(status === undefined ? {} : { status }),
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    },
+  );
+}
+
+function parseRetryAfterMs(
+  value: string | string[] | undefined,
+  nowMs: number,
+): number | undefined {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  if (candidate === undefined) {
+    return undefined;
+  }
+  const seconds = Number(candidate);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1_000;
+  }
+  const retryAtMs = Date.parse(candidate);
+  if (!Number.isFinite(retryAtMs)) {
+    return undefined;
+  }
+  return Math.max(0, retryAtMs - nowMs);
 }
 
 function headersToRecord(headers: Headers): Record<string, string> {

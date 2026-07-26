@@ -11,6 +11,7 @@
     "smoke:public-web-conformance": "node --import tsx ./scripts/public-web-conformance-smoke.mjs",
     "smoke:assistant-transcript": "node ./scripts/assistant-transcript-virtualization-smoke.mjs",
     "smoke:react-bundle:install-browser": "playwright install chromium",
+    "gate:flows": "node ./scripts/flow-gate.mjs",
     "dev": "node ../../scripts/run-with-local-dev-auth.mjs vite",
     "build:deps": "tsc -b ../../packages/structured-logger/tsconfig.json ../../packages/protocol/tsconfig.json ../../packages/artifact-runtime-policy/tsconfig.json",
     "build:app": "npm run check:artifact-runtime-sources && tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && vite build",
@@ -18,7 +19,8 @@
     "check:app": "npm run check:artifact-runtime-sources && tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
     "check": "npm run build:deps && npm run check:app",
     "test:files": "npm run check:artifact-runtime-sources && node ../../scripts/run-workspace-node-tests.mjs --workspace web-shell --tsconfig ./tsconfig.test.json",
-    "test:app": "npm run test:files -- \"**/*.test.js\"",
+    "test:flow-gate-lifecycle": "node --test ./scripts/flow-gate.test.mjs",
+    "test:app": "npm run test:files -- \"**/*.test.js\" && npm run test:flow-gate-lifecycle",
     "test": "npm run build:deps && npm run test:app",
     "preview": "vite preview"
   },

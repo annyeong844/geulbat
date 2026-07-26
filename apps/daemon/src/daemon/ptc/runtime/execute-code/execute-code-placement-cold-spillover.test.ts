@@ -295,6 +295,44 @@ void test('independent read-only overlap cold-creates an isolated burst and clea
   await coordinator.releasePlacement(warm.value);
 });
 
+void test('child placement reports unavailable when cold burst is disabled', async () => {
+  const { sessionManager, batchRunner } = createUnusedPlacementDependencies();
+  const result =
+    await createPtcExecuteCodePlacementCoordinator().acquirePlacement({
+      kind: 'detached_cell',
+      ownerKind: 'child',
+      cellId: 'ptc_cell_child_without_burst',
+      continuity: classifyPtcExecuteCodePlacementContinuity({
+        independenceProof: { reason: 'read_only_analysis' },
+      }),
+      callbackEffectPolicy: createPtcExecuteCodeCallbackEffectPolicy({
+        callbackToolCount: 1,
+      }),
+      identity: {
+        threadId: testThreadId(940_7),
+        stateRoot: '/workspace',
+        trustContextId: 'trust-context',
+      },
+      sessionManager,
+      batchRunner,
+    });
+
+  assert.deepEqual(result, {
+    ok: false,
+    reasonCode: 'ptc_lab_session_unavailable',
+    message:
+      'Child-owned PTC work requires cold burst placement, but cold burst placement is not enabled',
+    remediation:
+      'Ask the operator to enable GEULBAT_PTC_BURST_ENABLED=true, or return the work to the root/main owner.',
+    diagnostics: {
+      placementOwnerKind: 'child',
+      continuityKind: 'independent',
+      burstEligible: true,
+      coldBurstAvailable: false,
+    },
+  });
+});
+
 void test('child placement is cold-only and refuses unproven or write-capable work', async () => {
   const identity = {
     threadId: testThreadId(940_7),

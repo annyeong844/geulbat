@@ -14,15 +14,19 @@
 .rail-header {
   display: flex;
   align-items: center;
-  padding: 14px 20px 8px;
+  /* 상단 띠 공통 높이 — 좌·중·우 헤더는 반드시 같은 값으로 움직인다
+     (가로줄이 패널 경계에서 계단지면 안 된다) */
+  min-height: 48px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--outline-variant);
 }
 
 /* 글밭 브랜드 — 작지만 또렷한 세리프 워드마크 */
 .rail-brand {
   font-family: var(--font-prose-serif);
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
   color: var(--primary);
 }
 
@@ -37,40 +41,14 @@
   overflow: hidden;
 }
 
-.rail-tools {
-  margin: 0 12px 8px;
-  border-radius: var(--radius-md);
-  background: var(--surface-container-low);
-}
-
-.rail-tools > summary {
-  list-style: none;
-  cursor: pointer;
-  padding: 6px 8px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--on-surface-muted);
-  border-radius: var(--radius-md);
-  transition: background var(--transition-base);
-}
-.rail-tools > summary::-webkit-details-marker {
-  display: none;
-}
-.rail-tools > summary:hover {
-  background: var(--surface-container-high);
-}
-.rail-tools[open] > summary {
-  color: var(--on-surface-variant);
-}
-
 .rail-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 20px 4px;
+  min-height: 46px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--outline-variant);
 }
 
 .rail-section-label {
@@ -81,18 +59,18 @@
 .rail-section-label {
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--on-surface-muted);
 }
 
 .rail-icon-button {
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   border: none;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--on-surface-muted);
   font-size: 14px;
@@ -101,7 +79,8 @@
   transition: all var(--transition-base);
 }
 .rail-icon-button:hover {
-  background: var(--surface-container);
+  background: var(--surface-container-lowest);
+  box-shadow: var(--elev-floating);
   color: var(--primary);
 }
 .rail-icon-button:disabled {
@@ -136,6 +115,7 @@
   justify-content: space-between;
   gap: 10px;
   padding: 10px 14px 12px;
+  border-top: 1px solid var(--outline-variant);
   background: var(--surface-container-low);
   flex-shrink: 0;
 }
@@ -175,7 +155,7 @@
 
 .settings-entry:hover,
 .settings-entry.active {
-  background: var(--surface-container);
+  background: var(--secondary-soft);
   color: var(--primary);
 }
 
@@ -216,10 +196,16 @@
   padding: 4px 0 8px;
   -webkit-user-select: none;
   user-select: none;
-  /* 가상 스크롤 — 트리 자체가 스크롤 영역, 행 높이는 고정 26px */
+  /* 가상 스크롤 — 트리 자체가 스크롤 영역, 행 높이는 고정 32px */
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.tree::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .tree:focus {
@@ -231,7 +217,7 @@
   align-items: center;
   gap: 7px;
   width: 100%;
-  height: 26px;
+  height: 32px;
   padding: 0 16px;
   border: none;
   background: transparent;
@@ -244,21 +230,43 @@
   transition: background var(--transition-base);
 }
 
+.tree-entry-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid rgba(50, 34, 20, 0.2);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: var(--surface-container-low);
+  color: var(--on-surface);
+  font-family: var(--font-ui-label);
+  font-size: 13px;
+  transition: border-color var(--transition-base);
+}
+
+.tree-entry-input:focus {
+  border-bottom-color: var(--secondary);
+}
+
 .tree-node.folder {
   font-weight: 500;
   color: var(--on-surface);
 }
 
 .tree-node:hover {
-  background: var(--surface-container-high);
+  background: color-mix(
+    in srgb,
+    var(--surface-container-lowest) 72%,
+    transparent
+  );
 }
 
 /* active file — No-Line Rule 명시 예외: single-side accent (§3.1.1) */
 .tree-node.active {
-  background: var(--surface-container);
-  color: var(--primary);
-  font-weight: 500;
-  box-shadow: inset 2px 0 0 0 var(--primary);
+  background: var(--secondary-soft);
+  color: var(--on-secondary-fixed-variant);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 0 var(--secondary);
 }
 
 /* multi-select selection visual (§3.1.2, selection visual only) */
@@ -325,8 +333,11 @@
 }
 
 .tree-icon {
+  position: relative;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
-  font-size: 12px;
   color: var(--on-surface-muted);
 }
 
@@ -352,6 +363,7 @@
   z-index: 60;
   min-width: 180px;
   padding: 6px;
+  border: 1px solid var(--outline-variant);
   background: var(--surface-container-lowest);
   border-radius: var(--radius-md);
   box-shadow: var(--elev-floating);
@@ -418,14 +430,39 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding: 2px 8px 8px;
+  margin: 8px 8px 5px;
+  padding: 7px 6px 8px;
+  border: 1px solid
+    color-mix(in srgb, var(--secondary) 22%, var(--outline-variant));
+  border-radius: var(--radius-md);
+  background: color-mix(
+    in srgb,
+    var(--secondary-soft) 58%,
+    var(--surface-container-lowest)
+  );
+}
+
+/* 섹션 라벨 — 세로바 액센트는 선택된 행 하나(.quick-access-item.active)만
+   쓴다. 라벨은 rail-section-label/current-directory-heading과 같은 문법. */
+.quick-access-heading {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 7px 3px;
+  color: var(--on-surface-muted);
+  font-family: var(--font-ui-label);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
 }
 
 .quick-access-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 10px;
+  position: relative;
+  min-height: 32px;
+  padding: 4px 10px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -438,7 +475,32 @@
 }
 
 .quick-access-item:hover {
-  background: var(--surface-container);
+  background: color-mix(
+    in srgb,
+    var(--surface-container-lowest) 72%,
+    transparent
+  );
+}
+
+.current-directory-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  min-height: 30px;
+  padding: 6px 14px 2px;
+  color: var(--on-surface-muted);
+  font-family: var(--font-ui-label);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.current-directory-heading::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--outline-variant);
 }
 
 .quick-access-item.active {
@@ -447,9 +509,326 @@
   font-weight: 600;
 }
 
+.quick-access-item.active::before {
+  content: '';
+  position: absolute;
+  inset-block: 7px;
+  left: 0;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--secondary);
+}
+
 .quick-access-icon {
+  position: relative;
+  display: inline-block;
   width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--on-surface-muted);
+}
+
+.quick-access-item.active .quick-access-icon {
+  color: var(--secondary);
+}
+
+.quick-access-icon::before,
+.quick-access-icon::after,
+.tree-icon::before,
+.tree-icon::after {
+  content: '';
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.quick-access-icon.folder::before,
+.tree-icon.folder::before {
+  left: 1px;
+  top: 5px;
+  width: 14px;
+  height: 9px;
+  border: 1.4px solid currentColor;
+  border-radius: 2px;
+}
+
+.quick-access-icon.folder::after,
+.tree-icon.folder::after {
+  left: 2px;
+  top: 2px;
+  width: 7px;
+  height: 4px;
+  border: 1.4px solid currentColor;
+  border-bottom: 0;
+  border-radius: 2px 2px 0 0;
+}
+
+.tree-icon.file::before {
+  inset: 1px 3px;
+  border: 1.4px solid currentColor;
+  border-radius: 2px;
+}
+
+.tree-icon.file::after {
+  right: 3px;
+  top: 1px;
+  width: 4px;
+  height: 4px;
+  border-left: 1.4px solid currentColor;
+  border-bottom: 1.4px solid currentColor;
+}
+
+.tree-icon.truncated::before {
+  content: '…';
+  inset: -2px 0 0;
+  font-size: 13px;
+  line-height: 16px;
   text-align: center;
+}
+
+.quick-access-icon.computer::before {
+  left: 1px;
+  top: 2px;
+  width: 14px;
+  height: 10px;
+  border: 1.4px solid currentColor;
+  border-radius: 2px;
+}
+
+.quick-access-icon.computer::after {
+  left: 4px;
+  bottom: 1px;
+  width: 8px;
+  height: 3px;
+  border-top: 1.4px solid currentColor;
+  box-shadow: inset 0 1px 0 currentColor;
+}
+
+.quick-access-icon.drive::before {
+  left: 1px;
+  top: 3px;
+  width: 14px;
+  height: 10px;
+  border: 1.4px solid currentColor;
+  border-radius: 3px;
+}
+
+.quick-access-icon.drive::after {
+  right: 3px;
+  bottom: 5px;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.quick-access-icon.home::before {
+  left: 3px;
+  top: 2px;
+  width: 10px;
+  height: 10px;
+  border-left: 1.4px solid currentColor;
+  border-top: 1.4px solid currentColor;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
+.quick-access-icon.home::after {
+  left: 3px;
+  top: 7px;
+  width: 10px;
+  height: 7px;
+  border: 1.4px solid currentColor;
+  border-top: 0;
+  border-radius: 0 0 2px 2px;
+}
+
+/* .video-settings-card 기본 폭(360px)이 이 파일보다 나중에 로드된다. 명시도를
+   같게 두면 그쪽이 이겨서 오른쪽 칸이 잘린다 — 두 클래스를 겹쳐 잡는다. */
+.video-settings-card.computer-directory-picker-card {
+  /* 폭·높이 예산의 소유자는 이 카드 하나다. 안쪽 칸들은 각자 상한을 들지 않고
+     이 안에서 나눠 쓴다 — 예산이 여러 곳에 있으면 서로를 몰라서 합이 카드를
+     넘고, 그때 밖으로 삐져나온다. */
+  width: clamp(300px, 78vw, 1100px);
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  /* 안쪽 어느 칸도 카드를 넘지 못한다. */
+  overflow: hidden;
+}
+
+/* 위치 목록은 왼쪽 세로 칸, 내용은 오른쪽. 목록이 늘어나도 아래로 쌓이므로
+   가로 스크롤이 생기지 않는다. */
+.computer-directory-picker-body {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: minmax(150px, 22%) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.computer-directory-picker-main {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.computer-directory-picker-locations-heading {
+  margin: 10px 0 4px;
+  color: var(--on-surface-variant);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.computer-directory-picker-locations
+  section:first-child
+  .computer-directory-picker-locations-heading {
+  margin-top: 0;
+}
+
+.computer-directory-picker-card h2,
+.computer-directory-picker-card p {
+  margin: 0;
+}
+
+.computer-directory-picker-locations {
+  display: flex;
+  min-width: 0;
+  /* 상한을 들지 않는다 — 격자 칸이 주는 높이를 따르고 넘치면 스크롤한다. */
+  min-height: 0;
+  flex-direction: column;
+  padding-right: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-right: 1px solid var(--outline-variant);
+}
+
+.computer-directory-picker-locations section {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.computer-directory-picker-path button {
+  flex: none;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  background: var(--surface-container-low);
+  color: var(--on-surface);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* 세로 목록 줄 — 이름이 길면 잘라서 보여준다. 가로로 밀지 않는다. */
+.computer-directory-picker-locations button {
+  overflow: hidden;
+  flex: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  background: transparent;
+  color: var(--on-surface);
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.computer-directory-picker-locations button:hover {
+  background: var(--surface-container-low);
+}
+
+.computer-directory-picker-locations button.active {
+  border-color: var(--outline-variant);
+  background: var(--surface-container-low);
+  color: var(--primary);
+}
+
+.computer-directory-picker-pin {
+  align-self: flex-start;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-md);
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--on-surface-variant);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.computer-directory-picker-pin[aria-pressed='true'] {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.computer-directory-picker-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.computer-directory-picker-path span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-directory-picker-list {
+  /* min-height는 max-height를 이긴다. 하한을 두면 짧은 화면에서 이 목록이
+     카드를 밀어내므로, 높이는 남은 공간에서 받고 넘치면 스크롤한다. */
+  min-height: 0;
+  flex: 1;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-md);
+  background: var(--surface-container-low);
+}
+
+.computer-directory-picker-list > button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--on-surface);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.computer-directory-picker-list > button:hover {
+  background: var(--surface-container-high);
+}
+
+.computer-directory-picker-list > p {
+  padding: 18px 12px;
+  color: var(--on-surface-muted);
+  text-align: center;
+}
+
+.computer-directory-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.computer-directory-picker-path button:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 
 .computer-tree {
@@ -457,6 +836,43 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
+}
+
+.thread-delete-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 12px 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.thread-delete-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.thread-delete-confirm-actions button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.thread-delete-confirm-actions button:hover {
+  background: var(--surface-container-high);
+  color: var(--primary);
 }
 
 .rail-browse-path-short {
@@ -487,4 +903,94 @@
 .rail-browse-path:hover .rail-browse-path-full,
 .rail-browse-path:focus-visible .rail-browse-path-full {
   display: block;
+}
+
+.rail-browse-breadcrumbs {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 10px 6px;
+  overflow-x: auto;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  scrollbar-width: none;
+}
+
+.rail-browse-breadcrumbs::-webkit-scrollbar {
+  display: none;
+}
+
+.rail-browse-breadcrumbs > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.rail-browse-breadcrumbs button {
+  border: none;
+  padding: 1px 2px;
+  background: transparent;
+  color: var(--on-surface-variant);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.rail-browse-breadcrumbs button:hover:not(:disabled) {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.rail-browse-breadcrumbs button:disabled {
+  color: var(--on-surface);
+  cursor: default;
+}
+
+.computer-directory-picker-path nav {
+  display: flex;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.computer-directory-picker-path nav > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.computer-directory-picker-path nav button {
+  border: none;
+  padding: 4px;
+  background: transparent;
+  color: var(--on-surface-variant);
+  white-space: nowrap;
+}
+
+.computer-directory-picker-path nav button:hover:not(:disabled) {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.computer-directory-picker-path nav button:disabled {
+  color: var(--on-surface);
+  cursor: default;
+}
+
+/* 좁은 창에서는 왼쪽 칸을 위로 접는다 — 150px 칸과 파일 목록이 한 줄에 같이
+   있으면 둘 다 못 읽을 폭이 된다. */
+@media (max-width: 720px) {
+  .computer-directory-picker-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .computer-directory-picker-locations {
+    max-height: 28vh;
+    padding-right: 0;
+    padding-bottom: 6px;
+    border-right: 0;
+    border-bottom: 1px solid var(--outline-variant);
+  }
 }

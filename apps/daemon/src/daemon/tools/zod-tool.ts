@@ -11,6 +11,7 @@ import type {
   ToolObjectParameters,
   ToolParameters,
   ToolRecoveryStrategy,
+  ToolResultProjectionCapability,
 } from './types.js';
 import { defineParsedTool, failToolParse } from './parsed-tool.js';
 
@@ -28,7 +29,9 @@ interface ZodToolOptions<TSchema extends AnyZodObject> {
   requiresApproval: boolean;
   exposure?: ToolExposure;
   recoveryStrategy?: ToolRecoveryStrategy;
+  resultProjection?: ToolResultProjectionCapability;
   streamsArgsDelta?: boolean;
+  endsTurnAfterSuccess?: boolean;
   catalogSearchMetadata?: ToolCatalogSearchMetadata;
   executeParsed: (
     args: z.output<TSchema>,
@@ -59,7 +62,13 @@ export function defineZodTool<TSchema extends AnyZodObject>(
     ...(options.recoveryStrategy
       ? { recoveryStrategy: options.recoveryStrategy }
       : {}),
+    ...(options.resultProjection
+      ? { resultProjection: options.resultProjection }
+      : {}),
     ...(options.streamsArgsDelta === true ? { streamsArgsDelta: true } : {}),
+    ...(options.endsTurnAfterSuccess === true
+      ? { endsTurnAfterSuccess: true }
+      : {}),
     ...(options.catalogSearchMetadata
       ? { catalogSearchMetadata: options.catalogSearchMetadata }
       : {}),

@@ -2,13 +2,30 @@ import { randomUUID } from 'node:crypto';
 import { createLogger } from '@geulbat/structured-logger/logger';
 import type { RunId, RunSubagentModelRouting } from './contract.js';
 
-import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
+import type {
+  AgentRuntimeServices,
+  AgentRuntimeSubagentServices,
+} from '../daemon-runtime-contract.js';
+
+// Child lifecycle bookkeeping touches the child registry, background result
+// delivery, and the durable subagent stores — declare exactly that surface
+// instead of the full runtime bag.
+interface SubagentLifecycleServices {
+  backgroundNotifications: AgentRuntimeServices['backgroundNotifications'];
+  childRuns: AgentRuntimeServices['childRuns'];
+  subagent: Pick<
+    AgentRuntimeSubagentServices,
+    'launchRequests' | 'terminalDeliveries'
+  >;
+}
 import type { RunContext } from '../run-context.js';
 import type { AgentEvent, ToolRunState } from '../runtime-contracts.js';
-import type {
-  SubagentLaunchReservation,
-  SubagentType,
-  ResolvedChildModelPin,
+import {
+  resolveSubagentToolSurfaceProfile,
+  type SubagentCapability,
+  type SubagentLaunchReservation,
+  type SubagentType,
+  type ResolvedChildModelPin,
 } from '../subagent-runtime-contracts.js';
 import { getErrorMessage } from '../utils/error.js';
 import { registerChildRun, type RunState } from './runtime/run-state.js';
@@ -37,19 +54,22 @@ export interface BackgroundChildLifecycle {
 
 export function beginBackgroundChildLifecycle(args: {
   subagentType: SubagentType;
+  capabilities: readonly SubagentCapability[];
   parentRunId: RunId;
   ownerThreadId: RunContext['threadId'];
   startedChildRun: StartedChildRunHandle;
   parentRunState: ToolRunState;
-  runtimeServices: AgentRuntimeServices;
+  runtimeServices: SubagentLifecycleServices;
   launchReservation: SubagentLaunchReservation | undefined;
   modelPin: ResolvedChildModelPin;
   subagentModelRouting: RunSubagentModelRouting;
   emitAgentEvent: ((event: AgentEvent) => void) | undefined;
   timeoutMs?: number;
+  durableLaunchRecorded?: true;
 }): BackgroundChildLifecycle {
   const {
     subagentType,
+    capabilities,
     parentRunId,
     ownerThreadId,
     startedChildRun,
@@ -60,6 +80,7 @@ export function beginBackgroundChildLifecycle(args: {
     subagentModelRouting,
     emitAgentEvent,
     timeoutMs,
+    durableLaunchRecorded,
   } = args;
   const {
     runId: childRunId,
@@ -98,21 +119,51 @@ export function beginBackgroundChildLifecycle(args: {
     runChildLifecycleStep('finish managed child run', () => {
       finish();
     });
+    runChildLifecycleStep('release child capacity lease', () => {
+      launchReservation?.release();
+    });
   };
 
   try {
-    launchReservation?.release();
-
+    const observedAt = new Date().toISOString();
+    const launchRequestStore = runtimeServices.subagent.launchRequests;
+    const durableLaunch =
+      durableLaunchRecorded === true
+        ? launchRequestStore?.readSubagentLaunchRequestByChildRunId(childRunId)
+        : undefined;
+    const runtime = {
+      phase: 'provider_waiting' as const,
+      observedAt,
+      partialOutputAvailable: false,
+      ...(durableLaunch?.previousChildRunId === null ||
+      durableLaunch?.previousChildRunId === undefined
+        ? {}
+        : { previousChildRunId: durableLaunch.previousChildRunId }),
+    };
     runtimeServices.childRuns.registerChildRun({
       childRunId,
       childThreadId,
       parentRunId,
       ownerThreadId,
       subagentType,
+      capabilities,
       modelPin,
       subagentModelRouting,
+      runtime,
     });
     childRegistryRegistered = true;
+    launchReservation?.activate(childRunState);
+
+    if (durableLaunchRecorded === true) {
+      if (launchRequestStore === undefined) {
+        throw new Error('durable agent launch store is unavailable');
+      }
+      launchRequestStore.markSubagentLaunchStarted(childRunId);
+      launchRequestStore.recordSubagentRuntimeObservation({
+        childRunId,
+        runtime,
+      });
+    }
 
     emitAgentEvent?.({
       type: 'subagent_spawned',
@@ -121,9 +172,15 @@ export function beginBackgroundChildLifecycle(args: {
         childRunId,
         childThreadId,
         subagentType,
+        capabilities,
+        toolSurface: resolveSubagentToolSurfaceProfile({
+          subagentType,
+          capabilities,
+        }),
         modelId: modelPin.modelId,
         reasoningEffort: modelPin.providerRunSelection.reasoningEffort,
         selectionSource: modelPin.selectionSource,
+        runtime,
       },
     });
   } catch (error: unknown) {
@@ -158,6 +215,7 @@ export function beginBackgroundChildLifecycle(args: {
         childRunId,
         childThreadId,
         subagentType,
+        capabilities,
         elapsedMs: readChildElapsedMs(childRunState),
         usageTotals: childRunState.usageTotals,
         modelPin,
@@ -168,12 +226,13 @@ export function beginBackgroundChildLifecycle(args: {
 
 function publishBackgroundChildTerminalOutcome(args: {
   outcome: ChildTerminalOutcome;
-  runtimeServices: AgentRuntimeServices;
+  runtimeServices: SubagentLifecycleServices;
   ownerThreadId: RunContext['threadId'];
   parentRunId: RunId;
   childRunId: RunId;
   childThreadId: RunContext['threadId'];
   subagentType: SubagentType;
+  capabilities: readonly SubagentCapability[];
   elapsedMs: number | undefined;
   usageTotals: RunUsageTotals;
   modelPin: ResolvedChildModelPin;
@@ -186,6 +245,7 @@ function publishBackgroundChildTerminalOutcome(args: {
     childRunId,
     childThreadId,
     subagentType,
+    capabilities,
     elapsedMs,
     usageTotals,
     modelPin,
@@ -199,15 +259,23 @@ function publishBackgroundChildTerminalOutcome(args: {
       reason: outcome.terminalReason,
     });
   });
+  const runtime = runtimeServices.childRuns.getChildRun(childRunId)?.runtime;
+  const deliveryId = randomUUID();
   runChildLifecycleStep('publish background child terminal result', () => {
     runtimeServices.backgroundNotifications.enqueueThreadBackgroundResult(
       ownerThreadId,
       {
-        deliveryId: randomUUID(),
+        deliveryId,
         parentRunId,
         childRunId,
         childThreadId,
         subagentType,
+        capabilities,
+        toolSurface: resolveSubagentToolSurfaceProfile({
+          subagentType,
+          capabilities,
+        }),
+        ...(runtime === undefined ? {} : { runtime }),
         terminalState: outcome.terminalState,
         ...(outcome.terminalReason ? { reason: outcome.terminalReason } : {}),
         result: outcome.terminalResult,
@@ -218,6 +286,21 @@ function publishBackgroundChildTerminalOutcome(args: {
         reasoningEffort: modelPin.providerRunSelection.reasoningEffort,
       },
     );
+    const terminalStore = runtimeServices.subagent.terminalDeliveries;
+    if (terminalStore === undefined) {
+      return;
+    }
+    const durableOutcome =
+      terminalStore.readSubagentTerminalOutcomeByChildRunId(childRunId);
+    if (durableOutcome?.result.deliveryId !== deliveryId) {
+      throw new Error(
+        `durable child terminal result is unavailable: ${childRunId}`,
+      );
+    }
+    runtimeServices.childRuns.claimTerminalChildRuns({
+      ownerThreadId,
+      childRunIds: [childRunId],
+    });
   });
 }
 

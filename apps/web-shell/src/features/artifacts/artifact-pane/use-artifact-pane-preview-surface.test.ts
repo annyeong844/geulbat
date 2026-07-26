@@ -21,49 +21,17 @@ function createRuntimeFrameRecorder() {
   };
 }
 
-void test('useArtifactPanePreviewSurface does not render runtime frames when preview is hidden', async () => {
-  const runtimeFrame = createRuntimeFrameRecorder();
-  const hook = await renderHook(useArtifactPanePreviewSurface, {
-    viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
-        renderer: 'js',
-        digest: 'fixture',
-        payload: 'document.body.textContent = "hidden";',
-        raw: 'document.body.textContent = "hidden";',
-      },
-    }),
-    artifactSessionKey: 'js::hidden::completed',
-    canShowPreview: false,
-    supportsStreamingPreview: false,
-    isLiveStreamingArtifact: false,
-    renderRuntimeFrame: runtimeFrame.renderRuntimeFrame,
-  });
-
-  assert.equal(hook.result.current.previewSurface, null);
-  assert.equal(hook.result.current.runtimeUnavailableMessage, null);
-  assert.deepEqual(runtimeFrame.calls, []);
-  hook.unmount();
-});
-
 void test('useArtifactPanePreviewSurface resolves runtime previews with the injected frame renderer', async () => {
   const runtimeFrame = createRuntimeFrameRecorder();
   const hook = await renderHook(useArtifactPanePreviewSurface, {
     viewModel: createArtifactPaneViewModel({
-      parsed: {
-        kind: 'artifact',
-        state: 'completed',
+      artifact: {
         renderer: 'js',
         digest: 'fixture',
         payload: 'document.body.textContent = "hello";',
-        raw: 'document.body.textContent = "hello";',
       },
     }),
-    artifactSessionKey: 'js::hello::completed',
-    canShowPreview: true,
-    supportsStreamingPreview: false,
-    isLiveStreamingArtifact: false,
+    artifactSessionKey: 'js::hello',
     renderRuntimeFrame: runtimeFrame.renderRuntimeFrame,
   });
 

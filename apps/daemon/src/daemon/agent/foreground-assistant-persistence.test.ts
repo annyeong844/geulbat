@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { assertRunId } from '@geulbat/protocol/ids';
 
 import type { AgentEvent } from './events.js';
 import { createDaemonContext } from '../context.js';
@@ -284,4 +285,80 @@ void test('assistant envelope artifact stays active over tool-committed refs', a
   const active = assistant.metadata?.activeArtifactRef;
   assert.ok(active);
   assert.notEqual(active.artifactId, 'art_img');
+});
+
+void test('planning output persists the latest daemon-issued stamp on the final answer and artifact version', async () => {
+  const threadId = testThreadId(1205);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-assistant-'));
+  const events: AgentEvent[] = [];
+  const runtimeServices = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const collecting = await runtimeServices.planningWorkflows.enterOrResume({
+    threadId,
+    requested: true,
+    intensity: 'visual',
+    depth: 'deep',
+    executionTemplate: {
+      workingDirectory: '/workspace',
+      permissionMode: 'basic',
+    },
+  });
+  assert.equal(collecting?.state, 'collecting');
+  if (collecting === null) {
+    throw new Error('expected collecting workflow');
+  }
+  const proposed = await runtimeServices.planningWorkflows.propose({
+    threadId,
+    proposalRunId: assertRunId('run-foreground-assistant'),
+    draft: {
+      schemaVersion: 'plan_draft_v1',
+      outcome: 'Ship stamped plan renderings',
+      steps: [
+        {
+          id: 'stamp',
+          text: 'Persist the plan rendering stamp',
+          acceptanceCriteria: ['Artifact and final answer carry one exact ref'],
+        },
+      ],
+      decisions: [],
+      assumptions: [],
+      openQuestions: [],
+    },
+  });
+  const agentInput = makeAgentInput({ workspaceRoot, threadId, events });
+  agentInput.runtimeServices = runtimeServices;
+  agentInput.planningWorkflow = {
+    workflowId: collecting.workflowId,
+    intensity: collecting.intensity,
+    depth: collecting.depth,
+  };
+
+  const persisted = await persistForegroundAssistantAnswer({
+    agentInput,
+    result: {
+      ok: true,
+      finalProse: '이 명세는 현재 계획에서 만들었습니다.',
+      artifactCandidate: {
+        renderer: 'markdown',
+        payload: '# 계획 명세',
+        digest: null,
+      },
+    },
+    deps: makeDeps(),
+  });
+
+  assert.equal(persisted, true);
+  const expectedStamp = {
+    workflowId: proposed.workflowId,
+    planId: proposed.planId,
+    revision: proposed.revision,
+    digest: proposed.digest,
+  };
+  const artifact = (
+    await loadAllThreadArtifactVersions(workspaceRoot, threadId)
+  ).at(-1);
+  assert.deepEqual(artifact?.planStamp, expectedStamp);
+  const assistant = (await readTranscriptEntries(workspaceRoot, threadId)).at(
+    -1,
+  );
+  assert.deepEqual(assistant?.metadata?.planStamp, expectedStamp);
 });

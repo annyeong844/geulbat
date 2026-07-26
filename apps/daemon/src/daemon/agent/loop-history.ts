@@ -71,11 +71,13 @@ export async function loadInitialHistory(
   threadId: string,
   prompt: string,
   providerTarget?: ProviderHistoryTarget,
+  throughEntryId?: string,
 ): Promise<HistoryItem[]> {
   const history = await loadExistingHistory(
     workspaceRoot,
     threadId,
     providerTarget,
+    throughEntryId,
   );
   const lastItem = history.at(-1);
   if (lastItem?.kind !== 'user' || lastItem.text !== prompt) {
@@ -88,10 +90,26 @@ export async function loadExistingHistory(
   workspaceRoot: string,
   threadId: string,
   providerTarget?: ProviderHistoryTarget,
+  throughEntryId?: string,
 ): Promise<HistoryItem[]> {
-  const transcriptEntries = await readTranscriptEntries(
+  const storedTranscriptEntries = await readTranscriptEntries(
     workspaceRoot,
     threadId,
+  );
+  const throughEntryIndex =
+    throughEntryId === undefined
+      ? storedTranscriptEntries.length - 1
+      : storedTranscriptEntries.findIndex(
+          (entry) => entry.entryId === throughEntryId,
+        );
+  if (throughEntryId !== undefined && throughEntryIndex < 0) {
+    throw new Error(
+      `provider-transition history boundary is missing: ${throughEntryId}`,
+    );
+  }
+  const transcriptEntries = storedTranscriptEntries.slice(
+    0,
+    throughEntryIndex + 1,
   );
   const artifactVersions = await loadThreadArtifactVersionsByRefs(
     workspaceRoot,
@@ -136,7 +154,7 @@ export async function loadExistingHistory(
     artifactVersionsByRef,
     attachmentsById,
     activeHistoryOverride,
-    providerTarget?.replayScopeId,
+    providerTarget,
   );
 }
 
@@ -152,19 +170,13 @@ function buildProviderRoundAwareActiveHistory(args: {
     args.transcriptEntries,
     args.threadId,
   );
-  const transcriptIndexById = new Map(
-    args.transcriptEntries.map(
-      (entry, index) => [entry.entryId, index] as const,
-    ),
+  const activeEntryIds = new Set(
+    active.activeEntries.map((entry) => entry.entryId),
   );
-  const latestCompactionIndex =
-    active.latestCompactionEntryId === undefined
-      ? -1
-      : (transcriptIndexById.get(active.latestCompactionEntryId) ?? -1);
   const reachableProviderRounds = args.providerRounds.filter((record) => {
     const anchor = record.precedingTranscriptEntryId;
     if (anchor === null) {
-      if (latestCompactionIndex >= 0) {
+      if (active.latestCompactionEntryId !== undefined) {
         return false;
       }
       if (args.transcriptEntries.length > 0) {
@@ -175,20 +187,19 @@ function buildProviderRoundAwareActiveHistory(args: {
     if (anchor === active.latestCompactionEntryId) {
       return true;
     }
-    const anchorIndex = transcriptIndexById.get(anchor);
-    if (anchorIndex === undefined) {
-      // Regenerate keeps the journal append-only while replacing the active
-      // transcript tail. A record whose anchor is no longer reachable belongs
-      // to that superseded tail and is intentionally excluded from replay.
-      logger.warn('provider round is unreachable from active transcript:', {
-        threadId: args.threadId,
-        runId: record.runId,
-        round: record.round,
-        anchor,
-      });
-      return false;
+    if (activeEntryIds.has(anchor)) {
+      return true;
     }
-    return anchorIndex > latestCompactionIndex;
+    // Regenerate keeps the journal append-only while replacing the active
+    // transcript prefix. A record anchored outside the retained active set
+    // belongs to superseded history and is intentionally excluded from replay.
+    logger.warn('provider round is unreachable from active transcript:', {
+      threadId: args.threadId,
+      runId: record.runId,
+      round: record.round,
+      anchor,
+    });
+    return false;
   });
 
   if (reachableProviderRounds.length === 0) {
@@ -206,8 +217,20 @@ function buildProviderRoundAwareActiveHistory(args: {
       record.providerId !== args.providerTarget.providerId ||
       record.model !== args.providerTarget.model
     ) {
-      throw new Error(
-        `provider round history is incompatible with ${args.providerTarget.providerId}/${args.providerTarget.model}`,
+      logger.info(
+        'provider round history is incompatible with the selected target; rebuilding normalized transcript history',
+        {
+          threadId: args.threadId,
+          sourceProviderId: record.providerId,
+          sourceModel: record.model,
+          targetProviderId: args.providerTarget.providerId,
+          targetModel: args.providerTarget.model,
+        },
+      );
+      return buildHistoryFromTranscript(
+        active.activeEntries,
+        args.artifactVersionsByRef,
+        args.attachmentsById,
       );
     }
   }

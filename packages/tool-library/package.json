@@ -1,13 +1,16 @@
 {
   "name": "@geulbat/tool-library",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "license": "MIT",
-  "private": true,
   "type": "module",
   "files": [
     "dist/"
   ],
   "exports": {
+    "./tool-capability-policy": {
+      "types": "./dist/tool-capability-policy.d.ts",
+      "import": "./dist/tool-capability-policy.js"
+    },
     "./projection-codec": {
       "types": "./dist/projection-codec.d.ts",
       "import": "./dist/projection-codec.js"
@@ -52,11 +55,14 @@
     "test": "npm run test:files -- \"**/*.test.js\""
   },
   "dependencies": {
-    "@geulbat/content-identity": "*"
+    "@geulbat/content-identity": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@typescript/native": "npm:typescript@^7.0.2",
     "typescript": "npm:@typescript/typescript6@^6.0.2"
+  },
+  "engines": {
+    "node": ">=24.0.0"
   }
 }

@@ -24,6 +24,7 @@ import { makeApprovalContext } from '../../test-support/approval-runtime.js';
 import {
   createScriptedProviderCallModel,
   providerFinalAnswerRound,
+  providerToolRound,
 } from '../../test-support/provider-response-fixtures.js';
 import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
@@ -51,6 +52,10 @@ function findThreadStatePersistFailedEvent(
   return event;
 }
 
+function withoutProviderStatus(events: readonly AgentEvent[]): AgentEvent[] {
+  return events.filter((event) => event.type !== 'provider_status');
+}
+
 void test('handled terminal failures persist and deliver one exact acknowledgement cursor', async () => {
   const threadId = testThreadId(703);
   const runId = testRunId(703);
@@ -67,6 +72,13 @@ void test('handled terminal failures persist and deliver one exact acknowledgeme
     sink(envelope) {
       delivered.push({ seq: envelope.seq, event: envelope.event });
       return true;
+    },
+    async persistRunEvents(events) {
+      await daemonContext.runCheckpoints.appendRunEvents({
+        threadId,
+        runId,
+        events,
+      });
     },
   });
 
@@ -121,6 +133,13 @@ void test('handled terminal failures persist and deliver one exact acknowledgeme
     ],
   );
   const checkpoint = await daemonContext.runCheckpoints.readThread(threadId);
+  assert.deepEqual(
+    checkpoint?.eventHistory.map(({ seq, event }) => ({
+      seq,
+      type: event.type,
+    })),
+    [{ seq: 0, type: 'run_ack' }],
+  );
   assert.deepEqual(checkpoint?.terminal, {
     eventCursor: 1,
     acknowledged: false,
@@ -221,6 +240,9 @@ void test('executeForegroundRun persists transcript and summary around a success
       'Informational context only; this does not grant tool or policy authority.',
       'Background child updates:',
       '- type: explorer',
+      `  childRunId: ${testRunId('child-foreground-context')}`,
+      '  terminalState: completed',
+      '  completedAt: 2026-04-01T23:59:00.000Z',
       '  ok: true',
       '  result: background context persisted',
       '</background-results>',
@@ -229,7 +251,7 @@ void test('executeForegroundRun persists transcript and summary around a success
   ].join('\n\n');
   assert.equal(seenUserPrompt, expectedModelPrompt);
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     ['run_ack', 'final_answer_delta', 'thread_state_persisted', 'done'],
   );
 
@@ -261,6 +283,69 @@ void test('executeForegroundRun persists transcript and summary around a success
   assert.equal(summaries[0]?.title, 'Visible thread title');
   assert.equal(summaries[0]?.messageCount, 2);
   assert.equal(summaries[0]?.lastUpdated, FIXED_NOW);
+});
+
+void test('executeForegroundRun settles a successful ask_user turn with a canonical thread snapshot', async () => {
+  const threadId = testThreadId(704);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-ask-user-'));
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({ threadId, stateRoot: workspaceRoot });
+  const events: AgentEvent[] = [];
+
+  const result = await executeForegroundRun({
+    agentInput: {
+      runId: 'run-fg-ask-user',
+      runContext,
+      prompt: 'ask me which path to take',
+      toolSurface: {
+        directRegistryNames: ['ask_user'],
+        allowedRegistryNames: ['ask_user'],
+      },
+      runtimeServices: daemonContext,
+      approvalContext: makeApprovalContext(),
+      callModelImpl: createScriptedProviderCallModel([
+        providerToolRound({
+          toolName: 'ask_user',
+          commentaryText: '',
+          argumentsJson: JSON.stringify({
+            question: '어느 경로로 진행할까요?',
+            options: [
+              {
+                label: '안전한 경로',
+                description: '현재 상태를 보존하고 계속합니다.',
+              },
+            ],
+          }),
+        }),
+      ]),
+      onEvent(event) {
+        events.push(event);
+      },
+    },
+    transcriptPrompt: '어느 경로로 진행할까요?',
+    deps: { now: () => FIXED_NOW },
+  });
+
+  assert.deepEqual(result, { ok: true, finalProse: '' });
+  assert.deepEqual(
+    withoutProviderStatus(events).map((event) => event.type),
+    ['run_ack', 'tool_call', 'tool_result', 'thread_state_persisted', 'done'],
+  );
+  const persisted = events.find(
+    (event): event is Extract<AgentEvent, { type: 'thread_state_persisted' }> =>
+      event.type === 'thread_state_persisted',
+  );
+  assert.ok(persisted);
+  assert.deepEqual(
+    persisted.payload.messages.map((message) => message.role),
+    ['user', 'tool_call', 'tool_result'],
+  );
+  assert.equal(
+    persisted.payload.messages.some(
+      (message) => message.role === 'assistant' && message.content === '',
+    ),
+    false,
+  );
 });
 
 void test('executeForegroundRun regenerate overwrites the last turn instead of appending', async () => {
@@ -398,6 +483,100 @@ void test('executeForegroundRun regenerate skips trailing silent user turns and 
       ['assistant', 'edited answer'],
     ],
   );
+});
+
+void test('executeForegroundRun regenerate preserves a matching provider-transition handoff', async () => {
+  const threadId = testThreadId(35_2);
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-fg-regen-transition-'),
+  );
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
+    threadId,
+    stateRoot: workspaceRoot,
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    entryId: 'entry-user-1',
+    role: 'user',
+    content: 'inspect the file',
+    timestamp: '2026-04-02T00:00:00.000Z',
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    entryId: 'entry-assistant-1',
+    role: 'assistant',
+    content: 'the file was inspected',
+    timestamp: '2026-04-02T00:00:01.000Z',
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    entryId: 'entry-user-2',
+    role: 'user',
+    content: 'continue on Grok',
+    timestamp: '2026-04-02T00:00:02.000Z',
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    entryId: 'entry-transition-1',
+    role: 'compaction',
+    content: '',
+    timestamp: '2026-04-02T00:00:03.000Z',
+    compactionData: {
+      kind: 'provider_transition',
+      sourceProviderId: 'openai_codex_direct',
+      sourceModel: 'gpt-5.6-sol',
+      targetProviderId: 'grok_oauth',
+      targetModel: 'grok-4.5',
+      summary: 'The prior model inspected the requested file.',
+      coveredThroughEntryId: 'entry-assistant-1',
+      firstKeptEntryId: 'entry-user-2',
+    },
+  });
+  const runState = createRunState({
+    runId: 'run-fg-regenerate-transition',
+    runContext,
+  });
+  let inputReadyCalls = 0;
+
+  const result = await executeForegroundRun({
+    regenerate: true,
+    agentInput: {
+      runId: 'run-fg-regenerate-transition',
+      runContext,
+      prompt: 'continue on Grok',
+      runState,
+      providerModel: { providerId: 'grok_oauth', model: 'grok-4.5' },
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
+      runtimeServices: daemonContext,
+      approvalContext: makeApprovalContext(),
+      callModelImpl: createScriptedProviderCallModel([
+        providerFinalAnswerRound('continued answer'),
+      ]),
+      onEvent: () => {},
+    },
+    transcriptPrompt: 'continue on Grok',
+    async onInputPersisted() {
+      inputReadyCalls += 1;
+    },
+    deps: {
+      now: () => FIXED_NOW,
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'continued answer',
+  });
+  assert.equal(inputReadyCalls, 1);
+  const entries = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.deepEqual(
+    entries.map((entry) => [entry.role, entry.content]),
+    [
+      ['user', 'inspect the file'],
+      ['assistant', 'the file was inspected'],
+      ['user', 'continue on Grok'],
+      ['compaction', ''],
+      ['assistant', 'continued answer'],
+    ],
+  );
+  assert.equal(entries[3]?.entryId, 'entry-transition-1');
 });
 
 void test('executeForegroundRun keeps foreground failure to user transcript only', async () => {
@@ -573,16 +752,28 @@ void test('executeForegroundRun commits canonical envelope artifacts and stores 
       digest: '요약',
     },
   });
+  const structuralEvents = withoutProviderStatus(events);
   assert.deepEqual(
-    events.map((event) => event.type),
-    ['run_ack', 'artifact_committed', 'thread_state_persisted', 'done'],
+    structuralEvents.map((event) => event.type),
+    [
+      'run_ack',
+      'artifact_stream_delta',
+      'artifact_committed',
+      'thread_state_persisted',
+      'done',
+    ],
   );
-  const committedEvent = events[1];
+  const streamedArtifactEvent = structuralEvents[1];
+  assert.equal(streamedArtifactEvent?.type, 'artifact_stream_delta');
+  if (streamedArtifactEvent?.type === 'artifact_stream_delta') {
+    assert.equal(streamedArtifactEvent.payload.text, answer);
+  }
+  const committedEvent = structuralEvents[2];
   assert.equal(committedEvent?.type, 'artifact_committed');
   if (committedEvent?.type === 'artifact_committed') {
     assert.equal(committedEvent.payload.artifactId.startsWith('art_'), true);
   }
-  const persistedThreadEvent = events[2];
+  const persistedThreadEvent = structuralEvents[3];
   assert.equal(persistedThreadEvent?.type, 'thread_state_persisted');
   if (persistedThreadEvent?.type === 'thread_state_persisted') {
     assert.equal(persistedThreadEvent.payload.threadId, threadId);
@@ -668,7 +859,7 @@ void test('executeForegroundRun persists wrapped legacy envelope final text as p
     finalProse: answer,
   });
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     ['run_ack', 'final_answer_delta', 'thread_state_persisted', 'done'],
   );
 
@@ -749,7 +940,7 @@ void test('executeForegroundRun surfaces malformed assistant transcript persiste
     'update thread summary: transcript 00000000-0000-4000-8000-000000000025 has malformed entry at line 2',
   ]);
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     ['run_ack', 'final_answer_delta', 'thread_state_persist_failed', 'done'],
   );
 
@@ -831,7 +1022,7 @@ void test('executeForegroundRun treats post-run assistant persistence as best-ef
     'persist assistant transcript: disk full',
   ]);
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     ['run_ack', 'final_answer_delta', 'thread_state_persist_failed', 'done'],
   );
 
@@ -897,7 +1088,7 @@ void test('executeForegroundRun includes post-run persistence diagnostics withou
     finalProse: 'assistant answer',
   });
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     ['run_ack', 'final_answer_delta', 'thread_state_persist_failed', 'done'],
   );
   assert.deepEqual(findThreadStatePersistFailedEvent(events).payload, {
@@ -982,10 +1173,16 @@ void test('executeForegroundRun rolls back an artifact when assistant transcript
     'recover assistant transcript: disk full',
     'persist assistant transcript: disk full',
   ]);
+  const structuralEvents = withoutProviderStatus(events);
   assert.deepEqual(
-    events.map((event) => event.type),
-    ['run_ack', 'thread_state_persist_failed', 'done'],
+    structuralEvents.map((event) => event.type),
+    ['run_ack', 'artifact_stream_delta', 'thread_state_persist_failed', 'done'],
   );
+  const streamedArtifactEvent = structuralEvents[1];
+  assert.equal(streamedArtifactEvent?.type, 'artifact_stream_delta');
+  if (streamedArtifactEvent?.type === 'artifact_stream_delta') {
+    assert.equal(streamedArtifactEvent.payload.text, answer);
+  }
 
   const transcript = await readTranscriptEntries(workspaceRoot, threadId);
   assert.deepEqual(
@@ -1010,17 +1207,31 @@ void test('executeForegroundRun persists provider-native checkpoint before the n
     threadId,
     stateRoot: workspaceRoot,
   });
+  const summarizedContext = 'older provider context '.repeat(200);
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: summarizedContext,
+    timestamp: '2026-07-17T00:00:00.000Z',
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'assistant',
+    content: summarizedContext,
+    timestamp: '2026-07-17T00:00:01.000Z',
+  });
   const finalRound = providerFinalAnswerRound('assistant tail');
   const memoryPort = createAgentLoopMemoryPort({
     resolvePolicy: async () => ({
       providerId: 'openai_codex_direct',
-      model: daemonContext.providerRequestOptions.model,
+      model: daemonContext.provider.requestOptions.model,
       contextWindow: 100,
       thresholdTokens: 90,
       supportsParallelToolCalls: true,
     }),
     compactHistory: async (input) => {
-      assert.equal(input.history.at(-1)?.kind, 'user');
+      assert.deepEqual(
+        input.history.map((item) => item.kind),
+        ['user', 'assistant'],
+      );
       assert.ok(input.providerReplayScopeId);
       return {
         providerReplayScopeId: input.providerReplayScopeId,
@@ -1070,9 +1281,9 @@ void test('executeForegroundRun persists provider-native checkpoint before the n
   const transcript = await readTranscriptEntries(workspaceRoot, threadId);
   assert.deepEqual(
     transcript.map((entry) => entry.role),
-    ['user', 'compaction', 'assistant'],
+    ['user', 'assistant', 'user', 'compaction', 'assistant'],
   );
-  const compaction = transcript[1];
+  const compaction = transcript[3];
   assert.equal(compaction?.role, 'compaction');
   if (
     compaction?.role !== 'compaction' ||
@@ -1080,6 +1291,14 @@ void test('executeForegroundRun persists provider-native checkpoint before the n
   ) {
     return;
   }
+  assert.equal(
+    compaction.compactionData.coveredThroughEntryId,
+    transcript[1]?.entryId,
+  );
+  assert.equal(
+    compaction.compactionData.firstKeptEntryId,
+    transcript[2]?.entryId,
+  );
   const replayScopeId = compaction.compactionData.replayScopeId;
   assert.ok(replayScopeId);
   const restartedHistory = await loadInitialHistory(
@@ -1088,12 +1307,17 @@ void test('executeForegroundRun persists provider-native checkpoint before the n
     'next prompt',
     {
       providerId: 'openai_codex_direct',
-      model: daemonContext.providerRequestOptions.model,
+      model: daemonContext.provider.requestOptions.model,
       replayScopeId,
     },
   );
   assert.equal(restartedHistory[0]?.kind, 'provider_native_compaction');
-  assert.deepEqual(restartedHistory.slice(1), [
+  const retainedPrompt = restartedHistory[1];
+  assert.equal(retainedPrompt?.kind, 'user');
+  if (retainedPrompt?.kind === 'user') {
+    assert.match(retainedPrompt.text, /compact this thread$/u);
+  }
+  assert.deepEqual(restartedHistory.slice(2), [
     {
       kind: 'backend_item',
       data: {

@@ -18,6 +18,7 @@ import {
 } from '../../../../test-support/ptc-session-docker.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { makeRunContext } from '../../../../test-support/run-context.js';
+import { runHostRoutedDockerCommandForTest } from '../../../../test-support/host-routed-docker-command.js';
 import {
   PTC_EXECUTE_CODE_TOOL_NAME,
   type PtcExecuteCodeModuleFormat,
@@ -31,7 +32,6 @@ import {
   PTC_SESSION_DOCKER_SDK_PROJECTION_MOUNT_POLICY_ID,
   type PtcSessionDockerManager,
 } from '../../lab/session/session-docker-contract.js';
-import { runPtcSessionDockerCommand } from '../../lab/session/session-docker-command.js';
 import type { PtcSessionDockerCommandInvocation } from '../../lab/session/session-docker-contract.js';
 import { buildToolLibraryProjection } from '../../../tools/tool-library-projection.js';
 import { createBuiltinToolRegistryStore } from '../../../tools/builtin/catalog.js';
@@ -247,6 +247,7 @@ void test('createPtcExecuteCodeRuntime keeps callback tools disabled when no cal
   const runtime = createPtcExecuteCodeRuntime({
     commandRunner: fixture.runner,
     runtimeRootForState: () => runtimeRoot,
+    callbackTransportPolicy: undefined,
   });
 
   try {
@@ -682,7 +683,7 @@ void test('createPtcExecuteCodeRuntime exposes geulbat.callTool through an epoch
             PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
           ),
         );
-        return await runPtcSessionDockerCommand({
+        return await runHostRoutedDockerCommandForTest({
           executable: '/bin/bash',
           args: ['-c', localCommand],
           ...(invocation.timeoutMs === undefined
@@ -1050,8 +1051,16 @@ void test('createPtcExecuteCodeRuntime turns an exit-zero store conflict into a 
     maxValueBytes: 4_096,
     maxTotalBytes: 32_768,
   } as const;
+  const slowCommandStarted = createDeferred<void>();
+  const releaseSlowCommand = createDeferred<void>();
   const slowFixture = createExecutableCallbackFixture(
     'container-agent-ptc-execute-code-store-conflict-slow',
+    {
+      async beforeExec() {
+        slowCommandStarted.resolve();
+        await releaseSlowCommand.promise;
+      },
+    },
   );
   const fastFixture = createExecutableCallbackFixture(
     'container-agent-ptc-execute-code-store-conflict-fast',
@@ -1079,21 +1088,24 @@ void test('createPtcExecuteCodeRuntime turns an exit-zero store conflict into a 
     const slowResultPromise = slowRuntime.executeCode({
       runContext,
       request: {
-        code: [
-          "await geulbat.store.set('shared', 'slow');",
-          'await new Promise((resolve) => setTimeout(resolve, 300));',
-        ].join('\n'),
+        code: "await geulbat.store.set('shared', 'slow');",
         timeoutMs: 5_000,
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    const fastResult = await fastRuntime.executeCode({
-      runContext,
-      request: {
-        code: "await geulbat.store.set('shared', 'fast');",
-        timeoutMs: 5_000,
-      },
-    });
+    const slowStartOutcome = await Promise.race([
+      slowCommandStarted.promise.then(() => 'started' as const),
+      slowResultPromise.then(() => 'settled' as const),
+    ]);
+    assert.equal(slowStartOutcome, 'started');
+    const fastResult = await fastRuntime
+      .executeCode({
+        runContext,
+        request: {
+          code: "await geulbat.store.set('shared', 'fast');",
+          timeoutMs: 5_000,
+        },
+      })
+      .finally(() => releaseSlowCommand.resolve());
     const slowResult = await slowResultPromise;
 
     assert.equal(fastResult.ok, true);
@@ -1439,7 +1451,12 @@ function readCallbackHostRoot(
   );
 }
 
-function createExecutableCallbackFixture(containerId: string) {
+function createExecutableCallbackFixture(
+  containerId: string,
+  options: {
+    beforeExec?: () => Promise<void> | void;
+  } = {},
+) {
   let fixture: ReturnType<typeof createPtcSessionDockerCommandFixture>;
   fixture = createPtcSessionDockerCommandFixture({
     policy: createPtcSessionDockerLocalBatchCommandPolicy(),
@@ -1454,7 +1471,8 @@ function createExecutableCallbackFixture(containerId: string) {
         command,
         readCallbackHostRoot(fixture.invocations),
       );
-      return await runPtcSessionDockerCommand({
+      await options.beforeExec?.();
+      return await runHostRoutedDockerCommandForTest({
         executable: '/bin/bash',
         args: ['-c', localCommand],
         ...(invocation.timeoutMs === undefined
@@ -1465,4 +1483,15 @@ function createExecutableCallbackFixture(containerId: string) {
     },
   });
   return fixture;
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
 }

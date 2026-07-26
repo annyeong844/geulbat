@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 
-import type { RunUsageTotals } from '@geulbat/protocol/run-events';
+import type {
+  ProviderRuntimeStatusEventPayload,
+  RunUsageTotals,
+} from '@geulbat/protocol/run-events';
 import type { RunTranscriptEntry } from '../../lib/run-transcript-entry.js';
 import {
   formatElapsedDuration,
@@ -23,22 +26,36 @@ const VERB_ROTATION_MS = 15_000;
 // 끝났으면 모델 차례이므로 null(기본 문구만)을 돌려준다.
 export function resolveRunStatusActivity(
   entries: readonly RunTranscriptEntry[],
+  providerRuntime: ProviderRuntimeStatusEventPayload | null = null,
 ): string | null {
+  const providerActivity =
+    providerRuntime?.phase === 'auth_waiting'
+      ? '제공자 인증 갱신 대기'
+      : providerRuntime?.phase === 'rate_limit_waiting'
+        ? '요청 제한 해제 대기'
+        : providerRuntime?.phase === 'provider_waiting'
+          ? '모델 응답 대기'
+          : providerRuntime?.phase === 'provider_streaming'
+            ? '응답 생성 중'
+            : null;
+
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (entry === undefined) {
       continue;
     }
     if (entry.kind === 'tool_activity') {
-      return entry.state === 'running' ? `${entry.tool} 실행 중` : null;
+      return entry.state === 'running'
+        ? `${entry.tool} 실행 중`
+        : providerActivity;
     }
     if (entry.kind === 'subagent_activity') {
       return entry.state === 'spawned' || entry.state === 'approval_required'
         ? '보조 작업 진행 중'
-        : null;
+        : providerActivity;
     }
   }
-  return null;
+  return providerActivity;
 }
 
 // hang처럼 보이지 않게 — 도구 카드가 없거나 모델이 조용히 생각하는 동안에도
@@ -47,6 +64,7 @@ export function RunStatusRow(props: {
   transcriptEntries: readonly RunTranscriptEntry[];
   // 있으면 런 누적 총입력과 그 안의 캐시 부분집합을 명시한다.
   usageTotals?: RunUsageTotals | null;
+  providerRuntime?: ProviderRuntimeStatusEventPayload | null;
 }) {
   const startedAtMsRef = useRef(Date.now());
   const [nowMs, setNowMs] = useState(() => startedAtMsRef.current);
@@ -70,9 +88,18 @@ export function RunStatusRow(props: {
     RUN_STATUS_VERBS[
       Math.floor(elapsedMs / VERB_ROTATION_MS) % RUN_STATUS_VERBS.length
     ] ?? RUN_STATUS_VERBS[0];
-  const activity = resolveRunStatusActivity(props.transcriptEntries);
+  const activity = resolveRunStatusActivity(
+    props.transcriptEntries,
+    props.providerRuntime ?? null,
+  );
   const usage = props.usageTotals ?? null;
   const usageLabel = usage !== null ? ` · ${formatRunUsageMeta(usage)}` : '';
+  const activityAgeLabel =
+    props.providerRuntime === null || props.providerRuntime === undefined
+      ? ''
+      : ` · 활동 경과 ${formatElapsedDuration(
+          Math.max(0, nowMs - Date.parse(props.providerRuntime.observedAt)),
+        )}`;
 
   return (
     <div className="run-status-row" role="status" aria-live="off">
@@ -82,6 +109,7 @@ export function RunStatusRow(props: {
       <span>
         {verb}… ({formatElapsedDuration(elapsedMs)}
         {activity ? ` · ${activity}` : ''}
+        {activityAgeLabel}
         {usageLabel})
       </span>
     </div>

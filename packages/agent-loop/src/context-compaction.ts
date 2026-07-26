@@ -71,6 +71,22 @@ type ContextCompactionTriggerEvaluation =
       field?: keyof ContextCompactionBudget;
     };
 
+type ContextCompactionRequestValidation =
+  | { kind: 'valid' }
+  | Extract<ContextCompactionTriggerEvaluation, { kind: 'invalid' }>;
+
+export type ContextRequestAdmission =
+  | { kind: 'fitting' }
+  | { kind: 'near_policy' }
+  | { kind: 'over_window' }
+  | {
+      kind: 'invalid';
+      reason:
+        | InvalidContextCompactionBudgetReason
+        | 'current_request_tokens_not_safe_integer';
+      field?: keyof ContextCompactionBudget;
+    };
+
 interface ContextCompactionSelectionItem {
   tokenCount: number;
   canStartRetainedTail: boolean;
@@ -87,9 +103,14 @@ type ContextCompactionPrefixSelection =
     }
   | {
       kind: 'invalid';
-      reason: 'item_token_count_not_safe_integer' | 'token_count_overflow';
-      itemIndex?: number;
-    };
+      reason: 'keep_recent_tokens_not_safe_integer';
+    }
+  | {
+      kind: 'invalid';
+      reason: 'item_token_count_not_safe_integer';
+      itemIndex: number;
+    }
+  | { kind: 'invalid'; reason: 'token_count_overflow' };
 
 export function validateContextCompactionBudget(
   budget: ContextCompactionBudget,
@@ -150,6 +171,41 @@ export function evaluateContextCompactionTrigger(
   currentRequestTokens: number,
   budget: ContextCompactionBudget | ContextCompactionTriggerBudget,
 ): ContextCompactionTriggerEvaluation {
+  const validation = validateContextCompactionRequestInput(
+    currentRequestTokens,
+    budget,
+  );
+  if (validation.kind === 'invalid') {
+    return validation;
+  }
+  return currentRequestTokens >= budget.thresholdTokens
+    ? { kind: 'threshold_reached' }
+    : { kind: 'under_threshold' };
+}
+
+export function classifyContextRequestAdmission(
+  currentRequestTokens: number,
+  budget: ContextCompactionBudget | ContextCompactionTriggerBudget,
+): ContextRequestAdmission {
+  const validation = validateContextCompactionRequestInput(
+    currentRequestTokens,
+    budget,
+  );
+  if (validation.kind === 'invalid') {
+    return validation;
+  }
+  if (currentRequestTokens > budget.contextWindow) {
+    return { kind: 'over_window' };
+  }
+  return currentRequestTokens >= budget.thresholdTokens
+    ? { kind: 'near_policy' }
+    : { kind: 'fitting' };
+}
+
+function validateContextCompactionRequestInput(
+  currentRequestTokens: number,
+  budget: ContextCompactionBudget | ContextCompactionTriggerBudget,
+): ContextCompactionRequestValidation {
   const validation = isContextCompactionBudget(budget)
     ? validateContextCompactionBudget(budget)
     : validateContextCompactionTriggerBudget(budget);
@@ -162,9 +218,7 @@ export function evaluateContextCompactionTrigger(
       reason: 'current_request_tokens_not_safe_integer',
     };
   }
-  return currentRequestTokens >= budget.thresholdTokens
-    ? { kind: 'threshold_reached' }
-    : { kind: 'under_threshold' };
+  return { kind: 'valid' };
 }
 
 function validateContextCompactionTriggerBudget(
@@ -217,7 +271,7 @@ export function selectContextCompactionPrefix(
   if (!isNonNegativeSafeInteger(keepRecentTokens)) {
     return {
       kind: 'invalid',
-      reason: 'item_token_count_not_safe_integer',
+      reason: 'keep_recent_tokens_not_safe_integer',
     };
   }
 
@@ -261,7 +315,7 @@ export function selectContextCompactionPrefix(
     retainedTokens = nextRetained;
   }
 
-  if (candidateIndex === 0 || items.length === 0) {
+  if (candidateIndex === 0) {
     return { kind: 'no_summarizable_prefix' };
   }
   if (candidateIndex === items.length) {

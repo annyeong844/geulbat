@@ -1,13 +1,16 @@
 import { isRecord } from '../../../lib/json.js';
 
-import type { VisualizeWidgetView } from '../../artifacts/runtime-preview/visualize/document.js';
+import type { PlanRenderingStamp } from '@geulbat/protocol/planning-workflow';
+import type { VisualizeWidgetView as RuntimeVisualizeWidgetView } from '../../artifacts/runtime-preview/visualize/document.js';
 
 // visualize 도구 호출을 인라인 위젯 뷰로 좁힌다. 위젯 코드는 tool_result가
 // 아니라 tool_call args에 실려 온다 — 결과 출력은 모델에 되돌아가는 확인
 // 응답이라 작게 유지하고, 렌더 원본은 호출 인자가 정본이다.
 export const VISUALIZE_TOOL_NAME = 'visualize';
 
-export type { VisualizeWidgetView };
+export type VisualizeWidgetView = RuntimeVisualizeWidgetView & {
+  planStamp?: PlanRenderingStamp;
+};
 
 export function readVisualizeWidgetViewFromToolArgs(
   args: unknown,
@@ -23,10 +26,12 @@ export function readVisualizeWidgetViewFromToolArgs(
     typeof args.title === 'string' && args.title.trim() !== ''
       ? args.title.trim()
       : null;
+  const planStamp = readPlanRenderingStamp(args.planStamp);
   return {
     mode: detectVisualizeWidgetMode(code),
     code,
     title,
+    ...(planStamp === null ? {} : { planStamp }),
   };
 }
 
@@ -61,10 +66,43 @@ export function readVisualizeStreamViewFromArgsText(
   const title = readPartialJsonStringField(argsText, 'title', {
     completeOnly: true,
   });
+  let planStamp: PlanRenderingStamp | null = null;
+  try {
+    const parsed = JSON.parse(argsText) as unknown;
+    planStamp = isRecord(parsed)
+      ? readPlanRenderingStamp(parsed.planStamp)
+      : null;
+  } catch {
+    // Partial JSON is expected while tool arguments stream.
+  }
   return {
     mode: detectVisualizeWidgetMode(code),
     code,
     title: title !== null && title.trim() !== '' ? title.trim() : null,
+    ...(planStamp === null ? {} : { planStamp }),
+  };
+}
+
+function readPlanRenderingStamp(value: unknown): PlanRenderingStamp | null {
+  if (
+    !isRecord(value) ||
+    typeof value.workflowId !== 'string' ||
+    value.workflowId === '' ||
+    typeof value.planId !== 'string' ||
+    value.planId === '' ||
+    typeof value.revision !== 'number' ||
+    !Number.isInteger(value.revision) ||
+    value.revision < 1 ||
+    typeof value.digest !== 'string' ||
+    !/^sha256:[0-9a-f]{64}$/u.test(value.digest)
+  ) {
+    return null;
+  }
+  return {
+    workflowId: value.workflowId,
+    planId: value.planId,
+    revision: value.revision,
+    digest: value.digest as PlanRenderingStamp['digest'],
   };
 }
 

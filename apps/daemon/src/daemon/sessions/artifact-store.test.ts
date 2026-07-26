@@ -75,6 +75,64 @@ void test('commitThreadArtifactUpdateVersion appends the next version with linea
   assert.equal(persisted[1]?.title, '초안');
 });
 
+void test('artifact versions inherit a plan stamp until a new revision explicitly replaces it', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-artifact-'));
+  const threadId = testThreadId(524);
+  const firstStamp = {
+    workflowId: 'workflow-1',
+    planId: 'plan-1',
+    revision: 1,
+    digest: `sha256:${'a'.repeat(64)}`,
+  } as const;
+  const secondStamp = {
+    ...firstStamp,
+    revision: 2,
+    digest: `sha256:${'b'.repeat(64)}`,
+  } as const;
+  const created = await commitThreadArtifactVersion({
+    workspaceRoot,
+    threadId,
+    runId: 'run-create',
+    renderer: 'markdown',
+    payload: '# v1',
+    digest: null,
+    sourceRef: null,
+    timestamp: '2026-07-17T00:00:00.000Z',
+    planStamp: firstStamp,
+  });
+
+  const inherited = await commitThreadArtifactUpdateVersion({
+    workspaceRoot,
+    threadId,
+    artifactId: created.artifact.artifactId,
+    baseVersion: 1,
+    payload: '# v2',
+    createdByRunId: 'user-edit',
+    timestamp: '2026-07-17T00:01:00.000Z',
+  });
+  assert.equal(inherited.ok, true);
+  assert.deepEqual(
+    inherited.ok ? inherited.version.planStamp : null,
+    firstStamp,
+  );
+
+  const replaced = await commitThreadArtifactUpdateVersion({
+    workspaceRoot,
+    threadId,
+    artifactId: created.artifact.artifactId,
+    baseVersion: 2,
+    payload: '# v3',
+    createdByRunId: 'run-revision-2',
+    timestamp: '2026-07-17T00:02:00.000Z',
+    planStamp: secondStamp,
+  });
+  assert.equal(replaced.ok, true);
+  assert.deepEqual(
+    replaced.ok ? replaced.version.planStamp : null,
+    secondStamp,
+  );
+});
+
 void test('commitThreadArtifactUpdateVersion rejects stale baseVersion and unknown artifacts without writing', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-artifact-'));
   const threadId = testThreadId(522);

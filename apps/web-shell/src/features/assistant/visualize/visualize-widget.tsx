@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 
 import type { RunToolResultPayload } from '@geulbat/protocol/run-channel';
+import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 
 import { buildCanonicalArtifactSourceRef } from '../../artifacts/artifact-source-ref.js';
+import { resolvePlanRenderingStampProjection } from '../../artifacts/artifact-view-model.js';
 import { buildHtmlArtifactRuntimePayload } from '../../artifacts/runtime-preview/html/document.js';
 import {
   buildVisualizeWidgetDocument,
@@ -10,7 +12,7 @@ import {
   VISUALIZE_STREAM_UPDATE_MESSAGE_KIND,
 } from '../../artifacts/runtime-preview/visualize/document.js';
 import { readVisualizeStreamViewFromArgsText } from './visualize-widget-view.js';
-import { ArtifactRuntimeFrame } from '../runtime-frame/artifact-runtime-frame.js';
+import { ArtifactRuntimeFrame } from '../runtime-frame/artifact-runtime-frame-lazy.js';
 import type { ArtifactRuntimeAgentToolIntent } from '../runtime-frame/artifact-runtime-frame-message-handler.js';
 import { MIN_INLINE_ARTIFACT_RUNTIME_FRAME_HEIGHT } from '../runtime-frame/artifact-runtime-frame-messages.js';
 import type { VisualizeWidgetView } from './visualize-widget-view.js';
@@ -167,6 +169,7 @@ export function VisualizeStreamingWidget(props: {
 
 export function VisualizeWidget(props: {
   view: VisualizeWidgetView;
+  planningWorkflowSnapshot?: PlanningWorkflowSnapshot | null;
   playback?: 'auto' | 'instant';
   deferRuntimeBoot?: boolean;
   onWidgetPrompt?: (prompt: string) => Promise<void> | void;
@@ -176,6 +179,7 @@ export function VisualizeWidget(props: {
 }) {
   const {
     view,
+    planningWorkflowSnapshot,
     playback = 'auto',
     deferRuntimeBoot = false,
     onWidgetPrompt,
@@ -251,6 +255,12 @@ export function VisualizeWidget(props: {
 
   return (
     <div className="visualize-widget">
+      <PlanRenderingStampLabel
+        view={view}
+        {...(planningWorkflowSnapshot === undefined
+          ? {}
+          : { planningWorkflowSnapshot })}
+      />
       <ArtifactRuntimeFrame
         renderer="html5"
         title={view.title ?? 'visualize widget'}
@@ -274,5 +284,26 @@ export function VisualizeWidget(props: {
           : {})}
       />
     </div>
+  );
+}
+
+function PlanRenderingStampLabel({
+  view,
+  planningWorkflowSnapshot,
+}: {
+  view: VisualizeWidgetView;
+  planningWorkflowSnapshot?: PlanningWorkflowSnapshot | null;
+}) {
+  const planRendering = resolvePlanRenderingStampProjection(
+    view.planStamp,
+    planningWorkflowSnapshot,
+  );
+  if (planRendering === null) {
+    return null;
+  }
+  return (
+    <code className="plan-rendering-stamp" title={planRendering.title}>
+      {planRendering.label}
+    </code>
   );
 }

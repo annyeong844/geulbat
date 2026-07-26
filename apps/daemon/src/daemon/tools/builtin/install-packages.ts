@@ -10,6 +10,13 @@ import type { ErrorCode } from '../../error-codes.js';
 import { toolError } from '../result.js';
 import { defineZodTool } from '../zod-tool.js';
 import { resolvePtcExecuteCodeToolSdkProjection } from './execute-code-tool-callback.js';
+import type { AgentRuntimePtcServices } from '../../daemon-runtime-contract.js';
+
+// This tool depends only on its own PTC runtime; keep the declared
+// service surface that narrow.
+type InstallPackagesToolServices = {
+  ptc: Pick<AgentRuntimePtcServices, 'packageInstall'>;
+};
 
 // No timeoutMs field by contract (child spec §3.4): time budgets are operator
 // env-knob territory, never model/schema territory.
@@ -65,7 +72,9 @@ export const installPackagesTool = defineZodTool({
         'run context is required for install_packages.',
       );
     }
-    const runtime = ctx.agentSpawnRuntime?.ptcPackageInstall;
+    const services: InstallPackagesToolServices | undefined =
+      ctx.runtimeServices;
+    const runtime = services?.ptc.packageInstall;
     if (!runtime) {
       return toolError(
         'execution_failed',

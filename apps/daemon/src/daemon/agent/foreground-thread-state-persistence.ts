@@ -26,14 +26,20 @@ export async function persistSuccessfulForegroundOutput(args: {
   const { agentInput, transcriptPrompt, result, deps, persistenceDiagnostics } =
     args;
   const { runContext } = agentInput;
-  const assistantPersisted = await persistForegroundAssistantAnswer({
-    agentInput,
-    result,
-    deps,
-    ...(args.toolCommittedArtifactRefs !== undefined
-      ? { toolCommittedArtifactRefs: args.toolCommittedArtifactRefs }
-      : {}),
-  });
+  const hasAssistantOutput =
+    result.finalProse !== '' ||
+    result.artifactCandidate !== undefined ||
+    (args.toolCommittedArtifactRefs?.length ?? 0) > 0;
+  const assistantPersisted = hasAssistantOutput
+    ? await persistForegroundAssistantAnswer({
+        agentInput,
+        result,
+        deps,
+        ...(args.toolCommittedArtifactRefs !== undefined
+          ? { toolCommittedArtifactRefs: args.toolCommittedArtifactRefs }
+          : {}),
+      })
+    : true;
 
   await runBestEffortForegroundPersistence(
     'update thread summary',
@@ -60,6 +66,9 @@ export async function upsertCurrentThreadSummary(args: {
   threadId: AgentInput['runContext']['threadId'];
   transcriptPrompt: string;
   deps: ResolvedExecuteForegroundRunDeps;
+  // run 시작 시점에는 제목을 비워둔다 — 모델이 set_thread_title로 요약
+  // 제목을 붙일 기회를 준 뒤, run 종료 시에만 원문 폴백을 채운다.
+  allowDefaultTitle?: boolean;
 }): Promise<void> {
   const { deps } = args;
   const messages = await deps.readTranscriptEntries(
@@ -70,7 +79,11 @@ export async function upsertCurrentThreadSummary(args: {
   const existing = existingIndex.find(
     (entry) => entry.threadId === args.threadId,
   );
-  const title = existing?.title ?? sanitizeTitle(args.transcriptPrompt);
+  const title =
+    existing?.title ??
+    (args.allowDefaultTitle === false
+      ? undefined
+      : sanitizeTitle(args.transcriptPrompt));
   const summary: ThreadSummary = {
     threadId: args.threadId,
     lastUpdated: deps.now(),
@@ -140,6 +153,7 @@ async function publishForegroundThreadStateSnapshot(args: {
           await loadThreadDetailSnapshot({
             workspaceRoot: runContext.stateRoot,
             threadId: runContext.threadId,
+            includeActiveRunCommentary: true,
           }),
         ),
       );

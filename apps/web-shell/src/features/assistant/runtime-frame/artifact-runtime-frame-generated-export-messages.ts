@@ -12,28 +12,15 @@ const GENERATED_TEXT_EXPORT_MESSAGE_KIND =
 const GENERATED_BINARY_EXPORT_MESSAGE_KIND =
   'geulbat.runtime.generated_binary_export';
 
-type GeneratedTextExportSnapshotMessage =
+type GeneratedExportSnapshotMessage<MessageKind extends string, Snapshot> =
   | {
-      kind: typeof GENERATED_TEXT_EXPORT_MESSAGE_KIND;
+      kind: MessageKind;
       scopeHandle: string;
       action: 'set_snapshot';
-      snapshot: GeneratedTextExportSnapshot;
+      snapshot: Snapshot;
     }
   | {
-      kind: typeof GENERATED_TEXT_EXPORT_MESSAGE_KIND;
-      scopeHandle: string;
-      action: 'clear_snapshot';
-    };
-
-type GeneratedBinaryExportSnapshotMessage =
-  | {
-      kind: typeof GENERATED_BINARY_EXPORT_MESSAGE_KIND;
-      scopeHandle: string;
-      action: 'set_snapshot';
-      snapshot: GeneratedBinaryExportSnapshot;
-    }
-  | {
-      kind: typeof GENERATED_BINARY_EXPORT_MESSAGE_KIND;
+      kind: MessageKind;
       scopeHandle: string;
       action: 'clear_snapshot';
     };
@@ -52,9 +39,11 @@ export function readArtifactRuntimeGeneratedExportSnapshotMessage(
   value: unknown,
   expectedScopeHandle: string,
 ): ArtifactRuntimeGeneratedExportSnapshotMessage | null {
-  const binarySnapshotMessage = readGeneratedBinaryExportSnapshotMessage(
+  const binarySnapshotMessage = readGeneratedExportSnapshotMessage(
     value,
     expectedScopeHandle,
+    GENERATED_BINARY_EXPORT_MESSAGE_KIND,
+    sanitizeGeneratedBinaryExportSnapshot,
   );
   if (binarySnapshotMessage) {
     return {
@@ -66,9 +55,11 @@ export function readArtifactRuntimeGeneratedExportSnapshotMessage(
     };
   }
 
-  const textSnapshotMessage = readGeneratedTextExportSnapshotMessage(
+  const textSnapshotMessage = readGeneratedExportSnapshotMessage(
     value,
     expectedScopeHandle,
+    GENERATED_TEXT_EXPORT_MESSAGE_KIND,
+    sanitizeGeneratedTextExportSnapshot,
   );
   if (textSnapshotMessage) {
     return {
@@ -83,15 +74,20 @@ export function readArtifactRuntimeGeneratedExportSnapshotMessage(
   return null;
 }
 
-function readGeneratedTextExportSnapshotMessage(
+function readGeneratedExportSnapshotMessage<
+  MessageKind extends string,
+  Snapshot,
+>(
   value: unknown,
   expectedScopeHandle: string,
-): GeneratedTextExportSnapshotMessage | null {
+  messageKind: MessageKind,
+  sanitizeSnapshot: (value: unknown) => Snapshot | null,
+): GeneratedExportSnapshotMessage<MessageKind, Snapshot> | null {
   if (!isRecord(value)) {
     return null;
   }
   if (
-    value['kind'] !== GENERATED_TEXT_EXPORT_MESSAGE_KIND ||
+    value['kind'] !== messageKind ||
     value['scopeHandle'] !== expectedScopeHandle ||
     (value['action'] !== 'set_snapshot' && value['action'] !== 'clear_snapshot')
   ) {
@@ -99,50 +95,17 @@ function readGeneratedTextExportSnapshotMessage(
   }
   if (value['action'] === 'clear_snapshot') {
     return {
-      kind: GENERATED_TEXT_EXPORT_MESSAGE_KIND,
+      kind: messageKind,
       scopeHandle: expectedScopeHandle,
       action: 'clear_snapshot',
     };
   }
-  const snapshot = sanitizeGeneratedTextExportSnapshot(value['snapshot']);
-  if (!snapshot) {
+  const snapshot = sanitizeSnapshot(value['snapshot']);
+  if (snapshot === null) {
     return null;
   }
   return {
-    kind: GENERATED_TEXT_EXPORT_MESSAGE_KIND,
-    scopeHandle: expectedScopeHandle,
-    action: 'set_snapshot',
-    snapshot,
-  };
-}
-
-function readGeneratedBinaryExportSnapshotMessage(
-  value: unknown,
-  expectedScopeHandle: string,
-): GeneratedBinaryExportSnapshotMessage | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  if (
-    value['kind'] !== GENERATED_BINARY_EXPORT_MESSAGE_KIND ||
-    value['scopeHandle'] !== expectedScopeHandle ||
-    (value['action'] !== 'set_snapshot' && value['action'] !== 'clear_snapshot')
-  ) {
-    return null;
-  }
-  if (value['action'] === 'clear_snapshot') {
-    return {
-      kind: GENERATED_BINARY_EXPORT_MESSAGE_KIND,
-      scopeHandle: expectedScopeHandle,
-      action: 'clear_snapshot',
-    };
-  }
-  const snapshot = sanitizeGeneratedBinaryExportSnapshot(value['snapshot']);
-  if (!snapshot) {
-    return null;
-  }
-  return {
-    kind: GENERATED_BINARY_EXPORT_MESSAGE_KIND,
+    kind: messageKind,
     scopeHandle: expectedScopeHandle,
     action: 'set_snapshot',
     snapshot,

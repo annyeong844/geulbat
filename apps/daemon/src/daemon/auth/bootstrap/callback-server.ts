@@ -18,6 +18,7 @@ import {
 import type { ProviderAuthBootstrapStore } from './session-store.js';
 import type { ProviderAuthRuntimeStore } from '../runtime-state.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
+import { runDetached } from '../../utils/run-detached.js';
 
 const logger = createLogger('provider-auth');
 
@@ -78,7 +79,7 @@ export function createProviderAuthCallbackServerController(options: {
       state.listenPromise = new Promise<void>((resolve, reject) => {
         const requestHandler = stateRequestHandler(state, options);
         const server = createHttpServer((req, res) => {
-          void requestHandler(req, res);
+          runDetached('auth/callback-request', () => requestHandler(req, res));
         });
 
         const onError = (err: Error & { code?: string }) => {
@@ -137,9 +138,11 @@ export function createProviderAuthCallbackServerController(options: {
 
     bindLifecycle(server) {
       server.once('close', () => {
-        void this.close().catch((error: unknown) => {
-          logger.warn('callback server cleanup failed:', error);
-        });
+        runDetached('auth/callback-server-cleanup', () =>
+          this.close().catch((error: unknown) => {
+            logger.warn('callback server cleanup failed:', error);
+          }),
+        );
       });
     },
   };

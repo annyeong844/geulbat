@@ -547,6 +547,66 @@ void test('concurrent getProviderAuth callers share one in-flight refresh', asyn
   assert.equal(persistCalls, 1);
 });
 
+void test('a cancelled caller leaves a shared provider auth refresh wait without cancelling its sibling', async () => {
+  const { runtimeStore } = createProviderAuthTestStores();
+  await initProviderAuth({
+    runtimeStore,
+    readCredential: async () => ({
+      accessToken: 'stale-token',
+      refreshToken: 'refresh-token',
+      accountId: 'account-1',
+      expiresAt: Date.now() - 1_000,
+    }),
+  });
+
+  let releaseRefresh!: (credential: {
+    accessToken: string;
+    refreshToken: string;
+    accountId: string;
+    expiresAt: number;
+  }) => void;
+  const refreshGate = new Promise<{
+    accessToken: string;
+    refreshToken: string;
+    accountId: string;
+    expiresAt: number;
+  }>((resolve) => {
+    releaseRefresh = resolve;
+  });
+  const refreshCredential = async () => refreshGate;
+  const firstWaitingStates: string[] = [];
+  const secondWaitingStates: string[] = [];
+  const secondAbort = new AbortController();
+
+  const firstOptions = {
+    runtimeStore,
+    refreshCredential,
+    onWait: () => firstWaitingStates.push('auth_waiting'),
+  };
+  const secondOptions = {
+    runtimeStore,
+    refreshCredential,
+    onWait: () => secondWaitingStates.push('auth_waiting'),
+    signal: secondAbort.signal,
+  };
+  const first = getProviderAuth(firstOptions);
+  const second = getProviderAuth(secondOptions);
+
+  await Promise.resolve();
+  secondAbort.abort('run cancelled');
+  releaseRefresh({
+    accessToken: 'fresh-token',
+    refreshToken: 'refresh-token',
+    accountId: 'account-1',
+    expiresAt: Date.now() + 60_000,
+  });
+
+  await assert.rejects(second, /provider auth wait aborted/u);
+  assert.equal((await first).accessToken, 'fresh-token');
+  assert.deepEqual(firstWaitingStates, ['auth_waiting']);
+  assert.deepEqual(secondWaitingStates, ['auth_waiting']);
+});
+
 void test('getProviderAuth can use an injected runtime store without warming the default cache', async () => {
   const untouchedRuntimeStore = createProviderAuthRuntimeStore();
   const runtimeStore = createProviderAuthRuntimeStore();

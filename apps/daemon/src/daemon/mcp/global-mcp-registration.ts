@@ -95,9 +95,6 @@ function cloneTransport(
     ...(transport.requestTimeoutMs === undefined
       ? {}
       : { requestTimeoutMs: transport.requestTimeoutMs }),
-    ...(transport.shutdownGraceMs === undefined
-      ? {}
-      : { shutdownGraceMs: transport.shutdownGraceMs }),
   };
 }
 
@@ -138,9 +135,6 @@ export function normalizeCreateRequest(
       ...(request.transport.requestTimeoutMs === undefined
         ? {}
         : { requestTimeoutMs: request.transport.requestTimeoutMs }),
-      ...(request.transport.shutdownGraceMs === undefined
-        ? {}
-        : { shutdownGraceMs: request.transport.shutdownGraceMs }),
     },
   };
   validateRegistration(registration);
@@ -168,10 +162,6 @@ export function validateRegistration(
   validateOptionalTimeout(
     registration.transport.requestTimeoutMs,
     'requestTimeoutMs',
-  );
-  validateOptionalTimeout(
-    registration.transport.shutdownGraceMs,
-    'shutdownGraceMs',
   );
 }
 
@@ -231,9 +221,6 @@ export function toServerView(
       ...(registration.transport.requestTimeoutMs === undefined
         ? {}
         : { requestTimeoutMs: registration.transport.requestTimeoutMs }),
-      ...(registration.transport.shutdownGraceMs === undefined
-        ? {}
-        : { shutdownGraceMs: registration.transport.shutdownGraceMs }),
     },
     runtime: {
       ...runtime,

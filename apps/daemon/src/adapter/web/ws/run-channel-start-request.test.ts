@@ -38,6 +38,41 @@ void test('readRunStartRequest rejects blank prompts', async (t) => {
   );
 });
 
+void test('readRunStartRequest refuses to invent a plan intensity', async (t) => {
+  const result = await readRunStartRequest(
+    {
+      prompt: 'plan this',
+      planModeRequested: true,
+    },
+    await createArgs(t),
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    status: 400,
+    code: 'bad_request',
+    message: 'planModeIntensity is required when plan mode is requested',
+  });
+});
+
+void test('readRunStartRequest refuses to invent a plan depth', async (t) => {
+  const result = await readRunStartRequest(
+    {
+      prompt: 'plan this',
+      planModeRequested: true,
+      planModeIntensity: 'visual',
+    },
+    await createArgs(t),
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    status: 400,
+    code: 'bad_request',
+    message: 'planModeDepth is required when plan mode is requested',
+  });
+});
+
 void test('readRunStartRequest admits a working directory anywhere on the host filesystem', async (t) => {
   const args = await createArgs(t);
   const outsideRoot = await mkdtemp(
@@ -138,6 +173,21 @@ void test('readRunStartRequest admits an explicit computer-root-relative working
   assert.equal(result.value.permissionMode, 'full_access');
 });
 
+void test('readRunStartRequest canonicalizes the computer root to the empty portable coordinate', async (t) => {
+  const args = await createArgs(t);
+  const result = await readRunStartRequest(
+    {
+      prompt: 'hello',
+      workingDirectory: args.computerFileScope.root,
+    },
+    args,
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.workingDirectory, '');
+});
+
 void test('readRunStartRequest defaults working directory to the computer browse start path', async (t) => {
   const args = await createArgs(t);
   const result = await readRunStartRequest(
@@ -152,6 +202,85 @@ void test('readRunStartRequest defaults working directory to the computer browse
     args.computerFileScope.browseStartPath,
   );
   assert.equal(result.value.modelId, 'grok-4.5');
+});
+
+void test('readRunStartRequest preserves the selected Fast tier', async (t) => {
+  const result = await readRunStartRequest(
+    {
+      prompt: 'hello quickly',
+      modelId: 'gpt-5.6-sol',
+      serviceTier: 'fast',
+    },
+    await createArgs(t),
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.serviceTier, 'fast');
+});
+
+void test('readRunStartRequest preserves a consent-backed provider transition recovery', async (t) => {
+  const result = await readRunStartRequest(
+    {
+      prompt: 'continue',
+      modelId: 'gpt-5.6-luna',
+      providerTransitionRecovery: {
+        sourceModelId: 'grok-4.5',
+        sourceReasoningEffort: 'high',
+      },
+    },
+    await createArgs(t),
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.value.providerTransitionRecovery, {
+    sourceModelId: 'grok-4.5',
+    sourceReasoningEffort: 'high',
+  });
+});
+
+void test('readRunStartRequest normalizes ultra to the selected model maximum', async (t) => {
+  const args = await createArgs(t);
+  const grok = await readRunStartRequest(
+    {
+      prompt: 'hello',
+      modelId: 'grok-4.5',
+      reasoningEffort: 'ultra',
+    },
+    args,
+  );
+  assert.equal(grok.ok, true);
+  if (!grok.ok) return;
+  assert.equal(grok.value.ultraReasoning, true);
+  assert.equal(grok.value.reasoningEffort, 'high');
+
+  const qwen = await readRunStartRequest(
+    {
+      prompt: 'hello',
+      modelId: 'qwen3.8-max-preview',
+      reasoningEffort: 'ultra',
+    },
+    args,
+  );
+  assert.equal(qwen.ok, true);
+  if (!qwen.ok) return;
+  assert.equal(qwen.value.reasoningEffort, 'max');
+
+  const standard = await readRunStartRequest({ prompt: 'hello' }, args);
+  assert.equal(standard.ok, true);
+  if (!standard.ok) return;
+  assert.equal(standard.value.ultraReasoning, false);
+  assert.equal(standard.value.reasoningEffort, undefined);
+
+  const grokHigh = await readRunStartRequest(
+    { prompt: 'hello', modelId: 'grok-4.5', reasoningEffort: 'high' },
+    args,
+  );
+  assert.equal(grokHigh.ok, true);
+  if (!grokHigh.ok) return;
+  assert.equal(grokHigh.value.ultraReasoning, false);
+  assert.equal(grokHigh.value.reasoningEffort, 'high');
 });
 
 void test('readRunStartRequest preserves the image generation model selection', async (t) => {

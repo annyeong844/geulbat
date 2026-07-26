@@ -12,6 +12,8 @@ export type StreamErrorCategory =
   | 'llm_rate_limited'
   | 'llm_auth_expired'
   | 'llm_context_overflow'
+  | 'llm_context_preparation_required'
+  | 'llm_provider_transition_required'
   | 'oversize_input'
   | 'llm_refused'
   | 'abort_user'
@@ -25,6 +27,8 @@ const STREAM_ERROR_CATEGORY_VALUES = [
   'llm_rate_limited',
   'llm_auth_expired',
   'llm_context_overflow',
+  'llm_context_preparation_required',
+  'llm_provider_transition_required',
   'oversize_input',
   'llm_refused',
   'abort_user',
@@ -107,10 +111,14 @@ function mapProviderCodeToStreamErrorCategory(
       return 'llm_auth_expired';
     case 'llm_context_length_exceeded':
       return 'llm_context_overflow';
+    case 'provider_transition_required':
+      return 'llm_provider_transition_required';
     case 'llm_connection_lost':
     case 'llm_overloaded':
     case 'llm_auth_expired':
     case 'llm_context_overflow':
+    case 'llm_context_preparation_required':
+    case 'llm_provider_transition_required':
     case 'oversize_input':
     case 'llm_refused':
     case 'abort_user':

@@ -49,8 +49,8 @@ test.after(() => {
 
 void test('provider-auth callback route stays public and returns html failure for missing state', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
 
   try {
     await withDaemonServer(
@@ -66,15 +66,15 @@ void test('provider-auth callback route stays public and returns html failure fo
       { daemonContext },
     );
   } finally {
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth start route validates launcher over authenticated HTTP', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
 
   try {
     await withAuthenticatedDaemonServer(
@@ -98,15 +98,15 @@ void test('provider-auth start route validates launcher over authenticated HTTP'
       { daemonContext },
     );
   } finally {
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth start route rejects unsupported provider ids', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
 
   try {
     await withAuthenticatedDaemonServer(
@@ -133,22 +133,22 @@ void test('provider-auth start route rejects unsupported provider ids', async ()
       { daemonContext },
     );
   } finally {
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth start route returns conflict only when provider status is ready', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
-  daemonContext.providerAuthRuntime.setCachedProviderCredential({
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.setCachedProviderCredential({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     accountId: 'account-1',
     expiresAt: Date.now() + 60_000,
   });
-  daemonContext.providerAuthRuntime.setHydratedProviderAuth(true);
+  daemonContext.provider.authRuntime.setHydratedProviderAuth(true);
 
   try {
     await withAuthenticatedDaemonServer(
@@ -171,27 +171,30 @@ void test('provider-auth start route returns conflict only when provider status 
       { daemonContext },
     );
   } finally {
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth start route can start Grok OAuth while Codex direct is already connected', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
-  daemonContext.providerAuthRuntime.setCachedProviderCredential({
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.setCachedProviderCredential({
     accessToken: 'codex-access-token',
     refreshToken: 'codex-refresh-token',
     accountId: 'codex-account-1',
     expiresAt: Date.now() + 60_000,
   });
-  daemonContext.providerAuthRuntime.setHydratedProviderAuth(true);
-  daemonContext.providerAuthRuntime.setHydratedProviderAuth(true, 'grok_oauth');
+  daemonContext.provider.authRuntime.setHydratedProviderAuth(true);
+  daemonContext.provider.authRuntime.setHydratedProviderAuth(
+    true,
+    'grok_oauth',
+  );
   const previousEnsureListening =
-    daemonContext.providerAuthCallbackServer.ensureListening;
+    daemonContext.provider.authCallbackServer.ensureListening;
   let callbackListener: ProviderAuthCallbackListenerConfig | null = null;
-  daemonContext.providerAuthCallbackServer.ensureListening = async (
+  daemonContext.provider.authCallbackServer.ensureListening = async (
     listener,
   ) => {
     callbackListener = listener ?? null;
@@ -230,31 +233,31 @@ void test('provider-auth start route can start Grok OAuth while Codex direct is 
       { daemonContext },
     );
   } finally {
-    daemonContext.providerAuthCallbackServer.ensureListening =
+    daemonContext.provider.authCallbackServer.ensureListening =
       previousEnsureListening;
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth start route allows reconnect when status is expired', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
-  daemonContext.providerAuthRuntime.setCachedProviderCredential({
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.setCachedProviderCredential({
     accessToken: 'expired-access-token',
     refreshToken: 'refresh-token',
     accountId: 'account-1',
     expiresAt: Date.now() - 60_000,
   });
-  daemonContext.providerAuthRuntime.setCachedProviderAuthRefreshError({
+  daemonContext.provider.authRuntime.setCachedProviderAuthRefreshError({
     code: 'provider_auth_refresh_failed',
     message: 'Provider token refresh failed. network down',
   });
-  daemonContext.providerAuthRuntime.setHydratedProviderAuth(true);
+  daemonContext.provider.authRuntime.setHydratedProviderAuth(true);
   const previousEnsureListening =
-    daemonContext.providerAuthCallbackServer.ensureListening;
-  daemonContext.providerAuthCallbackServer.ensureListening = async () => {};
+    daemonContext.provider.authCallbackServer.ensureListening;
+  daemonContext.provider.authCallbackServer.ensureListening = async () => {};
 
   try {
     await withAuthenticatedDaemonServer(
@@ -283,20 +286,20 @@ void test('provider-auth start route allows reconnect when status is expired', a
       { daemonContext },
     );
   } finally {
-    daemonContext.providerAuthCallbackServer.ensureListening =
+    daemonContext.provider.authCallbackServer.ensureListening =
       previousEnsureListening;
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth status route returns protocol error shape for unexpected failures', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   const previousHasHydratedProviderAuth =
-    daemonContext.providerAuthRuntime.hasHydratedProviderAuth;
-  daemonContext.providerAuthRuntime.hasHydratedProviderAuth = () => {
+    daemonContext.provider.authRuntime.hasHydratedProviderAuth;
+  daemonContext.provider.authRuntime.hasHydratedProviderAuth = () => {
     throw new Error('provider runtime boom');
   };
 
@@ -320,18 +323,18 @@ void test('provider-auth status route returns protocol error shape for unexpecte
       { daemonContext },
     );
   } finally {
-    daemonContext.providerAuthRuntime.hasHydratedProviderAuth =
+    daemonContext.provider.authRuntime.hasHydratedProviderAuth =
       previousHasHydratedProviderAuth;
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth status route reports missing client id as a protocol error state', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
-  daemonContext.providerAuthRuntime.setHydratedProviderAuth(true);
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.setHydratedProviderAuth(true);
   const currentClientId = process.env['PROVIDER_AUTH_CLIENT_ID'];
   delete process.env['PROVIDER_AUTH_CLIENT_ID'];
 
@@ -367,22 +370,22 @@ void test('provider-auth status route reports missing client id as a protocol er
     } else {
       process.env['PROVIDER_AUTH_CLIENT_ID'] = currentClientId;
     }
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth status route stays ready when a usable cached credential exists even if client id config is missing', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
-  daemonContext.providerAuthRuntime.setCachedProviderCredential({
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.setCachedProviderCredential({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     accountId: 'account-1',
     expiresAt: Date.now() + 60_000,
   });
-  daemonContext.providerAuthRuntime.setHydratedProviderAuth(true);
+  daemonContext.provider.authRuntime.setHydratedProviderAuth(true);
   const currentClientId = process.env['PROVIDER_AUTH_CLIENT_ID'];
   delete process.env['PROVIDER_AUTH_CLIENT_ID'];
 
@@ -412,16 +415,16 @@ void test('provider-auth status route stays ready when a usable cached credentia
     } else {
       process.env['PROVIDER_AUTH_CLIENT_ID'] = currentClientId;
     }
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth start route reports missing client id as exact config error', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
-  daemonContext.providerAuthRuntime.setHydratedProviderAuth(true);
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.setHydratedProviderAuth(true);
   const currentClientId = process.env['PROVIDER_AUTH_CLIENT_ID'];
   delete process.env['PROVIDER_AUTH_CLIENT_ID'];
 
@@ -454,19 +457,19 @@ void test('provider-auth start route reports missing client id as exact config e
     } else {
       process.env['PROVIDER_AUTH_CLIENT_ID'] = currentClientId;
     }
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth start route reports callback listener bind failures explicitly', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
-  daemonContext.providerAuthRuntime.setHydratedProviderAuth(true);
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.setHydratedProviderAuth(true);
   const previousEnsureListening =
-    daemonContext.providerAuthCallbackServer.ensureListening;
-  daemonContext.providerAuthCallbackServer.ensureListening = async () => {
+    daemonContext.provider.authCallbackServer.ensureListening;
+  daemonContext.provider.authCallbackServer.ensureListening = async () => {
     throw new Error('EADDRINUSE');
   };
 
@@ -494,24 +497,24 @@ void test('provider-auth start route reports callback listener bind failures exp
       { daemonContext },
     );
   } finally {
-    daemonContext.providerAuthCallbackServer.ensureListening =
+    daemonContext.provider.authCallbackServer.ensureListening =
       previousEnsureListening;
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth start route falls back generic start failures to provider_auth_exchange_failed', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
-  daemonContext.providerAuthRuntime.setHydratedProviderAuth(true);
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.setHydratedProviderAuth(true);
   const previousEnsureListening =
-    daemonContext.providerAuthCallbackServer.ensureListening;
-  daemonContext.providerAuthCallbackServer.ensureListening = async () => {};
+    daemonContext.provider.authCallbackServer.ensureListening;
+  daemonContext.provider.authCallbackServer.ensureListening = async () => {};
   const previousSetPendingProviderAuthSession =
-    daemonContext.providerAuthBootstrap.setPendingProviderAuthSession;
-  daemonContext.providerAuthBootstrap.setPendingProviderAuthSession = () => {
+    daemonContext.provider.authBootstrap.setPendingProviderAuthSession;
+  daemonContext.provider.authBootstrap.setPendingProviderAuthSession = () => {
     throw new Error('provider auth session store boom');
   };
 
@@ -539,22 +542,22 @@ void test('provider-auth start route falls back generic start failures to provid
       { daemonContext },
     );
   } finally {
-    daemonContext.providerAuthCallbackServer.ensureListening =
+    daemonContext.provider.authCallbackServer.ensureListening =
       previousEnsureListening;
-    daemonContext.providerAuthBootstrap.setPendingProviderAuthSession =
+    daemonContext.provider.authBootstrap.setPendingProviderAuthSession =
       previousSetPendingProviderAuthSession;
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });
 
 void test('provider-auth callback route keeps html fallback for unexpected failures', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-  daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+  daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+  daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   const previousGetProviderAuthSessionSnapshotByState =
-    daemonContext.providerAuthBootstrap.getProviderAuthSessionSnapshotByState;
-  daemonContext.providerAuthBootstrap.getProviderAuthSessionSnapshotByState =
+    daemonContext.provider.authBootstrap.getProviderAuthSessionSnapshotByState;
+  daemonContext.provider.authBootstrap.getProviderAuthSessionSnapshotByState =
     () => {
       throw new Error('provider callback boom');
     };
@@ -573,9 +576,9 @@ void test('provider-auth callback route keeps html fallback for unexpected failu
       { daemonContext },
     );
   } finally {
-    daemonContext.providerAuthBootstrap.getProviderAuthSessionSnapshotByState =
+    daemonContext.provider.authBootstrap.getProviderAuthSessionSnapshotByState =
       previousGetProviderAuthSessionSnapshotByState;
-    daemonContext.providerAuthRuntime.clearProviderAuthRuntimeState();
-    daemonContext.providerAuthBootstrap.clearProviderAuthBootstrapState();
+    daemonContext.provider.authRuntime.clearProviderAuthRuntimeState();
+    daemonContext.provider.authBootstrap.clearProviderAuthBootstrapState();
   }
 });

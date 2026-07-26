@@ -9,6 +9,7 @@ import { createSubagentRunLauncher } from './subagent-support.js';
 import { createRunState } from './runtime/run-state.js';
 import { createDaemonContext } from '../context.js';
 import type { HistoryItem } from '../llm/index.js';
+import { createDaemonRuntimeStateStore } from '../runtime-state-store.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
 import {
   composeProviderRounds,
@@ -94,25 +95,18 @@ async function runSubagentLoopScenario(args: {
   finalProse: string;
 }> {
   const threadId = testThreadId(args.threadIdNumber);
-  const daemonContext = createDaemonContext();
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-loop-subagent-phase-'),
   );
-  const runContext = makeRunContext({
-    threadId,
-    stateRoot: workspaceRoot,
-  });
-  const runState = createRunState({
-    runId: testRunId(`loop-subagent-phase-${args.threadIdNumber}`),
-    runContext,
+  const runtimeStateStore = await createDaemonRuntimeStateStore({
+    homeStateRoot: workspaceRoot,
   });
   const childPrompts: string[] = [];
   const childProviderSelections: Array<{
     providerModel: Parameters<typeof runAgentLoop>[0]['providerModel'];
     reasoningEffort: Parameters<typeof runAgentLoop>[0]['reasoningEffort'];
   }> = [];
-
-  daemonContext.subagentRuns = createSubagentRunLauncher({
+  const subagentRuns = createSubagentRunLauncher({
     runAgentLoop: async (input) => {
       childPrompts.push(input.prompt);
       childProviderSelections.push({
@@ -128,37 +122,57 @@ async function runSubagentLoopScenario(args: {
       };
     },
   });
-
-  const result = await runAgentLoop({
-    runId: runState.runId,
+  const daemonContext = createDaemonContext({
+    homeStateRoot: workspaceRoot,
+    subagentLaunchRequests: runtimeStateStore,
+  });
+  const runtimeServices = {
+    ...daemonContext,
+    subagent: { ...daemonContext.subagent, runs: subagentRuns },
+  };
+  const runContext = makeRunContext({
+    threadId,
+    stateRoot: workspaceRoot,
+  });
+  const runState = createRunState({
+    runId: testRunId(`loop-subagent-phase-${args.threadIdNumber}`),
     runContext,
-    prompt: args.prompt,
-    runState,
-    ...(args.providerModel !== undefined
-      ? { providerModel: args.providerModel }
-      : {}),
-    ...(args.reasoningEffort !== undefined
-      ? { reasoningEffort: args.reasoningEffort }
-      : {}),
-    toolSurface: {
-      directRegistryNames: ['agent_spawn', 'agent_wait'],
-      allowedRegistryNames: ['agent_spawn', 'agent_wait'],
-    },
-    runtimeServices: daemonContext,
-    approvalContext: makeApprovalContext({
-      sessionId: `session-loop-subagent-phase-${args.threadIdNumber}`,
-    }),
-    callModelImpl: createScriptedProviderCallModel(args.rounds),
-    onEvent: () => {},
   });
 
-  assert.deepEqual(result.ok, true);
-  assert.equal(runState.status, 'completed');
-  return {
-    childPrompts,
-    childProviderSelections,
-    finalProse: result.finalProse,
-  };
+  try {
+    const result = await runAgentLoop({
+      runId: runState.runId,
+      runContext,
+      prompt: args.prompt,
+      runState,
+      ...(args.providerModel !== undefined
+        ? { providerModel: args.providerModel }
+        : {}),
+      ...(args.reasoningEffort !== undefined
+        ? { reasoningEffort: args.reasoningEffort }
+        : {}),
+      toolSurface: {
+        directRegistryNames: ['agent_spawn', 'agent_wait'],
+        allowedRegistryNames: ['agent_spawn', 'agent_wait'],
+      },
+      runtimeServices,
+      approvalContext: makeApprovalContext({
+        computerSessionId: `session-loop-subagent-phase-${args.threadIdNumber}`,
+      }),
+      callModelImpl: createScriptedProviderCallModel(args.rounds),
+      onEvent: () => {},
+    });
+
+    assert.deepEqual(result.ok, true);
+    assert.equal(runState.status, 'completed');
+    return {
+      childPrompts,
+      childProviderSelections,
+      finalProse: result.finalProse,
+    };
+  } finally {
+    runtimeStateStore.close();
+  }
 }
 
 void test('runAgentLoop records same-round agent_spawn handles for model follow-up', async () => {

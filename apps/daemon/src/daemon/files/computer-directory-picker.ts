@@ -1,4 +1,3 @@
-import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 
@@ -10,7 +9,38 @@ const WINDOWS_WINDOWS_POWERSHELL_PATH =
   'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 const WINDOWS_FOLDER_PICKER_INITIAL_PATH_PLACEHOLDER =
   '__GEULBAT_DIRECTORY_PICKER_INITIAL_PATH_BASE64__';
-const WINDOWS_FOLDER_PICKER_SCRIPT = String.raw`
+const WINDOWS_WPF_FOLDER_PICKER_SCRIPT = String.raw`
+Add-Type -AssemblyName PresentationFramework
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$dialog = [Microsoft.Win32.OpenFolderDialog]::new()
+$dialog.Title = '시작 위치 선택'
+$dialog.Multiselect = $false
+$initialPath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${WINDOWS_FOLDER_PICKER_INITIAL_PATH_PLACEHOLDER}'))
+if ($initialPath -and [System.IO.Directory]::Exists($initialPath)) {
+  $dialog.InitialDirectory = $initialPath
+}
+# The daemon has no browser HWND to own the native dialog. Keep an invisible
+# topmost owner alive so the picker cannot wait behind the browser.
+$owner = [System.Windows.Window]::new()
+$owner.Width = 1
+$owner.Height = 1
+$owner.Left = -32000
+$owner.Top = -32000
+$owner.WindowStyle = [System.Windows.WindowStyle]::None
+$owner.ShowInTaskbar = $false
+$owner.Topmost = $true
+$owner.Opacity = 0
+$owner.Show()
+$owner.Activate() | Out-Null
+try {
+  if ($dialog.ShowDialog($owner) -eq $true) {
+    [Console]::Out.Write($dialog.FolderName)
+  }
+} finally {
+  $owner.Close()
+}
+`;
+const WINDOWS_FORMS_FOLDER_PICKER_SCRIPT = String.raw`
 Add-Type -AssemblyName System.Windows.Forms
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $dialog = [System.Windows.Forms.FolderBrowserDialog]::new()
@@ -78,7 +108,14 @@ export function createComputerDirectoryPicker(
   const platform = options.platform ?? process.platform;
   const fileExists = options.fileExists ?? existsSync;
   const isDirectory = options.isDirectory ?? defaultIsDirectory;
-  const runCommand = options.runCommand ?? runCommandWithExecFile;
+  const runCommand =
+    options.runCommand ??
+    (() =>
+      Promise.reject(
+        new Error(
+          'computer directory picker requires the daemon host command runtime',
+        ),
+      ));
   let activeSelection:
     | {
         key: symbol;
@@ -153,8 +190,10 @@ async function selectComputerDirectory(args: {
           signal,
         )
       : args.initialAbsolutePath;
-  const encodedCommand =
-    buildWindowsFolderPickerEncodedCommand(initialNativePath);
+  const encodedCommand = buildWindowsFolderPickerEncodedCommand(
+    runtime.pickerScript,
+    initialNativePath,
+  );
   let selectedNativePath: string;
   try {
     const result = await args.runCommand(
@@ -211,40 +250,51 @@ function relayAbort(
 }
 
 function buildWindowsFolderPickerEncodedCommand(
+  pickerScript: string,
   initialNativePath: string,
 ): string {
   const initialPathBase64 = Buffer.from(initialNativePath, 'utf8').toString(
     'base64',
   );
-  const pickerScript = WINDOWS_FOLDER_PICKER_SCRIPT.replace(
+  const hydratedPickerScript = pickerScript.replace(
     WINDOWS_FOLDER_PICKER_INITIAL_PATH_PLACEHOLDER,
     initialPathBase64,
   );
-  return Buffer.from(pickerScript, 'utf16le').toString('base64');
+  return Buffer.from(hydratedPickerScript, 'utf16le').toString('base64');
 }
 
 function resolvePickerRuntime(
   platform: NodeJS.Platform,
   fileExists: (path: string) => boolean,
 ):
-  | { kind: 'windows'; powershellCommand: string }
-  | { kind: 'wsl'; powershellCommand: string } {
+  | { kind: 'windows'; powershellCommand: string; pickerScript: string }
+  | { kind: 'wsl'; powershellCommand: string; pickerScript: string } {
   if (platform === 'win32' && fileExists(WINDOWS_PWSH_PATH)) {
-    return { kind: 'windows', powershellCommand: WINDOWS_PWSH_PATH };
+    return {
+      kind: 'windows',
+      powershellCommand: WINDOWS_PWSH_PATH,
+      pickerScript: WINDOWS_WPF_FOLDER_PICKER_SCRIPT,
+    };
   }
   if (platform === 'win32' && fileExists(WINDOWS_WINDOWS_POWERSHELL_PATH)) {
     return {
       kind: 'windows',
       powershellCommand: WINDOWS_WINDOWS_POWERSHELL_PATH,
+      pickerScript: WINDOWS_FORMS_FOLDER_PICKER_SCRIPT,
     };
   }
   if (platform === 'linux' && fileExists(WSL_PWSH_PATH)) {
-    return { kind: 'wsl', powershellCommand: WSL_PWSH_PATH };
+    return {
+      kind: 'wsl',
+      powershellCommand: WSL_PWSH_PATH,
+      pickerScript: WINDOWS_WPF_FOLDER_PICKER_SCRIPT,
+    };
   }
   if (platform === 'linux' && fileExists(WSL_WINDOWS_POWERSHELL_PATH)) {
     return {
       kind: 'wsl',
       powershellCommand: WSL_WINDOWS_POWERSHELL_PATH,
+      pickerScript: WINDOWS_FORMS_FOLDER_PICKER_SCRIPT,
     };
   }
   throw new ComputerDirectoryPickerError(
@@ -280,28 +330,4 @@ async function defaultIsDirectory(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function runCommandWithExecFile(
-  command: string,
-  args: readonly string[],
-  options: RunCommandOptions = {},
-): Promise<RunCommandResult> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      command,
-      [...args],
-      {
-        encoding: 'utf8',
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      },
-      (error: Error | null, stdout: string) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve({ stdout });
-      },
-    );
-  });
 }

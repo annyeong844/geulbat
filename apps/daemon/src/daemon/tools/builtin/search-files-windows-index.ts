@@ -1,6 +1,10 @@
-import { spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import { fromWindowsFsPath } from './search-files-ripgrep-paths.js';
+import {
+  createDelimitedFrameReader,
+  streamHostRoutedCommandLines,
+  type SearchFilesHostRouting,
+} from './search-files-host-stream.js';
 
 const WINDOWS_POWERSHELL_PATH =
   '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
@@ -33,23 +37,52 @@ type WindowsFilenameIndexSearchResult =
       reasonCode:
         | 'unsupported_root'
         | 'pattern_not_exact'
+        | 'pattern_not_indexable'
+        | 'max_results_required'
         | 'powershell_unavailable'
+        | 'command_runtime_unavailable'
         | 'query_failed';
     }
-  | { kind: 'results'; paths: string[] };
+  | { kind: 'results'; paths: string[]; limited: boolean };
+
+type WindowsFilenameIndexQueryMode = 'exact_hint' | 'bounded_basename_glob';
 
 export async function tryWindowsFilenameIndexSearch(args: {
   rootDir: string;
   pattern: string;
+  queryMode?: WindowsFilenameIndexQueryMode;
+  maxResults?: number;
   signal?: AbortSignal;
+  hostRouting?: SearchFilesHostRouting;
 }): Promise<WindowsFilenameIndexSearchResult> {
   const scope = toWindowsSearchScope(args.rootDir);
   if (scope === undefined) {
     return { kind: 'unavailable', reasonCode: 'unsupported_root' };
   }
-  const exactFilename = readExactFilenamePattern(args.pattern);
-  if (exactFilename === undefined) {
-    return { kind: 'unavailable', reasonCode: 'pattern_not_exact' };
+  const queryMode = args.queryMode ?? 'exact_hint';
+  if (queryMode === 'bounded_basename_glob' && args.maxResults === undefined) {
+    return { kind: 'unavailable', reasonCode: 'max_results_required' };
+  }
+  const query = buildWindowsFilenameIndexQuery({
+    scope,
+    pattern: args.pattern,
+    queryMode,
+    ...(args.maxResults === undefined ? {} : { maxResults: args.maxResults }),
+  });
+  if (query === undefined) {
+    return {
+      kind: 'unavailable',
+      reasonCode:
+        queryMode === 'exact_hint'
+          ? 'pattern_not_exact'
+          : 'pattern_not_indexable',
+    };
+  }
+  if (args.hostRouting === undefined) {
+    return {
+      kind: 'unavailable',
+      reasonCode: 'command_runtime_unavailable',
+    };
   }
   try {
     await access(WINDOWS_POWERSHELL_PATH);
@@ -57,28 +90,87 @@ export async function tryWindowsFilenameIndexSearch(args: {
     return { kind: 'unavailable', reasonCode: 'powershell_unavailable' };
   }
 
-  const query = [
-    'SELECT System.ItemUrl FROM SystemIndex',
-    `WHERE SCOPE='${escapeWindowsSearchSqlLiteral(scope)}'`,
-    `AND System.FileName='${escapeWindowsSearchSqlLiteral(exactFilename)}'`,
-  ].join(' ');
   return await runWindowsSearchQuery({
     query,
     rootDir: args.rootDir,
+    hostRouting: args.hostRouting,
+    ...(args.maxResults === undefined ? {} : { maxResults: args.maxResults }),
     ...(args.signal === undefined ? {} : { signal: args.signal }),
   });
 }
 
-export function readExactFilenamePattern(pattern: string): string | undefined {
+export function readWindowsFilenameIndexPattern(
+  pattern: string,
+  queryMode: WindowsFilenameIndexQueryMode = 'exact_hint',
+): { operator: '=' | 'LIKE'; literal: string } | undefined {
+  if (
+    queryMode === 'bounded_basename_glob' &&
+    (pattern.includes('/') ||
+      pattern.startsWith('!') ||
+      /[[\]{}\\]/u.test(pattern))
+  ) {
+    return undefined;
+  }
   const filename = pattern.split('/').at(-1);
   if (
     filename === undefined ||
     filename.length === 0 ||
-    /[*?[\]{}\\]/u.test(filename)
+    /[[\]{}\\]/u.test(filename)
   ) {
     return undefined;
   }
-  return filename;
+  if (!/[*?]/u.test(filename)) {
+    return { operator: '=', literal: filename };
+  }
+  if (queryMode === 'exact_hint') {
+    return undefined;
+  }
+  let literal = '';
+  for (const character of filename) {
+    if (character === '*') {
+      literal += '%';
+    } else if (character === '?') {
+      literal += '_';
+    } else if (character === '%') {
+      literal += '[%]';
+    } else if (character === '_') {
+      literal += '[_]';
+    } else {
+      literal += character;
+    }
+  }
+  return { operator: 'LIKE', literal };
+}
+
+export function buildWindowsFilenameIndexQuery(args: {
+  scope: string;
+  pattern: string;
+  queryMode: WindowsFilenameIndexQueryMode;
+  maxResults?: number;
+}): string | undefined {
+  const parsedPattern = readWindowsFilenameIndexPattern(
+    args.pattern,
+    args.queryMode,
+  );
+  if (
+    parsedPattern === undefined ||
+    (args.maxResults !== undefined &&
+      (!Number.isInteger(args.maxResults) || args.maxResults <= 0))
+  ) {
+    return undefined;
+  }
+  const selectLimit =
+    args.maxResults === undefined ? '' : ` TOP ${args.maxResults}`;
+  const filenamePredicate =
+    parsedPattern.operator === '='
+      ? `System.FileName='${escapeWindowsSearchSqlLiteral(parsedPattern.literal)}'`
+      : `System.FileName LIKE '${escapeWindowsSearchSqlLiteral(parsedPattern.literal)}'`;
+  return [
+    `SELECT${selectLimit} System.ItemUrl FROM SystemIndex`,
+    `WHERE SCOPE='${escapeWindowsSearchSqlLiteral(args.scope)}'`,
+    `AND ${filenamePredicate}`,
+    'ORDER BY System.ItemUrl',
+  ].join(' ');
 }
 
 function toWindowsSearchScope(rootDir: string): string | undefined {
@@ -98,81 +190,73 @@ function escapeWindowsSearchSqlLiteral(value: string): string {
 async function runWindowsSearchQuery(args: {
   query: string;
   rootDir: string;
+  hostRouting: SearchFilesHostRouting;
+  maxResults?: number;
   signal?: AbortSignal;
 }): Promise<WindowsFilenameIndexSearchResult> {
-  return await new Promise((resolve, reject) => {
-    const queryBase64 = Buffer.from(args.query, 'utf8').toString('base64');
-    const encodedCommand = Buffer.from(
-      WINDOWS_SEARCH_QUERY_SCRIPT.replace(
-        '__GEULBAT_QUERY_BASE64__',
-        queryBase64,
-      ),
-      'utf16le',
-    ).toString('base64');
-    const child = spawn(
-      WINDOWS_POWERSHELL_PATH,
-      ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedCommand],
-      {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
-    let stdout = '';
-    let killed = false;
-    const killChild = () => {
-      if (!killed) {
-        killed = true;
-        child.kill('SIGTERM');
-      }
-    };
-    if (args.signal) {
-      if (args.signal.aborted) {
-        killChild();
-      } else {
-        args.signal.addEventListener('abort', killChild, { once: true });
-      }
+  const queryBase64 = Buffer.from(args.query, 'utf8').toString('base64');
+  const encodedCommand = Buffer.from(
+    WINDOWS_SEARCH_QUERY_SCRIPT.replace(
+      '__GEULBAT_QUERY_BASE64__',
+      queryBase64,
+    ),
+    'utf16le',
+  ).toString('base64');
+  const paths: string[] = [];
+  let invalidOutput = false;
+  const frames = createDelimitedFrameReader('\n', (line) => {
+    const encodedPath = line.trim();
+    if (encodedPath.length === 0 || invalidOutput) {
+      return;
     }
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.resume();
-    child.on('close', (exitCode) => {
-      args.signal?.removeEventListener('abort', killChild);
-      if (killed) {
-        reject(
-          Object.assign(new Error('Windows filename index aborted'), {
-            code: 'aborted',
-          }),
-        );
-        return;
-      }
-      if (exitCode !== 0) {
-        resolve({ kind: 'unavailable', reasonCode: 'query_failed' });
-        return;
-      }
-      try {
-        resolve({
-          kind: 'results',
-          paths: stdout
-            .split(/\r?\n/u)
-            .map((line) => line.trim())
-            .filter((line) => line.length > 0)
-            .map((line) =>
-              fromWindowsFsPath(
-                Buffer.from(line, 'base64')
-                  .toString('utf8')
-                  .replaceAll('/', '\\'),
-                args.rootDir,
-              ),
-            ),
-        });
-      } catch {
-        resolve({ kind: 'unavailable', reasonCode: 'query_failed' });
-      }
-    });
-    child.on('error', () => {
-      args.signal?.removeEventListener('abort', killChild);
-      resolve({ kind: 'unavailable', reasonCode: 'query_failed' });
-    });
+    try {
+      paths.push(
+        fromWindowsFsPath(
+          Buffer.from(encodedPath, 'base64')
+            .toString('utf8')
+            .replaceAll('/', '\\'),
+          args.rootDir,
+        ),
+      );
+    } catch {
+      invalidOutput = true;
+    }
   });
+  const streamed = await streamHostRoutedCommandLines({
+    hostCommands: args.hostRouting.hostCommands,
+    stateRoot: args.hostRouting.stateRoot,
+    executable: WINDOWS_POWERSHELL_PATH,
+    commandArgs: [
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      encodedCommand,
+    ],
+    cwd: args.hostRouting.stateRoot,
+    env: process.env,
+    pageLimitBytes: args.hostRouting.pageLimitBytes,
+    onStdoutChunk: frames.consume,
+    ...(args.signal === undefined ? {} : { signal: args.signal }),
+  });
+  frames.flush();
+  if (!streamed.ok) {
+    if (streamed.aborted) {
+      throw Object.assign(new Error('Windows filename index aborted'), {
+        code: 'aborted',
+      });
+    }
+    return { kind: 'unavailable', reasonCode: 'query_failed' };
+  }
+  if (
+    streamed.value.status !== 'exit' ||
+    streamed.value.exitCode !== 0 ||
+    invalidOutput
+  ) {
+    return { kind: 'unavailable', reasonCode: 'query_failed' };
+  }
+  return {
+    kind: 'results',
+    paths,
+    limited: args.maxResults !== undefined && paths.length >= args.maxResults,
+  };
 }

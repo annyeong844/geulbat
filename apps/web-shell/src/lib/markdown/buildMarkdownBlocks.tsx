@@ -87,13 +87,6 @@ export function buildMarkdownBlocks(
   ];
 }
 
-export function prepareMarkdownBlocks(
-  renderCacheOwner: object,
-  markdown: string,
-): void {
-  readPreparedMarkdown(renderCacheOwner, markdown);
-}
-
 interface MarkdownSourceNode {
   key: string;
   startOffset: number;

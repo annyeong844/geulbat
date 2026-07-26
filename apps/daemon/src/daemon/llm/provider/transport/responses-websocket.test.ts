@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 import { buildResponseCreatePayload } from './responses-wire-input.js';
 import {
   extractWebSocketCloseError,
   extractWebSocketError,
 } from './responses-websocket-errors.js';
+import { connectWebSocket } from './responses-websocket-connection.js';
 import {
   resolveCodexResponsesUrl,
   resolveCodexWebSocketUrl,
@@ -14,6 +17,7 @@ import {
 import {
   resolveResponsesStreamIdleTimeoutMs,
   streamResponsesOverWebSocket,
+  type ResponsesRequestMeasurement,
 } from './responses-websocket.js';
 import type { ResponsesWebSocketReusePolicy } from './responses-websocket-cache.js';
 
@@ -60,6 +64,51 @@ void test('WebSocket error extraction accepts browser-style message events', () 
   assert.equal(Reflect.get(genericError, 'llmCode'), 'llm_connection_lost');
 });
 
+void test('WebSocket error extraction preserves authentication handshake failures', () => {
+  for (const status of [401, 403]) {
+    const error = extractWebSocketError(
+      new Error(`Unexpected server response: ${status}`),
+    );
+
+    assert.equal(error.message, `Unexpected server response: ${status}`);
+    assert.equal(Reflect.get(error, 'status'), status);
+    assert.equal(Reflect.get(error, 'llmCode'), 'llm_auth_failed');
+  }
+
+  const upstreamFailure = extractWebSocketError(
+    new Error('Unexpected server response: 500'),
+  );
+  assert.equal(Reflect.get(upstreamFailure, 'llmCode'), 'llm_connection_lost');
+});
+
+void test('WebSocket handshake rejection preserves provider Retry-After evidence', async () => {
+  const server = createServer();
+  server.on('upgrade', (_request, socket) => {
+    socket.end(
+      'HTTP/1.1 429 Too Many Requests\r\nRetry-After: 2\r\nConnection: close\r\n\r\n',
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
+
+  try {
+    await assert.rejects(
+      connectWebSocket(`ws://127.0.0.1:${address.port}`, new Headers()),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, 'Unexpected server response: 429');
+        assert.equal(Reflect.get(error, 'status'), 429);
+        assert.equal(Reflect.get(error, 'retryAfterMs'), 2_000);
+        return true;
+      },
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 void test('WebSocket close extraction preserves string, binary, and unstructured reasons', () => {
   const abnormalClose = extractWebSocketCloseError({
     code: 1006,
@@ -88,8 +137,8 @@ void test('WebSocket close extraction preserves string, binary, and unstructured
   );
 });
 
-void test('resolveResponsesStreamIdleTimeoutMs preserves the normative 60-second default', () => {
-  assert.equal(resolveResponsesStreamIdleTimeoutMs({}), 60_000);
+void test('resolveResponsesStreamIdleTimeoutMs leaves long reasoning unconstrained unless the operator opts in', () => {
+  assert.equal(resolveResponsesStreamIdleTimeoutMs({}), undefined);
 });
 
 void test('resolveResponsesStreamIdleTimeoutMs accepts an explicit positive operator value', () => {
@@ -241,6 +290,148 @@ void test('streamResponsesOverWebSocket rejects incompatible native history befo
     }),
     /provider-native compaction history is incompatible/u,
   );
+  assert.equal(acquireCalls, 0);
+});
+
+void test('streamResponsesOverWebSocket forwards provider Retry-After evidence to the shared session owner', async () => {
+  const deferrals: Array<{ url: string; retryAfterMs: number }> = [];
+  await assert.rejects(
+    streamResponsesOverWebSocket({
+      body: baseBody,
+      headers: new Headers(),
+      historyProjection: 'provider_output',
+      history: [],
+      providerSessionId: 'provider-session',
+      webSocketUrl: 'wss://api.example.test/v1/responses',
+      webSocketReusePolicy: TEST_REUSE_POLICY,
+      providerWebSocketSessions: {
+        async acquireWebSocket() {
+          throw Object.assign(new Error('provider rate limited'), {
+            status: 429,
+            retryAfterMs: 2_500,
+          });
+        },
+        deferProviderRequests(url, retryAfterMs) {
+          deferrals.push({ url, retryAfterMs });
+        },
+      },
+    }),
+    /provider rate limited/u,
+  );
+
+  assert.deepEqual(deferrals, [
+    {
+      url: 'wss://api.example.test/v1/responses',
+      retryAfterMs: 2_500,
+    },
+  ]);
+});
+
+void test('streamResponsesOverWebSocket measures the exact serialized request immediately before dispatch', async () => {
+  const order: string[] = [];
+  const admissionStates: string[] = [];
+  const requestText = 'UTF-8 한글 요청'.repeat(64);
+  let sentPayload = '';
+  let measurement: ResponsesRequestMeasurement | undefined;
+  const socket = new EventEmitter() as EventEmitter & {
+    readyState: number;
+    send(payload: string): void;
+    close(code?: number, reason?: string): void;
+  };
+  socket.readyState = 1;
+  socket.send = (payload: string) => {
+    order.push('send');
+    sentPayload = payload;
+  };
+  socket.close = () => {};
+
+  const runPromise = streamResponsesOverWebSocket({
+    payload: {
+      type: 'response.create',
+      model: 'test-model',
+      input: [{ role: 'user', content: requestText }],
+    },
+    headers: new Headers(),
+    historyProjection: 'provider_output',
+    providerSessionId: 'provider-session',
+    webSocketReusePolicy: TEST_REUSE_POLICY,
+    providerWebSocketSessions: {
+      async acquireWebSocket(
+        _url,
+        _headers,
+        _providerSessionId,
+        _reusePolicy,
+        _signal,
+        onAdmissionState,
+      ) {
+        onAdmissionState?.({ state: 'rate_limit_waiting' });
+        onAdmissionState?.({ state: 'admitted' });
+        return {
+          socket,
+          reused: false,
+          release() {},
+        };
+      },
+    },
+    onRequestPrepared(nextMeasurement) {
+      order.push('measure');
+      measurement = nextMeasurement;
+    },
+    onAdmissionState(observation) {
+      admissionStates.push(observation.state);
+    },
+  });
+
+  await setImmediatePromise();
+  socket.emit(
+    'message',
+    Buffer.from(
+      JSON.stringify({
+        type: 'response.completed',
+        response: { usage: { input_tokens: 1 } },
+      }),
+    ),
+  );
+  await runPromise;
+
+  assert.deepEqual(order, ['measure', 'send']);
+  assert.deepEqual(admissionStates, ['rate_limit_waiting', 'admitted']);
+  assert.equal(
+    measurement?.serializedBytes,
+    Buffer.byteLength(sentPayload, 'utf8'),
+  );
+  assert.equal(measurement?.dominantPressureSource, 'history');
+  assert.ok((measurement?.serializedBytesBySource.history ?? 0) > 0);
+  assert.ok(sentPayload.includes(requestText));
+});
+
+void test('streamResponsesOverWebSocket stops a request before socket acquisition when preparation is required', async () => {
+  let acquireCalls = 0;
+
+  await assert.rejects(
+    streamResponsesOverWebSocket({
+      body: baseBody,
+      history: [{ kind: 'user', text: 'prepare first' }],
+      headers: new Headers(),
+      historyProjection: 'normalized',
+      providerSessionId: 'thread-preparation',
+      webSocketReusePolicy: TEST_REUSE_POLICY,
+      providerWebSocketSessions: {
+        async acquireWebSocket() {
+          acquireCalls += 1;
+          throw new Error('socket acquisition must not run');
+        },
+      },
+      onRequestPrepared() {
+        return { kind: 'prepare', reason: 'over_window' };
+      },
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      Reflect.get(error, 'llmCode') === 'llm_context_preparation_required' &&
+      Reflect.get(error, 'preparationReason') === 'over_window',
+  );
+
   assert.equal(acquireCalls, 0);
 });
 

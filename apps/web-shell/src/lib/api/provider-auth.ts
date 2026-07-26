@@ -12,6 +12,15 @@ import type {
 
 import { apiFetch } from './client.js';
 
+export function isProviderAuthConnectedStatus(
+  status: ProviderAuthStatusResponse | null | undefined,
+): status is Extract<
+  ProviderAuthStatusResponse,
+  { state: 'ready'; ready: true }
+> {
+  return status?.state === 'ready' && status.ready;
+}
+
 export function startProviderAuth(
   providerId?: ProviderAuthProviderId,
 ): Promise<ProviderAuthStartResponse> {

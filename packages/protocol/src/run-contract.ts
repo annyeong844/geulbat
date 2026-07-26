@@ -1,8 +1,25 @@
 import type { RunId, ThreadId } from './ids.js';
+import { isGoalRef, type GoalRef } from './goal.js';
 import { isPermissionMode, type PermissionMode } from './run-approval.js';
 import { isThreadId } from './ids.js';
-import type { ProviderAuthProviderId } from './provider-auth.js';
-import { isNumber, isRecord, isString } from './wire-value-guards.js';
+import {
+  isApprovedPlanRef,
+  isPlanModeDepth,
+  isPlanModeIntensity,
+  type ApprovedPlanRef,
+  type PlanModeDepth,
+  type PlanModeIntensity,
+} from './planning-workflow.js';
+import {
+  PROVIDER_AUTH_PROVIDER_IDS,
+  type ProviderAuthProviderId,
+} from './provider-auth.js';
+import {
+  isBoolean,
+  isNumber,
+  isRecord,
+  isString,
+} from './wire-value-guards.js';
 
 // 사고 수준 — provider의 reasoning effort와 같은 축. 셸과 daemon은 이
 // 계약만 공유하고 서로의 구현을 모른다.
@@ -15,10 +32,44 @@ export const RUN_REASONING_EFFORTS = [
 ] as const;
 export type RunReasoningEffort = (typeof RUN_REASONING_EFFORTS)[number];
 
+export const RUN_REASONING_SELECTIONS = [
+  ...RUN_REASONING_EFFORTS,
+  'ultra',
+] as const;
+export type RunReasoningSelection = (typeof RUN_REASONING_SELECTIONS)[number];
+
+export function isRunReasoningSelection(
+  value: unknown,
+): value is RunReasoningSelection {
+  return RUN_REASONING_SELECTIONS.some((selection) => selection === value);
+}
+
+export const RUN_SERVICE_TIERS = ['standard', 'fast'] as const;
+export type RunServiceTier = (typeof RUN_SERVICE_TIERS)[number];
+export const DEFAULT_RUN_SERVICE_TIER =
+  'standard' as const satisfies RunServiceTier;
+
+export function isRunServiceTier(value: unknown): value is RunServiceTier {
+  return RUN_SERVICE_TIERS.some((tier) => tier === value);
+}
+
 export function isRunReasoningEffort(
   value: unknown,
 ): value is RunReasoningEffort {
   return (RUN_REASONING_EFFORTS as readonly unknown[]).includes(value);
+}
+
+export const RUN_PROVIDER_IDS = [
+  ...PROVIDER_AUTH_PROVIDER_IDS,
+  'qwen_token_plan',
+] as const;
+export type RunProviderId = (typeof RUN_PROVIDER_IDS)[number];
+
+export function isRunProviderId(value: unknown): value is RunProviderId {
+  return (
+    typeof value === 'string' &&
+    (RUN_PROVIDER_IDS as readonly string[]).includes(value)
+  );
 }
 
 export const RUN_MODEL_CATALOG = [
@@ -28,6 +79,7 @@ export const RUN_MODEL_CATALOG = [
     providerId: 'openai_codex_direct',
     reasoningEfforts: RUN_REASONING_EFFORTS,
     defaultReasoningEffort: 'medium',
+    serviceTiers: RUN_SERVICE_TIERS,
   },
   {
     id: 'gpt-5.6-terra',
@@ -35,6 +87,7 @@ export const RUN_MODEL_CATALOG = [
     providerId: 'openai_codex_direct',
     reasoningEfforts: RUN_REASONING_EFFORTS,
     defaultReasoningEffort: 'medium',
+    serviceTiers: RUN_SERVICE_TIERS,
   },
   {
     id: 'gpt-5.6-luna',
@@ -42,6 +95,7 @@ export const RUN_MODEL_CATALOG = [
     providerId: 'openai_codex_direct',
     reasoningEfforts: RUN_REASONING_EFFORTS,
     defaultReasoningEffort: 'medium',
+    serviceTiers: RUN_SERVICE_TIERS,
   },
   {
     id: 'grok-4.5',
@@ -49,13 +103,23 @@ export const RUN_MODEL_CATALOG = [
     providerId: 'grok_oauth',
     reasoningEfforts: ['low', 'medium', 'high'],
     defaultReasoningEffort: 'high',
+    serviceTiers: ['standard'],
+  },
+  {
+    id: 'qwen3.8-max-preview',
+    label: 'Qwen3.8 Max Preview',
+    providerId: 'qwen_token_plan',
+    reasoningEfforts: RUN_REASONING_EFFORTS,
+    defaultReasoningEffort: 'high',
+    serviceTiers: ['standard'],
   },
 ] as const satisfies readonly {
   id: string;
   label: string;
-  providerId: ProviderAuthProviderId;
+  providerId: RunProviderId;
   reasoningEfforts: readonly RunReasoningEffort[];
   defaultReasoningEffort: RunReasoningEffort;
+  serviceTiers: readonly RunServiceTier[];
 }[];
 
 type RunModelDescriptor = (typeof RUN_MODEL_CATALOG)[number];
@@ -76,6 +140,40 @@ export function resolveRunModelDescriptor(
     }
   }
   throw new Error(`unknown run model '${modelId}'`);
+}
+
+export function resolveMaximumReasoningEffort(
+  modelId: RunModelId,
+): RunReasoningEffort {
+  const descriptor = resolveRunModelDescriptor(modelId);
+  for (const effort of [...RUN_REASONING_EFFORTS].reverse()) {
+    if (
+      (descriptor.reasoningEfforts as readonly RunReasoningEffort[]).includes(
+        effort,
+      )
+    ) {
+      return effort;
+    }
+  }
+  throw new Error(`run model '${modelId}' has no supported reasoning effort`);
+}
+
+export function resolveRunReasoningSelection(
+  modelId: RunModelId,
+  selection: RunReasoningSelection | undefined,
+): {
+  reasoningEffort: RunReasoningEffort | undefined;
+  ultraReasoning: boolean;
+} {
+  return selection === 'ultra'
+    ? {
+        reasoningEffort: resolveMaximumReasoningEffort(modelId),
+        ultraReasoning: true,
+      }
+    : {
+        reasoningEffort: selection,
+        ultraReasoning: false,
+      };
 }
 
 // 이미지 생성 모델 카탈로그(image-generation-open §4.0) — 선택 단위는
@@ -249,6 +347,11 @@ export interface RunAttachmentInput {
   mimeType?: string;
 }
 
+export interface RunProviderTransitionRecovery {
+  sourceModelId: RunModelId;
+  sourceReasoningEffort: RunReasoningEffort;
+}
+
 export interface RunRequest {
   prompt: string;
   displayPrompt?: string;
@@ -261,7 +364,27 @@ export interface RunRequest {
   selection?: { startLine: number; endLine: number; text: string };
   allowedPublicToolNames?: string[];
   permissionMode?: PermissionMode;
-  reasoningEffort?: RunReasoningEffort;
+  // 계획 모드 진입 요청. 상태가 아니라 요청이다 — 활성 워크플로우의 진실
+  // 소유자는 daemon이고, 이 필드로 활성 워크플로우를 빠져나갈 수는 없다.
+  planModeRequested?: boolean;
+  planModeIntensity?: PlanModeIntensity;
+  planModeDepth?: PlanModeDepth;
+  // 승인된 정확한 계획을 실행하는 새 run의 daemon-issued 참조.
+  approvedPlanRef?: ApprovedPlanRef;
+  // 명시적인 Goal 시작 요청. 상태 자체는 daemon이 소유하며, 이후 같은
+  // 스레드 run은 활성 Goal을 자동으로 이어받는다.
+  goalModeRequested?: boolean;
+  // daemon이 resume 명령에서 발급한 정확한 Goal 실행 handoff.
+  goalRef?: GoalRef;
+  // Ultra도 별도 에이전트 모드가 아니라 사고 강도 선택이다. daemon은
+  // 선택 모델의 실제 최고 effort로 해석하고 재귀 서브에이전트를 연다.
+  reasoningEffort?: RunReasoningSelection;
+  // 제품 표면은 표준/빠름을 사용한다. provider wire 값(priority 등)은
+  // daemon provider adapter가 소유한다.
+  serviceTier?: RunServiceTier;
+  // 사용자가 교차 provider 전환 시 허용한 1회 overflow 복구. 대상 모델은
+  // modelId가 소유하며, 원문 요청이 실제 context limit에 거절될 때만 쓴다.
+  providerTransitionRecovery?: RunProviderTransitionRecovery;
   subagentModelRouting?: RunSubagentModelRouting;
   attachments?: RunAttachmentInput[];
   // 답변 재생성(덮어쓰기) — run 시작 전에 스레드를 마지막 사용자 턴
@@ -422,7 +545,15 @@ function isRunRequestBase(value: Record<string, unknown>): boolean {
       'selection',
       'allowedPublicToolNames',
       'permissionMode',
+      'planModeRequested',
+      'planModeIntensity',
+      'planModeDepth',
+      'approvedPlanRef',
+      'goalModeRequested',
+      'goalRef',
       'reasoningEffort',
+      'serviceTier',
+      'providerTransitionRecovery',
       'subagentModelRouting',
       'attachments',
       'regenerate',
@@ -444,8 +575,36 @@ function isRunRequestBase(value: Record<string, unknown>): boolean {
       isStringArray(value.allowedPublicToolNames)) &&
     (value.permissionMode === undefined ||
       isPermissionMode(value.permissionMode)) &&
+    (value.planModeRequested === undefined ||
+      isBoolean(value.planModeRequested)) &&
+    (value.planModeIntensity === undefined ||
+      isPlanModeIntensity(value.planModeIntensity)) &&
+    (value.planModeDepth === undefined ||
+      isPlanModeDepth(value.planModeDepth)) &&
+    (value.approvedPlanRef === undefined ||
+      isApprovedPlanRef(value.approvedPlanRef)) &&
+    (value.approvedPlanRef === undefined || value.threadId !== undefined) &&
+    (value.goalModeRequested === undefined ||
+      isBoolean(value.goalModeRequested)) &&
+    (value.goalRef === undefined || isGoalRef(value.goalRef)) &&
+    !(
+      value.planModeRequested === true && value.approvedPlanRef !== undefined
+    ) &&
+    !(value.goalModeRequested === true && value.goalRef !== undefined) &&
+    (value.planModeIntensity === undefined ||
+      value.planModeRequested === true) &&
+    (value.planModeDepth === undefined || value.planModeRequested === true) &&
+    (value.planModeRequested !== true ||
+      (value.planModeIntensity !== undefined &&
+        value.planModeDepth !== undefined)) &&
     (value.reasoningEffort === undefined ||
-      isRunReasoningEffort(value.reasoningEffort)) &&
+      isRunReasoningSelection(value.reasoningEffort)) &&
+    isRunServiceTierSelection(value) &&
+    (value.providerTransitionRecovery === undefined ||
+      isRunProviderTransitionRecovery(
+        value.providerTransitionRecovery,
+        value.modelId,
+      )) &&
     (value.subagentModelRouting === undefined ||
       isRunSubagentModelRouting(value.subagentModelRouting)) &&
     (value.attachments === undefined ||
@@ -464,6 +623,48 @@ function isRunRequestBase(value: Record<string, unknown>): boolean {
       isVideoGenerationModelId(value.videoGenerationModel)) &&
     (value.videoGenerationSettings === undefined ||
       isVideoGenerationSettings(value.videoGenerationSettings))
+  );
+}
+
+function isRunServiceTierSelection(value: Record<string, unknown>): boolean {
+  if (value.serviceTier === undefined) {
+    return true;
+  }
+  if (!isRunServiceTier(value.serviceTier)) {
+    return false;
+  }
+  if (value.modelId === undefined) {
+    return value.serviceTier === DEFAULT_RUN_SERVICE_TIER;
+  }
+  if (!isRunModelId(value.modelId)) {
+    return false;
+  }
+  return (
+    resolveRunModelDescriptor(value.modelId)
+      .serviceTiers as readonly RunServiceTier[]
+  ).includes(value.serviceTier);
+}
+
+export function isRunProviderTransitionRecovery(
+  value: unknown,
+  targetModelId: unknown,
+): value is RunProviderTransitionRecovery {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['sourceModelId', 'sourceReasoningEffort']) ||
+    !isRunModelId(value.sourceModelId) ||
+    !isRunReasoningEffort(value.sourceReasoningEffort) ||
+    !isRunModelId(targetModelId)
+  ) {
+    return false;
+  }
+  const source = resolveRunModelDescriptor(value.sourceModelId);
+  const target = resolveRunModelDescriptor(targetModelId);
+  return (
+    source.providerId !== target.providerId &&
+    (source.reasoningEfforts as readonly RunReasoningEffort[]).includes(
+      value.sourceReasoningEffort,
+    )
   );
 }
 

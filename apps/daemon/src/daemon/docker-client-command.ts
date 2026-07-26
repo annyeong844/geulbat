@@ -1,10 +1,19 @@
-import {
-  buildAllowlistedChildProcessEnv,
-  runBoundedChildProcess,
-  type BoundedChildProcessResult,
-} from './bounded-child-process.js';
+import { buildAllowlistedCommandEnv } from './command-environment.js';
 
-export type DockerClientCommandResult = BoundedChildProcessResult;
+type DockerClientCommandOutputStreamName = 'stdout' | 'stderr';
+
+export type DockerClientCommandResult =
+  | { kind: 'exit'; exitCode: number; stdout: string; stderr: string }
+  | { kind: 'timeout'; stdout: string; stderr: string }
+  | { kind: 'cancelled'; stdout: string; stderr: string }
+  | {
+      kind: 'output_limit_exceeded';
+      stdout: string;
+      stderr: string;
+      stream: DockerClientCommandOutputStreamName;
+      maxBufferedBytesPerStream: number;
+    }
+  | { kind: 'crash'; stdout: string; stderr: string };
 
 export interface DockerClientCommandInvocation {
   executable: string;
@@ -31,23 +40,21 @@ const DOCKER_CLIENT_ENV_KEYS = [
 export function buildDockerClientProcessEnv(
   sourceEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  return buildAllowlistedChildProcessEnv(DOCKER_CLIENT_ENV_KEYS, sourceEnv);
+  return buildAllowlistedCommandEnv(DOCKER_CLIENT_ENV_KEYS, sourceEnv);
 }
 
 export async function runDockerClientCommand(
   invocation: DockerClientCommandInvocation,
 ): Promise<DockerClientCommandResult> {
-  return await runBoundedChildProcess({
-    executable: invocation.executable,
-    args: invocation.args,
-    env: buildDockerClientProcessEnv(),
-    ...(invocation.timeoutMs === undefined
-      ? {}
-      : { timeoutMs: invocation.timeoutMs }),
-    ...(invocation.signal ? { signal: invocation.signal } : {}),
-    ...(invocation.outputBufferPolicy
-      ? { outputBufferPolicy: invocation.outputBufferPolicy }
-      : {}),
-    cancelledStderr: 'docker command cancelled',
-  });
+  return invocation.signal?.aborted === true
+    ? {
+        kind: 'cancelled',
+        stdout: '',
+        stderr: 'docker command cancelled',
+      }
+    : {
+        kind: 'crash',
+        stdout: '',
+        stderr: 'docker command requires the daemon host command runtime',
+      };
 }

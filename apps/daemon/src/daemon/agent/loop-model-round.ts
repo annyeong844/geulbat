@@ -8,7 +8,7 @@ import {
 } from '../llm/index.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
 import type { ToolDefinition } from '../tools/types.js';
-import type { AgentEventEmitter } from './events.js';
+import type { AgentEventEmitter, AgentEventPayloadMap } from './events.js';
 import {
   getErrorCode,
   getErrorMessage,
@@ -25,6 +25,14 @@ import {
   emitClassifiedStreamError,
   sleepForModelRoundRetry,
 } from './loop-model-round-retry.js';
+type ProviderRuntimeStatusPayload = AgentEventPayloadMap['provider_status'];
+type ProviderRuntimePhase = ProviderRuntimeStatusPayload['phase'];
+type ProviderRequestDiagnostics = NonNullable<
+  ProviderRuntimeStatusPayload['request']
+>;
+type ProviderRetryDiagnostics = NonNullable<
+  ProviderRequestDiagnostics['retry']
+>;
 
 interface ModelRoundData {
   assistantText: string;
@@ -49,6 +57,11 @@ export interface RunModelRoundArgs {
   emit: AgentEventEmitter;
   callModelImpl?: CallModelFn;
   retrySleep?: (delayMs: number) => Promise<void>;
+  onProviderRequestPrepared?: CallModelInput['onProviderRequestPrepared'];
+  onContextPreparationRequired?: () => Promise<
+    { kind: 'prepared' } | { kind: 'failed'; message: string }
+  >;
+  onContextOverflow?: () => Promise<boolean>;
   now?: () => number;
   streamArgsToolNames?: ReadonlySet<string>;
 }
@@ -89,11 +102,56 @@ export async function runModelRound(
     emit,
     callModelImpl,
     retrySleep = sleepForModelRoundRetry,
+    onProviderRequestPrepared,
+    onContextPreparationRequired,
+    onContextOverflow,
     now = Date.now,
   } = args;
   let attemptIndex = 0;
+  let providerAttemptCount = 0;
+  let contextPreparationAttempted = false;
+  let contextOverflowRecoveryAttempted = false;
+  const requestStartedAtMs = now();
+  const requestStartedAt = new Date(requestStartedAtMs).toISOString();
+  let currentProviderPhase: ProviderRuntimePhase = 'provider_waiting';
+  let lastProviderEventAtMs: number | undefined;
+  let retryDiagnostics: ProviderRetryDiagnostics | undefined;
+
+  const buildProviderRequestDiagnostics = (
+    observedAtMs: number,
+    ended: boolean,
+  ): ProviderRequestDiagnostics => ({
+    startedAt: requestStartedAt,
+    ...(lastProviderEventAtMs === undefined
+      ? {}
+      : { lastEventAt: new Date(lastProviderEventAtMs).toISOString() }),
+    ...(ended
+      ? {
+          endedAt: new Date(observedAtMs).toISOString(),
+          durationMs: Math.max(0, observedAtMs - requestStartedAtMs),
+        }
+      : {}),
+    attemptCount: providerAttemptCount,
+    ...(retryDiagnostics === undefined ? {} : { retry: retryDiagnostics }),
+  });
+
+  const emitProviderRuntimeStatus = (
+    phase: ProviderRuntimePhase,
+    observedAtMs: number,
+    ended = false,
+  ): void => {
+    currentProviderPhase = phase;
+    emit('provider_status', {
+      phase,
+      observedAt: new Date(observedAtMs).toISOString(),
+      request: buildProviderRequestDiagnostics(observedAtMs, ended),
+    });
+  };
 
   modelRoundAttempts: for (;;) {
+    providerAttemptCount += 1;
+    emitProviderRuntimeStatus('provider_waiting', now());
+    let observedProviderEventForAttempt = false;
     const input: CallModelInput = {
       history,
       systemPrompt,
@@ -103,6 +161,12 @@ export async function runModelRound(
       providerAuthRuntime,
       providerRequestOptions,
       ...(providerReplayScopeId === undefined ? {} : { providerReplayScopeId }),
+      ...(onProviderRequestPrepared === undefined
+        ? {}
+        : { onProviderRequestPrepared }),
+      onProviderRuntimeState(observation) {
+        emitProviderRuntimeStatus(observation.state, now());
+      },
     };
     if (signal !== undefined) {
       input.signal = signal;
@@ -115,6 +179,13 @@ export async function runModelRound(
       emit,
       attemptIndex,
       now,
+      onProviderEventObserved(observedAtMs) {
+        lastProviderEventAtMs = observedAtMs;
+        if (!observedProviderEventForAttempt) {
+          observedProviderEventForAttempt = true;
+          emitProviderRuntimeStatus('provider_streaming', observedAtMs);
+        }
+      },
       round: args.round,
       ...(args.streamArgsToolNames !== undefined
         ? { streamArgsToolNames: args.streamArgsToolNames }
@@ -123,6 +194,14 @@ export async function runModelRound(
 
     switch (chunkResult.kind) {
       case 'success': {
+        if (attemptIndex > 0) {
+          retryDiagnostics = {
+            available: false,
+            performed: true,
+            outcome: 'recovered',
+          };
+        }
+        emitProviderRuntimeStatus(currentProviderPhase, now(), true);
         const terminalResult =
           chunkResult.artifactCandidate !== undefined
             ? composeAgentResult({
@@ -154,12 +233,45 @@ export async function runModelRound(
         };
       }
       case 'aborted':
+        emitProviderRuntimeStatus(currentProviderPhase, now(), true);
         return {
           ok: false,
           result: emitTerminalFailure(emit, 'aborted', 'run cancelled'),
         };
       case 'stream_error':
       case 'thrown_error': {
+        if (
+          chunkResult.category === 'llm_context_preparation_required' &&
+          !chunkResult.sawSemanticChunk &&
+          !contextPreparationAttempted &&
+          onContextPreparationRequired !== undefined
+        ) {
+          contextPreparationAttempted = true;
+          const preparation = await onContextPreparationRequired();
+          if (preparation.kind === 'prepared') {
+            continue modelRoundAttempts;
+          }
+          return {
+            ok: false,
+            result: emitTerminalFailure(
+              emit,
+              'llm_context_length_exceeded',
+              preparation.message,
+            ),
+          };
+        }
+        if (
+          (chunkResult.category === 'llm_context_overflow' ||
+            chunkResult.category === 'llm_provider_transition_required') &&
+          !chunkResult.sawSemanticChunk &&
+          !contextOverflowRecoveryAttempted &&
+          onContextOverflow !== undefined
+        ) {
+          contextOverflowRecoveryAttempted = true;
+          if (await onContextOverflow()) {
+            continue modelRoundAttempts;
+          }
+        }
         const failure = resolveModelRoundFailure({
           emit,
           category: chunkResult.category,
@@ -171,6 +283,10 @@ export async function runModelRound(
             ? { message: chunkResult.message }
             : {}),
           logTerminalFailure: true,
+          onRetryDecision(diagnostics, terminal) {
+            retryDiagnostics = diagnostics;
+            emitProviderRuntimeStatus(currentProviderPhase, now(), terminal);
+          },
         });
         if (failure.kind === 'retry') {
           await retrySleep(failure.delayMs);
@@ -196,17 +312,37 @@ function resolveModelRoundFailure(args: {
   retryPolicy: CallModelInput['providerRequestOptions']['modelRoundRetry'];
   message?: string;
   logTerminalFailure?: boolean;
+  onRetryDecision: (
+    diagnostics: ProviderRetryDiagnostics,
+    terminal: boolean,
+  ) => void;
 }): ModelRoundFailureResolution {
-  const retry = decideModelRoundRetry({
+  const retryDecision = decideModelRoundRetry({
     category: args.category,
     attemptIndex: args.attemptIndex,
     sawSemanticChunk: args.sawSemanticChunk,
     policy: args.retryPolicy,
   });
-  if (retry) {
-    return { kind: 'retry', delayMs: retry.delayMs };
+  if (retryDecision.kind === 'retry') {
+    args.onRetryDecision(
+      {
+        available: true,
+        performed: true,
+        outcome: 'scheduled',
+      },
+      false,
+    );
+    return { kind: 'retry', delayMs: retryDecision.delayMs };
   }
 
+  args.onRetryDecision(
+    {
+      available: false,
+      performed: args.attemptIndex > 0,
+      outcome: retryDecision.reason,
+    },
+    true,
+  );
   if (args.logTerminalFailure) {
     logger.error('model round failed:', buildModelRoundFailureLogFields(args));
   }

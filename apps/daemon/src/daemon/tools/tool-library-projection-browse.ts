@@ -38,7 +38,7 @@ export async function resolveToolLibraryProjectionBrowsePath(args: {
   }
 
   const identity = args.ctx.toolLibraryProjectionIdentity;
-  const projectionPort = args.ctx.agentSpawnRuntime?.toolLibraryProjection;
+  const projectionPort = args.ctx.runtimeServices?.toolLibraryProjection;
   const threadId = args.ctx.threadId;
   const stateRoot = args.ctx.stateRoot;
   if (

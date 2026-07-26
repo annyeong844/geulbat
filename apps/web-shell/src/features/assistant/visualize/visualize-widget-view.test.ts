@@ -34,6 +34,25 @@ void test('tool args에서 위젯 뷰를 읽는다', () => {
     code: '<p>x</p>',
     title: null,
   });
+  assert.deepEqual(
+    readVisualizeWidgetViewFromToolArgs({
+      code: '<p>plan</p>',
+      planStamp: {
+        workflowId: 'workflow-stamped',
+        planId: 'plan-stamped',
+        revision: 3,
+        digest:
+          'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+    })?.planStamp,
+    {
+      workflowId: 'workflow-stamped',
+      planId: 'plan-stamped',
+      revision: 3,
+      digest:
+        'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    },
+  );
 });
 
 void test('빈 코드나 비정형 args는 거부한다', () => {

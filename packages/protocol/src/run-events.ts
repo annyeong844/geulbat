@@ -15,6 +15,7 @@ import {
 } from './run-contract.js';
 import {
   isBoolean,
+  isCanonicalIsoTimestamp,
   isNumber,
   isRecord,
   isString,
@@ -29,20 +30,33 @@ import {
   type ThreadArtifactVersion,
 } from './artifacts.js';
 import {
+  isPlanningWorkflowSnapshot,
+  type PlanningWorkflowSnapshot,
+} from './planning-workflow.js';
+import { isGoalSnapshot, type GoalSnapshot } from './goal.js';
+import {
   isThreadDetailResponse,
   type ThreadDetailResponse,
 } from './threads.js';
+import {
+  isAgentChildTerminalReason,
+  isAgentChildTerminalState,
+  type AgentChildTerminalReason,
+  type AgentChildTerminalState,
+} from './subagent-terminal.js';
 
 export type { SideEffectLevel };
 export { isToolCallSourcePayload };
 
 type RunEventType =
   | 'run_ack'
+  | 'provider_status'
   | 'commentary_delta'
   | 'tool_call'
   | 'tool_call_delta'
   | 'tool_result'
   | 'subagent_spawned'
+  | 'subagent_status'
   | 'subagent_terminal'
   | 'subagent_approval_required'
   | 'interject_applied'
@@ -50,7 +64,10 @@ type RunEventType =
   | 'usage_updated'
   | 'context_usage_updated'
   | 'final_answer_delta'
+  | 'artifact_stream_delta'
   | 'artifact_committed'
+  | 'planning_workflow_updated'
+  | 'goal_updated'
   | 'thread_state_persisted'
   | 'thread_state_persist_failed'
   | 'done'
@@ -60,6 +77,44 @@ type RunAckEventPayload = RunAck;
 
 interface TextDeltaEventPayload {
   text: string;
+}
+
+export const PROVIDER_RUNTIME_PHASES = [
+  'auth_waiting',
+  'provider_waiting',
+  'rate_limit_waiting',
+  'provider_streaming',
+] as const;
+export type ProviderRuntimePhase = (typeof PROVIDER_RUNTIME_PHASES)[number];
+
+export const PROVIDER_RETRY_OUTCOMES = [
+  'scheduled',
+  'recovered',
+  'exhausted',
+  'unsafe_after_output',
+  'unavailable',
+] as const;
+export type ProviderRetryOutcome = (typeof PROVIDER_RETRY_OUTCOMES)[number];
+
+export interface ProviderRetryDiagnostics {
+  available: boolean;
+  performed: boolean;
+  outcome: ProviderRetryOutcome;
+}
+
+export interface ProviderRequestDiagnostics {
+  startedAt: string;
+  lastEventAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  attemptCount: number;
+  retry?: ProviderRetryDiagnostics;
+}
+
+export interface ProviderRuntimeStatusEventPayload {
+  phase: ProviderRuntimePhase;
+  observedAt: string;
+  request?: ProviderRequestDiagnostics;
 }
 
 interface ToolCallEventPayload {
@@ -79,8 +134,89 @@ interface ToolCallDeltaEventPayload {
   argsDelta: string;
 }
 
+export interface ToolOutputDeltaEventPayload {
+  callId: string;
+  tool: string;
+  stream: 'stdout' | 'stderr';
+  text: string;
+}
+
 export const SUBAGENT_TYPES = ['explorer', 'worker'] as const;
 export type SubagentType = (typeof SUBAGENT_TYPES)[number];
+
+export const SUBAGENT_CAPABILITIES = ['ptc'] as const;
+export type SubagentCapability = (typeof SUBAGENT_CAPABILITIES)[number];
+
+export const SUBAGENT_TOOL_SURFACE_PROFILES = [
+  'explorer',
+  'explorer_ptc',
+  'worker',
+] as const;
+export type SubagentToolSurfaceProfile =
+  (typeof SUBAGENT_TOOL_SURFACE_PROFILES)[number];
+
+export const SUBAGENT_RUNTIME_PHASES = [
+  'queued',
+  'starting',
+  'auth_waiting',
+  'provider_waiting',
+  'rate_limit_waiting',
+  'provider_streaming',
+  'tool_running',
+  'approval_pending',
+] as const;
+export type SubagentRuntimePhase = (typeof SUBAGENT_RUNTIME_PHASES)[number];
+
+export const SUBAGENT_RUNTIME_TOOL_STATES = [
+  'running',
+  'succeeded',
+  'failed',
+] as const;
+export type SubagentRuntimeToolState =
+  (typeof SUBAGENT_RUNTIME_TOOL_STATES)[number];
+
+export interface SubagentRuntimeDiagnostics {
+  phase: SubagentRuntimePhase;
+  observedAt: string;
+  lastTool?: {
+    name: string;
+    callId: string;
+    state: SubagentRuntimeToolState;
+  };
+  partialOutputAvailable: boolean;
+  previousChildRunId?: RunId;
+  providerRequest?: ProviderRequestDiagnostics;
+}
+
+export const SUBAGENT_LAUNCH_REQUEST_STATES = [
+  'queued',
+  'starting',
+  'started',
+  'interrupted',
+  'cancelled',
+  'failed_to_start',
+] as const;
+export type SubagentLaunchRequestState =
+  (typeof SUBAGENT_LAUNCH_REQUEST_STATES)[number];
+
+export const SUBAGENT_LAUNCH_PRIORITY_CLASSES = [
+  'low',
+  'normal',
+  'high',
+] as const;
+export type SubagentLaunchPriorityClass =
+  (typeof SUBAGENT_LAUNCH_PRIORITY_CLASSES)[number];
+
+export const SUBAGENT_LAUNCH_DEFER_REASONS = [
+  'resource_budget',
+  'configured_capacity',
+  'provider_cooldown',
+  'main_reserve',
+  'batch_group_wait',
+  'recovery_reconciliation',
+] as const;
+export type SubagentLaunchDeferReason =
+  (typeof SUBAGENT_LAUNCH_DEFER_REASONS)[number];
 
 export interface AgentLaunchAckToolRaw {
   ok: true;
@@ -88,6 +224,18 @@ export interface AgentLaunchAckToolRaw {
   childThreadId: string;
   subagentType: SubagentType;
   launchState: 'started';
+  modelId?: string;
+  reasoningEffort?: RunReasoningEffort;
+  selectionSource?: SubagentModelSelectionSource;
+}
+
+export interface AgentLaunchQueuedToolRaw {
+  ok: true;
+  childRunId: string;
+  childThreadId: string;
+  subagentType: SubagentType;
+  launchState: 'queued';
+  deferReason: SubagentLaunchDeferReason;
   modelId?: string;
   reasoningEffort?: RunReasoningEffort;
   selectionSource?: SubagentModelSelectionSource;
@@ -104,16 +252,8 @@ export interface AgentLaunchRejectedToolRaw {
 
 export type AgentLaunchToolRaw =
   | AgentLaunchAckToolRaw
+  | AgentLaunchQueuedToolRaw
   | AgentLaunchRejectedToolRaw;
-
-export type AgentChildTerminalState = 'completed' | 'failed' | 'cancelled';
-
-export type AgentChildTerminalReason =
-  | 'child_error'
-  | 'timeout'
-  | 'user_interrupt'
-  | 'sibling_error'
-  | 'explicit_stop';
 
 export const AGENT_WAIT_APPROVAL_BLOCKED_REASON = 'approval_pending' as const;
 
@@ -131,12 +271,27 @@ interface AgentWaitToolRaw {
     terminalState: AgentChildTerminalState;
     ok: boolean;
     reason?: AgentChildTerminalReason;
-    result: string;
+    result?: string;
+    resultRef?: string;
+    runtime?: SubagentRuntimeDiagnostics;
   }>;
   pending: string[];
   blocked: Array<{
     childRunId: string;
     blockedReason: AgentWaitBlockedReason;
+  }>;
+  launches?: Array<{
+    childRunId: string;
+    childThreadId: string;
+    previousChildRunId?: string;
+    launchState: SubagentLaunchRequestState;
+    priorityClass: SubagentLaunchPriorityClass;
+    enqueueOrder: number;
+    createdAt: string;
+    updatedAt: string;
+    runtime?: SubagentRuntimeDiagnostics;
+    deferReason?: SubagentLaunchDeferReason;
+    failureReason?: string;
   }>;
 }
 
@@ -150,13 +305,87 @@ type AgentStopToolRaw =
       ok: true;
       childRunId: string;
       stopState: 'already_terminal';
+    }
+  | {
+      ok: true;
+      childRunId: string;
+      stopState: 'cancelled_before_start';
     };
+
+interface AgentSetPriorityToolRaw {
+  ok: true;
+  childRunId: string;
+  launchState: SubagentLaunchRequestState;
+  priorityClass: SubagentLaunchPriorityClass;
+  updateState: 'updated' | 'unchanged' | 'not_queued';
+}
+
+export const SUBAGENT_RETRY_DISPOSITIONS = [
+  'created',
+  'same_call_replay',
+  'already_retried',
+] as const;
+
+export type SubagentRetryDisposition =
+  (typeof SUBAGENT_RETRY_DISPOSITIONS)[number];
+
+export interface AgentRetryToolRaw {
+  ok: true;
+  previousChildRunId: string;
+  childRunId: string;
+  childThreadId: string;
+  retryDisposition: SubagentRetryDisposition;
+  launchState: SubagentLaunchRequestState;
+  deferReason: SubagentLaunchDeferReason | null;
+  failureReason: string | null;
+  modelId: string;
+  reasoningEffort: RunReasoningEffort;
+  selectionSource: SubagentModelSelectionSource;
+}
+
+/* 대용량 결과 오프로드 — 인라인 한도를 넘는 tool_result는 raw 자리에 원본
+   대신 read_tool_output으로 재진입 가능한 슬림 참조가 실린다. 기록(emit)
+   경로가 만드는 형태는 재독(저널 replay/재접속 복구) 경로도 동일하게
+   수용해야 한다 — 한쪽만 아는 비대칭 검증은 저널을 영구 오염시켜 run.auth
+   복구를 죽인다 (2026-07-21 agent_wait S0 실증). */
+export interface OffloadedToolResultRaw {
+  ok: true;
+  offloaded: true;
+  tool: string;
+  callId: string;
+  outputRef: string;
+  summary: string;
+  fullOutputBytes: number;
+  fullOutputChars: number;
+  recoveryTool: 'read_tool_output';
+}
+
+export function isOffloadedToolResultRaw(
+  value: unknown,
+): value is OffloadedToolResultRaw {
+  return (
+    isRecord(value) &&
+    value.ok === true &&
+    value.offloaded === true &&
+    isString(value.tool) &&
+    isString(value.callId) &&
+    isString(value.outputRef) &&
+    isString(value.summary) &&
+    isNumber(value.fullOutputBytes) &&
+    isNumber(value.fullOutputChars) &&
+    value.recoveryTool === 'read_tool_output'
+  );
+}
 
 export interface ToolResultRawMap {
   agent_spawn: AgentLaunchToolRaw;
   agent_send_input: AgentLaunchToolRaw;
-  agent_wait: AgentWaitToolRaw;
+  // agent_wait는 오프로드 대상(출력이 자식 결과 모음이라 커질 수 있다) —
+  // raw가 원본 또는 슬림 참조 둘 다일 수 있다.
+  agent_wait: AgentWaitToolRaw | OffloadedToolResultRaw;
   agent_stop: AgentStopToolRaw;
+  agent_set_priority: AgentSetPriorityToolRaw;
+  agent_retry: AgentRetryToolRaw;
 }
 
 export type KnownToolResultRawTool = keyof ToolResultRawMap;
@@ -243,7 +472,26 @@ interface ThreadStatePersistFailedEventPayload {
 
 type ErrorEventPayload = ApiError;
 
-interface SubagentSpawnedEventPayload {
+interface SubagentLifecycleDiagnostics {
+  // Optional for replay compatibility with events journaled before selective
+  // child capabilities became public diagnostics. Current producers always
+  // send both fields, including an empty capability list.
+  capabilities?: readonly SubagentCapability[];
+  toolSurface?: SubagentToolSurfaceProfile;
+  runtime?: SubagentRuntimeDiagnostics;
+}
+
+interface SubagentSpawnedEventPayload extends SubagentLifecycleDiagnostics {
+  parentRunId: RunId;
+  childRunId: RunId;
+  childThreadId: ThreadId;
+  subagentType: SubagentType;
+  modelId?: string;
+  reasoningEffort?: RunReasoningEffort;
+  selectionSource?: SubagentModelSelectionSource;
+}
+
+interface SubagentStatusEventPayload extends SubagentLifecycleDiagnostics {
   parentRunId: RunId;
   childRunId: RunId;
   childThreadId: ThreadId;
@@ -260,15 +508,59 @@ export interface RunUsageTotals {
   cachedInputTokens: number;
 }
 
-export interface ContextUsageUpdatedEventPayload {
-  state: 'measured' | 'compacted';
+interface KnownContextUsageUpdatedEventPayload {
+  state: 'measured';
+  /** Missing only on snapshots persisted before measurement quality existed. */
+  quality?: 'exact' | 'estimated';
   modelId: string;
   inputTokens: number;
   contextWindow: number;
   thresholdTokens: number;
+  requestBytes?: number;
 }
 
-interface SubagentTerminalEventPayload {
+interface CompactedContextUsageUpdatedEventPayloadBase {
+  state: 'compacted';
+  /** Missing only on snapshots persisted before measurement quality existed. */
+  quality?: 'exact';
+  modelId: string;
+  inputTokens: number;
+  contextWindow: number;
+  thresholdTokens: number;
+  requestBytes?: number;
+}
+
+type CompactedContextUsageUpdatedEventPayload =
+  CompactedContextUsageUpdatedEventPayloadBase &
+    (
+      | {
+          /** Legacy snapshot persisted before commit provenance existed. */
+          compactionEntryId?: undefined;
+          historyBytesBefore?: undefined;
+          historyBytesAfter?: undefined;
+        }
+      | {
+          compactionEntryId: string;
+          historyBytesBefore: number;
+          historyBytesAfter: number;
+        }
+    );
+
+interface UnknownContextUsageUpdatedEventPayload {
+  state: 'measured';
+  quality: 'unknown';
+  modelId: string;
+  requestBytes: number;
+  contextWindow?: number;
+  thresholdTokens?: number;
+}
+
+export type ContextUsageUpdatedEventPayload =
+  | KnownContextUsageUpdatedEventPayload
+  | CompactedContextUsageUpdatedEventPayload
+  | UnknownContextUsageUpdatedEventPayload;
+
+interface SubagentTerminalEventPayload extends SubagentLifecycleDiagnostics {
   deliveryId: string;
   parentRunId: RunId;
   childRunId: RunId;
@@ -280,6 +572,7 @@ interface SubagentTerminalEventPayload {
   ok: boolean;
   reason?: AgentChildTerminalReason;
   result: string;
+  resultRef?: string;
   // Drill-down telemetry: wall-clock lifetime and token usage of the child run.
   elapsedMs?: number;
   usage?: RunUsageTotals;
@@ -288,7 +581,7 @@ interface SubagentTerminalEventPayload {
   reasoningEffort?: RunReasoningEffort;
 }
 
-interface SubagentApprovalRequiredEventPayload {
+interface SubagentApprovalRequiredEventPayload extends SubagentLifecycleDiagnostics {
   parentRunId: RunId;
   childRunId: RunId;
   subagentType: SubagentType;
@@ -305,11 +598,13 @@ export type ArtifactCommittedEventPayload = ThreadArtifactVersion;
 
 export interface SharedRunEventPayloadMap {
   run_ack: RunAckEventPayload;
+  provider_status: ProviderRuntimeStatusEventPayload;
   commentary_delta: TextDeltaEventPayload;
   tool_call: ToolCallEventPayload;
   tool_call_delta: ToolCallDeltaEventPayload;
   tool_result: ToolResultEventPayload;
   subagent_spawned: SubagentSpawnedEventPayload;
+  subagent_status: SubagentStatusEventPayload;
   subagent_terminal: SubagentTerminalEventPayload;
   subagent_approval_required: SubagentApprovalRequiredEventPayload;
   interject_applied: InterjectAppliedEventPayload;
@@ -319,7 +614,12 @@ export interface SharedRunEventPayloadMap {
   // 정확한 모델 입력 사용량과 실제 컴팩션 임계값 — 컨텍스트 고리 표시용
   context_usage_updated: ContextUsageUpdatedEventPayload;
   final_answer_delta: TextDeltaEventPayload;
+  // 아티팩트 전용 답변의 봉투 텍스트 라이브 스트림 — 채팅(final_answer_delta)
+  // 대신 중앙 아티팩트 창이 소비한다. 커밋 전 생성 과정을 실시간으로 보여준다.
+  artifact_stream_delta: TextDeltaEventPayload;
   artifact_committed: ArtifactCommittedEventPayload;
+  planning_workflow_updated: PlanningWorkflowSnapshot;
+  goal_updated: GoalSnapshot;
   thread_state_persisted: ThreadStatePersistedEventPayload;
   thread_state_persist_failed: ThreadStatePersistFailedEventPayload;
   done: DoneEventPayload;
@@ -383,8 +683,147 @@ export function isToolCallDeltaEventPayload(
   );
 }
 
+export function isToolOutputDeltaEventPayload(
+  value: unknown,
+): value is ToolOutputDeltaEventPayload {
+  return (
+    isRecord(value) &&
+    isString(value.callId) &&
+    isString(value.tool) &&
+    (value.stream === 'stdout' || value.stream === 'stderr') &&
+    isString(value.text)
+  );
+}
+
 export function isSubagentType(value: unknown): value is SubagentType {
   return SUBAGENT_TYPES.some((subagentType) => subagentType === value);
+}
+
+export function isSubagentCapabilities(
+  value: unknown,
+): value is readonly SubagentCapability[] {
+  if (!Array.isArray(value) || value.length > SUBAGENT_CAPABILITIES.length) {
+    return false;
+  }
+  return value.every((capability) =>
+    SUBAGENT_CAPABILITIES.some((candidate) => candidate === capability),
+  );
+}
+
+export function isSubagentToolSurfaceProfile(
+  value: unknown,
+): value is SubagentToolSurfaceProfile {
+  return SUBAGENT_TOOL_SURFACE_PROFILES.some((profile) => profile === value);
+}
+
+export function isSubagentRuntimePhase(
+  value: unknown,
+): value is SubagentRuntimePhase {
+  return SUBAGENT_RUNTIME_PHASES.some((phase) => phase === value);
+}
+
+export function isProviderRuntimeStatusEventPayload(
+  value: unknown,
+): value is ProviderRuntimeStatusEventPayload {
+  return (
+    isRecord(value) &&
+    PROVIDER_RUNTIME_PHASES.some((phase) => phase === value.phase) &&
+    isCanonicalIsoTimestamp(value.observedAt) &&
+    (value.request === undefined || isProviderRequestDiagnostics(value.request))
+  );
+}
+
+export function isProviderRetryDiagnostics(
+  value: unknown,
+): value is ProviderRetryDiagnostics {
+  if (
+    !isRecord(value) ||
+    !isBoolean(value.available) ||
+    !isBoolean(value.performed) ||
+    !PROVIDER_RETRY_OUTCOMES.some((outcome) => outcome === value.outcome)
+  ) {
+    return false;
+  }
+  if (value.outcome === 'scheduled') {
+    return value.available && value.performed;
+  }
+  if (value.available) {
+    return false;
+  }
+  return value.outcome !== 'recovered' || value.performed;
+}
+
+export function isProviderRequestDiagnostics(
+  value: unknown,
+): value is ProviderRequestDiagnostics {
+  return (
+    isRecord(value) &&
+    isCanonicalIsoTimestamp(value.startedAt) &&
+    (value.lastEventAt === undefined ||
+      isCanonicalIsoTimestamp(value.lastEventAt)) &&
+    (value.endedAt === undefined || isCanonicalIsoTimestamp(value.endedAt)) &&
+    (value.durationMs === undefined ||
+      (isNumber(value.durationMs) &&
+        Number.isSafeInteger(value.durationMs) &&
+        value.durationMs >= 0)) &&
+    (value.endedAt === undefined) === (value.durationMs === undefined) &&
+    isNumber(value.attemptCount) &&
+    Number.isSafeInteger(value.attemptCount) &&
+    value.attemptCount >= 1 &&
+    (value.retry === undefined || isProviderRetryDiagnostics(value.retry))
+  );
+}
+
+export function isSubagentRuntimeToolState(
+  value: unknown,
+): value is SubagentRuntimeToolState {
+  return SUBAGENT_RUNTIME_TOOL_STATES.some((state) => state === value);
+}
+
+export function isSubagentLaunchRequestState(
+  value: unknown,
+): value is SubagentLaunchRequestState {
+  return SUBAGENT_LAUNCH_REQUEST_STATES.some((state) => state === value);
+}
+
+export function isSubagentLaunchPriorityClass(
+  value: unknown,
+): value is SubagentLaunchPriorityClass {
+  return SUBAGENT_LAUNCH_PRIORITY_CLASSES.some(
+    (priorityClass) => priorityClass === value,
+  );
+}
+
+export function isSubagentLaunchDeferReason(
+  value: unknown,
+): value is SubagentLaunchDeferReason {
+  return SUBAGENT_LAUNCH_DEFER_REASONS.some((reason) => reason === value);
+}
+
+function hasValidSubagentLifecycleDiagnostics(
+  value: Record<string, unknown>,
+): boolean {
+  if (
+    value.runtime !== undefined &&
+    !isSubagentRuntimeDiagnostics(value.runtime)
+  ) {
+    return false;
+  }
+  if (value.capabilities === undefined && value.toolSurface === undefined) {
+    return true;
+  }
+  if (
+    !isSubagentCapabilities(value.capabilities) ||
+    !isSubagentToolSurfaceProfile(value.toolSurface)
+  ) {
+    return false;
+  }
+  if (value.subagentType === 'worker') {
+    return value.capabilities.length === 0 && value.toolSurface === 'worker';
+  }
+  return value.capabilities.includes('ptc')
+    ? value.toolSurface === 'explorer_ptc'
+    : value.toolSurface === 'explorer';
 }
 
 function isAgentLaunchRejectionErrorCode(
@@ -410,7 +849,9 @@ export function isAgentLaunchToolRaw(
 
   if (value.ok) {
     return (
-      value.launchState === 'started' &&
+      (value.launchState === 'started' ||
+        (value.launchState === 'queued' &&
+          isSubagentLaunchDeferReason(value.deferReason))) &&
       isString(value.childRunId) &&
       isString(value.childThreadId) &&
       isSubagentType(value.subagentType) &&
@@ -434,24 +875,6 @@ export function isAgentLaunchToolRaw(
   );
 }
 
-export function isAgentChildTerminalState(
-  value: unknown,
-): value is AgentChildTerminalState {
-  return value === 'completed' || value === 'failed' || value === 'cancelled';
-}
-
-function isAgentChildTerminalReason(
-  value: unknown,
-): value is AgentChildTerminalReason {
-  return (
-    value === 'child_error' ||
-    value === 'timeout' ||
-    value === 'user_interrupt' ||
-    value === 'sibling_error' ||
-    value === 'explicit_stop'
-  );
-}
-
 function isAgentWaitCompletedRecord(value: unknown): boolean {
   return (
     isRecord(value) &&
@@ -459,7 +882,11 @@ function isAgentWaitCompletedRecord(value: unknown): boolean {
     isAgentChildTerminalState(value.terminalState) &&
     isBoolean(value.ok) &&
     (value.reason === undefined || isAgentChildTerminalReason(value.reason)) &&
-    isString(value.result)
+    (value.result === undefined || isString(value.result)) &&
+    (value.resultRef === undefined ||
+      (isString(value.resultRef) && value.resultRef.trim() !== '')) &&
+    (value.result !== undefined || value.resultRef !== undefined) &&
+    (value.runtime === undefined || isSubagentRuntimeDiagnostics(value.runtime))
   );
 }
 
@@ -477,6 +904,31 @@ function isAgentWaitBlockedRecord(value: unknown): boolean {
   );
 }
 
+function isAgentWaitLaunchRecord(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isString(value.childRunId) &&
+    isRunId(value.childRunId) &&
+    isString(value.childThreadId) &&
+    isThreadId(value.childThreadId) &&
+    (value.previousChildRunId === undefined ||
+      (isString(value.previousChildRunId) &&
+        isRunId(value.previousChildRunId))) &&
+    isSubagentLaunchRequestState(value.launchState) &&
+    isSubagentLaunchPriorityClass(value.priorityClass) &&
+    isNumber(value.enqueueOrder) &&
+    Number.isSafeInteger(value.enqueueOrder) &&
+    value.enqueueOrder > 0 &&
+    isCanonicalIsoTimestamp(value.createdAt) &&
+    isCanonicalIsoTimestamp(value.updatedAt) &&
+    (value.runtime === undefined ||
+      isSubagentRuntimeDiagnostics(value.runtime)) &&
+    (value.deferReason === undefined ||
+      isSubagentLaunchDeferReason(value.deferReason)) &&
+    (value.failureReason === undefined || isString(value.failureReason))
+  );
+}
+
 export function isAgentWaitToolRaw(value: unknown): value is AgentWaitToolRaw {
   return (
     isRecord(value) &&
@@ -486,7 +938,10 @@ export function isAgentWaitToolRaw(value: unknown): value is AgentWaitToolRaw {
     Array.isArray(value.pending) &&
     value.pending.every(isString) &&
     Array.isArray(value.blocked) &&
-    value.blocked.every(isAgentWaitBlockedRecord)
+    value.blocked.every(isAgentWaitBlockedRecord) &&
+    (value.launches === undefined ||
+      (Array.isArray(value.launches) &&
+        value.launches.every(isAgentWaitLaunchRecord)))
   );
 }
 
@@ -495,15 +950,65 @@ export function isAgentStopToolRaw(value: unknown): value is AgentStopToolRaw {
     isRecord(value) &&
     value.ok === true &&
     isString(value.childRunId) &&
-    (value.stopState === 'stopping' || value.stopState === 'already_terminal')
+    (value.stopState === 'stopping' ||
+      value.stopState === 'already_terminal' ||
+      value.stopState === 'cancelled_before_start')
+  );
+}
+
+export function isAgentSetPriorityToolRaw(
+  value: unknown,
+): value is AgentSetPriorityToolRaw {
+  return (
+    isRecord(value) &&
+    value.ok === true &&
+    isString(value.childRunId) &&
+    isSubagentLaunchRequestState(value.launchState) &&
+    isSubagentLaunchPriorityClass(value.priorityClass) &&
+    (value.updateState === 'updated' ||
+      value.updateState === 'unchanged' ||
+      value.updateState === 'not_queued')
+  );
+}
+
+export function isAgentRetryToolRaw(
+  value: unknown,
+): value is AgentRetryToolRaw {
+  return (
+    isRecord(value) &&
+    value.ok === true &&
+    isString(value.previousChildRunId) &&
+    isString(value.childRunId) &&
+    isString(value.childThreadId) &&
+    (SUBAGENT_RETRY_DISPOSITIONS as readonly unknown[]).includes(
+      value.retryDisposition,
+    ) &&
+    isSubagentLaunchRequestState(value.launchState) &&
+    (value.deferReason === null ||
+      isSubagentLaunchDeferReason(value.deferReason)) &&
+    (value.failureReason === null || isString(value.failureReason)) &&
+    isString(value.modelId) &&
+    isRunReasoningEffort(value.reasoningEffort) &&
+    isSubagentModelSelectionSource(value.selectionSource)
+  );
+}
+
+function isAgentWaitToolRawOrOffloaded(
+  value: unknown,
+): value is AgentWaitToolRaw | OffloadedToolResultRaw {
+  return (
+    isAgentWaitToolRaw(value) ||
+    (isOffloadedToolResultRaw(value) && value.tool === 'agent_wait')
   );
 }
 
 const TOOL_RESULT_RAW_GUARDS: ToolResultRawGuardMap = {
   agent_spawn: isAgentLaunchToolRaw,
   agent_send_input: isAgentLaunchToolRaw,
-  agent_wait: isAgentWaitToolRaw,
+  agent_wait: isAgentWaitToolRawOrOffloaded,
   agent_stop: isAgentStopToolRaw,
+  agent_set_priority: isAgentSetPriorityToolRaw,
+  agent_retry: isAgentRetryToolRaw,
 };
 
 function isToolResultRawOwner(tool: string): tool is KnownToolResultRawTool {
@@ -511,7 +1016,9 @@ function isToolResultRawOwner(tool: string): tool is KnownToolResultRawTool {
     tool === 'agent_spawn' ||
     tool === 'agent_send_input' ||
     tool === 'agent_wait' ||
-    tool === 'agent_stop'
+    tool === 'agent_stop' ||
+    tool === 'agent_set_priority' ||
+    tool === 'agent_retry'
   );
 }
 
@@ -598,6 +1105,57 @@ export function isSubagentSpawnedEventPayload(
     isString(value.childThreadId) &&
     isThreadId(value.childThreadId) &&
     isSubagentType(value.subagentType) &&
+    hasValidSubagentLifecycleDiagnostics(value) &&
+    (value.modelId === undefined || isString(value.modelId)) &&
+    (value.reasoningEffort === undefined ||
+      isRunReasoningEffort(value.reasoningEffort)) &&
+    (value.selectionSource === undefined ||
+      isSubagentModelSelectionSource(value.selectionSource))
+  );
+}
+
+export function isSubagentRuntimeDiagnostics(
+  value: unknown,
+): value is SubagentRuntimeDiagnostics {
+  if (
+    !isRecord(value) ||
+    !isSubagentRuntimePhase(value.phase) ||
+    !isCanonicalIsoTimestamp(value.observedAt) ||
+    !isBoolean(value.partialOutputAvailable) ||
+    (value.providerRequest !== undefined &&
+      !isProviderRequestDiagnostics(value.providerRequest)) ||
+    (value.previousChildRunId !== undefined &&
+      (!isString(value.previousChildRunId) ||
+        !isRunId(value.previousChildRunId)))
+  ) {
+    return false;
+  }
+  if (value.lastTool === undefined) {
+    return true;
+  }
+  return (
+    isRecord(value.lastTool) &&
+    isString(value.lastTool.name) &&
+    value.lastTool.name.trim().length > 0 &&
+    isString(value.lastTool.callId) &&
+    value.lastTool.callId.trim().length > 0 &&
+    isSubagentRuntimeToolState(value.lastTool.state)
+  );
+}
+
+export function isSubagentStatusEventPayload(
+  value: unknown,
+): value is SubagentStatusEventPayload {
+  return (
+    isRecord(value) &&
+    isString(value.parentRunId) &&
+    isRunId(value.parentRunId) &&
+    isString(value.childRunId) &&
+    isRunId(value.childRunId) &&
+    isString(value.childThreadId) &&
+    isThreadId(value.childThreadId) &&
+    isSubagentType(value.subagentType) &&
+    hasValidSubagentLifecycleDiagnostics(value) &&
     (value.modelId === undefined || isString(value.modelId)) &&
     (value.reasoningEffort === undefined ||
       isRunReasoningEffort(value.reasoningEffort)) &&
@@ -618,31 +1176,73 @@ export function isRunUsageTotals(value: unknown): value is RunUsageTotals {
 export function isContextUsageUpdatedEventPayload(
   value: unknown,
 ): value is ContextUsageUpdatedEventPayload {
+  if (
+    !isRecord(value) ||
+    (value.state !== 'measured' && value.state !== 'compacted') ||
+    !isString(value.modelId) ||
+    value.modelId.trim().length === 0
+  ) {
+    return false;
+  }
+
+  const hasNoCompactionCommitProvenance =
+    value.compactionEntryId === undefined &&
+    value.historyBytesBefore === undefined &&
+    value.historyBytesAfter === undefined;
+  const hasValidCompactionCommitProvenance =
+    isString(value.compactionEntryId) &&
+    value.compactionEntryId.trim().length > 0 &&
+    isPositiveSafeInteger(value.historyBytesBefore) &&
+    isNonNegativeSafeInteger(value.historyBytesAfter) &&
+    value.historyBytesAfter < value.historyBytesBefore;
+  if (
+    (value.state === 'measured' && !hasNoCompactionCommitProvenance) ||
+    (value.state === 'compacted' &&
+      !hasNoCompactionCommitProvenance &&
+      !hasValidCompactionCommitProvenance)
+  ) {
+    return false;
+  }
+
+  if (value.quality === 'unknown') {
+    const hasContextWindow = value.contextWindow !== undefined;
+    const hasThresholdTokens = value.thresholdTokens !== undefined;
+    return (
+      value.state === 'measured' &&
+      isPositiveSafeInteger(value.requestBytes) &&
+      value.inputTokens === undefined &&
+      hasContextWindow === hasThresholdTokens &&
+      (!hasContextWindow ||
+        (isPositiveSafeInteger(value.contextWindow) &&
+          isPositiveSafeInteger(value.thresholdTokens) &&
+          value.thresholdTokens <= value.contextWindow))
+    );
+  }
+
+  if (
+    value.quality !== undefined &&
+    value.quality !== 'exact' &&
+    value.quality !== 'estimated'
+  ) {
+    return false;
+  }
+  if (value.state === 'compacted' && value.quality === 'estimated') {
+    return false;
+  }
+
   return (
-    isRecord(value) &&
-    (value.state === 'measured' || value.state === 'compacted') &&
-    isString(value.modelId) &&
-    value.modelId.trim().length > 0 &&
     isNonNegativeSafeInteger(value.inputTokens) &&
     isPositiveSafeInteger(value.contextWindow) &&
     isPositiveSafeInteger(value.thresholdTokens) &&
-    value.thresholdTokens <= value.contextWindow
+    value.thresholdTokens <= value.contextWindow &&
+    (value.requestBytes === undefined ||
+      isPositiveSafeInteger(value.requestBytes)) &&
+    (value.quality !== 'estimated' || value.requestBytes !== undefined)
   );
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isRunEventTimestamp(value: unknown): value is string {
-  if (
-    !isString(value) ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)
-  ) {
-    return false;
-  }
-  const parsed = Date.parse(value);
-  return !Number.isNaN(parsed) && new Date(parsed).toISOString() === value;
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {
@@ -660,9 +1260,12 @@ export function isSubagentTerminalEventPayload(
     isString(value.childRunId) &&
     isRunId(value.childRunId) &&
     isSubagentType(value.subagentType) &&
+    hasValidSubagentLifecycleDiagnostics(value) &&
     isAgentChildTerminalState(value.terminalState) &&
     isBoolean(value.ok) &&
     isString(value.result) &&
+    (value.resultRef === undefined ||
+      (isString(value.resultRef) && value.resultRef.trim() !== '')) &&
     (value.reason === undefined || isAgentChildTerminalReason(value.reason)) &&
     (value.childThreadId === undefined ||
       (isString(value.childThreadId) && isThreadId(value.childThreadId))) &&
@@ -684,6 +1287,7 @@ export function isSubagentApprovalRequiredEventPayload(
     isString(value.childRunId) &&
     isRunId(value.childRunId) &&
     isSubagentType(value.subagentType) &&
+    hasValidSubagentLifecycleDiagnostics(value) &&
     isApprovalRequired(value.approval)
   );
 }
@@ -708,6 +1312,46 @@ export function isArtifactCommittedEventPayload(
   return isThreadArtifactVersion(value);
 }
 
+// 이벤트 종류별 payload 검사기 — 키가 RunEventType으로 고정돼 있어, 새 이벤트를
+// 추가하면 여기 항목을 채울 때까지 컴파일이 깨진다. 값 타입도 종류별 payload에
+// 묶여 있어 엉뚱한 검사기를 꽂는 것도 잡힌다. switch + default였을 때는 둘 다
+// 조용히 통과했고 새 이벤트는 런타임에 거부돼 사라졌다.
+// (adapter/web의 agentEventPayloadGuards와 같은 형태다.)
+const RUN_EVENT_PAYLOAD_GUARDS: {
+  [K in RunEventType]: (value: unknown) => value is RunEventPayloadMap[K];
+} = {
+  run_ack: isRunAckEventPayload,
+  provider_status: isProviderRuntimeStatusEventPayload,
+  commentary_delta: isTextDeltaEventPayload,
+  final_answer_delta: isTextDeltaEventPayload,
+  artifact_stream_delta: isTextDeltaEventPayload,
+  artifact_committed: isArtifactCommittedEventPayload,
+  planning_workflow_updated: isPlanningWorkflowSnapshot,
+  goal_updated: isGoalSnapshot,
+  thread_state_persisted: isThreadStatePersistedEventPayload,
+  thread_state_persist_failed: isThreadStatePersistFailedEventPayload,
+  tool_call: isToolCallEventPayload,
+  tool_call_delta: isToolCallDeltaEventPayload,
+  tool_result: isToolResultEventPayload,
+  subagent_spawned: isSubagentSpawnedEventPayload,
+  subagent_status: isSubagentStatusEventPayload,
+  subagent_terminal: isSubagentTerminalEventPayload,
+  subagent_approval_required: isSubagentApprovalRequiredEventPayload,
+  interject_applied: isInterjectAppliedEventPayload,
+  approval_required: isApprovalRequired,
+  usage_updated: isRunUsageTotals,
+  context_usage_updated: isContextUsageUpdatedEventPayload,
+  done: isDoneEventPayload,
+  error: isErrorEventPayload,
+};
+
+// 임의 문자열로 조회하는 자리 — 단언 없이 찾으려고 Map으로 한 번 옮긴다.
+// 소진 검사는 위 레코드 리터럴이 맡고, 여기서는 미지의 type이 undefined가 된다.
+const RUN_EVENT_PAYLOAD_GUARD_BY_TYPE = new Map<
+  string,
+  (value: unknown) => boolean
+>(Object.entries(RUN_EVENT_PAYLOAD_GUARDS));
+
 export function isRunEvent(value: unknown): value is RunEvent {
   if (
     !isRecord(value) ||
@@ -716,48 +1360,36 @@ export function isRunEvent(value: unknown): value is RunEvent {
     !isString(value.threadId) ||
     !isThreadId(value.threadId) ||
     !isNonNegativeSafeInteger(value.seq) ||
-    !isRunEventTimestamp(value.ts)
+    !isCanonicalIsoTimestamp(value.ts) ||
+    !isString(value.type)
   ) {
     return false;
   }
-
   switch (value.type) {
     case 'run_ack':
-      return isRunAckEventPayload(value.payload);
-    case 'commentary_delta':
-    case 'final_answer_delta':
-      return isTextDeltaEventPayload(value.payload);
-    case 'artifact_committed':
-      return isArtifactCommittedEventPayload(value.payload);
-    case 'thread_state_persisted':
-      return isThreadStatePersistedEventPayload(value.payload);
-    case 'thread_state_persist_failed':
-      return isThreadStatePersistFailedEventPayload(value.payload);
-    case 'tool_call':
-      return isToolCallEventPayload(value.payload);
-    case 'tool_call_delta':
-      return isToolCallDeltaEventPayload(value.payload);
-    case 'tool_result':
-      return isToolResultEventPayload(value.payload);
-    case 'subagent_spawned':
-      return isSubagentSpawnedEventPayload(value.payload);
-    case 'subagent_terminal':
-      return isSubagentTerminalEventPayload(value.payload);
-    case 'subagent_approval_required':
-      return isSubagentApprovalRequiredEventPayload(value.payload);
+      return (
+        isRunAckEventPayload(value.payload) &&
+        value.payload.runId === value.runId &&
+        value.payload.threadId === value.threadId
+      );
     case 'interject_applied':
-      return isInterjectAppliedEventPayload(value.payload);
-    case 'approval_required':
-      return isApprovalRequired(value.payload);
-    case 'usage_updated':
-      return isRunUsageTotals(value.payload);
-    case 'context_usage_updated':
-      return isContextUsageUpdatedEventPayload(value.payload);
-    case 'done':
-      return isDoneEventPayload(value.payload);
-    case 'error':
-      return isErrorEventPayload(value.payload);
-    default:
-      return false;
+      return (
+        isInterjectAppliedEventPayload(value.payload) &&
+        value.payload.runId === value.runId
+      );
+    case 'planning_workflow_updated':
+      return (
+        isPlanningWorkflowSnapshot(value.payload) &&
+        value.payload.threadId === value.threadId
+      );
+    case 'goal_updated':
+      return (
+        isGoalSnapshot(value.payload) &&
+        value.payload.threadId === value.threadId
+      );
+    default: {
+      const guard = RUN_EVENT_PAYLOAD_GUARD_BY_TYPE.get(value.type);
+      return guard !== undefined && guard(value.payload);
+    }
   }
 }

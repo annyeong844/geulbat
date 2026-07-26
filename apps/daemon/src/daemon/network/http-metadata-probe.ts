@@ -5,6 +5,7 @@ import {
   parseHttpUrl,
   type HttpLookup,
 } from './http-url-guard.js';
+import { runDetached } from '../utils/run-detached.js';
 
 export const REACT_BUNDLE_DEPENDENCY_CDN_ALLOWLIST_ID =
   'react_bundle_dependency_cdn_v1';
@@ -455,22 +456,24 @@ export function requestHttpMetadata(
           'user-agent': 'geulbat-dependency-metadata-probe/1',
         },
         lookup(hostname, _lookupOptions, callback) {
-          void guardedLookupPublicAddress(hostname, {
-            ...(options.lookup ? { lookup: options.lookup } : {}),
-            label: 'dependency metadata probe',
-          })
-            .then((record) => {
-              callback(null, record.address, record.family);
+          runDetached('network/metadata-probe-lookup', () =>
+            guardedLookupPublicAddress(hostname, {
+              ...(options.lookup ? { lookup: options.lookup } : {}),
+              label: 'dependency metadata probe',
             })
-            .catch((error: unknown) => {
-              const message =
-                error instanceof Error ? error.message : String(error);
-              callback(
-                new HttpMetadataProbeRuntimeError('dns_blocked', message),
-                '',
-                4,
-              );
-            });
+              .then((record) => {
+                callback(null, record.address, record.family);
+              })
+              .catch((error: unknown) => {
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                callback(
+                  new HttpMetadataProbeRuntimeError('dns_blocked', message),
+                  '',
+                  4,
+                );
+              }),
+          );
         },
       },
       (response) => {

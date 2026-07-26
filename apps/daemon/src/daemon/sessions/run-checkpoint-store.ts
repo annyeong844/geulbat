@@ -11,12 +11,20 @@ import {
 } from '@geulbat/protocol/ids';
 import {
   isImageGenerationModelId,
+  isRunModelId,
+  isRunProviderId,
+  isRunProviderTransitionRecovery,
   isRunReasoningEffort,
+  isRunServiceTier,
   isRunSubagentModelRouting,
   isVideoGenerationModelId,
   isVideoGenerationSettings,
+  resolveRunModelDescriptor,
   type ImageGenerationModelId,
+  type RunProviderTransitionRecovery,
+  type RunProviderId,
   type RunReasoningEffort,
+  type RunServiceTier,
   type RunSubagentModelRouting,
   type VideoGenerationModelId,
   type VideoGenerationSettings,
@@ -29,32 +37,57 @@ import {
   type ApprovalGrantScope,
   type PermissionMode,
 } from '@geulbat/protocol/run-approval';
-import {
-  isProviderAuthProviderId,
-  type ProviderAuthProviderId,
-} from '@geulbat/protocol/provider-auth';
 import { isErrorEventPayload } from '@geulbat/protocol/run-events';
+import {
+  isApprovedPlanRef,
+  type ApprovedPlanRef,
+} from '@geulbat/protocol/planning-workflow';
+import {
+  validateToolCapabilityPolicy,
+  type ToolCapabilityPolicy,
+} from '@geulbat/tool-library/tool-capability-policy';
 import { isRecord } from '../runtime-json.js';
 
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
 import type { TerminalAgentEvent } from '../runtime-contracts.js';
 import type { PendingInterject } from './active-run-interject-buffer.js';
+import {
+  createRunEventJournalStore,
+  type RunCheckpointEvent,
+} from './run-event-journal.js';
+
+export type { RunCheckpointEvent } from './run-event-journal.js';
 
 const RUN_CHECKPOINT_SCHEMA_VERSION = 1;
 
 export interface RecoverableRunRequest {
   workingDirectory: string;
   permissionMode: PermissionMode;
-  providerModel?: { providerId: ProviderAuthProviderId; model: string };
+  planningWorkflow?: {
+    workflowId: string;
+  };
+  approvedPlanRef?: ApprovedPlanRef;
+  goal?: {
+    goalId: string;
+  };
+  loopImplementation?: {
+    readonly implementationId: string;
+    readonly contractVersion: string;
+  };
+  providerModel?: { providerId: RunProviderId; model: string };
+  providerTransitionRecovery?: RunProviderTransitionRecovery;
   currentFile?: string;
   selection?: { startLine: number; endLine: number; text: string };
+  ultraReasoning?: boolean;
   reasoningEffort?: RunReasoningEffort;
+  serviceTier?: RunServiceTier;
   subagentModelRouting?: RunSubagentModelRouting;
   toolSurface?: {
     directRegistryNames: string[];
     allowedRegistryNames: string[];
   };
+  toolCapabilityPolicy?: ToolCapabilityPolicy;
   imageGenerationModel?: ImageGenerationModelId;
   videoGenerationModel?: VideoGenerationModelId;
   videoGenerationSettings?: VideoGenerationSettings;
@@ -93,6 +126,7 @@ export interface RunCheckpoint {
   applyingInterject: PendingInterject | null;
   pendingInterjects: PendingInterject[];
   approvals: RunCheckpointApproval[];
+  eventHistory: RunCheckpointEvent[];
   terminal: RunCheckpointTerminalSnapshot | null;
   createdAt: string;
   updatedAt: string;
@@ -174,7 +208,13 @@ export interface RunCheckpointStore {
     callId: string;
     decision: 'approved' | 'denied';
     grantScope: ApprovalGrantScope;
+    permissionMode?: PermissionMode;
   }): Promise<RunCheckpointApprovalMutationResult>;
+  appendRunEvents(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    events: readonly RunCheckpointEvent[];
+  }): Promise<void>;
   settleRun(args: {
     threadId: ThreadId;
     runId: RunId;
@@ -194,17 +234,49 @@ export function createRunCheckpointStore(args: {
   const root = join(args.stateRoot, '.geulbat', 'run-checkpoints');
   const now = args.now ?? (() => new Date().toISOString());
   const runMutationSerial = createKeyedSerialRunner();
+  const runningRunIdByThread = new Map<ThreadId, RunId>();
+  const runEventJournal = createRunEventJournalStore({
+    stateRoot: args.stateRoot,
+  });
 
-  async function readThread(threadId: ThreadId): Promise<RunCheckpoint | null> {
+  async function readCheckpointFile(
+    threadId: ThreadId,
+  ): Promise<RunCheckpoint | null> {
     const path = checkpointPath(root, threadId);
     try {
-      return parseRunCheckpoint(JSON.parse(await readFile(path, 'utf8')));
+      const checkpoint = parseRunCheckpoint(
+        JSON.parse(await readFile(path, 'utf8')),
+      );
+      if (checkpoint.status === 'running') {
+        runningRunIdByThread.set(threadId, checkpoint.runId);
+      } else {
+        runningRunIdByThread.delete(threadId);
+      }
+      return checkpoint;
     } catch (error: unknown) {
       if (isMissingFileError(error)) {
+        runningRunIdByThread.delete(threadId);
         return null;
       }
       throw error;
     }
+  }
+
+  async function hydrateEventHistory(
+    checkpoint: RunCheckpoint,
+  ): Promise<RunCheckpoint> {
+    return {
+      ...checkpoint,
+      eventHistory: await runEventJournal.read({
+        threadId: checkpoint.threadId,
+        runId: checkpoint.runId,
+      }),
+    };
+  }
+
+  async function readThread(threadId: ThreadId): Promise<RunCheckpoint | null> {
+    const checkpoint = await readCheckpointFile(threadId);
+    return checkpoint === null ? null : await hydrateEventHistory(checkpoint);
   }
 
   async function listCheckpoints(): Promise<RunCheckpoint[]> {
@@ -221,11 +293,17 @@ export function createRunCheckpointStore(args: {
       names
         .filter((name) => name.endsWith('.json'))
         .sort()
-        .map(async (name) =>
-          parseRunCheckpoint(
+        .map(async (name) => {
+          const checkpoint = parseRunCheckpoint(
             JSON.parse(await readFile(join(root, name), 'utf8')),
-          ),
-        ),
+          );
+          if (checkpoint.status === 'running') {
+            runningRunIdByThread.set(checkpoint.threadId, checkpoint.runId);
+          } else {
+            runningRunIdByThread.delete(checkpoint.threadId);
+          }
+          return await hydrateEventHistory(checkpoint);
+        }),
     );
   }
 
@@ -268,11 +346,13 @@ export function createRunCheckpointStore(args: {
           applyingInterject: null,
           pendingInterjects: [],
           approvals: [],
+          eventHistory: [],
           terminal: null,
           createdAt: timestamp,
           updatedAt: timestamp,
         };
         await writeCheckpoint(path, checkpoint);
+        runningRunIdByThread.set(threadId, runId);
         return { ok: true, checkpoint };
       });
     },
@@ -465,6 +545,7 @@ export function createRunCheckpointStore(args: {
       callId,
       decision,
       grantScope,
+      permissionMode,
     }) {
       const path = checkpointPath(root, threadId);
       return await runMutationSerial(path, async () => {
@@ -483,9 +564,14 @@ export function createRunCheckpointStore(args: {
         if (existing === undefined) {
           return { ok: false, code: 'approval_not_pending' };
         }
+        if (decision === 'denied' && permissionMode !== undefined) {
+          return { ok: false, code: 'approval_conflict' };
+        }
         if (existing.status === 'decided') {
           return existing.decision === decision &&
-            existing.grantScope === grantScope
+            existing.grantScope === grantScope &&
+            (permissionMode === undefined ||
+              previous.request.permissionMode === permissionMode)
             ? {
                 ok: true,
                 checkpoint: previous,
@@ -505,6 +591,10 @@ export function createRunCheckpointStore(args: {
         const checkpoint: RunCheckpoint = {
           ...previous,
           revision: previous.revision + 1,
+          request:
+            decision === 'approved' && permissionMode !== undefined
+              ? { ...previous.request, permissionMode }
+              : previous.request,
           approvals,
           updatedAt: now(),
         };
@@ -515,6 +605,24 @@ export function createRunCheckpointStore(args: {
           approval,
           changed: true,
         };
+      });
+    },
+    async appendRunEvents({ threadId, runId, events }) {
+      if (events.length === 0) {
+        return;
+      }
+      const path = checkpointPath(root, threadId);
+      await runMutationSerial(path, async () => {
+        if (runningRunIdByThread.get(threadId) !== runId) {
+          const checkpoint = await readCheckpointFile(threadId);
+          if (checkpoint === null || checkpoint.runId !== runId) {
+            throw new Error(`run checkpoint not found: ${runId}`);
+          }
+          if (checkpoint.status !== 'running') {
+            throw new Error(`run checkpoint is terminal: ${runId}`);
+          }
+        }
+        await runEventJournal.append({ threadId, runId, events });
       });
     },
     async settleRun({ threadId, runId, terminal }) {
@@ -549,6 +657,7 @@ export function createRunCheckpointStore(args: {
           updatedAt: now(),
         };
         await writeCheckpoint(path, checkpoint);
+        runningRunIdByThread.delete(threadId);
         return checkpoint;
       });
     },
@@ -614,9 +723,14 @@ async function writeCheckpoint(
   path: string,
   checkpoint: RunCheckpoint,
 ): Promise<void> {
-  await writeTextFileAtomically(path, `${JSON.stringify(checkpoint)}\n`, {
-    mode: 0o600,
-  });
+  const { eventHistory: _eventHistory, ...persistedCheckpoint } = checkpoint;
+  await writeTextFileAtomically(
+    path,
+    `${JSON.stringify(persistedCheckpoint)}\n`,
+    {
+      mode: 0o600,
+    },
+  );
 }
 
 function parseRunCheckpoint(value: unknown): RunCheckpoint {
@@ -682,6 +796,7 @@ function parseRunCheckpoint(value: unknown): RunCheckpoint {
     applyingInterject,
     pendingInterjects,
     approvals,
+    eventHistory: [],
     terminal,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
@@ -833,13 +948,30 @@ function parseRecoverableRunRequest(value: unknown): RecoverableRunRequest {
     throw new Error('invalid recoverable run request');
   }
   const providerModel = parseProviderModel(value.providerModel);
+  const providerTransitionRecovery = parseProviderTransitionRecovery(
+    value.providerTransitionRecovery,
+    providerModel,
+  );
+  const loopImplementation = parseAgentLoopImplementationIdentity(
+    value.loopImplementation,
+  );
   const selection = parseSelection(value.selection);
   const toolSurface = parseToolSurface(value.toolSurface);
+  const toolCapabilityPolicy = parseCheckpointToolCapabilityPolicy(
+    value.toolCapabilityPolicy,
+  );
+  const planningWorkflow = parsePlanningWorkflowBinding(value.planningWorkflow);
+  const goal = parseGoalBinding(value.goal);
   if (
     (value.currentFile !== undefined &&
       typeof value.currentFile !== 'string') ||
+    (value.ultraReasoning !== undefined &&
+      typeof value.ultraReasoning !== 'boolean') ||
     (value.reasoningEffort !== undefined &&
       !isRunReasoningEffort(value.reasoningEffort)) ||
+    (value.serviceTier !== undefined && !isRunServiceTier(value.serviceTier)) ||
+    (value.serviceTier === 'fast' &&
+      providerModel?.providerId !== 'openai_codex_direct') ||
     (value.subagentModelRouting !== undefined &&
       !isRunSubagentModelRouting(value.subagentModelRouting)) ||
     (value.imageGenerationModel !== undefined &&
@@ -847,25 +979,50 @@ function parseRecoverableRunRequest(value: unknown): RecoverableRunRequest {
     (value.videoGenerationModel !== undefined &&
       !isVideoGenerationModelId(value.videoGenerationModel)) ||
     (value.videoGenerationSettings !== undefined &&
-      !isVideoGenerationSettings(value.videoGenerationSettings))
+      !isVideoGenerationSettings(value.videoGenerationSettings)) ||
+    (value.approvedPlanRef !== undefined &&
+      !isApprovedPlanRef(value.approvedPlanRef)) ||
+    (planningWorkflow !== undefined && value.approvedPlanRef !== undefined) ||
+    (planningWorkflow !== undefined && goal !== undefined)
   ) {
     throw new Error('invalid recoverable run request');
+  }
+  if (toolSurface !== undefined && toolCapabilityPolicy !== undefined) {
+    throw new Error(
+      'recoverable run request cannot contain both toolSurface and toolCapabilityPolicy',
+    );
   }
   return {
     workingDirectory: value.workingDirectory,
     permissionMode: value.permissionMode,
+    ...(planningWorkflow === undefined ? {} : { planningWorkflow }),
+    ...(value.approvedPlanRef === undefined
+      ? {}
+      : { approvedPlanRef: value.approvedPlanRef }),
+    ...(goal === undefined ? {} : { goal }),
+    ...(loopImplementation === undefined ? {} : { loopImplementation }),
     ...(providerModel === undefined ? {} : { providerModel }),
+    ...(providerTransitionRecovery === undefined
+      ? {}
+      : { providerTransitionRecovery }),
     ...(value.currentFile === undefined
       ? {}
       : { currentFile: value.currentFile }),
     ...(selection === undefined ? {} : { selection }),
+    ...(value.ultraReasoning === undefined
+      ? {}
+      : { ultraReasoning: value.ultraReasoning }),
     ...(value.reasoningEffort === undefined
       ? {}
       : { reasoningEffort: value.reasoningEffort }),
+    ...(value.serviceTier === undefined
+      ? {}
+      : { serviceTier: value.serviceTier }),
     ...(value.subagentModelRouting === undefined
       ? {}
       : { subagentModelRouting: value.subagentModelRouting }),
     ...(toolSurface === undefined ? {} : { toolSurface }),
+    ...(toolCapabilityPolicy === undefined ? {} : { toolCapabilityPolicy }),
     ...(value.imageGenerationModel === undefined
       ? {}
       : { imageGenerationModel: value.imageGenerationModel }),
@@ -878,6 +1035,79 @@ function parseRecoverableRunRequest(value: unknown): RecoverableRunRequest {
   };
 }
 
+function parsePlanningWorkflowBinding(
+  value: unknown,
+): RecoverableRunRequest['planningWorkflow'] {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    !isRecord(value) ||
+    typeof value.workflowId !== 'string' ||
+    value.workflowId.trim() === ''
+  ) {
+    throw new Error('invalid recoverable planning workflow binding');
+  }
+  return {
+    workflowId: value.workflowId,
+  };
+}
+
+function parseGoalBinding(value: unknown): RecoverableRunRequest['goal'] {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    !isRecord(value) ||
+    typeof value.goalId !== 'string' ||
+    value.goalId.trim() === ''
+  ) {
+    throw new Error('invalid recoverable Goal binding');
+  }
+  return {
+    goalId: value.goalId,
+  };
+}
+
+function parseProviderTransitionRecovery(
+  value: unknown,
+  target: RecoverableRunRequest['providerModel'],
+): RunProviderTransitionRecovery | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    target === undefined ||
+    !isRunModelId(target.model) ||
+    resolveRunModelDescriptor(target.model).providerId !== target.providerId ||
+    !isRunProviderTransitionRecovery(value, target.model)
+  ) {
+    throw new Error('invalid recoverable provider transition recovery');
+  }
+  return value;
+}
+
+function parseAgentLoopImplementationIdentity(
+  value: unknown,
+): RecoverableRunRequest['loopImplementation'] {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    !isRecord(value) ||
+    typeof value.implementationId !== 'string' ||
+    value.implementationId.trim().length === 0 ||
+    typeof value.contractVersion !== 'string' ||
+    value.contractVersion.trim().length === 0
+  ) {
+    throw new Error('invalid recoverable agent loop implementation identity');
+  }
+  return {
+    implementationId: value.implementationId,
+    contractVersion: value.contractVersion,
+  };
+}
+
 function parseProviderModel(
   value: unknown,
 ): RecoverableRunRequest['providerModel'] {
@@ -886,7 +1116,7 @@ function parseProviderModel(
   }
   if (
     !isRecord(value) ||
-    !isProviderAuthProviderId(value.providerId) ||
+    !isRunProviderId(value.providerId) ||
     typeof value.model !== 'string'
   ) {
     throw new Error('invalid run checkpoint provider model');
@@ -913,6 +1143,19 @@ function parseSelection(value: unknown): RecoverableRunRequest['selection'] {
     endLine: value.endLine,
     text: value.text,
   };
+}
+
+function parseCheckpointToolCapabilityPolicy(
+  value: unknown,
+): ToolCapabilityPolicy | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    return validateToolCapabilityPolicy(value);
+  } catch {
+    throw new Error('invalid run checkpoint tool capability policy');
+  }
 }
 
 function parseToolSurface(

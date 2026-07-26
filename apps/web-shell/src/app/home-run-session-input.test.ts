@@ -18,6 +18,7 @@ function createRunSessionViewModelStub(): RunSessionViewModel {
     isSettling: true,
     transcriptEntries: [{ kind: 'assistant_text', text: 'commentary' }],
     finalAnswerText: 'done',
+    streamingArtifactText: '',
     activeArtifact: null,
     pendingApproval: makeApprovalRequiredFixture({
       runId: RUN_ID,
@@ -25,15 +26,28 @@ function createRunSessionViewModelStub(): RunSessionViewModel {
     }),
     permissionMode: 'full_access',
     modelId: 'grok-4.5',
-    reasoningEffort: 'medium',
+    reasoningEffort: 'ultra',
+    serviceTier: 'standard',
     subagentModelRouting: { mode: 'auto' },
-    setPermissionMode: () => {},
+    setPermissionMode: async () => {},
+    planModeRequested: false,
+    setPlanModeRequested: () => {},
+    planModeIntensity: 'visual',
+    setPlanModeIntensity: () => {},
+    planModeDepth: 'standard',
+    setPlanModeDepth: () => {},
+    planningWorkflow: null,
+    goal: null,
+    followupSuggestion: null,
+    dismissFollowupSuggestion: () => {},
     setModelId: () => {},
     prepareProviderTransition: async () => {},
     setReasoningEffort: () => {},
+    setServiceTier: () => {},
     setSubagentModelRouting: () => {},
     requestWidgetTool: async () => ({ ok: true, output: 'tool-ok' }),
     streamError: 'stream failed',
+    streamErrorCode: 'internal',
     backgroundNotifications: [
       {
         kind: 'subagent_activity',
@@ -47,6 +61,10 @@ function createRunSessionViewModelStub(): RunSessionViewModel {
       outputTokens: 252,
       cachedInputTokens: 4000,
     },
+    providerRuntime: {
+      phase: 'rate_limit_waiting',
+      observedAt: '2026-07-23T11:00:00.000Z',
+    },
     contextUsage: {
       state: 'measured',
       modelId: 'grok-4.5',
@@ -55,6 +73,7 @@ function createRunSessionViewModelStub(): RunSessionViewModel {
       thresholdTokens: 425_000,
     },
     sendPrompt: async () => {},
+    sendPromptAsNewTurn: async () => {},
     sendWidgetPrompt: async () => {},
     regeneratePrompt: async () => {},
     cancelSteer: async () => {},
@@ -65,6 +84,7 @@ function createRunSessionViewModelStub(): RunSessionViewModel {
     handleApprove: async () => {},
     handleDeny: async () => {},
     handleCancel: async () => {},
+    stopChildRun: async () => {},
   };
 }
 
@@ -72,6 +92,7 @@ void test('createHomeRunSessionInput preserves the run-session surface used by H
   const runSession = createRunSessionViewModelStub();
   const input = createHomeRunSessionInput(runSession);
 
+  assert.equal(input.visibleThreadId, THREAD_ID);
   assert.equal(input.isRunStarting, true);
   assert.equal(input.isRunning, true);
   assert.equal(input.isRunSettling, true);
@@ -81,9 +102,11 @@ void test('createHomeRunSessionInput preserves the run-session surface used by H
   assert.equal(input.pendingApproval, runSession.pendingApproval);
   assert.equal(input.permissionMode, 'full_access');
   assert.equal(input.modelId, 'grok-4.5');
+  assert.equal(input.serviceTier, 'standard');
   assert.deepEqual(input.subagentModelRouting, { mode: 'auto' });
   assert.equal(input.setPermissionMode, runSession.setPermissionMode);
   assert.equal(input.setModelId, runSession.setModelId);
+  assert.equal(input.setServiceTier, runSession.setServiceTier);
   assert.equal(
     input.prepareProviderTransition,
     runSession.prepareProviderTransition,
@@ -95,7 +118,9 @@ void test('createHomeRunSessionInput preserves the run-session surface used by H
   assert.equal(input.flushSteers, runSession.flushSteers);
   assert.equal(input.pendingSteerFlushRequested, true);
   assert.equal(input.streamError, 'stream failed');
+  assert.equal(input.streamErrorCode, 'internal');
   assert.equal(input.usageTotals, runSession.usageTotals);
+  assert.equal(input.providerRuntime, runSession.providerRuntime);
   assert.equal(input.contextUsage, runSession.contextUsage);
   assert.equal(
     input.backgroundNotifications,

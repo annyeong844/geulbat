@@ -10,7 +10,12 @@ import {
   summarizeToolDescription,
 } from '@geulbat/tool-library/search-ranking';
 import { defineZodTool } from '../zod-tool.js';
-import type { AnyTool, ToolCatalogSearchFamily } from '../types.js';
+import { describeToolResultDelivery } from '../tool-registry-model.js';
+import type {
+  AnyTool,
+  ToolCatalogSearchFamily,
+  ToolResultDelivery,
+} from '../types.js';
 
 const toolSearchArgsSchema = z.strictObject({
   query: z
@@ -35,6 +40,7 @@ export interface ToolSearchCatalogCard extends ToolSearchIndexCard {
   sideEffectLevel: SideEffectLevel;
   approvalClass: 'approval_free' | 'approval_required';
   mayMutateComputerFiles: boolean;
+  resultDelivery: ToolResultDelivery;
   signatureRef: string;
   whenToUse: string;
   notFor: string;
@@ -50,6 +56,7 @@ type ToolSearchResult = Pick<
   | 'sideEffectLevel'
   | 'approvalClass'
   | 'mayMutateComputerFiles'
+  | 'resultDelivery'
   | 'signatureRef'
 >;
 
@@ -103,6 +110,7 @@ export function createToolSearchTool(deps: {
         sideEffectLevel: result.sideEffectLevel,
         approvalClass: result.approvalClass,
         mayMutateComputerFiles: result.mayMutateComputerFiles,
+        resultDelivery: result.resultDelivery,
         signatureRef: result.signatureRef,
       }));
       const output: ToolSearchOutput = {
@@ -149,6 +157,7 @@ function buildToolSearchCatalogCard(tool: AnyTool): ToolSearchCatalogCard {
       ? 'approval_required'
       : 'approval_free',
     mayMutateComputerFiles: tool.mayMutateComputerFiles,
+    resultDelivery: describeToolResultDelivery(tool.resultProjection),
     signatureRef: buildToolSignatureRef(tool.name),
     whenToUse: metadata?.whenToUse ?? summary,
     notFor:

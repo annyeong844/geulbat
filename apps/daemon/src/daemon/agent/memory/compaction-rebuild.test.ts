@@ -15,6 +15,7 @@ import {
   CompactionTokenCountError,
   getActiveTranscriptEntries,
   prepareContextCompaction,
+  ProviderNativeCompactionBoundaryError,
   ProviderTransitionCompactionBoundaryError,
 } from './compaction-rebuild.js';
 
@@ -62,7 +63,11 @@ function compaction(
   };
 }
 
-function nativeCompaction(entryId: string): CompactionThreadMessage {
+function nativeCompaction(
+  entryId: string,
+  firstKeptEntryId?: string,
+  coveredThroughEntryId?: string,
+): CompactionThreadMessage {
   return {
     entryId,
     role: 'compaction',
@@ -82,6 +87,8 @@ function nativeCompaction(entryId: string): CompactionThreadMessage {
       tokensBefore: TEST_BUDGET_PROFILE.thresholdTokens,
       contextWindow: TEST_BUDGET_PROFILE.contextWindow,
       thresholdTokens: TEST_BUDGET_PROFILE.thresholdTokens,
+      ...(firstKeptEntryId === undefined ? {} : { firstKeptEntryId }),
+      ...(coveredThroughEntryId === undefined ? {} : { coveredThroughEntryId }),
     },
   };
 }
@@ -90,6 +97,7 @@ function providerTransitionCompaction(
   entryId: string,
   coveredThroughEntryId: string,
   summary: string,
+  firstKeptEntryId?: string,
 ): CompactionThreadMessage {
   return {
     entryId,
@@ -104,6 +112,7 @@ function providerTransitionCompaction(
       targetModel: 'gpt-5.6-sol',
       summary,
       coveredThroughEntryId,
+      ...(firstKeptEntryId === undefined ? {} : { firstKeptEntryId }),
     },
   };
 }
@@ -158,7 +167,11 @@ void test('provider-native rebuild replaces the prefix and keeps only post-check
     new Map(),
     new Map(),
     undefined,
-    TEST_REPLAY_SCOPE_ID,
+    {
+      providerId: 'openai_codex_direct',
+      model: 'test-model',
+      replayScopeId: TEST_REPLAY_SCOPE_ID,
+    },
   );
 
   assert.equal(active.latestCompactionEntryId, 'native-checkpoint');
@@ -189,9 +202,102 @@ void test('provider-native rebuild replaces the prefix and keeps only post-check
         new Map(),
         new Map(),
         undefined,
-        `sha256:${'f'.repeat(64)}` as ProviderReplayScopeId,
+        {
+          providerId: 'openai_codex_direct',
+          model: 'test-model',
+          replayScopeId: `sha256:${'f'.repeat(64)}` as ProviderReplayScopeId,
+        },
       ),
     /different authentication scope/u,
+  );
+});
+
+void test('provider-native rebuild keeps the verbatim pre-checkpoint tail and later appends after its opaque head', () => {
+  const entries = [
+    message('old-user', 'user', 'old'),
+    message('covered', 'assistant', 'old answer'),
+    message('keep-user', 'user', 'current request'),
+    message('keep-result', 'assistant', 'current working tail'),
+    nativeCompaction('native-checkpoint', 'keep-user', 'covered'),
+    message('future-user', 'user', 'next request'),
+  ];
+
+  const active = getActiveTranscriptEntries(entries, 'thread');
+  assert.deepEqual(
+    active.activeEntries.map((entry) => entry.entryId),
+    ['keep-user', 'keep-result', 'future-user'],
+  );
+  assert.deepEqual(
+    buildCompactionAwareHistory(
+      entries,
+      'thread',
+      new Map(),
+      new Map(),
+      undefined,
+      {
+        providerId: 'openai_codex_direct',
+        model: 'test-model',
+        replayScopeId: TEST_REPLAY_SCOPE_ID,
+      },
+    ).slice(1),
+    [
+      { kind: 'user', text: 'current request' },
+      {
+        kind: 'assistant',
+        phase: 'final_answer',
+        text: 'current working tail',
+      },
+      { kind: 'user', text: 'next request' },
+    ],
+  );
+});
+
+void test('provider-native rebuild fails closed when its retained-tail coverage is stale', () => {
+  const entries = [
+    message('old-user', 'user', 'old'),
+    message('covered', 'assistant', 'old answer'),
+    message('unexpected', 'assistant', 'raced entry'),
+    message('keep-user', 'user', 'current request'),
+    nativeCompaction('native-checkpoint', 'keep-user', 'covered'),
+  ];
+
+  assert.throws(
+    () => getActiveTranscriptEntries(entries, 'thread'),
+    (error: unknown) => {
+      assert.ok(error instanceof ProviderNativeCompactionBoundaryError);
+      assert.equal(error.compactionEntryId, 'native-checkpoint');
+      assert.equal(error.expectedCoveredThroughEntryId, 'covered');
+      assert.equal(error.actualCoveredThroughEntryId, 'unexpected');
+      return true;
+    },
+  );
+});
+
+void test('provider-native history falls back to the append-only normalized transcript for another provider', () => {
+  const entries = [
+    message('old-user', 'user', 'old'),
+    message('old-assistant', 'assistant', 'old answer'),
+    nativeCompaction('native-checkpoint'),
+    message('latest-user', 'user', 'new tail'),
+  ];
+
+  assert.deepEqual(
+    buildCompactionAwareHistory(
+      entries,
+      'thread',
+      new Map(),
+      new Map(),
+      undefined,
+      {
+        providerId: 'grok_oauth',
+        model: 'grok-4.5',
+      },
+    ),
+    [
+      { kind: 'user', text: 'old' },
+      { kind: 'assistant', phase: 'final_answer', text: 'old answer' },
+      { kind: 'user', text: 'new tail' },
+    ],
   );
 });
 
@@ -221,6 +327,31 @@ void test('provider-transition rebuild uses the portable summary and only the po
     assert.match(history[0].text, /portable handoff/u);
   }
   assert.deepEqual(history.slice(1), [{ kind: 'user', text: 'new tail' }]);
+});
+
+void test('provider-transition rebuild keeps the consent-time user tail that precedes its checkpoint', () => {
+  const entries = [
+    message('old-user', 'user', 'old'),
+    message('covered', 'assistant', 'old answer'),
+    message('keep-user', 'user', 'exact latest request'),
+    providerTransitionCompaction(
+      'transition-checkpoint',
+      'covered',
+      'portable handoff',
+      'keep-user',
+    ),
+    message('future-user', 'user', 'next request'),
+  ];
+
+  const active = getActiveTranscriptEntries(entries, 'thread');
+  assert.deepEqual(
+    active.activeEntries.map((entry) => entry.entryId),
+    ['keep-user', 'future-user'],
+  );
+  assert.deepEqual(buildCompactionAwareHistory(entries, 'thread').slice(1), [
+    { kind: 'user', text: 'exact latest request' },
+    { kind: 'user', text: 'next request' },
+  ]);
 });
 
 void test('provider-transition rebuild fails closed when its covered snapshot is not adjacent', () => {
@@ -493,6 +624,27 @@ void test('an invalid host token count throws before a checkpoint can be prepare
         forced: false,
       }),
     CompactionTokenCountError,
+  );
+});
+
+void test('an invalid retained-token budget keeps its configuration identity', () => {
+  assert.deepEqual(
+    prepareContextCompaction({
+      entries: [message('entry', 'user', 'entry')],
+      threadId: 'thread',
+      currentRequestTokens: TEST_BUDGET_PROFILE.thresholdTokens,
+      budgetProfile: {
+        ...TEST_BUDGET_PROFILE,
+        keepRecentTokens: Number.NaN,
+      },
+      tokenCounter: createTokenCounter(),
+      forced: false,
+    }),
+    {
+      kind: 'invalid_budget',
+      reason: 'token_value_not_safe_integer',
+      field: 'keepRecentTokens',
+    },
   );
 });
 

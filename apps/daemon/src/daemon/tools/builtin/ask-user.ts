@@ -36,6 +36,7 @@ export const askUserTool = defineZodTool({
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  endsTurnAfterSuccess: true,
   catalogSearchMetadata: {
     family: 'presentation',
     searchHints: ['ask user', 'question', 'choices', 'options', 'clarify'],

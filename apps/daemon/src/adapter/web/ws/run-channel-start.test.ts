@@ -10,8 +10,17 @@ import type {
 } from '@geulbat/protocol/run-contract';
 import { assertRunId, type ThreadId } from '@geulbat/protocol/ids';
 import { isRunChannelServerMessage } from '@geulbat/protocol/run-channel';
+import {
+  agentLoopKernelImplementation,
+  type AgentLoopImplementation,
+} from '@geulbat/agent-loop/kernel';
+import { createToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
 
 import { createDaemonContext } from '../../../daemon/context.js';
+import {
+  createAgentLoopImplementationAdmission,
+  type AgentLoopImplementationAdmission,
+} from '../../../daemon/agent/loop-implementation-admission.js';
 import { startManagedRun } from '../../../daemon/agent/runtime/managed-run.js';
 import {
   readRunPromptInputRef,
@@ -29,6 +38,7 @@ import {
 } from '../../../test-support/run-channel-test-support.js';
 import {
   executeRunRequest,
+  recoverDurableRunsAtDaemonStartup,
   recoverDurableRunsForSocket,
 } from './run-channel-start.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
@@ -142,6 +152,258 @@ void test('executeRunRequest does not start a run for a closed socket', async ()
     cleanupSocketState(socket, daemonContext);
   }
 });
+
+void test('executeRunRequest releases its managed run when loop admission rejects the contract', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
+  const socket = createTestSocket();
+  const threadId = testThreadId(34);
+  const incompatible = {
+    ...agentLoopKernelImplementation,
+    implementationId: 'test.incompatible-loop',
+    contractVersion: '2',
+  };
+  let capturedToolCapabilityPolicy:
+    | ReturnType<typeof createToolCapabilityPolicy>
+    | undefined;
+  const incompatibleAdmission = createAgentLoopImplementationAdmission({
+    additionalImplementations: [incompatible],
+    selectImplementationId: () => incompatible.implementationId,
+  });
+  const capturingAdmission: AgentLoopImplementationAdmission = {
+    async admitRun(input) {
+      capturedToolCapabilityPolicy = input.toolCapabilityPolicy;
+      return await incompatibleAdmission.admitRun(input);
+    },
+  };
+  const runtimeContext = {
+    ...daemonContext,
+    agent: {
+      ...daemonContext.agent,
+      loopImplementationAdmission: capturingAdmission,
+    },
+  };
+
+  try {
+    await executeRunRequest({
+      socket,
+      requestId: 'run-start-incompatible-loop',
+      request: { prompt: 'hello', threadId } satisfies RunRequest,
+      allowedPublicToolNames: undefined,
+      runtimeContext,
+    });
+
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.error',
+      requestId: 'run-start-incompatible-loop',
+      status: 503,
+      code: 'execution_failed',
+      message:
+        'agent loop implementation contract is incompatible: test.incompatible-loop@2; registered 2, host requires 1',
+    });
+    const toolCapabilityPolicy = capturedToolCapabilityPolicy;
+    assert.ok(toolCapabilityPolicy);
+    assert.deepEqual(
+      toolCapabilityPolicy.directRegistryNames,
+      toolCapabilityPolicy.allowedRegistryNames,
+    );
+    assert.equal(toolCapabilityPolicy.writeCallbackEnabled, false);
+    assert.equal(
+      toolCapabilityPolicy.callbackRegistryNames.every((name) =>
+        toolCapabilityPolicy.allowedRegistryNames.includes(name),
+      ),
+      true,
+    );
+    const afterFailure = startManagedRun(
+      {
+        runId: 'run-after-incompatible-loop',
+        runContext: {
+          threadId,
+          stateRoot: runtimeContext.homeStateRoot,
+          workingDirectory: '',
+        },
+      },
+      { activeRuns: runtimeContext.activeRuns },
+    );
+    assert.equal(afterFailure.ok, true);
+    if (afterFailure.ok) {
+      afterFailure.finish();
+    }
+  } finally {
+    cleanupSocketState(socket, runtimeContext);
+  }
+});
+
+void test('durable recovery requires the exact recorded loop implementation without selection fallback', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
+  const socket = createTestSocket();
+  const threadId = testThreadId(37);
+  const runId = assertRunId('run-removed-loop-recovery');
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+
+  try {
+    await daemonContext.runCheckpoints.startRun({
+      runId,
+      threadId,
+      request: {
+        workingDirectory: '',
+        permissionMode: 'basic',
+        loopImplementation: {
+          implementationId: 'test.removed-loop',
+          contractVersion: '1',
+        },
+      },
+    });
+
+    assert.equal(await recoverDurableRunsForSocket(socket, daemonContext), 0);
+    assert.equal(
+      daemonContext.activeRuns.getRunByThreadId(threadId),
+      undefined,
+    );
+    assert.equal(
+      (await daemonContext.runCheckpoints.readThread(threadId))?.status,
+      'running',
+    );
+    assert.match(JSON.stringify(errors), /implementation_unavailable/u);
+    assert.match(JSON.stringify(errors), /test\.removed-loop/u);
+  } finally {
+    console.error = originalError;
+    cleanupSocketState(socket, daemonContext);
+    await rm(daemonContext.homeStateRoot, { recursive: true, force: true });
+  }
+});
+
+void test(
+  'durable recovery replays active history without holding socket authentication open',
+  { timeout: 5_000 },
+  async () => {
+    const daemonContext = createRunChannelTestDaemonContext();
+    daemonContext.provider.authRuntime.setCachedProviderCredential({
+      accessToken: 'recovery-test-access-token',
+      refreshToken: 'recovery-test-refresh-token',
+      accountId: 'recovery-test-account',
+      expiresAt: 0,
+    });
+    daemonContext.provider.authRuntime.setHydratedProviderAuth(true);
+    const socket = createTestSocket();
+    const threadId = testThreadId(40);
+    const runId = assertRunId('run-active-progress-replay');
+    let releaseLoop: () => void = () => {};
+    const loopRelease = new Promise<void>((resolve) => {
+      releaseLoop = resolve;
+    });
+    let markLoopStarted: () => void = () => {};
+    const loopStarted = new Promise<void>((resolve) => {
+      markLoopStarted = resolve;
+    });
+    const blockingImplementation = {
+      implementationId: 'test.blocking-recovery-loop',
+      contractVersion: agentLoopKernelImplementation.contractVersion,
+      async run() {
+        markLoopStarted();
+        await loopRelease;
+        throw new Error('released blocking recovery loop');
+      },
+    } satisfies AgentLoopImplementation;
+    const recoveryToolCapabilityPolicy = createToolCapabilityPolicy({
+      directRegistryNames: ['list_files'],
+      allowedRegistryNames: ['list_files', 'read_file'],
+      callbackRegistryNames: ['read_file'],
+      writeCallbackEnabled: false,
+    });
+    let capturedRecoveryToolCapabilityPolicy:
+      | ReturnType<typeof createToolCapabilityPolicy>
+      | undefined;
+    const recoveryAdmission = createAgentLoopImplementationAdmission({
+      additionalImplementations: [blockingImplementation],
+    });
+    const capturingRecoveryAdmission: AgentLoopImplementationAdmission = {
+      async admitRun(input) {
+        capturedRecoveryToolCapabilityPolicy = input.toolCapabilityPolicy;
+        return await recoveryAdmission.admitRun(input);
+      },
+    };
+    const runtimeContext = {
+      ...daemonContext,
+      agent: {
+        ...daemonContext.agent,
+        loopImplementationAdmission: capturingRecoveryAdmission,
+      },
+    };
+    const originalFinishRun = runtimeContext.liveRunEvents.finishRun;
+    let markRecoveryFinished: () => void = () => {};
+    const recoveryFinished = new Promise<void>((resolve) => {
+      markRecoveryFinished = resolve;
+    });
+    runtimeContext.liveRunEvents.finishRun = (candidateRunId) => {
+      originalFinishRun(candidateRunId);
+      if (candidateRunId === runId) {
+        markRecoveryFinished();
+      }
+    };
+
+    try {
+      await appendTranscriptEntry(runtimeContext.homeStateRoot, threadId, {
+        role: 'user',
+        content: 'continue after restart',
+        timestamp: '2026-07-21T00:00:00.000Z',
+      });
+      await runtimeContext.runCheckpoints.startRun({
+        runId,
+        threadId,
+        request: {
+          workingDirectory: '',
+          permissionMode: 'basic',
+          loopImplementation: {
+            implementationId: blockingImplementation.implementationId,
+            contractVersion: blockingImplementation.contractVersion,
+          },
+          toolCapabilityPolicy: recoveryToolCapabilityPolicy,
+        },
+      });
+      await runtimeContext.runCheckpoints.appendRunEvents({
+        runId,
+        threadId,
+        events: [
+          {
+            seq: 0,
+            event: { type: 'run_ack', payload: { runId, threadId } },
+          },
+        ],
+      });
+
+      assert.equal(
+        await recoverDurableRunsForSocket(socket, runtimeContext),
+        1,
+      );
+      assert.equal(runtimeContext.activeRuns.getRunById(runId)?.runId, runId);
+      assert.equal(socket.sentFrames.length, 1);
+      const replayed: unknown = JSON.parse(socket.sentFrames[0] ?? '');
+      assert.equal(isRunChannelServerMessage(replayed), true);
+      if (
+        isRunChannelServerMessage(replayed) &&
+        replayed.type === 'run.event'
+      ) {
+        assert.equal(replayed.event.seq, 0);
+        assert.equal(replayed.event.type, 'run_ack');
+      }
+      await loopStarted;
+      assert.deepEqual(
+        capturedRecoveryToolCapabilityPolicy,
+        recoveryToolCapabilityPolicy,
+      );
+    } finally {
+      releaseLoop();
+      await recoveryFinished;
+      runtimeContext.liveRunEvents.finishRun = originalFinishRun;
+      cleanupSocketState(socket, runtimeContext);
+      await rm(runtimeContext.homeStateRoot, { recursive: true, force: true });
+    }
+  },
+);
 
 void test('executeRunRequest reports conflict_active_run when the thread already has a run', async () => {
   const daemonContext = createRunChannelTestDaemonContext();
@@ -370,6 +632,132 @@ void test('durable terminal recovery reprojects the thread snapshot and stable d
   }
 });
 
+void test('durable terminal recovery accepts a successful terminal cursor without a reserved snapshot slot', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
+  const socket = createTestSocket();
+  const threadId = testThreadId(41);
+  const runId = assertRunId('run-terminal-without-snapshot-slot');
+
+  try {
+    await daemonContext.runCheckpoints.startRun({
+      runId,
+      threadId,
+      request: { workingDirectory: '', permissionMode: 'basic' },
+    });
+    await daemonContext.runCheckpoints.appendRunEvents({
+      runId,
+      threadId,
+      events: [
+        {
+          seq: 0,
+          event: { type: 'run_ack', payload: { runId, threadId } },
+        },
+        {
+          seq: 1,
+          event: {
+            type: 'final_answer_delta',
+            payload: { text: 'answer before terminal persistence' },
+          },
+        },
+      ],
+    });
+    await daemonContext.runCheckpoints.settleRun({
+      runId,
+      threadId,
+      terminal: {
+        eventCursor: 2,
+        event: {
+          type: 'done',
+          payload: { answer: 'answer before terminal persistence', ok: true },
+        },
+      },
+    });
+
+    assert.equal(await recoverDurableRunsForSocket(socket, daemonContext), 1);
+    const runEvents = socket.sentFrames.map((raw) => {
+      const message: unknown = JSON.parse(raw);
+      assert.equal(isRunChannelServerMessage(message), true);
+      if (!isRunChannelServerMessage(message) || message.type !== 'run.event') {
+        throw new Error('invalid run channel test message');
+      }
+      return { seq: message.event.seq, type: message.event.type };
+    });
+    assert.deepEqual(runEvents, [
+      { seq: 0, type: 'run_ack' },
+      { seq: 1, type: 'final_answer_delta' },
+      { seq: 2, type: 'done' },
+    ]);
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+    await rm(daemonContext.homeStateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('durable terminal recovery replays journaled progress after the client cursor', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
+  const socket = createTestSocket();
+  const threadId = testThreadId(39);
+  const runId = assertRunId('run-terminal-progress-replay');
+
+  try {
+    await daemonContext.runCheckpoints.startRun({
+      runId,
+      threadId,
+      request: { workingDirectory: '', permissionMode: 'basic' },
+    });
+    await daemonContext.runCheckpoints.appendRunEvents({
+      runId,
+      threadId,
+      events: [
+        {
+          seq: 0,
+          event: { type: 'run_ack', payload: { runId, threadId } },
+        },
+        {
+          seq: 1,
+          event: {
+            type: 'commentary_delta',
+            payload: { text: 'survived restart' },
+          },
+        },
+      ],
+    });
+    await daemonContext.runCheckpoints.settleRun({
+      runId,
+      threadId,
+      terminal: {
+        eventCursor: 2,
+        event: {
+          type: 'error',
+          payload: { code: 'internal', message: 'durable failure' },
+        },
+      },
+    });
+
+    assert.equal(
+      await recoverDurableRunsForSocket(socket, daemonContext, [
+        { runId, seq: 0 },
+      ]),
+      1,
+    );
+    const runEvents: Array<{ seq: number; type: string }> = [];
+    for (const raw of socket.sentFrames) {
+      const message: unknown = JSON.parse(raw);
+      assert.equal(isRunChannelServerMessage(message), true);
+      if (isRunChannelServerMessage(message) && message.type === 'run.event') {
+        runEvents.push({ seq: message.event.seq, type: message.event.type });
+      }
+    }
+    assert.deepEqual(runEvents, [
+      { seq: 1, type: 'commentary_delta' },
+      { seq: 2, type: 'error' },
+    ]);
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+    await rm(daemonContext.homeStateRoot, { recursive: true, force: true });
+  }
+});
+
 void test('durable recovery reconciles an already persisted final answer before model or tool recovery', async () => {
   const daemonContext = createRunChannelTestDaemonContext();
   const socket = createTestSocket();
@@ -393,31 +781,193 @@ void test('durable recovery reconciles an already persisted final answer before 
       threadId,
       request: { workingDirectory: '', permissionMode: 'basic' },
     });
+    await daemonContext.runCheckpoints.appendRunEvents({
+      runId,
+      threadId,
+      events: [
+        {
+          seq: 0,
+          event: { type: 'run_ack', payload: { runId, threadId } },
+        },
+      ],
+    });
 
     assert.equal(await recoverDurableRunsForSocket(socket, daemonContext), 1);
     const checkpoint = await daemonContext.runCheckpoints.readThread(threadId);
     assert.equal(checkpoint?.status, 'terminal');
     assert.deepEqual(checkpoint?.terminal, {
-      eventCursor: 1,
+      eventCursor: 2,
       acknowledged: false,
       event: {
         type: 'done',
         payload: { answer: 'already committed', ok: true },
       },
     });
-    assert.equal(socket.sentFrames.length, 2);
-    const terminalMessage: unknown = JSON.parse(socket.sentFrames[1] ?? '');
+    assert.equal(socket.sentFrames.length, 3);
+    const replayedMessage: unknown = JSON.parse(socket.sentFrames[0] ?? '');
+    assert.equal(isRunChannelServerMessage(replayedMessage), true);
+    if (
+      isRunChannelServerMessage(replayedMessage) &&
+      replayedMessage.type === 'run.event'
+    ) {
+      assert.equal(replayedMessage.event.seq, 0);
+      assert.equal(replayedMessage.event.type, 'run_ack');
+    }
+    const terminalMessage: unknown = JSON.parse(socket.sentFrames[2] ?? '');
     assert.equal(isRunChannelServerMessage(terminalMessage), true);
     if (
       isRunChannelServerMessage(terminalMessage) &&
       terminalMessage.type === 'run.event'
     ) {
-      assert.equal(terminalMessage.event.seq, 1);
+      assert.equal(terminalMessage.event.seq, 2);
       assert.equal(terminalMessage.event.type, 'done');
     }
   } finally {
     cleanupSocketState(socket, daemonContext);
     await rm(daemonContext.homeStateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('durable Goal recovery surfaces interrupted verification without rerunning the model', async () => {
+  const homeStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-goal-verification-recovery-'),
+  );
+  const beforeRestart = createDaemonContext({ homeStateRoot });
+  const threadId = testThreadId(42);
+  const runId = assertRunId('run-goal-verification-recovery');
+  const socket = createTestSocket();
+  let afterRestart: ReturnType<typeof createDaemonContext> | undefined;
+
+  try {
+    const goal = await beforeRestart.goals.enterOrResume({
+      threadId,
+      requested: true,
+      objective: 'Recover Goal verification safely',
+      executionTemplate: {
+        workingDirectory: '',
+        permissionMode: 'basic',
+      },
+    });
+    assert.ok(goal);
+    await beforeRestart.goals.requestVerification({
+      threadId,
+      goalId: goal.goalId,
+      runId,
+    });
+    await beforeRestart.runCheckpoints.startRun({
+      runId,
+      threadId,
+      request: {
+        workingDirectory: '',
+        permissionMode: 'basic',
+        goal: { goalId: goal.goalId },
+      },
+    });
+
+    afterRestart = createDaemonContext({ homeStateRoot });
+    assert.equal(await recoverDurableRunsForSocket(socket, afterRestart), 1);
+    let checkpoint = await afterRestart.runCheckpoints.readThread(threadId);
+    for (
+      let attempt = 0;
+      attempt < 50 && checkpoint?.status !== 'terminal';
+      attempt += 1
+    ) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      checkpoint = await afterRestart.runCheckpoints.readThread(threadId);
+    }
+    assert.equal(checkpoint?.status, 'terminal');
+    assert.equal(checkpoint?.terminal?.event.type, 'error');
+    if (checkpoint?.terminal?.event.type === 'error') {
+      assert.deepEqual(checkpoint.terminal.event.payload, {
+        code: 'execution_failed',
+        message:
+          'Goal completion verification is unavailable after daemon recovery',
+      });
+    }
+
+    const events = socket.sentFrames.flatMap((raw) => {
+      const message: unknown = JSON.parse(raw);
+      assert.equal(isRunChannelServerMessage(message), true);
+      return isRunChannelServerMessage(message) && message.type === 'run.event'
+        ? [message.event]
+        : [];
+    });
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['goal_updated', 'error'],
+    );
+    assert.equal(events[0]?.type, 'goal_updated');
+    if (events[0]?.type === 'goal_updated') {
+      assert.equal(events[0].payload.state, 'verification_unavailable');
+      assert.equal('votes' in events[0].payload, false);
+    }
+  } finally {
+    cleanupSocketState(socket, afterRestart ?? beforeRestart);
+    await rm(homeStateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('daemon startup reconciles a persisted final answer without waiting for a client socket', async () => {
+  const homeStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-run-startup-recovery-'),
+  );
+  const beforeRestart = createDaemonContext({ homeStateRoot });
+  const threadId = testThreadId(38);
+  const runId = assertRunId('run-startup-transcript-terminal-reconcile');
+  const activeBeforeRestart = startManagedRun(
+    {
+      runId,
+      runContext: {
+        threadId,
+        stateRoot: homeStateRoot,
+        workingDirectory: '',
+      },
+    },
+    { activeRuns: beforeRestart.activeRuns },
+  );
+  assert.equal(activeBeforeRestart.ok, true);
+
+  try {
+    await appendTranscriptEntry(homeStateRoot, threadId, {
+      role: 'assistant',
+      content: 'already durable before reconnect',
+      timestamp: '2026-07-21T00:00:00.000Z',
+      metadata: { phase: 'final_answer', sourceRunId: runId },
+    });
+    await beforeRestart.runCheckpoints.startRun({
+      runId,
+      threadId,
+      request: { workingDirectory: '', permissionMode: 'basic' },
+    });
+
+    const afterRestart = createDaemonContext({ homeStateRoot });
+    assert.equal(afterRestart.activeRuns.getRunById(runId), undefined);
+    assert.equal(await recoverDurableRunsAtDaemonStartup(afterRestart), 1);
+    const checkpoint = await afterRestart.runCheckpoints.readThread(threadId);
+    assert.equal(checkpoint?.status, 'terminal');
+    assert.equal(checkpoint?.revision, 2);
+    assert.deepEqual(checkpoint?.request, {
+      workingDirectory: '',
+      permissionMode: 'basic',
+    });
+    assert.deepEqual(checkpoint?.terminal, {
+      eventCursor: 1,
+      acknowledged: false,
+      event: {
+        type: 'done',
+        payload: {
+          answer: 'already durable before reconnect',
+          ok: true,
+        },
+      },
+    });
+    assert.equal(afterRestart.liveRunEvents.hasRun(runId), false);
+    assert.equal(afterRestart.activeRuns.getRunById(runId), undefined);
+  } finally {
+    if (activeBeforeRestart.ok) {
+      activeBeforeRestart.finish();
+    }
+    await rm(homeStateRoot, { recursive: true, force: true });
   }
 });
 

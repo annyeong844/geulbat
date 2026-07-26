@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useRef,
@@ -8,9 +9,11 @@ import {
 } from 'react';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadId } from '@geulbat/protocol/ids';
+import type { RunModelId } from '@geulbat/protocol/run-contract';
 import type {
   ThreadDetailResponse,
   ThreadMessage,
+  ThreadSubagentTerminalOutcome,
   ThreadSummary,
 } from '@geulbat/protocol/threads';
 
@@ -36,8 +39,10 @@ interface UseThreadSessionsResult {
   threads: ThreadSummary[];
   threadError: string | null;
   selectedThreadId: string | null;
+  activeModelId: RunModelId | null;
   messages: ThreadMessage[];
   artifacts: ThreadArtifactVersion[];
+  subagentTerminalOutcomes: ThreadSubagentTerminalOutcome[];
   deletingThreadId: string | null;
   pendingDeleteThread: ThreadSummary | null;
   loadThreads: () => Promise<void>;
@@ -203,8 +208,10 @@ export function useThreadSessions(): UseThreadSessionsResult {
   const {
     selectedThreadId,
     setSelectedThreadId,
+    activeModelId,
     messages,
     artifacts,
+    subagentTerminalOutcomes,
     selectThreadSnapshot,
     applyThreadSnapshotForRunSettle: applyThreadSnapshotSelection,
     appendOptimisticUserMessage,
@@ -283,8 +290,10 @@ export function useThreadSessions(): UseThreadSessionsResult {
     async (threadId: string) => {
       const res = await loadThreadDetail(threadId);
       if (res) {
-        selectThreadSnapshot(res);
-        setThreadError(null);
+        startTransition(() => {
+          selectThreadSnapshot(res);
+          setThreadError(null);
+        });
       }
     },
     [loadThreadDetail, selectThreadSnapshot],
@@ -415,8 +424,10 @@ export function useThreadSessions(): UseThreadSessionsResult {
     threads,
     threadError,
     selectedThreadId,
+    activeModelId,
     messages,
     artifacts,
+    subagentTerminalOutcomes,
     deletingThreadId,
     pendingDeleteThread,
     loadThreads,

@@ -6,11 +6,14 @@ import type { ThreadMessageAttachment } from '@geulbat/protocol/thread-metadata'
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
+import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 
 import {
   type ArtifactsByRefMap,
+  hasNewerArtifactVersion,
   readCommittedMessageArtifact,
 } from '../artifacts/artifact-transcript-lookup.js';
+import { resolvePlanRenderingStampProjection } from '../artifacts/artifact-view-model.js';
 import { ArtifactReferenceChip } from './artifact-pane/artifact-reference-chip.js';
 import { CommittedArtifactMessage } from './artifact-pane/index.js';
 import {
@@ -21,6 +24,7 @@ import {
   AssistantMessageContent,
   useCopyToClipboard,
 } from './assistant-message-content.js';
+import { ReasoningDisclosure } from './assistant-reasoning-disclosure.js';
 import {
   assistantStyles,
   getTranscriptMessageStyle,
@@ -30,7 +34,10 @@ import {
   parseToolResultView,
   type ToolResultView,
 } from './tool-result-view.js';
-import { AskUserCard } from './ask-user/ask-user-card.js';
+import {
+  AskUserCard,
+  type AskUserAnswerHandler,
+} from './ask-user/ask-user-card.js';
 import { readAskUserCardViewFromToolCallContent } from './ask-user/ask-user-card-view.js';
 import { VisualizeWidget } from './visualize/visualize-widget.js';
 import { readVisualizeWidgetViewFromToolCallContent } from './visualize/visualize-widget-view.js';
@@ -53,6 +60,7 @@ interface TranscriptMessageActions {
 export function TranscriptMessage(props: {
   message: ThreadMessage;
   artifactsByRef: ArtifactsByRefMap;
+  planningWorkflowSnapshot?: PlanningWorkflowSnapshot | null;
   isRunning: boolean;
   onStartArtifactRun?: (request: RunRequest) => Promise<void> | void;
   attachmentImageUrl?: (attachmentId: string) => string | null;
@@ -60,7 +68,7 @@ export function TranscriptMessage(props: {
   // visualize 위젯의 sendPrompt를 기존 전송 경로로 번역하는 콜백
   onWidgetPrompt?: (prompt: string) => Promise<void> | void;
   // ask_user 카드 답변 — 사용자 선택이므로 아티팩트 귀속 없이 전송한다
-  onAskUserAnswer?: (prompt: string) => Promise<void> | void;
+  onAskUserAnswer?: AskUserAnswerHandler;
   // 위젯 발 도구 호출(run.tool) 번역 콜백
   onWidgetToolRequest?: WidgetToolRequestHandler;
   deferVisualizeRuntimeBoot?: boolean;
@@ -71,6 +79,7 @@ export function TranscriptMessage(props: {
   const {
     message,
     artifactsByRef,
+    planningWorkflowSnapshot = null,
     isRunning,
     onStartArtifactRun,
     attachmentImageUrl,
@@ -97,12 +106,43 @@ export function TranscriptMessage(props: {
         : null,
     [message.content, message.role],
   );
+  const askUserRequestKey = useMemo(() => {
+    if (message.role !== 'tool_call') {
+      return message.entryId;
+    }
+    try {
+      const parsed: unknown = JSON.parse(message.content);
+      return isRecord(parsed) && typeof parsed.callId === 'string'
+        ? parsed.callId
+        : message.entryId;
+    } catch {
+      return message.entryId;
+    }
+  }, [message.content, message.entryId, message.role]);
+  const messagePlanRendering = resolvePlanRenderingStampProjection(
+    message.role === 'assistant' && message.metadata?.phase === 'final_answer'
+      ? message.metadata.planStamp
+      : undefined,
+    planningWorkflowSnapshot,
+  );
+  if (
+    message.role === 'assistant' &&
+    message.metadata?.phase === 'commentary'
+  ) {
+    return <ReasoningDisclosure text={message.content} />;
+  }
   if (message.role === 'assistant') {
     const committedArtifact = readCommittedMessageArtifact(
       message,
       artifactsByRef,
     );
     if (committedArtifact) {
+      // 같은 아티팩트의 더 새 버전이 있으면 이 버전의 카드는 숨긴다 —
+      // 채팅에는 최신 카드 하나만 남고(♻ 재작성 포함), 과거 버전은 중앙
+      // 창의 ← v{n} → 스테퍼로 돌려 본다. 인라인 이미지는 대화 삽화라 유지.
+      const staleVersionChip =
+        !canRenderInlineImageArtifact(committedArtifact) &&
+        hasNewerArtifactVersion(committedArtifact, artifactsByRef);
       return (
         <>
           {message.content ? (
@@ -110,10 +150,13 @@ export function TranscriptMessage(props: {
               messageRole="assistant"
               content={message.content}
               renderCacheOwner={message}
+              planRendering={messagePlanRendering}
               {...(actions !== undefined ? { actions } : {})}
             />
           ) : null}
-          {canRenderInlineImageArtifact(committedArtifact) ? (
+          {staleVersionChip ? null : canRenderInlineImageArtifact(
+              committedArtifact,
+            ) ? (
             <div className="transcript-message from-assistant">
               <InlineImageArtifactMessage artifact={committedArtifact} />
             </div>
@@ -121,6 +164,7 @@ export function TranscriptMessage(props: {
             <div className="transcript-message from-assistant">
               <ArtifactReferenceChip
                 artifact={committedArtifact}
+                planningWorkflowSnapshot={planningWorkflowSnapshot}
                 onOpen={onOpenArtifact}
               />
             </div>
@@ -129,6 +173,7 @@ export function TranscriptMessage(props: {
               label="assistant"
               artifact={committedArtifact}
               isRunning={isRunning}
+              planningWorkflowSnapshot={planningWorkflowSnapshot}
               {...(onStartArtifactRun !== undefined
                 ? { onStartArtifactRun }
                 : {})}
@@ -146,6 +191,7 @@ export function TranscriptMessage(props: {
       <div className="transcript-message from-assistant">
         <VisualizeWidget
           view={visualizeWidgetView}
+          planningWorkflowSnapshot={planningWorkflowSnapshot}
           playback="instant"
           {...(deferVisualizeRuntimeBoot !== undefined
             ? { deferRuntimeBoot: deferVisualizeRuntimeBoot }
@@ -165,6 +211,7 @@ export function TranscriptMessage(props: {
       <div className="transcript-message from-assistant">
         <AskUserCard
           view={askUserCardView}
+          requestKey={askUserRequestKey}
           {...(onAskUserAnswer !== undefined
             ? { onAnswer: onAskUserAnswer }
             : {})}
@@ -212,6 +259,7 @@ export function TranscriptMessage(props: {
       messageRole={message.role}
       content={message.content}
       renderCacheOwner={message}
+      planRendering={messagePlanRendering}
       attachments={readMessageAttachments(message)}
       {...(message.role === 'user' &&
       message.metadata?.origin === 'artifact_frame'
@@ -298,6 +346,8 @@ export function ToolDiffBlock(props: { diff: ToolCallDiffView }) {
 function ToolResultBlock(props: { view: ToolResultView }) {
   const { view } = props;
   const [expanded, setExpanded] = useState(false);
+  const isPendingPtcResult =
+    view.ptcStatus === 'queued' || view.ptcStatus === 'running';
   return (
     <div className="tool-diff tool-result">
       <button
@@ -308,10 +358,10 @@ function ToolResultBlock(props: { view: ToolResultView }) {
         onClick={() => setExpanded((current) => !current)}
       >
         <span
-          className={`tool-result-status ${view.ok ? 'ok' : 'failed'}`}
+          className={`tool-result-status ${isPendingPtcResult ? 'pending' : view.ok ? 'ok' : 'failed'}`}
           aria-hidden="true"
         >
-          {view.ok ? '✓' : '!'}
+          {isPendingPtcResult ? '…' : view.ok ? '✓' : '!'}
         </span>
         <span className="tool-diff-path">{view.tool}</span>
         <span className="tool-result-summary" title={view.summary}>
@@ -366,6 +416,7 @@ export function TranscriptTextMessage(props: {
   attachmentImageUrl?: (attachmentId: string) => string | null;
   actions?: TranscriptMessageActions;
   renderCacheOwner?: object;
+  planRendering?: ReturnType<typeof resolvePlanRenderingStampProjection>;
   // 아티팩트 프레임 발 턴 귀속 라벨 (back-channel 설계 가시성 불변식) —
   // 사용자가 직접 친 질문과 프레임이 올린 요청을 채팅에서 구분한다.
   originBadge?: string;
@@ -377,6 +428,7 @@ export function TranscriptTextMessage(props: {
     attachmentImageUrl,
     actions,
     renderCacheOwner,
+    planRendering,
     originBadge,
   } = props;
   const [editing, setEditing] = useState(false);
@@ -385,6 +437,14 @@ export function TranscriptTextMessage(props: {
   const showActions =
     (messageRole === 'user' || messageRole === 'assistant') &&
     content.trim().length > 0;
+  const submitEdit = () => {
+    const nextPrompt = draft.trim();
+    if (nextPrompt === '') {
+      return;
+    }
+    setEditing(false);
+    actions?.onEditSubmit?.(nextPrompt);
+  };
 
   const wrapperClassName = `transcript-message ${
     messageRole === 'user' ? 'from-user' : 'from-assistant'
@@ -399,6 +459,17 @@ export function TranscriptTextMessage(props: {
           rows={Math.min(8, Math.max(2, draft.split('\n').length))}
           aria-label="질문 수정"
           onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (
+              event.key !== 'Enter' ||
+              event.shiftKey ||
+              event.nativeEvent.isComposing
+            ) {
+              return;
+            }
+            event.preventDefault();
+            submitEdit();
+          }}
         />
         <div className="message-actions user-actions editing">
           <button
@@ -415,10 +486,7 @@ export function TranscriptTextMessage(props: {
             type="button"
             className="message-action-button primary"
             disabled={!draft.trim()}
-            onClick={() => {
-              setEditing(false);
-              actions?.onEditSubmit?.(draft.trim());
-            }}
+            onClick={submitEdit}
           >
             보내기
           </button>
@@ -435,6 +503,11 @@ export function TranscriptTextMessage(props: {
         <div className="message-origin-badge">{originBadge}</div>
       ) : null}
       <div style={getTranscriptMessageStyle(messageRole)}>
+        {planRendering === null || planRendering === undefined ? null : (
+          <code className="plan-rendering-stamp" title={planRendering.title}>
+            {planRendering.label}
+          </code>
+        )}
         {messageRole !== 'user' && messageRole !== 'assistant' ? (
           <div style={assistantStyles.messageRole}>{messageRole}</div>
         ) : null}
@@ -495,7 +568,7 @@ function MessageActionsRow(props: {
   onBranch?: () => void;
 }) {
   const { role, content, onRetry, onEdit, onBranch } = props;
-  const { copied, copy } = useCopyToClipboard();
+  const { copied, clearCopied, copy } = useCopyToClipboard();
 
   return (
     <div
@@ -506,9 +579,10 @@ function MessageActionsRow(props: {
       <button
         type="button"
         className="message-action-button"
-        title="복사"
-        aria-label="메시지 복사"
+        title={copied ? '복사됨' : '복사'}
+        aria-label={copied ? '메시지 복사됨' : '메시지 복사'}
         onClick={() => copy(content)}
+        onBlur={clearCopied}
       >
         {copied ? '✓' : '⧉'}
       </button>

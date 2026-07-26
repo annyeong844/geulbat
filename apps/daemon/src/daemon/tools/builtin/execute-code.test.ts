@@ -171,7 +171,10 @@ void test('exec surfaces capacity pressure as a queued cell handoff', async () =
       workingDirectory: 'project',
       threadId: runState.threadId,
       runState,
-      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, executeCode: ptcExecuteCode },
+      },
       callbackToolDispatcher: makeUnexpectedCallbackToolDispatcher(),
     },
   );
@@ -196,6 +199,7 @@ void test('explorer child exec receives daemon-owned read-only independence prov
     parentRunId: testRunId('execute-code-explorer-parent'),
     ownerThreadId: testThreadId(912_3),
     subagentType: 'explorer',
+    capabilities: ['ptc'],
   });
   const ptcExecuteCode: PtcExecuteCodeRuntime = {
     async executeCode(args) {
@@ -227,7 +231,7 @@ void test('explorer child exec receives daemon-owned read-only independence prov
       currentFile: undefined,
       selection: undefined,
       approvalGranted: false,
-      approvalSessionId: 'approval-execute-code-explorer-child',
+      computerSessionId: 'approval-execute-code-explorer-child',
       permissionMode: 'basic',
       stateRoot: '/workspace/home-state',
       workingDirectory: 'project',
@@ -235,7 +239,10 @@ void test('explorer child exec receives daemon-owned read-only independence prov
       runState: undefined,
       emitAgentEvent: () => undefined,
       memoryIndex: undefined,
-      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, executeCode: ptcExecuteCode },
+      },
       callbackToolDispatcher: makeUnexpectedCallbackToolDispatcher(),
     },
   );
@@ -415,7 +422,10 @@ void test('exec returns compact runtime output without session identifiers', asy
       workingDirectory: 'project',
       threadId: runState.threadId,
       runState,
-      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, executeCode: ptcExecuteCode },
+      },
       callbackToolDispatcher: makeUnexpectedCallbackToolDispatcher(),
     },
   );
@@ -477,17 +487,11 @@ void test('exec returns compact runtime output without session identifiers', asy
 });
 
 void test('exec reuses a supplied resource snapshot ref before capturing a new one', async () => {
-  const daemonContext = createDaemonContext();
   const suppliedResourceSnapshotRef = {
     snapshotId: 'resource-snapshot-from-shared-window',
   } satisfies ToolExecutionResourceSnapshotRef;
   let captureCalled = false;
-  daemonContext.resourceBudgetProvider = {
-    captureSnapshot() {
-      captureCalled = true;
-      throw new Error('exec should reuse the supplied resource snapshot ref');
-    },
-  };
+  const daemonContext = createDaemonContext();
   let observedResourceSnapshotRef:
     | PtcExecuteCodePlacementResourceSnapshotRef
     | undefined;
@@ -524,7 +528,21 @@ void test('exec reuses a supplied resource snapshot ref before capturing a new o
       threadId: runState.threadId,
       runState,
       resourceSnapshotRef: suppliedResourceSnapshotRef,
-      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+      runtimeServices: {
+        ...daemonContext,
+        agent: {
+          ...daemonContext.agent,
+          resourceBudgetProvider: {
+            captureSnapshot() {
+              captureCalled = true;
+              throw new Error(
+                'exec should reuse the supplied resource snapshot ref',
+              );
+            },
+          },
+        },
+        ptc: { ...daemonContext.ptc, executeCode: ptcExecuteCode },
+      },
     },
   );
 
@@ -561,7 +579,7 @@ void test('exec callback handler dispatches admitted read-only tools and rejects
       stateRoot: daemonContext.homeStateRoot,
       workingDirectory: '',
       threadId,
-      agentSpawnRuntime: daemonContext,
+      runtimeServices: daemonContext,
       callbackToolDispatcher,
     });
     assert.ok(handler);
@@ -571,7 +589,7 @@ void test('exec callback handler dispatches admitted read-only tools and rejects
       stateRoot: daemonContext.homeStateRoot,
       workingDirectory: '',
       threadId,
-      agentSpawnRuntime: daemonContext,
+      runtimeServices: daemonContext,
       callbackToolDispatcher,
     });
     assert.ok(help);
@@ -692,7 +710,7 @@ void test('exec resolves Home-owned SDK wrappers independently of cwd and reject
       workingDirectory,
       stateRoot,
       threadId,
-      agentSpawnRuntime: daemonContext,
+      runtimeServices: daemonContext,
       callbackToolDispatcher,
       toolLibraryProjectionIdentity: {
         sdkVersion: resolved.pin.sdkVersion,
@@ -719,6 +737,10 @@ void test('exec resolves Home-owned SDK wrappers independently of cwd and reject
         {
           specifier: 'geulbat-sdk/tools/fetch-url',
           exportName: 'fetchUrl',
+        },
+        {
+          specifier: 'geulbat-sdk/tools/list-commands',
+          exportName: 'listCommands',
         },
         {
           specifier: 'geulbat-sdk/files/listFiles',
@@ -803,7 +825,7 @@ void test('exec callback handler fails closed before long wait when dispatcher i
 
     workingDirectory: 'project',
     threadId: testThreadId(919),
-    agentSpawnRuntime: daemonContext,
+    runtimeServices: daemonContext,
   });
   assert.ok(handler);
   assert.equal(
@@ -813,7 +835,7 @@ void test('exec callback handler fails closed before long wait when dispatcher i
 
       workingDirectory: 'project',
       threadId: testThreadId(919),
-      agentSpawnRuntime: daemonContext,
+      runtimeServices: daemonContext,
     }),
     undefined,
   );
@@ -875,7 +897,7 @@ void test('exec callback handler enters long wait after admission and before slo
 
     workingDirectory: 'project',
     threadId: testThreadId(918),
-    agentSpawnRuntime: daemonContext,
+    runtimeServices: daemonContext,
     callbackToolDispatcher,
   });
   assert.ok(handler);
@@ -905,7 +927,7 @@ void test('exec callback surface defaults to the read-only callable registry sna
 
     workingDirectory: 'project',
     threadId: testThreadId(916),
-    agentSpawnRuntime: daemonContext,
+    runtimeServices: daemonContext,
   });
   assert.ok(surface);
 
@@ -1000,7 +1022,10 @@ void test('exec callback surface intersects run allowed tool names before help o
       workingDirectory: 'project',
       threadId: testThreadId(917),
       allowedRegistryNames: [PTC_EXECUTE_CODE_TOOL_NAME],
-      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, executeCode: ptcExecuteCode },
+      },
     },
   );
 
@@ -1128,7 +1153,10 @@ void test('exec strips unstable failure diagnostics from tool output', async () 
 
       workingDirectory: 'project',
       threadId: testThreadId(913),
-      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, executeCode: ptcExecuteCode },
+      },
     },
   );
 
@@ -1221,7 +1249,10 @@ void test('exec projects opt-in store commit summaries and structured conflict r
 
     workingDirectory: 'project',
     threadId: testThreadId(914),
-    agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+    runtimeServices: {
+      ...daemonContext,
+      ptc: { ...daemonContext.ptc, executeCode: ptcExecuteCode },
+    },
   };
 
   const committed = await executeCodeTool.execute(
@@ -1295,7 +1326,10 @@ void test('exec rejects extra URL-shaped arguments before runtime invocation', a
 
       workingDirectory: 'project',
       threadId: testThreadId(914),
-      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, executeCode: ptcExecuteCode },
+      },
     },
   );
 

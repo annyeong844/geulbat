@@ -92,7 +92,10 @@ void test('browser_navigate returns digest-only runtime output without raw URL l
 
       workingDirectory: 'project',
       threadId: testThreadId(931),
-      agentSpawnRuntime: { ...daemonContext, ptcBrowserNavigate },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, browserNavigate: ptcBrowserNavigate },
+      },
       approvalGranted: true,
     },
   );
@@ -151,7 +154,10 @@ void test('browser_navigate strips unsafe failure diagnostics from tool output',
 
       workingDirectory: 'project',
       threadId: testThreadId(932),
-      agentSpawnRuntime: { ...daemonContext, ptcBrowserNavigate },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, browserNavigate: ptcBrowserNavigate },
+      },
       approvalGranted: true,
     },
   );

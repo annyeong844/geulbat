@@ -10,6 +10,14 @@ import { testThreadId } from '../../../test-support/thread-id.js';
 import { isToolObjectParameters } from '../types.js';
 import { waitTool } from './wait.js';
 
+function runtimeWithExecuteCode(ptcExecuteCode: PtcExecuteCodeRuntime) {
+  const daemonContext = createDaemonContext();
+  return {
+    ...daemonContext,
+    ptc: { ...daemonContext.ptc, executeCode: ptcExecuteCode },
+  };
+}
+
 void test('wait description teaches the exec running-cell protocol', () => {
   const parameters = waitTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
@@ -68,7 +76,7 @@ void test('wait preserves a queued cell as visible scheduler state', async () =>
 
       workingDirectory: 'project',
       threadId: testThreadId(920_1),
-      agentSpawnRuntime: { ...createDaemonContext(), ptcExecuteCode },
+      runtimeServices: runtimeWithExecuteCode(ptcExecuteCode),
     },
   );
 
@@ -206,7 +214,7 @@ void test('wait reads exec cell results through the current thread runtime', asy
 
       workingDirectory: 'project',
       threadId: testThreadId(921),
-      agentSpawnRuntime: { ...createDaemonContext(), ptcExecuteCode },
+      runtimeServices: runtimeWithExecuteCode(ptcExecuteCode),
     },
   );
 
@@ -263,7 +271,7 @@ void test('wait preserves detached-cell store commit conflicts as code-visible f
 
       workingDirectory: 'project',
       threadId: testThreadId(924),
-      agentSpawnRuntime: { ...createDaemonContext(), ptcExecuteCode },
+      runtimeServices: runtimeWithExecuteCode(ptcExecuteCode),
     },
   );
 
@@ -307,7 +315,7 @@ void test('wait maps runtime cancellation to an aborted tool result', async () =
 
       workingDirectory: 'project',
       threadId: testThreadId(922),
-      agentSpawnRuntime: { ...createDaemonContext(), ptcExecuteCode },
+      runtimeServices: runtimeWithExecuteCode(ptcExecuteCode),
     },
   );
 
@@ -350,7 +358,7 @@ void test('wait reports expired retained cell results distinctly from missing ce
 
       workingDirectory: 'project',
       threadId: testThreadId(923),
-      agentSpawnRuntime: { ...createDaemonContext(), ptcExecuteCode },
+      runtimeServices: runtimeWithExecuteCode(ptcExecuteCode),
     },
   );
 

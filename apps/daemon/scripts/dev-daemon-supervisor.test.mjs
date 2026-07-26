@@ -12,7 +12,10 @@ import {
   createDaemonSourceWatcher,
   runDaemonDevSupervisor,
 } from './dev-daemon-supervisor.mjs';
-import { createDaemonDevBundleBuilder } from './dev-daemon-bundle.mjs';
+import {
+  createDaemonDevBundleBuilder,
+  getDaemonDevWatchRoots,
+} from './dev-daemon-bundle.mjs';
 
 const validAuthEnv = {
   GEULBAT_DEV_TOKEN: 'daemon-supervisor-test-token',
@@ -99,6 +102,11 @@ test('daemon development bundle resolves workspace packages from source', async 
   };
   try {
     const appRoot = join(root, 'apps/daemon');
+    const entryPoint = join(appRoot, 'src/product-index.ts');
+    const sourceRoots = [
+      join(appRoot, 'src'),
+      join(root, 'packages/xharness/src'),
+    ];
     const sourceModulePath = join(appRoot, 'src/source-location.ts');
     await mkdir(dirname(sourceModulePath), { recursive: true });
     await writeFile(
@@ -109,6 +117,8 @@ test('daemon development bundle resolves workspace packages from source', async 
     const builder = await createDaemonDevBundleBuilder({
       root,
       appRoot,
+      entryPoint,
+      sourceRoots,
       createContext: async (options) => {
         buildOptions = options;
         for (const plugin of options.plugins) {
@@ -126,6 +136,10 @@ test('daemon development bundle resolves workspace packages from source', async 
     });
 
     assert.equal(builder.entryPath, join(appRoot, 'dist-dev/index.mjs'));
+    assert.deepEqual(buildOptions.entryPoints, {
+      index: entryPoint,
+      'command-host': join(appRoot, 'src/command-host/main.ts'),
+    });
     assert.deepEqual(buildOptions.external, ['@vscode/ripgrep', 'esbuild']);
     assert.deepEqual(
       resolveWorkspacePackage({ path: '@geulbat/protocol/run-channel' }),
@@ -134,6 +148,41 @@ test('daemon development bundle resolves workspace packages from source', async 
     assert.deepEqual(
       resolveWorkspacePackage({ path: '@geulbat/content-identity/sha256' }),
       { path: join(root, 'packages/content-identity/src/sha256.ts') },
+    );
+    assert.deepEqual(
+      resolveWorkspacePackage({
+        path: '@geulbat/artifact-runtime-policy/react-bundle-url',
+      }),
+      {
+        path: join(
+          root,
+          'packages/artifact-runtime-policy/src/react-bundle-url.ts',
+        ),
+      },
+    );
+    assert.deepEqual(
+      resolveWorkspacePackage({ path: '@geulbat/daemon/host' }),
+      { path: join(root, 'apps/daemon/src/host.ts') },
+    );
+    assert.deepEqual(
+      resolveWorkspacePackage({
+        path: '@geulbat/daemon/loop-implementation-admission',
+      }),
+      {
+        path: join(
+          root,
+          'apps/daemon/src/daemon/agent/loop-implementation-admission.ts',
+        ),
+      },
+    );
+    assert.deepEqual(
+      resolveWorkspacePackage({ path: '@geulbat/xharness/harness-run-store' }),
+      { path: join(root, 'packages/xharness/src/harness-run-store.ts') },
+    );
+    assert.ok(
+      getDaemonDevWatchRoots(root).includes(
+        join(root, 'packages/artifact-runtime-policy/src'),
+      ),
     );
     const loadedSource = await loadSourceModule({ path: sourceModulePath });
     assert.equal(

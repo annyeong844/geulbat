@@ -1,4 +1,8 @@
-import { assertAgentRunId, assertAgentThreadId } from '../contract.js';
+import {
+  assertAgentRunId,
+  assertAgentThreadId,
+  type PermissionMode,
+} from '../contract.js';
 import type {
   ApprovalGrantContext,
   ApprovalGrantScope,
@@ -16,14 +20,22 @@ interface PendingApprovalEntry {
   runId: string;
   threadId: string;
   approvalGrantContext: ApprovalGrantContext;
-  resolve: (decision: ApprovalDecision) => void;
+  onPermissionModeChange?: (permissionMode: PermissionMode) => void;
+  resolve: (
+    decision: ApprovalDecision,
+    grantScope?: ApprovalGrantScope,
+    permissionMode?: PermissionMode,
+  ) => void;
   reject: (error: unknown) => void;
 }
 
 interface ResolvedApprovalEntry {
   runId: string;
   threadId: string;
-  sessionId: string;
+  computerSessionId: string;
+  decision: ApprovalDecision;
+  grantScope: ApprovalGrantScope | undefined;
+  permissionMode: PermissionMode | undefined;
 }
 
 type ApprovalCheckpointMutationResult =
@@ -40,26 +52,22 @@ interface ApprovalCheckpointPort {
 }
 
 export interface ApprovalGate {
-  clearApprovalSessionGrants(sessionId: string): void;
-  clearApprovalSessionRuntime(sessionId: string): void;
-  rebindApprovalSessionRuntime(
-    previousSessionId: string,
-    nextSessionId: string,
-  ): void;
+  clearComputerSessionGrants(computerSessionId: string): void;
+  clearComputerSessionRuntime(computerSessionId: string): void;
   // Existence probe only — does a pending approval entry exist for this triple.
   // NOT an authorization check: it ignores the caller's session. For any
-  // authorization decision use hasPendingApprovalForSession, which binds the
-  // pending entry to the caller's approval session.
+  // authorization decision use hasApprovalDecisionAuthority, which binds the
+  // exact pending/resolved entry to the caller's computer session.
   hasPendingApprovalEntry(
     callId: string,
     runId: string,
     threadId: string,
   ): boolean;
-  hasPendingApprovalForSession(
+  hasApprovalDecisionAuthority(
     callId: string,
     runId: string,
     threadId: string,
-    sessionId: string,
+    computerSessionId: string,
   ): boolean;
   waitForApproval(
     callId: string,
@@ -68,6 +76,7 @@ export interface ApprovalGate {
     approvalGrantContext: ApprovalGrantContext,
     signal?: AbortSignal,
     onPending?: () => void,
+    onPermissionModeChange?: (permissionMode: PermissionMode) => void,
   ): Promise<ApprovalDecision>;
   resolveApproval(
     callId: string,
@@ -75,7 +84,16 @@ export interface ApprovalGate {
     threadId: string,
     decision: DurableApprovalDecision,
     grantScope?: ApprovalGrantScope,
+    permissionMode?: PermissionMode,
   ): Promise<'resolved' | 'already_resolved' | 'not_found'>;
+}
+
+function approvalRuntimeIdentityKey(
+  callId: string,
+  runId: string,
+  threadId: string,
+): string {
+  return JSON.stringify([callId, runId, threadId]);
 }
 
 export function createApprovalGate(args: {
@@ -87,60 +105,59 @@ export function createApprovalGate(args: {
   const resolvedApprovals = new Map<string, ResolvedApprovalEntry>();
 
   return {
-    clearApprovalSessionGrants(sessionId) {
-      approvalGrants.clearApprovalSession(sessionId);
+    clearComputerSessionGrants(computerSessionId) {
+      approvalGrants.clearComputerSession(computerSessionId);
     },
-    clearApprovalSessionRuntime(sessionId) {
+    clearComputerSessionRuntime(computerSessionId) {
       const pendingForSession = [...pendingApprovals.entries()].filter(
-        ([, entry]) => entry.approvalGrantContext.sessionId === sessionId,
+        ([, entry]) =>
+          entry.approvalGrantContext.computerSessionId === computerSessionId,
       );
       for (const [, entry] of pendingForSession) {
         entry.resolve('aborted');
       }
-      for (const [callId, entry] of resolvedApprovals.entries()) {
-        if (entry.sessionId === sessionId) {
-          resolvedApprovals.delete(callId);
+      for (const [identityKey, entry] of resolvedApprovals.entries()) {
+        if (entry.computerSessionId === computerSessionId) {
+          resolvedApprovals.delete(identityKey);
         }
       }
-      approvalGrants.clearApprovalSession(sessionId);
-    },
-    rebindApprovalSessionRuntime(previousSessionId, nextSessionId) {
-      if (previousSessionId === nextSessionId) {
-        return;
-      }
-      for (const entry of pendingApprovals.values()) {
-        if (entry.approvalGrantContext.sessionId !== previousSessionId) {
-          continue;
-        }
-        entry.approvalGrantContext = {
-          ...entry.approvalGrantContext,
-          sessionId: nextSessionId,
-        };
-      }
-      for (const entry of resolvedApprovals.values()) {
-        if (entry.sessionId === previousSessionId) {
-          entry.sessionId = nextSessionId;
-        }
-      }
-      approvalGrants.rebindApprovalRunGrants(previousSessionId, nextSessionId);
+      approvalGrants.clearComputerSession(computerSessionId);
     },
     hasPendingApprovalEntry(callId, runId, threadId) {
       const validThreadId = assertAgentThreadId(threadId);
-      const entry = pendingApprovals.get(callId);
+      const identityKey = approvalRuntimeIdentityKey(
+        callId,
+        runId,
+        validThreadId,
+      );
+      const entry = pendingApprovals.get(identityKey);
       return (
         entry !== undefined &&
         entry.runId === runId &&
         entry.threadId === validThreadId
       );
     },
-    hasPendingApprovalForSession(callId, runId, threadId, sessionId) {
+    hasApprovalDecisionAuthority(callId, runId, threadId, computerSessionId) {
       const validThreadId = assertAgentThreadId(threadId);
-      const entry = pendingApprovals.get(callId);
+      const identityKey = approvalRuntimeIdentityKey(
+        callId,
+        runId,
+        validThreadId,
+      );
+      const pending = pendingApprovals.get(identityKey);
+      if (pending !== undefined) {
+        return (
+          pending.runId === runId &&
+          pending.threadId === validThreadId &&
+          pending.approvalGrantContext.computerSessionId === computerSessionId
+        );
+      }
+      const resolved = resolvedApprovals.get(identityKey);
       return (
-        entry !== undefined &&
-        entry.runId === runId &&
-        entry.threadId === validThreadId &&
-        entry.approvalGrantContext.sessionId === sessionId
+        resolved !== undefined &&
+        resolved.runId === runId &&
+        resolved.threadId === validThreadId &&
+        resolved.computerSessionId === computerSessionId
       );
     },
     async waitForApproval(
@@ -150,9 +167,15 @@ export function createApprovalGate(args: {
       approvalGrantContext,
       signal,
       onPending,
+      onPermissionModeChange,
     ) {
       const validRunId = assertAgentRunId(runId);
       const validThreadId = assertAgentThreadId(threadId);
+      const identityKey = approvalRuntimeIdentityKey(
+        callId,
+        validRunId,
+        validThreadId,
+      );
       let settled = false;
       let abortHandler: (() => void) | undefined;
       let settleWait: (decision: ApprovalDecision) => void = () => undefined;
@@ -161,18 +184,25 @@ export function createApprovalGate(args: {
         settleWait = resolve;
         rejectWait = reject;
       });
-      const resolveOnce = (decision: ApprovalDecision) => {
+      const resolveOnce = (
+        decision: ApprovalDecision,
+        grantScope?: ApprovalGrantScope,
+        permissionMode?: PermissionMode,
+      ) => {
         if (settled) {
           return;
         }
         settled = true;
-        if (pendingApprovals.get(callId) === entry) {
-          pendingApprovals.delete(callId);
+        if (pendingApprovals.get(identityKey) === entry) {
+          pendingApprovals.delete(identityKey);
         }
-        resolvedApprovals.set(callId, {
+        resolvedApprovals.set(identityKey, {
           runId: validRunId,
           threadId: validThreadId,
-          sessionId: approvalGrantContext.sessionId,
+          computerSessionId: approvalGrantContext.computerSessionId,
+          decision,
+          grantScope,
+          permissionMode,
         });
         if (abortHandler && signal) {
           signal.removeEventListener('abort', abortHandler);
@@ -184,8 +214,8 @@ export function createApprovalGate(args: {
           return;
         }
         settled = true;
-        if (pendingApprovals.get(callId) === entry) {
-          pendingApprovals.delete(callId);
+        if (pendingApprovals.get(identityKey) === entry) {
+          pendingApprovals.delete(identityKey);
         }
         if (abortHandler && signal) {
           signal.removeEventListener('abort', abortHandler);
@@ -196,10 +226,13 @@ export function createApprovalGate(args: {
         runId: validRunId,
         threadId: validThreadId,
         approvalGrantContext,
+        ...(onPermissionModeChange === undefined
+          ? {}
+          : { onPermissionModeChange }),
         resolve: resolveOnce,
         reject: rejectOnce,
       };
-      pendingApprovals.set(callId, entry);
+      pendingApprovals.set(identityKey, entry);
 
       abortHandler = () => {
         resolveOnce('aborted');
@@ -226,14 +259,20 @@ export function createApprovalGate(args: {
           const durableApproval = checkpointResult.approval;
           if (
             durableApproval.decision === 'approved' &&
-            durableApproval.grantScope === 'run'
+            durableApproval.grantScope !== undefined
           ) {
             approvalGrants.registerApprovalGrant(
               approvalGrantContext,
               durableApproval.grantScope,
             );
           }
-          resolveOnce(durableApproval.decision);
+          resolveOnce(
+            durableApproval.decision,
+            durableApproval.grantScope,
+            durableApproval.decision === 'approved'
+              ? approvalGrantContext.permissionMode
+              : undefined,
+          );
         } else if (!settled) {
           onPending?.();
         }
@@ -249,10 +288,35 @@ export function createApprovalGate(args: {
       threadId,
       decision,
       grantScope = 'once',
+      permissionMode,
     ) {
       const validRunId = assertAgentRunId(runId);
       const validThreadId = assertAgentThreadId(threadId);
-      const entry = pendingApprovals.get(callId);
+      const identityKey = approvalRuntimeIdentityKey(
+        callId,
+        validRunId,
+        validThreadId,
+      );
+      const readResolvedResult = ():
+        | 'resolved'
+        | 'already_resolved'
+        | undefined => {
+        const resolved = resolvedApprovals.get(identityKey);
+        if (
+          resolved === undefined ||
+          resolved.runId !== validRunId ||
+          resolved.threadId !== validThreadId
+        ) {
+          return undefined;
+        }
+        return resolved.decision === decision &&
+          resolved.grantScope === grantScope &&
+          (permissionMode === undefined ||
+            resolved.permissionMode === permissionMode)
+          ? 'resolved'
+          : 'already_resolved';
+      };
+      const entry = pendingApprovals.get(identityKey);
       if (entry) {
         if (entry.runId !== validRunId || entry.threadId !== validThreadId) {
           return 'not_found';
@@ -263,33 +327,30 @@ export function createApprovalGate(args: {
           callId,
           decision,
           grantScope,
+          ...(permissionMode === undefined ? {} : { permissionMode }),
         });
         if (!checkpointResult.ok) {
           return checkpointResult.code === 'approval_conflict'
             ? 'already_resolved'
             : 'not_found';
         }
-        if (pendingApprovals.get(callId) !== entry) {
-          return 'already_resolved';
+        if (pendingApprovals.get(identityKey) !== entry) {
+          return readResolvedResult() ?? 'already_resolved';
         }
         if (decision === 'approved') {
+          if (permissionMode !== undefined) {
+            entry.approvalGrantContext.permissionMode = permissionMode;
+            entry.onPermissionModeChange?.(permissionMode);
+          }
           approvalGrants.registerApprovalGrant(
             entry.approvalGrantContext,
             grantScope,
           );
         }
-        entry.resolve(decision);
+        entry.resolve(decision, grantScope, permissionMode);
         return 'resolved';
       }
-      const resolved = resolvedApprovals.get(callId);
-      if (
-        resolved !== undefined &&
-        resolved.runId === validRunId &&
-        resolved.threadId === validThreadId
-      ) {
-        return 'already_resolved';
-      }
-      return 'not_found';
+      return readResolvedResult() ?? 'not_found';
     },
   };
 }

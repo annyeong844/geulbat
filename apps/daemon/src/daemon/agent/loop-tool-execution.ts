@@ -16,40 +16,54 @@ import {
   parseToolCallArguments,
   recordInvalidToolArguments,
   recordToolCall,
+  recordToolCalls,
   recordToolResult,
+  recordToolResults,
 } from './loop-tool-support.js';
 import {
   buildChildLaunchPayload,
   buildChildLaunchRejected,
   type AgentLaunchRejectedToolRaw,
+  type DurableSubagentLaunchRequest,
+  type SubagentLaunchRequestInput,
   type SubagentType,
 } from '../subagent-runtime-contracts.js';
 import { PTC_EXECUTE_CODE_WAIT_TOOL_NAME } from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
 import type {
   ExecuteResult,
   ToolExecutionResourceSnapshotRef,
+  ToolResultProjectionCapability,
 } from '../tools/types.js';
+import { buildAgentToolExecutionContext } from '../tools/types.js';
 import type {
   ToolMeta,
   ToolRecoveryStrategy,
 } from '../tools/tool-registry-model.js';
 import { toolError } from '../tools/result.js';
+import type { ToolOutputProjectionRound } from './tool-output-offload.js';
+import type { ToolResultObservation } from './observer/agent-loop-observer.js';
 import {
   hasPendingInterject,
   isInterjectFlushRequested,
 } from '../sessions/active-run-interject-buffer.js';
+import { resolveAgentSpawnLaunchRequest } from '../tools/builtin/agent-spawn.js';
 
 interface ProcessFunctionCallsArgs {
   functionCalls: FunctionCall[];
   round: number;
   history: HistoryItem[];
   runtime: AgentToolCallExecutionRuntime;
+  projectionRound?: ToolOutputProjectionRound;
+  observeToolResult?:
+    | ((observation: ToolResultObservation) => void)
+    | undefined;
 }
 
 interface PreparedFunctionCall {
   functionCall: FunctionCall;
   toolArgs: Record<string, unknown>;
   computerFilesMayHaveChanged: boolean;
+  resultProjection?: ToolResultProjectionCapability;
 }
 
 type SharedFunctionCallKind = 'read_only' | 'subagent_launch' | 'ptc_cell';
@@ -71,12 +85,20 @@ type FunctionCallScheduleItem =
       kind: 'invalid_args';
       functionCall: FunctionCall;
       errorResult: ExecuteResult;
+      resultProjection?: ToolResultProjectionCapability;
     };
 
 export async function processFunctionCalls(
   args: ProcessFunctionCallsArgs,
 ): Promise<StepResult<void>> {
-  const { functionCalls, round, history, runtime } = args;
+  const {
+    functionCalls,
+    round,
+    history,
+    runtime,
+    projectionRound,
+    observeToolResult,
+  } = args;
   const { emit } = runtime;
   const runContext = getToolRuntimeRunContext(runtime);
   const schedule = prepareFunctionCallSchedule(functionCalls, runtime);
@@ -94,6 +116,8 @@ export async function processFunctionCalls(
         round,
         history,
         runtime,
+        projectionRound,
+        observeToolResult,
         toolResult: buildAbortedSkippedToolResult(),
       });
       return settleFunctionCallProcessingAbort(runtime, abortSignalBeforeItem);
@@ -108,6 +132,8 @@ export async function processFunctionCalls(
         round,
         history,
         runtime,
+        projectionRound,
+        observeToolResult,
         toolResult: buildInterjectFlushSkippedToolResult(),
       });
       return { ok: true, value: undefined };
@@ -119,6 +145,8 @@ export async function processFunctionCalls(
         round,
         history,
         runtime,
+        projectionRound,
+        observeToolResult,
       });
       if (!result.ok) {
         return result;
@@ -131,6 +159,8 @@ export async function processFunctionCalls(
           round,
           history,
           runtime,
+          projectionRound,
+          observeToolResult,
           toolResult: buildAbortedSkippedToolResult(),
         });
         return settleFunctionCallProcessingAbort(
@@ -151,6 +181,11 @@ export async function processFunctionCalls(
         runId: runtime.executionContextBase.runId,
         history,
         emit,
+        projectionRound,
+        ...(item.resultProjection === undefined
+          ? {}
+          : { resultProjection: item.resultProjection }),
+        ...(observeToolResult === undefined ? {} : { observeToolResult }),
       });
       const abortSignalAfterInvalidArguments =
         getFunctionCallProcessingAbortSignal(runtime);
@@ -160,6 +195,8 @@ export async function processFunctionCalls(
           round,
           history,
           runtime,
+          projectionRound,
+          observeToolResult,
           toolResult: buildAbortedSkippedToolResult(),
         });
         return settleFunctionCallProcessingAbort(
@@ -192,6 +229,8 @@ export async function processFunctionCalls(
         round,
         history,
         runtime,
+        projectionRound,
+        observeToolResult,
         recordCall: false,
         toolResult: buildAbortedSkippedToolResult(),
       });
@@ -200,6 +239,8 @@ export async function processFunctionCalls(
         round,
         history,
         runtime,
+        projectionRound,
+        observeToolResult,
         toolResult: buildAbortedSkippedToolResult(),
       });
       return settleFunctionCallProcessingAbort(
@@ -208,6 +249,7 @@ export async function processFunctionCalls(
       );
     }
 
+    const executionStartedAt = Date.now();
     const execution = await executeFunctionCall({
       functionCall: preparedFunctionCall.functionCall,
       round,
@@ -224,6 +266,8 @@ export async function processFunctionCalls(
           round,
           history,
           runtime,
+          projectionRound,
+          observeToolResult,
           toolResult: buildDeferredTerminalSkippedToolResult(
             deferredTerminalFailure,
           ),
@@ -248,12 +292,18 @@ export async function processFunctionCalls(
       round,
       toolResult: execution.value,
       toolOutputRecoveryAvailable: isToolOutputRecoveryAvailable(runtime),
+      ...(preparedFunctionCall.resultProjection === undefined
+        ? {}
+        : { resultProjection: preparedFunctionCall.resultProjection }),
+      elapsedMs: Date.now() - executionStartedAt,
       computerFilesMayHaveChanged:
         preparedFunctionCall.computerFilesMayHaveChanged,
       runContext,
       runId: runtime.executionContextBase.runId,
       history,
       emit,
+      projectionRound,
+      ...(observeToolResult === undefined ? {} : { observeToolResult }),
     });
     const abortSignalAfterToolResult =
       getFunctionCallProcessingAbortSignal(runtime);
@@ -263,6 +313,8 @@ export async function processFunctionCalls(
         round,
         history,
         runtime,
+        projectionRound,
+        observeToolResult,
         toolResult: buildAbortedSkippedToolResult(),
       });
       return settleFunctionCallProcessingAbort(
@@ -304,6 +356,10 @@ async function recordSkippedScheduleItems(args: {
   round: number;
   history: HistoryItem[];
   runtime: AgentToolCallExecutionRuntime;
+  projectionRound?: ToolOutputProjectionRound | undefined;
+  observeToolResult?:
+    | ((observation: ToolResultObservation) => void)
+    | undefined;
   toolResult: ExecuteResult;
 }): Promise<void> {
   for (const item of args.scheduleItems) {
@@ -315,7 +371,14 @@ async function recordSkippedScheduleItems(args: {
           round: args.round,
           history: args.history,
           runtime: args.runtime,
+          projectionRound: args.projectionRound,
+          ...(args.observeToolResult === undefined
+            ? {}
+            : { observeToolResult: args.observeToolResult }),
           recordCall: true,
+          ...(preparedFunctionCall.resultProjection === undefined
+            ? {}
+            : { resultProjection: preparedFunctionCall.resultProjection }),
           toolResult: args.toolResult,
         });
       }
@@ -329,7 +392,16 @@ async function recordSkippedScheduleItems(args: {
         round: args.round,
         history: args.history,
         runtime: args.runtime,
+        projectionRound: args.projectionRound,
+        ...(args.observeToolResult === undefined
+          ? {}
+          : { observeToolResult: args.observeToolResult }),
         recordCall: true,
+        ...(item.preparedFunctionCall.resultProjection === undefined
+          ? {}
+          : {
+              resultProjection: item.preparedFunctionCall.resultProjection,
+            }),
         toolResult: args.toolResult,
       });
       continue;
@@ -341,7 +413,14 @@ async function recordSkippedScheduleItems(args: {
       round: args.round,
       history: args.history,
       runtime: args.runtime,
+      projectionRound: args.projectionRound,
+      ...(args.observeToolResult === undefined
+        ? {}
+        : { observeToolResult: args.observeToolResult }),
       recordCall: true,
+      ...(item.resultProjection === undefined
+        ? {}
+        : { resultProjection: item.resultProjection }),
       toolResult: args.toolResult,
     });
   }
@@ -353,7 +432,12 @@ async function recordSkippedFunctionCall(args: {
   round: number;
   history: HistoryItem[];
   runtime: AgentToolCallExecutionRuntime;
+  projectionRound?: ToolOutputProjectionRound | undefined;
+  observeToolResult?:
+    | ((observation: ToolResultObservation) => void)
+    | undefined;
   recordCall: boolean;
+  resultProjection?: ToolResultProjectionCapability;
   toolResult: ExecuteResult;
 }): Promise<void> {
   const runContext = getToolRuntimeRunContext(args.runtime);
@@ -372,11 +456,18 @@ async function recordSkippedFunctionCall(args: {
     round: args.round,
     toolResult: args.toolResult,
     toolOutputRecoveryAvailable: isToolOutputRecoveryAvailable(args.runtime),
+    ...(args.resultProjection === undefined
+      ? {}
+      : { resultProjection: args.resultProjection }),
     computerFilesMayHaveChanged: false,
     runContext,
     runId: args.runtime.executionContextBase.runId,
     history: args.history,
     emit: args.runtime.emit,
+    projectionRound: args.projectionRound,
+    ...(args.observeToolResult === undefined
+      ? {}
+      : { observeToolResult: args.observeToolResult }),
   });
 }
 
@@ -429,6 +520,7 @@ function prepareFunctionCallSchedule(
   };
 
   for (const functionCall of functionCalls) {
+    const toolMeta = runtime.toolRegistry.getToolMeta(functionCall.name);
     const parsedArgs = parseToolCallArguments(functionCall.arguments);
     if (!parsedArgs.ok) {
       flushSharedWindow();
@@ -436,11 +528,13 @@ function prepareFunctionCallSchedule(
         kind: 'invalid_args',
         functionCall,
         errorResult: parsedArgs.error,
+        ...(toolMeta?.resultProjection === undefined
+          ? {}
+          : { resultProjection: toolMeta.resultProjection }),
       });
       continue;
     }
 
-    const toolMeta = runtime.toolRegistry.getToolMeta(functionCall.name);
     const sharedKind = classifySharedFunctionCallKind({
       toolMeta,
       toolName: functionCall.name,
@@ -452,6 +546,9 @@ function prepareFunctionCallSchedule(
       toolArgs: parsedArgs.args,
       computerFilesMayHaveChanged:
         toolMeta !== null ? toolMeta.mayMutateComputerFiles : false,
+      ...(toolMeta?.resultProjection === undefined
+        ? {}
+        : { resultProjection: toolMeta.resultProjection }),
     };
 
     if (sharedKind === null) {
@@ -526,6 +623,10 @@ interface ProcessSharedFunctionCallWindowArgs {
   round: number;
   history: HistoryItem[];
   runtime: AgentToolCallExecutionRuntime;
+  projectionRound?: ToolOutputProjectionRound | undefined;
+  observeToolResult?:
+    | ((observation: ToolResultObservation) => void)
+    | undefined;
 }
 
 async function processSharedFunctionCallWindow({
@@ -533,6 +634,8 @@ async function processSharedFunctionCallWindow({
   round,
   history,
   runtime,
+  projectionRound,
+  observeToolResult,
 }: ProcessSharedFunctionCallWindowArgs): Promise<StepResult<void>> {
   const runState = getToolRuntimeRunState(runtime);
 
@@ -545,7 +648,60 @@ async function processSharedFunctionCallWindow({
   const subagentLaunchCalls = preparedFunctionCalls.filter(
     isPreparedSubagentLaunchCall,
   );
+  const builtinAgentSpawnCalls = subagentLaunchCalls.filter(
+    ({ functionCall }) => functionCall.name === 'agent_spawn',
+  );
   const ptcCellCalls = preparedFunctionCalls.filter(isPreparedPtcCellCall);
+  const stagedExecutions: Array<
+    | {
+        execution: Awaited<ReturnType<typeof executeFunctionCall>>;
+        elapsedMs: number | null;
+      }
+    | undefined
+  > = [];
+  let subagentLaunchesRejected = false;
+  const durableLaunchRequests: SubagentLaunchRequestInput[] = [];
+  let invalidAgentSpawnBatch = false;
+
+  for (const preparedFunctionCall of builtinAgentSpawnCalls) {
+    const resolution = resolveAgentSpawnLaunchRequest(
+      preparedFunctionCall.toolArgs,
+      buildAgentToolExecutionContext({
+        base: runtime.executionContextBase,
+        callId: preparedFunctionCall.functionCall.callId,
+        approvalGranted: true,
+      }),
+    );
+    if (!resolution.ok) {
+      stagedExecutions[preparedFunctionCalls.indexOf(preparedFunctionCall)] = {
+        execution: { ok: true, value: resolution.result },
+        elapsedMs: null,
+      };
+      invalidAgentSpawnBatch = true;
+      continue;
+    }
+    durableLaunchRequests.push(resolution.value.request);
+  }
+  if (invalidAgentSpawnBatch) {
+    for (const preparedFunctionCall of subagentLaunchCalls) {
+      const preparedIndex = preparedFunctionCalls.indexOf(preparedFunctionCall);
+      if (stagedExecutions[preparedIndex] !== undefined) {
+        continue;
+      }
+      stagedExecutions[preparedIndex] = {
+        execution: {
+          ok: true,
+          value: toolError(
+            'invalid_args',
+            'same-round agent_spawn batch contains an invalid request',
+          ),
+        },
+        elapsedMs: null,
+      };
+    }
+    subagentLaunchesRejected = true;
+  }
+
   let sharedResourceSnapshotRef: ToolExecutionResourceSnapshotRef | undefined;
   if (
     subagentLaunchCalls.length > 0 &&
@@ -553,7 +709,7 @@ async function processSharedFunctionCallWindow({
     runState !== undefined
   ) {
     const resourceSnapshot =
-      runtime.executionContextBase.agentSpawnRuntime?.resourceBudgetProvider.captureSnapshot(
+      runtime.executionContextBase.runtimeServices?.agent.resourceBudgetProvider.captureSnapshot(
         { runState },
       );
     sharedResourceSnapshotRef =
@@ -563,55 +719,121 @@ async function processSharedFunctionCallWindow({
             snapshotId: resourceSnapshot.snapshotId,
           };
   }
-  const stagedExecutions: Array<
-    Awaited<ReturnType<typeof executeFunctionCall>> | undefined
-  > = [];
-  let subagentLaunchesRejected = false;
-
   if (
     subagentLaunchCalls.length > 0 &&
     runState !== undefined &&
-    !runtime.executionContextBase.agentSpawnRuntime
+    !runtime.executionContextBase.runtimeServices
   ) {
     for (const preparedFunctionCall of subagentLaunchCalls) {
       stagedExecutions[preparedFunctionCalls.indexOf(preparedFunctionCall)] = {
-        ok: true,
-        value: buildRejectedSubagentLaunchResult({
-          preparedFunctionCall,
-          errorCode: 'execution_failed',
-          error: 'agent spawn runtime is required',
-        }),
+        execution: {
+          ok: true,
+          value: buildRejectedSubagentLaunchResult({
+            preparedFunctionCall,
+            errorCode: 'execution_failed',
+            error: 'agent spawn runtime is required',
+          }),
+        },
+        elapsedMs: null,
       };
     }
     subagentLaunchesRejected = true;
   }
 
+  const launchRuntime = runtime.executionContextBase.runtimeServices;
+  const launchRequestStore = launchRuntime?.subagent.launchRequests;
+  let durableAcceptedRequests: readonly DurableSubagentLaunchRequest[] = [];
+  if (durableLaunchRequests.length > 0 && !subagentLaunchesRejected) {
+    let persistenceFailed = launchRequestStore === undefined;
+    if (launchRequestStore !== undefined) {
+      try {
+        durableAcceptedRequests = launchRequestStore.enqueueSubagentLaunchBatch(
+          durableLaunchRequests,
+        );
+      } catch {
+        persistenceFailed = true;
+      }
+    }
+    if (persistenceFailed) {
+      for (const preparedFunctionCall of subagentLaunchCalls) {
+        stagedExecutions[preparedFunctionCalls.indexOf(preparedFunctionCall)] =
+          {
+            execution: {
+              ok: true,
+              value: toolError(
+                'persistence_unavailable',
+                'agent launch batch could not be durably accepted',
+              ),
+            },
+            elapsedMs: null,
+          };
+      }
+      subagentLaunchesRejected = true;
+    }
+  }
+
   const batchAdmission =
     subagentLaunchCalls.length > 0 &&
     runState !== undefined &&
-    runtime.executionContextBase.agentSpawnRuntime &&
+    launchRuntime &&
     !subagentLaunchesRejected
-      ? runtime.executionContextBase.agentSpawnRuntime.subagentAdmission.reserveSubagentLaunchSlots(
-          {
-            runState,
-            requestedChildren: subagentLaunchCalls.length,
-          },
-        )
+      ? launchRuntime.subagent.admission.reserveSubagentLaunchSlots({
+          runState,
+          requestedChildren: subagentLaunchCalls.length,
+          ultraReasoning: runtime.executionContextBase.ultraReasoning ?? false,
+          transferable: true,
+        })
       : undefined;
 
   if (batchAdmission && !batchAdmission.ok) {
-    for (const preparedFunctionCall of subagentLaunchCalls) {
-      stagedExecutions[preparedFunctionCalls.indexOf(preparedFunctionCall)] = {
-        ok: true,
-        value: buildRejectedSubagentLaunchResult({
-          preparedFunctionCall,
-          errorCode: batchAdmission.errorCode,
-          error: batchAdmission.error,
-          effectiveMax: batchAdmission.effectiveMax,
-        }),
-      };
+    const canDurablyDeferWholeBatch =
+      launchRequestStore !== undefined &&
+      launchRuntime?.subagent.launchPromotions !== undefined &&
+      builtinAgentSpawnCalls.length === subagentLaunchCalls.length &&
+      durableAcceptedRequests.length === subagentLaunchCalls.length;
+    let deferred = false;
+    if (canDurablyDeferWholeBatch) {
+      try {
+        launchRequestStore.markSubagentLaunchDeferredBatch({
+          childRunIds: durableAcceptedRequests.map(
+            (request) => request.childRunId,
+          ),
+          deferReason: 'batch_group_wait',
+        });
+        deferred = true;
+      } catch {
+        deferred = false;
+      }
     }
-    subagentLaunchesRejected = true;
+    if (!deferred) {
+      for (const durableRequest of durableAcceptedRequests) {
+        try {
+          launchRequestStore?.markSubagentLaunchFailedToStart({
+            childRunId: durableRequest.childRunId,
+            reason: batchAdmission.error,
+          });
+        } catch {
+          // The tool result below remains an explicit rejection; the store
+          // operation already reports its own persistence diagnostic.
+        }
+      }
+      for (const preparedFunctionCall of subagentLaunchCalls) {
+        stagedExecutions[preparedFunctionCalls.indexOf(preparedFunctionCall)] =
+          {
+            execution: {
+              ok: true,
+              value: buildRejectedSubagentLaunchResult({
+                preparedFunctionCall,
+                errorCode: batchAdmission.errorCode,
+                error: batchAdmission.error,
+                effectiveMax: batchAdmission.effectiveMax,
+              }),
+            },
+            elapsedMs: null,
+          };
+      }
+      subagentLaunchesRejected = true;
+    }
   }
 
   const runnablePreparedFunctionCalls = preparedFunctionCalls
@@ -623,8 +845,9 @@ async function processSharedFunctionCallWindow({
 
   try {
     const executions = await Promise.allSettled(
-      runnablePreparedFunctionCalls.map(({ preparedFunctionCall }) =>
-        executeFunctionCall({
+      runnablePreparedFunctionCalls.map(async ({ preparedFunctionCall }) => {
+        const startedAt = Date.now();
+        const execution = await executeFunctionCall({
           functionCall: preparedFunctionCall.functionCall,
           round,
           toolArgs: preparedFunctionCall.toolArgs,
@@ -634,8 +857,9 @@ async function processSharedFunctionCallWindow({
           sharedResourceSnapshotRef !== undefined
             ? { resourceSnapshotRef: sharedResourceSnapshotRef }
             : {}),
-        }),
-      ),
+        });
+        return { execution, elapsedMs: Date.now() - startedAt };
+      }),
     );
     for (const [executionIndex, execution] of executions.entries()) {
       const runnable = runnablePreparedFunctionCalls[executionIndex];
@@ -644,11 +868,14 @@ async function processSharedFunctionCallWindow({
           execution.status === 'fulfilled'
             ? execution.value
             : {
-                ok: true,
-                value: toolError(
-                  'execution_failed',
-                  'tool execution failed unexpectedly',
-                ),
+                execution: {
+                  ok: true,
+                  value: toolError(
+                    'execution_failed',
+                    'tool execution failed unexpectedly',
+                  ),
+                },
+                elapsedMs: null,
               };
       }
     }
@@ -659,10 +886,16 @@ async function processSharedFunctionCallWindow({
   }
 
   let terminalFailure: StepResult<void> | undefined;
-  for (const [index, execution] of stagedExecutions.entries()) {
-    if (!execution) {
+  const recordableExecutions: Array<{
+    preparedFunctionCall: PreparedFunctionCall;
+    toolResult: ExecuteResult;
+    elapsedMs: number | null;
+  }> = [];
+  for (const [index, stagedExecution] of stagedExecutions.entries()) {
+    if (!stagedExecution) {
       continue;
     }
+    const { execution, elapsedMs } = stagedExecution;
     if (!execution.ok) {
       terminalFailure = execution;
       continue;
@@ -673,14 +906,35 @@ async function processSharedFunctionCallWindow({
       continue;
     }
 
-    await recordParallelExecutionResult({
+    recordableExecutions.push({
       preparedFunctionCall,
-      round,
-      history,
-      runtime,
       toolResult: execution.value,
+      elapsedMs,
     });
   }
+
+  await recordToolResults({
+    results: recordableExecutions.map(
+      ({ preparedFunctionCall, toolResult, elapsedMs }) => ({
+        functionCall: preparedFunctionCall.functionCall,
+        round,
+        toolResult,
+        toolOutputRecoveryAvailable: isToolOutputRecoveryAvailable(runtime),
+        ...(preparedFunctionCall.resultProjection === undefined
+          ? {}
+          : { resultProjection: preparedFunctionCall.resultProjection }),
+        elapsedMs,
+        computerFilesMayHaveChanged:
+          preparedFunctionCall.computerFilesMayHaveChanged,
+      }),
+    ),
+    runContext: getToolRuntimeRunContext(runtime),
+    runId: runtime.executionContextBase.runId,
+    history,
+    emit: runtime.emit,
+    projectionRound,
+    ...(observeToolResult === undefined ? {} : { observeToolResult }),
+  });
 
   if (terminalFailure) {
     return terminalFailure;
@@ -698,19 +952,19 @@ async function recordPreparedParallelToolCalls(args: {
   const runContext = getToolRuntimeRunContext(runtime);
   const { emit } = runtime;
 
-  for (const preparedFunctionCall of preparedFunctionCalls) {
-    await recordToolCall({
+  await recordToolCalls({
+    calls: preparedFunctionCalls.map((preparedFunctionCall) => ({
       functionCall: preparedFunctionCall.functionCall,
       round,
       toolArgs: preparedFunctionCall.toolArgs,
-      runContext,
-      emit,
       ...readToolRecoveryStrategyInput(
         runtime,
         preparedFunctionCall.functionCall.name,
       ),
-    });
-  }
+    })),
+    runContext,
+    emit,
+  });
 }
 
 function readToolRecoveryStrategyInput(
@@ -750,28 +1004,6 @@ function buildRejectedSubagentLaunchResult(args: {
   }
 
   return buildChildLaunchPayload(buildChildLaunchRejected(rejectionArgs));
-}
-
-async function recordParallelExecutionResult(args: {
-  preparedFunctionCall: PreparedFunctionCall;
-  round: number;
-  history: HistoryItem[];
-  runtime: AgentToolCallExecutionRuntime;
-  toolResult: Parameters<typeof recordToolResult>[0]['toolResult'];
-}): Promise<void> {
-  const { preparedFunctionCall, round, history, runtime, toolResult } = args;
-  await recordToolResult({
-    functionCall: preparedFunctionCall.functionCall,
-    round,
-    toolResult,
-    toolOutputRecoveryAvailable: isToolOutputRecoveryAvailable(runtime),
-    computerFilesMayHaveChanged:
-      preparedFunctionCall.computerFilesMayHaveChanged,
-    runContext: getToolRuntimeRunContext(runtime),
-    runId: runtime.executionContextBase.runId,
-    history,
-    emit: runtime.emit,
-  });
 }
 
 function getPreparedSubagentType(

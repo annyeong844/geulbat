@@ -1,9 +1,15 @@
+import type {
+  AgentLoopImplementationIdentity,
+  AgentLoopKernelEvent,
+} from '@geulbat/agent-loop/kernel';
+
 import type { ProviderRequestOptions } from '../../llm/provider/provider-options.js';
 import type { RunContext } from '../../run-context.js';
 import type { ToolLibraryProjectionPort } from '../../tools/tool-library-projection-port.js';
 import type { ToolDefinition } from '../../tools/tool-registry-model.js';
 import type { PermissionMode, ThreadId } from '../contract.js';
 import type { AgentToolSurface } from '../loop-types.js';
+import { runDetached } from '../../utils/run-detached.js';
 
 type AgentLoopObserverRunStateKind = 'none' | 'root' | 'child';
 
@@ -22,9 +28,10 @@ interface AgentLoopObserverToolLibraryProjectionSummary {
 }
 
 export interface AgentLoopObserverSnapshot {
-  schemaVersion: 4;
+  schemaVersion: 5;
   runId: string;
   threadId: string;
+  loopImplementation: AgentLoopImplementationIdentity;
   input: {
     currentFileProvided: boolean;
     selectionProvided: boolean;
@@ -120,29 +127,47 @@ interface BuildAgentLoopObserverSnapshotArgs {
   initialHistoryItemCount: number;
   pendingBackgroundResultCount: number;
   midRunSteerEnabled: boolean;
+  loopImplementation: AgentLoopImplementationIdentity;
 }
 
-export type AgentLoopObserverEvent =
-  | {
-      schemaVersion: 1;
-      kind: 'round_started';
-      runId: string;
-      threadId: string;
-      round: number;
-      historyItemCount: number;
-      sawFirstModelRequest: boolean;
-    }
-  | {
-      schemaVersion: 1;
-      kind: 'round_completed';
-      runId: string;
-      threadId: string;
-      round: number;
-      outcome: 'continue' | 'terminal';
-      terminalOk?: boolean;
-    };
+export type AgentLoopObserverEvent = AgentLoopKernelEvent & {
+  schemaVersion: 3;
+  runId: string;
+  threadId: string;
+};
 
-type AgentLoopObserverDeliveryOperation = 'record_snapshot' | 'record_event';
+export type ToolResultParseQuality =
+  | 'empty'
+  | 'opaque_text'
+  | 'structured_json';
+
+export type ToolResultProjectionOutcome =
+  | 'duplicate_ref'
+  | 'existing_ref'
+  | 'inline'
+  | 'snapshot_failed'
+  | 'snapshot_failed_inline'
+  | 'summary_ref';
+
+export interface ToolResultObservation {
+  schemaVersion: 1;
+  runId: string;
+  threadId: string;
+  callId: string;
+  toolName: string;
+  outcome: 'success' | 'failure';
+  elapsedMs: number | null;
+  fullOutputBytes: number;
+  modelVisibleBytes: number;
+  parseQuality: ToolResultParseQuality;
+  projection: ToolResultProjectionOutcome;
+  exactDurableRecovery: boolean;
+}
+
+type AgentLoopObserverDeliveryOperation =
+  | 'record_snapshot'
+  | 'record_event'
+  | 'record_tool_result';
 
 export interface AgentLoopObserverDiagnostic {
   schemaVersion: 1;
@@ -154,6 +179,7 @@ export interface AgentLoopObserverDiagnostic {
 export interface AgentLoopObserver {
   recordSnapshot(snapshot: AgentLoopObserverSnapshot): void | Promise<void>;
   recordEvent(event: AgentLoopObserverEvent): void | Promise<void>;
+  recordToolResult?(observation: ToolResultObservation): void | Promise<void>;
   recordDiagnostic?(
     diagnostic: AgentLoopObserverDiagnostic,
   ): void | Promise<void>;
@@ -210,15 +236,28 @@ export function recordAgentLoopObserverEvent(
   );
 }
 
+export function recordAgentLoopObserverToolResult(
+  observer: AgentLoopObserver | undefined,
+  observation: ToolResultObservation,
+): void {
+  deliverObserverCall(observer, 'record_tool_result', () =>
+    observer?.recordToolResult?.(observation),
+  );
+}
+
 export function buildAgentLoopObserverSnapshot(
   args: BuildAgentLoopObserverSnapshotArgs,
 ): AgentLoopObserverSnapshot {
   const toolNames = args.toolDefs.map((toolDef) => toolDef.name);
   const retryPolicy = args.providerRequestOptions.modelRoundRetry;
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     runId: args.runId,
     threadId: args.runContext.threadId,
+    loopImplementation: {
+      implementationId: args.loopImplementation.implementationId,
+      contractVersion: args.loopImplementation.contractVersion,
+    },
     input: {
       currentFileProvided: args.currentFileProvided,
       selectionProvided: args.selectionProvided,
@@ -313,39 +352,16 @@ export function buildAgentLoopObserverSnapshot(
   };
 }
 
-export function buildAgentLoopObserverRoundStartedEvent(args: {
+export function buildAgentLoopObserverEvent(args: {
   runId: string;
   threadId: string;
-  round: number;
-  historyItemCount: number;
-  sawFirstModelRequest: boolean;
+  event: AgentLoopKernelEvent;
 }): AgentLoopObserverEvent {
   return {
-    schemaVersion: 1,
-    kind: 'round_started',
+    ...args.event,
+    schemaVersion: 3,
     runId: args.runId,
     threadId: args.threadId,
-    round: args.round,
-    historyItemCount: args.historyItemCount,
-    sawFirstModelRequest: args.sawFirstModelRequest,
-  };
-}
-
-export function buildAgentLoopObserverRoundCompletedEvent(args: {
-  runId: string;
-  threadId: string;
-  round: number;
-  outcome: 'continue' | 'terminal';
-  terminalOk?: boolean;
-}): AgentLoopObserverEvent {
-  return {
-    schemaVersion: 1,
-    kind: 'round_completed',
-    runId: args.runId,
-    threadId: args.threadId,
-    round: args.round,
-    outcome: args.outcome,
-    ...(args.terminalOk !== undefined ? { terminalOk: args.terminalOk } : {}),
   };
 }
 
@@ -402,7 +418,9 @@ function observeMaybeAsync(
   onRejected: () => void,
 ): void {
   if (isPromiseLike(result)) {
-    void Promise.resolve(result).catch(onRejected);
+    runDetached('agent/loop-observer-callback', () =>
+      Promise.resolve(result).catch(onRejected),
+    );
   }
 }
 

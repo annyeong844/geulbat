@@ -1,5 +1,5 @@
 export const TOOL_SDK_RELEASE = {
-  packageVersion: '0.1.0',
+  packageVersion: '0.2.0',
   apiVersion: '1',
   transportProtocolVersion: '1',
   projectionSchemaVersion: '1',
@@ -16,7 +16,11 @@ export const TOOL_SDK_CAPABILITIES = [
   'tool-output.recover',
 ] as const;
 
-export const TOOL_SDK_PUBLIC_TOOLS = ['files.read', 'files.list'] as const;
+export const TOOL_SDK_PUBLIC_TOOLS = [
+  'files.read',
+  'files.list',
+  'files.search',
+] as const;
 
 export type ToolSdkCapability = (typeof TOOL_SDK_CAPABILITIES)[number];
 export type ToolSdkPublicTool = (typeof TOOL_SDK_PUBLIC_TOOLS)[number];

@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { brandThreadId } from '../../lib/id-brand-helpers.js';
 
-import { parseArtifactEnvelope } from './artifact-envelope.js';
 import {
   canOverwriteRememberedGeneratedBinaryExport,
   rememberGeneratedBinaryExportTarget,
@@ -26,7 +25,6 @@ import {
   type ResolvedArtifactSourceRef,
 } from './artifact-types.js';
 import { createCommittedArtifactViewModel } from './artifact-view-model.js';
-import { createLegacyArtifactPreviewViewModel as createArtifactViewModel } from './test-support/legacy-artifact-preview.js';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 
 const THREAD_ID = '00000000-0000-4000-8000-000000000001';
@@ -62,170 +60,41 @@ function createArtifactSourceAuthority(
   });
 }
 
-void test('parseArtifactEnvelope returns completed markdown artifact for valid envelope', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# hello\n<!-- /GEULBAT_ARTIFACT -->',
-  );
+function createThreadArtifactVersion(
+  overrides: Partial<ThreadArtifactVersion> = {},
+): ThreadArtifactVersion {
+  return {
+    artifactId: 'art_1',
+    version: 1,
+    parentVersion: null,
+    baseVersion: null,
+    renderer: 'markdown',
+    payload: '# hello',
+    digest: '요약',
+    contentHash: 'hash',
+    createdAt: MESSAGE_TIMESTAMP,
+    createdByRunId: 'run-1',
+    previewValidation: { ok: true },
+    title: null,
+    persistenceEpoch: 0,
+    sourceRef: {
+      kind: 'thread-file',
+      workingDirectory: 'stories/sample',
+      threadId: BRANDED_THREAD_ID,
+      runId: 'run-1',
+      filePath: 'episodes/ch01.md',
+      messageTimestamp: MESSAGE_TIMESTAMP,
+    },
+    ...overrides,
+  };
+}
 
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'completed');
-  assert.equal(result.renderer, 'markdown');
-  assert.equal(result.digest, '요약');
-  assert.equal(result.payload.trim(), '# hello');
-});
-
-void test('parseArtifactEnvelope returns completed code artifact for supported code renderer', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"code","digest":"예시"} -->\nconst value = 1;\n<!-- /GEULBAT_ARTIFACT -->',
-  );
-
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'completed');
-  assert.equal(result.renderer, 'code');
-  assert.equal(result.digest, '예시');
-  assert.equal(result.payload.trim(), 'const value = 1;');
-});
-
-void test('parseArtifactEnvelope returns completed diff artifact for supported diff renderer', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"diff","digest":"patch"} -->\n@@ -1 +1 @@\n-old\n+new\n<!-- /GEULBAT_ARTIFACT -->',
-  );
-
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'completed');
-  assert.equal(result.renderer, 'diff');
-  assert.equal(result.digest, 'patch');
-  assert.match(result.payload, /\+new/);
-});
-
-void test('parseArtifactEnvelope returns completed table artifact for supported table renderer', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"table","digest":"rows"} -->\n| name | score |\n| --- | --- |\n| sample | 10 |\n<!-- /GEULBAT_ARTIFACT -->',
-  );
-
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'completed');
-  assert.equal(result.renderer, 'table');
-  assert.equal(result.digest, 'rows');
-  assert.match(result.payload, /\| sample \| 10 \|/);
-});
-
-void test('parseArtifactEnvelope returns completed html5 artifact for supported html5 renderer', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"html5","digest":"page"} --><section><h1>Hello</h1><a href="#footnote">Jump</a></section><!-- /GEULBAT_ARTIFACT -->',
-  );
-
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'completed');
-  assert.equal(result.renderer, 'html5');
-  assert.equal(result.digest, 'page');
-  assert.match(result.payload, /<h1>Hello<\/h1>/);
-});
-
-void test('parseArtifactEnvelope returns none for legacy fenced envelope', () => {
-  const result = parseArtifactEnvelope(
-    '```artifact\ndigest: romance-fantasy-character-map-v1\ntype: text/html\ntitle: 로맨스 판타지 관계도\n\n<!DOCTYPE html><html lang="ko"><body><section>hello</section></body></html>\n```',
-  );
-
-  assert.deepEqual(result, {
-    kind: 'none',
-    raw: '```artifact\ndigest: romance-fantasy-character-map-v1\ntype: text/html\ntitle: 로맨스 판타지 관계도\n\n<!DOCTYPE html><html lang="ko"><body><section>hello</section></body></html>\n```',
-  });
-});
-
-void test('parseArtifactEnvelope returns none for legacy xml-like artifact tag', () => {
-  const result = parseArtifactEnvelope(
-    '<artifact digest="react-preview-heart-v1" renderer="react_bundle">import React from "react";</artifact>',
-  );
-
-  assert.deepEqual(result, {
-    kind: 'none',
-    raw: '<artifact digest="react-preview-heart-v1" renderer="react_bundle">import React from "react";</artifact>',
-  });
-});
-
-void test('parseArtifactEnvelope returns completed js artifact for supported js renderer', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"js","digest":"canvas-demo"} -->\nconst root = document.getElementById("geulbat-js-root");\nif (root) root.textContent = "hello";\n<!-- /GEULBAT_ARTIFACT -->',
-  );
-
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'completed');
-  assert.equal(result.renderer, 'js');
-  assert.equal(result.digest, 'canvas-demo');
-  assert.match(result.payload, /geulbat-js-root/);
-});
-
-void test('parseArtifactEnvelope returns completed react_bundle artifact for supported renderer', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"react_bundle","digest":"react-demo"} -->\n{"entryUrl":"https://fixtures.geulbat.local/public-web/react-bundle-counter/entry.js"}\n<!-- /GEULBAT_ARTIFACT -->',
-  );
-
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'completed');
-  assert.equal(result.renderer, 'react_bundle');
-  assert.equal(result.digest, 'react-demo');
-  assert.match(result.payload, /"entryUrl"/);
-});
-
-void test('parseArtifactEnvelope keeps partial payload in streaming state before end marker', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# hello',
-  );
-
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'streaming');
-  assert.equal(result.payload.trim(), '# hello');
-});
-
-void test('parseArtifactEnvelope falls back on unsupported renderer', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"timeline","digest":"요약"} -->\nvalue\n<!-- /GEULBAT_ARTIFACT -->',
-  );
-
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'fallback');
-  assert.match(result.issue ?? '', /unsupported artifact renderer/);
-});
-
-void test('parseArtifactEnvelope falls back on missing renderer as unsupported artifact', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"digest":"요약"} -->\nvalue\n<!-- /GEULBAT_ARTIFACT -->',
-  );
-
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'fallback');
-  assert.match(result.issue ?? '', /unsupported artifact renderer/);
-});
-
-void test('parseArtifactEnvelope falls back on malformed header JSON', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {renderer:"markdown"} -->\n# hello',
-  );
-
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'fallback');
-  assert.match(result.issue ?? '', /header JSON parse failed/);
-});
-
-void test('parseArtifactEnvelope falls back on nested artifact markers', () => {
-  const result = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\nouter\n<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"중첩"} -->\ninner\n<!-- /GEULBAT_ARTIFACT -->',
-  );
-
-  assert.equal(result.kind, 'artifact');
-  assert.equal(result.state, 'fallback');
-  assert.match(result.issue ?? '', /nested artifact envelope/);
-});
-
-void test('createArtifactViewModel exposes visible apply and export actions for a completed markdown artifact', () => {
-  const view = createArtifactViewModel({
-    rawText:
-      '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# hello\n<!-- /GEULBAT_ARTIFACT -->',
+void test('createCommittedArtifactViewModel exposes apply and export actions for a markdown object', () => {
+  const view = createCommittedArtifactViewModel({
+    artifact: createThreadArtifactVersion(),
     sourceRef: createResolvedArtifactSourceRef({
       filePath: 'episodes/ch01.md',
     }),
-    isRunning: false,
   });
 
   assert.equal(view.actions.apply.visible, true);
@@ -234,115 +103,28 @@ void test('createArtifactViewModel exposes visible apply and export actions for 
   assert.equal(view.actions.export.enabled, true);
 });
 
-void test('createArtifactViewModel keeps code artifact preview visible without widening markdown-only actions', () => {
-  const view = createArtifactViewModel({
-    rawText:
-      '<!-- GEULBAT_ARTIFACT {"renderer":"code","digest":"요약"} -->\nconst value = 1;\n<!-- /GEULBAT_ARTIFACT -->',
-    sourceRef: createResolvedArtifactSourceRef({
-      filePath: 'episodes/ch01.ts',
-    }),
-    isRunning: false,
-  });
+void test('createCommittedArtifactViewModel keeps non-markdown previews outside markdown-only actions', () => {
+  const renderers = [
+    'code',
+    'diff',
+    'table',
+    'html5',
+    'js',
+    'react_bundle',
+  ] as const;
 
-  assert.equal(view.parsed.kind, 'artifact');
-  assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.apply.visible, false);
-  assert.equal(view.actions.export.visible, false);
-});
+  for (const renderer of renderers) {
+    const view = createCommittedArtifactViewModel({
+      artifact: createThreadArtifactVersion({ renderer }),
+      sourceRef: createResolvedArtifactSourceRef({
+        filePath: 'episodes/ch01.md',
+      }),
+    });
 
-void test('createArtifactViewModel keeps diff artifact preview visible without widening markdown-only actions', () => {
-  const view = createArtifactViewModel({
-    rawText:
-      '<!-- GEULBAT_ARTIFACT {"renderer":"diff","digest":"patch"} -->\n@@ -1 +1 @@\n-old\n+new\n<!-- /GEULBAT_ARTIFACT -->',
-    sourceRef: createResolvedArtifactSourceRef({
-      filePath: 'episodes/ch01.md',
-    }),
-    isRunning: false,
-  });
-
-  assert.equal(view.parsed.kind, 'artifact');
-  assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.apply.visible, false);
-  assert.equal(view.actions.export.visible, false);
-});
-
-void test('createArtifactViewModel keeps table artifact preview visible without widening markdown-only actions', () => {
-  const view = createArtifactViewModel({
-    rawText:
-      '<!-- GEULBAT_ARTIFACT {"renderer":"table","digest":"rows"} -->\n| name | score |\n| --- | --- |\n| sample | 10 |\n<!-- /GEULBAT_ARTIFACT -->',
-    sourceRef: createResolvedArtifactSourceRef({
-      filePath: 'notes/scores.md',
-    }),
-    isRunning: false,
-  });
-
-  assert.equal(view.parsed.kind, 'artifact');
-  assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.apply.visible, false);
-  assert.equal(view.actions.export.visible, false);
-});
-
-void test('createArtifactViewModel keeps html5 artifact preview visible without widening markdown-only actions', () => {
-  const view = createArtifactViewModel({
-    rawText:
-      '<!-- GEULBAT_ARTIFACT {"renderer":"html5","digest":"page"} --><section><h1>Hello</h1><a href="#jump">Jump</a></section><!-- /GEULBAT_ARTIFACT -->',
-    sourceRef: createResolvedArtifactSourceRef({
-      filePath: 'notes/preview.html',
-    }),
-    isRunning: false,
-  });
-
-  assert.equal(view.parsed.kind, 'artifact');
-  assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.apply.visible, false);
-  assert.equal(view.actions.export.visible, false);
-});
-
-void test('createArtifactViewModel keeps react bundle artifact preview visible without widening markdown-only actions', () => {
-  const view = createArtifactViewModel({
-    rawText:
-      '<!-- GEULBAT_ARTIFACT {"renderer":"react_bundle","digest":"react-demo"} -->\n{"entryUrl":"https://fixtures.geulbat.local/public-web/react-bundle-counter/entry.js"}\n<!-- /GEULBAT_ARTIFACT -->',
-    sourceRef: createResolvedArtifactSourceRef({
-      filePath: 'notes/react-demo.js',
-    }),
-    isRunning: false,
-  });
-
-  assert.equal(view.parsed.kind, 'artifact');
-  assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.apply.visible, false);
-  assert.equal(view.actions.export.visible, false);
-});
-
-void test('createArtifactViewModel keeps js artifact preview visible without widening markdown-only actions', () => {
-  const view = createArtifactViewModel({
-    rawText:
-      '<!-- GEULBAT_ARTIFACT {"renderer":"js","digest":"canvas-demo"} -->\nconst root = document.getElementById("geulbat-js-root");\nif (root) root.textContent = "hello";\n<!-- /GEULBAT_ARTIFACT -->',
-    sourceRef: createResolvedArtifactSourceRef({
-      filePath: 'notes/demo.js',
-    }),
-    isRunning: false,
-  });
-
-  assert.equal(view.parsed.kind, 'artifact');
-  assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.actions.apply.visible, false);
-  assert.equal(view.actions.export.visible, false);
-});
-
-void test('createArtifactViewModel downgrades incomplete artifact to fallback after stream settles', () => {
-  const view = createArtifactViewModel({
-    rawText:
-      '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# hello',
-    sourceRef: createResolvedArtifactSourceRef({
-      filePath: 'episodes/ch01.md',
-    }),
-    isRunning: false,
-  });
-
-  assert.equal(view.parsed.kind, 'artifact');
-  assert.equal(view.parsed.state, 'fallback');
-  assert.equal(view.actions.apply.visible, false);
+    assert.equal(view.artifact.renderer, renderer);
+    assert.equal(view.actions.apply.visible, false);
+    assert.equal(view.actions.export.visible, false);
+  }
 });
 
 void test('rememberGeneratedBinaryExportTarget captures the binary export path and versionToken', () => {
@@ -402,12 +184,10 @@ void test('canOverwriteRememberedGeneratedBinaryExport requires exact same-path 
 });
 
 void test('buildArtifactApplyRunDraftFromAuthority produces a top-level run request instead of a write shortcut', () => {
-  const parsed = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# hello\n<!-- /GEULBAT_ARTIFACT -->',
-  );
+  const artifact = createThreadArtifactVersion();
 
   const draft = buildArtifactApplyRunDraftFromAuthority({
-    parsed,
+    artifact,
     sourceAuthority: createArtifactSourceAuthority(
       {
         filePath: 'episodes/ch01.md',
@@ -443,35 +223,12 @@ void test('buildArtifactApplyRunDraftFromAuthority produces a top-level run requ
   assert.match(draft.prompt, /<\/artifact_preview>/);
 });
 
-void test('buildArtifactApplyRunDraftFromAuthority requires a completed artifact', () => {
-  const parsed = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# hello',
-  );
-
-  assert.equal(
-    buildArtifactApplyRunDraftFromAuthority({
-      parsed,
-      sourceAuthority: createArtifactSourceAuthority(
-        {
-          runId: null,
-          filePath: 'episodes/ch01.md',
-          messageTimestamp: null,
-        },
-        { requireFilePath: true },
-      ),
-    }),
-    null,
-  );
-});
-
 void test('buildArtifactApplyRunDraftFromAuthority requires full artifact session authority and target file context', () => {
-  const parsed = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# hello\n<!-- /GEULBAT_ARTIFACT -->',
-  );
+  const artifact = createThreadArtifactVersion();
 
   assert.equal(
     buildArtifactApplyRunDraftFromAuthority({
-      parsed,
+      artifact,
       sourceAuthority: createArtifactSourceAuthority(
         {
           filePath: 'episodes/ch01.md',
@@ -484,7 +241,7 @@ void test('buildArtifactApplyRunDraftFromAuthority requires full artifact sessio
   );
   assert.equal(
     buildArtifactApplyRunDraftFromAuthority({
-      parsed,
+      artifact,
       sourceAuthority: createArtifactSourceAuthority(
         {
           filePath: null,
@@ -497,13 +254,11 @@ void test('buildArtifactApplyRunDraftFromAuthority requires full artifact sessio
 });
 
 void test('buildArtifactExportRunDraftFromAuthority requires an explicit target path', () => {
-  const parsed = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# hello\n<!-- /GEULBAT_ARTIFACT -->',
-  );
+  const artifact = createThreadArtifactVersion();
 
   assert.equal(
     buildArtifactExportRunDraftFromAuthority({
-      parsed,
+      artifact,
       sourceAuthority: createArtifactSourceAuthority(),
       targetPath: '',
     }),
@@ -511,7 +266,7 @@ void test('buildArtifactExportRunDraftFromAuthority requires an explicit target 
   );
 
   const draft = buildArtifactExportRunDraftFromAuthority({
-    parsed,
+    artifact,
     sourceAuthority: createArtifactSourceAuthority({
       filePath: 'episodes/ch01.md',
     }),
@@ -573,14 +328,9 @@ void test('createCommittedArtifactViewModel does not rehydrate a legacy envelope
     }),
   });
 
-  assert.equal(view.parsed.kind, 'artifact');
-  if (view.parsed.kind !== 'artifact') {
-    return;
-  }
-  assert.equal(view.parsed.state, 'completed');
-  assert.equal(view.parsed.payload, '# hello');
-  assert.equal(view.parsed.raw, '# hello');
-  assert.doesNotMatch(view.parsed.raw, /GEULBAT_ARTIFACT/);
+  assert.equal(view.artifact, artifact);
+  assert.equal(view.artifact.payload, '# hello');
+  assert.doesNotMatch(view.artifact.payload, /GEULBAT_ARTIFACT/);
 });
 
 void test('createCommittedArtifactViewModel hides open-source action when committed source file path is absent', () => {
@@ -621,26 +371,12 @@ void test('createCommittedArtifactViewModel hides open-source action when commit
   assert.equal(view.actions.apply.visible, false);
 });
 
-void test('buildArtifactExportRunDraftFromAuthority requires full artifact session authority even for completed artifacts', () => {
-  const parsed = parseArtifactEnvelope(
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# hello\n<!-- /GEULBAT_ARTIFACT -->',
-  );
+void test('buildArtifactExportRunDraftFromAuthority requires full artifact session authority', () => {
+  const artifact = createThreadArtifactVersion();
 
   assert.equal(
     buildArtifactExportRunDraftFromAuthority({
-      parsed,
-      sourceAuthority: createArtifactSourceAuthority({
-        threadId: null,
-        runId: null,
-        messageTimestamp: null,
-      }),
-      targetPath: 'exports/ch01-preview.md',
-    }),
-    null,
-  );
-  assert.equal(
-    buildArtifactExportRunDraftFromAuthority({
-      parsed,
+      artifact,
       sourceAuthority: createArtifactSourceAuthority({
         threadId: null,
         runId: null,
@@ -905,15 +641,13 @@ void test('artifact durability helpers derive canonical authority and explicit i
   );
 });
 
-void test('createArtifactViewModel hides explicit export when artifact session authority is incomplete', () => {
-  const view = createArtifactViewModel({
-    rawText:
-      '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# hello\n<!-- /GEULBAT_ARTIFACT -->',
+void test('createCommittedArtifactViewModel hides explicit export when artifact session authority is incomplete', () => {
+  const view = createCommittedArtifactViewModel({
+    artifact: createThreadArtifactVersion(),
     sourceRef: createResolvedArtifactSourceRef({
       filePath: 'episodes/ch01.md',
       messageTimestamp: null,
     }),
-    isRunning: false,
   });
 
   assert.equal(view.actions.apply.visible, false);

@@ -8,9 +8,17 @@
  */
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync, globSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { availableParallelism, tmpdir } from 'node:os';
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
+import { performance } from 'node:perf_hooks';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import {
@@ -25,6 +33,7 @@ export function parseRunnerArgs(args) {
   const patterns = [];
   let jobs;
   let testRoot;
+  let timingOutput;
   let workspace;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -55,6 +64,18 @@ export function parseRunnerArgs(args) {
     }
     if (argument.startsWith('--test-root=')) {
       testRoot = argument.slice('--test-root='.length);
+      continue;
+    }
+    if (argument === '--timing-output') {
+      timingOutput = args[index + 1];
+      if (timingOutput === undefined) {
+        throw new Error('--timing-output requires a value');
+      }
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('--timing-output=')) {
+      timingOutput = argument.slice('--timing-output='.length);
       continue;
     }
     if (argument === '--workspace') {
@@ -90,11 +111,14 @@ export function parseRunnerArgs(args) {
   if (testRoot !== undefined && testRoot.length === 0) {
     throw new Error('--test-root must not be empty');
   }
+  if (timingOutput !== undefined && timingOutput.length === 0) {
+    throw new Error('--timing-output must not be empty');
+  }
   if (workspace !== undefined && workspace.length === 0) {
     throw new Error('--workspace must not be empty');
   }
 
-  return { jobs: parsedJobs, patterns, testRoot, workspace };
+  return { jobs: parsedJobs, patterns, testRoot, timingOutput, workspace };
 }
 
 export function expandTestFiles(patterns, cwd = process.cwd()) {
@@ -352,7 +376,7 @@ function printResult(result, cwd, testRoot) {
 
 async function runPhase(files, options) {
   if (files.length === 0) {
-    return { failures: [], interrupted: false };
+    return { failures: [], results: [] };
   }
 
   const results = new Array(files.length);
@@ -371,14 +395,18 @@ async function runPhase(files, options) {
         return;
       }
       let result;
+      const startedAt = performance.now();
       try {
-        result = await options.runFile(files[index], {
-          cwd: options.cwd,
-          env: options.env,
-          outputDirectory: options.outputDirectory,
-          activeChildren: options.scheduler.activeChildren,
-          onUnsafeSettlement: options.onUnsafeSettlement,
-        });
+        result = {
+          ...(await options.runFile(files[index], {
+            cwd: options.cwd,
+            env: options.env,
+            outputDirectory: options.outputDirectory,
+            activeChildren: options.scheduler.activeChildren,
+            onUnsafeSettlement: options.onUnsafeSettlement,
+          })),
+          durationMs: Math.round(performance.now() - startedAt),
+        };
       } finally {
         release();
       }
@@ -401,7 +429,10 @@ async function runPhase(files, options) {
       printResult(result, options.cwd, options.testRoot);
     }
   }
-  return { failures };
+  return {
+    failures,
+    results: results.filter((result) => result !== undefined),
+  };
 }
 
 function createConcurrencyGate(limit) {
@@ -440,12 +471,14 @@ export async function runTestFiles(
     onUnsafeSettlement = () => {},
   } = {},
 ) {
+  const startedAt = performance.now();
   validateSerialTestLanes(lanes, { cwd, testRoot });
   const laneByFile = classifyTestFiles(files, lanes, { cwd, testRoot });
   const outputDirectory = await mkdtemp(
     resolve(outputRoot, 'geulbat-node-tests-'),
   );
   const failures = [];
+  const results = [];
   let interrupted = false;
   const scheduler = {
     activeChildren: new Set(),
@@ -507,6 +540,7 @@ export async function runTestFiles(
     const phaseResults = await Promise.all(phasePromises);
     for (const phaseResult of phaseResults) {
       failures.push(...phaseResult.failures);
+      results.push(...phaseResult.results);
     }
   } finally {
     for (const [signal, handler] of signalHandlers) {
@@ -520,7 +554,47 @@ export async function runTestFiles(
       );
     }
   }
-  return { failures, interrupted, settlementSafe };
+  return {
+    durationMs: Math.round(performance.now() - startedAt),
+    failures,
+    interrupted,
+    results,
+    settlementSafe,
+  };
+}
+
+async function writeTestTimingReport(
+  timingOutput,
+  result,
+  { cwd, files, jobs, testRoot, workspace },
+) {
+  const outputPath = resolve(cwd, timingOutput);
+  const fileTimings = result.results
+    .map((fileResult) => ({
+      path: relativeTestPath(fileResult.file, cwd, testRoot),
+      durationMs: fileResult.durationMs,
+      exitCode: fileResult.code,
+      signal: fileResult.signal ?? null,
+    }))
+    .sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+    );
+  const report = {
+    schemaVersion: 1,
+    workspace,
+    jobs,
+    requestedFileCount: files.length,
+    startedFileCount: fileTimings.length,
+    failedFileCount: result.failures.length,
+    durationMs: result.durationMs,
+    interrupted: result.interrupted,
+    settlementSafe: result.settlementSafe,
+    files: fileTimings,
+  };
+
+  await mkdir(dirname(outputPath), { recursive: true });
+  await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  console.log(`Test timing report: ${outputPath}`);
 }
 
 export async function main(
@@ -544,17 +618,27 @@ export async function main(
     const testRoot = resolve(cwd, parsed.testRoot ?? '.');
     files = expandTestFiles(parsed.patterns, testRoot);
     const workspace = parsed.workspace ?? basename(cwd);
+    const jobs = parsed.jobs ?? resolveDefaultJobs(env);
     const lanes = serialTestLanesForWorkspace(workspace);
     const priorityFiles = priorityTestFilesForWorkspace(workspace);
     const result = await runTestFiles(files, {
       cwd,
       env,
-      jobs: parsed.jobs ?? resolveDefaultJobs(env),
+      jobs,
       lanes,
       priorityFiles,
       testRoot,
       onUnsafeSettlement,
     });
+    if (parsed.timingOutput !== undefined) {
+      await writeTestTimingReport(parsed.timingOutput, result, {
+        cwd,
+        files,
+        jobs,
+        testRoot,
+        workspace,
+      });
+    }
     if (!result.settlementSafe) {
       console.error(
         'Process tree settlement failed; invocation-owned files must be preserved.',

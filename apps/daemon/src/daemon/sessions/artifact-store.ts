@@ -16,6 +16,7 @@ import {
   type ThreadMessage,
 } from './contract.js';
 import { parseVideoArtifactPayload } from '@geulbat/protocol/artifacts';
+import type { PlanRenderingStamp } from '@geulbat/protocol/planning-workflow';
 
 import { isRecord, tryParseJson } from '../runtime-json.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -65,6 +66,7 @@ export interface CommitThreadArtifactVersionArgs {
   title?: string | null;
   sourceRef: ArtifactSourceRef | null;
   timestamp: string;
+  planStamp?: PlanRenderingStamp;
 }
 
 export async function commitThreadArtifactVersion(
@@ -102,6 +104,7 @@ export async function commitThreadArtifactVersion(
         createdAt: args.timestamp,
         createdByRunId: args.runId,
         previewValidation: { ok: true },
+        ...(args.planStamp === undefined ? {} : { planStamp: args.planStamp }),
       };
 
       await saveThreadArtifactStore(args.workspaceRoot, args.threadId, {
@@ -132,6 +135,7 @@ interface CommitThreadArtifactUpdateVersionArgs {
   // renderer와 다르면 identity가 갈라지므로 거절한다 (호출자는 새 아티팩트
   // 생성으로 폴백).
   expectedRenderer?: ArtifactRenderer;
+  planStamp?: PlanRenderingStamp;
 }
 
 type CommitThreadArtifactUpdateVersionResult =
@@ -182,6 +186,11 @@ export async function commitThreadArtifactUpdateVersion(
       }
 
       const nextVersionNumber = artifact.latestVersion + 1;
+      const baseVersion = store.versions.find(
+        (candidate) =>
+          candidate.artifactId === artifact.artifactId &&
+          candidate.version === args.baseVersion,
+      );
       const nextArtifact: ArtifactRecord = {
         ...artifact,
         latestVersion: nextVersionNumber,
@@ -199,6 +208,11 @@ export async function commitThreadArtifactUpdateVersion(
         createdAt: args.timestamp,
         createdByRunId: args.createdByRunId,
         previewValidation: { ok: true },
+        ...(args.planStamp === undefined
+          ? baseVersion?.planStamp === undefined
+            ? {}
+            : { planStamp: baseVersion.planStamp }
+          : { planStamp: args.planStamp }),
       };
 
       await saveThreadArtifactStore(args.workspaceRoot, args.threadId, {

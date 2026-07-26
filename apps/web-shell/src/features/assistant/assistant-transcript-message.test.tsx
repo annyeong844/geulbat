@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
+import { assertRunId } from '@geulbat/protocol/ids';
+import type {
+  PlanningWorkflowSnapshot,
+  PlanRenderingStamp,
+} from '@geulbat/protocol/planning-workflow';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
 import { createArtifactsByRefMap } from '../artifacts/artifact-transcript-lookup.js';
@@ -63,52 +68,146 @@ void test('TranscriptMessage keeps artifact-looking raw text plain without metad
   assert.doesNotMatch(markup, /should not render/);
 });
 
-void test('TranscriptMessage replays settled visualize calls instantly and can defer runtime boot', () => {
+void test('TranscriptMessage marks stamped final specs as current or superseded', () => {
+  const planStamp = {
+    workflowId: 'workflow-1',
+    planId: 'plan-1',
+    revision: 1,
+    digest: `sha256:${'a'.repeat(64)}`,
+  } as const;
+  const message: ThreadMessage = {
+    entryId: 'entry-stamped-spec',
+    role: 'assistant',
+    content: '승인할 최종 명세입니다.',
+    timestamp: '2026-07-26T00:00:00.000Z',
+    metadata: { phase: 'final_answer', planStamp },
+  };
+  const snapshot = createPlanningSnapshot(planStamp);
+
+  const current = renderToStaticMarkup(
+    <TranscriptMessage
+      message={message}
+      artifactsByRef={createArtifactsByRefMap([])}
+      planningWorkflowSnapshot={snapshot}
+      isRunning={false}
+    />,
+  );
+  const superseded = renderToStaticMarkup(
+    <TranscriptMessage
+      message={message}
+      artifactsByRef={createArtifactsByRefMap([])}
+      planningWorkflowSnapshot={{
+        ...snapshot,
+        revision: 2,
+        digest: `sha256:${'b'.repeat(64)}`,
+      }}
+      isRunning={false}
+    />,
+  );
+
+  assert.match(current, /현재 계획 · r1/);
+  assert.match(superseded, /이전 계획 · r1/);
+});
+
+void test('VisualizeWidget marks a rendering from an older plan revision as superseded', async () => {
+  const planStamp = {
+    workflowId: 'workflow-visualize',
+    planId: 'plan-visualize',
+    revision: 1,
+    digest: `sha256:${'c'.repeat(64)}`,
+  } as const;
+  const view = {
+    mode: 'svg' as const,
+    code: '<svg xmlns="http://www.w3.org/2000/svg"><text>Plan</text></svg>',
+    title: 'Stamped plan visualization',
+    planStamp,
+  };
+  let renderer!: ReactTestRenderer;
+
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <VisualizeWidget
+        view={view}
+        planningWorkflowSnapshot={createPlanningSnapshot({
+          ...planStamp,
+          revision: 2,
+          digest: `sha256:${'d'.repeat(64)}`,
+        })}
+        playback="instant"
+      />,
+    );
+  });
+
+  const label = renderer.root.findByProps({
+    className: 'plan-rendering-stamp',
+  });
+  assert.deepEqual(label.children, ['이전 계획 · r1']);
+
+  await act(async () => {
+    renderer.unmount();
+  });
+});
+
+void test('TranscriptMessage replays settled visualize calls instantly and can defer runtime boot', async () => {
   const view = {
     mode: 'html' as const,
     code: '<section><h2>Settled visualization</h2><p>Ready.</p></section>',
     title: 'Settled visualization',
   };
-  const historyMarkup = renderToStaticMarkup(
-    <TranscriptMessage
-      message={{
-        entryId: 'entry-settled-visualize',
-        role: 'tool_call',
-        content: JSON.stringify({ tool: 'visualize', args: view }),
-        timestamp: '2026-07-19T00:00:00.000Z',
-      }}
-      artifactsByRef={createArtifactsByRefMap([])}
-      isRunning={false}
-    />,
-  );
-  const instantMarkup = renderToStaticMarkup(
-    <VisualizeWidget view={view} playback="instant" />,
-  );
-  const replayMarkup = renderToStaticMarkup(<VisualizeWidget view={view} />);
-  const deferredMarkup = renderToStaticMarkup(
-    <TranscriptMessage
-      message={{
-        entryId: 'entry-deferred-visualize',
-        role: 'tool_call',
-        content: JSON.stringify({ tool: 'visualize', args: view }),
-        timestamp: '2026-07-19T00:00:00.000Z',
-      }}
-      artifactsByRef={createArtifactsByRefMap([])}
-      isRunning={false}
-      deferVisualizeRuntimeBoot
-    />,
-  );
+  let historyRenderer!: ReactTestRenderer;
+  let instantRenderer!: ReactTestRenderer;
+  let replayRenderer!: ReactTestRenderer;
+  let deferredRenderer!: ReactTestRenderer;
+  await act(async () => {
+    historyRenderer = TestRenderer.create(
+      <TranscriptMessage
+        message={{
+          entryId: 'entry-settled-visualize',
+          role: 'tool_call',
+          content: JSON.stringify({ tool: 'visualize', args: view }),
+          timestamp: '2026-07-19T00:00:00.000Z',
+        }}
+        artifactsByRef={createArtifactsByRefMap([])}
+        isRunning={false}
+      />,
+    );
+    instantRenderer = TestRenderer.create(
+      <VisualizeWidget view={view} playback="instant" />,
+    );
+    replayRenderer = TestRenderer.create(<VisualizeWidget view={view} />);
+    deferredRenderer = TestRenderer.create(
+      <TranscriptMessage
+        message={{
+          entryId: 'entry-deferred-visualize',
+          role: 'tool_call',
+          content: JSON.stringify({ tool: 'visualize', args: view }),
+          timestamp: '2026-07-19T00:00:00.000Z',
+        }}
+        artifactsByRef={createArtifactsByRefMap([])}
+        isRunning={false}
+        deferVisualizeRuntimeBoot
+      />,
+    );
+  });
 
+  const historyFrame = historyRenderer.root.findByType('iframe');
+  const instantFrame = instantRenderer.root.findByType('iframe');
+  const replayFrame = replayRenderer.root.findByType('iframe');
+  assert.equal(historyFrame.props.src, instantFrame.props.src);
+  assert.notEqual(historyFrame.props.src, replayFrame.props.src);
   assert.equal(
-    readIframeSource(historyMarkup),
-    readIframeSource(instantMarkup),
+    deferredRenderer.root.findAllByProps({ className: 'visualize-widget' })
+      .length,
+    1,
   );
-  assert.notEqual(
-    readIframeSource(historyMarkup),
-    readIframeSource(replayMarkup),
-  );
-  assert.match(deferredMarkup, /visualize-widget/);
-  assert.doesNotMatch(deferredMarkup, /<iframe/);
+  assert.equal(deferredRenderer.root.findAllByType('iframe').length, 0);
+
+  await act(async () => {
+    historyRenderer.unmount();
+    instantRenderer.unmount();
+    replayRenderer.unmount();
+    deferredRenderer.unmount();
+  });
 });
 
 void test('VisualizeWidget keeps its iframe mounted after deferred boot becomes active again', async () => {
@@ -139,12 +238,6 @@ void test('VisualizeWidget keeps its iframe mounted after deferred boot becomes 
     renderer.unmount();
   });
 });
-
-function readIframeSource(markup: string): string {
-  const match = /<iframe[^>]*\ssrc="([^"]+)"/.exec(markup);
-  assert.ok(match?.[1]);
-  return match[1];
-}
 
 function createAssistantMessage(args: {
   content: string;
@@ -196,5 +289,28 @@ function createThreadArtifactVersion(args: {
       filePath: 'notes/demo.md',
       messageTimestamp: '2026-04-29T00:00:00.000Z',
     },
+  };
+}
+
+function createPlanningSnapshot(
+  planStamp: PlanRenderingStamp,
+): Extract<PlanningWorkflowSnapshot, { state: 'awaiting_approval' }> {
+  return {
+    state: 'awaiting_approval',
+    threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
+    intensity: 'visual',
+    depth: 'deep',
+    createdAt: '2026-07-26T00:00:00.000Z',
+    updatedAt: '2026-07-26T00:00:01.000Z',
+    ...planStamp,
+    draft: {
+      schemaVersion: 'plan_draft_v1',
+      outcome: 'Render a stamped spec',
+      steps: [],
+      decisions: [],
+      assumptions: [],
+      openQuestions: [],
+    },
+    proposalRunId: assertRunId('run-plan'),
   };
 }

@@ -1,4 +1,8 @@
 import { isThreadId, type ThreadId } from './ids.js';
+import {
+  isApprovedPlanRef,
+  type PlanRenderingStamp,
+} from './planning-workflow.js';
 import { isNumber, isRecord, isString } from './wire-value-guards.js';
 
 const ARTIFACT_RENDERERS = [
@@ -77,6 +81,7 @@ export interface ArtifactVersionRecord {
   createdAt: string;
   createdByRunId: ArtifactRunId;
   previewValidation: ArtifactPreviewValidation;
+  planStamp?: PlanRenderingStamp;
 }
 
 export interface ThreadArtifactVersion extends ArtifactVersionRecord {
@@ -318,7 +323,8 @@ export function isArtifactVersionRecord(
     value.contentHash.trim() !== '' &&
     isString(value.createdAt) &&
     isString(value.createdByRunId) &&
-    isPreviewValidation(value.previewValidation)
+    isPreviewValidation(value.previewValidation) &&
+    (value.planStamp === undefined || isApprovedPlanRef(value.planStamp))
   );
 }
 

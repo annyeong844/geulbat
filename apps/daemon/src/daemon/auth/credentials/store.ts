@@ -9,8 +9,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { execFile as execFileCallback } from 'node:child_process';
-import { promisify } from 'node:util';
 import { isRecord } from '../../runtime-json.js';
 import {
   getErrorCode,
@@ -41,6 +39,10 @@ export interface ProviderCredential {
   /** epoch-ms when the access token expires, 0 = unknown */
   expiresAt: number;
 }
+
+export type ProviderAuthFilePermissionHardener = (
+  targetPath: string,
+) => Promise<void>;
 
 export const DEFAULT_PROVIDER_AUTH_CREDENTIAL_PROVIDER_ID =
   DEFAULT_PROVIDER_AUTH_PROVIDER_ID;
@@ -91,6 +93,7 @@ export async function readProviderAuthFile(
 export async function writeProviderAuthFile(
   credential: ProviderCredential,
   providerId: ProviderAuthCredentialProviderId = DEFAULT_PROVIDER_AUTH_CREDENTIAL_PROVIDER_ID,
+  hardenPermissions: ProviderAuthFilePermissionHardener = hardenProviderAuthFilePermissions,
 ): Promise<void> {
   const authFile = resolveProviderAuthFilePath();
   const credentials = await readProviderAuthCredentialMapForWrite(authFile);
@@ -103,11 +106,12 @@ export async function writeProviderAuthFile(
 
   const content = JSON.stringify(data, null, 2);
   await writeTextFileAtomically(authFile, content, { mode: 0o600 });
-  await hardenProviderAuthFilePermissions(authFile);
+  await hardenPermissions(authFile);
 }
 
 export async function deleteProviderAuthFile(
   providerId?: ProviderAuthCredentialProviderId,
+  hardenPermissions: ProviderAuthFilePermissionHardener = hardenProviderAuthFilePermissions,
 ): Promise<void> {
   const authFile = resolveProviderAuthFilePath();
   if (providerId !== undefined) {
@@ -124,7 +128,7 @@ export async function deleteProviderAuthFile(
     };
     const content = JSON.stringify(data, null, 2);
     await writeTextFileAtomically(authFile, content, { mode: 0o600 });
-    await hardenProviderAuthFilePermissions(authFile);
+    await hardenPermissions(authFile);
     return;
   }
 
@@ -144,54 +148,61 @@ async function unlinkProviderAuthFileIfPresent(
 }
 
 type ChmodLike = Pick<typeof fs, 'chmod'>;
-type ExecFileLike = (
-  file: string,
+type WindowsAclCommandRunner = (
+  executable: string,
   args: readonly string[],
-  options: { windowsHide?: boolean },
-) => Promise<unknown>;
-const execFile = promisify(execFileCallback);
+) => Promise<void>;
+
+interface ProviderAuthFilePermissionHardeningOptions {
+  chmodLike?: ChmodLike;
+  platform?: NodeJS.Platform;
+  runWindowsAclCommand?: WindowsAclCommandRunner;
+  env?: NodeJS.ProcessEnv;
+}
 
 /**
- * POSIX hardening path for provider auth file permissions.
- * Windows does not provide portable chmod semantics for this file, so we leave ACLs to the user profile.
+ * Provider auth file permission policy. POSIX uses chmod; Windows delegates
+ * the icacls process boundary to the daemon host command runtime.
  */
 export async function hardenProviderAuthFilePermissions(
   targetPath: string,
-  chmodLike: ChmodLike = fs,
-  platform = process.platform,
-  execFileLike: ExecFileLike = execFile,
-  env: NodeJS.ProcessEnv = process.env,
+  options: ProviderAuthFilePermissionHardeningOptions = {},
 ): Promise<void> {
+  const platform = options.platform ?? process.platform;
   if (platform === 'win32') {
-    const currentPrincipal = resolveCurrentWindowsPrincipal(env);
+    const currentPrincipal = resolveCurrentWindowsPrincipal(
+      options.env ?? process.env,
+    );
     if (!currentPrincipal) {
       logger.warn(
         'windows ACL hardening skipped: current user principal unavailable',
       );
       return;
     }
-    try {
-      await execFileLike(
-        'icacls',
-        [
-          targetPath,
-          '/inheritance:r',
-          '/grant:r',
-          `${currentPrincipal}:(F)`,
-          '/grant:r',
-          '*S-1-5-18:(F)',
-          '/grant:r',
-          '*S-1-5-32-544:(F)',
-        ],
-        { windowsHide: true },
+    if (options.runWindowsAclCommand === undefined) {
+      logger.warn(
+        'windows ACL hardening skipped: daemon host command runtime unavailable',
       );
+      return;
+    }
+    try {
+      await options.runWindowsAclCommand('icacls', [
+        targetPath,
+        '/inheritance:r',
+        '/grant:r',
+        `${currentPrincipal}:(F)`,
+        '/grant:r',
+        '*S-1-5-18:(F)',
+        '/grant:r',
+        '*S-1-5-32-544:(F)',
+      ]);
     } catch (error: unknown) {
       logger.warn('windows ACL hardening failed:', getErrorMessage(error));
     }
     return;
   }
   try {
-    await chmodLike.chmod(targetPath, 0o600);
+    await (options.chmodLike ?? fs).chmod(targetPath, 0o600);
   } catch (error: unknown) {
     logger.warn('chmod hardening failed:', getErrorMessage(error));
   }

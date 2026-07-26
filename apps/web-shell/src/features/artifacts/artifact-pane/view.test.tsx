@@ -13,10 +13,8 @@ void test('ArtifactPaneView renders artifact-owned pane shell', () => {
     viewModel,
     paneState: {
       tab: 'source',
-      canShowPreview: true,
       showApply: true,
       canApply: true,
-      surfaceStateBadge: null,
       previewSurface: null,
       runtimeUnavailableMessage: null,
       handleSelectTab: () => {},

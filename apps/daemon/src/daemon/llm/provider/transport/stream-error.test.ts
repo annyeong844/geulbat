@@ -12,6 +12,21 @@ void test('classifyStreamError preserves explicit stream categories', () => {
     ),
     'abort_budget',
   );
+  assert.equal(
+    classifyStreamError(
+      Object.assign(new Error('context preparation required'), {
+        llmCode: 'llm_context_preparation_required',
+      }),
+    ),
+    'llm_context_preparation_required',
+  );
+  assert.equal(
+    classifyStreamError({
+      code: 'provider_transition_required',
+      message: 'provider transition requires a portable context handoff',
+    }),
+    'llm_provider_transition_required',
+  );
 });
 
 void test('classifyStreamError maps provider status and code shapes', () => {

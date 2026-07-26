@@ -1,6 +1,7 @@
 import type WebSocket from 'ws';
 import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
+import type { RunChildCancelRequest } from '@geulbat/protocol/run-channel';
 
 import { sendError, sendMessage } from './run-channel-socket.js';
 import type { RunChannelControlContext } from './run-channel-runtime-context.js';
@@ -42,11 +43,63 @@ export function handleRunCancel(
     return;
   }
 
-  controlContext.activeRuns.abortThreadTree(run.ownerThreadId);
+  controlContext.activeRuns.abortThreadTree(
+    run.ownerThreadId,
+    'user_interrupt',
+  );
   sendMessage(socket, {
     type: 'run.control',
     requestId,
     action: 'run.cancel',
+    ok: true,
+  });
+}
+
+export function handleRunChildCancel(
+  socket: WebSocket,
+  requestId: string,
+  request: RunChildCancelRequest,
+  controlContext: RunChannelControlContext,
+): void {
+  const { parentRunId, childRunId } = request;
+  if (!socketOwnsRun(socket, parentRunId)) {
+    sendError(
+      socket,
+      requestId,
+      403,
+      'access_denied',
+      `socket does not own parent run: ${parentRunId}`,
+    );
+    return;
+  }
+
+  const childRun = controlContext.activeRuns.getRunById(childRunId);
+  if (!childRun) {
+    sendError(
+      socket,
+      requestId,
+      404,
+      'not_found',
+      `no active child run: ${childRunId}`,
+    );
+    return;
+  }
+  if (childRun.parentRunId !== parentRunId) {
+    sendError(
+      socket,
+      requestId,
+      403,
+      'access_denied',
+      `run is not a child of parent run: ${parentRunId}`,
+    );
+    return;
+  }
+
+  controlContext.activeRuns.abortRunSubtree(childRunId, 'explicit_stop');
+  sendMessage(socket, {
+    type: 'run.control',
+    requestId,
+    action: 'run.child.cancel',
     ok: true,
   });
 }
@@ -62,15 +115,15 @@ export async function handleRunApprove(
     sendError(socket, requestId, 400, 'bad_request', parsedRequest.message);
     return;
   }
-  const { callId, runId, threadId, approved, grantScope } = parsedRequest;
-  const approvalSessionId = getSocketState(socket).approvalSessionId;
+  const { callId, runId, threadId, approved, grantScope, permissionMode } =
+    parsedRequest;
+  const computerSessionId = getSocketState(socket).computerSessionId;
   const canResolveApproval =
-    socketOwnsRun(socket, runId) ||
-    controlContext.approvalGate.hasPendingApprovalForSession(
+    controlContext.approvalGate.hasApprovalDecisionAuthority(
       callId,
       runId,
       threadId,
-      approvalSessionId,
+      computerSessionId,
     );
   if (!canResolveApproval) {
     sendError(
@@ -78,7 +131,7 @@ export async function handleRunApprove(
       requestId,
       403,
       'access_denied',
-      `socket does not own run: ${runId}`,
+      `computer session does not own approval: ${callId}`,
     );
     return;
   }
@@ -90,6 +143,7 @@ export async function handleRunApprove(
     threadId,
     decision,
     grantScope,
+    permissionMode,
   );
 
   switch (result) {

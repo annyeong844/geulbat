@@ -1,0 +1,184 @@
+/* 세션 관리 오버레이 — 가운데 워크스페이스 표면(설정과 같은 자리)을 차지한다.
+   × 닫기 원형 호버는 settings.css의 공유 규칙(.settings-header/.extension-hub-header/
+   .home-sessions .settings-close)에서 함께 정의한다. */
+.home-sessions {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  color: var(--on-surface);
+  background: var(--surface-container-lowest);
+}
+
+.session-manager-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 32px 12px;
+}
+
+.session-manager-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 32px 20px;
+}
+
+.session-manager-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 120;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--outline-variant);
+  /* 팝오버는 항상 완전 불투명 — 아래 행이 비쳐 보이면 안 된다 */
+  background-color: var(--surface-container-lowest);
+  box-shadow: 0 8px 24px rgba(50, 34, 20, 0.18);
+}
+
+.session-manager-menu button {
+  border: none;
+  background: transparent;
+  color: var(--on-surface);
+  font-size: 12px;
+  font-family: var(--font-ui-label);
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.session-manager-menu button:hover {
+  background: var(--surface-container);
+}
+
+.session-manager-menu .menu-section {
+  font-size: 10px;
+  color: var(--on-surface-muted);
+  padding: 6px 8px 2px;
+  letter-spacing: 0.04em;
+}
+
+.session-manager-menu .menu-check {
+  color: var(--primary);
+}
+
+.session-manager-menu.menu-left {
+  left: 0;
+  right: auto;
+}
+
+/* 대량 삭제 확인 — 화면 가운데 팝업 */
+.session-confirm-card {
+  width: min(360px, calc(100vw - 48px));
+  gap: 6px;
+  z-index: 130;
+}
+
+.session-confirm-title {
+  font-size: 15px;
+  color: var(--on-surface);
+}
+
+.session-confirm-body {
+  margin: 2px 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--on-surface-muted);
+}
+
+.session-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.session-manager-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  margin-right: 12px;
+}
+
+/* 상단 띠 — rail/assistant 헤더와 같은 높이·헤어라인.
+   ×의 원 오른끝을 아래 컨트롤 줄(패딩 32px)의 새로 생성 오른끝과 맞춘다. */
+.session-manager-header {
+  min-height: 48px;
+  padding: 0 32px 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--outline-variant);
+}
+
+/* 헤어라인 아래 컨트롤 줄 — 오른쪽 밀착 */
+.session-manager-controls-row {
+  display: flex;
+  align-items: center;
+  padding: 14px 32px 0;
+}
+
+.session-manager-controls-row .session-manager-header-controls {
+  margin-left: auto;
+  margin-right: 0;
+}
+
+/* 스크롤 핸들은 평소 투명, 목록에 올렸을 때만 은은하게 */
+.session-manager-list {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.session-manager-list:hover {
+  scrollbar-color: var(--outline-variant) transparent;
+}
+
+.session-manager-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.session-manager-list::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+}
+
+.session-manager-list:hover::-webkit-scrollbar-thumb {
+  background: var(--outline-variant);
+}
+
+/* 목록 행 — 날짜는 평소에, 호버하면 그 자리에 ⋮가 드러난다 */
+.session-manager-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 10px;
+  border-bottom: 1px solid var(--outline-variant);
+}
+
+.session-manager-row:hover {
+  background: var(--surface-container);
+}
+
+.session-manager-row .row-menu-toggle {
+  opacity: 0;
+}
+
+.session-manager-row:hover .row-menu-toggle,
+.session-manager-row:focus-within .row-menu-toggle,
+.session-manager-row .row-menu-toggle[aria-expanded='true'] {
+  opacity: 1;
+}
+
+.session-manager-row:hover .row-date,
+.session-manager-row:focus-within .row-date {
+  display: none;
+}

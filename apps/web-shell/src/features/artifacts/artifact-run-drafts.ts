@@ -11,7 +11,6 @@ import {
   sanitizeGeneratedBinaryExportSnapshot,
   sanitizeGeneratedTextExportFileNameHint,
   sanitizeGeneratedTextExportSnapshot,
-  type ArtifactParseResult,
   type GeneratedBinaryExportSnapshot,
   type GeneratedTextExportSnapshot,
 } from './artifact-types.js';
@@ -25,15 +24,13 @@ const FILE_MUTATION_ALLOWED_TOOLS = [
 type ResolvedArtifactSourceAuthority = ArtifactDurabilitySourceAuthority;
 
 export function buildArtifactApplyRunDraftFromAuthority(args: {
-  parsed: ArtifactParseResult;
+  artifact: ThreadArtifactVersion;
   sourceAuthority: ResolvedArtifactSourceAuthority | null;
 }): RunRequest | null {
-  const parsed = args.parsed;
+  const artifact = args.artifact;
   const sourceAuthority = args.sourceAuthority;
   if (
-    parsed.kind !== 'artifact' ||
-    parsed.state !== 'completed' ||
-    parsed.renderer !== 'markdown' ||
+    artifact.renderer !== 'markdown' ||
     !sourceAuthority ||
     sourceAuthority.filePath === null
   ) {
@@ -43,8 +40,8 @@ export function buildArtifactApplyRunDraftFromAuthority(args: {
     action: 'apply_markdown',
     sourceAuthority,
     targetPath: sourceAuthority.filePath!,
-    artifactDigest: parsed.digest,
-    artifactPayload: parsed.payload,
+    artifactDigest: artifact.digest,
+    artifactPayload: artifact.payload,
   });
 
   return buildRunDraft({
@@ -60,34 +57,28 @@ export function buildArtifactApplyRunDraftFromAuthority(args: {
       `Target file: ${sourceAuthority.filePath}`,
       ...buildSourceAuthorityPromptLines(sourceAuthority, intentSnapshotId),
       '',
-      ...buildArtifactPromptBody(parsed),
+      ...buildArtifactPromptBody(artifact),
     ],
   });
 }
 
 export function buildArtifactExportRunDraftFromAuthority(args: {
-  parsed: ArtifactParseResult;
+  artifact: ThreadArtifactVersion;
   sourceAuthority: ResolvedArtifactSourceAuthority | null;
   targetPath: string;
 }): RunRequest | null {
-  const parsed = args.parsed;
+  const artifact = args.artifact;
   const sourceAuthority = args.sourceAuthority;
   const targetPath = args.targetPath.trim();
-  if (
-    parsed.kind !== 'artifact' ||
-    parsed.state !== 'completed' ||
-    parsed.renderer !== 'markdown' ||
-    !sourceAuthority ||
-    !targetPath
-  ) {
+  if (artifact.renderer !== 'markdown' || !sourceAuthority || !targetPath) {
     return null;
   }
   const intentSnapshotId = createArtifactDurabilityIntentSnapshotId({
     action: 'export_markdown',
     sourceAuthority,
     targetPath,
-    artifactDigest: parsed.digest,
-    artifactPayload: parsed.payload,
+    artifactDigest: artifact.digest,
+    artifactPayload: artifact.payload,
   });
 
   return buildRunDraft({
@@ -100,7 +91,7 @@ export function buildArtifactExportRunDraftFromAuthority(args: {
       `Target export path: ${targetPath}`,
       ...buildSourceAuthorityPromptLines(sourceAuthority, intentSnapshotId),
       '',
-      ...buildArtifactPromptBody(parsed),
+      ...buildArtifactPromptBody(artifact),
     ],
   });
 }
@@ -143,15 +134,10 @@ export function buildGeneratedTextExportRunDraftFromAuthority(args: {
 }
 
 export function canBuildArtifactExportRunFromAuthority(args: {
-  parsed: ArtifactParseResult;
+  artifact: ThreadArtifactVersion;
   sourceAuthority: ResolvedArtifactSourceAuthority | null;
 }): boolean {
-  return (
-    args.parsed.kind === 'artifact' &&
-    args.parsed.state === 'completed' &&
-    args.parsed.renderer === 'markdown' &&
-    args.sourceAuthority !== null
-  );
+  return args.artifact.renderer === 'markdown' && args.sourceAuthority !== null;
 }
 
 export function canBuildGeneratedTextExportRunFromAuthority(args: {
@@ -206,8 +192,9 @@ export function deriveGeneratedBinaryExportTargetPathHint(args: {
   return `exports/artifact-preview${readGeneratedBinaryExportExtension(snapshot.blob.type)}`;
 }
 
-// 아티팩트 다시 만들기(♻) — 라우팅은 모델이 스스로 판단한다: 문제가
-// 국소적이면 최소 수정, 구조적으로 심하면 같은 목적으로 처음부터 재작성.
+// 아티팩트 다시 만들기(♻) — 라우팅은 모델이 스스로 판단한다: 망가졌으면
+// 수리(국소 최소 수정/구조적 재작성), 멀쩡하면 같은 요청의 새로운 변주.
+// "고장 수리"로만 정의하면 멀쩡한 아티팩트에서 거의 같은 결과가 반복된다.
 // 결과는 같은 아티팩트의 새 버전 커밋으로 이어진다.
 export function buildArtifactRewriteRunDraft(args: {
   artifact: Pick<
@@ -228,10 +215,11 @@ export function buildArtifactRewriteRunDraft(args: {
     // 새 버전 스트리밍으로 보인다 (감사 기록은 metadata.silent로 남음)
     silentPrompt: true,
     prompt: buildPromptText([
-      'The artifact below has a problem and the user asked to redo it.',
-      'First diagnose how broken it is, then route yourself:',
+      'The user pressed the redo (♻) button on the artifact below and expects a visibly new result.',
+      'First check whether it is actually broken, then route yourself:',
       '- If the defect is local, apply a minimal targeted fix and keep everything that already works.',
       '- If it is structurally broken, rebuild it from scratch with the same intent.',
+      '- If nothing is broken, treat this as "try again": create a fresh take on the same request — meaningfully different composition, styling, or details. Never return a near-identical copy.',
       'Commit the result as a new version of the same artifact: put',
       `"artifactId":"${artifact.artifactId}" and "baseVersion":${artifact.version}`,
       'into the GEULBAT_ARTIFACT envelope header exactly as given.',
@@ -310,17 +298,13 @@ function buildSourceAuthorityPromptLines(
   ];
 }
 
-function buildArtifactPromptBody(parsed: ArtifactParseResult): string[] {
-  if (parsed.kind !== 'artifact') {
-    return [parsed.raw];
-  }
-
+function buildArtifactPromptBody(artifact: ThreadArtifactVersion): string[] {
   return [
     '<artifact_preview>',
-    `renderer: ${parsed.renderer ?? 'unknown'}`,
-    parsed.digest ? `digest: ${parsed.digest}` : 'digest: (none)',
+    `renderer: ${artifact.renderer}`,
+    artifact.digest ? `digest: ${artifact.digest}` : 'digest: (none)',
     '<artifact_payload>',
-    parsed.payload,
+    artifact.payload,
     '</artifact_payload>',
     '</artifact_preview>',
   ];
@@ -355,9 +339,10 @@ function readGeneratedTextExportExtension(
     case 'text/markdown':
       return '.md';
     case 'text/plain':
-    default:
       return '.txt';
   }
+  // default를 두지 않는다 — 닫힌 유니온이므로 항목이 늘면 여기서 컴파일이
+  // 깨져야 한다. 폴백이 있으면 새 형식이 조용히 .txt로 나간다.
 }
 
 function readGeneratedBinaryExportExtension(mimeType: string): string {

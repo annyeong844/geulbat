@@ -118,6 +118,12 @@ void test('isArtifactVersionRecord accepts explicit preview validation success a
     isArtifactVersionRecord({
       ...baseRecord,
       previewValidation: { ok: true },
+      planStamp: {
+        workflowId: 'workflow-1',
+        planId: 'plan-1',
+        revision: 1,
+        digest: `sha256:${'a'.repeat(64)}`,
+      },
     }),
     true,
   );
@@ -132,6 +138,31 @@ void test('isArtifactVersionRecord accepts explicit preview validation success a
       },
     }),
     true,
+  );
+});
+
+void test('isArtifactVersionRecord rejects malformed plan rendering stamps', () => {
+  assert.equal(
+    isArtifactVersionRecord({
+      artifactId: 'art_1',
+      version: 1,
+      parentVersion: null,
+      baseVersion: null,
+      renderer: 'markdown',
+      payload: '# hello',
+      digest: null,
+      contentHash: 'hash',
+      createdAt: '2026-04-10T00:00:00.000Z',
+      createdByRunId: 'run_1',
+      previewValidation: { ok: true },
+      planStamp: {
+        workflowId: 'workflow-1',
+        planId: 'plan-1',
+        revision: 0,
+        digest: 'not-a-digest',
+      },
+    }),
+    false,
   );
 });
 

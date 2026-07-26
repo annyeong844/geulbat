@@ -63,11 +63,14 @@ export function errorCodeToStatus(code: ErrorCode): number {
     case 'already_exists':
     case 'conflict':
     case 'aborted':
+    case 'provider_transition_required':
     case 'conflict_stale_write':
     case 'conflict_active_run':
     case 'persistence_conflict':
     case 'provider_auth_already_connected':
       return 409;
+    case 'provider_transition_preparation_failed':
+      return 422;
     case 'llm_rate_limited':
     case 'rate_limited':
     case 'quota_exceeded':

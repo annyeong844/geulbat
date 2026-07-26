@@ -77,6 +77,69 @@ void test('child run registry tracks launch, approval pending, and terminal stat
   assert.equal(terminalResult?.includes('child failed'), true);
 });
 
+void test('child run registry exposes active children by their owner thread for reconnect', () => {
+  const registry = createChildRunRegistry();
+  const ownerThreadId = testThreadId(81);
+  const otherOwnerThreadId = testThreadId(82);
+
+  registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    childRunId: testRunId('child-active-running'),
+    childThreadId: testThreadId(83),
+    parentRunId: testRunId('parent-active-running'),
+    ownerThreadId,
+    subagentType: 'worker',
+  });
+  registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    childRunId: testRunId('child-active-approval'),
+    childThreadId: testThreadId(84),
+    parentRunId: testRunId('parent-active-approval'),
+    ownerThreadId,
+    subagentType: 'explorer',
+  });
+  registry.markChildApprovalPending(testRunId('child-active-approval'));
+  registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    childRunId: testRunId('child-terminal'),
+    childThreadId: testThreadId(85),
+    parentRunId: testRunId('parent-terminal'),
+    ownerThreadId,
+    subagentType: 'worker',
+  });
+  registry.markChildTerminal({
+    childRunId: testRunId('child-terminal'),
+    terminalState: 'completed',
+    result: 'done',
+  });
+  registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    childRunId: testRunId('child-other-owner'),
+    childThreadId: testThreadId(86),
+    parentRunId: testRunId('parent-other-owner'),
+    ownerThreadId: otherOwnerThreadId,
+    subagentType: 'worker',
+  });
+
+  assert.deepEqual(
+    registry
+      .getActiveChildRunsByOwnerThread(ownerThreadId)
+      .map((snapshot) => [snapshot.childRunId, snapshot.status]),
+    [
+      [testRunId('child-active-running'), 'running'],
+      [testRunId('child-active-approval'), 'approval_pending'],
+    ],
+  );
+  assert.deepEqual(
+    registry.getActiveChildRuns().map((snapshot) => snapshot.childRunId),
+    [
+      testRunId('child-active-running'),
+      testRunId('child-active-approval'),
+      testRunId('child-other-owner'),
+    ],
+  );
+});
+
 void test('child run registry preserves and clones the child model pin and routing policy', () => {
   const registry = createChildRunRegistry();
   const childRunId = testRunId('child-model-pin');
@@ -136,6 +199,110 @@ void test('child run registry preserves and clones the child model pin and routi
   assert.deepEqual(reread?.subagentModelRouting, {
     mode: 'fixed',
     choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
+  });
+});
+
+void test('child run registry replaces runtime diagnostics and preserves them on terminal snapshots', () => {
+  const registry = createChildRunRegistry();
+  const childRunId = testRunId('child-runtime-diagnostics');
+  registry.registerChildRun({
+    ...TEST_CHILD_MODEL_REGISTRATION,
+    childRunId,
+    childThreadId: testThreadId(76),
+    parentRunId: testRunId('parent-runtime-diagnostics'),
+    ownerThreadId: testThreadId(77),
+    subagentType: 'explorer',
+    runtime: {
+      phase: 'provider_waiting',
+      observedAt: '2026-07-23T09:51:00.000Z',
+      partialOutputAvailable: false,
+    },
+  });
+
+  const observed = registry.updateChildRuntime({
+    childRunId,
+    runtime: {
+      phase: 'tool_running',
+      observedAt: '2026-07-23T09:51:01.000Z',
+      lastTool: {
+        name: 'read_file',
+        callId: 'call-read-1',
+        state: 'running',
+      },
+      partialOutputAvailable: true,
+      previousChildRunId: testRunId('child-runtime-previous'),
+      providerRequest: {
+        startedAt: '2026-07-23T09:50:00.000Z',
+        lastEventAt: '2026-07-23T09:51:00.500Z',
+        endedAt: '2026-07-23T09:51:01.000Z',
+        durationMs: 61_000,
+        attemptCount: 2,
+        retry: {
+          available: false,
+          performed: true,
+          outcome: 'recovered',
+        },
+      },
+    },
+  });
+  assert.deepEqual(observed?.runtime, {
+    phase: 'tool_running',
+    observedAt: '2026-07-23T09:51:01.000Z',
+    lastTool: {
+      name: 'read_file',
+      callId: 'call-read-1',
+      state: 'running',
+    },
+    partialOutputAvailable: true,
+    previousChildRunId: testRunId('child-runtime-previous'),
+    providerRequest: {
+      startedAt: '2026-07-23T09:50:00.000Z',
+      lastEventAt: '2026-07-23T09:51:00.500Z',
+      endedAt: '2026-07-23T09:51:01.000Z',
+      durationMs: 61_000,
+      attemptCount: 2,
+      retry: {
+        available: false,
+        performed: true,
+        outcome: 'recovered',
+      },
+    },
+  });
+
+  if (observed?.runtime.lastTool !== undefined) {
+    observed.runtime.lastTool.state = 'failed';
+  }
+  if (observed?.runtime.providerRequest?.retry !== undefined) {
+    observed.runtime.providerRequest.retry.outcome = 'exhausted';
+  }
+  registry.markChildTerminal({
+    childRunId,
+    terminalState: 'failed',
+    result: 'tool failed',
+    reason: 'tool_error',
+  });
+  assert.deepEqual(registry.getChildRun(childRunId)?.runtime, {
+    phase: 'tool_running',
+    observedAt: '2026-07-23T09:51:01.000Z',
+    lastTool: {
+      name: 'read_file',
+      callId: 'call-read-1',
+      state: 'running',
+    },
+    partialOutputAvailable: true,
+    previousChildRunId: testRunId('child-runtime-previous'),
+    providerRequest: {
+      startedAt: '2026-07-23T09:50:00.000Z',
+      lastEventAt: '2026-07-23T09:51:00.500Z',
+      endedAt: '2026-07-23T09:51:01.000Z',
+      durationMs: 61_000,
+      attemptCount: 2,
+      retry: {
+        available: false,
+        performed: true,
+        outcome: 'recovered',
+      },
+    },
   });
 });
 

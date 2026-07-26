@@ -50,6 +50,8 @@ const CASES = {
   rate_limited: 429,
   llm_auth_failed: 502,
   llm_context_length_exceeded: 400,
+  provider_transition_required: 409,
+  provider_transition_preparation_failed: 422,
   invalid_path: 400,
   already_exists: 409,
   path_out_of_computer_scope: 403,

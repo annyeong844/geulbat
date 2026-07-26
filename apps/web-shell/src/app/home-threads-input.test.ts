@@ -20,6 +20,7 @@ function createThreadsSourceStub() {
     selectedThreadId: thread.threadId,
     messages: [],
     artifacts: [],
+    subagentTerminalOutcomes: [],
     deletingThreadId: thread.threadId,
     pendingDeleteThread: thread,
     loadThreads: async () => {},
@@ -48,6 +49,10 @@ void test('createHomeThreadsInput preserves the thread surface used by Home shel
   assert.equal(input.selectedThreadId, THREAD_ID);
   assert.equal(input.messages, threads.messages);
   assert.equal(input.artifacts, threads.artifacts);
+  assert.equal(
+    input.subagentTerminalOutcomes,
+    threads.subagentTerminalOutcomes,
+  );
   assert.equal(input.deletingThreadId, THREAD_ID);
   assert.equal(input.pendingDeleteThread, threads.pendingDeleteThread);
   assert.equal(input.loadThreads, threads.loadThreads);

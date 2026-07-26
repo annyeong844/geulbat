@@ -24,6 +24,7 @@ import {
   type PtcExecuteCodeCellTerminalResult,
   type TerminalCellLookupResult,
 } from './execute-code-cell-terminal-retention.js';
+import { runDetached } from '../../../utils/run-detached.js';
 
 export const PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS = 1_000;
 const CLEANUP_DIAGNOSTIC_TOKEN_MAX_LENGTH = 80;
@@ -1010,7 +1011,7 @@ function scheduleDefaultReapTimeout(
   delayMs: number,
 ): PtcExecuteCodeCellReapCancel {
   const timer = setTimeout(() => {
-    void callback();
+    runDetached('ptc/cell-reap', () => callback());
   }, delayMs);
   timer.unref?.();
   return () => clearTimeout(timer);

@@ -3,6 +3,7 @@ import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { isPtcRecord } from '../shared/record-shape.js';
+import { runDetached } from '../../utils/run-detached.js';
 
 type PtcEpochCallbackHandlerResult =
   | { ok: true; result: unknown }
@@ -168,25 +169,30 @@ export async function createPtcEpochCallbackChannel(
           clearFrameTimeout();
           const line = buffer.slice(0, newlineIndex);
           buffer = '';
-          void handleCallbackFrame({
-            line,
-            socket,
-            token,
-            handler: args.handler,
-            callbackTimeoutMs,
-            maxResponseBytes,
-            pendingControllers,
-            get closed() {
-              return closed;
-            },
-            tryReserveCallbackSlot: () => {
-              if (maxCallbacks !== undefined && callbackCount >= maxCallbacks) {
-                return false;
-              }
-              callbackCount += 1;
-              return true;
-            },
-          }).finally(() => socket.end());
+          runDetached('ptc/callback-frame', () =>
+            handleCallbackFrame({
+              line,
+              socket,
+              token,
+              handler: args.handler,
+              callbackTimeoutMs,
+              maxResponseBytes,
+              pendingControllers,
+              get closed() {
+                return closed;
+              },
+              tryReserveCallbackSlot: () => {
+                if (
+                  maxCallbacks !== undefined &&
+                  callbackCount >= maxCallbacks
+                ) {
+                  return false;
+                }
+                callbackCount += 1;
+                return true;
+              },
+            }).finally(() => socket.end()),
+          );
         }
       });
     });
@@ -229,6 +235,27 @@ interface HandleCallbackFrameArgs {
   pendingControllers: Set<AbortController>;
   closed: boolean;
   tryReserveCallbackSlot(): boolean;
+}
+
+function isPtcEpochCallbackHandlerResult(
+  value: unknown,
+): value is PtcEpochCallbackHandlerResult {
+  if (!isPtcRecord(value)) {
+    return false;
+  }
+  if (value.ok === true) {
+    return Object.hasOwn(value, 'result');
+  }
+  if (value.ok !== false) {
+    return false;
+  }
+  return (
+    typeof value.errorCode === 'string' &&
+    typeof value.message === 'string' &&
+    (value.remediation === undefined ||
+      typeof value.remediation === 'string') &&
+    (value.details === undefined || isPtcRecord(value.details))
+  );
 }
 
 async function handleCallbackFrame(
@@ -331,20 +358,35 @@ async function handleCallbackFrame(
     return;
   }
 
-  if (!result.value.ok) {
+  const handlerResult: unknown = result.value;
+  if (!isPtcEpochCallbackHandlerResult(handlerResult)) {
     writeResponse(
       args.socket,
       {
         requestId: request.requestId,
         ok: false,
-        errorCode: result.value.errorCode,
-        message: result.value.message,
-        ...(result.value.remediation === undefined
+        errorCode: 'callback_result_invalid',
+        message: 'PTC callback handler returned an invalid result',
+      },
+      args.maxResponseBytes,
+    );
+    return;
+  }
+
+  if (!handlerResult.ok) {
+    writeResponse(
+      args.socket,
+      {
+        requestId: request.requestId,
+        ok: false,
+        errorCode: handlerResult.errorCode,
+        message: handlerResult.message,
+        ...(handlerResult.remediation === undefined
           ? {}
-          : { remediation: result.value.remediation }),
-        ...(result.value.details === undefined
+          : { remediation: handlerResult.remediation }),
+        ...(handlerResult.details === undefined
           ? {}
-          : { details: result.value.details }),
+          : { details: handlerResult.details }),
       },
       args.maxResponseBytes,
     );
@@ -356,7 +398,7 @@ async function handleCallbackFrame(
     {
       requestId: request.requestId,
       ok: true,
-      result: result.value.result,
+      result: handlerResult.result,
     },
     args.maxResponseBytes,
   );

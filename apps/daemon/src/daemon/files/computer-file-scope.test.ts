@@ -26,21 +26,36 @@ void test('createComputerFileScope tolerates hosts without a home or shortcut di
   );
 });
 
-void test('createComputerFileScope derives root-relative home and existing shortcuts', () => {
+void test('createComputerFileScope does not invent shortcuts from guessed home folder names', () => {
   const scope = createComputerFileScope({
     root: '/computer',
     home: '/computer/Users/sample',
-    isDirectory: (path) =>
-      path === '/computer/Users/sample/Downloads' ||
-      path === '/computer/Users/sample/Documents',
   });
 
   assert.deepEqual(scope, {
     root: '/computer',
     browseStartPath: 'Users/sample',
+    browseShortcuts: [],
+  });
+});
+
+void test('createComputerFileScope projects discovered host locations into the existing shortcut contract', () => {
+  const scope = createComputerFileScope({
+    root: '/',
+    home: '/Users/Alice',
+    browseLocations: [
+      { label: 'WSL', path: '/' },
+      { label: 'Windows (F:)', path: '/mnt/f' },
+      { label: 'duplicate F', path: '/mnt/f' },
+    ],
+  });
+
+  assert.deepEqual(scope, {
+    root: '/',
+    browseStartPath: 'Users/Alice',
     browseShortcuts: [
-      { label: '다운로드', path: 'Users/sample/Downloads' },
-      { label: '문서', path: 'Users/sample/Documents' },
+      { label: 'WSL', path: '' },
+      { label: 'Windows (F:)', path: 'mnt/f' },
     ],
   });
 });
@@ -50,7 +65,6 @@ void test('createComputerFileScope keeps root home as an empty browse path', () 
     createComputerFileScope({
       root: '/computer',
       home: '/computer',
-      isDirectory: () => false,
     }),
     { root: '/computer', browseStartPath: '', browseShortcuts: [] },
   );
@@ -61,12 +75,11 @@ void test('createComputerFileScope treats root as a coordinate base rather than 
     createComputerFileScope({
       root: '/computer',
       home: '/Users/Alice',
-      isDirectory: (path) => path === '/Users/Alice/Documents',
     }),
     {
       root: '/computer',
       browseStartPath: '../Users/Alice',
-      browseShortcuts: [{ label: '문서', path: '../Users/Alice/Documents' }],
+      browseShortcuts: [],
     },
   );
 });

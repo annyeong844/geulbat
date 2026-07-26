@@ -54,26 +54,24 @@ export function deriveArtifactExportModel(args: {
     canOfferRememberedBinaryOverwrite,
     hasStartArtifactRun,
   } = args;
-  const parsed = viewModel.parsed;
+  const artifact = viewModel.artifact;
   const trimmedTargetPath = targetPath.trim();
   const sourceAuthority = viewModel.sourceAuthority;
   const staticExportVisible = viewModel.actions.export.visible;
   const supportsGeneratedBinaryExport = supportsGeneratedBinaryExportSnapshot(
-    parsed.renderer,
+    artifact.renderer,
   );
   const supportsGeneratedTextExport = supportsGeneratedTextExportSnapshot(
-    parsed.renderer,
+    artifact.renderer,
   );
   const runtimeBinaryExportVisible =
     supportsGeneratedBinaryExport &&
-    parsed.state === 'completed' &&
     canBuildGeneratedBinaryExportFromAuthority({
       snapshot: generatedBinaryExportSnapshot,
       sourceAuthority,
     });
   const runtimeTextExportVisible =
     supportsGeneratedTextExport &&
-    parsed.state === 'completed' &&
     canBuildGeneratedTextExportRunFromAuthority({
       snapshot: generatedTextExportSnapshot,
       sourceAuthority,
@@ -152,7 +150,7 @@ function createArtifactExportDraft(args: {
   } = args;
   if (exportMode === 'static') {
     return buildArtifactExportRunDraftFromAuthority({
-      parsed: viewModel.parsed,
+      artifact: viewModel.artifact,
       sourceAuthority,
       targetPath,
     });

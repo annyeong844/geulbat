@@ -57,10 +57,18 @@ void test('sendPromptAction runs the shared run-start pipeline for prompt reques
   const harness = createStartActionHarness();
   const promptInputs: SendPromptActionArgs['promptInputs'] = {
     workingDirectory: 'home/user/Downloads',
-    modelId: 'grok-4.5',
+    modelId: 'gpt-5.6-luna',
+    providerTransitionRecovery: {
+      sourceModelId: 'grok-4.5',
+      sourceReasoningEffort: 'high',
+    },
     selectedThreadId: THREAD_ID_VALUE,
     permissionMode: 'basic',
+    planModeRequested: false,
+    planModeIntensity: 'visual',
+    planModeDepth: 'standard',
     reasoningEffort: 'medium',
+    serviceTier: 'fast',
     subagentModelRouting: { mode: 'auto' },
   };
 
@@ -84,6 +92,14 @@ void test('sendPromptAction runs the shared run-start pipeline for prompt reques
       ...(request.permissionMode !== undefined
         ? { permissionMode: request.permissionMode }
         : {}),
+      ...(request.providerTransitionRecovery !== undefined
+        ? {
+            providerTransitionRecovery: request.providerTransitionRecovery,
+          }
+        : {}),
+      ...(request.serviceTier !== undefined
+        ? { serviceTier: request.serviceTier }
+        : {}),
       ...(request.subagentModelRouting !== undefined
         ? { subagentModelRouting: request.subagentModelRouting }
         : {}),
@@ -99,9 +115,14 @@ void test('sendPromptAction runs the shared run-start pipeline for prompt reques
   assert.deepEqual(harness.startedRequests, [
     {
       workingDirectory: 'home/user/Downloads',
-      modelId: 'grok-4.5',
+      modelId: 'gpt-5.6-luna',
       threadId: THREAD_ID,
       permissionMode: 'basic',
+      serviceTier: 'fast',
+      providerTransitionRecovery: {
+        sourceModelId: 'grok-4.5',
+        sourceReasoningEffort: 'high',
+      },
       subagentModelRouting: { mode: 'auto' },
       promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
     },
@@ -117,7 +138,11 @@ void test('regeneratePromptAction trims the stale turn and optimistically re-app
     modelId: 'grok-4.5',
     selectedThreadId: THREAD_ID_VALUE,
     permissionMode: 'basic',
+    planModeRequested: false,
+    planModeIntensity: 'visual',
+    planModeDepth: 'standard',
     reasoningEffort: 'medium',
+    serviceTier: 'standard',
     subagentModelRouting: { mode: 'auto' },
   };
 
@@ -140,6 +165,9 @@ void test('regeneratePromptAction trims the stale turn and optimistically re-app
       ...(request.regenerate !== undefined
         ? { regenerate: request.regenerate }
         : {}),
+      ...(request.serviceTier !== undefined
+        ? { serviceTier: request.serviceTier }
+        : {}),
       ...(request.subagentModelRouting !== undefined
         ? { subagentModelRouting: request.subagentModelRouting }
         : {}),
@@ -154,6 +182,7 @@ void test('regeneratePromptAction trims the stale turn and optimistically re-app
   const started = harness.startedRequests[0];
   assert.ok(started && 'regenerate' in started && started.regenerate === true);
   assert.equal(started?.workingDirectory, 'home/user/Documents');
+  assert.equal(started?.serviceTier, 'standard');
   assert.deepEqual(harness.logFailures, []);
 });
 
@@ -170,7 +199,11 @@ void test('regeneratePromptAction is a no-op without a selected thread', async (
       modelId: 'grok-4.5',
       selectedThreadId: null,
       permissionMode: 'basic',
+      planModeRequested: false,
+      planModeIntensity: 'visual',
+      planModeDepth: 'standard',
       reasoningEffort: 'medium',
+      serviceTier: 'standard',
       subagentModelRouting: { mode: 'auto' },
     },
     trimMessagesForRegenerate: () => {
@@ -202,6 +235,7 @@ void test('startRunAction reuses the shared run-start pipeline and surfaces fail
     },
     modelId: 'gpt-5.6-sol',
     permissionMode: 'full_access',
+    serviceTier: 'fast',
     subagentModelRouting: { mode: 'auto' },
     appendOptimisticUserMessage: harness.appendOptimisticUserMessage,
     optimisticPrompt: 'fallback prompt',
@@ -215,6 +249,9 @@ void test('startRunAction reuses the shared run-start pipeline and surfaces fail
       ...(request.permissionMode !== undefined
         ? { permissionMode: request.permissionMode }
         : {}),
+      ...(request.serviceTier !== undefined
+        ? { serviceTier: request.serviceTier }
+        : {}),
       ...(request.subagentModelRouting !== undefined
         ? { subagentModelRouting: request.subagentModelRouting }
         : {}),
@@ -226,7 +263,11 @@ void test('startRunAction reuses the shared run-start pipeline and surfaces fail
   assert.deepEqual(harness.optimisticPrompts, ['visible prompt']);
   assert.deepEqual(harness.dispatched, [
     { type: 'run_start_requested', threadId: THREAD_ID_VALUE },
-    { type: 'run_start_failed', message: '[internal] transport offline' },
+    {
+      type: 'run_start_failed',
+      threadId: THREAD_ID_VALUE,
+      message: '[internal] transport offline',
+    },
   ]);
   assert.deepEqual(harness.startedRequests, [
     {
@@ -234,6 +275,7 @@ void test('startRunAction reuses the shared run-start pipeline and surfaces fail
       modelId: 'gpt-5.6-sol',
       threadId: THREAD_ID,
       permissionMode: 'full_access',
+      serviceTier: 'fast',
       subagentModelRouting: { mode: 'auto' },
       promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
     },
@@ -280,6 +322,7 @@ void test('interjectPromptAction queues the steer instead of appending a bubble'
   assert.deepEqual(dispatched, [
     {
       type: 'steer_queued',
+      runId: 'run-1',
       threadId: THREAD_ID_VALUE,
       steer: { receivedSeq: 3, text: 'please steer' },
     },
@@ -303,7 +346,11 @@ void test('degradeWidgetToolRequestAction starts an attributed fallback run when
       errorCode: 'approval_required',
       error: 'tool "write_file" requires user approval',
     },
-    cancelState: { phase: 'idle', activeRunId: null },
+    cancelState: {
+      phase: 'idle',
+      activeRunId: null,
+      activeThreadId: null,
+    },
     startClient: harness.client,
     interjectClient: {
       async interject() {
@@ -368,7 +415,11 @@ void test('degradeWidgetToolRequestAction steers the active run instead of start
       errorCode: 'approval_required',
       error: 'needs approval',
     },
-    cancelState: { phase: 'running', activeRunId: 'run-9' },
+    cancelState: {
+      phase: 'running',
+      activeRunId: 'run-9',
+      activeThreadId: THREAD_ID_VALUE,
+    },
     startClient: {
       async start() {
         assert.fail('running path must not start a new run');
@@ -404,6 +455,56 @@ void test('degradeWidgetToolRequestAction steers the active run instead of start
   assert.deepEqual(harness.optimisticPrompts, []);
 });
 
+void test('degradeWidgetToolRequestAction does not steer a run owned by another thread', async () => {
+  const harness = createStartActionHarness();
+  const rejection = {
+    ok: false as const,
+    errorCode: 'approval_required' as const,
+    error: 'needs approval',
+  };
+  const cancelState = {
+    phase: 'running' as const,
+    activeRunId: 'run-9',
+    activeThreadId: '00000000-0000-4000-8000-000000000002',
+  };
+
+  const result = await degradeWidgetToolRequestAction({
+    request: {
+      toolName: 'write_file',
+      args: {},
+      scopeHandle: 'scope-degrade-other-thread',
+    },
+    threadId: THREAD_ID_VALUE,
+    rejection,
+    cancelState,
+    startClient: {
+      async start() {
+        assert.fail('running path must not start a new run');
+      },
+    },
+    interjectClient: {
+      async interject() {
+        assert.fail('another thread must not steer the active run');
+      },
+      async cancelInterject() {
+        assert.fail('cancel should not run');
+      },
+      async flushInterject() {
+        assert.fail('flush should not run');
+      },
+    },
+    dispatch: harness.dispatch,
+    clearSessionError: harness.clearSessionError,
+    appendOptimisticUserMessage: harness.appendOptimisticUserMessage,
+    logCommandFailure: harness.logCommandFailure,
+    startRequestInFlight: { current: false },
+    tryConsumeBudget: () => true,
+  });
+
+  assert.deepEqual(result, rejection);
+  assert.deepEqual(harness.dispatched, []);
+});
+
 void test('degradeWidgetToolRequestAction returns the plain rejection when the prompt budget is exhausted', async () => {
   const harness = createStartActionHarness();
 
@@ -416,7 +517,11 @@ void test('degradeWidgetToolRequestAction returns the plain rejection when the p
     request: { toolName: 'write_file', args: {}, scopeHandle: 'scope-x' },
     threadId: THREAD_ID_VALUE,
     rejection,
-    cancelState: { phase: 'idle', activeRunId: null },
+    cancelState: {
+      phase: 'idle',
+      activeRunId: null,
+      activeThreadId: null,
+    },
     startClient: {
       async start() {
         assert.fail('exhausted budget must not start a run');
@@ -474,7 +579,37 @@ void test('cancelSteerAction removes the queued steer after the daemon acknowled
   });
 
   assert.deepEqual(cancelled, [{ runId: 'run-1', receivedSeq: 3 }]);
-  assert.deepEqual(dispatched, [{ type: 'steer_cancelled', receivedSeq: 3 }]);
+  assert.deepEqual(dispatched, [
+    { type: 'steer_cancelled', runId: 'run-1', receivedSeq: 3 },
+  ]);
+});
+
+void test('cancelSteerAction keeps the queued steer when the daemon reports cancelled=false', async () => {
+  const dispatched: RunSessionStateAction[] = [];
+
+  await cancelSteerAction({
+    client: {
+      async interject() {
+        assert.fail('interject should not run on cancel');
+      },
+      async cancelInterject() {
+        return { cancelled: false };
+      },
+      async flushInterject() {
+        assert.fail('flush should not run on the cancel path');
+      },
+    },
+    dispatch(action) {
+      dispatched.push(action);
+    },
+    activeRunId: 'run-1',
+    receivedSeq: 3,
+    logCommandFailure() {
+      assert.fail('cancelled=false is a normal race, not a failure');
+    },
+  });
+
+  assert.deepEqual(dispatched, []);
 });
 
 void test('flushSteersAction marks the queue when the daemon confirms the flush', async () => {
@@ -504,7 +639,9 @@ void test('flushSteersAction marks the queue when the daemon confirms the flush'
   });
 
   assert.deepEqual(flushed, [{ runId: 'run-1' }]);
-  assert.deepEqual(dispatched, [{ type: 'steer_flush_requested' }]);
+  assert.deepEqual(dispatched, [
+    { type: 'steer_flush_requested', runId: 'run-1' },
+  ]);
 });
 
 void test('flushSteersAction stays quiet when the queue already drained (flushed=false)', async () => {

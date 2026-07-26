@@ -22,7 +22,7 @@ npm run build
 Start the daemon and web shell in separate terminals:
 
 ```bash
-npm run dev -w apps/daemon
+npm run dev:daemon
 ```
 
 ```bash

@@ -45,6 +45,15 @@ export function formatBackgroundResultNote(
   for (const result of results) {
     const ok = result.terminalState === 'completed';
     lines.push(`- type: ${result.subagentType}`);
+    lines.push(`  childRunId: ${result.childRunId}`);
+    lines.push(`  terminalState: ${result.terminalState}`);
+    lines.push(`  completedAt: ${result.completedAt}`);
+    if (result.reason !== undefined) {
+      lines.push(`  reason: ${result.reason}`);
+    }
+    if (result.resultRef !== undefined) {
+      lines.push(`  resultRef: ${result.resultRef}`);
+    }
     lines.push(`  ok: ${ok ? 'true' : 'false'}`);
     lines.push(`  result: ${result.result || '(empty)'}`);
   }

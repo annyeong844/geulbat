@@ -27,6 +27,23 @@ export function createArtifactsByRefMap(
   );
 }
 
+// 같은 아티팩트의 더 새 버전이 커밋되어 있는지 — 채팅 카드는 최신 버전
+// 하나만 남기고, 과거 버전 탐색은 중앙 창의 ← v{n} → 스테퍼가 맡는다.
+export function hasNewerArtifactVersion(
+  artifact: ThreadArtifactVersion,
+  artifactsByRef: ArtifactsByRefMap,
+): boolean {
+  for (const candidate of artifactsByRef.values()) {
+    if (
+      candidate.artifactId === artifact.artifactId &&
+      candidate.version > artifact.version
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function readCommittedMessageArtifact(
   message: ThreadMessage,
   artifactsByRef: ArtifactsByRefMap,

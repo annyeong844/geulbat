@@ -15,6 +15,7 @@ import {
 } from '@geulbat/protocol/plugins';
 
 import { createPluginMarketplaceStore } from './daemon/extensions/plugin-marketplace-store.js';
+import { runSystemCommand } from './daemon/system-command.js';
 
 import {
   authHeaders,
@@ -179,12 +180,14 @@ void test('authenticated plugin routes install, list, toggle, and remove a manag
 void test('marketplace routes add a Git catalog, install exact listed bytes, and preserve the installed copy after source removal', async () => {
   const daemonContext = createRouteTestDaemonContext();
   const homeStateRoot = getHomeStateRootFromContext(daemonContext);
-  daemonContext.pluginMarketplaces = createPluginMarketplaceStore({
-    homeStateRoot,
-    acquireGitRepository: async ({ repositoryRoot }) => {
-      await writeMarketplaceFixture(repositoryRoot);
+  daemonContext.pluginMarketplaces = createRouteTestPluginMarketplaceStore(
+    daemonContext,
+    {
+      acquireGitRepository: async ({ repositoryRoot }) => {
+        await writeMarketplaceFixture(repositoryRoot);
+      },
     },
-  });
+  );
 
   await withAuthenticatedDaemonServer(
     async ({ port }) => {
@@ -292,17 +295,18 @@ void test('marketplace routes add a Git catalog, install exact listed bytes, and
 
 void test('official marketplace route connects the Codex catalog without caller source policy', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  const homeStateRoot = getHomeStateRootFromContext(daemonContext);
   let acquisitionCount = 0;
-  daemonContext.pluginMarketplaces = createPluginMarketplaceStore({
-    homeStateRoot,
-    acquireGitRepository: async ({ repositoryRoot, url, requestedRef }) => {
-      acquisitionCount += 1;
-      assert.equal(url, 'https://github.com/openai/plugins.git');
-      assert.equal(requestedRef, 'main');
-      await writeMarketplaceFixture(repositoryRoot, { official: true });
+  daemonContext.pluginMarketplaces = createRouteTestPluginMarketplaceStore(
+    daemonContext,
+    {
+      acquireGitRepository: async ({ repositoryRoot, url, requestedRef }) => {
+        acquisitionCount += 1;
+        assert.equal(url, 'https://github.com/openai/plugins.git');
+        assert.equal(requestedRef, 'main');
+        await writeMarketplaceFixture(repositoryRoot, { official: true });
+      },
     },
-  });
+  );
 
   await withAuthenticatedDaemonServer(
     async ({ port }) => {
@@ -513,4 +517,29 @@ function runGit(cwd: string, args: string[]): void {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function createRouteTestPluginMarketplaceStore(
+  daemonContext: ReturnType<typeof createRouteTestDaemonContext>,
+  args: Omit<
+    Parameters<typeof createPluginMarketplaceStore>[0],
+    'homeStateRoot' | 'runCommand'
+  >,
+) {
+  const homeStateRoot = getHomeStateRootFromContext(daemonContext);
+  return createPluginMarketplaceStore({
+    ...args,
+    homeStateRoot,
+    runCommand: async (commandArgs) => {
+      const result = await runSystemCommand({
+        hostCommands: daemonContext.hostCommands,
+        stateRoot: homeStateRoot,
+        executable: commandArgs.executable,
+        args: commandArgs.args,
+        env: commandArgs.env,
+        maxOutputBytes: daemonContext.hostCommandInlineMaxBytes,
+      });
+      return { exitCode: result.exitCode, stdout: result.stdout };
+    },
+  });
 }

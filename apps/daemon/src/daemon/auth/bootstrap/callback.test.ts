@@ -131,9 +131,9 @@ void test('completeProviderAuthCallback rejects replayed callback sessions', asy
     redirectUri: 'http://localhost:1455/auth/callback',
     createdAt: Date.now(),
     expiresAt: Date.now() + 60_000,
-    consumedAt: Date.now(),
     status: 'pending',
   });
+  bootstrapStore.markProviderAuthSessionConsumed('auth-consumed');
 
   const result = await completeProviderAuthCallback(
     {

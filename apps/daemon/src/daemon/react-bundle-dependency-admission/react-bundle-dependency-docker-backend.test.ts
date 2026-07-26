@@ -3,11 +3,11 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { runHostRoutedDockerCommandForTest } from '../../test-support/host-routed-docker-command.js';
 import type { ReactBundleDependencyNetworkProbeCandidate } from './react-bundle-dependency-network-probe-candidate.js';
 import {
   buildDockerMetadataProbeRunArgs,
   checkDockerMetadataProbeBackendAvailable,
-  runDockerCommand,
   runDockerMetadataProbeProcess,
   type DockerCommandInvocation,
   type DockerMetadataProbeCommandInvocation,
@@ -295,8 +295,8 @@ void test('runDockerMetadataProbeProcess writes candidate input and accepts dock
   });
 });
 
-void test('runDockerCommand waits for timeout termination before returning', async () => {
-  const result = await runDockerCommand({
+void test('host-routed Docker command waits for timeout termination before returning', async () => {
+  const result = await runHostRoutedDockerCommandForTest({
     executable: process.execPath,
     args: [
       '-e',
@@ -308,8 +308,8 @@ void test('runDockerCommand waits for timeout termination before returning', asy
   assert.equal(result.kind, 'timeout');
 });
 
-void test('runDockerCommand preserves large stdout and stderr', async () => {
-  const result = await runDockerCommand({
+void test('host-routed Docker command preserves large stdout and stderr', async () => {
+  const result = await runHostRoutedDockerCommandForTest({
     executable: process.execPath,
     args: [
       '-e',
@@ -325,9 +325,9 @@ void test('runDockerCommand preserves large stdout and stderr', async () => {
   assert.doesNotMatch(result.stderr, /\[truncated\]/u);
 });
 
-void test('runDockerCommand waits for cancellation termination before returning', async () => {
+void test('host-routed Docker command waits for cancellation termination before returning', async () => {
   const controller = new AbortController();
-  const resultPromise = runDockerCommand({
+  const resultPromise = runHostRoutedDockerCommandForTest({
     executable: process.execPath,
     args: [
       '-e',
@@ -343,7 +343,7 @@ void test('runDockerCommand waits for cancellation termination before returning'
   assert.equal(result.kind, 'cancelled');
 });
 
-void test('runDockerCommand preserves Docker client environment without inheriting unrelated env', async () => {
+void test('host-routed Docker command preserves Docker client environment without inheriting unrelated env', async () => {
   const previousDockerHost = process.env.DOCKER_HOST;
   const previousDockerContext = process.env.DOCKER_CONTEXT;
   const previousDockerConfig = process.env.DOCKER_CONFIG;
@@ -356,7 +356,7 @@ void test('runDockerCommand preserves Docker client environment without inheriti
     process.env.DOCKER_TLS_VERIFY = '1';
     process.env.GEULBAT_TEST_SECRET = 'do-not-inherit';
 
-    const result = await runDockerCommand({
+    const result = await runHostRoutedDockerCommandForTest({
       executable: process.execPath,
       args: [
         '-e',
@@ -394,7 +394,7 @@ void test('runDockerCommand preserves Docker client environment without inheriti
   }
 });
 
-void test('runDockerCommand rechecks abort after registering the listener', async () => {
+void test('host-routed Docker command rechecks abort after registering the listener', async () => {
   const controller = new AbortController();
   const originalAddEventListener = controller.signal.addEventListener.bind(
     controller.signal,
@@ -409,7 +409,7 @@ void test('runDockerCommand rechecks abort after registering the listener', asyn
     originalAddEventListener(type, listener, options);
   };
 
-  const result = await runDockerCommand({
+  const result = await runHostRoutedDockerCommandForTest({
     executable: process.execPath,
     args: [
       '-e',

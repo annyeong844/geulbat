@@ -2,7 +2,7 @@ import type { CSSProperties } from 'react';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
 /**
- * 우측 어시스턴트 visual reskin (§3.3.2) — Modern Heritage tokens.
+ * 우측 어시스턴트 visual reskin (§3.3.2) — Sage Editorial tokens.
  * 메커니즘은 carry, visual만 변경 (§3.3.1).
  */
 export const assistantStyles = {
@@ -31,34 +31,35 @@ export const assistantStyles = {
     fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer',
-    background: 'var(--primary)',
+    background: 'var(--secondary)',
     color: 'var(--on-primary)',
     border: 'none',
-    borderRadius: 999,
+    borderRadius: 6,
     fontFamily: 'var(--font-ui-label)',
   },
-  // user message — solid primary bubble (§3.3.2 #2)
+  // user message — quiet sage bubble; the assistant remains the visual hero.
   userMessageBlock: {
     alignSelf: 'flex-end',
     maxWidth: '82%',
-    background: 'var(--primary)',
-    color: 'var(--on-primary)',
+    background: 'var(--secondary-soft)',
+    color: 'var(--on-secondary-fixed-variant)',
     padding: '10px 14px',
-    borderRadius: 8,
-    borderTopRightRadius: 4,
+    border: '1px solid var(--outline-variant)',
+    borderRadius: 10,
+    borderTopRightRadius: 6,
     fontFamily: 'var(--font-ui-label)',
     fontSize: 13.5,
     lineHeight: 1.55,
-    boxShadow: 'var(--elev-card)',
+    boxShadow: 'none',
     margin: '4px 0',
   },
   // assistant text — 박스 없음, prose-serif. 작품 mode 영향 없음 (§10.24)
   assistantMessageBlock: {
     fontFamily: 'var(--font-prose-serif)',
-    fontSize: 15,
-    lineHeight: 1.7,
+    fontSize: 15.5,
+    lineHeight: 1.75,
     color: 'var(--primary)',
-    maxWidth: '92%',
+    maxWidth: '100%',
     wordBreak: 'keep-all',
     margin: '4px 0',
   },
@@ -77,37 +78,32 @@ export const assistantStyles = {
     fontSize: 'inherit',
     lineHeight: 'inherit',
   },
-  commentaryBlock: {
-    fontFamily: 'var(--font-prose-serif)',
-    fontSize: 14,
-    lineHeight: 1.65,
-    color: 'var(--on-surface-variant)',
-    maxWidth: '92%',
-    wordBreak: 'keep-all',
-    margin: '4px 0',
-  },
+  // 채팅 속 승인 기록 줄 — 도구 타임라인과 같은 무게의 조용한 로그.
+  // 행동 유도는 컴포저 위 승인 카드(.approval-card)가 owner다.
   approvalNoticeBlock: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
     margin: '4px 0',
-    padding: '10px 12px',
-    borderRadius: 8,
-    background: 'var(--warning-bg)',
-    color: 'var(--warning-text)',
-    fontSize: 13,
+    padding: '4px 6px',
+    color: 'var(--on-surface-muted)',
+    fontSize: 12,
     fontFamily: 'var(--font-ui-label)',
   },
   approvalNoticeDetail: {
-    marginTop: 4,
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
     fontSize: 11.5,
-    color: 'var(--warning-text)',
-    opacity: 0.85,
-    lineHeight: 1.4,
+    color: 'var(--on-surface-muted)',
     fontFamily: 'var(--font-ui-mono)',
-    wordBreak: 'break-all',
   },
   errorBanner: {
     margin: '6px 0',
     padding: '10px 12px',
-    borderRadius: 8,
+    border: '1px solid color-mix(in srgb, var(--error) 22%, transparent)',
+    borderRadius: 10,
     background: 'rgba(177, 74, 58, 0.1)',
     fontSize: 12.5,
     color: 'var(--error)',

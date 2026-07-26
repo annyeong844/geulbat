@@ -168,16 +168,11 @@ export function useRichFormatToolbar(args: {
   };
 }
 
+// 저장은 우측 하단 상태 칩 소관(모드 공통) — 툴바는 서식만 담당한다
 export function FormatToolbar({
   controller,
-  isDirty,
-  saving,
-  onSave,
 }: {
   controller: RichFormatToolbarController;
-  isDirty: boolean;
-  saving: boolean;
-  onSave: () => Promise<void> | void;
 }) {
   const {
     readOnly,
@@ -442,14 +437,6 @@ export function FormatToolbar({
         onClick={() => runRichCommand('redo')}
       >
         ↷
-      </FormatButton>
-      <span className="format-divider" />
-      <FormatButton
-        label="저장 (Ctrl+S)"
-        disabled={readOnly || !isDirty || saving}
-        onClick={() => void onSave()}
-      >
-        💾
       </FormatButton>
     </div>
   );

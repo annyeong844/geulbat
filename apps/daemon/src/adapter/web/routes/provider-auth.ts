@@ -40,10 +40,10 @@ export function createProviderAuthRoutes(args: {
   context: ProviderAuthRoutesContext;
 }): Router {
   const {
-    providerAuthBootstrap: bootstrapStore,
-    providerAuthCallbackServer: callbackServer,
-    providerAuthRuntime: runtimeStore,
-  } = args.context;
+    authBootstrap: bootstrapStore,
+    authCallbackServer: callbackServer,
+    authRuntime: runtimeStore,
+  } = args.context.provider;
   return createProviderAuthRoutesInternal({
     bootstrapStore,
     callbackServer,

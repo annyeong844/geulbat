@@ -1,7 +1,14 @@
 import { isRecord } from '../../lib/json.js';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
-import type { RunTranscriptEntry } from '../../lib/run-transcript-entry.js';
+import type {
+  RunTranscriptEntry,
+  ToolActivityOutput,
+} from '../../lib/run-transcript-entry.js';
+import {
+  parseToolResultView,
+  type PtcToolActivityStatus,
+} from './tool-result-view.js';
 
 // 도구 활동 타임라인 뷰모델 — 디자인개편 참조안의 "아이콘 행 + 세로
 // 연결선 + 펼치면 Request/Response 카드" 표현을 위해, settled tool_call/
@@ -16,8 +23,10 @@ export interface ToolTimelineItem {
   tool: string | null;
   label: string;
   state: ToolTimelineState;
+  ptcStatus?: PtcToolActivityStatus;
   toolCallContent: string | null;
   toolResultContent: string | null;
+  liveOutput: ToolActivityOutput | null;
 }
 
 const COMMAND_TOOL_NAMES = new Set(['exec_command', 'exec']);
@@ -91,6 +100,7 @@ export function buildSettledToolTimelineItems(
         state: 'completed',
         toolCallContent: message.content,
         toolResultContent: null,
+        liveOutput: null,
       };
       items.push(item);
       trackOpenItem(item, callId);
@@ -99,10 +109,17 @@ export function buildSettledToolTimelineItems(
 
     if (message.role === 'tool_result') {
       const failed = record?.ok === false;
+      const ptcStatus =
+        tool === 'exec' || tool === 'wait'
+          ? parseToolResultView(message.content)?.ptcStatus
+          : undefined;
       const matched = takeOpenItem(callId, tool);
       if (matched !== null) {
         matched.toolResultContent = message.content;
         matched.state = failed ? 'failed' : 'completed';
+        if (ptcStatus !== undefined) {
+          matched.ptcStatus = ptcStatus;
+        }
         return;
       }
       items.push({
@@ -110,8 +127,10 @@ export function buildSettledToolTimelineItems(
         tool,
         label: formatToolActivityLabel(tool ?? '도구'),
         state: failed ? 'failed' : 'completed',
+        ...(ptcStatus !== undefined ? { ptcStatus } : {}),
         toolCallContent: null,
         toolResultContent: message.content,
+        liveOutput: null,
       });
     }
   });
@@ -119,13 +138,13 @@ export function buildSettledToolTimelineItems(
   return items;
 }
 
-// 라이브 tool_activity 엔트리를 행으로 접는다 — 같은 도구의 실행 중 행이
-// 남아 있으면 완료/실패 엔트리가 그 행의 상태를 올린다 (라이브 이벤트에는
-// callId가 없어 도구명 순서 매칭이 최선이다).
+// 라이브 tool_activity 엔트리를 행으로 접는다. callId가 있으면 정확히
+// 짝지으며, 오래된 이벤트와의 호환을 위해 도구명 순서 매칭도 남긴다.
 export function buildLiveToolTimelineItems(
   entries: Extract<RunTranscriptEntry, { kind: 'tool_activity' }>[],
 ): ToolTimelineItem[] {
   const items: ToolTimelineItem[] = [];
+  const runningByCallId = new Map<string, ToolTimelineItem>();
   const runningByTool = new Map<string, ToolTimelineItem[]>();
 
   entries.forEach((entry, index) => {
@@ -135,21 +154,41 @@ export function buildLiveToolTimelineItems(
         tool: entry.tool,
         label: formatToolActivityLabel(entry.tool),
         state: 'running',
+        ...(entry.ptcStatus !== undefined
+          ? { ptcStatus: entry.ptcStatus }
+          : {}),
         toolCallContent: null,
         toolResultContent: null,
+        liveOutput: entry.output ?? null,
       };
       items.push(item);
+      if (entry.callId !== undefined) {
+        runningByCallId.set(entry.callId, item);
+      }
       const queue = runningByTool.get(entry.tool) ?? [];
       queue.push(item);
       runningByTool.set(entry.tool, queue);
       return;
     }
 
+    const exactMatch =
+      entry.callId === undefined
+        ? null
+        : (runningByCallId.get(entry.callId) ?? null);
+    if (entry.callId !== undefined) {
+      runningByCallId.delete(entry.callId);
+    }
     const queue = runningByTool.get(entry.tool) ?? [];
-    const matched = queue.shift() ?? null;
+    const matched = exactMatch ?? queue.shift() ?? null;
     if (matched !== null) {
-      runningByTool.set(entry.tool, queue);
+      runningByTool.set(
+        entry.tool,
+        queue.filter((candidate) => candidate !== matched),
+      );
       matched.state = entry.state;
+      if (entry.ptcStatus !== undefined) {
+        matched.ptcStatus = entry.ptcStatus;
+      }
       return;
     }
     items.push({
@@ -157,8 +196,10 @@ export function buildLiveToolTimelineItems(
       tool: entry.tool,
       label: formatToolActivityLabel(entry.tool),
       state: entry.state,
+      ...(entry.ptcStatus !== undefined ? { ptcStatus: entry.ptcStatus } : {}),
       toolCallContent: null,
       toolResultContent: null,
+      liveOutput: entry.output ?? null,
     });
   });
 

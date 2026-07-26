@@ -11,8 +11,6 @@ import type {
 
 export interface ArtifactRuntimePreviewContext {
   digest: string | null;
-  state: 'streaming' | 'completed' | 'fallback';
-  isStreamingPreview: boolean;
   sourceRef: ResolvedArtifactSourceRef;
   onGeneratedTextExportSnapshotChange?: (
     snapshot: GeneratedTextExportSnapshot | null,

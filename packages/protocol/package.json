@@ -44,6 +44,14 @@
       "types": "./dist/run-approval.d.ts",
       "import": "./dist/run-approval.js"
     },
+    "./planning-workflow": {
+      "types": "./dist/planning-workflow.d.ts",
+      "import": "./dist/planning-workflow.js"
+    },
+    "./goal": {
+      "types": "./dist/goal.d.ts",
+      "import": "./dist/goal.js"
+    },
     "./cancel": {
       "types": "./dist/cancel.d.ts",
       "import": "./dist/cancel.js"
@@ -60,6 +68,10 @@
       "types": "./dist/thread-metadata.d.ts",
       "import": "./dist/thread-metadata.js"
     },
+    "./subagent-terminal": {
+      "types": "./dist/subagent-terminal.d.ts",
+      "import": "./dist/subagent-terminal.js"
+    },
     "./run-events": {
       "types": "./dist/run-events.d.ts",
       "import": "./dist/run-events.js"
@@ -67,6 +79,10 @@
     "./provider-auth": {
       "types": "./dist/provider-auth.d.ts",
       "import": "./dist/provider-auth.js"
+    },
+    "./provider-usage": {
+      "types": "./dist/provider-usage.d.ts",
+      "import": "./dist/provider-usage.js"
     },
     "./mcp": {
       "types": "./dist/mcp.d.ts",

@@ -45,6 +45,10 @@ function buildResult(): GenerateImageArtifactResult {
       byteLength: 1234,
       digest: { algorithm: 'sha256', encoding: 'hex', value: 'ab'.repeat(32) },
     },
+    media: {
+      mediaRef: `${'ab'.repeat(32)}.png`,
+      filePath: `/state/threads/thread-1/media/${'ab'.repeat(32)}.png`,
+    },
   };
 }
 
@@ -67,7 +71,7 @@ function buildAgentContext(args: {
     currentFile: undefined,
     selection: undefined,
     approvalGranted: false,
-    agentSpawnRuntime: {
+    runtimeServices: {
       ...daemonContext,
       imageGeneration: args.imageGeneration,
     },
@@ -76,7 +80,7 @@ function buildAgentContext(args: {
       args.events.push(event);
     },
     permissionMode: 'full_access' as const,
-    approvalSessionId: 'approval-session',
+    computerSessionId: 'approval-session',
   };
 }
 
@@ -130,6 +134,12 @@ void test('generate_image commits via the runtime, emits artifact_committed, and
   assert.equal(output.ok, true);
   assert.equal(output.artifactRef, 'art_img@1');
   assert.equal(output.provider, 'grok_oauth');
+  // 저장/내보내기용 디스크 참조 — media 스토어 탐색 없이 바로 복사 가능.
+  assert.equal(output.mediaRef, `${'ab'.repeat(32)}.png`);
+  assert.equal(
+    output.mediaFilePath,
+    `/state/threads/thread-1/media/${'ab'.repeat(32)}.png`,
+  );
   // 바이트/base64는 모델에게 돌려주지 않는다.
   assert.ok(!result.output.includes('dataBase64'));
 });

@@ -2,10 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  AGENT_LOOP_PROMPT_COMPONENT_IDENTITY,
   composeAgentLoopUserPrompt,
   createAgentLoopPromptPort,
 } from './loop-prompt.js';
 import { testThreadId } from '../../test-support/thread-id.js';
+
+void test('binds the default prompt behavior to one content-redacted identity', () => {
+  assert.deepEqual(AGENT_LOOP_PROMPT_COMPONENT_IDENTITY, {
+    componentId: 'geulbat.daemon.prompt-port',
+    componentVersion: '5',
+    behaviorDigest:
+      'sha256:387f9051b6557e4c89fef47695a7b1b2eb0005ccaf0a1af260227e822af140b8',
+  });
+  assert.equal(Object.isFrozen(AGENT_LOOP_PROMPT_COMPONENT_IDENTITY), true);
+});
 
 void test('createAgentLoopPromptPort delegates to the current prompt builders', () => {
   const promptPort = createAgentLoopPromptPort();
@@ -52,6 +63,25 @@ void test('createAgentLoopPromptPort projects the explorer capability prompt', (
     /Computer filesystem access is unavailable/u,
   );
   assert.doesNotMatch(bundle.systemPrompt, /react_bundle/u);
+});
+
+void test('createAgentLoopPromptPort describes PTC only when the direct surface exposes exec and wait', () => {
+  const promptPort = createAgentLoopPromptPort();
+  const typedOnly = promptPort.buildPromptBundle({
+    threadId: testThreadId(93),
+    promptProfile: 'explorer',
+    computerSessionAvailable: false,
+    directRegistryNames: ['list_files', 'read_file'],
+  });
+  const ptcEnabled = promptPort.buildPromptBundle({
+    threadId: testThreadId(94),
+    promptProfile: 'explorer',
+    computerSessionAvailable: false,
+    directRegistryNames: ['list_files', 'read_file', 'exec', 'wait'],
+  });
+
+  assert.doesNotMatch(typedOnly.systemPrompt, /PTC exec and wait tools/u);
+  assert.match(ptcEnabled.systemPrompt, /PTC exec and wait tools/u);
 });
 
 void test('composeAgentLoopUserPrompt keeps volatile context in one deterministic user message', () => {

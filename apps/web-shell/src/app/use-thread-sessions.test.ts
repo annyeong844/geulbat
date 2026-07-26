@@ -69,6 +69,18 @@ void test('useThreadSessions clears the pending delete dialog after conflict', a
             timestamp: '2026-03-30T00:00:00.000Z',
           },
         ],
+        subagentTerminalOutcomes: [
+          {
+            deliveryId: 'delivery-conflict-history',
+            parentRunId: 'run-parent',
+            childRunId: 'run-child',
+            subagentType: 'worker',
+            terminalState: 'failed',
+            reason: 'daemon_restart',
+            result: 'partial result',
+            completedAt: '2026-03-30T00:00:01.000Z',
+          },
+        ],
       }),
     () =>
       jsonResponse(
@@ -93,6 +105,10 @@ void test('useThreadSessions clears the pending delete dialog after conflict', a
   assert.equal(hook.result.current.deletingThreadId, null);
   assert.equal(hook.result.current.selectedThreadId, THREAD_ID);
   assert.equal(hook.result.current.messages.length, 1);
+  assert.equal(
+    hook.result.current.subagentTerminalOutcomes[0]?.deliveryId,
+    'delivery-conflict-history',
+  );
   assert.equal(hook.result.current.threads.length, 1);
   assert.equal(
     hook.result.current.threadError,
@@ -160,6 +176,7 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
       jsonResponse({
         threadId: THREAD_ID,
         snapshotVersion: '2026-04-16T00:00:01.000Z',
+        activeModelId: 'grok-4.5',
         messages: [
           {
             entryId: 'entry-first-thread',
@@ -174,6 +191,7 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
       jsonResponse({
         threadId: OTHER_THREAD_ID,
         snapshotVersion: '2026-04-16T00:00:02.000Z',
+        activeModelId: 'gpt-5.6-sol',
         messages: [
           {
             entryId: 'entry-second-thread',
@@ -188,6 +206,7 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
       jsonResponse({
         threadId: THREAD_ID,
         snapshotVersion: '2026-04-16T00:00:01.000Z',
+        activeModelId: 'grok-4.5',
         messages: [
           {
             entryId: 'entry-first-thread-reopened',
@@ -208,6 +227,7 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
 
   assert.equal(hook.result.current.threadError, null);
   assert.equal(hook.result.current.selectedThreadId, THREAD_ID);
+  assert.equal(hook.result.current.activeModelId, 'grok-4.5');
   assert.deepEqual(hook.result.current.messages, [
     {
       entryId: 'entry-first-thread-reopened',

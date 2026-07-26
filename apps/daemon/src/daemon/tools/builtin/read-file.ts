@@ -42,6 +42,11 @@ export const readFileTool = defineZodTool({
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  resultProjection: {
+    exactDurableRecovery: true,
+    modelProjection: 'read_file_summary',
+    snapshotFailure: 'fail_closed',
+  },
   exposure: {
     directHot: true,
     sdkVisible: true,

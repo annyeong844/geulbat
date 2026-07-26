@@ -103,7 +103,6 @@ void test('MCP panel adds, toggles, and removes a global stdio server', async ()
     changeField(renderer, 'API_KEY', 'MCP_API_KEY');
     changeField(renderer, 'SDK 기본값', '2500');
     changeField(renderer, 'SDK 요청 기본값', '9000');
-    changeField(renderer, '기본 2000ms', '1500');
   });
   await act(async () => {
     await renderer.root.findByType('form').props.onSubmit({
@@ -121,7 +120,6 @@ void test('MCP panel adds, toggles, and removes a global stdio server', async ()
       envKeys: ['MCP_API_KEY'],
       connectionTimeoutMs: 2500,
       requestTimeoutMs: 9000,
-      shutdownGraceMs: 1500,
     },
   });
   assert.doesNotMatch(renderedText(renderer.root), /read_file/);

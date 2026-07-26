@@ -6,7 +6,7 @@ import type { BackgroundNotificationQueue } from '../../../daemon/agent/runtime/
 import type {
   PrepareProviderTransitionCompactionArgs,
   PrepareProviderTransitionCompactionResult,
-} from '../../../daemon/agent/memory/compaction-loop.js';
+} from '../../../daemon/agent/memory/provider-transition-compaction.js';
 
 type PrepareThreadProviderTransitionArgs = Pick<
   PrepareProviderTransitionCompactionArgs,
@@ -18,7 +18,7 @@ export interface ThreadsRoutesContext {
   activeRuns: ActiveThreadRunLookup;
   backgroundNotifications: Pick<
     BackgroundNotificationQueue,
-    'clearThreadBackgroundResults'
+    'clearThreadBackgroundResults' | 'readThreadBackgroundResultHistory'
   >;
   providerTransitionCompaction: {
     prepare(
@@ -29,10 +29,13 @@ export interface ThreadsRoutesContext {
 
 export interface ActiveThreadRunLookup {
   getRunByThreadId(threadId: string): { runId: RunId } | undefined;
+  getRunByOwnerThread(threadId: string): { runId: RunId } | undefined;
 }
 
 export interface ProviderAuthRoutesContext {
-  providerAuthBootstrap: ProviderAuthBootstrapStore;
-  providerAuthCallbackServer: ProviderAuthCallbackServerController;
-  providerAuthRuntime: ProviderAuthRuntimeStore;
+  provider: {
+    authBootstrap: ProviderAuthBootstrapStore;
+    authCallbackServer: ProviderAuthCallbackServerController;
+    authRuntime: ProviderAuthRuntimeStore;
+  };
 }

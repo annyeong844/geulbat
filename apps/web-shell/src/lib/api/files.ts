@@ -11,6 +11,8 @@ import {
   type FileReadResponse,
   type FileSaveResponse,
   type FileTreeResponse,
+  isDirectoryPreferencesResponse,
+  type DirectoryPreferencesResponse,
 } from '@geulbat/protocol/files';
 import {
   isConflictStaleWriteError,
@@ -326,4 +328,31 @@ function fileScopeSearchParams(scope: FileApiScope): URLSearchParams {
 
 function fileScopeBody(scope: FileApiScope): ComputerFileApiScope {
   return scope;
+}
+
+/**
+ * 어디서 일하는지에 대한 사용자 선택. 값의 소유자는 daemon이다 — 셸이 들고 있으면
+ * daemon이 죽거나 브라우저를 새로 열 때 사라진다.
+ */
+export function fetchDirectoryPreferences(): Promise<DirectoryPreferencesResponse> {
+  return apiFetch(
+    '/api/files/directory-preferences',
+    undefined,
+    isDirectoryPreferencesResponse,
+  );
+}
+
+export function applyDirectoryPreference(
+  action: 'select' | 'pin' | 'unpin',
+  path: string,
+): Promise<DirectoryPreferencesResponse> {
+  return apiFetch(
+    '/api/files/directory-preferences',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, path }),
+    },
+    isDirectoryPreferencesResponse,
+  );
 }

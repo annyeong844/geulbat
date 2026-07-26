@@ -19,30 +19,45 @@ import type { RunId, ThreadId } from './ids.js';
 import {
   AGENT_WAIT_APPROVAL_BLOCKED_REASON,
   AGENT_WAIT_BLOCKED_REASONS,
-  isAgentChildTerminalState,
   isAgentLaunchToolRaw,
+  isAgentRetryToolRaw,
+  isAgentSetPriorityToolRaw,
   isAgentStopToolRaw,
   isAgentWaitBlockedReason,
   isAgentWaitToolRaw,
   isArtifactCommittedEventPayload,
+  isContextUsageUpdatedEventPayload,
   isDoneEventPayload,
   isErrorEventPayload,
-  isContextUsageUpdatedEventPayload,
   isInterjectAppliedEventPayload,
+  isOffloadedToolResultRaw,
+  isProviderRequestDiagnostics,
+  isProviderRetryDiagnostics,
+  isProviderRuntimeStatusEventPayload,
   isRunAckEventPayload,
   isRunEvent,
+  isRunUsageTotals,
   isSubagentApprovalRequiredEventPayload,
+  isSubagentLaunchRequestState,
+  isSubagentRuntimeDiagnostics,
   isSubagentSpawnedEventPayload,
   isSubagentTerminalEventPayload,
   isTextDeltaEventPayload,
-  isThreadStatePersistFailedEventPayload,
   isThreadStatePersistedEventPayload,
-  isToolCallSourcePayload,
+  isThreadStatePersistFailedEventPayload,
+  isToolCallDeltaEventPayload,
   isToolCallEventPayload,
+  isToolCallSourcePayload,
+  isToolOutputDeltaEventPayload,
   isToolResultEventPayload,
   isToolResultRaw,
 } from './run-events.js';
+import {
+  isAgentChildTerminalReason,
+  isAgentChildTerminalState,
+} from './subagent-terminal.js';
 import { isRunId, isThreadId } from './ids.js';
+import { assertEveryFieldIsValidated } from './test-support/field-coverage.js';
 
 function assertFixtureRunId(value: string): RunId {
   assert.equal(isRunId(value), true);
@@ -56,6 +71,71 @@ function assertFixtureThreadId(value: string): ThreadId {
 
 const THREAD_ID = assertFixtureThreadId('11111111-1111-4111-8111-111111111111');
 const RUN_ID = assertFixtureRunId('run-event-1');
+
+void test('Goal updates carry only the aggregate public snapshot', () => {
+  const event = {
+    type: 'goal_updated',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+    seq: 1,
+    ts: '2026-07-26T00:01:00.000Z',
+    payload: {
+      goalId: 'goal-1',
+      threadId: THREAD_ID,
+      objective: 'Ship Goal mode',
+      state: 'continuing',
+      createdAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T00:01:00.000Z',
+    },
+  };
+  assert.equal(isRunEvent(event), true);
+  assert.equal(
+    isRunEvent({
+      ...event,
+      payload: {
+        ...event.payload,
+        votes: [{ verdict: 'not_achieved' }],
+      },
+    }),
+    false,
+  );
+});
+
+void test('subagent launch request states expose daemon restart interruption without treating arbitrary values as durable state', () => {
+  assert.equal(isSubagentLaunchRequestState('interrupted'), true);
+  assert.equal(isSubagentLaunchRequestState('running_after_restart'), false);
+});
+
+void test('child terminal reasons distinguish graceful daemon shutdown from restart recovery', () => {
+  assert.equal(isAgentChildTerminalReason('daemon_shutdown'), true);
+  assert.equal(isAgentChildTerminalReason('daemon_restart'), true);
+  assert.equal(isAgentChildTerminalReason('daemon_stopped_somehow'), false);
+});
+
+void test('agent retry raw preserves fresh-attempt lineage and rejects invented retry dispositions', () => {
+  const raw = {
+    ok: true,
+    previousChildRunId: 'previous-child',
+    childRunId: 'fresh-child',
+    childThreadId: 'fresh-thread',
+    retryDisposition: 'created',
+    launchState: 'queued',
+    deferReason: 'configured_capacity',
+    failureReason: null,
+    modelId: 'gpt-5.6',
+    reasoningEffort: 'medium',
+    selectionSource: 'inherited',
+  } as const;
+
+  assert.equal(isAgentRetryToolRaw(raw), true);
+  assert.equal(
+    isAgentRetryToolRaw({
+      ...raw,
+      retryDisposition: 'reused_interrupted_attempt',
+    }),
+    false,
+  );
+});
 
 void test('RunEvent envelope enforces producer sequence and timestamp contract', () => {
   const event = {
@@ -92,13 +172,109 @@ void test('RunEvent envelope enforces producer sequence and timestamp contract',
   }
 });
 
-void test('context usage payloads require exact integer policy measurements', () => {
+void test('provider runtime status distinguishes response, auth, and rate-limit waits', () => {
+  const providerWaiting = {
+    phase: 'provider_waiting',
+    observedAt: '2026-07-23T11:30:00.000Z',
+  } as const;
+  const authWaiting = {
+    phase: 'auth_waiting',
+    observedAt: '2026-07-23T11:30:00.500Z',
+  } as const;
+  const rateLimitWaiting = {
+    phase: 'rate_limit_waiting',
+    observedAt: '2026-07-23T11:30:01.000Z',
+  } as const;
+
+  assert.equal(isProviderRuntimeStatusEventPayload(providerWaiting), true);
+  assert.equal(isProviderRuntimeStatusEventPayload(authWaiting), true);
+  assert.equal(isProviderRuntimeStatusEventPayload(rateLimitWaiting), true);
+  assert.equal(
+    isRunEvent({
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      seq: 1,
+      type: 'provider_status',
+      ts: '2026-07-23T11:30:01.000Z',
+      payload: rateLimitWaiting,
+    }),
+    true,
+  );
+  assert.equal(
+    isProviderRuntimeStatusEventPayload({
+      ...rateLimitWaiting,
+      phase: 'thinking',
+    }),
+    false,
+  );
+  assert.equal(
+    isProviderRuntimeStatusEventPayload({
+      ...rateLimitWaiting,
+      observedAt: 'later',
+    }),
+    false,
+  );
+});
+
+void test('provider request diagnostics preserve request timing and factual retry outcome', () => {
+  const request = {
+    startedAt: '2026-07-23T11:30:00.000Z',
+    lastEventAt: '2026-07-23T11:30:02.000Z',
+    endedAt: '2026-07-23T11:30:03.000Z',
+    durationMs: 3_000,
+    attemptCount: 2,
+    retry: {
+      available: false,
+      performed: true,
+      outcome: 'recovered',
+    },
+  } as const;
+
+  assert.equal(isProviderRequestDiagnostics(request), true);
+  assert.equal(
+    isProviderRuntimeStatusEventPayload({
+      phase: 'provider_streaming',
+      observedAt: request.endedAt,
+      request,
+    }),
+    true,
+  );
+  assert.equal(
+    isProviderRequestDiagnostics({
+      ...request,
+      attemptCount: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    isProviderRequestDiagnostics({
+      ...request,
+      endedAt: undefined,
+    }),
+    false,
+  );
+  assert.equal(
+    isProviderRequestDiagnostics({
+      ...request,
+      retry: {
+        available: true,
+        performed: false,
+        outcome: 'scheduled',
+      },
+    }),
+    false,
+  );
+});
+
+void test('context usage payloads distinguish exact, estimated, and unknown measurements', () => {
   const payload = {
     state: 'measured' as const,
+    quality: 'exact' as const,
     modelId: 'gpt-5.6-sol',
     inputTokens: 122_400,
     contextWindow: 272_000,
     thresholdTokens: 244_800,
+    requestBytes: 510_000,
   };
 
   assert.equal(isContextUsageUpdatedEventPayload(payload), true);
@@ -117,8 +293,56 @@ void test('context usage payloads require exact integer policy measurements', ()
     isContextUsageUpdatedEventPayload({
       ...payload,
       state: 'compacted',
+      compactionEntryId: 'compaction-entry-1',
+      historyBytesBefore: 65_522,
+      historyBytesAfter: 4_003,
     }),
     true,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      ...payload,
+      state: 'compacted',
+    }),
+    true,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      ...payload,
+      state: 'compacted',
+      compactionEntryId: 'compaction-entry-1',
+      historyBytesBefore: 65_522,
+    }),
+    false,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      ...payload,
+      compactionEntryId: 'compaction-entry-1',
+      historyBytesBefore: 65_522,
+      historyBytesAfter: 4_003,
+    }),
+    false,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      ...payload,
+      state: 'compacted',
+      compactionEntryId: ' ',
+      historyBytesBefore: 65_522,
+      historyBytesAfter: 4_003,
+    }),
+    false,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      ...payload,
+      state: 'compacted',
+      compactionEntryId: 'compaction-entry-1',
+      historyBytesBefore: 65_522,
+      historyBytesAfter: 65_522,
+    }),
+    false,
   );
   assert.equal(
     isContextUsageUpdatedEventPayload({ ...payload, modelId: ' ' }),
@@ -134,6 +358,67 @@ void test('context usage payloads require exact integer policy measurements', ()
       thresholdTokens: payload.contextWindow + 1,
     }),
     false,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      ...payload,
+      quality: 'estimated',
+    }),
+    true,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      ...payload,
+      quality: 'estimated',
+      requestBytes: undefined,
+    }),
+    false,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      state: 'measured',
+      quality: 'unknown',
+      modelId: payload.modelId,
+      requestBytes: payload.requestBytes,
+    }),
+    true,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      state: 'measured',
+      quality: 'unknown',
+      modelId: payload.modelId,
+      requestBytes: payload.requestBytes,
+      contextWindow: payload.contextWindow,
+      thresholdTokens: payload.thresholdTokens,
+    }),
+    true,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      state: 'measured',
+      quality: 'unknown',
+      modelId: payload.modelId,
+      requestBytes: payload.requestBytes,
+      inputTokens: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      ...payload,
+      state: 'compacted',
+      quality: 'estimated',
+    }),
+    false,
+  );
+  assert.equal(
+    isContextUsageUpdatedEventPayload({
+      ...payload,
+      quality: undefined,
+      requestBytes: undefined,
+    }),
+    true,
   );
 });
 
@@ -174,7 +459,7 @@ type _InterjectAppliedReceivedSeqsStayNumeric = Expect<
   Equal<InterjectAppliedEventPayload['receivedSeqs'], number[]>
 >;
 
-void test('shared payload guards accept canonical shapes and reject malformed ones', () => {
+void test('child state, wait reason, text delta, and run ack guards stay strict', () => {
   assert.equal(isAgentChildTerminalState('completed'), true);
   assert.equal(isAgentChildTerminalState('failed'), true);
   assert.equal(isAgentChildTerminalState('cancelled'), true);
@@ -195,7 +480,9 @@ void test('shared payload guards accept canonical shapes and reject malformed on
     isRunAckEventPayload({ runId: 'bad id', threadId: THREAD_ID }),
     false,
   );
+});
 
+void test('tool call sources and basic tool result envelopes reject malformed shapes', () => {
   assert.equal(
     isToolCallEventPayload({
       callId: 'call-1',
@@ -322,17 +609,156 @@ void test('shared payload guards accept canonical shapes and reject malformed on
     }),
     false,
   );
+});
+
+void test('agent_wait tool result accepts offloaded slim raw the emit path produces', () => {
+  // 오프로드된 agent_wait raw — 2026-07-21 저널 오염 사고의 실제 형태.
+  // emit이 기록한 이벤트를 저널 재독이 거부하면 run.auth 복구가 영구히
+  // 죽으므로, 읽기 계약은 쓰기 경로가 만드는 형태를 그대로 수용해야 한다.
+  const offloadedRaw = {
+    ok: true,
+    offloaded: true,
+    tool: 'agent_wait',
+    callId: 'call-wait-1',
+    outputRef: 'tool-output:thread-1/run-1/call-wait-1',
+    summary: 'agent_wait returned 4 completed, 0 pending, and 0 blocked runs.',
+    fullOutputBytes: 48067,
+    fullOutputChars: 21556,
+    recoveryTool: 'read_tool_output',
+  };
+  assert.equal(
+    isToolResultEventPayload({
+      callId: 'call-wait-1',
+      step: 4,
+      tool: 'agent_wait',
+      ok: true,
+      computerFilesMayHaveChanged: false,
+      displayText: 'offloaded agent_wait result',
+      raw: offloadedRaw,
+    }),
+    true,
+  );
+  // 다른 raw-owner 툴 이름이 박힌 슬림 참조는 여전히 거부한다
+  assert.equal(
+    isToolResultEventPayload({
+      callId: 'call-wait-1',
+      step: 4,
+      tool: 'agent_wait',
+      ok: true,
+      computerFilesMayHaveChanged: false,
+      displayText: 'mismatched offloaded tool',
+      raw: { ...offloadedRaw, tool: 'exec' },
+    }),
+    false,
+  );
+  // 재진입 수단이 빠진 슬림 참조도 거부한다 — 복구 불가능한 참조는 계약 밖
+  assert.equal(
+    isToolResultEventPayload({
+      callId: 'call-wait-1',
+      step: 4,
+      tool: 'agent_wait',
+      ok: true,
+      computerFilesMayHaveChanged: false,
+      displayText: 'missing recovery tool',
+      raw: { ...offloadedRaw, recoveryTool: undefined },
+    }),
+    false,
+  );
+});
+
+void test('subagent lifecycle payload guards preserve terminal metadata contracts', () => {
+  const runtime = {
+    phase: 'provider_streaming',
+    observedAt: '2026-07-23T09:50:00.000Z',
+    lastTool: {
+      name: 'read_file',
+      callId: 'call-read-1',
+      state: 'succeeded',
+    },
+    partialOutputAvailable: true,
+    previousChildRunId: RUN_ID,
+  } as const;
   assert.equal(
     isSubagentSpawnedEventPayload({
       parentRunId: RUN_ID,
       childRunId: RUN_ID,
       childThreadId: THREAD_ID,
       subagentType: 'explorer',
+      capabilities: ['ptc'],
+      toolSurface: 'explorer_ptc',
       modelId: 'gpt-5.6-luna',
       reasoningEffort: 'xhigh',
       selectionSource: 'model_selected',
+      runtime,
     }),
     true,
+  );
+  assert.equal(
+    isRunEvent({
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      seq: 4,
+      type: 'subagent_status',
+      ts: '2026-07-23T09:50:00.000Z',
+      payload: {
+        parentRunId: RUN_ID,
+        childRunId: RUN_ID,
+        childThreadId: THREAD_ID,
+        subagentType: 'explorer',
+        capabilities: [],
+        toolSurface: 'explorer',
+        runtime,
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isSubagentSpawnedEventPayload({
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      childThreadId: THREAD_ID,
+      subagentType: 'explorer',
+      runtime: {
+        ...runtime,
+        observedAt: 'not-an-event-timestamp',
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isSubagentSpawnedEventPayload({
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      childThreadId: THREAD_ID,
+      subagentType: 'explorer',
+      runtime: {
+        ...runtime,
+        lastTool: { ...runtime.lastTool, state: 'unknown' },
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isSubagentSpawnedEventPayload({
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      childThreadId: THREAD_ID,
+      subagentType: 'explorer',
+      capabilities: ['shell'],
+      toolSurface: 'explorer_ptc',
+    }),
+    false,
+  );
+  assert.equal(
+    isSubagentSpawnedEventPayload({
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      childThreadId: THREAD_ID,
+      subagentType: 'explorer',
+      capabilities: ['ptc'],
+      toolSurface: 'explorer_shell',
+    }),
+    false,
   );
   assert.equal(
     isSubagentTerminalEventPayload({
@@ -342,10 +768,25 @@ void test('shared payload guards accept canonical shapes and reject malformed on
       subagentType: 'worker',
       terminalState: 'cancelled',
       ok: false,
-      reason: 'timeout',
+      reason: 'daemon_restart',
       result: 'cancelled',
+      resultRef: 'subagent-result:delivery-timeout',
+      runtime,
     }),
     true,
+  );
+  assert.equal(
+    isSubagentTerminalEventPayload({
+      deliveryId: 'delivery-empty-result-ref',
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      subagentType: 'worker',
+      terminalState: 'failed',
+      ok: false,
+      result: 'failed',
+      resultRef: ' ',
+    }),
+    false,
   );
   assert.equal(
     isSubagentTerminalEventPayload({
@@ -434,6 +875,9 @@ void test('shared payload guards accept canonical shapes and reject malformed on
     }),
     true,
   );
+});
+
+void test('interject and tool result envelope guards preserve correlation invariants', () => {
   assert.equal(
     isInterjectAppliedEventPayload({
       runId: RUN_ID,
@@ -506,6 +950,18 @@ void test('shared payload guards accept canonical shapes and reject malformed on
     }),
     false,
   );
+});
+
+void test('subagent tool result guards accept owned success and rejection shapes', () => {
+  const queuedSpawnRaw = {
+    ok: true,
+    childRunId: 'child-queued',
+    childThreadId: THREAD_ID,
+    subagentType: 'worker',
+    launchState: 'queued',
+    deferReason: 'configured_capacity',
+  } satisfies ToolResultRawMap['agent_spawn'];
+  assert.equal(isAgentLaunchToolRaw(queuedSpawnRaw), true);
   assert.equal(
     isToolResultEventPayload({
       callId: 'call-2',
@@ -526,6 +982,18 @@ void test('shared payload guards accept canonical shapes and reject malformed on
         ],
         pending: [],
         blocked: [],
+        launches: [
+          {
+            childRunId: 'child-1',
+            childThreadId: THREAD_ID,
+            launchState: 'started',
+            priorityClass: 'high',
+            enqueueOrder: 1,
+            createdAt: '2026-07-23T00:00:00.000Z',
+            updatedAt: '2026-07-23T00:00:01.000Z',
+            deferReason: 'configured_capacity',
+          },
+        ],
       },
     }),
     true,
@@ -586,6 +1054,36 @@ void test('shared payload guards accept canonical shapes and reject malformed on
     }),
     true,
   );
+  const cancelledBeforeStartRaw = {
+    ok: true,
+    childRunId: 'child-2',
+    stopState: 'cancelled_before_start',
+  } satisfies ToolResultRawMap['agent_stop'];
+  assert.equal(isAgentStopToolRaw(cancelledBeforeStartRaw), true);
+
+  const priorityRaw = {
+    ok: true,
+    childRunId: 'child-2',
+    launchState: 'queued',
+    priorityClass: 'high',
+    updateState: 'updated',
+  } satisfies ToolResultRawMap['agent_set_priority'];
+  assert.equal(isAgentSetPriorityToolRaw(priorityRaw), true);
+  assert.equal(
+    isToolResultEventPayload({
+      callId: 'call-6',
+      step: 1,
+      tool: 'agent_set_priority',
+      ok: true,
+      computerFilesMayHaveChanged: false,
+      displayText: 'queued child priority updated',
+      raw: priorityRaw,
+    }),
+    true,
+  );
+});
+
+void test('subagent tool result guards reject malformed owned shapes and preserve unknown raw', () => {
   assert.equal(
     isToolResultEventPayload({
       callId: 'call-6',
@@ -601,6 +1099,36 @@ void test('shared payload guards accept canonical shapes and reject malformed on
         errorCode: 'unsupported_mode',
         error: 'legacy mode is not a launch rejection code',
       },
+    }),
+    false,
+  );
+  assert.equal(
+    isAgentWaitToolRaw({
+      ok: true,
+      completed: [],
+      pending: [],
+      blocked: [],
+      launches: [
+        {
+          childRunId: 'child-1',
+          childThreadId: THREAD_ID,
+          launchState: 'waiting',
+          priorityClass: 'high',
+          enqueueOrder: 0,
+          createdAt: 'not-a-timestamp',
+          updatedAt: '2026-07-23T00:00:00.000Z',
+        },
+      ],
+    }),
+    false,
+  );
+  assert.equal(
+    isAgentSetPriorityToolRaw({
+      ok: true,
+      childRunId: 'child-1',
+      launchState: 'queued',
+      priorityClass: 'urgent',
+      updateState: 'updated',
     }),
     false,
   );
@@ -658,7 +1186,9 @@ void test('shared payload guards accept canonical shapes and reject malformed on
     }),
     true,
   );
+});
 
+void test('done and thread persistence payload guards reject malformed diagnostics', () => {
   assert.equal(isDoneEventPayload({ answer: 'done', ok: true }), true);
   assert.equal(isDoneEventPayload({ answer: 'done', ok: 'yes' }), false);
 
@@ -708,7 +1238,9 @@ void test('shared payload guards accept canonical shapes and reject malformed on
     }),
     false,
   );
+});
 
+void test('error payload guards enforce error-code-specific fields', () => {
   assert.equal(
     isErrorEventPayload({ code: 'internal', message: 'boom' }),
     true,
@@ -770,7 +1302,9 @@ void test('shared payload guards accept canonical shapes and reject malformed on
     false,
   );
   assert.equal(isErrorEventPayload({ code: 500, message: 'boom' }), false);
+});
 
+void test('artifact committed payload guard accepts the canonical source shape', () => {
   assert.equal(
     isArtifactCommittedEventPayload({
       artifactId: 'art_1',
@@ -802,6 +1336,10 @@ void test('shared payload guards accept canonical shapes and reject malformed on
 void test('RunEventPayloadMap remains aligned with shared semantic payloads', () => {
   const shared: SharedRunEventPayloadMap = {
     run_ack: { runId: RUN_ID, threadId: THREAD_ID },
+    provider_status: {
+      phase: 'rate_limit_waiting',
+      observedAt: '2026-07-23T11:00:00.000Z',
+    },
     commentary_delta: { text: 'commentary' },
     tool_call: {
       callId: 'call-1',
@@ -829,12 +1367,29 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
       childRunId: RUN_ID,
       childThreadId: THREAD_ID,
       subagentType: 'explorer',
+      capabilities: ['ptc'],
+      toolSurface: 'explorer_ptc',
+    },
+    subagent_status: {
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      childThreadId: THREAD_ID,
+      subagentType: 'explorer',
+      capabilities: ['ptc'],
+      toolSurface: 'explorer_ptc',
+      runtime: {
+        phase: 'provider_waiting',
+        observedAt: '2026-07-23T09:50:00.000Z',
+        partialOutputAvailable: false,
+      },
     },
     subagent_terminal: {
       deliveryId: 'delivery-terminal',
       parentRunId: RUN_ID,
       childRunId: RUN_ID,
       subagentType: 'worker',
+      capabilities: [],
+      toolSurface: 'worker',
       terminalState: 'failed',
       ok: false,
       reason: 'child_error',
@@ -844,6 +1399,8 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
       parentRunId: RUN_ID,
       childRunId: RUN_ID,
       subagentType: 'worker',
+      capabilities: [],
+      toolSurface: 'worker',
       approval: {
         callId: 'call-1',
         runId: RUN_ID,
@@ -882,7 +1439,25 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
       contextWindow: 272_000,
       thresholdTokens: 244_800,
     },
+    planning_workflow_updated: {
+      state: 'collecting',
+      workflowId: 'workflow-event',
+      threadId: THREAD_ID,
+      intensity: 'visual',
+      depth: 'standard',
+      createdAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T00:00:00.000Z',
+    },
+    goal_updated: {
+      goalId: 'goal-event',
+      threadId: THREAD_ID,
+      objective: 'Ship Goal mode',
+      state: 'working',
+      createdAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T00:00:00.000Z',
+    },
     final_answer_delta: { text: 'final' },
+    artifact_stream_delta: { text: 'artifact' },
     artifact_committed: {
       artifactId: 'art_1',
       version: 1,
@@ -923,6 +1498,8 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
   const artifactCommitted: ArtifactCommittedEventPayload =
     shared.artifact_committed;
   assert.equal(payloads.subagent_spawned.childThreadId, THREAD_ID);
+  assert.deepEqual(payloads.subagent_spawned.capabilities, ['ptc']);
+  assert.equal(payloads.subagent_spawned.toolSurface, 'explorer_ptc');
   assert.equal(payloads.subagent_terminal.terminalState, 'failed');
   assert.equal(payloads.interject_applied.count, 2);
   assert.equal(artifactCommitted.artifactId, 'art_1');
@@ -984,6 +1561,28 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
 });
 
 void test('subagent tool raw guards accept owned shapes and reject malformed raw payloads', () => {
+  assert.equal(
+    isAgentLaunchToolRaw({
+      ok: true,
+      childRunId: 'child-queued',
+      childThreadId: THREAD_ID,
+      subagentType: 'worker',
+      launchState: 'queued',
+      deferReason: 'batch_group_wait',
+    }),
+    true,
+  );
+  assert.equal(
+    isAgentLaunchToolRaw({
+      ok: true,
+      childRunId: 'child-queued',
+      childThreadId: THREAD_ID,
+      subagentType: 'worker',
+      launchState: 'queued',
+      deferReason: 'busy_for_now',
+    }),
+    false,
+  );
   assert.equal(
     isAgentLaunchToolRaw({
       ok: true,
@@ -1066,6 +1665,38 @@ void test('subagent tool raw guards accept owned shapes and reject malformed raw
   assert.equal(
     isAgentWaitToolRaw({
       ok: true,
+      completed: [
+        {
+          childRunId: 'child-ref-only',
+          terminalState: 'failed',
+          ok: false,
+          reason: 'provider_error',
+          resultRef: 'subagent-result:delivery-ref-only',
+        },
+      ],
+      pending: [],
+      blocked: [],
+    }),
+    true,
+  );
+  assert.equal(
+    isAgentWaitToolRaw({
+      ok: true,
+      completed: [
+        {
+          childRunId: 'child-without-result',
+          terminalState: 'failed',
+          ok: false,
+        },
+      ],
+      pending: [],
+      blocked: [],
+    }),
+    false,
+  );
+  assert.equal(
+    isAgentWaitToolRaw({
+      ok: true,
       completed: [],
       pending: [1],
       blocked: [],
@@ -1101,5 +1732,202 @@ void test('subagent tool raw guards accept owned shapes and reject malformed raw
       stopState: 'cancelled',
     }),
     false,
+  );
+});
+
+void test('every declared run-event payload field is actually validated', () => {
+  assertEveryFieldIsValidated(
+    'TextDeltaEventPayload',
+    isTextDeltaEventPayload,
+    { text: 'delta' },
+    { text: 42 },
+  );
+
+  assertEveryFieldIsValidated(
+    'ToolCallEventPayload',
+    isToolCallEventPayload,
+    { callId: 'call-1', step: 1, tool: 'read_file', args: { path: 'a.md' } },
+    { callId: 42, step: '1', tool: 42, args: 'not-a-record', source: 'x' },
+  );
+
+  assertEveryFieldIsValidated(
+    'ToolCallDeltaEventPayload',
+    isToolCallDeltaEventPayload,
+    { callId: 'call-1', step: 1, tool: 'visualize', argsDelta: '{"code":"<' },
+    { callId: 42, step: '1', tool: 42, argsDelta: 42 },
+  );
+
+  assertEveryFieldIsValidated(
+    'ToolOutputDeltaEventPayload',
+    isToolOutputDeltaEventPayload,
+    { callId: 'call-1', tool: 'exec', stream: 'stdout', text: 'out' },
+    { callId: 42, tool: 42, stream: 'stdin', text: 42 },
+  );
+
+  assertEveryFieldIsValidated(
+    'ProviderRuntimeStatusEventPayload',
+    isProviderRuntimeStatusEventPayload,
+    { phase: 'rate_limit_waiting', observedAt: '2026-07-23T11:00:00.000Z' },
+    { phase: 'invented_phase', observedAt: 'not-a-timestamp', request: 'x' },
+  );
+
+  assertEveryFieldIsValidated(
+    'ProviderRetryDiagnostics',
+    isProviderRetryDiagnostics,
+    { available: true, performed: true, outcome: 'scheduled' },
+    { available: 'yes', performed: 'no', outcome: 'invented_outcome' },
+  );
+
+  // endedAt과 durationMs는 "함께 있거나 함께 없다"는 교차 규칙이 있어, 필드
+  // 단위 오염을 격리하려면 선택 필드까지 모두 채운 정상값에서 출발해야 한다.
+  assertEveryFieldIsValidated(
+    'ProviderRequestDiagnostics',
+    isProviderRequestDiagnostics,
+    {
+      startedAt: '2026-07-23T11:00:00.000Z',
+      lastEventAt: '2026-07-23T11:00:01.000Z',
+      endedAt: '2026-07-23T11:00:02.000Z',
+      durationMs: 2000,
+      attemptCount: 2,
+      retry: { available: true, performed: true, outcome: 'scheduled' },
+    },
+    {
+      startedAt: 'not-a-timestamp',
+      lastEventAt: 'not-a-timestamp',
+      endedAt: 'not-a-timestamp',
+      durationMs: 'x',
+      attemptCount: 0,
+      retry: 'x',
+    },
+  );
+
+  assertEveryFieldIsValidated(
+    'SubagentRuntimeDiagnostics',
+    isSubagentRuntimeDiagnostics,
+    {
+      phase: 'provider_waiting',
+      observedAt: '2026-07-23T09:50:00.000Z',
+      partialOutputAvailable: false,
+    },
+    {
+      phase: 'invented_phase',
+      observedAt: 'not-a-timestamp',
+      partialOutputAvailable: 'no',
+      lastTool: 'x',
+      previousChildRunId: 42,
+      providerRequest: 'x',
+    },
+  );
+
+  assertEveryFieldIsValidated(
+    'RunUsageTotals',
+    isRunUsageTotals,
+    { inputTokens: 1, outputTokens: 2, cachedInputTokens: 3 },
+    { inputTokens: 'x', outputTokens: 'x', cachedInputTokens: 'x' },
+  );
+
+  assertEveryFieldIsValidated(
+    'InterjectAppliedEventPayload',
+    isInterjectAppliedEventPayload,
+    { runId: RUN_ID, count: 2, receivedSeqs: [1, 2] },
+    { runId: 42, count: 'x', receivedSeqs: 'x' },
+  );
+
+  assertEveryFieldIsValidated(
+    'DoneEventPayload',
+    isDoneEventPayload,
+    { answer: 'done', ok: true },
+    { answer: 42, ok: 'yes' },
+  );
+
+  assertEveryFieldIsValidated(
+    'ThreadStatePersistFailedEventPayload',
+    isThreadStatePersistFailedEventPayload,
+    { message: 'sync failed' },
+    { message: 42, diagnostics: 'x' },
+  );
+
+  assertEveryFieldIsValidated(
+    'OffloadedToolResultRaw',
+    isOffloadedToolResultRaw,
+    {
+      ok: true,
+      offloaded: true,
+      tool: 'agent_wait',
+      callId: 'call-wait-1',
+      outputRef: 'tool-output:thread-1/run-1/call-wait-1',
+      summary: 'agent_wait returned 4 completed runs.',
+      fullOutputBytes: 48_067,
+      fullOutputChars: 21_556,
+      recoveryTool: 'read_tool_output',
+    },
+    {
+      ok: false,
+      offloaded: false,
+      tool: 42,
+      callId: 42,
+      outputRef: 42,
+      summary: 42,
+      fullOutputBytes: 'x',
+      fullOutputChars: 'x',
+      recoveryTool: 'exec',
+    },
+  );
+
+  assertEveryFieldIsValidated(
+    'AgentWaitToolRaw',
+    isAgentWaitToolRaw,
+    { ok: true, completed: [], pending: [], blocked: [] },
+    { ok: false, completed: 'x', pending: 'x', blocked: 'x', launches: 'x' },
+  );
+
+  assertEveryFieldIsValidated(
+    'AgentSetPriorityToolRaw',
+    isAgentSetPriorityToolRaw,
+    {
+      ok: true,
+      childRunId: 'child-1',
+      launchState: 'queued',
+      priorityClass: 'normal',
+      updateState: 'updated',
+    },
+    {
+      ok: false,
+      childRunId: 42,
+      launchState: 'invented_state',
+      priorityClass: 'urgent',
+      updateState: 'invented_update',
+    },
+  );
+
+  assertEveryFieldIsValidated(
+    'AgentRetryToolRaw',
+    isAgentRetryToolRaw,
+    {
+      ok: true,
+      previousChildRunId: 'previous-child',
+      childRunId: 'fresh-child',
+      childThreadId: 'fresh-thread',
+      retryDisposition: 'created',
+      launchState: 'queued',
+      deferReason: 'configured_capacity',
+      failureReason: null,
+      modelId: 'gpt-5.6',
+      reasoningEffort: 'medium',
+      selectionSource: 'inherited',
+    },
+    {
+      ok: false,
+      previousChildRunId: 42,
+      childRunId: 42,
+      childThreadId: 42,
+      retryDisposition: 'invented_disposition',
+      launchState: 'invented_state',
+      deferReason: 'invented_reason',
+      failureReason: 42,
+      modelId: 42,
+      reasoningEffort: 'invented_effort',
+      selectionSource: 'invented_source',
+    },
   );
 });

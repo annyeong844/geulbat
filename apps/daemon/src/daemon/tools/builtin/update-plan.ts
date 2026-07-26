@@ -4,13 +4,18 @@ import {
   loadPlanState,
   savePlanState,
   type PlanItem,
-} from './update-plan/store.js';
+} from '../../plan-state-store.js';
 import { defineZodTool } from '../zod-tool.js';
 
 const PLAN_STATUSES = ['pending', 'in_progress', 'completed'] as const;
 
 const planStepSchema = z
   .strictObject({
+    id: z
+      .string()
+      .min(1, 'id is required when supplied.')
+      .optional()
+      .describe('Stable approved plan step identity when one exists.'),
     step: z.string().min(1, 'step is required.'),
     status: z
       .enum(PLAN_STATUSES)
@@ -56,8 +61,13 @@ export const updatePlanTool = defineZodTool({
     }
 
     try {
-      await loadPlanState(stateRoot, threadId);
-      const state = buildPlanState(args);
+      const current = await loadPlanState(stateRoot, threadId);
+      const state = {
+        ...buildPlanState(args),
+        ...(current.execution === undefined
+          ? {}
+          : { execution: current.execution }),
+      };
       await savePlanState(stateRoot, threadId, state);
       return {
         ok: true,
@@ -80,7 +90,7 @@ function buildPlanState(args: UpdatePlanArgs): {
 } {
   const createdAt = Date.now();
   const items = args.plan.map((item, index) => ({
-    id: String(index + 1),
+    id: item.id ?? String(index + 1),
     text: item.step,
     status: item.status,
     createdAt,

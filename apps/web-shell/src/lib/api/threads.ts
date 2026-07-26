@@ -3,6 +3,7 @@ import {
   isThreadDeleteResponse,
   isThreadDetailResponse,
   isThreadListResponse,
+  isThreadRenameResponse,
   isPrepareProviderTransitionResponse,
   type PrepareProviderTransitionRequest,
   type PrepareProviderTransitionResponse,
@@ -10,6 +11,7 @@ import {
   type ThreadDeleteResponse,
   type ThreadDetailResponse,
   type ThreadListResponse,
+  type ThreadRenameResponse,
 } from '@geulbat/protocol/threads';
 import {
   isArtifactDraftCommitResponse,
@@ -33,6 +35,19 @@ export class ThreadDeleteConflictError extends Error {
   }
 }
 
+export class ProviderTransitionPreparationError extends Error {
+  readonly code = 'provider_transition_preparation_failed';
+  readonly reason?: string;
+
+  constructor(message: string, reason?: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ProviderTransitionPreparationError';
+    if (reason !== undefined) {
+      this.reason = reason;
+    }
+  }
+}
+
 export function getThreads(): Promise<ThreadListResponse> {
   return apiFetch('/api/threads', undefined, isThreadListResponse);
 }
@@ -45,19 +60,35 @@ export function getThread(threadId: string): Promise<ThreadDetailResponse> {
   );
 }
 
-export function prepareThreadProviderTransition(
+export async function prepareThreadProviderTransition(
   threadId: string,
   request: PrepareProviderTransitionRequest,
 ): Promise<PrepareProviderTransitionResponse> {
-  return apiFetch(
-    `/api/threads/${encodeURIComponent(threadId)}/provider-transition`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    },
-    isPrepareProviderTransitionResponse,
-  );
+  try {
+    return await apiFetch(
+      `/api/threads/${encodeURIComponent(threadId)}/provider-transition`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      isPrepareProviderTransitionResponse,
+    );
+  } catch (error: unknown) {
+    const body = error instanceof ApiFetchError ? error.bodyJson : undefined;
+    if (
+      isRecord(body) &&
+      body.code === 'provider_transition_preparation_failed' &&
+      typeof body.message === 'string'
+    ) {
+      throw new ProviderTransitionPreparationError(
+        body.message,
+        typeof body.reason === 'string' ? body.reason : undefined,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 // upToEntryId 포함 prefix를 복제한 새 스레드를 만든다 — 원 스레드는 불변
@@ -116,6 +147,35 @@ export async function commitArtifactDraftVersion(
     }
     throw error;
   }
+}
+
+export function renameThread(
+  threadId: string,
+  title: string,
+): Promise<ThreadRenameResponse> {
+  return patchThread(threadId, { title });
+}
+
+export function setThreadPinned(
+  threadId: string,
+  pinned: boolean,
+): Promise<ThreadRenameResponse> {
+  return patchThread(threadId, { pinned });
+}
+
+function patchThread(
+  threadId: string,
+  body: { title?: string; pinned?: boolean },
+): Promise<ThreadRenameResponse> {
+  return apiFetch(
+    `/api/threads/${encodeURIComponent(threadId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    isThreadRenameResponse,
+  );
 }
 
 export function deleteThread(threadId: string): Promise<ThreadDeleteResponse> {

@@ -31,12 +31,14 @@ import {
   type PtcExecuteCodePlacementDecision,
   type PtcExecuteCodePlacementDecisionReason,
   type PtcExecuteCodePlacementObservation,
+  type PtcExecuteCodePlacementPressureSnapshot,
   type PtcExecuteCodePlacementReleaseResult,
   type PtcExecuteCodePlacementRequest,
   type PtcExecuteCodeQueuedPlacementAcquisition,
   type PtcExecuteCodeSettledPlacementAcquireResult,
   type PtcExecuteCodeWarmSessionPlacement,
 } from './execute-code-placement-contract.js';
+import { runDetached } from '../../../utils/run-detached.js';
 
 interface PendingPlacementAcquire {
   queueId: `ptc_placement_queue_${string}`;
@@ -146,6 +148,23 @@ export function createPtcExecuteCodePlacementCoordinator(
       };
     }
 
+    if (request.ownerKind === 'child' && burstConfig?.enabled !== true) {
+      return {
+        ok: false,
+        reasonCode: 'ptc_lab_session_unavailable',
+        message:
+          'Child-owned PTC work requires cold burst placement, but cold burst placement is not enabled',
+        remediation:
+          'Ask the operator to enable GEULBAT_PTC_BURST_ENABLED=true, or return the work to the root/main owner.',
+        diagnostics: {
+          placementOwnerKind: request.ownerKind,
+          continuityKind: request.continuity.kind,
+          burstEligible: true,
+          coldBurstAvailable: false,
+        },
+      };
+    }
+
     if (request.kind === 'detached_cell' && burstConfig?.enabled === true) {
       if (burstEligible) {
         return enqueuePlacement(
@@ -186,9 +205,11 @@ export function createPtcExecuteCodePlacementCoordinator(
     const previous = retainedWarmPlacement;
     const transition = replaceRetainedWarmPlacement(previous, request, reason);
     warmTransition = transition;
-    void transition.then(
-      () => finishWarmTransition(transition),
-      () => finishWarmTransition(transition),
+    runDetached('ptc/warm-placement-transition', () =>
+      transition.then(
+        () => finishWarmTransition(transition),
+        () => finishWarmTransition(transition),
+      ),
     );
     return transition;
   }
@@ -390,10 +411,10 @@ export function createPtcExecuteCodePlacementCoordinator(
     if (pending === undefined) {
       return;
     }
-    void Promise.resolve(acquireWarmPlacement(pending.request)).then(
-      (result) => {
+    runDetached('ptc/warm-placement-acquire', () =>
+      Promise.resolve(acquireWarmPlacement(pending.request)).then((result) => {
         settlePendingAcquire(pending, result);
-      },
+      }),
     );
   }
 
@@ -587,6 +608,37 @@ export function createPtcExecuteCodePlacementCoordinator(
     return firstFailure ?? { ok: true };
   }
 
+  function readPressureSnapshot(): PtcExecuteCodePlacementPressureSnapshot {
+    const standby = args.standbyPool?.readPressureSnapshot();
+    const burstPlacements = [...activeBurstPlacements.values()];
+    return {
+      shutdownState,
+      activeWarmPlacementCount: activeWarmPlacement === undefined ? 0 : 1,
+      retainedWarmPlacementCount: retainedWarmPlacement === undefined ? 0 : 1,
+      warmTransitionCount: warmTransition === undefined ? 0 : 1,
+      activeBurstPlacementCount: burstPlacements.length,
+      coldCreateBurstPlacementCount: burstPlacements.filter(
+        ({ placement }) => placement.provisioning === 'coldCreate',
+      ).length,
+      standbyRestoreBurstPlacementCount: burstPlacements.filter(
+        ({ placement }) => placement.provisioning === 'standbyRestore',
+      ).length,
+      burstCleanupCount: burstPlacements.filter(
+        ({ cleanup }) => cleanup !== undefined,
+      ).length,
+      queuedWarmPlacementCount: pendingWarmQueue.length,
+      queuedBurstPlacementCount: [...pendingBurstByThread.values()].reduce(
+        (count, queue) => count + queue.length,
+        0,
+      ),
+      queuedBurstThreadCount: pendingBurstByThread.size,
+      standbyPoolState: standby?.state ?? 'disabled',
+      standbyReadySlotCount: standby?.readySlotCount ?? 0,
+      standbyRefillInFlightCount: standby?.refillInFlightCount ?? 0,
+      standbyIdentityCount: standby?.identityCount ?? 0,
+    };
+  }
+
   function rejectPendingAcquires(): void {
     const pending = [
       ...pendingWarmQueue,
@@ -611,6 +663,7 @@ export function createPtcExecuteCodePlacementCoordinator(
     refreshQueuedPlacements() {
       drainBurstQueue();
     },
+    readPressureSnapshot,
     beginShutdown() {
       if (shutdownState !== 'open') {
         return;
@@ -648,10 +701,12 @@ export function createPtcExecuteCodePlacementCoordinator(
     if (standbyPool === undefined) {
       return;
     }
-    void standbyPool.refill(identity, () => {
-      const admission = readStandbyResourceAdmission(identity);
-      return admission?.ok !== false;
-    });
+    runDetached('ptc/standby-refill', () =>
+      standbyPool.refill(identity, () => {
+        const admission = readStandbyResourceAdmission(identity);
+        return admission?.ok !== false;
+      }),
+    );
   }
 
   function readBurstResourceAdmission(

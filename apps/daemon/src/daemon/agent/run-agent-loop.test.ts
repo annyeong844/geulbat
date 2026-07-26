@@ -4,11 +4,15 @@ import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+import { createToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
 import {
   isProviderReplayScopeId,
   type ProviderReplayScopeId,
 } from '@geulbat/protocol/provider-auth';
+import type { PlanDraftV1 } from '@geulbat/protocol/planning-workflow';
+import type { ContextUsageUpdatedEventPayload } from '@geulbat/protocol/run-events';
 import { runAgentLoop } from './run-agent-loop.js';
+import { createAgentLoopPromptPort } from './loop-prompt.js';
 import type { AgentEvent } from './events.js';
 import { createThreadBackgroundNotificationQueue } from './runtime/background-notification-queue.js';
 import { createRunState } from './runtime/run-state.js';
@@ -21,6 +25,7 @@ import {
 } from '../sessions/active-run-interject-buffer.js';
 import { readTranscriptEntries } from '../sessions/transcript-log.js';
 import { persistSingleInterjectToTranscript } from './loop-history.js';
+import { updatePlanTool } from '../tools/builtin/update-plan.js';
 import type {
   AnyTool,
   ExecuteResult,
@@ -28,8 +33,10 @@ import type {
   ToolParseResult,
 } from '../tools/types.js';
 import { createResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-cache.js';
+import type { ResponsesRequestMeasurement } from '../llm/provider/transport/responses-websocket.js';
 import { ProviderReplayScopeMismatchError } from '../llm/provider/provider-replay-scope.js';
 import type { HistoryItem } from '../llm/index.js';
+import type { AgentLoopObserverSnapshot } from './observer/agent-loop-observer.js';
 import type { PtcFixedEpochProbeRuntime } from '../daemon-runtime-contract.js';
 import {
   PTC_BROWSER_PAGE_LOAD_EVIDENCE_TOOL_NAME,
@@ -69,6 +76,10 @@ import {
   PTC_FIXED_PROBE_STRUCTURED_OUTPUT_KIND,
   PTC_FIXED_PROBE_STRUCTURED_OUTPUT_PROBE_ID,
 } from './ptc-fixed-probe-structured-output-caller.js';
+
+function withoutProviderStatus(events: readonly AgentEvent[]): AgentEvent[] {
+  return events.filter((event) => event.type !== 'provider_status');
+}
 
 function registerOnce(
   daemonContext: ReturnType<typeof createDaemonContext>,
@@ -110,6 +121,48 @@ function structuredPtcFixedProbeOutput() {
     kind: PTC_FIXED_PROBE_STRUCTURED_OUTPUT_KIND,
     payload: {
       probeId: PTC_FIXED_PROBE_STRUCTURED_OUTPUT_PROBE_ID,
+    },
+  };
+}
+
+function createTestContextBudgetRound(
+  onContextUsage?: (snapshot: ContextUsageUpdatedEventPayload) => void,
+) {
+  let requestBytes: number | undefined;
+  return {
+    onProviderRequestPrepared(measurement: ResponsesRequestMeasurement) {
+      requestBytes = measurement.serializedBytes;
+    },
+    async prepareBeforeModelRound() {
+      return { kind: 'failed' as const, message: 'not requested by this test' };
+    },
+    getRequestBytes() {
+      return requestBytes;
+    },
+    getToolResultContextBudget() {
+      return {
+        kind: 'unknown' as const,
+        modelKey: 'test\0test',
+        reason: 'usage_unavailable' as const,
+      };
+    },
+    publish(snapshot: ContextUsageUpdatedEventPayload) {
+      onContextUsage?.(snapshot);
+    },
+  };
+}
+
+function testRequestMeasurement(
+  serializedBytes: number,
+): ResponsesRequestMeasurement {
+  return {
+    serializedBytes,
+    dominantPressureSource: 'history',
+    serializedBytesBySource: {
+      history: serializedBytes,
+      instructions: 0,
+      toolDefinitions: 0,
+      envelope: 0,
     },
   };
 }
@@ -177,7 +230,7 @@ void test('runAgentLoop rejects direct tools outside the allowed registry surfac
     },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-invalid-tool-surface',
+      computerSessionId: 'session-loop-invalid-tool-surface',
     }),
     callModelImpl: createScriptedProviderCallModel([
       {
@@ -195,7 +248,7 @@ void test('runAgentLoop rejects direct tools outside the allowed registry surfac
   assert.deepEqual(result, { ok: false, finalProse: '' });
   assert.equal(modelCallCount, 0);
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     ['run_ack', 'error'],
   );
   const terminalEvent = events.at(-1);
@@ -207,6 +260,944 @@ void test('runAgentLoop rejects direct tools outside the allowed registry surfac
     terminalEvent.payload.message,
     /direct tool is outside the allowed registry surface: write_file/,
   );
+});
+
+void test('runAgentLoop rejects ambiguous or unknown explicit capability authority before model execution', async () => {
+  const threadId = testThreadId(2);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-invalid-tool-capability-policy-'),
+  );
+  const toolCapabilityPolicy = createToolCapabilityPolicy({
+    directRegistryNames: ['list_files'],
+    allowedRegistryNames: ['list_files'],
+    callbackRegistryNames: [],
+    writeCallbackEnabled: false,
+  });
+  let modelCallCount = 0;
+
+  const ambiguous = await runAgentLoop({
+    runId: 'run-loop-ambiguous-tool-capability-policy',
+    runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+    prompt: 'do not start this run',
+    toolSurface: {
+      directRegistryNames: ['list_files'],
+      allowedRegistryNames: ['list_files'],
+    },
+    toolCapabilityPolicy,
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-ambiguous-tool-capability-policy',
+    }),
+    modelRoundPort: {
+      async runModelRound() {
+        modelCallCount += 1;
+        assert.fail('ambiguous tool authority must stop before the model');
+      },
+    },
+    onEvent() {},
+  });
+  const unknown = await runAgentLoop({
+    runId: 'run-loop-unknown-tool-capability-policy',
+    runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+    prompt: 'do not start this run either',
+    toolCapabilityPolicy: createToolCapabilityPolicy({
+      directRegistryNames: [],
+      allowedRegistryNames: ['unknown_policy_tool'],
+      callbackRegistryNames: [],
+      writeCallbackEnabled: false,
+    }),
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-unknown-tool-capability-policy',
+    }),
+    modelRoundPort: {
+      async runModelRound() {
+        modelCallCount += 1;
+        assert.fail('unknown tool authority must stop before the model');
+      },
+    },
+    onEvent() {},
+  });
+
+  assert.deepEqual(ambiguous, { ok: false, finalProse: '' });
+  assert.deepEqual(unknown, { ok: false, finalProse: '' });
+  assert.equal(modelCallCount, 0);
+});
+
+void test('runAgentLoop composes one explicit tool capability policy across definitions, projection, execution, and observation', async () => {
+  const threadId = testThreadId(1);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-tool-capability-policy-'),
+  );
+  const toolCapabilityPolicy = createToolCapabilityPolicy({
+    directRegistryNames: ['list_files'],
+    allowedRegistryNames: ['list_files', 'read_file'],
+    callbackRegistryNames: ['read_file'],
+    writeCallbackEnabled: false,
+  });
+  const definitionAdmissions: Array<readonly string[] | undefined> = [];
+  const projectionPolicies: unknown[] = [];
+  const executionPolicies: unknown[] = [];
+  const executionAllowedRegistryNames: Array<readonly string[] | undefined> =
+    [];
+  const promptDirectRegistryNames: Array<readonly string[] | undefined> = [];
+  const snapshots: AgentLoopObserverSnapshot[] = [];
+  let modelRound = 0;
+  const promptPort = createAgentLoopPromptPort();
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-tool-capability-policy',
+    runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+    prompt: 'use the bounded tool policy',
+    toolCapabilityPolicy,
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-tool-capability-policy',
+    }),
+    promptPort: {
+      buildPromptBundle(args) {
+        promptDirectRegistryNames.push(args.directRegistryNames);
+        return promptPort.buildPromptBundle(args);
+      },
+    },
+    toolDefinitionPort: {
+      buildToolDefinitions(args) {
+        definitionAdmissions.push(args.directRegistryNames);
+        return daemonContext.toolRegistry.buildToolDefinitions({
+          names: [...(args.directRegistryNames ?? [])],
+        });
+      },
+    },
+    toolLibraryProjectionPort: {
+      async resolveProjection(args) {
+        projectionPolicies.push(args.toolCapabilityPolicy);
+        return {
+          ok: true,
+          identity: {
+            sdkVersion: 'sdk-policy-test',
+            sdkProjectionHash:
+              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+            policyId: toolCapabilityPolicy.toolCapabilityPolicyId,
+          },
+        };
+      },
+    },
+    modelRoundPort: {
+      async runModelRound() {
+        modelRound += 1;
+        if (modelRound === 1) {
+          return {
+            ok: true,
+            value: {
+              assistantText: '',
+              terminalResult: { ok: true, finalProse: '' },
+              functionCalls: [
+                {
+                  id: 'fc-policy-list-files',
+                  callId: 'call-policy-list-files',
+                  name: 'list_files',
+                  arguments: '{}',
+                },
+              ],
+            },
+          };
+        }
+        return {
+          ok: true,
+          value: {
+            assistantText: 'bounded policy complete',
+            terminalResult: {
+              ok: true,
+              finalProse: 'bounded policy complete',
+            },
+            functionCalls: [],
+          },
+        };
+      },
+    },
+    toolRuntimePort: {
+      async processFunctionCalls(args) {
+        executionPolicies.push(args.toolCapabilityPolicy);
+        executionAllowedRegistryNames.push(args.allowedRegistryNames);
+        return { ok: true, value: undefined };
+      },
+    },
+    observer: {
+      recordSnapshot(snapshot) {
+        snapshots.push(snapshot);
+      },
+      recordEvent() {},
+    },
+    onEvent() {},
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'bounded policy complete',
+  });
+  assert.deepEqual(definitionAdmissions, [['list_files']]);
+  assert.deepEqual(promptDirectRegistryNames, [['list_files']]);
+  assert.deepEqual(projectionPolicies, [toolCapabilityPolicy]);
+  assert.deepEqual(executionPolicies, [toolCapabilityPolicy]);
+  assert.deepEqual(executionAllowedRegistryNames, [
+    ['list_files', 'read_file'],
+  ]);
+  assert.deepEqual(snapshots[0]?.toolSurface.admission, {
+    kind: 'restricted',
+    directRegistryNames: ['list_files'],
+    allowedRegistryNames: ['list_files', 'read_file'],
+  });
+  assert.equal(
+    snapshots[0]?.toolSurface.toolLibraryProjection?.policyId,
+    toolCapabilityPolicy.toolCapabilityPolicyId,
+  );
+});
+
+void test('runAgentLoop executes the tool identity captured before the model round', async () => {
+  const threadId = testThreadId(1220);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-tool-registry-snapshot-'),
+  );
+  let originalExecutions = 0;
+  let replacementExecutions = 0;
+  let modelRound = 0;
+  const toolName = 'run_snapshot_tool';
+
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: toolName,
+      description: 'original run tool',
+      sideEffectLevel: 'none',
+      requiresApproval: false,
+      async executeParsed() {
+        originalExecutions += 1;
+        return { ok: true, output: 'original run tool result' };
+      },
+    }),
+  );
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-tool-registry-snapshot',
+    runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+    prompt: 'use the snapshotted tool',
+    toolSurface: {
+      directRegistryNames: [toolName],
+      allowedRegistryNames: [toolName],
+    },
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-tool-registry-snapshot',
+      permissionMode: 'full_access',
+    }),
+    toolLibraryProjectionPort: {
+      async resolveProjection() {
+        return {
+          ok: true,
+          identity: {
+            sdkVersion: 'sdk-run-snapshot-test',
+            sdkProjectionHash:
+              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+            policyId: 'run-snapshot-test',
+          },
+        };
+      },
+    },
+    modelRoundPort: {
+      async runModelRound(args) {
+        modelRound += 1;
+        if (modelRound === 1) {
+          assert.deepEqual(
+            args.toolDefs.map(({ name, description }) => ({
+              name,
+              description,
+            })),
+            [{ name: toolName, description: 'original run tool' }],
+          );
+          assert.equal(
+            daemonContext.toolRegistry.unregisterTool(toolName),
+            true,
+          );
+          daemonContext.toolRegistry.registerTool(
+            makeTestTool({
+              name: toolName,
+              description: 'replacement run tool',
+              sideEffectLevel: 'write',
+              requiresApproval: true,
+              async executeParsed() {
+                replacementExecutions += 1;
+                return { ok: true, output: 'replacement run tool result' };
+              },
+            }),
+          );
+          return {
+            ok: true,
+            value: {
+              assistantText: '',
+              terminalResult: { ok: true, finalProse: '' },
+              functionCalls: [
+                {
+                  id: 'fc-run-snapshot-tool',
+                  callId: 'call-run-snapshot-tool',
+                  name: toolName,
+                  arguments: '{}',
+                },
+              ],
+            },
+          };
+        }
+        return {
+          ok: true,
+          value: {
+            assistantText: 'snapshot complete',
+            terminalResult: {
+              ok: true,
+              finalProse: 'snapshot complete',
+            },
+            functionCalls: [],
+          },
+        };
+      },
+    },
+    onEvent() {},
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'snapshot complete',
+  });
+  assert.equal(modelRound, 2);
+  assert.equal(originalExecutions, 1);
+  assert.equal(replacementExecutions, 0);
+  assert.equal(
+    daemonContext.toolRegistry
+      .captureSnapshot()
+      .buildToolDefinitions({ names: [toolName] })[0]?.description,
+    'replacement run tool',
+  );
+});
+
+void test('runAgentLoop ends a turn only after a successful turn-ending tool result', async () => {
+  const threadId = testThreadId(1211);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-turn-ending-tool-'),
+  );
+  const outcomes = ['failure', 'success'] as const;
+  let modelRound = 0;
+  let toolRound = 0;
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-turn-ending-tool',
+    runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+    prompt: 'ask one question',
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-turn-ending-tool',
+    }),
+    toolDefinitionPort: {
+      buildToolDefinitions() {
+        return daemonContext.toolRegistry.buildToolDefinitions({
+          names: ['ask_user'],
+        });
+      },
+    },
+    toolLibraryProjectionPort: {
+      async resolveProjection() {
+        return {
+          ok: true,
+          identity: {
+            sdkVersion: 'sdk-turn-ending-tool-test',
+            sdkProjectionHash:
+              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+            policyId: 'turn-ending-tool-test',
+          },
+        };
+      },
+    },
+    modelRoundPort: {
+      async runModelRound() {
+        modelRound += 1;
+        assert.ok(modelRound <= 2, 'a successful ask_user must end the turn');
+        return {
+          ok: true,
+          value: {
+            assistantText: '',
+            terminalResult: {
+              ok: true,
+              finalProse: `waiting-round-${modelRound}`,
+            },
+            functionCalls: [
+              {
+                id: `fc-ask-user-${modelRound}`,
+                callId: `call-ask-user-${modelRound}`,
+                name: 'ask_user',
+                arguments: '{}',
+              },
+            ],
+          },
+        };
+      },
+    },
+    toolRuntimePort: {
+      async processFunctionCalls(args) {
+        const outcome = outcomes[toolRound];
+        assert.ok(outcome);
+        toolRound += 1;
+        args.observeToolResult?.({
+          schemaVersion: 1,
+          runId: args.runId,
+          threadId: args.runContext.threadId,
+          callId: args.functionCalls[0]?.callId ?? '',
+          toolName: 'ask_user',
+          outcome,
+          elapsedMs: null,
+          fullOutputBytes: 0,
+          modelVisibleBytes: 0,
+          parseQuality: 'structured_json',
+          projection: 'inline',
+          exactDurableRecovery: false,
+        });
+        return { ok: true, value: undefined };
+      },
+    },
+    onEvent() {},
+  });
+
+  assert.equal(modelRound, 2);
+  assert.equal(toolRound, 2);
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'waiting-round-2',
+  });
+});
+
+void test('runAgentLoop refuses to leave a collecting workflow on final prose alone', async () => {
+  const threadId = testThreadId(1213);
+  const daemonContext = createDaemonContext();
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-planning-terminal-gate-'),
+  );
+  let modelRound = 0;
+  const planningWorkflows = {
+    ...daemonContext.planningWorkflows,
+    async readThread() {
+      return {
+        state: 'collecting' as const,
+        workflowId: 'workflow-terminal-gate',
+        threadId,
+        intensity: 'quiet' as const,
+        depth: 'deep' as const,
+        createdAt: '2026-07-26T00:00:00.000Z',
+        updatedAt: '2026-07-26T00:00:00.000Z',
+      };
+    },
+  };
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-planning-terminal-gate',
+    runContext: makeRunContext({ threadId, stateRoot }),
+    prompt: 'plan this carefully',
+    planningWorkflow: {
+      workflowId: 'workflow-terminal-gate',
+      intensity: 'quiet',
+      depth: 'deep',
+    },
+    runtimeServices: { ...daemonContext, planningWorkflows },
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-planning-terminal-gate',
+    }),
+    modelRoundPort: {
+      async runModelRound() {
+        modelRound += 1;
+        if (modelRound === 1) {
+          return {
+            ok: true,
+            value: {
+              assistantText: '설명은 여기까지입니다.',
+              terminalResult: {
+                ok: true,
+                finalProse: '설명은 여기까지입니다.',
+              },
+              functionCalls: [],
+            },
+          };
+        }
+        assert.equal(modelRound, 2);
+        return {
+          ok: true,
+          value: {
+            assistantText: '',
+            terminalResult: {
+              ok: true,
+              finalProse: '사용자 결정을 기다립니다.',
+            },
+            functionCalls: [
+              {
+                id: 'fc-planning-ask-user',
+                callId: 'call-planning-ask-user',
+                name: 'ask_user',
+                arguments: '{}',
+              },
+            ],
+          },
+        };
+      },
+    },
+    toolRuntimePort: {
+      async processFunctionCalls(args) {
+        args.observeToolResult?.({
+          schemaVersion: 1,
+          runId: args.runId,
+          threadId,
+          callId: 'call-planning-ask-user',
+          toolName: 'ask_user',
+          outcome: 'success',
+          elapsedMs: null,
+          fullOutputBytes: 0,
+          modelVisibleBytes: 0,
+          parseQuality: 'structured_json',
+          projection: 'inline',
+          exactDurableRecovery: false,
+        });
+        return { ok: true, value: undefined };
+      },
+    },
+    onEvent() {},
+  });
+
+  assert.equal(modelRound, 2);
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: '사용자 결정을 기다립니다.',
+  });
+});
+
+void test('runAgentLoop continues until the exact approved-plan execution is complete', async () => {
+  const threadId = testThreadId(1212);
+  const runId = testRunId(1212);
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-approved-plan-completion-'),
+  );
+  const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
+  const draft: PlanDraftV1 = {
+    schemaVersion: 'plan_draft_v1',
+    outcome: 'Finish the approved implementation',
+    steps: [
+      {
+        id: 'implementation',
+        text: 'Implement the approved change',
+        acceptanceCriteria: ['The implementation is complete'],
+      },
+      {
+        id: 'verification',
+        text: 'Run the approved verification',
+        acceptanceCriteria: ['The verification passes'],
+      },
+    ],
+    decisions: [],
+    assumptions: [],
+    openQuestions: [],
+  };
+  await daemonContext.planningWorkflows.enterOrResume({
+    threadId,
+    requested: true,
+    intensity: 'quiet',
+    depth: 'standard',
+    executionTemplate: {
+      workingDirectory: '/workspace',
+      permissionMode: 'basic',
+    },
+  });
+  const proposed = await daemonContext.planningWorkflows.propose({
+    threadId,
+    proposalRunId: testRunId(1211),
+    draft,
+  });
+  if (proposed.state !== 'awaiting_approval') {
+    throw new Error('expected proposed plan');
+  }
+  const approved = await daemonContext.planningWorkflows.applyCommand({
+    kind: 'approve',
+    threadId,
+    workflowId: proposed.workflowId,
+    planId: proposed.planId,
+    revision: proposed.revision,
+    digest: proposed.digest,
+  });
+  if (approved.approvedPlanRef === undefined) {
+    throw new Error('expected approved plan ref');
+  }
+  await daemonContext.planningWorkflows.claimExecution({
+    ref: approved.approvedPlanRef,
+    threadId,
+    executionRunId: runId,
+  });
+
+  const history: HistoryItem[] = [{ kind: 'user', text: 'execute the plan' }];
+  let modelRound = 0;
+  const result = await runAgentLoop({
+    runId,
+    runContext: makeRunContext({ threadId, stateRoot }),
+    prompt: 'execute the plan',
+    approvedPlan: { ref: approved.approvedPlanRef, draft },
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-approved-plan-completion',
+    }),
+    historyPort: {
+      async loadInitialHistory() {
+        return history;
+      },
+    },
+    modelRoundPort: {
+      async runModelRound() {
+        modelRound += 1;
+        if (modelRound === 1) {
+          return {
+            ok: true,
+            value: {
+              assistantText: 'premature completion',
+              terminalResult: {
+                ok: true,
+                finalProse: 'premature completion',
+              },
+              functionCalls: [],
+            },
+          };
+        }
+        assert.equal(modelRound, 2);
+        assert.equal(
+          history.some(
+            (item) =>
+              item.kind === 'assistant' &&
+              item.text.includes('"verdict":"not_achieved"') &&
+              item.text.includes('"id":"implementation"') &&
+              item.text.includes('"id":"verification"'),
+          ),
+          true,
+        );
+        const progress = await updatePlanTool.execute(
+          {
+            plan: draft.steps.map((step) => ({
+              id: step.id,
+              step: step.text,
+              status: 'completed' as const,
+            })),
+          },
+          {
+            callId: 'call-approved-plan-complete',
+            stateRoot,
+            threadId,
+          },
+        );
+        assert.equal(progress.ok, true);
+        return {
+          ok: true,
+          value: {
+            assistantText: 'approved plan complete',
+            terminalResult: {
+              ok: true,
+              finalProse: 'approved plan complete',
+            },
+            functionCalls: [],
+          },
+        };
+      },
+    },
+    onEvent() {},
+  });
+
+  assert.equal(modelRound, 2);
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'approved plan complete',
+  });
+});
+
+void test('runAgentLoop exposes update_goal only in Goal mode and completes after a two-vote quorum', async () => {
+  const threadId = testThreadId(1214);
+  const runId = testRunId(1214);
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-goal-'));
+  const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
+  const snapshot = await daemonContext.goals.enterOrResume({
+    threadId,
+    requested: true,
+    objective: 'Finish the Goal integration',
+    executionTemplate: {
+      workingDirectory: '/workspace',
+      permissionMode: 'basic',
+    },
+  });
+  assert.ok(snapshot);
+
+  const history: HistoryItem[] = [
+    { kind: 'user', text: 'Finish the Goal integration' },
+  ];
+  const events: AgentEvent[] = [];
+  let modelRound = 0;
+  let verifierCalls = 0;
+  const result = await runAgentLoop({
+    runId,
+    runContext: makeRunContext({ threadId, stateRoot }),
+    prompt: 'Finish the Goal integration',
+    goal: {
+      goalId: snapshot.goalId,
+      objective: snapshot.objective,
+    },
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-goal-completion',
+    }),
+    historyPort: {
+      async loadInitialHistory() {
+        return history;
+      },
+    },
+    modelRoundPort: {
+      async runModelRound(args) {
+        modelRound += 1;
+        assert.equal(
+          args.toolDefs.some((definition) => definition.name === 'update_goal'),
+          true,
+        );
+        if (modelRound === 1) {
+          return {
+            ok: true,
+            value: {
+              assistantText: '',
+              terminalResult: {
+                ok: true,
+                finalProse: '',
+              },
+              functionCalls: [
+                {
+                  id: 'fc-goal-complete',
+                  callId: 'call-goal-complete',
+                  name: 'update_goal',
+                  arguments: '{"status":"complete"}',
+                },
+              ],
+            },
+          };
+        }
+        if (modelRound === 2) {
+          assert.equal(
+            history.some(
+              (item) =>
+                item.kind === 'assistant' &&
+                item.text.includes('"kind":"goal_completion_assessment"') &&
+                item.text.includes('Finish the remaining verification'),
+            ),
+            true,
+          );
+          return {
+            ok: true,
+            value: {
+              assistantText: '',
+              terminalResult: {
+                ok: true,
+                finalProse: '',
+              },
+              functionCalls: [
+                {
+                  id: 'fc-goal-complete-again',
+                  callId: 'call-goal-complete-again',
+                  name: 'update_goal',
+                  arguments: '{"status":"complete"}',
+                },
+              ],
+            },
+          };
+        }
+        assert.equal(
+          history.some(
+            (item) =>
+              item.kind === 'assistant' &&
+              item.text.includes('"kind":"goal_completion_verified"'),
+          ),
+          true,
+        );
+        return {
+          ok: true,
+          value: {
+            assistantText: 'Goal integration is complete.',
+            terminalResult: {
+              ok: true,
+              finalProse: 'Goal integration is complete.',
+            },
+            functionCalls: [],
+          },
+        };
+      },
+    },
+    goalCompletionVerifier: {
+      async verify(args) {
+        verifierCalls += 1;
+        assert.equal(args.goal.state, 'verifying');
+        if (verifierCalls === 1) {
+          return {
+            outcome: {
+              kind: 'incomplete',
+              unmetRequirements: ['Finish the remaining verification'],
+            },
+            votes: [
+              {
+                verdict: 'not_achieved',
+                unmetRequirements: ['Finish the remaining verification'],
+              },
+              {
+                verdict: 'not_achieved',
+                unmetRequirements: ['Finish the remaining verification'],
+              },
+              { verdict: 'achieved' },
+            ],
+          };
+        }
+        return {
+          outcome: { kind: 'achieved' },
+          votes: [
+            { verdict: 'achieved' },
+            { verdict: 'achieved' },
+            {
+              verdict: 'not_achieved',
+              unmetRequirements: ['Dissenting check'],
+            },
+          ],
+        };
+      },
+    },
+    onEvent(event) {
+      events.push(event);
+    },
+  });
+
+  assert.equal(modelRound, 3);
+  assert.equal(verifierCalls, 2);
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'Goal integration is complete.',
+  });
+  assert.equal(
+    (await daemonContext.goals.readThread(threadId))?.state,
+    'completed',
+  );
+  assert.deepEqual(
+    events
+      .filter((event) => event.type === 'goal_updated')
+      .map((event) => event.payload.state),
+    ['verifying', 'continuing', 'verifying', 'completed'],
+  );
+});
+
+void test('runAgentLoop does not expose or invoke Goal completion verification in ordinary chat', async () => {
+  const threadId = testThreadId(1215);
+  const runId = testRunId(1215);
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-no-goal-'));
+  const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
+  let verifierCalls = 0;
+
+  const result = await runAgentLoop({
+    runId,
+    runContext: makeRunContext({ threadId, stateRoot }),
+    prompt: 'Answer an ordinary question',
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-no-goal',
+    }),
+    modelRoundPort: {
+      async runModelRound(args) {
+        assert.equal(
+          args.toolDefs.some((definition) => definition.name === 'update_goal'),
+          false,
+        );
+        return {
+          ok: true,
+          value: {
+            assistantText: 'Ordinary answer.',
+            terminalResult: {
+              ok: true,
+              finalProse: 'Ordinary answer.',
+            },
+            functionCalls: [],
+          },
+        };
+      },
+    },
+    goalCompletionVerifier: {
+      async verify() {
+        verifierCalls += 1;
+        return {
+          outcome: { kind: 'achieved' },
+          votes: [
+            { verdict: 'achieved' },
+            { verdict: 'achieved' },
+            { verdict: 'achieved' },
+          ],
+        };
+      },
+    },
+    onEvent() {},
+  });
+
+  assert.equal(verifierCalls, 0);
+  assert.deepEqual(result, {
+    ok: true,
+    finalProse: 'Ordinary answer.',
+  });
+});
+
+void test('runAgentLoop ignores stale thread plan state without an approved execution binding', async () => {
+  const threadId = testThreadId(1213);
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-stale-plan-completion-'),
+  );
+  const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
+  const stale = await updatePlanTool.execute(
+    {
+      plan: [{ step: 'old unfinished work', status: 'in_progress' }],
+    },
+    {
+      callId: 'call-stale-plan',
+      stateRoot,
+      threadId,
+    },
+  );
+  assert.equal(stale.ok, true);
+  let modelRound = 0;
+
+  const result = await runAgentLoop({
+    runId: testRunId(1213),
+    runContext: makeRunContext({ threadId, stateRoot }),
+    prompt: 'answer a new ordinary question',
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-stale-plan-completion',
+    }),
+    modelRoundPort: {
+      async runModelRound() {
+        modelRound += 1;
+        return {
+          ok: true,
+          value: {
+            assistantText: 'ordinary answer',
+            terminalResult: {
+              ok: true,
+              finalProse: 'ordinary answer',
+            },
+            functionCalls: [],
+          },
+        };
+      },
+    },
+    onEvent() {},
+  });
+
+  assert.equal(modelRound, 1);
+  assert.deepEqual(result, { ok: true, finalProse: 'ordinary answer' });
 });
 
 void test('runAgentLoop surfaces a persisted replay-scope mismatch as a terminal auth error', async () => {
@@ -239,7 +1230,7 @@ void test('runAgentLoop surfaces a persisted replay-scope mismatch as a terminal
   }
 });
 
-void test('runAgentLoop emits usage_updated with accumulated totals when the provider reports usage', async () => {
+void test('runAgentLoop accumulates model-round and compaction usage in emission order', async () => {
   const threadId = testThreadId(77);
   const daemonContext = createDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-usage-'));
@@ -258,11 +1249,24 @@ void test('runAgentLoop emits usage_updated with accumulated totals when the pro
     runState,
     runtimeServices: daemonContext,
     memoryPort: {
+      beginContextBudgetRound(args) {
+        return createTestContextBudgetRound(args.onContextUsage);
+      },
       async compactAfterModelRound() {
-        return { kind: 'not_needed', reason: 'under_threshold' };
+        return {
+          kind: 'compacted',
+          providerRoundAnchorEntryId: 'entry-before-compaction',
+          providerUsageTelemetry: {
+            inputTokens: 300,
+            outputTokens: 25,
+            cachedInputTokens: 100,
+          },
+        };
       },
     },
-    approvalContext: makeApprovalContext({ sessionId: 'session-loop-usage' }),
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-usage',
+    }),
     callModelImpl: createScriptedProviderCallModel([
       {
         ...finalRound,
@@ -288,17 +1292,22 @@ void test('runAgentLoop emits usage_updated with accumulated totals when the pro
 
   assert.equal(result.ok, true);
   const usageEvents = events.filter((event) => event.type === 'usage_updated');
-  assert.equal(usageEvents.length, 1);
+  assert.equal(usageEvents.length, 2);
   assert.deepEqual(usageEvents[0]?.payload, {
     inputTokens: 9_800,
     outputTokens: 252,
     cachedInputTokens: 4_000,
   });
+  assert.deepEqual(usageEvents[1]?.payload, {
+    inputTokens: 10_100,
+    outputTokens: 277,
+    cachedInputTokens: 4_100,
+  });
   // 런 상태의 누적치와 이벤트 페이로드가 일치한다 (스냅샷 복사)
   assert.deepEqual(runState.usageTotals, {
-    inputTokens: 9_800,
-    outputTokens: 252,
-    cachedInputTokens: 4_000,
+    inputTokens: 10_100,
+    outputTokens: 277,
+    cachedInputTokens: 4_100,
   });
 });
 
@@ -344,7 +1353,7 @@ void test('runAgentLoop persists approval denial as transcripted terminal failur
     },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-denied',
+      computerSessionId: 'session-loop-denied',
     }),
     callModelImpl: createScriptedProviderCallModel([
       providerToolRound({
@@ -369,7 +1378,7 @@ void test('runAgentLoop persists approval denial as transcripted terminal failur
   assert.deepEqual(result, { ok: false, finalProse: '' });
   assert.equal(runState.status, 'failed');
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     [
       'run_ack',
       'commentary_delta',
@@ -435,7 +1444,7 @@ void test('runAgentLoop completes after approved tool execution and second-round
     },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-success',
+      computerSessionId: 'session-loop-success',
     }),
     callModelImpl,
     onEvent: (event) => {
@@ -459,7 +1468,7 @@ void test('runAgentLoop completes after approved tool execution and second-round
   });
   assert.equal(runState.status, 'completed');
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     [
       'run_ack',
       'commentary_delta',
@@ -488,6 +1497,7 @@ void test('runAgentLoop projects a run-selected model to its provider round', as
   let observedProviderId: string | undefined;
   let observedModel: string | undefined;
   let observedReasoningEffort: string | undefined;
+  let observedServiceTier: string | undefined;
 
   const result = await runAgentLoop({
     runId: 'run-loop-provider',
@@ -498,15 +1508,17 @@ void test('runAgentLoop projects a run-selected model to its provider round', as
       model: 'grok-4.5',
     },
     reasoningEffort: 'high',
+    serviceTier: 'standard',
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-provider',
+      computerSessionId: 'session-loop-provider',
     }),
     modelRoundPort: {
       async runModelRound(args) {
         observedProviderId = args.providerRequestOptions.providerId;
         observedModel = args.providerRequestOptions.model;
         observedReasoningEffort = args.providerRequestOptions.reasoning.effort;
+        observedServiceTier = args.providerRequestOptions.serviceTier;
         return {
           ok: true,
           value: {
@@ -527,6 +1539,271 @@ void test('runAgentLoop projects a run-selected model to its provider round', as
   assert.equal(observedProviderId, 'grok_oauth');
   assert.equal(observedModel, 'grok-4.5');
   assert.equal(observedReasoningEffort, 'high');
+  assert.equal(observedServiceTier, 'standard');
+});
+
+void test('runAgentLoop wires the runtime memory owner into pre-dispatch preparation', async () => {
+  const threadId = testThreadId(311);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-context-preparation-'),
+  );
+  let preparationCalls = 0;
+  let postRoundCalls = 0;
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-context-preparation',
+    runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+    prompt: 'continue safely',
+    runtimeServices: {
+      ...daemonContext,
+      agent: {
+        ...daemonContext.agent,
+        loopMemory: {
+          beginContextBudgetRound(args) {
+            assert.equal(args.threadId, threadId);
+            return {
+              onProviderRequestPrepared(measurement) {
+                assert.equal(measurement.serializedBytes, 256);
+                return { kind: 'prepare', reason: 'near_policy' };
+              },
+              async prepareBeforeModelRound() {
+                preparationCalls += 1;
+                return { kind: 'prepared' };
+              },
+              getRequestBytes() {
+                return 256;
+              },
+              getToolResultContextBudget() {
+                return {
+                  kind: 'unknown',
+                  modelKey: 'test\0test',
+                  reason: 'usage_unavailable',
+                };
+              },
+              publish() {},
+            };
+          },
+          async compactAfterModelRound() {
+            postRoundCalls += 1;
+            return { kind: 'not_needed', reason: 'under_threshold' };
+          },
+        },
+      },
+    },
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-context-preparation',
+    }),
+    modelRoundPort: {
+      async runModelRound(args) {
+        assert.ok(args.onProviderRequestPrepared);
+        assert.deepEqual(
+          await args.onProviderRequestPrepared(testRequestMeasurement(256)),
+          { kind: 'prepare', reason: 'near_policy' },
+        );
+        assert.ok(args.onContextPreparationRequired);
+        assert.deepEqual(await args.onContextPreparationRequired(), {
+          kind: 'prepared',
+        });
+        return {
+          ok: true,
+          value: {
+            assistantText: 'prepared',
+            terminalResult: { ok: true, finalProse: 'prepared' },
+            functionCalls: [],
+          },
+        };
+      },
+    },
+    onEvent: () => undefined,
+  });
+
+  assert.deepEqual(result, { ok: true, finalProse: 'prepared' });
+  assert.equal(preparationCalls, 1);
+  assert.equal(postRoundCalls, 1);
+});
+
+void test('runAgentLoop hands the completed model budget to the same-round tool owner after appending calls', async () => {
+  const threadId = testThreadId(1311);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-tool-result-budget-'),
+  );
+  let modelRound = 0;
+  let budgetReadAfterCallAppend = false;
+  let observedBudget: unknown;
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-tool-result-budget',
+    runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+    prompt: 'measure the tool round',
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-tool-result-budget',
+    }),
+    memoryPort: {
+      beginContextBudgetRound(args) {
+        return {
+          onProviderRequestPrepared() {},
+          async prepareBeforeModelRound() {
+            return { kind: 'prepared' };
+          },
+          getRequestBytes() {
+            return 1_000;
+          },
+          getToolResultContextBudget() {
+            budgetReadAfterCallAppend = args.history.some(
+              (item) =>
+                item.kind === 'function_call' &&
+                item.callId === 'call-tool-result-budget',
+            );
+            return {
+              kind: 'available',
+              quality: 'exact',
+              modelKey: 'openai_codex_direct\0gpt-test',
+              availableRequestBytes: 700,
+            };
+          },
+          publish() {},
+        };
+      },
+      async compactAfterModelRound() {
+        return { kind: 'not_needed', reason: 'under_threshold' };
+      },
+    },
+    modelRoundPort: {
+      async runModelRound() {
+        modelRound += 1;
+        if (modelRound === 1) {
+          return {
+            ok: true,
+            value: {
+              assistantText: '',
+              terminalResult: { ok: true, finalProse: '' },
+              functionCalls: [
+                {
+                  id: 'fc-tool-result-budget',
+                  callId: 'call-tool-result-budget',
+                  name: 'list_files',
+                  arguments: '{}',
+                },
+              ],
+            },
+          };
+        }
+        return {
+          ok: true,
+          value: {
+            assistantText: 'done',
+            terminalResult: { ok: true, finalProse: 'done' },
+            functionCalls: [],
+          },
+        };
+      },
+    },
+    toolRuntimePort: {
+      async processFunctionCalls(args) {
+        observedBudget = args.toolResultContextBudget;
+        return { ok: true, value: undefined };
+      },
+    },
+    onEvent() {},
+  });
+
+  assert.equal(budgetReadAfterCallAppend, true);
+  assert.deepEqual(observedBudget, {
+    kind: 'available',
+    quality: 'exact',
+    modelKey: 'openai_codex_direct\0gpt-test',
+    availableRequestBytes: 700,
+  });
+  assert.deepEqual(result, { ok: true, finalProse: 'done' });
+});
+
+void test('runAgentLoop exposes one consent-backed cross-provider overflow recovery', async () => {
+  const threadId = testThreadId(312);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-provider-transition-recovery-'),
+  );
+  const history: HistoryItem[] = [{ kind: 'user', text: 'continue' }];
+  let recoveryCalls = 0;
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-provider-transition-recovery',
+    runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+    prompt: 'continue',
+    providerModel: {
+      providerId: 'openai_codex_direct',
+      model: 'gpt-5.6-luna',
+    },
+    providerTransitionRecovery: {
+      sourceModelId: 'grok-4.5',
+      sourceReasoningEffort: 'high',
+    },
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-provider-transition-recovery',
+    }),
+    historyPort: {
+      async loadInitialHistory() {
+        return history;
+      },
+    },
+    modelRoundPort: {
+      async runModelRound(args) {
+        assert.ok(args.onContextOverflow);
+        assert.equal(await args.onContextOverflow(), true);
+        assert.equal(await args.onContextOverflow(), false);
+        assert.deepEqual(args.history, [
+          { kind: 'user', text: 'portable handoff' },
+          { kind: 'user', text: 'continue' },
+        ]);
+        return {
+          ok: true,
+          value: {
+            assistantText: 'continued',
+            terminalResult: { ok: true, finalProse: 'continued' },
+            functionCalls: [],
+          },
+        };
+      },
+    },
+    memoryPort: {
+      beginContextBudgetRound(args) {
+        return createTestContextBudgetRound(args.onContextUsage);
+      },
+      async recoverProviderTransitionAfterOverflow(args) {
+        recoveryCalls += 1;
+        assert.equal(args.workspaceRoot, workspaceRoot);
+        assert.equal(args.threadId, threadId);
+        assert.equal(args.prompt, 'continue');
+        assert.deepEqual(args.source, {
+          providerId: 'grok_oauth',
+          model: 'grok-4.5',
+        });
+        assert.deepEqual(args.target, {
+          providerId: 'openai_codex_direct',
+          model: 'gpt-5.6-luna',
+        });
+        assert.equal(args.sourceReasoningEffort, 'high');
+        args.history.splice(
+          0,
+          args.history.length,
+          { kind: 'user', text: 'portable handoff' },
+          { kind: 'user', text: 'continue' },
+        );
+        return true;
+      },
+      async compactAfterModelRound() {
+        return { kind: 'not_needed', reason: 'under_threshold' };
+      },
+    },
+    onEvent: () => undefined,
+  });
+
+  assert.deepEqual(result, { ok: true, finalProse: 'continued' });
+  assert.equal(recoveryCalls, 1);
 });
 
 void test('runAgentLoop keeps prior tool output bytes immutable after successful model consumption', async () => {
@@ -566,7 +1843,7 @@ void test('runAgentLoop keeps prior tool output bytes immutable after successful
     prompt: 'continue',
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-output-compaction',
+      computerSessionId: 'session-loop-output-compaction',
     }),
     historyPort: {
       async loadInitialHistory() {
@@ -647,7 +1924,7 @@ void test('runAgentLoop preserves provider output items exactly once across a to
     prompt: 'look it up',
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-provider-output-continuity',
+      computerSessionId: 'session-loop-provider-output-continuity',
     }),
     historyPort: {
       async loadInitialHistory() {
@@ -762,7 +2039,7 @@ void test('runAgentLoop compacts successful round input before appending the new
     prompt: 'continue',
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-native-compaction',
+      computerSessionId: 'session-loop-native-compaction',
     }),
     historyPort: {
       async loadInitialHistory() {
@@ -770,7 +2047,8 @@ void test('runAgentLoop compacts successful round input before appending the new
       },
     },
     modelRoundPort: {
-      async runModelRound() {
+      async runModelRound(args) {
+        await args.onProviderRequestPrepared?.(testRequestMeasurement(400));
         return {
           ok: true,
           value: {
@@ -783,17 +2061,24 @@ void test('runAgentLoop compacts successful round input before appending the new
       },
     },
     memoryPort: {
+      beginContextBudgetRound(args) {
+        return createTestContextBudgetRound(args.onContextUsage);
+      },
       async compactAfterModelRound(args) {
         memoryCalls += 1;
         assert.equal(args.inputTokens, 90);
+        assert.equal(args.contextBudgetRound.getRequestBytes(), 400);
         assert.deepEqual(args.history, [{ kind: 'user', text: 'old context' }]);
         const contextUsage = {
+          state: 'measured' as const,
+          quality: 'exact' as const,
           modelId: args.providerRequestOptions.model,
           inputTokens: 90,
           contextWindow: 100,
           thresholdTokens: 90,
+          requestBytes: 400,
         };
-        args.onContextUsage?.({ state: 'measured', ...contextUsage });
+        args.contextBudgetRound.publish(contextUsage);
         args.history.splice(0, args.history.length, {
           kind: 'provider_native_compaction',
           providerId: 'openai_codex_direct',
@@ -805,8 +2090,14 @@ void test('runAgentLoop compacts successful round input before appending the new
             },
           ],
         });
-        args.onContextUsage?.({ state: 'compacted', ...contextUsage });
-        return { kind: 'compacted' };
+        args.contextBudgetRound.publish({
+          ...contextUsage,
+          state: 'compacted',
+        });
+        return {
+          kind: 'compacted',
+          providerRoundAnchorEntryId: 'unused-without-provider-items',
+        };
       },
     },
     onEvent: (event) => events.push(event),
@@ -824,7 +2115,7 @@ void test('runAgentLoop compacts successful round input before appending the new
     {
       kind: 'provider_native_compaction',
       providerId: 'openai_codex_direct',
-      model: daemonContext.providerRequestOptions.model,
+      model: daemonContext.provider.requestOptions.model,
       output: [
         {
           type: 'compaction',
@@ -850,7 +2141,7 @@ void test('runAgentLoop fails closed when a compaction transaction fails', async
     prompt: 'continue',
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-compaction-failure',
+      computerSessionId: 'session-loop-compaction-failure',
     }),
     modelRoundPort: {
       async runModelRound() {
@@ -866,6 +2157,9 @@ void test('runAgentLoop fails closed when a compaction transaction fails', async
       },
     },
     memoryPort: {
+      beginContextBudgetRound(args) {
+        return createTestContextBudgetRound(args.onContextUsage);
+      },
       async compactAfterModelRound() {
         return {
           kind: 'failed',
@@ -951,7 +2245,7 @@ void test('runAgentLoop applies pending interject before the next steer-aware mo
     toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-interject',
+      computerSessionId: 'session-loop-interject',
     }),
     callModelImpl,
     onEvent: (event) => {
@@ -971,7 +2265,7 @@ void test('runAgentLoop applies pending interject before the next steer-aware mo
   });
   assert.equal(runState.status, 'completed');
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     [
       'run_ack',
       'final_answer_delta',
@@ -1050,7 +2344,7 @@ void test('runAgentLoop reconciles a transcript-persisted applying interject exa
     toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-interject-restart',
+      computerSessionId: 'session-loop-interject-restart',
     }),
     historyPort: {
       async loadInitialHistory() {
@@ -1145,7 +2439,7 @@ void test('runAgentLoop continues across tool rounds through the while loop', as
     },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-while-rounds',
+      computerSessionId: 'session-loop-while-rounds',
     }),
     callModelImpl: createScriptedProviderCallModel([
       ...toolRounds,
@@ -1190,7 +2484,7 @@ void test('runAgentLoop surfaces a legacy artifact candidate separately from fin
     toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-artifact-candidate',
+      computerSessionId: 'session-loop-artifact-candidate',
     }),
     callModelImpl: createScriptedProviderCallModel([
       providerFinalAnswerRound(answer),
@@ -1211,8 +2505,8 @@ void test('runAgentLoop surfaces a legacy artifact candidate separately from fin
   });
   assert.equal(runState.status, 'completed');
   assert.deepEqual(
-    events.map((event) => event.type),
-    ['run_ack'],
+    withoutProviderStatus(events).map((event) => event.type),
+    ['run_ack', 'artifact_stream_delta'],
   );
 });
 
@@ -1240,7 +2534,7 @@ void test('runAgentLoop routes structured react bundle output through typed ingr
     toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-structured-react-bundle',
+      computerSessionId: 'session-loop-structured-react-bundle',
     }),
     callModelImpl: createScriptedProviderCallModel([
       providerStructuredOutputRound(
@@ -1261,7 +2555,7 @@ void test('runAgentLoop routes structured react bundle output through typed ingr
     ['react_bundle_dependency_prepare'],
   );
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     ['run_ack'],
   );
 });
@@ -1296,7 +2590,7 @@ void test('runAgentLoop records structured output before applying a pending stee
     toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-structured-interject',
+      computerSessionId: 'session-loop-structured-interject',
     }),
     callModelImpl: createScriptedProviderCallModel([
       {
@@ -1343,7 +2637,7 @@ void test('runAgentLoop records structured output before applying a pending stee
   });
   assert.equal(runState.status, 'completed');
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     ['run_ack', 'interject_applied', 'final_answer_delta'],
   );
   const transcript = await readTranscriptEntries(workspaceRoot, threadId);
@@ -1404,9 +2698,12 @@ void test('runAgentLoop routes structured PTC fixed probe output through daemon 
     prompt: 'run the structured PTC fixed probe',
     runState,
     toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
-    runtimeServices: { ...daemonContext, ptcFixedProbe },
+    runtimeServices: {
+      ...daemonContext,
+      ptc: { ...daemonContext.ptc, fixedProbe: ptcFixedProbe },
+    },
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-structured-ptc-fixed-probe',
+      computerSessionId: 'session-loop-structured-ptc-fixed-probe',
     }),
     callModelImpl: createScriptedProviderCallModel([
       providerStructuredOutputRound(structuredPtcFixedProbeOutput()),
@@ -1430,7 +2727,7 @@ void test('runAgentLoop routes structured PTC fixed probe output through daemon 
     [],
   );
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     ['run_ack'],
   );
   assert.doesNotMatch(result.finalProse, /container-agent-loop/u);
@@ -1532,9 +2829,12 @@ void test('runAgentLoop exposes exec and wait as model-visible PTC tools', async
         PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
       ],
     },
-    runtimeServices: { ...daemonContext, ptcExecuteCode },
+    runtimeServices: {
+      ...daemonContext,
+      ptc: { ...daemonContext.ptc, executeCode: ptcExecuteCode },
+    },
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-execute-code-tool',
+      computerSessionId: 'session-loop-execute-code-tool',
     }),
     callModelImpl: createScriptedProviderCallModel([
       {
@@ -1567,7 +2867,7 @@ void test('runAgentLoop exposes exec and wait as model-visible PTC tools', async
   assert.deepEqual(observedCallbackToolNames, []);
   assert.equal(runState.status, 'completed');
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     [
       'run_ack',
       'commentary_delta',
@@ -1624,9 +2924,12 @@ void test('runAgentLoop exposes browser_navigate as an approval-gated model-visi
       directRegistryNames: [PTC_BROWSER_NAVIGATE_TOOL_NAME],
       allowedRegistryNames: [PTC_BROWSER_NAVIGATE_TOOL_NAME],
     },
-    runtimeServices: { ...daemonContext, ptcBrowserNavigate },
+    runtimeServices: {
+      ...daemonContext,
+      ptc: { ...daemonContext.ptc, browserNavigate: ptcBrowserNavigate },
+    },
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-browser-navigate-tool',
+      computerSessionId: 'session-loop-browser-navigate-tool',
       permissionMode: 'full_access',
     }),
     callModelImpl: createScriptedProviderCallModel([
@@ -1656,7 +2959,7 @@ void test('runAgentLoop exposes browser_navigate as an approval-gated model-visi
   assert.equal(observedUrl, 'https://example.com/');
   assert.equal(runState.status, 'completed');
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     [
       'run_ack',
       'commentary_delta',
@@ -1715,9 +3018,15 @@ void test('runAgentLoop exposes browser_page_load_evidence as an approval-gated 
       directRegistryNames: [PTC_BROWSER_PAGE_LOAD_EVIDENCE_TOOL_NAME],
       allowedRegistryNames: [PTC_BROWSER_PAGE_LOAD_EVIDENCE_TOOL_NAME],
     },
-    runtimeServices: { ...daemonContext, ptcBrowserPageLoadEvidence },
+    runtimeServices: {
+      ...daemonContext,
+      ptc: {
+        ...daemonContext.ptc,
+        browserPageLoadEvidence: ptcBrowserPageLoadEvidence,
+      },
+    },
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-browser-page-load-evidence-tool',
+      computerSessionId: 'session-loop-browser-page-load-evidence-tool',
       permissionMode: 'full_access',
     }),
     callModelImpl: createScriptedProviderCallModel([
@@ -1747,7 +3056,7 @@ void test('runAgentLoop exposes browser_page_load_evidence as an approval-gated 
   assert.equal(observedUrl, 'https://example.com/');
   assert.equal(runState.status, 'completed');
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     [
       'run_ack',
       'commentary_delta',
@@ -1806,9 +3115,15 @@ void test('runAgentLoop exposes browser_text_evidence as an approval-gated model
       directRegistryNames: [PTC_BROWSER_TEXT_EVIDENCE_TOOL_NAME],
       allowedRegistryNames: [PTC_BROWSER_TEXT_EVIDENCE_TOOL_NAME],
     },
-    runtimeServices: { ...daemonContext, ptcBrowserTextEvidence },
+    runtimeServices: {
+      ...daemonContext,
+      ptc: {
+        ...daemonContext.ptc,
+        browserTextEvidence: ptcBrowserTextEvidence,
+      },
+    },
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-browser-text-evidence-tool',
+      computerSessionId: 'session-loop-browser-text-evidence-tool',
       permissionMode: 'full_access',
     }),
     callModelImpl: createScriptedProviderCallModel([
@@ -1838,7 +3153,7 @@ void test('runAgentLoop exposes browser_text_evidence as an approval-gated model
   assert.equal(observedUrl, 'https://example.com/');
   assert.equal(runState.status, 'completed');
   assert.deepEqual(
-    events.map((event) => event.type),
+    withoutProviderStatus(events).map((event) => event.type),
     [
       'run_ack',
       'commentary_delta',
@@ -1870,7 +3185,7 @@ void test('runAgentLoop treats final prose JSON as final prose, not structured o
     toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-json-prose',
+      computerSessionId: 'session-loop-json-prose',
     }),
     callModelImpl: createScriptedProviderCallModel([
       providerFinalAnswerRound(finalJson),
@@ -1909,7 +3224,7 @@ void test('runAgentLoop rejects ambiguous structured react bundle outputs', asyn
     toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-ambiguous-structured',
+      computerSessionId: 'session-loop-ambiguous-structured',
     }),
     callModelImpl: createScriptedProviderCallModel([
       providerStructuredOutputRound([
@@ -1957,7 +3272,7 @@ void test('runAgentLoop rejects structured output mixed with tool calls', async 
     toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-structured-tool-mix',
+      computerSessionId: 'session-loop-structured-tool-mix',
     }),
     callModelImpl: createScriptedProviderCallModel([
       composeProviderRounds(
@@ -2026,7 +3341,7 @@ void test('runAgentLoop keeps pending background results out of stable instructi
       backgroundNotifications: notifications,
     },
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-background-note',
+      computerSessionId: 'session-loop-background-note',
     }),
     callModelImpl,
     onEvent: () => {},
@@ -2074,10 +3389,13 @@ void test('runAgentLoop forwards an injected provider websocket session store', 
     prompt: 'use injected websocket store',
     runtimeServices: {
       ...daemonContext,
-      providerWebSocketSessions,
+      provider: {
+        ...daemonContext.provider,
+        webSocketSessions: providerWebSocketSessions,
+      },
     },
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-provider-ws-store',
+      computerSessionId: 'session-loop-provider-ws-store',
     }),
     callModelImpl,
     onEvent: () => {},
@@ -2102,7 +3420,7 @@ void test('runAgentLoop can use the runtime service default websocket session st
   const daemonContext = createDaemonContext();
   let seenStore:
     | {
-        acquireWebSocket: typeof daemonContext.providerWebSocketSessions.acquireWebSocket;
+        acquireWebSocket: typeof daemonContext.provider.webSocketSessions.acquireWebSocket;
       }
     | undefined;
   const callModelImpl = createScriptedProviderCallModel([
@@ -2120,7 +3438,7 @@ void test('runAgentLoop can use the runtime service default websocket session st
     prompt: 'summarize context work',
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
-      sessionId: 'session-loop-daemon-context',
+      computerSessionId: 'session-loop-daemon-context',
     }),
     callModelImpl,
     onEvent: () => {},
@@ -2130,5 +3448,5 @@ void test('runAgentLoop can use the runtime service default websocket session st
     ok: true,
     finalProse: 'context noted',
   });
-  assert.equal(seenStore, daemonContext.providerWebSocketSessions);
+  assert.equal(seenStore, daemonContext.provider.webSocketSessions);
 });

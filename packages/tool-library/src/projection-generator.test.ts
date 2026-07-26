@@ -34,6 +34,10 @@ const sampleTool: ToolLibraryProjectionGeneratedTool = {
   sideEffectLevel: 'read',
   approvalClass: 'approval_free',
   mayMutateComputerFiles: false,
+  resultDelivery: {
+    exactDurableRecovery: true,
+    modelVisibleForms: ['inline', 'summary_ref', 'duplicate_ref'],
+  },
   family: 'network',
   searchHints: ['fetch url', 'open webpage'],
   tags: ['network'],
@@ -75,7 +79,7 @@ const sampleManifest: ToolLibraryProjectionManifest = {
 void test('projection generator builds importable module descriptors', () => {
   assert.equal(
     TOOL_LIBRARY_PROJECTION_GENERATOR_VERSION,
-    'geulbat-tool-library-projection-v10',
+    'geulbat-tool-library-projection-v11',
   );
   const importableModules = buildToolLibraryProjectionImportableModules({
     importSpecifier: '@geulbat/generated-tools',
@@ -133,6 +137,21 @@ void test('projection generator emits importable files from descriptors', async 
   }
 
   assert.equal(byPath.get('catalog.js')?.content.includes('whenToUse'), true);
+  const catalogModule = byPath.get('catalog.js');
+  assert.ok(catalogModule);
+  const importedCatalog = (await import(
+    `data:text/javascript;base64,${Buffer.from(catalogModule.content).toString(
+      'base64',
+    )}`
+  )) as {
+    catalog: Array<{
+      resultDelivery?: unknown;
+    }>;
+  };
+  assert.deepEqual(importedCatalog.catalog[0]?.resultDelivery, {
+    exactDurableRecovery: true,
+    modelVisibleForms: ['inline', 'summary_ref', 'duplicate_ref'],
+  });
   assert.equal(
     byPath
       .get('search-runtime.js')
@@ -149,6 +168,13 @@ void test('projection generator emits importable files from descriptors', async 
       ?.content.includes('"timeoutMs"?: number'),
     true,
   );
+  const wrapperDeclaration = byPath.get('tools/fetch-url.d.ts')?.content;
+  assert.ok(wrapperDeclaration);
+  assert.match(
+    wrapperDeclaration,
+    /export type GeulbatInlineToolValue =[\s\S]*ok: true; output: string[\s\S]*ok: false; output: string; errorCode: string; error: string/u,
+  );
+  assert.match(wrapperDeclaration, /value: GeulbatInlineToolValue;/u);
 
   const signatureModule = byPath.get('signatures/fetch-url.js');
   assert.ok(signatureModule);

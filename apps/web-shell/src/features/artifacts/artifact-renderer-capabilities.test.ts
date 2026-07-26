@@ -7,7 +7,6 @@ import {
   supportsGeneratedBinaryExportSnapshot,
   supportsGeneratedTextExportSnapshot,
   supportsRuntimeGeneratedExportSnapshots,
-  supportsStreamingArtifactPreview,
   usesHookManagedArtifactPreview,
 } from './artifact-renderer-capabilities.js';
 
@@ -21,9 +20,7 @@ void test('artifact renderer generated export capabilities are owned by the arti
   assert.equal(supportsRuntimeGeneratedExportSnapshots('unknown'), false);
 });
 
-void test('artifact renderer preview lifecycle capabilities are owned by the artifact contract', () => {
-  assert.equal(supportsStreamingArtifactPreview('html5'), true);
-  assert.equal(supportsStreamingArtifactPreview('react_bundle'), false);
+void test('artifact renderer hook-managed preview capabilities are owned by the artifact contract', () => {
   assert.equal(usesHookManagedArtifactPreview('react_bundle'), true);
   assert.equal(usesHookManagedArtifactPreview('html5'), false);
   assert.equal(usesHookManagedArtifactPreview('unknown'), false);

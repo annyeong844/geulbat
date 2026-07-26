@@ -15,6 +15,11 @@ export interface RunPlanStep {
   status: RunPlanStepStatus;
 }
 
+interface RunPlanHistory {
+  plansByRunId: ReadonlyMap<string, RunPlanStep[]>;
+  pendingPlan: RunPlanStep[] | null;
+}
+
 export function readRunPlanFromToolArgs(args: unknown): RunPlanStep[] | null {
   if (!isRecord(args) || !Array.isArray(args.plan)) {
     return null;
@@ -48,6 +53,53 @@ export function readRunPlanFromToolCallContent(
   return readRunPlanFromToolArgs(parsed.args);
 }
 
+// update_plan 호출은 별도 run id를 갖지 않으므로, 순서상 뒤따르는 최종
+// 답변의 sourceRunId에 최신 계획을 귀속한다. 새 일반 사용자 턴과 최종
+// 답변은 pending 계획의 경계이고, 실행 중 interject는 같은 run이므로
+// 경계를 만들지 않는다.
+export function resolveRunPlanHistory(
+  messages: readonly ThreadMessage[],
+): RunPlanHistory {
+  const plansByRunId = new Map<string, RunPlanStep[]>();
+  let pendingPlan: RunPlanStep[] | null = null;
+
+  for (const message of messages) {
+    if (message.role === 'user' && message.metadata?.source !== 'interject') {
+      pendingPlan = null;
+      continue;
+    }
+
+    if (
+      message.role === 'tool_call' &&
+      message.content.includes('"tool":"update_plan"')
+    ) {
+      const plan = readRunPlanFromToolCallContent(message.content);
+      if (plan !== null) {
+        pendingPlan = plan;
+      }
+      continue;
+    }
+
+    if (
+      message.role === 'assistant' &&
+      message.metadata?.phase === 'final_answer'
+    ) {
+      const sourceRunId = message.metadata.sourceRunId;
+      if (sourceRunId !== undefined && pendingPlan !== null) {
+        plansByRunId.set(sourceRunId, pendingPlan);
+      }
+      if (
+        pendingPlan === null ||
+        pendingPlan.every((step) => step.status === 'completed')
+      ) {
+        pendingPlan = null;
+      }
+    }
+  }
+
+  return { plansByRunId, pendingPlan };
+}
+
 // 라이브 엔트리(최신) → settled 메시지 순으로 뒤에서부터 훑어 가장 최근
 // 계획을 찾는다.
 export function resolveLatestRunPlan(args: {
@@ -68,24 +120,7 @@ export function resolveLatestRunPlan(args: {
     }
   }
 
-  for (let index = args.messages.length - 1; index >= 0; index -= 1) {
-    const message = args.messages[index];
-    if (message?.role !== 'tool_call') {
-      continue;
-    }
-    // 긴 스레드에서 매 스트림 이벤트마다 모든 tool_call을 JSON 파싱하지
-    // 않도록 문자열 프리필터로 후보만 거른다 (record는 공백 없는 canonical
-    // JSON.stringify 산출물이다).
-    if (!message.content.includes('"tool":"update_plan"')) {
-      continue;
-    }
-    const plan = readRunPlanFromToolCallContent(message.content);
-    if (plan !== null) {
-      return plan;
-    }
-  }
-
-  return null;
+  return resolveRunPlanHistory(args.messages).pendingPlan;
 }
 
 function isRunPlanStepStatus(value: unknown): value is RunPlanStepStatus {

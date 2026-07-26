@@ -14,6 +14,7 @@ export interface SearchFilesResult {
   };
   query: string;
   total: number;
+  totalRelation?: 'exact' | 'lower_bound';
   truncated: boolean;
   results: SearchMatch[];
 }

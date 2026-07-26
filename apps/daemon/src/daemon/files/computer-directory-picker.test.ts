@@ -50,6 +50,17 @@ void test('WSL native directory picker converts the initial and selected Windows
   const pickerScript = Buffer.from(encodedCommand, 'base64').toString(
     'utf16le',
   );
+  assert.match(pickerScript, /Microsoft\.Win32\.OpenFolderDialog/u);
+  assert.doesNotMatch(
+    pickerScript,
+    /System\.Windows\.Forms\.FolderBrowserDialog/u,
+  );
+  assert.match(pickerScript, /\$owner = \[System\.Windows\.Window\]::new\(\)/u);
+  assert.match(pickerScript, /\$owner\.ShowInTaskbar = \$false/u);
+  assert.match(pickerScript, /\$owner\.Topmost = \$true/u);
+  assert.match(pickerScript, /\$owner\.Opacity = 0/u);
+  assert.match(pickerScript, /\$dialog\.ShowDialog\(\$owner\)/u);
+  assert.match(pickerScript, /\$owner\.Close\(\)/u);
   const initialPathMatch = /FromBase64String\('([^']+)'\)/u.exec(pickerScript);
   assert.ok(initialPathMatch?.[1]);
   assert.equal(
@@ -220,5 +231,19 @@ void test('native directory picker fails visibly when no supported host dialog e
     (error: unknown) =>
       error instanceof ComputerDirectoryPickerError &&
       error.code === 'unavailable',
+  );
+});
+
+void test('native directory picker fails closed without a host command runtime', async () => {
+  const picker = createComputerDirectoryPicker({
+    platform: 'win32',
+    fileExists: () => true,
+  });
+
+  await assert.rejects(
+    picker.select({ initialAbsolutePath: 'C:\\Users\\user' }),
+    (error: unknown) =>
+      error instanceof ComputerDirectoryPickerError &&
+      error.code === 'execution_failed',
   );
 });

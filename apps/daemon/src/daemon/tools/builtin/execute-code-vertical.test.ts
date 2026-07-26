@@ -10,6 +10,7 @@ import {
 } from '../../../test-support/ptc-session-docker.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { createDaemonContext } from '../../context.js';
+import { createHostRoutedDetachedProcessStarter } from '../../host-routed-detached-process.js';
 import { createAgentLoopToolDefinitionPort } from '../../agent/loop-tool-definitions.js';
 import { createPtcExecuteCodePlacementCoordinator } from '../../ptc/runtime/execute-code/execute-code-placement.js';
 import { readPtcExecuteCodePlacementPreflightRecord } from '../../ptc/runtime/execute-code/execute-code-placement-contract.js';
@@ -17,10 +18,7 @@ import {
   createPtcSessionDockerLocalBatchCommandPolicy,
   PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
 } from '../../ptc/lab/session/session-docker-contract.js';
-import {
-  startExecuteCodeCellProcess,
-  type DetachedProcessExitInfo,
-} from '../../ptc/runtime/execute-code/execute-code-cell-process.js';
+import type { DetachedProcessExitInfo } from '../../ptc/runtime/execute-code/execute-code-cell-process.js';
 import { executeTool } from '../executor.js';
 import type { CallbackToolDispatcher } from '../types.js';
 import { executeCodeTool } from './execute-code.js';
@@ -57,7 +55,9 @@ void test('WO6-V3 removed search_memory_index stays usable through the pinned mu
     policy: createPtcSessionDockerLocalBatchCommandPolicy(),
     containerId: 'container-agent-ptc-wo6-v1',
   });
-  const daemonContext = createDaemonContext({
+  let daemonContext: ReturnType<typeof createDaemonContext>;
+  daemonContext = createDaemonContext({
+    homeStateRoot: stateRoot,
     ptcExecuteCodeRuntimeOptions: {
       callbackTransportPolicy: TEST_CALLBACK_TRANSPORT_POLICY,
       commandRunner: fixture.runner,
@@ -107,7 +107,7 @@ void test('WO6-V3 removed search_memory_index stays usable through the pinned mu
         runningCellReapAfterMs: TEST_RUNNING_CELL_REAP_AFTER_MS,
       },
       runtimeRootForState: () => runtimeRoot,
-      startCellProcess(invocation) {
+      async startCellProcess(invocation) {
         assert.deepEqual(events, ['placement:acquire']);
         const command = invocation.args.at(-1);
         assert.ok(command);
@@ -124,8 +124,16 @@ void test('WO6-V3 removed search_memory_index stays usable through the pinned mu
           PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
         );
         events.push('process:start');
-        const started = startExecuteCodeCellProcess({
-          ...invocation,
+        const startDetachedProcess = createHostRoutedDetachedProcessStarter({
+          hostCommands: daemonContext.hostCommands,
+          stateRoot: daemonContext.homeStateRoot,
+          pageLimitBytes: daemonContext.hostCommandInlineMaxBytes,
+          cwd: daemonContext.homeStateRoot,
+          env: process.env,
+          runId: 'execute-code-vertical',
+        });
+        const started = await startDetachedProcess({
+          callId: invocation.cellId,
           executable: '/bin/bash',
           args: [
             '-c',
@@ -135,6 +143,18 @@ void test('WO6-V3 removed search_memory_index stays usable through the pinned mu
               sdkHostRoot,
             ),
           ],
+          ...(invocation.timeoutMs === undefined
+            ? {}
+            : { timeoutMs: invocation.timeoutMs }),
+          ...(invocation.redactionMarkers === undefined
+            ? {}
+            : { redactionMarkers: invocation.redactionMarkers }),
+          ...(invocation.redactionReplacement === undefined
+            ? {}
+            : { redactionReplacement: invocation.redactionReplacement }),
+          ...(invocation.outputBufferPolicy === undefined
+            ? {}
+            : { outputBufferPolicy: invocation.outputBufferPolicy }),
         });
         if (started.ok) {
           detachedExit = started.handle.exit;
@@ -208,6 +228,7 @@ void test('WO6-V3 removed search_memory_index stays usable through the pinned mu
     }
     assert.deepEqual(projection.projection.allowedRegistryNames, [
       'fetch_url',
+      'list_commands',
       'list_files',
       'read_file',
       'read_tool_output',
@@ -219,7 +240,7 @@ void test('WO6-V3 removed search_memory_index stays usable through the pinned mu
       threadId,
       stateRoot,
       workingDirectory: '',
-      agentSpawnRuntime: daemonContext,
+      runtimeServices: daemonContext,
       callbackToolDispatcher,
       toolLibraryProjectionIdentity: {
         sdkVersion: projection.pin.sdkVersion,
@@ -346,7 +367,7 @@ void test('WO6-V3 removed search_memory_index stays usable through the pinned mu
       'placement:release',
     ]);
   } finally {
-    await daemonContext.ptcExecuteCode.closeAll();
+    await daemonContext.ptc.executeCode.closeAll();
     await rm(computerFileRoot, { recursive: true, force: true });
     await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });

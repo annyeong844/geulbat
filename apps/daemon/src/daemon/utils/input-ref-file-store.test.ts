@@ -182,3 +182,161 @@ void test('failed input streams leave no pending or claimed file', async (t) => 
   const directory = join(workspaceRoot, '.geulbat', TEST_STORE.directoryName);
   assert.deepEqual(await readdir(directory), []);
 });
+
+void test('input ref reads and claims fail closed on invalid refs, missing files, and double claims', async (t) => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-input-ref-guard-'),
+  );
+  t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
+
+  // A reference without the configured prefix, or with a non-UUID body, is
+  // rejected as a bad request before any filesystem access.
+  assert.deepEqual(
+    await readInputRefFilePath({
+      workspaceRoot,
+      ref: 'wrong-prefix:body',
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'bad_request', message: 'invalid prefix' },
+  );
+  assert.deepEqual(
+    await readInputRefFilePath({
+      workspaceRoot,
+      ref: `${TEST_STORE.refPrefix}not-a-uuid`,
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'bad_request', message: 'invalid id' },
+  );
+
+  // A well-formed reference with no persisted file reads and claims as
+  // not_found rather than crashing.
+  const absentRef = `${TEST_STORE.refPrefix}${randomUUID()}`;
+  assert.deepEqual(
+    await readInputRefFilePath({
+      workspaceRoot,
+      ref: absentRef,
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'not_found', message: 'not found' },
+  );
+  assert.deepEqual(
+    await claimInputRefFilePath({
+      workspaceRoot,
+      ref: absentRef,
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'not_found', message: 'not found' },
+  );
+
+  // Once a reference is claimed, both a re-read and a second claim report the
+  // in-flight claim as a conflict instead of handing out the bytes twice.
+  const written = await writeInputRefFileFromStream({
+    workspaceRoot,
+    input: Readable.from(['payload']),
+    config: TEST_STORE,
+  });
+  const claimed = await claimInputRefFilePath({
+    workspaceRoot,
+    ref: written.ref,
+    config: TEST_STORE,
+  });
+  assert.equal(claimed.ok, true);
+
+  assert.deepEqual(
+    await readInputRefFilePath({
+      workspaceRoot,
+      ref: written.ref,
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'conflict', message: 'already claimed' },
+  );
+  assert.deepEqual(
+    await claimInputRefFilePath({
+      workspaceRoot,
+      ref: written.ref,
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'conflict', message: 'already claimed' },
+  );
+
+  if (claimed.ok) {
+    await deleteInputRefFilePath(claimed.path);
+  }
+});
+
+void test('input ref recovery rejects invalid refs and claim ids and resolves lone pending state', async (t) => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-input-ref-recover-'),
+  );
+  t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    await recoverInputRefFile({
+      workspaceRoot,
+      ref: 'wrong-prefix:body',
+      action: 'retry',
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'bad_request', message: 'invalid prefix' },
+  );
+
+  const ref = `${TEST_STORE.refPrefix}${randomUUID()}`;
+  assert.deepEqual(
+    await recoverInputRefFile({
+      workspaceRoot,
+      ref,
+      action: 'retry',
+      claimId: 'not-a-uuid',
+      config: TEST_STORE,
+    }),
+    {
+      ok: false,
+      code: 'bad_request',
+      message: 'claimId must identify a persisted input ref claim.',
+    },
+  );
+
+  // Recovering a reference with no persisted file at all is not_found.
+  assert.deepEqual(
+    await recoverInputRefFile({
+      workspaceRoot,
+      ref,
+      action: 'retry',
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'not_found', message: 'not found' },
+  );
+
+  // A lone pending file can be retry-recovered (left pending) or released.
+  const written = await writeInputRefFileFromStream({
+    workspaceRoot,
+    input: Readable.from(['payload']),
+    config: TEST_STORE,
+  });
+  assert.deepEqual(
+    await recoverInputRefFile({
+      workspaceRoot,
+      ref: written.ref,
+      action: 'retry',
+      config: TEST_STORE,
+    }),
+    { ok: true, disposition: 'pending' },
+  );
+  assert.deepEqual(
+    await recoverInputRefFile({
+      workspaceRoot,
+      ref: written.ref,
+      action: 'release',
+      config: TEST_STORE,
+    }),
+    { ok: true, disposition: 'released' },
+  );
+  assert.deepEqual(
+    await readInputRefFilePath({
+      workspaceRoot,
+      ref: written.ref,
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'not_found', message: 'not found' },
+  );
+});

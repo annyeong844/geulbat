@@ -1,52 +1,91 @@
-import type { ErrorCode, ProviderAuthStatusState } from '../contract.js';
+import type { ErrorCode } from '../contract.js';
 import type { ProviderAuthCredentialProviderId } from '../credentials/store.js';
 
 import { PROVIDER_AUTH_PENDING_TTL_MS } from './config.js';
 
-export interface PendingProviderAuthSession {
+interface ProviderAuthSessionFields {
   authSessionId: string;
   providerId: ProviderAuthCredentialProviderId;
   state: string;
-  codeVerifier: string;
   redirectUri: string;
   createdAt: number;
   expiresAt: number;
-  consumedAt?: number;
-  status: Extract<
-    ProviderAuthStatusState,
-    'pending' | 'ready' | 'exchange_failed' | 'expired'
-  >;
-  lastErrorCode?: ErrorCode;
-  lastErrorMessage?: string;
 }
+
+type ProviderAuthPendingSession = ProviderAuthSessionFields & {
+  status: 'pending';
+  codeVerifier: string;
+  consumedAt?: never;
+  lastErrorCode?: never;
+  lastErrorMessage?: never;
+};
+
+type ProviderAuthConsumedSession = ProviderAuthSessionFields & {
+  status: 'pending';
+  codeVerifier: string;
+  consumedAt: number;
+  lastErrorCode?: never;
+  lastErrorMessage?: never;
+};
+
+type ProviderAuthReadySession = ProviderAuthSessionFields & {
+  status: 'ready';
+  codeVerifier: '';
+  consumedAt: number;
+  lastErrorCode?: never;
+  lastErrorMessage?: never;
+};
+
+type ProviderAuthFailedSession = ProviderAuthSessionFields & {
+  status: 'exchange_failed';
+  codeVerifier: '';
+  consumedAt: number;
+  lastErrorCode: ErrorCode;
+  lastErrorMessage: string;
+};
+
+type ProviderAuthExpiredSession = ProviderAuthSessionFields & {
+  status: 'expired';
+  codeVerifier: '';
+  consumedAt?: number;
+  lastErrorCode: ErrorCode;
+  lastErrorMessage: string;
+};
+
+export type PendingProviderAuthSession =
+  | ProviderAuthPendingSession
+  | ProviderAuthConsumedSession
+  | ProviderAuthReadySession
+  | ProviderAuthFailedSession
+  | ProviderAuthExpiredSession;
 
 export interface ProviderAuthBootstrapStore {
   getProviderAuthSessionSnapshot(): PendingProviderAuthSession | null;
-  getPendingProviderAuthSession(): PendingProviderAuthSession | null;
+  getPendingProviderAuthSession(): ProviderAuthPendingSession | null;
   setPendingProviderAuthSession(
-    session: PendingProviderAuthSession,
-  ): PendingProviderAuthSession;
+    session: ProviderAuthPendingSession,
+  ): ProviderAuthPendingSession;
   resolvePendingProviderAuthSessionByState(
     state: string,
-  ): PendingProviderAuthSession | null;
+  ): ProviderAuthPendingSession | null;
   getProviderAuthSessionSnapshotByState(
     state: string,
   ): PendingProviderAuthSession | null;
   markProviderAuthSessionConsumed(
     authSessionId: string,
-  ): PendingProviderAuthSession | null;
+  ): ProviderAuthConsumedSession | null;
   markProviderAuthSessionReady(
     authSessionId: string,
-  ): PendingProviderAuthSession | null;
+  ): ProviderAuthReadySession | null;
   markProviderAuthSessionFailure(
     authSessionId: string,
     code: ErrorCode,
     message: string,
-  ): PendingProviderAuthSession | null;
+  ): ProviderAuthFailedSession | null;
   markProviderAuthSessionExpired(
     authSessionId: string,
     message?: string,
-  ): PendingProviderAuthSession | null;
+  ): ProviderAuthExpiredSession | null;
   clearProviderAuthBootstrapState(): void;
 }
 
@@ -60,7 +99,7 @@ export function createProviderAuthBootstrapStore(): ProviderAuthBootstrapStore {
     if (currentSession.expiresAt > Date.now()) {
       return;
     }
-    currentSession = {
+    const expiredSession: ProviderAuthExpiredSession = {
       ...currentSession,
       status: 'expired',
       codeVerifier: '',
@@ -69,27 +108,36 @@ export function createProviderAuthBootstrapStore(): ProviderAuthBootstrapStore {
         'The provider login session has expired.',
       ),
     };
+    currentSession = expiredSession;
   }
 
   return {
     getProviderAuthSessionSnapshot() {
       expireCurrentSessionIfNeeded();
-      return cloneSession(currentSession);
+      return currentSession === null ? null : cloneSession(currentSession);
     },
     getPendingProviderAuthSession() {
       expireCurrentSessionIfNeeded();
-      if (!currentSession || currentSession.status !== 'pending') {
+      if (
+        !currentSession ||
+        currentSession.status !== 'pending' ||
+        currentSession.consumedAt !== undefined
+      ) {
         return null;
       }
       return cloneSession(currentSession);
     },
     setPendingProviderAuthSession(session) {
-      currentSession = { ...session };
-      return cloneSession(currentSession)!;
+      currentSession = cloneSession(session);
+      return cloneSession(session);
     },
     resolvePendingProviderAuthSessionByState(state) {
       const session = this.getProviderAuthSessionSnapshotByState(state);
-      if (!session || session.status !== 'pending') {
+      if (
+        !session ||
+        session.status !== 'pending' ||
+        session.consumedAt !== undefined
+      ) {
         return null;
       }
       return session;
@@ -105,38 +153,49 @@ export function createProviderAuthBootstrapStore(): ProviderAuthBootstrapStore {
       return cloneSession(currentSession);
     },
     markProviderAuthSessionConsumed(authSessionId) {
-      if (!currentSession || currentSession.authSessionId !== authSessionId) {
+      if (
+        !currentSession ||
+        currentSession.authSessionId !== authSessionId ||
+        currentSession.status !== 'pending' ||
+        currentSession.consumedAt !== undefined
+      ) {
         return null;
       }
-      if (!currentSession.consumedAt) {
-        currentSession = {
-          ...currentSession,
-          consumedAt: Date.now(),
-        };
-      }
-      return cloneSession(currentSession);
+      const consumedSession: ProviderAuthConsumedSession = {
+        ...currentSession,
+        consumedAt: Date.now(),
+      };
+      currentSession = consumedSession;
+      return cloneSession(consumedSession);
     },
     markProviderAuthSessionReady(authSessionId) {
-      if (!currentSession || currentSession.authSessionId !== authSessionId) {
+      if (
+        !currentSession ||
+        currentSession.authSessionId !== authSessionId ||
+        currentSession.consumedAt === undefined
+      ) {
         return null;
       }
+      const consumedAt = currentSession.consumedAt;
       const {
         lastErrorCode: _lastErrorCode,
         lastErrorMessage: _lastErrorMessage,
         ...sessionWithoutError
       } = currentSession;
-      currentSession = {
+      const readySession: ProviderAuthReadySession = {
         ...sessionWithoutError,
         status: 'ready',
         codeVerifier: '',
+        consumedAt,
       };
-      return cloneSession(currentSession);
+      currentSession = readySession;
+      return cloneSession(readySession);
     },
     markProviderAuthSessionFailure(authSessionId, code, message) {
       if (!currentSession || currentSession.authSessionId !== authSessionId) {
         return null;
       }
-      currentSession = {
+      const failedSession: ProviderAuthFailedSession = {
         ...currentSession,
         status: 'exchange_failed',
         consumedAt: currentSession.consumedAt ?? Date.now(),
@@ -144,7 +203,8 @@ export function createProviderAuthBootstrapStore(): ProviderAuthBootstrapStore {
         lastErrorCode: code,
         lastErrorMessage: sanitizeProviderAuthMessage(message),
       };
-      return cloneSession(currentSession);
+      currentSession = failedSession;
+      return cloneSession(failedSession);
     },
     markProviderAuthSessionExpired(
       authSessionId,
@@ -153,14 +213,15 @@ export function createProviderAuthBootstrapStore(): ProviderAuthBootstrapStore {
       if (!currentSession || currentSession.authSessionId !== authSessionId) {
         return null;
       }
-      currentSession = {
+      const expiredSession: ProviderAuthExpiredSession = {
         ...currentSession,
         status: 'expired',
         codeVerifier: '',
         lastErrorCode: 'provider_auth_session_expired',
         lastErrorMessage: sanitizeProviderAuthMessage(message),
       };
-      return cloneSession(currentSession);
+      currentSession = expiredSession;
+      return cloneSession(expiredSession);
     },
     clearProviderAuthBootstrapState() {
       currentSession = null;
@@ -172,10 +233,10 @@ export function sanitizeProviderAuthMessage(message: string): string {
   return message.replace(/\s+/g, ' ').trim();
 }
 
-function cloneSession(
-  session: PendingProviderAuthSession | null,
-): PendingProviderAuthSession | null {
-  return session ? { ...session } : null;
+function cloneSession<Session extends PendingProviderAuthSession>(
+  session: Session,
+): Session {
+  return { ...session };
 }
 
 export function createPendingProviderAuthTimestamps(now = Date.now()): {

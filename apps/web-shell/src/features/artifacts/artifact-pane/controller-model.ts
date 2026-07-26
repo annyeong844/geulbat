@@ -3,7 +3,7 @@ import type { ArtifactPreviewSurface } from '../artifact-types.js';
 import type { ArtifactPaneBodyProps } from './body.js';
 import type { ArtifactPaneExportPanelProps } from './export-panel.js';
 import type { ArtifactPaneHeaderProps } from './header.js';
-import type { ArtifactSurfaceStateBadge, ArtifactTab } from './types.js';
+import type { ArtifactTab } from './types.js';
 
 // "파일로 저장" 대상 — OS 저장 대화상자로 payload를 로컬 파일에 내려받는다
 interface ArtifactDirectSaveTarget {
@@ -20,10 +20,8 @@ export interface ArtifactPaneControllerProps {
 
 export interface ArtifactPaneControllerPaneState {
   tab: ArtifactTab;
-  canShowPreview: boolean;
   showApply: boolean;
   canApply: boolean;
-  surfaceStateBadge: ArtifactSurfaceStateBadge | null;
   previewSurface: ArtifactPreviewSurface | null;
   runtimeUnavailableMessage: string | null;
   handleSelectTab: (tab: ArtifactTab) => Promise<void> | void;
@@ -63,21 +61,14 @@ const DIRECT_SAVE_EXTENSIONS: Record<string, string> = {
 export function buildDirectSaveTarget(
   viewModel: ArtifactPaneViewModel,
 ): ArtifactDirectSaveTarget | null {
-  const { parsed, sourceRef } = viewModel;
-  if (
-    parsed.kind !== 'artifact' ||
-    parsed.state !== 'completed' ||
-    parsed.renderer === null
-  ) {
-    return null;
-  }
-  const ext = DIRECT_SAVE_EXTENSIONS[parsed.renderer];
-  if (!ext || parsed.payload.trim().length === 0) {
+  const { artifact, sourceRef } = viewModel;
+  const ext = DIRECT_SAVE_EXTENSIONS[artifact.renderer];
+  if (!ext || artifact.payload.trim().length === 0) {
     return null;
   }
   const baseName = sourceRef.artifactId ?? 'artifact';
   return {
-    payload: parsed.payload,
+    payload: artifact.payload,
     defaultPath: `${baseName}.${ext}`,
   };
 }
@@ -94,9 +85,13 @@ export function buildArtifactPaneControllerProps(args: {
     directSave: buildDirectSaveTarget(viewModel),
     headerProps: {
       label,
-      surfaceStateBadge: paneState.surfaceStateBadge,
+      ...(viewModel.planRendering === null
+        ? {}
+        : {
+            planRenderingLabel: viewModel.planRendering.label,
+            planRenderingTitle: viewModel.planRendering.title,
+          }),
       tab: paneState.tab,
-      canShowPreview: paneState.canShowPreview,
       showApply: paneState.showApply,
       canApply: paneState.canApply,
       showExport: exportState.showExport,
@@ -127,9 +122,8 @@ export function buildArtifactPaneControllerProps(args: {
           }
         : null,
     bodyProps: {
-      parsed: viewModel.parsed,
+      artifact: viewModel.artifact,
       tab: paneState.tab,
-      canShowPreview: paneState.canShowPreview,
       previewSurface: paneState.previewSurface,
       runtimeUnavailableMessage: paneState.runtimeUnavailableMessage,
     },

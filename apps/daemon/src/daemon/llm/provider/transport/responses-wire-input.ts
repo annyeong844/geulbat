@@ -5,7 +5,7 @@ import type {
 } from '../wire/types.js';
 import { isRecord } from '../../../runtime-json.js';
 import type { ProviderReplayScopeId } from '../../../runtime-contracts.js';
-import { ProviderReplayScopeMismatchError } from '../provider-replay-scope.js';
+import { ProviderReplayScopeMismatchError } from '../provider-error.js';
 
 export function buildResponseCreatePayload(
   body: WireRequestBase,
@@ -65,11 +65,7 @@ export function buildResponseWireInput(
         });
         break;
       case 'function_call_output':
-        input.push({
-          type: 'function_call_output',
-          call_id: item.callId,
-          output: item.output,
-        });
+        input.push(buildResponseWireFunctionCallOutput(item));
         break;
       case 'provider_native_compaction':
         if (
@@ -101,6 +97,38 @@ export function buildResponseWireInput(
   return input;
 }
 
+export function measureResponseWireInputBytes(
+  history: HistoryItem[],
+  providerNativeTarget?: ProviderNativeHistoryTarget,
+): number {
+  return Buffer.byteLength(
+    JSON.stringify(buildResponseWireInput(history, providerNativeTarget)),
+    'utf8',
+  );
+}
+
+export function measureResponseWireFunctionCallOutputAppendBytes(
+  item: Extract<HistoryItem, { kind: 'function_call_output' }>,
+): number {
+  const encodedItemBytes = Buffer.byteLength(
+    JSON.stringify(buildResponseWireFunctionCallOutput(item)),
+    'utf8',
+  );
+  // A run always has an existing user/history item before tool results. The
+  // appended wire item therefore adds exactly one JSON array separator.
+  return encodedItemBytes + 1;
+}
+
+function buildResponseWireFunctionCallOutput(
+  item: Extract<HistoryItem, { kind: 'function_call_output' }>,
+): Record<string, string> {
+  return {
+    type: 'function_call_output',
+    call_id: item.callId,
+    output: item.output,
+  };
+}
+
 function assertReplayScopeCompatible(
   itemScope: ProviderReplayScopeId | null | undefined,
   targetScope: ProviderReplayScopeId | undefined,
@@ -126,10 +154,10 @@ function assertValidFunctionCallReplay(
     if (item.kind !== 'function_call') {
       continue;
     }
-    if (
-      providerNativeTarget !== undefined ||
-      normalizedCallIds.has(item.callId)
-    ) {
+    if (providerNativeTarget !== undefined) {
+      throw new ProviderTransitionRequiredError();
+    }
+    if (normalizedCallIds.has(item.callId)) {
       throw new ProviderHistoryItemInvalidError();
     }
     normalizedCallIds.add(item.callId);
@@ -174,6 +202,16 @@ export class ProviderHistoryItemInvalidError extends Error {
   constructor() {
     super('provider history item is invalid');
     this.name = 'ProviderHistoryItemInvalidError';
+  }
+}
+
+export class ProviderTransitionRequiredError extends Error {
+  readonly code = 'provider_transition_required';
+  readonly llmCode = this.code;
+
+  constructor() {
+    super('provider transition requires a portable context handoff');
+    this.name = 'ProviderTransitionRequiredError';
   }
 }
 

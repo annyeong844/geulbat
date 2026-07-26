@@ -29,8 +29,6 @@ function createResolvedSourceRef(
 function createRuntimeContext(): ArtifactRuntimePreviewContext {
   return {
     digest: 'fixture',
-    state: 'completed',
-    isStreamingPreview: false,
     sourceRef: createResolvedSourceRef({
       filePath: 'episodes/ch01.md',
       artifactId: 'art_1',

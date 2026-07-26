@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
 
+import { brandRunId } from '../../lib/id-brand-helpers.js';
 import { makeApprovalRequiredFixture } from '../../test-support/protocol-fixtures.js';
-import { RunTranscriptEntryBlock } from './assistant-transcript-entry-blocks.js';
+import {
+  formatSubagentActivityMeta,
+  RunTranscriptEntryBlock,
+} from './assistant-transcript-entry-blocks.js';
 
 (
   globalThis as typeof globalThis & {
@@ -32,7 +36,8 @@ void test('RunTranscriptEntryBlock renders run transcript leaf entries', () => {
     />,
   );
 
-  assert.match(approvalHtml, /Write hello.txt/);
+  assert.match(approvalHtml, /승인 요청 · 파일 쓰기/u);
+  assert.match(approvalHtml, /hello\.txt/u);
 
   const subagentHtml = renderToStaticMarkup(
     <RunTranscriptEntryBlock
@@ -50,6 +55,60 @@ void test('RunTranscriptEntryBlock renders run transcript leaf entries', () => {
   assert.match(subagentHtml, /explorer 작업 완료/);
   assert.match(subagentHtml, /summary/);
   assert.match(subagentHtml, /<details/);
+});
+
+void test('ask_user selection reports its call identity and disables resubmission while sending', async () => {
+  let resolveAnswer!: () => void;
+  const pendingAnswer = new Promise<void>((resolve) => {
+    resolveAnswer = resolve;
+  });
+  const answers: Array<{ answer: string; requestKey: string }> = [];
+  let renderer!: ReactTestRenderer;
+
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <RunTranscriptEntryBlock
+        entry={{
+          kind: 'tool_activity',
+          tool: 'ask_user',
+          state: 'running',
+          callId: 'call-ask-user',
+          args: {
+            question: '어떻게 진행할까요?',
+            options: [
+              { label: '계속', description: '작업을 이어갑니다.' },
+              { label: '중지', description: '여기서 멈춥니다.' },
+            ],
+          },
+        }}
+        onAskUserAnswer={(request) => {
+          answers.push(request);
+          return pendingAnswer;
+        }}
+      />,
+    );
+  });
+
+  const option = renderer.root.findAllByProps({
+    className: 'ask-user-option',
+  })[0];
+  assert.ok(option);
+  act(() => {
+    option.props.onClick();
+  });
+
+  assert.deepEqual(answers, [{ answer: '계속', requestKey: 'call-ask-user' }]);
+  assert.equal(
+    renderer.root.findAllByProps({ className: 'ask-user-card' }).length,
+    1,
+  );
+  assert.equal(option.props.disabled, true);
+
+  await act(async () => {
+    resolveAnswer();
+    await pendingAnswer;
+    renderer.unmount();
+  });
 });
 
 void test('RunTranscriptEntryBlock defers a live visualize iframe without dropping its layout shell', () => {
@@ -125,6 +184,8 @@ void test('RunTranscriptEntryBlock renders subagent terminal telemetry as CC-sty
         kind: 'subagent_activity',
         childRunId: 'child-run-1',
         subagentType: 'explorer',
+        capabilities: ['ptc'],
+        toolSurface: 'explorer_ptc',
         state: 'completed',
         result: 'summary',
         elapsedMs: 475_000,
@@ -138,6 +199,8 @@ void test('RunTranscriptEntryBlock renders subagent terminal telemetry as CC-sty
   );
 
   assert.match(subagentHtml, /7m 55s/);
+  assert.match(subagentHtml, /도구: 읽기·검색 \+ PTC/);
+  assert.match(subagentHtml, /capability: PTC/);
   assert.match(
     subagentHtml,
     /런 누적 · 총 입력 15.9k \(그중 캐시 900\) · 출력 1.2k/,
@@ -159,6 +222,136 @@ void test('RunTranscriptEntryBlock renders subagent terminal telemetry as CC-sty
     />,
   );
   assert.doesNotMatch(bareHtml, /\(/);
+});
+
+void test('RunTranscriptEntryBlock renders durable live diagnostics and exact failure reason', () => {
+  const subagentHtml = renderToStaticMarkup(
+    <RunTranscriptEntryBlock
+      entry={{
+        kind: 'subagent_activity',
+        childRunId: 'child-run-1',
+        subagentType: 'worker',
+        state: 'failed',
+        reason: 'tool_error',
+        result: '부분 결과',
+        resultRef: 'subagent-result:delivery-failed',
+        runtime: {
+          phase: 'tool_running',
+          observedAt: '2026-07-23T09:58:12.345Z',
+          lastTool: {
+            name: 'shell_command',
+            callId: 'call-shell-1',
+            state: 'failed',
+          },
+          partialOutputAvailable: true,
+          previousChildRunId: brandRunId('child-run-0'),
+          providerRequest: {
+            startedAt: '2026-07-23T09:57:00.000Z',
+            lastEventAt: '2026-07-23T09:58:10.000Z',
+            endedAt: '2026-07-23T09:58:12.345Z',
+            durationMs: 72_345,
+            attemptCount: 2,
+            retry: {
+              available: false,
+              performed: true,
+              outcome: 'exhausted',
+            },
+          },
+        },
+      }}
+    />,
+  );
+
+  assert.match(subagentHtml, /진행: 도구 실행 중/);
+  assert.match(subagentHtml, /관측: 2026-07-23T09:58:12.345Z/);
+  assert.match(subagentHtml, /최근 도구: shell_command \(실패\)/);
+  assert.match(subagentHtml, /부분 출력: 있음/);
+  assert.match(subagentHtml, /부분 결과/);
+  assert.match(subagentHtml, /결과 참조: subagent-result:delivery-failed/);
+  assert.match(subagentHtml, /재시도 원본: child-run-0/);
+  assert.match(subagentHtml, /종료 원인: 도구 오류/);
+  assert.match(subagentHtml, /모델 요청 시작: 2026-07-23T09:57:00.000Z/);
+  assert.match(subagentHtml, /마지막 제공자 이벤트: 2026-07-23T09:58:10.000Z/);
+  assert.match(subagentHtml, /모델 요청 경과: 1m 12s/);
+  assert.match(subagentHtml, /모델 요청 횟수: 2/);
+  assert.match(subagentHtml, /자동 재시도: 불가 · 수행함 · 예산 소진/);
+});
+
+void test('formatSubagentActivityMeta derives active age from the exact observed timestamp', () => {
+  const meta = formatSubagentActivityMeta(
+    {
+      kind: 'subagent_activity',
+      childRunId: 'child-run-age',
+      subagentType: 'explorer',
+      state: 'spawned',
+      runtime: {
+        phase: 'provider_waiting',
+        observedAt: '2026-07-23T11:00:00.000Z',
+        partialOutputAvailable: false,
+      },
+    },
+    Date.parse('2026-07-23T11:01:05.000Z'),
+  );
+
+  assert.match(meta ?? '', /관측: 2026-07-23T11:00:00.000Z/);
+  assert.match(meta ?? '', /활동 경과: 1m 5s/);
+});
+
+void test('RunTranscriptEntryBlock distinguishes graceful daemon shutdown from restart recovery', () => {
+  const shutdownHtml = renderToStaticMarkup(
+    <RunTranscriptEntryBlock
+      entry={{
+        kind: 'subagent_activity',
+        childRunId: 'child-run-shutdown',
+        subagentType: 'worker',
+        state: 'cancelled',
+        reason: 'daemon_shutdown',
+      }}
+    />,
+  );
+
+  assert.match(shutdownHtml, /종료 원인: 데몬 종료/);
+  assert.doesNotMatch(shutdownHtml, /데몬 재시작/);
+});
+
+void test('RunTranscriptEntryBlock distinguishes a child rate-limit admission wait', () => {
+  const subagentHtml = renderToStaticMarkup(
+    <RunTranscriptEntryBlock
+      entry={{
+        kind: 'subagent_activity',
+        childRunId: 'child-run-1',
+        subagentType: 'worker',
+        state: 'spawned',
+        runtime: {
+          phase: 'rate_limit_waiting',
+          observedAt: '2026-07-23T11:00:00.000Z',
+          partialOutputAvailable: false,
+        },
+      }}
+    />,
+  );
+
+  assert.match(subagentHtml, /진행: 요청 제한 해제 대기/);
+});
+
+void test('RunTranscriptEntryBlock distinguishes a child provider auth refresh wait', () => {
+  const subagentHtml = renderToStaticMarkup(
+    <RunTranscriptEntryBlock
+      entry={{
+        kind: 'subagent_activity',
+        childRunId: 'child-run-1',
+        subagentType: 'worker',
+        state: 'spawned',
+        runtime: {
+          phase: 'auth_waiting',
+          observedAt: '2026-07-23T11:00:00.000Z',
+          partialOutputAvailable: false,
+        },
+      }}
+    />,
+  );
+
+  assert.match(subagentHtml, /진행: 제공자 인증 갱신 대기/);
 });
 
 void test('RunTranscriptEntryBlock offers child session drill-down only when identity and handler exist', () => {
@@ -201,4 +394,60 @@ void test('RunTranscriptEntryBlock offers child session drill-down only when ide
     />,
   );
   assert.doesNotMatch(withoutHandler, /트랜스크립트 보기/);
+});
+
+void test('RunTranscriptEntryBlock stops only a live child with parent identity', async () => {
+  const requests: Array<{ parentRunId: string; childRunId: string }> = [];
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <RunTranscriptEntryBlock
+        entry={{
+          kind: 'subagent_activity',
+          parentRunId: 'parent-run',
+          childRunId: 'child-run',
+          subagentType: 'explorer',
+          state: 'spawned',
+        }}
+        onStopChildRun={async (request) => {
+          requests.push(request);
+        }}
+      />,
+    );
+  });
+
+  const stopButton = renderer.root
+    .findAllByType('button')
+    .find((button) => button.children.join('') === '중지');
+  assert.ok(stopButton);
+  await act(async () => {
+    stopButton.props.onClick();
+  });
+  assert.deepEqual(requests, [
+    { parentRunId: 'parent-run', childRunId: 'child-run' },
+  ]);
+
+  await act(async () => {
+    renderer.update(
+      <RunTranscriptEntryBlock
+        entry={{
+          kind: 'subagent_activity',
+          parentRunId: 'parent-run',
+          childRunId: 'child-run',
+          subagentType: 'explorer',
+          state: 'cancelled',
+        }}
+        onStopChildRun={() => {}}
+      />,
+    );
+  });
+  assert.equal(
+    renderer.root
+      .findAllByType('button')
+      .some((button) => button.children.join('') === '중지'),
+    false,
+  );
+  await act(async () => {
+    renderer.unmount();
+  });
 });

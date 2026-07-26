@@ -7,6 +7,7 @@ void test('readRunChannelClientMessage accepts valid run.auth payloads', () => {
     type: 'run.auth',
     requestId: 'req-auth',
     token: 'geulbat-dev-token',
+    computerSessionId: 'computer-session-validation',
   });
 
   assert.deepEqual(result, {
@@ -15,8 +16,48 @@ void test('readRunChannelClientMessage accepts valid run.auth payloads', () => {
       type: 'run.auth',
       requestId: 'req-auth',
       token: 'geulbat-dev-token',
+      computerSessionId: 'computer-session-validation',
     },
   });
+});
+
+void test('readRunChannelClientMessage accepts exact computer-session end messages', () => {
+  assert.deepEqual(
+    readRunChannelClientMessage({
+      type: 'computer.session.end',
+      requestId: 'req-computer-session-end',
+    }),
+    {
+      ok: true,
+      message: {
+        type: 'computer.session.end',
+        requestId: 'req-computer-session-end',
+      },
+    },
+  );
+  assert.equal(
+    readRunChannelClientMessage({
+      type: 'computer.session.end',
+      requestId: 'req-computer-session-end',
+      computerSessionId: 'caller-must-not-select-this',
+    }).ok,
+    false,
+  );
+});
+
+void test('readRunChannelClientMessage accepts an exact thread subscription request', () => {
+  const result = readRunChannelClientMessage({
+    type: 'run.thread.subscribe',
+    requestId: 'req-thread-subscribe',
+    request: {
+      threadId: '123e4567-e89b-42d3-a456-426614174020',
+    },
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.message.type, 'run.thread.subscribe');
+  }
 });
 
 void test('readRunChannelClientMessage rejects empty objects', () => {
@@ -99,6 +140,22 @@ void test('readRunChannelClientMessage preserves cancel and flush envelopes for 
   }
 });
 
+void test('readRunChannelClientMessage accepts an exact child cancel request', () => {
+  const result = readRunChannelClientMessage({
+    type: 'run.child.cancel',
+    requestId: 'req-child-cancel',
+    request: {
+      parentRunId: '123e4567-e89b-42d3-a456-426614174001',
+      childRunId: '123e4567-e89b-42d3-a456-426614174002',
+    },
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.message.type, 'run.child.cancel');
+  }
+});
+
 void test('readRunChannelClientMessage rejects retired project ownership', () => {
   assert.deepEqual(
     readRunChannelClientMessage({
@@ -177,6 +234,7 @@ void test('readRunChannelClientMessage rejects blank request ids centrally', () 
       type: 'run.auth',
       requestId: '   ',
       token: 'geulbat-dev-token',
+      computerSessionId: 'computer-session-validation',
     }),
     { ok: false, message: 'requestId is required' },
   );

@@ -79,7 +79,13 @@ void test('browser_text_evidence returns text evidence without raw URL leaks', a
 
       workingDirectory: 'project',
       threadId: testThreadId(956),
-      agentSpawnRuntime: { ...daemonContext, ptcBrowserTextEvidence },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: {
+          ...daemonContext.ptc,
+          browserTextEvidence: ptcBrowserTextEvidence,
+        },
+      },
       approvalGranted: true,
     },
   );
@@ -138,7 +144,13 @@ void test('browser_text_evidence strips unsafe failure diagnostics from tool out
 
       workingDirectory: 'project',
       threadId: testThreadId(957),
-      agentSpawnRuntime: { ...daemonContext, ptcBrowserTextEvidence },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: {
+          ...daemonContext.ptc,
+          browserTextEvidence: ptcBrowserTextEvidence,
+        },
+      },
       approvalGranted: true,
     },
   );

@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "../../packages/content-identity" },
+    { "path": "../../packages/xharness" },
+    { "path": "../geulbat/tsconfig.app.json" },
+    { "path": "./tsconfig.app.json" }
+  ]
+}

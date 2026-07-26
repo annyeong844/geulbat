@@ -1,5 +1,8 @@
 import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
-import { isApprovalGrantScope } from '@geulbat/protocol/run-approval';
+import {
+  isApprovalGrantScope,
+  isPermissionMode,
+} from '@geulbat/protocol/run-approval';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
 import { isRunId, isThreadId } from '@geulbat/protocol/ids';
 import type {
@@ -27,9 +30,11 @@ export function readRunApproveRequest(request: ApprovalRequest):
       threadId: ApprovalRequest['threadId'];
       approved: boolean;
       grantScope: ApprovalRequest['grantScope'];
+      permissionMode?: ApprovalRequest['permissionMode'];
     }
   | { ok: false; message: string } {
-  const { callId, runId, threadId, approved, grantScope } = request;
+  const { callId, runId, threadId, approved, grantScope, permissionMode } =
+    request;
   if (!callId) {
     return { ok: false, message: 'callId is required' };
   }
@@ -48,6 +53,18 @@ export function readRunApproveRequest(request: ApprovalRequest):
       message: 'grantScope must be once, run, or session',
     };
   }
+  if (permissionMode !== undefined && !isPermissionMode(permissionMode)) {
+    return {
+      ok: false,
+      message: 'permissionMode must be basic or full_access',
+    };
+  }
+  if (!approved && permissionMode !== undefined) {
+    return {
+      ok: false,
+      message: 'permissionMode can only accompany an approved decision',
+    };
+  }
   return {
     ok: true,
     callId,
@@ -55,6 +72,7 @@ export function readRunApproveRequest(request: ApprovalRequest):
     threadId,
     approved,
     grantScope,
+    ...(permissionMode === undefined ? {} : { permissionMode }),
   };
 }
 

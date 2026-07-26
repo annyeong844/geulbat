@@ -256,6 +256,68 @@ void test('user message edit flow submits the revised prompt', async () => {
   });
 });
 
+void test('user message edit submits with Enter while Shift+Enter keeps editing', async () => {
+  const submitted: string[] = [];
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <TranscriptTextMessage
+        messageRole="user"
+        content="원래 질문"
+        actions={{
+          onEditSubmit: (nextPrompt) => {
+            submitted.push(nextPrompt);
+          },
+        }}
+      />,
+    );
+  });
+
+  await act(async () => {
+    renderer.root.findByProps({ 'aria-label': '질문 수정' }).props.onClick();
+  });
+  const textarea = renderer.root.findByProps({ 'aria-label': '질문 수정' });
+  await act(async () => {
+    textarea.props.onChange({ target: { value: '  엔터로 고친 질문  ' } });
+  });
+
+  let shiftEnterPrevented = false;
+  await act(async () => {
+    textarea.props.onKeyDown({
+      key: 'Enter',
+      shiftKey: true,
+      nativeEvent: { isComposing: false },
+      preventDefault() {
+        shiftEnterPrevented = true;
+      },
+    });
+  });
+  assert.equal(shiftEnterPrevented, false);
+  assert.deepEqual(submitted, []);
+
+  let enterPrevented = false;
+  await act(async () => {
+    textarea.props.onKeyDown({
+      key: 'Enter',
+      shiftKey: false,
+      nativeEvent: { isComposing: false },
+      preventDefault() {
+        enterPrevented = true;
+      },
+    });
+  });
+  assert.equal(enterPrevented, true);
+  assert.deepEqual(submitted, ['엔터로 고친 질문']);
+  assert.equal(
+    renderer.root.findAllByProps({ className: 'message-edit-input' }).length,
+    0,
+  );
+
+  await act(async () => {
+    renderer.unmount();
+  });
+});
+
 void test('assistant message actions include branch when provided, user messages never do', async () => {
   let branchClicks = 0;
   let withBranch!: ReactTestRenderer;
@@ -340,4 +402,67 @@ void test('assistant message actions include retry only when provided', async ()
   await act(async () => {
     withoutRetry.unmount();
   });
+});
+
+void test('message copy feedback stays accessible until the next focus action', async () => {
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'navigator',
+  );
+  let copiedText: string | null = null;
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: {
+      clipboard: {
+        writeText(text: string) {
+          copiedText = text;
+          return Promise.resolve();
+        },
+      },
+    },
+  });
+
+  let renderer!: ReactTestRenderer;
+  try {
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <TranscriptTextMessage messageRole="assistant" content="복사할 답변" />,
+      );
+    });
+    const copyButton = renderer.root.findByProps({
+      'aria-label': '메시지 복사',
+    });
+    await act(async () => {
+      copyButton.props.onClick();
+      await Promise.resolve();
+    });
+
+    assert.equal(copiedText, '복사할 답변');
+    const copiedButton = renderer.root.findByProps({
+      'aria-label': '메시지 복사됨',
+    });
+    act(() => {
+      copiedButton.props.onBlur();
+    });
+    assert.equal(
+      renderer.root.findAllByProps({ 'aria-label': '메시지 복사됨' }).length,
+      0,
+    );
+    assert.equal(
+      renderer.root.findAllByProps({ 'aria-label': '메시지 복사' }).length,
+      1,
+    );
+  } finally {
+    if (renderer !== undefined) {
+      const mountedRenderer = renderer;
+      await act(async () => {
+        mountedRenderer.unmount();
+      });
+    }
+    if (navigatorDescriptor === undefined) {
+      Reflect.deleteProperty(globalThis, 'navigator');
+    } else {
+      Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+    }
+  }
 });

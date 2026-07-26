@@ -129,7 +129,8 @@ function makeExecutionRuntime(
     runId: string;
     approvalContext: ReturnType<typeof makeApprovalContext>;
     emit: ReturnType<typeof makeEmitter>;
-    agentSpawnRuntime?: ReturnType<typeof createDaemonContext>;
+    runtimeServices?: ReturnType<typeof createDaemonContext>;
+    planningWorkflow?: { workflowId: string };
     signal?: AbortSignal;
     runState?: RunState;
   },
@@ -157,7 +158,10 @@ function makeExecutionRuntime(
         ? {}
         : { computerFileRoot: args.computerFileRoot }),
       memoryIndex: undefined,
-      agentSpawnRuntime: args.agentSpawnRuntime,
+      runtimeServices: args.runtimeServices,
+      ...(args.planningWorkflow === undefined
+        ? {}
+        : { planningWorkflow: args.planningWorkflow }),
     }),
   });
 }
@@ -169,6 +173,7 @@ function makeApprovalResolvingEmitter(
   daemonContext: ReturnType<typeof createDaemonContext>,
   decision: 'approved' | 'denied',
   onApprovalRequired?: () => void | Promise<void>,
+  permissionMode?: 'basic' | 'full_access',
 ): AgentEventEmitter {
   return (type, payload) => {
     events.push(createAgentEvent(type, payload));
@@ -186,6 +191,8 @@ function makeApprovalResolvingEmitter(
             approval.runId,
             approval.threadId,
             decision,
+            'once',
+            permissionMode,
           );
         })();
       }, 0);
@@ -282,7 +289,7 @@ void test('executeFunctionCall auto-approves write tools in full_access mode', a
       stateRoot: workspaceRoot,
       runId: 'run-full-access-tool',
       approvalContext: makeApprovalContext({
-        sessionId: 'session-full-access-tool',
+        computerSessionId: 'session-full-access-tool',
         permissionMode: 'full_access',
       }),
       emit: makeEmitter(events),
@@ -298,6 +305,137 @@ void test('executeFunctionCall auto-approves write tools in full_access mode', a
   });
   assert.equal(seenApprovalGranted, true);
   assert.deepEqual(events, []);
+});
+
+void test('planning workflow clamp blocks full_access write tools before trusted approval', async () => {
+  const toolName = 'loop_tool_plan_clamp_full_access_write_test_tool';
+  const daemonContext = createTestDaemonContext();
+  let executed = false;
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: toolName,
+      description: 'plan clamp write test tool',
+      sideEffectLevel: 'write',
+      requiresApproval: true,
+      async executeParsed() {
+        executed = true;
+        return { ok: true, output: 'must-not-run' };
+      },
+    }),
+  );
+
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-plan-clamp-'));
+  const threadId = testThreadId(82_3);
+  const events: AgentEvent[] = [];
+  const result = await executeFunctionCall({
+    functionCall: {
+      id: 'fc-plan-clamp',
+      callId: 'call-plan-clamp',
+      name: toolName,
+      arguments: '{"path":"draft.md"}',
+    },
+    round: 0,
+    toolArgs: { path: 'draft.md' },
+    history: [],
+    runtime: makeExecutionRuntime(daemonContext, {
+      threadId,
+      stateRoot: workspaceRoot,
+      runId: 'run-plan-clamp',
+      approvalContext: makeApprovalContext({
+        permissionMode: 'full_access',
+      }),
+      emit: makeEmitter(events),
+      planningWorkflow: { workflowId: 'workflow-plan-clamp' },
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(executed, false);
+  if (!result.ok) {
+    return;
+  }
+  assert.equal(result.value.ok, false);
+  assert.equal(result.value.errorCode, 'approval_required');
+  assert.match(result.value.error ?? '', /PLAN_APPROVAL_REQUIRED/);
+  assert.deepEqual(events, []);
+});
+
+void test('an explicit full_access approval upgrades the current run before its next destructive tool', async () => {
+  const firstToolName = 'loop_tool_approval_upgrade_write_test_tool';
+  const secondToolName = 'loop_tool_approval_upgrade_destructive_test_tool';
+  const daemonContext = createTestDaemonContext();
+  const executed: string[] = [];
+  const executedPermissionModes: Array<'basic' | 'full_access' | undefined> =
+    [];
+  for (const [name, sideEffectLevel] of [
+    [firstToolName, 'write'],
+    [secondToolName, 'destructive'],
+  ] as const) {
+    registerOnce(
+      daemonContext,
+      makeTestTool({
+        name,
+        description: 'current-run permission upgrade test tool',
+        sideEffectLevel,
+        requiresApproval: true,
+        async executeParsed(_, ctx) {
+          executed.push(name);
+          executedPermissionModes.push(ctx.permissionMode);
+          return { ok: true, output: name };
+        },
+      }),
+    );
+  }
+
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-approval-'));
+  const threadId = testThreadId(82_2);
+  const runId = 'run-current-permission-upgrade';
+  const events: AgentEvent[] = [];
+  const approvalContext = makeApprovalContext({ permissionMode: 'basic' });
+  await startApprovalCheckpoint(daemonContext, threadId, runId);
+  const runtime = makeExecutionRuntime(daemonContext, {
+    threadId,
+    stateRoot: workspaceRoot,
+    runId,
+    approvalContext,
+    emit: makeApprovalResolvingEmitter(
+      events,
+      daemonContext,
+      'approved',
+      undefined,
+      'full_access',
+    ),
+  });
+
+  for (const [index, name] of [firstToolName, secondToolName].entries()) {
+    const result = await executeFunctionCall({
+      functionCall: {
+        id: `fc-permission-upgrade-${index}`,
+        callId: `call-permission-upgrade-${index}`,
+        name,
+        arguments: '{}',
+      },
+      round: index,
+      toolArgs: {},
+      history: [],
+      runtime,
+    });
+    assert.equal(result.ok, true);
+  }
+
+  assert.equal(approvalContext.permissionMode, 'full_access');
+  assert.deepEqual(executed, [firstToolName, secondToolName]);
+  assert.deepEqual(executedPermissionModes, ['full_access', 'full_access']);
+  assert.equal(
+    events.filter((event) => event.type === 'approval_required').length,
+    1,
+  );
+  assert.equal(
+    (await daemonContext.runCheckpoints.readThread(threadId))?.request
+      .permissionMode,
+    'full_access',
+  );
 });
 
 void test('executeFunctionCall can auto-approve from an injected approval grant store', async () => {
@@ -321,13 +459,13 @@ void test('executeFunctionCall can auto-approve from an injected approval grant 
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-approval-'));
   const threadId = testThreadId(82_1);
   const approvalContext = makeApprovalContext({
-    sessionId: 'session-grant-store-tool',
+    computerSessionId: 'session-grant-store-tool',
     permissionMode: 'basic',
   });
   daemonContext.approvalGrants.registerApprovalGrant(
     {
       runId: 'run-grant-store-tool',
-      sessionId: approvalContext.sessionId,
+      computerSessionId: approvalContext.computerSessionId,
       approvalClass: toApprovalClass(toolName),
       sideEffectLevel: 'destructive',
       permissionMode: approvalContext.permissionMode,
@@ -499,7 +637,10 @@ void test('executeFunctionCall admits an SDK-visible no-effect callback from exe
       runId: 'run-ptc-callback',
       approvalContext: makeApprovalContext(),
       emit: makeEmitter(events),
-      agentSpawnRuntime: { ...daemonContext, ptcExecuteCode },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, executeCode: ptcExecuteCode },
+      },
     }),
   });
 
@@ -634,7 +775,7 @@ void test('executeFunctionCall resolves interactive approval against the owner r
       stateRoot: workspaceRoot,
       runId: 'run-visible',
       approvalContext: makeApprovalContext({
-        sessionId: 'session-interactive-tool',
+        computerSessionId: 'session-interactive-tool',
         ownerRunId: 'run-owner',
         ownerThreadId,
       }),
@@ -723,7 +864,7 @@ void test('executeFunctionCall returns terminal failure when approval is denied 
       stateRoot: workspaceRoot,
       runId: 'run-denied-orchestration',
       approvalContext: makeApprovalContext({
-        sessionId: 'session-denied-orchestration',
+        computerSessionId: 'session-denied-orchestration',
       }),
       emit: (type, payload) => {
         const event: AgentEvent = createAgentEvent(type, payload);
@@ -977,7 +1118,7 @@ void test('W2: aborted approval wait returns a code-visible aborted result and l
   });
 });
 
-void test('W2: class-only grants from direct approvals do not auto-approve PTC write callbacks', async () => {
+void test('W2: grants only auto-approve PTC write callbacks when the Computer-scoped class matches', async () => {
   const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-grant-'));
   const threadId = testThreadId(84_3);
@@ -986,7 +1127,7 @@ void test('W2: class-only grants from direct approvals do not auto-approve PTC w
   const grantContext = {
     runId: 'run-w1-class-grant',
     threadId,
-    sessionId: approvalContext.sessionId,
+    computerSessionId: approvalContext.computerSessionId,
     approvalClass: toApprovalClass('manage_files:create'),
     sideEffectLevel: 'write' as const,
     permissionMode: approvalContext.permissionMode,
@@ -1022,8 +1163,9 @@ void test('W2: class-only grants from direct approvals do not auto-approve PTC w
       denialMode: 'code_visible',
     });
 
-    // The stored class grant is not consumed: the callback still had to go
-    // through the interactive wait and the user's denial stands.
+    // 저장된 grant는 'manage_files:create'인데 런타임 클래스는
+    // 'manage_files:create:computer'다 — 스코프가 다른 grant는 소비되지 않고
+    // 콜백은 대화형 대기를 거치며 사용자의 거부가 유효하다.
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.value.ok, false);
@@ -1037,7 +1179,7 @@ void test('W2: class-only grants from direct approvals do not auto-approve PTC w
   });
 });
 
-void test('W2: an interactive grant is not reused as auto-approval for the next PTC write callback', async () => {
+void test('W2: an interactive grant is reused as auto-approval for the next PTC write callback', async () => {
   const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w2-noreuse-'));
   const threadId = testThreadId(84_9);
@@ -1092,8 +1234,10 @@ void test('W2: an interactive grant is not reused as auto-approval for the next 
       assert.equal(first.value.ok, true);
     }
 
-    // Second callback in the same run/class: the recorded grant must not be
-    // consumed as auto-approval evidence — it waits again and denial stands.
+    // Second callback in the same run/class: 승인은 세션 단위 (오너 결정
+    // 2026-07-23, Q5=(a) 갱신) — 직접 승인에서 쌓인 run/session grant를 PTC
+    // 중첩 콜백도 자동 승인 근거로 쓴다. 대기 없이 실행되고
+    // approval_required가 다시 뜨지 않는다.
     const secondEvents: AgentEvent[] = [];
     const second = await executeFunctionCall({
       functionCall: {
@@ -1112,25 +1256,22 @@ void test('W2: an interactive grant is not reused as auto-approval for the next 
         workingDirectory: workspaceRoot,
         runId: 'run-w2-noreuse',
         approvalContext,
-        emit: makeApprovalResolvingEmitter(
-          secondEvents,
-          daemonContext,
-          'denied',
-        ),
+        emit: (type, payload) => {
+          secondEvents.push(createAgentEvent(type, payload));
+        },
       }),
       source: makePtcWriteCallbackSource('runtime-w2-9b'),
       denialMode: 'code_visible',
     });
     assert.equal(second.ok, true);
     if (second.ok) {
-      assert.equal(second.value.ok, false);
-      assert.equal(second.value.errorCode, 'approval_denied');
+      assert.equal(second.value.ok, true);
     }
-    assert.deepEqual(
-      secondEvents.map((event) => event.type),
-      ['approval_required'],
+    assert.equal(
+      secondEvents.some((event) => event.type === 'approval_required'),
+      false,
     );
-    await assert.rejects(() => stat(join(workspaceRoot, 'second.txt')));
+    await stat(join(workspaceRoot, 'second.txt'));
   });
 });
 
@@ -1201,7 +1342,7 @@ void test('W2: mutation is re-validated after the approval wait (symlink swap is
   });
 });
 
-void test('W1: write tools outside the allowlist and destructive operations stay rejected with the knob on', async () => {
+void test('W1: write tools outside the allowlist and destructive operations stay rejected in basic mode with the knob on', async () => {
   const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-reject-'));
   const threadId = testThreadId(84_4);
@@ -1214,7 +1355,7 @@ void test('W1: write tools outside the allowlist and destructive operations stay
       computerFileRoot: workspaceRoot,
       workingDirectory: workspaceRoot,
       runId: 'run-w1-reject',
-      approvalContext: makeApprovalContext({ permissionMode: 'full_access' }),
+      approvalContext: makeApprovalContext({ permissionMode: 'basic' }),
       emit: makeEmitter(events),
     });
 
@@ -1257,6 +1398,73 @@ void test('W1: write tools outside the allowlist and destructive operations stay
     );
 
     assert.deepEqual(events, []);
+  });
+});
+
+void test('W1: full_access admits outside-allowlist and destructive callbacks without prompts', async () => {
+  // yolo (오너 결정 2026-07-23): full_access의 PTC 콜백은 표면 allowlist를
+  // 우회한다 — 셀 코드는 모델 작성이라 agent-loop 직접 호출과 같은 신뢰
+  // 등급이고, 모드가 이미 전면 위임이다.
+  const daemonContext = createTestDaemonContext();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-yolo-'));
+  const threadId = testThreadId(84_10);
+  const events: AgentEvent[] = [];
+
+  await withWriteCallbackKnob('1', async () => {
+    const runtime = makeExecutionRuntime(daemonContext, {
+      threadId,
+      stateRoot: workspaceRoot,
+      computerFileRoot: workspaceRoot,
+      workingDirectory: workspaceRoot,
+      runId: 'run-w1-yolo',
+      approvalContext: makeApprovalContext({ permissionMode: 'full_access' }),
+      emit: makeEmitter(events),
+    });
+
+    const written = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w1-yolo-write',
+        callId: 'call-execute-code::nested-w1-10',
+        name: 'write_file',
+        arguments: JSON.stringify({ path: 'w1.txt', content: 'yolo' }),
+      },
+      round: 0,
+      toolArgs: { path: 'w1.txt', content: 'yolo' },
+      history: [],
+      runtime,
+      source: makePtcWriteCallbackSource('runtime-w1-10'),
+      denialMode: 'code_visible',
+    });
+    assert.equal(written.ok, true);
+    if (written.ok) {
+      assert.equal(written.value.ok, true);
+    }
+    const created = await stat(join(workspaceRoot, 'w1.txt'));
+    assert.equal(created.isFile(), true);
+
+    const deleted = await executeFunctionCall({
+      functionCall: {
+        id: 'fc-w1-yolo-delete',
+        callId: 'call-execute-code::nested-w1-11',
+        name: 'manage_files',
+        arguments: JSON.stringify({ operation: 'delete', path: 'w1.txt' }),
+      },
+      round: 0,
+      toolArgs: { operation: 'delete', path: 'w1.txt' },
+      history: [],
+      runtime,
+      source: makePtcWriteCallbackSource('runtime-w1-11'),
+      denialMode: 'code_visible',
+    });
+    assert.equal(deleted.ok, true);
+    if (deleted.ok) {
+      assert.equal(deleted.value.ok, true);
+    }
+    await assert.rejects(() => stat(join(workspaceRoot, 'w1.txt')));
+    assert.equal(
+      events.some((event) => event.type === 'approval_required'),
+      false,
+    );
   });
 });
 
@@ -1400,7 +1608,7 @@ void test('W1: callback dispatcher reports changed-files on successful writes an
   assert.equal(readCallLine.includes('approvalClass'), false);
 });
 
-void test('PTC read_tool_output keeps the page code-visible while audit records only its immutable range', async () => {
+void test('PTC read_tool_output keeps character and item pages code-visible while audit records only their immutable ranges', async () => {
   const daemonContext = createTestDaemonContext();
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-read-output-audit-'),
@@ -1408,6 +1616,7 @@ void test('PTC read_tool_output keeps the page code-visible while audit records 
   const threadId = testThreadId(84_7);
   const events: AgentEvent[] = [];
   const pageContent = `AUDIT_PAGE_CONTENT_MUST_NOT_REPEAT_${'x'.repeat(256)}`;
+  const itemContent = `AUDIT_ITEM_CONTENT_MUST_NOT_REPEAT_${'y'.repeat(256)}`;
   const outputRef = `tool-output:${threadId}/run-read-output/source-call`;
   const pageOutput = JSON.stringify({
     ok: true,
@@ -1422,6 +1631,28 @@ void test('PTC read_tool_output keeps the page code-visible while audit records 
     nextOffset: null,
     content: pageContent,
   });
+  const itemPageItems = [
+    {
+      path: 'evidence.ts',
+      line: 7,
+      text: itemContent,
+    },
+  ];
+  const itemPageOutput = JSON.stringify({
+    ok: true,
+    outputRef,
+    toolName: 'search_files',
+    contentType: 'application/json',
+    mode: 'items',
+    itemField: 'results',
+    offset: 7,
+    limit: 1,
+    endOffset: 8,
+    totalItems: 20,
+    hasMore: true,
+    nextOffset: 8,
+    items: itemPageItems,
+  });
   const runtime = makeExecutionRuntime(daemonContext, {
     threadId,
     stateRoot: workspaceRoot,
@@ -1431,15 +1662,22 @@ void test('PTC read_tool_output keeps the page code-visible while audit records 
     approvalContext: makeApprovalContext(),
     emit: makeEmitter(events),
   });
+  const dispatchedOutputs = [pageOutput, itemPageOutput];
+  let dispatchIndex = 0;
   const dispatcher = createCallbackToolDispatcher({
     runtime,
     history: [],
     parentRound: 0,
     parentToolCallId: 'call-execute-code-read-output',
-    dispatchFunctionCall: async () => ({
-      ok: true,
-      value: { ok: true, output: pageOutput },
-    }),
+    dispatchFunctionCall: async () => {
+      const output = dispatchedOutputs[dispatchIndex];
+      dispatchIndex += 1;
+      assert.ok(output);
+      return {
+        ok: true,
+        value: { ok: true, output },
+      };
+    },
   });
 
   try {
@@ -1451,10 +1689,20 @@ void test('PTC read_tool_output keeps the page code-visible while audit records 
     });
     assert.deepEqual(cellResult, { ok: true, output: pageOutput });
 
+    const itemCellResult = await dispatcher.dispatch({
+      toolName: 'read_tool_output',
+      args: { outputRef, mode: 'items', offset: 7, limit: 1 },
+      runtimeToolCallId: 'rt-read-output-items-1',
+      signal: new AbortController().signal,
+    });
+    assert.deepEqual(itemCellResult, { ok: true, output: itemPageOutput });
+
     const resultEvent = events.find(
       (event) =>
         event.type === 'tool_result' &&
-        event.payload.tool === 'read_tool_output',
+        event.payload.tool === 'read_tool_output' &&
+        isRecord(event.payload.raw) &&
+        event.payload.raw['auditProjection'] === 'read_tool_output_page_ref_v1',
     );
     assert.ok(resultEvent?.type === 'tool_result');
     assert.ok(isRecord(resultEvent.payload.raw));
@@ -1474,17 +1722,50 @@ void test('PTC read_tool_output keeps the page code-visible while audit records 
       /AUDIT_PAGE_CONTENT_MUST_NOT_REPEAT_/u,
     );
 
+    const itemResultEvent = events.find(
+      (event) =>
+        event.type === 'tool_result' &&
+        event.payload.tool === 'read_tool_output' &&
+        isRecord(event.payload.raw) &&
+        event.payload.raw['auditProjection'] ===
+          'read_tool_output_item_page_ref_v1',
+    );
+    assert.ok(itemResultEvent?.type === 'tool_result');
+    assert.ok(isRecord(itemResultEvent.payload.raw));
+    assert.equal(itemResultEvent.payload.raw['items'], undefined);
+    assert.equal(
+      itemResultEvent.payload.raw['auditProjection'],
+      'read_tool_output_item_page_ref_v1',
+    );
+    assert.equal(itemResultEvent.payload.raw['itemCount'], 1);
+    const serializedItems = JSON.stringify(itemPageItems);
+    assert.equal(
+      itemResultEvent.payload.raw['itemsChars'],
+      serializedItems.length,
+    );
+    assert.equal(
+      itemResultEvent.payload.raw['itemsBytes'],
+      Buffer.byteLength(serializedItems, 'utf8'),
+    );
+    assert.match(itemResultEvent.payload.displayText, /items omitted/u);
+    assert.doesNotMatch(
+      itemResultEvent.payload.displayText,
+      /AUDIT_ITEM_CONTENT_MUST_NOT_REPEAT_/u,
+    );
+
     const transcript = await readFile(
       threadFilePath(workspaceRoot, threadId),
       'utf8',
     );
     assert.doesNotMatch(transcript, /AUDIT_PAGE_CONTENT_MUST_NOT_REPEAT_/u);
+    assert.doesNotMatch(transcript, /AUDIT_ITEM_CONTENT_MUST_NOT_REPEAT_/u);
     assert.match(transcript, /read_tool_output_page_ref_v1/u);
+    assert.match(transcript, /read_tool_output_item_page_ref_v1/u);
     const transcriptEntries = await readTranscriptEntries(
       workspaceRoot,
       threadId,
     );
-    assert.equal(transcriptEntries.length, 2);
+    assert.equal(transcriptEntries.length, 4);
     for (const entry of transcriptEntries) {
       const record: unknown = JSON.parse(entry.content);
       assert.ok(isRecord(record));

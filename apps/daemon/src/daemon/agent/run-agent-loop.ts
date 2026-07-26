@@ -3,7 +3,11 @@
  * Emits internal AgentEvents; adapter/web converts to RunEventEnvelope.
  */
 
-import { runAgentLoopKernel } from '@geulbat/agent-loop/kernel';
+import { agentLoopKernelImplementation } from '@geulbat/agent-loop/kernel';
+import {
+  validateToolCapabilityPolicy,
+  type ToolCapabilityPolicy,
+} from '@geulbat/tool-library/tool-capability-policy';
 import {
   isProviderReplayScopeId,
   isRootRunState,
@@ -11,20 +15,27 @@ import {
 } from '../runtime-contracts.js';
 
 import { createAgentEvent, type AgentEventEmitter } from './events.js';
-import {
-  describeAgentResultForTextSurface,
-  type AgentResult,
-} from './agent-result.js';
+import type { AgentResult } from './agent-result.js';
 import type { AgentInput } from './loop-types.js';
+import { loadGeulbatInstructions } from './prompt/load-geulbat-md.js';
+import {
+  listPendingMemoryNotes,
+  memoryConsolidationIsDue,
+} from '../memories/notes-store.js';
+import { readMemoryEntries } from '../memories/entries-store.js';
+import { startMemoryConsolidationDetached } from './memory-consolidation.js';
 import type { HistoryItem } from '../llm/index.js';
 import {
-  buildAgentLoopObserverRoundCompletedEvent,
-  buildAgentLoopObserverRoundStartedEvent,
+  buildAgentLoopObserverEvent,
   buildAgentLoopObserverSnapshot,
   recordAgentLoopObserverEvent,
   recordAgentLoopObserverSnapshot,
+  recordAgentLoopObserverToolResult,
 } from './observer/agent-loop-observer.js';
-import { assertAgentRunId as assertValidRunId } from './contract.js';
+import {
+  assertAgentRunId as assertValidRunId,
+  resolveAgentRunModelDescriptor,
+} from './contract.js';
 import { accumulateRunUsageTotals } from './runtime/run-usage-totals.js';
 import {
   appendAssistantTextToHistory,
@@ -36,7 +47,6 @@ import {
 import {
   clearInterjectFlushRequest,
   closeInterjectBuffer,
-  hasPendingInterject,
   peekPendingInterject,
   removePendingInterjectBySeq,
 } from '../sessions/active-run-interject-buffer.js';
@@ -57,22 +67,21 @@ import {
   projectProviderRunSelection,
   resolveProviderRequestOptionsForRun,
 } from '../llm/provider/provider-options.js';
-import { resolveGrokOAuthModelDescriptor } from '../llm/provider/grok-oauth-transport.js';
 import {
   normalizeProviderErrorCode,
   sanitizeProviderErrorMessage,
 } from '../llm/provider/provider-error.js';
 import { resolveProviderReplayScopeForRun } from '../llm/provider/provider-replay-scope.js';
-import { resolveCodexResponsesUrl } from '../llm/provider/transport/responses-websocket-url.js';
 import { coerceGenericApiErrorCode } from '../error-codes.js';
 import { createAgentLoopMemoryPort } from './memory/compaction-loop.js';
 import type { RunCheckpointStore } from '../sessions/run-checkpoint-store.js';
-import { readTranscriptEntries } from '../sessions/transcript-log.js';
+import { readLastTranscriptEntryId } from '../sessions/transcript-log.js';
 import { appendProviderRound } from '../sessions/provider-round-journal.js';
 import type {
   FunctionCall,
   ProviderStructuredOutput,
 } from '../llm/provider/wire/types.js';
+import { createAgentRunCompletionPolicy } from './run-completion-policy.js';
 
 export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   const {
@@ -83,13 +92,21 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     selection,
     embeddedBackgroundResultCount = 0,
     providerModel,
+    providerTransitionRecovery,
+    ultraReasoning = false,
     reasoningEffort,
+    serviceTier,
     subagentModelRouting,
+    planningWorkflow,
+    approvedPlan,
+    goal,
     signal,
     onEvent,
     runState,
     toolSurface,
+    toolCapabilityPolicy: requestedToolCapabilityPolicy,
     promptProfile = 'root',
+    loopImplementation = agentLoopKernelImplementation,
     runtimeServices,
     approvalContext,
     callModelImpl,
@@ -98,6 +115,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     lifecyclePort: injectedLifecyclePort,
     memoryPort: injectedMemoryPort,
     modelRoundPort: injectedModelRoundPort,
+    goalCompletionVerifier: injectedGoalCompletionVerifier,
     structuredOutputPort: injectedStructuredOutputPort,
     toolDefinitionPort: injectedToolDefinitionPort,
     toolRuntimePort: injectedToolRuntimePort,
@@ -114,53 +132,162 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   // 1. run_ack
   emit('run_ack', { runId: assertValidRunId(runId), threadId });
 
-  if (toolSurface !== undefined) {
-    const allowedRegistryNames = new Set(toolSurface.allowedRegistryNames);
-    const invalidDirectRegistryName = toolSurface.directRegistryNames.find(
-      (name) => !allowedRegistryNames.has(name),
+  const rejectToolAdmission = (message: string): AgentResult => {
+    const result = lifecyclePort.createTerminalFailure({
+      emit,
+      code: 'execution_failed',
+      message,
+    });
+    lifecyclePort.settleAfterResult({ runState, result, signal });
+    return result;
+  };
+  if (
+    toolSurface !== undefined &&
+    requestedToolCapabilityPolicy !== undefined
+  ) {
+    return rejectToolAdmission(
+      'toolSurface and toolCapabilityPolicy cannot be supplied together',
     );
+  }
+  let toolCapabilityPolicy: ToolCapabilityPolicy | undefined;
+  if (requestedToolCapabilityPolicy !== undefined) {
+    try {
+      toolCapabilityPolicy = validateToolCapabilityPolicy(
+        requestedToolCapabilityPolicy,
+      );
+    } catch (error: unknown) {
+      return rejectToolAdmission(
+        `invalid tool capability policy: ${error instanceof Error ? error.message : 'validation failed'}`,
+      );
+    }
+  }
+  const effectiveToolSurface =
+    toolCapabilityPolicy === undefined
+      ? toolSurface
+      : {
+          directRegistryNames: toolCapabilityPolicy.directRegistryNames,
+          allowedRegistryNames: toolCapabilityPolicy.allowedRegistryNames,
+        };
+
+  if (effectiveToolSurface !== undefined) {
+    const allowedRegistryNames = new Set(
+      effectiveToolSurface.allowedRegistryNames,
+    );
+    const invalidDirectRegistryName =
+      effectiveToolSurface.directRegistryNames.find(
+        (name) => !allowedRegistryNames.has(name),
+      );
     if (invalidDirectRegistryName !== undefined) {
-      const result = lifecyclePort.createTerminalFailure({
-        emit,
-        code: 'execution_failed',
-        message: `direct tool is outside the allowed registry surface: ${invalidDirectRegistryName}`,
-      });
-      lifecyclePort.settleAfterResult({ runState, result, signal });
-      return result;
+      return rejectToolAdmission(
+        `direct tool is outside the allowed registry surface: ${invalidDirectRegistryName}`,
+      );
+    }
+  }
+
+  const registry = runtimeServices.toolRegistry.captureSnapshot();
+  const runRuntimeServices = Object.freeze({
+    ...runtimeServices,
+    toolRegistry: registry,
+  });
+  if (toolCapabilityPolicy !== undefined) {
+    const unknownRegistryName = toolCapabilityPolicy.allowedRegistryNames.find(
+      (name) => registry.getTool(name) === undefined,
+    );
+    if (unknownRegistryName !== undefined) {
+      return rejectToolAdmission(
+        `tool capability policy includes an unknown registry tool: ${unknownRegistryName}`,
+      );
     }
   }
 
   const promptPort = injectedPromptPort ?? createAgentLoopPromptPort();
+  // 작업 폴더의 geulbat.md — 없으면 undefined이고 프롬프트는 예전과 같다.
+  const { instructions: projectInstructions } = await loadGeulbatInstructions(
+    runContext.workingDirectory,
+  );
+  // 메모리는 root 런에만 싣는다. 서브에이전트는 부모가 준 과제로 일하고,
+  // 사용자 장기 기억을 자식마다 복제하면 비용과 노출이 함께 늘어난다.
+  const [memoryEntries, pendingMemoryNotes] =
+    promptProfile === 'root'
+      ? await Promise.all([
+          readMemoryEntries(runContext.stateRoot),
+          listPendingMemoryNotes(runContext.stateRoot),
+        ])
+      : [[], []];
+  const memoryNotes = pendingMemoryNotes.map((note) => note.text);
   const { systemPrompt } = promptPort.buildPromptBundle({
     threadId,
     promptProfile,
     computerSessionAvailable: runtimeServices.computerFileRoot !== undefined,
     workingDirectory: runContext.workingDirectory,
+    ...(effectiveToolSurface === undefined
+      ? {}
+      : { directRegistryNames: effectiveToolSurface.directRegistryNames }),
     ...(currentFile === undefined ? {} : { currentFile }),
     ...(selection === undefined ? {} : { selection }),
+    ...(projectInstructions === undefined ? {} : { projectInstructions }),
+    ...(planningWorkflow === undefined ? {} : { planMode: planningWorkflow }),
+    ...(approvedPlan === undefined ? {} : { approvedPlan }),
+    ...(goal === undefined ? {} : { goal }),
+    ...(memoryNotes.length === 0 ? {} : { memoryNotes }),
+    ...(memoryEntries.length === 0
+      ? {}
+      : {
+          memoryEntries: memoryEntries.map((entry) => ({
+            id: entry.id,
+            text: entry.text,
+          })),
+        }),
   });
-  const registry = runtimeServices.toolRegistry;
-  const providerAuthRuntime = runtimeServices.providerAuthRuntime;
+  const providerAuthRuntime = runtimeServices.provider.authRuntime;
   // The web adapter projects public model identity to the provider-owned
   // selection before it reaches the agent/LLM boundary.
   const providerRequestOptions = resolveProviderRequestOptionsForRun(
-    runtimeServices.providerRequestOptions,
+    runtimeServices.provider.requestOptions,
     {
       ...(providerModel !== undefined ? { providerModel } : {}),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(serviceTier !== undefined ? { serviceTier } : {}),
     },
   );
-  const webSocketSessions = runtimeServices.providerWebSocketSessions;
+  const webSocketSessions = runtimeServices.provider.webSocketSessions;
+  if (memoryConsolidationIsDue(pendingMemoryNotes.length)) {
+    startMemoryConsolidationDetached({
+      stateRoot: runContext.stateRoot,
+      access: {
+        providerAuthRuntime,
+        providerWebSocketSessions: webSocketSessions,
+        providerRequestOptions,
+      },
+    });
+  }
   const historyPort = injectedHistoryPort ?? createAgentLoopHistoryPort();
-  const memoryPort = injectedMemoryPort ?? createAgentLoopMemoryPort();
+  const memoryPort =
+    injectedMemoryPort ??
+    runtimeServices.agent.loopMemory ??
+    createAgentLoopMemoryPort();
+  let completedContextBudgetRound:
+    | ReturnType<typeof memoryPort.beginContextBudgetRound>
+    | undefined;
+  const recoverProviderTransitionAfterOverflow =
+    memoryPort.recoverProviderTransitionAfterOverflow;
+  const providerTransitionSource =
+    providerTransitionRecovery === undefined
+      ? undefined
+      : resolveAgentRunModelDescriptor(
+          providerTransitionRecovery.sourceModelId,
+        );
+  let providerTransitionRecoveryAvailable =
+    providerTransitionSource !== undefined;
   const modelRoundPort = injectedModelRoundPort ?? createModelRoundPort();
   const structuredOutputPort =
     injectedStructuredOutputPort ??
-    createAgentLoopStructuredOutputPort(runtimeServices);
+    createAgentLoopStructuredOutputPort(runRuntimeServices);
   const toolDefinitionPort =
     injectedToolDefinitionPort ?? createAgentLoopToolDefinitionPort(registry);
   const toolRuntimePort =
-    injectedToolRuntimePort ?? createAgentLoopToolRuntimePort(runtimeServices);
+    injectedToolRuntimePort ??
+    createAgentLoopToolRuntimePort(runRuntimeServices);
   const toolLibraryProjectionPort =
     injectedToolLibraryProjectionPort ??
     createAgentLoopToolLibraryProjectionPort(
@@ -168,11 +295,23 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     );
   const toolDefs = [
     ...toolDefinitionPort.buildToolDefinitions({
-      ...(toolSurface === undefined
+      ...(effectiveToolSurface === undefined
         ? {}
-        : { directRegistryNames: toolSurface.directRegistryNames }),
+        : {
+            directRegistryNames: effectiveToolSurface.directRegistryNames,
+          }),
     }),
-  ];
+  ].filter(
+    (definition) => goal !== undefined || definition.name !== 'update_goal',
+  );
+  if (
+    goal !== undefined &&
+    !toolDefs.some((definition) => definition.name === 'update_goal')
+  ) {
+    return rejectToolAdmission(
+      'Goal mode requires the update_goal tool in the admitted tool surface',
+    );
+  }
   // 인자 스트리밍 opt-in 도구(ToolMeta.streamsArgsDelta) — 모델 라운드가
   // 이 목록에 한해 tool_call_delta를 방출한다 (visualize 실시간 렌더)
   const streamArgsToolNames: ReadonlySet<string> = new Set(
@@ -183,13 +322,25 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       )
       .map((definition) => definition.name),
   );
+  const turnEndingToolNames: ReadonlySet<string> = new Set(
+    toolDefs
+      .filter(
+        (definition) =>
+          registry.getToolMeta(definition.name)?.endsTurnAfterSuccess === true,
+      )
+      .map((definition) => definition.name),
+  );
   const toolLibraryProjection =
     await toolLibraryProjectionPort.resolveProjection({
       stateRoot,
       threadId,
-      ...(toolSurface === undefined
-        ? {}
-        : { allowedRegistryNames: toolSurface.allowedRegistryNames }),
+      ...(toolCapabilityPolicy === undefined
+        ? effectiveToolSurface === undefined
+          ? {}
+          : {
+              allowedRegistryNames: effectiveToolSurface.allowedRegistryNames,
+            }
+        : { toolCapabilityPolicy }),
     });
   if (!toolLibraryProjection.ok) {
     const result = lifecyclePort.createTerminalFailure({
@@ -200,16 +351,12 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     lifecyclePort.settleAfterResult({ runState, result, signal });
     return result;
   }
+  let endTurnAfterLastToolProcessing = false;
   let providerReplayScopeId: ProviderReplayScopeId | undefined;
   if (callModelImpl === undefined && injectedModelRoundPort === undefined) {
     try {
       providerReplayScopeId = await resolveProviderReplayScopeForRun({
-        providerId: providerRequestOptions.providerId,
-        endpoint:
-          providerRequestOptions.providerId === 'grok_oauth'
-            ? resolveGrokOAuthModelDescriptor(providerRequestOptions.model)
-                .baseUrl
-            : resolveCodexResponsesUrl(),
+        providerRequestOptions,
         providerAuthRuntime,
       });
     } catch (error: unknown) {
@@ -250,11 +397,37 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     lifecyclePort.settleAfterResult({ runState, result, signal });
     return result;
   }
+  const completionPolicy = createAgentRunCompletionPolicy({
+    runId: assertValidRunId(runId),
+    threadId,
+    history,
+    planningWorkflows: runtimeServices.planningWorkflows,
+    goals: runtimeServices.goals,
+    emit,
+    providerAuthRuntime,
+    providerWebSocketSessions: webSocketSessions,
+    providerRequestOptions,
+    ...(runState === undefined ? {} : { runState }),
+    ...(planningWorkflow === undefined ? {} : { planningWorkflow }),
+    ...(approvedPlan === undefined ? {} : { approvedPlan }),
+    ...(goal === undefined ? {} : { goal }),
+    ...(providerReplayScopeId === undefined ? {} : { providerReplayScopeId }),
+    ...(callModelImpl === undefined ? {} : { callModelImpl }),
+    ...(injectedGoalCompletionVerifier === undefined
+      ? {}
+      : { goalCompletionVerifier: injectedGoalCompletionVerifier }),
+    ...(signal === undefined ? {} : { signal }),
+  });
   const processRoundFunctionCalls = async (args: {
     round: number;
     functionCalls: readonly FunctionCall[];
-  }) =>
-    await toolRuntimePort.processFunctionCalls({
+  }) => {
+    endTurnAfterLastToolProcessing = false;
+    const contextBudgetRound = completedContextBudgetRound;
+    completedContextBudgetRound = undefined;
+    const toolResultContextBudget =
+      contextBudgetRound?.getToolResultContextBudget();
+    return await toolRuntimePort.processFunctionCalls({
       functionCalls: [...args.functionCalls],
       round: args.round,
       history,
@@ -266,20 +439,43 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       selection,
       signal,
       runState,
-      ...(toolSurface === undefined
+      toolRegistry: registry,
+      ...(effectiveToolSurface === undefined
         ? {}
-        : { allowedRegistryNames: toolSurface.allowedRegistryNames }),
+        : {
+            allowedRegistryNames: effectiveToolSurface.allowedRegistryNames,
+          }),
+      ...(toolCapabilityPolicy === undefined ? {} : { toolCapabilityPolicy }),
       toolLibraryProjectionIdentity: toolLibraryProjection.identity,
       providerRunSelection: projectProviderRunSelection(providerRequestOptions),
+      ultraReasoning,
       ...(subagentModelRouting === undefined ? {} : { subagentModelRouting }),
+      ...(planningWorkflow === undefined ? {} : { planningWorkflow }),
+      ...(toolResultContextBudget === undefined
+        ? {}
+        : { toolResultContextBudget }),
+      observeToolResult(observation) {
+        if (
+          observation.outcome === 'success' &&
+          turnEndingToolNames.has(observation.toolName)
+        ) {
+          endTurnAfterLastToolProcessing = true;
+        }
+        if (observer !== undefined) {
+          recordAgentLoopObserverToolResult(observer, observation);
+        }
+      },
     });
+  };
   recordAgentLoopObserverSnapshot(
     observer,
     buildAgentLoopObserverSnapshot({
       runId,
       runContext,
       approvalContext,
-      ...(toolSurface !== undefined ? { toolSurface } : {}),
+      ...(effectiveToolSurface !== undefined
+        ? { toolSurface: effectiveToolSurface }
+        : {}),
       toolLibraryProjection: toolLibraryProjection.identity,
       toolDefs,
       providerRequestOptions,
@@ -306,10 +502,11 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       initialHistoryItemCount: history.length,
       pendingBackgroundResultCount: embeddedBackgroundResultCount,
       midRunSteerEnabled: true,
+      loopImplementation,
     }),
   );
 
-  return runAgentLoopKernel<
+  return loopImplementation.run<
     AgentResult,
     FunctionCall,
     ProviderStructuredOutput,
@@ -333,6 +530,23 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         }
       },
       async runModelRound({ round }) {
+        completedContextBudgetRound = undefined;
+        const contextBudgetRound = memoryPort.beginContextBudgetRound({
+          workspaceRoot: stateRoot,
+          threadId,
+          history,
+          systemPrompt,
+          tools: toolDefs,
+          providerAuthRuntime,
+          providerRequestOptions,
+          ...(providerReplayScopeId === undefined
+            ? {}
+            : { providerReplayScopeId }),
+          ...(signal === undefined ? {} : { signal }),
+          onContextUsage(snapshot) {
+            emit('context_usage_updated', snapshot);
+          },
+        });
         const modelRoundArgs: RunModelRoundArgs = {
           history,
           systemPrompt,
@@ -347,12 +561,51 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
             : { providerReplayScopeId }),
           emit,
           streamArgsToolNames,
+          onProviderRequestPrepared:
+            contextBudgetRound.onProviderRequestPrepared,
+          onContextPreparationRequired: async () =>
+            await contextBudgetRound.prepareBeforeModelRound(),
         };
         if (signal !== undefined) {
           modelRoundArgs.signal = signal;
         }
         if (callModelImpl !== undefined) {
           modelRoundArgs.callModelImpl = callModelImpl;
+        }
+        if (
+          providerTransitionSource !== undefined &&
+          providerTransitionRecovery !== undefined &&
+          recoverProviderTransitionAfterOverflow !== undefined
+        ) {
+          modelRoundArgs.onContextOverflow = async () => {
+            if (!providerTransitionRecoveryAvailable) {
+              return false;
+            }
+            providerTransitionRecoveryAvailable = false;
+            return await recoverProviderTransitionAfterOverflow({
+              workspaceRoot: stateRoot,
+              threadId,
+              prompt,
+              history,
+              source: {
+                providerId: providerTransitionSource.providerId,
+                model: providerTransitionSource.id,
+              },
+              target: {
+                providerId: providerRequestOptions.providerId,
+                model: providerRequestOptions.model,
+              },
+              sourceReasoningEffort:
+                providerTransitionRecovery.sourceReasoningEffort,
+              providerAuthRuntime,
+              providerWebSocketSessions: webSocketSessions,
+              providerRequestOptions,
+              ...(providerReplayScopeId === undefined
+                ? {}
+                : { targetReplayScopeId: providerReplayScopeId }),
+              ...(signal === undefined ? {} : { signal }),
+            });
+          };
         }
         const modelRound = await modelRoundPort.runModelRound(modelRoundArgs);
         if (modelRound.ok && runState !== undefined) {
@@ -401,6 +654,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
             tools: toolDefs,
             providerAuthRuntime,
             providerRequestOptions,
+            contextBudgetRound,
             ...(roundReplayScopeId === undefined
               ? {}
               : { providerReplayScopeId: roundReplayScopeId }),
@@ -411,9 +665,6 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
                     modelRound.value.providerUsageTelemetry.inputTokens,
                 }
               : {}),
-            onContextUsage(snapshot) {
-              emit('context_usage_updated', snapshot);
-            },
             ...(signal !== undefined ? { signal } : {}),
           });
           if (compaction.kind === 'failed') {
@@ -427,15 +678,27 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
             };
           }
           if (
+            compaction.kind === 'compacted' &&
+            compaction.providerUsageTelemetry !== undefined &&
+            runState !== undefined
+          ) {
+            accumulateRunUsageTotals(
+              runState.usageTotals,
+              compaction.providerUsageTelemetry,
+            );
+            emit('usage_updated', { ...runState.usageTotals });
+          }
+          completedContextBudgetRound = contextBudgetRound;
+          if (
             providerItems !== undefined &&
             providerItems.length > 0 &&
             providerItems.every((item) => item.kind === 'backend_item') &&
             roundReplayScopeId !== undefined
           ) {
-            const transcriptEntries = await readTranscriptEntries(
-              stateRoot,
-              threadId,
-            );
+            const precedingTranscriptEntryId =
+              compaction.kind === 'compacted'
+                ? compaction.providerRoundAnchorEntryId
+                : await readLastTranscriptEntryId(stateRoot, threadId);
             await appendProviderRound({
               stateRoot,
               threadId,
@@ -444,8 +707,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
               providerId: providerRequestOptions.providerId,
               model: providerRequestOptions.model,
               replayScopeId: roundReplayScopeId,
-              precedingTranscriptEntryId:
-                transcriptEntries.at(-1)?.entryId ?? null,
+              precedingTranscriptEntryId,
               items: providerItems.map((item) => item.data),
               functionCalls: modelRound.value.functionCalls.map((call) => ({
                 ...call,
@@ -481,19 +743,17 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
           functionCalls,
         });
       },
-      resolveTerminalCandidate({ source, result }) {
-        if (runState !== undefined && hasPendingInterject(runState.interject)) {
-          return source === 'structured_output'
-            ? {
-                kind: 'continue',
-                historyText: describeAgentResultForTextSurface(result),
-              }
-            : { kind: 'continue' };
-        }
-        if (runState !== undefined) {
-          closeInterjectBuffer(runState.interject);
-        }
-        return { kind: 'terminal' };
+      shouldEndTurnAfterFunctionCalls({ functionCalls }) {
+        return (
+          endTurnAfterLastToolProcessing &&
+          functionCalls.some((call) => turnEndingToolNames.has(call.name))
+        );
+      },
+      async resolveTerminalCandidate({ source, result }) {
+        return await completionPolicy.resolveTerminalCandidate({
+          source,
+          result,
+        });
       },
       createTerminalFailure(failure) {
         if (runState !== undefined) {
@@ -516,30 +776,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         });
       },
       observe(event) {
-        if (event.kind === 'round_started') {
-          recordAgentLoopObserverEvent(
-            observer,
-            buildAgentLoopObserverRoundStartedEvent({
-              runId,
-              threadId,
-              round: event.round,
-              historyItemCount: event.historyItemCount,
-              sawFirstModelRequest: event.sawFirstModelRequest,
-            }),
-          );
-          return;
-        }
         recordAgentLoopObserverEvent(
           observer,
-          buildAgentLoopObserverRoundCompletedEvent({
-            runId,
-            threadId,
-            round: event.round,
-            outcome: event.outcome,
-            ...(event.terminalOk === undefined
-              ? {}
-              : { terminalOk: event.terminalOk }),
-          }),
+          buildAgentLoopObserverEvent({ runId, threadId, event }),
         );
       },
     },

@@ -1,4 +1,9 @@
-import { isBoolean, isRecord, isString } from './wire-value-guards.js';
+import {
+  isBoolean,
+  isCanonicalIsoTimestamp,
+  isRecord,
+  isString,
+} from './wire-value-guards.js';
 
 export const PLUGIN_SKILL_LOGICAL_ROOT = 'geulbat-skill' as const;
 
@@ -269,8 +274,8 @@ export function isInstalledPluginView(
     !isSha256Digest(value.contentDigest) ||
     (value.sourceKind !== 'local-directory' &&
       value.sourceKind !== 'marketplace') ||
-    !isIsoTimestamp(value.installedAt) ||
-    !isIsoTimestamp(value.updatedAt) ||
+    !isCanonicalIsoTimestamp(value.installedAt) ||
+    !isCanonicalIsoTimestamp(value.updatedAt) ||
     !Array.isArray(value.capabilities)
   ) {
     return false;
@@ -438,8 +443,8 @@ function isPluginMarketplaceSourceView(
     isSafeHttpsGitUrl(value.sourceUrl) &&
     (value.requestedRef === null || isGitRef(value.requestedRef)) &&
     isGitRevision(value.resolvedRevision) &&
-    isIsoTimestamp(value.addedAt) &&
-    isIsoTimestamp(value.refreshedAt)
+    isCanonicalIsoTimestamp(value.addedAt) &&
+    isCanonicalIsoTimestamp(value.refreshedAt)
   );
 }
 
@@ -676,14 +681,6 @@ function isPortableRelativePath(value: unknown): value is string {
 
 function isSha256Digest(value: unknown): value is string {
   return isString(value) && /^sha256:[a-f0-9]{64}$/u.test(value);
-}
-
-function isIsoTimestamp(value: unknown): value is string {
-  return (
-    isString(value) &&
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) &&
-    !Number.isNaN(Date.parse(value))
-  );
 }
 
 function isNonEmptyString(value: unknown): value is string {

@@ -1,0 +1,50 @@
+{
+  "name": "@geulbat/xharness",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist/"
+  ],
+  "exports": {
+    "./harness-snapshot": {
+      "types": "./dist/harness-snapshot.d.ts",
+      "import": "./dist/harness-snapshot.js"
+    },
+    "./harness-run-store": {
+      "types": "./dist/harness-run-store.d.ts",
+      "import": "./dist/harness-run-store.js"
+    },
+    "./run-trace": {
+      "types": "./dist/run-trace.d.ts",
+      "import": "./dist/run-trace.js"
+    },
+    "./run-trace-comparison": {
+      "types": "./dist/run-trace-comparison.d.ts",
+      "import": "./dist/run-trace-comparison.js"
+    },
+    "./runner": {
+      "types": "./dist/runner.d.ts",
+      "import": "./dist/runner.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test:files": "node ../../scripts/run-workspace-node-tests.mjs --workspace xharness --tsconfig ./tsconfig.test.json",
+    "test": "npm run test:files -- \"**/*.test.js\""
+  },
+  "dependencies": {
+    "@geulbat/agent-loop": "^0.1.0",
+    "@geulbat/content-identity": "^0.1.0",
+    "@geulbat/tool-library": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

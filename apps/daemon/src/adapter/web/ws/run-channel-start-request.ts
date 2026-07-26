@@ -2,7 +2,17 @@ import { stat } from 'node:fs/promises';
 
 import { isThreadId } from '@geulbat/protocol/ids';
 import type { PermissionMode } from '@geulbat/protocol/run-approval';
-import type { RunStartRequest } from '@geulbat/protocol/run-contract';
+import {
+  DEFAULT_RUN_MODEL_ID,
+  resolveRunReasoningSelection,
+  type RunReasoningEffort,
+  type RunStartRequest,
+} from '@geulbat/protocol/run-contract';
+import type {
+  ApprovedPlanRef,
+  PlanModeDepth,
+  PlanModeIntensity,
+} from '@geulbat/protocol/planning-workflow';
 
 import { readRunPromptInputRef } from '../../../daemon/sessions/prompt-input-ref-store.js';
 import type { ResolvedRunAttachment } from '../../../daemon/agent/run-attachments.js';
@@ -21,7 +31,16 @@ interface NormalizedRunStartRequest {
   selection: RunStartRequest['selection'];
   requestedThreadId: RunStartRequest['threadId'];
   permissionMode: PermissionMode;
-  reasoningEffort: RunStartRequest['reasoningEffort'];
+  planModeRequested: boolean;
+  planModeIntensity: PlanModeIntensity | undefined;
+  planModeDepth: PlanModeDepth | undefined;
+  approvedPlanRef?: ApprovedPlanRef;
+  goalModeRequested: boolean;
+  goalRef: RunStartRequest['goalRef'];
+  ultraReasoning: boolean;
+  reasoningEffort: RunReasoningEffort | undefined;
+  serviceTier: RunStartRequest['serviceTier'];
+  providerTransitionRecovery: RunStartRequest['providerTransitionRecovery'];
   subagentModelRouting?: RunStartRequest['subagentModelRouting'];
   attachments: ResolvedRunAttachment[];
   regenerate: boolean;
@@ -107,18 +126,59 @@ export async function readRunStartRequest(
     };
   }
 
+  const modelId =
+    request.modelId ??
+    (request.reasoningEffort === 'ultra' ? DEFAULT_RUN_MODEL_ID : undefined);
+  const { reasoningEffort, ultraReasoning } = resolveRunReasoningSelection(
+    modelId ?? DEFAULT_RUN_MODEL_ID,
+    request.reasoningEffort,
+  );
+  if (
+    request.planModeRequested === true &&
+    request.planModeIntensity === undefined
+  ) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'bad_request',
+      message: 'planModeIntensity is required when plan mode is requested',
+    };
+  }
+  if (
+    request.planModeRequested === true &&
+    request.planModeDepth === undefined
+  ) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'bad_request',
+      message: 'planModeDepth is required when plan mode is requested',
+    };
+  }
+
   return {
     ok: true,
     value: {
       prompt: promptInput.prompt,
       transcriptPrompt: readTranscriptPrompt(request, promptInput.prompt),
       workingDirectory: workingDirectory.workingDirectory,
-      modelId: request.modelId,
+      modelId,
       currentFile: currentFile.value,
       selection: request.selection,
       requestedThreadId,
       permissionMode: request.permissionMode ?? 'basic',
-      reasoningEffort: request.reasoningEffort,
+      planModeRequested: request.planModeRequested === true,
+      planModeIntensity: request.planModeIntensity,
+      planModeDepth: request.planModeDepth,
+      ...(request.approvedPlanRef === undefined
+        ? {}
+        : { approvedPlanRef: request.approvedPlanRef }),
+      goalModeRequested: request.goalModeRequested === true,
+      goalRef: request.goalRef,
+      ultraReasoning,
+      reasoningEffort,
+      serviceTier: request.serviceTier,
+      providerTransitionRecovery: request.providerTransitionRecovery,
       ...(request.subagentModelRouting === undefined
         ? {}
         : { subagentModelRouting: request.subagentModelRouting }),
@@ -218,7 +278,7 @@ export async function readWorkingDirectory(
     }
     return {
       ok: true,
-      workingDirectory: target.relativePath,
+      workingDirectory: target.relativePath === '.' ? '' : target.relativePath,
     };
   } catch (error: unknown) {
     if (error instanceof FileAccessError) {

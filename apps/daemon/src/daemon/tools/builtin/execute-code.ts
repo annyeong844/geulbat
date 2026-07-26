@@ -22,19 +22,32 @@ import {
   resolvePtcExecuteCodeToolSdkProjection,
   type PtcExecuteCodeCallbackBreakdown,
 } from './execute-code-tool-callback.js';
+import type {
+  AgentRuntimeAgentServices,
+  AgentRuntimePtcServices,
+  AgentRuntimeServices,
+} from '../../daemon-runtime-contract.js';
+
+// Exec needs the PTC exec runtime, the resource budget observer, and child
+// provenance lookups — declare exactly that surface.
+type ExecuteCodeToolServices = {
+  agent: Pick<AgentRuntimeAgentServices, 'resourceBudgetProvider'>;
+  childRuns: AgentRuntimeServices['childRuns'];
+  ptc: Pick<AgentRuntimePtcServices, 'executeCode'>;
+};
 
 const executeCodeArgsSchema = z.strictObject({
   code: z
     .string()
     .min(1, 'code is required.')
     .describe(
-      'JavaScript or Node-native TypeScript for PTC Docker. Node transforms types, enums, runtime namespaces, and parameter properties without type checking; TSX, decorators, and tsconfig transforms are unsupported. CommonJS may return compact JSON; ESM must write stdout because top-level return is invalid.',
+      'JavaScript or Node-native TypeScript for PTC Docker. Node transforms types, enums, runtime namespaces, and parameter properties without type checking; TSX, decorators, and tsconfig transforms are unsupported.',
     ),
   moduleFormat: z
     .enum(['commonjs', 'esm'])
     .optional()
     .describe(
-      'Omit for CommonJS require()/return. Use "esm" for static import/export and top-level await; installed packages resolve from this PTC session.',
+      'Omit for CommonJS require()/return; use "esm" for static import/export and top-level await. ESM writes results to stdout. Packages resolve from this PTC session.',
     ),
   timeoutMs: z
     .number()
@@ -42,7 +55,7 @@ const executeCodeArgsSchema = z.strictObject({
     .min(1)
     .optional()
     .describe(
-      'Optional execution timeout in milliseconds. Use the exact key timeoutMs; timeout_ms is not accepted. Omitted requests use the admitted PTC lab shell policy.',
+      'Optional timeout in milliseconds. Use the exact key timeoutMs; timeout_ms is not accepted. Omit to use the admitted PTC lab shell policy.',
     ),
   'yield-time_ms': z
     .number()
@@ -51,7 +64,7 @@ const executeCodeArgsSchema = z.strictObject({
     .max(PTC_EXECUTE_CODE_CELL_EXEC_MAX_YIELD_MS)
     .optional()
     .describe(
-      'Optional initial observation window in milliseconds for detached exec cells. The JSON property name is exactly "yield-time_ms", with a hyphen between "yield" and "time". If exec returns status "queued" or "running", call wait with the returned cellId.',
+      'Optional initial observation window in milliseconds. The key is exactly "yield-time_ms", with a hyphen; status "queued" or "running" continues through wait.',
     ),
 });
 
@@ -60,12 +73,17 @@ type ExecuteCodeArgs = z.output<typeof executeCodeArgsSchema>;
 export const executeCodeTool = defineZodTool({
   name: PTC_EXECUTE_CODE_TOOL_NAME,
   description:
-    'Run JavaScript or Node-native TypeScript in PTC Docker. Omit moduleFormat for CommonJS require()/return; use "esm" for static import/export and top-level await, writing results to stdout. Node transforms types, enums, namespaces, and parameter properties without type checking; TSX, decorators, and tsconfig transforms are unsupported. PTC has no direct host filesystem mount. Before depending on host tools, call geulbat.help() and check its callbacks.enabled field inside the program. Only when it is true may the program use pinned generated geulbat-sdk wrappers discovered from the tool library using the named CommonJS form, such as const { readFile } = require(\'geulbat-sdk/files/readFile\') or const { searchMemoryIndex } = require(\'geulbat-sdk/tools/search-memory-index\'); geulbat.callTool(name, args) remains the admitted low-level bridge. Low-level geulbat.callTool returns raw { ok, output, errorCode?, error? }, not the generated wrapper\'s kind/value envelope. Generated wrappers return { kind: "inline", value: { ok: true, output: string } } for inline success, { kind: "inline", value: { ok: false, output: string, errorCode: string, error: string } } for inline failure, or { kind: "offloaded", outputRef: string, ... }. Validate result.kind and result.value.ok before reading or parsing result.value.output; wrapper results do not use status or content fields. When processing multiple callback requests, preserve each request path or name and report the failing request with its errorCode and error instead of collapsing failures into a generic message. For readFile, JSON.parse(result.value.output) yields the bounded read payload: require payload.hasMore === false before treating payload.content as a complete structured file. Relative callback file paths start from the user-selected run cwd; do not assume a repository cwd. If callbacks are disabled, do not infer that the host was inspected: return that operator callback transport policy is required. If the result has status "queued" or status "running" and a cellId, call wait with cell_id set to that cellId to observe admission, completion, or termination.',
+    'Run JavaScript or Node-native TypeScript in PTC Docker; use moduleFormat for ESM. PTC has no direct host filesystem mount. Before a host callback, call geulbat.help() and require callbacks.enabled. When disabled, do not infer host inspection; report that operator callback transport policy is required. Use a generated CommonJS wrapper such as const { readFile } = require(\'geulbat-sdk/files/readFile\'). Low-level geulbat.callTool returns raw { ok, output, errorCode?, error? }, not the generated wrapper\'s kind/value envelope. Generated wrappers return { kind: "inline", value: { ok: true, output: string } | { ok: false, output: string, errorCode: string, error: string } } or { kind: "offloaded", outputRef: string, ... }. Check result.kind and result.value.ok before result.value.output; wrapper values do not use status or content fields. For a batch, preserve each request path or name and report its errorCode and error rather than a generic message. For readFile, parse result.value.output and require payload.hasMore === false before treating payload.content as complete. Relative callback paths start from the user-selected run cwd; do not assume a repository cwd. If exec returns status "queued" or status "running" with cellId, call wait with cell_id.',
   argsSchema: executeCodeArgsSchema,
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
   parallelBatchKind: 'ptc_cell',
   requiresApproval: false,
+  resultProjection: {
+    exactDurableRecovery: true,
+    modelProjection: 'runtime_summary',
+    snapshotFailure: 'inline',
+  },
   catalogSearchMetadata: {
     family: 'ptc',
     searchHints: [
@@ -86,14 +104,15 @@ export const executeCodeTool = defineZodTool({
     if (!ctx.threadId || !ctx.stateRoot) {
       return toolError('execution_failed', 'run context is required for exec.');
     }
-    const runtime = ctx.agentSpawnRuntime?.ptcExecuteCode;
+    const services: ExecuteCodeToolServices | undefined = ctx.runtimeServices;
+    const runtime = services?.ptc.executeCode;
     if (!runtime) {
       return toolError('execution_failed', 'PTC exec runtime is required.');
     }
     const ownerKind = ctx.runOwnerKind ?? 'root_main';
     const childRun =
       ctx.kind === 'agent' && ownerKind === 'child' && isRunId(ctx.runId)
-        ? ctx.agentSpawnRuntime?.childRuns.getChildRun(ctx.runId)
+        ? services?.childRuns.getChildRun(ctx.runId)
         : undefined;
     const placementContinuityProvenance:
       | PtcExecuteCodePlacementContinuityProvenance
@@ -126,7 +145,7 @@ export const executeCodeTool = defineZodTool({
     const resourceSnapshot =
       ctx.resourceSnapshotRef !== undefined || ctx.runState === undefined
         ? undefined
-        : ctx.agentSpawnRuntime?.resourceBudgetProvider.captureSnapshot({
+        : services?.agent.resourceBudgetProvider.captureSnapshot({
             runState: ctx.runState,
           });
     const placementResourceSnapshotId =

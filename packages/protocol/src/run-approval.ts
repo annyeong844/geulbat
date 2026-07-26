@@ -10,7 +10,7 @@ import {
   type ToolCallSourcePayload,
 } from './tool-call-source.js';
 
-const PERMISSION_MODES = ['basic', 'full_access'] as const;
+export const PERMISSION_MODES = ['basic', 'full_access'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 export function isPermissionMode(value: unknown): value is PermissionMode {
@@ -18,6 +18,32 @@ export function isPermissionMode(value: unknown): value is PermissionMode {
     typeof value === 'string' &&
     (PERMISSION_MODES as readonly string[]).includes(value)
   );
+}
+
+/**
+ * 승인 모드의 durable 기본값은 daemon이 소유한다. 클라이언트 저장소는 첫 페인트용
+ * 표시 캐시일 뿐이라, 이 응답이 유일한 진실 소스다.
+ */
+export const DEFAULT_PERMISSION_MODE: PermissionMode = 'basic';
+
+export interface PermissionModeState {
+  permissionMode: PermissionMode;
+  /** 마지막으로 모드를 기록한 시각. 아직 기록이 없으면 null. */
+  updatedAt: string | null;
+}
+
+export function isPermissionModeState(
+  value: unknown,
+): value is PermissionModeState {
+  return (
+    isRecord(value) &&
+    isPermissionMode(value['permissionMode']) &&
+    (value['updatedAt'] === null || isString(value['updatedAt']))
+  );
+}
+
+export interface PermissionModeUpdateRequest {
+  permissionMode: PermissionMode;
 }
 
 export const APPROVAL_GRANT_SCOPES = ['once', 'run', 'session'] as const;
@@ -85,6 +111,7 @@ export interface ApprovalRequest {
   threadId: ThreadId;
   approved: boolean;
   grantScope: ApprovalGrantScope;
+  permissionMode?: PermissionMode;
 }
 
 interface ApprovalResponse {
@@ -115,6 +142,7 @@ export function isApprovalRequest(value: unknown): value is ApprovalRequest {
       'threadId',
       'approved',
       'grantScope',
+      'permissionMode',
     ]) &&
     isString(value.callId) &&
     isString(value.runId) &&
@@ -122,7 +150,9 @@ export function isApprovalRequest(value: unknown): value is ApprovalRequest {
     isString(value.threadId) &&
     isThreadId(value.threadId) &&
     isBoolean(value.approved) &&
-    isApprovalGrantScope(value.grantScope)
+    isApprovalGrantScope(value.grantScope) &&
+    (value.permissionMode === undefined ||
+      isPermissionMode(value.permissionMode))
   );
 }
 

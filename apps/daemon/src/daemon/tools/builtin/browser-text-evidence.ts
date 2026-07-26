@@ -14,6 +14,13 @@ import {
   pickBrowserTextEvidencePolicyOutputFields,
   stringifyBrowserEvidenceFailureOutput,
 } from './browser-summary-output.js';
+import type { AgentRuntimePtcServices } from '../../daemon-runtime-contract.js';
+
+// This tool depends only on its own PTC runtime; keep the declared
+// service surface that narrow.
+type BrowserTextEvidenceToolServices = {
+  ptc: Pick<AgentRuntimePtcServices, 'browserTextEvidence'>;
+};
 
 const browserTextEvidenceArgsSchema = z.strictObject({
   url: z
@@ -58,7 +65,9 @@ export const browserTextEvidenceTool = defineZodTool({
         'run context is required for browser_text_evidence.',
       );
     }
-    const runtime = ctx.agentSpawnRuntime?.ptcBrowserTextEvidence;
+    const services: BrowserTextEvidenceToolServices | undefined =
+      ctx.runtimeServices;
+    const runtime = services?.ptc.browserTextEvidence;
     if (!runtime) {
       return toolError(
         'execution_failed',

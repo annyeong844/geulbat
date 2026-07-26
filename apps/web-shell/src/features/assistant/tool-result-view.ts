@@ -1,4 +1,9 @@
 import { isRecord } from '../../lib/json.js';
+import type { RunTranscriptEntry } from '../../lib/run-transcript-entry.js';
+
+export type PtcToolActivityStatus = NonNullable<
+  Extract<RunTranscriptEntry, { kind: 'tool_activity' }>['ptcStatus']
+>;
 
 // tool_result 표시용 뷰모델 — raw JSON 블롭 대신 접힌 헤더(도구명 + 상태 +
 // 한 줄 요약)와 펼침 본문(displayText/output, JSON이면 pretty print)으로
@@ -9,6 +14,7 @@ export interface ToolResultView {
   ok: boolean;
   // 접힌 헤더 우측 한 줄 — 실패면 에러 메시지, 성공이면 본문 첫 줄
   summary: string;
+  ptcStatus?: PtcToolActivityStatus;
   bodyLines: string[];
   truncatedLineCount: number;
 }
@@ -38,19 +44,124 @@ export function parseToolResultView(content: string): ToolResultView | null {
   const body = prettyPrintIfJson(displayText || output);
   const allLines = body === '' ? [] : body.split('\n');
   const bodyLines = allLines.slice(0, MAX_RENDERED_RESULT_LINES);
+  const ptcStatus = readPtcToolActivityStatus({
+    tool: record.tool,
+    ok: record.ok,
+    text: record.ok ? displayText || output : output || displayText,
+  });
 
-  const summarySource = record.ok
-    ? (summarizeJsonPayload(displayText || output) ??
-      allLines.find((line) => line.trim() !== '') ??
-      '')
-    : error || displayText || '실패';
+  const summarySource =
+    ptcStatus !== undefined
+      ? formatPtcToolActivityStatus(ptcStatus)
+      : record.ok
+        ? (summarizeJsonPayload(displayText || output) ??
+          allLines.find((line) => line.trim() !== '') ??
+          '')
+        : error || displayText || '실패';
   return {
     tool: record.tool,
     ok: record.ok,
     summary: truncateSummary(summarySource.trim()),
+    ...(ptcStatus !== undefined ? { ptcStatus } : {}),
     bodyLines,
     truncatedLineCount: allLines.length - bodyLines.length,
   };
+}
+
+export function readPtcToolActivityStatus(args: {
+  tool: string;
+  ok: boolean;
+  text: string;
+  raw?: unknown;
+}): PtcToolActivityStatus | undefined {
+  if (args.tool !== 'exec' && args.tool !== 'wait') {
+    return undefined;
+  }
+
+  let parsed = args.raw;
+  if (parsed === undefined) {
+    try {
+      parsed = JSON.parse(args.text);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!isRecord(parsed)) {
+    return undefined;
+  }
+  const result = !args.ok && isRecord(parsed.details) ? parsed.details : parsed;
+
+  if (
+    !args.ok &&
+    (result.kind === 'ptc_execute_code_error' ||
+      result.kind === 'ptc_execute_code_cell_wait_error') &&
+    (result.reasonCode === 'resource_budget_unavailable' ||
+      result.reasonCode === 'resource_budget_insufficient')
+  ) {
+    return result.reasonCode;
+  }
+
+  if (!args.ok) {
+    return result.kind === 'ptc_execute_code_error' ||
+      result.kind === 'ptc_execute_code_cell_wait_error'
+      ? 'failed'
+      : undefined;
+  }
+  if (args.tool === 'exec') {
+    if (result.kind === 'ptc_execute_code_result') {
+      return 'completed';
+    }
+    return (result.kind === 'ptc_execute_code_cell_queued' &&
+      result.status === 'queued') ||
+      (result.kind === 'ptc_execute_code_cell_running' &&
+        result.status === 'running')
+      ? result.status
+      : undefined;
+  }
+  if (result.kind !== 'ptc_execute_code_cell_wait') {
+    return undefined;
+  }
+  switch (result.status) {
+    case 'queued':
+    case 'running':
+    case 'completed':
+    case 'terminated':
+    case 'completed_with_cleanup_failure':
+    case 'terminated_with_cleanup_failure':
+    case 'missing':
+    case 'expired':
+      return result.status;
+  }
+  return undefined;
+}
+
+export function formatPtcToolActivityStatus(
+  status: PtcToolActivityStatus,
+): string {
+  switch (status) {
+    case 'queued':
+      return 'PTC 리소스 대기 중';
+    case 'running':
+      return 'PTC 실행 중';
+    case 'completed':
+      return 'PTC 실행 완료';
+    case 'failed':
+      return 'PTC 실행 실패';
+    case 'terminated':
+      return 'PTC 실행 종료';
+    case 'completed_with_cleanup_failure':
+      return 'PTC 실행 완료 · 정리 실패';
+    case 'terminated_with_cleanup_failure':
+      return 'PTC 실행 종료 · 정리 실패';
+    case 'missing':
+      return 'PTC 실행 상태 없음';
+    case 'expired':
+      return 'PTC 실행 결과 만료';
+    case 'resource_budget_unavailable':
+      return 'PTC 리소스 상태 확인 불가';
+    case 'resource_budget_insufficient':
+      return 'PTC 리소스 부족';
+  }
 }
 
 // displayText가 JSON 문자열인 도구가 많다(list_files, write_file 등) —

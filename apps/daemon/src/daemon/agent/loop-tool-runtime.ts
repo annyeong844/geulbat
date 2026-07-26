@@ -54,17 +54,20 @@ export function buildAgentToolExecutionContextBase(args: {
   signal: AbortSignal | undefined;
   runState: RunState | undefined;
   allowedRegistryNames?: readonly string[];
+  toolCapabilityPolicy?: AgentToolExecutionContextBase['toolCapabilityPolicy'];
   toolLibraryProjectionIdentity?: AgentToolExecutionContextBase['toolLibraryProjectionIdentity'];
   providerRunSelection?: AgentToolExecutionContextBase['providerRunSelection'];
+  ultraReasoning?: AgentToolExecutionContextBase['ultraReasoning'];
   subagentModelRouting?: AgentToolExecutionContextBase['subagentModelRouting'];
+  planningWorkflow?: AgentToolExecutionContextBase['planningWorkflow'];
   computerFileRoot?: string;
   fileStateCache?: AgentRuntimeServices['fileStateCache'];
   memoryIndex: AgentMemoryIndex | undefined;
-  agentSpawnRuntime: AgentRuntimeServices | undefined;
+  runtimeServices: AgentRuntimeServices | undefined;
 }): AgentLoopToolExecutionContextBase {
   const runOwnerKind =
     isAgentRunId(args.runId) &&
-    args.agentSpawnRuntime?.childRuns.getChildRun(args.runId) !== undefined
+    args.runtimeServices?.childRuns.getChildRun(args.runId) !== undefined
       ? 'child'
       : 'root_main';
   return {
@@ -78,28 +81,38 @@ export function buildAgentToolExecutionContextBase(args: {
       : { computerFileRoot: args.computerFileRoot }),
     currentFile: args.currentFile,
     selection: args.selection,
-    approvalSessionId: args.approvalContext.sessionId,
+    computerSessionId: args.approvalContext.computerSessionId,
     ...(args.allowedRegistryNames !== undefined
       ? { allowedRegistryNames: args.allowedRegistryNames }
       : {}),
+    ...(args.toolCapabilityPolicy === undefined
+      ? {}
+      : { toolCapabilityPolicy: args.toolCapabilityPolicy }),
     ...(args.toolLibraryProjectionIdentity === undefined
       ? {}
       : { toolLibraryProjectionIdentity: args.toolLibraryProjectionIdentity }),
     ...(args.providerRunSelection === undefined
       ? {}
       : { providerRunSelection: args.providerRunSelection }),
+    ultraReasoning: args.ultraReasoning ?? false,
     ...(args.subagentModelRouting === undefined
       ? {}
       : { subagentModelRouting: args.subagentModelRouting }),
+    ...(args.planningWorkflow === undefined
+      ? {}
+      : { planningWorkflow: args.planningWorkflow }),
     permissionMode: args.approvalContext.permissionMode,
     threadId: args.runContext.threadId,
     runId: args.runId,
     runOwnerKind,
     runState: args.runState,
+    ...(args.runState === undefined
+      ? {}
+      : { interjectBuffer: args.runState.interject }),
     emitAgentEvent: (event) => args.emit(event.type, event.payload),
     ...(args.fileStateCache ? { fileStateCache: args.fileStateCache } : {}),
     memoryIndex: args.memoryIndex,
-    agentSpawnRuntime: args.agentSpawnRuntime,
+    runtimeServices: args.runtimeServices,
   };
 }
 

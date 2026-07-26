@@ -1,14 +1,16 @@
 import type {
-  AgentChildTerminalState,
   SharedRunEventPayloadMap,
+  ToolOutputDeltaEventPayload,
 } from '@geulbat/protocol/run-events';
+import type { AgentChildTerminalState } from '@geulbat/protocol/subagent-terminal';
 import type { RunId } from '@geulbat/protocol/ids';
+import type { RunProviderId } from '@geulbat/protocol/run-contract';
 import {
   isProviderReplayScopeId as isProtocolProviderReplayScopeId,
   type ProviderReplayScopeId,
 } from '@geulbat/protocol/provider-auth';
 
-export type { ProviderReplayScopeId };
+export type { ProviderReplayScopeId, RunProviderId };
 
 export function isProviderReplayScopeId(
   value: unknown,
@@ -18,7 +20,12 @@ export function isProviderReplayScopeId(
 
 export type ToolCallArgs = SharedRunEventPayloadMap['tool_call']['args'];
 
-export type AgentEventPayloadMap = SharedRunEventPayloadMap;
+interface AgentTransientEventPayloadMap {
+  tool_output_delta: ToolOutputDeltaEventPayload;
+}
+
+export type AgentEventPayloadMap = SharedRunEventPayloadMap &
+  AgentTransientEventPayloadMap;
 
 export type AgentEventType = keyof AgentEventPayloadMap;
 
@@ -33,6 +40,13 @@ export type TerminalAgentEvent = Extract<
   AgentEvent,
   { type: 'done' | 'error' }
 >;
+
+export type TransientAgentEvent = Extract<
+  AgentEvent,
+  { type: keyof AgentTransientEventPayloadMap }
+>;
+
+export type RunEventAgentEvent = Exclude<AgentEvent, TransientAgentEvent>;
 
 export type AgentEventEmitter = <Type extends AgentEventType>(
   type: Type,

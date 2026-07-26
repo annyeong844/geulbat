@@ -144,6 +144,9 @@ function parseAuthRequestId(socket: FakeSocket): string {
     socket.sent[0] ?? 'null',
   ) as RunChannelClientMessage;
   assert.equal(authMessage.type, 'run.auth');
+  if (authMessage.type === 'run.auth') {
+    assert.equal(authMessage.computerSessionId, 'computer-session-harness');
+  }
   return authMessage.requestId;
 }
 
@@ -158,9 +161,10 @@ function createClientHarness(): {
   const messages: RunChannelServerMessage[] = [];
   const client = new RunChannelClient({
     getWebSocketUrl: () => 'ws://example.test/api/ws',
-    buildAuthMessage: (requestId) => ({
+    buildAuthMessage: (requestId, computerSessionId) => ({
       type: 'run.auth',
       requestId,
+      computerSessionId,
       token: 'test-token',
     }),
     createWebSocket: () => {
@@ -170,6 +174,7 @@ function createClientHarness(): {
     },
     scheduleTask: scheduler.schedule,
     clearScheduledTask: scheduler.clear,
+    computerSessionId: 'computer-session-harness',
   });
   client.subscribe((message) => {
     messages.push(message);
@@ -252,6 +257,136 @@ void test('RunChannelClient reconnects after unexpected authenticated close', as
   assert.equal(startMessage.type, 'run.start');
 });
 
+void test('RunChannelClient restores active-run identity before auth completes and reconnects from its last cursor', async () => {
+  const harness = createClientHarness();
+  const runId = brandRunId('run-reconnect-cursor');
+  const threadId = brandThreadId('123e4567-e89b-42d3-a456-426614174020');
+  const connectPromise = harness.client.connect();
+  const socket = getSocket(harness.sockets);
+  socket.emitOpen();
+  socket.emitMessage({
+    type: 'run.event',
+    event: {
+      runId,
+      threadId,
+      seq: 4,
+      ts: new Date().toISOString(),
+      type: 'run_ack',
+      payload: { runId, threadId },
+    },
+  });
+
+  assert.deepEqual(harness.client.getActiveRunForThread(threadId), {
+    runId,
+    threadId,
+  });
+  socket.emitMessage({
+    type: 'run.auth.ok',
+    requestId: parseAuthRequestId(socket),
+    ok: true,
+  });
+  await connectPromise;
+
+  socket.close();
+  harness.scheduler.runNext();
+  const reconnectSocket = getSocket(harness.sockets, 1);
+  reconnectSocket.emitOpen();
+  const reconnectAuth = JSON.parse(
+    reconnectSocket.sent[0] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(reconnectAuth.type, 'run.auth');
+  if (reconnectAuth.type !== 'run.auth') {
+    return;
+  }
+  assert.deepEqual(reconnectAuth.runEventCursors, [{ runId, seq: 4 }]);
+  assert.deepEqual(reconnectAuth.threadSubscriptions, [threadId]);
+});
+
+void test('RunChannelClient clears active identity but retains the terminal cursor across reconnect', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+  const runId = brandRunId('run-terminal-active-identity');
+  const threadId = brandThreadId('123e4567-e89b-42d3-a456-426614174021');
+  socket.emitMessage({
+    type: 'run.event',
+    event: {
+      runId,
+      threadId,
+      seq: 0,
+      ts: new Date().toISOString(),
+      type: 'run_ack',
+      payload: { runId, threadId },
+    },
+  });
+  socket.emitMessage({
+    type: 'run.event',
+    event: {
+      runId,
+      threadId,
+      seq: 1,
+      ts: new Date().toISOString(),
+      type: 'done',
+      payload: { ok: true, answer: 'done' },
+    },
+  });
+
+  assert.equal(harness.client.getActiveRunForThread(threadId), null);
+  socket.close();
+  harness.scheduler.runNext();
+  const reconnectSocket = getSocket(harness.sockets, 1);
+  reconnectSocket.emitOpen();
+  const reconnectAuth = JSON.parse(
+    reconnectSocket.sent[0] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(reconnectAuth.type, 'run.auth');
+  if (reconnectAuth.type !== 'run.auth') {
+    return;
+  }
+  assert.deepEqual(reconnectAuth.runEventCursors, [{ runId, seq: 1 }]);
+  assert.deepEqual(reconnectAuth.threadSubscriptions, [threadId]);
+});
+
+void test('RunChannelClient subscribes the selected thread without reconnecting and retains it for later auth', async () => {
+  const harness = createClientHarness();
+  const firstThreadId = brandThreadId('123e4567-e89b-42d3-a456-426614174022');
+  const secondThreadId = brandThreadId('123e4567-e89b-42d3-a456-426614174023');
+
+  await harness.client.subscribeThread(firstThreadId);
+  const socket = await connectAuthenticatedClient(harness);
+  const initialAuth = JSON.parse(
+    socket.sent[0] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(initialAuth.type, 'run.auth');
+  if (initialAuth.type === 'run.auth') {
+    assert.deepEqual(initialAuth.threadSubscriptions, [firstThreadId]);
+  }
+
+  await harness.client.subscribeThread(secondThreadId);
+  assert.deepEqual(JSON.parse(socket.sent[1] ?? 'null'), {
+    type: 'run.thread.subscribe',
+    requestId: JSON.parse(socket.sent[1] ?? 'null').requestId,
+    request: { threadId: secondThreadId },
+  });
+
+  await harness.client.subscribeThread(secondThreadId);
+  assert.equal(socket.sent.length, 2);
+
+  socket.close();
+  harness.scheduler.runNext();
+  const reconnectSocket = getSocket(harness.sockets, 1);
+  reconnectSocket.emitOpen();
+  const reconnectAuth = JSON.parse(
+    reconnectSocket.sent[0] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(reconnectAuth.type, 'run.auth');
+  if (reconnectAuth.type === 'run.auth') {
+    assert.deepEqual(reconnectAuth.threadSubscriptions, [
+      firstThreadId,
+      secondThreadId,
+    ]);
+  }
+});
+
 void test('RunChannelClient detaches stale socket listeners after reconnect', async () => {
   const harness = createClientHarness();
   const staleSocket = await connectAuthenticatedClient(harness);
@@ -310,6 +445,17 @@ void test('RunChannelClient sends an exact run event acknowledgement cursor', as
   const socket = await connectAuthenticatedClient(harness);
   const runId = brandRunId('run-event-ack');
   const threadId = brandThreadId('123e4567-e89b-42d3-a456-426614174000');
+  socket.emitMessage({
+    type: 'run.event',
+    event: {
+      runId,
+      threadId,
+      seq: 7,
+      ts: new Date().toISOString(),
+      type: 'done',
+      payload: { ok: true, answer: 'acknowledged terminal' },
+    },
+  });
 
   const acknowledgementPromise = harness.client.acknowledgeEvent({
     runId,
@@ -335,6 +481,18 @@ void test('RunChannelClient sends an exact run event acknowledgement cursor', as
     seq: 7,
   });
   assert.equal(await acknowledgementPromise, message.requestId);
+
+  socket.close();
+  harness.scheduler.runNext();
+  const reconnectSocket = getSocket(harness.sockets, 1);
+  reconnectSocket.emitOpen();
+  const reconnectAuth = JSON.parse(
+    reconnectSocket.sent[0] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(reconnectAuth.type, 'run.auth');
+  if (reconnectAuth.type === 'run.auth') {
+    assert.equal('runEventCursors' in reconnectAuth, false);
+  }
 });
 
 void test('RunChannelClient keeps run event acknowledgement conflicts out of the session stream', async () => {
@@ -365,6 +523,217 @@ void test('RunChannelClient keeps run event acknowledgement conflicts out of the
 
   await assert.rejects(acknowledgementPromise, /cursor_conflict/u);
   assert.deepEqual(harness.messages, []);
+});
+
+void test('RunChannelClient waits for the correlated run.approve acknowledgement', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+
+  const approvalPromise = harness.client.approve({
+    callId: 'call-approve-ack',
+    runId: brandRunId('run-approve-ack'),
+    threadId: brandThreadId('123e4567-e89b-42d3-a456-426614174000'),
+    approved: true,
+    grantScope: 'once',
+  });
+  await Promise.resolve();
+
+  const message = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(message.type, 'run.approve');
+  if (message.type !== 'run.approve') {
+    return;
+  }
+
+  let settled = false;
+  void approvalPromise.then(() => {
+    settled = true;
+  });
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+  assert.equal(settled, false);
+
+  socket.emitMessage({
+    type: 'run.control',
+    requestId: message.requestId,
+    action: 'run.approve',
+    ok: true,
+  });
+
+  assert.equal(await approvalPromise, message.requestId);
+});
+
+void test('RunChannelClient correlates a trusted planning command acknowledgement', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+  const request = {
+    kind: 'approve' as const,
+    threadId: brandThreadId('123e4567-e89b-42d3-a456-426614174000'),
+    workflowId: 'workflow-trusted',
+    planId: 'plan-trusted',
+    revision: 2,
+    digest:
+      'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const,
+  };
+
+  const commandPromise = harness.client.planCommand(request);
+  await Promise.resolve();
+
+  const message = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(message.type, 'plan.command');
+  if (message.type !== 'plan.command') {
+    return;
+  }
+  assert.deepEqual(message.request, request);
+
+  let settled = false;
+  void commandPromise.then(() => {
+    settled = true;
+  });
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+  assert.equal(settled, false);
+
+  socket.emitMessage({
+    type: 'run.control',
+    requestId: message.requestId,
+    action: 'plan.command',
+    ok: true,
+    commandKind: 'approve',
+    snapshot: null,
+    approvedPlanRef: {
+      workflowId: request.workflowId,
+      planId: request.planId,
+      revision: request.revision,
+      digest: request.digest,
+    },
+  });
+
+  assert.deepEqual(await commandPromise, {
+    type: 'run.control',
+    requestId: message.requestId,
+    action: 'plan.command',
+    ok: true,
+    commandKind: 'approve',
+    snapshot: null,
+    approvedPlanRef: {
+      workflowId: request.workflowId,
+      planId: request.planId,
+      revision: request.revision,
+      digest: request.digest,
+    },
+  });
+});
+
+void test('RunChannelClient correlates a Goal command acknowledgement', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+  const request = {
+    kind: 'resume' as const,
+    threadId: brandThreadId('123e4567-e89b-42d3-a456-426614174084'),
+    goalId: 'goal-trusted',
+  };
+
+  const commandPromise = harness.client.goalCommand(request);
+  await Promise.resolve();
+
+  const message = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(message.type, 'goal.command');
+  if (message.type !== 'goal.command') {
+    return;
+  }
+  assert.deepEqual(message.request, request);
+
+  socket.emitMessage({
+    type: 'run.control',
+    requestId: message.requestId,
+    action: 'goal.command',
+    ok: true,
+    commandKind: 'resume',
+    snapshot: null,
+  });
+
+  const control = await commandPromise;
+  assert.equal(control.action, 'goal.command');
+  assert.equal(control.commandKind, 'resume');
+  assert.equal(control.snapshot, null);
+});
+
+void test('RunChannelClient waits for the correlated child cancel acknowledgement', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+  const request = {
+    parentRunId: brandRunId('run-child-cancel-parent'),
+    childRunId: brandRunId('run-child-cancel-target'),
+  };
+
+  const cancelPromise = harness.client.cancelChild(request);
+  await Promise.resolve();
+
+  const message = JSON.parse(
+    socket.sent[1] ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(message.type, 'run.child.cancel');
+  if (message.type !== 'run.child.cancel') {
+    return;
+  }
+  assert.deepEqual(message.request, request);
+
+  socket.emitMessage({
+    type: 'run.control',
+    requestId: message.requestId,
+    action: 'run.child.cancel',
+    ok: true,
+  });
+
+  assert.equal(await cancelPromise, message.requestId);
+});
+
+void test('RunChannelClient rejects an unacknowledged approval when the socket disconnects', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+
+  const approvalPromise = harness.client.approve({
+    callId: 'call-approve-disconnect',
+    runId: brandRunId('run-approve-disconnect'),
+    threadId: brandThreadId('123e4567-e89b-42d3-a456-426614174000'),
+    approved: true,
+    grantScope: 'once',
+  });
+  await Promise.resolve();
+
+  socket.close();
+
+  await assert.rejects(approvalPromise, /run channel disconnected/u);
+  assert.equal(harness.scheduler.size, 1);
+});
+
+void test('RunChannelClient closes an approval auth handshake without a dangling acknowledgement', async () => {
+  const harness = createClientHarness();
+  const approvalPromise = harness.client.approve({
+    callId: 'call-approve-auth-close',
+    runId: brandRunId('run-approve-auth-close'),
+    threadId: brandThreadId('123e4567-e89b-42d3-a456-426614174000'),
+    approved: true,
+    grantScope: 'once',
+  });
+  const socket = getSocket(harness.sockets);
+
+  harness.client.close();
+
+  await assert.rejects(approvalPromise, /run channel closed/u);
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+  assert.equal(socket.readyState, 3);
+  assert.equal(harness.scheduler.size, 0);
 });
 
 void test('RunChannelClient waits for run.interject acknowledgement', async () => {
@@ -558,6 +927,55 @@ void test('RunChannelClient closes the socket on unmatched malformed server payl
     status: 500,
   });
   assert.equal(harness.scheduler.size, 1);
+});
+
+void test('RunChannelClient explicit close rejects and closes an in-flight connection', async () => {
+  const harness = createClientHarness();
+  const connectPromise = harness.client.connect();
+  const socket = getSocket(harness.sockets);
+
+  harness.client.close();
+  const readyStateAfterClose = socket.readyState;
+  socket.emitError();
+
+  await assert.rejects(connectPromise, /run channel closed/u);
+  assert.equal(readyStateAfterClose, 3);
+  assert.equal(harness.scheduler.size, 0);
+});
+
+void test('RunChannelClient ends its computer session before closing the transport', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+
+  harness.client.endComputerSession();
+
+  const message = JSON.parse(
+    socket.sent.at(-1) ?? 'null',
+  ) as RunChannelClientMessage;
+  assert.equal(message.type, 'computer.session.end');
+  if (message.type !== 'computer.session.end') {
+    return;
+  }
+  assert.equal(message.requestId.trim().length > 0, true);
+  assert.deepEqual(Object.keys(message).sort(), ['requestId', 'type']);
+  assert.equal(socket.readyState, 3);
+  assert.equal(harness.scheduler.size, 0);
+
+  const sentAfterEnd = socket.sent.length;
+  harness.client.endComputerSession();
+  assert.equal(socket.sent.length, sentAfterEnd);
+  await assert.rejects(harness.client.connect(), /computer session ended/u);
+});
+
+void test('RunChannelClient transport close preserves its computer session', async () => {
+  const harness = createClientHarness();
+  const socket = await connectAuthenticatedClient(harness);
+  const sentBeforeClose = socket.sent.length;
+
+  harness.client.close();
+
+  assert.equal(socket.sent.length, sentBeforeClose);
+  assert.equal(socket.readyState, 3);
 });
 
 void test('RunChannelClient close clears pending reconnect task', async () => {

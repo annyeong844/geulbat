@@ -1,5 +1,6 @@
 import { createElement, useEffect, useRef, useState } from 'react';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
+import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 import { getErrorMessage } from '../../../lib/error-message.js';
 
 import { LineNumberedCodeArea } from '../../../lib/code-area/line-numbered-code-area.js';
@@ -9,10 +10,9 @@ import { buildCommittedArtifactSourceRef } from '../../artifacts/artifact-source
 import { createCommittedArtifactViewModel } from '../../artifacts/artifact-view-model.js';
 import { ArtifactPreviewSurface } from '../../artifacts/artifact-pane/body.js';
 import { buildDirectSaveTarget } from '../../artifacts/artifact-pane/controller-model.js';
-import { buildArtifactPaneStateModel } from '../../artifacts/artifact-pane/state-model.js';
 import { useArtifactPanePreviewSurface } from '../../artifacts/artifact-pane/use-artifact-pane-preview-surface.js';
 import type { RenderArtifactRuntimeFrame } from '../../artifacts/runtime-preview/types.js';
-import { ArtifactRuntimeFrame } from '../runtime-frame/artifact-runtime-frame.js';
+import { ArtifactRuntimeFrame } from '../runtime-frame/artifact-runtime-frame-lazy.js';
 
 // 에디터 표면에서는 프레임을 카드 크롬 없이(inline variant) 그린다 —
 // 콘텐츠가 시트를 가득 채우고 중첩 박스가 생기지 않는다.
@@ -31,6 +31,7 @@ export function ArtifactEditorSurface(props: {
   // threadId가 없으면(스트리밍 커밋 직후 등) 여기서 보충한다. 없으면
   // 프레임 스토리지가 scope 불가로 강등되며 콘솔 에러가 반복된다.
   threadId: string | null;
+  planningWorkflowSnapshot?: PlanningWorkflowSnapshot | null;
   isRunning: boolean;
   mode: ArtifactEditorSurfaceMode;
   onSelectMode: (mode: ArtifactEditorSurfaceMode) => void;
@@ -51,10 +52,14 @@ export function ArtifactEditorSurface(props: {
   // </>에서 고친 draft를 같은 아티팩트의 새 버전으로 커밋 — 성공 시 부모가
   // 새 버전을 내려보내 draft가 초기화된다. 실패(409 등)는 여기서 표시.
   onCommitDraft?: (draftPayload: string) => Promise<void>;
+  // ✕ 닫기 — 아티팩트 뷰와 헤더의 아티팩트 필을 함께 내린다. 다시 보려면
+  // 채팅의 아티팩트 칩에서 연다.
+  onClose?: () => void;
 }) {
   const {
     artifact,
     threadId,
+    planningWorkflowSnapshot = null,
     isRunning,
     mode,
     onSelectMode,
@@ -66,6 +71,7 @@ export function ArtifactEditorSurface(props: {
     versionHistory,
     onSelectVersion,
     onCommitDraft,
+    onClose,
   } = props;
   // 사용자 편집 draft — 원문(</>)에서 고치면 프리뷰/저장이 draft를 쓴다.
   // 새 버전이 도착하면 초기화.
@@ -86,20 +92,13 @@ export function ArtifactEditorSurface(props: {
   const viewModel = createCommittedArtifactViewModel({
     artifact: effectiveArtifact,
     sourceRef,
+    planningWorkflowSnapshot,
   });
   const artifactSessionKey = buildArtifactSessionKey(viewModel);
-  const paneStateModel = buildArtifactPaneStateModel({
-    viewModel,
-    isRunning,
-    hasStartArtifactRunHandler: false,
-  });
   const { previewSurface, runtimeUnavailableMessage } =
     useArtifactPanePreviewSurface({
       viewModel,
       artifactSessionKey,
-      canShowPreview: paneStateModel.canShowPreview,
-      supportsStreamingPreview: paneStateModel.supportsStreamingPreview,
-      isLiveStreamingArtifact: false,
       renderRuntimeFrame: renderEditorRuntimeFrame,
     });
   const reveal = useArtifactCodeReveal(
@@ -113,7 +112,6 @@ export function ArtifactEditorSurface(props: {
   const [commitPending, setCommitPending] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const copyResetTimer = useRef(0);
   const draftDirty = draft !== null && draft !== artifact.payload;
   // 스테퍼 좌표 — 현재 표시 중인 버전이 목록의 몇 번째인지
   const versionIndex =
@@ -134,10 +132,6 @@ export function ArtifactEditorSurface(props: {
     versionHistory !== undefined &&
     versionHistory.length > 1 &&
     onSelectVersion !== undefined;
-
-  useEffect(() => {
-    return () => window.clearTimeout(copyResetTimer.current);
-  }, []);
 
   const handleSave = async () => {
     if (directSave === null || savePending) {
@@ -176,17 +170,25 @@ export function ArtifactEditorSurface(props: {
     try {
       await navigator.clipboard.writeText(artifact.payload);
       setCopied(true);
-      window.clearTimeout(copyResetTimer.current);
-      copyResetTimer.current = window.setTimeout(() => setCopied(false), 1_500);
     } catch {
       // 클립보드 권한이 없으면 조용히 둔다 — 원문은 코드 모드에서 보인다
     }
   };
 
-  const title =
+  // 미디어 아티팩트(video/image)는 감상 표면 — 텍스트 편집용 도구(복사·
+  // 버전 커밋)를 걷고 제목도 짧게. ♻ 다시 만들기와 버전 스테퍼는 핵심
+  // 동작이므로 그대로 남는다.
+  const isMediaArtifact =
+    artifact.renderer === 'video' || artifact.renderer === 'image';
+  const rawTitle =
     artifact.title !== null && artifact.title.trim() !== ''
       ? artifact.title
       : '아티팩트';
+  const title = isMediaArtifact
+    ? artifact.renderer === 'video'
+      ? '동영상'
+      : '이미지'
+    : rawTitle;
 
   return (
     <>
@@ -216,7 +218,12 @@ export function ArtifactEditorSurface(props: {
               <CodeIcon />
             </button>
           </span>
-          <span className="artifact-editor-title">{title}</span>
+          <span
+            className="artifact-editor-title"
+            title={isMediaArtifact ? rawTitle : undefined}
+          >
+            {title}
+          </span>
           <span className="artifact-editor-meta">
             · {artifact.renderer} ·{' '}
             {showVersionStepper ? (
@@ -271,16 +278,23 @@ export function ArtifactEditorSurface(props: {
             )}
             {mode === 'code' && !reveal.done ? ' · 코드 작성 중…' : ''}
             {draftDirty ? ' · 수정됨' : ''}
+            {viewModel.planRendering === null
+              ? ''
+              : ` · ${viewModel.planRendering.label}`}
           </span>
           <span className="artifact-editor-toolbar-spacer" />
-          <button
-            type="button"
-            className="artifact-editor-icon-button"
-            title={copied ? '복사됨' : '원문 복사'}
-            onClick={() => void handleCopy()}
-          >
-            {copied ? <CheckIcon /> : <CopyIcon />}
-          </button>
+          {!isMediaArtifact ? (
+            <button
+              type="button"
+              className="artifact-editor-icon-button"
+              title={copied ? '복사됨' : '원문 복사'}
+              aria-label={copied ? '원문 복사됨' : '원문 복사'}
+              onClick={() => void handleCopy()}
+              onBlur={() => setCopied(false)}
+            >
+              {copied ? <CheckIcon /> : <CopyIcon />}
+            </button>
+          ) : null}
           {onRewrite !== undefined ? (
             <button
               type="button"
@@ -292,7 +306,7 @@ export function ArtifactEditorSurface(props: {
               <RecycleIcon />
             </button>
           ) : null}
-          {onCommitDraft !== undefined && draftDirty ? (
+          {onCommitDraft !== undefined && draftDirty && !isMediaArtifact ? (
             <button
               type="button"
               className="artifact-editor-action"
@@ -323,6 +337,17 @@ export function ArtifactEditorSurface(props: {
           >
             {expanded ? <CollapseIcon /> : <ExpandIcon />}
           </button>
+          {onClose !== undefined ? (
+            <button
+              type="button"
+              className="artifact-editor-icon-button"
+              title="닫기 — 채팅의 아티팩트 칩에서 다시 열 수 있어요"
+              aria-label="아티팩트 닫기"
+              onClick={onClose}
+            >
+              ✕
+            </button>
+          ) : null}
         </div>
         {saveError !== null ? (
           <div className="artifact-editor-error" role="alert">
@@ -350,7 +375,7 @@ export function ArtifactEditorSurface(props: {
           )
         ) : (
           <div className="artifact-editor-body">
-            {paneStateModel.canShowPreview && previewSurface !== null ? (
+            {previewSurface !== null ? (
               <ArtifactPreviewSurface
                 surface={previewSurface}
                 runtimeUnavailableMessage={runtimeUnavailableMessage}

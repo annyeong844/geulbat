@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   CallToolResultSchema,
   ListToolsResultSchema,
@@ -11,8 +12,11 @@ import type {
   JsonSchemaValidator,
 } from '@modelcontextprotocol/sdk/validation/types.js';
 import type { McpServerRegistration } from '@geulbat/protocol/mcp';
+import {
+  toApprovalClass,
+  type ApprovalClass,
+} from '@geulbat/protocol/run-approval';
 import { isMcpRecord as isRecord } from './mcp-value-guards.js';
-import { createLogger } from '@geulbat/structured-logger/logger';
 
 import { defineParsedTool } from '../tools/parsed-tool.js';
 import { toolError } from '../tools/result.js';
@@ -23,16 +27,16 @@ import type {
 import { getErrorMessage } from '../utils/error.js';
 import { McpServerConfigError } from './global-mcp-contract.js';
 import { cloneServerSource } from './global-mcp-registration.js';
-import type { OwnedStdioClientTransport } from './owned-stdio-client-transport.js';
-
-const logger = createLogger('global-mcp');
 
 export interface LiveMcpServer {
   client: Client;
-  transport: OwnedStdioClientTransport;
+  /**
+   * 살아 있는 MCP 전송이다. 프로세스는 command-host 세션이 소유하므로 이
+   * 계층은 프로세스를 알지 못한다 (P7.6 §4, §9 M4).
+   */
+  transport: Transport;
   schemaValidator: AjvJsonSchemaValidator;
   projectedToolNames: Set<string>;
-  detachStderr: () => void;
 }
 
 type DiscoveredMcpTool = Awaited<
@@ -160,6 +164,7 @@ export function createProjectedMcpTool(args: {
       ? {}
       : { timeoutMs: args.registration.transport.requestTimeoutMs }),
     requiresApproval: true,
+    approvalClass: mcpApprovalClass(args.registration.serverId),
     exposure: {
       directHot: false,
       sdkVisible: true,
@@ -367,6 +372,23 @@ function resolveLocalMcpSchemaRef(root: unknown, ref: string): unknown {
   return current;
 }
 
+/**
+ * MCP 도구의 승낙(grant) 단위는 **서버**다.
+ *
+ * 사용자가 내린 신뢰 결정은 "이 MCP 서버를 설치했다"이지 "이 해시를
+ * 허용한다"가 아니다. 투영 이름(`projectMcpToolName`)은 내용 해시라 사람이
+ * "다시 묻지 않기"를 걸 단위가 못 되고, 승인 클래스 문법(소문자 슬러그)도
+ * 만족하지 못한다 — base64url은 대문자를 포함한다. `serverId`는 대시를 뺀
+ * 소문자 hex라 그 문법을 구성상 만족하므로 슬러그화도 충돌 위험도 없다.
+ *
+ * 서버 하나 안에서 더 좁혀야 할 이유가 생기면 효과 세그먼트를 덧붙인다
+ * (`mcp:<serverId>:destructive`) — 지금 `manage_files:delete`가 쓰는 것과
+ * 같은 문법이라 구조를 바꾸지 않고 확장된다.
+ */
+export function mcpApprovalClass(serverId: string): ApprovalClass {
+  return toApprovalClass(`mcp:${serverId}`);
+}
+
 export function projectMcpToolName(serverId: string, toolName: string): string {
   if (toolName.length === 0) {
     throw new McpServerConfigError('MCP server published an empty tool name');
@@ -417,29 +439,4 @@ export function unregisterProjection(
     toolRegistry.unregisterTool(name);
   }
   live.projectedToolNames.clear();
-}
-
-export function attachSecretSafeStderrDiagnostic(
-  registration: McpServerRegistration,
-  transport: OwnedStdioClientTransport,
-): () => void {
-  const stderr = transport.stderr;
-  if (!stderr) {
-    return () => {};
-  }
-  let reported = false;
-  const onData = () => {
-    if (reported) {
-      return;
-    }
-    reported = true;
-    logger
-      .withContext({
-        serverId: registration.serverId,
-        serverName: registration.name,
-      })
-      .warn('MCP server emitted stderr; diagnostic contents were suppressed');
-  };
-  stderr.on('data', onData);
-  return () => stderr.off('data', onData);
 }

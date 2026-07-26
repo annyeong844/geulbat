@@ -1,7 +1,7 @@
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
+import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 import type { RunRequest } from '@geulbat/protocol/run-contract';
 
-import type { RunTranscriptEntry } from '../../lib/run-transcript-entry.js';
 import { ArtifactReferenceChip } from './artifact-pane/artifact-reference-chip.js';
 import { CommittedArtifactMessage } from './artifact-pane/index.js';
 import {
@@ -9,41 +9,40 @@ import {
   InlineImageArtifactMessage,
 } from './artifact-pane/inline-image-artifact.js';
 import { assistantStyles } from './assistant-styles.js';
-import { RunTranscriptEntryBlock } from './assistant-transcript-entry-blocks.js';
 import { TranscriptTextMessage } from './assistant-transcript-message.js';
+import { resolvePlanRenderingStampProjection } from '../artifacts/artifact-view-model.js';
 
 export function AssistantTranscriptLiveTail(props: {
   finalAnswerText: string;
   activeArtifact: ThreadArtifactVersion | null;
+  planningWorkflowSnapshot?: PlanningWorkflowSnapshot | null;
   streamError: string | null;
-  backgroundNotifications: Extract<
-    RunTranscriptEntry,
-    { kind: 'subagent_activity' }
-  >[];
-  backgroundNotificationKeys: string[];
   hasUnreadStreamContent: boolean;
   isRunning: boolean;
   onStartArtifactRun?: (request: RunRequest) => Promise<void> | void;
   onJumpToLatest: () => void;
-  onOpenChildSession?: Parameters<
-    typeof RunTranscriptEntryBlock
-  >[0]['onOpenChildSession'];
   // 존재하면 스트리밍 아티팩트도 인라인 대신 참조 칩 + 중앙 패널로 흐른다
   onOpenArtifact?: (artifact: ThreadArtifactVersion) => void;
 }) {
   const {
     finalAnswerText,
     activeArtifact,
+    planningWorkflowSnapshot = null,
     streamError,
-    backgroundNotifications,
-    backgroundNotificationKeys,
     hasUnreadStreamContent,
     isRunning,
     onStartArtifactRun,
     onJumpToLatest,
-    onOpenChildSession,
     onOpenArtifact,
   } = props;
+  const livePlanRendering =
+    planningWorkflowSnapshot !== null &&
+    planningWorkflowSnapshot.state !== 'collecting'
+      ? resolvePlanRenderingStampProjection(
+          planningWorkflowSnapshot,
+          planningWorkflowSnapshot,
+        )
+      : null;
 
   return (
     <>
@@ -51,6 +50,7 @@ export function AssistantTranscriptLiveTail(props: {
         <TranscriptTextMessage
           messageRole="assistant"
           content={finalAnswerText}
+          planRendering={livePlanRendering}
         />
       ) : null}
 
@@ -63,6 +63,7 @@ export function AssistantTranscriptLiveTail(props: {
           <div className="transcript-message from-assistant">
             <ArtifactReferenceChip
               artifact={activeArtifact}
+              planningWorkflowSnapshot={planningWorkflowSnapshot}
               isStreaming={isRunning}
               onOpen={onOpenArtifact}
             />
@@ -72,6 +73,7 @@ export function AssistantTranscriptLiveTail(props: {
             label="assistant"
             artifact={activeArtifact}
             isRunning={isRunning}
+            planningWorkflowSnapshot={planningWorkflowSnapshot}
             {...(onStartArtifactRun !== undefined
               ? { onStartArtifactRun }
               : {})}
@@ -84,22 +86,6 @@ export function AssistantTranscriptLiveTail(props: {
           응답 생성 실패. {streamError}
         </div>
       ) : null}
-
-      {backgroundNotifications.map((entry, index) => (
-        <div
-          key={
-            backgroundNotificationKeys[index] ??
-            `background-${entry.childRunId}`
-          }
-        >
-          <RunTranscriptEntryBlock
-            entry={entry}
-            {...(onOpenChildSession !== undefined
-              ? { onOpenChildSession }
-              : {})}
-          />
-        </div>
-      ))}
 
       {hasUnreadStreamContent ? (
         <div style={assistantStyles.unreadNoticeRow}>

@@ -36,6 +36,11 @@ export function createFetchUrlTool(
     mayMutateComputerFiles: false,
     requiresApproval: false,
     recoveryStrategy: 'replay_safe',
+    resultProjection: {
+      exactDurableRecovery: true,
+      modelProjection: 'fetch_url_summary',
+      snapshotFailure: 'fail_closed',
+    },
     exposure: {
       directHot: false,
       sdkVisible: true,

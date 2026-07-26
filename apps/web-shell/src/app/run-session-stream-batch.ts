@@ -1,11 +1,10 @@
 import type { RunSessionStateAction } from './run-session-state-types.js';
 import type { RunSessionMessageEffect } from './run-session-message-effects.js';
 
-// Coalescing window for streamed assistant deltas. Long answers arrive as many
-// tiny deltas (~40/s); a one-frame (~16ms) window is shorter than the typical
-// inter-delta gap, so deltas were each dispatched separately and re-rendered the
-// transcript per delta. A wider window batches deltas in the same target into one
-// dispatch, cutting render/reflow churn during streaming.
+// Shared display window for streamed assistant deltas and short bursts of
+// tool/subagent activity. The first effect remains immediate; later effects keep
+// arrival order inside the window, while adjacent deltas for one target coalesce.
+// This limits transcript render/reflow churn without delaying initial feedback.
 export const RUN_SESSION_STREAM_BATCH_WINDOW_MS = 48;
 
 type StreamedTextEffect = Extract<
@@ -18,34 +17,77 @@ type StreamedToolArgsEffect = Extract<
   { kind: 'tool_call_args_streamed' }
 >;
 
-type BatchedStreamEffect = StreamedTextEffect | StreamedToolArgsEffect;
+type StreamedToolOutputEffect = Extract<
+  RunSessionMessageEffect,
+  { kind: 'tool_output_streamed' }
+>;
 
-function dispatchStreamedEffect(
+type DisplayEffect = Extract<
+  RunSessionMessageEffect,
+  { kind: 'transcript_activity_added' | 'subagent_activity_added' }
+>;
+
+type BatchedRunSessionEffect =
+  | StreamedTextEffect
+  | StreamedToolArgsEffect
+  | StreamedToolOutputEffect
+  | DisplayEffect;
+
+function dispatchBatchedEffect(
   dispatch: (action: RunSessionStateAction) => void,
-  effect: BatchedStreamEffect,
+  effect: BatchedRunSessionEffect,
 ): void {
-  if (effect.kind === 'tool_call_args_streamed') {
-    dispatch({
-      type: 'tool_call_args_streamed',
-      threadId: effect.threadId,
-      callId: effect.callId,
-      tool: effect.tool,
-      argsDelta: effect.argsDelta,
-    });
-    return;
+  switch (effect.kind) {
+    case 'tool_call_args_streamed':
+      dispatch({
+        type: 'tool_call_args_streamed',
+        threadId: effect.threadId,
+        callId: effect.callId,
+        tool: effect.tool,
+        argsDelta: effect.argsDelta,
+      });
+      return;
+    case 'tool_output_streamed':
+      dispatch({
+        type: 'tool_output_streamed',
+        threadId: effect.threadId,
+        callId: effect.callId,
+        tool: effect.tool,
+        stream: effect.stream,
+        text: effect.text,
+      });
+      return;
+    case 'assistant_text_streamed':
+      dispatch({
+        type: 'assistant_text_streamed',
+        threadId: effect.threadId,
+        target: effect.target,
+        text: effect.text,
+      });
+      return;
+    case 'transcript_activity_added':
+      dispatch({
+        type: 'transcript_activity_added',
+        threadId: effect.threadId,
+        entry: effect.entry,
+        ...(effect.streamedToolCallId === undefined
+          ? {}
+          : { streamedToolCallId: effect.streamedToolCallId }),
+      });
+      return;
+    case 'subagent_activity_added':
+      dispatch({
+        type: 'subagent_activity_added',
+        threadId: effect.threadId,
+        entry: effect.entry,
+      });
   }
-  dispatch({
-    type: 'assistant_text_streamed',
-    threadId: effect.threadId,
-    target: effect.target,
-    text: effect.text,
-  });
 }
 
 // 같은 대상의 연속 델타는 한 디스패치로 합친다
 function mergeStreamedEffect(
-  last: BatchedStreamEffect | undefined,
-  effect: BatchedStreamEffect,
+  last: BatchedRunSessionEffect | undefined,
+  effect: BatchedRunSessionEffect,
 ): boolean {
   if (last === undefined || last.kind !== effect.kind) {
     return false;
@@ -70,6 +112,20 @@ function mergeStreamedEffect(
     last.text += effect.text;
     return true;
   }
+  if (
+    last.kind === 'tool_output_streamed' &&
+    effect.kind === 'tool_output_streamed'
+  ) {
+    if (
+      last.threadId !== effect.threadId ||
+      last.callId !== effect.callId ||
+      last.stream !== effect.stream
+    ) {
+      return false;
+    }
+    last.text += effect.text;
+    return true;
+  }
   return false;
 }
 
@@ -83,10 +139,12 @@ export function createRunSessionStreamBatchController(options: {
     >,
   ): void;
   queueStreamedToolArgsEffect(effect: StreamedToolArgsEffect): void;
+  queueStreamedToolOutputEffect(effect: StreamedToolOutputEffect): void;
+  queueDisplayEffect(effect: DisplayEffect): void;
   flushPendingStreamEffects(): void;
   clearPendingStreamEffects(): void;
 } {
-  let effects: BatchedStreamEffect[] = [];
+  let effects: BatchedRunSessionEffect[] = [];
   let cancelScheduledFlush: (() => void) | null = null;
 
   const flushPendingStreamEffects = () => {
@@ -96,7 +154,7 @@ export function createRunSessionStreamBatchController(options: {
     cancelScheduledFlush = null;
 
     for (const effect of pendingEffects) {
-      dispatchStreamedEffect(options.readDispatch(), effect);
+      dispatchBatchedEffect(options.readDispatch(), effect);
     }
   };
 
@@ -106,9 +164,9 @@ export function createRunSessionStreamBatchController(options: {
     effects = [];
   };
 
-  const queueBatchedStreamEffect = (effect: BatchedStreamEffect) => {
+  const queueBatchedStreamEffect = (effect: BatchedRunSessionEffect) => {
     if (cancelScheduledFlush === null && effects.length === 0) {
-      dispatchStreamedEffect(options.readDispatch(), effect);
+      dispatchBatchedEffect(options.readDispatch(), effect);
       cancelScheduledFlush = scheduleRunSessionStreamFlush(() => {
         cancelScheduledFlush = null;
         flushPendingStreamEffects();
@@ -133,6 +191,8 @@ export function createRunSessionStreamBatchController(options: {
   return {
     queueStreamedTextEffect: queueBatchedStreamEffect,
     queueStreamedToolArgsEffect: queueBatchedStreamEffect,
+    queueStreamedToolOutputEffect: queueBatchedStreamEffect,
+    queueDisplayEffect: queueBatchedStreamEffect,
     flushPendingStreamEffects,
     clearPendingStreamEffects,
   };

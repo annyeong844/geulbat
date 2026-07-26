@@ -1,3 +1,5 @@
+import { runDetached } from '../../../utils/run-detached.js';
+
 export async function nextResponseEvent(
   iterator: AsyncIterator<Record<string, unknown>, unknown>,
   options?: { signal?: AbortSignal; idleTimeoutMs?: number },
@@ -35,7 +37,9 @@ export async function nextResponseEvent(
                   llmCode: 'llm_idle_timeout',
                 }),
               );
-              void closeIteratorOnce();
+              runDetached('llm/response-iterator-close', () =>
+                closeIteratorOnce(),
+              );
             }, options.idleTimeoutMs);
           },
         ),
@@ -48,7 +52,9 @@ export async function nextResponseEvent(
           (_, reject) => {
             abortHandler = () => {
               reject(new Error('Request was aborted'));
-              void closeIteratorOnce();
+              runDetached('llm/response-iterator-close', () =>
+                closeIteratorOnce(),
+              );
             };
             options.signal!.addEventListener('abort', abortHandler!, {
               once: true,

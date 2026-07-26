@@ -53,6 +53,8 @@ export async function persistRequiredForegroundInput(args: {
     threadId: runContext.threadId,
     transcriptPrompt,
     deps,
+    // 시작 시점에는 제목을 확정하지 않는다 — set_thread_title이 먼저다.
+    allowDefaultTitle: false,
   });
 }
 

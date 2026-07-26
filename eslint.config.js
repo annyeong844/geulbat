@@ -55,6 +55,10 @@ export default [
           ],
         },
         {
+          type: 'xharness',
+          pattern: ['packages/xharness/src/**', 'packages/xharness/dist/**'],
+        },
+        {
           type: 'artifact-runtime-policy',
           pattern: [
             'packages/artifact-runtime-policy/src/**',
@@ -89,6 +93,16 @@ export default [
         {
           type: 'tool-sdk',
           pattern: ['packages/tool-sdk/src/**', 'packages/tool-sdk/dist/**'],
+        },
+        { type: 'geulbat-product', pattern: ['apps/geulbat/src/**'] },
+        {
+          type: 'geulbat-product-test',
+          pattern: ['apps/geulbat/src/**/*.test.ts'],
+        },
+        { type: 'geulbat-lab', pattern: ['apps/geulbat-lab/src/**'] },
+        {
+          type: 'geulbat-lab-test',
+          pattern: ['apps/geulbat-lab/src/**/*.test.ts'],
         },
         {
           type: 'web-shell-entry',
@@ -142,6 +156,10 @@ export default [
           pattern: ['apps/web-shell/src/features/provider-auth/**'],
         },
         {
+          type: 'feature-provider-usage',
+          pattern: ['apps/web-shell/src/features/provider-usage/**'],
+        },
+        {
           type: 'feature-thread-list',
           pattern: ['apps/web-shell/src/features/thread-list/**'],
         },
@@ -149,8 +167,21 @@ export default [
         {
           type: 'daemon-process-execution',
           pattern: [
-            'apps/daemon/src/daemon/bounded-child-process.ts',
+            'apps/daemon/src/daemon/command-environment.ts',
             'apps/daemon/src/daemon/docker-client-command.ts',
+            'apps/daemon/src/daemon/docker-host-command.ts',
+            'apps/daemon/src/daemon/host-routed-command.ts',
+            'apps/daemon/src/daemon/host-routed-detached-process.ts',
+            'apps/daemon/src/daemon/system-command.ts',
+          ],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-host-command',
+          pattern: [
+            'apps/daemon/src/daemon/host-command-runtime.ts',
+            'apps/daemon/src/daemon/host-command-output-store.ts',
+            'apps/daemon/src/command-host/**',
           ],
           mode: 'full',
         },
@@ -159,6 +190,7 @@ export default [
           pattern: [
             'apps/daemon/src/daemon/artifact-candidate.ts',
             'apps/daemon/src/daemon/error-codes.ts',
+            'apps/daemon/src/daemon/planning-approval.ts',
             'apps/daemon/src/daemon/port.ts',
             'apps/daemon/src/daemon/runtime-json.ts',
             'apps/daemon/src/daemon/run-context.ts',
@@ -175,10 +207,22 @@ export default [
             'apps/daemon/src/daemon-server-lifecycle.ts',
             'apps/daemon/src/home-state-root.ts',
             'apps/daemon/src/daemon/context.ts',
+            'apps/daemon/src/daemon/react-bundle-docker-command-runner.ts',
+            'apps/daemon/src/daemon/computer-discovery-command-runner.ts',
             'apps/daemon/src/daemon/ptc-execute-code-terminal-result-store.ts',
             'apps/daemon/src/daemon/plugin-mcp-coordinator.ts',
             'apps/daemon/src/daemon/daemon-runtime-contract.ts',
             'apps/daemon/src/daemon/runtime-persistence-file-access.ts',
+            'apps/daemon/src/daemon/permission-mode-store.ts',
+            'apps/daemon/src/daemon/provider-usage.ts',
+            'apps/daemon/src/daemon/plan-state-store.ts',
+            'apps/daemon/src/daemon/directory-preferences-store.ts',
+            'apps/daemon/src/daemon/runtime-state-store.ts',
+            'apps/daemon/src/daemon/runtime-state-database.ts',
+            'apps/daemon/src/daemon/runtime-state-migration-ladder.ts',
+            'apps/daemon/src/daemon/runtime-state-mcp-session-store.ts',
+            'apps/daemon/src/daemon/runtime-state-subagent-launch-store.ts',
+            'apps/daemon/src/daemon/runtime-state-subagent-terminal-delivery-store.ts',
             'apps/daemon/src/daemon/runtime-services.ts',
             'apps/daemon/src/daemon/daemon-instance-admission-lock.ts',
           ],
@@ -207,6 +251,10 @@ export default [
         {
           type: 'daemon-memory',
           pattern: ['apps/daemon/src/daemon/memory/**'],
+        },
+        {
+          type: 'daemon-memories',
+          pattern: ['apps/daemon/src/daemon/memories/**'],
         },
         {
           type: 'daemon-mcp',
@@ -305,6 +353,7 @@ export default [
         {
           type: 'daemon-ptc-package-helpers',
           pattern: [
+            'apps/daemon/src/daemon/ptc/shared/positive-integer-env.ts',
             'apps/daemon/src/daemon/ptc/shared/record-shape.ts',
             'apps/daemon/src/daemon/ptc/shared/stable-identity.ts',
           ],
@@ -415,7 +464,18 @@ export default [
             'apps/daemon/src/bootstrap-entry.ts',
             'apps/daemon/src/index.ts',
             'apps/daemon/src/main.ts',
+            'apps/daemon/src/host.ts',
             'apps/daemon/src/env-local.ts',
+            'apps/daemon/src/loop-implementation-admission.ts',
+            'apps/daemon/src/process-fatal-logging.ts',
+            'apps/daemon/src/prompt-component-identity.ts',
+            'apps/daemon/src/run-evidence.ts',
+            'apps/daemon/dist/bootstrap-entry.*',
+            'apps/daemon/dist/host.*',
+            'apps/daemon/dist/loop-implementation-admission.*',
+            'apps/daemon/dist/process-fatal-logging.*',
+            'apps/daemon/dist/prompt-component-identity.*',
+            'apps/daemon/dist/run-evidence.*',
           ],
           mode: 'full',
         },
@@ -478,6 +538,59 @@ export default [
           rules: [
             { from: { type: 'agent-loop' }, allow: [] },
             {
+              from: { type: 'xharness' },
+              allow: {
+                to: {
+                  type: ['agent-loop', 'content-identity', 'tool-library'],
+                },
+              },
+            },
+            {
+              from: { type: 'geulbat-product-test' },
+              allow: {
+                to: {
+                  type: ['daemon-entry', 'geulbat-product', 'xharness'],
+                },
+              },
+            },
+            {
+              from: { type: 'geulbat-product' },
+              allow: {
+                to: {
+                  type: [
+                    'content-identity',
+                    'daemon-entry',
+                    'structured-logger',
+                    'xharness',
+                  ],
+                },
+              },
+            },
+            // 랩(오프라인 평가·연구 레인)은 제품을 평가하는 쪽이라 제품을 향해
+            // 의존한다. 역방향은 geulbat-product의 allow 목록에 geulbat-lab이
+            // 없다는 사실로 막힌다 — 제품이 연구 코드를 끌어오면 lint가 잡는다.
+            {
+              from: { type: 'geulbat-lab-test' },
+              allow: {
+                to: {
+                  type: [
+                    'content-identity',
+                    'geulbat-lab',
+                    'geulbat-product',
+                    'xharness',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'geulbat-lab' },
+              allow: {
+                to: {
+                  type: ['content-identity', 'geulbat-product', 'xharness'],
+                },
+              },
+            },
+            {
               from: { type: 'artifact-runtime-policy' },
               allow: { to: { type: ['protocol'] } },
             },
@@ -510,6 +623,7 @@ export default [
                     'feature-project-selector',
                     'feature-computer-tree',
                     'feature-provider-auth',
+                    'feature-provider-usage',
                     'feature-thread-list',
                   ],
                 },
@@ -548,6 +662,7 @@ export default [
                     'feature-project-selector',
                     'feature-computer-tree',
                     'feature-provider-auth',
+                    'feature-provider-usage',
                     'feature-thread-list',
                   ],
                 },
@@ -697,6 +812,22 @@ export default [
               },
             },
             {
+              // 사용량 카드는 제공자 연결 카드의 스타일 토큰을 재사용한다 —
+              // 설정 안에서 같은 결을 유지하려면 값을 복제하지 않고 공유한다.
+              from: { type: 'feature-provider-usage' },
+              allow: {
+                to: {
+                  type: [
+                    'protocol',
+                    'structured-logger',
+                    'web-shell-lib',
+                    'feature-provider-auth',
+                    'feature-provider-usage',
+                  ],
+                },
+              },
+            },
+            {
               from: { type: 'feature-thread-list' },
               allow: {
                 to: {
@@ -741,6 +872,7 @@ export default [
                     'daemon-files',
                     'daemon-utils',
                     'daemon-entry',
+                    'daemon-host-command',
                   ],
                 },
               },
@@ -788,17 +920,20 @@ export default [
                   type: [
                     'agent-loop',
                     'structured-logger',
+                    'tool-library',
                     'daemon-kernel',
                     'daemon-agent-contract',
                     'daemon-agent-sandbox-ingress',
                     'daemon-composition',
                     'daemon-ptc-runtime-contract',
                     'daemon-memory',
+                    'daemon-memories',
                     'daemon-tools',
                     'daemon-sessions',
                     'daemon-files',
                     'daemon-llm',
                     'daemon-utils',
+                    'daemon-host-command',
                   ],
                 },
               },
@@ -826,8 +961,10 @@ export default [
                     'daemon-media-contract',
                     'daemon-files',
                     'daemon-memory',
+                    'daemon-memories',
                     'daemon-network',
                     'daemon-utils',
+                    'daemon-host-command',
                     'tool-library',
                     'tool-sdk',
                   ],
@@ -838,7 +975,10 @@ export default [
               from: { type: 'daemon-network' },
               allow: {
                 to: {
-                  type: ['daemon-network'],
+                  // daemon-utils는 의존성 없는 리프다. 분리 실행의 단일
+                  // 출구(runDetached)가 거기 살고, 계층마다 복제하면 그것이
+                  // 곧 중복 오너다.
+                  type: ['daemon-network', 'daemon-utils'],
                 },
               },
             },
@@ -847,6 +987,9 @@ export default [
               allow: {
                 to: {
                   type: [
+                    // P7.6 §4 A안 — MCP 서버 프로세스는 command-host 세션에
+                    // 산다. 전송이 그 계약을 봐야 배치를 고를 수 있다.
+                    'daemon-host-command',
                     'structured-logger',
                     'protocol',
                     'daemon-tools',
@@ -1097,6 +1240,8 @@ export default [
                     'daemon-ptc-callback',
                     'daemon-ptc-lab-session',
                     'daemon-ptc-package-helpers',
+                    // 분리 실행의 단일 출구(runDetached)가 사는 리프 계층.
+                    'daemon-utils',
                   ],
                 },
               },
@@ -1333,6 +1478,8 @@ export default [
                     'daemon-ptc-runtime-execute-code',
                     'daemon-ptc-runtime-execute-code-sdk',
                     'daemon-ptc-shared',
+                    // 분리 실행의 단일 출구(runDetached)가 사는 리프 계층.
+                    'daemon-utils',
                   ],
                 },
               },
@@ -1378,10 +1525,35 @@ export default [
               },
             },
             {
+              from: { type: 'daemon-memories' },
+              allow: {
+                to: {
+                  type: ['structured-logger', 'daemon-utils'],
+                },
+              },
+            },
+            {
               from: { type: 'daemon-process-execution' },
               allow: {
                 to: {
-                  type: ['daemon-process-execution'],
+                  // P7.6 — 이 계층이 데몬의 프로세스 소유를 대신 짊어진다.
+                  // 자식을 직접 낳는 대신 command-host 세션으로 돌리려면 그
+                  // 계약을 볼 수 있어야 한다.
+                  type: [
+                    'daemon-process-execution',
+                    'daemon-host-command',
+                    // 증분 host 세션의 관찰/종료 루프도 실패 소유자를 가져야
+                    // 하므로 공용 detached 실행 출구만 허용한다.
+                    'daemon-utils',
+                  ],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-host-command' },
+              allow: {
+                to: {
+                  type: ['daemon-host-command', 'daemon-utils'],
                 },
               },
             },
@@ -1398,12 +1570,15 @@ export default [
               allow: {
                 to: {
                   type: [
+                    'agent-loop',
                     'structured-logger',
                     'protocol',
                     'adapter-web',
-                    'daemon-kernel',
-                    'daemon-composition',
                     'daemon-agent',
+                    'daemon-kernel',
+                    // P7.6 item 3 — 조립이 내부 명령의 실행 위치를 정한다.
+                    'daemon-process-execution',
+                    'daemon-composition',
                     'daemon-auth',
                     'daemon-memory',
                     'daemon-tools',
@@ -1421,6 +1596,7 @@ export default [
                     'daemon-files-contract',
                     'daemon-files',
                     'daemon-utils',
+                    'daemon-host-command',
                   ],
                 },
               },
@@ -1442,6 +1618,8 @@ export default [
                     'daemon-composition',
                     'daemon-files',
                     'daemon-utils',
+                    'daemon-host-command',
+                    'tool-library',
                   ],
                 },
               },
@@ -1467,13 +1645,17 @@ export default [
               allow: {
                 to: {
                   type: [
+                    'agent-loop',
+                    'content-identity',
                     'structured-logger',
                     'protocol',
                     'adapter-web',
+                    'daemon-agent',
                     'daemon-kernel',
                     'daemon-entry',
                     'daemon-composition',
                     'daemon-auth',
+                    'daemon-sessions',
                     'daemon-utils',
                   ],
                 },
@@ -1591,6 +1773,36 @@ export default [
             "ExportAllDeclaration[source.value='@geulbat/structured-logger']",
           message:
             'Do not re-export the structured-logger root barrel in daemon source code. Re-export structured-logger subpaths instead.',
+        },
+      ],
+    },
+  },
+  {
+    // 분리 실행(`void somethingAsync()`)은 거절을 아무도 받지 않는 상태를
+    // 만들고, Node는 그것을 프로세스 종료로 승격한다 — 한 하위 시스템의
+    // 실패가 데몬 전체를 죽인다. 데몬은 자기 이유로만 죽어야 하므로 분리
+    // 실행은 소유자를 아는 단일 출구를 지난다.
+    files: ['apps/daemon/src/**/*.ts'],
+    ignores: [
+      'apps/daemon/src/**/*.test.ts',
+      'apps/daemon/src/test-support/**/*.ts',
+      // command-host 워커는 별도 프로세스이고 자기 fail-fast 규율을 갖는다
+      // (main.ts). 거기서 새는 거절은 워커를 죽이고, 데몬은 그것을 워커
+      // 종료라는 값으로 관찰한다 — 봉쇄가 이미 프로세스 경계에 있다.
+      'apps/daemon/src/command-host/**/*.ts',
+      // 2026-07-25: 다른 세션이 편집 중인 파일들. 그 작업이 정착하면 이
+      // 예외를 지우고 runDetached로 옮긴다.
+      'apps/daemon/src/adapter/web/ws/run-channel-start.ts',
+      'apps/daemon/src/adapter/web/ws/run-channel-socket-runtime.ts',
+      'apps/daemon/src/daemon/sessions/live-run-events.ts',
+    ],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "UnaryExpression[operator='void'] > CallExpression",
+          message:
+            'Detached execution must go through runDetached(label, work) (daemon/utils/run-detached.ts) so its failure belongs to an owner instead of ending the daemon process.',
         },
       ],
     },
@@ -2039,6 +2251,7 @@ export default [
   {
     files: [
       'packages/*/src/**/*.test.ts',
+      'packages/*/src/test-support/**/*.ts',
       'apps/*/src/**/*.test.ts',
       'apps/*/src/**/*.test.tsx',
       'apps/*/src/test-support/**/*.ts',

@@ -1,3 +1,4 @@
+import type { ApprovalClass } from '@geulbat/protocol/run-approval';
 import type { SideEffectLevel } from '@geulbat/protocol/run-events';
 import type { ErrorCode } from '../error-codes.js';
 import { isRecord, tryParseJson } from '../runtime-json.js';
@@ -119,6 +120,44 @@ export type ToolRecoveryStrategy =
   | 'durable_handle'
   | 'at_least_once';
 
+export type ToolResultProjectionKind =
+  | 'fetch_url_summary'
+  | 'list_files_summary'
+  | 'read_file_summary'
+  | 'runtime_summary'
+  | 'search_files_summary'
+  | 'search_memory_index_summary';
+
+export interface ToolResultProjectionCapability {
+  exactDurableRecovery: true;
+  modelProjection: ToolResultProjectionKind;
+  snapshotFailure: 'fail_closed' | 'inline';
+}
+
+export type ToolResultModelVisibleForm =
+  | 'inline'
+  | 'summary_ref'
+  | 'duplicate_ref';
+
+export interface ToolResultDelivery {
+  exactDurableRecovery: boolean;
+  modelVisibleForms: readonly ToolResultModelVisibleForm[];
+}
+
+export function describeToolResultDelivery(
+  capability: ToolResultProjectionCapability | undefined,
+): ToolResultDelivery {
+  return capability === undefined
+    ? {
+        exactDurableRecovery: false,
+        modelVisibleForms: ['inline'],
+      }
+    : {
+        exactDurableRecovery: capability.exactDurableRecovery,
+        modelVisibleForms: ['inline', 'summary_ref', 'duplicate_ref'],
+      };
+}
+
 export interface ToolExposure {
   directHot: boolean;
   sdkVisible: boolean;
@@ -141,11 +180,15 @@ export interface ToolMeta {
   parallelBatchKind?: ParallelToolBatchKind;
   timeoutMs?: number;
   requiresApproval: boolean;
+  /** 승낙이 걸리는 단위. 생략이면 도구 이름이 곧 클래스다 (ToolDescriptor 참조). */
+  approvalClass?: ApprovalClass;
   exposure: ToolExposure;
   recoveryStrategy?: ToolRecoveryStrategy;
+  resultProjection?: ToolResultProjectionCapability;
   // 도구 인자 스트리밍 opt-in — 켜면 provider args 델타가 tool_call_delta
   // 이벤트로 클라이언트까지 흐른다 (visualize의 실시간 렌더용)
   streamsArgsDelta?: boolean;
+  endsTurnAfterSuccess?: boolean;
 }
 
 export interface RegisteredToolLike {
@@ -158,9 +201,13 @@ export interface RegisteredToolLike {
   parallelBatchKind?: ParallelToolBatchKind;
   timeoutMs?: number;
   requiresApproval: boolean;
+  /** 승낙이 걸리는 단위. 생략이면 도구 이름이 곧 클래스다 (ToolDescriptor 참조). */
+  approvalClass?: ApprovalClass;
   exposure?: ToolExposure;
   recoveryStrategy?: ToolRecoveryStrategy;
+  resultProjection?: ToolResultProjectionCapability;
   streamsArgsDelta?: boolean;
+  endsTurnAfterSuccess?: boolean;
   catalogSearchMetadata?: ToolCatalogSearchMetadata;
   parseArgs(
     raw: unknown,
@@ -174,22 +221,33 @@ export interface RegisteredToolLike {
   >;
 }
 
-export interface ToolRegistryStore {
-  registerTool(tool: RegisteredToolLike): void;
-  unregisterTool(name: string): boolean;
+export type ToolExecutionHandle = Readonly<
+  Pick<
+    RegisteredToolLike,
+    'timeoutMs' | 'requiresApproval' | 'parseArgs' | 'executeParsed'
+  >
+>;
+
+export interface ToolRegistrySnapshot {
+  captureSnapshot(): ToolRegistrySnapshot;
   getTool(name: string): RegisteredToolLike | undefined;
+  getToolExecutionHandle(name: string): ToolExecutionHandle | undefined;
   getToolMeta(name: string): ToolMeta | null;
   getAllRegisteredToolNames(): string[];
   buildToolDefinitions(options?: { names?: string[] }): ToolDefinition[];
 }
 
-export type ToolResolver = Pick<ToolRegistryStore, 'getTool'>;
-export type ToolMetaReader = Pick<ToolRegistryStore, 'getToolMeta'>;
-export type ToolExecutionRegistry = Pick<
-  ToolRegistryStore,
-  'getTool' | 'getToolMeta'
->;
+export interface ToolRegistryStore extends ToolRegistrySnapshot {
+  registerTool(tool: RegisteredToolLike): void;
+  unregisterTool(name: string): boolean;
+}
+
+export type ToolResolver = Pick<ToolRegistrySnapshot, 'getTool'> &
+  Partial<Pick<ToolRegistrySnapshot, 'getToolExecutionHandle'>>;
+export type ToolMetaReader = Pick<ToolRegistrySnapshot, 'getToolMeta'>;
+export type ToolExecutionRegistry = ToolResolver &
+  Pick<ToolRegistrySnapshot, 'getToolMeta'>;
 export type ToolRuntimeRegistry = Pick<
-  ToolRegistryStore,
-  'buildToolDefinitions' | 'getTool' | 'getToolMeta'
+  ToolRegistrySnapshot,
+  'buildToolDefinitions' | 'captureSnapshot' | 'getTool' | 'getToolMeta'
 >;

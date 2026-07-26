@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assertRunId, type RunId } from '@geulbat/protocol/ids';
+import { toApprovalClass } from '@geulbat/protocol/run-approval';
+import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
 import { startManagedRun } from '../../../daemon/agent/runtime/managed-run.js';
 import {
   cleanupSocketState,
@@ -17,6 +19,7 @@ import { handleClientMessage } from './run-channel-dispatch.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 
 const TEST_DEV_TOKEN = 'test-token-123456';
+const TEST_COMPUTER_SESSION_ID = 'computer-session-dispatch-test';
 
 void test('handleClientMessage rejects invalid websocket JSON', async () => {
   const socket = createTestSocket();
@@ -47,6 +50,7 @@ void test('handleClientMessage rejects blank requestId before auth', async () =>
         type: 'run.auth',
         requestId: '  ',
         token: TEST_DEV_TOKEN,
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
       }),
       daemonContext,
     );
@@ -77,11 +81,13 @@ void test('handleClientMessage authenticates a socket and rejects duplicate auth
         type: 'run.auth',
         requestId: 'auth-1',
         token: TEST_DEV_TOKEN,
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
       }),
       daemonContext,
     );
 
     assert.equal(state.authenticated, true);
+    assert.equal(state.computerSessionId, TEST_COMPUTER_SESSION_ID);
     assert.equal(state.authTimeout, null);
     assert.deepEqual(readLastSentMessage(socket), {
       type: 'run.auth.ok',
@@ -96,6 +102,7 @@ void test('handleClientMessage authenticates a socket and rejects duplicate auth
         type: 'run.auth',
         requestId: 'auth-2',
         token: TEST_DEV_TOKEN,
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
       }),
       daemonContext,
     );
@@ -113,6 +120,136 @@ void test('handleClientMessage authenticates a socket and rejects duplicate auth
   }
 });
 
+void test('computer.session.end clears only the authenticated computer session runtime', async () => {
+  const socket = createTestSocket();
+  const daemonContext = createRunChannelTestDaemonContext();
+  const state = getSocketState(socket);
+  state.upgradeAuthorized = true;
+  const observedComputerSessionIds: string[] = [];
+  const originalClearComputerSessionRuntime =
+    daemonContext.approvalGate.clearComputerSessionRuntime.bind(
+      daemonContext.approvalGate,
+    );
+  daemonContext.approvalGate.clearComputerSessionRuntime = (
+    computerSessionId,
+  ) => {
+    observedComputerSessionIds.push(computerSessionId);
+    originalClearComputerSessionRuntime(computerSessionId);
+  };
+  const approvalGrantContext = {
+    runId: 'run-computer-session-end',
+    computerSessionId: TEST_COMPUTER_SESSION_ID,
+    approvalClass: toApprovalClass('write_file:computer'),
+    sideEffectLevel: 'write' as const,
+    permissionMode: 'basic' as const,
+  };
+  daemonContext.approvalGrants.registerApprovalGrant(
+    approvalGrantContext,
+    'session',
+  );
+  const otherComputerSessionGrantContext = {
+    ...approvalGrantContext,
+    computerSessionId: 'other-computer-session',
+  };
+  daemonContext.approvalGrants.registerApprovalGrant(
+    otherComputerSessionGrantContext,
+    'session',
+  );
+
+  try {
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'run.auth',
+        requestId: 'auth-computer-session-end',
+        token: 'cookie-auth',
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
+      }),
+      daemonContext,
+    );
+    clearSentMessages(socket);
+
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'computer.session.end',
+        requestId: 'computer-session-end-1',
+      }),
+      daemonContext,
+    );
+
+    assert.deepEqual(observedComputerSessionIds, [TEST_COMPUTER_SESSION_ID]);
+    assert.equal(
+      daemonContext.approvalGrants.hasApprovalGrant(approvalGrantContext),
+      false,
+    );
+    assert.equal(
+      daemonContext.approvalGrants.hasApprovalGrant(
+        otherComputerSessionGrantContext,
+      ),
+      true,
+    );
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.control',
+      requestId: 'computer-session-end-1',
+      action: 'computer.session.end',
+      ok: true,
+    });
+    assert.deepEqual(socket.closeCalls, [
+      { code: 1000, reason: 'computer session ended' },
+    ]);
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('handleClientMessage does not authenticate before durable run synchronization finishes', async () => {
+  const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
+  process.env['GEULBAT_DEV_TOKEN'] = TEST_DEV_TOKEN;
+  const socket = createTestSocket();
+  const daemonContext = createRunChannelTestDaemonContext();
+  const state = getSocketState(socket);
+  let releaseRecovery: () => void = () => undefined;
+  const blockedRecovery = new Promise<never[]>((resolve) => {
+    releaseRecovery = () => resolve([]);
+  });
+  const originalListRunning = daemonContext.runCheckpoints.listRunning;
+  daemonContext.runCheckpoints.listRunning = () => blockedRecovery;
+
+  try {
+    const authentication = handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'run.auth',
+        requestId: 'auth-sync-barrier',
+        token: TEST_DEV_TOKEN,
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
+      }),
+      daemonContext,
+    );
+    await Promise.resolve();
+
+    assert.equal(state.authenticationPending, true);
+    assert.equal(state.authenticated, false);
+    assert.equal(socket.sentFrames.length, 0);
+
+    releaseRecovery();
+    await authentication;
+
+    assert.equal(state.authenticationPending, false);
+    assert.equal(state.authenticated, true);
+    assert.deepEqual(readLastSentMessage(socket), {
+      type: 'run.auth.ok',
+      requestId: 'auth-sync-barrier',
+      ok: true,
+    });
+  } finally {
+    daemonContext.runCheckpoints.listRunning = originalListRunning;
+    cleanupSocketState(socket, daemonContext);
+    restoreEnv('GEULBAT_DEV_TOKEN', previousDevToken);
+  }
+});
+
 void test('handleClientMessage automatically rebinds detached run delivery after auth', async () => {
   const daemonContext = createRunChannelTestDaemonContext();
   const detachedSocket = createTestSocket();
@@ -123,8 +260,13 @@ void test('handleClientMessage automatically rebinds detached run delivery after
   daemonContext.liveRunEvents.startRun({
     runId,
     threadId,
-    ownerId: detachedState.approvalSessionId,
+    ownerId: detachedState.computerSessionId,
     sink: () => true,
+    async persistRunEvents() {},
+  });
+  daemonContext.liveRunEvents.publishRunEvent(runId, {
+    type: 'commentary_delta',
+    payload: { text: 'already rendered before disconnect' },
   });
   cleanupSocketState(detachedSocket, daemonContext);
   daemonContext.liveRunEvents.publishRunEvent(runId, {
@@ -143,25 +285,159 @@ void test('handleClientMessage automatically rebinds detached run delivery after
         type: 'run.auth',
         requestId: 'auth-auto-rebind',
         token: 'cookie-auth',
+        computerSessionId: detachedState.computerSessionId,
+        runEventCursors: [{ runId, seq: 0 }],
       }),
       daemonContext,
     );
 
-    const message = readLastSentMessage(replacementSocket);
+    const messages = replacementSocket.sentFrames.map(
+      (frame) => JSON.parse(frame) as RunChannelServerMessage,
+    );
+    assert.equal(messages.length, 2);
+    const message = messages[0];
     assert.equal(message?.type, 'run.event');
     if (message?.type !== 'run.event') {
       return;
     }
     assert.equal(message.event.runId, runId);
     assert.equal(message.event.threadId, threadId);
-    assert.equal(message.event.seq, 0);
+    assert.equal(message.event.seq, 1);
     assert.equal(message.event.type, 'commentary_delta');
     assert.deepEqual(message.event.payload, {
       text: 'continued while disconnected',
     });
+    assert.deepEqual(messages[1], {
+      type: 'run.auth.ok',
+      requestId: 'auth-auto-rebind',
+      ok: true,
+    });
     assert.equal(replacementState.activeRunIds.has(runId), true);
+    assert.equal(
+      replacementState.computerSessionId,
+      detachedState.computerSessionId,
+    );
   } finally {
     cleanupSocketState(replacementSocket, daemonContext);
+  }
+});
+
+void test('authenticated reconnect restores the current planning workflow snapshot', async () => {
+  const socket = createTestSocket();
+  const daemonContext = createRunChannelTestDaemonContext();
+  const threadId = testThreadId(229);
+  getSocketState(socket).upgradeAuthorized = true;
+  const collecting = await daemonContext.planningWorkflows.enterOrResume({
+    threadId,
+    requested: true,
+    intensity: 'visual',
+    depth: 'deep',
+    executionTemplate: {
+      workingDirectory: '/workspace',
+      permissionMode: 'basic',
+    },
+  });
+  assert.ok(collecting);
+
+  try {
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'run.auth',
+        requestId: 'auth-planning-workflow-reconnect',
+        token: 'cookie-auth',
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
+        threadSubscriptions: [threadId],
+      }),
+      daemonContext,
+    );
+
+    const messages = socket.sentFrames.map(
+      (frame) => JSON.parse(frame) as RunChannelServerMessage,
+    );
+    const planningMessage = messages.find(
+      (
+        message,
+      ): message is Extract<
+        RunChannelServerMessage,
+        { type: 'plan.workflow' }
+      > => message.type === 'plan.workflow',
+    );
+    assert.ok(planningMessage);
+    assert.equal(planningMessage.threadId, threadId);
+    assert.deepEqual(planningMessage.snapshot, collecting);
+    assert.deepEqual(messages[0], {
+      type: 'run.auth.ok',
+      requestId: 'auth-planning-workflow-reconnect',
+      ok: true,
+    });
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('handleClientMessage replays a pending child terminal result from an explicit auth thread subscription after daemon restart', async () => {
+  const socket = createTestSocket();
+  const daemonContext = createRunChannelTestDaemonContext();
+  const threadId = testThreadId(228);
+  const parentRunId = assertRunId('123e4567-e89b-42d3-a456-426614174228');
+  const childRunId = assertRunId('123e4567-e89b-42d3-a456-426614174229');
+  getSocketState(socket).upgradeAuthorized = true;
+  daemonContext.backgroundNotifications.enqueueThreadBackgroundResult(
+    threadId,
+    {
+      deliveryId: 'delivery-after-daemon-restart',
+      parentRunId,
+      childRunId,
+      subagentType: 'worker',
+      terminalState: 'failed',
+      reason: 'child_error',
+      result: 'daemon restarted while the child was running',
+      completedAt: '2026-07-23T08:42:59.000Z',
+    },
+  );
+
+  try {
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'run.auth',
+        requestId: 'auth-thread-subscription',
+        token: 'cookie-auth',
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
+        threadSubscriptions: [threadId],
+      }),
+      daemonContext,
+    );
+
+    const messages = socket.sentFrames.map(
+      (frame) => JSON.parse(frame) as RunChannelServerMessage,
+    );
+    assert.equal(messages.length, 4);
+    const terminal = messages[0];
+    assert.equal(terminal?.type, 'run.event');
+    if (terminal?.type === 'run.event') {
+      assert.equal(terminal.event.type, 'subagent_terminal');
+      assert.equal(terminal.event.threadId, threadId);
+      assert.equal(terminal.event.runId, childRunId);
+    }
+    assert.deepEqual(messages[1], {
+      type: 'run.auth.ok',
+      requestId: 'auth-thread-subscription',
+      ok: true,
+    });
+    assert.deepEqual(messages[2], {
+      type: 'plan.workflow',
+      threadId,
+      snapshot: null,
+    });
+    assert.deepEqual(messages[3], {
+      type: 'goal.state',
+      threadId,
+      snapshot: null,
+    });
+  } finally {
+    cleanupSocketState(socket, daemonContext);
   }
 });
 
@@ -217,7 +493,7 @@ void test('handleClientMessage durably acknowledges only the matching terminal e
   }
 });
 
-void test('authenticated reconnect prefers the detached live terminal buffer over durable replay', async () => {
+void test('authenticated reconnect replays detached live history once before auth completion', async () => {
   const daemonContext = createRunChannelTestDaemonContext();
   const detachedSocket = createTestSocket();
   const detachedState = getSocketState(detachedSocket);
@@ -233,8 +509,15 @@ void test('authenticated reconnect prefers the detached live terminal buffer ove
   daemonContext.liveRunEvents.startRun({
     runId,
     threadId,
-    ownerId: detachedState.approvalSessionId,
+    ownerId: detachedState.computerSessionId,
     sink: () => true,
+    async persistRunEvents(events) {
+      await daemonContext.runCheckpoints.appendRunEvents({
+        threadId,
+        runId,
+        events,
+      });
+    },
   });
   daemonContext.liveRunEvents.publishRunEvent(runId, {
     type: 'run_ack',
@@ -269,17 +552,30 @@ void test('authenticated reconnect prefers the detached live terminal buffer ove
         type: 'run.auth',
         requestId: 'auth-live-terminal-before-durable',
         token: 'cookie-auth',
+        computerSessionId: detachedState.computerSessionId,
       }),
       daemonContext,
     );
 
-    assert.equal(replacementSocket.sentFrames.length, 2);
-    const message = readLastSentMessage(replacementSocket);
-    assert.equal(message?.type, 'run.event');
-    if (message?.type === 'run.event') {
-      assert.equal(message.event.type, 'done');
-      assert.equal(message.event.seq, 1);
+    const messages = replacementSocket.sentFrames.map(
+      (frame) => JSON.parse(frame) as RunChannelServerMessage,
+    );
+    assert.equal(messages.length, 3);
+    assert.equal(messages[0]?.type, 'run.event');
+    if (messages[0]?.type === 'run.event') {
+      assert.equal(messages[0].event.type, 'run_ack');
+      assert.equal(messages[0].event.seq, 0);
     }
+    assert.equal(messages[1]?.type, 'run.event');
+    if (messages[1]?.type === 'run.event') {
+      assert.equal(messages[1].event.type, 'done');
+      assert.equal(messages[1].event.seq, 1);
+    }
+    assert.deepEqual(messages[2], {
+      type: 'run.auth.ok',
+      requestId: 'auth-live-terminal-before-durable',
+      ok: true,
+    });
   } finally {
     cleanupSocketState(replacementSocket, daemonContext);
   }
@@ -299,6 +595,7 @@ void test('handleClientMessage authenticates sockets that were authorized during
         type: 'run.auth',
         requestId: 'auth-cookie-upgrade',
         token: 'cookie-auth',
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
       }),
       daemonContext,
     );
@@ -330,6 +627,7 @@ void test('handleClientMessage closes unauthorized sockets for invalid auth toke
         type: 'run.auth',
         requestId: 'auth-invalid',
         token: 'wrong-token-123456',
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
       }),
       daemonContext,
     );
@@ -366,6 +664,7 @@ void test('handleClientMessage rate limits repeated websocket auth failures from
           type: 'run.auth',
           requestId: `auth-invalid-${index}`,
           token: 'wrong-token-123456',
+          computerSessionId: TEST_COMPUTER_SESSION_ID,
         }),
         daemonContext,
       );
@@ -388,6 +687,7 @@ void test('handleClientMessage rate limits repeated websocket auth failures from
         type: 'run.auth',
         requestId: 'auth-limited',
         token: 'wrong-token-123456',
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
       }),
       daemonContext,
     );
@@ -453,6 +753,7 @@ void test('handleClientMessage routes authenticated run.start validation errors 
         type: 'run.auth',
         requestId: 'auth-start',
         token: TEST_DEV_TOKEN,
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
       }),
       daemonContext,
     );
@@ -496,6 +797,7 @@ void test('handleClientMessage rejects a second same-socket run.start while anot
         type: 'run.auth',
         requestId: 'auth-inflight',
         token: TEST_DEV_TOKEN,
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
       }),
       daemonContext,
     );
@@ -519,7 +821,7 @@ void test('handleClientMessage rejects a second same-socket run.start while anot
       requestId: 'start-second',
       status: 409,
       code: 'conflict_active_run',
-      message: 'socket already has an active run',
+      message: 'socket already has a run.start request in flight',
     });
   } finally {
     cleanupSocketState(socket, daemonContext);
@@ -560,6 +862,7 @@ void test('handleClientMessage routes run.interject to the durable active run bu
         type: 'run.auth',
         requestId: 'auth-interject-enabled',
         token: TEST_DEV_TOKEN,
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
       }),
       daemonContext,
     );
@@ -677,6 +980,7 @@ void test('handleClientMessage preserves requestId when run.start setup throws u
         type: 'run.auth',
         requestId: 'auth-start-throw',
         token: TEST_DEV_TOKEN,
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
       }),
       daemonContext,
     );
@@ -746,6 +1050,7 @@ void test('handleClientMessage can route run.start through an injected active-ru
         type: 'run.auth',
         requestId: 'auth-local-start',
         token: TEST_DEV_TOKEN,
+        computerSessionId: TEST_COMPUTER_SESSION_ID,
       }),
       daemonContext,
     );

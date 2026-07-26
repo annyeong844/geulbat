@@ -9,6 +9,7 @@ import type { ProviderReplayScopeId } from '@geulbat/protocol/provider-auth';
 import { testRunId } from '../../test-support/run-id.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import { loadExistingHistory } from '../agent/loop-history.js';
+import { buildQwenChatMessages } from '../llm/provider/qwen/index.js';
 import { buildResponseWireInput } from '../llm/provider/transport/responses-wire-input.js';
 import { appendTranscriptEntry } from './transcript-log.js';
 import { branchThreadSession } from './branch-thread.js';
@@ -226,13 +227,22 @@ void test('history replay restores raw provider calls without duplicating normal
         providerReplayScopeId: PROVIDER_TARGET.replayScopeId,
       }),
     );
-    await assert.rejects(
-      loadExistingHistory(stateRoot, threadId, {
+    const normalizedForAnotherModel = await loadExistingHistory(
+      stateRoot,
+      threadId,
+      {
         providerId: 'openai_codex_direct',
         model: 'different-model',
         replayScopeId: PROVIDER_TARGET.replayScopeId,
-      }),
-      /provider round history is incompatible/u,
+      },
+    );
+    assert.equal(
+      normalizedForAnotherModel.some((item) => item.kind === 'backend_item'),
+      false,
+    );
+    assert.deepEqual(
+      normalizedForAnotherModel.map((item) => item.kind),
+      ['user', 'function_call', 'function_call_output', 'assistant'],
     );
   } finally {
     await rm(stateRoot, { recursive: true, force: true });
@@ -355,6 +365,101 @@ void test('legacy provider rounds remain readable but fail closed in a scoped re
     await assert.rejects(
       loadExistingHistory(stateRoot, threadId, PROVIDER_TARGET),
       /different authentication scope/u,
+    );
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('provider round journal durably replays Qwen reasoning into the next turn', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-provider-round-qwen-'),
+  );
+  const threadId = testThreadId(706);
+  const runId = testRunId(706);
+  const replayScopeId = `sha256:${'b'.repeat(64)}` as ProviderReplayScopeId;
+  const providerTarget = {
+    providerId: 'qwen_token_plan' as const,
+    model: 'qwen3.8-max-preview',
+    replayScopeId,
+  };
+  const reasoningItem = {
+    type: 'message',
+    id: 'qwen-reasoning-706',
+    role: 'assistant',
+    status: 'completed',
+    phase: 'commentary',
+    content: [
+      {
+        type: 'output_text',
+        text: 'Retained Qwen reasoning.',
+        annotations: [],
+      },
+    ],
+  };
+  const answerItem = {
+    type: 'message',
+    id: 'qwen-answer-706',
+    role: 'assistant',
+    status: 'completed',
+    phase: 'final_answer',
+    content: [
+      { type: 'output_text', text: 'Initial answer.', annotations: [] },
+    ],
+  };
+
+  try {
+    const initialUser = await appendTranscriptEntry(stateRoot, threadId, {
+      role: 'user',
+      content: 'Please reason carefully.',
+      timestamp: '2026-07-18T00:00:00.000Z',
+    });
+    await appendProviderRound({
+      stateRoot,
+      threadId,
+      runId,
+      round: 0,
+      ...providerTarget,
+      precedingTranscriptEntryId: initialUser.entryId,
+      items: [reasoningItem, answerItem],
+      functionCalls: [],
+      now: () => '2026-07-18T00:00:01.000Z',
+    });
+    await appendTranscriptEntry(stateRoot, threadId, {
+      role: 'assistant',
+      content: 'Initial answer.',
+      metadata: { phase: 'final_answer', sourceRunId: runId },
+      timestamp: '2026-07-18T00:00:02.000Z',
+    });
+    await appendTranscriptEntry(stateRoot, threadId, {
+      role: 'user',
+      content: 'Use that reasoning again.',
+      timestamp: '2026-07-18T00:00:03.000Z',
+    });
+
+    const [record] = await readProviderRoundHistory(stateRoot, threadId);
+    assert.equal(record?.providerId, 'qwen_token_plan');
+    assert.deepEqual(record?.items, [reasoningItem, answerItem]);
+
+    const reloadedHistory = await loadExistingHistory(
+      stateRoot,
+      threadId,
+      providerTarget,
+    );
+    assert.deepEqual(
+      buildQwenChatMessages({
+        history: reloadedHistory,
+        providerReplayScopeId: replayScopeId,
+      }),
+      [
+        { role: 'user', content: 'Please reason carefully.' },
+        {
+          role: 'assistant',
+          content: 'Initial answer.',
+          reasoning_content: 'Retained Qwen reasoning.',
+        },
+        { role: 'user', content: 'Use that reasoning again.' },
+      ],
     );
   } finally {
     await rm(stateRoot, { recursive: true, force: true });

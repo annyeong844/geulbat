@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
 
 import { createAgentEvent, type AgentEvent } from './events.js';
 import { executeResolvedFunctionCall } from './loop-tool-execute-context.js';
@@ -113,11 +114,17 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
   const toolArgs = {
     path: 'draft.md',
   };
+  const toolCapabilityPolicy = createToolCapabilityPolicy({
+    directRegistryNames: [toolName],
+    allowedRegistryNames: [toolName],
+    callbackRegistryNames: [],
+    writeCallbackEnabled: false,
+  });
   const toolLibraryProjectionIdentity = {
     sdkVersion: 'sdk-v1',
     sdkProjectionHash:
       'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const,
-    policyId: 'ptc_sdk_read_file_slice_v1',
+    policyId: toolCapabilityPolicy.toolCapabilityPolicyId,
   };
 
   const result = await executeResolvedFunctionCall({
@@ -131,7 +138,7 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
     approvalGranted: true,
     runtime: buildToolCallExecutionRuntime({
       approvalContext: makeApprovalContext({
-        sessionId: 'session-execute-context',
+        computerSessionId: 'session-execute-context',
       }),
       emit: (type, payload) => {
         events.push(createAgentEvent(type, payload));
@@ -143,16 +150,17 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
         runId: 'run-execute-context',
         runContext,
         approvalContext: makeApprovalContext({
-          sessionId: 'session-execute-context',
+          computerSessionId: 'session-execute-context',
         }),
         currentFile: 'draft.md',
         selection,
         signal: undefined,
         runState,
+        toolCapabilityPolicy,
         toolLibraryProjectionIdentity,
         computerFileRoot: '/tmp/execute-context-computer',
         memoryIndex: undefined,
-        agentSpawnRuntime: undefined,
+        runtimeServices: undefined,
         emit: (type, payload) => {
           events.push(createAgentEvent(type, payload));
         },
@@ -168,7 +176,7 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
   assert.ok(capturedContext.signal instanceof AbortSignal);
   assert.equal(capturedContext.runSignal, undefined);
   assert.equal(capturedContext.approvalGranted, true);
-  assert.equal(capturedContext.approvalSessionId, 'session-execute-context');
+  assert.equal(capturedContext.computerSessionId, 'session-execute-context');
   assert.equal(capturedContext.permissionMode, 'basic');
   assert.equal(capturedContext.stateRoot, runContext.stateRoot);
   assert.equal(capturedContext.workingDirectory, runContext.workingDirectory);
@@ -186,6 +194,7 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
     capturedContext.toolLibraryProjectionIdentity,
     toolLibraryProjectionIdentity,
   );
+  assert.deepEqual(capturedContext.toolCapabilityPolicy, toolCapabilityPolicy);
   assert.equal(typeof capturedContext.emitAgentEvent, 'function');
   assert.deepEqual(events, [
     createAgentEvent('commentary_delta', { text: 'from-tool' }),
@@ -231,7 +240,7 @@ void test('executeResolvedFunctionCall does not revive or execute a run cancelle
     approvalGranted: true,
     runtime: buildToolCallExecutionRuntime({
       approvalContext: makeApprovalContext({
-        sessionId: 'session-execute-context-cancelled',
+        computerSessionId: 'session-execute-context-cancelled',
       }),
       emit: () => {},
       approvalGrants: createApprovalGrantStore(),
@@ -241,7 +250,7 @@ void test('executeResolvedFunctionCall does not revive or execute a run cancelle
         runId: 'run-execute-context-cancelled',
         runContext,
         approvalContext: makeApprovalContext({
-          sessionId: 'session-execute-context-cancelled',
+          computerSessionId: 'session-execute-context-cancelled',
         }),
         emit: () => {},
         currentFile: undefined,
@@ -249,7 +258,7 @@ void test('executeResolvedFunctionCall does not revive or execute a run cancelle
         signal: undefined,
         runState,
         memoryIndex: undefined,
-        agentSpawnRuntime: undefined,
+        runtimeServices: undefined,
       }),
     }),
   });
@@ -286,14 +295,14 @@ void test('buildAgentToolExecutionContextBase projects registered child ownershi
       stateRoot: '/tmp/execute-context-child-state',
     }),
     approvalContext: makeApprovalContext({
-      sessionId: 'session-execute-context-child',
+      computerSessionId: 'session-execute-context-child',
     }),
     currentFile: undefined,
     selection: undefined,
     signal: undefined,
     runState: undefined,
     memoryIndex: undefined,
-    agentSpawnRuntime: daemonContext,
+    runtimeServices: daemonContext,
     emit: () => {},
   });
 
@@ -337,7 +346,7 @@ void test('executeResolvedFunctionCall can use an injected registry for tools ab
     approvalGranted: false,
     runtime: buildToolCallExecutionRuntime({
       approvalContext: makeApprovalContext({
-        sessionId: 'session-execute-context-local',
+        computerSessionId: 'session-execute-context-local',
       }),
       emit: () => {},
       approvalGrants: createApprovalGrantStore(),
@@ -347,7 +356,7 @@ void test('executeResolvedFunctionCall can use an injected registry for tools ab
         runId: 'run-execute-context-local',
         runContext,
         approvalContext: makeApprovalContext({
-          sessionId: 'session-execute-context-local',
+          computerSessionId: 'session-execute-context-local',
         }),
         emit: () => {},
         currentFile: undefined,
@@ -355,7 +364,7 @@ void test('executeResolvedFunctionCall can use an injected registry for tools ab
         signal: undefined,
         runState: undefined,
         memoryIndex: undefined,
-        agentSpawnRuntime: undefined,
+        runtimeServices: undefined,
       }),
     }),
   });

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
 import { createDaemonContext } from '../../context.js';
 import {
   PTC_EXECUTE_CODE_TOOL_NAME,
@@ -13,6 +14,7 @@ import {
   createPtcExecuteCodeCallbackBreakdown,
   createPtcExecuteCodeToolCallbackHandler,
   createPtcExecuteCodeToolCallbackHelp,
+  createPtcExecuteCodeToolCallbackSurface,
 } from './execute-code-tool-callback.js';
 import {
   isPtcExecuteCodeWriteCallbackToolMetaAllowed,
@@ -24,6 +26,12 @@ function makeCtx(
   overrides: {
     allowedRegistryNames?: readonly string[];
     callbackToolDispatcher?: CallbackToolDispatcher;
+    toolCapabilityPolicy?: ReturnType<typeof createToolCapabilityPolicy>;
+    toolLibraryProjectionIdentity?: {
+      sdkVersion: string;
+      sdkProjectionHash: `sha256:${string}`;
+      policyId: string;
+    };
   } = {},
 ) {
   return {
@@ -32,7 +40,7 @@ function makeCtx(
 
     workingDirectory: 'project',
     threadId: testThreadId(930),
-    agentSpawnRuntime: daemonContext,
+    runtimeServices: daemonContext,
     ...overrides,
   };
 }
@@ -207,6 +215,49 @@ void test('write tier stays absent without the knob and out of run scope with it
   });
   assert.equal(scopedSurface.allows('manage_files'), true);
   assert.equal(scopedSurface.allows('apply_patch'), false);
+});
+
+void test('an explicit capability policy owns the callback surface instead of the ambient write knob', async () => {
+  const daemonContext = createDaemonContext();
+  const toolCapabilityPolicy = createToolCapabilityPolicy({
+    directRegistryNames: ['execute_code'],
+    allowedRegistryNames: ['apply_patch', 'execute_code', 'read_file'],
+    callbackRegistryNames: ['read_file'],
+    writeCallbackEnabled: false,
+  });
+  const projectionIdentity = {
+    sdkVersion: 'sdk-policy-test',
+    sdkProjectionHash:
+      'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' as const,
+    policyId: toolCapabilityPolicy.toolCapabilityPolicyId,
+  };
+
+  await withWriteCallbackEnv('1', () => {
+    const surface = createPtcExecuteCodeToolCallbackSurface(
+      makeCtx(daemonContext, {
+        toolCapabilityPolicy,
+        toolLibraryProjectionIdentity: projectionIdentity,
+      }),
+    );
+    assert.ok(surface);
+    assert.equal(surface.writeTierEnabled, false);
+    assert.equal(surface.allows('read_file'), true);
+    assert.equal(surface.allows('apply_patch'), false);
+  });
+
+  assert.throws(
+    () =>
+      createPtcExecuteCodeToolCallbackSurface(
+        makeCtx(daemonContext, {
+          toolCapabilityPolicy,
+          toolLibraryProjectionIdentity: {
+            ...projectionIdentity,
+            policyId: 'different-policy',
+          },
+        }),
+      ),
+    /does not match the mounted tool library projection/u,
+  );
 });
 
 void test('manage_files stays discoverable while delete is refused before dispatch', async () => {

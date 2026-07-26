@@ -106,6 +106,13 @@ void test('Editor shows the empty state before a file is opened', () => {
       lastSavedAt={null}
       uiError={null}
       saveConflict={null}
+      recentFiles={[
+        'projects/roadmap.md',
+        'research/agent-notes.md',
+        'docs/launch-checklist.md',
+      ]}
+      onOpenFolder={() => {}}
+      onOpenRecentFile={() => {}}
       onChange={() => {}}
       onSave={() => {}}
       onConflictReload={() => {}}
@@ -114,7 +121,96 @@ void test('Editor shows the empty state before a file is opened', () => {
     />,
   );
 
-  assert.match(html, /파일을 열어 시작하세요/);
+  assert.match(html, /폴더를 열어 시작하세요/);
+  assert.match(html, /폴더 열기/);
+  assert.match(html, /최근 파일/);
+  assert.match(html, /roadmap\.md/);
+  assert.match(html, /agent-notes\.md/);
+  assert.doesNotMatch(html, /최근 작업 또는 새 문서로 시작할 수 있습니다/);
+  assert.doesNotMatch(html, /새 문서/);
+});
+
+void test('Editor empty-state actions open a folder and a recent file', () => {
+  const openedPaths: string[] = [];
+  const removedPaths: string[] = [];
+  let folderOpenCount = 0;
+  const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'window',
+  );
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      addEventListener() {},
+      removeEventListener() {},
+    },
+  });
+
+  let renderer!: ReactTestRenderer;
+  try {
+    withQuietReactTestRenderer(() => {
+      act(() => {
+        renderer = TestRenderer.create(
+          <Editor
+            filePath={null}
+            content=""
+            isDirty={false}
+            saving={false}
+            openingFile={false}
+            lastSavedAt={null}
+            uiError={null}
+            saveConflict={null}
+            recentFiles={['projects/roadmap.md']}
+            onOpenFolder={() => {
+              folderOpenCount += 1;
+            }}
+            onOpenRecentFile={(path) => {
+              openedPaths.push(path);
+            }}
+            onRemoveRecentFile={(path) => {
+              removedPaths.push(path);
+            }}
+            onChange={() => {}}
+            onSave={() => {}}
+            onConflictReload={() => {}}
+            onConflictSaveAsCopy={() => {}}
+            onConflictInspect={async () => null}
+          />,
+        );
+      });
+    });
+
+    const buttons = renderer.root.findAllByType('button');
+    const openFolderButton = buttons.find((button) =>
+      button.children.includes('폴더 열기'),
+    );
+    const recentFileButton = buttons.find(
+      (button) => button.props.className === 'recent-file-open',
+    );
+    const removeRecentFileButton = buttons.find(
+      (button) => button.props.className === 'recent-file-remove',
+    );
+    assert.ok(openFolderButton);
+    assert.ok(recentFileButton);
+    assert.ok(removeRecentFileButton);
+
+    void act(() => openFolderButton.props.onClick());
+    void act(() => recentFileButton.props.onClick());
+    void act(() => removeRecentFileButton.props.onClick());
+
+    assert.equal(folderOpenCount, 1);
+    assert.deepEqual(openedPaths, ['projects/roadmap.md']);
+    assert.deepEqual(removedPaths, ['projects/roadmap.md']);
+  } finally {
+    if (renderer !== undefined) {
+      act(() => renderer.unmount());
+    }
+    if (originalWindowDescriptor === undefined) {
+      Reflect.deleteProperty(globalThis, 'window');
+    } else {
+      Object.defineProperty(globalThis, 'window', originalWindowDescriptor);
+    }
+  }
 });
 
 void test('Editor file tabs use native buttons and move selection with arrow keys', () => {

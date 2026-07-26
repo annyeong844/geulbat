@@ -37,6 +37,7 @@ export interface ActiveRunStore {
   finishRun(threadId: string | ThreadId, runId: RunId): void;
   getRunById(runId: RunId): ActiveRunSnapshot | undefined;
   getRunByThreadId(threadId: string): ActiveRunSnapshot | undefined;
+  getRunByOwnerThread(ownerThreadId: string): ActiveRunSnapshot | undefined;
   appendPendingInterject(
     runId: RunId,
     request: { text: string },
@@ -52,7 +53,9 @@ export interface ActiveRunStore {
   ): { ok: true; flushed: boolean } | { ok: false; code: 'not_found' };
   abortRun(runId: RunId): boolean;
   abortRunSubtree(runId: RunId, reason?: unknown): boolean;
-  abortThreadTree(ownerThreadId: string): boolean;
+  abortThreadTree(ownerThreadId: string, reason?: unknown): boolean;
+  abortAllRuns(reason?: unknown): number;
+  waitForIdle(signal?: AbortSignal): Promise<void>;
 }
 
 function snapshotActiveRun(run: ActiveRun): ActiveRunSnapshot {
@@ -74,6 +77,17 @@ export function createActiveRunStore(): ActiveRunStore {
   const ownerThreadIdByRunId = new Map<RunId, ThreadId>();
   const parentRunIdByRunId = new Map<RunId, RunId>();
   const childrenByParentRunId = new Map<RunId, Set<RunId>>();
+  const idleWaiters = new Set<() => void>();
+
+  const notifyIdleWaiters = (): void => {
+    if (byRunId.size > 0) {
+      return;
+    }
+    for (const resolve of idleWaiters) {
+      resolve();
+    }
+    idleWaiters.clear();
+  };
 
   const pruneInactiveRunLineage = (runId: RunId): void => {
     if (byRunId.has(runId)) {
@@ -185,6 +199,7 @@ export function createActiveRunStore(): ActiveRunStore {
       byThread.delete(run.threadId);
       byRunId.delete(runId);
       pruneInactiveRunLineage(runId);
+      notifyIdleWaiters();
     },
     getRunById(runId) {
       const run = byRunId.get(runId);
@@ -193,6 +208,21 @@ export function createActiveRunStore(): ActiveRunStore {
     getRunByThreadId(threadId) {
       const run = byThread.get(assertValidThreadId(threadId));
       return run ? snapshotActiveRun(run) : undefined;
+    },
+    getRunByOwnerThread(ownerThreadId) {
+      const runIds = runIdsByOwnerThread.get(
+        assertValidThreadId(ownerThreadId),
+      );
+      if (!runIds) {
+        return undefined;
+      }
+      for (const runId of runIds) {
+        const run = byRunId.get(runId);
+        if (run) {
+          return snapshotActiveRun(run);
+        }
+      }
+      return undefined;
     },
     appendPendingInterject(runId, request) {
       const run = byRunId.get(runId);
@@ -240,13 +270,52 @@ export function createActiveRunStore(): ActiveRunStore {
     abortRunSubtree(runId, reason) {
       return abortRunIdsAndDescendants([runId], reason);
     },
-    abortThreadTree(ownerThreadId) {
+    abortThreadTree(ownerThreadId, reason) {
       const validOwnerThreadId = assertValidThreadId(ownerThreadId);
       const runIds = runIdsByOwnerThread.get(validOwnerThreadId);
       if (!runIds || runIds.size === 0) {
         return false;
       }
-      return abortRunIdsAndDescendants(runIds);
+      return abortRunIdsAndDescendants(runIds, reason);
+    },
+    abortAllRuns(reason) {
+      let aborted = 0;
+      for (const run of byRunId.values()) {
+        if (run.abortController.signal.aborted) {
+          continue;
+        }
+        run.abortController.abort(reason);
+        aborted += 1;
+      }
+      return aborted;
+    },
+    waitForIdle(signal) {
+      if (byRunId.size === 0) {
+        return Promise.resolve();
+      }
+      if (signal?.aborted) {
+        return Promise.reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new Error('active run idle wait aborted'),
+        );
+      }
+      return new Promise<void>((resolve, reject) => {
+        const onIdle = () => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        const onAbort = () => {
+          idleWaiters.delete(onIdle);
+          reject(
+            signal?.reason instanceof Error
+              ? signal.reason
+              : new Error('active run idle wait aborted'),
+          );
+        };
+        idleWaiters.add(onIdle);
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
     },
   };
 }

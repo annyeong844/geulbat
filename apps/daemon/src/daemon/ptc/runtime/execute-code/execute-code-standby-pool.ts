@@ -6,6 +6,7 @@ import type {
   PtcSessionDockerResult,
 } from '../../lab/session/session-docker-contract.js';
 import { createPtcLogger } from '../../shared/logger.js';
+import { runDetached } from '../../../utils/run-detached.js';
 
 const logger = createPtcLogger('execute-code/standby-pool');
 
@@ -28,6 +29,13 @@ export type PtcExecuteCodeStandbyIdentity = PtcSessionDockerIdentity & {
   ephemeralBurstId: `ptc_burst_${string}`;
 };
 
+export interface PtcExecuteCodeStandbyPressureSnapshot {
+  state: 'open' | 'closing' | 'closed';
+  readySlotCount: number;
+  refillInFlightCount: number;
+  identityCount: number;
+}
+
 export interface PtcExecuteCodeStandbyPool {
   refill(
     identity: PtcSessionDockerIdentity,
@@ -40,6 +48,7 @@ export interface PtcExecuteCodeStandbyPool {
     readySlotCount: number;
     reservedSlotCount: number;
   };
+  readPressureSnapshot(): PtcExecuteCodeStandbyPressureSnapshot;
   close(): Promise<PtcSessionDockerResult<void>>;
 }
 
@@ -117,10 +126,14 @@ export function createPtcExecuteCodeStandbyPool(args: {
         const refillPromise = prewarmSlot(baseIdentity, identityKey);
         inFlightRefills.add(refillPromise);
         incrementInFlightRefillCount(identityKey);
-        void refillPromise.finally(() => {
-          inFlightRefills.delete(refillPromise);
-          decrementInFlightRefillCount(identityKey);
-        });
+        // finally는 거절을 처리하지 않는다 — 파생 프로미스의 거절을 받을
+        // 소유자가 여기에 필요하다.
+        runDetached('ptc/standby-refill-bookkeeping', () =>
+          refillPromise.finally(() => {
+            inFlightRefills.delete(refillPromise);
+            decrementInFlightRefillCount(identityKey);
+          }),
+        );
         scheduled.push(refillPromise);
       }
       if (scheduled.length === 0) {
@@ -170,6 +183,18 @@ export function createPtcExecuteCodeStandbyPool(args: {
     return {
       readySlotCount: readySlotsByIdentity.get(identityKey)?.length ?? 0,
       reservedSlotCount: readySlotCount + inFlightRefills.size,
+    };
+  }
+
+  function readPressureSnapshot(): PtcExecuteCodeStandbyPressureSnapshot {
+    return {
+      state,
+      readySlotCount,
+      refillInFlightCount: inFlightRefills.size,
+      identityCount: new Set([
+        ...readySlotsByIdentity.keys(),
+        ...inFlightRefillCountByIdentity.keys(),
+      ]).size,
     };
   }
 
@@ -263,7 +288,7 @@ export function createPtcExecuteCodeStandbyPool(args: {
     inFlightRefillCountByIdentity.set(identityKey, next);
   }
 
-  return { refill, claimReady, readInventory, close };
+  return { refill, claimReady, readInventory, readPressureSnapshot, close };
 }
 
 function withoutEphemeralBurstId(

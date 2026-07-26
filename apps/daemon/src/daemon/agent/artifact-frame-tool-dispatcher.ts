@@ -66,7 +66,11 @@ export async function dispatchArtifactFrameToolCall(args: {
     runtimeToolCallId: frameRequestId,
     hostCallId,
     ...(mayMutateComputerFiles
-      ? { approvalClass: resolveApprovalClass(toolName, toolArgs) }
+      ? {
+          approvalClass: resolveApprovalClass(toolName, toolArgs, {
+            toolRegistry: runtimeServices.toolRegistry,
+          }),
+        }
       : {}),
   };
   const functionCall: FunctionCall = {
@@ -89,7 +93,7 @@ export async function dispatchArtifactFrameToolCall(args: {
       : { computerFileRoot: runtimeServices.computerFileRoot }),
     fileStateCache: runtimeServices.fileStateCache,
     memoryIndex: runtimeServices.memoryIndex,
-    agentSpawnRuntime: runtimeServices,
+    runtimeServices: runtimeServices,
   });
   const toolRuntime = buildToolCallExecutionRuntime({
     approvalContext,

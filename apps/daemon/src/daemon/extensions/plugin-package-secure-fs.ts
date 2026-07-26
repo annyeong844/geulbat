@@ -34,6 +34,7 @@ export async function inventoryPackageTree(
       getErrorCode(error) === 'ENOENT'
         ? 'managed plugin package is missing'
         : 'managed plugin package cannot be inspected',
+      { cause: error },
     );
   }
   if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
@@ -317,9 +318,17 @@ export async function readJsonObject(
     if (error instanceof PluginPackageAdmissionError) {
       throw error;
     }
+    if (error instanceof SyntaxError) {
+      throw new PluginPackageAdmissionError(
+        'invalid_request',
+        `plugin JSON is invalid: ${displayPath}`,
+        { cause: error },
+      );
+    }
     throw new PluginPackageAdmissionError(
       'invalid_request',
-      `plugin JSON is invalid: ${displayPath}`,
+      `plugin JSON could not be read: ${displayPath}`,
+      { cause: error },
     );
   }
   if (!isRecord(parsed)) {

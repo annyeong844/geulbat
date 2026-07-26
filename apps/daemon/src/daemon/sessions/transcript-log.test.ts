@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { testThreadId } from '../../test-support/thread-id.js';
@@ -11,12 +18,18 @@ import {
   writeToolOutputSnapshot,
 } from '../files/tool-output-store.js';
 import {
+  buildHostCommandOutputRef,
+  buildHostCommandPaths,
+} from '../host-command-output-store.js';
+import {
+  appendTranscriptEntries,
   appendTranscriptEntry,
   CompareAndAppendMismatchError,
   getTranscriptEntryCacheLimitForTests,
   getTranscriptEntryCacheSizeForTests,
   getTranscriptEntryParseCountForTests,
   hasTranscriptEntryCacheForTests,
+  readLastTranscriptEntryId,
   readTranscriptEntries,
   replaceTranscriptEntries,
   resetTranscriptEntryCacheForTests,
@@ -334,16 +347,89 @@ void test('appendTranscriptEntry updates a warmed transcript cache without forci
   assert.equal(initial.length, 1);
   assert.equal(getTranscriptEntryParseCountForTests(), 1);
 
-  await appendTranscriptEntry(workspaceRoot, threadId, {
+  const appended = await appendTranscriptEntry(workspaceRoot, threadId, {
     role: 'assistant',
     content: 'second',
     timestamp: '2026-03-29T00:00:01.000Z',
   });
 
+  assert.equal(
+    await readLastTranscriptEntryId(workspaceRoot, threadId),
+    appended.entryId,
+  );
+  assert.equal(getTranscriptEntryParseCountForTests(), 1);
+
   const updated = await readTranscriptEntries(workspaceRoot, threadId);
   assert.deepEqual(
     updated.map((entry) => entry.content),
     ['first', 'second'],
+  );
+  assert.equal(getTranscriptEntryParseCountForTests(), 1);
+});
+
+void test('appendTranscriptEntry recreates a removed directory behind a warmed cache', async () => {
+  resetTranscriptEntryCacheForTests();
+  const threadId = testThreadId(22);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-transcript-'));
+  const sessionsDir = join(workspaceRoot, '.geulbat', 'sessions');
+
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: 'before-directory-removal',
+    timestamp: '2026-03-29T00:05:00.000Z',
+  });
+  await readTranscriptEntries(workspaceRoot, threadId);
+  assert.equal(getTranscriptEntryParseCountForTests(), 1);
+
+  await rm(sessionsDir, { recursive: true, force: true });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'assistant',
+    content: 'after-directory-removal',
+    timestamp: '2026-03-29T00:05:01.000Z',
+  });
+
+  const updated = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.deepEqual(
+    updated.map((entry) => entry.content),
+    ['after-directory-removal'],
+  );
+  assert.equal(getTranscriptEntryParseCountForTests(), 2);
+});
+
+void test('appendTranscriptEntries persists an ordered batch and updates a warmed cache once', async () => {
+  resetTranscriptEntryCacheForTests();
+  const threadId = testThreadId(21);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-transcript-'));
+
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: 'before-batch',
+    timestamp: '2026-03-29T00:10:00.000Z',
+  });
+  await readTranscriptEntries(workspaceRoot, threadId);
+  assert.equal(getTranscriptEntryParseCountForTests(), 1);
+
+  const appended = await appendTranscriptEntries(workspaceRoot, threadId, [
+    {
+      role: 'tool_call',
+      content: '{"callId":"call-a"}',
+      timestamp: '2026-03-29T00:10:01.000Z',
+    },
+    {
+      role: 'tool_call',
+      content: '{"callId":"call-b"}',
+      timestamp: '2026-03-29T00:10:02.000Z',
+    },
+  ]);
+
+  const updated = await readTranscriptEntries(workspaceRoot, threadId);
+  assert.deepEqual(
+    updated.map((entry) => entry.content),
+    ['before-batch', '{"callId":"call-a"}', '{"callId":"call-b"}'],
+  );
+  assert.deepEqual(
+    appended.map((entry) => entry.entryId),
+    updated.slice(1).map((entry) => entry.entryId),
   );
   assert.equal(getTranscriptEntryParseCountForTests(), 1);
 });
@@ -495,7 +581,7 @@ void test('replaceTranscriptEntries rewrites the transcript and refreshes the wa
   );
 });
 
-void test('replaceTranscriptEntries prunes snapshots whose output refs leave the authoritative transcript', async () => {
+void test('replaceTranscriptEntries prunes durable outputs whose refs leave the authoritative transcript', async () => {
   resetTranscriptEntryCacheForTests();
   const threadId = testThreadId(9);
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-transcript-'));
@@ -508,6 +594,18 @@ void test('replaceTranscriptEntries prunes snapshots whose output refs leave the
     threadId,
     runId: 'run-removed',
     callId: 'call-removed',
+  });
+  const retainedCommandOutputRef = buildHostCommandOutputRef({
+    threadId,
+    sessionId: '00000000-0000-4000-8000-000000000301',
+  });
+  const removedCommandOutputRef = buildHostCommandOutputRef({
+    threadId,
+    sessionId: '00000000-0000-4000-8000-000000000302',
+  });
+  const checkpointCommandOutputRef = buildHostCommandOutputRef({
+    threadId,
+    sessionId: '00000000-0000-4000-8000-000000000303',
   });
   for (const [outputRef, runId, callId] of [
     [retainedOutputRef, 'run-retained', 'call-retained'],
@@ -539,13 +637,92 @@ void test('replaceTranscriptEntries prunes snapshots whose output refs leave the
       timestamp: '2026-03-31T00:00:00.000Z',
     });
   }
+  const retainedCommandPaths = buildHostCommandPaths({
+    stateRoot: workspaceRoot,
+    threadId,
+    outputRef: retainedCommandOutputRef,
+  });
+  const removedCommandPaths = buildHostCommandPaths({
+    stateRoot: workspaceRoot,
+    threadId,
+    outputRef: removedCommandOutputRef,
+  });
+  const checkpointCommandPaths = buildHostCommandPaths({
+    stateRoot: workspaceRoot,
+    threadId,
+    outputRef: checkpointCommandOutputRef,
+  });
+  for (const paths of [
+    retainedCommandPaths,
+    removedCommandPaths,
+    checkpointCommandPaths,
+  ]) {
+    await mkdir(paths.directory, { recursive: true });
+    await Promise.all([
+      writeFile(paths.stdout, 'command output', 'utf8'),
+      writeFile(paths.stderr, '', 'utf8'),
+    ]);
+  }
+  await appendTranscriptEntries(workspaceRoot, threadId, [
+    {
+      role: 'tool_result',
+      content: JSON.stringify({
+        callId: 'call-command-retained',
+        tool: 'write_stdin',
+        ok: true,
+        output: JSON.stringify({
+          snapshot: { outputRef: retainedCommandOutputRef, status: 'exit' },
+          page: null,
+        }),
+      }),
+      timestamp: '2026-03-31T00:00:01.000Z',
+    },
+    {
+      role: 'tool_result',
+      content: JSON.stringify({
+        callId: 'call-command-removed',
+        tool: 'exec_command',
+        ok: true,
+        output: JSON.stringify({
+          outputRef: removedCommandOutputRef,
+          status: 'exit',
+        }),
+      }),
+      timestamp: '2026-03-31T00:00:02.000Z',
+    },
+  ]);
 
   const currentEntries = await readTranscriptEntries(workspaceRoot, threadId);
-  await replaceTranscriptEntries(
-    workspaceRoot,
-    threadId,
-    currentEntries.filter((entry) => !entry.content.includes(removedOutputRef)),
-  );
+  await replaceTranscriptEntries(workspaceRoot, threadId, [
+    ...currentEntries.filter(
+      (entry) =>
+        !entry.content.includes(removedOutputRef) &&
+        !entry.content.includes(removedCommandOutputRef),
+    ),
+    {
+      role: 'compaction',
+      content: '',
+      timestamp: '2026-03-31T00:00:03.000Z',
+      compactionData: {
+        kind: 'provider_native',
+        providerId: 'openai_codex_direct',
+        model: 'gpt-test',
+        output: [{ type: 'compaction_summary', encrypted_content: 'opaque' }],
+        tokensBefore: 100,
+        contextWindow: 1_000,
+        thresholdTokens: 900,
+        evidence: [
+          {
+            callId: 'call-command-checkpoint',
+            toolName: 'exec_command',
+            outcome: 'success',
+            fullOutputBytes: 14,
+            outputRef: checkpointCommandOutputRef,
+          },
+        ],
+      },
+    },
+  ]);
 
   assert.equal(
     (
@@ -567,6 +744,19 @@ void test('replaceTranscriptEntries prunes snapshots whose output refs leave the
     throw new Error('expected removed snapshot to be pruned');
   }
   assert.equal(removed.errorCode, 'not_found');
+  assert.equal(
+    (await stat(retainedCommandPaths.directory)).isDirectory(),
+    true,
+  );
+  assert.equal(
+    (await stat(checkpointCommandPaths.directory)).isDirectory(),
+    true,
+  );
+  await assert.rejects(
+    stat(removedCommandPaths.directory),
+    (error: unknown) =>
+      error instanceof Error && 'code' in error && error.code === 'ENOENT',
+  );
 });
 
 void test('readTranscriptEntries bounds the transcript cache and evicts the least recently used thread', async () => {

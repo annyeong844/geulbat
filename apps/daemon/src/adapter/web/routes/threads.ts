@@ -20,7 +20,10 @@ import {
   commitThreadArtifactUpdateVersion,
   isArtifactStoreCorruptionError,
 } from '../../../daemon/sessions/artifact-store.js';
-import { loadThreadIndex } from '../../../daemon/sessions/threads-index.js';
+import {
+  loadThreadIndex,
+  upsertThreadSummary,
+} from '../../../daemon/sessions/threads-index.js';
 import { loadThreadDetailSnapshot } from '../../../daemon/sessions/thread-detail.js';
 import { readRunAttachment } from '../../../daemon/sessions/run-attachment-store.js';
 import {
@@ -82,12 +85,15 @@ function createThreadsRoutesInternal(args: {
     }
 
     try {
-      res.json(
-        await loadThreadDetailSnapshot({
-          workspaceRoot: homeStateRoot,
-          threadId,
-        }),
-      );
+      const detail = await loadThreadDetailSnapshot({
+        workspaceRoot: homeStateRoot,
+        threadId,
+      });
+      res.json({
+        ...detail,
+        subagentTerminalOutcomes:
+          backgroundNotifications.readThreadBackgroundResultHistory(threadId),
+      });
     } catch (err: unknown) {
       if (isTranscriptCorruptionError(err)) {
         sendApiError(res, 'internal', 'thread transcript is corrupted');
@@ -241,7 +247,7 @@ function createThreadsRoutesInternal(args: {
         );
         return;
       }
-      if (source.providerId === target.providerId) {
+      if (source.id === target.id) {
         res.json({
           ok: true,
           status: 'not_needed',
@@ -296,10 +302,13 @@ function createThreadsRoutesInternal(args: {
         res,
         result.reason === 'stale_snapshot'
           ? 'conflict'
-          : result.reason === 'same_provider'
+          : result.reason === 'same_target'
             ? 'invalid_args'
-            : 'execution_failed',
-        result.message,
+            : 'provider_transition_preparation_failed',
+        result.reason === 'stale_snapshot' || result.reason === 'same_target'
+          ? result.message
+          : `${result.message}; retry, or continue with the selected model in a new thread`,
+        { reason: result.reason },
       );
     },
   );
@@ -418,13 +427,77 @@ function createThreadsRoutesInternal(args: {
     }
   });
 
+  // 목록 표시 상태(제목·고정)만 바꾸는 얇은 갱신 — 스레드 본문/트랜스크립트는
+  // 건드리지 않는다.
+  router.patch('/api/threads/:threadId', async (req, res) => {
+    const threadId = readThreadIdOrSendError(req, res);
+    if (!threadId) {
+      return;
+    }
+    const requestBody: unknown = req.body;
+    if (!isRecord(requestBody)) {
+      sendApiError(res, 'invalid_args', 'request body must be an object');
+      return;
+    }
+    const hasTitle = requestBody.title !== undefined;
+    const hasPinned = requestBody.pinned !== undefined;
+    const rawTitle =
+      typeof requestBody.title === 'string' ? requestBody.title.trim() : null;
+    if (
+      hasTitle &&
+      (rawTitle === null || rawTitle === '' || rawTitle.length > 200)
+    ) {
+      sendApiError(
+        res,
+        'invalid_args',
+        'title must be a non-empty string of at most 200 characters',
+      );
+      return;
+    }
+    if (hasPinned && typeof requestBody.pinned !== 'boolean') {
+      sendApiError(res, 'invalid_args', 'pinned must be a boolean');
+      return;
+    }
+    if (!hasTitle && !hasPinned) {
+      sendApiError(res, 'invalid_args', 'title or pinned is required');
+      return;
+    }
+
+    try {
+      const entries = await loadThreadIndex(homeStateRoot);
+      const summary = entries.find((entry) => entry.threadId === threadId);
+      if (!summary) {
+        sendApiError(res, 'not_found', `thread not found: ${threadId}`);
+        return;
+      }
+      const nextTitle =
+        hasTitle && rawTitle !== null ? rawTitle : summary.title;
+      const nextPinned = hasPinned
+        ? requestBody.pinned === true
+        : summary.pinned === true;
+      const { pinned: _previousPinned, ...rest } = summary;
+      await upsertThreadSummary(homeStateRoot, {
+        ...rest,
+        ...(nextTitle !== undefined ? { title: nextTitle } : {}),
+        ...(nextPinned ? { pinned: true } : {}),
+      });
+      res.json({
+        ok: true,
+        threadId,
+        title: nextTitle ?? '',
+      });
+    } catch (err: unknown) {
+      sendUnexpectedApiError(res, 'threads/rename', err);
+    }
+  });
+
   router.delete('/api/threads/:threadId', async (req, res) => {
     const threadId = readThreadIdOrSendError(req, res);
     if (!threadId) {
       return;
     }
 
-    const activeRun = activeRuns.getRunByThreadId(threadId);
+    const activeRun = activeRuns.getRunByOwnerThread(threadId);
     if (activeRun) {
       sendApiError(
         res,

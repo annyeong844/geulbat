@@ -7,7 +7,7 @@ import {
 } from './run-session-stream-batch.js';
 import type { RunSessionStateAction } from './run-session-state-types.js';
 
-void test('createRunSessionStreamBatchController flushes queued streamed effects in order', async () => {
+void test('createRunSessionStreamBatchController flushes queued stream and display effects in order', async () => {
   const actions: RunSessionStateAction[] = [];
   const controller = createRunSessionStreamBatchController({
     readDispatch: () => (action) => {
@@ -26,6 +26,18 @@ void test('createRunSessionStreamBatchController flushes queued streamed effects
     threadId: 'thread-1',
     target: 'transcript',
     text: 'world',
+  });
+  controller.queueDisplayEffect({
+    kind: 'transcript_activity_added',
+    threadId: 'thread-1',
+    streamedToolCallId: 'call-1',
+    entry: {
+      kind: 'tool_activity',
+      tool: 'read_file',
+      state: 'running',
+      callId: 'call-1',
+    },
+    computerFilesMayHaveChanged: false,
   });
   controller.queueStreamedTextEffect({
     kind: 'assistant_text_streamed',
@@ -59,6 +71,17 @@ void test('createRunSessionStreamBatchController flushes queued streamed effects
       threadId: 'thread-1',
       target: 'transcript',
       text: 'world',
+    },
+    {
+      type: 'transcript_activity_added',
+      threadId: 'thread-1',
+      streamedToolCallId: 'call-1',
+      entry: {
+        kind: 'tool_activity',
+        tool: 'read_file',
+        state: 'running',
+        callId: 'call-1',
+      },
     },
     {
       type: 'assistant_text_streamed',
@@ -154,4 +177,80 @@ void test('coalesces same-target deltas that arrive within the batch window into
     ).text,
     'bc',
   );
+});
+
+void test('coalesces adjacent tool output by call and stream while preserving stream order', async () => {
+  const actions: RunSessionStateAction[] = [];
+  const controller = createRunSessionStreamBatchController({
+    readDispatch: () => (action) => {
+      actions.push(action);
+    },
+  });
+
+  controller.queueStreamedToolOutputEffect({
+    kind: 'tool_output_streamed',
+    threadId: 'thread-1',
+    callId: 'call-exec',
+    tool: 'exec_command',
+    stream: 'stdout',
+    text: 'a',
+  });
+  controller.queueStreamedToolOutputEffect({
+    kind: 'tool_output_streamed',
+    threadId: 'thread-1',
+    callId: 'call-exec',
+    tool: 'exec_command',
+    stream: 'stdout',
+    text: 'b',
+  });
+  controller.queueStreamedToolOutputEffect({
+    kind: 'tool_output_streamed',
+    threadId: 'thread-1',
+    callId: 'call-exec',
+    tool: 'exec_command',
+    stream: 'stdout',
+    text: 'c',
+  });
+  controller.queueStreamedToolOutputEffect({
+    kind: 'tool_output_streamed',
+    threadId: 'thread-1',
+    callId: 'call-exec',
+    tool: 'exec_command',
+    stream: 'stderr',
+    text: 'warn',
+  });
+
+  assert.deepEqual(actions, [
+    {
+      type: 'tool_output_streamed',
+      threadId: 'thread-1',
+      callId: 'call-exec',
+      tool: 'exec_command',
+      stream: 'stdout',
+      text: 'a',
+    },
+  ]);
+
+  await new Promise((resolve) =>
+    setTimeout(resolve, RUN_SESSION_STREAM_BATCH_WINDOW_MS + 10),
+  );
+
+  assert.deepEqual(actions.slice(1), [
+    {
+      type: 'tool_output_streamed',
+      threadId: 'thread-1',
+      callId: 'call-exec',
+      tool: 'exec_command',
+      stream: 'stdout',
+      text: 'bc',
+    },
+    {
+      type: 'tool_output_streamed',
+      threadId: 'thread-1',
+      callId: 'call-exec',
+      tool: 'exec_command',
+      stream: 'stderr',
+      text: 'warn',
+    },
+  ]);
 });

@@ -28,6 +28,7 @@ import {
   type GeneratedVideoProvenance,
   type VideoGenerationRuntime,
 } from './contract.js';
+import { acquireGenerationProviderAuthOrFailClosed } from './generation-provider-auth.js';
 import { generateVideoViaGrok } from './providers/grok-video-provider.js';
 import { withVideoGenerationRequestDefaults } from './video-generation-request-defaults.js';
 
@@ -214,22 +215,6 @@ async function readThreadMediaAsBase64(
   }
 }
 
-async function acquireProviderAuthOrFailClosed<T>(
-  acquire: () => Promise<T>,
-): Promise<T> {
-  try {
-    return await acquire();
-  } catch (error: unknown) {
-    throw new ImageGenerationError({
-      surface: 'provider_auth',
-      reasonCode: 'provider_not_connected',
-      message:
-        'video provider grok_oauth is not connected or its credential is unavailable',
-      cause: error,
-    });
-  }
-}
-
 async function generateWithAuthRetry(
   input: GenerateVideoArtifactInput,
   deps: VideoGenerationRuntimeDeps,
@@ -267,13 +252,16 @@ async function generateVideoOnce(
   options: { allowRefresh: boolean },
 ): Promise<Awaited<ReturnType<typeof generateVideoViaGrok>>> {
   const getAuth = deps.getProviderAuthImpl ?? getProviderAuth;
-  const auth = await acquireProviderAuthOrFailClosed(() =>
-    getAuth({
-      providerId: 'grok_oauth',
-      allowRefresh: options.allowRefresh,
-      runtimeStore: deps.providerAuthRuntime,
-    }),
-  );
+  const auth = await acquireGenerationProviderAuthOrFailClosed({
+    mediaKind: 'video',
+    providerId: 'grok_oauth',
+    acquire: () =>
+      getAuth({
+        providerId: 'grok_oauth',
+        allowRefresh: options.allowRefresh,
+        runtimeStore: deps.providerAuthRuntime,
+      }),
+  });
   const generate = deps.generateViaGrokImpl ?? generateVideoViaGrok;
   return generate({
     request: {

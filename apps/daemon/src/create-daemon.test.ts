@@ -15,7 +15,7 @@ import { createRouteTestDaemonContext } from './test-support/http-routes.js';
 void test('createDaemon reaps prior PTC runtime residue before mounting routes', async () => {
   const daemonContext = createRouteTestDaemonContext();
   const observedStateRoots: string[] = [];
-  daemonContext.ptcExecuteCode.reapRestartResidue = async ({ stateRoot }) => {
+  daemonContext.ptc.executeCode.reapRestartResidue = async ({ stateRoot }) => {
     observedStateRoots.push(stateRoot);
     return { ok: true };
   };
@@ -27,7 +27,7 @@ void test('createDaemon reaps prior PTC runtime residue before mounting routes',
 
 void test('createDaemon fails closed when prior PTC runtime residue cannot be reaped', async () => {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.ptcExecuteCode.reapRestartResidue = async () => ({
+  daemonContext.ptc.executeCode.reapRestartResidue = async () => ({
     ok: false,
     reasonCode: 'ptc_execute_code_session_cleanup_failed',
     message: 'cleanup unavailable',
@@ -285,7 +285,12 @@ void test('createDaemon resolves the configured Home state root independently of
   try {
     process.chdir(tempCwd);
     const configuredDaemonContext = createDaemonContext();
-    configuredDaemonContext.ptcExecuteCode.reapRestartResidue = async () => ({
+    configuredDaemonContext.globalMcp.attachSessionCoordinateStore({
+      readMcpSessionCoordinate: () => undefined,
+      persistMcpSessionCoordinate: () => undefined,
+      deleteMcpSessionCoordinate: () => undefined,
+    });
+    configuredDaemonContext.ptc.executeCode.reapRestartResidue = async () => ({
       ok: true,
     });
     const { app, daemonContext } = await createDaemon({
@@ -318,7 +323,7 @@ void test('createDaemon resolves the configured Home state root independently of
 
 function createIsolatedDaemon() {
   const daemonContext = createRouteTestDaemonContext();
-  daemonContext.ptcExecuteCode.reapRestartResidue = async () => ({ ok: true });
+  daemonContext.ptc.executeCode.reapRestartResidue = async () => ({ ok: true });
   return createDaemon({ daemonContext });
 }
 

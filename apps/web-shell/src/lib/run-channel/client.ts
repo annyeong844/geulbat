@@ -1,8 +1,10 @@
 import { isRunChannelServerMessage } from '@geulbat/protocol/run-channel';
 import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
+import { assertThreadId, type ThreadId } from '@geulbat/protocol/ids';
 import type {
   RunChannelClientMessage,
+  RunChildCancelRequest,
   RunControlMessage,
   RunChannelServerMessage,
   RunEventAckRequest,
@@ -10,7 +12,9 @@ import type {
   RunToolRequest,
   RunToolResultPayload,
 } from '@geulbat/protocol/run-channel';
-import type { RunStartRequest } from '@geulbat/protocol/run-contract';
+import type { RunAck, RunStartRequest } from '@geulbat/protocol/run-contract';
+import type { PlanWorkflowCommand } from '@geulbat/protocol/planning-workflow';
+import type { GoalCommand } from '@geulbat/protocol/goal';
 import { isRecord, isString, tryParseJson } from '../json.js';
 import { buildRunChannelAuthMessage } from '../auth/shell-auth.js';
 import {
@@ -53,10 +57,14 @@ interface WebSocketLike {
 
 interface RunChannelClientOptions {
   getWebSocketUrl?: () => string;
-  buildAuthMessage?: (requestId: string) => RunChannelClientMessage;
+  buildAuthMessage?: (
+    requestId: string,
+    computerSessionId: string,
+  ) => RunChannelClientMessage;
   createWebSocket?: (url: string) => WebSocketLike;
   scheduleTask?: (callback: () => void, delayMs: number) => number;
   clearScheduledTask?: (handle: number) => void;
+  computerSessionId?: string;
 }
 
 const SOCKET_OPEN = 1;
@@ -108,15 +116,22 @@ export function getReconnectDelay(attempt: number): number {
 
 export class RunChannelClient {
   private socket: WebSocketLike | null = null;
+  private pendingConnection: PendingSocketConnection | null = null;
   private connectPromise: Promise<WebSocketLike> | null = null;
   private listeners = new Set<Listener>();
   private pendingControlAcks = new Map<string, PendingControlAck>();
+  private activeRunByThread = new Map<string, RunAck>();
+  private lastSeenEventSeqByRun = new Map<RunAck['runId'], number>();
+  private threadSubscriptions = new Set<ThreadId>();
   private connectionState: RunChannelConnectionState =
     createInitialRunChannelConnectionState();
+  private computerSessionEnded = false;
 
   private readonly resolveWebSocketUrl: () => string;
+  private readonly computerSessionId: string;
   private readonly buildAuthMessage: (
     requestId: string,
+    computerSessionId: string,
   ) => RunChannelClientMessage;
   private readonly createSocket: (url: string) => WebSocketLike;
   private readonly scheduleTask: (
@@ -127,6 +142,8 @@ export class RunChannelClient {
 
   constructor(options: RunChannelClientOptions = {}) {
     this.resolveWebSocketUrl = options.getWebSocketUrl ?? getWebSocketUrl;
+    this.computerSessionId =
+      options.computerSessionId ?? globalThis.crypto.randomUUID();
     this.buildAuthMessage =
       options.buildAuthMessage ?? buildRunChannelAuthMessage;
     this.createSocket =
@@ -145,7 +162,34 @@ export class RunChannelClient {
     };
   }
 
+  getActiveRunForThread(threadId: string | null): RunAck | null {
+    if (threadId === null) {
+      return null;
+    }
+    const activeRun = this.activeRunByThread.get(threadId);
+    return activeRun === undefined ? null : { ...activeRun };
+  }
+
+  async subscribeThread(threadId: string): Promise<void> {
+    const parsedThreadId = assertThreadId(threadId);
+    if (this.threadSubscriptions.has(parsedThreadId)) {
+      return;
+    }
+    this.threadSubscriptions.add(parsedThreadId);
+    if (this.socket?.readyState !== SOCKET_OPEN) {
+      return;
+    }
+    await this.send({
+      type: 'run.thread.subscribe',
+      requestId: createRequestId(),
+      request: { threadId: parsedThreadId },
+    });
+  }
+
   async connect(): Promise<WebSocketLike> {
+    if (this.computerSessionEnded) {
+      throw new Error('computer session ended');
+    }
     if (this.socket && this.socket.readyState === SOCKET_OPEN) {
       return this.socket;
     }
@@ -157,6 +201,7 @@ export class RunChannelClient {
     this.connectionState = beginConnectionAttempt(this.connectionState);
     this.connectPromise = new Promise<WebSocketLike>((resolve, reject) => {
       const pending = this.createPendingSocketConnection(resolve, reject);
+      this.pendingConnection = pending;
       const handleOpen: SocketListener<'open'> = () =>
         this.handleSocketOpen(pending);
       const handleMessage: SocketListener<'message'> = (event) => {
@@ -222,7 +267,16 @@ export class RunChannelClient {
       this.pendingControlAcks.delete(requestId);
       throw error;
     }
-    await acknowledgement;
+    const control = await acknowledgement;
+    const lastSeenSeq = this.lastSeenEventSeqByRun.get(request.runId);
+    if (
+      control.action === 'run.event.ack' &&
+      control.seq === request.seq &&
+      lastSeenSeq !== undefined &&
+      lastSeenSeq <= control.seq
+    ) {
+      this.lastSeenEventSeqByRun.delete(request.runId);
+    }
     return requestId;
   }
 
@@ -236,14 +290,118 @@ export class RunChannelClient {
     return requestId;
   }
 
+  async cancelChild(request: RunChildCancelRequest): Promise<string> {
+    const requestId = createRequestId();
+    const acknowledgement = new Promise<RunControlMessage>(
+      (resolve, reject) => {
+        this.pendingControlAcks.set(requestId, {
+          action: 'run.child.cancel',
+          resolve,
+          reject,
+        });
+      },
+    );
+    try {
+      await Promise.all([
+        this.send({
+          type: 'run.child.cancel',
+          requestId,
+          request,
+        }),
+        acknowledgement,
+      ]);
+    } catch (error: unknown) {
+      this.pendingControlAcks.delete(requestId);
+      throw error;
+    }
+    return requestId;
+  }
+
   async approve(request: ApprovalRequest): Promise<string> {
     const requestId = createRequestId();
-    await this.send({
-      type: 'run.approve',
-      requestId,
-      request,
-    });
+    const acknowledgement = new Promise<RunControlMessage>(
+      (resolve, reject) => {
+        this.pendingControlAcks.set(requestId, {
+          action: 'run.approve',
+          resolve,
+          reject,
+        });
+      },
+    );
+    try {
+      await Promise.all([
+        this.send({
+          type: 'run.approve',
+          requestId,
+          request,
+        }),
+        acknowledgement,
+      ]);
+    } catch (error: unknown) {
+      this.pendingControlAcks.delete(requestId);
+      throw error;
+    }
     return requestId;
+  }
+
+  async planCommand(
+    request: PlanWorkflowCommand,
+  ): Promise<Extract<RunControlMessage, { action: 'plan.command' }>> {
+    const requestId = createRequestId();
+    const acknowledgement = new Promise<RunControlMessage>(
+      (resolve, reject) => {
+        this.pendingControlAcks.set(requestId, {
+          action: 'plan.command',
+          resolve,
+          reject,
+        });
+      },
+    );
+    try {
+      await this.send({
+        type: 'plan.command',
+        requestId,
+        request,
+      });
+    } catch (error: unknown) {
+      this.pendingControlAcks.delete(requestId);
+      throw error;
+    }
+    const control = await acknowledgement;
+    if (control.action !== 'plan.command') {
+      throw new Error('unexpected planning workflow acknowledgement');
+    }
+    return control;
+  }
+
+  async goalCommand(
+    request: GoalCommand,
+  ): Promise<Extract<RunControlMessage, { action: 'goal.command' }>> {
+    const requestId = createRequestId();
+    const acknowledgement = new Promise<RunControlMessage>(
+      (resolve, reject) => {
+        this.pendingControlAcks.set(requestId, {
+          action: 'goal.command',
+          resolve,
+          reject,
+        });
+      },
+    );
+    try {
+      await this.send({
+        type: 'goal.command',
+        requestId,
+        request,
+      });
+    } catch (error: unknown) {
+      this.pendingControlAcks.delete(requestId);
+      throw error;
+    }
+    const control = await acknowledgement;
+    if (control.action !== 'goal.command') {
+      throw new Error('unexpected Goal acknowledgement');
+    }
+    return control;
   }
 
   // 실행 중 스티어링 — 진행 중인 run에 사용자 지시를 주입한다.
@@ -371,10 +529,31 @@ export class RunChannelClient {
     return control.result;
   }
 
+  endComputerSession(): void {
+    if (this.computerSessionEnded) {
+      return;
+    }
+    this.computerSessionEnded = true;
+    if (this.socket?.readyState === SOCKET_OPEN) {
+      this.socket.send(
+        JSON.stringify({
+          type: 'computer.session.end',
+          requestId: createRequestId(),
+        } satisfies RunChannelClientMessage),
+      );
+    }
+    this.close();
+  }
+
   close(): void {
     this.clearReconnectTask();
     this.connectionState = markConnectionClosed(this.connectionState, true);
     this.rejectPendingControlAcks('run channel closed');
+    const pendingConnection = this.pendingConnection;
+    if (pendingConnection !== null) {
+      this.rejectBeforeAuth(pendingConnection, 'run channel closed', false);
+      pendingConnection.socket.close();
+    }
     this.socket?.close();
     this.socket = null;
     this.connectPromise = null;
@@ -411,8 +590,28 @@ export class RunChannelClient {
   private handleSocketOpen(pending: PendingSocketConnection): void {
     pending.opened = true;
     this.connectionState = markAuthHandshakeStarted(this.connectionState);
-    const authMessage = this.buildAuthMessage(pending.authRequestId);
-    pending.socket.send(JSON.stringify(authMessage));
+    const authMessage = this.buildAuthMessage(
+      pending.authRequestId,
+      this.computerSessionId,
+    );
+    const runEventCursors = Array.from(
+      this.lastSeenEventSeqByRun,
+      ([runId, seq]) => ({ runId, seq }),
+    );
+    const threadSubscriptions = Array.from(this.threadSubscriptions);
+    pending.socket.send(
+      JSON.stringify(
+        authMessage.type === 'run.auth'
+          ? {
+              ...authMessage,
+              ...(runEventCursors.length > 0 ? { runEventCursors } : {}),
+              ...(threadSubscriptions.length > 0
+                ? { threadSubscriptions }
+                : {}),
+            }
+          : authMessage,
+      ),
+    );
   }
 
   private handleSocketMessage(
@@ -437,6 +636,7 @@ export class RunChannelClient {
     }
 
     const message = parsed.value;
+    this.observeRunEvent(message);
     if (this.handleUnauthenticatedMessage(pending, message)) {
       return;
     }
@@ -447,6 +647,29 @@ export class RunChannelClient {
     // (the next prompt would then run.start into conflict_active_run).
     if (!consumedByControlError) {
       this.emit(message);
+    }
+  }
+
+  private observeRunEvent(message: RunChannelServerMessage): void {
+    if (message.type !== 'run.event') {
+      return;
+    }
+    const { event } = message;
+    this.threadSubscriptions.add(event.threadId);
+    this.lastSeenEventSeqByRun.set(event.runId, event.seq);
+    if (event.type === 'run_ack') {
+      this.activeRunByThread.set(event.threadId, {
+        runId: event.runId,
+        threadId: event.threadId,
+      });
+      return;
+    }
+    if (event.type !== 'done' && event.type !== 'error') {
+      return;
+    }
+    const activeRun = this.activeRunByThread.get(event.threadId);
+    if (activeRun?.runId === event.runId) {
+      this.activeRunByThread.delete(event.threadId);
     }
   }
 
@@ -464,6 +687,9 @@ export class RunChannelClient {
     ) {
       pending.authenticated = true;
       pending.settled = true;
+      if (this.pendingConnection === pending) {
+        this.pendingConnection = null;
+      }
       this.socket = pending.socket;
       this.connectionState = markConnectionReady(this.connectionState);
       pending.resolve(this.socket);
@@ -545,6 +771,9 @@ export class RunChannelClient {
 
     pending.settled = true;
     pending.detachListeners();
+    if (this.pendingConnection === pending) {
+      this.pendingConnection = null;
+    }
     this.connectPromise = null;
     const explicitClose = this.connectionState.closedExplicitly;
     this.connectionState = markConnectionClosed(

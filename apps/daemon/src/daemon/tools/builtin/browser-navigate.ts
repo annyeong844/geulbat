@@ -15,6 +15,13 @@ import {
   pickBrowserNavigatePolicyOutputFields,
   pickBrowserSafeDiagnosticFields,
 } from './browser-summary-output.js';
+import type { AgentRuntimePtcServices } from '../../daemon-runtime-contract.js';
+
+// This tool depends only on its own PTC runtime; keep the declared
+// service surface that narrow.
+type BrowserNavigateToolServices = {
+  ptc: Pick<AgentRuntimePtcServices, 'browserNavigate'>;
+};
 
 const browserNavigateArgsSchema = z.strictObject({
   url: z
@@ -59,7 +66,9 @@ export const browserNavigateTool = defineZodTool({
         'run context is required for browser_navigate.',
       );
     }
-    const runtime = ctx.agentSpawnRuntime?.ptcBrowserNavigate;
+    const services: BrowserNavigateToolServices | undefined =
+      ctx.runtimeServices;
+    const runtime = services?.ptc.browserNavigate;
     if (!runtime) {
       return toolError(
         'execution_failed',

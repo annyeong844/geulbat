@@ -1,4 +1,8 @@
-import { spawn } from 'node:child_process';
+import {
+  createDelimitedFrameReader,
+  streamHostRoutedCommandLines,
+  type SearchFilesHostRouting,
+} from './search-files-host-stream.js';
 import type {
   SearchFilesResult,
   SearchMatch,
@@ -21,10 +25,18 @@ export async function filenameSearch(
   matchesInclude: SearchPathMatcher,
   maxResults: number | undefined,
   signal?: AbortSignal,
-  dependencies: {
+  options: {
+    consistency?: 'filesystem_snapshot' | 'eventual_index';
     searchFilenameIndex?: typeof tryWindowsFilenameIndexSearch;
+    /** 실행파일 탐색 주입 — 내용 검색은 rgPath를 인자로 받는데 여기만 내부에서 찾는다. */
+    resolveRipgrepPathForRoot?: typeof resolveRipgrepPath;
+    // P7.6 item 4 — 파일명 스캔과 Windows index query는 command-host 워커의
+    // system 세션에서만 돈다. eventual-index 테스트처럼 명령을 실행하지 않는
+    // injected query만 이 값 없이 끝날 수 있다.
+    hostRouting?: SearchFilesHostRouting;
   } = {},
 ): Promise<SearchFilesResult> {
+  const consistency = options.consistency ?? 'filesystem_snapshot';
   const results: SearchMatch[] = [];
   const acceptedRelativePaths = new Set<string>();
   let totalMatches = 0;
@@ -50,19 +62,41 @@ export async function filenameSearch(
 
     acceptedRelativePaths.add(relativePath);
     totalMatches += 1;
-    insertBoundedSortedResult(
-      results,
-      { path: relativePath, line: 0, text: '' },
-      maxResults,
-    );
+    const match = { path: relativePath, line: 0, text: '' };
+    if (maxResults === undefined) {
+      results.push(match);
+      return;
+    }
+    insertBoundedSortedResult(results, match, maxResults);
   };
 
+  if (consistency === 'eventual_index' && maxResults === undefined) {
+    throw Object.assign(
+      new Error('eventual_index filename search requires maxResults.'),
+      { code: 'invalid_args' },
+    );
+  }
+  if (consistency === 'eventual_index' && matchesInclude !== null) {
+    throw Object.assign(
+      new Error('eventual_index filename search does not accept include.'),
+      { code: 'invalid_args' },
+    );
+  }
+
+  const hostRouting = options.hostRouting;
   const indexedSearch = await (
-    dependencies.searchFilenameIndex ?? tryWindowsFilenameIndexSearch
+    options.searchFilenameIndex ?? tryWindowsFilenameIndexSearch
   )({
     rootDir,
     pattern,
+    ...(consistency === 'eventual_index' && maxResults !== undefined
+      ? {
+          queryMode: 'bounded_basename_glob' as const,
+          maxResults,
+        }
+      : {}),
     ...(signal === undefined ? {} : { signal }),
+    ...(hostRouting === undefined ? {} : { hostRouting }),
   });
   if (indexedSearch.kind === 'results') {
     for (const path of indexedSearch.paths) {
@@ -70,10 +104,39 @@ export async function filenameSearch(
     }
   }
 
-  const rgPath = await resolveRipgrepPath(rootDir);
+  if (consistency === 'eventual_index') {
+    if (indexedSearch.kind === 'unavailable') {
+      const code =
+        indexedSearch.reasonCode === 'powershell_unavailable' ||
+        indexedSearch.reasonCode === 'command_runtime_unavailable' ||
+        indexedSearch.reasonCode === 'query_failed'
+          ? 'execution_failed'
+          : 'invalid_args';
+      throw Object.assign(
+        new Error(
+          `Windows filename index is unavailable (${indexedSearch.reasonCode}).`,
+        ),
+        { code },
+      );
+    }
+    return {
+      backend: 'windows-search-index',
+      consistency: 'eventual_index',
+      query: 'filename',
+      total: totalMatches,
+      totalRelation: indexedSearch.limited ? 'lower_bound' : 'exact',
+      truncated: indexedSearch.limited,
+      results,
+    };
+  }
+
+  const rgPath = await (
+    options.resolveRipgrepPathForRoot ?? resolveRipgrepPath
+  )(rootDir, hostRouting);
   const acceleration =
     indexedSearch.kind === 'unavailable' &&
     (indexedSearch.reasonCode === 'powershell_unavailable' ||
+      indexedSearch.reasonCode === 'command_runtime_unavailable' ||
       indexedSearch.reasonCode === 'query_failed')
       ? {
           backend: 'windows-search-index' as const,
@@ -81,91 +144,90 @@ export async function filenameSearch(
           reasonCode: indexedSearch.reasonCode,
         }
       : undefined;
-  return await new Promise((resolve, reject) => {
-    const rgRootDir = toRipgrepFsPath(rootDir, rgPath);
-    const rgArgs = [
-      '--files',
-      '--hidden',
-      '--no-ignore',
-      '--follow',
-      '--null',
-      '--',
-      rgRootDir,
-    ];
-    let buffer = '';
-    let stderr = '';
-    let killed = false;
-
-    const child = spawn(rgPath, rgArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const killChild = () => {
-      if (!killed) {
-        killed = true;
-        child.kill('SIGTERM');
-      }
-    };
-    const acceptPath = (ripgrepPath: string) => {
-      if (ripgrepPath.length === 0) {
-        return;
-      }
-      const hostPath = fromRipgrepFsPath(ripgrepPath, rgPath, workspaceRoot);
-      acceptHostPath(hostPath);
-    };
-
-    if (signal) {
-      if (signal.aborted) {
-        killChild();
-      } else {
-        signal.addEventListener('abort', killChild, { once: true });
-      }
+  const rgArgs = [
+    '--files',
+    '--hidden',
+    '--no-ignore',
+    '--follow',
+    '--null',
+    '--',
+    toRipgrepFsPath(rootDir, rgPath),
+  ];
+  const acceptPath = (ripgrepPath: string) => {
+    if (ripgrepPath.length === 0) {
+      return;
     }
+    acceptHostPath(fromRipgrepFsPath(ripgrepPath, rgPath, workspaceRoot));
+  };
+  // 두 실행 경로가 같은 결과를 조립하도록 한 곳에 둔다.
+  const buildFilenameResult = (): SearchFilesResult => {
+    // An exact unbounded snapshot already retains every accepted path for
+    // deduplication. Keep collection O(1) per match and sort once here;
+    // inserting each path into the middle of a growing array turns broad
+    // host searches into quadratic main-thread work.
+    if (maxResults === undefined) {
+      results.sort((left, right) => left.path.localeCompare(right.path));
+    }
+    return {
+      backend:
+        indexedSearch.kind === 'results'
+          ? 'windows-search-index+ripgrep-files'
+          : 'ripgrep-files',
+      consistency:
+        indexedSearch.kind === 'results'
+          ? 'eventual_index'
+          : 'filesystem_snapshot',
+      ...(acceleration === undefined ? {} : { acceleration }),
+      query: 'filename',
+      total: totalMatches,
+      truncated: maxResults !== undefined && totalMatches > results.length,
+      results,
+    };
+  };
 
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      buffer += chunk;
-      const paths = buffer.split('\0');
-      buffer = paths.pop() ?? '';
-      for (const path of paths) {
-        acceptPath(path);
-      }
-    });
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on('close', (exitCode) => {
-      signal?.removeEventListener('abort', killChild);
-      acceptPath(buffer);
-      const failure = buildRipgrepCloseError({ exitCode, killed, stderr });
-      if (failure) {
-        reject(failure);
-        return;
-      }
-      resolve({
-        backend:
-          indexedSearch.kind === 'results'
-            ? 'windows-search-index+ripgrep-files'
-            : 'ripgrep-files',
-        consistency:
-          indexedSearch.kind === 'results'
-            ? 'eventual_index'
-            : 'filesystem_snapshot',
-        ...(acceleration === undefined ? {} : { acceleration }),
-        query: 'filename',
-        total: totalMatches,
-        truncated: maxResults !== undefined && totalMatches > results.length,
-        results,
-      });
-    });
-    child.on('error', (error) => {
-      signal?.removeEventListener('abort', killChild);
-      reject(
-        Object.assign(
-          new Error(`ripgrep filename scan failed: ${error.message}`),
-          { code: 'execution_failed' },
-        ),
-      );
-    });
+  if (hostRouting === undefined) {
+    throw Object.assign(
+      new Error(
+        'search_files filename scans require the daemon host command runtime.',
+      ),
+      { code: 'execution_failed' },
+    );
+  }
+
+  // ripgrep --files는 NUL로 경로를 구분한다 — 프레이밍만 다르고 스트림 경로는
+  // 내용 검색과 같다.
+  const frames = createDelimitedFrameReader('\u0000', acceptPath);
+  const streamed = await streamHostRoutedCommandLines({
+    hostCommands: hostRouting.hostCommands,
+    stateRoot: hostRouting.stateRoot,
+    executable: rgPath,
+    commandArgs: rgArgs,
+    cwd: hostRouting.stateRoot,
+    env: process.env,
+    pageLimitBytes: hostRouting.pageLimitBytes,
+    onStdoutChunk: frames.consume,
+    ...(signal === undefined ? {} : { signal }),
   });
+  frames.flush();
+  if (!streamed.ok) {
+    throw Object.assign(
+      new Error(
+        streamed.aborted
+          ? 'ripgrep filename scan was cancelled'
+          : `ripgrep filename session failed: ${streamed.message}`,
+      ),
+      { code: 'execution_failed' },
+    );
+  }
+  const hostFailure = buildRipgrepCloseError({
+    exitCode: streamed.value.exitCode,
+    killed: streamed.value.status !== 'exit',
+    stderr: streamed.value.stderr,
+  });
+  if (hostFailure) {
+    throw hostFailure;
+  }
+  return buildFilenameResult();
 }
 
 export function createGlobMatcher(pattern: string | null): SearchPathMatcher {
@@ -177,7 +239,10 @@ export function createGlobMatcher(pattern: string | null): SearchPathMatcher {
   if (!effectivePattern) {
     return null;
   }
-  const regexStr = globPatternToRegexSource(effectivePattern);
+  const pathPattern = effectivePattern.includes('/')
+    ? effectivePattern
+    : `**/${effectivePattern}`;
+  const regexStr = globPatternToRegexSource(pathPattern);
   const regex = new RegExp(`^${regexStr}$`);
   return excludesMatches
     ? (filePath: string) => !regex.test(filePath)
@@ -232,7 +297,7 @@ function escapeRegexCharacter(character: string): string {
 function insertBoundedSortedResult(
   results: SearchMatch[],
   match: SearchMatch,
-  maxResults: number | undefined,
+  maxResults: number,
 ): void {
   let low = 0;
   let high = results.length;
@@ -244,11 +309,11 @@ function insertBoundedSortedResult(
       high = middle;
     }
   }
-  if (maxResults !== undefined && low >= maxResults) {
+  if (low >= maxResults) {
     return;
   }
   results.splice(low, 0, match);
-  if (maxResults !== undefined && results.length > maxResults) {
+  if (results.length > maxResults) {
     results.pop();
   }
 }

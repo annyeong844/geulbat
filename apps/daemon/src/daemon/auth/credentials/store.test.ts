@@ -201,15 +201,14 @@ void test('readProviderAuthFile preserves unreadable credential path failures in
 void test('hardenProviderAuthFilePermissions applies chmod on posix platforms', async () => {
   const calls: string[] = [];
 
-  await hardenProviderAuthFilePermissions(
-    'provider.json',
-    {
+  await hardenProviderAuthFilePermissions('provider.json', {
+    chmodLike: {
       async chmod(target: PathLike, mode: Mode) {
         calls.push(`chmod:${String(target)}:${mode.toString(8)}`);
       },
     },
-    'linux',
-  );
+    platform: 'linux',
+  });
 
   assert.deepEqual(calls, ['chmod:provider.json:600']);
 });
@@ -222,25 +221,24 @@ function assertRecord(
   assert.equal(Array.isArray(value), false);
 }
 
-void test('hardenProviderAuthFilePermissions skips chmod on windows', async () => {
+void test('hardenProviderAuthFilePermissions routes Windows ACL work through the injected command runner', async () => {
   const calls: string[] = [];
 
-  await hardenProviderAuthFilePermissions(
-    'provider.json',
-    {
+  await hardenProviderAuthFilePermissions('provider.json', {
+    chmodLike: {
       async chmod(target: PathLike, mode: Mode) {
         calls.push(`chmod:${String(target)}:${mode.toString(8)}`);
       },
     },
-    'win32',
-    async (file, args) => {
+    platform: 'win32',
+    async runWindowsAclCommand(file, args) {
       calls.push(`${file}:${args.join('|')}`);
     },
-    {
+    env: {
       USERDOMAIN: 'GEULBAT',
       USERNAME: 'alice',
     },
-  );
+  });
 
   assert.deepEqual(calls, [
     'icacls:provider.json|/inheritance:r|/grant:r|GEULBAT\\alice:(F)|/grant:r|*S-1-5-18:(F)|/grant:r|*S-1-5-32-544:(F)',
@@ -250,19 +248,37 @@ void test('hardenProviderAuthFilePermissions skips chmod on windows', async () =
 void test('hardenProviderAuthFilePermissions skips windows ACL hardening when current user is unavailable', async () => {
   const calls: string[] = [];
 
-  await hardenProviderAuthFilePermissions(
-    'provider.json',
-    {
+  await hardenProviderAuthFilePermissions('provider.json', {
+    chmodLike: {
       async chmod(target: PathLike, mode: Mode) {
         calls.push(`chmod:${String(target)}:${mode.toString(8)}`);
       },
     },
-    'win32',
-    async (file, args) => {
+    platform: 'win32',
+    async runWindowsAclCommand(file, args) {
       calls.push(`${file}:${args.join('|')}`);
     },
-    {},
-  );
+    env: {},
+  });
 
   assert.deepEqual(calls, []);
+});
+
+void test('hardenProviderAuthFilePermissions never starts Windows ACL work without an injected runner', async () => {
+  const chmodCalls: string[] = [];
+
+  await hardenProviderAuthFilePermissions('provider.json', {
+    chmodLike: {
+      async chmod(target: PathLike, mode: Mode) {
+        chmodCalls.push(`chmod:${String(target)}:${mode.toString(8)}`);
+      },
+    },
+    platform: 'win32',
+    env: {
+      USERDOMAIN: 'GEULBAT',
+      USERNAME: 'alice',
+    },
+  });
+
+  assert.deepEqual(chmodCalls, []);
 });

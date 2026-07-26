@@ -1,0 +1,233 @@
+/* ─────────────────────────────────────
+   CENTER — 미디어 미리보기 뷰어 + 크게 보기 모달
+   editor.css에서 분리 (2026-07-23) — 이미지/동영상/오디오 탭 표면.
+   ───────────────────────────────────── */
+/* 바이너리/이미지 미리보기 — 원고지 시트(article.media)가 곧 뷰어 카드다.
+   종이/테두리/그림자는 시트가 이미 갖고 있으므로 여기서는 절대 카드를
+   중첩하지 않는다(카드 속 카드 금지, 2026-07-23). */
+.binary-preview {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 매체 모드 시트 — 56px 원고 여백 대신 사진 매트(passe-partout) 두께.
+   margin-top 76px = 걸친 툴바 흐름 높이(40-12=28) + 미디어에서 걷어낸
+   제호 줄(48) 보정 — 탭을 오가도 종이 윗변이 같은 높이(154px)에 남는다 */
+.manuscript-sheet.media {
+  padding: 20px 20px 12px;
+  min-height: 0;
+  margin-top: 76px;
+}
+
+.binary-preview-image {
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: opacity var(--transition-slow);
+}
+
+.binary-preview-image.loaded {
+  opacity: 1;
+}
+
+/* 미리보기 뷰어 — 줌 툴바/스테이지/상태 칩 */
+.binary-preview-info {
+  color: var(--on-surface-muted);
+  font-feature-settings: 'tnum';
+}
+
+.binary-preview-zoom-value {
+  min-width: 44px;
+  text-align: center;
+  font-family: var(--font-ui-label);
+  font-size: 11.5px;
+  color: var(--on-surface-variant);
+  font-feature-settings: 'tnum';
+}
+
+/* 하단 상태·줌 바 — 포토 뷰어 문법의 글밭 번안: 좌측은 파일명·해상도·용량,
+   우측은 배율 도구. 어두운 크롬 대신 헤어라인과 세이지 액센트로 조용하게. */
+.binary-preview-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid
+    color-mix(in srgb, var(--outline-variant) 55%, transparent);
+  font-family: var(--font-ui-label);
+  font-size: 12px;
+  color: var(--on-surface-muted);
+}
+
+.binary-preview-footer-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.binary-preview-footer-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.binary-preview-zoom-range {
+  width: 132px;
+  accent-color: var(--secondary);
+}
+
+.binary-preview-audio {
+  width: 100%;
+  max-width: 560px;
+}
+
+.binary-preview-stage.audio-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ─────────────────────────────────────
+   크게 보기 — 앱 위에 뜨는 창 형태 모달. 검정 풀스크린 대신 세이지/크림
+   팔레트의 종이 창. 편집 도구가 생기면 상단 바에 얹힌다.
+   ───────────────────────────────────── */
+.binary-preview-immersive {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5vh 6vw;
+  /* 웜 스크림 — 뒤 화면은 어둡게 가라앉되 앱의 온기가 남는다 */
+  background: color-mix(in srgb, var(--primary) 42%, transparent);
+}
+
+.binary-preview-immersive-window {
+  width: min(1240px, 100%);
+  height: 100%;
+  max-height: 880px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-container-lowest);
+  border: 1px solid color-mix(in srgb, var(--outline-variant) 42%, transparent);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    0 24px 64px rgba(64, 51, 35, 0.28),
+    0 4px 16px rgba(64, 51, 35, 0.12);
+  overflow: hidden;
+}
+
+.binary-preview-immersive-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--outline-variant) 55%, transparent);
+  font-family: var(--font-ui-label);
+  font-size: 12.5px;
+  color: var(--on-surface-muted);
+}
+
+.binary-preview-immersive-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-feature-settings: 'tnum';
+}
+
+.binary-preview-immersive-close {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.binary-preview-immersive-close:hover {
+  background: var(--surface-container);
+  color: var(--primary);
+}
+
+.binary-preview-immersive-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  /* 사진 뒤는 은은한 크림 — 흰 종이 창 안에서 사진의 윤곽이 산다 */
+  background: var(--surface-container-low);
+}
+
+.binary-preview-immersive-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* 뷰어 스테이지 — 콘텐츠가 크면 좌측 잘림 없이 스크롤, 작으면 가운데.
+   라운드 클리핑도 여기서: overflow가 visible이 아니면 radius가 내용을 자른다 */
+.binary-preview-stage {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow: auto;
+  border-radius: calc(var(--radius-lg) - 8px);
+}
+
+/* 필름 매트 — 순검정(#000) 대신 종이 위에서 눈에 편한 웜 블랙 */
+.binary-preview-stage.video {
+  background: color-mix(in srgb, var(--primary) 55%, black);
+}
+
+.binary-preview-stage-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  padding: 4px;
+  box-sizing: border-box;
+}
+
+.binary-preview-image.fit,
+.binary-preview-video.fit {
+  /* 스테이지(inner.fit이 100%×100%) 기준 — 뷰포트 기준이면 툴바/패딩만큼
+     넘쳐 fit인데도 스크롤이 생긴다 */
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.binary-preview-video.fit {
+  /* 작은 비디오도 패널을 채운다 — 없으면 맞춤이 1:1과 같아진다 */
+  width: 100%;
+}
+
+.binary-preview-video {
+  /* 라운드 클리핑과 매트 배경은 스테이지가 담당한다 */
+  display: block;
+}
+
+.binary-preview-stage-inner.fit {
+  width: 100%;
+  height: 100%;
+}

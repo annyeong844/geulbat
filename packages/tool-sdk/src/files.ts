@@ -35,6 +35,35 @@ export interface ListFilesOutput {
   entries: ListFilesEntry[];
 }
 
+export type SearchFilesType = 'content' | 'filename';
+export type SearchFilesConsistency = 'filesystem_snapshot' | 'eventual_index';
+export type SearchFilesTotalRelation = 'exact' | 'lower_bound';
+
+export interface SearchFilesInput {
+  pattern: string;
+  path?: string;
+  type?: SearchFilesType;
+  include?: string;
+  maxResults?: number;
+  consistency?: SearchFilesConsistency;
+}
+
+export interface SearchFilesMatch {
+  path: string;
+  line: number;
+  text: string;
+}
+
+export interface SearchFilesOutput {
+  path: string;
+  type: SearchFilesType;
+  consistency: SearchFilesConsistency;
+  total: number;
+  totalRelation: SearchFilesTotalRelation;
+  truncated: boolean;
+  results: SearchFilesMatch[];
+}
+
 type FileInputResult<Input> =
   | { ok: true; value: Input }
   | { ok: false; message: string };
@@ -189,6 +218,171 @@ export function parseListFilesOutput(value: unknown): ListFilesOutput | null {
   return { path, total, entries };
 }
 
+export function readSearchFilesInput(
+  value: unknown,
+): FileInputResult<SearchFilesInput> {
+  if (!isRecord(value)) {
+    return { ok: false, message: 'input must be an object' };
+  }
+  const pattern = value['pattern'];
+  const path = value['path'];
+  const type = value['type'];
+  const include = value['include'];
+  const maxResults = value['maxResults'];
+  const consistency = value['consistency'];
+  if (typeof pattern !== 'string' || pattern.length === 0) {
+    return { ok: false, message: 'pattern must be a non-empty string' };
+  }
+  if (
+    path !== undefined &&
+    (typeof path !== 'string' || path.trim().length === 0)
+  ) {
+    return { ok: false, message: 'path must be a non-empty string' };
+  }
+  if (type !== undefined && type !== 'content' && type !== 'filename') {
+    return { ok: false, message: 'type must be content or filename' };
+  }
+  if (include !== undefined && typeof include !== 'string') {
+    return { ok: false, message: 'include must be a string' };
+  }
+  if (maxResults !== undefined && !isPositiveSafeInteger(maxResults)) {
+    return {
+      ok: false,
+      message: 'maxResults must be a positive safe integer',
+    };
+  }
+  if (
+    consistency !== undefined &&
+    consistency !== 'filesystem_snapshot' &&
+    consistency !== 'eventual_index'
+  ) {
+    return {
+      ok: false,
+      message: 'consistency must be filesystem_snapshot or eventual_index',
+    };
+  }
+
+  const normalizedType = type ?? 'content';
+  const normalizedConsistency = consistency ?? 'filesystem_snapshot';
+  if (normalizedConsistency === 'eventual_index') {
+    if (normalizedType !== 'filename') {
+      return {
+        ok: false,
+        message: 'eventual_index is available only for filename search',
+      };
+    }
+    if (maxResults === undefined) {
+      return {
+        ok: false,
+        message: 'eventual_index requires maxResults',
+      };
+    }
+    if (include !== undefined) {
+      return {
+        ok: false,
+        message: 'eventual_index does not accept include',
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      pattern,
+      ...(path === undefined ? {} : { path }),
+      ...(type === undefined ? {} : { type }),
+      ...(include === undefined ? {} : { include }),
+      ...(maxResults === undefined ? {} : { maxResults }),
+      ...(consistency === undefined ? {} : { consistency }),
+    },
+  };
+}
+
+export function encodeSearchFilesInput(
+  input: SearchFilesInput,
+): Record<string, ToolSdkJsonValue> {
+  return {
+    pattern: input.pattern,
+    path: input.path ?? '.',
+    type: input.type ?? 'content',
+    consistency: input.consistency ?? 'filesystem_snapshot',
+    ...(input.include === undefined ? {} : { include: input.include }),
+    ...(input.maxResults === undefined ? {} : { maxResults: input.maxResults }),
+  };
+}
+
+export function parseSearchFilesOutput(
+  value: unknown,
+  input: SearchFilesInput,
+): SearchFilesOutput | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const path = value['path'];
+  const type = readSearchFilesType(value['type']);
+  const consistency = readSearchFilesConsistency(value['consistency']);
+  const total = value['total'];
+  const totalRelation = value['totalRelation'];
+  const truncated = value['truncated'];
+  const rawResults = value['results'];
+  const requestedType = input.type ?? 'content';
+  const requestedConsistency = input.consistency ?? 'filesystem_snapshot';
+  if (
+    typeof path !== 'string' ||
+    type === null ||
+    type !== requestedType ||
+    consistency === null ||
+    consistency !== requestedConsistency ||
+    !isNonNegativeSafeInteger(total) ||
+    (totalRelation !== 'exact' && totalRelation !== 'lower_bound') ||
+    typeof truncated !== 'boolean' ||
+    !Array.isArray(rawResults) ||
+    rawResults.length > total ||
+    (input.maxResults !== undefined && rawResults.length > input.maxResults) ||
+    (truncated && input.maxResults === undefined) ||
+    (consistency === 'filesystem_snapshot' && totalRelation !== 'exact') ||
+    (consistency === 'eventual_index' && type !== 'filename') ||
+    (totalRelation === 'lower_bound' &&
+      (consistency !== 'eventual_index' || !truncated)) ||
+    (!truncated && rawResults.length !== total) ||
+    (truncated && totalRelation === 'exact' && rawResults.length >= total) ||
+    (truncated &&
+      totalRelation === 'lower_bound' &&
+      rawResults.length !== total)
+  ) {
+    return null;
+  }
+
+  const results: SearchFilesMatch[] = [];
+  for (const rawResult of rawResults) {
+    if (!isRecord(rawResult)) {
+      return null;
+    }
+    const resultPath = rawResult['path'];
+    const line = rawResult['line'];
+    const text = rawResult['text'];
+    if (
+      typeof resultPath !== 'string' ||
+      !isNonNegativeSafeInteger(line) ||
+      typeof text !== 'string' ||
+      (type === 'filename' && (line !== 0 || text.length !== 0)) ||
+      (type === 'content' && line === 0)
+    ) {
+      return null;
+    }
+    results.push({ path: resultPath, line, text });
+  }
+  return {
+    path,
+    type,
+    consistency,
+    total,
+    totalRelation,
+    truncated,
+    results,
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -199,4 +393,16 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
 
 function isPositiveSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && typeof value === 'number' && value > 0;
+}
+
+function readSearchFilesType(value: unknown): SearchFilesType | null {
+  return value === 'content' || value === 'filename' ? value : null;
+}
+
+function readSearchFilesConsistency(
+  value: unknown,
+): SearchFilesConsistency | null {
+  return value === 'filesystem_snapshot' || value === 'eventual_index'
+    ? value
+    : null;
 }

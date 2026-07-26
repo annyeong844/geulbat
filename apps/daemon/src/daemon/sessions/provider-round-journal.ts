@@ -10,11 +10,13 @@ import {
   type ThreadId,
 } from '@geulbat/protocol/ids';
 import {
-  isProviderAuthProviderId,
   isProviderReplayScopeId,
-  type ProviderAuthProviderId,
   type ProviderReplayScopeId,
 } from '@geulbat/protocol/provider-auth';
+import {
+  isRunProviderId,
+  type RunProviderId,
+} from '@geulbat/protocol/run-contract';
 
 import { isJsonValue, isRecord, type JsonValue } from '../runtime-json.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
@@ -27,7 +29,7 @@ export interface ProviderRoundJournalRecord {
   threadId: ThreadId;
   runId: RunId;
   round: number;
-  providerId: ProviderAuthProviderId;
+  providerId: RunProviderId;
   model: string;
   replayScopeId: ProviderReplayScopeId | null;
   precedingTranscriptEntryId: string | null;
@@ -49,7 +51,7 @@ export async function appendProviderRound(args: {
   threadId: ThreadId;
   runId: RunId;
   round: number;
-  providerId: ProviderAuthProviderId;
+  providerId: RunProviderId;
   model: string;
   replayScopeId: ProviderReplayScopeId | null;
   precedingTranscriptEntryId: string | null;
@@ -225,7 +227,7 @@ function parseProviderRoundJournalRecord(
     typeof value.round !== 'number' ||
     !Number.isSafeInteger(value.round) ||
     value.round < 0 ||
-    !isProviderAuthProviderId(value.providerId) ||
+    !isRunProviderId(value.providerId) ||
     typeof value.model !== 'string' ||
     value.model.trim() === '' ||
     (value.schemaVersion === PROVIDER_ROUND_JOURNAL_SCHEMA_VERSION &&

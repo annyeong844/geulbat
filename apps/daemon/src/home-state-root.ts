@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { posix, win32 } from 'node:path';
+import { join, posix, win32 } from 'node:path';
 
 interface HomeStateRootResolutionInput {
   env: Readonly<NodeJS.ProcessEnv>;
@@ -64,6 +64,15 @@ export function resolveHomeStateRoot(
     'state',
     'geulbat',
   );
+}
+
+/**
+ * 프로세스가 치명적으로 종료할 때 그 소유자를 남기는 곳. 죽음은 워크스페이스
+ * 하나의 사건이 아니므로(데몬은 여러 워크스페이스를 서빙한다) Home state root에
+ * 둔다.
+ */
+export function daemonFatalRecordPath(): string {
+  return join(resolveHomeStateRoot(), 'daemon-fatal.jsonl');
 }
 
 function requireHomeDirectory(

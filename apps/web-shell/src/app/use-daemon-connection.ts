@@ -25,23 +25,31 @@ async function probeHealth(): Promise<boolean> {
  * 아니다. 실패가 이어지면 reconnecting → disconnected로 강등되고, 성공
  * 즉시 connected로 복귀한다.
  */
-export function useDaemonConnection(): {
+export function useDaemonConnection(options?: { onRecovered?: () => void }): {
   state: DaemonConnectionState;
   reconnect: () => void;
 } {
   const [state, setState] = useState<DaemonConnectionState>('connected');
   const failureCountRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mountedRef = useRef(true);
+  const mountedRef = useRef({
+    active: true,
+    onRecovered: options?.onRecovered,
+  });
+  mountedRef.current.onRecovered = options?.onRecovered;
 
   const runProbe = useCallback(async () => {
     const healthy = await probeHealth();
-    if (!mountedRef.current) {
+    if (!mountedRef.current.active) {
       return;
     }
     if (healthy) {
+      const recovered = failureCountRef.current > 0;
       failureCountRef.current = 0;
       setState('connected');
+      if (recovered) {
+        mountedRef.current.onRecovered?.();
+      }
     } else {
       failureCountRef.current += 1;
       setState(
@@ -57,10 +65,11 @@ export function useDaemonConnection(): {
   }, []);
 
   useEffect(() => {
-    mountedRef.current = true;
+    const mounted = mountedRef.current;
+    mounted.active = true;
     void runProbe();
     return () => {
-      mountedRef.current = false;
+      mounted.active = false;
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
       }

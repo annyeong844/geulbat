@@ -54,7 +54,16 @@ interface HomeLeftPanelView {
   } | null;
 }
 
+interface ProviderAuthCardView {
+  statuses: ProviderAuthStatusByProvider;
+  busyProviderId: ProviderAuthProviderId | null;
+  uiErrors: ProviderAuthErrorByProvider;
+  onConnect: (providerId: ProviderAuthProviderId) => Promise<void> | void;
+  onDisconnect: (providerId: ProviderAuthProviderId) => Promise<void> | void;
+}
+
 interface HomeCenterPanelView {
+  providerAuthCard: ProviderAuthCardView;
   editor: {
     filePath: string | null;
     extractedDocument: 'docx' | 'xlsx' | 'hwpx' | null;
@@ -83,15 +92,9 @@ interface HomeCenterPanelView {
 }
 
 interface HomeRightPanelView {
-  providerAuthCard: {
-    statuses: ProviderAuthStatusByProvider;
-    busyProviderId: ProviderAuthProviderId | null;
-    uiErrors: ProviderAuthErrorByProvider;
-    onConnect: (providerId: ProviderAuthProviderId) => Promise<void> | void;
-    onDisconnect: (providerId: ProviderAuthProviderId) => Promise<void> | void;
-  };
   assistant: HomeRunSessionView['assistant'];
   approvalPanel: HomeRunSessionView['approvalPanel'];
+  streamingArtifactText: HomeRunSessionView['streamingArtifactText'];
 }
 
 interface CreateHomeLeftPanelViewArgs {
@@ -128,6 +131,15 @@ interface CreateHomeLeftPanelViewArgs {
 }
 
 interface CreateHomeCenterPanelViewArgs {
+  providerAuthStatuses: ProviderAuthStatusByProvider;
+  providerAuthBusyProviderId: ProviderAuthProviderId | null;
+  providerAuthErrors: ProviderAuthErrorByProvider;
+  onConnectProvider: (
+    providerId: ProviderAuthProviderId,
+  ) => Promise<void> | void;
+  onDisconnectProvider: (
+    providerId: ProviderAuthProviderId,
+  ) => Promise<void> | void;
   selectedFile: string | null;
   extractedDocument: 'docx' | 'xlsx' | 'hwpx' | null;
   binaryPreview: {
@@ -154,17 +166,9 @@ interface CreateHomeCenterPanelViewArgs {
 }
 
 interface CreateHomeRightPanelViewArgs {
-  providerAuthStatuses: ProviderAuthStatusByProvider;
-  providerAuthBusyProviderId: ProviderAuthProviderId | null;
-  providerAuthErrors: ProviderAuthErrorByProvider;
-  onConnectProvider: (
-    providerId: ProviderAuthProviderId,
-  ) => Promise<void> | void;
-  onDisconnectProvider: (
-    providerId: ProviderAuthProviderId,
-  ) => Promise<void> | void;
   assistant: HomeRunSessionView['assistant'];
   approvalPanel: HomeRunSessionView['approvalPanel'];
+  streamingArtifactText: HomeRunSessionView['streamingArtifactText'];
 }
 
 export function createHomeLeftPanelView({
@@ -235,6 +239,11 @@ export function createHomeLeftPanelView({
 }
 
 export function createHomeCenterPanelView({
+  providerAuthStatuses,
+  providerAuthBusyProviderId,
+  providerAuthErrors,
+  onConnectProvider,
+  onDisconnectProvider,
   selectedFile,
   extractedDocument,
   binaryPreview,
@@ -255,6 +264,13 @@ export function createHomeCenterPanelView({
   inspectCurrentFile,
 }: CreateHomeCenterPanelViewArgs): HomeCenterPanelView {
   return {
+    providerAuthCard: {
+      statuses: providerAuthStatuses,
+      busyProviderId: providerAuthBusyProviderId,
+      uiErrors: providerAuthErrors,
+      onConnect: onConnectProvider,
+      onDisconnect: onDisconnectProvider,
+    },
     editor: {
       filePath: selectedFile,
       extractedDocument,
@@ -279,23 +295,13 @@ export function createHomeCenterPanelView({
 }
 
 export function createHomeRightPanelView({
-  providerAuthStatuses,
-  providerAuthBusyProviderId,
-  providerAuthErrors,
-  onConnectProvider,
-  onDisconnectProvider,
   assistant,
   approvalPanel,
+  streamingArtifactText,
 }: CreateHomeRightPanelViewArgs): HomeRightPanelView {
   return {
-    providerAuthCard: {
-      statuses: providerAuthStatuses,
-      busyProviderId: providerAuthBusyProviderId,
-      uiErrors: providerAuthErrors,
-      onConnect: onConnectProvider,
-      onDisconnect: onDisconnectProvider,
-    },
     assistant,
     approvalPanel,
+    streamingArtifactText,
   };
 }

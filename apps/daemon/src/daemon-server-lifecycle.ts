@@ -1,6 +1,12 @@
 import type http from 'node:http';
+import { isIP } from 'node:net';
 import type { WebSocketServer } from 'ws';
+import { createLogger } from '@geulbat/structured-logger/logger';
+import type { DaemonRuntimeStateStore } from './daemon/runtime-state-store.js';
+import type { ActiveRunStore } from './daemon/sessions/active-runs.js';
 import { getErrorMessage } from './daemon/utils/error.js';
+
+const logger = createLogger('daemon-server-lifecycle');
 
 type DaemonRuntimeSessionCleanupResult =
   | { ok: true }
@@ -17,12 +23,19 @@ interface DaemonMcpRuntimeCloser {
 }
 
 export interface DaemonRuntimeSessionClosers {
+  activeRuns: Pick<ActiveRunStore, 'abortAllRuns' | 'waitForIdle'>;
   computerDirectoryPicker: { close(): Promise<void> };
   globalMcp: DaemonMcpRuntimeCloser;
-  ptcBrowserPageLoadEvidence: DaemonRuntimeSessionCloser;
-  ptcBrowserTextEvidence: DaemonRuntimeSessionCloser;
-  ptcBrowserNavigate: DaemonRuntimeSessionCloser;
-  ptcExecuteCode: DaemonRuntimeSessionCloser;
+  hostCommands: DaemonRuntimeSessionCloser;
+  provider: { webSocketSessions: DaemonRuntimeSessionCloser };
+  ptc: {
+    browserPageLoadEvidence: DaemonRuntimeSessionCloser;
+    browserTextEvidence: DaemonRuntimeSessionCloser;
+    browserNavigate: DaemonRuntimeSessionCloser;
+    executeCode: DaemonRuntimeSessionCloser;
+  };
+  subagentLaunchPromotions: { close(): Promise<void> };
+  runtimeStateStore: Pick<DaemonRuntimeStateStore, 'close'>;
 }
 
 export async function closeDaemonServers(args: {
@@ -45,7 +58,9 @@ export async function closeDaemonForShutdown(args: {
     phase:
       | 'interactiveRequests'
       | 'servers'
+      | 'activeRuns'
       | 'runtimeSessions'
+      | 'runtimeStateStore'
       | 'admissionLock',
     close: () => Promise<void>,
   ): Promise<void> => {
@@ -70,12 +85,21 @@ export async function closeDaemonForShutdown(args: {
       webSocketServers: args.webSocketServers,
     }),
   );
+  await attempt('activeRuns', async () => {
+    args.runtimeSessions.activeRuns.abortAllRuns('daemon_shutdown');
+    await args.runtimeSessions.activeRuns.waitForIdle(args.signal);
+  });
   await attempt('runtimeSessions', async () => {
     const results = await collectDaemonBackgroundRuntimeSessionResults({
       runtimeSessions: args.runtimeSessions,
       ...(args.signal === undefined ? {} : { signal: args.signal }),
     });
     throwForRuntimeSessionFailures(results);
+  });
+  await attempt('runtimeStateStore', async () => {
+    throwForRuntimeSessionFailures([
+      closeDaemonRuntimeStateStore(args.runtimeSessions.runtimeStateStore),
+    ]);
   });
   await attempt('admissionLock', () => args.admissionLock.release());
 
@@ -93,7 +117,15 @@ export function listenDaemonHttpServer(args: {
   server: http.Server;
   port: number;
   host: string;
+  reportExposureWarning?: (message: string) => void;
 }): Promise<void> {
+  if (!isLoopbackDaemonBindHost(args.host)) {
+    const message = `daemon bind host "${args.host}" is not loopback; local dev-token authentication is intended for single-user local use only`;
+    (args.reportExposureWarning ?? ((warning) => logger.warn(warning)))(
+      message,
+    );
+  }
+
   return new Promise((resolve, reject) => {
     const cleanup = () => {
       args.server.off('error', onError);
@@ -121,6 +153,21 @@ export function listenDaemonHttpServer(args: {
   });
 }
 
+function isLoopbackDaemonBindHost(host: string): boolean {
+  const normalizedHost = host.toLowerCase().replace(/\.$/u, '');
+  if (normalizedHost === 'localhost') {
+    return true;
+  }
+  const ipVersion = isIP(normalizedHost);
+  if (ipVersion === 4) {
+    return normalizedHost.startsWith('127.');
+  }
+  if (ipVersion === 6) {
+    return new URL(`http://[${normalizedHost}]`).hostname === '[::1]';
+  }
+  return false;
+}
+
 export async function closeDaemonRuntimeSessions(args: {
   runtimeSessions: DaemonRuntimeSessionClosers;
   signal?: AbortSignal;
@@ -129,76 +176,121 @@ export async function closeDaemonRuntimeSessions(args: {
     closeComputerDirectoryPicker(args.runtimeSessions.computerDirectoryPicker),
     collectDaemonBackgroundRuntimeSessionResults(args),
   ]);
-  throwForRuntimeSessionFailures([pickerResult, ...backgroundResults]);
+  const runtimeStateStoreResult = closeDaemonRuntimeStateStore(
+    args.runtimeSessions.runtimeStateStore,
+  );
+  throwForRuntimeSessionFailures([
+    pickerResult,
+    ...backgroundResults,
+    runtimeStateStoreResult,
+  ]);
 }
 
 async function collectDaemonBackgroundRuntimeSessionResults(args: {
   runtimeSessions: DaemonRuntimeSessionClosers;
   signal?: AbortSignal;
-}): Promise<ReadonlyArray<{ failure?: string }>> {
+}): Promise<ReadonlyArray<Error | undefined>> {
   return await Promise.all([
     closeDaemonMcpRuntime({
       runtime: args.runtimeSessions.globalMcp,
       signal: args.signal,
     }),
     closeDaemonRuntimeSession({
+      label: 'hostCommands',
+      runtime: args.runtimeSessions.hostCommands,
+      signal: args.signal,
+    }),
+    closeDaemonRuntimeSession({
+      label: 'providerWebSocketSessions',
+      runtime: args.runtimeSessions.provider.webSocketSessions,
+      signal: args.signal,
+    }),
+    closeDaemonRuntimeSession({
       label: 'ptcBrowserPageLoadEvidence',
-      runtime: args.runtimeSessions.ptcBrowserPageLoadEvidence,
+      runtime: args.runtimeSessions.ptc.browserPageLoadEvidence,
       signal: args.signal,
     }),
     closeDaemonRuntimeSession({
       label: 'ptcBrowserTextEvidence',
-      runtime: args.runtimeSessions.ptcBrowserTextEvidence,
+      runtime: args.runtimeSessions.ptc.browserTextEvidence,
       signal: args.signal,
     }),
     closeDaemonRuntimeSession({
       label: 'ptcBrowserNavigate',
-      runtime: args.runtimeSessions.ptcBrowserNavigate,
+      runtime: args.runtimeSessions.ptc.browserNavigate,
       signal: args.signal,
     }),
     closeDaemonRuntimeSession({
       label: 'ptcExecuteCode',
-      runtime: args.runtimeSessions.ptcExecuteCode,
+      runtime: args.runtimeSessions.ptc.executeCode,
       signal: args.signal,
     }),
+    closeSubagentLaunchPromotions(
+      args.runtimeSessions.subagentLaunchPromotions,
+    ),
   ]);
 }
 
+async function closeSubagentLaunchPromotions(
+  promotions: DaemonRuntimeSessionClosers['subagentLaunchPromotions'],
+): Promise<Error | undefined> {
+  try {
+    await promotions.close();
+    return undefined;
+  } catch (error: unknown) {
+    return new Error('subagentLaunchPromotions:threw', { cause: error });
+  }
+}
+
 function throwForRuntimeSessionFailures(
-  results: ReadonlyArray<{ failure?: string }>,
+  results: ReadonlyArray<Error | undefined>,
 ): void {
-  const failures = results
-    .map((result) => result.failure)
-    .filter((failure): failure is string => typeof failure === 'string');
+  const failures = results.filter(
+    (failure): failure is Error => failure !== undefined,
+  );
   if (failures.length > 0) {
-    throw new Error(
-      `daemon runtime session cleanup failed: ${failures.join('; ')}`,
+    throw new AggregateError(
+      failures,
+      `daemon runtime session cleanup failed: ${failures
+        .map((failure) => failure.message)
+        .join('; ')}`,
     );
   }
 }
 
 async function closeComputerDirectoryPicker(
   picker: DaemonRuntimeSessionClosers['computerDirectoryPicker'],
-): Promise<{ failure?: string }> {
+): Promise<Error | undefined> {
   try {
     await picker.close();
-    return {};
-  } catch {
-    return { failure: 'computerDirectoryPicker:threw' };
+    return undefined;
+  } catch (error: unknown) {
+    return new Error('computerDirectoryPicker:threw', { cause: error });
   }
 }
 
 async function closeDaemonMcpRuntime(args: {
   runtime: DaemonMcpRuntimeCloser;
   signal: AbortSignal | undefined;
-}): Promise<{ failure?: string }> {
+}): Promise<Error | undefined> {
   try {
     await args.runtime.close(
       args.signal === undefined ? undefined : { signal: args.signal },
     );
-    return {};
-  } catch {
-    return { failure: 'globalMcp:threw' };
+    return undefined;
+  } catch (error: unknown) {
+    return new Error('globalMcp:threw', { cause: error });
+  }
+}
+
+function closeDaemonRuntimeStateStore(
+  runtimeStateStore: DaemonRuntimeSessionClosers['runtimeStateStore'],
+): Error | undefined {
+  try {
+    runtimeStateStore.close();
+    return undefined;
+  } catch (error: unknown) {
+    return new Error('runtimeStateStore:threw', { cause: error });
   }
 }
 
@@ -223,21 +315,19 @@ async function closeDaemonRuntimeSession(args: {
   label: string;
   runtime: DaemonRuntimeSessionCloser;
   signal: AbortSignal | undefined;
-}): Promise<{ failure?: string }> {
+}): Promise<Error | undefined> {
   let result: DaemonRuntimeSessionCleanupResult;
   try {
     result = await args.runtime.closeAll(
       args.signal === undefined ? undefined : { signal: args.signal },
     );
-  } catch {
-    return { failure: `${args.label}:threw` };
+  } catch (error: unknown) {
+    return new Error(`${args.label}:threw`, { cause: error });
   }
   if (result.ok) {
-    return {};
+    return undefined;
   }
-  return {
-    failure: `${args.label}:${result.reasonCode}`,
-  };
+  return new Error(`${args.label}:${result.reasonCode}`, { cause: result });
 }
 
 function closeHttpServer(server: http.Server): Promise<void> {

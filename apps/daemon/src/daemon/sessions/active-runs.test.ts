@@ -198,9 +198,11 @@ void test('abortThreadTree aborts foreground and background runs owned by the sa
     { ok: true },
   );
 
-  assert.equal(store.abortThreadTree(parentThreadId), true);
+  assert.equal(store.abortThreadTree(parentThreadId, 'test_abort'), true);
   assert.equal(parentController.signal.aborted, true);
+  assert.equal(parentController.signal.reason, 'test_abort');
   assert.equal(childController.signal.aborted, true);
+  assert.equal(childController.signal.reason, 'test_abort');
 
   store.finishRun(childThreadId, childRunId);
   store.finishRun(parentThreadId, parentRunId);
@@ -557,4 +559,105 @@ void test('requestPendingInterjectFlush marks a queued live run and reports empt
   );
 
   store.finishRun(threadId, runId);
+});
+
+void test('owner-thread lookup keeps finding a background child after its parent settles', () => {
+  const store = createActiveRunStore();
+  const ownerThreadId = testThreadId(40);
+  const childThreadId = testThreadId(41);
+  const parentRunId = testRunId('owner-lookup-parent');
+  const childRunId = testRunId('owner-lookup-child');
+
+  registerTestActiveRun({
+    store,
+    runId: parentRunId,
+    threadId: ownerThreadId,
+    ownerThreadId,
+    abortController: new AbortController(),
+  });
+  registerTestActiveRun({
+    store,
+    runId: childRunId,
+    threadId: childThreadId,
+    ownerThreadId,
+    abortController: new AbortController(),
+    parentRunId,
+  });
+
+  store.finishRun(ownerThreadId, parentRunId);
+
+  assert.equal(store.getRunByThreadId(ownerThreadId), undefined);
+  assert.equal(store.getRunByOwnerThread(ownerThreadId)?.runId, childRunId);
+
+  store.finishRun(childThreadId, childRunId);
+  assert.equal(store.getRunByOwnerThread(ownerThreadId), undefined);
+});
+
+void test('abortAllRuns cancels every active tree and waitForIdle resolves after lifecycle cleanup', async () => {
+  const store = createActiveRunStore();
+  const firstThreadId = testThreadId(42);
+  const secondThreadId = testThreadId(43);
+  const firstRunId = testRunId('shutdown-first');
+  const secondRunId = testRunId('shutdown-second');
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+
+  registerTestActiveRun({
+    store,
+    runId: firstRunId,
+    threadId: firstThreadId,
+    ownerThreadId: firstThreadId,
+    abortController: firstController,
+  });
+  registerTestActiveRun({
+    store,
+    runId: secondRunId,
+    threadId: secondThreadId,
+    ownerThreadId: secondThreadId,
+    abortController: secondController,
+  });
+
+  let idle = false;
+  const idleWait = store.waitForIdle().then(() => {
+    idle = true;
+  });
+
+  assert.equal(store.abortAllRuns('daemon_shutdown'), 2);
+  assert.equal(firstController.signal.reason, 'daemon_shutdown');
+  assert.equal(secondController.signal.reason, 'daemon_shutdown');
+  await Promise.resolve();
+  assert.equal(idle, false);
+
+  store.finishRun(firstThreadId, firstRunId);
+  await Promise.resolve();
+  assert.equal(idle, false);
+  store.finishRun(secondThreadId, secondRunId);
+  await idleWait;
+  assert.equal(idle, true);
+  assert.equal(store.abortAllRuns('daemon_shutdown'), 0);
+});
+
+void test('waitForIdle observes caller cancellation without changing active runs', async () => {
+  const store = createActiveRunStore();
+  const threadId = testThreadId(44);
+  const runId = testRunId('idle-wait-abort');
+  const runController = new AbortController();
+  const waitController = new AbortController();
+
+  registerTestActiveRun({
+    store,
+    runId,
+    threadId,
+    ownerThreadId: threadId,
+    abortController: runController,
+  });
+
+  const reason = new Error('stop waiting');
+  const waiting = store.waitForIdle(waitController.signal);
+  waitController.abort(reason);
+
+  await assert.rejects(waiting, reason);
+  assert.equal(runController.signal.aborted, false);
+  store.finishRun(threadId, runId);
+  await store.waitForIdle();
 });

@@ -2,6 +2,7 @@ import { createLogger } from '@geulbat/structured-logger/logger';
 
 import type {
   ArtifactRef,
+  PlanRenderingStamp,
   RunId,
   ThreadArtifactVersion,
   ThreadMessage,
@@ -36,37 +37,42 @@ export async function persistForegroundAssistantAnswer(args: {
 }): Promise<boolean> {
   const { agentInput, result, deps } = args;
   const { runId, runContext, currentFile } = agentInput;
-  const persistArgs: Parameters<typeof persistAssistantAnswer>[0] = {
-    workspaceRoot: runContext.stateRoot,
-    workingDirectory: runContext.workingDirectory,
-    threadId: runContext.threadId,
-    runId,
-    finalProse: result.finalProse,
-    onArtifactCommitted: (artifact) => {
-      agentInput.onEvent({
-        type: 'artifact_committed',
-        payload: artifact,
-      });
-    },
-    deps,
-  };
-
-  if (result.artifactCandidate !== undefined) {
-    persistArgs.artifactCandidate = result.artifactCandidate;
-  }
-
-  if (
-    args.toolCommittedArtifactRefs !== undefined &&
-    args.toolCommittedArtifactRefs.length > 0
-  ) {
-    persistArgs.toolCommittedArtifactRefs = args.toolCommittedArtifactRefs;
-  }
-
-  if (currentFile !== undefined) {
-    persistArgs.currentFile = currentFile;
-  }
-
   try {
+    const planStamp = await resolveForegroundPlanRenderingStamp(agentInput);
+    const persistArgs: Parameters<typeof persistAssistantAnswer>[0] = {
+      workspaceRoot: runContext.stateRoot,
+      workingDirectory: runContext.workingDirectory,
+      threadId: runContext.threadId,
+      runId,
+      finalProse: result.finalProse,
+      onArtifactCommitted: (artifact) => {
+        agentInput.onEvent({
+          type: 'artifact_committed',
+          payload: artifact,
+        });
+      },
+      deps,
+    };
+
+    if (result.artifactCandidate !== undefined) {
+      persistArgs.artifactCandidate = result.artifactCandidate;
+    }
+
+    if (
+      args.toolCommittedArtifactRefs !== undefined &&
+      args.toolCommittedArtifactRefs.length > 0
+    ) {
+      persistArgs.toolCommittedArtifactRefs = args.toolCommittedArtifactRefs;
+    }
+
+    if (currentFile !== undefined) {
+      persistArgs.currentFile = currentFile;
+    }
+
+    if (planStamp !== undefined) {
+      persistArgs.planStamp = planStamp;
+    }
+
     await persistAssistantAnswer(persistArgs);
     return true;
   } catch (error: unknown) {
@@ -84,6 +90,7 @@ async function persistAssistantAnswer(args: {
   finalProse: string;
   artifactCandidate?: AgentArtifactCandidate;
   toolCommittedArtifactRefs?: readonly ArtifactRef[];
+  planStamp?: PlanRenderingStamp;
   onArtifactCommitted?: (artifact: ThreadArtifactVersion) => void;
   deps: ResolvedExecuteForegroundRunDeps;
 }): Promise<void> {
@@ -95,6 +102,7 @@ async function persistAssistantAnswer(args: {
     currentFile,
     finalProse,
     artifactCandidate,
+    planStamp,
     onArtifactCommitted,
     deps,
   } = args;
@@ -109,6 +117,7 @@ async function persistAssistantAnswer(args: {
         ...(currentFile !== undefined ? { currentFile } : {}),
         candidate: artifactCandidate,
         timestamp,
+        ...(planStamp === undefined ? {} : { planStamp }),
         deps,
       })
     : null;
@@ -118,6 +127,7 @@ async function persistAssistantAnswer(args: {
   >[0] = {
     runId: sourceRunId,
     artifactRef: committedArtifact?.ref ?? null,
+    ...(planStamp === undefined ? {} : { planStamp }),
   };
 
   if (
@@ -161,6 +171,7 @@ async function commitAssistantArtifactCandidate(args: {
   currentFile?: string;
   candidate: AgentArtifactCandidate;
   timestamp: string;
+  planStamp?: PlanRenderingStamp;
   deps: ResolvedExecuteForegroundRunDeps;
 }): Promise<CommittedAssistantArtifact> {
   const {
@@ -171,6 +182,7 @@ async function commitAssistantArtifactCandidate(args: {
     currentFile,
     candidate,
     timestamp,
+    planStamp,
     deps,
   } = args;
 
@@ -184,6 +196,7 @@ async function commitAssistantArtifactCandidate(args: {
       createdByRunId: runId,
       timestamp,
       expectedRenderer: candidate.renderer,
+      ...(planStamp === undefined ? {} : { planStamp }),
     });
     if (updated.ok) {
       return {
@@ -209,6 +222,7 @@ async function commitAssistantArtifactCandidate(args: {
     renderer: candidate.renderer,
     payload: candidate.payload,
     digest: candidate.digest,
+    ...(planStamp === undefined ? {} : { planStamp }),
     sourceRef:
       currentFile !== undefined
         ? {
@@ -237,6 +251,7 @@ function buildAssistantTranscriptMetadata(args: {
   currentFile?: string;
   artifactRef?: ArtifactRef | null;
   toolCommittedArtifactRefs?: readonly ArtifactRef[];
+  planStamp?: PlanRenderingStamp;
 }): ThreadMessageMetadata {
   const metadata: ThreadMessageMetadata = {
     phase: 'final_answer',
@@ -257,7 +272,38 @@ function buildAssistantTranscriptMetadata(args: {
     metadata.artifactRefs = refs;
     metadata.activeArtifactRef = activeRef;
   }
+  if (args.planStamp !== undefined) {
+    metadata.planStamp = args.planStamp;
+  }
   return metadata;
+}
+
+async function resolveForegroundPlanRenderingStamp(
+  agentInput: AgentInput,
+): Promise<PlanRenderingStamp | undefined> {
+  if (agentInput.approvedPlan !== undefined) {
+    return agentInput.approvedPlan.ref;
+  }
+  if (agentInput.planningWorkflow === undefined) {
+    return undefined;
+  }
+  const snapshot =
+    await agentInput.runtimeServices.planningWorkflows.readThread(
+      agentInput.runContext.threadId,
+    );
+  if (
+    snapshot === null ||
+    snapshot.workflowId !== agentInput.planningWorkflow.workflowId ||
+    snapshot.state === 'collecting'
+  ) {
+    return undefined;
+  }
+  return {
+    workflowId: snapshot.workflowId,
+    planId: snapshot.planId,
+    revision: snapshot.revision,
+    digest: snapshot.digest,
+  };
 }
 
 async function appendAssistantTranscriptWithArtifactRollback(args: {

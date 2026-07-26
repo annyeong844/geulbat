@@ -8,7 +8,7 @@ import {
   buildChildLaunchRejected,
   isAgentChildTerminalState,
 } from '../../subagent-runtime-contracts.js';
-import type { SubagentRunLauncher } from '../types.js';
+import type { SubagentRunLauncher } from '../../daemon-runtime-contract.js';
 import { runSubagentLaunchPipeline } from './subagent-launch-pipeline.js';
 
 const agentSendInputArgsSchema = z.strictObject({
@@ -70,7 +70,7 @@ export function createAgentSendInputTool(
           'run context is required for agent_send_input',
         );
       }
-      if (!ctx.agentSpawnRuntime) {
+      if (!ctx.runtimeServices) {
         return toolError(
           'execution_failed',
           'agent_send_input requires agent runtime',
@@ -80,11 +80,11 @@ export function createAgentSendInputTool(
       const stateRoot = ctx.stateRoot;
       const parentRunId = assertToolRunId(ctx.runId);
       const ownerThreadId = ctx.threadId;
-      const agentSpawnRuntime = ctx.agentSpawnRuntime;
+      const runtimeServices = ctx.runtimeServices;
       const agentCtx = isAgentToolExecutionContext(ctx) ? ctx : undefined;
       const childRunHandleId = assertToolRunId(childRunId);
       const childRecord =
-        agentSpawnRuntime.childRuns.getChildRun(childRunHandleId);
+        runtimeServices.childRuns.getChildRun(childRunHandleId);
       if (!childRecord) {
         return toolError('invalid_args', `unknown child run: ${childRunId}`);
       }
@@ -114,6 +114,7 @@ export function createAgentSendInputTool(
       return await runSubagentLaunchPipeline({
         task,
         subagentType,
+        capabilities: childRecord.capabilities ?? [],
         parentRunId,
         ownerThreadId,
         stateRoot,
@@ -122,15 +123,16 @@ export function createAgentSendInputTool(
         childRunId: childRunHandleId,
         childThreadId: childRecord.childThreadId,
         parentRunState: ctx.runState,
-        runtimeServices: agentSpawnRuntime,
+        runtimeServices: runtimeServices,
         ...(options.startBackgroundRun !== undefined
           ? { startBackgroundRun: options.startBackgroundRun }
           : {}),
         ...(agentCtx ? { emitAgentEvent: agentCtx.emitAgentEvent } : {}),
-        ...(ctx.approvalSessionId !== undefined
-          ? { approvalSessionId: ctx.approvalSessionId }
+        ...(ctx.computerSessionId !== undefined
+          ? { computerSessionId: ctx.computerSessionId }
           : {}),
         ...(agentCtx ? { permissionMode: agentCtx.permissionMode } : {}),
+        ultraReasoning: agentCtx?.ultraReasoning ?? false,
         modelPin: childRecord.modelPin,
         subagentModelRouting: childRecord.subagentModelRouting,
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),

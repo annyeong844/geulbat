@@ -15,12 +15,41 @@ import test from 'node:test';
 
 import {
   OFFICIAL_CODEX_MARKETPLACE_SOURCE,
-  createPluginMarketplaceStore,
+  createPluginMarketplaceStore as createProductPluginMarketplaceStore,
 } from './plugin-marketplace-store.js';
 import { PluginMarketplaceStoreError } from './plugin-marketplace-contract.js';
-import { acquirePluginMarketplaceGitRepository } from './plugin-marketplace-git.js';
+import {
+  acquirePluginMarketplaceGitRepository,
+  type PluginMarketplaceCommandRunner,
+} from './plugin-marketplace-git.js';
 import { createPluginStore } from './plugin-store.js';
 import { PluginStoreError } from './plugin-store-contract.js';
+
+const runMarketplaceTestCommand: PluginMarketplaceCommandRunner = async (
+  args,
+) => {
+  const result = spawnSync(args.executable, [...args.args], {
+    encoding: 'utf8',
+    env: args.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  return {
+    exitCode: result.status,
+    stdout: result.stdout,
+  };
+};
+
+function createPluginMarketplaceStore(
+  args: Parameters<typeof createProductPluginMarketplaceStore>[0],
+) {
+  return createProductPluginMarketplaceStore({
+    ...args,
+    runCommand: args.runCommand ?? runMarketplaceTestCommand,
+  });
+}
 
 void test('real Git acquisition resolves a detached local revision without repository hooks', async () => {
   const fixture = await createMarketplaceFixture();
@@ -31,6 +60,7 @@ void test('real Git acquisition resolves a detached local revision without repos
       url: fixture.repositoryRoot,
       requestedRef: null,
       isolatedConfigRoot: join(fixture.root, 'git-runtime'),
+      runCommand: runMarketplaceTestCommand,
     });
     assert.equal(
       await readFile(
@@ -45,6 +75,28 @@ void test('real Git acquisition resolves a detached local revision without repos
     );
   } finally {
     await fixture.cleanup();
+  }
+});
+
+void test('Git acquisition fails closed without a daemon host command runner', async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), 'geulbat-marketplace-unrouted-git-'),
+  );
+  try {
+    await assert.rejects(
+      acquirePluginMarketplaceGitRepository({
+        repositoryRoot: join(root, 'checkout'),
+        url: 'https://github.com/example/plugins.git',
+        requestedRef: null,
+        isolatedConfigRoot: join(root, 'git-runtime'),
+      }),
+      (error: unknown) =>
+        error instanceof PluginMarketplaceStoreError &&
+        error.code === 'invalid_request' &&
+        /requires the daemon host command runtime/u.test(error.message),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

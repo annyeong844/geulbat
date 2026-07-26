@@ -11,6 +11,8 @@ import {
   isWellKnownApprovalClass,
   WELL_KNOWN_APPROVAL_CLASSES,
 } from './run-approval.js';
+import type { RunId, ThreadId } from './ids.js';
+import { assertEveryFieldIsValidated } from './test-support/field-coverage.js';
 
 const RUN_ID = 'run-approval-1';
 const THREAD_ID = '11111111-1111-4111-8111-111111111111';
@@ -104,6 +106,14 @@ void test('approval decisions are exact while server projections remain additive
   } as const;
   assert.equal(isApprovalRequest(decision), true);
   assert.equal(
+    isApprovalRequest({ ...decision, permissionMode: 'full_access' }),
+    true,
+  );
+  assert.equal(
+    isApprovalRequest({ ...decision, permissionMode: 'unrestricted' }),
+    false,
+  );
+  assert.equal(
     isApprovalRequest({ ...decision, futureGrantSelector: 'workspace' }),
     false,
   );
@@ -136,4 +146,58 @@ void test('approvalClass uses a centralized normalized token guard', () => {
 
   assert.equal(toApprovalClass('write_file'), 'write_file');
   assert.throws(() => toApprovalClass('contains spaces'));
+});
+
+void test('every declared approval contract field is actually validated', () => {
+  assertEveryFieldIsValidated(
+    'ApprovalRequired',
+    isApprovalRequired,
+    {
+      callId: 'call-1',
+      runId: RUN_ID as RunId,
+      threadId: THREAD_ID as ThreadId,
+      toolName: 'write_file',
+      approvalClass: 'write_file',
+      permissionMode: 'basic',
+      argumentsPreview: { path: 'docs/a.md' },
+      sideEffectLevel: 'write',
+      source: {
+        kind: 'artifact_frame',
+        scopeHandle: 'scope-1',
+        runtimeToolCallId: 'rt-call-1',
+      },
+    },
+    {
+      callId: 42,
+      runId: 42,
+      threadId: '../escape',
+      toolName: 42,
+      approvalClass: 42,
+      permissionMode: 'invented-mode',
+      argumentsPreview: 'not-a-record',
+      sideEffectLevel: 'invented-level',
+      source: 'not-a-record',
+    },
+  );
+
+  assertEveryFieldIsValidated(
+    'ApprovalRequest',
+    isApprovalRequest,
+    {
+      callId: 'call-1',
+      runId: RUN_ID as RunId,
+      threadId: THREAD_ID as ThreadId,
+      approved: true,
+      grantScope: 'once',
+      permissionMode: 'basic',
+    },
+    {
+      callId: 42,
+      runId: 42,
+      threadId: '../escape',
+      approved: 'yes',
+      grantScope: 'thread',
+      permissionMode: 'invented-mode',
+    },
+  );
 });

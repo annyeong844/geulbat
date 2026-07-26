@@ -14,6 +14,7 @@ import { agentWaitTool } from './agent-wait.js';
 import { createSubagentRunLauncher } from '../../agent/subagent-support.js';
 import { createDaemonContext } from '../../context.js';
 import { createRunState } from '../../agent/runtime/run-state.js';
+import { createDaemonRuntimeStateStore } from '../../runtime-state-store.js';
 import { readTranscriptEntries } from '../../sessions/transcript-log.js';
 import {
   assertRunId as assertValidRunId,
@@ -40,6 +41,19 @@ async function waitForChildStatus(args: {
     await delay(10);
   }
   throw new Error(`child ${args.childRunId} did not reach ${args.status}`);
+}
+
+async function createDurableAgentToolTestContext(stateRoot: string) {
+  const runtimeStateStore = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  return {
+    daemonContext: createDaemonContext({
+      homeStateRoot: stateRoot,
+      subagentLaunchRequests: runtimeStateStore,
+    }),
+    runtimeStateStore,
+  };
 }
 
 void test('agent_send_input rejects malformed handles and blank tasks at the parser boundary', async () => {
@@ -77,7 +91,8 @@ void test('agent_send_input rejects malformed handles and blank tasks at the par
 void test('agent_send_input continues the same child thread across top-level runs', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-agent-send-input-'));
   const threadId = testThreadId(31);
-  const daemonContext = createDaemonContext();
+  const { daemonContext, runtimeStateStore } =
+    await createDurableAgentToolTestContext(stateRoot);
   const outputs = ['first child answer', 'second child answer'];
 
   const startBackgroundRun = createSubagentRunLauncher({
@@ -119,8 +134,8 @@ void test('agent_send_input continues the same child thread across top-level run
         runState: firstParentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
-        approvalSessionId: 'send-input-seed-session',
-        agentSpawnRuntime: daemonContext,
+        computerSessionId: 'send-input-seed-session',
+        runtimeServices: daemonContext,
       },
     );
 
@@ -158,8 +173,8 @@ void test('agent_send_input continues the same child thread across top-level run
         runState: secondParentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
-        approvalSessionId: 'send-input-continue-session',
-        agentSpawnRuntime: daemonContext,
+        computerSessionId: 'send-input-continue-session',
+        runtimeServices: daemonContext,
       },
     );
 
@@ -218,7 +233,7 @@ void test('agent_send_input continues the same child thread across top-level run
         stateRoot,
         runId: 'top-run-parent-2',
         threadId,
-        agentSpawnRuntime: daemonContext,
+        runtimeServices: daemonContext,
         signal: new AbortController().signal,
       },
     );
@@ -229,6 +244,7 @@ void test('agent_send_input continues the same child thread across top-level run
     assert.equal(waitPayload.completed[0]?.childRunId, spawnPayload.childRunId);
     assert.equal(waitPayload.completed[0]?.result, 'second child answer');
   } finally {
+    runtimeStateStore.close();
     await rm(stateRoot, { recursive: true, force: true });
   }
 });
@@ -238,7 +254,8 @@ void test('agent_send_input allows child runs to continue nested child handles',
     join(tmpdir(), 'geulbat-agent-send-input-nested-'),
   );
   const childThreadId = testThreadId(35);
-  const daemonContext = createDaemonContext();
+  const { daemonContext, runtimeStateStore } =
+    await createDurableAgentToolTestContext(stateRoot);
   const outputs = ['nested seed answer', 'nested follow-up answer'];
 
   const startBackgroundRun = createSubagentRunLauncher({
@@ -281,8 +298,8 @@ void test('agent_send_input allows child runs to continue nested child handles',
         runState: childRunState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
-        approvalSessionId: 'send-input-nested-seed-session',
-        agentSpawnRuntime: daemonContext,
+        computerSessionId: 'send-input-nested-seed-session',
+        runtimeServices: daemonContext,
       },
     );
 
@@ -320,8 +337,8 @@ void test('agent_send_input allows child runs to continue nested child handles',
         }),
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
-        approvalSessionId: 'send-input-nested-continue-session',
-        agentSpawnRuntime: daemonContext,
+        computerSessionId: 'send-input-nested-continue-session',
+        runtimeServices: daemonContext,
       },
     );
 
@@ -358,6 +375,7 @@ void test('agent_send_input allows child runs to continue nested child handles',
       status: 'completed',
     });
   } finally {
+    runtimeStateStore.close();
     await rm(stateRoot, { recursive: true, force: true });
   }
 });
@@ -367,7 +385,8 @@ void test('agent_send_input rejects a child handle that is still running', async
     join(tmpdir(), 'geulbat-agent-send-input-busy-'),
   );
   const threadId = testThreadId(32);
-  const daemonContext = createDaemonContext();
+  const { daemonContext, runtimeStateStore } =
+    await createDurableAgentToolTestContext(stateRoot);
   let releaseChild!: () => void;
   const childBlocked = new Promise<void>((resolve) => {
     releaseChild = resolve;
@@ -407,8 +426,8 @@ void test('agent_send_input rejects a child handle that is still running', async
         runState: parentState,
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
-        approvalSessionId: 'send-input-busy-seed-session',
-        agentSpawnRuntime: daemonContext,
+        computerSessionId: 'send-input-busy-seed-session',
+        runtimeServices: daemonContext,
       },
     );
 
@@ -436,8 +455,8 @@ void test('agent_send_input rejects a child handle that is still running', async
         }),
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
-        approvalSessionId: 'send-input-busy-continue-session',
-        agentSpawnRuntime: daemonContext,
+        computerSessionId: 'send-input-busy-continue-session',
+        runtimeServices: daemonContext,
       },
     );
 
@@ -457,6 +476,7 @@ void test('agent_send_input rejects a child handle that is still running', async
       status: 'completed',
     });
   } finally {
+    runtimeStateStore.close();
     await rm(stateRoot, { recursive: true, force: true });
   }
 });
@@ -466,7 +486,8 @@ void test('agent_send_input forwards child approval events through the shared ch
     join(tmpdir(), 'geulbat-agent-send-input-approval-'),
   );
   const threadId = testThreadId(33);
-  const daemonContext = createDaemonContext();
+  const { daemonContext, runtimeStateStore } =
+    await createDurableAgentToolTestContext(stateRoot);
 
   const testAgentSpawnTool = createAgentSpawnTool({
     startBackgroundRun: createSubagentRunLauncher({
@@ -504,11 +525,11 @@ void test('agent_send_input forwards child approval events through the shared ch
         currentFile: undefined,
         selection: undefined,
         approvalGranted: false,
-        agentSpawnRuntime: daemonContext,
+        runtimeServices: daemonContext,
         memoryIndex: undefined,
         emitAgentEvent: () => {},
         permissionMode: 'basic',
-        approvalSessionId: 'session-seed',
+        computerSessionId: 'session-seed',
       },
     );
 
@@ -582,9 +603,9 @@ void test('agent_send_input forwards child approval events through the shared ch
         currentFile: undefined,
         selection: undefined,
         approvalGranted: false,
-        approvalSessionId: 'session-continue',
+        computerSessionId: 'session-continue',
         permissionMode: 'basic',
-        agentSpawnRuntime: daemonContext,
+        runtimeServices: daemonContext,
         memoryIndex: undefined,
         emitAgentEvent: (event) => {
           emittedTypes.push(event.type);
@@ -605,12 +626,25 @@ void test('agent_send_input forwards child approval events through the shared ch
       'subagent_approval_required',
       'approval_required',
     ]);
+    const approvalBridgeRuntime = (
+      emittedPayloads[1]?.payload as {
+        runtime?: { observedAt?: unknown };
+      }
+    ).runtime;
+    const approvalBridgeObservedAt = approvalBridgeRuntime?.observedAt;
+    assert.equal(typeof approvalBridgeObservedAt, 'string');
+    assert.equal(
+      Number.isNaN(Date.parse(approvalBridgeObservedAt as string)),
+      false,
+    );
     assert.deepEqual(emittedPayloads[1], {
       type: 'subagent_approval_required',
       payload: {
         parentRunId: 'top-run-continue',
         childRunId: seededPayload.childRunId,
         subagentType: 'worker',
+        capabilities: [],
+        toolSurface: 'worker',
         approval: {
           callId: 'call-child-approval',
           runId: seededPayload.childRunId,
@@ -623,9 +657,20 @@ void test('agent_send_input forwards child approval events through the shared ch
           },
           sideEffectLevel: 'write',
         },
+        runtime: {
+          phase: 'approval_pending',
+          observedAt: approvalBridgeObservedAt,
+          partialOutputAvailable: false,
+          lastTool: {
+            name: 'write_file',
+            callId: 'call-child-approval',
+            state: 'running',
+          },
+        },
       },
     });
   } finally {
+    runtimeStateStore.close();
     await rm(stateRoot, { recursive: true, force: true });
   }
 });
@@ -635,7 +680,8 @@ void test('agent_send_input lets continued worker inherit current parent permiss
     join(tmpdir(), 'geulbat-agent-send-input-permission-'),
   );
   const threadId = testThreadId(34);
-  const daemonContext = createDaemonContext();
+  const { daemonContext, runtimeStateStore } =
+    await createDurableAgentToolTestContext(stateRoot);
 
   const testAgentSpawnTool = createAgentSpawnTool({
     startBackgroundRun: createSubagentRunLauncher({
@@ -673,11 +719,11 @@ void test('agent_send_input lets continued worker inherit current parent permiss
         currentFile: undefined,
         selection: undefined,
         approvalGranted: false,
-        agentSpawnRuntime: daemonContext,
+        runtimeServices: daemonContext,
         memoryIndex: undefined,
         emitAgentEvent: () => {},
         permissionMode: 'basic',
-        approvalSessionId: 'session-seed-permission',
+        computerSessionId: 'session-seed-permission',
       },
     );
 
@@ -694,7 +740,7 @@ void test('agent_send_input lets continued worker inherit current parent permiss
 
     let capturedApprovalContext:
       | {
-          sessionId: string;
+          computerSessionId: string;
           permissionMode: 'basic' | 'full_access';
           ownerRunId?: string;
           ownerThreadId?: string;
@@ -737,9 +783,9 @@ void test('agent_send_input lets continued worker inherit current parent permiss
         currentFile: undefined,
         selection: undefined,
         approvalGranted: false,
-        approvalSessionId: 'session-continue-permission',
+        computerSessionId: 'session-continue-permission',
         permissionMode: 'full_access',
-        agentSpawnRuntime: daemonContext,
+        runtimeServices: daemonContext,
         memoryIndex: undefined,
         emitAgentEvent: () => {},
       },
@@ -753,12 +799,13 @@ void test('agent_send_input lets continued worker inherit current parent permiss
     });
 
     assert.deepEqual(capturedApprovalContext, {
-      sessionId: 'session-continue-permission',
+      computerSessionId: 'session-continue-permission',
       permissionMode: 'full_access',
       ownerRunId: 'top-run-continue-permission',
       ownerThreadId: threadId,
     });
   } finally {
+    runtimeStateStore.close();
     await rm(stateRoot, { recursive: true, force: true });
   }
 });
@@ -768,7 +815,8 @@ void test('agent_send_input rejects standalone worker continuation without appro
     join(tmpdir(), 'geulbat-agent-send-input-standalone-worker-'),
   );
   const threadId = testThreadId(35);
-  const daemonContext = createDaemonContext();
+  const { daemonContext, runtimeStateStore } =
+    await createDurableAgentToolTestContext(stateRoot);
 
   const testAgentSpawnTool = createAgentSpawnTool({
     startBackgroundRun: createSubagentRunLauncher({
@@ -806,11 +854,11 @@ void test('agent_send_input rejects standalone worker continuation without appro
         currentFile: undefined,
         selection: undefined,
         approvalGranted: false,
-        agentSpawnRuntime: daemonContext,
+        runtimeServices: daemonContext,
         memoryIndex: undefined,
         emitAgentEvent: () => {},
         permissionMode: 'basic',
-        approvalSessionId: 'session-seed-standalone-worker',
+        computerSessionId: 'session-seed-standalone-worker',
       },
     );
 
@@ -852,9 +900,9 @@ void test('agent_send_input rejects standalone worker continuation without appro
         }),
         signal: new AbortController().signal,
         runSignal: new AbortController().signal,
-        approvalSessionId: 'session-standalone-worker',
+        computerSessionId: 'session-standalone-worker',
         permissionMode: 'full_access',
-        agentSpawnRuntime: daemonContext,
+        runtimeServices: daemonContext,
       },
     );
 
@@ -863,6 +911,7 @@ void test('agent_send_input rejects standalone worker continuation without appro
     assert.match(rejected.error, /approval event routing/);
     assert.equal(startCalled, false);
   } finally {
+    runtimeStateStore.close();
     await rm(stateRoot, { recursive: true, force: true });
   }
 });
@@ -878,6 +927,7 @@ void test('agent_send_input continues retained terminal child handles', async ()
     parentRunId: testRunId('send-input-terminal-parent'),
     ownerThreadId,
     subagentType: 'explorer',
+    capabilities: ['ptc'],
     modelPin: {
       modelId: 'gpt-5.6-luna',
       providerRunSelection: {
@@ -904,6 +954,8 @@ void test('agent_send_input continues retained terminal child handles', async ()
   const testAgentSendInputTool = createAgentSendInputTool({
     startBackgroundRun: async (input) => {
       continuedTask = input.task;
+      assert.equal(input.ultraReasoning, true);
+      assert.deepEqual(input.capabilities, ['ptc']);
       assert.deepEqual(input.modelPin, {
         modelId: 'gpt-5.6-luna',
         providerRunSelection: {
@@ -930,6 +982,8 @@ void test('agent_send_input continues retained terminal child handles', async ()
       task: 'continue retained child',
     },
     {
+      kind: 'agent',
+      runOwnerKind: 'root_main',
       callId: 'call-send-input-terminal',
       providerRunSelection: {
         providerModel: { providerId: 'grok_oauth', model: 'grok-4.5' },
@@ -937,6 +991,7 @@ void test('agent_send_input continues retained terminal child handles', async ()
       },
       subagentModelRouting: { mode: 'auto' },
       stateRoot: '/tmp/home-state',
+      workingDirectory: '/tmp',
       threadId: ownerThreadId,
       runId: parentRunId,
       runState: createRunState({
@@ -948,8 +1003,15 @@ void test('agent_send_input continues retained terminal child handles', async ()
       }),
       signal: new AbortController().signal,
       runSignal: new AbortController().signal,
-      approvalSessionId: 'send-input-terminal-session',
-      agentSpawnRuntime: daemonContext,
+      currentFile: undefined,
+      selection: undefined,
+      approvalGranted: true,
+      computerSessionId: 'send-input-terminal-session',
+      permissionMode: 'full_access',
+      ultraReasoning: true,
+      emitAgentEvent: () => {},
+      memoryIndex: undefined,
+      runtimeServices: daemonContext,
     },
   );
 

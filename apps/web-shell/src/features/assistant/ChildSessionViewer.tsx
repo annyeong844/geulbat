@@ -154,9 +154,9 @@ export function ChildSessionViewer(props: {
             <div className="child-session-notice">기록된 대화가 없습니다.</div>
           ) : (
             <AssistantTranscript
+              threadId={target.childThreadId}
               messages={loadState.detail.messages}
               artifacts={loadState.detail.artifacts ?? []}
-              backgroundNotifications={[]}
               transcriptEntries={[]}
               finalAnswerText=""
               activeArtifact={null}

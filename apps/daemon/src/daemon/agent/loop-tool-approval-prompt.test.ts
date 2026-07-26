@@ -42,7 +42,7 @@ function makeApprovalDecisionRuntime(args: {
       signal: args.signal,
       runState: args.runState,
       memoryIndex: undefined,
-      agentSpawnRuntime: undefined,
+      runtimeServices: undefined,
     }),
   };
 }
@@ -101,7 +101,7 @@ void test('resolveApprovalDecision persists denial as tool_result before termina
       runContext,
       runState,
       approvalContext: makeApprovalContext({
-        sessionId: 'session-approval-denied',
+        computerSessionId: 'session-approval-denied',
       }),
       signal: undefined,
       approvalGate,
@@ -194,7 +194,7 @@ void test('resolveApprovalDecision marks the run cancelled when approval is abor
       runContext,
       runState,
       approvalContext: makeApprovalContext({
-        sessionId: 'session-approval-aborted',
+        computerSessionId: 'session-approval-aborted',
       }),
       signal: controller.signal,
       approvalGate,
@@ -285,7 +285,7 @@ void test('resolveApprovalDecision can use an injected approval gate without rel
       runContext,
       runState,
       approvalContext: makeApprovalContext({
-        sessionId: 'session-approval-local-gate',
+        computerSessionId: 'session-approval-local-gate',
       }),
       signal: undefined,
       approvalGate,

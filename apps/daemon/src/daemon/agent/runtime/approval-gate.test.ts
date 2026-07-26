@@ -20,8 +20,9 @@ function createTestApprovalGate(
   return createApprovalGate({
     approvalGrants,
     runCheckpoints: {
-      async recordApprovalPending({ callId, approvalClass }) {
-        const existing = approvals.get(callId);
+      async recordApprovalPending({ callId, runId, threadId, approvalClass }) {
+        const identityKey = JSON.stringify([callId, runId, threadId]);
+        const existing = approvals.get(identityKey);
         if (existing !== undefined) {
           return existing.approvalClass === approvalClass
             ? { ok: true, approval: existing }
@@ -32,11 +33,18 @@ function createTestApprovalGate(
           callId,
           approvalClass,
         };
-        approvals.set(callId, approval);
+        approvals.set(identityKey, approval);
         return { ok: true, approval };
       },
-      async recordApprovalDecision({ callId, decision, grantScope }) {
-        const existing = approvals.get(callId);
+      async recordApprovalDecision({
+        callId,
+        runId,
+        threadId,
+        decision,
+        grantScope,
+      }) {
+        const identityKey = JSON.stringify([callId, runId, threadId]);
+        const existing = approvals.get(identityKey);
         if (existing === undefined) {
           return { ok: false, code: 'approval_not_pending' };
         }
@@ -52,7 +60,7 @@ function createTestApprovalGate(
           decision,
           grantScope,
         };
-        approvals.set(callId, approval);
+        approvals.set(identityKey, approval);
         return { ok: true, approval };
       },
     },
@@ -69,7 +77,7 @@ void test('resolveApproval requires matching runId and threadId', async () => {
     threadId,
     {
       runId: 'run-1',
-      sessionId: 'session-1',
+      computerSessionId: 'session-1',
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
       permissionMode: 'basic',
@@ -93,6 +101,189 @@ void test('resolveApproval requires matching runId and threadId', async () => {
   await assert.doesNotReject(wait);
 });
 
+void test('the same callId in different runs retains and resolves both approval waiters', async () => {
+  const gate = createTestApprovalGate();
+  const callId = 'shared-call-id';
+  const firstThreadId = testThreadId(14);
+  const secondThreadId = testThreadId(15);
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const firstContext = {
+    runId: 'run-shared-call-first',
+    computerSessionId: 'session-shared-call-first',
+    approvalClass: toApprovalClass('write_file'),
+    sideEffectLevel: 'write' as const,
+    permissionMode: 'basic' as const,
+  };
+  const secondContext = {
+    runId: 'run-shared-call-second',
+    computerSessionId: 'session-shared-call-second',
+    approvalClass: toApprovalClass('write_file'),
+    sideEffectLevel: 'write' as const,
+    permissionMode: 'basic' as const,
+  };
+  const firstWait = gate.waitForApproval(
+    callId,
+    firstContext.runId,
+    firstThreadId,
+    firstContext,
+    firstController.signal,
+  );
+  const secondWait = gate.waitForApproval(
+    callId,
+    secondContext.runId,
+    secondThreadId,
+    secondContext,
+    secondController.signal,
+  );
+
+  try {
+    assert.equal(
+      gate.hasPendingApprovalEntry(callId, firstContext.runId, firstThreadId),
+      true,
+    );
+    assert.equal(
+      gate.hasPendingApprovalEntry(callId, secondContext.runId, secondThreadId),
+      true,
+    );
+    assert.equal(
+      gate.hasApprovalDecisionAuthority(
+        callId,
+        firstContext.runId,
+        firstThreadId,
+        firstContext.computerSessionId,
+      ),
+      true,
+    );
+    assert.equal(
+      gate.hasApprovalDecisionAuthority(
+        callId,
+        firstContext.runId,
+        firstThreadId,
+        secondContext.computerSessionId,
+      ),
+      false,
+    );
+
+    assert.equal(
+      await gate.resolveApproval(
+        callId,
+        firstContext.runId,
+        firstThreadId,
+        'denied',
+      ),
+      'resolved',
+    );
+    assert.equal(
+      await gate.resolveApproval(
+        callId,
+        secondContext.runId,
+        secondThreadId,
+        'approved',
+      ),
+      'resolved',
+    );
+    assert.deepEqual(await Promise.all([firstWait, secondWait]), [
+      'denied',
+      'approved',
+    ]);
+    assert.equal(
+      await gate.resolveApproval(
+        callId,
+        firstContext.runId,
+        firstThreadId,
+        'denied',
+      ),
+      'resolved',
+    );
+    assert.equal(
+      await gate.resolveApproval(
+        callId,
+        secondContext.runId,
+        secondThreadId,
+        'approved',
+      ),
+      'resolved',
+    );
+  } finally {
+    firstController.abort();
+    secondController.abort();
+    await Promise.allSettled([firstWait, secondWait]);
+  }
+});
+
+void test('resolveApproval accepts an exact retry but rejects a divergent decision', async () => {
+  const gate = createTestApprovalGate();
+  const threadId = testThreadId(13);
+  const runId = 'run-approval-retry';
+  const wait = gate.waitForApproval(
+    'call-approval-retry',
+    runId,
+    threadId,
+    {
+      runId,
+      computerSessionId: 'session-approval-retry',
+      approvalClass: toApprovalClass('write_file'),
+      sideEffectLevel: 'write',
+      permissionMode: 'basic',
+    },
+    AbortSignal.timeout(1_000),
+  );
+
+  const [initialResult, retryResult] = await Promise.all([
+    gate.resolveApproval(
+      'call-approval-retry',
+      runId,
+      threadId,
+      'approved',
+      'run',
+      'full_access',
+    ),
+    gate.resolveApproval(
+      'call-approval-retry',
+      runId,
+      threadId,
+      'approved',
+      'run',
+      'full_access',
+    ),
+  ]);
+
+  assert.deepEqual([initialResult, retryResult], ['resolved', 'resolved']);
+  assert.equal(await wait, 'approved');
+  assert.equal(
+    await gate.resolveApproval(
+      'call-approval-retry',
+      runId,
+      threadId,
+      'approved',
+      'run',
+      'basic',
+    ),
+    'already_resolved',
+  );
+  assert.equal(
+    await gate.resolveApproval(
+      'call-approval-retry',
+      runId,
+      threadId,
+      'approved',
+      'session',
+    ),
+    'already_resolved',
+  );
+  assert.equal(
+    await gate.resolveApproval(
+      'call-approval-retry',
+      runId,
+      threadId,
+      'denied',
+      'once',
+    ),
+    'already_resolved',
+  );
+});
+
 void test('resolveApproval returns already_resolved after abort settles the waiter', async () => {
   const gate = createTestApprovalGate();
   const threadId = testThreadId(3);
@@ -103,7 +294,7 @@ void test('resolveApproval returns already_resolved after abort settles the wait
     threadId,
     {
       runId: 'run-2',
-      sessionId: 'session-2',
+      computerSessionId: 'session-2',
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
       permissionMode: 'basic',
@@ -126,7 +317,7 @@ void test('resolveApproval registers reusable grants when scope exceeds once', a
   const threadId = testThreadId(4);
   const approvalContext = {
     runId: 'run-3',
-    sessionId: 'session-3',
+    computerSessionId: 'session-3',
     approvalClass: toApprovalClass('write_file'),
     sideEffectLevel: 'write' as const,
     permissionMode: 'basic' as const,
@@ -153,7 +344,7 @@ void test('resolveApproval registers reusable grants when scope exceeds once', a
   assert.equal(approvalGrants.hasApprovalGrant(approvalContext), true);
 });
 
-void test('clearApprovalSessionRuntime aborts pending waiters for the same session', async () => {
+void test('clearComputerSessionRuntime aborts pending waiters for the same session', async () => {
   const gate = createTestApprovalGate();
   const threadId = testThreadId(5);
   const wait = gate.waitForApproval(
@@ -162,7 +353,7 @@ void test('clearApprovalSessionRuntime aborts pending waiters for the same sessi
     threadId,
     {
       runId: 'run-4',
-      sessionId: 'session-4',
+      computerSessionId: 'session-4',
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
       permissionMode: 'basic',
@@ -170,7 +361,7 @@ void test('clearApprovalSessionRuntime aborts pending waiters for the same sessi
     AbortSignal.timeout(1000),
   );
 
-  gate.clearApprovalSessionRuntime('session-4');
+  gate.clearComputerSessionRuntime('session-4');
 
   assert.equal(await wait, 'aborted');
   assert.equal(
@@ -179,7 +370,7 @@ void test('clearApprovalSessionRuntime aborts pending waiters for the same sessi
   );
 });
 
-void test('clearApprovalSessionRuntime clears resolved approvals for that session only', async () => {
+void test('clearComputerSessionRuntime clears resolved approvals for that session only', async () => {
   const gate = createTestApprovalGate();
   const threadId = testThreadId(7);
   const firstWait = gate.waitForApproval(
@@ -188,7 +379,7 @@ void test('clearApprovalSessionRuntime clears resolved approvals for that sessio
     threadId,
     {
       runId: 'run-session-a',
-      sessionId: 'session-a',
+      computerSessionId: 'session-a',
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
       permissionMode: 'basic',
@@ -201,7 +392,7 @@ void test('clearApprovalSessionRuntime clears resolved approvals for that sessio
     threadId,
     {
       runId: 'run-session-b',
-      sessionId: 'session-b',
+      computerSessionId: 'session-b',
       approvalClass: toApprovalClass('write_file'),
       sideEffectLevel: 'write',
       permissionMode: 'basic',
@@ -230,7 +421,7 @@ void test('clearApprovalSessionRuntime clears resolved approvals for that sessio
   assert.equal(await firstWait, 'denied');
   assert.equal(await secondWait, 'denied');
 
-  gate.clearApprovalSessionRuntime('session-a');
+  gate.clearComputerSessionRuntime('session-a');
 
   assert.equal(
     await gate.resolveApproval(
@@ -248,17 +439,17 @@ void test('clearApprovalSessionRuntime clears resolved approvals for that sessio
       threadId,
       'denied',
     ),
-    'already_resolved',
+    'resolved',
   );
 });
 
-void test('clearApprovalSessionGrants clears grants without aborting pending approvals', async () => {
+void test('clearComputerSessionGrants clears grants without aborting pending approvals', async () => {
   const approvalGrants = createApprovalGrantStore();
   const gate = createTestApprovalGate(approvalGrants);
   const threadId = testThreadId(6);
   const approvalContext = {
     runId: 'run-5',
-    sessionId: 'session-5',
+    computerSessionId: 'session-5',
     approvalClass: toApprovalClass('write_file'),
     sideEffectLevel: 'write' as const,
     permissionMode: 'basic' as const,
@@ -278,7 +469,7 @@ void test('clearApprovalSessionGrants clears grants without aborting pending app
     true,
   );
 
-  gate.clearApprovalSessionGrants('session-5');
+  gate.clearComputerSessionGrants('session-5');
 
   assert.equal(approvalGrants.hasApprovalGrant(approvalContext), false);
   assert.equal(
@@ -295,102 +486,6 @@ void test('clearApprovalSessionGrants clears grants without aborting pending app
     'resolved',
   );
   assert.equal(await wait, 'approved');
-});
-
-void test('rebindApprovalSessionRuntime keeps a pending decision on the replacement session', async () => {
-  const approvalGrants = createApprovalGrantStore();
-  const gate = createTestApprovalGate(approvalGrants);
-  const threadId = testThreadId(8);
-  const previousContext = {
-    runId: 'run-rebind-pending',
-    sessionId: 'session-before-reconnect',
-    approvalClass: toApprovalClass('write_file'),
-    sideEffectLevel: 'write' as const,
-    permissionMode: 'basic' as const,
-  };
-  const nextContext = {
-    ...previousContext,
-    sessionId: 'session-after-reconnect',
-  };
-  const wait = gate.waitForApproval(
-    'call-rebind-pending',
-    previousContext.runId,
-    threadId,
-    previousContext,
-    AbortSignal.timeout(1_000),
-  );
-
-  gate.rebindApprovalSessionRuntime(
-    previousContext.sessionId,
-    nextContext.sessionId,
-  );
-
-  assert.equal(
-    gate.hasPendingApprovalForSession(
-      'call-rebind-pending',
-      previousContext.runId,
-      threadId,
-      previousContext.sessionId,
-    ),
-    false,
-  );
-  assert.equal(
-    gate.hasPendingApprovalForSession(
-      'call-rebind-pending',
-      previousContext.runId,
-      threadId,
-      nextContext.sessionId,
-    ),
-    true,
-  );
-  assert.equal(
-    await gate.resolveApproval(
-      'call-rebind-pending',
-      previousContext.runId,
-      threadId,
-      'approved',
-      'run',
-    ),
-    'resolved',
-  );
-  assert.equal(await wait, 'approved');
-  assert.equal(approvalGrants.hasApprovalGrant(previousContext), false);
-  assert.equal(approvalGrants.hasApprovalGrant(nextContext), true);
-});
-
-void test('rebindApprovalSessionRuntime preserves run grants but not session grants', () => {
-  const approvalGrants = createApprovalGrantStore();
-  const gate = createTestApprovalGate(approvalGrants);
-  const runGrant = {
-    runId: 'run-rebind-grant',
-    sessionId: 'session-grant-before',
-    approvalClass: toApprovalClass('write_file'),
-    sideEffectLevel: 'write' as const,
-    permissionMode: 'basic' as const,
-  };
-  const sessionGrant = {
-    ...runGrant,
-    approvalClass: toApprovalClass('execute_code'),
-  };
-  approvalGrants.registerApprovalGrant(runGrant, 'run');
-  approvalGrants.registerApprovalGrant(sessionGrant, 'session');
-
-  gate.rebindApprovalSessionRuntime(runGrant.sessionId, 'session-grant-after');
-
-  assert.equal(
-    approvalGrants.hasApprovalGrant({
-      ...runGrant,
-      sessionId: 'session-grant-after',
-    }),
-    true,
-  );
-  assert.equal(
-    approvalGrants.hasApprovalGrant({
-      ...sessionGrant,
-      sessionId: 'session-grant-after',
-    }),
-    false,
-  );
 });
 
 void test('a pending approval is restored from the durable checkpoint after gate recreation', async (t) => {
@@ -415,7 +510,7 @@ void test('a pending approval is restored from the durable checkpoint after gate
   });
   const approvalContext = {
     runId,
-    sessionId: 'session-before-approval-restart',
+    computerSessionId: 'session-before-approval-restart',
     approvalClass: toApprovalClass('write_file:computer'),
     sideEffectLevel: 'write' as const,
     permissionMode: 'basic' as const,
@@ -451,7 +546,7 @@ void test('a pending approval is restored from the durable checkpoint after gate
     'call-approval-restart',
     runId,
     threadId,
-    { ...approvalContext, sessionId: 'session-after-approval-restart' },
+    { ...approvalContext, computerSessionId: 'session-after-approval-restart' },
     AbortSignal.timeout(1_000),
     observeRestoredPending,
   );
@@ -509,7 +604,7 @@ void test('a durable decision resumes without another approval event and restore
   const gate = createApprovalGate({ approvalGrants, runCheckpoints });
   const approvalContext = {
     runId,
-    sessionId: 'session-after-decided-restart',
+    computerSessionId: 'session-after-decided-restart',
     approvalClass,
     sideEffectLevel: 'write' as const,
     permissionMode: 'basic' as const,

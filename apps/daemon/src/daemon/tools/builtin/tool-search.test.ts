@@ -45,6 +45,7 @@ void test('buildToolSearchCatalog derives cards from current tool definitions', 
 
   const catalog = buildToolSearchCatalog(readRegisteredTools(registry));
   const readFile = catalog.find((card) => card.publicName === 'read_file');
+  const listFiles = catalog.find((card) => card.publicName === 'list_files');
   const toolSearch = catalog.find((card) => card.publicName === 'tool_search');
 
   assert.ok(readFile);
@@ -54,6 +55,16 @@ void test('buildToolSearchCatalog derives cards from current tool definitions', 
   assert.equal(readFile.sideEffectLevel, 'read');
   assert.equal(readFile.mayMutateComputerFiles, false);
   assert.equal(readFile.searchHints.includes('cat file'), true);
+  assert.deepEqual(readFile.resultDelivery, {
+    exactDurableRecovery: true,
+    modelVisibleForms: ['inline', 'summary_ref', 'duplicate_ref'],
+  });
+
+  assert.ok(listFiles);
+  assert.deepEqual(listFiles.resultDelivery, {
+    exactDurableRecovery: true,
+    modelVisibleForms: ['inline', 'summary_ref', 'duplicate_ref'],
+  });
 
   assert.ok(toolSearch);
   assert.equal(toolSearch.family, 'catalog');
@@ -102,6 +113,10 @@ void test('searchToolCatalog ranks familiar BM25 intents deterministically', () 
   assert.equal(
     firstSearchResult('message subagent', catalog),
     'agent_send_input',
+  );
+  assert.equal(
+    firstSearchResult('change agent priority', catalog),
+    'agent_set_priority',
   );
   assert.equal(firstSearchResult('stop subagent', catalog), 'agent_stop');
   assert.equal(firstSearchResult('wait for agent', catalog), 'agent_wait');
@@ -208,6 +223,7 @@ void test('tool_search executes against the injected catalog without registry ac
     'sideEffectLevel',
     'approvalClass',
     'mayMutateComputerFiles',
+    'resultDelivery',
     'signatureRef',
   ]);
   assert.match(output.note, /not callable aliases/);
@@ -331,6 +347,10 @@ function createCatalogCard(
     sideEffectLevel: 'read',
     approvalClass: 'approval_free',
     mayMutateComputerFiles: false,
+    resultDelivery: {
+      exactDurableRecovery: false,
+      modelVisibleForms: ['inline'],
+    },
     signatureRef: buildToolSignatureRef(overrides.publicName),
     notFor: 'Other tool actions.',
     ...overrides,

@@ -5,7 +5,7 @@ import { toApprovalClass } from '@geulbat/protocol/run-approval';
 import { makeApprovalRequiredFixture } from '../../test-support/protocol-fixtures.js';
 import { buildApprovalSummary } from '../../lib/approvals/approval-summary.js';
 
-void test('buildApprovalSummary renders built-in write_file approvals with content detail', () => {
+void test('buildApprovalSummary renders built-in write_file approvals with the target path', () => {
   const summary = buildApprovalSummary(
     makeApprovalRequiredFixture({
       toolName: 'write_file',
@@ -18,8 +18,28 @@ void test('buildApprovalSummary renders built-in write_file approvals with conte
   );
 
   assert.deepEqual(summary, {
-    title: 'Write docs/a.md',
-    detail: '2 lines of content',
+    title: '파일을 쓰려고 해요',
+    label: '파일 쓰기',
+    detail: 'docs/a.md',
+  });
+});
+
+void test('buildApprovalSummary matches Computer-scoped classes by stripping the suffix', () => {
+  const summary = buildApprovalSummary(
+    makeApprovalRequiredFixture({
+      toolName: 'manage_files',
+      approvalClass: toApprovalClass('manage_files:mkdir:computer'),
+      argumentsPreview: {
+        operation: 'mkdir',
+        path: 'approval-demo',
+      },
+    }),
+  );
+
+  assert.deepEqual(summary, {
+    title: '폴더를 만들려고 해요',
+    label: '폴더 만들기',
+    detail: 'approval-demo',
   });
 });
 
@@ -42,29 +62,29 @@ void test('buildApprovalSummary renders built-in apply_patch approvals with targ
   );
 
   assert.deepEqual(summary, {
-    title: 'Apply patch to docs/a.md',
-    detail: 'Update file',
+    title: '파일을 고치려고 해요',
+    label: '파일 수정',
+    detail: 'docs/a.md',
   });
 });
 
-void test('buildApprovalSummary labels unsupported apply_patch delete previews explicitly', () => {
+void test('buildApprovalSummary renders rename approvals with an arrow target', () => {
   const summary = buildApprovalSummary(
     makeApprovalRequiredFixture({
-      toolName: 'apply_patch',
-      approvalClass: 'apply_patch',
+      toolName: 'manage_files',
+      approvalClass: 'manage_files:rename',
       argumentsPreview: {
-        patch: [
-          '*** Begin Patch',
-          '*** Delete File: docs/a.md',
-          '*** End Patch',
-        ].join('\n'),
+        operation: 'rename',
+        path: 'draft/ch1.md',
+        destination: 'draft/ch1-rev.md',
       },
     }),
   );
 
   assert.deepEqual(summary, {
-    title: 'Apply patch to docs/a.md',
-    detail: 'Unsupported delete patch',
+    title: '이름을 바꾸려고 해요',
+    label: '이름 변경',
+    detail: 'draft/ch1.md → draft/ch1-rev.md',
   });
 });
 
@@ -82,7 +102,8 @@ void test('buildApprovalSummary falls back for custom approval classes', () => {
   );
 
   assert.deepEqual(summary, {
-    title: 'Run loop_tool_approval_grant_store_test_tool',
+    title: 'loop_tool_approval_grant_store_test_tool 도구를 쓰려고 해요',
+    label: 'loop_tool_approval_grant_store_test_tool',
     detail: 'draft.md',
   });
 });
@@ -99,8 +120,9 @@ void test('buildApprovalSummary renders generic manage_files fallback for built-
   );
 
   assert.deepEqual(summary, {
-    title: 'Manage draft.md',
-    detail: null,
+    title: '파일을 정리하려고 해요',
+    label: '파일 정리',
+    detail: 'draft.md',
   });
 });
 
@@ -116,7 +138,8 @@ void test('buildApprovalSummary renders exec_command approvals with command deta
   );
 
   assert.deepEqual(summary, {
-    title: 'Run shell command',
+    title: '명령을 실행하려고 해요',
+    label: '명령 실행',
     detail: 'npm run check -w apps/web-shell',
   });
 });

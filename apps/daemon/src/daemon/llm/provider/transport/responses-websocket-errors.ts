@@ -9,14 +9,30 @@ function createWebSocketConnectionError(message: string): Error {
   });
 }
 
+function createWebSocketError(message: string): Error {
+  const status =
+    message === 'Unexpected server response: 401'
+      ? 401
+      : message === 'Unexpected server response: 403'
+        ? 403
+        : undefined;
+  if (status === undefined) {
+    return createWebSocketConnectionError(message);
+  }
+  return Object.assign(new Error(message), {
+    status,
+    llmCode: 'llm_auth_failed' as const,
+  });
+}
+
 export function extractWebSocketError(event: unknown): Error {
   if (event instanceof Error && event.message) {
-    return createWebSocketConnectionError(event.message);
+    return createWebSocketError(event.message);
   }
   if (event && typeof event === 'object' && 'message' in event) {
     const message = (event as { message?: unknown }).message;
     if (typeof message === 'string' && message.length > 0) {
-      return createWebSocketConnectionError(message);
+      return createWebSocketError(message);
     }
   }
   return createWebSocketConnectionError('WebSocket error');

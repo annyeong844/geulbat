@@ -107,9 +107,9 @@ for await (const chunk of callModel({
   systemPrompt:
     'You are running a transport-shape discovery baseline. Reply only with pong.',
   providerSessionId,
-  providerWebSocketSessions: daemonContext.providerWebSocketSessions,
-  providerAuthRuntime: daemonContext.providerAuthRuntime,
-  providerRequestOptions: daemonContext.providerRequestOptions,
+  providerWebSocketSessions: daemonContext.provider.webSocketSessions,
+  providerAuthRuntime: daemonContext.provider.authRuntime,
+  providerRequestOptions: daemonContext.provider.requestOptions,
   oauthWireDiscoverySink: {
     recordRequest(snapshot) {
       requestSnapshots.push(snapshot);

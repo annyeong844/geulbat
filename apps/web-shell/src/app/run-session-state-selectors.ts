@@ -2,95 +2,108 @@ import { createArtifactRefKey } from '@geulbat/protocol/artifacts';
 import type {
   RunSessionState,
   ActiveRunViewState,
+  RunSessionLaneState,
   VisibleRunState,
 } from './run-session-state-types.js';
+import { createRunSessionLaneState } from './run-session-state-types.js';
 
 interface SelectVisibleRunStateArgs {
   selectedThreadId: string | null;
   state: RunSessionState;
 }
 
-export function isRunSessionStarting(state: RunSessionState): boolean {
-  return state.phase === 'starting';
+export function selectRunSessionLaneState(
+  state: RunSessionState,
+  threadId: string | null,
+): RunSessionLaneState {
+  const stored =
+    threadId === null
+      ? state.newThreadRunLane
+      : state.runLanesByThread?.[threadId];
+  if (stored !== undefined) {
+    return stored;
+  }
+  const legacyMatches =
+    threadId === null
+      ? state.phase !== 'idle'
+      : state.activeRunView.threadId === threadId ||
+        (state.phase === 'starting' && state.pendingStartThreadId === threadId);
+  return legacyMatches
+    ? { phase: state.phase, activeRunView: state.activeRunView }
+    : createRunSessionLaneState(threadId);
 }
 
-export function getActiveRunId(state: RunSessionState): string | null {
-  return state.phase === 'running' ? state.activeRunView.runId : null;
+export function isRunSessionStarting(
+  state: RunSessionState,
+  threadId?: string | null,
+): boolean {
+  return threadId === undefined
+    ? state.phase === 'starting'
+    : selectRunSessionLaneState(state, threadId).phase === 'starting';
+}
+
+export function getActiveRunId(
+  state: RunSessionState,
+  threadId?: string | null,
+): string | null {
+  const lane =
+    threadId === undefined
+      ? { phase: state.phase, activeRunView: state.activeRunView }
+      : selectRunSessionLaneState(state, threadId);
+  return lane.phase === 'running' ? lane.activeRunView.runId : null;
 }
 
 export function selectVisibleRunState({
   selectedThreadId,
   state,
 }: SelectVisibleRunStateArgs): VisibleRunState {
-  const isStarting = isRunSessionStarting(state);
-  const showingPendingExistingThread =
-    isStarting &&
-    state.activeRunView.runId === null &&
-    state.pendingStartThreadId !== null &&
-    state.pendingStartThreadId === selectedThreadId;
-  const showingPendingNewThread =
-    isStarting &&
-    state.activeRunView.runId === null &&
-    state.pendingStartThreadId === null &&
-    selectedThreadId === null;
-  const showingActiveThread =
-    (state.phase === 'running' ||
-      state.phase === 'settling' ||
-      state.phase === 'error') &&
-    state.activeRunView.threadId !== null &&
-    state.activeRunView.threadId === selectedThreadId;
-  const showingUnselectedActiveThread =
-    (state.phase === 'running' ||
-      state.phase === 'settling' ||
-      state.phase === 'error') &&
-    selectedThreadId === null &&
-    state.activeRunView.threadId !== null;
-  const showingThreadlessError =
-    state.phase === 'error' &&
-    state.activeRunView.threadId === null &&
-    selectedThreadId === null;
-  const showRunState =
-    showingPendingExistingThread ||
-    showingPendingNewThread ||
-    showingActiveThread ||
-    showingUnselectedActiveThread ||
-    showingThreadlessError;
+  const lane = selectRunSessionLaneState(state, selectedThreadId);
+  const isStarting = lane.phase === 'starting';
+  const showRunState = lane.phase !== 'idle';
   const visibleThreadId = showRunState
-    ? (state.activeRunView.threadId ?? selectedThreadId)
+    ? (lane.activeRunView.threadId ?? selectedThreadId)
     : selectedThreadId;
 
   return {
     visibleThreadId,
-    activeRunId: showRunState ? state.activeRunView.runId : null,
+    activeRunId: showRunState ? lane.activeRunView.runId : null,
     transcriptEntries: showRunState
-      ? appendStreamingToolEntry(state.activeRunView)
+      ? appendStreamingToolEntry(lane.activeRunView)
       : [],
-    finalAnswerText: showRunState ? state.activeRunView.finalAnswerText : '',
+    finalAnswerText: showRunState ? lane.activeRunView.finalAnswerText : '',
     activeArtifact: showRunState
-      ? resolveActiveArtifact(state.activeRunView)
+      ? resolveActiveArtifact(lane.activeRunView)
       : null,
+    streamingArtifactText: showRunState
+      ? lane.activeRunView.streamingArtifactText
+      : '',
     // Approvals are keyed to the active run view, not the payload threadId:
     // a worker(child)-run approval carries the child threadId but must still
     // surface on the parent session that owns the run.
-    pendingApproval: showRunState ? state.activeRunView.pendingApproval : null,
-    pendingSteers: showRunState ? state.activeRunView.pendingSteers : [],
+    pendingApproval: showRunState ? lane.activeRunView.pendingApproval : null,
+    pendingSteers: showRunState ? lane.activeRunView.pendingSteers : [],
     pendingSteerFlushRequested: showRunState
-      ? state.activeRunView.pendingSteerFlushRequested
+      ? lane.activeRunView.pendingSteerFlushRequested
       : false,
-    usageTotals: showRunState ? state.activeRunView.usageTotals : null,
+    usageTotals: showRunState ? lane.activeRunView.usageTotals : null,
+    providerRuntime: showRunState ? lane.activeRunView.providerRuntime : null,
     contextUsage:
       visibleThreadId === null
         ? null
         : (state.contextUsageByThread[visibleThreadId] ?? null),
     streamError: showRunState
-      ? (state.activeRunView.streamError ?? state.sessionError)
+      ? (lane.activeRunView.streamError ?? state.sessionError)
       : state.sessionError,
+    streamErrorCode:
+      showRunState && lane.activeRunView.streamError !== null
+        ? lane.activeRunView.streamErrorCode
+        : null,
     backgroundNotifications:
       visibleThreadId === null
         ? []
         : (state.backgroundNotificationsByThread[visibleThreadId] ?? []),
-    isRunning: showRunState && (isStarting || state.phase === 'running'),
-    isSettling: showRunState && state.phase === 'settling',
+    isRunning: showRunState && (isStarting || lane.phase === 'running'),
+    isSettling: showRunState && lane.phase === 'settling',
   };
 }
 

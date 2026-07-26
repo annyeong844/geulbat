@@ -428,3 +428,37 @@ void test('runReactBundleStructuredOutputCaller redacts path-like diagnostics fr
     });
   });
 });
+
+void test('runReactBundleStructuredOutputCaller forwards the docker command runner to the ingress', async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    let forwardedDockerRunner: unknown;
+    // 신원만 확인하는 감시 러너 — runIngress를 대역으로 세워 실제 probe가 돌지
+    // 않으므로 호출되지는 않는다. caller가 이 참조를 그대로 ingress로 넘기는지가
+    // 검증 대상이다(docker 실행·매핑은 docker-host-command·network-probe가 덮는다).
+    const dockerCommandRunner = async (): Promise<{
+      kind: 'exit';
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+    }> => ({ kind: 'exit', exitCode: 0, stdout: '', stderr: '' });
+
+    const result = await runReactBundleStructuredOutputCaller({
+      workspaceRoot,
+      store: createSandboxAttemptStore(),
+      structuredOutputs: [structuredOutput(NO_DEPENDENCY_REQUEST)],
+      functionCalls: [],
+      dockerCommandRunner,
+      runIngress: async (args) => {
+        forwardedDockerRunner = args.dockerCommandRunner;
+        return {
+          ok: false,
+          reasonCode: 'prepare_failed',
+          message: 'synthetic prepare failure',
+        };
+      },
+    });
+
+    assertFailure(result, 'prepare_failed');
+    assert.equal(forwardedDockerRunner, dockerCommandRunner);
+  });
+});

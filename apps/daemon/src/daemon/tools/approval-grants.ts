@@ -10,7 +10,7 @@ export type { ApprovalClass } from '@geulbat/protocol/run-approval';
 
 export interface ApprovalGrantContext {
   runId: string;
-  sessionId: string;
+  computerSessionId: string;
   approvalClass: ApprovalClass;
   sideEffectLevel: SideEffectLevel;
   permissionMode: PermissionMode;
@@ -22,11 +22,7 @@ interface ApprovalGrantBucket {
 }
 
 export interface ApprovalGrantStore {
-  clearApprovalSession(sessionId: string): void;
-  rebindApprovalRunGrants(
-    previousSessionId: string,
-    nextSessionId: string,
-  ): void;
+  clearComputerSession(computerSessionId: string): void;
   registerApprovalGrant(
     approvalGrantContext: ApprovalGrantContext,
     grantScope: ApprovalGrantScope,
@@ -42,10 +38,15 @@ function buildScopedApprovalKey(
 }
 
 export function createApprovalGrantStore(): ApprovalGrantStore {
-  const approvalGrantsBySession = new Map<string, ApprovalGrantBucket>();
+  const approvalGrantsByComputerSession = new Map<
+    string,
+    ApprovalGrantBucket
+  >();
 
-  function getApprovalGrantBucket(sessionId: string): ApprovalGrantBucket {
-    const existing = approvalGrantsBySession.get(sessionId);
+  function getApprovalGrantBucket(
+    computerSessionId: string,
+  ): ApprovalGrantBucket {
+    const existing = approvalGrantsByComputerSession.get(computerSessionId);
     if (existing) {
       return existing;
     }
@@ -54,34 +55,22 @@ export function createApprovalGrantStore(): ApprovalGrantStore {
       run: new Set<string>(),
       session: new Set<string>(),
     };
-    approvalGrantsBySession.set(sessionId, next);
+    approvalGrantsByComputerSession.set(computerSessionId, next);
     return next;
   }
 
   return {
-    clearApprovalSession(sessionId) {
-      approvalGrantsBySession.delete(sessionId);
-    },
-    rebindApprovalRunGrants(previousSessionId, nextSessionId) {
-      if (previousSessionId === nextSessionId) {
-        return;
-      }
-      const previous = approvalGrantsBySession.get(previousSessionId);
-      if (!previous) {
-        return;
-      }
-      const next = getApprovalGrantBucket(nextSessionId);
-      for (const grant of previous.run) {
-        next.run.add(grant);
-      }
-      approvalGrantsBySession.delete(previousSessionId);
+    clearComputerSession(computerSessionId) {
+      approvalGrantsByComputerSession.delete(computerSessionId);
     },
     registerApprovalGrant(approvalGrantContext, grantScope) {
       if (grantScope === 'once') {
         return;
       }
 
-      const store = getApprovalGrantBucket(approvalGrantContext.sessionId);
+      const store = getApprovalGrantBucket(
+        approvalGrantContext.computerSessionId,
+      );
       switch (grantScope) {
         case 'run':
           store.run.add(
@@ -97,7 +86,9 @@ export function createApprovalGrantStore(): ApprovalGrantStore {
       }
     },
     hasApprovalGrant(approvalGrantContext) {
-      const store = approvalGrantsBySession.get(approvalGrantContext.sessionId);
+      const store = approvalGrantsByComputerSession.get(
+        approvalGrantContext.computerSessionId,
+      );
       if (!store) {
         return false;
       }

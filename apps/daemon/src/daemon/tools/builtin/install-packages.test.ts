@@ -116,7 +116,10 @@ void test('install_packages delegates to the runtime and returns sanitized blata
 
       workingDirectory: 'project',
       threadId: testThreadId(941),
-      agentSpawnRuntime: { ...daemonContext, ptcPackageInstall },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, packageInstall: ptcPackageInstall },
+      },
     },
   );
 
@@ -191,7 +194,10 @@ void test('install_packages accepts a package with no version and forwards it wi
 
       workingDirectory: 'project',
       threadId: testThreadId(943),
-      agentSpawnRuntime: { ...daemonContext, ptcPackageInstall },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, packageInstall: ptcPackageInstall },
+      },
     },
   );
 
@@ -219,7 +225,10 @@ void test('install_packages surfaces the disabled opt-in as a stable classified 
 
       workingDirectory: 'project',
       threadId: testThreadId(942),
-      agentSpawnRuntime: { ...daemonContext, ptcPackageInstall },
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, packageInstall: ptcPackageInstall },
+      },
     },
   );
 

@@ -89,7 +89,7 @@ void dockerTest(
         threadId,
         stateRoot,
         workingDirectory: '',
-        agentSpawnRuntime: daemonContext,
+        runtimeServices: daemonContext,
         callbackToolDispatcher,
         toolLibraryProjectionIdentity: {
           sdkVersion: projection.pin.sdkVersion,
@@ -177,7 +177,7 @@ void dockerTest(
         /(?:^|[/\\])\.geulbat(?:[/\\]|$)|tool-library[/\\]projections/u,
       );
     } finally {
-      await daemonContext.ptcExecuteCode.closeAll();
+      await daemonContext.ptc.executeCode.closeAll();
       await rm(runtimeRoot, { recursive: true, force: true });
       await rm(computerFileRoot, { recursive: true, force: true });
       await rm(stateRoot, { recursive: true, force: true });

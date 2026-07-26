@@ -28,47 +28,84 @@ function createThreadStub(): ThreadSummary {
 
 function createAssistantStub(): HomeRunSessionView['assistant'] {
   return {
-    messages: [],
-    artifacts: [],
-    backgroundNotifications: [
-      {
-        kind: 'subagent_activity',
-        childRunId: 'run-child-1',
-        subagentType: 'worker',
-        state: 'completed',
-      },
-    ],
-    transcriptEntries: [{ kind: 'assistant_text', text: 'hi' }],
-    finalAnswerText: 'done',
-    activeArtifact: null,
-    onWidgetToolRequest: async () => ({ ok: true, output: 'tool-ok' }),
-    streamError: null,
-    isRunning: true,
-    isStarting: false,
-    usageTotals: null,
-    contextUsage: null,
-    onSend: async () => {},
-    onWidgetPrompt: async () => {},
-    onRegenerate: async () => {},
-    onBranchFromMessage: async () => {},
-    onEditPastUserPrompt: async () => {},
-    branchNotice: null,
-    onDismissBranchNotice: () => {},
-    onCancelSteer: async () => {},
-    onFlushSteers: async () => {},
-    pendingSteerFlushRequested: false,
-    pendingSteers: [],
-    onStartArtifactRun: async () => {},
-    onCancel: async () => {},
-    permissionMode: 'basic' as const,
-    onPermissionModeChange: () => {},
-    modelId: 'gpt-5.6-sol' as const,
-    onModelIdChange: () => {},
-    onPrepareProviderTransition: async () => {},
-    reasoningEffort: 'medium' as const,
-    onReasoningEffortChange: () => {},
-    subagentModelRouting: { mode: 'auto' },
-    onSubagentModelRoutingChange: () => {},
+    conversation: {
+      threadId: THREAD_ID,
+      messages: [],
+      transcriptEntries: [{ kind: 'assistant_text', text: 'hi' }],
+      finalAnswerText: 'done',
+      branchNotice: null,
+      onDismissBranchNotice: () => {},
+    },
+    activity: {
+      backgroundNotifications: [
+        {
+          kind: 'subagent_activity',
+          childRunId: 'run-child-1',
+          subagentType: 'worker',
+          state: 'completed',
+        },
+      ],
+      subagentTerminalHistoryEntries: [],
+      onStopChildRun: async () => {},
+    },
+    artifacts: {
+      versions: [],
+      activeVersion: null,
+      onStartRun: async () => {},
+      onWidgetPrompt: async () => {},
+      onWidgetToolRequest: async () => ({ ok: true, output: 'tool-ok' }),
+    },
+    runState: {
+      streamError: null,
+      streamErrorCode: null,
+      isRunning: true,
+      isStarting: false,
+      isSettling: false,
+      usageTotals: null,
+      providerRuntime: null,
+      contextUsage: null,
+    },
+    runActions: {
+      onSend: async () => {},
+      onSendNewTurn: async () => {},
+      onRegenerate: async () => {},
+      onBranchFromMessage: async () => {},
+      onEditPastUserPrompt: async () => {},
+      onCancel: async () => {},
+      onPrepareProviderTransition: async () => {},
+    },
+    steering: {
+      pendingSteers: [],
+      onCancelSteer: async () => {},
+      onFlushSteers: async () => {},
+      pendingSteerFlushRequested: false,
+    },
+    composerControls: {
+      permissionMode: 'basic' as const,
+      onPermissionModeChange: () => {},
+      planModeRequested: false,
+      onPlanModeRequestedChange: () => {},
+      planModeIntensity: 'visual' as const,
+      onPlanModeIntensityChange: () => {},
+      planModeDepth: 'standard' as const,
+      onPlanModeDepthChange: () => {},
+      modelId: 'gpt-5.6-sol' as const,
+      onModelIdChange: () => {},
+      reasoningEffort: 'medium' as const,
+      onReasoningEffortChange: () => {},
+      serviceTier: 'standard' as const,
+      onServiceTierChange: () => {},
+      subagentModelRouting: { mode: 'auto' },
+      onSubagentModelRoutingChange: () => {},
+    },
+    workflow: {
+      planningWorkflow: null,
+      goal: null,
+    },
+    composerSurface: {
+      followupSuggestion: null,
+      onDismissFollowupSuggestion: () => {},
+    },
   };
 }
 
@@ -135,6 +172,20 @@ void test('center and right panel views pass editor, provider auth, and assistan
   const onDisconnectProvider = () => {};
 
   const center = createHomeCenterPanelView({
+    providerAuthStatuses: {
+      openai_codex_direct: {
+        state: 'ready',
+        ready: true,
+      },
+      grok_oauth: null,
+    },
+    providerAuthBusyProviderId: 'grok_oauth',
+    providerAuthErrors: {
+      openai_codex_direct: 'auth failed',
+      grok_oauth: null,
+    },
+    onConnectProvider,
+    onDisconnectProvider,
     selectedFile: 'draft.md',
     binaryPreview: null,
     extractedDocument: null,
@@ -155,22 +206,9 @@ void test('center and right panel views pass editor, provider auth, and assistan
     inspectCurrentFile: onConflictInspect,
   });
   const right = createHomeRightPanelView({
-    providerAuthStatuses: {
-      openai_codex_direct: {
-        state: 'ready',
-        ready: true,
-      },
-      grok_oauth: null,
-    },
-    providerAuthBusyProviderId: 'grok_oauth',
-    providerAuthErrors: {
-      openai_codex_direct: 'auth failed',
-      grok_oauth: null,
-    },
-    onConnectProvider,
-    onDisconnectProvider,
     assistant,
     approvalPanel,
+    streamingArtifactText: '',
   });
 
   assert.equal(center.editor.filePath, 'draft.md');
@@ -179,13 +217,13 @@ void test('center and right panel views pass editor, provider auth, and assistan
   assert.equal(center.editor.onConflictReload, onConflictReload);
   assert.equal(center.editor.onConflictSaveAsCopy, onConflictSaveAsCopy);
   assert.equal(center.editor.onConflictInspect, onConflictInspect);
-  assert.equal(right.providerAuthCard.busyProviderId, 'grok_oauth');
+  assert.equal(center.providerAuthCard.busyProviderId, 'grok_oauth');
   assert.equal(
-    right.providerAuthCard.uiErrors.openai_codex_direct,
+    center.providerAuthCard.uiErrors.openai_codex_direct,
     'auth failed',
   );
-  assert.equal(right.providerAuthCard.onConnect, onConnectProvider);
-  assert.equal(right.providerAuthCard.onDisconnect, onDisconnectProvider);
+  assert.equal(center.providerAuthCard.onConnect, onConnectProvider);
+  assert.equal(center.providerAuthCard.onDisconnect, onDisconnectProvider);
   assert.equal(right.assistant, assistant);
   assert.equal(right.approvalPanel, approvalPanel);
 });

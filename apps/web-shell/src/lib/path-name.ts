@@ -10,6 +10,18 @@ export function parentDirOf(path: string): string {
   return index < 0 ? '' : path.slice(0, index);
 }
 
+export function buildPathBreadcrumbs(
+  path: string,
+): Array<{ label: string; path: string }> {
+  const breadcrumbs = [{ label: '컴퓨터', path: '' }];
+  let currentPath = '';
+  for (const segment of path.split('/').filter(Boolean)) {
+    currentPath = currentPath === '' ? segment : `${currentPath}/${segment}`;
+    breadcrumbs.push({ label: segment, path: currentPath });
+  }
+  return breadcrumbs;
+}
+
 export function splitExtension(name: string): { base: string; ext: string } {
   const dotIndex = name.lastIndexOf('.');
   if (dotIndex <= 0) {

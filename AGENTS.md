@@ -11,7 +11,7 @@
 ## Environment and startup
 
 - Use Node.js 24 or newer and install from the lockfile with `npm ci`.
-- Start `npm run dev -w apps/daemon` and `npm run dev -w apps/web-shell` in separate terminals.
+- Start `npm run dev:daemon` and `npm run dev -w apps/web-shell` in separate terminals.
 - Provider credentials are supplied by each user and remain local to that machine.
 
 ## Change workflow
@@ -30,8 +30,10 @@ For source, config, test, or generated-runtime changes:
 2. `npm run lint`
 3. Run every affected workspace check:
    - `npm run check -w apps/daemon`
+   - `npm run check -w apps/geulbat`
    - `npm run check -w apps/web-shell`
    - `npm run check -w packages/agent-loop`
+   - `npm run check -w packages/xharness`
    - `npm run check -w packages/artifact-runtime-policy`
    - `npm run check -w packages/content-identity`
    - `npm run check -w packages/protocol`

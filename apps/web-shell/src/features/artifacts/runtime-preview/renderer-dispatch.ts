@@ -16,8 +16,6 @@ const runtimeArtifactRendererRegistry: Record<
     render(payload, context, renderRuntimeFrame) {
       return resolveHtmlArtifactRuntimePreview({
         payload,
-        isStreaming: context.isStreamingPreview,
-        digest: context.digest,
         sourceRef: context.sourceRef,
         renderRuntimeFrame,
       });

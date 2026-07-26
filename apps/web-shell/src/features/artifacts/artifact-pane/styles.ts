@@ -34,19 +34,6 @@ export const artifactPaneStyles = {
     textTransform: 'uppercase',
     fontFamily: 'var(--font-ui-label)',
   },
-  metaRow: {
-    display: 'flex',
-    gap: 6,
-    flexWrap: 'wrap',
-    alignItems: 'center',
-  },
-  metaBadge: {
-    padding: '3px 8px',
-    borderRadius: 999,
-    fontSize: 11,
-    lineHeight: 1.2,
-    fontFamily: 'var(--font-ui-label)',
-  },
   // 알약 배경을 버튼 개별로 두지 않고 줄 전체에 씌우면 줄바꿈 시 모양이
   // 깨진다 — 컨테이너는 투명하게 두고 버튼이 각자 상태 배경을 가진다.
   buttonRow: {
@@ -177,23 +164,6 @@ export function getTabButtonStyle(
       : 'var(--on-surface-muted)',
     opacity: disabled ? 0.45 : 1,
     cursor: disabled ? 'default' : 'pointer',
-  };
-}
-
-export function getStateBadgeStyle(tone: 'info' | 'warn'): CSSProperties {
-  const palette =
-    tone === 'info'
-      ? {
-          background: 'var(--secondary-soft)',
-          color: 'var(--on-secondary-fixed-variant)',
-        }
-      : {
-          background: 'var(--warning-bg)',
-          color: 'var(--warning-text)',
-        };
-  return {
-    ...artifactPaneStyles.metaBadge,
-    ...palette,
   };
 }
 

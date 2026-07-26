@@ -14,16 +14,28 @@ export interface ChildTerminalOutcome {
 }
 
 export function buildChildResultTerminalOutcome(args: {
+  abortSignal: AbortSignal;
+  isTimedOut: boolean;
   result: AgentResult;
   terminalMessage: string;
+  terminalReason?: AgentChildTerminalReason | null;
 }): ChildTerminalOutcome {
-  const { result, terminalMessage } = args;
+  const { abortSignal, isTimedOut, result, terminalMessage, terminalReason } =
+    args;
+  const resultText = describeAgentResultForTextSurface(result);
+  if (abortSignal.aborted) {
+    return buildChildErrorTerminalOutcome({
+      abortSignal,
+      isTimedOut,
+      terminalMessage: resultText || terminalMessage,
+      ...(terminalReason === undefined ? {} : { terminalReason }),
+    });
+  }
   return {
     terminalState: result.ok ? 'completed' : 'failed',
-    terminalReason: result.ok ? null : 'child_error',
+    terminalReason: result.ok ? null : (terminalReason ?? 'child_error'),
     terminalResult:
-      describeAgentResultForTextSurface(result) ||
-      (result.ok ? '' : terminalMessage || 'sub-agent failed'),
+      resultText || (result.ok ? '' : terminalMessage || 'sub-agent failed'),
   };
 }
 
@@ -31,8 +43,9 @@ export function buildChildErrorTerminalOutcome(args: {
   abortSignal: AbortSignal;
   isTimedOut: boolean;
   terminalMessage: string;
+  terminalReason?: AgentChildTerminalReason | null;
 }): ChildTerminalOutcome {
-  const { abortSignal, isTimedOut, terminalMessage } = args;
+  const { abortSignal, isTimedOut, terminalMessage, terminalReason } = args;
   if (abortSignal.aborted) {
     return {
       terminalState: 'cancelled',
@@ -46,7 +59,7 @@ export function buildChildErrorTerminalOutcome(args: {
 
   return {
     terminalState: 'failed',
-    terminalReason: 'child_error',
+    terminalReason: terminalReason ?? 'child_error',
     terminalResult: terminalMessage || 'sub-agent failed',
   };
 }
@@ -59,5 +72,10 @@ function resolveChildAbortTerminalReason(args: {
   if (isTimedOut) {
     return 'timeout';
   }
-  return abortReason === 'explicit_stop' ? 'explicit_stop' : 'user_interrupt';
+  if (abortReason === 'explicit_stop') {
+    return 'explicit_stop';
+  }
+  return abortReason === 'daemon_shutdown'
+    ? 'daemon_shutdown'
+    : 'user_interrupt';
 }

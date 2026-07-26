@@ -21,11 +21,11 @@ declare global {
   }
 }
 
-export async function saveTextToLocalFile(args: {
+export async function saveBlobToLocalFile(args: {
   suggestedName: string;
-  payload: string;
+  blob: Blob;
 }): Promise<boolean> {
-  const blob = new Blob([args.payload], { type: 'text/plain;charset=utf-8' });
+  const { blob } = args;
 
   if (typeof window.showSaveFilePicker === 'function') {
     try {
@@ -54,4 +54,14 @@ export async function saveTextToLocalFile(args: {
     URL.revokeObjectURL(url);
   }
   return true;
+}
+
+export async function saveTextToLocalFile(args: {
+  suggestedName: string;
+  payload: string;
+}): Promise<boolean> {
+  return saveBlobToLocalFile({
+    suggestedName: args.suggestedName,
+    blob: new Blob([args.payload], { type: 'text/plain;charset=utf-8' }),
+  });
 }

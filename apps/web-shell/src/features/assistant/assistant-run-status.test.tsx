@@ -45,6 +45,89 @@ void test('resolveRunStatusActivity names the tool while it is still running', (
   assert.equal(resolveRunStatusActivity([]), null);
 });
 
+void test('resolveRunStatusActivity exposes provider admission waits without hiding active tools', () => {
+  const rateLimitWait = {
+    phase: 'rate_limit_waiting' as const,
+    observedAt: '2026-07-23T11:00:00.000Z',
+  };
+
+  assert.equal(
+    resolveRunStatusActivity([], rateLimitWait),
+    '요청 제한 해제 대기',
+  );
+  assert.equal(
+    resolveRunStatusActivity([], {
+      phase: 'auth_waiting',
+      observedAt: '2026-07-23T11:00:00.500Z',
+    }),
+    '제공자 인증 갱신 대기',
+  );
+  assert.equal(
+    resolveRunStatusActivity([], {
+      phase: 'provider_waiting',
+      observedAt: '2026-07-23T11:00:01.000Z',
+    }),
+    '모델 응답 대기',
+  );
+  assert.equal(
+    resolveRunStatusActivity([], {
+      phase: 'provider_streaming',
+      observedAt: '2026-07-23T11:00:01.500Z',
+    }),
+    '응답 생성 중',
+  );
+  assert.equal(
+    resolveRunStatusActivity(
+      [{ kind: 'tool_activity', tool: 'read_file', state: 'running' }],
+      rateLimitWait,
+    ),
+    'read_file 실행 중',
+  );
+});
+
+void test('RunStatusRow renders the provider auth refresh wait beside the existing cancelable run UI', async () => {
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <RunStatusRow
+        transcriptEntries={[]}
+        providerRuntime={{
+          phase: 'auth_waiting',
+          observedAt: '2026-07-23T11:00:00.000Z',
+        }}
+      />,
+    );
+  });
+
+  assert.match(JSON.stringify(renderer.toJSON()), /제공자 인증 갱신 대기/);
+  assert.match(JSON.stringify(renderer.toJSON()), /활동 경과/);
+
+  await act(async () => {
+    renderer.unmount();
+  });
+});
+
+void test('RunStatusRow renders the rate-limit wait beside the existing cancelable run UI', async () => {
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <RunStatusRow
+        transcriptEntries={[]}
+        providerRuntime={{
+          phase: 'rate_limit_waiting',
+          observedAt: '2026-07-23T11:00:00.000Z',
+        }}
+      />,
+    );
+  });
+
+  assert.match(JSON.stringify(renderer.toJSON()), /요청 제한 해제 대기/);
+
+  await act(async () => {
+    renderer.unmount();
+  });
+});
+
 void test('RunStatusRow appends run usage totals when provided', async () => {
   let renderer!: ReactTestRenderer;
   await act(async () => {

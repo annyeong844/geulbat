@@ -61,6 +61,7 @@ export async function runReactBundleExplicitCdnArtifactIngress(args: {
   signal?: AbortSignal;
   now?: () => string;
   probeTransport?: ReactBundleDependencyProbeArgs['probeTransport'];
+  dockerCommandRunner?: ReactBundleDependencyProbeArgs['dockerCommandRunner'];
   acceptRuntimeManifest?: typeof acceptReactBundleRuntimeManifest;
   buildArtifactCandidate?: typeof buildReactBundleAcceptedManifestArtifactCandidate;
 }): Promise<ReactBundleExplicitCdnArtifactIngressResult> {
@@ -102,6 +103,9 @@ export async function runReactBundleExplicitCdnArtifactIngress(args: {
         ...(args.now ? { now: args.now } : {}),
         ...(args.signal ? { signal: args.signal } : {}),
         ...(args.probeTransport ? { probeTransport: args.probeTransport } : {}),
+        ...(args.dockerCommandRunner
+          ? { dockerCommandRunner: args.dockerCommandRunner }
+          : {}),
         ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
       });
     } catch (error: unknown) {

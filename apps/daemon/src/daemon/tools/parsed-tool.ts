@@ -35,9 +35,19 @@ export function defineParsedTool<TArgs extends object>(
       ? { timeoutMs: options.timeoutMs }
       : {}),
     requiresApproval: options.requiresApproval,
+    ...(options.approvalClass === undefined
+      ? {}
+      : { approvalClass: options.approvalClass }),
     ...(options.exposure ? { exposure: options.exposure } : {}),
     ...(options.recoveryStrategy
       ? { recoveryStrategy: options.recoveryStrategy }
+      : {}),
+    ...(options.resultProjection
+      ? { resultProjection: options.resultProjection }
+      : {}),
+    ...(options.streamsArgsDelta === true ? { streamsArgsDelta: true } : {}),
+    ...(options.endsTurnAfterSuccess === true
+      ? { endsTurnAfterSuccess: true }
       : {}),
     ...(options.catalogSearchMetadata
       ? { catalogSearchMetadata: options.catalogSearchMetadata }

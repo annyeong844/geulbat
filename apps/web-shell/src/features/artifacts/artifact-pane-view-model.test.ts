@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { assertRunId } from '@geulbat/protocol/ids';
+import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 
 import {
   buildArtifactSessionKey,
@@ -7,6 +9,7 @@ import {
 } from './artifact-pane-view-model.js';
 import { createArtifactPaneViewModel } from '../../test-support/create-artifact-pane-view-model.js';
 import { brandThreadId } from '../../lib/id-brand-helpers.js';
+import { resolvePlanRenderingStampProjection } from './artifact-view-model.js';
 
 void test('createCommittedArtifactPaneViewModel owns committed artifact source identity assembly', () => {
   const viewModel = createCommittedArtifactPaneViewModel({
@@ -44,37 +47,65 @@ void test('createCommittedArtifactPaneViewModel owns committed artifact source i
     artifactVersion: 7,
     persistenceEpoch: 4,
   });
-  assert.equal(viewModel.parsed.renderer, 'markdown');
-  assert.equal(viewModel.parsed.payload, '# committed');
+  assert.equal(viewModel.artifact.renderer, 'markdown');
+  assert.equal(viewModel.artifact.payload, '# committed');
 });
 
-void test('buildArtifactSessionKey prefers committed artifact identity over digest when available', () => {
+void test('buildArtifactSessionKey uses the protocol-owned committed artifact identity', () => {
   assert.equal(
     buildArtifactSessionKey(
       createArtifactPaneViewModel({
-        sourceRef: {
-          artifactId: 'art_1',
-          artifactVersion: 3,
+        artifact: {
+          artifactId: 'artifact_3',
+          version: 3,
           persistenceEpoch: 2,
         },
       }),
     ),
-    'markdown::art_1::3::2::completed',
+    'markdown::artifact_3::3::2',
   );
 });
 
-void test('buildArtifactSessionKey falls back to digest and source context for legacy artifacts', () => {
+void test('plan rendering projection distinguishes current, superseded, and historical revisions', () => {
+  const stamp = {
+    workflowId: 'workflow-1',
+    planId: 'plan-1',
+    revision: 1,
+    digest: `sha256:${'a'.repeat(64)}`,
+  } as const;
+  const currentSnapshot: PlanningWorkflowSnapshot = {
+    state: 'awaiting_approval',
+    threadId: brandThreadId('00000000-0000-4000-8000-000000000001'),
+    intensity: 'visual',
+    depth: 'deep',
+    createdAt: '2026-07-26T00:00:00.000Z',
+    updatedAt: '2026-07-26T00:00:01.000Z',
+    ...stamp,
+    draft: {
+      schemaVersion: 'plan_draft_v1',
+      outcome: 'Stamp the rendering',
+      steps: [],
+      decisions: [],
+      assumptions: [],
+      openQuestions: [],
+    },
+    proposalRunId: assertRunId('run-plan'),
+  };
+
   assert.equal(
-    buildArtifactSessionKey(createArtifactPaneViewModel()),
-    [
-      'markdown',
-      'fixture',
-      'completed',
-      'computer-root',
-      '00000000-0000-4000-8000-000000000001',
-      'run-1',
-      'notes/demo.md',
-      '2026-04-04T00:00:00.000Z',
-    ].join('::'),
+    resolvePlanRenderingStampProjection(stamp, currentSnapshot)?.status,
+    'current',
+  );
+  assert.equal(
+    resolvePlanRenderingStampProjection(stamp, {
+      ...currentSnapshot,
+      revision: 2,
+      digest: `sha256:${'b'.repeat(64)}`,
+    })?.status,
+    'superseded',
+  );
+  assert.equal(
+    resolvePlanRenderingStampProjection(stamp, null)?.status,
+    'historical',
   );
 });

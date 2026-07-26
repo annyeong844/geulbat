@@ -1,13 +1,10 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useState } from 'react';
 import {
   ARTIFACT_END_MARKER,
   ARTIFACT_START_PREFIX,
 } from '@geulbat/protocol/artifacts';
 
-import {
-  buildMarkdownBlocks,
-  prepareMarkdownBlocks,
-} from '../../lib/markdown/buildMarkdownBlocks.js';
+import { buildMarkdownBlocks } from '../../lib/markdown/buildMarkdownBlocks.js';
 import { assistantStyles } from './assistant-styles.js';
 
 type MessageContentSegment =
@@ -72,38 +69,26 @@ export function splitMessageContentSegments(
 // 복사 버튼이 같은 동작을 공유한다.
 export function useCopyToClipboard(): {
   copied: boolean;
+  clearCopied: () => void;
   copy: (text: string) => void;
 } {
   const [copied, setCopied] = useState(false);
-  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (resetTimer.current !== null) {
-        clearTimeout(resetTimer.current);
-      }
-    };
-  }, []);
 
   const copy = (text: string) => {
     void navigator.clipboard.writeText(text).then(
       () => {
         setCopied(true);
-        if (resetTimer.current !== null) {
-          clearTimeout(resetTimer.current);
-        }
-        resetTimer.current = setTimeout(() => setCopied(false), 1500);
       },
       () => undefined,
     );
   };
 
-  return { copied, copy };
+  return { copied, clearCopied: () => setCopied(false), copy };
 }
 
 function MessageCodeBlock(props: { language: string | null; code: string }) {
   const { language, code } = props;
-  const { copied, copy } = useCopyToClipboard();
+  const { copied, clearCopied, copy } = useCopyToClipboard();
 
   return (
     <div className="message-code-block">
@@ -112,9 +97,10 @@ function MessageCodeBlock(props: { language: string | null; code: string }) {
         <button
           type="button"
           className="message-code-copy-button"
-          title="코드 복사"
-          aria-label="코드 복사"
+          title={copied ? '코드 복사됨' : '코드 복사'}
+          aria-label={copied ? '코드 복사됨' : '코드 복사'}
           onClick={() => copy(code)}
+          onBlur={clearCopied}
         >
           {copied ? '✓ 복사됨' : '⧉'}
         </button>
@@ -125,23 +111,6 @@ function MessageCodeBlock(props: { language: string | null; code: string }) {
 }
 
 // 답변 본문 렌더 — 텍스트는 공용 Markdown, 코드 펜스는 복사 가능한 블록.
-export function prepareAssistantMessageContent(
-  renderCacheOwner: object,
-  content: string,
-): void {
-  if (
-    content.includes(ARTIFACT_START_PREFIX) ||
-    content.includes(ARTIFACT_END_MARKER)
-  ) {
-    return;
-  }
-  for (const segment of splitMessageContentSegments(content)) {
-    if (segment.kind === 'text') {
-      prepareMarkdownBlocks(renderCacheOwner, segment.text);
-    }
-  }
-}
-
 export const AssistantMessageContent = memo(
   function AssistantMessageContent(props: {
     content: string;

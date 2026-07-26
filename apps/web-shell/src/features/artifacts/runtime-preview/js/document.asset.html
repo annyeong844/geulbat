@@ -96,7 +96,10 @@
         const nativeFetch =
           typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
         let runtimeResizeSyncStarted = false;
+        let runtimeResizePublishingStarted = false;
+        let runtimeResizeObserver = null;
         let runtimeResizeRafId = 0;
+        let runtimeResizePendingHeight = -1;
         let runtimeResizeLastSentHeight = -1;
 
         const cleanupTrackedObjectUrls = (reason) => {
@@ -121,17 +124,33 @@
         };
 
         const measureRuntimeResize = () => {
-          const docEl = document.documentElement;
           const body = document.body;
-          // docEl/body의 client·scrollHeight는 뷰포트(현재 프레임 높이)와
-          // 결합돼 한 번 커진 프레임이 줄지 않는 래칫을 만든다 — 실제
-          // 콘텐츠 높이(rect, body 스크롤 범위)만 보고한다.
-          return Math.max(
-            Math.ceil(docEl?.getBoundingClientRect?.().height ?? 0),
-            Math.ceil(body?.getBoundingClientRect?.().height ?? 0),
-            body?.scrollHeight ?? 0,
-            body?.offsetHeight ?? 0,
-          );
+          // ResizeObserver가 없는 브라우저의 fallback이다.
+          // documentElement의 client·scrollHeight는 현재 iframe viewport와
+          // 결합돼 한 번 커진 프레임이 줄지 않는 래칫을 만들므로 body의
+          // layout/overflow 범위만 사용한다.
+          return Math.max(body?.scrollHeight ?? 0, body?.offsetHeight ?? 0);
+        };
+
+        const measureObservedRuntimeResize = (entries) => {
+          let observedHeight = 0;
+          for (const entry of entries) {
+            if (
+              entry.target !== document.documentElement &&
+              entry.target !== document.body
+            ) {
+              continue;
+            }
+            const borderBoxSize = entry.borderBoxSize;
+            const borderBox = Array.isArray(borderBoxSize)
+              ? borderBoxSize[0]
+              : borderBoxSize;
+            observedHeight = Math.max(
+              observedHeight,
+              Math.ceil(borderBox?.blockSize ?? entry.contentRect?.height ?? 0),
+            );
+          }
+          return observedHeight;
         };
 
         const postRuntimeResize = (height) => {
@@ -152,18 +171,37 @@
           }
         };
 
-        const scheduleRuntimeResize = () => {
-          if (runtimeResizeRafId !== 0) {
+        const queueRuntimeResize = (height) => {
+          runtimeResizePendingHeight = height;
+          if (!runtimeResizePublishingStarted || runtimeResizeRafId !== 0) {
             return;
           }
-          // Capture layout in the observer/event callback. The rAF callback
-          // only publishes the cached value, so it cannot force a second
-          // layout while the parent transcript is scrolling.
-          const height = measureRuntimeResize();
           runtimeResizeRafId = window.requestAnimationFrame(() => {
             runtimeResizeRafId = 0;
+            const height = runtimeResizePendingHeight;
+            runtimeResizePendingHeight = -1;
             postRuntimeResize(height);
           });
+        };
+
+        const measureAndQueueRuntimeResize = () => {
+          queueRuntimeResize(measureRuntimeResize());
+        };
+
+        const startRuntimeResizePublishing = () => {
+          runtimeResizePublishingStarted = true;
+          if (runtimeResizeObserver) {
+            // Re-observe only after the payload has settled. The next initial
+            // entry describes the completed document, so no synchronous
+            // scrollHeight/rect read is needed on the mount task.
+            runtimeResizeObserver.disconnect();
+            runtimeResizeObserver.observe(document.documentElement);
+            if (document.body) {
+              runtimeResizeObserver.observe(document.body);
+            }
+            return;
+          }
+          measureAndQueueRuntimeResize();
         };
 
         const installRuntimeResizeSync = () => {
@@ -173,18 +211,22 @@
           runtimeResizeSyncStarted = true;
 
           if (typeof ResizeObserver === 'function') {
-            const resizeObserver = new ResizeObserver(scheduleRuntimeResize);
-            resizeObserver.observe(document.documentElement);
+            // ResizeObserver entries already carry the browser's completed
+            // layout. Consume that snapshot instead of forcing another
+            // synchronous layout read while the runtime document is mounting.
+            runtimeResizeObserver = new ResizeObserver((entries) => {
+              queueRuntimeResize(measureObservedRuntimeResize(entries));
+            });
+            runtimeResizeObserver.observe(document.documentElement);
             if (document.body) {
-              resizeObserver.observe(document.body);
+              runtimeResizeObserver.observe(document.body);
             }
+          } else {
+            window.addEventListener('load', measureAndQueueRuntimeResize);
+            window.addEventListener('resize', measureAndQueueRuntimeResize);
+            window.setTimeout(measureAndQueueRuntimeResize, 0);
+            window.setTimeout(measureAndQueueRuntimeResize, 120);
           }
-
-          window.addEventListener('load', scheduleRuntimeResize);
-          window.addEventListener('resize', scheduleRuntimeResize);
-          window.setTimeout(scheduleRuntimeResize, 0);
-          window.setTimeout(scheduleRuntimeResize, 120);
-          scheduleRuntimeResize();
         };
 
         const postGeneratedTextExportMessage = (message) => {
@@ -930,14 +972,14 @@
               'boot_failed',
               event.message || 'payload startup failed',
             );
-            scheduleRuntimeResize();
+            startRuntimeResizePublishing();
             return;
           }
           renderError(
             'runtime_crashed',
             event.message || 'js runtime crashed after startup',
           );
-          scheduleRuntimeResize();
+          startRuntimeResizePublishing();
         });
 
         window.addEventListener('unhandledrejection', (event) => {
@@ -950,7 +992,7 @@
               ? event.reason.message
               : String(event.reason ?? 'js runtime rejected without detail'),
           );
-          scheduleRuntimeResize();
+          startRuntimeResizePublishing();
         });
 
         try {
@@ -963,16 +1005,17 @@
           }
           await Promise.resolve((0, eval)(source));
           bootSettled = true;
-          scheduleRuntimeResize();
+          startRuntimeResizePublishing();
         } catch (error) {
           if (error instanceof Error && error.name === POLICY_ERROR_NAME) {
+            startRuntimeResizePublishing();
             return;
           }
           renderError(
             'boot_failed',
             error instanceof Error ? error.message : String(error),
           );
-          scheduleRuntimeResize();
+          startRuntimeResizePublishing();
         }
       })();
     </script>

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
+import { readPtcPositiveIntegerEnv } from '../../shared/positive-integer-env.js';
 import { hashPtcSha256Hex } from '../../shared/sha256.js';
 import type {
   PtcExecuteCodeStoreCommitSummary,
@@ -134,21 +135,21 @@ export function resolvePtcExecuteCodeStoreConfigFromEnv(
     maxKeys:
       maxKeysRaw === undefined
         ? PTC_EXECUTE_CODE_STORE_DEFAULT_MAX_KEYS
-        : readStorePositiveIntegerEnv(
+        : readPtcPositiveIntegerEnv(
             PTC_EXECUTE_CODE_STORE_MAX_KEYS_ENV,
             maxKeysRaw,
           ),
     maxValueBytes:
       maxValueBytesRaw === undefined
         ? PTC_EXECUTE_CODE_STORE_DEFAULT_MAX_VALUE_BYTES
-        : readStorePositiveIntegerEnv(
+        : readPtcPositiveIntegerEnv(
             PTC_EXECUTE_CODE_STORE_MAX_VALUE_BYTES_ENV,
             maxValueBytesRaw,
           ),
     maxTotalBytes:
       maxTotalBytesRaw === undefined
         ? PTC_EXECUTE_CODE_STORE_DEFAULT_MAX_TOTAL_BYTES
-        : readStorePositiveIntegerEnv(
+        : readPtcPositiveIntegerEnv(
             PTC_EXECUTE_CODE_STORE_MAX_TOTAL_BYTES_ENV,
             maxTotalBytesRaw,
           ),
@@ -364,18 +365,6 @@ function readStoreBooleanEnv(name: string, raw: string): boolean {
     return false;
   }
   throw new Error(`invalid ${name}: ${value || 'empty'}`);
-}
-
-function readStorePositiveIntegerEnv(name: string, raw: string): number {
-  const value = raw.trim();
-  if (!/^\d+$/u.test(value)) {
-    throw new Error(`invalid ${name}: ${value || 'empty'}`);
-  }
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new Error(`invalid ${name}: ${value}`);
-  }
-  return parsed;
 }
 
 function validateStoreKey(key: unknown): PtcExecuteCodeStoreResult<string> {

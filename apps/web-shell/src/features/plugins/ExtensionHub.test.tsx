@@ -125,7 +125,11 @@ void test('extension hub switches between real plugin and skill catalogs in the 
   assert.equal(pluginListCount, 2);
 
   act(() => {
-    renderer.root.findByProps({ 'aria-label': '만들기 메뉴' }).props.onClick();
+    const creatorButton = renderer.root.findByProps({
+      'aria-label': '만들기 메뉴',
+    });
+    assert.equal(renderedText(creatorButton), '만들기');
+    creatorButton.props.onClick();
   });
   act(() => {
     menuItemByText(renderer.root, '플러그인 만들기').props.onClick();

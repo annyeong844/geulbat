@@ -9,10 +9,12 @@ import {
 const THREAD_ID = '00000000-0000-4000-8000-000000000001';
 const CONTEXT_USAGE = {
   state: 'measured',
+  quality: 'exact',
   modelId: 'gpt-5.6-sol',
   inputTokens: 122_400,
   contextWindow: 272_000,
   thresholdTokens: 244_800,
+  requestBytes: 510_000,
 } as const;
 
 void test('context usage cache round-trips the last exact snapshot by thread', () => {

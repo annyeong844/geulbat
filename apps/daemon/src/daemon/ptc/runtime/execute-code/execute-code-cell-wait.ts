@@ -19,6 +19,7 @@ import {
   type PtcExecuteCodeCellId,
   type PtcExecuteCodeRuntimeWaitResult,
 } from './execute-code-runtime-contract.js';
+import { runDetached } from '../../../utils/run-detached.js';
 
 type CreatePtcExecuteCodeCellRegistry = typeof createPtcExecuteCodeCellRegistry;
 
@@ -360,16 +361,18 @@ async function waitForQueuedCellObservationWindow(args: {
     const onAbort = () => finish({ kind: 'abort' });
 
     args.signal?.addEventListener('abort', onAbort, { once: true });
-    void args.cellRegistry
-      .waitForThreadRevisionChange({
-        threadId: args.threadId,
-        afterRevision: args.afterThreadRevision,
-        abortSignal: waitAbort.signal,
-      })
-      .then(
-        () => finish({ kind: 'change' }),
-        () => undefined,
-      );
+    runDetached('ptc/wait-thread-revision', () =>
+      args.cellRegistry
+        .waitForThreadRevisionChange({
+          threadId: args.threadId,
+          afterRevision: args.afterThreadRevision,
+          abortSignal: waitAbort.signal,
+        })
+        .then(
+          () => finish({ kind: 'change' }),
+          () => undefined,
+        ),
+    );
   });
 }
 
@@ -465,27 +468,31 @@ async function waitForCellObservationWindow(args: {
     };
 
     args.signal?.addEventListener('abort', onAbort, { once: true });
-    void args.cellRegistry
-      .waitForThreadRevisionChange({
-        threadId: args.threadId,
-        afterRevision: args.afterThreadRevision,
-        abortSignal: waitAbort.signal,
-      })
-      .then(
-        () => finish({ kind: 'change' }),
-        () => undefined,
-      );
-    void args.cellRegistry
-      .waitForRunningCellOutputChange({
-        threadId: args.threadId,
-        cellId: args.cellId,
-        afterOutputRevision: args.afterOutputRevision,
-        abortSignal: waitAbort.signal,
-      })
-      .then(
-        () => finish({ kind: 'change' }),
-        () => undefined,
-      );
+    runDetached('ptc/wait-thread-revision', () =>
+      args.cellRegistry
+        .waitForThreadRevisionChange({
+          threadId: args.threadId,
+          afterRevision: args.afterThreadRevision,
+          abortSignal: waitAbort.signal,
+        })
+        .then(
+          () => finish({ kind: 'change' }),
+          () => undefined,
+        ),
+    );
+    runDetached('ptc/wait-cell-output', () =>
+      args.cellRegistry
+        .waitForRunningCellOutputChange({
+          threadId: args.threadId,
+          cellId: args.cellId,
+          afterOutputRevision: args.afterOutputRevision,
+          abortSignal: waitAbort.signal,
+        })
+        .then(
+          () => finish({ kind: 'change' }),
+          () => undefined,
+        ),
+    );
   });
 }
 

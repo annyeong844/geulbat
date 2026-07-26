@@ -1,13 +1,11 @@
 import { useEffect, useId, useState } from 'react';
-import {
-  isApprovalGrantScope,
-  isPermissionMode,
-  type ApprovalGrantScope,
-  type ApprovalRequired,
-  type PermissionMode,
+import type {
+  ApprovalGrantScope,
+  ApprovalRequired,
+  PermissionMode,
 } from '@geulbat/protocol/run-approval';
+import type { SideEffectLevel } from '@geulbat/protocol/run-events';
 import { buildApprovalSummary } from '../../lib/approvals/approval-summary.js';
-import { approvalStyles, getApprovalBadgeStyle } from './approval-styles.js';
 
 interface Props {
   pending: ApprovalRequired | null;
@@ -16,11 +14,29 @@ interface Props {
   onApprove: (
     pending: ApprovalRequired,
     grantScope: ApprovalGrantScope,
+    permissionMode: PermissionMode,
   ) => Promise<void> | void;
   onDeny: (pending: ApprovalRequired) => Promise<void> | void;
 }
 
 const MAX_APPROVAL_PREVIEW_CHARS = 1200;
+
+// 허용 범위 — 셀렉트 대신 칩. run은 사용자에게 "이번 답변"이 실체다.
+const SCOPE_OPTIONS: ReadonlyArray<{
+  value: ApprovalGrantScope;
+  label: string;
+}> = [
+  { value: 'once', label: '이번만' },
+  { value: 'run', label: '이번 답변' },
+  { value: 'session', label: '이 컴퓨터 세션' },
+];
+
+const LEVEL_LABELS: Record<SideEffectLevel, string> = {
+  none: '영향 없음',
+  read: '읽기',
+  write: '쓰기',
+  destructive: '위험',
+};
 
 export function Approvals({
   pending,
@@ -30,9 +46,9 @@ export function Approvals({
   onDeny,
 }: Props) {
   const [grantScope, setGrantScope] = useState<ApprovalGrantScope>('once');
-  const [pendingAction, setPendingAction] = useState<'approve' | 'deny' | null>(
-    null,
-  );
+  const [pendingAction, setPendingAction] = useState<
+    'approve' | 'approve_all' | 'deny' | null
+  >(null);
   const titleId = useId();
 
   useEffect(() => {
@@ -56,7 +72,23 @@ export function Approvals({
     }
     setPendingAction('approve');
     try {
-      await Promise.resolve(onApprove(activePending, grantScope));
+      await Promise.resolve(
+        onApprove(activePending, grantScope, permissionMode),
+      );
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  // "다시 묻지 않기" — 전체 허용 모드로 전환하며 이번 요청도 함께 허용한다.
+  async function handleApproveAll(): Promise<void> {
+    if (controlsDisabled) {
+      return;
+    }
+    setPendingAction('approve_all');
+    try {
+      await Promise.resolve(onPermissionModeChange('full_access'));
+      await Promise.resolve(onApprove(activePending, 'session', 'full_access'));
     } finally {
       setPendingAction(null);
     }
@@ -76,115 +108,82 @@ export function Approvals({
 
   return (
     <section
-      className="approvals"
-      style={styles.tray}
+      className="approval-card"
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
       aria-busy={controlsDisabled}
     >
-      <div style={styles.headerRow}>
-        <div>
-          <div style={styles.eyebrow}>Approval required</div>
-          <div style={styles.summaryRow}>
-            <strong id={titleId}>{summary.title}</strong>
-            <span style={getApprovalBadgeStyle(activePending.sideEffectLevel)}>
-              {activePending.sideEffectLevel}
-            </span>
-          </div>
-          {summary.detail ? (
-            <div style={styles.detailText}>{summary.detail}</div>
-          ) : null}
-        </div>
-      </div>
-      <PermissionModeSelector
-        permissionMode={permissionMode}
-        onPermissionModeChange={onPermissionModeChange}
-        compact
-        disabled={controlsDisabled}
-      />
-      <label style={styles.field}>
-        Approval Pass
-        <select
-          name="approval-pass-scope"
-          value={grantScope}
-          disabled={controlsDisabled}
-          onChange={(event) => {
-            const nextGrantScope = event.target.value;
-            if (isApprovalGrantScope(nextGrantScope)) {
-              setGrantScope(nextGrantScope);
-            }
-          }}
-          style={styles.select}
+      <div className="approval-card-header">
+        <span className="approval-card-dot" aria-hidden="true" />
+        <strong id={titleId} className="approval-card-title">
+          {summary.title}
+        </strong>
+        <span
+          className={`approval-card-level ${activePending.sideEffectLevel}`}
         >
-          <option value="once">Once</option>
-          <option value="run">This run</option>
-          <option value="session">This session</option>
-        </select>
-      </label>
+          {LEVEL_LABELS[activePending.sideEffectLevel]}
+        </span>
+      </div>
 
-      <div style={styles.actionRow}>
+      {summary.detail ? (
+        <code className="approval-card-target">{summary.detail}</code>
+      ) : null}
+
+      <div className="approval-card-scope" role="group" aria-label="허용 범위">
+        <span className="approval-card-scope-label">허용 범위</span>
+        {SCOPE_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={`approval-scope-chip${
+              option.value === grantScope ? ' active' : ''
+            }`}
+            aria-pressed={option.value === grantScope}
+            disabled={controlsDisabled}
+            onClick={() => setGrantScope(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="approval-card-actions">
         <button
+          className="approval-allow-button"
           onClick={() => void handleApprove()}
           disabled={controlsDisabled}
-          style={styles.approveButton}
         >
-          {pendingAction === 'approve' ? 'Approving...' : 'Approve'}
+          {pendingAction === 'approve' ? '허용 중…' : '허용'}
         </button>
         <button
+          className="approval-deny-button"
           onClick={() => void handleDeny()}
           disabled={controlsDisabled}
-          style={styles.denyButton}
         >
-          {pendingAction === 'deny' ? 'Denying...' : 'Deny'}
+          {pendingAction === 'deny' ? '거부 중…' : '거부'}
+        </button>
+        <button
+          className="approval-allow-all-button"
+          onClick={() => void handleApproveAll()}
+          disabled={controlsDisabled}
+          title="전체 허용 모드로 바꾸고 앞으로는 승인 없이 진행합니다"
+        >
+          {pendingAction === 'approve_all' ? '전환 중…' : '다시 묻지 않기'}
         </button>
       </div>
 
-      <details style={styles.details}>
-        <summary style={styles.detailsSummary}>Advanced details</summary>
-        <div style={styles.classRow}>
-          class: <code>{pending.approvalClass}</code>
+      <details className="approval-advanced">
+        <summary>자세히</summary>
+        <div className="approval-advanced-class">
+          분류: <code>{pending.approvalClass}</code> · 도구:{' '}
+          <code>{pending.toolName}</code>
         </div>
-        <pre style={styles.preview}>
+        <pre className="approval-advanced-preview">
           {formatArgumentsPreview(pending.argumentsPreview)}
         </pre>
       </details>
     </section>
-  );
-}
-
-function PermissionModeSelector(props: {
-  permissionMode: PermissionMode;
-  onPermissionModeChange: (mode: PermissionMode) => Promise<void> | void;
-  compact?: boolean;
-  disabled?: boolean;
-}) {
-  const {
-    permissionMode,
-    onPermissionModeChange,
-    compact = false,
-    disabled = false,
-  } = props;
-
-  return (
-    <label style={compact ? styles.inlineField : styles.field}>
-      Permission Mode
-      <select
-        name="permission-mode"
-        value={permissionMode}
-        disabled={disabled}
-        onChange={(event) => {
-          const nextPermissionMode = event.target.value;
-          if (isPermissionMode(nextPermissionMode)) {
-            void onPermissionModeChange(nextPermissionMode);
-          }
-        }}
-        style={styles.select}
-      >
-        <option value="basic">Basic</option>
-        <option value="full_access">Full access</option>
-      </select>
-    </label>
   );
 }
 
@@ -197,5 +196,3 @@ function formatArgumentsPreview(
   }
   return `${text.slice(0, MAX_APPROVAL_PREVIEW_CHARS)}\n...(truncated)`;
 }
-
-const styles = approvalStyles;

@@ -11,6 +11,7 @@ import { getGenericApiErrorCode, getErrorMessage } from '../utils/error.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
 import { initProviderAuth } from './init.js';
 import { requiresProviderReconnect } from './shared.js';
+import { runDetached } from '../utils/run-detached.js';
 
 const logger = createLogger('provider-auth');
 
@@ -21,12 +22,14 @@ const logger = createLogger('provider-auth');
  */
 export async function getProviderAuth(options: {
   allowRefresh?: boolean;
+  onWait?: () => void;
   providerId?: ProviderAuthCredentialProviderId;
   refreshCredential?: (
     current: ProviderCredential,
   ) => Promise<ProviderCredential>;
   persistCredential?: (credential: ProviderCredential) => Promise<void>;
   runtimeStore: ProviderAuthRuntimeStore;
+  signal?: AbortSignal;
 }): Promise<{ accessToken: string; accountId: string }> {
   const { runtimeStore } = options;
   const providerId = resolveProviderAuthCredentialProviderId(
@@ -59,12 +62,14 @@ export async function getProviderAuth(options: {
     await doRefresh({
       providerId,
       runtimeStore,
+      ...(options.onWait !== undefined ? { onWait: options.onWait } : {}),
       ...(options.refreshCredential !== undefined
         ? { refreshCredential: options.refreshCredential }
         : {}),
       ...(options.persistCredential !== undefined
         ? { persistCredential: options.persistCredential }
         : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
     });
     cached = runtimeStore.getCachedProviderCredential(providerId);
     if (!cached) {
@@ -89,12 +94,14 @@ export async function getProviderAuth(options: {
 }
 
 export async function forceRefreshProviderAuth(options: {
+  onWait?: () => void;
   providerId?: ProviderAuthCredentialProviderId;
   refreshCredential?: (
     current: ProviderCredential,
   ) => Promise<ProviderCredential>;
   persistCredential?: (credential: ProviderCredential) => Promise<void>;
   runtimeStore: ProviderAuthRuntimeStore;
+  signal?: AbortSignal;
 }): Promise<{ accessToken: string; accountId: string }> {
   const { runtimeStore } = options;
   const providerId = resolveProviderAuthCredentialProviderId(
@@ -117,12 +124,14 @@ export async function forceRefreshProviderAuth(options: {
   await doRefresh({
     providerId,
     runtimeStore,
+    ...(options.onWait !== undefined ? { onWait: options.onWait } : {}),
     ...(options.refreshCredential !== undefined
       ? { refreshCredential: options.refreshCredential }
       : {}),
     ...(options.persistCredential !== undefined
       ? { persistCredential: options.persistCredential }
       : {}),
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
   });
 
   const refreshError =
@@ -147,21 +156,26 @@ export async function forceRefreshProviderAuth(options: {
 
 /** Refresh mutex — concurrent callers await the same promise. */
 async function doRefresh(options: {
+  onWait?: () => void;
   providerId: ProviderAuthCredentialProviderId;
   refreshCredential?: (
     current: ProviderCredential,
   ) => Promise<ProviderCredential>;
   persistCredential?: (credential: ProviderCredential) => Promise<void>;
   runtimeStore: ProviderAuthRuntimeStore;
+  signal?: AbortSignal;
 }): Promise<void> {
   const { providerId, runtimeStore } = options;
+  throwIfProviderAuthWaitAborted(options.signal);
   const currentRefreshPromise =
     runtimeStore.getProviderAuthRefreshPromise(providerId);
   if (currentRefreshPromise) {
-    await currentRefreshPromise;
+    options.onWait?.();
+    await waitForProviderAuthRefresh(currentRefreshPromise, options.signal);
     return;
   }
 
+  options.onWait?.();
   const refreshCredential =
     options.refreshCredential ??
     ((current: ProviderCredential) =>
@@ -200,11 +214,67 @@ async function doRefresh(options: {
   })();
   runtimeStore.setProviderAuthRefreshPromise(refreshPromise, providerId);
 
-  try {
-    await refreshPromise;
-  } finally {
-    runtimeStore.setProviderAuthRefreshPromise(null, providerId);
+  const clearRefreshPromise = () => {
+    if (
+      runtimeStore.getProviderAuthRefreshPromise(providerId) === refreshPromise
+    ) {
+      runtimeStore.setProviderAuthRefreshPromise(null, providerId);
+    }
+  };
+  runDetached('auth/provider-refresh-cleanup', () =>
+    refreshPromise.then(clearRefreshPromise, clearRefreshPromise),
+  );
+  await waitForProviderAuthRefresh(refreshPromise, options.signal);
+}
+
+function waitForProviderAuthRefresh(
+  refreshPromise: Promise<void>,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (signal === undefined) {
+    return refreshPromise;
   }
+  throwIfProviderAuthWaitAborted(signal);
+
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort);
+      reject(createProviderAuthWaitAbortError(signal.reason));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    runDetached('auth/provider-refresh-wait', () =>
+      refreshPromise.then(
+        () => {
+          signal.removeEventListener('abort', onAbort);
+          resolve();
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', onAbort);
+          reject(
+            error instanceof Error
+              ? error
+              : new Error('provider auth refresh failed', { cause: error }),
+          );
+        },
+      ),
+    );
+  });
+}
+
+function throwIfProviderAuthWaitAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw createProviderAuthWaitAbortError(signal.reason);
+  }
+}
+
+function createProviderAuthWaitAbortError(reason: unknown): Error {
+  const error = new Error('provider auth wait aborted', { cause: reason });
+  error.name = 'AbortError';
+  return error;
 }
 
 function throwProviderAuthFailure(error: {

@@ -6,6 +6,8 @@ import type {
   ChildRunSnapshot,
   ChildRunStatus,
   ChildRunTerminalSnapshot,
+  SubagentCapability,
+  SubagentRuntimeDiagnostics,
   SubagentType,
 } from '../../subagent-runtime-contracts.js';
 import { isAgentChildTerminalState } from '../../subagent-runtime-contracts.js';
@@ -18,11 +20,17 @@ export interface ChildRunRegistry {
     parentRunId: RunId;
     ownerThreadId: ThreadId;
     subagentType: SubagentType;
+    capabilities?: readonly SubagentCapability[];
     modelPin: ChildRunSnapshot['modelPin'];
     subagentModelRouting: ChildRunSnapshot['subagentModelRouting'];
+    runtime?: SubagentRuntimeDiagnostics;
   }): void;
   markChildApprovalPending(childRunId: RunId): void;
   markChildRunning(childRunId: RunId): void;
+  updateChildRuntime(args: {
+    childRunId: RunId;
+    runtime: SubagentRuntimeDiagnostics;
+  }): ChildRunSnapshot | undefined;
   markChildTerminal(args: {
     childRunId: RunId;
     terminalState: AgentChildTerminalState;
@@ -34,6 +42,12 @@ export interface ChildRunRegistry {
     revision: number;
     records: ChildRunSnapshot[];
   };
+  getActiveChildRuns(): ChildRunSnapshot[];
+  getActiveChildRunsByOwnerThread(ownerThreadId: ThreadId): ChildRunSnapshot[];
+  subscribeActiveChildRunUpdates(
+    ownerThreadId: ThreadId,
+    listener: (snapshot: ChildRunSnapshot) => void,
+  ): () => void;
   claimTerminalChildRuns(args: {
     ownerThreadId: ThreadId;
     childRunIds: readonly RunId[];
@@ -55,9 +69,53 @@ interface ChildRunRevisionTracker {
   ): Promise<number>;
 }
 
+function cloneRuntimeDiagnostics(
+  runtime: SubagentRuntimeDiagnostics,
+): SubagentRuntimeDiagnostics {
+  return {
+    ...runtime,
+    ...(runtime.lastTool === undefined
+      ? {}
+      : { lastTool: { ...runtime.lastTool } }),
+    ...(runtime.providerRequest === undefined
+      ? {}
+      : {
+          providerRequest: {
+            ...runtime.providerRequest,
+            ...(runtime.providerRequest.retry === undefined
+              ? {}
+              : { retry: { ...runtime.providerRequest.retry } }),
+          },
+        }),
+  };
+}
+
+function hasSameProviderRequestDiagnostics(
+  current: SubagentRuntimeDiagnostics['providerRequest'],
+  next: SubagentRuntimeDiagnostics['providerRequest'],
+): boolean {
+  if (current === undefined || next === undefined) {
+    return current === next;
+  }
+  return (
+    current.startedAt === next.startedAt &&
+    current.lastEventAt === next.lastEventAt &&
+    current.endedAt === next.endedAt &&
+    current.durationMs === next.durationMs &&
+    current.attemptCount === next.attemptCount &&
+    current.retry?.available === next.retry?.available &&
+    current.retry?.performed === next.retry?.performed &&
+    current.retry?.outcome === next.retry?.outcome
+  );
+}
+
 function cloneSnapshot(snapshot: ChildRunSnapshot): ChildRunSnapshot {
   return {
     ...snapshot,
+    ...(snapshot.capabilities === undefined
+      ? {}
+      : { capabilities: [...snapshot.capabilities] }),
+    runtime: cloneRuntimeDiagnostics(snapshot.runtime),
     modelPin: {
       ...snapshot.modelPin,
       providerRunSelection: {
@@ -65,6 +123,11 @@ function cloneSnapshot(snapshot: ChildRunSnapshot): ChildRunSnapshot {
           ...snapshot.modelPin.providerRunSelection.providerModel,
         },
         reasoningEffort: snapshot.modelPin.providerRunSelection.reasoningEffort,
+        ...(snapshot.modelPin.providerRunSelection.serviceTier === undefined
+          ? {}
+          : {
+              serviceTier: snapshot.modelPin.providerRunSelection.serviceTier,
+            }),
       },
     },
     subagentModelRouting:
@@ -150,6 +213,11 @@ function createChildRunRevisionTracker(): ChildRunRevisionTracker {
 export function createChildRunRegistry(): ChildRunRegistry {
   const records = new Map<RunId, ChildRunSnapshot>();
   const revisionTracker = createChildRunRevisionTracker();
+  const activeChildRunUpdates = createSignal<[ChildRunSnapshot]>({
+    onListenerError(error) {
+      logger.warn('active child listener failed:', error);
+    },
+  });
 
   function mutateRecord(
     childRunId: RunId,
@@ -167,17 +235,37 @@ export function createChildRunRegistry(): ChildRunRegistry {
     revisionTracker.bumpRevision();
   }
 
+  function readActiveChildRuns(ownerThreadId?: ThreadId): ChildRunSnapshot[] {
+    return [...records.values()]
+      .filter(
+        (record) =>
+          !isTerminalSnapshot(record) &&
+          (ownerThreadId === undefined ||
+            record.ownerThreadId === ownerThreadId),
+      )
+      .map(cloneSnapshot);
+  }
+
   return {
     registerChildRun(args) {
       const now = new Date().toISOString();
+      const runtime: SubagentRuntimeDiagnostics = args.runtime ?? {
+        phase: 'provider_waiting',
+        observedAt: now,
+        partialOutputAvailable: false,
+      };
       const snapshot: ChildRunSnapshot = {
         childRunId: args.childRunId,
         childThreadId: args.childThreadId,
         parentRunId: args.parentRunId,
         ownerThreadId: args.ownerThreadId,
         subagentType: args.subagentType,
+        ...(args.capabilities === undefined || args.capabilities.length === 0
+          ? {}
+          : { capabilities: [...args.capabilities] }),
         modelPin: args.modelPin,
         subagentModelRouting: args.subagentModelRouting,
+        runtime: cloneRuntimeDiagnostics(runtime),
         status: 'running',
         result: null,
         completedAt: null,
@@ -186,6 +274,7 @@ export function createChildRunRegistry(): ChildRunRegistry {
       };
       records.set(args.childRunId, cloneSnapshot(snapshot));
       revisionTracker.bumpRevision();
+      activeChildRunUpdates.emit(cloneSnapshot(snapshot));
     },
     markChildApprovalPending(childRunId) {
       mutateRecord(childRunId, (current) => {
@@ -219,6 +308,39 @@ export function createChildRunRegistry(): ChildRunRegistry {
           updatedAt: new Date().toISOString(),
         };
       });
+    },
+    updateChildRuntime({ childRunId, runtime }) {
+      const current = records.get(childRunId);
+      if (current === undefined || isTerminalSnapshot(current)) {
+        return current === undefined ? undefined : cloneSnapshot(current);
+      }
+      const currentLastTool = current.runtime.lastTool;
+      const nextLastTool = runtime.lastTool;
+      if (
+        current.runtime.phase === runtime.phase &&
+        current.runtime.observedAt === runtime.observedAt &&
+        current.runtime.partialOutputAvailable ===
+          runtime.partialOutputAvailable &&
+        current.runtime.previousChildRunId === runtime.previousChildRunId &&
+        hasSameProviderRequestDiagnostics(
+          current.runtime.providerRequest,
+          runtime.providerRequest,
+        ) &&
+        currentLastTool?.name === nextLastTool?.name &&
+        currentLastTool?.callId === nextLastTool?.callId &&
+        currentLastTool?.state === nextLastTool?.state
+      ) {
+        return cloneSnapshot(current);
+      }
+      const next: ChildRunSnapshot = {
+        ...current,
+        runtime: cloneRuntimeDiagnostics(runtime),
+        updatedAt: runtime.observedAt,
+      };
+      records.set(childRunId, next);
+      revisionTracker.bumpRevision();
+      activeChildRunUpdates.emit(cloneSnapshot(next));
+      return cloneSnapshot(next);
     },
     markChildTerminal({ childRunId, terminalState, result, reason }) {
       const current = records.get(childRunId);
@@ -256,6 +378,22 @@ export function createChildRunRegistry(): ChildRunRegistry {
           .filter((record): record is ChildRunSnapshot => record !== undefined)
           .map(cloneSnapshot),
       };
+    },
+    getActiveChildRuns() {
+      return readActiveChildRuns();
+    },
+    getActiveChildRunsByOwnerThread(ownerThreadId) {
+      return readActiveChildRuns(ownerThreadId);
+    },
+    subscribeActiveChildRunUpdates(ownerThreadId, listener) {
+      return activeChildRunUpdates.subscribe((snapshot) => {
+        if (
+          snapshot.ownerThreadId === ownerThreadId &&
+          !isTerminalSnapshot(snapshot)
+        ) {
+          listener(cloneSnapshot(snapshot));
+        }
+      });
     },
     claimTerminalChildRuns({ ownerThreadId, childRunIds }) {
       let claimed = 0;

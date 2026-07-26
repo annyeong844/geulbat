@@ -2,19 +2,33 @@ interface AgentLoopKernelResult {
   ok: boolean;
 }
 
+export const AGENT_LOOP_IMPLEMENTATION_CONTRACT_VERSION = '1';
+
+export interface AgentLoopImplementationIdentity {
+  readonly implementationId: string;
+  readonly contractVersion: string;
+}
+
 interface AgentLoopRoundContext {
   round: number;
   sawFirstModelRequest: boolean;
 }
 
-type AgentLoopTerminalSource =
-  | 'aborted'
-  | 'model_failure'
-  | 'structured_output_failure'
-  | 'structured_output'
-  | 'structured_output_unhandled'
-  | 'natural'
-  | 'tool_failure';
+export const AGENT_LOOP_TERMINAL_SOURCES = [
+  'aborted',
+  'blocked',
+  'model_failure',
+  'structured_output_failure',
+  'structured_output',
+  'structured_output_unhandled',
+  'natural',
+  'tool_completion',
+  'tool_failure',
+  'verification_unavailable',
+] as const;
+
+export type AgentLoopTerminalSource =
+  (typeof AGENT_LOOP_TERMINAL_SOURCES)[number];
 
 export type AgentLoopKernelEvent =
   | {
@@ -24,10 +38,52 @@ export type AgentLoopKernelEvent =
       sawFirstModelRequest: boolean;
     }
   | {
+      kind: 'model_call_started';
+      round: number;
+    }
+  | {
+      kind: 'model_call_completed';
+      round: number;
+      outcome: 'failure';
+    }
+  | {
+      kind: 'model_call_completed';
+      round: number;
+      outcome: 'success';
+      functionCallCount: number;
+      structuredOutputCount: number;
+    }
+  | {
+      kind: 'structured_outputs_started';
+      round: number;
+      structuredOutputCount: number;
+    }
+  | {
+      kind: 'structured_outputs_completed';
+      round: number;
+      outcome: 'none' | 'handled' | 'unhandled' | 'failure';
+    }
+  | {
+      kind: 'tool_calls_started';
+      round: number;
+      functionCallCount: number;
+    }
+  | {
+      kind: 'tool_calls_completed';
+      round: number;
+      outcome: 'success' | 'failure';
+    }
+  | {
       kind: 'round_completed';
       round: number;
-      outcome: 'continue' | 'terminal';
-      terminalOk?: boolean;
+      outcome: 'continue';
+    }
+  | {
+      kind: 'round_completed';
+      round: number;
+      outcome: 'terminal';
+      terminalOk: boolean;
+      terminalSource: AgentLoopTerminalSource;
     };
 
 type AgentLoopStepResult<TResult, TValue> =
@@ -52,14 +108,18 @@ type AgentLoopStructuredOutputResult<TResult> =
   | { ok: true; handled: true; result: TResult }
   | { ok: false; message: string };
 
-type AgentLoopTerminalCandidateDecision =
+export type AgentLoopTerminalCandidateDecision =
   | { kind: 'terminal' }
-  | { kind: 'continue'; historyText?: string };
+  | { kind: 'continue'; historyText?: string }
+  | { kind: 'blocked'; message: string }
+  | { kind: 'verification_unavailable'; message: string };
 
 type AgentLoopKernelFailure =
   | { kind: 'aborted'; message: string }
+  | { kind: 'blocked'; message: string }
   | { kind: 'structured_output_failure'; message: string }
-  | { kind: 'structured_output_unhandled'; message: string };
+  | { kind: 'structured_output_unhandled'; message: string }
+  | { kind: 'verification_unavailable'; message: string };
 
 export interface AgentLoopKernelPorts<
   TResult extends AgentLoopKernelResult,
@@ -97,20 +157,27 @@ export interface AgentLoopKernelPorts<
     context: AgentLoopRoundContext;
     functionCalls: readonly TFunctionCall[];
   }): Promise<AgentLoopStepResult<TResult, void>>;
+  shouldEndTurnAfterFunctionCalls?(args: {
+    context: AgentLoopRoundContext;
+    functionCalls: readonly TFunctionCall[];
+  }): boolean;
   resolveTerminalCandidate?(args: {
     context: AgentLoopRoundContext;
-    source: 'structured_output' | 'natural';
+    source: 'structured_output' | 'natural' | 'tool_completion';
     result: TResult;
-  }): AgentLoopTerminalCandidateDecision;
+  }):
+    | AgentLoopTerminalCandidateDecision
+    | Promise<AgentLoopTerminalCandidateDecision>;
   createTerminalFailure(failure: AgentLoopKernelFailure): TResult;
   settleTerminal(args: {
     result: TResult;
     source: AgentLoopTerminalSource;
   }): void;
+  checkpointEvent?(event: AgentLoopKernelEvent): Promise<void>;
   observe?(event: AgentLoopKernelEvent): void;
 }
 
-interface RunAgentLoopKernelArgs<
+export interface AgentLoopKernelInput<
   TResult extends AgentLoopKernelResult,
   TFunctionCall,
   TStructuredOutput,
@@ -123,6 +190,22 @@ interface RunAgentLoopKernelArgs<
     TStructuredOutput,
     THistoryItem
   >;
+}
+
+export interface AgentLoopImplementation extends AgentLoopImplementationIdentity {
+  run<
+    TResult extends AgentLoopKernelResult,
+    TFunctionCall,
+    TStructuredOutput,
+    THistoryItem,
+  >(
+    input: AgentLoopKernelInput<
+      TResult,
+      TFunctionCall,
+      TStructuredOutput,
+      THistoryItem
+    >,
+  ): Promise<TResult>;
 }
 
 type AgentLoopRoundOutcome<TResult> =
@@ -139,7 +222,7 @@ export async function runAgentLoopKernel<
   TStructuredOutput,
   THistoryItem,
 >(
-  args: RunAgentLoopKernelArgs<
+  args: AgentLoopKernelInput<
     TResult,
     TFunctionCall,
     TStructuredOutput,
@@ -148,12 +231,43 @@ export async function runAgentLoopKernel<
 ): Promise<TResult> {
   const { ports, signal } = args;
 
+  const emitEvent = async (event: AgentLoopKernelEvent): Promise<void> => {
+    await ports.checkpointEvent?.(event);
+    ports.observe?.(event);
+  };
+
   const finish = (
     result: TResult,
     source: AgentLoopTerminalSource,
   ): AgentLoopRoundOutcome<TResult> => {
-    ports.settleTerminal({ result, source });
     return { kind: 'terminal', result, source };
+  };
+
+  const assessTerminalCandidate = async (args: {
+    context: AgentLoopRoundContext;
+    source: 'structured_output' | 'natural' | 'tool_completion';
+    result: TResult;
+  }): Promise<AgentLoopRoundOutcome<TResult>> => {
+    const decision = await ports.resolveTerminalCandidate?.(args);
+    if (decision === undefined || decision.kind === 'terminal') {
+      return finish(args.result, args.source);
+    }
+    if (decision.kind === 'continue') {
+      if (decision.historyText !== undefined) {
+        ports.appendAssistantText({
+          text: decision.historyText,
+          functionCalls: [],
+        });
+      }
+      return { kind: 'continue' };
+    }
+    return finish(
+      ports.createTerminalFailure({
+        kind: decision.kind,
+        message: decision.message,
+      }),
+      decision.kind,
+    );
   };
 
   const runRound = async (
@@ -171,8 +285,14 @@ export async function runAgentLoopKernel<
 
     await ports.beforeModelRound?.(context);
 
+    await emitEvent({ kind: 'model_call_started', round: context.round });
     const modelRound = await ports.runModelRound(context);
     if (!modelRound.ok) {
+      await emitEvent({
+        kind: 'model_call_completed',
+        round: context.round,
+        outcome: 'failure',
+      });
       return finish(modelRound.result, 'model_failure');
     }
 
@@ -183,13 +303,36 @@ export async function runAgentLoopKernel<
       itemsToAppend,
       structuredOutputs = [],
     } = modelRound.value;
+    await emitEvent({
+      kind: 'model_call_completed',
+      round: context.round,
+      outcome: 'success',
+      functionCallCount: functionCalls.length,
+      structuredOutputCount: structuredOutputs.length,
+    });
     if (itemsToAppend !== undefined) {
       ports.appendHistoryItems(itemsToAppend);
     }
+    await emitEvent({
+      kind: 'structured_outputs_started',
+      round: context.round,
+      structuredOutputCount: structuredOutputs.length,
+    });
     const structuredResult = await ports.processStructuredOutputs({
       context,
       structuredOutputs,
       functionCalls,
+    });
+    await emitEvent({
+      kind: 'structured_outputs_completed',
+      round: context.round,
+      outcome: !structuredResult.ok
+        ? 'failure'
+        : structuredResult.handled
+          ? 'handled'
+          : structuredOutputs.length > 0
+            ? 'unhandled'
+            : 'none',
     });
 
     if (!structuredResult.ok) {
@@ -203,21 +346,11 @@ export async function runAgentLoopKernel<
     }
 
     if (structuredResult.handled) {
-      const decision = ports.resolveTerminalCandidate?.({
+      return await assessTerminalCandidate({
         context,
         source: 'structured_output',
         result: structuredResult.result,
       });
-      if (decision?.kind === 'continue') {
-        if (decision.historyText !== undefined) {
-          ports.appendAssistantText({
-            text: decision.historyText,
-            functionCalls: [],
-          });
-        }
-        return { kind: 'continue' };
-      }
-      return finish(structuredResult.result, 'structured_output');
     }
 
     if (structuredOutputs.length > 0) {
@@ -239,26 +372,42 @@ export async function runAgentLoopKernel<
     }
 
     if (functionCalls.length === 0) {
-      const decision = ports.resolveTerminalCandidate?.({
+      return await assessTerminalCandidate({
         context,
         source: 'natural',
         result: terminalResult,
       });
-      if (decision?.kind === 'continue') {
-        return { kind: 'continue' };
-      }
-      return finish(terminalResult, 'natural');
     }
 
     if (itemsToAppend === undefined) {
       ports.appendFunctionCalls(functionCalls);
     }
+    await emitEvent({
+      kind: 'tool_calls_started',
+      round: context.round,
+      functionCallCount: functionCalls.length,
+    });
     const toolProcessing = await ports.processFunctionCalls({
       context,
       functionCalls,
     });
+    await emitEvent({
+      kind: 'tool_calls_completed',
+      round: context.round,
+      outcome: toolProcessing.ok ? 'success' : 'failure',
+    });
     if (!toolProcessing.ok) {
       return finish(toolProcessing.result, 'tool_failure');
+    }
+    if (
+      ports.shouldEndTurnAfterFunctionCalls?.({ context, functionCalls }) ===
+      true
+    ) {
+      return await assessTerminalCandidate({
+        context,
+        source: 'tool_completion',
+        result: terminalResult,
+      });
     }
     return { kind: 'continue' };
   };
@@ -267,23 +416,36 @@ export async function runAgentLoopKernel<
   let sawFirstModelRequest = false;
   while (true) {
     const context = { round, sawFirstModelRequest };
-    ports.observe?.({
+    await emitEvent({
       kind: 'round_started',
       round,
       historyItemCount: ports.getHistoryItemCount(),
       sawFirstModelRequest,
     });
     const outcome = await runRound(context);
-    ports.observe?.({
-      kind: 'round_completed',
-      round,
-      outcome: outcome.kind,
-      ...(outcome.kind === 'terminal' ? { terminalOk: outcome.result.ok } : {}),
-    });
+    await emitEvent(
+      outcome.kind === 'terminal'
+        ? {
+            kind: 'round_completed',
+            round,
+            outcome: 'terminal',
+            terminalOk: outcome.result.ok,
+            terminalSource: outcome.source,
+          }
+        : { kind: 'round_completed', round, outcome: 'continue' },
+    );
     if (outcome.kind === 'terminal') {
+      ports.settleTerminal({ result: outcome.result, source: outcome.source });
       return outcome.result;
     }
     sawFirstModelRequest = true;
     round += 1;
   }
 }
+
+export const agentLoopKernelImplementation: AgentLoopImplementation =
+  Object.freeze({
+    implementationId: 'geulbat.agent-loop.kernel',
+    contractVersion: AGENT_LOOP_IMPLEMENTATION_CONTRACT_VERSION,
+    run: runAgentLoopKernel,
+  });

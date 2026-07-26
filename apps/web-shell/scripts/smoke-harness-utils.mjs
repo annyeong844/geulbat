@@ -67,25 +67,30 @@ function pushLog(logs, chunk) {
   }
 }
 
-export async function waitForDaemonReady(daemonHostUrl, logs) {
+export async function waitForDaemonReady(daemonHostUrl, logs, { signal } = {}) {
   const readyUrl =
     daemonHostUrl instanceof URL ? daemonHostUrl : new URL(daemonHostUrl);
   const timeoutAt = Date.now() + DAEMON_READY_TIMEOUT_MS;
   let lastError = null;
 
+  signal?.throwIfAborted();
   while (Date.now() < timeoutAt) {
     try {
-      const response = await fetch(readyUrl);
+      const response = await fetch(readyUrl, { signal });
       if (response.ok) {
         return;
       }
       lastError = new Error(`daemon responded with ${response.status}`);
     } catch (error) {
+      if (signal?.aborted === true) {
+        throw signal.reason;
+      }
       lastError = error;
     }
-    await delay(DAEMON_READY_POLL_MS);
+    await delay(DAEMON_READY_POLL_MS, undefined, { signal });
   }
 
+  signal?.throwIfAborted();
   const detail = logs.length > 0 ? `\n${logs.slice(-20).join('\n')}` : '';
   throw new Error(
     `daemon did not become ready at ${readyUrl.toString()}: ${

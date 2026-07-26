@@ -50,6 +50,7 @@ export async function runReactBundleStructuredOutputCaller(args: {
   signal?: AbortSignal;
   now?: () => string;
   probeTransport?: Parameters<RunIngress>[0]['probeTransport'];
+  dockerCommandRunner?: Parameters<RunIngress>[0]['dockerCommandRunner'];
   runIngress?: RunIngress;
 }): Promise<ReactBundleStructuredOutputCallerResult> {
   if (args.structuredOutputs.length > 1) {
@@ -105,6 +106,9 @@ export async function runReactBundleStructuredOutputCaller(args: {
   }
   if (args.probeTransport !== undefined) {
     ingressArgs.probeTransport = args.probeTransport;
+  }
+  if (args.dockerCommandRunner !== undefined) {
+    ingressArgs.dockerCommandRunner = args.dockerCommandRunner;
   }
 
   const ingress = await runIngress(ingressArgs);

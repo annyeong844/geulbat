@@ -19,6 +19,19 @@ export function createRouteTestDaemonContext(): DaemonContext {
   const homeStateRoot = join(testRoot, 'home');
   const computerFileRoot = join(testRoot, 'computer');
   const daemonContext = createDaemonContext({ homeStateRoot });
+  const mcpSessionOutputRefs = new Map<string, string>();
+  daemonContext.globalMcp.attachSessionCoordinateStore({
+    readMcpSessionCoordinate(serverId) {
+      const outputRef = mcpSessionOutputRefs.get(serverId);
+      return outputRef === undefined ? undefined : { serverId, outputRef };
+    },
+    persistMcpSessionCoordinate({ serverId, outputRef }) {
+      mcpSessionOutputRefs.set(serverId, outputRef);
+    },
+    deleteMcpSessionCoordinate(serverId) {
+      mcpSessionOutputRefs.delete(serverId);
+    },
+  });
   daemonContext.computerFileScope = {
     root: computerFileRoot,
     browseShortcuts: [],
@@ -93,7 +106,7 @@ export async function withDaemonServer<T>(
     try {
       await closeServer(server);
     } finally {
-      await daemonContext.providerAuthCallbackServer.close();
+      await daemonContext.provider.authCallbackServer.close();
     }
   }
 }

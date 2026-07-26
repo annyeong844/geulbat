@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { RunId } from '@geulbat/protocol/ids';
 
 import {
@@ -9,6 +12,7 @@ import {
 import type { BackgroundChildResult } from '../../subagent-runtime-contracts.js';
 import { testRunId } from '../../../test-support/run-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
+import { createDaemonRuntimeStateStore } from '../../runtime-state-store.js';
 
 type Equal<Left, Right> = [Left] extends [Right]
   ? [Right] extends [Left]
@@ -170,6 +174,79 @@ void test('thread background notification queue ignores duplicate delivery ids f
       .map((backgroundResult) => backgroundResult.deliveryId),
     ['delivery-duplicate'],
   );
+});
+
+void test('thread background notification queue replays and acknowledges through the durable runtime store', async () => {
+  const fixtureRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-background-queue-'),
+  );
+  const homeStateRoot = join(fixtureRoot, 'home-state');
+  const threadId = testThreadId(174012);
+  const result: BackgroundChildResult = {
+    deliveryId: 'delivery-durable-replay',
+    parentRunId: testRunId('parent-durable-replay'),
+    childRunId: testRunId('child-durable-replay'),
+    childThreadId: testThreadId(174013),
+    subagentType: 'worker',
+    terminalState: 'completed',
+    result: 'durable terminal result',
+    completedAt: '2026-07-23T04:00:00.000Z',
+  };
+  const durableResult = {
+    ...result,
+    resultRef: `subagent-result:${result.deliveryId}`,
+  };
+  let store = await createDaemonRuntimeStateStore({ homeStateRoot });
+
+  try {
+    const firstQueue = createThreadBackgroundNotificationQueue();
+    firstQueue.enqueueThreadBackgroundResult(threadId, result);
+    firstQueue.attachDurableStore(store);
+    assert.deepEqual(firstQueue.readThreadBackgroundResults(threadId), [
+      durableResult,
+    ]);
+    firstQueue.enqueueThreadBackgroundResult(threadId, result);
+    assert.deepEqual(firstQueue.readThreadBackgroundResults(threadId), [
+      durableResult,
+    ]);
+
+    store.close();
+    store = await createDaemonRuntimeStateStore({ homeStateRoot });
+    const replayQueue = createThreadBackgroundNotificationQueue();
+    replayQueue.attachDurableStore(store);
+    const replayed: BackgroundChildResult[] = [];
+    const unsubscribe = replayQueue.subscribeThreadBackgroundResults(
+      threadId,
+      (delivery) => replayed.push(delivery),
+    );
+    unsubscribe();
+    assert.deepEqual(replayed, [durableResult]);
+
+    replayQueue.acknowledgeThreadBackgroundResults(threadId, [
+      result.deliveryId,
+    ]);
+    assert.deepEqual(replayQueue.readThreadBackgroundResults(threadId), []);
+    assert.deepEqual(replayQueue.readThreadBackgroundResultHistory(threadId), [
+      durableResult,
+    ]);
+
+    store.close();
+    store = await createDaemonRuntimeStateStore({ homeStateRoot });
+    const reopenedQueue = createThreadBackgroundNotificationQueue();
+    reopenedQueue.attachDurableStore(store);
+    assert.deepEqual(reopenedQueue.readThreadBackgroundResults(threadId), []);
+    assert.deepEqual(
+      reopenedQueue.readThreadBackgroundResultHistory(threadId),
+      [durableResult],
+    );
+    assert.deepEqual(
+      store.readSubagentTerminalOutcomeByChildRunId(result.childRunId)?.result,
+      result,
+    );
+  } finally {
+    store.close();
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
 });
 
 void test('thread background notification queue isolates listener failures and continues delivery', () => {

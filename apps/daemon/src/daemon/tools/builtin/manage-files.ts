@@ -40,12 +40,10 @@ const manageFilesPathSchema = z
   .refine((value) => value.trim().length > 0, {
     message: 'path must not be empty.',
   })
-  .describe(
-    'The target host path. Relative paths start from the current directory; absolute paths may address any location accessible to the daemon process.',
-  );
+  .describe('The source or target host path.');
 
 const manageFilesDestinationDescription =
-  'The destination host path for rename/move operations. Relative paths start from the current directory; absolute paths may address any location accessible to the daemon process. Required for rename/move and forbidden for create/mkdir/delete.';
+  'The destination host path. Required for rename/move and forbidden for create/mkdir/delete.';
 
 const manageFilesDestinationSchema = z
   .string()
@@ -121,7 +119,7 @@ interface ManageFilesExecutionContext {
 export const manageFilesTool = defineParsedTool({
   name: 'manage_files',
   description:
-    'Manage host files and directories using OS permissions and approval as the authority boundary. Supports creating, renaming, moving, deleting files, and creating directories; deleting or moving a symlink acts on the link itself.',
+    'Manage host files and directories using OS permissions and approval as the authority boundary. Path and destination are host paths: relative paths start from the current directory, while absolute paths may address any location accessible to the daemon process. Supports creating, renaming, moving, deleting files, and creating directories; deleting or moving a symlink acts on the link itself.',
   parameters: zodSchemaToToolParameters(manageFilesBranchSchema),
   strict: true,
   sideEffectLevel: 'write',

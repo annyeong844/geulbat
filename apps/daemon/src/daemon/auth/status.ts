@@ -1,9 +1,6 @@
-import type { ErrorCode, ProviderAuthStatusResponse } from './contract.js';
+import type { ProviderAuthStatusResponse } from './contract.js';
 
-import type {
-  PendingProviderAuthSession,
-  ProviderAuthBootstrapStore,
-} from './bootstrap/session-store.js';
+import type { ProviderAuthBootstrapStore } from './bootstrap/session-store.js';
 import {
   isProviderAuthConfigured,
   MISSING_PROVIDER_AUTH_CLIENT_ID_MESSAGE,
@@ -15,10 +12,7 @@ import type {
   ProviderAuthCredentialProviderId,
   ProviderCredential,
 } from './credentials/store.js';
-import {
-  deleteProviderAuthFile,
-  resolveProviderAuthCredentialProviderId,
-} from './credentials/store.js';
+import { resolveProviderAuthCredentialProviderId } from './credentials/store.js';
 import type { ProviderAuthRuntimeStore } from './runtime-state.js';
 import {
   EXPIRED_PROVIDER_CREDENTIAL_MESSAGE,
@@ -213,7 +207,8 @@ export async function getProviderBootstrapStatus(options: {
         state: 'exchange_failed',
         authSessionId: session.authSessionId,
         expiresAt: session.expiresAt,
-        ...readTerminalProviderAuthSessionError(session),
+        lastErrorCode: session.lastErrorCode,
+        lastErrorMessage: session.lastErrorMessage,
         ready: false,
       };
     case 'expired':
@@ -221,7 +216,8 @@ export async function getProviderBootstrapStatus(options: {
         state: 'expired',
         authSessionId: session.authSessionId,
         expiresAt: session.expiresAt,
-        ...readTerminalProviderAuthSessionError(session),
+        lastErrorCode: session.lastErrorCode,
+        lastErrorMessage: session.lastErrorMessage,
         ready: false,
       };
   }
@@ -257,28 +253,10 @@ export async function logoutProviderAuth(options: {
   const providerId = resolveProviderAuthCredentialProviderId(
     options.providerId,
   );
-  await deleteProviderAuthFile(providerId);
+  await runtimeStore.deletePersistedProviderCredential(providerId);
   runtimeStore.clearProviderAuthRuntimeState(providerId);
   const session = bootstrapStore.getProviderAuthSessionSnapshot();
   if (session?.providerId === providerId) {
     bootstrapStore.clearProviderAuthBootstrapState();
   }
-}
-
-function readTerminalProviderAuthSessionError(
-  session: PendingProviderAuthSession,
-): {
-  lastErrorCode: ErrorCode;
-  lastErrorMessage: string;
-} {
-  if (!session.lastErrorCode || !session.lastErrorMessage) {
-    throw new Error(
-      `provider auth ${session.status} session is missing terminal error fields`,
-    );
-  }
-
-  return {
-    lastErrorCode: session.lastErrorCode,
-    lastErrorMessage: session.lastErrorMessage,
-  };
 }

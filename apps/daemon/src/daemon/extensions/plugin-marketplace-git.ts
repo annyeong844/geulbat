@@ -4,11 +4,20 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import {
-  buildAllowlistedChildProcessEnv,
-  runBoundedChildProcess,
-} from '../bounded-child-process.js';
+import { buildAllowlistedCommandEnv } from '../command-environment.js';
 import { PluginMarketplaceStoreError } from './plugin-marketplace-contract.js';
+
+/**
+ * 이 레인이 자식을 어떻게 얻는가 (P7.6 item 3). 데몬 조립이 command-host
+ * 기반 실행기를 넘기며, 빠진 실행기를 데몬 직접 실행으로 대체하지 않는다.
+ */
+export interface PluginMarketplaceCommandRunner {
+  (args: {
+    executable: string;
+    args: readonly string[];
+    env: NodeJS.ProcessEnv;
+  }): Promise<{ exitCode: number | null; stdout: string }>;
+}
 
 const GIT_REVISION_PATTERN = /^git:[a-f0-9]{40,64}$/u;
 const NETWORK_ENV_KEYS = [
@@ -29,12 +38,14 @@ export async function acquirePluginMarketplaceGitRepository(args: {
   url: string;
   requestedRef: string | null;
   isolatedConfigRoot: string;
+  runCommand?: PluginMarketplaceCommandRunner;
 }): Promise<void> {
+  const runCommand = requirePluginMarketplaceCommandRunner(args.runCommand);
   await mkdir(args.isolatedConfigRoot, { recursive: true, mode: 0o700 });
   const hooksRoot = join(args.isolatedConfigRoot, 'hooks');
   await mkdir(hooksRoot, { recursive: true, mode: 0o700 });
   const env = {
-    ...buildAllowlistedChildProcessEnv(NETWORK_ENV_KEYS),
+    ...buildAllowlistedCommandEnv(NETWORK_ENV_KEYS),
     GCM_INTERACTIVE: 'Never',
     GIT_CONFIG_GLOBAL: join(args.isolatedConfigRoot, 'gitconfig'),
     GIT_CONFIG_NOSYSTEM: '1',
@@ -43,21 +54,25 @@ export async function acquirePluginMarketplaceGitRepository(args: {
     XDG_CONFIG_HOME: args.isolatedConfigRoot,
   } satisfies NodeJS.ProcessEnv;
   await runGit(
+    runCommand,
     ['init', '--quiet', args.repositoryRoot],
     env,
     'Git marketplace repository initialization failed',
   );
   await runGit(
+    runCommand,
     ['-C', args.repositoryRoot, 'config', 'core.hooksPath', hooksRoot],
     env,
     'Git marketplace hook isolation failed',
   );
   await runGit(
+    runCommand,
     ['-C', args.repositoryRoot, 'remote', 'add', 'origin', args.url],
     env,
     'Git marketplace source registration failed',
   );
   await runGit(
+    runCommand,
     [
       '-C',
       args.repositoryRoot,
@@ -71,6 +86,7 @@ export async function acquirePluginMarketplaceGitRepository(args: {
     'Git marketplace fetch failed',
   );
   await runGit(
+    runCommand,
     [
       '-C',
       args.repositoryRoot,
@@ -87,18 +103,19 @@ export async function acquirePluginMarketplaceGitRepository(args: {
 export async function readGitRevision(
   repositoryRoot: string,
   marketplaceId: string,
+  runCommand?: PluginMarketplaceCommandRunner,
 ): Promise<string> {
   const env = {
-    ...buildAllowlistedChildProcessEnv([]),
+    ...buildAllowlistedCommandEnv([]),
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0',
   } satisfies NodeJS.ProcessEnv;
-  const result = await runBoundedChildProcess({
+  const result = await requirePluginMarketplaceCommandRunner(runCommand)({
     executable: 'git',
     args: ['-C', repositoryRoot, 'rev-parse', 'HEAD'],
     env,
   });
-  if (result.kind !== 'exit' || result.exitCode !== 0) {
+  if (result.exitCode !== 0) {
     throw new PluginMarketplaceStoreError(
       'corrupt_registry',
       `managed marketplace revision is unreadable: ${marketplaceId}`,
@@ -114,17 +131,30 @@ export async function readGitRevision(
   return revision;
 }
 
+function requirePluginMarketplaceCommandRunner(
+  runCommand: PluginMarketplaceCommandRunner | undefined,
+): PluginMarketplaceCommandRunner {
+  if (runCommand === undefined) {
+    throw new PluginMarketplaceStoreError(
+      'invalid_request',
+      'marketplace Git requires the daemon host command runtime',
+    );
+  }
+  return runCommand;
+}
+
 async function runGit(
+  runCommand: PluginMarketplaceCommandRunner,
   gitArgs: string[],
   env: NodeJS.ProcessEnv,
   failureMessage: string,
 ): Promise<void> {
-  const result = await runBoundedChildProcess({
+  const result = await runCommand({
     executable: 'git',
     args: gitArgs,
     env,
   });
-  if (result.kind !== 'exit' || result.exitCode !== 0) {
+  if (result.exitCode !== 0) {
     throw new PluginMarketplaceStoreError('invalid_request', failureMessage);
   }
 }

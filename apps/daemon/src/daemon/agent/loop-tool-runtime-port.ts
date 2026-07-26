@@ -11,6 +11,10 @@ import {
   buildToolCallExecutionRuntime,
 } from './loop-tool-runtime.js';
 import type { RunState } from './runtime/run-state.js';
+import type { ToolResultContextBudget } from './memory/compaction-loop.js';
+import { createToolOutputProjectionRound } from './tool-output-offload.js';
+import type { ToolResultObservation } from './observer/agent-loop-observer.js';
+import type { ToolExecutionRegistry } from '../tools/tool-registry-model.js';
 
 interface ProcessAgentLoopToolCallsArgs {
   functionCalls: FunctionCall[];
@@ -24,10 +28,16 @@ interface ProcessAgentLoopToolCallsArgs {
   selection: LineSelection | undefined;
   signal: AbortSignal | undefined;
   runState: RunState | undefined;
+  toolRegistry: ToolExecutionRegistry;
   allowedRegistryNames?: readonly string[];
+  toolCapabilityPolicy?: AgentToolExecutionContextBase['toolCapabilityPolicy'];
   toolLibraryProjectionIdentity?: AgentToolExecutionContextBase['toolLibraryProjectionIdentity'];
   providerRunSelection?: AgentToolExecutionContextBase['providerRunSelection'];
+  ultraReasoning?: AgentToolExecutionContextBase['ultraReasoning'];
   subagentModelRouting?: AgentToolExecutionContextBase['subagentModelRouting'];
+  planningWorkflow?: AgentToolExecutionContextBase['planningWorkflow'];
+  toolResultContextBudget?: ToolResultContextBudget;
+  observeToolResult?: (observation: ToolResultObservation) => void;
 }
 
 export interface AgentLoopToolRuntimePort {
@@ -41,6 +51,16 @@ export function createAgentLoopToolRuntimePort(
 ): AgentLoopToolRuntimePort {
   return {
     async processFunctionCalls(args) {
+      const projectionRound =
+        args.toolResultContextBudget === undefined
+          ? undefined
+          : createToolOutputProjectionRound({
+              availableModelVisibleBytes:
+                args.toolResultContextBudget.kind === 'available'
+                  ? args.toolResultContextBudget.availableRequestBytes
+                  : undefined,
+              resultCount: args.functionCalls.length,
+            });
       const executionContextBase = buildAgentToolExecutionContextBase({
         runContext: args.runContext,
         runId: args.runId,
@@ -53,6 +73,9 @@ export function createAgentLoopToolRuntimePort(
         ...(args.allowedRegistryNames === undefined
           ? {}
           : { allowedRegistryNames: args.allowedRegistryNames }),
+        ...(args.toolCapabilityPolicy === undefined
+          ? {}
+          : { toolCapabilityPolicy: args.toolCapabilityPolicy }),
         ...(args.toolLibraryProjectionIdentity === undefined
           ? {}
           : {
@@ -61,20 +84,24 @@ export function createAgentLoopToolRuntimePort(
         ...(args.providerRunSelection === undefined
           ? {}
           : { providerRunSelection: args.providerRunSelection }),
+        ultraReasoning: args.ultraReasoning,
         ...(args.subagentModelRouting === undefined
           ? {}
           : { subagentModelRouting: args.subagentModelRouting }),
+        ...(args.planningWorkflow === undefined
+          ? {}
+          : { planningWorkflow: args.planningWorkflow }),
         ...(runtimeServices.computerFileRoot === undefined
           ? {}
           : { computerFileRoot: runtimeServices.computerFileRoot }),
         fileStateCache: runtimeServices.fileStateCache,
         memoryIndex: runtimeServices.memoryIndex,
-        agentSpawnRuntime: runtimeServices,
+        runtimeServices,
       });
       const toolRuntime = buildToolCallExecutionRuntime({
         approvalContext: args.approvalContext,
         emit: args.emit,
-        toolRegistry: runtimeServices.toolRegistry,
+        toolRegistry: args.toolRegistry,
         approvalGate: runtimeServices.approvalGate,
         approvalGrants: runtimeServices.approvalGrants,
         executionContextBase,
@@ -84,6 +111,10 @@ export function createAgentLoopToolRuntimePort(
         round: args.round,
         history: args.history,
         runtime: toolRuntime,
+        ...(projectionRound === undefined ? {} : { projectionRound }),
+        ...(args.observeToolResult === undefined
+          ? {}
+          : { observeToolResult: args.observeToolResult }),
       });
     },
   };

@@ -5,6 +5,7 @@ import { createHealthRoutes } from './adapter/web/routes/health.js';
 import { createArtifactRuntimeHostRoutes } from './adapter/web/routes/artifact-runtime-host.js';
 import { createPublicWebFixtureRoutes } from './adapter/web/routes/public-web-fixtures.js';
 import { createProviderAuthRoutes } from './adapter/web/routes/provider-auth.js';
+import { createQwenTokenPlanRoutes } from './adapter/web/routes/qwen-token-plan.js';
 import {
   createPublicReactBundleInlineGeneratedAssetRoutes,
   createReactBundleInlineCompileRoutes,
@@ -14,6 +15,9 @@ import { createArtifactRuntimePersistenceRoutes } from './adapter/web/routes/art
 import { createRunInputRoutes } from './adapter/web/routes/run-inputs.js';
 import { createThreadsRoutes } from './adapter/web/routes/threads.js';
 import { createMcpRoutes } from './adapter/web/routes/mcp.js';
+import { createPermissionModeRoutes } from './adapter/web/routes/permission-mode.js';
+import { createProviderUsageRoutes } from './adapter/web/routes/provider-usage.js';
+import { createDirectoryPreferencesRoutes } from './adapter/web/routes/directory-preferences.js';
 import { createPluginRoutes } from './adapter/web/routes/plugins.js';
 import { createInputRefRoutes } from './adapter/web/routes/input-refs.js';
 import type {
@@ -30,7 +34,13 @@ import {
   readConfiguredAllowedOrigins,
 } from './adapter/web/origin-policy.js';
 import { createDaemonContext, type DaemonContext } from './daemon/context.js';
-import { prepareProviderTransitionCompaction } from './daemon/agent/memory/compaction-loop.js';
+import { loadCurrentProviderCredential } from './daemon/auth/status.js';
+import { prepareProviderTransitionCompaction } from './daemon/agent/memory/provider-transition-compaction.js';
+import {
+  deleteQwenTokenPlanCredential,
+  getQwenTokenPlanConnectionStatus,
+  writeQwenTokenPlanCredential,
+} from './daemon/llm/provider/qwen/index.js';
 
 interface DaemonOptions {
   daemonContext?: DaemonContext;
@@ -43,11 +53,19 @@ export async function createDaemon(options: DaemonOptions = {}) {
   const daemonContext = options.daemonContext ?? createDaemonContext();
   const homeStateRoot = daemonContext.homeStateRoot;
   const ptcRestartCleanup =
-    await daemonContext.ptcExecuteCode.reapRestartResidue?.({
+    await daemonContext.ptc.executeCode.reapRestartResidue?.({
       stateRoot: homeStateRoot,
     });
   if (ptcRestartCleanup !== undefined && !ptcRestartCleanup.ok) {
-    throw new Error('PTC restart residue cleanup failed during daemon startup');
+    // 실패 이유를 버리면 부팅이 막힌 사용자가 손쓸 곳을 알 수 없다 — reasonCode와
+    // diagnostics를 메시지에 실어 보낸다.
+    throw new Error(
+      `PTC restart residue cleanup failed during daemon startup: ${
+        ptcRestartCleanup.reasonCode
+      } ${ptcRestartCleanup.message ?? ''} ${JSON.stringify(
+        ptcRestartCleanup.diagnostics ?? {},
+      )}`.trim(),
+    );
   }
   await daemonContext.plugins.initialize();
   await daemonContext.pluginMarketplaces.initialize();
@@ -73,9 +91,7 @@ export async function createDaemon(options: DaemonOptions = {}) {
 
   // Provider auth callback is public; protected provider-auth endpoints re-apply requireAuth internally.
   const providerAuthRoutesContext = {
-    providerAuthBootstrap: daemonContext.providerAuthBootstrap,
-    providerAuthCallbackServer: daemonContext.providerAuthCallbackServer,
-    providerAuthRuntime: daemonContext.providerAuthRuntime,
+    provider: daemonContext.provider,
   } satisfies ProviderAuthRoutesContext;
   app.use(createProviderAuthRoutes({ context: providerAuthRoutesContext }));
 
@@ -83,6 +99,17 @@ export async function createDaemon(options: DaemonOptions = {}) {
   app.use('/api', requireAuth);
 
   // Mount route groups
+  app.use(
+    createQwenTokenPlanRoutes({
+      getStatus: getQwenTokenPlanConnectionStatus,
+      writeCredential: (credential) =>
+        writeQwenTokenPlanCredential(credential, {
+          hardenPermissions:
+            daemonContext.provider.credentialFilePermissionHardener,
+        }),
+      deleteCredential: deleteQwenTokenPlanCredential,
+    }),
+  );
   app.use(
     createReactBundleInlineCompileRoutes({
       homeStateRoot,
@@ -107,6 +134,43 @@ export async function createDaemon(options: DaemonOptions = {}) {
     }),
   );
   app.use(
+    createPermissionModeRoutes({
+      homeStateRoot,
+    }),
+  );
+  app.use(
+    createDirectoryPreferencesRoutes({
+      homeStateRoot,
+      // 기본 경로는 선택기가 이미 자기 항목으로 보여준다 — 최근 목록에서 뺀다.
+      listDefaultPaths: () => {
+        const scope = daemonContext.computerFileScope;
+        if (scope === undefined) {
+          return [];
+        }
+        return [
+          scope.browseStartPath ?? '',
+          ...scope.browseShortcuts.map((shortcut) => shortcut.path),
+        ].filter((path) => path !== '');
+      },
+    }),
+  );
+  app.use(
+    createProviderUsageRoutes({
+      async loadCredential(providerId) {
+        const credential = await loadCurrentProviderCredential({
+          runtimeStore: daemonContext.provider.authRuntime,
+          providerId,
+        });
+        return credential === null
+          ? null
+          : {
+              accessToken: credential.accessToken,
+              accountId: credential.accountId,
+            };
+      },
+    }),
+  );
+  app.use(
     createInputRefRoutes({
       homeStateRoot,
       ...(daemonContext.computerFileScope === undefined
@@ -122,9 +186,9 @@ export async function createDaemon(options: DaemonOptions = {}) {
       async prepare(args) {
         return await prepareProviderTransitionCompaction({
           ...args,
-          providerAuthRuntime: daemonContext.providerAuthRuntime,
-          providerWebSocketSessions: daemonContext.providerWebSocketSessions,
-          providerRequestOptions: daemonContext.providerRequestOptions,
+          providerAuthRuntime: daemonContext.provider.authRuntime,
+          providerWebSocketSessions: daemonContext.provider.webSocketSessions,
+          providerRequestOptions: daemonContext.provider.requestOptions,
         });
       },
     },

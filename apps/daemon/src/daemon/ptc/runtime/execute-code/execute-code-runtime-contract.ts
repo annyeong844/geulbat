@@ -274,6 +274,17 @@ export type PtcExecuteCodeRuntimeCellTerminalStatus =
   | 'completed_with_cleanup_failure'
   | 'terminated_with_cleanup_failure';
 
+export function isPtcExecuteCodeRuntimeCellTerminalStatus(
+  value: unknown,
+): value is PtcExecuteCodeRuntimeCellTerminalStatus {
+  return (
+    value === 'completed' ||
+    value === 'terminated' ||
+    value === 'completed_with_cleanup_failure' ||
+    value === 'terminated_with_cleanup_failure'
+  );
+}
+
 export interface PtcExecuteCodeCellDurableOutput {
   outputRef: string;
   fullOutputBytes: number;

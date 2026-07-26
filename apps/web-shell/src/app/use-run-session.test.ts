@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import type { CancelRequest } from '@geulbat/protocol/cancel';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ApprovalRequest } from '@geulbat/protocol/run-approval';
+import type {
+  PermissionMode,
+  PermissionModeState,
+} from '@geulbat/protocol/run-approval';
 import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
 import type {
   RunStartRequest,
@@ -11,22 +15,18 @@ import type {
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 
 import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
-import { appendThreadNotification } from './run-session-entry-state.js';
 import { storeContextUsageByThread } from './run-session-context-usage-cache.js';
-import { selectVisibleRunState } from './run-session-state-selectors.js';
-import {
-  createEmptyActiveRunView,
-  type BackgroundNotificationsByThread,
-} from './run-session-state-types.js';
 import { makeApprovalRequiredFixture } from '../test-support/protocol-fixtures.js';
-import { settleRunEffects, useRunSession } from './use-run-session.js';
+import { useRunSession } from './use-run-session.js';
 import { renderHook } from '../test-support/hook-test.js';
 import type { RunSessionControllerClient } from './use-run-session.js';
 
-const RUN_ID = brandRunId('run-1');
-const THREAD_ID_VALUE = '00000000-0000-4000-8000-000000000001';
-const OTHER_THREAD_ID_VALUE = '00000000-0000-4000-8000-000000000002';
-const THREAD_ID = brandThreadId(THREAD_ID_VALUE);
+import {
+  OTHER_THREAD_ID_VALUE,
+  RUN_ID,
+  THREAD_ID,
+  THREAD_ID_VALUE,
+} from '../test-support/run-session-fixtures.js';
 type UseRunSessionArgs = Parameters<typeof useRunSession>[0];
 
 interface RunSessionClientHarness {
@@ -37,6 +37,7 @@ interface RunSessionClientHarness {
   closeCalls: () => number;
   subscribeCount: () => number;
   unsubscribeCount: () => number;
+  threadSubscriptionCalls: () => string[];
 }
 
 function createPersistedThreadDetail(args?: {
@@ -80,12 +81,56 @@ function createRunSessionArgs(
       ...(request.permissionMode !== undefined
         ? { permissionMode: request.permissionMode }
         : {}),
+      ...(request.planModeRequested !== undefined
+        ? { planModeRequested: request.planModeRequested }
+        : {}),
+      ...(request.planModeIntensity !== undefined
+        ? { planModeIntensity: request.planModeIntensity }
+        : {}),
+      ...(request.planModeDepth !== undefined
+        ? { planModeDepth: request.planModeDepth }
+        : {}),
+      ...(request.reasoningEffort !== undefined
+        ? { reasoningEffort: request.reasoningEffort }
+        : {}),
+      ...(request.providerTransitionRecovery !== undefined
+        ? {
+            providerTransitionRecovery: request.providerTransitionRecovery,
+          }
+        : {}),
+      ...(request.serviceTier !== undefined
+        ? { serviceTier: request.serviceTier }
+        : {}),
       ...(request.subagentModelRouting !== undefined
         ? { subagentModelRouting: request.subagentModelRouting }
         : {}),
       promptRef: 'run-prompt-input:11111111-1111-4111-8111-111111111111',
     }),
+    ...createPermissionModeTransport(),
     ...overrides,
+  };
+}
+
+/**
+ * 승인 모드의 durable 소유자는 daemon이다. 훅 테스트에서는 HTTP 대신 같은 계약을
+ * 지키는 in-memory 소유자를 물려서, 저장한 값이 다시 읽힐 때 그대로 나오게 한다.
+ */
+function createPermissionModeTransport(
+  initial: PermissionMode = 'basic',
+): Pick<
+  UseRunSessionArgs,
+  'readPermissionModeState' | 'writePermissionModeState'
+> {
+  let stored: PermissionModeState = {
+    permissionMode: initial,
+    updatedAt: null,
+  };
+  return {
+    readPermissionModeState: async () => stored,
+    writePermissionModeState: async (permissionMode) => {
+      stored = { permissionMode, updatedAt: '2026-07-25T11:00:00.000Z' };
+      return stored;
+    },
   };
 }
 
@@ -95,6 +140,9 @@ function createRunSessionClientHarness(overrides?: {
   cancel?: (request: CancelRequest) => Promise<string>;
   connect?: () => Promise<unknown>;
   close?: () => void;
+  getActiveRunForThread?: RunSessionControllerClient['getActiveRunForThread'];
+  interject?: RunSessionControllerClient['interject'];
+  subscribeThread?: RunSessionControllerClient['subscribeThread'];
 }): RunSessionClientHarness {
   let listener: ((message: RunChannelServerMessage) => void) | null = null;
   let createClientCalls = 0;
@@ -102,6 +150,7 @@ function createRunSessionClientHarness(overrides?: {
   let closeCalls = 0;
   let subscribeCount = 0;
   let unsubscribeCount = 0;
+  const threadSubscriptionCalls: string[] = [];
 
   const client: RunSessionControllerClient = {
     async acknowledgeEvent() {
@@ -121,7 +170,14 @@ function createRunSessionClientHarness(overrides?: {
       closeCalls += 1;
       overrides?.close?.();
     },
-    async interject() {
+    endComputerSession() {
+      closeCalls += 1;
+      overrides?.close?.();
+    },
+    async interject(request) {
+      if (overrides?.interject) {
+        return await overrides.interject(request);
+      }
       return { requestId: 'req-interject', receivedSeq: 1 };
     },
     async cancelInterject() {
@@ -151,12 +207,42 @@ function createRunSessionClientHarness(overrides?: {
       }
       throw new Error('cancel not implemented in client harness');
     },
+    async cancelChild() {
+      return 'req-child-cancel';
+    },
+    async planCommand(request) {
+      return {
+        type: 'run.control',
+        requestId: 'req-plan-command',
+        action: 'plan.command',
+        ok: true,
+        commandKind: request.kind,
+        snapshot: null,
+      };
+    },
+    async goalCommand(request) {
+      return {
+        type: 'run.control',
+        requestId: 'req-goal-command',
+        action: 'goal.command',
+        ok: true,
+        commandKind: request.kind,
+        snapshot: null,
+      };
+    },
+    async subscribeThread(threadId) {
+      threadSubscriptionCalls.push(threadId);
+      await overrides?.subscribeThread?.(threadId);
+    },
     async connect() {
       connectCalls += 1;
       if (overrides?.connect) {
         return await overrides.connect();
       }
       return {};
+    },
+    getActiveRunForThread(threadId) {
+      return overrides?.getActiveRunForThread?.(threadId) ?? null;
     },
   };
 
@@ -176,40 +262,11 @@ function createRunSessionClientHarness(overrides?: {
     closeCalls: () => closeCalls,
     subscribeCount: () => subscribeCount,
     unsubscribeCount: () => unsubscribeCount,
+    threadSubscriptionCalls: () => threadSubscriptionCalls.slice(),
   };
 }
 
-void test('settleRunEffects continues running follow-up tasks even if one task rejects', async () => {
-  const seen: string[] = [];
-
-  const results = await settleRunEffects({
-    threadId: THREAD_ID_VALUE,
-    selectedFile: 'hello.txt',
-    openThreadForRunSettle: async () => {
-      seen.push('openThread');
-      throw new Error('openThread failed');
-    },
-    loadThreads: async () => {
-      seen.push('loadThreads');
-    },
-    openFile: async () => {
-      seen.push('openFile');
-    },
-  });
-
-  assert.deepEqual(
-    seen.sort(),
-    ['loadThreads', 'openFile', 'openThread'].sort(),
-  );
-  assert.equal(results.length, 3);
-  assert.equal(results[0]?.status, 'rejected');
-  assert.equal(
-    results.slice(1).every((result) => result.status === 'fulfilled'),
-    true,
-  );
-});
-
-void test('useRunSession does not eagerly connect the run channel on mount', async () => {
+void test('useRunSession connects the run channel on mount for durable run recovery', async () => {
   const harness = createRunSessionClientHarness();
   const hook = await renderHook(
     useRunSession,
@@ -219,7 +276,21 @@ void test('useRunSession does not eagerly connect the run channel on mount', asy
   );
 
   assert.equal(harness.createClientCalls(), 1);
-  assert.equal(harness.connectCalls(), 0);
+  assert.equal(harness.connectCalls(), 1);
+  hook.unmount();
+});
+
+void test('useRunSession subscribes the selected thread for durable child-result replay', async () => {
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      createClient: harness.createClient,
+    }),
+  );
+
+  assert.deepEqual(harness.threadSubscriptionCalls(), [THREAD_ID_VALUE]);
   hook.unmount();
 });
 
@@ -242,13 +313,21 @@ void test('useRunSession restores the last exact context measurement on mount', 
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
-    value: { localStorage: storage },
+    value: {
+      localStorage: storage,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    },
   });
+  const harness = createRunSessionClientHarness();
 
   try {
     const hook = await renderHook(
       useRunSession,
-      createRunSessionArgs({ selectedThreadId: THREAD_ID_VALUE }),
+      createRunSessionArgs({
+        selectedThreadId: THREAD_ID_VALUE,
+        createClient: harness.createClient,
+      }),
     );
 
     assert.deepEqual(hook.result.current.contextUsage, contextUsage);
@@ -262,18 +341,26 @@ void test('useRunSession restores the last exact context measurement on mount', 
   }
 });
 
-void test('useRunSession prepares a cross-provider thread without committing the model selection', async () => {
-  const requests: unknown[] = [];
+void test('useRunSession prepares an explicit overflow handoff without granting compaction to the retry run', async () => {
+  const transitionRequests: unknown[] = [];
+  const runRequests: RunStartRequest[] = [];
   let loadedThreads = 0;
+  const harness = createRunSessionClientHarness({
+    start: async (request) => {
+      runRequests.push(request);
+      return RUN_ID;
+    },
+  });
   const hook = await renderHook(
     useRunSession,
     createRunSessionArgs({
       selectedThreadId: THREAD_ID_VALUE,
+      createClient: harness.createClient,
       loadThreads: async () => {
         loadedThreads += 1;
       },
       prepareProviderTransitionRequest: async (threadId, request) => {
-        requests.push({ threadId, request });
+        transitionRequests.push({ threadId, request });
         return {
           ok: true,
           status: 'compacted',
@@ -286,22 +373,60 @@ void test('useRunSession prepares a cross-provider thread without committing the
     }),
   );
 
-  await hook.run((session) => session.setModelId('grok-4.5'));
-  assert.equal(hook.result.current.modelId, 'grok-4.5');
-  await hook.run((session) => session.prepareProviderTransition('gpt-5.6-sol'));
+  await hook.run((session) => session.setModelId('gpt-5.6-sol'));
+  await hook.run((session) => session.setModelId('gpt-5.6-luna'));
+  await hook.run((session) =>
+    session.prepareProviderTransition({
+      sourceModelId: 'gpt-5.6-sol',
+      targetModelId: 'gpt-5.6-luna',
+      reasoningEffort: 'medium',
+    }),
+  );
 
-  assert.deepEqual(requests, [
+  assert.deepEqual(transitionRequests, [
     {
       threadId: THREAD_ID_VALUE,
       request: {
-        sourceModelId: 'grok-4.5',
-        targetModelId: 'gpt-5.6-sol',
+        sourceModelId: 'gpt-5.6-sol',
+        targetModelId: 'gpt-5.6-luna',
         reasoningEffort: 'medium',
       },
     },
   ]);
   assert.equal(loadedThreads, 1);
-  assert.equal(hook.result.current.modelId, 'grok-4.5');
+
+  await hook.run((session) => session.sendPrompt('continue on Luna'));
+  assert.equal(runRequests.length, 1);
+  assert.equal(runRequests[0]?.providerTransitionRecovery, undefined);
+
+  hook.unmount();
+});
+
+void test('useRunSession rejects a stale provider handoff target before calling the daemon', async () => {
+  let prepareCount = 0;
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      prepareProviderTransitionRequest: async () => {
+        prepareCount += 1;
+        throw new Error('daemon should not be called');
+      },
+    }),
+  );
+
+  await hook.run((session) => session.setModelId('grok-4.5'));
+  await assert.rejects(
+    hook.run((session) =>
+      session.prepareProviderTransition({
+        sourceModelId: 'grok-4.5',
+        targetModelId: 'gpt-5.6-sol',
+        reasoningEffort: 'medium',
+      }),
+    ),
+    /target no longer matches/u,
+  );
+  assert.equal(prepareCount, 0);
   hook.unmount();
 });
 
@@ -368,7 +493,7 @@ void test('useRunSession settles with the latest selectedFile instead of a stale
   hook.unmount();
 });
 
-void test('useRunSession ignores stale persisted snapshots without settling the active run', async () => {
+void test('useRunSession settles the run without applying a stale persisted snapshot', async () => {
   let loadedThreads = 0;
   let openedFiles = 0;
   const harness = createRunSessionClientHarness();
@@ -376,6 +501,7 @@ void test('useRunSession ignores stale persisted snapshots without settling the 
     useRunSession,
     createRunSessionArgs({
       selectedFile: 'draft.md',
+      selectedThreadId: THREAD_ID_VALUE,
       loadThreads: async () => {
         loadedThreads += 1;
       },
@@ -416,9 +542,10 @@ void test('useRunSession ignores stale persisted snapshots without settling the 
   });
   await hook.flush();
 
-  assert.equal(hook.result.current.isRunning, true);
+  assert.equal(hook.result.current.isRunning, false);
   assert.equal(hook.result.current.isSettling, false);
-  assert.equal(loadedThreads, 1);
+  assert.equal(hook.result.current.activeRunId, null);
+  assert.equal(loadedThreads, 2);
   assert.equal(openedFiles, 0);
   hook.unmount();
 });
@@ -431,6 +558,7 @@ void test('useRunSession starts prompts through a stale callback with the latest
     modelId?: string;
     currentFile?: string;
     threadId?: string;
+    serviceTier?: string;
     subagentModelRouting?: RunSubagentModelRouting;
   }> = [];
   const optimisticPrompts: string[] = [];
@@ -456,6 +584,9 @@ void test('useRunSession starts prompts through a stale callback with the latest
         ...(request.threadId !== undefined
           ? { threadId: request.threadId }
           : {}),
+        ...(request.serviceTier !== undefined
+          ? { serviceTier: request.serviceTier }
+          : {}),
         ...(request.subagentModelRouting !== undefined
           ? { subagentModelRouting: request.subagentModelRouting }
           : {}),
@@ -478,7 +609,8 @@ void test('useRunSession starts prompts through a stale callback with the latest
 
   const staleSendPrompt = hook.result.current.sendPrompt;
   await hook.run(async (current) => {
-    current.setPermissionMode('full_access');
+    await current.setPermissionMode('full_access');
+    current.setServiceTier('fast');
   });
   await hook.rerender(
     createRunSessionArgs({
@@ -502,10 +634,171 @@ void test('useRunSession starts prompts through a stale callback with the latest
       modelId: 'gpt-5.6-sol',
       permissionMode: 'full_access',
       threadId: THREAD_ID_VALUE,
+      serviceTier: 'fast',
       subagentModelRouting: { mode: 'auto' },
     },
   ]);
   assert.deepEqual(optimisticPrompts, ['Write the next scene']);
+  hook.unmount();
+});
+
+void test('useRunSession omits planModeRequested while plan mode is off', async () => {
+  const startedRequests: RunStartRequest[] = [];
+  const harness = createRunSessionClientHarness({
+    start: async (request) => {
+      startedRequests.push(request);
+      return RUN_ID;
+    },
+  });
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async (current) => {
+    await current.sendPrompt('just do it');
+  });
+
+  assert.equal(startedRequests.length, 1);
+  assert.equal(startedRequests[0]?.planModeRequested, undefined);
+  hook.unmount();
+});
+
+void test('useRunSession sends planModeRequested once plan mode is on', async () => {
+  const startedRequests: RunStartRequest[] = [];
+  const harness = createRunSessionClientHarness({
+    start: async (request) => {
+      startedRequests.push(request);
+      return RUN_ID;
+    },
+  });
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async (current) => {
+    current.setPlanModeRequested(true);
+  });
+  assert.equal(hook.result.current.planModeRequested, true);
+
+  await hook.run(async (current) => {
+    await current.sendPrompt('plan this first');
+  });
+
+  assert.equal(startedRequests.length, 1);
+  assert.equal(startedRequests[0]?.planModeRequested, true);
+  assert.equal(startedRequests[0]?.planModeIntensity, 'visual');
+  assert.equal(startedRequests[0]?.planModeDepth, 'standard');
+  hook.unmount();
+});
+
+void test('useRunSession adopts the permission mode the daemon already owns instead of the cached hint', async () => {
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      createClient: harness.createClient,
+      ...createPermissionModeTransport('full_access'),
+    }),
+  );
+
+  assert.equal(hook.result.current.permissionMode, 'full_access');
+  hook.unmount();
+});
+
+void test('useRunSession persists a permission mode change to the daemon', async () => {
+  const harness = createRunSessionClientHarness();
+  const written: PermissionMode[] = [];
+  let stored: PermissionModeState = {
+    permissionMode: 'basic',
+    updatedAt: null,
+  };
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      createClient: harness.createClient,
+      readPermissionModeState: async () => stored,
+      writePermissionModeState: async (permissionMode) => {
+        written.push(permissionMode);
+        stored = { permissionMode, updatedAt: '2026-07-25T11:00:00.000Z' };
+        return stored;
+      },
+    }),
+  );
+
+  await hook.run(async (current) => {
+    await current.setPermissionMode('full_access');
+  });
+
+  assert.deepEqual(written, ['full_access']);
+  assert.equal(hook.result.current.permissionMode, 'full_access');
+  hook.unmount();
+});
+
+void test('useRunSession returns to the daemon-owned mode when persisting the change fails', async () => {
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      createClient: harness.createClient,
+      readPermissionModeState: async () => ({
+        permissionMode: 'basic',
+        updatedAt: null,
+      }),
+      writePermissionModeState: async () => {
+        throw new Error('daemon unavailable');
+      },
+    }),
+  );
+
+  await hook.run(async (current) => {
+    await current.setPermissionMode('full_access');
+  });
+
+  // 저장이 실패했으면 켜진 것처럼 남지 않는다.
+  assert.equal(hook.result.current.permissionMode, 'basic');
+  hook.unmount();
+});
+
+void test('useRunSession falls back to the safe mode when the daemon mode cannot be read', async () => {
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      createClient: harness.createClient,
+      readPermissionModeState: async () => {
+        throw new Error('daemon unavailable');
+      },
+    }),
+  );
+
+  assert.equal(hook.result.current.permissionMode, 'basic');
+  hook.unmount();
+});
+
+void test('useRunSession resets Fast synchronously when the selected model does not support it', async () => {
+  const harness = createRunSessionClientHarness();
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({ createClient: harness.createClient }),
+  );
+
+  await hook.run(async (current) => {
+    current.setServiceTier('fast');
+  });
+  assert.equal(hook.result.current.serviceTier, 'fast');
+
+  await hook.run(async (current) => {
+    current.setModelId('grok-4.5');
+  });
+  assert.equal(hook.result.current.serviceTier, 'standard');
   hook.unmount();
 });
 
@@ -594,6 +887,57 @@ void test('useRunSession sends a fixed Luna xhigh subagent route independently f
   hook.unmount();
 });
 
+void test('useRunSession sends Ultra as the single reasoning-strength selection', async () => {
+  const seen: Array<{
+    reasoningEffort: string | undefined;
+    subagentModelRouting: RunSubagentModelRouting | undefined;
+  }> = [];
+  const harness = createRunSessionClientHarness({
+    start: async (request) => {
+      seen.push({
+        reasoningEffort: request.reasoningEffort,
+        subagentModelRouting: request.subagentModelRouting,
+      });
+      return RUN_ID;
+    },
+  });
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({ createClient: harness.createClient }),
+  );
+
+  await hook.run((current) => {
+    current.setModelId('grok-4.5');
+  });
+  await hook.run((current) => {
+    current.setSubagentModelRouting({
+      mode: 'fixed',
+      choice: {
+        modelId: 'qwen3.8-max-preview',
+        reasoningEffort: 'medium',
+      },
+    });
+    current.setReasoningEffort('ultra');
+  });
+  await hook.run(async (current) => {
+    await current.sendPrompt('Use Ultra');
+  });
+
+  assert.deepEqual(seen, [
+    {
+      reasoningEffort: 'ultra',
+      subagentModelRouting: {
+        mode: 'fixed',
+        choice: {
+          modelId: 'qwen3.8-max-preview',
+          reasoningEffort: 'medium',
+        },
+      },
+    },
+  ]);
+  hook.unmount();
+});
+
 void test('useRunSession routes approval decisions through the controller command handlers', async () => {
   const requests: Array<{
     approved: boolean;
@@ -666,6 +1010,7 @@ void test('useRunSession reveals queued approvals with matching callId after the
   const hook = await renderHook(
     useRunSession,
     createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
       createClient: harness.createClient,
     }),
   );
@@ -813,7 +1158,11 @@ void test('useRunSession keeps a reconnect failure visible while cancelling a ne
 });
 
 void test('useRunSession keeps a new-thread run visible after ack before thread selection catches up', async () => {
-  const harness = createRunSessionClientHarness();
+  const harness = createRunSessionClientHarness({
+    async start() {
+      return 'req-start-new-thread';
+    },
+  });
   const hook = await renderHook(
     useRunSession,
     createRunSessionArgs({
@@ -821,6 +1170,10 @@ void test('useRunSession keeps a new-thread run visible after ack before thread 
     }),
   );
 
+  await hook.run(async (current) => {
+    await current.sendPrompt('start a new thread');
+  });
+  await hook.flush();
   await hook.run(async () => {
     harness.emit({
       type: 'run.event',
@@ -858,6 +1211,188 @@ void test('useRunSession keeps a new-thread run visible after ack before thread 
   assert.deepEqual(hook.result.current.transcriptEntries, [
     { kind: 'assistant_text', text: 'Thinking...' },
   ]);
+  hook.unmount();
+});
+
+void test('useRunSession synchronizes before sending and steers a run restored during reconnect', async () => {
+  const steered: Array<{ runId: string; text: string }> = [];
+  let startCalls = 0;
+  const harness = createRunSessionClientHarness({
+    async start() {
+      startCalls += 1;
+      return 'unexpected-start';
+    },
+    getActiveRunForThread(threadId) {
+      return threadId === THREAD_ID_VALUE
+        ? { runId: RUN_ID, threadId: THREAD_ID }
+        : null;
+    },
+    async interject(request) {
+      steered.push(request);
+      return { requestId: 'req-reconnected-steer', receivedSeq: 3 };
+    },
+  });
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async (current) => {
+    await current.sendPrompt('continue the recovered work');
+  });
+  await hook.flush();
+
+  assert.equal(startCalls, 0);
+  assert.deepEqual(steered, [
+    { runId: RUN_ID, text: 'continue the recovered work' },
+  ]);
+  assert.equal(hook.result.current.activeRunId, RUN_ID);
+  assert.equal(hook.result.current.isRunning, true);
+  assert.deepEqual(hook.result.current.pendingSteers, [
+    { receivedSeq: 3, text: 'continue the recovered work' },
+  ]);
+  hook.unmount();
+});
+
+void test('useRunSession refuses a new-turn-only prompt when reconnect restores an active run', async () => {
+  let startCalls = 0;
+  let interjectCalls = 0;
+  const harness = createRunSessionClientHarness({
+    async start() {
+      startCalls += 1;
+      return 'unexpected-start';
+    },
+    getActiveRunForThread(threadId) {
+      return threadId === THREAD_ID_VALUE
+        ? { runId: RUN_ID, threadId: THREAD_ID }
+        : null;
+    },
+    async interject() {
+      interjectCalls += 1;
+      return { requestId: 'unexpected-interject', receivedSeq: 1 };
+    },
+  });
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      createClient: harness.createClient,
+    }),
+  );
+
+  await assert.rejects(
+    hook.run(async (current) => {
+      await current.sendPromptAsNewTurn('answer after ask_user');
+    }),
+    /synchronized run is still active/,
+  );
+  await hook.flush();
+
+  assert.equal(startCalls, 0);
+  assert.equal(interjectCalls, 0);
+  assert.equal(hook.result.current.activeRunId, RUN_ID);
+  assert.equal(hook.result.current.isRunning, true);
+  assert.deepEqual(hook.result.current.pendingSteers, []);
+  hook.unmount();
+});
+
+void test('useRunSession starts and preserves another selected thread while the first run continues', async () => {
+  const startedThreadIds: Array<string | undefined> = [];
+  const secondRunId = brandRunId('run-2');
+  const otherThreadId = brandThreadId(OTHER_THREAD_ID_VALUE);
+  const harness = createRunSessionClientHarness({
+    async start(request) {
+      startedThreadIds.push(request.threadId);
+      return 'req-start-second-thread';
+    },
+  });
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'run_ack',
+        payload: {
+          runId: RUN_ID,
+          threadId: THREAD_ID,
+        },
+      },
+    });
+  });
+  await hook.rerender(
+    createRunSessionArgs({
+      selectedThreadId: OTHER_THREAD_ID_VALUE,
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async (current) => {
+    await current.sendPrompt('start independent work in this thread');
+  });
+  await hook.flush();
+
+  assert.deepEqual(startedThreadIds, [OTHER_THREAD_ID_VALUE]);
+  assert.equal(hook.result.current.activeRunId, null);
+  assert.equal(hook.result.current.isRunStarting, true);
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: secondRunId,
+        threadId: otherThreadId,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'run_ack',
+        payload: {
+          runId: secondRunId,
+          threadId: otherThreadId,
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: secondRunId,
+        threadId: otherThreadId,
+        seq: 1,
+        ts: new Date().toISOString(),
+        type: 'commentary_delta',
+        payload: { text: 'second thread working' },
+      },
+    });
+  });
+  await hook.flush();
+
+  assert.equal(hook.result.current.activeRunId, secondRunId);
+  assert.equal(hook.result.current.isRunning, true);
+  assert.deepEqual(hook.result.current.transcriptEntries, [
+    { kind: 'assistant_text', text: 'second thread working' },
+  ]);
+
+  await hook.rerender(
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      createClient: harness.createClient,
+    }),
+  );
+  assert.equal(hook.result.current.activeRunId, RUN_ID);
+  assert.equal(hook.result.current.isRunning, true);
+  assert.deepEqual(hook.result.current.pendingSteers, []);
   hook.unmount();
 });
 
@@ -1123,196 +1658,4 @@ void test('useRunSession preserves streamed output and reports a daemon-owned sy
     'Run finished, but refreshing the saved thread state failed. The streamed result is still shown.',
   );
   hook.unmount();
-});
-
-void test('appendThreadNotification keeps subagent activity entries scoped per thread and capped to ten', () => {
-  let notifications: BackgroundNotificationsByThread = {};
-  for (let index = 0; index < 12; index += 1) {
-    notifications = appendThreadNotification(notifications, THREAD_ID_VALUE, {
-      kind: 'subagent_activity',
-      childRunId: `run-child-${index}`,
-      subagentType: 'worker',
-      state: 'completed',
-    });
-  }
-  notifications = appendThreadNotification(
-    notifications,
-    OTHER_THREAD_ID_VALUE,
-    {
-      kind: 'subagent_activity',
-      childRunId: 'other-thread',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-  );
-
-  assert.deepEqual(notifications[THREAD_ID_VALUE], [
-    {
-      kind: 'subagent_activity',
-      childRunId: 'run-child-2',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-    {
-      kind: 'subagent_activity',
-      childRunId: 'run-child-3',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-    {
-      kind: 'subagent_activity',
-      childRunId: 'run-child-4',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-    {
-      kind: 'subagent_activity',
-      childRunId: 'run-child-5',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-    {
-      kind: 'subagent_activity',
-      childRunId: 'run-child-6',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-    {
-      kind: 'subagent_activity',
-      childRunId: 'run-child-7',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-    {
-      kind: 'subagent_activity',
-      childRunId: 'run-child-8',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-    {
-      kind: 'subagent_activity',
-      childRunId: 'run-child-9',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-    {
-      kind: 'subagent_activity',
-      childRunId: 'run-child-10',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-    {
-      kind: 'subagent_activity',
-      childRunId: 'run-child-11',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-  ]);
-  assert.deepEqual(notifications[OTHER_THREAD_ID_VALUE], [
-    {
-      kind: 'subagent_activity',
-      childRunId: 'other-thread',
-      subagentType: 'worker',
-      state: 'completed',
-    },
-  ]);
-});
-
-void test('appendThreadNotification dedupes terminal replay entries by deliveryId', () => {
-  let notifications: BackgroundNotificationsByThread = {};
-
-  notifications = appendThreadNotification(notifications, THREAD_ID_VALUE, {
-    kind: 'subagent_activity',
-    deliveryId: 'delivery-1',
-    childRunId: 'run-child-1',
-    subagentType: 'worker',
-    state: 'completed',
-  });
-  notifications = appendThreadNotification(notifications, THREAD_ID_VALUE, {
-    kind: 'subagent_activity',
-    deliveryId: 'delivery-1',
-    childRunId: 'run-child-1',
-    subagentType: 'worker',
-    state: 'completed',
-  });
-
-  assert.equal(notifications[THREAD_ID_VALUE]?.length, 1);
-});
-
-void test('selectVisibleRunState only exposes active run state for the selected thread', () => {
-  const state = selectVisibleRunState({
-    selectedThreadId: OTHER_THREAD_ID_VALUE,
-    state: {
-      phase: 'starting',
-      pendingStartThreadId: THREAD_ID_VALUE,
-      activeRunView: {
-        ...createEmptyActiveRunView(THREAD_ID_VALUE),
-        runId: 'run-1',
-        transcriptEntries: [{ kind: 'assistant_text', text: 'commentary' }],
-        finalAnswerText: 'final',
-        pendingApproval: makeApprovalRequiredFixture({
-          runId: RUN_ID,
-          threadId: THREAD_ID,
-        }),
-        streamError: '[internal] failed',
-      },
-      sessionError: null,
-      backgroundNotificationsByThread: {
-        [THREAD_ID_VALUE]: [
-          {
-            kind: 'subagent_activity',
-            childRunId: 'run-child-1',
-            subagentType: 'worker',
-            state: 'failed',
-          },
-        ],
-        [OTHER_THREAD_ID_VALUE]: [
-          {
-            kind: 'subagent_activity',
-            childRunId: 'run-child-2',
-            subagentType: 'explorer',
-            state: 'completed',
-          },
-        ],
-      },
-      contextUsageByThread: {},
-    },
-  });
-
-  assert.equal(state.isRunning, false);
-  assert.equal(state.visibleThreadId, OTHER_THREAD_ID_VALUE);
-  assert.equal(state.activeRunId, null);
-  assert.deepEqual(state.transcriptEntries, []);
-  assert.equal(state.finalAnswerText, '');
-  assert.equal(state.streamError, null);
-  assert.equal(state.pendingApproval, null);
-  assert.deepEqual(state.backgroundNotifications, [
-    {
-      kind: 'subagent_activity',
-      childRunId: 'run-child-2',
-      subagentType: 'explorer',
-      state: 'completed',
-    },
-  ]);
-});
-
-void test('selectVisibleRunState keeps threadless transport errors visible for the new-thread composer', () => {
-  const state = selectVisibleRunState({
-    selectedThreadId: null,
-    state: {
-      phase: 'error',
-      pendingStartThreadId: null,
-      activeRunView: {
-        ...createEmptyActiveRunView(null),
-        streamError: '[internal] socket down',
-      },
-      sessionError: null,
-      backgroundNotificationsByThread: {},
-      contextUsageByThread: {},
-    },
-  });
-
-  assert.equal(state.visibleThreadId, null);
-  assert.equal(state.streamError, '[internal] socket down');
-  assert.equal(state.isRunning, false);
 });

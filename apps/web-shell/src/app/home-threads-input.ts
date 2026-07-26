@@ -1,5 +1,9 @@
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
-import type { ThreadMessage, ThreadSummary } from '@geulbat/protocol/threads';
+import type {
+  ThreadMessage,
+  ThreadSubagentTerminalOutcome,
+  ThreadSummary,
+} from '@geulbat/protocol/threads';
 
 import type { BranchBeforeEntryResult } from './use-thread-sessions.js';
 
@@ -9,6 +13,7 @@ interface HomeThreadsInput {
   selectedThreadId: string | null;
   messages: ThreadMessage[];
   artifacts: ThreadArtifactVersion[];
+  subagentTerminalOutcomes: ThreadSubagentTerminalOutcome[];
   deletingThreadId: string | null;
   pendingDeleteThread: ThreadSummary | null;
   loadThreads: () => Promise<void>;
@@ -41,6 +46,7 @@ export function createHomeThreadsInput(
     selectedThreadId: threads.selectedThreadId,
     messages: threads.messages,
     artifacts: threads.artifacts,
+    subagentTerminalOutcomes: threads.subagentTerminalOutcomes,
     deletingThreadId: threads.deletingThreadId,
     pendingDeleteThread: threads.pendingDeleteThread,
     loadThreads: threads.loadThreads,

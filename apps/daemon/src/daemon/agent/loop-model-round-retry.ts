@@ -14,18 +14,28 @@ import { emitTerminalFailure } from './loop-shared.js';
 
 const logger = createLogger('agent/model-round');
 
+type ModelRoundRetryDecision =
+  | { kind: 'retry'; delayMs: number }
+  | {
+      kind: 'terminal';
+      reason: 'unsafe_after_output' | 'exhausted' | 'unavailable';
+    };
+
 export function decideModelRoundRetry(args: {
   category: StreamErrorCategory;
   attemptIndex: number;
   sawSemanticChunk: boolean;
   policy: ProviderModelRoundRetryPolicy;
-}): { delayMs: number } | null {
+}): ModelRoundRetryDecision {
   if (args.sawSemanticChunk) {
-    return null;
+    return { kind: 'terminal', reason: 'unsafe_after_output' };
   }
   const rule = getModelRoundRetryRule(args.policy, args.category);
-  if (!rule || args.attemptIndex >= rule.maxRetries) {
-    return null;
+  if (!rule) {
+    return { kind: 'terminal', reason: 'unavailable' };
+  }
+  if (args.attemptIndex >= rule.maxRetries) {
+    return { kind: 'terminal', reason: 'exhausted' };
   }
 
   const delayMs = defaultModelRoundRetryDelayMs({
@@ -38,7 +48,7 @@ export function decideModelRoundRetry(args: {
     category: args.category,
     delayMs,
   });
-  return { delayMs };
+  return { kind: 'retry', delayMs };
 }
 
 export function emitClassifiedStreamError(
@@ -68,14 +78,16 @@ function getModelRoundRetryRule(
 ): { maxRetries: number } | null {
   switch (category) {
     case 'llm_connection_lost':
+    case 'llm_idle_timeout':
       return policy.llmConnectionLost;
     case 'llm_overloaded':
       return policy.llmOverloaded;
     case 'llm_rate_limited':
       return policy.llmRateLimited;
-    case 'llm_idle_timeout':
     case 'llm_auth_expired':
     case 'llm_context_overflow':
+    case 'llm_context_preparation_required':
+    case 'llm_provider_transition_required':
     case 'oversize_input':
     case 'llm_refused':
     case 'abort_user':
@@ -117,7 +129,10 @@ function streamErrorCategoryToErrorCode(
       return 'llm_rate_limited';
     case 'llm_auth_expired':
       return 'llm_auth_failed';
+    case 'llm_provider_transition_required':
+      return 'provider_transition_required';
     case 'llm_context_overflow':
+    case 'llm_context_preparation_required':
     case 'oversize_input':
       return 'llm_context_length_exceeded';
     case 'abort_user':
@@ -143,6 +158,10 @@ function streamErrorCategoryToMessage(category: StreamErrorCategory): string {
       return 'provider authentication failed';
     case 'llm_context_overflow':
       return 'context length exceeded';
+    case 'llm_context_preparation_required':
+      return 'context preparation required';
+    case 'llm_provider_transition_required':
+      return 'provider transition requires a portable context handoff';
     case 'oversize_input':
       return 'input exceeds retry budget';
     case 'llm_refused':

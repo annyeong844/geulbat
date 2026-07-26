@@ -10,12 +10,48 @@ export interface RunInterjectBuffer {
   // 즉시 반영 요청 — 에이전트 루프가 현재 라운드의 남은 도구 호출을
   // 건너뛰고 다음 소비 지점으로 빨리 가도록 하는 1회성 신호
   flushRequested: boolean;
+  subscribeFlush(listener: () => void): () => void;
+}
+
+const interjectFlushListeners = new WeakMap<
+  RunInterjectBuffer,
+  Set<() => void>
+>();
+
+function subscribeInterjectFlush(
+  buffer: RunInterjectBuffer,
+  listener: () => void,
+): () => void {
+  let listeners = interjectFlushListeners.get(buffer);
+  if (listeners === undefined) {
+    listeners = new Set();
+    interjectFlushListeners.set(buffer, listeners);
+  }
+  listeners.add(listener);
+  if (buffer.flushRequested && buffer.items.length > 0) {
+    listener();
+  }
+  return () => {
+    listeners?.delete(listener);
+    if (listeners?.size === 0) {
+      interjectFlushListeners.delete(buffer);
+    }
+  };
 }
 
 // Shared by reference between RunState and ActiveRun; mutation stays on the
 // daemon event loop and is only observed at explicit loop checkpoints.
 export function createRunInterjectBuffer(): RunInterjectBuffer {
-  return { items: [], seq: 0, accepting: true, flushRequested: false };
+  const buffer: RunInterjectBuffer = {
+    items: [],
+    seq: 0,
+    accepting: true,
+    flushRequested: false,
+    subscribeFlush(listener) {
+      return subscribeInterjectFlush(buffer, listener);
+    },
+  };
+  return buffer;
 }
 
 export function pushPendingInterject(
@@ -89,6 +125,9 @@ export function requestInterjectFlush(buffer: RunInterjectBuffer): boolean {
     return false;
   }
   buffer.flushRequested = true;
+  for (const listener of interjectFlushListeners.get(buffer) ?? []) {
+    listener();
+  }
   return true;
 }
 

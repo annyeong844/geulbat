@@ -205,6 +205,6 @@ function createRuntime(): PluginSkillRuntime {
 function toolContext(runtime: PluginSkillRuntime): ToolExecutionContext {
   return {
     callId: 'plugin-skill-tool-call',
-    agentSpawnRuntime: { pluginSkills: runtime } as AgentRuntimeServices,
+    runtimeServices: { pluginSkills: runtime } as AgentRuntimeServices,
   };
 }

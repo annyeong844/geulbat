@@ -15,6 +15,7 @@ import {
 
 import {
   getProviderAuthStatus,
+  isProviderAuthConnectedStatus,
   logoutProviderAuth,
   startProviderAuth,
 } from '../lib/api/provider-auth.js';
@@ -104,7 +105,7 @@ export function useProviderAuthState() {
     async (
       providerId: ProviderAuthProviderId = DEFAULT_PROVIDER_AUTH_PROVIDER_ID,
     ) => {
-      if (providerAuthStatuses[providerId]?.state === 'ready') {
+      if (isProviderAuthConnectedStatus(providerAuthStatuses[providerId])) {
         showProviderAlreadyConnectedNotice(providerId);
         return;
       }
@@ -231,6 +232,11 @@ function useProviderAuthStatusPolling({
               withProviderValue(current, id, null),
             );
           } catch (err: unknown) {
+            setProviderAuthStatuses((current) =>
+              current[id] === null
+                ? current
+                : withProviderValue(current, id, null),
+            );
             setProviderAuthErrors((current) =>
               withProviderValue(
                 current,
@@ -407,8 +413,8 @@ export function didProviderCredentialRefresh(
   next: ProviderAuthStatusResponse | null,
 ): boolean {
   return (
-    previous?.state === 'ready' &&
-    next?.state === 'ready' &&
+    isProviderAuthConnectedStatus(previous) &&
+    isProviderAuthConnectedStatus(next) &&
     typeof previous.expiresAt === 'number' &&
     typeof next.expiresAt === 'number' &&
     next.expiresAt > previous.expiresAt
@@ -449,11 +455,10 @@ export function getProviderStatusObserveDelayMs(
   status: ProviderAuthStatusResponse | null,
   now = Date.now(),
 ): number | null {
-  if (
-    status?.state !== 'ready' ||
-    !status.ready ||
-    typeof status.expiresAt !== 'number'
-  ) {
+  if (status?.state === 'ready' && !status.ready) {
+    return PROVIDER_AUTH_READY_POLL_MS;
+  }
+  if (status?.state !== 'ready' || typeof status.expiresAt !== 'number') {
     return null;
   }
 

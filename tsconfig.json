@@ -18,9 +18,11 @@
     { "path": "packages/protocol" },
     { "path": "packages/artifact-runtime-policy" },
     { "path": "packages/agent-loop" },
+    { "path": "packages/xharness" },
     { "path": "packages/tool-sdk" },
     { "path": "packages/tool-library" },
     { "path": "apps/daemon" },
+    { "path": "apps/geulbat" },
     { "path": "apps/web-shell" }
   ],
   "files": []

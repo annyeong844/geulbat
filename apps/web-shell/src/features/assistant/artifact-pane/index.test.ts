@@ -4,7 +4,8 @@ import { isValidElement } from 'react';
 
 import type { ResolvedArtifactSourceRef } from '../../artifacts/artifact-types.js';
 import type { ArtifactRuntimeFrameRenderArgs } from '../../artifacts/runtime-preview/types.js';
-import { ArtifactRuntimeFrame } from '../runtime-frame/artifact-runtime-frame.js';
+// 패널은 초기 번들을 가볍게 유지하기 위해 지연 로딩 래퍼를 주입한다.
+import { ArtifactRuntimeFrame } from '../runtime-frame/artifact-runtime-frame-lazy.js';
 import { renderArtifactRuntimeFrame } from './index.js';
 
 function createResolvedSourceRef(

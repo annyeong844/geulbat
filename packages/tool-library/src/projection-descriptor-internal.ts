@@ -12,6 +12,16 @@ export type ToolLibraryProjectionApprovalClass =
   | 'approval_free'
   | 'approval_required';
 
+type ToolLibraryProjectionResultModelVisibleForm =
+  | 'inline'
+  | 'summary_ref'
+  | 'duplicate_ref';
+
+export interface ToolLibraryProjectionResultDelivery {
+  exactDurableRecovery: boolean;
+  modelVisibleForms: readonly ToolLibraryProjectionResultModelVisibleForm[];
+}
+
 export type ToolLibraryProjectionCatalogSearchFamily =
   | 'agent'
   | 'browser'

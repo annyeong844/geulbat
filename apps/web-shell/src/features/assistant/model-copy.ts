@@ -4,6 +4,7 @@ import {
   type ImageGenerationModelId,
   type RunModelId,
   type RunReasoningEffort,
+  type RunServiceTier,
 } from '@geulbat/protocol/run-contract';
 
 // 모델·사고 강도에 대한 작가-facing 문구 — 컴포저 피커와 보조 작업
@@ -15,6 +16,11 @@ export const REASONING_EFFORT_LABELS = {
   xhigh: '매우 높음',
   max: '최대',
 } as const satisfies Record<RunReasoningEffort, string>;
+
+export const SERVICE_TIER_LABELS = {
+  standard: '표준',
+  fast: '빠름',
+} as const satisfies Record<RunServiceTier, string>;
 
 // 이미지 모델 한 줄 소개 — [+] 메뉴 "이미지" 서브패널 행 설명
 export const IMAGE_GENERATION_MODEL_TAGLINES = {
@@ -29,6 +35,7 @@ export const RUN_MODEL_TAGLINES = {
   'gpt-5.6-terra': '일상적인 작업에 가장 효율적',
   'gpt-5.6-luna': '가장 빠른 답변',
   'grok-4.5': '색다른 관점이 필요할 때',
+  'qwen3.8-max-preview': '긴 맥락과 깊은 사고가 필요할 때',
 } as const satisfies Record<RunModelId, string>;
 
 export function formatRunModelLabel(modelId: string): string {

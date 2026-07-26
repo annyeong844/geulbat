@@ -31,10 +31,6 @@ const GENERATED_BINARY_EXPORT_RENDERERS: Partial<
   react_bundle: true,
 };
 
-const STREAMING_PREVIEW_RENDERERS: Partial<Record<ArtifactRenderer, true>> = {
-  html5: true,
-};
-
 const HOOK_MANAGED_PREVIEW_RENDERERS: Partial<Record<ArtifactRenderer, true>> =
   {
     react_bundle: true,
@@ -70,15 +66,6 @@ export function supportsRuntimeGeneratedExportSnapshots(
   return (
     supportsGeneratedTextExportSnapshot(renderer) ||
     supportsGeneratedBinaryExportSnapshot(renderer)
-  );
-}
-
-export function supportsStreamingArtifactPreview(
-  renderer: string | null,
-): boolean {
-  return (
-    isArtifactRenderer(renderer) &&
-    STREAMING_PREVIEW_RENDERERS[renderer] === true
   );
 }
 

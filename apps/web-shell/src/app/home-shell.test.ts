@@ -97,6 +97,7 @@ function createThreadsStub(): HomeThreadsInput {
     selectedThreadId: thread.threadId,
     messages: [],
     artifacts: [],
+    subagentTerminalOutcomes: [],
     deletingThreadId: thread.threadId,
     pendingDeleteThread: thread,
     loadThreads: async () => {},
@@ -116,10 +117,12 @@ function createThreadsStub(): HomeThreadsInput {
 
 function createRunSessionStub(): HomeRunSessionInput {
   return {
+    visibleThreadId: THREAD_ID,
     isRunStarting: false,
     isRunning: true,
     transcriptEntries: [{ kind: 'assistant_text', text: 'hello' }],
     finalAnswerText: 'done',
+    streamingArtifactText: '',
     activeArtifact: null,
     pendingApproval: makeApprovalRequiredFixture({
       runId: RUN_ID,
@@ -128,9 +131,12 @@ function createRunSessionStub(): HomeRunSessionInput {
     permissionMode: 'basic',
     modelId: 'gpt-5.6-sol',
     reasoningEffort: 'medium',
+    serviceTier: 'standard',
     subagentModelRouting: { mode: 'auto' },
     streamError: null,
+    streamErrorCode: null,
     usageTotals: null,
+    providerRuntime: null,
     contextUsage: null,
     backgroundNotifications: [
       {
@@ -140,12 +146,24 @@ function createRunSessionStub(): HomeRunSessionInput {
         state: 'completed',
       },
     ],
-    setPermissionMode: () => {},
+    setPermissionMode: async () => {},
+    planModeRequested: false,
+    setPlanModeRequested: () => {},
+    planModeIntensity: 'visual',
+    setPlanModeIntensity: () => {},
+    planModeDepth: 'standard',
+    setPlanModeDepth: () => {},
+    planningWorkflow: null,
+    goal: null,
+    followupSuggestion: null,
+    dismissFollowupSuggestion: () => {},
     setModelId: () => {},
     prepareProviderTransition: async () => {},
     setReasoningEffort: () => {},
+    setServiceTier: () => {},
     setSubagentModelRouting: () => {},
     sendPrompt: async () => {},
+    sendPromptAsNewTurn: async () => {},
     sendWidgetPrompt: async () => {},
     requestWidgetTool: async () => ({ ok: true, output: 'tool-ok' }),
     regeneratePrompt: async () => {},
@@ -157,6 +175,7 @@ function createRunSessionStub(): HomeRunSessionInput {
     handleApprove: async () => {},
     handleDeny: async () => {},
     handleCancel: async () => {},
+    stopChildRun: async () => {},
   };
 }
 
@@ -178,10 +197,13 @@ void test('createHomeShellView composes panel views from files, threads, provide
   assert.equal(shell.leftPanelView.threadDeleteConfirm?.busy, true);
   assert.equal(shell.centerPanelView.editor.filePath, 'draft.md');
   assert.equal(
-    shell.rightPanelView.providerAuthCard.busyProviderId,
+    shell.centerPanelView.providerAuthCard.busyProviderId,
     'grok_oauth',
   );
-  assert.equal(shell.rightPanelView.assistant.finalAnswerText, 'done');
+  assert.equal(
+    shell.rightPanelView.assistant.conversation.finalAnswerText,
+    'done',
+  );
   assert.equal(
     shell.rightPanelView.approvalPanel.pending?.callId,
     runSession.pendingApproval?.callId,
@@ -216,7 +238,7 @@ void test('createHomeShellView edits a past question by branching before it and 
     runSession,
   });
 
-  await shell.rightPanelView.assistant.onEditPastUserPrompt(
+  await shell.rightPanelView.assistant.runActions.onEditPastUserPrompt(
     'entry-past-question',
     '고친 질문',
   );
@@ -249,7 +271,7 @@ void test('createHomeShellView skips the rerun when the edit branch fails', asyn
     },
   });
 
-  await shell.rightPanelView.assistant.onEditPastUserPrompt(
+  await shell.rightPanelView.assistant.runActions.onEditPastUserPrompt(
     'entry-past-question',
     '고친 질문',
   );

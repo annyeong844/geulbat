@@ -17,21 +17,15 @@ interface RunStartClaimAccepted {
 type RunStartClaimResult = RunStartClaimRejected | RunStartClaimAccepted;
 
 export function claimSocketRunStart(
-  socketState: Pick<
-    RunChannelSocketState,
-    'activeRunIds' | 'runStartInFlightRequestId'
-  >,
+  socketState: Pick<RunChannelSocketState, 'runStartInFlightRequestId'>,
   requestId: string,
 ): RunStartClaimResult {
-  if (
-    socketState.activeRunIds.size > 0 ||
-    socketState.runStartInFlightRequestId !== null
-  ) {
+  if (socketState.runStartInFlightRequestId !== null) {
     return {
       ok: false,
       status: 409,
       code: 'conflict_active_run',
-      message: 'socket already has an active run',
+      message: 'socket already has a run.start request in flight',
     };
   }
 

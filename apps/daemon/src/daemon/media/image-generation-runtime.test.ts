@@ -13,7 +13,9 @@ import {
   type ImageGenerationRuntimeDeps,
 } from './image-generation-runtime.js';
 
-const THREAD_ID = 'thr_00000000000000000000000000' as ThreadId;
+// media 경로 해석(threadMediaDirPath)이 세션 threadId 형식을 검증하므로
+// 실제 형식(UUID)을 쓴다.
+const THREAD_ID = '00000000-0000-4000-8000-000000000001' as ThreadId;
 
 function buildCandidate(): GeneratedImageCandidate {
   return {

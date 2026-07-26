@@ -2,32 +2,13 @@ import type {
   ArtifactId,
   ArtifactRunId,
   ArtifactSourceRef,
+  ThreadArtifactVersion,
 } from '@geulbat/protocol/artifacts';
 import type { ReactBundleInlineCompileFailureCode } from '@geulbat/protocol/react-bundle-inline-compile';
 import { isThreadId, type ThreadId } from '@geulbat/protocol/ids';
 import { isRecord } from '../../lib/json.js';
 import type { ReactNode } from 'react';
 import type { ArtifactDurabilitySourceAuthority } from './artifact-durability-source-authority.js';
-
-export type ArtifactParseResult =
-  | {
-      kind: 'none';
-      raw: string;
-    }
-  | {
-      kind: 'artifact';
-      state: 'streaming' | 'completed' | 'fallback';
-      renderer: string | null;
-      digest: string | null;
-      payload: string;
-      raw: string;
-      issue?: string;
-    };
-
-export type ArtifactOnlyParseResult = Extract<
-  ArtifactParseResult,
-  { kind: 'artifact' }
->;
 
 export interface ArtifactSourceInputRef {
   kind?: ArtifactSourceRef['kind'] | null;
@@ -121,19 +102,22 @@ interface ArtifactActionState {
   reason: string | null;
 }
 
+export interface PlanRenderingProjection {
+  label: string;
+  title: string;
+  status: 'current' | 'superseded' | 'historical';
+}
+
 export interface ArtifactViewModel {
-  parsed: ArtifactParseResult;
+  artifact: ThreadArtifactVersion;
   sourceRef: ResolvedArtifactSourceRef;
   sourceAuthority: ArtifactDurabilitySourceAuthority | null;
+  planRendering: PlanRenderingProjection | null;
   actions: {
     apply: ArtifactActionState;
     export: ArtifactActionState;
   };
 }
-
-export type ArtifactOnlyViewModel = ArtifactViewModel & {
-  parsed: ArtifactOnlyParseResult;
-};
 
 export function sanitizeArtifactSourceInputRef(
   sourceRef: ArtifactSourceInputRef | ResolvedArtifactSourceRef | undefined,

@@ -3,6 +3,7 @@ import type {
   ToolLibraryProjectionImportableModule,
   ToolLibraryProjectionPin,
 } from '@geulbat/tool-library/projection-codec';
+import type { ToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
 import type {
   ToolLibraryProjectionFile,
   ToolLibraryProjectionGeneratedTool,
@@ -28,6 +29,7 @@ interface ResolveToolLibraryProjectionArgs {
   stateRoot: string;
   threadId: string;
   allowedRegistryNames?: readonly string[];
+  toolCapabilityPolicy?: ToolCapabilityPolicy;
 }
 
 type ResolveToolLibraryProjectionPortResult =

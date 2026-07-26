@@ -87,25 +87,28 @@ export async function readPersistedRegistry(registryPath: string): Promise<{
     );
   }
   let registry: PersistedMcpRegistry;
-  let migrationRequired = false;
-  if (isPersistedMcpRegistry(value)) {
-    registry = value;
-  } else if (isPreviousPersistedMcpRegistry(value)) {
+  // 폐기된 전송 필드는 읽는 자리에서 떼어낸다. 저장된 값이 데몬을 막아서는
+  // 안 되지만, 지킬 수 없는 값을 계속 들고 있어서도 안 된다.
+  const retired = stripRetiredTransportField(value);
+  let migrationRequired = retired.stripped;
+  if (isPersistedMcpRegistry(retired.value)) {
+    registry = retired.value;
+  } else if (isPreviousPersistedMcpRegistry(retired.value)) {
     registry = {
       schemaVersion: MCP_REGISTRY_SCHEMA_VERSION,
-      servers: value.servers.map(migratePreviousRegistration),
+      servers: retired.value.servers.map(migratePreviousRegistration),
     };
     migrationRequired = true;
-  } else if (isLegacyV2PersistedMcpRegistry(value)) {
+  } else if (isLegacyV2PersistedMcpRegistry(retired.value)) {
     registry = {
       schemaVersion: MCP_REGISTRY_SCHEMA_VERSION,
-      servers: value.servers.map(migrateLegacyV2Registration),
+      servers: retired.value.servers.map(migrateLegacyV2Registration),
     };
     migrationRequired = true;
-  } else if (isLegacyV1PersistedMcpRegistry(value)) {
+  } else if (isLegacyV1PersistedMcpRegistry(retired.value)) {
     registry = {
       schemaVersion: MCP_REGISTRY_SCHEMA_VERSION,
-      servers: value.servers.map((server) => ({
+      servers: retired.value.servers.map((server) => ({
         ...server,
         configVersion: MCP_SERVER_CONFIG_VERSION,
         installedToolNames: [],
@@ -127,6 +130,40 @@ export async function readPersistedRegistry(registryPath: string): Promise<{
     validateRegistration(registration);
   }
   return { registry, migrationRequired };
+}
+
+/**
+ * P7.6 §11.6 — `shutdownGraceMs`는 폐기된 전송 필드다. 종료 유예는 프로세스를
+ * 든 쪽만 지킬 수 있고, 그 프로세스는 이제 command-host 세션의 것이다. 이미
+ * 저장된 값이 데몬 부팅을 막으면 안 되므로 읽는 자리에서 떼어내고,
+ * 마이그레이션으로 표시해 다음 저장에서 파일에서도 사라지게 한다.
+ */
+const RETIRED_TRANSPORT_FIELD = 'shutdownGraceMs';
+
+function stripRetiredTransportField(value: unknown): {
+  value: unknown;
+  stripped: boolean;
+} {
+  if (!isRecord(value) || !Array.isArray(value.servers)) {
+    return { value, stripped: false };
+  }
+  let stripped = false;
+  const servers = value.servers.map((server: unknown) => {
+    if (
+      !isRecord(server) ||
+      !isRecord(server.transport) ||
+      !(RETIRED_TRANSPORT_FIELD in server.transport)
+    ) {
+      return server;
+    }
+    stripped = true;
+    const transport = { ...server.transport };
+    delete transport[RETIRED_TRANSPORT_FIELD];
+    return { ...server, transport };
+  });
+  return stripped
+    ? { value: { ...value, servers }, stripped: true }
+    : { value, stripped: false };
 }
 
 function migratePreviousRegistration(

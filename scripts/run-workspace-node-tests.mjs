@@ -24,8 +24,8 @@ import {
   rm,
   symlink,
 } from 'node:fs/promises';
-import { hostname } from 'node:os';
-import { basename, dirname, relative, resolve } from 'node:path';
+import { homedir, hostname } from 'node:os';
+import { basename, dirname, parse, relative, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { spawnOwnedChildProcess } from './owned-child-process.mjs';
@@ -50,6 +50,7 @@ function parseWorkspaceTestArgs(args) {
   let coverageOutput;
   let jobs;
   let postBuildScript;
+  let timingOutput;
   let tsconfig = './tsconfig.test.json';
   let workspace;
 
@@ -95,6 +96,18 @@ function parseWorkspaceTestArgs(args) {
       postBuildScript = argument.slice('--post-build-script='.length);
       continue;
     }
+    if (argument === '--timing-output') {
+      timingOutput = args[index + 1];
+      if (timingOutput === undefined) {
+        throw new Error('--timing-output requires a value');
+      }
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('--timing-output=')) {
+      timingOutput = argument.slice('--timing-output='.length);
+      continue;
+    }
     if (argument === '--tsconfig') {
       tsconfig = args[index + 1];
       if (tsconfig === undefined) {
@@ -135,6 +148,7 @@ function parseWorkspaceTestArgs(args) {
   for (const [name, value] of [
     ['--coverage-output', coverageOutput],
     ['--post-build-script', postBuildScript],
+    ['--timing-output', timingOutput],
     ['--tsconfig', tsconfig],
     ['--workspace', workspace],
   ]) {
@@ -153,6 +167,7 @@ function parseWorkspaceTestArgs(args) {
     jobs: parsedJobs,
     patterns,
     postBuildScript,
+    timingOutput,
     tsconfig,
     workspace,
   };
@@ -610,6 +625,25 @@ async function prepareWorkspaceTestBuild(parsed, options) {
   }
 }
 
+function resolveWorkspaceTestEnvironment(workspace, env) {
+  if (
+    workspace !== 'daemon' ||
+    env['GEULBAT_COMPUTER_SESSION_DISABLED'] === '1' ||
+    Object.hasOwn(env, 'GEULBAT_COMPUTER_SESSION_ROOT')
+  ) {
+    return env;
+  }
+
+  const testHome = homedir();
+  return {
+    ...env,
+    GEULBAT_COMPUTER_SESSION_ROOT: parse(testHome).root,
+    ...(Object.hasOwn(env, 'GEULBAT_COMPUTER_SESSION_HOME')
+      ? {}
+      : { GEULBAT_COMPUTER_SESSION_HOME: testHome }),
+  };
+}
+
 export async function runWorkspaceNodeTests(
   args = process.argv.slice(2),
   {
@@ -675,22 +709,29 @@ export async function runWorkspaceNodeTests(
 
     const runnerArgs = [
       ...(parsed.jobs === undefined ? [] : [`--jobs=${parsed.jobs}`]),
+      ...(parsed.timingOutput === undefined
+        ? []
+        : ['--timing-output', parsed.timingOutput]),
       '--test-root',
       basename(testRoot),
       ...(parsed.workspace ? ['--workspace', parsed.workspace] : []),
       ...parsed.patterns,
     ];
+    const testEnvironment = resolveWorkspaceTestEnvironment(
+      parsed.workspace,
+      env,
+    );
     const result =
       parsed.coverageOutput === undefined
         ? await runTests(runnerArgs, {
             cwd,
-            env,
+            env: testEnvironment,
             onUnsafeSettlement: markSettlementUnsafe,
           })
         : await runCoverageTests(parsed, runnerArgs, {
             coverageCli,
             cwd,
-            env,
+            env: testEnvironment,
             markSettlementUnsafe,
             setActiveChild,
             testRoot,

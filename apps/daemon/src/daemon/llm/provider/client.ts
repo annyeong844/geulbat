@@ -32,6 +32,11 @@ import {
   streamGrokOAuthResponses,
 } from './grok-oauth-transport.js';
 import {
+  buildQwenPromptCacheProjection,
+  loadQwenTokenPlanConfig,
+  streamQwenChatCompletions,
+} from './qwen/index.js';
+import {
   buildCodexDirectPromptCacheProjection,
   buildProviderInstructions,
   buildProviderVisiblePrefixMaterial,
@@ -49,10 +54,14 @@ import {
 } from './provider-replay-scope.js';
 import type { ProviderRequestOptions } from './provider-options.js';
 import { ProviderHistoryItemInvalidError } from './transport/responses-wire-input.js';
-import { streamResponsesOverWebSocket } from './transport/responses-websocket.js';
+import {
+  streamResponsesOverWebSocket,
+  type ResponsesRequestPreparedHandler,
+  type ResponsesWireDiscoverySink,
+} from './transport/responses-websocket.js';
 import { resolveCodexResponsesUrl } from './transport/responses-websocket-url.js';
-import type { ResponsesWireDiscoverySink } from './transport/responses-websocket.js';
 import type {
+  ResponsesWebSocketAdmissionObserver,
   ResponsesWebSocketReusePolicy,
   ResponsesWebSocketSessionStore,
 } from './transport/responses-websocket-cache.js';
@@ -104,6 +113,15 @@ export type LLMChunk =
     }
   | { type: 'error'; code: string; message: string };
 
+export type ProviderRuntimeObservation =
+  | { state: 'auth_waiting' }
+  | { state: 'provider_waiting' }
+  | { state: 'rate_limit_waiting' };
+
+export type ProviderRuntimeObserver = (
+  observation: ProviderRuntimeObservation,
+) => void;
+
 export interface CallModelInput {
   history: HistoryItem[];
   systemPrompt: string;
@@ -118,6 +136,8 @@ export interface CallModelInput {
   providerRequestOptions: ProviderRequestOptions;
   providerReplayScopeId?: ProviderReplayScopeId;
   oauthWireDiscoverySink?: ResponsesWireDiscoverySink;
+  onProviderRequestPrepared?: ResponsesRequestPreparedHandler;
+  onProviderRuntimeState?: ProviderRuntimeObserver;
   signal?: AbortSignal;
 }
 
@@ -126,6 +146,7 @@ interface CallModelDependencies {
   forceRefreshProviderAuth: typeof forceRefreshProviderAuth;
   streamResponsesOverWebSocket: typeof streamResponsesOverWebSocket;
   streamGrokOAuthResponses?: typeof streamGrokOAuthResponses;
+  streamQwenChatCompletions?: typeof streamQwenChatCompletions;
 }
 
 const defaultCallModelDependencies: CallModelDependencies = {
@@ -133,6 +154,7 @@ const defaultCallModelDependencies: CallModelDependencies = {
   forceRefreshProviderAuth,
   streamResponsesOverWebSocket,
   streamGrokOAuthResponses,
+  streamQwenChatCompletions,
 };
 
 const logger = createLogger('llm/provider/client');
@@ -298,10 +320,79 @@ async function callResponsesOnce(
   structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
 }> {
+  if (input.providerRequestOptions.providerId === 'qwen_token_plan') {
+    return callQwenResponsesOnce(input, channel, deps, options);
+  }
   if (input.providerRequestOptions.providerId === 'grok_oauth') {
     return callGrokOAuthResponsesOnce(input, channel, deps, options);
   }
   return callCodexDirectResponsesOnce(input, channel, deps, options);
+}
+
+async function callQwenResponsesOnce(
+  input: CallModelInput,
+  channel: AsyncQueue<LLMChunk>,
+  deps: CallModelDependencies,
+  options?: CallResponsesOnceOptions,
+): Promise<{
+  itemsToAppend?: HistoryItem[];
+  functionCalls: FunctionCall[];
+  assistantText: string;
+  finalText: string;
+  artifactCandidate?: ProviderArtifactCandidate;
+  structuredOutputs?: ProviderStructuredOutput[];
+  providerUsageTelemetry?: ProviderUsageTelemetry;
+}> {
+  const config = await loadQwenTokenPlanConfig({
+    model: input.providerRequestOptions.model,
+  });
+  const providerReplayScopeId = createProviderReplayScopeId({
+    providerId: 'qwen_token_plan',
+    accountId: config.credentialIdentity,
+    endpoint: config.chatCompletionsUrl,
+  });
+  assertProviderReplayScope(providerReplayScopeId, input.providerReplayScopeId);
+  const instructions = buildProviderInstructions(input);
+  const result = await (
+    deps.streamQwenChatCompletions ?? streamQwenChatCompletions
+  )({
+    config,
+    history: input.history,
+    providerReplayScopeId,
+    ...(instructions === undefined ? {} : { instructions }),
+    ...(input.tools === undefined ? {} : { tools: input.tools }),
+    ...(input.onProviderRequestPrepared === undefined
+      ? {}
+      : { onRequestPrepared: input.onProviderRequestPrepared }),
+    ...(input.onProviderRuntimeState === undefined
+      ? {}
+      : {
+          onProviderWaiting: () =>
+            input.onProviderRuntimeState?.({ state: 'provider_waiting' }),
+        }),
+    ...buildProviderStreamCallbacks(channel, options),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+  const itemsToAppend = scopeProviderOutputBatch({
+    ...result,
+    providerReplayScopeId,
+  });
+
+  return {
+    ...(itemsToAppend === undefined ? {} : { itemsToAppend }),
+    functionCalls: result.functionCalls,
+    assistantText: result.assistantText,
+    finalText: result.finalText,
+    ...(result.artifactCandidate === undefined
+      ? {}
+      : { artifactCandidate: result.artifactCandidate }),
+    ...(result.structuredOutputs === undefined
+      ? {}
+      : { structuredOutputs: result.structuredOutputs }),
+    ...(result.providerUsageTelemetry === undefined
+      ? {}
+      : { providerUsageTelemetry: result.providerUsageTelemetry }),
+  };
 }
 
 async function callCodexDirectResponsesOnce(
@@ -318,12 +409,7 @@ async function callCodexDirectResponsesOnce(
   structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
 }> {
-  const auth = await deps.getProviderAuth({
-    ...(options?.allowRefresh !== undefined
-      ? { allowRefresh: options.allowRefresh }
-      : {}),
-    runtimeStore: input.providerAuthRuntime,
-  });
+  const auth = await getSelectedProviderAuth(input, deps, options);
   const promptCacheProjection = buildCodexDirectPromptCacheProjection(input);
   const providerReplayScopeId = createProviderReplayScopeId({
     providerId: 'openai_codex_direct',
@@ -350,6 +436,12 @@ async function callCodexDirectResponsesOnce(
     providerWebSocketSessions: input.providerWebSocketSessions,
     ...(input.oauthWireDiscoverySink !== undefined
       ? { discoverySink: input.oauthWireDiscoverySink }
+      : {}),
+    ...(input.onProviderRequestPrepared !== undefined
+      ? { onRequestPrepared: input.onProviderRequestPrepared }
+      : {}),
+    ...(input.onProviderRuntimeState !== undefined
+      ? { onAdmissionState: createProviderAdmissionObserver(input) }
       : {}),
     ...streamCallbacks,
     ...(input.signal !== undefined ? { signal: input.signal } : {}),
@@ -390,13 +482,7 @@ async function callGrokOAuthResponsesOnce(
   structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
 }> {
-  const auth = await deps.getProviderAuth({
-    providerId: 'grok_oauth',
-    ...(options?.allowRefresh !== undefined
-      ? { allowRefresh: options.allowRefresh }
-      : {}),
-    runtimeStore: input.providerAuthRuntime,
-  });
+  const auth = await getSelectedProviderAuth(input, deps, options);
   const model = resolveGrokOAuthModelDescriptor(
     input.providerRequestOptions.model,
   );
@@ -421,6 +507,12 @@ async function callGrokOAuthResponsesOnce(
       providerWebSocketSessions: input.providerWebSocketSessions,
       ...(input.oauthWireDiscoverySink !== undefined
         ? { discoverySink: input.oauthWireDiscoverySink }
+        : {}),
+      ...(input.onProviderRequestPrepared !== undefined
+        ? { onRequestPrepared: input.onProviderRequestPrepared }
+        : {}),
+      ...(input.onProviderRuntimeState !== undefined
+        ? { onAdmissionState: createProviderAdmissionObserver(input) }
         : {}),
       ...(instructions !== undefined ? { instructions } : {}),
       ...(input.tools !== undefined ? { tools: input.tools } : {}),
@@ -607,7 +699,13 @@ function buildPromptCacheTelemetryContext(input: CallModelInput): {
   cacheProjectionVersion: string;
 } {
   let trace: PromptCacheProjection['trace'];
-  if (input.providerRequestOptions.providerId === 'grok_oauth') {
+  if (input.providerRequestOptions.providerId === 'qwen_token_plan') {
+    trace = buildQwenPromptCacheProjection({
+      model: input.providerRequestOptions.model,
+      providerSessionId: input.providerSessionId,
+      prefixMaterial: buildProviderVisiblePrefixMaterial(input),
+    }).trace;
+  } else if (input.providerRequestOptions.providerId === 'grok_oauth') {
     const model = resolveGrokOAuthModelDescriptor(
       input.providerRequestOptions.model,
     );
@@ -634,21 +732,72 @@ function buildPromptCacheTelemetryContext(input: CallModelInput): {
   };
 }
 
+function resolveSelectedOAuthProviderId(input: CallModelInput) {
+  const providerId = input.providerRequestOptions.providerId;
+  if (providerId === 'qwen_token_plan') {
+    throw new Error('Qwen Token Plan does not use provider OAuth.');
+  }
+  return providerId;
+}
+
 async function forceRefreshSelectedProviderAuth(
   input: CallModelInput,
   deps: CallModelDependencies,
 ): Promise<void> {
-  if (input.providerRequestOptions.providerId === 'grok_oauth') {
-    await deps.forceRefreshProviderAuth({
-      providerId: 'grok_oauth',
+  await observeProviderAuthWait(input, (onWait) =>
+    deps.forceRefreshProviderAuth({
+      providerId: resolveSelectedOAuthProviderId(input),
+      onWait,
       runtimeStore: input.providerAuthRuntime,
-    });
-    return;
-  }
+      ...(input.signal !== undefined ? { signal: input.signal } : {}),
+    }),
+  );
+}
 
-  await deps.forceRefreshProviderAuth({
-    runtimeStore: input.providerAuthRuntime,
+async function getSelectedProviderAuth(
+  input: CallModelInput,
+  deps: CallModelDependencies,
+  options?: CallResponsesOnceOptions,
+): Promise<{ accessToken: string; accountId: string }> {
+  return observeProviderAuthWait(input, (onWait) =>
+    deps.getProviderAuth({
+      providerId: resolveSelectedOAuthProviderId(input),
+      ...(options?.allowRefresh !== undefined
+        ? { allowRefresh: options.allowRefresh }
+        : {}),
+      onWait,
+      runtimeStore: input.providerAuthRuntime,
+      ...(input.signal !== undefined ? { signal: input.signal } : {}),
+    }),
+  );
+}
+
+async function observeProviderAuthWait<T>(
+  input: CallModelInput,
+  operation: (onWait: () => void) => Promise<T>,
+): Promise<T> {
+  let waitObserved = false;
+  const result = await operation(() => {
+    waitObserved = true;
+    input.onProviderRuntimeState?.({ state: 'auth_waiting' });
   });
+  if (waitObserved) {
+    input.onProviderRuntimeState?.({ state: 'provider_waiting' });
+  }
+  return result;
+}
+
+function createProviderAdmissionObserver(
+  input: CallModelInput,
+): ResponsesWebSocketAdmissionObserver {
+  return (observation) => {
+    input.onProviderRuntimeState?.({
+      state:
+        observation.state === 'admitted'
+          ? 'provider_waiting'
+          : 'rate_limit_waiting',
+    });
+  };
 }
 
 function isProviderAuthRetryAvailable(input: CallModelInput): boolean {

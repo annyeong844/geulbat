@@ -20,6 +20,7 @@ import {
   writeToolOutputSnapshot,
 } from '../files/tool-output-store.js';
 import { listFilesTool } from './builtin/list-files.js';
+import { searchFilesTool } from './builtin/search-files.js';
 import { createDaemonToolSdkTransport } from './external-tool-sdk-transport.js';
 import { createToolRegistryStore } from './registry.js';
 
@@ -166,6 +167,182 @@ void test('daemon SDK offloads a real large list result and recovers its public 
     JSON.stringify({ result, snapshot: snapshot.value.output }),
     /computerFileRoot|tool_library_projection|"root"/u,
   );
+});
+
+void test('daemon SDK offloads a broad read page and recovers its exact public DTO', async (t) => {
+  const temporaryRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-external-tool-sdk-read-recovery-'),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const stateRoot = join(temporaryRoot, 'state');
+  const computerFileRoot = join(temporaryRoot, 'computer');
+  await mkdir(stateRoot, { recursive: true });
+  await mkdir(computerFileRoot, { recursive: true });
+  const lines = Array.from(
+    { length: 100 },
+    (_, index) =>
+      `LINE_${String(index).padStart(3, '0')}_${'한글'.repeat(200)}`,
+  );
+  await writeFile(
+    join(computerFileRoot, 'large.txt'),
+    `${lines.join('\n')}\n`,
+    'utf8',
+  );
+
+  const runId = 'external-sdk-read-run';
+  const callId = 'external-sdk-read-call';
+  let recoveryAuthorizationCount = 0;
+  let recoveredOutputRef = '';
+  const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
+  const transport = daemonContext.createExternalToolSdkTransport({
+    getProjectionIdentity: () => PROJECTION,
+    authority: {
+      async authenticate() {
+        return { ok: true as const, principal: { subject: 'consumer-1' } };
+      },
+      async authorizeInvocation(options) {
+        assert.equal(options.publicTool, 'files.read');
+        return {
+          ok: true as const,
+          context: {
+            callId,
+            computerFileRoot,
+            runId,
+            stateRoot,
+            threadId: THREAD_ID,
+          },
+        };
+      },
+      async authorizeOutputRecovery(options) {
+        recoveryAuthorizationCount += 1;
+        recoveredOutputRef = options.outputRef;
+        return {
+          ok: true as const,
+          context: {
+            callId: 'external-sdk-read-recovery-call',
+            stateRoot,
+            threadId: THREAD_ID,
+          },
+        };
+      },
+    },
+  });
+  const client = createToolSdkClient({
+    transport,
+    projection: PROJECTION,
+    requestedPublicTools: ['files.read'],
+    credentialProvider: {
+      async getCredential() {
+        return { scheme: 'Bearer', value: 'fresh-credential' };
+      },
+    },
+  });
+
+  assert.equal((await client.connect()).ok, true);
+  const result = await client.readFile({
+    path: 'large.txt',
+    offset: 20,
+    limit: 60,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) {
+    return;
+  }
+  const expectedPage = `${lines.slice(20, 80).join('\n')}\n`;
+  assert.equal(result.value.content === expectedPage, true);
+  assert.equal(result.value.startLine, 21);
+  assert.equal(result.value.endLine, 80);
+  assert.equal(result.value.nextOffset, 80);
+  assert.equal(recoveryAuthorizationCount, 1);
+
+  const outputRef = buildToolOutputRef({
+    threadId: THREAD_ID,
+    runId,
+    callId,
+  });
+  assert.equal(recoveredOutputRef, outputRef);
+  const snapshot = await readToolOutputSnapshot({
+    stateRoot,
+    threadId: THREAD_ID,
+    outputRef,
+  });
+  assert.equal(snapshot.ok, true);
+  if (!snapshot.ok) {
+    return;
+  }
+  assert.equal(snapshot.value.toolName, 'read_file');
+  const exactOutput = JSON.parse(snapshot.value.output) as { content?: string };
+  assert.equal(exactOutput.content === expectedPage, true);
+});
+
+void test('daemon SDK recovers a stored files.search public DTO without the original invocation input', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-external-tool-sdk-search-recovery-'),
+  );
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  const runId = 'external-sdk-search-run';
+  const callId = 'external-sdk-search-call';
+  const outputRef = buildToolOutputRef({
+    threadId: THREAD_ID,
+    runId,
+    callId,
+  });
+  const publicOutput = {
+    path: '.',
+    type: 'filename',
+    consistency: 'eventual_index',
+    total: 1,
+    totalRelation: 'lower_bound',
+    truncated: true,
+    results: [{ path: 'geulbat.txt', line: 0, text: '' }],
+  } as const;
+  await writeToolOutputSnapshot({
+    stateRoot,
+    snapshot: buildToolOutputSnapshot({
+      outputRef,
+      threadId: THREAD_ID,
+      runId,
+      callId,
+      toolName: 'search_files',
+      output: JSON.stringify(publicOutput),
+    }),
+  });
+  const transport = createDaemonToolSdkTransport({
+    registry: createToolRegistryStore({ builtins: [searchFilesTool] }),
+    getProjectionIdentity: () => PROJECTION,
+    authority: {
+      async authenticate() {
+        return { ok: true as const, principal: 'consumer-1' };
+      },
+      async authorizeInvocation() {
+        return { ok: false as const, code: 'tool_not_admitted' as const };
+      },
+      async authorizeOutputRecovery() {
+        return {
+          ok: true as const,
+          context: {
+            callId: 'external-sdk-search-recovery',
+            stateRoot,
+            threadId: THREAD_ID,
+          },
+        };
+      },
+    },
+  });
+  if (transport.recoverOutput === undefined) {
+    assert.fail('search recovery transport is unavailable');
+  }
+
+  const result = await transport.recoverOutput(
+    { compatibility: COMPATIBILITY, outputRef },
+    { credential: { scheme: 'Bearer', value: 'credential-1' } },
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    value: { kind: 'inline', value: publicOutput },
+  });
 });
 
 void test('daemon SDK recovery does not reveal whether an output ref belongs to another thread', async (t) => {

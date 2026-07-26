@@ -45,6 +45,7 @@ void test('ComputerTree marks the selected file with the active accent', () => {
 
   assert.match(html, /tree-node[^"]*active/);
   assert.match(html, /1장\.md/);
+  assert.match(html, /title="1장\.md"/);
   assert.match(html, /role="tree"/);
 });
 
@@ -78,12 +79,18 @@ void test('ComputerTree keeps daemon shortcut paths intact and labels the logica
       .findAllByType('button')
       .find((button) => button.children.includes('다운로드'));
     assert.ok(downloadButton, 'expected the Downloads shortcut button');
+    const parentBreadcrumb = renderer.root.findByProps({
+      'aria-label': '경로로 이동: user',
+    });
+    act(() => {
+      parentBreadcrumb.props.onClick();
+    });
     act(() => {
       downloadButton.props.onClick();
     });
   });
 
-  assert.deepEqual(navigatedPaths, ['Users/user/Downloads']);
+  assert.deepEqual(navigatedPaths, ['Users/user', 'Users/user/Downloads']);
   const html = renderToStaticMarkup(
     <ComputerTree
       tree={[]}
@@ -96,8 +103,66 @@ void test('ComputerTree keeps daemon shortcut paths intact and labels the logica
     />,
   );
   assert.match(html, /컴퓨터 \/ Users\/user\/Downloads/);
+  assert.match(html, /aria-label="현재 폴더 경로"/);
   assert.doesNotMatch(html, /C:\//);
-  assert.match(html, /<nav class="quick-access"/);
+  assert.match(html, /<nav class="quick-access" aria-label="빠른 위치">/);
+  assert.match(html, /class="quick-access-heading"[^>]*>빠른 위치</);
+  assert.match(html, /class="current-directory-heading"[^>]*>현재 폴더</);
+  assert.match(html, /role="tree" aria-label="현재 폴더 내용"/);
+  assert.match(html, /quick-access-icon computer/);
+  assert.doesNotMatch(html, /🏠|💻|💽|📁/u);
+});
+
+void test('ComputerTree opens discovered host locations without duplicating the logical root', () => {
+  const navigatedPaths: string[] = [];
+  let renderer!: ReactTestRenderer;
+  withQuietReactTestRenderer(() => {
+    act(() => {
+      renderer = TestRenderer.create(
+        <ComputerTree
+          tree={[]}
+          browseEnabled
+          browseShortcuts={[
+            { label: 'WSL', path: '' },
+            { label: 'Archive (F:)', path: 'mnt/f' },
+          ]}
+          onNavigateInto={(path) => navigatedPaths.push(path)}
+          onLoad={() => {}}
+          onSelect={() => {}}
+          onCreateFile={async () => true}
+          onManageEntry={async () => true}
+        />,
+      );
+    });
+
+    const quickAccessButtons = renderer.root
+      .findAllByType('button')
+      .filter((button) =>
+        String(button.props.className).startsWith('quick-access-item'),
+      );
+    assert.equal(
+      quickAccessButtons.filter((button) => button.children.includes('WSL'))
+        .length,
+      1,
+    );
+    assert.equal(
+      quickAccessButtons.some((button) => button.children.includes('컴퓨터')),
+      false,
+    );
+    const driveButton = quickAccessButtons.find((button) =>
+      button.children.includes('Archive (F:)'),
+    );
+    assert.ok(driveButton, 'expected the discovered F drive shortcut');
+    assert.equal(
+      driveButton.findByType('span').props.className,
+      'quick-access-icon drive',
+    );
+    act(() => {
+      driveButton.props.onClick();
+    });
+  });
+
+  assert.deepEqual(navigatedPaths, ['mnt/f']);
 });
 
 void test('TreeContextMenu supports arrow navigation and Escape close', () => {

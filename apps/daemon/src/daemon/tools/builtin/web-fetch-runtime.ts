@@ -12,6 +12,7 @@ import {
   type WebFetchSuccess,
 } from './web-fetch-result.js';
 import type { WebFetchLookup } from './web-fetch-url-guard.js';
+import { runDetached } from '../../utils/run-detached.js';
 
 interface WebFetchHttpResponse {
   status: number;
@@ -190,26 +191,28 @@ export function requestWebFetchUrl(
           'user-agent': 'geulbat-fetch-url/1',
         },
         lookup(hostname, lookupOptions, callback) {
-          void guardedLookupPublicAddress(
-            hostname,
-            options.lookup ? { lookup: options.lookup } : {},
-          )
-            .then((record) => {
-              if (lookupOptions.all) {
-                callback(null, [record]);
-                return;
-              }
-              callback(null, record.address, record.family);
-            })
-            .catch((error: unknown) => {
-              const lookupError =
-                error instanceof Error ? error : new Error(String(error));
-              if (lookupOptions.all) {
-                callback(lookupError, []);
-                return;
-              }
-              callback(lookupError, '', 4);
-            });
+          runDetached('tools/web-fetch-lookup', () =>
+            guardedLookupPublicAddress(
+              hostname,
+              options.lookup ? { lookup: options.lookup } : {},
+            )
+              .then((record) => {
+                if (lookupOptions.all) {
+                  callback(null, [record]);
+                  return;
+                }
+                callback(null, record.address, record.family);
+              })
+              .catch((error: unknown) => {
+                const lookupError =
+                  error instanceof Error ? error : new Error(String(error));
+                if (lookupOptions.all) {
+                  callback(lookupError, []);
+                  return;
+                }
+                callback(lookupError, '', 4);
+              }),
+          );
         },
       },
       (response) => {

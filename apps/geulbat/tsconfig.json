@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "../../packages/structured-logger" },
+    { "path": "../../packages/content-identity" },
+    { "path": "../../packages/agent-loop" },
+    { "path": "../../packages/xharness" },
+    { "path": "../daemon/tsconfig.app.json" },
+    { "path": "./tsconfig.app.json" }
+  ]
+}

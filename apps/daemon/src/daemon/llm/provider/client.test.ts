@@ -7,15 +7,6 @@ import {
   CODEX_DIRECT_RESPONSES_WEBSOCKET_REUSE_POLICY,
   callModelWithDependencies,
 } from './client.js';
-import { buildResponsesRequestHeaders } from './codex-request.js';
-import {
-  compactGrokHistory,
-  compactOpenAiHistory,
-  resolveGrokNativeCompactionPolicy,
-  resolveOpenAiNativeCompactionPolicy,
-  type OpenAiNativeCompactionInput,
-  type ProviderNativeCompactionInput,
-} from './provider-native-compaction.js';
 import { createProviderAuthRuntimeStore } from '../../auth/runtime-state.js';
 import {
   resolveProviderRequestOptions,
@@ -82,60 +73,6 @@ function createGrokTransportAssistantItems(text: string) {
   ];
 }
 
-function createOpenAiNativeCompactionInput(
-  overrides: Partial<OpenAiNativeCompactionInput> = {},
-): OpenAiNativeCompactionInput {
-  return {
-    history: [{ kind: 'user', text: 'hello' }],
-    systemPrompt: 'system',
-    tools: [
-      {
-        type: 'function',
-        name: 'read_file',
-        description: 'Read a file.',
-        parameters: {
-          type: 'object',
-          properties: {},
-          required: [],
-          additionalProperties: false,
-        },
-        strict: true,
-      },
-    ],
-    providerSessionId: 'provider-session',
-    providerAuthRuntime: createProviderAuthRuntimeStore(),
-    providerRequestOptions: {
-      ...defaultProviderRequestOptions,
-      model: 'gpt-test',
-    },
-    ...overrides,
-  };
-}
-
-function createGrokNativeCompactionInput(
-  overrides: Partial<ProviderNativeCompactionInput> = {},
-): ProviderNativeCompactionInput {
-  return {
-    ...createOpenAiNativeCompactionInput(),
-    providerRequestOptions: {
-      ...defaultProviderRequestOptions,
-      providerId: 'grok_oauth',
-      model: 'grok-4.5',
-    },
-    ...overrides,
-  };
-}
-
-void test('buildResponsesRequestHeaders uses the current Codex direct originator', () => {
-  const headers = buildResponsesRequestHeaders({
-    accessToken: 'token',
-    accountId: 'account',
-    providerSessionId: 'provider-session',
-  });
-
-  assert.equal(headers.get('originator'), 'codex_cli_rs');
-});
-
 void test('callModelWithDependencies uses frozen provider request options instead of live env', async () => {
   const runtimeStore = createProviderAuthRuntimeStore();
   const itemsToAppend = createCodexAssistantItems('ok');
@@ -152,6 +89,7 @@ void test('callModelWithDependencies uses frozen provider request options instea
       model: 'gpt-frozen-startup',
       text: { verbosity: 'low' },
       reasoning: { effort: 'low', summary: 'auto' },
+      serviceTier: 'fast',
     };
     const input = {
       history: [],
@@ -179,6 +117,7 @@ void test('callModelWithDependencies uses frozen provider request options instea
           summary: 'auto',
         });
         assert.deepEqual(body.text, { verbosity: 'low' });
+        assert.equal(body.service_tier, 'priority');
         return {
           itemsToAppend,
           functionCalls: [],
@@ -226,6 +165,11 @@ void test('callModelWithDependencies builds provider body from daemon-local prov
     reasoning: { effort: 'xhigh', summary: 'auto' },
     text: { verbosity: 'high' },
   };
+  const onProviderRequestPrepared = () => undefined;
+  const providerRuntimeStates: string[] = [];
+  const onProviderRuntimeState = (observation: { state: string }) => {
+    providerRuntimeStates.push(observation.state);
+  };
   const chunks = [];
   for await (const chunk of callModelWithDependencies(
     {
@@ -235,18 +179,32 @@ void test('callModelWithDependencies builds provider body from daemon-local prov
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerAuthRuntime: runtimeStore,
       providerRequestOptions,
+      onProviderRequestPrepared,
+      onProviderRuntimeState,
     },
     {
-      getProviderAuth: async () => ({
-        accessToken: 'token',
-        accountId: 'account',
-      }),
+      getProviderAuth: async (options) => {
+        options.onWait?.();
+        return {
+          accessToken: 'token',
+          accountId: 'account',
+        };
+      },
       forceRefreshProviderAuth: async () => ({
         accessToken: 'token',
         accountId: 'account',
       }),
-      streamResponsesOverWebSocket: async ({ body, webSocketReusePolicy }) => {
+      streamResponsesOverWebSocket: async ({
+        body,
+        webSocketReusePolicy,
+        onRequestPrepared,
+        onAdmissionState,
+      }) => {
         assert.ok(body);
+        assert.equal(onRequestPrepared, onProviderRequestPrepared);
+        assert.equal(typeof onAdmissionState, 'function');
+        onAdmissionState?.({ state: 'rate_limit_waiting' });
+        onAdmissionState?.({ state: 'admitted' });
         assert.equal(body.model, 'gpt-5.6-sol');
         assert.equal(body.prompt_cache_key, 'provider-session');
         assert.deepEqual(
@@ -282,6 +240,12 @@ void test('callModelWithDependencies builds provider body from daemon-local prov
       itemsToAppend,
     },
   ]);
+  assert.deepEqual(providerRuntimeStates, [
+    'auth_waiting',
+    'provider_waiting',
+    'rate_limit_waiting',
+    'provider_waiting',
+  ]);
 });
 
 void test('callModelWithDependencies dispatches Grok OAuth through the provider transport path', async () => {
@@ -297,6 +261,11 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
     recordRequest() {},
     recordEvent() {},
   };
+  const onProviderRequestPrepared = () => undefined;
+  const providerRuntimeStates: string[] = [];
+  const onProviderRuntimeState = (observation: { state: string }) => {
+    providerRuntimeStates.push(observation.state);
+  };
   const observed: {
     accessToken?: string;
     authProviderId?: string;
@@ -307,6 +276,8 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
     discoverySink?: unknown;
     providerWebSocketSessions?: unknown;
     providerReplayScopeId?: ProviderReplayScopeId;
+    onRequestPrepared?: unknown;
+    onAdmissionState?: unknown;
   } = {};
 
   for await (const chunk of callModelWithDependencies(
@@ -319,6 +290,8 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
       providerAuthRuntime: runtimeStore,
       providerRequestOptions,
       oauthWireDiscoverySink: discoverySink,
+      onProviderRequestPrepared,
+      onProviderRuntimeState,
     },
     {
       getProviderAuth: async (options) => {
@@ -341,6 +314,10 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
         observed.providerWebSocketSessions = input.providerWebSocketSessions;
         observed.reasoningEffort = input.reasoningEffort;
         observed.discoverySink = input.discoverySink;
+        observed.onRequestPrepared = input.onRequestPrepared;
+        observed.onAdmissionState = input.onAdmissionState;
+        input.onAdmissionState?.({ state: 'rate_limit_waiting' });
+        input.onAdmissionState?.({ state: 'admitted' });
         if (input.providerReplayScopeId !== undefined) {
           observed.providerReplayScopeId = input.providerReplayScopeId;
         }
@@ -365,10 +342,14 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
   }
 
   assert.equal(observed.discoverySink, discoverySink);
+  assert.equal(observed.onRequestPrepared, onProviderRequestPrepared);
+  assert.equal(typeof observed.onAdmissionState, 'function');
   assert.deepEqual(
     {
       ...observed,
       discoverySink: undefined,
+      onRequestPrepared: undefined,
+      onAdmissionState: undefined,
     },
     {
       accessToken: 'grok-token',
@@ -378,6 +359,8 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
       instructions: 'system\n\ncontext',
       reasoningEffort: 'high',
       discoverySink: undefined,
+      onRequestPrepared: undefined,
+      onAdmissionState: undefined,
       providerWebSocketSessions: unusedProviderWebSocketSessions,
       providerReplayScopeId: GROK_TEST_REPLAY_SCOPE_ID,
     },
@@ -399,6 +382,10 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
         }),
       ),
     },
+  ]);
+  assert.deepEqual(providerRuntimeStates, [
+    'rate_limit_waiting',
+    'provider_waiting',
   ]);
 });
 
@@ -1492,424 +1479,122 @@ void test('callModelWithDependencies does not force refresh after a rate-limit f
   ]);
 });
 
-void test('resolveOpenAiNativeCompactionPolicy derives the upstream-compatible threshold from the OAuth catalog', async () => {
-  const input = createOpenAiNativeCompactionInput();
-  const policy = await resolveOpenAiNativeCompactionPolicy(input, {
-    getProviderAuth: async () => ({
-      accessToken: 'token',
-      accountId: 'account',
-    }),
-    forceRefreshProviderAuth: async () => ({
-      accessToken: 'fresh-token',
-      accountId: 'account',
-    }),
-    responsesUrl: 'https://chatgpt.test/backend-api/codex/responses',
-    clientVersion: '1.2.3-test',
-    fetchImpl: async (request, init) => {
-      assert.equal(
-        String(request),
-        'https://chatgpt.test/backend-api/codex/models?client_version=1.2.3-test',
-      );
-      const headers = new Headers(init?.headers);
-      assert.equal(headers.get('authorization'), 'Bearer token');
-      assert.equal(headers.get('chatgpt-account-id'), 'account');
-      return new Response(
-        JSON.stringify({
-          models: [
-            {
-              slug: 'gpt-test',
-              context_window: 272_000,
-              auto_compact_token_limit: null,
-              supports_parallel_tool_calls: true,
-            },
-          ],
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    },
-  });
+void test('callModelWithDependencies dispatches Qwen without OAuth or provider WebSockets', async () => {
+  const previousApiKey = process.env.BAILIAN_TOKEN_PLAN_API_KEY;
+  process.env.BAILIAN_TOKEN_PLAN_API_KEY = 'x'.repeat(32);
+  const chunks = [];
+  const observed: {
+    model?: string;
+    history?: unknown[];
+    instructions?: string;
+    providerReplayScopeId?: ProviderReplayScopeId;
+  } = {};
 
-  assert.deepEqual(policy, {
-    providerId: 'openai_codex_direct',
-    model: 'gpt-test',
-    contextWindow: 272_000,
-    thresholdTokens: 244_800,
-    supportsParallelToolCalls: true,
-  });
-});
-
-void test('resolveOpenAiNativeCompactionPolicy honors a lower catalog threshold', async () => {
-  const input = createOpenAiNativeCompactionInput();
-  const policy = await resolveOpenAiNativeCompactionPolicy(input, {
-    getProviderAuth: async () => ({
-      accessToken: 'token',
-      accountId: 'account',
-    }),
-    forceRefreshProviderAuth: async () => ({
-      accessToken: 'fresh-token',
-      accountId: 'account',
-    }),
-    fetchImpl: async () =>
-      new Response(
-        JSON.stringify({
-          models: [
-            {
-              slug: 'gpt-test',
-              context_window: 100_000,
-              auto_compact_token_limit: 80_000,
-              supports_parallel_tool_calls: false,
-            },
-          ],
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      ),
-  });
-
-  assert.equal(policy.thresholdTokens, 80_000);
-});
-
-void test('compactOpenAiHistory retries OAuth once and preserves the opaque replacement without response ids', async () => {
-  const input = createOpenAiNativeCompactionInput({
-    promptContext: 'thread context',
-  });
-  let forceRefreshCalls = 0;
-  let requestCalls = 0;
-  const result = await compactOpenAiHistory(
-    input,
-    {
-      providerId: 'openai_codex_direct',
-      model: 'gpt-test',
-      contextWindow: 100_000,
-      thresholdTokens: 90_000,
-      supportsParallelToolCalls: true,
-    },
-    {
-      getProviderAuth: async (options) => {
-        assert.equal(
-          options.allowRefresh,
-          requestCalls > 0 ? false : undefined,
-        );
-        return {
-          accessToken: forceRefreshCalls > 0 ? 'fresh-token' : 'token',
-          accountId: 'account',
-        };
-      },
-      forceRefreshProviderAuth: async () => {
-        forceRefreshCalls += 1;
-        return {
-          accessToken: 'fresh-token',
-          accountId: 'account',
-        };
-      },
-      responsesUrl: 'https://chatgpt.test/backend-api/codex/responses',
-      fetchImpl: async (request, init) => {
-        requestCalls += 1;
-        assert.equal(
-          String(request),
-          'https://chatgpt.test/backend-api/codex/responses/compact',
-        );
-        if (requestCalls === 1) {
-          return new Response(null, { status: 401 });
-        }
-        const headers = new Headers(init?.headers);
-        assert.equal(headers.get('authorization'), 'Bearer fresh-token');
-        assert.equal(headers.get('accept'), 'application/json');
-        assert.equal(typeof init?.body, 'string');
-        const body = JSON.parse(init?.body as string) as Record<
-          string,
-          unknown
-        >;
-        assert.equal(body['model'], 'gpt-test');
-        assert.equal(body['instructions'], 'system\n\nthread context');
-        assert.equal(body['parallel_tool_calls'], true);
-        assert.equal(body['prompt_cache_key'], 'provider-session');
-        assert.deepEqual(body['input'], [
-          {
-            role: 'user',
-            content: [{ type: 'input_text', text: 'hello' }],
-          },
-        ]);
-        assert.deepEqual(body['reasoning'], {
-          effort: 'medium',
-          summary: 'auto',
-        });
-        return new Response(
-          JSON.stringify({
-            output: [
-              {
-                id: 'response-item-id',
-                type: 'compaction',
-                encrypted_content: 'opaque-checkpoint',
-              },
-              {
-                id: 'message-id',
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'replacement' }],
-              },
-            ],
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
-      },
-    },
-  );
-
-  assert.equal(forceRefreshCalls, 1);
-  assert.equal(requestCalls, 2);
-  assert.deepEqual(result.output, [
-    {
-      type: 'compaction',
-      encrypted_content: 'opaque-checkpoint',
-    },
-    {
-      type: 'message',
-      role: 'assistant',
-      content: [{ type: 'output_text', text: 'replacement' }],
-    },
-  ]);
-  assert.equal(
-    result.providerReplayScopeId,
-    createProviderReplayScopeId({
-      providerId: 'openai_codex_direct',
-      accountId: 'account',
-      endpoint: 'https://chatgpt.test/backend-api/codex/responses',
-    }),
-  );
-});
-
-void test('compactOpenAiHistory accepts the live OAuth compaction_summary window without pruning retained items', async () => {
-  const input = createOpenAiNativeCompactionInput();
-  const result = await compactOpenAiHistory(
-    input,
-    {
-      providerId: 'openai_codex_direct',
-      model: 'gpt-test',
-      contextWindow: 100_000,
-      thresholdTokens: 90_000,
-      supportsParallelToolCalls: true,
-    },
-    {
-      getProviderAuth: async () => ({
-        accessToken: 'token',
-        accountId: 'account',
-      }),
-      forceRefreshProviderAuth: async () => ({
-        accessToken: 'fresh-token',
-        accountId: 'account',
-      }),
-      fetchImpl: async () =>
-        new Response(
-          JSON.stringify({
-            output: [
-              {
-                id: 'retained-user-id',
-                type: 'message',
-                role: 'user',
-                status: 'completed',
-                content: [{ type: 'input_text', text: 'hello' }],
-              },
-              {
-                id: 'compaction-summary-id',
-                type: 'compaction_summary',
-                encrypted_content: 'opaque-checkpoint',
-              },
-            ],
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        ),
-    },
-  );
-
-  assert.deepEqual(result.output, [
-    {
-      type: 'message',
-      role: 'user',
-      status: 'completed',
-      content: [{ type: 'input_text', text: 'hello' }],
-    },
-    {
-      type: 'compaction_summary',
-      encrypted_content: 'opaque-checkpoint',
-    },
-  ]);
-  assert.equal(
-    result.providerReplayScopeId,
-    createProviderReplayScopeId({
-      providerId: 'openai_codex_direct',
-      accountId: 'account',
-      endpoint: resolveCodexResponsesUrl(),
-    }),
-  );
-});
-
-void test('resolveGrokNativeCompactionPolicy derives the approved Grok Build threshold from the live model descriptor', async () => {
-  const input = createGrokNativeCompactionInput({
-    providerRequestOptions: {
-      ...defaultProviderRequestOptions,
-      providerId: 'grok_oauth',
-      model: 'grok',
-    },
-  });
-  const policy = await resolveGrokNativeCompactionPolicy(input, {
-    getProviderAuth: async (options) => {
-      assert.equal(options.providerId, 'grok_oauth');
-      assert.equal(options.allowRefresh, undefined);
-      return { accessToken: 'token', accountId: '' };
-    },
-    forceRefreshProviderAuth: async () => ({
-      accessToken: 'fresh-token',
-      accountId: '',
-    }),
-    fetchImpl: async (request, init) => {
-      assert.equal(String(request), 'https://api.x.ai/v1/models/grok-4.5');
-      assert.equal(init?.method, 'GET');
-      const headers = new Headers(init?.headers);
-      assert.equal(headers.get('authorization'), 'Bearer token');
-      assert.equal(headers.get('accept'), 'application/json');
-      return new Response(
-        JSON.stringify({ id: 'grok-4.5', context_length: 500_000 }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    },
-  });
-
-  assert.deepEqual(policy, {
-    providerId: 'grok_oauth',
-    model: 'grok-4.5',
-    contextWindow: 500_000,
-    thresholdTokens: 425_000,
-  });
-});
-
-void test('resolveGrokNativeCompactionPolicy fails closed on an invalid model context', async () => {
-  await assert.rejects(
-    resolveGrokNativeCompactionPolicy(createGrokNativeCompactionInput(), {
-      getProviderAuth: async () => ({
-        accessToken: 'token',
-        accountId: '',
-      }),
-      forceRefreshProviderAuth: async () => ({
-        accessToken: 'fresh-token',
-        accountId: '',
-      }),
-      fetchImpl: async () =>
-        new Response(
-          JSON.stringify({ id: 'grok-4.5', context_length: '500000' }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        ),
-    }),
-    /invalid context length/u,
-  );
-});
-
-void test('compactGrokHistory retries OAuth once and preserves the xAI opaque output verbatim', async () => {
-  const input = createGrokNativeCompactionInput({
-    history: [
+  try {
+    for await (const chunk of callModelWithDependencies(
       {
-        kind: 'provider_native_compaction',
-        providerId: 'grok_oauth',
-        model: 'grok-4.5',
-        output: [
-          {
-            id: 'previous-compaction-id',
-            type: 'compaction',
-            encrypted_content: 'previous-opaque-checkpoint',
-          },
-        ],
+        history: [{ kind: 'user', text: 'hello' }],
+        systemPrompt: 'system',
+        promptContext: 'context',
+        providerSessionId: 'provider-session',
+        providerWebSocketSessions: unusedProviderWebSocketSessions,
+        providerAuthRuntime: createProviderAuthRuntimeStore(),
+        providerRequestOptions: resolveProviderRequestOptions({
+          GEULBAT_LLM_PROVIDER: 'qwen_token_plan',
+        }),
       },
-      { kind: 'user', text: 'continue' },
-    ],
-    promptContext: 'thread context',
-  });
-  let forceRefreshCalls = 0;
-  let requestCalls = 0;
-  const result = await compactGrokHistory(
-    input,
-    {
-      providerId: 'grok_oauth',
-      model: 'grok-4.5',
-      contextWindow: 500_000,
-      thresholdTokens: 425_000,
-    },
-    {
-      getProviderAuth: async (options) => {
-        assert.equal(options.providerId, 'grok_oauth');
-        assert.equal(
-          options.allowRefresh,
-          requestCalls > 0 ? false : undefined,
-        );
-        return {
-          accessToken: forceRefreshCalls > 0 ? 'fresh-token' : 'token',
-          accountId: 'grok-account',
-        };
-      },
-      forceRefreshProviderAuth: async (options) => {
-        assert.equal(options.providerId, 'grok_oauth');
-        forceRefreshCalls += 1;
-        return { accessToken: 'fresh-token', accountId: 'grok-account' };
-      },
-      fetchImpl: async (request, init) => {
-        requestCalls += 1;
-        assert.equal(String(request), 'https://api.x.ai/v1/responses/compact');
-        assert.equal(init?.method, 'POST');
-        if (requestCalls === 1) {
-          return new Response(null, { status: 401 });
-        }
-        const headers = new Headers(init?.headers);
-        assert.equal(headers.get('authorization'), 'Bearer fresh-token');
-        assert.equal(headers.get('accept'), 'application/json');
-        assert.equal(headers.get('content-type'), 'application/json');
-        assert.equal(typeof init?.body, 'string');
-        const body = JSON.parse(init?.body as string) as Record<
-          string,
-          unknown
-        >;
-        assert.deepEqual(Object.keys(body).sort(), ['input', 'model']);
-        assert.equal(body['model'], 'grok-4.5');
-        assert.deepEqual(body['input'], [
-          { role: 'system', content: 'system\n\nthread context' },
-          {
-            id: 'previous-compaction-id',
-            type: 'compaction',
-            encrypted_content: 'previous-opaque-checkpoint',
-          },
-          {
-            role: 'user',
-            content: [{ type: 'input_text', text: 'continue' }],
-          },
-        ]);
-        return new Response(
-          JSON.stringify({
-            output: [
+      {
+        getProviderAuth: async () =>
+          assert.fail('Qwen must not request provider OAuth'),
+        forceRefreshProviderAuth: async () =>
+          assert.fail('Qwen must not refresh provider OAuth'),
+        streamResponsesOverWebSocket: async () =>
+          assert.fail('Codex websocket must not run for Qwen'),
+        streamGrokOAuthResponses: async () =>
+          assert.fail('Grok websocket must not run for Qwen'),
+        streamQwenChatCompletions: async (input) => {
+          observed.model = input.config.model;
+          observed.history = input.history;
+          observed.providerReplayScopeId = input.providerReplayScopeId;
+          if (input.instructions !== undefined) {
+            observed.instructions = input.instructions;
+          }
+          input.onAssistantDelta?.({
+            itemId: 'qwen-answer-1',
+            phase: 'final_answer',
+            text: 'hello from qwen',
+          });
+          return {
+            itemsToAppend: [
               {
-                id: 'xai-compaction-id',
-                type: 'compaction',
-                encrypted_content: 'new-opaque-checkpoint',
+                kind: 'backend_item',
+                data: {
+                  type: 'message',
+                  id: 'qwen-answer-1',
+                  role: 'assistant',
+                  status: 'completed',
+                  phase: 'final_answer',
+                  content: [
+                    {
+                      type: 'output_text',
+                      text: 'hello from qwen',
+                      annotations: [],
+                    },
+                  ],
+                },
               },
             ],
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
+            functionCalls: [],
+            assistantText: 'hello from qwen',
+            finalText: 'hello from qwen',
+          };
+        },
       },
-    },
-  );
+    )) {
+      chunks.push(chunk);
+    }
+  } finally {
+    if (previousApiKey === undefined) {
+      delete process.env.BAILIAN_TOKEN_PLAN_API_KEY;
+    } else {
+      process.env['BAILIAN_TOKEN_PLAN_API_KEY'] = previousApiKey;
+    }
+  }
 
-  assert.equal(forceRefreshCalls, 1);
-  assert.equal(requestCalls, 2);
-  assert.deepEqual(result.output, [
+  assert.equal(observed.model, 'qwen3.8-max-preview');
+  assert.deepEqual(observed.history, [{ kind: 'user', text: 'hello' }]);
+  assert.equal(observed.instructions, 'system\n\ncontext');
+  assert.match(observed.providerReplayScopeId ?? '', /^sha256:[a-f0-9]{64}$/u);
+  assert.deepEqual(chunks, [
     {
-      id: 'xai-compaction-id',
-      type: 'compaction',
-      encrypted_content: 'new-opaque-checkpoint',
+      type: 'text_delta',
+      text: 'hello from qwen',
+      phase: 'final_answer',
+    },
+    {
+      type: 'done',
+      assistantText: 'hello from qwen',
+      finalText: 'hello from qwen',
+      itemsToAppend: [
+        {
+          kind: 'backend_item',
+          providerReplayScopeId: observed.providerReplayScopeId,
+          data: {
+            type: 'message',
+            id: 'qwen-answer-1',
+            role: 'assistant',
+            status: 'completed',
+            phase: 'final_answer',
+            content: [
+              {
+                type: 'output_text',
+                text: 'hello from qwen',
+                annotations: [],
+              },
+            ],
+          },
+        },
+      ],
     },
   ]);
-  assert.equal(
-    result.providerReplayScopeId,
-    createProviderReplayScopeId({
-      providerId: 'grok_oauth',
-      accountId: 'grok-account',
-      endpoint: 'https://api.x.ai/v1',
-    }),
-  );
 });

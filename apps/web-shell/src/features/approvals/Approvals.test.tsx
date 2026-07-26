@@ -33,9 +33,10 @@ void test('Approvals truncates oversized arguments preview payloads', () => {
 
   assert.match(html, /\.\.\.\(truncated\)/);
   assert.equal(html.includes('x'.repeat(1500)), false);
-  assert.match(html, /Permission Mode/);
-  assert.match(html, /Approval Pass/);
-  assert.match(html, /Advanced details/);
+  assert.match(html, /허용 범위/u);
+  assert.match(html, /자세히/u);
+  // 권한 방식 셀렉트는 입력창 footer가 owner — 카드에서는 제거됐다
+  assert.doesNotMatch(html, /Permission Mode/u);
 });
 
 void test('Approvals shows summary-first rename copy and hides approval class behind advanced details', () => {
@@ -58,9 +59,10 @@ void test('Approvals shows summary-first rename copy and hides approval class be
     />,
   );
 
-  assert.match(html, /Rename draft\/ch1\.md -&gt; draft\/ch1-rev\.md/);
-  assert.match(html, /Advanced details/);
-  assert.match(html, /class:/);
+  assert.match(html, /이름을 바꾸려고 해요/u);
+  assert.match(html, /draft\/ch1\.md → draft\/ch1-rev\.md/u);
+  assert.match(html, /자세히/u);
+  assert.match(html, /분류:/u);
 });
 
 void test('Approvals marks pending approval UI as a modal dialog', () => {
@@ -81,7 +83,7 @@ void test('Approvals marks pending approval UI as a modal dialog', () => {
   assert.match(html, /aria-busy="false"/);
 });
 
-void test('Approvals offers only explicit once, run, and connection-session lifetimes', () => {
+void test('Approvals offers only explicit once, run, and computer-session lifetimes', () => {
   const html = renderToStaticMarkup(
     <Approvals
       pending={makeApprovalRequiredFixture()}
@@ -92,11 +94,11 @@ void test('Approvals offers only explicit once, run, and connection-session life
     />,
   );
 
-  assert.match(html, /<option value="once"/u);
-  assert.match(html, /<option value="run"/u);
-  assert.match(html, /<option value="session"/u);
-  assert.doesNotMatch(html, /<option value="thread"/u);
-  assert.doesNotMatch(html, /This thread/u);
+  assert.match(html, /이번만/u);
+  assert.match(html, /이번 답변/u);
+  assert.match(html, /이 컴퓨터 세션/u);
+  assert.doesNotMatch(html, /<option/u);
+  assert.doesNotMatch(html, /This thread|이 스레드/u);
 });
 
 void test('Approvals renders nothing when no approval is pending', () => {
@@ -140,8 +142,8 @@ void test('Approvals resets approval pass when the compound pending approval ide
       );
     });
 
-    changeApprovalPass(renderer, 'session');
-    assert.equal(getApprovalPassValue(renderer), 'session');
+    selectApprovalScope(renderer, '이 컴퓨터 세션');
+    assert.equal(getSelectedApprovalScopeLabel(renderer), '이 컴퓨터 세션');
 
     act(() => {
       renderer.update(
@@ -155,7 +157,92 @@ void test('Approvals resets approval pass when the compound pending approval ide
       );
     });
 
-    assert.equal(getApprovalPassValue(renderer), 'once');
+    assert.equal(getSelectedApprovalScopeLabel(renderer), '이번만');
+  });
+});
+
+void test('Approvals submits the selected permission mode with the explicit approval', async () => {
+  await withQuietReactTestRendererAsync(async () => {
+    const pending = makeApprovalRequiredFixture();
+    let received:
+      | {
+          pending: typeof pending;
+          grantScope: ApprovalGrantScope;
+          permissionMode: string;
+        }
+      | undefined;
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <Approvals
+          pending={pending}
+          permissionMode="full_access"
+          onPermissionModeChange={() => {}}
+          onApprove={(submittedPending, grantScope, permissionMode) => {
+            received = {
+              pending: submittedPending,
+              grantScope,
+              permissionMode,
+            };
+          }}
+          onDeny={() => {}}
+        />,
+      );
+    });
+
+    const approveButton = renderer.root
+      .findAllByType('button')
+      .find((button) => button.props.children === '허용');
+    assert.ok(approveButton);
+    await act(async () => {
+      approveButton.props.onClick();
+    });
+
+    assert.deepEqual(received, {
+      pending,
+      grantScope: 'once',
+      permissionMode: 'full_access',
+    });
+  });
+});
+
+void test('Approvals "다시 묻지 않기" switches to full access and approves in one step', async () => {
+  await withQuietReactTestRendererAsync(async () => {
+    const pending = makeApprovalRequiredFixture();
+    const modeChanges: string[] = [];
+    let received:
+      | { grantScope: ApprovalGrantScope; permissionMode: string }
+      | undefined;
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <Approvals
+          pending={pending}
+          permissionMode="basic"
+          onPermissionModeChange={(mode) => {
+            modeChanges.push(mode);
+          }}
+          onApprove={(_submittedPending, grantScope, permissionMode) => {
+            received = { grantScope, permissionMode };
+          }}
+          onDeny={() => {}}
+        />,
+      );
+    });
+
+    const approveAllButton = renderer.root
+      .findAllByType('button')
+      .find((button) => button.props.children === '다시 묻지 않기');
+    assert.ok(approveAllButton);
+    await act(async () => {
+      approveAllButton.props.onClick();
+    });
+
+    assert.deepEqual(modeChanges, ['full_access']);
+    assert.deepEqual(received, {
+      grantScope: 'session',
+      permissionMode: 'full_access',
+    });
   });
 });
 
@@ -178,29 +265,53 @@ function withQuietReactTestRenderer(callback: () => void): void {
   }
 }
 
-function changeApprovalPass(
-  renderer: ReactTestRenderer,
-  value: ApprovalGrantScope,
-): void {
+async function withQuietReactTestRendererAsync(
+  callback: () => Promise<void>,
+): Promise<void> {
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    if (
+      typeof args[0] === 'string' &&
+      args[0].includes('react-test-renderer is deprecated')
+    ) {
+      return;
+    }
+    originalConsoleError(...args);
+  };
+
+  try {
+    await callback();
+  } finally {
+    console.error = originalConsoleError;
+  }
+}
+
+function selectApprovalScope(renderer: ReactTestRenderer, label: string): void {
+  const scopeButton = findScopeButton(renderer, label);
   act(() => {
-    getApprovalPassSelect(renderer).props.onChange({
-      target: { value },
-    });
+    scopeButton.props.onClick();
   });
 }
 
-function getApprovalPassValue(renderer: ReactTestRenderer): string {
-  return String(getApprovalPassSelect(renderer).props.value);
+function getSelectedApprovalScopeLabel(renderer: ReactTestRenderer): string {
+  const selected = renderer.root
+    .findAllByType('button')
+    .find((button) => button.props['aria-pressed'] === true);
+  assert.ok(selected, 'expected a selected approval scope pill');
+  return String(selected.props.children);
 }
 
-function getApprovalPassSelect(renderer: ReactTestRenderer): ReactTestInstance {
-  const approvalPassSelect = renderer.root
-    .findAllByType('select')
-    .find((select) =>
-      select
-        .findAllByType('option')
-        .some((option) => option.props.value === 'session'),
+function findScopeButton(
+  renderer: ReactTestRenderer,
+  label: string,
+): ReactTestInstance {
+  const scopeButton = renderer.root
+    .findAllByType('button')
+    .find(
+      (button) =>
+        button.props['aria-pressed'] !== undefined &&
+        button.props.children === label,
     );
-  assert.ok(approvalPassSelect, 'expected approval pass select to be rendered');
-  return approvalPassSelect;
+  assert.ok(scopeButton, `expected approval scope pill: ${label}`);
+  return scopeButton;
 }

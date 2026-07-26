@@ -651,7 +651,9 @@ export function normalizeDependencyUrl(url: string): string {
     if (error instanceof Error && error.message.startsWith('dependency URL')) {
       throw error;
     }
-    throw new Error(`dependency URL must be absolute: ${url}`);
+    throw new Error(`dependency URL must be absolute: ${url}`, {
+      cause: error,
+    });
   }
 }
 

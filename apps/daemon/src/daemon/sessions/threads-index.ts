@@ -186,12 +186,14 @@ function parseThreadSummaryEntry(value: unknown): ThreadSummary {
   const title = parseOptionalString(record.title);
   const lastUpdated = parseRequiredString(record.lastUpdated);
   const messageCount = parseNonNegativeInteger(record.messageCount);
+  const pinned = record.pinned === true ? true : undefined;
 
   return {
     threadId,
     lastUpdated,
     messageCount,
     ...(title !== undefined ? { title } : {}),
+    ...(pinned !== undefined ? { pinned } : {}),
   };
 }
 

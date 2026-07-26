@@ -10,6 +10,17 @@ void test('builtin registry leaves child-run subagent tools without watchdog tim
   assertToolHasNoWatchdogTimeout(registry, 'agent_send_input');
   assertToolHasNoWatchdogTimeout(registry, 'agent_wait');
   assertToolHasNoWatchdogTimeout(registry, 'agent_stop');
+  assertToolHasNoWatchdogTimeout(registry, 'agent_set_priority');
+  assertToolHasNoWatchdogTimeout(registry, 'agent_retry');
+});
+
+void test('builtin retry keeps uncertain child effects behind approval', () => {
+  const meta = createBuiltinToolRegistryStore().getToolMeta('agent_retry');
+
+  assert.ok(meta);
+  assert.equal(meta.requiresApproval, true);
+  assert.equal(meta.sideEffectLevel, 'write');
+  assert.equal(meta.mayMutateComputerFiles, true);
 });
 
 void test('builtin registry leaves PTC exec cell tools without outer watchdog timeout', () => {
@@ -19,10 +30,11 @@ void test('builtin registry leaves PTC exec cell tools without outer watchdog ti
   assertToolHasNoWatchdogTimeout(registry, 'wait');
 });
 
-void test('builtin registry leaves exec_command without outer watchdog timeout', () => {
+void test('builtin registry leaves host command tools without outer watchdog timeout', () => {
   const registry = createBuiltinToolRegistryStore();
 
   assertToolHasNoWatchdogTimeout(registry, 'exec_command');
+  assertToolHasNoWatchdogTimeout(registry, 'write_stdin');
 });
 
 void test('builtin registry leaves tool output reads without watchdog timeout', () => {

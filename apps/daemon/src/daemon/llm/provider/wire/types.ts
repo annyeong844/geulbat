@@ -102,6 +102,7 @@ export interface WireToolDefinition {
 
 export interface WireRequestBody {
   model: string;
+  service_tier?: 'default' | 'priority';
   store: boolean;
   stream: boolean;
   instructions?: string;
