@@ -2,9 +2,16 @@ import type {
   SharedRunEventPayloadMap,
   ToolOutputDeltaEventPayload,
 } from '@geulbat/protocol/run-events';
+import {
+  isErrorCode,
+  isToolFailureDiagnostics,
+  type ErrorCode,
+  type ToolFailureDiagnostics,
+} from '@geulbat/protocol/errors';
 import type { AgentChildTerminalState } from '@geulbat/protocol/subagent-terminal';
 import type { RunId } from '@geulbat/protocol/ids';
 import type { RunProviderId } from '@geulbat/protocol/run-contract';
+import type { JsonValue } from '@geulbat/protocol/runtime-persistence';
 import {
   isProviderReplayScopeId as isProtocolProviderReplayScopeId,
   type ProviderReplayScopeId,
@@ -19,6 +26,71 @@ export function isProviderReplayScopeId(
 }
 
 export type ToolCallArgs = SharedRunEventPayloadMap['tool_call']['args'];
+
+export type ToolRecoveryStrategy =
+  | 'replay_safe'
+  | 'idempotency_key'
+  | 'reconcile_then_replay'
+  | 'durable_handle'
+  | 'at_least_once';
+
+export type ExecuteResult =
+  | { ok: true; output: string; errorCode?: undefined; error?: undefined }
+  | {
+      ok: false;
+      output: string;
+      errorCode: ErrorCode;
+      error: string;
+      diagnostics?: ToolFailureDiagnostics;
+    };
+
+export type RunCheckpointToolInvocation =
+  | {
+      status: 'in_flight';
+      callId: string;
+      toolName: string;
+      recoveryStrategy: ToolRecoveryStrategy;
+      recoveryState: JsonValue;
+    }
+  | {
+      status: 'reconciled';
+      callId: string;
+      toolName: string;
+      recoveryStrategy: ToolRecoveryStrategy;
+      recoveryState: JsonValue;
+      result: ExecuteResult;
+    };
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function parseExecuteResult(value: unknown): ExecuteResult | null {
+  if (!isUnknownRecord(value) || typeof value.output !== 'string') {
+    return null;
+  }
+  if (value.ok === true) {
+    return { ok: true, output: value.output };
+  }
+  if (
+    value.ok !== false ||
+    !isErrorCode(value.errorCode) ||
+    typeof value.error !== 'string' ||
+    (value.diagnostics !== undefined &&
+      !isToolFailureDiagnostics(value.diagnostics))
+  ) {
+    return null;
+  }
+  return {
+    ok: false,
+    output: value.output,
+    errorCode: value.errorCode,
+    error: value.error,
+    ...(value.diagnostics === undefined
+      ? {}
+      : { diagnostics: value.diagnostics }),
+  };
+}
 
 interface AgentTransientEventPayloadMap {
   tool_output_delta: ToolOutputDeltaEventPayload;

@@ -18,6 +18,7 @@ import {
   type RunProviderId,
 } from '@geulbat/protocol/run-contract';
 
+import type { ToolRecoveryStrategy } from '../runtime-contracts.js';
 import { isJsonValue, isRecord, type JsonValue } from '../runtime-json.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
 
@@ -44,6 +45,7 @@ interface ProviderRoundJournalFunctionCall {
   name: string;
   arguments: string;
   replaySafe: boolean;
+  recoveryStrategy?: ToolRecoveryStrategy;
 }
 
 export async function appendProviderRound(args: {
@@ -313,6 +315,7 @@ function providerFunctionCallsMatch(
 function isProviderRoundJournalFunctionCall(
   value: unknown,
 ): value is ProviderRoundJournalFunctionCall {
+  const recoveryStrategy = isRecord(value) ? value.recoveryStrategy : undefined;
   return (
     isRecord(value) &&
     typeof value.id === 'string' &&
@@ -323,7 +326,20 @@ function isProviderRoundJournalFunctionCall(
     value.name.trim() !== '' &&
     typeof value.arguments === 'string' &&
     value.arguments.trim() !== '' &&
-    typeof value.replaySafe === 'boolean'
+    typeof value.replaySafe === 'boolean' &&
+    (recoveryStrategy === undefined ||
+      (isToolRecoveryStrategy(recoveryStrategy) &&
+        value.replaySafe === (recoveryStrategy === 'replay_safe')))
+  );
+}
+
+function isToolRecoveryStrategy(value: unknown): value is ToolRecoveryStrategy {
+  return (
+    value === 'replay_safe' ||
+    value === 'idempotency_key' ||
+    value === 'reconcile_then_replay' ||
+    value === 'durable_handle' ||
+    value === 'at_least_once'
   );
 }
 

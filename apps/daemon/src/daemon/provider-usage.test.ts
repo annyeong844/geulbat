@@ -131,7 +131,7 @@ void test('Grok is reported as not provided because our credential is not accept
   const grok = findEntry(entries, 'grok_oauth');
   assert.equal(grok?.state, 'not_provided');
   assert.ok(grok?.state === 'not_provided');
-  assert.match(grok.reason, /자격증명/u);
+  assert.equal(grok.reason, '');
 });
 
 void test('a provider with no usage adapter is reported as not provided', async () => {

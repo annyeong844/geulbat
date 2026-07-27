@@ -7,7 +7,7 @@ import {
   isRunId,
   type RunId,
 } from '@geulbat/protocol/ids';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isRecord, tryDecodeJson } from './runtime-json.js';
@@ -84,6 +84,24 @@ function getPlanStatePath(stateRoot: string, threadId: string): string {
     'update-plan',
     `${assertValidThreadId(threadId)}.json`,
   );
+}
+
+/**
+ * 스레드 삭제 시 그 스레드의 update_plan 상태를 함께 지운다.
+ */
+export async function deleteThreadPlanState(
+  stateRoot: string,
+  threadId: string,
+): Promise<boolean> {
+  try {
+    await rm(getPlanStatePath(stateRoot, threadId));
+    return true;
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function parsePlanState(value: unknown): PlanState {

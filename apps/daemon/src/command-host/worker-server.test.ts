@@ -254,6 +254,9 @@ void test('worker redacts split markers before returning either lossless stream'
       capabilities: Record<string, unknown>;
     }
   ).capabilities;
+  assert.equal(capabilities['deferredOutputRelease'], true);
+  assert.equal(capabilities['idempotentStartByInvocation'], true);
+  assert.equal(capabilities['initialStdinOnStart'], true);
   assert.equal(capabilities['losslessStdio'], true);
   assert.equal(capabilities['prePersistenceOutputRedaction'], true);
 
@@ -673,10 +676,10 @@ void test('shutdown reports Busy while active work exists (§6.3)', async (t) =>
   const thread = threadId(32);
 
   const started = (
-    await client.request(
-      COMMAND_HOST_METHODS.start,
-      startParams(harness, thread, 'setInterval(() => {}, 1000);'),
-    )
+    await client.request(COMMAND_HOST_METHODS.start, {
+      ...startParams(harness, thread, 'process.stdin.resume();'),
+      stdinMode: 'open',
+    })
   )['result'] as { ok: true; outputRef: string };
   await client.request(COMMAND_HOST_METHODS.waitInitial, {
     outputRef: started.outputRef,
@@ -689,18 +692,21 @@ void test('shutdown reports Busy while active work exists (§6.3)', async (t) =>
     'Busy: active work exists',
   );
 
-  await client.request(COMMAND_HOST_METHODS.interact, {
+  const terminal = await client.request(COMMAND_HOST_METHODS.interact, {
     stateRoot: harness.stateRoot,
     threadId: thread,
     outputRef: started.outputRef,
-    terminate: true,
-    yieldTimeMs: 0,
+    closeStdin: true,
   });
-  await client.request(COMMAND_HOST_METHODS.interact, {
-    stateRoot: harness.stateRoot,
-    threadId: thread,
-    outputRef: started.outputRef,
-  });
+  assert.equal(
+    (
+      terminal['result'] as {
+        ok: true;
+        value: { snapshot: { status: string } };
+      }
+    ).value.snapshot.status,
+    'exit',
+  );
   const accepted = await client.request(COMMAND_HOST_METHODS.shutdown, {});
   assert.deepEqual(accepted['result'], { ok: true });
 });
@@ -1304,8 +1310,8 @@ void test('§4.7: an operation resent on a new connection is applied once', asyn
   }
 });
 
-void test('P7.6: a system session survives a reconnect inside the window', async (t) => {
-  const harness = await makeHarness(t);
+void test('P7.6: touching a system session re-pins it beyond the re-adoption window', async (t) => {
+  const harness = await makeHarness(t, { readoptionGraceMs: 50 });
   const first = new TestRpcClient();
   await first.connect(harness.socketPath);
   await first.initialize();
@@ -1346,6 +1352,15 @@ void test('P7.6: a system session survives a reconnect inside the window', async
     (value['snapshot'] as Record<string, unknown>)['status'],
     'running',
     'the server is still there for the daemon that came back',
+  );
+
+  await delay(150);
+  assert.equal(
+    harness.core
+      .listSessions()
+      .some((session) => session.running && session.outputRef === outputRef),
+    true,
+    'the replacement daemon renewed the session pin beyond the old connection window',
   );
 
   await second.request(COMMAND_HOST_METHODS.interact, {

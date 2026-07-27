@@ -17,14 +17,19 @@ import { createRunState } from '../../agent/runtime/run-state.js';
 import { threadFilePath } from '../../sessions/paths.js';
 import { testRunId } from '../../../test-support/run-id.js';
 import { makeRunContext } from '../../../test-support/run-context.js';
-import { TEST_INHERITED_SOL_MODEL_PIN } from '../../../test-support/subagent-model-routing.js';
+import {
+  TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+  TEST_INHERITED_SOL_MODEL_PIN,
+} from '../../../test-support/subagent-model-routing.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { assertRunId, assertThreadId } from '@geulbat/protocol/ids';
 import { isToolObjectParameters } from '../types.js';
 import type {
   DurableSubagentLaunchRequest,
+  SubagentLaunchRequestInput,
   SubagentLaunchRequestStore,
 } from '../../subagent-runtime-contracts.js';
+import { createDaemonRuntimeStateStore } from '../../runtime-state-store.js';
 
 function createDaemonContext(
   options: Parameters<typeof createBaseDaemonContext>[0] = {},
@@ -37,6 +42,7 @@ function createDaemonContext(
 
 function createTestSubagentLaunchRequestStore(): SubagentLaunchRequestStore {
   const requests = new Map<string, DurableSubagentLaunchRequest>();
+  const launchInputs = new Map<string, SubagentLaunchRequestInput>();
   let enqueueOrder = 0;
   const keyOf = (parentRunId: string, toolCallId: string) =>
     `${parentRunId}\u0000${toolCallId}`;
@@ -86,6 +92,7 @@ function createTestSubagentLaunchRequestStore(): SubagentLaunchRequestStore {
           },
         };
         requests.set(keyOf(input.parentRunId, input.toolCallId), request);
+        launchInputs.set(request.childRunId, input);
         return request;
       });
     },
@@ -96,6 +103,11 @@ function createTestSubagentLaunchRequestStore(): SubagentLaunchRequestStore {
       return [...requests.values()].find(
         (request) => request.childRunId === childRunId,
       );
+    },
+    readSubagentLaunchInput(childRunId) {
+      const input = launchInputs.get(childRunId);
+      assert.ok(input, `expected durable launch input ${childRunId}`);
+      return input;
     },
     readQueuedSubagentLaunchRequests() {
       const priorityOrder = { high: 0, normal: 1, low: 2 } as const;
@@ -204,6 +216,114 @@ void test('agent_spawn outward parameters omit compatibility-only mode', () => {
     'reasoning_effort',
   ]);
   assert.deepEqual(parameters.required, ['task', 'subagent_type']);
+  assert.equal(agentSpawnTool.recoveryStrategy, 'reconcile_then_replay');
+});
+
+void test('agent_spawn restart recovery returns the original interrupted child handle without launching a duplicate', async (t) => {
+  const fixtureRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-agent-spawn-recovery-'),
+  );
+  const homeStateRoot = join(fixtureRoot, 'home-state');
+  const stateRoot = join(fixtureRoot, 'workspace-state');
+  const parentRunId = testRunId('agent-spawn-recovery-parent');
+  const ownerThreadId = testThreadId(190);
+  const toolCallId = 'call-agent-spawn-recovery';
+  const originalStore = await createDaemonRuntimeStateStore({ homeStateRoot });
+  const [accepted] = originalStore.enqueueSubagentLaunchBatch([
+    {
+      toolCallId,
+      task: 'recover the original child handle',
+      subagentType: 'explorer',
+      capabilities: [],
+      parentRunId,
+      ownerThreadId,
+      stateRoot,
+      workingDirectory: fixtureRoot,
+      permissionMode: 'basic',
+      ultraReasoning: false,
+      modelPin: TEST_INHERITED_SOL_MODEL_PIN,
+      subagentModelRouting: TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+    },
+  ]);
+  assert.ok(accepted);
+  originalStore.markSubagentLaunchStarting(accepted.childRunId);
+  originalStore.markSubagentLaunchStarted(accepted.childRunId);
+  originalStore.close();
+
+  const replacementStore = await createDaemonRuntimeStateStore({
+    homeStateRoot,
+  });
+  const daemonContext = createBaseDaemonContext({
+    homeStateRoot,
+    subagentLaunchRequests: replacementStore,
+  });
+  t.after(async () => {
+    await daemonContext.subagent.launchPromotions?.close();
+    replacementStore.close();
+    await rm(fixtureRoot, { recursive: true, force: true });
+  });
+  assert.equal(
+    replacementStore.readSubagentLaunchRequestByChildRunId(accepted.childRunId)
+      ?.launchState,
+    'interrupted',
+  );
+
+  let launchCount = 0;
+  const recoveringTool = createAgentSpawnTool({
+    async startBackgroundRun() {
+      launchCount += 1;
+      throw new Error('interrupted child recovery must not launch a duplicate');
+    },
+  });
+  const parentRunState = createRunState({
+    runId: parentRunId,
+    runContext: makeRunContext({
+      threadId: ownerThreadId,
+      stateRoot,
+    }),
+  });
+  const result = await recoveringTool.execute(
+    {
+      task: 'recover the original child handle',
+      subagent_type: 'explorer',
+      model_id: 'retired-model-id',
+    },
+    {
+      kind: 'agent',
+      runOwnerKind: 'root_main',
+      callId: toolCallId,
+      stateRoot,
+      workingDirectory: fixtureRoot,
+      threadId: ownerThreadId,
+      runId: parentRunId,
+      runState: parentRunState,
+      signal: new AbortController().signal,
+      runSignal: new AbortController().signal,
+      currentFile: undefined,
+      selection: undefined,
+      approvalGranted: false,
+      runtimeServices: daemonContext,
+      memoryIndex: undefined,
+      emitAgentEvent: () => {},
+      permissionMode: 'basic',
+      ultraReasoning: false,
+      computerSessionId: 'replacement-session',
+    },
+  );
+
+  assert.equal(launchCount, 0);
+  assert.equal(result.ok, true);
+  assert.deepEqual(JSON.parse(result.output), {
+    ok: true,
+    childRunId: accepted.childRunId,
+    childThreadId: accepted.childThreadId,
+    subagentType: 'explorer',
+    launchState: 'started',
+    modelId: TEST_INHERITED_SOL_MODEL_PIN.modelId,
+    reasoningEffort:
+      TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection.reasoningEffort,
+    selectionSource: TEST_INHERITED_SOL_MODEL_PIN.selectionSource,
+  });
 });
 
 void test('agent_spawn requires run context', async () => {

@@ -75,6 +75,15 @@ export function daemonFatalRecordPath(): string {
   return join(resolveHomeStateRoot(), 'daemon-fatal.jsonl');
 }
 
+/**
+ * web shell 접속 토큰이 사는 곳. 워크스페이스가 아니라 Home state root에 두는
+ * 이유는 데몬 하나가 여러 워크스페이스를 서빙하고, 토큰은 그 데몬의 것이기
+ * 때문이다. 소스 체크아웃 안에 두면 설치된 배포에는 그 디렉터리가 없다.
+ */
+export function shellAccessTokenPath(): string {
+  return join(resolveHomeStateRoot(), '.geulbat', 'shell-access-token');
+}
+
 function requireHomeDirectory(
   pathModule: typeof posix,
   homeDirectory: string | undefined,

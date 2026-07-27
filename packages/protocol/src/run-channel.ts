@@ -24,6 +24,7 @@ import {
   type PlanWorkflowCommand,
 } from './planning-workflow.js';
 import {
+  hasOnlyKeys,
   isBoolean,
   isNumber,
   isRecord,
@@ -674,11 +675,4 @@ export function isRunChannelServerMessage(
     default:
       return false;
   }
-}
-
-function hasOnlyKeys(
-  value: Record<string, unknown>,
-  allowedKeys: readonly string[],
-): boolean {
-  return Object.keys(value).every((key) => allowedKeys.includes(key));
 }

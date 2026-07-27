@@ -399,6 +399,102 @@ export async function loadAllThreadArtifactVersions(
   return buildThreadArtifactVersions(store, () => true);
 }
 
+export async function restoreThreadArtifactVersions(args: {
+  workspaceRoot: string;
+  threadId: ThreadId;
+  versions: readonly ThreadArtifactVersion[];
+}): Promise<void> {
+  if (args.versions.length === 0) {
+    return;
+  }
+  await mutateThreadArtifactStore(
+    args.workspaceRoot,
+    args.threadId,
+    async (store) => {
+      if (store.artifacts.length > 0 || store.versions.length > 0) {
+        throw new Error('thread artifact restore destination is not empty');
+      }
+
+      const artifactById = new Map<ArtifactId, ArtifactRecord>();
+      const restoredVersions: ArtifactVersionRecord[] = [];
+      const seenRefs = new Set<string>();
+      for (const portableVersion of args.versions) {
+        const {
+          title,
+          persistenceEpoch,
+          sourceRef: rawSourceRef,
+          ...version
+        } = portableVersion;
+        if (
+          !isArtifactVersionRecord(version) ||
+          version.contentHash !== createContentHash(version.payload) ||
+          (title !== null && typeof title !== 'string') ||
+          !Number.isSafeInteger(persistenceEpoch) ||
+          persistenceEpoch < 0
+        ) {
+          throw new Error('portable thread artifact version is invalid');
+        }
+        const sourceRef = normalizeArtifactSourceRef(rawSourceRef);
+        if (rawSourceRef !== null && sourceRef === null) {
+          throw new Error('portable thread artifact source ref is invalid');
+        }
+        const refKey = createArtifactRefKey({
+          artifactId: version.artifactId,
+          version: version.version,
+        });
+        if (seenRefs.has(refKey)) {
+          throw new Error(`duplicate portable thread artifact ref: ${refKey}`);
+        }
+        seenRefs.add(refKey);
+        restoredVersions.push(version);
+
+        const existing = artifactById.get(version.artifactId);
+        if (existing === undefined) {
+          artifactById.set(version.artifactId, {
+            artifactId: version.artifactId,
+            threadId: args.threadId,
+            renderer: version.renderer,
+            title,
+            sourceRef,
+            latestVersion: version.version,
+            persistenceEpoch,
+            createdAt: version.createdAt,
+            updatedAt: version.createdAt,
+          });
+          continue;
+        }
+        if (
+          existing.renderer !== version.renderer ||
+          existing.title !== title ||
+          existing.persistenceEpoch !== persistenceEpoch ||
+          JSON.stringify(existing.sourceRef) !== JSON.stringify(sourceRef)
+        ) {
+          throw new Error(
+            `portable thread artifact metadata conflicts: ${version.artifactId}`,
+          );
+        }
+        artifactById.set(version.artifactId, {
+          ...existing,
+          latestVersion: Math.max(existing.latestVersion, version.version),
+          createdAt:
+            existing.createdAt.localeCompare(version.createdAt) <= 0
+              ? existing.createdAt
+              : version.createdAt,
+          updatedAt:
+            existing.updatedAt.localeCompare(version.createdAt) >= 0
+              ? existing.updatedAt
+              : version.createdAt,
+        });
+      }
+
+      await saveThreadArtifactStore(args.workspaceRoot, args.threadId, {
+        artifacts: [...artifactById.values()],
+        versions: restoredVersions,
+      });
+    },
+  );
+}
+
 function buildThreadArtifactVersions(
   store: ThreadArtifactStoreFile,
   shouldInclude: (version: ArtifactVersionRecord) => boolean,

@@ -3,7 +3,6 @@ import { rm } from 'node:fs/promises';
 import { forceRefreshProviderAuth, getProviderAuth } from '../auth/access.js';
 import type { ProviderAuthRuntimeStore } from '../auth/runtime-state.js';
 import type { ResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-cache.js';
-import { normalizeProviderErrorCode } from '../llm/provider/provider-error.js';
 import { commitThreadArtifactVersion } from '../sessions/artifact-store.js';
 import {
   resolveThreadMediaFilePath,
@@ -20,7 +19,10 @@ import {
   type ImageGenerationProviderId,
   type ImageGenerationRuntime,
 } from './contract.js';
-import { acquireGenerationProviderAuthOrFailClosed } from './generation-provider-auth.js';
+import {
+  acquireGenerationProviderAuthOrFailClosed,
+  generateWithProviderAuthRetry,
+} from './generation-provider-auth.js';
 import { buildImageArtifactCandidate } from './image-artifact-candidate.js';
 import { withImageGenerationRequestDefaults } from './image-generation-request-defaults.js';
 import { generateImageViaCodexResponses } from './providers/codex-image-provider.js';
@@ -91,13 +93,6 @@ function buildImageArtifactTitle(prompt: string): string {
   return `${singleLine.slice(0, IMAGE_ARTIFACT_TITLE_MAX_LENGTH - 1)}…`;
 }
 
-function isProviderAuthFailure(error: unknown): boolean {
-  if (error instanceof ImageGenerationError) {
-    return error.surface === 'provider_auth';
-  }
-  return normalizeProviderErrorCode(error) === 'llm_auth_failed';
-}
-
 export function createImageGenerationRuntime(
   deps: ImageGenerationRuntimeDeps,
 ): ImageGenerationRuntime {
@@ -107,7 +102,12 @@ export function createImageGenerationRuntime(
     ): Promise<GenerateImageArtifactResult> {
       const providerId =
         input.providerId ?? resolveDefaultImageGenerationProvider();
-      const candidate = await generateWithAuthRetry(input, deps, providerId);
+      const candidate = await generateWithProviderAuthRetry({
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+        runAttempt: (options) =>
+          generateImageOnce(input, deps, providerId, options),
+        forceRefresh: () => forceRefreshSelectedProviderAuth(deps, providerId),
+      });
       return commitGeneratedImageCandidate(input, deps, candidate);
     },
     withRequestDefaults(defaults) {
@@ -115,40 +115,6 @@ export function createImageGenerationRuntime(
     },
   };
   return runtime;
-}
-
-// 미연결(자격증명 부재/수급 불가)은 리프레시로 회복될 수 없다 — §4.2
-// fail-closed: 재시도 없이 명시적 오류로 끝낸다.
-function isProviderNotConnectedFailure(error: unknown): boolean {
-  return (
-    error instanceof ImageGenerationError &&
-    error.reasonCode === 'provider_not_connected'
-  );
-}
-
-async function generateWithAuthRetry(
-  input: GenerateImageArtifactInput,
-  deps: ImageGenerationRuntimeDeps,
-  providerId: ImageGenerationProviderId,
-): Promise<GeneratedImageCandidate> {
-  try {
-    return await generateImageOnce(input, deps, providerId, {
-      allowRefresh: true,
-    });
-  } catch (error: unknown) {
-    if (
-      isProviderNotConnectedFailure(error) ||
-      !isProviderAuthFailure(error) ||
-      input.signal?.aborted === true
-    ) {
-      throw error;
-    }
-    // 스트리밍 도중 커밋된 출력이 없는 단발 호출이므로 한 번만 재시도한다.
-    await forceRefreshSelectedProviderAuth(deps, providerId);
-    return await generateImageOnce(input, deps, providerId, {
-      allowRefresh: false,
-    });
-  }
 }
 
 async function generateImageOnce(

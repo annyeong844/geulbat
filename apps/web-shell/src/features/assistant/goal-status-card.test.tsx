@@ -16,13 +16,33 @@ import { GoalStatusCard } from './goal-status-card.js';
 const unavailableGoal: GoalSnapshot = {
   goalId: 'goal-card',
   threadId: assertThreadId('123e4567-e89b-42d3-a456-426614174082'),
-  objective: 'Keep verifier details private',
+  objective: 'Keep completion details private',
   state: 'verification_unavailable',
   createdAt: '2026-07-26T00:00:00.000Z',
   updatedAt: '2026-07-26T00:01:00.000Z',
 };
 
-void test('Goal card exposes semantic recovery state without verifier votes', async () => {
+void test('Goal card describes admission checks without claiming independent semantic verification', async () => {
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <GoalStatusCard
+        goal={{
+          snapshot: { ...unavailableGoal, state: 'verifying' },
+          busy: false,
+          onCommand() {},
+        }}
+      />,
+    );
+  });
+
+  const text = renderedText(renderer.toJSON());
+  assert.match(text, /남은 필수 완료 조건/u);
+  assert.doesNotMatch(text, /독립적으로|별도 모델|투표/u);
+  await act(async () => renderer.unmount());
+});
+
+void test('Goal card exposes completion recovery without claiming panel verification', async () => {
   const commands: GoalCommand[] = [];
   let renderer!: ReactTestRenderer;
   await act(async () => {
@@ -40,8 +60,8 @@ void test('Goal card exposes semantic recovery state without verifier votes', as
   });
 
   const text = renderedText(renderer.toJSON());
-  assert.match(text, /완료 확인을 다시 시작해 주세요/u);
-  assert.match(text, /Keep verifier details private/u);
+  assert.match(text, /완료 처리를 다시 시작해 주세요/u);
+  assert.match(text, /Keep completion details private/u);
   assert.doesNotMatch(text, /vote|투표|2\s*\/\s*3/iu);
 
   const resume = renderer.root

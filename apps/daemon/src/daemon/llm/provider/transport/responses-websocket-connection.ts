@@ -153,7 +153,7 @@ function createUnexpectedResponseError(response: IncomingMessage): Error {
   );
 }
 
-function parseRetryAfterMs(
+export function parseRetryAfterMs(
   value: string | string[] | undefined,
   nowMs: number,
 ): number | undefined {

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { isProcessAlive } from '../../command-host/runtime-paths.js';
 import { createCommandSessionHost } from '../../command-host/session-core.js';
 import { executeTool } from '../tools/executor.js';
 import { createToolRegistryStore } from '../tools/registry.js';
@@ -17,16 +18,40 @@ import {
 // ① 도구가 세션 너머에서도 똑같이 답한다 ② 의도 있는 종료가 세션을 남기지
 // 않는다 ③ 사라진 옵트아웃이 조용히 무시되지 않는다.
 
-function echoServerSource(): string {
+function echoServerSource(
+  options: { descendantPidPath?: string } = {},
+): string {
   const serverEntry = import.meta
     .resolve('@modelcontextprotocol/sdk/server/index.js');
   const stdioEntry = import.meta
     .resolve('@modelcontextprotocol/sdk/server/stdio.js');
   const typesEntry = import.meta.resolve('@modelcontextprotocol/sdk/types.js');
+  const descendantSource =
+    options.descendantPidPath === undefined
+      ? ''
+      : `
+import { spawn } from 'node:child_process';
+
+const descendant = spawn(
+  process.execPath,
+  [
+    '-e',
+    ${JSON.stringify(`
+const { writeFileSync } = require('node:fs');
+process.on('SIGTERM', () => undefined);
+writeFileSync(${JSON.stringify(options.descendantPidPath)}, String(process.pid));
+setInterval(() => undefined, 1000);
+`)},
+  ],
+  { stdio: 'ignore' },
+);
+descendant.unref();
+`;
   return `
 import { Server } from ${JSON.stringify(serverEntry)};
 import { StdioServerTransport } from ${JSON.stringify(stdioEntry)};
 import { CallToolRequestSchema, ListToolsRequestSchema } from ${JSON.stringify(typesEntry)};
+${descendantSource}
 
 const server = new Server(
   { name: 'placement-equivalence', version: '0.0.1' },
@@ -215,3 +240,83 @@ void test('P7.6: closing the MCP runtime leaves no worker session behind', async
     'no MCP process outlives an intentional shutdown',
   );
 });
+
+void test(
+  'P7.6: closing the MCP runtime reaps a SIGTERM-resistant descendant',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const homeStateRoot = await mkdtemp(
+      join(tmpdir(), 'geulbat-mcp-descendant-'),
+    );
+    const serverScript = join(homeStateRoot, 'echo-server.mjs');
+    const descendantPidPath = join(homeStateRoot, 'descendant.pid');
+    await writeFile(
+      serverScript,
+      echoServerSource({ descendantPidPath }),
+      'utf8',
+    );
+    const host = createCommandSessionHost({
+      inlineMaxBytes: 64 * 1024,
+      tailRingBytes: 64 * 1024,
+    });
+    const runtime = createGlobalMcpRuntime({
+      homeStateRoot,
+      toolRegistry: createToolRegistryStore({ builtins: [] }),
+      hostCommands: host,
+      maxPageBytes: 32 * 1024,
+    });
+    attachInMemorySessionCoordinateStore(runtime);
+    let descendantPid: number | undefined;
+    t.after(async () => {
+      await runtime.close().catch(() => undefined);
+      if (descendantPid !== undefined && isProcessAlive(descendantPid)) {
+        process.kill(descendantPid, 'SIGKILL');
+      }
+      await host.closeAll();
+      await rm(homeStateRoot, { recursive: true, force: true });
+    });
+
+    await runtime.initialize();
+    await runtime.addServer({
+      name: 'Echo server with descendant',
+      transport: {
+        kind: 'stdio',
+        command: process.execPath,
+        args: [serverScript],
+        envKeys: [],
+      },
+    });
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        descendantPid = Number(await readFile(descendantPidPath, 'utf8'));
+        break;
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    assert.ok(
+      descendantPid !== undefined && Number.isSafeInteger(descendantPid),
+      'the MCP fixture publishes its descendant pid',
+    );
+    assert.equal(isProcessAlive(descendantPid), true);
+
+    await runtime.close();
+
+    for (
+      let attempt = 0;
+      attempt < 100 && isProcessAlive(descendantPid);
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(
+      isProcessAlive(descendantPid),
+      false,
+      'no SIGTERM-resistant MCP descendant outlives shutdown',
+    );
+  },
+);

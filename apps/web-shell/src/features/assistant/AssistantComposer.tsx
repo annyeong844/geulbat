@@ -13,7 +13,6 @@ import type {
   PlanModeIntensity,
 } from '@geulbat/protocol/planning-workflow';
 import {
-  DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
   IMAGE_GENERATION_MODEL_CATALOG,
   VIDEO_GENERATION_MODEL_CATALOG,
   resolveImageGenerationModelDescriptor,
@@ -71,15 +70,10 @@ export interface AssistantComposerDraftRequest {
   text: string;
 }
 
-interface AssistantComposerProps {
-  isBusy: boolean;
-  isRunning: boolean;
+// 컴포저 상단 컨트롤 한 벌. 값과 변경 핸들러를 함께 소유하며,
+// composition root가 이미 만든 projection을 다시 flat props로 풀지 않는다.
+export interface AssistantComposerControls {
   permissionMode: PermissionMode;
-  modelId: RunModelId;
-  contextUsage?: ContextUsageUpdatedEventPayload | null;
-  reasoningEffort: RunReasoningSelection;
-  serviceTier: RunServiceTier;
-  subagentModelRouting: RunSubagentModelRouting;
   onPermissionModeChange: (mode: PermissionMode) => Promise<void> | void;
   planModeRequested: boolean;
   onPlanModeRequestedChange: (planModeRequested: boolean) => void;
@@ -87,10 +81,21 @@ interface AssistantComposerProps {
   onPlanModeIntensityChange: (intensity: PlanModeIntensity) => void;
   planModeDepth: PlanModeDepth;
   onPlanModeDepthChange: (depth: PlanModeDepth) => void;
+  modelId: RunModelId;
   onModelIdChange: (modelId: RunModelId) => void;
+  reasoningEffort: RunReasoningSelection;
   onReasoningEffortChange: (effort: RunReasoningSelection) => void;
+  serviceTier: RunServiceTier;
   onServiceTierChange: (serviceTier: RunServiceTier) => void;
+  subagentModelRouting: RunSubagentModelRouting;
   onSubagentModelRoutingChange: (routing: RunSubagentModelRouting) => void;
+}
+
+interface AssistantComposerProps {
+  isBusy: boolean;
+  isRunning: boolean;
+  controls: AssistantComposerControls;
+  contextUsage?: ContextUsageUpdatedEventPayload | null;
   workingDirectory?: string | null;
   browseStartPath?: string;
   workingDirectorySelectionPending?: boolean;
@@ -121,23 +126,25 @@ type OpenMenu = 'plus' | 'permission' | 'model' | null;
 export function AssistantComposer({
   isBusy,
   isRunning,
-  permissionMode,
-  modelId,
+  controls: {
+    permissionMode,
+    onPermissionModeChange,
+    planModeRequested,
+    onPlanModeRequestedChange,
+    planModeIntensity,
+    onPlanModeIntensityChange,
+    planModeDepth,
+    onPlanModeDepthChange,
+    modelId,
+    onModelIdChange,
+    reasoningEffort,
+    onReasoningEffortChange,
+    serviceTier,
+    onServiceTierChange,
+    subagentModelRouting,
+    onSubagentModelRoutingChange,
+  },
   contextUsage = null,
-  reasoningEffort,
-  serviceTier,
-  subagentModelRouting = DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
-  onPermissionModeChange,
-  planModeRequested,
-  onPlanModeRequestedChange,
-  planModeIntensity,
-  onPlanModeIntensityChange,
-  planModeDepth,
-  onPlanModeDepthChange,
-  onModelIdChange,
-  onReasoningEffortChange,
-  onServiceTierChange,
-  onSubagentModelRoutingChange,
   workingDirectory = null,
   browseStartPath = '',
   workingDirectorySelectionPending = false,

@@ -13,6 +13,8 @@ void test('fetch_url exposes scalar URL schema and read-only metadata', () => {
       status: 200,
       contentType: 'text/plain',
       content: 'ok',
+      contentFormat: 'line_preserved_text_v1',
+      contentLineCount: 1,
       untrusted: true,
     }),
   });
@@ -23,6 +25,7 @@ void test('fetch_url exposes scalar URL schema and read-only metadata', () => {
   assert.equal(tool.mayMutateComputerFiles, false);
   assert.equal(tool.recoveryStrategy, 'replay_safe');
   assert.equal(tool.parallelBatchKind, undefined);
+  assert.match(tool.description, /block boundaries preserved as lines/u);
   assert.ok(tool.exposure);
   assert.equal(tool.exposure.directHot, true);
   assert.equal(tool.exposure.sdkVisible, true);
@@ -47,6 +50,8 @@ void test('fetch_url forwards extractMode to the runtime owner', async () => {
         status: 200,
         contentType: 'text/plain',
         content: 'ok',
+        contentFormat: 'line_preserved_text_v1',
+        contentLineCount: 1,
         untrusted: true,
       };
     },

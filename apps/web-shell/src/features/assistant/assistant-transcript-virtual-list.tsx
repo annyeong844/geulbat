@@ -45,6 +45,41 @@ export type OpenChildSessionHandler = NonNullable<
   Parameters<typeof RunTranscriptEntryBlock>[0]['onOpenChildSession']
 >;
 
+// 전사 행이 소비하는 상호작용 표면 — 메시지 행과 런 엔트리 블록으로 그대로
+// 내려간다. 같은 콜백 묶음을 조립 계층마다 다시 선언하지 않기 위해 한 벌로
+// 소유한다. 소비자는 필요한 필드만 읽는다.
+export interface TranscriptRowInteractions {
+  onStartArtifactRun: (request: RunRequest) => Promise<void> | void;
+  attachmentImageUrl?: (attachmentId: string) => string | null;
+  onOpenChildSession?: OpenChildSessionHandler;
+  // visualize 위젯의 sendPrompt를 기존 전송 경로로 번역하는 콜백
+  onWidgetPrompt?: (prompt: string) => Promise<void> | void;
+  // ask_user 카드 답변 — 사용자 선택이므로 아티팩트 귀속 없이 전송한다
+  onAskUserAnswer?: AskUserAnswerHandler;
+  answeredAskUserRequestKeys?: ReadonlySet<string>;
+  // 아직 모델이 읽지 않은 내 말을 되돌린다 — 그 말풍선이 가진 동작이다
+  onCancelPendingSteer?: (receivedSeq: number) => void;
+  // 반짝이는 말풍선을 눌렀을 때 — 지금 밀어넣는다
+  onFlushPendingSteer?: () => void;
+  // 위젯 발 도구 호출(run.tool) 번역 콜백
+  onWidgetToolRequest?: WidgetToolRequestHandler;
+  // 존재하면 아티팩트는 인라인 대신 참조 칩으로 남고 중앙 패널에서 열린다
+  onOpenArtifact?: (artifact: ThreadArtifactVersion) => void;
+}
+
+// 메시지 행 하단 액션 — 표시 조건은 Assistant가 판정하고, 없는 콜백은 해당
+// 액션을 그리지 않는다는 뜻이다.
+export interface TranscriptMessageEditActions {
+  // 마지막 답변 액션에 ↻ 재시도를 붙인다
+  onRetryLastPrompt?: () => void;
+  // 마지막 질문에 ✎ 편집을 붙인다 (수정본은 재생성으로 전송)
+  onEditLastUserPrompt?: (nextPrompt: string) => void;
+  // 모든 답변에 ⑂ 여기서 새 채팅을 붙인다
+  onBranchFromMessage?: (entryId: string) => void;
+  // 과거 질문(마지막 제외)에 ✎ 편집을 붙인다 — 브랜치 기반 재실행
+  onEditPastUserPrompt?: (entryId: string, nextPrompt: string) => void;
+}
+
 interface VirtualizedTranscriptRowsProps {
   scrollElementRef: React.RefObject<HTMLDivElement | null>;
   shouldApplyVirtualizerScroll: () => boolean;
@@ -60,19 +95,9 @@ interface VirtualizedTranscriptRowsProps {
   artifactsByRef: ArtifactsByRefMap;
   planningWorkflowSnapshot?: PlanningWorkflowSnapshot | null;
   isRunning: boolean;
-  onStartArtifactRun: (request: RunRequest) => Promise<void> | void;
-  attachmentImageUrl?: (attachmentId: string) => string | null;
-  onRetryLastPrompt?: () => void;
-  onEditLastUserPrompt?: (nextPrompt: string) => void;
-  onBranchFromMessage?: (entryId: string) => void;
-  onEditPastUserPrompt?: (entryId: string, nextPrompt: string) => void;
-  onOpenChildSession?: OpenChildSessionHandler;
-  onWidgetPrompt?: (prompt: string) => Promise<void> | void;
-  // ask_user 카드 답변 — 사용자 선택이므로 아티팩트 귀속 없이 전송한다
-  onAskUserAnswer?: AskUserAnswerHandler;
-  answeredAskUserRequestKeys?: ReadonlySet<string>;
-  onWidgetToolRequest?: WidgetToolRequestHandler;
-  onOpenArtifact?: (artifact: ThreadArtifactVersion) => void;
+  // 행 재렌더를 아끼려면 호출부가 이 객체 identity를 안정적으로 유지한다.
+  rowInteractions: TranscriptRowInteractions;
+  messageEditActions?: TranscriptMessageEditActions;
 }
 
 const INITIAL_VIEWPORT_RECT = { width: 400, height: 800 };
@@ -107,19 +132,12 @@ export const VirtualizedTranscriptRows = React.memo(
     artifactsByRef,
     planningWorkflowSnapshot = null,
     isRunning,
-    onStartArtifactRun,
-    attachmentImageUrl,
-    onRetryLastPrompt,
-    onEditLastUserPrompt,
-    onBranchFromMessage,
-    onEditPastUserPrompt,
-    onOpenChildSession,
-    onWidgetPrompt,
-    onAskUserAnswer,
-    answeredAskUserRequestKeys = EMPTY_ANSWERED_ASK_USER_REQUEST_KEYS,
-    onWidgetToolRequest,
-    onOpenArtifact,
+    rowInteractions,
+    messageEditActions,
   }: VirtualizedTranscriptRowsProps) {
+    const answeredAskUserRequestKeys =
+      rowInteractions.answeredAskUserRequestKeys ??
+      EMPTY_ANSWERED_ASK_USER_REQUEST_KEYS;
     // settled 메시지 행과 라이브 엔트리 행을 따로 메모한다 — 스트리밍으로
     // 엔트리가 붙을 때 settled 행 객체의 identity가 보존되어, 아래
     // React.memo 행 콘텐츠가 화면에 보이는 과거 행을 다시 그리지 않는다.
@@ -393,33 +411,12 @@ export const VirtualizedTranscriptRows = React.memo(
                 isLastUserMessage={
                   row.kind === 'message' && row.messageIndex === lastUserIndex
                 }
-                onStartArtifactRun={onStartArtifactRun}
                 expanded={expandedGroups.has(row.key)}
                 onToggleGroup={toggleGroup}
-                {...(attachmentImageUrl !== undefined
-                  ? { attachmentImageUrl }
+                rowInteractions={rowInteractions}
+                {...(messageEditActions !== undefined
+                  ? { messageEditActions }
                   : {})}
-                {...(onRetryLastPrompt !== undefined
-                  ? { onRetryLastPrompt }
-                  : {})}
-                {...(onEditLastUserPrompt !== undefined
-                  ? { onEditLastUserPrompt }
-                  : {})}
-                {...(onBranchFromMessage !== undefined
-                  ? { onBranchFromMessage }
-                  : {})}
-                {...(onEditPastUserPrompt !== undefined
-                  ? { onEditPastUserPrompt }
-                  : {})}
-                {...(onOpenChildSession !== undefined
-                  ? { onOpenChildSession }
-                  : {})}
-                {...(onWidgetPrompt !== undefined ? { onWidgetPrompt } : {})}
-                {...(onAskUserAnswer !== undefined ? { onAskUserAnswer } : {})}
-                {...(onWidgetToolRequest !== undefined
-                  ? { onWidgetToolRequest }
-                  : {})}
-                {...(onOpenArtifact !== undefined ? { onOpenArtifact } : {})}
               />
             </div>
           );
@@ -439,18 +436,8 @@ const TranscriptVirtualRowContent = React.memo(
     isRunning: boolean;
     isLastAssistantMessage: boolean;
     isLastUserMessage: boolean;
-    onStartArtifactRun: (request: RunRequest) => Promise<void> | void;
-    attachmentImageUrl?: (attachmentId: string) => string | null;
-    onRetryLastPrompt?: () => void;
-    onEditLastUserPrompt?: (nextPrompt: string) => void;
-    onBranchFromMessage?: (entryId: string) => void;
-    onEditPastUserPrompt?: (entryId: string, nextPrompt: string) => void;
-    onOpenChildSession?: OpenChildSessionHandler;
-    onWidgetPrompt?: (prompt: string) => Promise<void> | void;
-    // ask_user 카드 답변 — 사용자 선택이므로 아티팩트 귀속 없이 전송한다
-    onAskUserAnswer?: AskUserAnswerHandler;
-    onWidgetToolRequest?: WidgetToolRequestHandler;
-    onOpenArtifact?: (artifact: ThreadArtifactVersion) => void;
+    rowInteractions: TranscriptRowInteractions;
+    messageEditActions?: TranscriptMessageEditActions;
     deferVisualizeRuntimeBoot: boolean;
     expanded: boolean;
     onToggleGroup: (key: string) => void;
@@ -462,21 +449,29 @@ const TranscriptVirtualRowContent = React.memo(
       isRunning,
       isLastAssistantMessage,
       isLastUserMessage,
-      onStartArtifactRun,
-      attachmentImageUrl,
-      onRetryLastPrompt,
-      onEditLastUserPrompt,
-      onBranchFromMessage,
-      onEditPastUserPrompt,
-      onOpenChildSession,
-      onWidgetPrompt,
-      onAskUserAnswer,
-      onWidgetToolRequest,
-      onOpenArtifact,
+      rowInteractions,
+      messageEditActions,
       deferVisualizeRuntimeBoot,
       expanded,
       onToggleGroup,
     } = props;
+    const {
+      onStartArtifactRun,
+      attachmentImageUrl,
+      onOpenChildSession,
+      onWidgetPrompt,
+      onCancelPendingSteer,
+      onFlushPendingSteer,
+      onAskUserAnswer,
+      onWidgetToolRequest,
+      onOpenArtifact,
+    } = rowInteractions;
+    const {
+      onRetryLastPrompt,
+      onEditLastUserPrompt,
+      onBranchFromMessage,
+      onEditPastUserPrompt,
+    } = messageEditActions ?? {};
 
     if (row.kind === 'message') {
       const actions = {
@@ -512,6 +507,12 @@ const TranscriptVirtualRowContent = React.memo(
           {...(attachmentImageUrl !== undefined ? { attachmentImageUrl } : {})}
           {...(Object.keys(actions).length > 0 ? { actions } : {})}
           {...(onWidgetPrompt !== undefined ? { onWidgetPrompt } : {})}
+          {...(onCancelPendingSteer !== undefined
+            ? { onCancelPendingSteer }
+            : {})}
+          {...(onFlushPendingSteer !== undefined
+            ? { onFlushPendingSteer }
+            : {})}
           {...(onAskUserAnswer !== undefined ? { onAskUserAnswer } : {})}
           {...(onWidgetToolRequest !== undefined
             ? { onWidgetToolRequest }

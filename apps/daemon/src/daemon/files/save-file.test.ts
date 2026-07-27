@@ -17,8 +17,10 @@ import {
 } from '../utils/atomic-file.js';
 import { hasErrorCode } from '../utils/error.js';
 import { StaleWriteError } from './file-domain-error.js';
+import { resolveSourceMutationTarget } from './file-platform.js';
 import { readFile } from './read-file.js';
-import { saveFile } from './save-file.js';
+import { saveFile, saveResolvedFile } from './save-file.js';
+import { createVersionToken } from './version-token.js';
 
 void test('saveFile atomically updates the canonical target of an existing symlink', async (t) => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-save-'));
@@ -40,6 +42,39 @@ void test('saveFile atomically updates the canonical target of an existing symli
   );
   assert.equal(result.ok, true);
   assert.equal(await fsReadFile(outsideFile, 'utf8'), 'updated\n');
+});
+
+void test('saveResolvedFile validates the canonical target after a symlink is retargeted', async (t) => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-save-'));
+  const outsideRoot = await mkdtemp(join(tmpdir(), 'geulbat-outside-'));
+  const originalTarget = join(outsideRoot, 'original.txt');
+  const replacementTarget = join(outsideRoot, 'replacement.txt');
+  const insideLink = join(workspaceRoot, 'linked.txt');
+
+  await writeFile(originalTarget, 'original\n', 'utf8');
+  await writeFile(replacementTarget, 'original\n', 'utf8');
+  if (!(await createSymlinkOrSkip(t, originalTarget, insideLink))) {
+    return;
+  }
+
+  const resolvedPath = await resolveSourceMutationTarget(
+    workspaceRoot,
+    'linked.txt',
+  );
+  const current = await readFile(workspaceRoot, 'linked.txt');
+
+  await writeFile(originalTarget, 'competing\n', 'utf8');
+  await unlink(insideLink);
+  if (!(await createSymlinkOrSkip(t, replacementTarget, insideLink))) {
+    return;
+  }
+
+  await assert.rejects(
+    () => saveResolvedFile(resolvedPath, 'updated\n', current.versionToken),
+    (error: unknown) => error instanceof StaleWriteError,
+  );
+  assert.equal(await fsReadFile(originalTarget, 'utf8'), 'competing\n');
+  assert.equal(await fsReadFile(replacementTarget, 'utf8'), 'original\n');
 });
 
 void test('saveFile creates a file through a symlinked parent directory', async (t) => {
@@ -94,6 +129,39 @@ void test('saveFile rejects stale writes when the file changed after the caller 
     () => saveFile(workspaceRoot, 'hello.txt', 'updated\n', file.versionToken),
     (error: unknown) => error instanceof StaleWriteError,
   );
+});
+
+void test('saveFile rejects an external change that happens after staging', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-save-'));
+  const absolutePath = join(workspaceRoot, 'hello.txt');
+  await writeFile(absolutePath, 'hello\n', 'utf8');
+  const file = await readFile(workspaceRoot, 'hello.txt');
+
+  await assert.rejects(
+    () =>
+      saveFile(workspaceRoot, 'hello.txt', 'updated\n', file.versionToken, {
+        atomicFs: {
+          async mkdir(...args) {
+            await mkdir(...args);
+          },
+          async writeFile(...args) {
+            await writeFile(...args);
+            await writeFile(absolutePath, 'competing\n', 'utf8');
+          },
+          async rename(...args) {
+            await rename(...args);
+          },
+          async unlink(...args) {
+            await unlink(...args);
+          },
+        },
+      }),
+    (error: unknown) =>
+      error instanceof StaleWriteError &&
+      error.currentVersionToken === createVersionToken('competing\n'),
+  );
+
+  assert.equal(await fsReadFile(absolutePath, 'utf8'), 'competing\n');
 });
 
 void test('saveFile canonicalizes CRLF content to LF before writing', async () => {

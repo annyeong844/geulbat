@@ -222,7 +222,7 @@ void test('handleClientMessage automatically rebinds detached run delivery after
       JSON.stringify({
         type: 'run.auth',
         requestId: 'auth-auto-rebind',
-        token: 'cookie-auth',
+        token: 'proxy-authenticated',
         runEventCursors: [{ runId, seq: 0 }],
       }),
       daemonContext,
@@ -283,7 +283,7 @@ void test('authenticated reconnect restores the current planning workflow snapsh
       JSON.stringify({
         type: 'run.auth',
         requestId: 'auth-planning-workflow-reconnect',
-        token: 'cookie-auth',
+        token: 'proxy-authenticated',
         threadSubscriptions: [threadId],
       }),
       daemonContext,
@@ -677,7 +677,7 @@ void test('handleClientMessage replays a pending child terminal result from an e
       JSON.stringify({
         type: 'run.auth',
         requestId: 'auth-thread-subscription',
-        token: 'cookie-auth',
+        token: 'proxy-authenticated',
         threadSubscriptions: [threadId],
       }),
       daemonContext,
@@ -826,7 +826,7 @@ void test('authenticated reconnect replays detached live history once before aut
       JSON.stringify({
         type: 'run.auth',
         requestId: 'auth-live-terminal-before-durable',
-        token: 'cookie-auth',
+        token: 'proxy-authenticated',
       }),
       daemonContext,
     );
@@ -856,6 +856,89 @@ void test('authenticated reconnect replays detached live history once before aut
   }
 });
 
+void test('authenticated reconnect fails closed when detached live history cannot be restored', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
+  const detachedSocket = createTestSocket();
+  const detachedState = getSocketState(detachedSocket);
+  detachedState.computerSessionId = daemonContext.computerSessionId;
+  const threadId = testThreadId(64);
+  const runId = assertRunId('run-live-terminal-restore-failure');
+  detachedState.activeRunIds.add(runId);
+
+  await daemonContext.runCheckpoints.startRun({
+    threadId,
+    runId,
+    request: { workingDirectory: '', permissionMode: 'basic' },
+  });
+  daemonContext.liveRunEvents.startRun({
+    runId,
+    threadId,
+    ownerId: detachedState.computerSessionId,
+    sink: () => true,
+    async persistRunEvents(events) {
+      await daemonContext.runCheckpoints.appendRunEvents({
+        threadId,
+        runId,
+        events,
+      });
+    },
+    async readPersistedRunEvents() {
+      return [];
+    },
+  });
+  daemonContext.liveRunEvents.publishRunEvent(runId, {
+    type: 'run_ack',
+    payload: { runId, threadId },
+  });
+  await daemonContext.liveRunEvents.flushRunEventHistory(runId);
+  cleanupSocketState(detachedSocket, daemonContext);
+  await daemonContext.liveRunEvents.commitTerminalRunEvent({
+    runId,
+    event: {
+      type: 'done',
+      payload: { answer: 'must not be hidden', ok: true },
+    },
+    async persist(envelope) {
+      await daemonContext.runCheckpoints.settleRun({
+        threadId,
+        runId,
+        terminal: {
+          eventCursor: envelope.seq,
+          event: envelope.event,
+        },
+      });
+    },
+  });
+  daemonContext.liveRunEvents.finishRun(runId);
+
+  const replacementSocket = createTestSocket();
+  const replacementState = getSocketState(replacementSocket);
+  replacementState.upgradeAuthorized = true;
+  try {
+    await handleClientMessage(
+      replacementSocket,
+      JSON.stringify({
+        type: 'run.auth',
+        requestId: 'auth-live-terminal-restore-failure',
+        token: 'proxy-authenticated',
+      }),
+      daemonContext,
+    );
+
+    assert.equal(replacementState.authenticated, false);
+    assert.deepEqual(replacementSocket.sentFrames, []);
+    assert.deepEqual(replacementSocket.closeCalls, [
+      {
+        code: 1011,
+        reason: 'authentication synchronization failed',
+      },
+    ]);
+    assert.equal(daemonContext.liveRunEvents.hasRun(runId), true);
+  } finally {
+    cleanupSocketState(replacementSocket, daemonContext);
+  }
+});
+
 void test('handleClientMessage authenticates sockets that were authorized during websocket upgrade', async () => {
   const socket = createTestSocket();
   const daemonContext = createRunChannelTestDaemonContext();
@@ -868,8 +951,8 @@ void test('handleClientMessage authenticates sockets that were authorized during
       socket,
       JSON.stringify({
         type: 'run.auth',
-        requestId: 'auth-cookie-upgrade',
-        token: 'cookie-auth',
+        requestId: 'auth-proxy-upgrade',
+        token: 'proxy-authenticated',
       }),
       daemonContext,
     );
@@ -878,7 +961,7 @@ void test('handleClientMessage authenticates sockets that were authorized during
     assert.equal(state.authTimeout, null);
     assert.deepEqual(readLastSentMessage(socket), {
       type: 'run.auth.ok',
-      requestId: 'auth-cookie-upgrade',
+      requestId: 'auth-proxy-upgrade',
       ok: true,
       computerSessionId: TEST_COMPUTER_SESSION_ID,
     });

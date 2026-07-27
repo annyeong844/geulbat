@@ -68,6 +68,9 @@ export interface SubagentLaunchPromotionController {
     registration: DeferredSubagentLaunchRegistration;
     deferReason: SubagentLaunchDeferReason;
   }): DurableSubagentLaunchRequest;
+  restoreQueuedLaunch(
+    registration: DeferredSubagentLaunchRegistration,
+  ): DurableSubagentLaunchRequest;
   forgetLaunch(childRunId: RunId): void;
   requestPromotion(): void;
   close(): Promise<void>;
@@ -204,63 +207,7 @@ export function createSubagentLaunchPromotionController(args: {
 
         const groups = groupQueuedLaunchRequests(queuedRequests);
         for (const group of groups) {
-          const groupRegistrations = group.map((request) =>
-            registrations.get(request.childRunId),
-          );
-          if (groupRegistrations.some((registration) => !registration)) {
-            continue;
-          }
-          const runnableRegistrations = groupRegistrations.filter(
-            (
-              registration,
-            ): registration is DeferredSubagentLaunchRegistration =>
-              registration !== undefined,
-          );
-          const parentRunState = runnableRegistrations[0]?.parentRunState;
-          const ultraReasoning = runnableRegistrations[0]?.ultraReasoning;
-          if (
-            parentRunState === undefined ||
-            ultraReasoning === undefined ||
-            runnableRegistrations.some(
-              (registration) =>
-                registration.parentRunState !== parentRunState ||
-                registration.ultraReasoning !== ultraReasoning,
-            )
-          ) {
-            logger.error(
-              'durable subagent promotion group has inconsistent parent runtime ownership',
-            );
-            continue;
-          }
-
-          const admission = args.admission.reserveSubagentLaunchSlots({
-            runState: parentRunState,
-            requestedChildren: runnableRegistrations.length,
-            ultraReasoning,
-            transferable: true,
-          });
-          if (!admission.ok) {
-            continue;
-          }
-          for (const request of group) {
-            registrations.delete(request.childRunId);
-          }
-          try {
-            const starts = runnableRegistrations.map((registration) =>
-              registration.start(),
-            );
-            const results = await Promise.allSettled(starts);
-            for (const result of results) {
-              if (result.status === 'rejected') {
-                logger.error(
-                  'deferred subagent promotion start failed:',
-                  getErrorMessage(result.reason),
-                );
-              }
-            }
-          } finally {
-            admission.reservation.release();
-          }
+          await promoteQueuedLaunchGroup(group);
         }
       } while (drainAgain && !closed);
     } finally {
@@ -268,6 +215,70 @@ export function createSubagentLaunchPromotionController(args: {
       if (drainAgain && !closed) {
         schedulePromotion();
       }
+    }
+  }
+
+  /**
+   * 한 그룹의 승격. 그룹은 함께 입장하거나 함께 남는다 — 부분 승격은 부모의
+   * 정원 소유권을 쪼개므로 어느 단계에서 막히든 이 그룹만 그대로 되돌린다.
+   */
+  async function promoteQueuedLaunchGroup(
+    group: readonly DurableSubagentLaunchRequest[],
+  ): Promise<void> {
+    const groupRegistrations = group.map((request) =>
+      registrations.get(request.childRunId),
+    );
+    if (groupRegistrations.some((registration) => !registration)) {
+      return;
+    }
+    const runnableRegistrations = groupRegistrations.filter(
+      (registration): registration is DeferredSubagentLaunchRegistration =>
+        registration !== undefined,
+    );
+    const parentRunState = runnableRegistrations[0]?.parentRunState;
+    const ultraReasoning = runnableRegistrations[0]?.ultraReasoning;
+    if (
+      parentRunState === undefined ||
+      ultraReasoning === undefined ||
+      runnableRegistrations.some(
+        (registration) =>
+          registration.parentRunState !== parentRunState ||
+          registration.ultraReasoning !== ultraReasoning,
+      )
+    ) {
+      logger.error(
+        'durable subagent promotion group has inconsistent parent runtime ownership',
+      );
+      return;
+    }
+
+    const admission = args.admission.reserveSubagentLaunchSlots({
+      runState: parentRunState,
+      requestedChildren: runnableRegistrations.length,
+      ultraReasoning,
+      transferable: true,
+    });
+    if (!admission.ok) {
+      return;
+    }
+    for (const request of group) {
+      registrations.delete(request.childRunId);
+    }
+    try {
+      const starts = runnableRegistrations.map((registration) =>
+        registration.start(),
+      );
+      const results = await Promise.allSettled(starts);
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          logger.error(
+            'deferred subagent promotion start failed:',
+            getErrorMessage(result.reason),
+          );
+        }
+      }
+    } finally {
+      admission.reservation.release();
     }
   }
 
@@ -285,6 +296,22 @@ export function createSubagentLaunchPromotionController(args: {
       registrations.set(registration.childRunId, registration);
       schedulePromotion();
       return deferred;
+    },
+    restoreQueuedLaunch(registration) {
+      if (closed) {
+        throw new Error('subagent launch promotion controller is closed');
+      }
+      const queued = args.launchRequests.readSubagentLaunchRequestByChildRunId(
+        registration.childRunId,
+      );
+      if (queued?.launchState !== 'queued') {
+        throw new Error(
+          `subagent launch is not queued for restoration: ${registration.childRunId}`,
+        );
+      }
+      registrations.set(registration.childRunId, registration);
+      schedulePromotion();
+      return queued;
     },
     forgetLaunch(childRunId) {
       registrations.delete(childRunId);

@@ -10,7 +10,7 @@ import type { AgentEvent } from '../../runtime-contracts.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { updateGoalTool } from './update-goal.js';
 
-void test('update_goal requests verification for the active Goal without completing it', async () => {
+void test('update_goal requests host completion admission without completing the Goal inside the tool', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'update-goal-'));
   const threadId = testThreadId(1_410);
   const runId = assertRunId('run-update-goal');
@@ -18,7 +18,7 @@ void test('update_goal requests verification for the active Goal without complet
   const goal = await daemonContext.goals.enterOrResume({
     threadId,
     requested: true,
-    objective: 'Verify before completion',
+    objective: 'Check host obligations before completion',
     executionTemplate: {
       workingDirectory: '/workspace',
       permissionMode: 'basic',
@@ -54,7 +54,7 @@ void test('update_goal requests verification for the active Goal without complet
   );
 
   assert.equal(result.ok, true);
-  assert.match(result.output, /"status":"verifying"/u);
+  assert.match(result.output, /"status":"completion_requested"/u);
   assert.equal(
     (await daemonContext.goals.readThread(threadId))?.state,
     'verifying',

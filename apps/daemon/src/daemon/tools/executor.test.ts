@@ -182,6 +182,51 @@ void test('executeTool sanitizes unsafe tool-level failure result messages', asy
   });
 });
 
+void test('executeTool keeps curated failure diagnostics while sanitizing the message', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  store.registerTool(
+    makeTool({
+      name: 'diagnostic_conflict_tool_for_executor_test',
+      async executeParsed() {
+        return {
+          ok: false,
+          output: '',
+          errorCode: 'conflict',
+          error: "EACCES: denied, open '/tmp/private/session.sock'",
+          diagnostics: {
+            phase: 'command_start',
+            reasonCode: 'ptc_execute_code_cell_busy',
+            retryHint:
+              'Wait for the running cell to settle before calling exec again.',
+          },
+        };
+      },
+    }),
+  );
+
+  const result = await executeTool(
+    'diagnostic_conflict_tool_for_executor_test',
+    {},
+    { callId: 'call_diagnostic_conflict' },
+    { toolRegistry: store },
+  );
+
+  // 메시지는 계속 정제한다. 정제가 진단까지 같이 버리면 호출자는 같은 실패를
+  // 반복할 수밖에 없다.
+  assert.deepEqual(result, {
+    ok: false,
+    output: '',
+    errorCode: 'conflict',
+    error: 'tool "diagnostic_conflict_tool_for_executor_test" execution failed',
+    diagnostics: {
+      phase: 'command_start',
+      reasonCode: 'ptc_execute_code_cell_busy',
+      retryHint:
+        'Wait for the running cell to settle before calling exec again.',
+    },
+  });
+});
+
 void test('executeTool preserves safe not_found tool-level failure messages', async () => {
   const store = createToolRegistryStore({ builtins: [] });
   store.registerTool(
@@ -583,11 +628,7 @@ void test('executeTool classifies caller aborts before tool completion as cancel
       name: 'caller_abort_pending_executor_tool',
       omitTimeout: true,
       async executeParsed() {
-        await delay(50);
-        return {
-          ok: true,
-          output: 'should-not-complete',
-        };
+        return await new Promise<ExecuteResult>(() => {});
       },
     }),
   );
@@ -611,6 +652,76 @@ void test('executeTool classifies caller aborts before tool completion as cancel
     errorCode: 'aborted',
     error: 'tool execution cancelled',
   });
+});
+
+void test('executeTool waits for cancellation-aware write cleanup before returning abort', async () => {
+  const store = createToolRegistryStore({ builtins: [] });
+  const controller = new AbortController();
+  let releaseCleanup: (() => void) | undefined;
+  let markCleanupStarted: (() => void) | undefined;
+  const cleanupStarted = new Promise<void>((resolve) => {
+    markCleanupStarted = resolve;
+  });
+  const cleanupRelease = new Promise<void>((resolve) => {
+    releaseCleanup = resolve;
+  });
+  let cleanupSettled = false;
+  store.registerTool(
+    makeTool({
+      name: 'caller_abort_cleanup_aware_write_tool',
+      sideEffectLevel: 'write',
+      omitTimeout: true,
+      async executeParsed(_args, ctx) {
+        await new Promise<void>((resolve) => {
+          ctx.signal?.addEventListener(
+            'abort',
+            () => {
+              markCleanupStarted?.();
+              resolve();
+            },
+            { once: true },
+          );
+        });
+        await cleanupRelease;
+        cleanupSettled = true;
+        return {
+          ok: false,
+          output: '',
+          errorCode: 'aborted',
+          error: 'tool cleanup settled after cancellation',
+        };
+      },
+    }),
+  );
+
+  let returned = false;
+  const waiting = executeTool(
+    'caller_abort_cleanup_aware_write_tool',
+    {},
+    {
+      callId: 'call_caller_abort_cleanup_aware_write',
+      signal: controller.signal,
+    },
+    { toolRegistry: store },
+  ).then((result) => {
+    returned = true;
+    return result;
+  });
+
+  await delay(0);
+  controller.abort();
+  await cleanupStarted;
+  await delay(0);
+  assert.equal(returned, false);
+
+  releaseCleanup?.();
+  assert.deepEqual(await waiting, {
+    ok: false,
+    output: '',
+    errorCode: 'aborted',
+    error: 'tool execution cancelled',
+  });
+  assert.equal(cleanupSettled, true);
 });
 
 void test('executeTool classifies thrown-after-caller-abort as cancellation', async () => {

@@ -9,6 +9,7 @@ import { isJsonValue, type JsonValue } from '../../runtime-json.js';
 import type { CallModelInput } from './client.js';
 import {
   buildCodexDirectPromptCacheProjection,
+  buildCodexDirectWireTools,
   buildProviderInstructions,
   buildResponsesRequestHeaders,
   resolveCodexWireServiceTier,
@@ -48,6 +49,7 @@ export type ProviderNativeCompactionInput = Pick<
   | 'systemPrompt'
   | 'promptContext'
   | 'tools'
+  | 'deferredTools'
   | 'providerSessionId'
   | 'providerAuthRuntime'
   | 'providerRequestOptions'
@@ -185,6 +187,7 @@ export async function compactOpenAiHistory(
 
   const promptCacheProjection = buildCodexDirectPromptCacheProjection(input);
   const instructions = buildProviderInstructions(input);
+  const tools = buildCodexDirectWireTools(input);
   const responsesUrl = resolveCodexResponsesUrl(deps.responsesUrl);
   const compactUrl = `${responsesUrl}/compact`;
   let providerReplayScopeId: ProviderReplayScopeId | undefined;
@@ -206,9 +209,7 @@ export async function compactOpenAiHistory(
         providerReplayScopeId,
       }),
       ...(instructions !== undefined ? { instructions } : {}),
-      ...(input.tools !== undefined && input.tools.length > 0
-        ? { tools: input.tools }
-        : {}),
+      ...(tools === undefined ? {} : { tools }),
       parallel_tool_calls: policy.supportsParallelToolCalls,
       reasoning: input.providerRequestOptions.reasoning,
       service_tier: resolveCodexWireServiceTier(

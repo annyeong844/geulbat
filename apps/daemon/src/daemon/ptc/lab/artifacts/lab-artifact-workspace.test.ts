@@ -20,6 +20,7 @@ import {
 } from '../profile/lab-profile.js';
 import {
   importPtcLabArtifactWorkspaceFile,
+  importPtcLabArtifactWorkspaceFiles,
   PTC_LAB_ARTIFACT_IMPORT_MAX_BYTES,
   type PtcLabArtifactWorkspaceSessionHandle,
 } from './lab-artifact-workspace.js';
@@ -161,6 +162,59 @@ void test('importPtcLabArtifactWorkspaceFile imports one explicit file into sand
     assert.equal(
       await readFile(join(copiedRoot, 'out', 'result.txt'), 'utf8'),
       'artifact bytes',
+    );
+  });
+});
+
+void test('importPtcLabArtifactWorkspaceFiles commits one evidence record and enforces the aggregate limit', async () => {
+  await withTempRoots(async ({ stateRoot, artifactRoot }) => {
+    await mkdir(join(artifactRoot, 'out'), { recursive: true });
+    await writeFile(join(artifactRoot, 'out', 'first.txt'), 'first', 'utf8');
+    await writeFile(join(artifactRoot, 'out', 'second.txt'), 'two', 'utf8');
+    const store = createSandboxAttemptStore();
+    const policy = {
+      maxFiles: 2,
+      maxFileBytes: 8,
+      maxTotalBytes: 8,
+    };
+
+    const imported = await importPtcLabArtifactWorkspaceFiles({
+      admission: admittedLab(),
+      session: session(artifactRoot),
+      stateRoot,
+      attemptStore: store,
+      request: {
+        relativePaths: ['out/first.txt', 'out/second.txt'],
+        policy,
+      },
+    });
+
+    assert.equal(imported.ok, true);
+    assert.deepEqual(
+      imported.ok ? imported.value.files.map((file) => file.relativePath) : [],
+      ['out/first.txt', 'out/second.txt'],
+    );
+    assert.equal(imported.ok ? imported.value.totalBytes : 0, 8);
+    assert.equal(store.getAttempts().records.length, 1);
+    assert.equal(
+      store.getAttempts().records[0]?.jobKind,
+      'ptc_execute_code_artifact_export',
+    );
+
+    const rejected = await importPtcLabArtifactWorkspaceFiles({
+      admission: admittedLab(),
+      session: session(artifactRoot),
+      stateRoot,
+      attemptStore: store,
+      request: {
+        relativePaths: ['out/first.txt', 'out/second.txt'],
+        policy: { ...policy, maxTotalBytes: 7 },
+      },
+    });
+    assert.equal(rejected.ok, false);
+    assert.equal(
+      rejected.ok ? '' : rejected.reasonCode,
+      'ptc_lab_artifact_total_too_large',
     );
   });
 });

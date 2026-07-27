@@ -14,6 +14,7 @@ import type { RunToolResultPayload } from '@geulbat/protocol/run-channel';
 import { getErrorMessage } from '../lib/error-message.js';
 
 import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
+import type { ArtifactRuntimeAgentToolIntent } from '../features/assistant/runtime-frame/artifact-runtime-frame-message-handler.js';
 
 import {
   prepareRunStartRequest,
@@ -38,7 +39,6 @@ import {
   type InterjectRunClient,
   type PromptActionInputs,
   type RunToolFailure,
-  type WidgetToolRequestIntent,
 } from './run-session-controller-action-fns.js';
 
 // 자유 액션 함수 계층은 run-session-controller-action-fns.ts로 이동 —
@@ -251,7 +251,7 @@ export function useRunSessionControllerActions({
 
   const degradeWidgetToolToPrompt = useCallback(
     async (
-      request: WidgetToolRequestIntent,
+      request: ArtifactRuntimeAgentToolIntent,
       threadId: string,
       rejection: RunToolFailure,
     ): Promise<RunToolResultPayload> =>
@@ -290,7 +290,9 @@ export function useRunSessionControllerActions({
   // daemon이 소유하며, 탐색기 위치는 권한이나 cwd가 아니다. 실패는 데이터
   // 응답으로 돌려 pending Promise를 settle한다.
   const requestWidgetTool = useCallback(
-    async (request: WidgetToolRequestIntent): Promise<RunToolResultPayload> => {
+    async (
+      request: ArtifactRuntimeAgentToolIntent,
+    ): Promise<RunToolResultPayload> => {
       const inputs = latestPromptInputsRef.current;
       const threadId = inputs.selectedThreadId;
       if (threadId === null || threadId === '') {

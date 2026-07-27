@@ -18,7 +18,17 @@ import {
   createArtifactRuntimeSourceIdentity,
 } from './artifact-runtime-frame-revision.js';
 
-const DEFAULT_ARTIFACT_RUNTIME_PARENT_ORIGIN = 'http://127.0.0.1:5173';
+/**
+ * 부모 창의 origin을 알 수 없을 때 쓰는 값. 이 값이 쓰이는 상황은 `window`가
+ * 없다는 뜻이고, 그때는 전달할 부모가 애초에 없다. 동작할 것처럼 보이는 주소를
+ * 두면 읽는 사람이 "기본 부모 origin"으로 오해하고, 단일 포트 제품에서는 그
+ * 주소가 아무 의미도 없다.
+ *
+ * `'null'`은 웹 표준의 opaque origin이다. 데몬의 parentOrigin 정규화가 이 값을
+ * URL로 해석하지 못해 `null`로 만들고, 런타임 호스트는 어떤 메시지도 보내지
+ * 않는다 — 모르는 부모에게 fail-closed다.
+ */
+const UNKNOWN_ARTIFACT_RUNTIME_PARENT_ORIGIN = 'null';
 
 interface ArtifactRuntimeFrameIdentity {
   runtimeParentOrigin: string;
@@ -76,7 +86,7 @@ export function createArtifactRuntimeFrameIdentity(args: {
 export function resolveArtifactRuntimeParentOrigin(
   locationOrigin: string | undefined,
 ): string {
-  return locationOrigin ?? DEFAULT_ARTIFACT_RUNTIME_PARENT_ORIGIN;
+  return locationOrigin ?? UNKNOWN_ARTIFACT_RUNTIME_PARENT_ORIGIN;
 }
 
 function createArtifactRuntimeFrameUrl(args: {

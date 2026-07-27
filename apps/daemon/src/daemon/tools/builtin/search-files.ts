@@ -85,7 +85,9 @@ export const searchFilesTool = defineZodTool({
   argsSchema: searchFilesArgsSchema,
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
+  abortSettlement: 'await_execution',
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   resultProjection: {
     exactDurableRecovery: true,
     modelProjection: 'search_files_summary',

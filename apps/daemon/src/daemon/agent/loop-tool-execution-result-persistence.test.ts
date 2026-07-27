@@ -1,16 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile as readFsFile, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile as readFsFile,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { assertRunId } from '@geulbat/protocol/ids';
 import type { HistoryItem } from '../llm/index.js';
 import { buildHistoryFromTranscript } from './history/build-history-from-transcript.js';
 import { recordToolCall, recordToolResult } from './loop-tool-support.js';
 import { processFunctionCalls } from './loop-tool-execution.js';
+import { recoverPendingReplaySafeToolCalls } from './loop-tool-recovery.js';
 import type { ToolResultObservation } from './observer/agent-loop-observer.js';
 import { createDaemonContext } from '../context.js';
-import { readTranscriptEntries } from '../sessions/transcript-log.js';
+import {
+  appendTranscriptEntry,
+  readTranscriptEntries,
+} from '../sessions/transcript-log.js';
+import { threadFilePath } from '../sessions/paths.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
 import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
@@ -79,6 +93,125 @@ void test('invalid tool arguments persist tool_call and tool_result to transcrip
   if (replayedOutput?.kind === 'function_call_output') {
     assert.equal(replayedOutput.output, liveOutput);
   }
+});
+
+void test('completed tool result survives a transcript append failure and restart without re-execution', async (t) => {
+  const threadId = testThreadId(82);
+  const runId = assertRunId(randomUUID());
+  const callId = 'call-result-ready-crash-window';
+  const toolName = 'result_ready_crash_window_probe';
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-result-ready-crash-window-'),
+  );
+  const daemonContext = createDaemonContext({
+    homeStateRoot: workspaceRoot,
+  });
+  t.after(async () => rm(workspaceRoot, { recursive: true, force: true }));
+  const runContext = makeRunContext({
+    threadId,
+    stateRoot: workspaceRoot,
+  });
+  const transcriptPath = threadFilePath(workspaceRoot, threadId);
+  const transcriptBackupPath = `${transcriptPath}.before-result`;
+  let executions = 0;
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: toolName,
+      description: 'Completes before making the result transcript unwritable.',
+      sideEffectLevel: 'write',
+      mayMutateComputerFiles: true,
+      requiresApproval: false,
+      async executeParsed() {
+        executions += 1;
+        await rename(transcriptPath, transcriptBackupPath);
+        await mkdir(transcriptPath);
+        return { ok: true, output: 'exact result from the first process' };
+      },
+    }),
+  );
+  await daemonContext.runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: workspaceRoot, permissionMode: 'basic' },
+  });
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: 'run the result readiness crash probe',
+    timestamp: '2026-07-18T00:00:00.000Z',
+  });
+  const runtime = {
+    ...makeExecutionRuntime(daemonContext, {
+      runContext,
+      runId,
+      approvalContext: makeApprovalContext({
+        computerSessionId: 'session-result-ready-crash-window',
+      }),
+      emit: () => {},
+    }),
+    runCheckpoints: daemonContext.runCheckpoints,
+  };
+
+  try {
+    await assert.rejects(
+      processFunctionCalls({
+        functionCalls: [
+          {
+            id: 'item-result-ready-crash-window',
+            callId,
+            name: toolName,
+            arguments: '{}',
+          },
+        ],
+        round: 1,
+        history: [],
+        runtime,
+      }),
+    );
+  } finally {
+    await rm(transcriptPath, { recursive: true, force: true });
+    await rename(transcriptBackupPath, transcriptPath);
+  }
+
+  assert.equal(executions, 1);
+  assert.equal(
+    (await daemonContext.runCheckpoints.readThread(threadId))?.toolResultsReady
+      .length,
+    1,
+  );
+  const replacement = createDaemonContext({
+    homeStateRoot: workspaceRoot,
+  });
+  const recovered = await recoverPendingReplaySafeToolCalls({
+    agentInput: {
+      runId,
+      runContext,
+      prompt: 'unused during recovery',
+      runtimeServices: replacement,
+      approvalContext: {
+        computerSessionId: 'replacement-session',
+        permissionMode: 'basic',
+      },
+      onEvent() {},
+    },
+  });
+
+  assert.equal(recovered.recoveredCallCount, 1);
+  assert.equal(executions, 1);
+  const results = (await readTranscriptEntries(workspaceRoot, threadId)).filter(
+    (entry) => entry.role === 'tool_result',
+  );
+  assert.equal(results.length, 1);
+  const stored = JSON.parse(results[0]?.content ?? '{}') as {
+    computerFilesMayHaveChanged?: boolean;
+    output?: string;
+  };
+  assert.equal(stored.output, 'exact result from the first process');
+  assert.equal(stored.computerFilesMayHaveChanged, true);
+  assert.deepEqual(
+    (await replacement.runCheckpoints.readThread(threadId))?.toolResultsReady,
+    [],
+  );
 });
 
 void test('large search_files output is offloaded and readable through its output ref', async () => {

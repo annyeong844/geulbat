@@ -1,5 +1,3 @@
-import { createLogger } from '@geulbat/structured-logger/logger';
-
 import type { RunId, ThreadId } from './contract.js';
 import type {
   AgentEvent,
@@ -106,8 +104,6 @@ interface LiveRunEventEntry {
   terminal: boolean;
   terminalCommitPending: boolean;
 }
-
-const logger = createLogger('sessions/live-run-events');
 
 export function createLiveRunEventStore(): LiveRunEventStore {
   const entries = new Map<RunId, LiveRunEventEntry>();
@@ -277,26 +273,22 @@ export function createLiveRunEventStore(): LiveRunEventStore {
       }
     },
     async bindRuns({ ownerId, sink, afterSeqByRun }) {
-      const bound: BoundLiveRun[] = [];
+      const replayableEntries: Array<{
+        entry: LiveRunEventEntry;
+        replayEvents: readonly LiveRunEventEnvelope[];
+      }> = [];
       for (const entry of entries.values()) {
-        // 한 런의 복원 실패가 나머지 런의 재연결까지 막으면 안 된다. 실패한
-        // 런만 건너뛰고 엔트리는 남긴다 — prune 뒤라 상주분은 종단 봉투
-        // 하나뿐이라서 남겨도 비용이 없고, 다음 재연결이 다시 시도한다.
-        let replayEvents: readonly LiveRunEventEnvelope[];
-        try {
-          replayEvents = await collectReplayEvents(
+        replayableEntries.push({
+          entry,
+          replayEvents: await collectReplayEvents(
             entry,
             afterSeqByRun?.get(entry.runId),
-          );
-        } catch (error: unknown) {
-          logger.warn('live run event replay could not be restored', {
-            runId: entry.runId,
-            threadId: entry.threadId,
-            firstResidentSeq: entry.firstResidentSeq,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          continue;
-        }
+          ),
+        });
+      }
+
+      const bound: BoundLiveRun[] = [];
+      for (const { entry, replayEvents } of replayableEntries) {
         if (!deliverEvents(replayEvents, sink)) {
           continue;
         }

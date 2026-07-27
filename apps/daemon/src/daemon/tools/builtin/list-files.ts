@@ -78,6 +78,7 @@ export const listFilesTool = defineZodTool({
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   resultProjection: {
     exactDurableRecovery: true,
     modelProjection: 'list_files_summary',

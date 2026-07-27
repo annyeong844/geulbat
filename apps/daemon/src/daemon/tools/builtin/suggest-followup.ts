@@ -29,6 +29,7 @@ export const suggestFollowupTool = defineZodTool({
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'planning',
     searchHints: ['suggest follow-up', 'next step', 'prompt suggestion'],

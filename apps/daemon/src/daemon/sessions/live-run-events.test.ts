@@ -518,7 +518,7 @@ void test('history is retained while the journal has not caught up', async () =>
   releasePersist?.();
 });
 
-void test('one run that cannot be restored does not block the others from rebinding', async () => {
+void test('one run that cannot be restored prevents partial replay and rebinding', async () => {
   const store = createLiveRunEventStore();
   const threadId = testThreadId(304);
   const brokenRunId = assertSessionRunId('run-live-events-broken');
@@ -559,20 +559,21 @@ void test('one run that cannot be restored does not block the others from rebind
   store.detachOwner('socket-session-a');
 
   const replayed: string[] = [];
-  const bound = await store.bindRuns({
-    ownerId: 'socket-session-b',
-    sink: (envelope) => {
-      replayed.push(`${envelope.runId}:${envelope.seq}`);
-      return true;
-    },
-  });
-
-  assert.deepEqual(
-    bound.map((run) => run.runId),
-    [healthyRunId],
-    '복원 가능한 런만 바인딩된다',
+  await assert.rejects(
+    store.bindRuns({
+      ownerId: 'socket-session-b',
+      sink: (envelope) => {
+        replayed.push(`${envelope.runId}:${envelope.seq}`);
+        return true;
+      },
+    }),
+    /live run event history could not be restored/u,
   );
-  assert.deepEqual(replayed, [`${healthyRunId}:0`, `${healthyRunId}:1`]);
+  assert.deepEqual(
+    replayed,
+    [],
+    '복원 사전 검사가 끝나기 전에는 전달하지 않는다',
+  );
   assert.equal(store.hasRun(brokenRunId), true, '실패한 런은 남겨 재시도한다');
-  assert.equal(store.hasRun(healthyRunId), false);
+  assert.equal(store.hasRun(healthyRunId), true);
 });

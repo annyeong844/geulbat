@@ -49,6 +49,23 @@ export interface ProviderStructuredOutput {
   payload: unknown;
 }
 
+/**
+ * Chat Completions SSE (`finish_reason`) 종료 신호.
+ *
+ * 우리 스택에서는 qwen_token_plan HTTP SSE 경로만 채운다. openai_codex_direct
+ * / grok_oauth Responses WebSocket 은 finish_reason 이 없고 이 필드를 비운다.
+ * WS 경로에 chat-completions 종료 이유를 흉내 내어 넣지 않는다.
+ *
+ * `tool_calls` + 실제 functionCalls 0건은 Qwen SSE에서 도구를 쓰겠다고 알리고
+ * payload는 비운 불일치다. 내레이션을 최종 답으로 승격하면 안 된다.
+ */
+export type ModelRoundStopReason =
+  | 'stop'
+  | 'tool_calls'
+  | 'length'
+  | 'content_filter'
+  | 'unknown';
+
 export interface CallResult {
   itemsToAppend: HistoryItem[];
   functionCalls: FunctionCall[];
@@ -57,6 +74,7 @@ export interface CallResult {
   artifactCandidate?: ProviderArtifactCandidate;
   structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
+  stopReason?: ModelRoundStopReason;
 }
 
 interface ProviderUsageTelemetryFields {
@@ -100,6 +118,19 @@ export interface WireToolDefinition {
   strict: boolean;
 }
 
+interface WireDeferredToolDefinition extends WireToolDefinition {
+  defer_loading: true;
+}
+
+interface WireHostedToolSearchDefinition {
+  type: 'tool_search';
+}
+
+export type WireResponsesToolDefinition =
+  | WireToolDefinition
+  | WireDeferredToolDefinition
+  | WireHostedToolSearchDefinition;
+
 export interface WireRequestBody {
   model: string;
   service_tier?: 'default' | 'priority';
@@ -109,7 +140,7 @@ export interface WireRequestBody {
   input: unknown[];
   include?: string[];
   prompt_cache_key?: string;
-  tools?: WireToolDefinition[];
+  tools?: WireResponsesToolDefinition[];
   tool_choice?: string;
   text?: { verbosity: string };
   reasoning?: { effort: string; summary: string };

@@ -167,6 +167,10 @@ export default [
           pattern: ['apps/web-shell/src/features/provider-usage/**'],
         },
         {
+          type: 'feature-settings',
+          pattern: ['apps/web-shell/src/features/settings/**'],
+        },
+        {
           type: 'feature-thread-list',
           pattern: ['apps/web-shell/src/features/thread-list/**'],
         },
@@ -188,8 +192,17 @@ export default [
           pattern: [
             'apps/daemon/src/daemon/host-command-runtime.ts',
             'apps/daemon/src/daemon/host-command-output-store.ts',
+            'apps/daemon/src/daemon/exec-command-shell-state.ts',
+            'apps/daemon/src/daemon/host-command-full-output-archive.ts',
             'apps/daemon/src/command-host/**',
           ],
+          mode: 'full',
+        },
+        {
+          // 체크포인트를 근거로 런을 실행/재개하는 소유자. 어댑터가 아니라
+          // 데몬의 것이며, 소비자는 웹소켓 채널과 daemon-entry 둘이다.
+          type: 'daemon-run-execution',
+          pattern: ['apps/daemon/src/daemon/durable-run-execution.ts'],
           mode: 'full',
         },
         {
@@ -216,6 +229,7 @@ export default [
             'apps/daemon/src/daemon/context.ts',
             'apps/daemon/src/daemon/react-bundle-docker-command-runner.ts',
             'apps/daemon/src/daemon/computer-discovery-command-runner.ts',
+            'apps/daemon/src/daemon/ptc-callback-transport-settings.ts',
             'apps/daemon/src/daemon/ptc-execute-code-terminal-result-store.ts',
             'apps/daemon/src/daemon/plugin-mcp-coordinator.ts',
             'apps/daemon/src/daemon/daemon-runtime-contract.ts',
@@ -228,6 +242,7 @@ export default [
             'apps/daemon/src/daemon/runtime-state-database.ts',
             'apps/daemon/src/daemon/runtime-state-migration-ladder.ts',
             'apps/daemon/src/daemon/runtime-state-mcp-session-store.ts',
+            'apps/daemon/src/daemon/runtime-state-ptc-cell-store.ts',
             'apps/daemon/src/daemon/runtime-state-subagent-launch-store.ts',
             'apps/daemon/src/daemon/runtime-state-subagent-terminal-delivery-store.ts',
             'apps/daemon/src/daemon/runtime-services.ts',
@@ -369,6 +384,25 @@ export default [
         {
           type: 'daemon-ptc-shared',
           pattern: ['apps/daemon/src/daemon/ptc/shared/**'],
+        },
+        {
+          type: 'daemon-ptc-callback-policy-store',
+          pattern: [
+            'apps/daemon/src/daemon/ptc/callback/callback-transport-policy-record.ts',
+          ],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-ptc-artifact-policy-store',
+          pattern: [
+            'apps/daemon/src/daemon/ptc/artifacts/artifact-export-policy-record.ts',
+          ],
+          mode: 'full',
+        },
+        {
+          type: 'daemon-ptc-artifact-export',
+          pattern: ['apps/daemon/src/daemon/ptc-artifact-export-service.ts'],
+          mode: 'full',
         },
         {
           type: 'daemon-ptc-callback',
@@ -530,6 +564,9 @@ export default [
         : 'error',
       curly: ['error', 'all'],
       eqeqeq: ['error', 'always', { null: 'ignore' }],
+      // 중첩 깊이는 길이보다 가독성 신호가 강하다. 제품 소스의 p99가 4이므로
+      // 5는 실제 상한에 가깝고, 넘는 코드는 흐름을 분리해야 한다는 뜻이다.
+      'max-depth': ['error', 5],
       'no-duplicate-imports': ['error', { allowSeparateTypeImports: true }],
       'no-promise-executor-return': 'error',
       'prefer-const': ['error', { ignoreReadBeforeAssign: true }],
@@ -638,6 +675,7 @@ export default [
                     'feature-computer-tree',
                     'feature-provider-auth',
                     'feature-provider-usage',
+                    'feature-settings',
                     'feature-thread-list',
                   ],
                 },
@@ -677,6 +715,7 @@ export default [
                     'feature-computer-tree',
                     'feature-provider-auth',
                     'feature-provider-usage',
+                    'feature-settings',
                     'feature-thread-list',
                   ],
                 },
@@ -842,6 +881,20 @@ export default [
               },
             },
             {
+              from: { type: 'feature-settings' },
+              allow: {
+                to: {
+                  type: [
+                    'protocol',
+                    'structured-logger',
+                    'web-shell-lib',
+                    'feature-provider-auth',
+                    'feature-settings',
+                  ],
+                },
+              },
+            },
+            {
               from: { type: 'feature-thread-list' },
               allow: {
                 to: {
@@ -879,6 +932,7 @@ export default [
                     'daemon-artifact-runtime-persistence',
                     'daemon-react-bundle-dependency-admission',
                     'daemon-react-bundle-inline',
+                    'daemon-ptc-artifact-export',
                     'daemon-sandbox',
                     'daemon-sessions-contract',
                     'daemon-sessions',
@@ -899,6 +953,7 @@ export default [
                     'structured-logger',
                     'protocol',
                     'daemon-kernel',
+                    'daemon-run-execution',
                     'daemon-composition',
                     'daemon-auth',
                     'daemon-agent',
@@ -906,6 +961,7 @@ export default [
                     'daemon-mcp',
                     'daemon-extensions',
                     'daemon-react-bundle-inline',
+                    'daemon-ptc-artifact-export',
                     'daemon-sessions',
                     'daemon-files',
                     'daemon-utils',
@@ -933,6 +989,9 @@ export default [
                 to: {
                   type: [
                     'agent-loop',
+                    // 완료 관측의 지문은 내용 동일성 판정이다 — 해시를 계층마다
+                    // 다시 만들지 않고 정본 소유자(stable JSON + sha256)를 쓴다.
+                    'content-identity',
                     'structured-logger',
                     'tool-library',
                     'daemon-kernel',
@@ -1162,6 +1221,7 @@ export default [
                     'structured-logger',
                     'daemon-files',
                     'daemon-network',
+                    'daemon-kernel',
                     'daemon-utils',
                   ],
                 },
@@ -1178,6 +1238,7 @@ export default [
                     'daemon-ptc-lab-session',
                     'daemon-ptc-shared',
                     'daemon-sandbox',
+                    'protocol',
                   ],
                 },
               },
@@ -1186,7 +1247,7 @@ export default [
               from: { type: 'daemon-ptc-runtime-contract' },
               allow: {
                 to: {
-                  type: ['daemon-ptc-shared'],
+                  type: ['daemon-ptc-shared', 'protocol'],
                 },
               },
             },
@@ -1214,6 +1275,7 @@ export default [
                     'daemon-ptc-runtime-probes',
                     'daemon-ptc-package-helpers',
                     'daemon-ptc-shared',
+                    'protocol',
                   ],
                 },
               },
@@ -1243,6 +1305,34 @@ export default [
               allow: {
                 to: {
                   type: ['content-identity', 'protocol', 'structured-logger'],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-callback-policy-store' },
+              allow: {
+                to: {
+                  type: ['daemon-ptc-callback', 'daemon-utils'],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-artifact-policy-store' },
+              allow: {
+                to: {
+                  type: ['protocol', 'daemon-kernel', 'daemon-utils'],
+                },
+              },
+            },
+            {
+              from: { type: 'daemon-ptc-artifact-export' },
+              allow: {
+                to: {
+                  type: [
+                    'protocol',
+                    'daemon-ptc-artifact-policy-store',
+                    'daemon-sandbox',
+                  ],
                 },
               },
             },
@@ -1488,12 +1578,14 @@ export default [
                     'daemon-ptc-lab-shell',
                     'daemon-process-execution',
                     'daemon-ptc-package-helpers',
+                    'daemon-ptc-sandbox-ingress',
                     'daemon-ptc-runtime-contract',
                     'daemon-ptc-runtime-execute-code',
                     'daemon-ptc-runtime-execute-code-sdk',
                     'daemon-ptc-shared',
                     // 분리 실행의 단일 출구(runDetached)가 사는 리프 계층.
                     'daemon-utils',
+                    'protocol',
                   ],
                 },
               },
@@ -1602,8 +1694,12 @@ export default [
                     'daemon-mcp',
                     'daemon-extensions',
                     'daemon-artifact-runtime-persistence',
+                    'daemon-ptc-artifact-export',
                     'daemon-ptc-runtime-contract',
                     'daemon-ptc-runtime-ingress',
+                    'daemon-ptc-artifact-policy-store',
+                    'daemon-ptc-callback-policy-store',
+                    'daemon-ptc-sandbox-ingress',
                     'daemon-sandbox',
                     'daemon-sessions-contract',
                     'daemon-sessions',
@@ -1618,6 +1714,23 @@ export default [
             {
               from: { type: 'daemon-utils' },
               allow: { to: { type: ['structured-logger', 'daemon-kernel'] } },
+            },
+            {
+              from: { type: 'daemon-run-execution' },
+              allow: {
+                to: {
+                  type: [
+                    'structured-logger',
+                    'protocol',
+                    'daemon-kernel',
+                    'daemon-sessions-contract',
+                    'daemon-composition',
+                    'daemon-agent',
+                    'daemon-sessions',
+                    'daemon-utils',
+                  ],
+                },
+              },
             },
             {
               from: { type: 'daemon-sessions' },
@@ -1664,6 +1777,7 @@ export default [
                     'structured-logger',
                     'protocol',
                     'adapter-web',
+                    'daemon-run-execution',
                     'daemon-agent',
                     'daemon-kernel',
                     'daemon-entry',

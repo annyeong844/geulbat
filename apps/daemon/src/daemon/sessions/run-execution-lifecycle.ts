@@ -23,7 +23,7 @@ import type {
 import type { RunExecutionTemplate } from './run-execution-template.js';
 
 const GOAL_RECOVERY_UNAVAILABLE_MESSAGE =
-  'Goal completion verification is unavailable after daemon recovery';
+  'Goal completion admission is unavailable after daemon recovery';
 
 export interface RunExecutionAgentBindings {
   planningWorkflow?: {
@@ -48,6 +48,7 @@ interface RunExecutionLifecycleDependencies {
   goals: GoalStore;
   runCheckpoints: RunCheckpointStore;
   liveRunEvents: LiveRunEventStore;
+  onTerminalSettled?: () => void;
 }
 
 interface InitialRunExecutionLifecycleArgs extends RunExecutionLifecycleDependencies {
@@ -114,6 +115,7 @@ export async function createRunExecutionLifecycle(
   let intendedTerminalEvent: RunCheckpointTerminalEvent | undefined;
   let unavailableRecoveryStarted = false;
   let unavailableGoalEventPublished = false;
+  let terminalSettlementNotified = false;
 
   function publishLifecycleEvent(event: AgentEvent): void {
     args.liveRunEvents.publishRunEvent(runId, event);
@@ -266,6 +268,14 @@ export async function createRunExecutionLifecycle(
     });
   }
 
+  function notifyTerminalSettled(): void {
+    if (terminalSettlementNotified) {
+      return;
+    }
+    terminalSettlementNotified = true;
+    args.onTerminalSettled?.();
+  }
+
   async function settleTerminal(
     event: RunCheckpointTerminalEvent,
   ): Promise<void> {
@@ -286,6 +296,7 @@ export async function createRunExecutionLifecycle(
         throw new Error(`run terminal checkpoint conflicts: ${runId}`);
       }
       await settleApprovedExecution(event.type === 'done' && event.payload.ok);
+      notifyTerminalSettled();
       return;
     }
     if (hasPendingInterject(checkpoint)) {
@@ -294,6 +305,7 @@ export async function createRunExecutionLifecycle(
     intendedTerminalEvent = event;
     await settleApprovedExecution(event.type === 'done' && event.payload.ok);
     await commitTerminalEvent(event);
+    notifyTerminalSettled();
   }
 
   return {
@@ -350,6 +362,7 @@ export async function createRunExecutionLifecycle(
           checkpoint.terminal?.event.type === 'done' &&
             checkpoint.terminal.event.payload.ok,
         );
+        notifyTerminalSettled();
         return true;
       }
       if (hasPendingInterject(checkpoint)) {
@@ -372,6 +385,7 @@ export async function createRunExecutionLifecycle(
       }
       const checkpoint = await readCorrelatedCheckpoint();
       if (checkpoint.status === 'terminal') {
+        notifyTerminalSettled();
         return true;
       }
       if (hasPendingInterject(checkpoint)) {

@@ -1,6 +1,7 @@
 import type { RunId, ThreadId } from '@geulbat/protocol/ids';
 import type { ProviderAuthRuntimeStore } from './auth/runtime-state.js';
 import type { ProviderRequestOptions } from './llm/provider/provider-options.js';
+import type { ProviderNativeWebSearchRuntime } from './llm/provider/codex-web-search.js';
 import type { ReactBundleStructuredOutputIngressPolicy } from './agent/react-bundle-structured-output-ingress-policy.js';
 import type { ResponsesWebSocketSessionStore } from './llm/provider/transport/responses-websocket-cache.js';
 import type { ActiveRunStore } from './sessions/active-runs.js';
@@ -103,6 +104,7 @@ export interface AgentRuntimeAgentServices {
 
 interface AgentRuntimeProviderServices {
   authRuntime: ProviderAuthRuntimeStore;
+  nativeWebSearch?: ProviderNativeWebSearchRuntime;
   requestOptions: ProviderRequestOptions;
   webSocketSessions: ResponsesWebSocketSessionStore;
 }

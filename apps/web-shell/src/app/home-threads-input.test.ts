@@ -23,11 +23,16 @@ function createThreadsSourceStub() {
     subagentTerminalOutcomes: [],
     deletingThreadId: thread.threadId,
     pendingDeleteThread: thread,
+    exportingThreadId: thread.threadId,
+    importingThreadArchive: true,
+    threadTransferNotice: 'transfer complete',
     loadThreads: async () => {},
     openThread: async () => {},
     requestDeleteThread: () => {},
     cancelDeleteThread: () => {},
     confirmDeleteThread: async () => {},
+    exportThread: async () => {},
+    importThread: async () => {},
     setSelectedThreadId: () => {},
     appendOptimisticUserMessage: () => {},
     startNewSession: () => {},
@@ -55,11 +60,16 @@ void test('createHomeThreadsInput preserves the thread surface used by Home shel
   );
   assert.equal(input.deletingThreadId, THREAD_ID);
   assert.equal(input.pendingDeleteThread, threads.pendingDeleteThread);
+  assert.equal(input.exportingThreadId, THREAD_ID);
+  assert.equal(input.importingThreadArchive, true);
+  assert.equal(input.threadTransferNotice, 'transfer complete');
   assert.equal(input.loadThreads, threads.loadThreads);
   assert.equal(input.openThread, threads.openThread);
   assert.equal(input.requestDeleteThread, threads.requestDeleteThread);
   assert.equal(input.cancelDeleteThread, threads.cancelDeleteThread);
   assert.equal(input.confirmDeleteThread, threads.confirmDeleteThread);
+  assert.equal(input.exportThread, threads.exportThread);
+  assert.equal(input.importThread, threads.importThread);
   assert.equal(input.setSelectedThreadId, threads.setSelectedThreadId);
   assert.equal(
     input.appendOptimisticUserMessage,

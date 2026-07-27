@@ -54,6 +54,7 @@ interface ApprovalCheckpointPort {
 export interface ApprovalGate {
   clearComputerSessionGrants(computerSessionId: string): void;
   clearComputerSessionRuntime(computerSessionId: string): void;
+  clearRunRuntime(computerSessionId: string, runId: string): void;
   // Existence probe only — does a pending approval entry exist for this triple.
   // NOT an authorization check: it ignores the caller's session. For any
   // authorization decision use hasApprovalDecisionAuthority, which binds the
@@ -122,6 +123,26 @@ export function createApprovalGate(args: {
         }
       }
       approvalGrants.clearComputerSession(computerSessionId);
+    },
+    clearRunRuntime(computerSessionId, runId) {
+      const validRunId = assertAgentRunId(runId);
+      const pendingForRun = [...pendingApprovals.entries()].filter(
+        ([, entry]) =>
+          entry.runId === validRunId &&
+          entry.approvalGrantContext.computerSessionId === computerSessionId,
+      );
+      for (const [, entry] of pendingForRun) {
+        entry.resolve('aborted');
+      }
+      for (const [identityKey, entry] of resolvedApprovals.entries()) {
+        if (
+          entry.runId === validRunId &&
+          entry.computerSessionId === computerSessionId
+        ) {
+          resolvedApprovals.delete(identityKey);
+        }
+      }
+      approvalGrants.clearRun(computerSessionId, validRunId);
     },
     hasPendingApprovalEntry(callId, runId, threadId) {
       const validThreadId = assertAgentThreadId(threadId);

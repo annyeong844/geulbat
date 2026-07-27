@@ -1,28 +1,18 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID, randomUUID as randomSubscriptionId } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { platform } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
 
 import {
   buildHostCommandOutputRef,
   parseHostCommandOutputRef,
-  readHostCommandOutputPage,
-  readPersistedHostCommand,
   removeHostCommandDirectory,
-  snapshotFromHostCommandMetadata,
   SYSTEM_SESSION_OWNER,
-  writeHostCommandMetadata,
-  type HostCommandMetadata,
-  type HostCommandOutputPage,
-  type HostCommandOutputStream,
   type HostCommandSnapshot,
   type HostCommandStatus,
 } from '../daemon/host-command-output-store.js';
 import {
   commitClaimMetadata,
   persistTerminalArtifacts,
-  readPageFromWindow,
   type DurabilityStageObserver,
 } from './durability.js';
 import type { SpawnJournal } from './journal.js';
@@ -38,10 +28,12 @@ import type {
   CommandSessionSubscribeOutcome,
   CommandSessionSubscriptionEvent,
   HostCommandInitialResult,
-  HostCommandInteractionResult,
   HostCommandOutputChunk,
   HostCommandRuntime,
 } from './contract.js';
+import { createSessionChildIo, detachSourceAbort } from './session-child-io.js';
+import { createSessionInteraction } from './session-interaction.js';
+import { boundaryPromise, waitForPromiseOrAbort } from './session-wait.js';
 import {
   buildSnapshot,
   describeSession,
@@ -61,12 +53,6 @@ import { appendClosedRow, createJournalRegistry } from './session-journal.js';
 export const COMMAND_HOST_SESSION_CAPACITY = 64;
 const SESSION_CAPACITY = COMMAND_HOST_SESSION_CAPACITY;
 const PROTECTED_RECENT_SESSIONS = 8;
-/** §7.5 — 세션당 stdin 버퍼 상한. 초과는 `stdin_backpressure`. */
-export const MAX_STDIN_BUFFERED_BYTES_PER_SESSION = 1024 * 1024;
-/** §7.5 — 알림 1건이 나르는 출력 조각의 상한. 초과분은 분할한다. */
-const MAX_NOTIFICATION_CHUNK_BYTES = 64 * 1024;
-// 요청 기반 종료 유예 — PTC 선례와 동일 값 (spec §4.5).
-const REQUESTED_TERMINATION_GRACE_MS = 1_000;
 /** §4.1 스트림당 tail 링 기본 예산. */
 export const DEFAULT_TAIL_RING_BYTES = 1024 * 1024;
 /**
@@ -91,12 +77,31 @@ type SessionPhase =
   | 'discarding'
   | 'discarded';
 
-interface SessionTerminalState {
+export interface SessionTerminalState {
   status: Exclude<HostCommandStatus, 'running'>;
   exitCode: number | null;
   finishedAtMs: number;
   outputLimitExceeded: HostCommandSnapshot['outputLimitExceeded'];
   terminationReason?: string;
+}
+
+/**
+ * 프로세스가 사라진 사실. `SessionTerminalState`와 구분해야 한다.
+ *
+ * Node의 `'exit'`은 프로세스 종료를, `'close'`는 stdio가 모두 닫힘을 뜻한다.
+ * 명령이 자손을 백그라운드로 띄우면(`cmd & exit 0`) 자손이 같은 stdout을
+ * 물고 있어 `'close'`가 오지 않는다 — 실측: `exit` 16ms, `close` 3017ms이며
+ * 자손이 계속 살면 `close`는 오지 않는다. 종료를 `'close'`로만 확정하면 이미
+ * 끝난 명령이 계속 `running`으로 보고되고, 모델은 끝난 명령을 계속 관찰한다.
+ *
+ * 반대로 `'exit'`에서 세션을 정착시키면 파이프에 남은 출력이 잘릴 수 있다.
+ * 그래서 두 사실을 각각 남긴다: 여기서 프로세스 생존을, `terminal`에서 출력
+ * 완결을 확정한다. 스냅샷의 `outputComplete`가 후자를 나른다.
+ */
+export interface SessionProcessExit {
+  status: Exclude<HostCommandStatus, 'running'>;
+  exitCode: number | null;
+  finishedAtMs: number;
 }
 
 /**
@@ -275,6 +280,8 @@ export interface SessionEntry {
   firstOutputAfterMs: number | null;
   revision: number;
   terminal: SessionTerminalState | null;
+  /** 프로세스는 사라졌지만 출력 스트림은 아직 열려 있을 수 있다. */
+  processExit: SessionProcessExit | null;
   terminalOverride: SessionTerminalState | null;
   outputWaiters: Set<() => void>;
   exit: Promise<void>;
@@ -329,6 +336,36 @@ export function createCommandSessionHost(
   const settledListeners = new Set<() => void>();
 
   const journalRegistry = createJournalRegistry();
+
+  /**
+   * 세션 하나의 자식 프로세스 입출력은 별도 소유자에게 있다. 그 소유자는
+   * 여기 있는 레지스트리(`resident`)와 정착 상태(`closed`)를 보지 않고
+   * `SessionEntry` 안에서만 움직이므로, 레지스트리를 건드리는 유일한 지점인
+   * `finalizeTerminal`만 넘긴다.
+   */
+  const {
+    applyStreamBackpressure,
+    attachChildProcess,
+    forceTermination,
+    requestGracefulTermination,
+  } = createSessionChildIo({
+    finalizeTerminal,
+    tailRingBytes,
+  });
+
+  /**
+   * `interact` 요청 본문도 별도 소유자에게 있다. 넘기는 것은 이 호스트의
+   * 정책(인라인 예산 · yield 상한 · 인라인 적격 판정)과 자식 입출력 경로뿐이며,
+   * 레지스트리는 넘기지 않는다.
+   */
+  const { interactWithPersisted, interactWithResident } =
+    createSessionInteraction({
+      applyStreamBackpressure,
+      inlineEligible,
+      inlineMaxBytes: config.inlineMaxBytes,
+      requestGracefulTermination,
+      resolveYieldTimeMs,
+    });
 
   function emitSettled(): void {
     for (const listener of [...settledListeners]) {
@@ -426,8 +463,47 @@ export function createCommandSessionHost(
     return attempt;
   }
 
+  let idempotentStartChain = Promise.resolve();
+
   const runtime: CommandSessionHost = {
     async start(args) {
+      if (args.requiresIdempotentStart === true) {
+        const attempt = idempotentStartChain.then(async () => {
+          const owner: CommandSessionOwnerKind = args.owner ?? 'thread';
+          const ownerId =
+            owner === 'system' ? SYSTEM_SESSION_OWNER : args.threadId;
+          const existing = [...resident.values()].find(
+            (entry) =>
+              entry.stateRoot === args.stateRoot &&
+              entry.owner === owner &&
+              entry.threadId === ownerId &&
+              entry.runId === args.runId &&
+              entry.callId === args.callId,
+          );
+          if (existing !== undefined) {
+            if (
+              existing.command !==
+              describeCommand(args.executable, args.args, args.outputRedaction)
+            ) {
+              return {
+                ok: false,
+                reasonCode: 'spawn_failed',
+                message:
+                  'idempotent command-host start identity conflicts with the existing command',
+              } as const;
+            }
+            return { ok: true, outputRef: existing.outputRef } as const;
+          }
+          const freshArgs = { ...args };
+          delete freshArgs.requiresIdempotentStart;
+          return await runtime.start(freshArgs);
+        });
+        idempotentStartChain = attempt.then(
+          () => undefined,
+          () => undefined,
+        );
+        return await attempt;
+      }
       if (closed) {
         return {
           ok: false,
@@ -536,6 +612,7 @@ export function createCommandSessionHost(
         firstOutputAfterMs: null,
         revision: 0,
         terminal: null,
+        processExit: null,
         terminalOverride: null,
         outputWaiters: new Set(),
         exit,
@@ -584,7 +661,33 @@ export function createCommandSessionHost(
           message: getErrorMessage(error),
         };
       }
+      const initialStdin = args.initialStdin;
+      const initialStdinWrite =
+        initialStdin === undefined
+          ? undefined
+          : new Promise<void>((resolve, reject) => {
+              entry.child.stdin.write(initialStdin, (error) => {
+                if (error) {
+                  reject(error);
+                } else {
+                  resolve();
+                }
+              });
+            });
       gated.release();
+      if (initialStdinWrite !== undefined) {
+        try {
+          await initialStdinWrite;
+        } catch (error: unknown) {
+          entry.stdinOpen = false;
+          await discard(entry);
+          return {
+            ok: false,
+            reasonCode: 'spawn_failed',
+            message: getErrorMessage(error),
+          };
+        }
+      }
 
       if (args.timeoutMs !== undefined) {
         entry.timeoutTimer = setTimeout(() => {
@@ -937,262 +1040,6 @@ export function createCommandSessionHost(
 
   return runtime;
 
-  function attachChildProcess(entry: SessionEntry): void {
-    entry.child.stdout.on('data', (chunk: Buffer) => {
-      appendOutput(entry, 'stdout', chunk);
-    });
-    entry.child.stderr.on('data', (chunk: Buffer) => {
-      appendOutput(entry, 'stderr', chunk);
-    });
-    // 자식이 먼저 죽으면 파이프는 EPIPE/ECONNRESET으로 끝난다. 그것은 세션
-    // 사건이 아니라 파이프가 제 수명을 다했다는 뜻이며, 종료 처리는 아래
-    // 'close'가 이미 한다 — 핸들러가 없으면 프로세스가 죽는다.
-    entry.child.stdin.on('error', () => {
-      entry.stdinOpen = false;
-    });
-    entry.child.stdout.on('error', () => undefined);
-    entry.child.stderr.on('error', () => undefined);
-    entry.child.on('error', () => {
-      handleChildTerminal(entry, {
-        status: 'crash',
-        exitCode: null,
-        finishedAtMs: Date.now(),
-        outputLimitExceeded: null,
-      });
-    });
-    entry.child.on('close', (exitCode, signal) => {
-      handleChildTerminal(
-        entry,
-        entry.terminalOverride ??
-          (signal === null
-            ? {
-                status: 'exit',
-                exitCode: exitCode ?? 1,
-                finishedAtMs: Date.now(),
-                outputLimitExceeded: null,
-              }
-            : {
-                status: 'signal',
-                exitCode: null,
-                finishedAtMs: Date.now(),
-                outputLimitExceeded: null,
-              }),
-      );
-    });
-  }
-
-  /**
-   * P7.6 §5.2 — 프로토콜 스트림은 버리지 않으므로, 예산을 넘으면 **읽는 쪽이
-   * 따라올 때까지 소스를 멈춘다**. 자식의 stdout을 읽지 않으면 파이프가 차고
-   * 자식이 write에서 막힌다 — 그것이 우리가 원하는 역압이다.
-   */
-  function applyStreamBackpressure(
-    entry: SessionEntry,
-    stream: HostCommandOutputStream,
-  ): void {
-    if (!isLosslessStream(entry, stream)) {
-      return;
-    }
-    const source =
-      stream === 'stdout' ? entry.child.stdout : entry.child.stderr;
-    // 멈춘 stream은 'end'를 내지 않는다 — 종료를 향하는 세션을 멈춰 두면
-    // 그 세션은 영원히 정착하지 못한다. 역압은 살아 있는 동안만 건다.
-    const overBudget =
-      entry.terminal === null &&
-      entry.terminalOverride === null &&
-      entry.stdout.ring.retainedBytes >= tailRingBytes;
-    if (overBudget && !source.isPaused()) {
-      source.pause();
-      return;
-    }
-    if (!overBudget && source.isPaused()) {
-      source.resume();
-    }
-  }
-
-  /** 역압으로 멈춰 둔 소스를 되살린다 — 종료·폐기 경로의 선행 조건이다. */
-  function resumePausedOutput(entry: SessionEntry): void {
-    for (const source of [entry.child.stdout, entry.child.stderr]) {
-      if (source.isPaused()) {
-        source.resume();
-      }
-    }
-  }
-
-  function appendOutput(
-    entry: SessionEntry,
-    stream: HostCommandOutputStream,
-    chunk: Buffer,
-  ): void {
-    const side = stream === 'stdout' ? entry.stdout : entry.stderr;
-    const redacted = side.redactor?.write(chunk) ?? chunk;
-    if (redacted.length === 0) {
-      return;
-    }
-    appendRedactedOutput(entry, stream, redacted);
-  }
-
-  function appendRedactedOutput(
-    entry: SessionEntry,
-    stream: HostCommandOutputStream,
-    chunk: Buffer,
-  ): void {
-    // §7.5 maxNotificationChunkBytes — 알림 1건이 나르는 조각을 상한에서
-    // 자른다. raw 바이트로 자르고 같은 StringDecoder에 순서대로 먹이므로
-    // 경계에 걸친 코드포인트도 다음 조각에서 온전히 복원된다.
-    for (
-      let offset = 0;
-      offset < chunk.length;
-      offset += MAX_NOTIFICATION_CHUNK_BYTES
-    ) {
-      appendOutputSlice(
-        entry,
-        stream,
-        chunk.subarray(offset, offset + MAX_NOTIFICATION_CHUNK_BYTES),
-      );
-    }
-  }
-
-  function appendOutputSlice(
-    entry: SessionEntry,
-    stream: HostCommandOutputStream,
-    chunk: Buffer,
-  ): void {
-    if (entry.terminal !== null) {
-      return;
-    }
-    const side = stream === 'stdout' ? entry.stdout : entry.stderr;
-    if (
-      entry.maxOutputBytesPerStream !== undefined &&
-      side.ring.totalBytes + chunk.length > entry.maxOutputBytesPerStream
-    ) {
-      forceTermination(entry, {
-        status: 'output_limit_exceeded',
-        exitCode: null,
-        finishedAtMs: Date.now(),
-        outputLimitExceeded: {
-          stream,
-          maxOutputBytesPerStream: entry.maxOutputBytesPerStream,
-        },
-        terminationReason: 'caller_output_limit',
-      });
-      return;
-    }
-    const startOffset = side.ring.totalBytes;
-    side.ring.append(chunk);
-    applyStreamBackpressure(entry, stream);
-    const endOffset = side.ring.totalBytes;
-    const text = side.decoder.write(chunk);
-    side.chars += text.length;
-    entry.firstOutputAfterMs ??= Math.max(0, Date.now() - entry.startedAtMs);
-    if (text.length > 0) {
-      entry.onOutput?.({ stream, text });
-    }
-    // spec §7.3: 알림은 스트림별 raw byte 범위를 나른다. chunk(디코딩된
-    // 문자열)는 best-effort 표시이며 정확 복구의 진실은 페이지 조회다.
-    entry.revision += 1;
-    if (text.length > 0) {
-      notifySubscribers(entry, {
-        kind: 'output',
-        outputRef: entry.outputRef,
-        revision: entry.revision,
-        stream,
-        startOffset,
-        endOffset,
-        chunk: text,
-      });
-    }
-    wakeWaiters(entry);
-  }
-
-  function bumpRevision(entry: SessionEntry): void {
-    entry.revision += 1;
-    wakeWaiters(entry);
-  }
-
-  function wakeWaiters(entry: SessionEntry): void {
-    const waiters = [...entry.outputWaiters];
-    entry.outputWaiters.clear();
-    for (const waiter of waiters) {
-      waiter();
-    }
-  }
-
-  function notifySubscribers(
-    entry: SessionEntry,
-    event: CommandSessionSubscriptionEvent,
-  ): void {
-    for (const listener of entry.subscribers.values()) {
-      listener(event);
-    }
-  }
-
-  function handleChildTerminal(
-    entry: SessionEntry,
-    terminal: SessionTerminalState,
-  ): void {
-    if (entry.terminal !== null) {
-      return;
-    }
-    resumePausedOutput(entry);
-    if (entry.timeoutTimer !== undefined) {
-      clearTimeout(entry.timeoutTimer);
-    }
-    if (entry.graceTimer !== undefined) {
-      clearTimeout(entry.graceTimer);
-    }
-    detachSourceAbort(entry);
-    flushRedactors(entry);
-    flushDecoders(entry);
-    entry.terminal = entry.terminalOverride ?? terminal;
-    entry.stdinOpen = false;
-    switch (entry.phase) {
-      case 'unclaimed_running':
-        entry.phase = 'unclaimed_terminal';
-        break;
-      case 'claiming_running':
-        // terminal 이벤트는 유실되지 않고 승격된다 (§4.2).
-        entry.phase = 'claiming_terminal';
-        break;
-      case 'claimed_running':
-        entry.phase = 'finalizing';
-        entry.finalizePromise = finalizeTerminal(entry);
-        break;
-      case 'discarding':
-        break;
-      default:
-        break;
-    }
-    bumpRevision(entry);
-    entry.resolveExit();
-  }
-
-  function flushRedactors(entry: SessionEntry): void {
-    for (const stream of ['stdout', 'stderr'] as const) {
-      const side = stream === 'stdout' ? entry.stdout : entry.stderr;
-      const redactor = side.redactor;
-      side.redactor = undefined;
-      if (redactor === undefined) {
-        continue;
-      }
-      const tail = redactor.end();
-      if (tail.length > 0) {
-        appendRedactedOutput(entry, stream, tail);
-      }
-    }
-  }
-
-  function flushDecoders(entry: SessionEntry): void {
-    for (const stream of ['stdout', 'stderr'] as const) {
-      const side = stream === 'stdout' ? entry.stdout : entry.stderr;
-      const tail = side.decoder.end();
-      if (tail.length > 0) {
-        side.chars += tail.length;
-        entry.onOutput?.({ stream, text: tail });
-      }
-    }
-  }
-
   /**
    * §4.2.1 커밋 cutoff — 커밋점(부모 dir fsync) **전에** 도착한 소유
    * waiter의 취소는 결정론적 discard이고, 그 뒤에 도착한 취소는 커밋된
@@ -1386,433 +1233,6 @@ export function createCommandSessionHost(
     await appendClosedRow(entry, 'discarded');
     emitSettled();
   }
-
-  function requestGracefulTermination(
-    entry: SessionEntry,
-    terminal: SessionTerminalState,
-  ): void {
-    if (entry.terminal !== null || entry.terminalOverride !== null) {
-      return;
-    }
-    // 종료를 향하는 세션은 더 멈춰 두지 않는다 (P7.6 §5.2 역압의 해제 지점).
-    resumePausedOutput(entry);
-    entry.terminalOverride = terminal;
-    if (platform() === 'win32') {
-      // Windows worker 모드는 비지원(spec §4.5) — inline은 현행 즉시
-      // 트리 종료 의미론을 유지한다.
-      terminateWindowsTree(entry.child);
-      return;
-    }
-    signalProcessTree(entry.child, 'SIGTERM');
-    entry.graceTimer = setTimeout(() => {
-      signalProcessTree(entry.child, 'SIGKILL');
-    }, REQUESTED_TERMINATION_GRACE_MS);
-    entry.graceTimer.unref?.();
-  }
-
-  function forceTermination(
-    entry: SessionEntry,
-    terminal: SessionTerminalState,
-  ): void {
-    if (entry.terminal !== null || entry.terminalOverride !== null) {
-      return;
-    }
-    entry.terminalOverride = terminal;
-    if (platform() === 'win32') {
-      terminateWindowsTree(entry.child);
-      return;
-    }
-    signalProcessTree(entry.child, 'SIGKILL');
-  }
-
-  /**
-   * §4.7 — 이 요청의 부수효과를 지금 적용해야 하는지 판정한다.
-   *
-   * 순서가 판정한다: 같은 파사드의 같은 seq는 이미 적용된 요청의 재전송이고,
-   * 더 작은 seq는 그 사이에 다른 연산이 끼어든 뒤 도착한 재전송이다. 후자는
-   * 지금 적용하면 호출자가 의도한 순서를 뒤집으므로 되돌린다.
-   *
-   * `clientId`가 다르면 이전 파사드는 이미 사라진 것이다 — 사라진 파사드는
-   * 재시도하지 않으므로 그 seq와 비교할 이유가 없다.
-   */
-  function judgeOperation(
-    entry: SessionEntry,
-    operation: CommandHostOperation | undefined,
-  ):
-    | { apply: true }
-    | { apply: false; duplicate: true }
-    | {
-        apply: false;
-        duplicate: false;
-        reasonCode: 'operation_superseded';
-        message: string;
-      } {
-    const last = entry.lastOperation;
-    if (
-      operation === undefined ||
-      last === null ||
-      last.clientId !== operation.clientId ||
-      operation.seq > last.seq
-    ) {
-      return { apply: true };
-    }
-    if (operation.seq === last.seq) {
-      return { apply: false, duplicate: true };
-    }
-    return {
-      apply: false,
-      duplicate: false,
-      reasonCode: 'operation_superseded',
-      message: `host command session already applied a later operation (${last.seq}); operation ${operation.seq} cannot be applied out of order.`,
-    };
-  }
-
-  async function interactWithResident(
-    entry: SessionEntry,
-    args: Parameters<HostCommandRuntime['interact']>[0],
-  ): Promise<HostCommandInteractionResult> {
-    const baselineRevision = args.afterRevision ?? entry.revision;
-    const hasSideEffect =
-      args.chars !== undefined ||
-      args.closeStdin === true ||
-      args.terminate === true;
-    const judged = hasSideEffect
-      ? judgeOperation(entry, args.operation)
-      : ({ apply: true } as const);
-    if (!judged.apply && !judged.duplicate) {
-      return {
-        ok: false,
-        reasonCode: judged.reasonCode,
-        message: judged.message,
-      };
-    }
-    // 중복이면 관찰만 남는다 — 부수효과는 건너뛰고 대기·페이지·스냅샷은
-    // 그대로 수행해 호출자가 재시도로 최신 상태를 받게 한다.
-    const applySideEffects = judged.apply;
-    // 효과가 실제로 일어난 뒤에만 기록한다. 실패한 요청(backpressure 등)까지
-    // 적용으로 세면 재시도가 중복으로 걸러져 쓰기가 조용히 사라진다. 아래
-    // 부수효과들은 await 없이 이어지므로 그 사이에 재전송이 끼어들 틈은 없다.
-    const markApplied = (): void => {
-      if (args.operation !== undefined) {
-        entry.lastOperation = args.operation;
-      }
-    };
-    if (applySideEffects && args.chars !== undefined) {
-      if (!entry.stdinOpen || entry.terminal !== null) {
-        return {
-          ok: false,
-          reasonCode: 'not_running',
-          message: 'host command stdin is not open.',
-        };
-      }
-      const written = writeStdin(entry, args.chars);
-      if (!written.ok) {
-        return written;
-      }
-      markApplied();
-    }
-    if (applySideEffects && args.closeStdin === true) {
-      if (!entry.stdinOpen || entry.terminal !== null) {
-        return {
-          ok: false,
-          reasonCode: 'not_running',
-          message: 'host command stdin is not open.',
-        };
-      }
-      entry.stdinOpen = false;
-      entry.child.stdin.end();
-      markApplied();
-    }
-    if (applySideEffects && args.terminate === true) {
-      requestGracefulTermination(entry, {
-        status: 'signal',
-        exitCode: null,
-        finishedAtMs: Date.now(),
-        outputLimitExceeded: null,
-        terminationReason: 'explicit_terminate',
-      });
-      markApplied();
-    }
-
-    const waitResult = await waitForChange(entry, {
-      afterRevision: baselineRevision,
-      yieldTimeMs: resolveYieldTimeMs(args.yieldTimeMs),
-      signal: args.signal,
-    });
-    if (!waitResult.ok) {
-      return waitResult;
-    }
-    // terminal 스냅샷은 내구화 완료 후에만 관찰된다 — 메모리상 종료와
-    // 디스크 상태가 갈라진 창을 관찰자에게 노출하지 않는다 (spec §6.3의
-    // pending-I/O 원칙).
-    if (entry.finalizePromise !== undefined) {
-      await entry.finalizePromise;
-    }
-    let page: HostCommandOutputPage | null = null;
-    if (args.page !== undefined) {
-      if (args.page.limitBytes > config.inlineMaxBytes) {
-        return {
-          ok: false,
-          reasonCode: 'invalid_args',
-          message: `limitBytes exceeds the configured inline result budget of ${config.inlineMaxBytes} bytes.`,
-        };
-      }
-      const side = args.page.stream === 'stdout' ? entry.stdout : entry.stderr;
-      page = readPageFromWindow({
-        window: {
-          baseOffset: side.ring.omittedBytes,
-          totalBytes: side.ring.totalBytes,
-          buffer: side.ring.snapshot(),
-        },
-        stream: args.page.stream,
-        offsetBytes: args.page.offsetBytes,
-        limitBytes: args.page.limitBytes,
-      });
-      if (isLosslessStream(entry, args.page.stream) && page !== null) {
-        // 건네준 만큼만 놓는다 — 그래야 아직 안 읽은 바이트는 보관되고,
-        // 읽은 만큼 자리가 나 소스가 다시 흐른다 (P7.6 §5.2). 마지막 페이지는
-        // `nextOffsetBytes`가 null이므로 실제로 건넨 끝(`endOffsetBytes`)을
-        // 쓴다 — 그래야 다 읽은 뒤에도 보관이 남지 않는다.
-        side.ring.releaseUpTo(page.endOffsetBytes);
-        applyStreamBackpressure(entry, args.page.stream);
-      }
-    }
-    return {
-      ok: true,
-      value: {
-        snapshot: buildSnapshot(entry, inlineEligible, {
-          includeInline: false,
-          outputRef: entry.outputRef,
-        }),
-        page,
-      },
-    };
-  }
-
-  async function interactWithPersisted(
-    args: Parameters<HostCommandRuntime['interact']>[0],
-  ): Promise<HostCommandInteractionResult> {
-    const persisted = await readPersistedHostCommand({
-      stateRoot: args.stateRoot,
-      threadId:
-        (args.owner ?? 'thread') === 'system'
-          ? SYSTEM_SESSION_OWNER
-          : args.threadId,
-      outputRef: args.outputRef,
-    });
-    if (!persisted.ok) {
-      return persisted;
-    }
-    let record = persisted.value;
-    if (record.metadata.status === 'running') {
-      // 세션 소유자(command host)가 사라진 채 남은 기록 — 워커/데몬
-      // 사망으로 링 내용은 유실됐다 (spec §8.2).
-      const metadata: HostCommandMetadata = {
-        ...record.metadata,
-        status: 'command_host_interrupted',
-        terminationReason: 'command_host_lost',
-        exitCode: null,
-        finishedAtMs: Date.now(),
-        stdinOpen: false,
-        revision: record.metadata.revision + 1,
-      };
-      try {
-        await writeHostCommandMetadata({ paths: record.paths, metadata });
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          reasonCode: 'output_store_failed',
-          message: getErrorMessage(error),
-        };
-      }
-      record = { ...record, metadata };
-    }
-    let page: HostCommandOutputPage | null = null;
-    if (args.page !== undefined) {
-      if (args.page.limitBytes > config.inlineMaxBytes) {
-        return {
-          ok: false,
-          reasonCode: 'invalid_args',
-          message: `limitBytes exceeds the configured inline result budget of ${config.inlineMaxBytes} bytes.`,
-        };
-      }
-      const baseOffset =
-        args.page.stream === 'stdout'
-          ? record.metadata.stdoutBaseOffset
-          : record.metadata.stderrBaseOffset;
-      if (baseOffset !== undefined) {
-        const path =
-          args.page.stream === 'stdout'
-            ? record.paths.stdout
-            : record.paths.stderr;
-        let buffer: Buffer;
-        try {
-          buffer = await readFile(path);
-        } catch {
-          buffer = Buffer.alloc(0);
-        }
-        page = readPageFromWindow({
-          window: {
-            baseOffset,
-            totalBytes: baseOffset + buffer.length,
-            buffer,
-          },
-          stream: args.page.stream,
-          offsetBytes: args.page.offsetBytes,
-          limitBytes: args.page.limitBytes,
-        });
-      } else {
-        const legacyPage = await readHostCommandOutputPage({
-          paths: record.paths,
-          page: args.page,
-          inlineMaxBytes: config.inlineMaxBytes,
-        });
-        if (!legacyPage.ok) {
-          return legacyPage;
-        }
-        page = legacyPage.value;
-      }
-    }
-    return {
-      ok: true,
-      value: {
-        snapshot: snapshotFromHostCommandMetadata(record.metadata),
-        page,
-      },
-    };
-  }
-
-  function writeStdin(
-    entry: SessionEntry,
-    chars: string,
-  ):
-    | { ok: true }
-    | {
-        ok: false;
-        reasonCode: 'not_running' | 'stdin_backpressure';
-        message: string;
-      } {
-    // §7.5 — 자식이 읽지 않는 동안 stdin 버퍼가 무한히 자라지 않게 한다.
-    // 상한을 넘으면 버퍼를 늘리는 대신 호출자에게 되돌린다.
-    const buffered = entry.child.stdin.writableLength;
-    if (
-      buffered + Buffer.byteLength(chars) >
-      MAX_STDIN_BUFFERED_BYTES_PER_SESSION
-    ) {
-      return {
-        ok: false,
-        reasonCode: 'stdin_backpressure',
-        message: `host command stdin buffer is full (${buffered} bytes pending); the process is not reading.`,
-      };
-    }
-    try {
-      // flush 완료를 기다리지 않는다. 자식이 stdin을 읽지 않으면 그 콜백은
-      // 영원히 오지 않으므로, 기다리면 이 RPC가 세션 수명 내내 매달린다.
-      // 유계성은 위의 버퍼 상한이 지키고, 파이프 파손은 stdinOpen을 내려
-      // 다음 호출에서 not_running으로 드러난다 (§4.7 exactly-once 비보장).
-      entry.child.stdin.write(chars, (error) => {
-        if (error) {
-          entry.stdinOpen = false;
-        }
-      });
-    } catch (error: unknown) {
-      entry.stdinOpen = false;
-      return {
-        ok: false,
-        reasonCode: 'not_running',
-        message: getErrorMessage(error),
-      };
-    }
-    return { ok: true };
-  }
-
-  async function waitForChange(
-    entry: SessionEntry,
-    args: {
-      afterRevision: number;
-      yieldTimeMs: number;
-      signal: AbortSignal | undefined;
-    },
-  ): Promise<
-    { ok: true } | { ok: false; reasonCode: 'wait_aborted'; message: string }
-  > {
-    if (entry.revision !== args.afterRevision || entry.terminal !== null) {
-      return { ok: true };
-    }
-    let onChange: (() => void) | undefined;
-    const changed = new Promise<void>((resolve) => {
-      onChange = resolve;
-      entry.outputWaiters.add(onChange);
-    });
-    const timer = createYieldTimer(args.yieldTimeMs);
-    try {
-      return await waitForPromiseOrAbort(
-        Promise.race([changed, timer.promise]),
-        args.signal,
-      );
-    } finally {
-      if (onChange !== undefined) {
-        entry.outputWaiters.delete(onChange);
-      }
-      timer.cancel();
-    }
-  }
-
-  function boundaryPromise(
-    entry: SessionEntry,
-    yieldTimeMs: number,
-  ): Promise<void> {
-    const timer = createYieldTimer(yieldTimeMs);
-    return Promise.race([entry.exit, timer.promise]).finally(() => {
-      timer.cancel();
-    });
-  }
-}
-
-function signalProcessTree(
-  child: ChildProcessWithoutNullStreams,
-  signal: 'SIGTERM' | 'SIGKILL',
-): void {
-  const pid = child.pid;
-  if (pid === undefined) {
-    child.kill('SIGKILL');
-    return;
-  }
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    child.kill(signal);
-  }
-}
-
-function terminateWindowsTree(child: ChildProcessWithoutNullStreams): void {
-  const pid = child.pid;
-  if (pid === undefined) {
-    child.kill('SIGKILL');
-    return;
-  }
-  const killer = spawn(
-    process.env['ComSpec'] ?? 'cmd.exe',
-    ['/d', '/s', '/c', `taskkill /pid ${pid} /t /f`],
-    { stdio: 'ignore', windowsHide: true },
-  );
-  killer.once('error', () => {
-    child.kill('SIGKILL');
-  });
-}
-
-function detachSourceAbort(entry: {
-  sourceSignal: AbortSignal | undefined;
-  sourceAbortListener: (() => void) | undefined;
-}): void {
-  if (
-    entry.sourceSignal !== undefined &&
-    entry.sourceAbortListener !== undefined
-  ) {
-    entry.sourceSignal.removeEventListener('abort', entry.sourceAbortListener);
-  }
-  entry.sourceSignal = undefined;
-  entry.sourceAbortListener = undefined;
 }
 
 async function joinClaim(
@@ -1843,58 +1263,6 @@ async function joinClaim(
       resolve(result);
     });
   });
-}
-
-async function waitForPromiseOrAbort(
-  promise: Promise<void>,
-  signal: AbortSignal | undefined,
-): Promise<
-  { ok: true } | { ok: false; reasonCode: 'wait_aborted'; message: string }
-> {
-  if (signal?.aborted) {
-    return {
-      ok: false,
-      reasonCode: 'wait_aborted',
-      message: 'host command wait was aborted.',
-    };
-  }
-  if (signal === undefined) {
-    await promise;
-    return { ok: true };
-  }
-  return await new Promise((resolve) => {
-    const onAbort = () => {
-      resolve({
-        ok: false,
-        reasonCode: 'wait_aborted',
-        message: 'host command wait was aborted.',
-      });
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    void promise.then(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve({ ok: true });
-    });
-  });
-}
-
-function createYieldTimer(yieldTimeMs: number): {
-  promise: Promise<void>;
-  cancel(): void;
-} {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const promise = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, yieldTimeMs);
-    timer.unref?.();
-  });
-  return {
-    promise,
-    cancel() {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
-    },
-  };
 }
 
 function getErrorMessage(error: unknown): string {
@@ -1928,16 +1296,6 @@ function redactExactMarkers(
     }
   }
   return redacted;
-}
-
-function isLosslessStream(
-  entry: SessionEntry,
-  stream: HostCommandOutputStream,
-): boolean {
-  return (
-    entry.streamMode === 'lossless' ||
-    (entry.streamMode === 'protocol' && stream === 'stdout')
-  );
 }
 
 function describeCommand(

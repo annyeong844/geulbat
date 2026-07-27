@@ -154,6 +154,11 @@ void test('createSubagentActivityEffect preserves terminal deliveryId, reason, r
       result: 'timed out',
       resultRef: 'subagent-result:delivery-1',
       resultDigest: `sha256:${'a'.repeat(64)}`,
+      resultReport: {
+        summary: '실패 원인을 짧게 보고합니다.',
+        sourceResultRef: 'subagent-result:delivery-1',
+        sourceResultDigest: `sha256:${'a'.repeat(64)}`,
+      },
       completedAt: '2026-04-18T00:00:02.000Z',
     },
   });
@@ -172,6 +177,11 @@ void test('createSubagentActivityEffect preserves terminal deliveryId, reason, r
       result: 'timed out',
       resultRef: 'subagent-result:delivery-1',
       resultDigest: `sha256:${'a'.repeat(64)}`,
+      resultReport: {
+        summary: '실패 원인을 짧게 보고합니다.',
+        sourceResultRef: 'subagent-result:delivery-1',
+        sourceResultDigest: `sha256:${'a'.repeat(64)}`,
+      },
       completedAt: '2026-04-18T00:00:02.000Z',
     },
   });
@@ -236,6 +246,12 @@ void test('createSubagentTerminalHistoryEntry restores persisted reason, runtime
   const entry = createSubagentTerminalHistoryEntry({
     deliveryId: 'delivery-history',
     resultRef: 'subagent-result:delivery-history',
+    resultDigest: `sha256:${'b'.repeat(64)}`,
+    resultReport: {
+      summary: '재시작 전에 확보한 부분 결과',
+      sourceResultRef: 'subagent-result:delivery-history',
+      sourceResultDigest: `sha256:${'b'.repeat(64)}`,
+    },
     parentRunId: RUN_ID,
     childRunId: CHILD_RUN_ID,
     childThreadId: THREAD_ID,
@@ -283,6 +299,12 @@ void test('createSubagentTerminalHistoryEntry restores persisted reason, runtime
     reason: 'daemon_restart',
     result: '재시작 전에 남긴 부분 결과',
     resultRef: 'subagent-result:delivery-history',
+    resultDigest: `sha256:${'b'.repeat(64)}`,
+    resultReport: {
+      summary: '재시작 전에 확보한 부분 결과',
+      sourceResultRef: 'subagent-result:delivery-history',
+      sourceResultDigest: `sha256:${'b'.repeat(64)}`,
+    },
     completedAt: '2026-04-18T00:00:03.000Z',
   });
 });

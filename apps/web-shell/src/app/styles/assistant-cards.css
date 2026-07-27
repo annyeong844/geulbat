@@ -8,6 +8,20 @@
   flex-shrink: 0;
 }
 
+/* 대화 가져오기 — 글리프 한 자짜리 버튼이라 "가져오는 중"이라고 쓸 자리가
+   없다. 그 사실을 없애는 대신 맥동으로 옮긴다: 비활성만으로는 눌리지 않는
+   이유가 "진행 중"인지 "쓸 수 없음"인지 구분되지 않는다. */
+.thread-import-button.is-busy {
+  animation: pulse-fast 1s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-import-button.is-busy {
+    animation: none;
+    opacity: 0.55;
+  }
+}
+
 .thread-row-menu-button {
   border: none;
   background: transparent;
@@ -480,6 +494,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 접힌 요약줄의 경과 시간 — 제목보다 작고 연하게 두어, 좁아질 때 제목이
+   먼저 살아남고 눈이 먼저 제목에 가도록 한다. */
+.subagent-work-elapsed {
+  flex: none;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .subagent-work-chevron {

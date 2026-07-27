@@ -64,11 +64,17 @@ function createRuntimeStateStore(
     readMcpSessionCoordinate: () => undefined,
     persistMcpSessionCoordinate: () => {},
     deleteMcpSessionCoordinate: () => {},
+    listPtcExecuteCodeCellCoordinates: () => [],
+    persistPtcExecuteCodeCellCoordinate: () => {},
+    deletePtcExecuteCodeCellCoordinate: () => {},
     enqueueSubagentLaunchBatch() {
       throw new Error('not used by daemon runtime owner tests');
     },
     readSubagentLaunchRequest: () => undefined,
     readSubagentLaunchRequestByChildRunId: () => undefined,
+    readSubagentLaunchInput() {
+      throw new Error('not used by daemon runtime owner tests');
+    },
     readQueuedSubagentLaunchRequests: () => [],
     markSubagentLaunchDeferredBatch: () => [],
     cancelQueuedSubagentLaunchRequest() {
@@ -120,6 +126,13 @@ async function withDaemonContext(
 void test('daemon runtime owner starts in order and hands run-channel a narrow projection', async () => {
   await withDaemonContext(async (daemonContext, homeStateRoot) => {
     const events: string[] = [];
+    daemonContext.ptc.executeCode.attachCellCoordinateStore = () => {
+      events.push('attach-ptc-cell-store');
+    };
+    daemonContext.ptc.executeCode.reAdoptRunningCells = async () => {
+      events.push('readopt-ptc-cells');
+      return { ok: true };
+    };
     const app: FakeApp = { kind: 'app' };
     const server: FakeServer = { kind: 'server' };
     const socket: FakeSocketServer = { kind: 'socket' };
@@ -163,6 +176,7 @@ void test('daemon runtime owner starts in order and hands run-channel a narrow p
         },
         listen: async (listenArgs) => {
           events.push(`listen:${listenArgs.port}:${listenArgs.host}`);
+          return listenArgs.port;
         },
         closeForShutdown: async () => {
           events.push('close');
@@ -185,6 +199,8 @@ void test('daemon runtime owner starts in order and hands run-channel a narrow p
       'acquire:true',
       'boot:admission-lock',
       'open-runtime-state:true',
+      'attach-ptc-cell-store',
+      'readopt-ptc-cells',
       'boot:runtime-state',
       'provider-auth',
       'boot:provider-auth',
@@ -251,7 +267,7 @@ void test('daemon runtime owner releases the admission lock when startup fails',
         createHttpServer: (): FakeServer => ({ kind: 'server' }),
         attachWebSockets: (): readonly FakeSocketServer[] => [],
         bindProviderAuthCallback: () => {},
-        listen: async () => {},
+        listen: async () => 4100,
         closeForShutdown: async () => {
           closeCalls += 1;
         },
@@ -313,6 +329,7 @@ void test('daemon runtime owner fails closed before app composition when durable
         },
         listen: async () => {
           events.push('listen');
+          return 4100;
         },
         closeForShutdown: async () => {
           closeCalls += 1;
@@ -358,7 +375,7 @@ void test('daemon runtime owner stops startup when the runtime-state store is un
         createHttpServer: (): FakeServer => ({ kind: 'server' }),
         attachWebSockets: (): readonly FakeSocketServer[] => [],
         bindProviderAuthCallback: () => {},
-        listen: async () => {},
+        listen: async () => 4100,
         closeForShutdown: async () => {},
       },
     });
@@ -385,7 +402,7 @@ void test('daemon runtime owner rejects shutdown before start', async () => {
         createHttpServer: (): FakeServer => ({ kind: 'server' }),
         attachWebSockets: (): readonly FakeSocketServer[] => [],
         bindProviderAuthCallback: () => {},
-        listen: async () => {},
+        listen: async () => 4100,
         closeForShutdown: async () => {},
       },
     });
@@ -414,7 +431,7 @@ void test('daemon runtime owner shuts down once and derives session closers from
         createHttpServer: () => server,
         attachWebSockets: () => [socket],
         bindProviderAuthCallback: () => {},
-        listen: async () => {},
+        listen: async () => 4100,
         closeForShutdown: async (closeArgs) => {
           closeCalls += 1;
           seenClose = closeArgs;
@@ -508,7 +525,7 @@ void test('daemon runtime owner restart exposes interruption through agent_wait 
         createHttpServer: () => ({ kind: 'server' }),
         attachWebSockets: () => [],
         bindProviderAuthCallback: () => {},
-        listen: async () => {},
+        listen: async () => 4100,
         closeForShutdown: async ({ admissionLock, runtimeSessions }) => {
           await closeDaemonRuntimeSessions({ runtimeSessions });
           await admissionLock.release();

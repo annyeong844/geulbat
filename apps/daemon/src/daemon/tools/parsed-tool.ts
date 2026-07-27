@@ -31,6 +31,9 @@ export function defineParsedTool<TArgs extends object>(
     ...(options.parallelBatchKind
       ? { parallelBatchKind: options.parallelBatchKind }
       : {}),
+    ...(options.abortSettlement
+      ? { abortSettlement: options.abortSettlement }
+      : {}),
     ...(options.timeoutMs !== undefined
       ? { timeoutMs: options.timeoutMs }
       : {}),

@@ -1,4 +1,5 @@
 import type {
+  AgentLaunchAckToolRaw,
   AgentLaunchQueuedToolRaw,
   AgentLaunchRejectedToolRaw,
   AgentLaunchToolRaw,
@@ -144,6 +145,7 @@ export interface SubagentLaunchRequestStore {
   readSubagentLaunchRequestByChildRunId(
     childRunId: RunId,
   ): DurableSubagentLaunchRequest | undefined;
+  readSubagentLaunchInput(childRunId: RunId): SubagentLaunchRequestInput;
   readQueuedSubagentLaunchRequests(): readonly DurableSubagentLaunchRequest[];
   markSubagentLaunchDeferredBatch(args: {
     childRunIds: readonly RunId[];
@@ -472,6 +474,24 @@ export function buildChildLaunchRejected(args: {
     ...(args.effectiveMax !== undefined
       ? { effectiveMax: args.effectiveMax }
       : {}),
+  };
+}
+
+export function buildChildLaunchStarted(args: {
+  childRunId: RunId;
+  childThreadId: ThreadId;
+  subagentType: SubagentType;
+  modelPin: ResolvedChildModelPin;
+}): AgentLaunchAckToolRaw {
+  return {
+    ok: true,
+    childRunId: args.childRunId,
+    childThreadId: args.childThreadId,
+    subagentType: args.subagentType,
+    launchState: 'started',
+    modelId: args.modelPin.modelId,
+    reasoningEffort: args.modelPin.providerRunSelection.reasoningEffort,
+    selectionSource: args.modelPin.selectionSource,
   };
 }
 

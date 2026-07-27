@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -29,6 +28,11 @@ import {
   readRequiredJson,
   type Sha256Digest,
 } from '@geulbat/product/cli-support';
+
+import {
+  runProductXHarnessGitProcess,
+  type ProductXHarnessGitProcessResult,
+} from './product-xharness-git-process.js';
 
 type SourceChangeAction = 'create' | 'modify' | 'delete';
 
@@ -154,12 +158,6 @@ interface ProductXHarnessSourceCandidateQualificationReceipt {
   readonly commandOutcomes: readonly ProductXHarnessSourceCandidateVerificationOutcome[];
   readonly qualified: boolean;
   readonly qualificationReceiptDigest: Sha256Digest;
-}
-
-interface GitResult {
-  readonly exitCode: number;
-  readonly stdout: Buffer;
-  readonly stderr: Buffer;
 }
 
 const CANDIDATE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
@@ -1647,35 +1645,8 @@ function decodeGitText(value: Buffer): string {
 async function runGit(
   repositoryRoot: string,
   args: readonly string[],
-): Promise<GitResult> {
-  const result = await new Promise<GitResult>((resolve, reject) => {
-    const child = spawn('git', ['-C', repositoryRoot, ...args], {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    child.stdout.on('data', (chunk: Buffer) => {
-      stdout.push(chunk);
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr.push(chunk);
-    });
-    child.once('error', reject);
-    child.once('close', (exitCode, signal) => {
-      if (signal !== null) {
-        reject(new Error(`git terminated by signal ${signal}`));
-        return;
-      }
-      resolve(
-        Object.freeze({
-          exitCode: exitCode ?? 1,
-          stdout: Buffer.concat(stdout),
-          stderr: Buffer.concat(stderr),
-        }),
-      );
-    });
-  });
+): Promise<ProductXHarnessGitProcessResult> {
+  const result = await runProductXHarnessGitProcess(repositoryRoot, args);
   if (result.exitCode !== 0) {
     const detail = decodeGitText(result.stderr).trim();
     throw new Error(detail.length === 0 ? 'git command failed' : detail);

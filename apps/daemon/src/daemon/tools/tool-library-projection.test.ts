@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
@@ -20,12 +27,14 @@ import {
   getToolLibraryProjectionManifest,
   getToolLibraryProjectionIdentity,
   getToolLibraryProjectionPin,
+  projectionDirectoryNameForHash,
 } from '@geulbat/tool-library/projection-manifest';
 import {
   getToolLibraryProjectionMount,
   resolveToolLibraryProjectionMountedModule,
 } from './tool-library-projection-mount.js';
 import { readVerifiedToolLibraryProjectionMount } from './tool-library-projection-store.js';
+import { threadProjectionDirectoryName } from './tool-library-projection-path.js';
 import {
   isToolObjectParameters,
   type AnyTool,
@@ -409,13 +418,26 @@ void test('createToolLibraryProjectionPort writes a pinned projection under the 
     if (!result.ok) {
       assert.fail('expected projection port to resolve');
     }
+    // 콘텐츠는 digest로 주소가 정해진 공유 위치에, pin만 thread 위치에 남는다.
     assert.match(
       result.projection.rootPath,
-      /\.geulbat[\\/]+tool-library[\\/]+projections[\\/]+thread-[0-9a-f]{16}[\\/]+sha256-[0-9a-f]{64}$/u,
+      /\.geulbat[\\/]+tool-library[\\/]+projections[\\/]+content[\\/]+sha256-[0-9a-f]{64}$/u,
     );
     assert.equal(
       result.projection.rootPath.includes('thread-runtime-test'),
       false,
+    );
+    assert.equal(result.projection.rootPath.includes('thread-'), false);
+    const projectionsRootPath = dirname(dirname(result.projection.rootPath));
+    assert.equal(
+      await pathExists(
+        join(
+          projectionsRootPath,
+          threadProjectionDirectoryName('thread-runtime-test'),
+          'projection-pin.json',
+        ),
+      ),
+      true,
     );
     assert.deepEqual(result.writtenFiles, [
       'manifest.js',
@@ -446,10 +468,14 @@ void test('createToolLibraryProjectionPort writes a pinned projection under the 
       false,
     );
 
-    const threadProjectionRootPath = dirname(result.projection.rootPath);
+    const contentRootPath = dirname(result.projection.rootPath);
     const expectedPin = getToolLibraryProjectionPin(result.projection);
     const mountResult = await readVerifiedToolLibraryProjectionMount({
-      threadProjectionRootPath,
+      contentRootPath,
+      threadProjectionRootPath: join(
+        dirname(contentRootPath),
+        threadProjectionDirectoryName('thread-runtime-test'),
+      ),
       expectedPin,
       importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
     });
@@ -555,6 +581,38 @@ void test('createToolLibraryProjectionPort binds an explicit callback surface to
       }),
     });
     assert.equal(outsideCallbackSurface.ok, false);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createToolLibraryProjectionPort accepts delegated approval callbacks without enabling the built-in write tier', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-delegated-approval-callback-'),
+  );
+  const tool = createDelegatedApprovalProjectionTestTool();
+  const registry = createToolRegistryStore({ builtins: [tool] });
+  const policy = createToolCapabilityPolicy({
+    directRegistryNames: [],
+    allowedRegistryNames: [tool.name],
+    callbackRegistryNames: [tool.name],
+    writeCallbackEnabled: false,
+  });
+  try {
+    const result = await createTestProjectionPort({
+      registry,
+    }).resolveProjection({
+      stateRoot,
+      threadId: 'thread-delegated-approval-callback',
+      toolCapabilityPolicy: policy,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) {
+      assert.fail('expected delegated approval callback projection to resolve');
+    }
+    assert.equal(result.pin.policyId, policy.toolCapabilityPolicyId);
+    assert.deepEqual(result.pin.allowedRegistryNames, [tool.name]);
   } finally {
     await rm(stateRoot, { recursive: true, force: true });
   }
@@ -750,10 +808,10 @@ void test('createToolLibraryProjectionPort keeps a live thread pinned while a ne
     if (!first.ok) {
       assert.fail('expected initial projection port to resolve');
     }
-    const threadProjectionRootPath = dirname(first.projection.rootPath);
+    const contentRootPath = dirname(first.projection.rootPath);
     const invalidProjectionDirectory = `sha256-${'0'.repeat(64)}`;
     const invalidProjectionRootPath = join(
-      threadProjectionRootPath,
+      contentRootPath,
       invalidProjectionDirectory,
     );
     await mkdir(invalidProjectionRootPath, { recursive: true });
@@ -823,7 +881,11 @@ void test('createToolLibraryProjectionPort keeps a live thread pinned while a ne
     );
 
     const storedMount = await readVerifiedToolLibraryProjectionMount({
-      threadProjectionRootPath,
+      contentRootPath,
+      threadProjectionRootPath: join(
+        dirname(contentRootPath),
+        threadProjectionDirectoryName('thread-pinned-reuse-test'),
+      ),
       expectedPin: first.pin,
       importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
     });
@@ -1560,6 +1622,247 @@ void test('createToolLibraryProjectionPort rejects stale rehydration identity', 
   }
 });
 
+void test('projection bundle import reuses exact shared content for another thread in one Home', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-bundle-shared-content-'),
+  );
+  try {
+    const port = createTestProjectionPort();
+    const resolved = await port.resolveProjection({
+      stateRoot,
+      threadId: 'source-shared-content-task',
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(resolved.ok, true);
+    if (!resolved.ok) {
+      assert.fail('expected source projection to resolve');
+    }
+    const identity = getToolLibraryProjectionIdentity(resolved.pin);
+    const exported = await port.exportProjectionBundle({
+      stateRoot,
+      threadId: 'source-shared-content-task',
+      expectedIdentity: identity,
+    });
+    assert.equal(exported.ok, true);
+    if (!exported.ok) {
+      assert.fail('expected exact projection bundle export');
+    }
+
+    const imported = await port.importProjectionBundle({
+      stateRoot,
+      threadId: 'target-shared-content-task',
+      serializedBundle: exported.serializedBundle,
+    });
+    assert.equal(imported.ok, true);
+    if (!imported.ok) {
+      assert.fail('expected shared projection content to be reused');
+    }
+    assert.deepEqual(getToolLibraryProjectionIdentity(imported.pin), identity);
+    assert.equal(
+      imported.mount.projectionRootPath,
+      resolved.mount.projectionRootPath,
+    );
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('projection bundle moves one exact projection between Home roots without authority state', async () => {
+  const sourceStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-bundle-source-'),
+  );
+  const targetStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-bundle-target-'),
+  );
+  try {
+    const sourcePort = createTestProjectionPort();
+    const sourceThreadId = 'source-task-record';
+    const targetThreadId = 'target-task-record';
+    const resolved = await sourcePort.resolveProjection({
+      stateRoot: sourceStateRoot,
+      threadId: sourceThreadId,
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(resolved.ok, true);
+    if (!resolved.ok) {
+      assert.fail('expected source projection to resolve');
+    }
+    const identity = getToolLibraryProjectionIdentity(resolved.pin);
+    const exported = await sourcePort.exportProjectionBundle({
+      stateRoot: sourceStateRoot,
+      threadId: sourceThreadId,
+      expectedIdentity: identity,
+    });
+    assert.equal(exported.ok, true);
+    if (!exported.ok) {
+      assert.fail('expected exact projection bundle export');
+    }
+    assert.deepEqual(exported.identity, identity);
+    assert.match(exported.bundleId, /^sha256:[0-9a-f]{64}$/u);
+    assert.equal(exported.serializedBundle.includes(sourceStateRoot), false);
+    assert.equal(exported.serializedBundle.includes(sourceThreadId), false);
+    assert.equal(
+      exported.serializedBundle.includes('computerSessionId'),
+      false,
+    );
+    assert.equal(exported.serializedBundle.includes('approvalGrant'), false);
+    assert.equal(exported.serializedBundle.includes('approvalDecision'), false);
+
+    const targetPort = createTestProjectionPort();
+    const imported = await targetPort.importProjectionBundle({
+      stateRoot: targetStateRoot,
+      threadId: targetThreadId,
+      serializedBundle: exported.serializedBundle,
+    });
+    assert.equal(imported.ok, true);
+    if (!imported.ok) {
+      assert.fail('expected destination projection bundle import');
+    }
+    assert.deepEqual(getToolLibraryProjectionIdentity(imported.pin), identity);
+    assert.equal(
+      imported.mount.projectionRootPath.startsWith(targetStateRoot),
+      true,
+    );
+    assert.equal(
+      imported.mount.projectionRootPath.includes(sourceStateRoot),
+      false,
+    );
+
+    const importedAgain = await targetPort.importProjectionBundle({
+      stateRoot: targetStateRoot,
+      threadId: targetThreadId,
+      serializedBundle: exported.serializedBundle,
+    });
+    assert.equal(importedAgain.ok, true);
+  } finally {
+    await rm(sourceStateRoot, { recursive: true, force: true });
+    await rm(targetStateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('projection bundle import rejects a destination without the executable registry surface', async () => {
+  const sourceStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-bundle-registry-source-'),
+  );
+  const targetStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-bundle-registry-target-'),
+  );
+  try {
+    const sourcePort = createTestProjectionPort();
+    const resolved = await sourcePort.resolveProjection({
+      stateRoot: sourceStateRoot,
+      threadId: 'source-registry-task',
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(resolved.ok, true);
+    if (!resolved.ok) {
+      assert.fail('expected source projection to resolve');
+    }
+    const exported = await sourcePort.exportProjectionBundle({
+      stateRoot: sourceStateRoot,
+      threadId: 'source-registry-task',
+      expectedIdentity: getToolLibraryProjectionIdentity(resolved.pin),
+    });
+    assert.equal(exported.ok, true);
+    if (!exported.ok) {
+      assert.fail('expected exact projection bundle export');
+    }
+
+    const targetPort = createTestProjectionPort({
+      registry: createToolRegistryStore(),
+    });
+    const imported = await targetPort.importProjectionBundle({
+      stateRoot: targetStateRoot,
+      threadId: 'target-registry-task',
+      serializedBundle: exported.serializedBundle,
+    });
+    assert.equal(imported.ok, false);
+    assert.equal(
+      await pathExists(join(targetStateRoot, '.geulbat', 'tool-library')),
+      false,
+    );
+  } finally {
+    await rm(sourceStateRoot, { recursive: true, force: true });
+    await rm(targetStateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('projection bundle import rejects a symlinked hash destination before writing', async () => {
+  const sourceStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-bundle-link-source-'),
+  );
+  const targetStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-bundle-link-target-'),
+  );
+  const outsideRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-bundle-link-outside-'),
+  );
+  try {
+    const sourcePort = createTestProjectionPort();
+    const resolved = await sourcePort.resolveProjection({
+      stateRoot: sourceStateRoot,
+      threadId: 'source-link-task',
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(resolved.ok, true);
+    if (!resolved.ok) {
+      assert.fail('expected source projection to resolve');
+    }
+    const identity = getToolLibraryProjectionIdentity(resolved.pin);
+    const exported = await sourcePort.exportProjectionBundle({
+      stateRoot: sourceStateRoot,
+      threadId: 'source-link-task',
+      expectedIdentity: identity,
+    });
+    assert.equal(exported.ok, true);
+    if (!exported.ok) {
+      assert.fail('expected exact projection bundle export');
+    }
+
+    const targetThreadId = 'target-link-task';
+    const targetThreadRoot = join(
+      targetStateRoot,
+      '.geulbat',
+      'tool-library',
+      'projections',
+      threadProjectionDirectoryName(targetThreadId),
+    );
+    await mkdir(targetThreadRoot, { recursive: true });
+    const targetContentRoot = join(
+      targetStateRoot,
+      '.geulbat',
+      'tool-library',
+      'projections',
+      'content',
+    );
+    await mkdir(targetContentRoot, { recursive: true });
+    await symlink(
+      outsideRoot,
+      join(
+        targetContentRoot,
+        projectionDirectoryNameForHash(identity.sdkProjectionHash),
+      ),
+      'dir',
+    );
+
+    const imported = await createTestProjectionPort().importProjectionBundle({
+      stateRoot: targetStateRoot,
+      threadId: targetThreadId,
+      serializedBundle: exported.serializedBundle,
+    });
+    assert.deepEqual(imported, {
+      ok: false,
+      reason: 'projection_failed',
+      message: 'Tool library projection bundle destination is already occupied',
+    });
+    assert.equal(await pathExists(join(outsideRoot, 'manifest.js')), false);
+  } finally {
+    await rm(sourceStateRoot, { recursive: true, force: true });
+    await rm(targetStateRoot, { recursive: true, force: true });
+    await rm(outsideRoot, { recursive: true, force: true });
+  }
+});
+
 function buildTestProjection(
   overrides: Pick<
     BuildToolLibraryProjectionArgs,
@@ -1636,6 +1939,23 @@ function createProjectionTestTool(args: {
     },
     async executeParsed() {
       return { ok: true, output: '{}' };
+    },
+  };
+}
+
+function createDelegatedApprovalProjectionTestTool(): AnyTool {
+  return {
+    ...createProjectionTestTool({ includeExtraParameter: false }),
+    name: 'delegated_approval_projection_test',
+    sideEffectLevel: 'write',
+    mayMutateComputerFiles: true,
+    requiresApproval: true,
+    exposure: {
+      directHot: false,
+      sdkVisible: true,
+      inCellCallable: true,
+      directOnly: false,
+      effectClass: 'hostStateMutation',
     },
   };
 }

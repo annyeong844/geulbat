@@ -24,9 +24,21 @@ interface AllowedTimerSite {
 const ALLOWED: readonly AllowedTimerSite[] = [
   {
     file: 'session-core.ts',
-    calls: 3,
+    calls: 1,
     timerImports: 0,
-    why: '호출자 timeoutMs(§4.6) · 요청 종료 SIGTERM 유예 1초(§4.5) · 호출자 yieldTimeMs',
+    why: '호출자 timeoutMs(§4.6)',
+  },
+  {
+    file: 'session-wait.ts',
+    calls: 1,
+    timerImports: 0,
+    why: '호출자 yieldTimeMs(§4.6) — 유계 대기를 소유하는 쪽이 그 상한 타이머도 소유한다',
+  },
+  {
+    file: 'session-child-io.ts',
+    calls: 1,
+    timerImports: 0,
+    why: '요청 종료 SIGTERM 유예 1초(§4.5) — 자식 프로세스 종료를 소유하는 쪽이 그 유예도 소유한다',
   },
   {
     file: 'main.ts',

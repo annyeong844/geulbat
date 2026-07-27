@@ -21,10 +21,13 @@ import type {
 import {
   branchThread,
   deleteThread,
+  exportThreadArchive,
   getThread,
   getThreads,
+  importThreadArchive,
   ThreadDeleteConflictError,
 } from '../lib/api/threads.js';
+import { saveBlobToLocalFile } from '../lib/save-local-file.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
 import { reportVisibleAppError } from './error-reporting.js';
 import { useThreadSessionSelection } from './use-thread-session-selection.js';
@@ -48,6 +51,9 @@ interface UseThreadSessionsResult {
   subagentTerminalOutcomes: ThreadSubagentTerminalOutcome[];
   deletingThreadId: string | null;
   pendingDeleteThread: ThreadSummary | null;
+  exportingThreadId: string | null;
+  importingThreadArchive: boolean;
+  threadTransferNotice: string | null;
   loadThreads: () => Promise<void>;
   openThread: (threadId: string) => Promise<void>;
   openThreadForRunSettle: (
@@ -56,6 +62,8 @@ interface UseThreadSessionsResult {
   requestDeleteThread: (threadId: string) => void;
   cancelDeleteThread: () => void;
   confirmDeleteThread: () => Promise<void>;
+  exportThread: (threadId: string) => Promise<void>;
+  importThread: (archive: Blob) => Promise<void>;
   setSelectedThreadId: (threadId: string | null) => void;
   appendOptimisticUserMessage: (
     prompt: string,
@@ -208,6 +216,14 @@ function useThreadDeleteFlow({
 export function useThreadSessions(): UseThreadSessionsResult {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [threadError, setThreadError] = useState<string | null>(null);
+  const [exportingThreadId, setExportingThreadId] = useState<string | null>(
+    null,
+  );
+  const [importingThreadArchive, setImportingThreadArchive] = useState(false);
+  const [threadTransferNotice, setThreadTransferNotice] = useState<
+    string | null
+  >(null);
+  const threadTransferInFlightRef = useRef(false);
   const {
     selectedThreadId,
     setSelectedThreadId,
@@ -302,6 +318,69 @@ export function useThreadSessions(): UseThreadSessionsResult {
       }
     },
     [loadThreadDetail, selectThreadSnapshot],
+  );
+
+  const exportThread = useCallback(async (threadId: string) => {
+    if (threadTransferInFlightRef.current) {
+      return;
+    }
+    threadTransferInFlightRef.current = true;
+    setExportingThreadId(threadId);
+    setThreadTransferNotice(null);
+    try {
+      const archive = await exportThreadArchive(threadId);
+      const saved = await saveBlobToLocalFile({
+        suggestedName: `geulbat-thread-${threadId}.json`,
+        blob: archive,
+      });
+      if (saved) {
+        setThreadTransferNotice('대화 아카이브를 내보냈습니다.');
+        setThreadError(null);
+      }
+    } catch (error: unknown) {
+      setThreadError(
+        reportThreadSessionError({
+          logContext: 'exportThread failed',
+          visiblePrefix: `대화 ${threadId}을(를) 내보내지 못했습니다.`,
+          error,
+        }),
+      );
+    } finally {
+      threadTransferInFlightRef.current = false;
+      setExportingThreadId(null);
+    }
+  }, []);
+
+  const importThread = useCallback(
+    async (archive: Blob) => {
+      if (threadTransferInFlightRef.current) {
+        return;
+      }
+      threadTransferInFlightRef.current = true;
+      setImportingThreadArchive(true);
+      setThreadTransferNotice(null);
+      try {
+        const imported = await importThreadArchive(archive);
+        setThreadTransferNotice(
+          `대화를 가져왔습니다 · 메시지 ${imported.importedMessageCount}개`,
+        );
+        setThreadError(null);
+        await loadThreads();
+        await openThread(imported.threadId);
+      } catch (error: unknown) {
+        setThreadError(
+          reportThreadSessionError({
+            logContext: 'importThread failed',
+            visiblePrefix: '대화를 가져오지 못했습니다.',
+            error,
+          }),
+        );
+      } finally {
+        threadTransferInFlightRef.current = false;
+        setImportingThreadArchive(false);
+      }
+    },
+    [loadThreads, openThread],
   );
 
   // 여기서 새 채팅 — entryId 포함 prefix를 복제한 새 스레드를 만들고 목록
@@ -437,12 +516,17 @@ export function useThreadSessions(): UseThreadSessionsResult {
     subagentTerminalOutcomes,
     deletingThreadId,
     pendingDeleteThread,
+    exportingThreadId,
+    importingThreadArchive,
+    threadTransferNotice,
     loadThreads,
     openThread,
     openThreadForRunSettle,
     requestDeleteThread,
     cancelDeleteThread,
     confirmDeleteThread,
+    exportThread,
+    importThread,
     setSelectedThreadId,
     appendOptimisticUserMessage,
     trimMessagesForRegenerate,

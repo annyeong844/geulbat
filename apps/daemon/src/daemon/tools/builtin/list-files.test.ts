@@ -7,6 +7,10 @@ import { join } from 'node:path';
 import { createSymlinkOrSkip } from '../../../test-support/symlink-test.js';
 import { listFilesTool } from './list-files.js';
 
+void test('list_files declares replay-safe restart recovery', () => {
+  assert.equal(listFilesTool.recoveryStrategy, 'replay_safe');
+});
+
 void test('list_files defaults a missing path to the current directory', async () => {
   const computerFileRoot = await mkdtemp(join(tmpdir(), 'geulbat-list-tool-'));
   await mkdir(join(computerFileRoot, 'src'));

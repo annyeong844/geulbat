@@ -1,3 +1,8 @@
+import {
+  isPtcExecuteCodeArtifactExport,
+  type PtcExecuteCodeArtifactExport,
+} from '@geulbat/protocol/ptc-artifacts';
+
 import { isRecord } from '../../lib/json.js';
 import type { RunTranscriptEntry } from '../../lib/run-transcript-entry.js';
 
@@ -15,6 +20,7 @@ export interface ToolResultView {
   // 접힌 헤더 우측 한 줄 — 실패면 에러 메시지, 성공이면 본문 첫 줄
   summary: string;
   ptcStatus?: PtcToolActivityStatus;
+  artifacts?: PtcExecuteCodeArtifactExport;
   bodyLines: string[];
   truncatedLineCount: number;
 }
@@ -49,6 +55,11 @@ export function parseToolResultView(content: string): ToolResultView | null {
     ok: record.ok,
     text: record.ok ? displayText || output : output || displayText,
   });
+  const artifacts = readPtcExecuteCodeArtifacts({
+    tool: record.tool,
+    ok: record.ok,
+    text: displayText || output,
+  });
 
   const summarySource =
     ptcStatus !== undefined
@@ -63,8 +74,37 @@ export function parseToolResultView(content: string): ToolResultView | null {
     ok: record.ok,
     summary: truncateSummary(summarySource.trim()),
     ...(ptcStatus !== undefined ? { ptcStatus } : {}),
+    ...(artifacts === undefined ? {} : { artifacts }),
     bodyLines,
     truncatedLineCount: allLines.length - bodyLines.length,
+  };
+}
+
+function readPtcExecuteCodeArtifacts(args: {
+  tool: string;
+  ok: boolean;
+  text: string;
+}): PtcExecuteCodeArtifactExport | undefined {
+  if (args.tool !== 'exec' || !args.ok || args.text.length === 0) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(args.text);
+  } catch {
+    return undefined;
+  }
+  if (
+    !isRecord(parsed) ||
+    parsed.kind !== 'ptc_execute_code_result' ||
+    !isPtcExecuteCodeArtifactExport(parsed.artifacts)
+  ) {
+    return undefined;
+  }
+  return {
+    evidenceRef: parsed.artifacts.evidenceRef,
+    files: parsed.artifacts.files.map((file) => ({ ...file })),
+    totalBytes: parsed.artifacts.totalBytes,
   };
 }
 

@@ -28,18 +28,24 @@ import {
 } from './thread-metadata.js';
 import {
   isAgentChildTerminalReason,
+  isAgentChildTerminalState,
+  isSubagentResultReport,
   type AgentChildTerminalReason,
   type AgentChildTerminalState,
+  type SubagentResultReport,
 } from './subagent-terminal.js';
-// 값이 아닌 타입만 가져온다 — verbatimModuleSyntax 아래에서는 `import {type X}`도
-// 문장이 그대로 방출돼 런타임 간선이 남으므로 `import type`이어야 한다.
-import type {
-  RunUsageTotals,
-  SubagentCapability,
-  SubagentRuntimeDiagnostics,
-  SubagentToolSurfaceProfile,
-  SubagentType,
-} from './run-events.js';
+import {
+  isRunUsageTotals,
+  isSubagentCapabilities,
+  isSubagentRuntimeDiagnostics,
+  isSubagentToolSurfaceProfile,
+  isSubagentType,
+  type RunUsageTotals,
+  type SubagentCapability,
+  type SubagentRuntimeDiagnostics,
+  type SubagentToolSurfaceProfile,
+  type SubagentType,
+} from './run-runtime-status.js';
 
 export const THREAD_MESSAGE_ROLES = [
   'user',
@@ -80,6 +86,7 @@ export interface ThreadSubagentTerminalOutcome {
   deliveryId: string;
   resultRef?: string;
   resultDigest?: `sha256:${string}`;
+  resultReport?: SubagentResultReport;
   parentRunId: RunId;
   childRunId: RunId;
   childThreadId?: ThreadId;
@@ -134,6 +141,16 @@ export interface ThreadBranchResponse {
   threadId: ThreadId;
   sourceThreadId: ThreadId;
   copiedMessageCount: number;
+}
+
+export const THREAD_ARCHIVE_MEDIA_TYPE =
+  'application/vnd.geulbat.thread-archive';
+
+export interface ThreadArchiveImportResponse {
+  ok: true;
+  threadId: ThreadId;
+  archiveId: `sha256:${string}`;
+  importedMessageCount: number;
 }
 
 export interface PrepareProviderTransitionRequest {
@@ -565,27 +582,6 @@ export function isThreadDetailDiagnostics(
   );
 }
 
-const THREAD_SUBAGENT_TERMINAL_STATES = [
-  'completed',
-  'failed',
-  'cancelled',
-] as const;
-const THREAD_SUBAGENT_RUNTIME_PHASES = [
-  'queued',
-  'starting',
-  'auth_waiting',
-  'provider_waiting',
-  'rate_limit_waiting',
-  'provider_streaming',
-  'tool_running',
-  'approval_pending',
-] as const;
-const THREAD_SUBAGENT_RUNTIME_TOOL_STATES = [
-  'running',
-  'succeeded',
-  'failed',
-] as const;
-
 export function isThreadSubagentTerminalOutcome(
   value: unknown,
 ): value is ThreadSubagentTerminalOutcome {
@@ -598,6 +594,10 @@ export function isThreadSubagentTerminalOutcome(
     (value.resultDigest !== undefined &&
       (typeof value.resultDigest !== 'string' ||
         !/^sha256:[a-f0-9]{64}$/u.test(value.resultDigest))) ||
+    (value.resultReport !== undefined &&
+      (!isSubagentResultReport(value.resultReport) ||
+        value.resultReport.sourceResultRef !== value.resultRef ||
+        value.resultReport.sourceResultDigest !== value.resultDigest)) ||
     typeof value.parentRunId !== 'string' ||
     !isRunId(value.parentRunId) ||
     typeof value.childRunId !== 'string' ||
@@ -605,10 +605,8 @@ export function isThreadSubagentTerminalOutcome(
     (value.childThreadId !== undefined &&
       (typeof value.childThreadId !== 'string' ||
         !isThreadId(value.childThreadId))) ||
-    (value.subagentType !== 'explorer' && value.subagentType !== 'worker') ||
-    !THREAD_SUBAGENT_TERMINAL_STATES.some(
-      (state) => state === value.terminalState,
-    ) ||
+    !isSubagentType(value.subagentType) ||
+    !isAgentChildTerminalState(value.terminalState) ||
     (value.reason !== undefined && !isAgentChildTerminalReason(value.reason)) ||
     typeof value.result !== 'string' ||
     !isCanonicalIsoTimestamp(value.completedAt) ||
@@ -618,8 +616,9 @@ export function isThreadSubagentTerminalOutcome(
     (value.modelId !== undefined && typeof value.modelId !== 'string') ||
     (value.reasoningEffort !== undefined &&
       !isRunReasoningEffort(value.reasoningEffort)) ||
-    !isThreadSubagentUsage(value.usage) ||
-    !isThreadSubagentRuntime(value.runtime)
+    (value.usage !== undefined && !isRunUsageTotals(value.usage)) ||
+    (value.runtime !== undefined &&
+      !isSubagentRuntimeDiagnostics(value.runtime))
   ) {
     return false;
   }
@@ -627,11 +626,8 @@ export function isThreadSubagentTerminalOutcome(
     return true;
   }
   if (
-    !Array.isArray(value.capabilities) ||
-    !value.capabilities.every((capability) => capability === 'ptc') ||
-    (value.toolSurface !== 'explorer' &&
-      value.toolSurface !== 'explorer_ptc' &&
-      value.toolSurface !== 'worker')
+    !isSubagentCapabilities(value.capabilities) ||
+    !isSubagentToolSurfaceProfile(value.toolSurface)
   ) {
     return false;
   }
@@ -684,54 +680,6 @@ function isThreadRunPreferences(value: unknown): value is ThreadRunPreferences {
   );
 }
 
-function isThreadSubagentRuntime(
-  value: unknown,
-): value is SubagentRuntimeDiagnostics | undefined {
-  if (value === undefined) {
-    return true;
-  }
-  if (
-    !isRecord(value) ||
-    !THREAD_SUBAGENT_RUNTIME_PHASES.some((phase) => phase === value.phase) ||
-    !isCanonicalIsoTimestamp(value.observedAt) ||
-    typeof value.partialOutputAvailable !== 'boolean' ||
-    (value.previousChildRunId !== undefined &&
-      (typeof value.previousChildRunId !== 'string' ||
-        !isRunId(value.previousChildRunId)))
-  ) {
-    return false;
-  }
-  const lastTool = value.lastTool;
-  if (lastTool === undefined) {
-    return true;
-  }
-  return (
-    isRecord(lastTool) &&
-    typeof lastTool.name === 'string' &&
-    lastTool.name.trim() !== '' &&
-    typeof lastTool.callId === 'string' &&
-    lastTool.callId.trim() !== '' &&
-    THREAD_SUBAGENT_RUNTIME_TOOL_STATES.some(
-      (state) => state === lastTool.state,
-    )
-  );
-}
-
-function isThreadSubagentUsage(
-  value: unknown,
-): value is RunUsageTotals | undefined {
-  return (
-    value === undefined ||
-    (isRecord(value) &&
-      typeof value.inputTokens === 'number' &&
-      Number.isFinite(value.inputTokens) &&
-      typeof value.outputTokens === 'number' &&
-      Number.isFinite(value.outputTokens) &&
-      typeof value.cachedInputTokens === 'number' &&
-      Number.isFinite(value.cachedInputTokens))
-  );
-}
-
 export function isThreadDeleteResponse(
   value: unknown,
 ): value is ThreadDeleteResponse {
@@ -768,5 +716,21 @@ export function isThreadBranchResponse(
     typeof value.copiedMessageCount === 'number' &&
     Number.isSafeInteger(value.copiedMessageCount) &&
     value.copiedMessageCount >= 0
+  );
+}
+
+export function isThreadArchiveImportResponse(
+  value: unknown,
+): value is ThreadArchiveImportResponse {
+  return (
+    isRecord(value) &&
+    value.ok === true &&
+    typeof value.threadId === 'string' &&
+    isThreadId(value.threadId) &&
+    typeof value.archiveId === 'string' &&
+    /^sha256:[0-9a-f]{64}$/u.test(value.archiveId) &&
+    typeof value.importedMessageCount === 'number' &&
+    Number.isSafeInteger(value.importedMessageCount) &&
+    value.importedMessageCount >= 0
   );
 }

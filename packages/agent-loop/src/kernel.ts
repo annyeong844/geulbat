@@ -18,6 +18,7 @@ export const AGENT_LOOP_TERMINAL_SOURCES = [
   'aborted',
   'blocked',
   'model_failure',
+  'no_progress',
   'structured_output_failure',
   'structured_output',
   'structured_output_unhandled',
@@ -112,11 +113,13 @@ export type AgentLoopTerminalCandidateDecision =
   | { kind: 'terminal' }
   | { kind: 'continue'; historyText?: string }
   | { kind: 'blocked'; message: string }
+  | { kind: 'no_progress'; message: string }
   | { kind: 'verification_unavailable'; message: string };
 
-type AgentLoopKernelFailure =
+export type AgentLoopKernelFailure =
   | { kind: 'aborted'; message: string }
   | { kind: 'blocked'; message: string }
+  | { kind: 'no_progress'; message: string }
   | { kind: 'structured_output_failure'; message: string }
   | { kind: 'structured_output_unhandled'; message: string }
   | { kind: 'verification_unavailable'; message: string };

@@ -174,7 +174,15 @@ export function processResponseEvent(
         '';
       const rawDetail = stringifyEventError(errorRecord ?? event);
       const msg = message || code || rawDetail || 'API stream error';
-      throw new Error(msg);
+      // provider가 준 구조화 코드는 message가 있으면 문자열에 뭉개져 사라진다.
+      // 분류가 `unknown`으로 떨어졌을 때 무엇이 왔는지 남지 않으면 진단할
+      // 근거가 없어지므로 별도 속성으로 보존한다. 분류 입력으로는 쓰지
+      // 않는다 — 어떤 코드가 어떤 실패 클래스인지는 관측 근거가 생긴 뒤에
+      // 실패 클래스 owner 표에 등록한다.
+      throw Object.assign(
+        new Error(msg),
+        code === '' ? {} : { providerErrorCode: code },
+      );
     }
 
     default:

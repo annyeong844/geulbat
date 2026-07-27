@@ -67,7 +67,7 @@ export function getComputerFileRootFromContext(
 
 export async function withAuthenticatedDaemonServer<T>(
   run: (ctx: { port: number; daemonContext: DaemonContext }) => Promise<T>,
-  args?: { daemonContext?: DaemonContext },
+  args?: { daemonContext?: DaemonContext; shellAssetRoot?: string },
 ): Promise<T> {
   const restoreToken = setDevToken();
   try {
@@ -82,12 +82,16 @@ export async function withDaemonServer<T>(
   args?: {
     daemonContext?: DaemonContext;
     enablePublicWebConformanceFixtures?: boolean;
+    shellAssetRoot?: string;
   },
 ): Promise<T> {
   const daemonContext = args?.daemonContext ?? createRouteTestDaemonContext();
   await ensureRouteTestRoots(daemonContext);
   const { app } = await createDaemon({
     daemonContext,
+    ...(args?.shellAssetRoot === undefined
+      ? {}
+      : { shellAssetRoot: args.shellAssetRoot }),
     ...(args?.enablePublicWebConformanceFixtures === undefined
       ? {}
       : {

@@ -1,5 +1,6 @@
 import { isRunId, isThreadId, type RunId, type ThreadId } from './ids.js';
 import {
+  hasOnlyKeys,
   isCanonicalIsoTimestamp,
   isNumber,
   isRecord,
@@ -332,11 +333,4 @@ function isNonBlankString(value: unknown): value is string {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(isString);
-}
-
-function hasOnlyKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-): boolean {
-  return Object.keys(value).every((key) => keys.includes(key));
 }

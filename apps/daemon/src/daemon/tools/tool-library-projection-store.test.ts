@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -13,9 +21,12 @@ import {
   getToolLibraryProjectionPin,
 } from '@geulbat/tool-library/projection-manifest';
 import {
+  deleteThreadToolLibraryProjection,
+  pruneUnreferencedToolLibraryProjectionContent,
   readVerifiedToolLibraryProjectionMount,
   writeToolLibraryProjectionFiles,
 } from './tool-library-projection-store.js';
+import { threadProjectionDirectoryName } from './tool-library-projection-path.js';
 import {
   BASE_PROJECTION_ARGS,
   createTestProjectionPort,
@@ -50,6 +61,20 @@ void test('writeToolLibraryProjectionFiles writes generated SDK files under the 
     await rm(rootPath, { recursive: true, force: true });
   }
 });
+
+/**
+ * projection 콘텐츠는 공유 위치(`<projections>/content/sha256-...`)에 있으므로
+ * thread pin 디렉터리는 콘텐츠 경로에서 유도하지 않고 projections 루트에서 만든다.
+ */
+function threadProjectionRootPathForTest(
+  projectionRootPath: string,
+  threadId: string,
+): string {
+  return join(
+    dirname(dirname(projectionRootPath)),
+    threadProjectionDirectoryName(threadId),
+  );
+}
 
 void test('readVerifiedToolLibraryProjectionMount rejects a stale pinned manifest', async () => {
   const threadProjectionRootPath = await mkdtemp(
@@ -92,6 +117,8 @@ void test('readVerifiedToolLibraryProjectionMount rejects a stale pinned manifes
 
     assert.deepEqual(
       await readVerifiedToolLibraryProjectionMount({
+        // 공유 위치가 비어 있으므로 구 레이아웃 해석 경로를 검증한다.
+        contentRootPath: join(threadProjectionRootPath, 'content'),
         threadProjectionRootPath,
         expectedPin,
         importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
@@ -171,6 +198,7 @@ void test('readVerifiedToolLibraryProjectionMount verifies an expected pin after
     );
 
     const firstMountResult = await readVerifiedToolLibraryProjectionMount({
+      contentRootPath: join(threadProjectionRootPath, 'content'),
       threadProjectionRootPath,
       expectedPin: firstPin,
       importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
@@ -225,6 +253,8 @@ void test('readVerifiedToolLibraryProjectionMount rejects stored pin module drif
 
     assert.deepEqual(
       await readVerifiedToolLibraryProjectionMount({
+        // 공유 위치가 비어 있으므로 구 레이아웃 해석 경로를 검증한다.
+        contentRootPath: join(threadProjectionRootPath, 'content'),
         threadProjectionRootPath,
         importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
       }),
@@ -257,7 +287,11 @@ void test('readVerifiedToolLibraryProjectionMount rehydrates from observer proje
 
     const expectedIdentity = getToolLibraryProjectionIdentity(result.pin);
     const mountResult = await readVerifiedToolLibraryProjectionMount({
-      threadProjectionRootPath: dirname(result.projection.rootPath),
+      contentRootPath: dirname(result.projection.rootPath),
+      threadProjectionRootPath: threadProjectionRootPathForTest(
+        result.projection.rootPath,
+        'thread-runtime-test',
+      ),
       expectedIdentity,
       importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
     });
@@ -294,7 +328,11 @@ void test('readVerifiedToolLibraryProjectionMount rejects replay identity mismat
 
     assert.deepEqual(
       await readVerifiedToolLibraryProjectionMount({
-        threadProjectionRootPath: dirname(result.projection.rootPath),
+        contentRootPath: dirname(result.projection.rootPath),
+        threadProjectionRootPath: threadProjectionRootPathForTest(
+          result.projection.rootPath,
+          'thread-runtime-test',
+        ),
         expectedIdentity: {
           ...getToolLibraryProjectionIdentity(result.pin),
           policyId: 'stale-policy',
@@ -331,7 +369,11 @@ void test('readVerifiedToolLibraryProjectionMount rejects import specifier misma
 
     assert.deepEqual(
       await readVerifiedToolLibraryProjectionMount({
-        threadProjectionRootPath: dirname(result.projection.rootPath),
+        contentRootPath: dirname(result.projection.rootPath),
+        threadProjectionRootPath: threadProjectionRootPathForTest(
+          result.projection.rootPath,
+          'thread-runtime-test',
+        ),
         expectedPin: result.pin,
         importSpecifier: '@geulbat/other-tools',
       }),
@@ -365,7 +407,11 @@ void test('readVerifiedToolLibraryProjectionMount rejects missing mount files', 
     await rm(join(result.projection.rootPath, 'index.js'));
 
     const mountResult = await readVerifiedToolLibraryProjectionMount({
-      threadProjectionRootPath: dirname(result.projection.rootPath),
+      contentRootPath: dirname(result.projection.rootPath),
+      threadProjectionRootPath: threadProjectionRootPathForTest(
+        result.projection.rootPath,
+        'thread-runtime-test',
+      ),
       expectedPin: result.pin,
       importSpecifier: BASE_PROJECTION_ARGS.importSpecifier,
     });
@@ -409,5 +455,247 @@ void test('writeToolLibraryProjectionFiles rejects unsafe generated file paths',
     assert.equal(await pathExists(outsidePath), false);
   } finally {
     await rm(parentPath, { recursive: true, force: true });
+  }
+});
+
+void test('legacy in-thread projection content migrates into the shared store', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-migrate-'),
+  );
+  try {
+    const runtime = createTestProjectionPort();
+    const first = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-migrate',
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(first.ok, true);
+    if (!first.ok) {
+      assert.fail('expected projection port to resolve');
+    }
+    const contentRootPath = dirname(first.projection.rootPath);
+    const projectionsRootPath = dirname(contentRootPath);
+    const threadProjectionRootPath = join(
+      projectionsRootPath,
+      threadProjectionDirectoryName('thread-migrate'),
+    );
+    const projectionDirectory = first.pin.projectionDirectory;
+
+    // 구 레이아웃 재현: 콘텐츠를 thread 디렉터리 안으로 되돌린다.
+    await rename(
+      join(contentRootPath, projectionDirectory),
+      join(threadProjectionRootPath, projectionDirectory),
+    );
+    await rm(contentRootPath, { recursive: true, force: true });
+    assert.equal(
+      await pathExists(join(threadProjectionRootPath, projectionDirectory)),
+      true,
+    );
+
+    const second = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-migrate',
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(second.ok, true);
+    if (!second.ok) {
+      assert.fail('expected the migrated projection to resolve');
+    }
+    assert.deepEqual(second.pin, first.pin);
+    assert.equal(
+      await pathExists(join(contentRootPath, projectionDirectory)),
+      true,
+    );
+    assert.equal(
+      await pathExists(join(threadProjectionRootPath, projectionDirectory)),
+      false,
+    );
+    assert.equal(
+      await pathExists(join(threadProjectionRootPath, 'projection-pin.json')),
+      true,
+    );
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('two threads sharing one projection digest keep a single content copy', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-share-'),
+  );
+  try {
+    const runtime = createTestProjectionPort();
+    const first = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-share-a',
+      allowedRegistryNames: ['read_file'],
+    });
+    const second = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-share-b',
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(first.ok, true);
+    assert.equal(second.ok, true);
+    if (!first.ok || !second.ok) {
+      assert.fail('expected both projections to resolve');
+    }
+    assert.equal(first.projection.rootPath, second.projection.rootPath);
+    // 두 번째 스레드는 콘텐츠를 다시 쓰지 않는다.
+    assert.deepEqual(second.writtenFiles, []);
+
+    const contentRootPath = dirname(first.projection.rootPath);
+    const contentEntries = await readdir(contentRootPath);
+    assert.deepEqual(contentEntries, [first.pin.projectionDirectory]);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('unreferenced shared content is pruned while pinned content survives', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-library-gc-'));
+  try {
+    const runtime = createTestProjectionPort();
+    const pinned = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-gc-pinned',
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(pinned.ok, true);
+    if (!pinned.ok) {
+      assert.fail('expected projection port to resolve');
+    }
+    const contentRootPath = dirname(pinned.projection.rootPath);
+    const projectionsRootPath = dirname(contentRootPath);
+    const orphanDirectory = `sha256-${'a'.repeat(64)}`;
+    await mkdir(join(contentRootPath, orphanDirectory), { recursive: true });
+    await writeFile(
+      join(contentRootPath, orphanDirectory, 'manifest.js'),
+      'export const projectionManifest = {};\n',
+      'utf8',
+    );
+
+    const result = await pruneUnreferencedToolLibraryProjectionContent({
+      projectionsRootPath,
+      contentRootPath,
+    });
+
+    assert.deepEqual(result.removedDirectories, [orphanDirectory]);
+    assert.deepEqual(result.failedDirectories, []);
+    assert.deepEqual(result.retainedDirectories, [
+      pinned.pin.projectionDirectory,
+    ]);
+    assert.deepEqual(result.unreadableThreadDirectories, []);
+    assert.equal(
+      await pathExists(join(contentRootPath, orphanDirectory)),
+      false,
+    );
+    assert.equal(await pathExists(pinned.projection.rootPath), true);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('content GC refuses to remove anything when a thread pin is unreadable', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-gc-guard-'),
+  );
+  try {
+    const runtime = createTestProjectionPort();
+    const pinned = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-gc-guard',
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(pinned.ok, true);
+    if (!pinned.ok) {
+      assert.fail('expected projection port to resolve');
+    }
+    const contentRootPath = dirname(pinned.projection.rootPath);
+    const projectionsRootPath = dirname(contentRootPath);
+    const orphanDirectory = `sha256-${'b'.repeat(64)}`;
+    await mkdir(join(contentRootPath, orphanDirectory), { recursive: true });
+
+    // 참조 집합을 신뢰할 수 없으면 아무것도 지우지 않아야 한다.
+    await writeFile(
+      join(
+        projectionsRootPath,
+        threadProjectionDirectoryName('thread-gc-guard'),
+        'projection-pin.json',
+      ),
+      'not json\n',
+      'utf8',
+    );
+
+    const result = await pruneUnreferencedToolLibraryProjectionContent({
+      projectionsRootPath,
+      contentRootPath,
+    });
+
+    assert.deepEqual(result.removedDirectories, []);
+    assert.equal(result.unreadableThreadDirectories.length, 1);
+    assert.equal(
+      await pathExists(join(contentRootPath, orphanDirectory)),
+      true,
+    );
+    assert.equal(await pathExists(pinned.projection.rootPath), true);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('deleting a thread projection removes only its pin directory', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-library-delete-'),
+  );
+  try {
+    const runtime = createTestProjectionPort();
+    const kept = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-delete-kept',
+      allowedRegistryNames: ['read_file'],
+    });
+    const removed = await runtime.resolveProjection({
+      stateRoot,
+      threadId: 'thread-delete-removed',
+      allowedRegistryNames: ['read_file'],
+    });
+    assert.equal(kept.ok, true);
+    assert.equal(removed.ok, true);
+    if (!kept.ok || !removed.ok) {
+      assert.fail('expected both projections to resolve');
+    }
+    const projectionsRootPath = dirname(dirname(kept.projection.rootPath));
+
+    assert.equal(
+      await deleteThreadToolLibraryProjection({
+        projectionsRootPath,
+        threadId: 'thread-delete-removed',
+      }),
+      true,
+    );
+
+    assert.equal(
+      await pathExists(
+        join(
+          projectionsRootPath,
+          threadProjectionDirectoryName('thread-delete-removed'),
+        ),
+      ),
+      false,
+    );
+    assert.equal(
+      await pathExists(
+        join(
+          projectionsRootPath,
+          threadProjectionDirectoryName('thread-delete-kept'),
+        ),
+      ),
+      true,
+    );
+    // 공유 콘텐츠는 남은 스레드가 참조하므로 유지된다.
+    assert.equal(await pathExists(kept.projection.rootPath), true);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
   }
 });

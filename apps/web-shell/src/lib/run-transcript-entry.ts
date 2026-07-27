@@ -9,6 +9,7 @@ import type {
 import type {
   AgentChildTerminalReason,
   AgentChildTerminalState,
+  SubagentResultReport,
 } from '@geulbat/protocol/subagent-terminal';
 import type { RunReasoningEffort } from '@geulbat/protocol/run-contract';
 
@@ -40,6 +41,7 @@ interface SubagentActivityEntry {
   result?: string;
   resultRef?: string;
   resultDigest?: `sha256:${string}`;
+  resultReport?: SubagentResultReport;
   completedAt?: string;
   // Terminal-only drill-down telemetry from subagent_terminal.
   elapsedMs?: number;
@@ -51,8 +53,13 @@ interface SubagentActivityEntry {
 
 export type RunTranscriptEntry =
   | { kind: 'assistant_text'; text: string }
-  // 스티어가 모델에 주입된 순간 대화에 합류한 사용자 발화
-  | { kind: 'user_text'; text: string }
+  // 사용자 발화. 실행 중에 보낸 말도 보내는 즉시 여기로 들어온다 — 내가 한
+  // 말이 화면 어딘가에 잡혀 있다가 나중에 합류하면, 보낸 것인지 아닌지를
+  // 사람이 매번 확인해야 한다.
+  //
+  // `pendingSteerSeq`가 있으면 아직 모델이 읽지 않은 말이다. 그 사실은 표시로
+  // 남기고(취소할 수 있는 창), 모델이 읽는 순간 사라진다.
+  | { kind: 'user_text'; text: string; pendingSteerSeq?: number }
   // args는 호출 인자가 곧 렌더 원본인 도구(visualize)만 실어 온다 —
   // 일반 도구는 상태 요약 행만 그리므로 인자를 상태에 들고 있지 않는다.
   | {

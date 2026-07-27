@@ -17,6 +17,7 @@ import {
   createPtcExecuteCodeToolCallbackSurface,
 } from './execute-code-tool-callback.js';
 import {
+  isPtcExecuteCodeDelegatedApprovalCallbackToolMetaAllowed,
   isPtcExecuteCodeWriteCallbackToolMetaAllowed,
   resolvePtcExecuteCodeCallbackToolSurface,
 } from './ptc-callback-tool-surface.js';
@@ -184,6 +185,77 @@ void test('write tier meta invariant is fail-closed even for allowlisted names',
       mayMutateComputerFiles: false,
     }),
     false,
+  );
+});
+
+void test('delegated approval callbacks use declared external exposure without enabling built-in writes', () => {
+  const daemonContext = createDaemonContext();
+  const registry = daemonContext.toolRegistry;
+  const toolName = 'mcp_external_echo_test';
+  const delegatedMeta = {
+    sideEffectLevel: 'write' as const,
+    mayMutateComputerFiles: true,
+    requiresApproval: true,
+    exposure: {
+      directHot: false,
+      sdkVisible: true,
+      inCellCallable: true,
+      directOnly: false,
+      effectClass: 'hostStateMutation' as const,
+    },
+  };
+  registry.registerTool({
+    name: toolName,
+    description: 'Synthetic installed external tool.',
+    parameters: {
+      type: 'object',
+      properties: { text: { type: 'string' } },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    strict: true,
+    ...delegatedMeta,
+    parseArgs: () => ({ ok: true, value: { text: 'hello' } }),
+    async executeParsed() {
+      return { ok: true, output: 'hello' };
+    },
+  });
+
+  assert.equal(
+    isPtcExecuteCodeDelegatedApprovalCallbackToolMetaAllowed(
+      toolName,
+      delegatedMeta,
+    ),
+    true,
+  );
+  assert.equal(
+    isPtcExecuteCodeDelegatedApprovalCallbackToolMetaAllowed(toolName, {
+      ...delegatedMeta,
+      exposure: { ...delegatedMeta.exposure, sdkVisible: false },
+    }),
+    false,
+  );
+  assert.equal(
+    isPtcExecuteCodeDelegatedApprovalCallbackToolMetaAllowed(toolName, {
+      ...delegatedMeta,
+      exposure: { ...delegatedMeta.exposure, directOnly: true },
+    }),
+    false,
+  );
+
+  const surface = resolvePtcExecuteCodeCallbackToolSurface({
+    registry,
+    allowedRegistryNames: [toolName, 'apply_patch'],
+    writeCallbackEnabled: false,
+  });
+  assert.equal(surface.writeTierEnabled, true);
+  assert.equal(surface.allows(toolName), true);
+  assert.equal(surface.allowsWrite(toolName), true);
+  assert.equal(surface.allows('apply_patch'), false);
+  assert.equal(
+    surface.callbackTools.find((tool) => tool.name === toolName)
+      ?.requiresApproval,
+    true,
   );
 });
 

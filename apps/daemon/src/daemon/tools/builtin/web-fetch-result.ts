@@ -19,6 +19,8 @@ export interface WebFetchSuccess {
   contentType: string | null;
   title?: string;
   content: string;
+  contentFormat: 'line_preserved_text_v1';
+  contentLineCount: number;
   untrusted: true;
 }
 

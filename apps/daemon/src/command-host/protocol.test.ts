@@ -100,7 +100,9 @@ void test('method param schemas validate required shapes', () => {
       runId: 'r',
       callId: 'c',
       stdinMode: 'closed',
+      initialStdin: 'private bootstrap\n',
       streamMode: 'lossless',
+      requiresDeferredOutputRelease: true,
       outputRedaction: {
         exactMarkers: ['private-token'],
         replacement: '[redacted]',
@@ -125,6 +127,21 @@ void test('method param schemas validate required shapes', () => {
       },
     }).success,
     false,
+  );
+  assert.equal(
+    interactParamsSchema.safeParse({
+      stateRoot: '/s',
+      threadId: 't',
+      outputRef: 'command-output:t/s',
+      page: {
+        stream: 'stdout',
+        offsetBytes: 3,
+        limitBytes: 3,
+        deferRelease: true,
+        releaseUpToBytes: 3,
+      },
+    }).success,
+    true,
   );
   assert.equal(
     interactParamsSchema.safeParse({

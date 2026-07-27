@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import {
@@ -31,6 +30,12 @@ import {
   readRequiredJson,
   type Sha256Digest,
 } from '@geulbat/product/cli-support';
+
+import {
+  runProductXHarnessGitProcess,
+  type ProductXHarnessGitProcessOptions,
+  type ProductXHarnessGitProcessResult,
+} from './product-xharness-git-process.js';
 
 type SourceChangeAction = 'create' | 'modify' | 'delete';
 
@@ -144,17 +149,6 @@ export interface ProductXHarnessSourceCandidateBuildReceipt {
   readonly candidateRef: string;
   readonly changes: readonly ProductXHarnessSourceChange[];
   readonly receiptDigest: Sha256Digest;
-}
-
-interface GitResult {
-  readonly exitCode: number;
-  readonly stdout: Buffer;
-  readonly stderr: Buffer;
-}
-
-interface GitOptions {
-  readonly env?: NodeJS.ProcessEnv;
-  readonly input?: string | Buffer;
 }
 
 const SOURCE_PUBLICATION_DIRECTORY = [
@@ -1943,8 +1937,8 @@ function decodeGitText(value: Buffer): string {
 async function runGit(
   repositoryRoot: string,
   args: readonly string[],
-  options: GitOptions = {},
-): Promise<GitResult> {
+  options: ProductXHarnessGitProcessOptions = {},
+): Promise<ProductXHarnessGitProcessResult> {
   const result = await runGitAllowFailure(repositoryRoot, args, options);
   if (result.exitCode !== 0) {
     throw gitFailure(result);
@@ -1955,40 +1949,12 @@ async function runGit(
 async function runGitAllowFailure(
   repositoryRoot: string,
   args: readonly string[],
-  options: GitOptions = {},
-): Promise<GitResult> {
-  return await new Promise<GitResult>((resolve, reject) => {
-    const child = spawn('git', ['-C', repositoryRoot, ...args], {
-      env: options.env ?? process.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    child.stdout.on('data', (chunk: Buffer) => {
-      stdout.push(chunk);
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr.push(chunk);
-    });
-    child.once('error', reject);
-    child.once('close', (exitCode, signal) => {
-      if (signal !== null) {
-        reject(new Error(`git terminated by signal ${signal}`));
-        return;
-      }
-      resolve(
-        Object.freeze({
-          exitCode: exitCode ?? 1,
-          stdout: Buffer.concat(stdout),
-          stderr: Buffer.concat(stderr),
-        }),
-      );
-    });
-    child.stdin.end(options.input);
-  });
+  options: ProductXHarnessGitProcessOptions = {},
+): Promise<ProductXHarnessGitProcessResult> {
+  return await runProductXHarnessGitProcess(repositoryRoot, args, options);
 }
 
-function gitFailure(result: GitResult): Error {
+function gitFailure(result: ProductXHarnessGitProcessResult): Error {
   const detail = decodeGitText(result.stderr).trim();
   return new Error(
     detail.length === 0

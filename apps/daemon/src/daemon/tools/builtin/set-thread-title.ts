@@ -19,6 +19,7 @@ export const setThreadTitleTool = defineZodTool({
   argsSchema: setThreadTitleArgsSchema,
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
+  abortSettlement: 'await_execution',
   requiresApproval: false,
   recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {

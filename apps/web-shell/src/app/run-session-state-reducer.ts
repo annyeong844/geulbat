@@ -364,6 +364,7 @@ function reduceSingleRunSessionState(
         ...state,
         activeRunView: {
           ...state.activeRunView,
+          // 보낸 말은 여기 쌓이기만 한다. 대화로 올리는 것은 ⤵ 를 누를 때다.
           pendingSteers: [...state.activeRunView.pendingSteers, action.steer],
         },
       };
@@ -393,11 +394,30 @@ function reduceSingleRunSessionState(
           pendingSteers: remainingSteers,
           // 소비 1회로 플러시 요청은 목적을 다한다(데몬과 같은 규칙)
           pendingSteerFlushRequested: false,
+          // 반영되면 반짝임이 꺼진다. 이미 대화에 올라와 있던 말은 표시만
+          // 걷고, ⤵를 누르지 않아 아직 안 올라온 말은 이때 합류한다 — 어느
+          // 경로로 들어왔든 반영된 뒤에 반짝이는 말은 없어야 한다.
           transcriptEntries: [
-            ...state.activeRunView.transcriptEntries,
-            ...applied.map(
-              (steer) => ({ kind: 'user_text', text: steer.text }) as const,
+            ...state.activeRunView.transcriptEntries.map((entry) =>
+              entry.kind === 'user_text' &&
+              entry.pendingSteerSeq !== undefined &&
+              appliedSeqs.has(entry.pendingSteerSeq)
+                ? { kind: 'user_text' as const, text: entry.text }
+                : entry,
             ),
+            ...applied
+              .filter(
+                (steer) =>
+                  !state.activeRunView.transcriptEntries.some(
+                    (entry) =>
+                      entry.kind === 'user_text' &&
+                      entry.pendingSteerSeq === steer.receivedSeq,
+                  ),
+              )
+              .map((steer) => ({
+                kind: 'user_text' as const,
+                text: steer.text,
+              })),
           ],
         },
       };
@@ -414,6 +434,14 @@ function reduceSingleRunSessionState(
         activeRunView: {
           ...state.activeRunView,
           pendingSteers: remainingSteers,
+          // 아직 읽히지 않은 말만 지운다 — 이미 읽힌 말은 대화의 일부다.
+          transcriptEntries: state.activeRunView.transcriptEntries.filter(
+            (entry) =>
+              !(
+                entry.kind === 'user_text' &&
+                entry.pendingSteerSeq === action.receivedSeq
+              ),
+          ),
           pendingSteerFlushRequested:
             remainingSteers.length === 0
               ? false
@@ -433,6 +461,25 @@ function reduceSingleRunSessionState(
         activeRunView: {
           ...state.activeRunView,
           pendingSteerFlushRequested: true,
+          // 대기하던 말이 대화로 올라와 반짝인다. 이미 올라온 것은 그대로 둔다
+          // — 같은 말이 두 줄이 되면 무엇이 반영될지 알 수 없다.
+          transcriptEntries: [
+            ...state.activeRunView.transcriptEntries,
+            ...state.activeRunView.pendingSteers
+              .filter(
+                (steer) =>
+                  !state.activeRunView.transcriptEntries.some(
+                    (entry) =>
+                      entry.kind === 'user_text' &&
+                      entry.pendingSteerSeq === steer.receivedSeq,
+                  ),
+              )
+              .map((steer) => ({
+                kind: 'user_text' as const,
+                text: steer.text,
+                pendingSteerSeq: steer.receivedSeq,
+              })),
+          ],
         },
       };
     case 'subagent_activity_added':

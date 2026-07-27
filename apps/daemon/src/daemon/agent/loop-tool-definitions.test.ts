@@ -9,7 +9,7 @@ import {
 } from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
 import type { RegisteredToolLike } from '../tools/tool-registry-model.js';
 
-void test('default agent surface removes SDK-reachable long-tail tools while keeping the fixed direct surface', () => {
+void test('default root surface keeps the stable direct allowlist and defers long-tail tools', () => {
   const registry = createBuiltinToolRegistryStore();
   const port = createAgentLoopToolDefinitionPort(registry);
 
@@ -24,36 +24,21 @@ void test('default agent surface removes SDK-reachable long-tail tools while kee
     'agent_wait',
     'apply_patch',
     'ask_user',
-    'browser_navigate',
-    'browser_page_load_evidence',
-    'browser_text_evidence',
-    'cite_memory',
     PTC_EXECUTE_CODE_TOOL_NAME,
     'exec_command',
-    'fetch_url',
-    'generate_image',
-    'generate_video',
     'inspect_git',
-    'list_commands',
     'list_files',
     'manage_files',
     'propose_plan',
     'read_file',
     'read_tool_output',
-    'refresh_memory_index',
     'search_files',
     'search_memory_index',
-    'set_thread_title',
-    'skill_search',
-    'submit_result_report',
-    'suggest_followup',
     'tool_search',
     'update_goal',
     'update_plan',
-    'visualize',
     PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
     'write_file',
-    'write_memory_note',
     'write_stdin',
   ]);
 });

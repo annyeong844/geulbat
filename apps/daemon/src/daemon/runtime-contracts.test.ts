@@ -5,6 +5,7 @@ import type { RunId } from '@geulbat/protocol/ids';
 import {
   isChildRunState,
   isRootRunState,
+  parseExecuteResult,
   RUN_APPROVAL_PENDING_STATUS,
   RUN_RUNNING_STATUS,
   type ChildToolRunState,
@@ -55,6 +56,36 @@ function makeToolRunState(args: {
 void test('RunStatus active vocabulary uses approval_pending consistently', () => {
   assert.equal(RUN_RUNNING_STATUS, 'running');
   assert.equal(RUN_APPROVAL_PENDING_STATUS, 'approval_pending');
+});
+
+void test('parseExecuteResult validates the shared daemon result contract', () => {
+  assert.deepEqual(parseExecuteResult({ ok: true, output: 'done' }), {
+    ok: true,
+    output: 'done',
+  });
+  assert.deepEqual(
+    parseExecuteResult({
+      ok: false,
+      output: '',
+      errorCode: 'execution_failed',
+      error: 'failed',
+    }),
+    {
+      ok: false,
+      output: '',
+      errorCode: 'execution_failed',
+      error: 'failed',
+    },
+  );
+  assert.equal(
+    parseExecuteResult({
+      ok: false,
+      output: '',
+      errorCode: 'not_a_real_error_code',
+      error: 'failed',
+    }),
+    null,
+  );
 });
 
 void test('ToolRunState guards classify root and child states', () => {

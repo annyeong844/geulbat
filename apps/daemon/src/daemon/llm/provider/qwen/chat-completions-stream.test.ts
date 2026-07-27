@@ -244,6 +244,94 @@ void test('Qwen final-answer streaming accepts nullable optional tool-call field
   assert.equal(result.functionCalls.length, 0);
 });
 
+void test('Qwen internal requests can select thinking mode and cap output tokens', async () => {
+  let observedBody: Record<string, unknown> | undefined;
+  await streamQwenChatCompletions(
+    {
+      config: CONFIG,
+      history: [{ kind: 'user', text: 'Summarize this.' }],
+      providerReplayScopeId: REPLAY_SCOPE,
+      enableThinking: true,
+      maxTokens: 20_000,
+    },
+    {
+      fetchImpl: (async (_url, init) => {
+        observedBody = JSON.parse(String(init?.body)) as Record<
+          string,
+          unknown
+        >;
+        return sseResponse([
+          qwenEvent({
+            id: 'summary-1',
+            choices: [{ index: 0, delta: { content: 'Summary.' } }],
+            usage: { completion_tokens: 3 },
+          }),
+          'data: [DONE]\n\n',
+        ]);
+      }) as typeof fetch,
+    },
+  );
+
+  assert.equal(observedBody?.['enable_thinking'], true);
+  assert.equal(observedBody?.['max_tokens'], 20_000);
+  assert.equal(observedBody?.['tools'], undefined);
+});
+
+void test('Qwen stable request surface fails closed before direct fetch when its HTTP owner is missing', async () => {
+  let fetchCalls = 0;
+
+  await assert.rejects(
+    streamQwenChatCompletions(
+      {
+        config: CONFIG,
+        history: [{ kind: 'user', text: 'Hello' }],
+        providerReplayScopeId: REPLAY_SCOPE,
+        providerSessionId: 'qwen-stable-session',
+        requestAttempt: 0,
+        providerRequestSessions: {},
+      },
+      {
+        fetchImpl: (async () => {
+          fetchCalls += 1;
+          return sseResponse([]);
+        }) as typeof fetch,
+      },
+    ),
+    /durable provider request transport is unavailable/u,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
+void test('Qwen stable request owner failure propagates without direct fetch fallback', async () => {
+  const ownerError = new Error('stable Qwen request owner failed');
+  let fetchCalls = 0;
+
+  await assert.rejects(
+    streamQwenChatCompletions(
+      {
+        config: CONFIG,
+        history: [{ kind: 'user', text: 'Hello' }],
+        providerReplayScopeId: REPLAY_SCOPE,
+        providerSessionId: 'qwen-stable-session',
+        requestAttempt: 0,
+        providerRequestSessions: {
+          streamDurableHttpSseEvents: async function* () {
+            throw ownerError;
+          },
+        },
+      },
+      {
+        fetchImpl: (async () => {
+          fetchCalls += 1;
+          return sseResponse([]);
+        }) as typeof fetch,
+      },
+    ),
+    (error: unknown) => error === ownerError,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
 void test('Qwen request preparation stops before the HTTP boundary', async () => {
   let fetchCalled = false;
   await assert.rejects(
@@ -287,6 +375,86 @@ void test('Qwen HTTP errors preserve status for shared retry classification', as
       error.name === 'QwenHttpError' &&
       (error as Error & { status?: unknown }).status === 429,
   );
+});
+
+void test('Qwen stream records finish_reason=tool_calls even when tool payload is empty', async () => {
+  const result = await streamQwenChatCompletions(
+    {
+      config: CONFIG,
+      history: [{ kind: 'user', text: 'Hello' }],
+      providerReplayScopeId: REPLAY_SCOPE,
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup',
+          description: 'Look up a value',
+          parameters: {
+            type: 'object',
+            properties: { query: { type: 'string' } },
+            required: ['query'],
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ],
+    },
+    {
+      fetchImpl: (async () =>
+        sseResponse([
+          qwenEvent({
+            id: 'response-drop',
+            choices: [
+              {
+                index: 0,
+                delta: { content: 'I will look that up.' },
+              },
+            ],
+          }),
+          qwenEvent({
+            id: 'response-drop',
+            choices: [
+              {
+                index: 0,
+                delta: {},
+                finish_reason: 'tool_calls',
+              },
+            ],
+          }),
+          'data: [DONE]\n\n',
+        ])) as typeof fetch,
+    },
+  );
+
+  assert.equal(result.stopReason, 'tool_calls');
+  assert.deepEqual(result.functionCalls, []);
+  assert.equal(result.finalText, 'I will look that up.');
+});
+
+void test('Qwen stream records finish_reason=stop on a normal text finish', async () => {
+  const result = await streamQwenChatCompletions(
+    {
+      config: CONFIG,
+      history: [{ kind: 'user', text: 'Hello' }],
+      providerReplayScopeId: REPLAY_SCOPE,
+    },
+    {
+      fetchImpl: (async () =>
+        sseResponse([
+          qwenEvent({
+            id: 'response-stop',
+            choices: [{ index: 0, delta: { content: 'Hi' } }],
+          }),
+          qwenEvent({
+            id: 'response-stop',
+            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          }),
+          'data: [DONE]\n\n',
+        ])) as typeof fetch,
+    },
+  );
+
+  assert.equal(result.stopReason, 'stop');
+  assert.equal(result.finalText, 'Hi');
 });
 
 void test('Qwen stream rejects non-SSE, invalid JSON, and empty output', async () => {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +24,10 @@ import {
   PTC_EXECUTE_CODE_CELL_RUNNING_REAP_MS_ENV,
   PTC_EXECUTE_CODE_CELL_TERMINAL_MEMORY_RETENTION_MS_ENV,
 } from './ptc/runtime/execute-code/execute-code-runtime.js';
+import {
+  ptcCallbackTransportPolicyRecordPath,
+  writeStoredPtcCallbackTransportPolicy,
+} from './ptc/callback/callback-transport-policy-record.js';
 import { createRunInterjectBuffer } from './sessions/active-run-interject-buffer.js';
 import { createRunContext } from './run-context.js';
 import { testRunId } from '../test-support/run-id.js';
@@ -245,6 +249,10 @@ void test('createDaemonContext installs a default tool library projection port',
   try {
     const daemonContext = createDaemonContext();
     assert.notEqual(daemonContext.toolLibraryProjection, undefined);
+    assert.equal(
+      daemonContext.toolLibraryProjection,
+      daemonContext.toolLibraryProjectionTransfer,
+    );
 
     const result = await daemonContext.toolLibraryProjection.resolveProjection({
       stateRoot: stateRoot,
@@ -296,7 +304,7 @@ void test('createDaemonContext installs a default tool library projection port',
     assert.equal(result.mount.projectionRootPath, result.projection.rootPath);
     assert.match(
       result.projection.rootPath,
-      /\.geulbat[\\/]+tool-library[\\/]+projections[\\/]+thread-[0-9a-f]{16}[\\/]+sha256-[0-9a-f]{64}$/u,
+      /\.geulbat[\\/]+tool-library[\\/]+projections[\\/]+content[\\/]+sha256-[0-9a-f]{64}$/u,
     );
     assert.equal(result.projection.rootPath.includes(testThreadId(101)), false);
     assert.equal(JSON.stringify(result.projection).includes(stateRoot), true);
@@ -651,6 +659,15 @@ void test('createDaemonContext freezes provider request options from env', () =>
   }
 });
 
+void test('createDaemonContext composes the stable provider request owner', () => {
+  const daemonContext = createDaemonContext();
+
+  assert.equal(
+    'streamDurableResponseEvents' in daemonContext.provider.webSocketSessions,
+    true,
+  );
+});
+
 void test('createDaemonContext freezes structured output ingress policy from env', () => {
   const previous =
     process.env[REACT_BUNDLE_STRUCTURED_OUTPUT_INGRESS_TIMEOUT_MS_ENV];
@@ -719,5 +736,49 @@ void test('createDaemonContext rejects invalid subagent background capacity env'
     );
   } finally {
     restoreEnv(SUBAGENT_BACKGROUND_CAPACITY_ENV, previous);
+  }
+});
+
+// PTC transition spec v7 §3 (2026-07-27) — 운영자가 확정한 콜백 전송 정책은 조립이
+// 읽는다. 레코드가 손상되면 조용히 비활성으로 떨어지지 않고 부팅에서 드러나야 한다
+// (환경 부분 설정이 부팅을 세우는 것과 같은 규범).
+void test('createDaemonContext accepts a stored callback transport policy', async () => {
+  const homeStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-context-callback-policy-'),
+  );
+  try {
+    await writeStoredPtcCallbackTransportPolicy({
+      homeStateRoot,
+      policy: {
+        maxFrameBytes: 8192,
+        maxOpenConnections: 4,
+        maxCallbacks: 20,
+        callbackTimeoutMs: 30_000,
+        maxResponseBytes: 8192,
+      },
+    });
+    assert.doesNotThrow(() => createDaemonContext({ homeStateRoot }));
+  } finally {
+    await rm(homeStateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createDaemonContext refuses to boot on a damaged callback transport policy', async () => {
+  const homeStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-context-callback-policy-damaged-'),
+  );
+  try {
+    await mkdir(join(homeStateRoot, '.geulbat'), { recursive: true });
+    await writeFile(
+      ptcCallbackTransportPolicyRecordPath(homeStateRoot),
+      '{ "schemaVersion": 1, "policy": { "maxFrameBytes": 8192 } }',
+      'utf8',
+    );
+    assert.throws(
+      () => createDaemonContext({ homeStateRoot }),
+      /PTC callback transport policy requires every limit/u,
+    );
+  } finally {
+    await rm(homeStateRoot, { recursive: true, force: true });
   }
 });

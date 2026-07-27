@@ -35,7 +35,7 @@ export function resolvePtcExecuteCodeCallbackToolSurface(args: {
       ? { names: [...new Set(args.allowedRegistryNames)] }
       : {},
   );
-  const writeTierEnabled = args.writeCallbackEnabled === true;
+  const builtInWriteTierEnabled = args.writeCallbackEnabled === true;
   const callableToolNames = new Set<string>();
   const callableWriteToolNames = new Set<string>();
   const callbackTools: PtcExecuteCodeRuntimeSdkHelpTool[] = [];
@@ -51,8 +51,12 @@ export function resolvePtcExecuteCodeCallbackToolSurface(args: {
       continue;
     }
     if (
-      writeTierEnabled &&
-      isPtcExecuteCodeWriteCallbackToolMetaAllowed(definition.name, meta)
+      isPtcExecuteCodeDelegatedApprovalCallbackToolMetaAllowed(
+        definition.name,
+        meta,
+      ) ||
+      (builtInWriteTierEnabled &&
+        isPtcExecuteCodeWriteCallbackToolMetaAllowed(definition.name, meta))
     ) {
       callableToolNames.add(definition.name);
       callableWriteToolNames.add(definition.name);
@@ -62,7 +66,7 @@ export function resolvePtcExecuteCodeCallbackToolSurface(args: {
 
   return Object.freeze({
     callbackTools: Object.freeze(callbackTools),
-    writeTierEnabled,
+    writeTierEnabled: callableWriteToolNames.size > 0,
     allows(toolName: string): boolean {
       return callableToolNames.has(toolName);
     },
@@ -110,6 +114,26 @@ export function isPtcExecuteCodeWriteCallbackToolMetaAllowed(
   return (
     PTC_EXECUTE_CODE_WRITE_CALLBACK_TOOL_ALLOWLIST.has(toolName) &&
     isPtcExecuteCodeCallbackToolNameEligible(toolName) &&
+    meta.requiresApproval === true &&
+    meta.sideEffectLevel === 'write' &&
+    meta.mayMutateComputerFiles === true
+  );
+}
+
+// Installed external tools declare their own cold SDK/callback exposure. They
+// reuse the canonical approval path without enabling the separate built-in
+// apply_patch/manage_files write tier.
+export function isPtcExecuteCodeDelegatedApprovalCallbackToolMetaAllowed(
+  toolName: string,
+  meta: Partial<ToolMeta>,
+): boolean {
+  const exposure = meta.exposure;
+  return (
+    isPtcExecuteCodeCallbackToolNameEligible(toolName) &&
+    exposure?.sdkVisible === true &&
+    exposure.inCellCallable &&
+    !exposure.directOnly &&
+    exposure.effectClass === 'hostStateMutation' &&
     meta.requiresApproval === true &&
     meta.sideEffectLevel === 'write' &&
     meta.mayMutateComputerFiles === true

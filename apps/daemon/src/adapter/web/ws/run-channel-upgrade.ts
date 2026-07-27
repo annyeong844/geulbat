@@ -42,9 +42,7 @@ export function readRunChannelUpgrade(
     return { ok: false, kind: 'ignore' };
   }
 
-  const origin =
-    typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
-  if (!isAllowedWebSocketOrigin(origin, configuredAllowedOrigins)) {
+  if (!isAllowedWebSocketOrigin(req, configuredAllowedOrigins)) {
     return {
       ok: false,
       kind: 'reject',

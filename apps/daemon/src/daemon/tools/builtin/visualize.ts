@@ -45,6 +45,7 @@ export const visualizeTool = defineZodTool({
   streamsArgsDelta: true,
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'presentation',
     searchHints: ['visualize', 'inline widget', 'diagram', 'chart', 'svg'],

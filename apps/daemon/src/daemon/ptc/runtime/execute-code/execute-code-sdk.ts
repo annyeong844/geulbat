@@ -1,22 +1,27 @@
 import { buildToolOutputCollectorRuntimeExpression } from '@geulbat/tool-library/tool-output-recovery';
 
 import {
+  PTC_EXECUTE_CODE_PYTHON_SDK_IMPORT_MODULE,
   PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION,
+  type PtcExecuteCodeLanguage,
   type PtcExecuteCodeModuleFormat,
   type PtcExecuteCodeRuntimeSdkHelp,
   type PtcExecuteCodeRuntimeSdkHelpTool,
   type PtcExecuteCodeRuntimeSdkProjection,
 } from './execute-code-runtime-contract.js';
 
-export { PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION };
+export {
+  PTC_EXECUTE_CODE_PYTHON_SDK_IMPORT_MODULE,
+  PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION,
+};
 export const PTC_EXECUTE_CODE_RESERVED_SDK_IMPORT_SPECIFIER =
   'geulbat-sdk' as const;
 
 interface PtcExecuteCodeSdkHelpBundle {
   protocolVersion: typeof PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION;
   runtime: {
-    language: 'javascript_or_node_native_typescript';
-    typescript: {
+    language: 'javascript_or_node_native_typescript' | 'python';
+    typescript?: {
       transform: 'node_experimental_transform_types';
       typeChecking: false;
       tsx: false;
@@ -24,12 +29,14 @@ interface PtcExecuteCodeSdkHelpBundle {
       tsconfig: false;
       moduleSystem: PtcExecuteCodeModuleFormat;
     };
-    executionSurface: 'node_via_lab_batch_command';
+    executionSurface:
+      | 'node_via_lab_batch_command'
+      | 'python_via_lab_batch_command';
     sessionLifecycle: 'runtime_owned_reusable';
   };
   callbacks: {
     enabled: boolean;
-    callShape: 'geulbat.callTool(name, args)';
+    callShape: 'geulbat.callTool(name, args)' | 'geulbat.call_tool(name, args)';
     tools: readonly PtcExecuteCodeRuntimeSdkHelpTool[];
   };
   helpers: {
@@ -78,6 +85,7 @@ const PTC_EXECUTE_CODE_SDK_TOOL_ALIASES: readonly PtcExecuteCodeSdkToolAlias[] =
 
 export function buildPtcExecuteCodeSdkHelpBundle(args: {
   callbacksEnabled: boolean;
+  language?: PtcExecuteCodeLanguage;
   moduleFormat?: PtcExecuteCodeModuleFormat;
   sdkHelp: PtcExecuteCodeRuntimeSdkHelp | undefined;
   sdkProjection?: PtcExecuteCodeRuntimeSdkProjection;
@@ -87,32 +95,44 @@ export function buildPtcExecuteCodeSdkHelpBundle(args: {
     ? (args.sdkHelp?.callbackTools ?? [])
     : [];
   const toolNames = new Set(tools.map((tool) => tool.name));
+  const language = args.language ?? 'javascript';
+  const javascriptRuntime = language === 'javascript';
   return {
     protocolVersion: PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION,
-    runtime: {
-      language: 'javascript_or_node_native_typescript',
-      typescript: {
-        transform: 'node_experimental_transform_types',
-        typeChecking: false,
-        tsx: false,
-        decorators: false,
-        tsconfig: false,
-        moduleSystem: args.moduleFormat ?? 'commonjs',
-      },
-      executionSurface: 'node_via_lab_batch_command',
-      sessionLifecycle: 'runtime_owned_reusable',
-    },
+    runtime: javascriptRuntime
+      ? {
+          language: 'javascript_or_node_native_typescript' as const,
+          typescript: {
+            transform: 'node_experimental_transform_types' as const,
+            typeChecking: false as const,
+            tsx: false as const,
+            decorators: false as const,
+            tsconfig: false as const,
+            moduleSystem: args.moduleFormat ?? 'commonjs',
+          },
+          executionSurface: 'node_via_lab_batch_command' as const,
+          sessionLifecycle: 'runtime_owned_reusable' as const,
+        }
+      : {
+          language: 'python' as const,
+          executionSurface: 'python_via_lab_batch_command' as const,
+          sessionLifecycle: 'runtime_owned_reusable' as const,
+        },
     callbacks: {
       enabled: args.callbacksEnabled,
-      callShape: 'geulbat.callTool(name, args)',
+      callShape: javascriptRuntime
+        ? ('geulbat.callTool(name, args)' as const)
+        : ('geulbat.call_tool(name, args)' as const),
       tools,
     },
     helpers: {
       namespace: 'geulbat.tools',
-      aliases: PTC_EXECUTE_CODE_SDK_TOOL_ALIASES.filter((alias) =>
-        toolNames.has(alias.toolName),
-      ),
-      ...(toolNames.has('read_tool_output')
+      aliases: javascriptRuntime
+        ? PTC_EXECUTE_CODE_SDK_TOOL_ALIASES.filter((alias) =>
+            toolNames.has(alias.toolName),
+          )
+        : [],
+      ...(javascriptRuntime && toolNames.has('read_tool_output')
         ? {
             toolOutput: {
               namespace: 'geulbat.toolOutput' as const,
@@ -122,7 +142,7 @@ export function buildPtcExecuteCodeSdkHelpBundle(args: {
           }
         : {}),
     },
-    ...(args.sdkProjection === undefined
+    ...(!javascriptRuntime || args.sdkProjection === undefined
       ? {}
       : {
           sdkProjection: {
@@ -137,7 +157,7 @@ export function buildPtcExecuteCodeSdkHelpBundle(args: {
           },
           runtimeSdkProjection: args.sdkProjection,
         }),
-    ...(args.storeMode === undefined
+    ...(!javascriptRuntime || args.storeMode === undefined
       ? {}
       : {
           store: {
@@ -186,6 +206,129 @@ export function buildPtcExecuteCodeGeulbatFacadeSource(args: {
           }),
         ]),
     `const geulbat = Object.freeze({ ${geulbatFields.join(', ')} });`,
+  ].join('\n');
+}
+
+export function buildPtcExecuteCodePythonFacadeSource(args: {
+  callbackConfig?: { socketPath: string; token: string };
+  helpBundle: PtcExecuteCodeSdkHelpBundle;
+}): string {
+  const serializedHelp = JSON.stringify({
+    ...args.helpBundle,
+    runtimeSdkProjection: undefined,
+  });
+  const callbackSocketPath =
+    args.callbackConfig === undefined
+      ? 'None'
+      : JSON.stringify(args.callbackConfig.socketPath);
+  const callbackToken =
+    args.callbackConfig === undefined
+      ? 'None'
+      : JSON.stringify(args.callbackConfig.token);
+
+  return [
+    'import keyword as _geulbat_keyword',
+    'import json as _geulbat_json',
+    'import socket as _geulbat_socket',
+    'import sys as _geulbat_sys',
+    'import time as _geulbat_time',
+    'import types as _geulbat_types',
+    `_geulbat_help = _geulbat_json.loads(${JSON.stringify(serializedHelp)})`,
+    `_geulbat_callback_socket_path = ${callbackSocketPath}`,
+    `_geulbat_callback_token = ${callbackToken}`,
+    '_geulbat_tool_names = frozenset(tool["name"] for tool in _geulbat_help["callbacks"]["tools"])',
+    'def _geulbat_clone(value):',
+    '    return _geulbat_json.loads(_geulbat_json.dumps(value))',
+    'class _GeulbatCallbackError(RuntimeError):',
+    '    def __init__(self, error_code, message):',
+    '        super().__init__(message)',
+    '        self.error_code = error_code',
+    'def _geulbat_validate_callback_response(response, request_id):',
+    '    if not isinstance(response, dict) or not isinstance(response.get("ok"), bool):',
+    '        raise RuntimeError("PTC callback response is invalid")',
+    '    response_request_id = response.get("requestId")',
+    '    if response_request_id is not None and response_request_id != request_id:',
+    '        raise RuntimeError("PTC callback response is invalid")',
+    '    if response["ok"] is True:',
+    '        if response_request_id != request_id:',
+    '            raise RuntimeError("PTC callback response is invalid")',
+    '        return response',
+    '    if not isinstance(response.get("errorCode"), str) or not isinstance(response.get("message"), str):',
+    '        raise RuntimeError("PTC callback response is invalid")',
+    '    return response',
+    'def _geulbat_call_tool(tool_name, args=None):',
+    '    if not isinstance(tool_name, str) or not tool_name:',
+    '        raise ValueError("tool_name is required")',
+    '    if args is None:',
+    '        args = {}',
+    '    if not isinstance(args, dict):',
+    '        raise TypeError("tool args must be a dict")',
+    '    if _geulbat_callback_socket_path is None or _geulbat_callback_token is None:',
+    '        raise RuntimeError("PTC execute_code tool callbacks are not enabled")',
+    '    request_id = f"ptc-tool-{_geulbat_time.time_ns()}"',
+    '    request = {"requestId": request_id, "token": _geulbat_callback_token, "kind": "geulbat_tool_call", "args": {"toolName": tool_name, "args": args}}',
+    '    with _geulbat_socket.socket(_geulbat_socket.AF_UNIX, _geulbat_socket.SOCK_STREAM) as client:',
+    '        client.connect(_geulbat_callback_socket_path)',
+    '        client.sendall((_geulbat_json.dumps(request, separators=(",", ":")) + "\\n").encode("utf-8"))',
+    '        with client.makefile("r", encoding="utf-8", newline="\\n") as response_file:',
+    '            line = response_file.readline()',
+    '    if not line:',
+    '        raise RuntimeError("PTC callback response closed before a response was received")',
+    '    try:',
+    '        response = _geulbat_json.loads(line)',
+    '    except _geulbat_json.JSONDecodeError as error:',
+    '        raise RuntimeError("PTC callback response is invalid JSON") from error',
+    '    response = _geulbat_validate_callback_response(response, request_id)',
+    '    if response["ok"] is True:',
+    '        return response.get("result")',
+    '    raise _GeulbatCallbackError(response["errorCode"], response["message"])',
+    'def _geulbat_normalize_tool_result(result):',
+    '    if isinstance(result, dict) and result.get("offloaded") is True and isinstance(result.get("outputRef"), str):',
+    '        normalized = {"kind": "offloaded", "outputRef": result["outputRef"], "raw": _geulbat_clone(result)}',
+    '        if isinstance(result.get("summary"), str):',
+    '            normalized["summary"] = result["summary"]',
+    '        if type(result.get("fullOutputBytes")) in (int, float):',
+    '            normalized["fullOutputBytes"] = result["fullOutputBytes"]',
+    '        if type(result.get("fullOutputChars")) in (int, float):',
+    '            normalized["fullOutputChars"] = result["fullOutputChars"]',
+    '        return normalized',
+    '    return {"kind": "inline", "value": result}',
+    'def _geulbat_create_tool_wrapper(tool_name, description):',
+    '    def wrapper(args=None):',
+    '        return _geulbat_normalize_tool_result(_geulbat_call_tool(tool_name, args))',
+    '    wrapper.__name__ = tool_name',
+    '    wrapper.__qualname__ = tool_name',
+    '    wrapper.__doc__ = description',
+    '    return wrapper',
+    `_geulbat_sdk = _geulbat_types.ModuleType(${JSON.stringify(
+      PTC_EXECUTE_CODE_PYTHON_SDK_IMPORT_MODULE,
+    )}, "Generated PTC callback tool wrappers.")`,
+    '_geulbat_sdk_names = []',
+    'for _geulbat_tool in _geulbat_help["callbacks"]["tools"]:',
+    '    _geulbat_tool_name = _geulbat_tool["name"]',
+    '    if _geulbat_tool_name.isidentifier() and not _geulbat_keyword.iskeyword(_geulbat_tool_name):',
+    '        setattr(_geulbat_sdk, _geulbat_tool_name, _geulbat_create_tool_wrapper(_geulbat_tool_name, _geulbat_tool["description"]))',
+    '        _geulbat_sdk_names.append(_geulbat_tool_name)',
+    '_geulbat_sdk.__all__ = tuple(_geulbat_sdk_names)',
+    `_geulbat_sys.modules[${JSON.stringify(
+      PTC_EXECUTE_CODE_PYTHON_SDK_IMPORT_MODULE,
+    )}] = _geulbat_sdk`,
+    'class _GeulbatTools:',
+    '    def __getattr__(self, name):',
+    '        if name not in _geulbat_tool_names:',
+    '            raise AttributeError(name)',
+    '        return lambda args=None: _geulbat_call_tool(name, args)',
+    'class _Geulbat:',
+    '    sdk_version = _geulbat_help["protocolVersion"]',
+    '    tools = _GeulbatTools()',
+    '    @staticmethod',
+    '    def help():',
+    '        return _geulbat_clone(_geulbat_help)',
+    '    @staticmethod',
+    '    def call_tool(tool_name, args=None):',
+    '        return _geulbat_call_tool(tool_name, args)',
+    '    callTool = call_tool',
+    'geulbat = _Geulbat()',
   ].join('\n');
 }
 

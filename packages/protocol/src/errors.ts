@@ -40,9 +40,23 @@ export type ErrorCode =
   | 'bad_request'
   | 'llm_connect_timeout'
   | 'llm_idle_timeout'
+  // TLS 인증서 검증 실패. 호스트 환경(CA bundle, TLS 검사 프록시, 만료·자가서명
+  // 인증서)이 원인이라 재시도해도 같은 handshake 실패가 반복된다. 연결 유실로
+  // 묶으면 재시도 예산을 태운 뒤 "timed out"이라는 틀린 진단이 나간다.
+  | 'llm_tls_verification_failed'
   | 'llm_rate_limited'
+  // 크레딧·구독·쿼터 소진. 일시 rate-limit과 다르다 — 같은 요청을 재시도해도
+  // 결정적으로 실패하므로 rate-limit 재시도 예산을 태우지 않는다.
+  | 'llm_usage_limit_exceeded'
   | 'llm_auth_failed'
   | 'llm_context_length_exceeded'
+  // 요청한 max_tokens(출력 상한)가 모델/남은 창을 넘는 경우. 입력 컨텍스트
+  // overflow와 다르다 — 압축해도 같은 max_tokens로 다시 실패하므로 압축
+  // 경로로 보내지 않는다.
+  | 'llm_output_budget_exceeded'
+  // Responses WS encrypted reasoning blob 검증 실패. context overflow와
+  // 문구가 겹칠 수 있어 별도 코드로 둔다.
+  | 'llm_replay_state_rejected'
   | 'provider_transition_required'
   | 'provider_transition_preparation_failed'
   | 'rate_limited'
@@ -54,6 +68,11 @@ export type ErrorCode =
   | 'buffer_limit_exceeded'
   | 'unsupported_mode'
   | 'execution_failed'
+  // 완료 obligation 분류(P7c §5.6) — 같은 gap fingerprint와 같은 evidence
+  // revision이 configured threshold까지 반복되면 run을 이 코드로 멈춘다.
+  // `execution_failed`와 구분해야 무진전과 실제 실행 오류가 같은 표면으로
+  // 뭉개지지 않는다.
+  | 'run_no_progress'
   | 'not_found'
   | 'unauthorized'
   | 'internal'
@@ -118,9 +137,13 @@ export const ERROR_CODES = [
   'bad_request',
   'llm_connect_timeout',
   'llm_idle_timeout',
+  'llm_tls_verification_failed',
   'llm_rate_limited',
+  'llm_usage_limit_exceeded',
   'llm_auth_failed',
   'llm_context_length_exceeded',
+  'llm_output_budget_exceeded',
+  'llm_replay_state_rejected',
   'provider_transition_required',
   'provider_transition_preparation_failed',
   'rate_limited',
@@ -132,6 +155,7 @@ export const ERROR_CODES = [
   'buffer_limit_exceeded',
   'unsupported_mode',
   'execution_failed',
+  'run_no_progress',
   'not_found',
   'unauthorized',
   'internal',

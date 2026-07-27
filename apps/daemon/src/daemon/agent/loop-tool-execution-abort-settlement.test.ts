@@ -118,6 +118,88 @@ void test('processFunctionCalls records skipped results for later tools when the
   );
 });
 
+void test('processFunctionCalls emits terminal abort only after write cleanup settles', async () => {
+  const threadId = testThreadId(43);
+  const daemonContext = createDaemonContext();
+  const abortController = new AbortController();
+  const executionStarted = createDeferred<void>();
+  const cleanupStarted = createDeferred<void>();
+  const releaseCleanup = createDeferred<void>();
+  const timeline: string[] = [];
+
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: 'cleanup_aware_write_tool',
+      description: 'waits for owned cleanup after cancellation',
+      sideEffectLevel: 'write',
+      requiresApproval: false,
+      async executeParsed(_args, ctx) {
+        executionStarted.resolve();
+        await new Promise<void>((resolve) => {
+          ctx.signal?.addEventListener('abort', () => resolve(), {
+            once: true,
+          });
+        });
+        timeline.push('cleanup_started');
+        cleanupStarted.resolve();
+        await releaseCleanup.promise;
+        timeline.push('cleanup_settled');
+        return {
+          ok: false,
+          output: '',
+          errorCode: 'aborted',
+          error: 'cleanup settled after cancellation',
+        };
+      },
+    }),
+  );
+
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-write-cleanup-abort-'),
+  );
+  const processing = processFunctionCalls({
+    functionCalls: [
+      {
+        id: 'fc-cleanup-aware-write',
+        callId: 'call-cleanup-aware-write',
+        name: 'cleanup_aware_write_tool',
+        arguments: '{}',
+      },
+    ],
+    round: 0,
+    history: [],
+    runtime: makeExecutionRuntime(daemonContext, {
+      runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+      runId: 'run-cleanup-aware-write',
+      approvalContext: makeApprovalContext({
+        computerSessionId: 'session-cleanup-aware-write',
+      }),
+      emit: (type) => {
+        timeline.push(type);
+      },
+      signal: abortController.signal,
+    }),
+  });
+
+  await executionStarted.promise;
+  abortController.abort();
+  await cleanupStarted.promise;
+  assert.deepEqual(timeline, ['tool_call', 'cleanup_started']);
+
+  releaseCleanup.resolve();
+  const result = await processing;
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(timeline, [
+    'tool_call',
+    'cleanup_started',
+    'cleanup_settled',
+    'tool_result',
+    'error',
+  ]);
+});
+
 void test('processFunctionCalls skips the remaining batch when an interject flush is requested mid-round', async () => {
   const threadId = testThreadId(42);
   const daemonContext = createDaemonContext();

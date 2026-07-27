@@ -20,18 +20,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Check Node
         run: node --version && npm --version
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Dependency vulnerability gate
+        run: npm audit --audit-level=high
 
       - name: Docs current-truth check
         run: npm run check:docs-current-truth
@@ -42,11 +46,31 @@ jobs:
       - name: Type check
         run: npm run check
 
+      # 빌드 시점 assertion을 CI에서 살린다. `check`는 `tsc --noEmit`이라
+      # Vite 빌드를 거치지 않으므로, artifact runtime chunk 경계와 hashed
+      # asset 이름 전제는 실제 빌드가 돌아야 검증된다.
+      - name: Build
+        run: npm run build
+
       - name: Npm installable distribution
         run: npm run check:npm-installable-distribution -- --approved-client-id-file release/provider-auth-approved-client-ids.json
 
       - name: Test
         run: npm test
 
+      - name: Install Chromium for the real-app flow gate
+        run: npx --no-install playwright install --with-deps chromium
+
+      - name: Real-app flow gate
+        run: npm run gate:flows -w apps/web-shell
+
       - name: Daemon coverage
         run: npm run test:cov:daemon
+
+      - name: Upload real-app flow failure evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: real-app-flow-failure-evidence
+          path: output/playwright/flow-gate/
+          if-no-files-found: ignore

@@ -14,11 +14,15 @@ import type {
 import type {
   DetachedProcessExitInfo,
   DetachedProcessHandle,
+  DetachedProcessPreparedOutputDelivery,
   DetachedProcessOutputSegment,
 } from './execute-code-cell-process.js';
 import type { buildPtcExecuteCodeSdkHelpBundle } from './execute-code-sdk.js';
 import type { createPtcExecuteCodeCellRegistry } from './execute-code-cell-registry.js';
-import type { PtcExecuteCodeCellTerminalResult } from './execute-code-cell-terminal-retention.js';
+import type {
+  PtcExecuteCodeCellRetainedResult,
+  PtcExecuteCodeCellTerminalResult,
+} from './execute-code-cell-terminal-retention.js';
 import {
   cellCleanupFailure,
   cellCloseDiagnostics,
@@ -86,6 +90,17 @@ interface PtcExecuteCodeCellSettlementContext {
     threadId: string;
     cellId: PtcExecuteCodeCellId;
   }) => Promise<void> | void;
+  persistRunningExecDelivery?: (args: {
+    cellId: PtcExecuteCodeCellId;
+    stdout: string;
+    stderr: string;
+    durationMs: number;
+    toolCallbackCount: number;
+    outputReadOffsets: {
+      stdoutBytes: number;
+      stderrBytes: number;
+    };
+  }) => Promise<void> | void;
   summarizeCompletedExecution: PtcExecuteCodeCompletedSummaryBuilder;
 }
 
@@ -96,6 +111,7 @@ export async function settleInitialCellWindow(args: {
   const runtimeArgs = args.runtimeArgs;
   const initial = await waitForInitialCellWindow({
     handle: args.started.handle,
+    prepareOutputDelivery: runtimeArgs.persistRunningExecDelivery !== undefined,
     signal: runtimeArgs.signal,
     yieldTimeMs: runtimeArgs.initialYieldTimeMs,
   });
@@ -134,6 +150,15 @@ export async function settleInitialCellWindow(args: {
       session: args.started.session,
     });
   }
+  if (initial.kind === 'delivery_unavailable') {
+    return {
+      ok: false,
+      reasonCode: 'ptc_execute_code_store_unavailable',
+      message:
+        'PTC execute_code running result cannot be delivered durably by this process owner',
+      diagnostics: { preparedOutputDeliveryUnavailable: true },
+    };
+  }
 
   const persistenceMarked =
     runtimeArgs.cellRegistry.markRunningCellTerminalResultPersistence({
@@ -158,6 +183,30 @@ export async function settleInitialCellWindow(args: {
     });
   }
 
+  const toolCallbackCount = runtimeArgs.callbackRuntime.observedCount();
+  if (
+    runtimeArgs.persistRunningExecDelivery !== undefined &&
+    initial.prepared !== undefined
+  ) {
+    try {
+      await runtimeArgs.persistRunningExecDelivery({
+        cellId: args.started.cellId,
+        stdout: initial.output.stdout,
+        stderr: initial.output.stderr,
+        durationMs,
+        toolCallbackCount,
+        outputReadOffsets: initial.prepared.offsets,
+      });
+      initial.prepared.commit();
+    } catch {
+      return {
+        ok: false,
+        reasonCode: 'ptc_execute_code_store_unavailable',
+        message: 'PTC execute_code running result could not be persisted',
+        diagnostics: { runningExecDeliveryPersistFailed: true },
+      };
+    }
+  }
   trackRunningCellCompletion({ runtimeArgs, started: args.started });
   return {
     ok: true,
@@ -217,14 +266,34 @@ export function trackRunningCellCompletion(args: {
   );
 }
 
+export function trackAdoptedRunningCellCompletion(args: {
+  cellRegistry: ReturnType<CreatePtcExecuteCodeCellRegistry>;
+  cellId: PtcExecuteCodeCellId;
+  handle: DetachedProcessHandle;
+  threadId: string;
+  onSettled?: () => Promise<void> | void;
+}): void {
+  runDetached('ptc/adopted-cell-completion-record', () =>
+    recordCellCompletion(args),
+  );
+}
+
 async function waitForInitialCellWindow(args: {
   handle: DetachedProcessHandle;
+  prepareOutputDelivery: boolean;
   signal: AbortSignal | undefined;
   yieldTimeMs: number;
 }): Promise<
   | { kind: 'exit'; exit: DetachedProcessExitInfo }
   | { kind: 'abort' }
-  | { kind: 'yield'; output: DetachedProcessOutputSegment }
+  | { kind: 'delivery_unavailable' }
+  | {
+      kind: 'yield';
+      output: DetachedProcessOutputSegment;
+      prepared?: DetachedProcessPreparedOutputDelivery & {
+        commit(): void;
+      };
+    }
 > {
   if (args.signal?.aborted === true) {
     return { kind: 'abort' };
@@ -252,7 +321,26 @@ async function waitForInitialCellWindow(args: {
       settled = true;
       cleanup();
       if (result.kind === 'yield') {
-        resolve({ kind: 'yield', output: args.handle.drainNewOutput() });
+        if (!args.prepareOutputDelivery) {
+          resolve({ kind: 'yield', output: args.handle.drainNewOutput() });
+          return;
+        }
+        if (
+          args.handle.prepareOutputDelivery === undefined ||
+          args.handle.commitPreparedOutputDelivery === undefined
+        ) {
+          resolve({ kind: 'delivery_unavailable' });
+          return;
+        }
+        const prepared = args.handle.prepareOutputDelivery();
+        resolve({
+          kind: 'yield',
+          output: prepared.output,
+          prepared: {
+            ...prepared,
+            commit: () => args.handle.commitPreparedOutputDelivery?.(),
+          },
+        });
         return;
       }
       resolve(result);
@@ -279,40 +367,46 @@ async function finishInitialCellExit(args: {
 }): Promise<PtcExecuteCodeRuntimeResult> {
   const output = args.handle.drainNewOutput();
   if (args.exit.kind !== 'exit') {
+    const terminalExit = args.exit;
     const closed = await args.args.cellRegistry.closeCell({
       threadId: args.args.identity.threadId,
       cellId: args.cellId,
       reason: 'run_terminal',
+      buildRecoveryResult: (retainedResult) =>
+        buildInitialCellNonExitRecoveryResult({
+          exit: terminalExit,
+          retainedResult,
+        }),
     });
     if (!closed.ok || !isProvenTerminatedCellCleanup(closed)) {
       return cellCleanupFailure({
         message: 'PTC execute_code cell cleanup failed after terminal signal',
         diagnostics: {
-          cellExitKind: args.exit.kind,
+          cellExitKind: terminalExit.kind,
           ...cellCloseDiagnostics(closed),
         },
         ...closedCellStoreSummary(closed),
       });
     }
-    if (args.exit.kind === 'output_limit_exceeded') {
+    if (terminalExit.kind === 'output_limit_exceeded') {
       return {
         ok: false,
         reasonCode: 'ptc_lab_command_output_rejected',
         message:
           'PTC execute_code cell output exceeded the policy buffer budget',
         diagnostics: {
-          outputStream: args.exit.stream,
-          maxBufferedBytesPerStream: args.exit.maxBufferedBytesPerStream,
+          outputStream: terminalExit.stream,
+          maxBufferedBytesPerStream: terminalExit.maxBufferedBytesPerStream,
         },
         ...closedCellStoreSummary(closed),
       };
     }
-    if (args.exit.kind === 'timeout') {
+    if (terminalExit.kind === 'timeout') {
       return {
         ok: false,
         reasonCode: 'ptc_lab_command_timeout',
         message: 'PTC execute_code cell timed out',
-        diagnostics: { cellExitKind: args.exit.kind },
+        diagnostics: { cellExitKind: terminalExit.kind },
         ...closedCellStoreSummary(closed),
       };
     }
@@ -320,11 +414,12 @@ async function finishInitialCellExit(args: {
       ok: false,
       reasonCode: 'ptc_lab_command_failed',
       message: 'PTC execute_code cell process did not exit cleanly',
-      diagnostics: { cellExitKind: args.exit.kind },
+      diagnostics: { cellExitKind: terminalExit.kind },
       ...closedCellStoreSummary(closed),
     };
   }
 
+  const toolCallbackCount = args.args.callbackRuntime.observedCount();
   const recorded = await args.args.cellRegistry.recordTerminalCellResult({
     threadId: args.args.identity.threadId,
     cellId: args.cellId,
@@ -333,6 +428,14 @@ async function finishInitialCellExit(args: {
       output,
       exit: args.exit,
     },
+    buildRecoveryResult: (retainedResult) =>
+      buildInitialCellExitResult({
+        runtimeArgs: args.args,
+        session: args.session,
+        durationMs: args.durationMs,
+        toolCallbackCount,
+        retainedResult,
+      }),
   });
   const claimed = args.args.cellRegistry.takeTerminalCellResult({
     threadId: args.args.identity.threadId,
@@ -345,6 +448,78 @@ async function finishInitialCellExit(args: {
       message: 'PTC execute_code cell result was unavailable',
     };
   }
+  return buildInitialCellExitResult({
+    runtimeArgs: args.args,
+    session: args.session,
+    durationMs: args.durationMs,
+    toolCallbackCount,
+    retainedResult: claimed.value,
+  });
+}
+
+function buildInitialCellNonExitRecoveryResult(args: {
+  exit: Exclude<DetachedProcessExitInfo, { kind: 'exit' }>;
+  retainedResult: PtcExecuteCodeCellRetainedResult;
+}): PtcExecuteCodeRuntimeResult {
+  if (args.retainedResult.status === 'start_failed') {
+    return args.retainedResult.failure;
+  }
+  if (args.retainedResult.status === 'cleanup_failed') {
+    const terminalResult = args.retainedResult.terminalResult;
+    return cellCleanupFailure({
+      message: 'PTC execute_code cell cleanup failed after terminal signal',
+      diagnostics: {
+        cellExitKind: args.exit.kind,
+        ...args.retainedResult.diagnostics,
+      },
+      ...(terminalResult?.store === undefined
+        ? {}
+        : { store: terminalResult.store }),
+    });
+  }
+  const terminalResult = args.retainedResult;
+  const storeSummary =
+    terminalResult.store !== undefined &&
+    'discardedWrites' in terminalResult.store
+      ? { store: terminalResult.store }
+      : {};
+  if (args.exit.kind === 'output_limit_exceeded') {
+    return {
+      ok: false,
+      reasonCode: 'ptc_lab_command_output_rejected',
+      message: 'PTC execute_code cell output exceeded the policy buffer budget',
+      diagnostics: {
+        outputStream: args.exit.stream,
+        maxBufferedBytesPerStream: args.exit.maxBufferedBytesPerStream,
+      },
+      ...storeSummary,
+    };
+  }
+  if (args.exit.kind === 'timeout') {
+    return {
+      ok: false,
+      reasonCode: 'ptc_lab_command_timeout',
+      message: 'PTC execute_code cell timed out',
+      diagnostics: { cellExitKind: args.exit.kind },
+      ...storeSummary,
+    };
+  }
+  return {
+    ok: false,
+    reasonCode: 'ptc_lab_command_failed',
+    message: 'PTC execute_code cell process did not exit cleanly',
+    diagnostics: { cellExitKind: args.exit.kind },
+    ...storeSummary,
+  };
+}
+
+function buildInitialCellExitResult(args: {
+  runtimeArgs: PtcExecuteCodeCellSettlementContext;
+  session: PtcSessionDockerHandle;
+  durationMs: number;
+  toolCallbackCount: number;
+  retainedResult: PtcExecuteCodeCellRetainedResult;
+}): PtcExecuteCodeRuntimeResult {
   let terminalResult: PtcExecuteCodeCellTerminalResult;
   let cleanupFailure:
     | {
@@ -352,21 +527,21 @@ async function finishInitialCellExit(args: {
         diagnostics: Record<string, string | number | boolean>;
       }
     | undefined;
-  if (claimed.value.status === 'start_failed') {
-    return claimed.value.failure;
+  if (args.retainedResult.status === 'start_failed') {
+    return args.retainedResult.failure;
   }
-  if (claimed.value.status === 'cleanup_failed') {
+  if (args.retainedResult.status === 'cleanup_failed') {
     cleanupFailure = {
-      message: claimed.value.message,
-      diagnostics: claimed.value.diagnostics,
+      message: args.retainedResult.message,
+      diagnostics: args.retainedResult.diagnostics,
     };
-    if (claimed.value.terminalResult === undefined) {
+    if (args.retainedResult.terminalResult === undefined) {
       return cellCleanupFailure(cleanupFailure);
     }
-    terminalResult = claimed.value.terminalResult;
+    terminalResult = args.retainedResult.terminalResult;
   } else {
     cleanupFailure = undefined;
-    terminalResult = claimed.value;
+    terminalResult = args.retainedResult;
   }
   if (terminalResult.exit.kind !== 'exit') {
     return {
@@ -377,13 +552,13 @@ async function finishInitialCellExit(args: {
   }
 
   const sanitizedOutput = sanitizeDetachedOutputSegment(terminalResult.output);
-  const execution = args.args.summarizeCompletedExecution(
+  const execution = args.runtimeArgs.summarizeCompletedExecution(
     {
       ok: true,
       profile: 'lab',
       policyId:
-        args.args.admission.labPolicy?.policyId ??
-        args.args.admission.metadata.policyId,
+        args.runtimeArgs.admission.labPolicy?.policyId ??
+        args.runtimeArgs.admission.metadata.policyId,
       labSessionId: buildPtcLabPublicSessionId(args.session),
       containerId: args.session.containerId,
       executionClass: 'lab_batch_command',
@@ -391,14 +566,16 @@ async function finishInitialCellExit(args: {
       exitCode: terminalResult.exit.exitCode,
       stdout: sanitizedOutput.stdout,
       stderr: sanitizedOutput.stderr,
-      effectiveTimeoutMs: args.args.request.timeoutMs,
+      effectiveTimeoutMs: args.runtimeArgs.request.timeoutMs,
       durationMs: args.durationMs,
     },
     {
-      toolCallbacksEnabled: args.args.callbackRuntime.toolCallbacksEnabled,
-      toolCallbackCount: args.args.callbackRuntime.observedCount(),
-      sdkProtocolVersion: args.args.sdkHelpBundle.protocolVersion,
-      sdkCallbackToolCount: args.args.sdkHelpBundle.callbacks.tools.length,
+      toolCallbacksEnabled:
+        args.runtimeArgs.callbackRuntime.toolCallbacksEnabled,
+      toolCallbackCount: args.toolCallbackCount,
+      sdkProtocolVersion: args.runtimeArgs.sdkHelpBundle.protocolVersion,
+      sdkCallbackToolCount:
+        args.runtimeArgs.sdkHelpBundle.callbacks.tools.length,
       sensitiveMarkers: [],
       ...(terminalResult.store === undefined
         ? {}

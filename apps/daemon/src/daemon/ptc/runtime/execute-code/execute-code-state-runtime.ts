@@ -98,6 +98,7 @@ export function buildPtcExecuteCodeStateRuntime(args: {
       ? createPtcSessionDockerLocalBatchCommandPolicy()
       : createPtcSessionDockerOpenNetworkPackageInstallPolicy({
           tmpTmpfsSize: packageInstallConfig.tmpTmpfsSize,
+          packageManagerFamilies: ['npm', 'pip'],
         });
   const managerArgs: Parameters<CreatePtcSessionDockerManager>[0] = {
     runtimeRoot,

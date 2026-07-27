@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { THREAD_ARCHIVE_MEDIA_TYPE } from '@geulbat/protocol/threads';
 
 import { DEV_TOKEN_HEADER_NAME } from '../auth/shell-auth.js';
-import { ApiFetchError } from './client.js';
+import { ApiFetchError, ApiShapeError } from './client.js';
 import {
   branchThread,
   deleteThread,
+  exportThreadArchive,
+  importThreadArchive,
   prepareThreadProviderTransition,
   ProviderTransitionPreparationError,
   ThreadDeleteConflictError,
@@ -82,6 +85,73 @@ void test('branchThread posts upToEntryId and validates the branch response', as
   );
   assert.equal(branched.threadId, '00000000-0000-4000-8000-000000000002');
   assert.equal(branched.copiedMessageCount, 3);
+});
+
+void test('exportThreadArchive receives opaque canonical archive bytes', async (t) => {
+  installApiTestBootstrap(t, async (input, init) => {
+    assert.equal(
+      String(input),
+      '/api/threads/00000000-0000-4000-8000-000000000001/archive',
+    );
+    assert.equal(init?.method, undefined);
+    return new Response('canonical archive', {
+      status: 200,
+      headers: { 'Content-Type': THREAD_ARCHIVE_MEDIA_TYPE },
+    });
+  });
+
+  const archive = await exportThreadArchive(
+    '00000000-0000-4000-8000-000000000001',
+  );
+
+  assert.equal(archive.type, THREAD_ARCHIVE_MEDIA_TYPE);
+  assert.equal(await archive.text(), 'canonical archive');
+});
+
+void test('exportThreadArchive refuses a response with the wrong media type', async (t) => {
+  installApiTestBootstrap(
+    t,
+    async () =>
+      new Response('not an admitted archive response', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+  );
+
+  await assert.rejects(
+    () => exportThreadArchive('00000000-0000-4000-8000-000000000001'),
+    (error: unknown) => error instanceof ApiShapeError,
+  );
+});
+
+void test('importThreadArchive sends opaque bytes with the protocol media type', async (t) => {
+  installApiTestBootstrap(t, async (input, init) => {
+    assert.equal(String(input), '/api/thread-archives/import');
+    assert.equal(init?.method, 'POST');
+    assert.equal(
+      new Headers(init?.headers).get('Content-Type'),
+      THREAD_ARCHIVE_MEDIA_TYPE,
+    );
+    assert.ok(init?.body instanceof Blob);
+    assert.equal(await init.body.text(), 'canonical archive');
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        threadId: '00000000-0000-4000-8000-000000000002',
+        archiveId:
+          'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        importedMessageCount: 4,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
+  const imported = await importThreadArchive(
+    new Blob(['canonical archive'], { type: 'application/json' }),
+  );
+
+  assert.equal(imported.threadId, '00000000-0000-4000-8000-000000000002');
+  assert.equal(imported.importedMessageCount, 4);
 });
 
 void test('prepareThreadProviderTransition posts the source selection before accepting a compacted response', async (t) => {

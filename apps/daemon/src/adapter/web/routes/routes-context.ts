@@ -7,6 +7,8 @@ import type {
   PrepareProviderTransitionCompactionArgs,
   PrepareProviderTransitionCompactionResult,
 } from '../../../daemon/agent/memory/provider-transition-compaction.js';
+import type { ThreadArchiveTransferService } from '../../../daemon/sessions/thread-portable-transfer.js';
+import type { ThreadProjectionPinDeletionPort } from '../../../daemon/sessions/delete-thread.js';
 
 type PrepareThreadProviderTransitionArgs = Pick<
   PrepareProviderTransitionCompactionArgs,
@@ -20,6 +22,8 @@ export interface ThreadsRoutesContext {
     BackgroundNotificationQueue,
     'clearThreadBackgroundResults' | 'readThreadBackgroundResultHistory'
   >;
+  threadArchiveTransfer: ThreadArchiveTransferService;
+  threadProjectionPins: ThreadProjectionPinDeletionPort;
   providerTransitionCompaction: {
     prepare(
       args: PrepareThreadProviderTransitionArgs,

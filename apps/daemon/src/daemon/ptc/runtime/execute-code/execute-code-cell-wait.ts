@@ -17,6 +17,7 @@ import {
   PTC_EXECUTE_CODE_CELL_WAIT_MIN_YIELD_MS,
   type PtcExecuteCodeCellDurableOutput,
   type PtcExecuteCodeCellId,
+  type PtcExecuteCodeCellOutputReadOffsets,
   type PtcExecuteCodeRuntimeWaitResult,
 } from './execute-code-runtime-contract.js';
 import { runDetached } from '../../../utils/run-detached.js';
@@ -39,6 +40,14 @@ export async function waitForExecuteCodeCell(args: {
     cellId: string;
     terminate?: boolean;
     yieldTimeMs?: number;
+  };
+  runningOutputDelivery?: {
+    persist(args: {
+      cellId: PtcExecuteCodeCellId;
+      stdout: string;
+      stderr: string;
+      outputReadOffsets: PtcExecuteCodeCellOutputReadOffsets;
+    }): void;
   };
   signal: AbortSignal | undefined;
 }): Promise<PtcExecuteCodeRuntimeWaitResult> {
@@ -93,6 +102,15 @@ export async function waitForExecuteCodeCell(args: {
         reason: 'terminate',
       });
       if (closed.ok && closed.status === 'terminated') {
+        const retained = takeClosedCellRetainedResult({
+          cellId,
+          cellRegistry: args.cellRegistry,
+          readDurableOutput: args.readDurableOutput,
+          threadId: args.runContext.threadId,
+        });
+        if (retained !== undefined) {
+          return retained;
+        }
         if (!isProvenTerminatedCellCleanup(closed)) {
           return cellCleanupFailure({
             message: 'PTC execute_code cell cleanup failed',
@@ -125,6 +143,15 @@ export async function waitForExecuteCodeCell(args: {
         });
       }
       if (closed.ok && closed.status === 'queued_cancelled') {
+        const retained = takeClosedCellRetainedResult({
+          cellId,
+          cellRegistry: args.cellRegistry,
+          readDurableOutput: args.readDurableOutput,
+          threadId: args.runContext.threadId,
+        });
+        if (retained !== undefined) {
+          return retained;
+        }
         return {
           ok: true,
           value: summarizeWaitClosedCell({
@@ -224,14 +251,67 @@ export async function waitForExecuteCodeCell(args: {
       });
     }
 
-    const output = args.cellRegistry.drainRunningCellOutput({
-      threadId: args.runContext.threadId,
-      cellId,
-    });
+    const preparedOutput =
+      args.runningOutputDelivery === undefined
+        ? undefined
+        : args.cellRegistry.prepareRunningCellOutputDelivery({
+            threadId: args.runContext.threadId,
+            cellId,
+          });
+    if (
+      preparedOutput !== undefined &&
+      !preparedOutput.ok &&
+      preparedOutput.reasonCode === 'delivery_unavailable'
+    ) {
+      return {
+        ok: false,
+        reasonCode: 'ptc_execute_code_cell_wait_unavailable',
+        message:
+          'PTC execute_code running output cannot be durably prepared for restart recovery',
+      };
+    }
+    const output =
+      preparedOutput === undefined
+        ? args.cellRegistry.drainRunningCellOutput({
+            threadId: args.runContext.threadId,
+            cellId,
+          })
+        : preparedOutput.ok
+          ? { ok: true as const, value: preparedOutput.value.output }
+          : preparedOutput;
     if (!output.ok) {
       continue;
     }
     if (hasCellOutput(output.value)) {
+      if (preparedOutput?.ok) {
+        try {
+          args.runningOutputDelivery?.persist({
+            cellId,
+            stdout: output.value.stdout,
+            stderr: output.value.stderr,
+            outputReadOffsets: preparedOutput.value.offsets,
+          });
+        } catch {
+          return {
+            ok: false,
+            reasonCode: 'ptc_execute_code_cell_wait_unavailable',
+            message:
+              'PTC execute_code running output could not be durably checkpointed',
+          };
+        }
+        const committed = args.cellRegistry.commitRunningCellOutputDelivery({
+          threadId: args.runContext.threadId,
+          cellId,
+        });
+        if (!committed.ok) {
+          return {
+            ok: false,
+            reasonCode: 'ptc_execute_code_cell_wait_unavailable',
+            message:
+              'PTC execute_code running output delivery could not be committed',
+          };
+        }
+      }
       return {
         ok: true,
         value: summarizeWaitRunningCell({ cellId, output: output.value }),
@@ -268,6 +348,46 @@ export async function waitForExecuteCodeCell(args: {
       };
     }
   }
+}
+
+function takeClosedCellRetainedResult(args: {
+  cellId: PtcExecuteCodeCellId;
+  cellRegistry: ReturnType<CreatePtcExecuteCodeCellRegistry>;
+  readDurableOutput:
+    | ((args: {
+        threadId: string;
+        cellId: PtcExecuteCodeCellId;
+      }) => Promise<
+        | { ok: true; value: PtcExecuteCodeCellDurableOutput | undefined }
+        | { ok: false; message: string }
+      >)
+    | undefined;
+  threadId: string;
+}): PtcExecuteCodeRuntimeWaitResult | undefined {
+  const durableOutput = args.cellRegistry.readTerminalCellDurableOutput({
+    threadId: args.threadId,
+    cellId: args.cellId,
+  });
+  const retained = args.cellRegistry.takeTerminalCellResult({
+    threadId: args.threadId,
+    cellId: args.cellId,
+  });
+  if (!retained.ok) {
+    return undefined;
+  }
+  if (durableOutput !== undefined && args.readDurableOutput !== undefined) {
+    return {
+      ok: true,
+      value: summarizeWaitDurableCell({
+        cellId: args.cellId,
+        durableOutput,
+      }),
+    };
+  }
+  return summarizeWaitRetainedCell({
+    cellId: args.cellId,
+    result: retained.value,
+  });
 }
 
 async function recoverDurableTerminalResult(args: {

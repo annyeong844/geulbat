@@ -24,6 +24,7 @@ import {
 } from '../../../test-support/run-channel-test-support.js';
 import { createRunInterjectBuffer } from '../../../daemon/sessions/active-run-interject-buffer.js';
 import { createDaemonContext } from '../../../daemon/context.js';
+import { createDaemonRuntimeStateStore } from '../../../daemon/runtime-state-store.js';
 import { makeRunContext } from '../../../test-support/run-context.js';
 import { testRunId } from '../../../test-support/run-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
@@ -219,6 +220,54 @@ void test('ensureThreadBackgroundSubscription subscribes once and forwards backg
     }
   } finally {
     cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('ensureThreadBackgroundSubscription forwards durable result reports with their original result address', async () => {
+  const socket = createTestSocket();
+  const homeStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-socket-result-report-'),
+  );
+  const runtimeStateStore = await createDaemonRuntimeStateStore({
+    homeStateRoot,
+  });
+  const daemonContext = createDaemonContext({
+    homeStateRoot,
+    subagentTerminalDeliveries: runtimeStateStore,
+  });
+  const threadId = testThreadId(24);
+
+  try {
+    ensureThreadBackgroundSubscription(socket, threadId, daemonContext);
+    daemonContext.backgroundNotifications.enqueueThreadBackgroundResult(
+      threadId,
+      {
+        deliveryId: 'delivery-report',
+        parentRunId: testRunId('parent-report'),
+        childRunId: testRunId('child-report'),
+        subagentType: 'worker',
+        terminalState: 'completed',
+        result: '정확한 원문 결과',
+        resultReportSummary: '원문을 보존한 짧은 결과 보고',
+        completedAt: '2026-07-27T00:00:00.000Z',
+      },
+    );
+
+    const message = readLastSentMessage(socket);
+    assert.equal(message?.type, 'run.event');
+    if (
+      message?.type === 'run.event' &&
+      message.event.type === 'subagent_terminal'
+    ) {
+      assert.deepEqual(message.event.payload.resultReport, {
+        summary: '원문을 보존한 짧은 결과 보고',
+        sourceResultRef: message.event.payload.resultRef,
+        sourceResultDigest: message.event.payload.resultDigest,
+      });
+    }
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+    runtimeStateStore.close();
   }
 });
 

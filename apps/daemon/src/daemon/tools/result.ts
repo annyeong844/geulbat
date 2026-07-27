@@ -2,9 +2,14 @@ import {
   isToolFailureDiagnostics,
   type ToolFailureDiagnostics,
 } from '@geulbat/protocol/errors';
-import type { ExecuteResult } from './types.js';
+import {
+  parseExecuteResult,
+  type ExecuteResult,
+} from '../runtime-contracts.js';
 import type { ErrorCode } from '../error-codes.js';
 import { getAppErrorCode, getErrorMessage } from '../utils/error.js';
+
+export { isToolFailureDiagnostics, parseExecuteResult };
 
 export function toolError(
   errorCode: ErrorCode,

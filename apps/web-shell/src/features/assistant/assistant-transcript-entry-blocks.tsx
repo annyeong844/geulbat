@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { KeyboardEvent } from 'react';
 import type {
   ProviderRequestDiagnostics,
   ProviderRetryDiagnostics,
@@ -61,6 +62,10 @@ export function RunTranscriptEntryBlock(props: {
     RunTranscriptEntry,
     { kind: 'tool_activity' }
   >['state'];
+  // 아직 모델이 읽지 않은 내 말을 되돌린다
+  onCancelPendingSteer?: (receivedSeq: number) => void;
+  // 아직 읽히지 않은 내 말을 지금 밀어넣는다 — 반짝이는 말풍선 자체가 버튼이다
+  onFlushPendingSteer?: () => void;
 }) {
   const {
     entry,
@@ -73,14 +78,68 @@ export function RunTranscriptEntryBlock(props: {
     onWidgetToolRequest,
     deferVisualizeRuntimeBoot,
     approvalStatus,
+    onCancelPendingSteer,
+    onFlushPendingSteer,
   } = props;
 
   switch (entry.kind) {
     case 'assistant_text':
       return <ReasoningDisclosure text={entry.text} live />;
-    case 'user_text':
-      // 소비된 스티어 — 실제 사용자 말풍선으로 합류
-      return <TranscriptTextMessage messageRole="user" content={entry.text} />;
+    case 'user_text': {
+      const pendingSteerSeq = entry.pendingSteerSeq;
+      if (pendingSteerSeq === undefined) {
+        return (
+          <TranscriptTextMessage messageRole="user" content={entry.text} />
+        );
+      }
+      // 보냈지만 모델이 아직 읽지 않은 말. 말풍선은 이미 대화에 있고, 아직
+      // 읽히기 전이라는 사실은 반짝임이 말한다.
+      //
+      // 그 반짝임이 곧 버튼이다: 누르면 다음 라운드를 기다리지 않고 지금
+      // 밀어넣는다. 별도의 "즉시 반영" 줄을 아래에 두면, 앞당길 대상과
+      // 앞당기는 버튼이 화면에서 떨어져 앉는다.
+      const flushable = onFlushPendingSteer !== undefined;
+      return (
+        <div
+          className={`pending-steer-message${flushable ? ' is-flushable' : ''}`}
+          {...(flushable
+            ? {
+                role: 'button',
+                tabIndex: 0,
+                title: '아직 읽히지 않았습니다 — 눌러서 지금 반영',
+                onClick: onFlushPendingSteer,
+                onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onFlushPendingSteer();
+                  }
+                },
+              }
+            : {})}
+        >
+          <TranscriptTextMessage messageRole="user" content={entry.text} />
+          <span className="pending-steer-badge">
+            <span>{flushable ? '눌러서 지금 반영' : '대기 중'}</span>
+            {onCancelPendingSteer === undefined ? null : (
+              <button
+                type="button"
+                className="pending-steer-badge-cancel"
+                title="대기 중 메시지 되돌리기"
+                aria-label="대기 중 메시지 되돌리기"
+                onClick={(event) => {
+                  // 되돌리기는 반영과 반대 방향이다 — 말풍선 클릭으로 새지
+                  // 않게 여기서 멈춘다.
+                  event.stopPropagation();
+                  onCancelPendingSteer(pendingSteerSeq);
+                }}
+              >
+                <PendingSteerCancelIcon />
+              </button>
+            )}
+          </span>
+        </div>
+      );
+    }
     case 'tool_activity': {
       // 실데이터 스트리밍 중인 visualize — 코드가 도착하는 대로 그린다
       if (entry.tool === VISUALIZE_TOOL_NAME && entry.argsText !== undefined) {
@@ -222,12 +281,14 @@ function SubagentActivityBlock(props: {
   const nowMs = useSubagentActivityNow(tracksActivityAge);
   const title = formatSubagentActivityTitle(entry);
   const meta = formatSubagentActivityMeta(entry, nowMs);
-  const summaryText = meta ? `${title} (${meta})` : title;
+  const summaryElapsed = formatSubagentActivitySummaryMeta(entry, nowMs);
   const childThreadId = entry.childThreadId;
   const canStop =
     onStopChildRun !== undefined &&
     entry.parentRunId !== undefined &&
     (entry.state === 'spawned' || entry.state === 'approval_required');
+  const resultReference =
+    entry.resultReport?.sourceResultRef ?? entry.resultRef;
   const detailLines = [
     title,
     ...(meta ? [meta] : []),
@@ -239,8 +300,15 @@ function SubagentActivityBlock(props: {
     ...(entry.runtime?.providerRequest === undefined
       ? []
       : formatProviderRequestDetail(entry.runtime.providerRequest, nowMs)),
-    ...(entry.result ? [entry.result] : []),
-    ...(entry.resultRef ? [`결과 참조: ${entry.resultRef}`] : []),
+    ...(entry.resultReport ? [`결과 보고: ${entry.resultReport.summary}`] : []),
+    ...(entry.result
+      ? [entry.resultReport ? `원문 결과: ${entry.result}` : entry.result]
+      : []),
+    ...(resultReference
+      ? [
+          `${entry.resultReport ? '원문 결과 참조' : '결과 참조'}: ${resultReference}`,
+        ]
+      : []),
   ];
 
   const stopChildRun = async (): Promise<void> => {
@@ -269,7 +337,10 @@ function SubagentActivityBlock(props: {
           className={`subagent-state-dot ${entry.state}`}
           aria-hidden="true"
         />
-        <span className="subagent-work-title">{summaryText}</span>
+        <span className="subagent-work-title">{title}</span>
+        {summaryElapsed === null ? null : (
+          <span className="subagent-work-elapsed">{summaryElapsed}</span>
+        )}
         <span className="subagent-work-chevron" aria-hidden="true">
           ⌄
         </span>
@@ -338,6 +409,31 @@ function formatToolState(state: string): string {
 // explicitly. Only terminal entries carry telemetry, so spawned/approval rows
 // render unchanged.
 // Exported for the child session viewer header.
+/**
+ * 접힌 요약줄이 말할 것은 제목과 "얼마나 됐는가"뿐이다.
+ *
+ * 관측 시각·capability·토큰 누적은 펼친 본문이 이미 그대로 싣고 있다. 요약에
+ * 옮겨 적으면 같은 문장이 두 번 나오면서, 한 줄 안에서 읽어야 할 제목을 계측이
+ * 밀어낸다. 접힌 카드의 값은 "펼칠지 말지 정할 수 있다"이지 "전부 보여준다"가
+ * 아니다.
+ */
+function formatSubagentActivitySummaryMeta(
+  entry: Extract<RunTranscriptEntry, { kind: 'subagent_activity' }>,
+  nowMs = Date.now(),
+): string | null {
+  if (
+    entry.runtime !== undefined &&
+    (entry.state === 'spawned' || entry.state === 'approval_required')
+  ) {
+    return formatElapsedDuration(
+      Math.max(0, nowMs - Date.parse(entry.runtime.observedAt)),
+    );
+  }
+  return entry.elapsedMs === undefined
+    ? null
+    : formatElapsedDuration(entry.elapsedMs);
+}
+
 export function formatSubagentActivityMeta(
   entry: Extract<RunTranscriptEntry, { kind: 'subagent_activity' }>,
   nowMs = Date.now(),
@@ -571,4 +667,21 @@ function formatSubagentActivityTitle(
     case 'cancelled':
       return `${entry.subagentType} 작업 취소됨`;
   }
+}
+
+function PendingSteerCancelIcon() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      aria-hidden
+    >
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
 }

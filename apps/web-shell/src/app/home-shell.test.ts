@@ -101,11 +101,16 @@ function createThreadsStub(): HomeThreadsInput {
     subagentTerminalOutcomes: [],
     deletingThreadId: thread.threadId,
     pendingDeleteThread: thread,
+    exportingThreadId: thread.threadId,
+    importingThreadArchive: true,
+    threadTransferNotice: 'transfer complete',
     loadThreads: async () => {},
     openThread: async () => {},
     requestDeleteThread: () => {},
     cancelDeleteThread: () => {},
     confirmDeleteThread: async () => {},
+    exportThread: async () => {},
+    importThread: async () => {},
     setSelectedThreadId: () => {},
     appendOptimisticUserMessage: () => {},
     startNewSession: () => {},
@@ -240,6 +245,12 @@ void test('createHomeShellView composes panel views from files, threads, provide
   });
 
   assert.equal(shell.leftPanelView.threadDeleteConfirm?.busy, true);
+  assert.equal(shell.leftPanelView.threadList.exportingThreadId, THREAD_ID);
+  assert.equal(shell.leftPanelView.threadList.importingThreadArchive, true);
+  assert.equal(
+    shell.leftPanelView.threadList.transferNotice,
+    'transfer complete',
+  );
   assert.equal(shell.centerPanelView.editor.filePath, 'draft.md');
   assert.equal(
     shell.centerPanelView.providerAuthCard.busyProviderId,

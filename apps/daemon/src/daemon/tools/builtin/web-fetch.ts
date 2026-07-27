@@ -30,7 +30,7 @@ export function createFetchUrlTool(
   return defineZodTool({
     name: 'fetch_url',
     description:
-      'Fetch one public HTTP(S) URL as untrusted text. Does not search, browse with cookies, or fetch local/private network URLs.',
+      'Fetch one public HTTP(S) URL as complete untrusted text with HTML block boundaries preserved as lines. Large results use the shared durable output reference. Does not search, browse with cookies, or fetch local/private network URLs.',
     argsSchema: webFetchArgsSchema,
     sideEffectLevel: 'read',
     mayMutateComputerFiles: false,

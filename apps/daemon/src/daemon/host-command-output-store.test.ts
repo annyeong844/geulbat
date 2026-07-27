@@ -284,6 +284,20 @@ void test('readHostCommandOutputPage paginates utf-8 output and enforces byte bo
     assert.equal(secondPage.value.nextOffsetBytes, null);
   }
 
+  await writeFile(paths.stdoutFull, '처음부터 보존', 'utf8');
+  const fullArchivePage = await readHostCommandOutputPage({
+    paths,
+    page: { stream: 'stdout', offsetBytes: 0, limitBytes: 100 },
+    inlineMaxBytes: 100,
+    fullOutputAvailable: true,
+  });
+  assert.equal(fullArchivePage.ok, true);
+  if (fullArchivePage.ok && fullArchivePage.value) {
+    assert.equal(fullArchivePage.value.content, '처음부터 보존');
+    assert.equal(fullArchivePage.value.totalBytes, 19);
+    assert.equal(fullArchivePage.value.hasMore, false);
+  }
+
   const midCharacter = await readHostCommandOutputPage({
     paths,
     page: { stream: 'stdout', offsetBytes: 1, limitBytes: 6 },

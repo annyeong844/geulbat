@@ -83,6 +83,7 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
   description: string;
   sideEffectLevel: AnyTool['sideEffectLevel'];
   requiresApproval: boolean;
+  approvalClass?: AnyTool['approvalClass'];
   mayMutateComputerFiles?: boolean;
   exposure?: AnyTool['exposure'];
   parseArgs?: (raw: unknown) => ToolParseResult<TArgs>;
@@ -107,6 +108,9 @@ function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
     mayMutateComputerFiles: args.mayMutateComputerFiles ?? false,
     timeoutMs: 1_000,
     requiresApproval: args.requiresApproval,
+    ...(args.approvalClass === undefined
+      ? {}
+      : { approvalClass: args.approvalClass }),
     ...(args.exposure === undefined ? {} : { exposure: args.exposure }),
     parseArgs: args.parseArgs ?? parseObjectArgs,
     executeParsed: args.executeParsed,
@@ -158,7 +162,7 @@ function makeExecutionRuntime(
         ? {}
         : { computerFileRoot: args.computerFileRoot }),
       memoryIndex: undefined,
-      runtimeServices: args.runtimeServices,
+      runtimeServices: args.runtimeServices ?? daemonContext,
       ...(args.planningWorkflow === undefined
         ? {}
         : { planningWorkflow: args.planningWorkflow }),
@@ -734,12 +738,91 @@ void test('executeFunctionCall rejects PTC callback write dispatch before approv
         },
         denialMode: 'code_visible',
       }),
-    /PTC callback dispatch currently supports only read-only no-approval tools/u,
+    /PTC callback dispatch rejected a tool outside the admitted callback surface/u,
   );
 
   assert.equal(executionCount, 0);
   assert.deepEqual(events, []);
   assert.deepEqual(history, []);
+});
+
+void test('executeFunctionCall routes a delegated external callback through interactive approval with the built-in write tier disabled', async () => {
+  const toolName = 'mcp_external_approval_callback_test';
+  const approvalClass = toApprovalClass('mcp:external-test-server');
+  const daemonContext = createTestDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-external-callback-'),
+  );
+  const threadId = testThreadId(82_4);
+  const events: AgentEvent[] = [];
+  let executionCount = 0;
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: toolName,
+      description: 'Delegated external approval callback test tool',
+      sideEffectLevel: 'write',
+      requiresApproval: true,
+      approvalClass,
+      mayMutateComputerFiles: true,
+      exposure: {
+        directHot: false,
+        sdkVisible: true,
+        inCellCallable: true,
+        directOnly: false,
+        effectClass: 'hostStateMutation',
+      },
+      async executeParsed() {
+        executionCount += 1;
+        return { ok: true, output: 'external-ok' };
+      },
+    }),
+  );
+  await startApprovalCheckpoint(
+    daemonContext,
+    threadId,
+    'run-external-callback',
+  );
+
+  const result = await withWriteCallbackKnob('0', () =>
+    executeFunctionCall({
+      functionCall: {
+        id: 'fc-external-callback',
+        callId: 'call-execute-code::external-callback',
+        name: toolName,
+        arguments: JSON.stringify({ path: 'outside-workspace.txt' }),
+      },
+      round: 0,
+      toolArgs: { path: 'outside-workspace.txt' },
+      history: [],
+      runtime: makeExecutionRuntime(daemonContext, {
+        threadId,
+        stateRoot: workspaceRoot,
+        runId: 'run-external-callback',
+        approvalContext: makeApprovalContext(),
+        emit: makeApprovalResolvingEmitter(events, daemonContext, 'approved'),
+      }),
+      source: makePtcWriteCallbackSource('external-callback'),
+      denialMode: 'code_visible',
+    }),
+  );
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.value, { ok: true, output: 'external-ok' });
+  }
+  assert.equal(executionCount, 1);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['approval_required'],
+  );
+  const approvalEvent = events[0];
+  assert.equal(approvalEvent?.type, 'approval_required');
+  if (approvalEvent?.type === 'approval_required') {
+    assert.equal(approvalEvent.payload.approvalClass, approvalClass);
+    assert.equal(approvalEvent.payload.runId, 'run-external-callback');
+    assert.equal(approvalEvent.payload.threadId, threadId);
+  }
 });
 
 void test('executeFunctionCall resolves interactive approval against the owner run/thread target before execution', async () => {
@@ -939,6 +1022,7 @@ void test('W1: full_access auto-approves an admitted PTC write callback and muta
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-fullaccess-'));
   const threadId = testThreadId(84_1);
   const events: AgentEvent[] = [];
+  await startApprovalCheckpoint(daemonContext, threadId, 'run-w1-full-access');
 
   await withWriteCallbackKnob('1', async () => {
     const result = await executeFunctionCall({
@@ -1420,6 +1504,7 @@ void test('W1: full_access admits outside-allowlist and destructive callbacks wi
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-w1-yolo-'));
   const threadId = testThreadId(84_10);
   const events: AgentEvent[] = [];
+  await startApprovalCheckpoint(daemonContext, threadId, 'run-w1-yolo');
 
   await withWriteCallbackKnob('1', async () => {
     const runtime = makeExecutionRuntime(daemonContext, {
@@ -1486,6 +1571,7 @@ void test('W1: full_access preserves host-wide Computer paths for PTC write call
   await mkdir(workspaceRoot, { recursive: true });
   const threadId = testThreadId(84_5);
   const events: AgentEvent[] = [];
+  await startApprovalCheckpoint(daemonContext, threadId, 'run-w1-boundary');
 
   await withWriteCallbackKnob('1', async () => {
     const result = await executeFunctionCall({
@@ -1961,18 +2047,26 @@ void test('artifact_frame data_only dispatch runs an admitted read-only callback
   assert.deepEqual(events, []);
 });
 
-void test('artifact_frame data_only rejects tools outside the shared callback surface as data', async () => {
-  const toolName = 'loop_tool_approval_artifact_frame_reject_test_tool';
+void test('artifact_frame data_only does not inherit the delegated external callback surface', async () => {
+  const toolName = 'mcp_artifact_frame_reject_test_tool';
   const daemonContext = createTestDaemonContext();
   let executionCount = 0;
   registerOnce(
     daemonContext,
     makeTestTool({
       name: toolName,
-      description: 'artifact frame non-admitted test tool',
-      sideEffectLevel: 'read',
-      requiresApproval: false,
-      // exposure 없음 → sdkVisible 아님 → 공유 surface 밖
+      description: 'artifact frame delegated external test tool',
+      sideEffectLevel: 'write',
+      requiresApproval: true,
+      approvalClass: toApprovalClass('mcp:artifact-frame-test-server'),
+      mayMutateComputerFiles: true,
+      exposure: {
+        directHot: false,
+        sdkVisible: true,
+        inCellCallable: true,
+        directOnly: false,
+        effectClass: 'hostStateMutation',
+      },
       async executeParsed() {
         executionCount += 1;
         return { ok: true, output: 'should-not-run' };
@@ -1998,7 +2092,7 @@ void test('artifact_frame data_only rejects tools outside the shared callback su
       threadId,
       stateRoot: workspaceRoot,
       runId: 'run-frame-reject',
-      approvalContext: makeApprovalContext(),
+      approvalContext: makeApprovalContext({ permissionMode: 'full_access' }),
       emit: makeEmitter(events),
     }),
     source: makeArtifactFrameSource('rt-reject-1'),
@@ -2058,6 +2152,7 @@ void test('artifact_frame write callback: full_access auto-approves via the shar
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-frame-write-'));
   const threadId = testThreadId(86_4);
   const events: AgentEvent[] = [];
+  await startApprovalCheckpoint(daemonContext, threadId, 'run-frame-write');
 
   await withWriteCallbackKnob('1', async () => {
     const result = await executeFunctionCall({

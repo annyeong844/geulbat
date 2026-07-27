@@ -9,8 +9,10 @@ import {
   parseHostCommandOutputRef,
   SYSTEM_SESSION_OWNER,
 } from '../daemon/host-command-output-store.js';
+import type { HostCommandSnapshot } from '../daemon/host-command-output-store.js';
 import { buildCommandHostJournalPath, readSpawnJournal } from './journal.js';
 import { recoverCommandHostState } from './recovery.js';
+import { isProcessAlive } from './runtime-paths.js';
 import { createCommandSessionHost } from './session-core.js';
 import type { CommandSessionHost, HostCommandRuntime } from './contract.js';
 
@@ -273,6 +275,146 @@ void test('T2: waitForInitialResult is idempotent after a completed claim', asyn
   await pollUntilTerminal(fixture.host, fixture, thread, started.outputRef);
 });
 
+void test('idempotent start returns the existing system session instead of spawning duplicate code', async (t) => {
+  const fixture = await makeFixture(t);
+  const thread = threadId(9034);
+  const args = startArgs(fixture, thread, 'setInterval(() => {}, 1000);', {
+    owner: 'system',
+    runId: 'ptc',
+    callId: 'ptc_cell_restart_identity',
+    requiresIdempotentStart: true,
+    stdinMode: 'open',
+  });
+
+  const first = await fixture.host.start(args);
+  const replay = await fixture.host.start(args);
+  assert.equal(first.ok, true);
+  assert.equal(replay.ok, true);
+  if (!first.ok || !replay.ok) {
+    return;
+  }
+  assert.equal(replay.outputRef, first.outputRef);
+  assert.equal(
+    fixture.host
+      .listSessions()
+      .filter(
+        (session) =>
+          session.runId === args.runId && session.callId === args.callId,
+      ).length,
+    1,
+  );
+
+  await fixture.host.waitForInitialResult({
+    stateRoot: fixture.stateRoot,
+    outputRef: first.outputRef,
+    yieldTimeMs: 0,
+  });
+  await fixture.host.interact({
+    stateRoot: fixture.stateRoot,
+    threadId: SYSTEM_SESSION_OWNER,
+    owner: 'system',
+    outputRef: first.outputRef,
+    terminate: true,
+    yieldTimeMs: 2_000,
+  });
+});
+
+void test('idempotent start writes non-persisted initial stdin exactly once', async (t) => {
+  const fixture = await makeFixture(t);
+  const thread = threadId(9035);
+  const args = startArgs(
+    fixture,
+    thread,
+    [
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => process.stdout.write(chunk));",
+      'setInterval(() => {}, 1000);',
+    ].join(''),
+    {
+      owner: 'system',
+      runId: 'provider-responses',
+      callId: 'stable-request-digest',
+      requiresIdempotentStart: true,
+      stdinMode: 'open',
+      streamMode: 'lossless',
+      initialStdin: 'bootstrap-once\n',
+    },
+  );
+
+  const first = await fixture.host.start(args);
+  const replay = await fixture.host.start(args);
+  assert.equal(first.ok, true);
+  assert.equal(replay.ok, true);
+  if (!first.ok || !replay.ok) {
+    return;
+  }
+  assert.equal(replay.outputRef, first.outputRef);
+
+  await fixture.host.waitForInitialResult({
+    stateRoot: fixture.stateRoot,
+    outputRef: first.outputRef,
+    yieldTimeMs: 0,
+  });
+  let output = '';
+  for (let attempt = 0; attempt < 20 && output.length === 0; attempt += 1) {
+    const observed = await fixture.host.interact({
+      stateRoot: fixture.stateRoot,
+      threadId: SYSTEM_SESSION_OWNER,
+      owner: 'system',
+      outputRef: first.outputRef,
+      yieldTimeMs: 25,
+      page: {
+        stream: 'stdout',
+        offsetBytes: 0,
+        limitBytes: 1024,
+      },
+    });
+    assert.equal(observed.ok, true);
+    if (observed.ok && observed.value.page !== null) {
+      output = observed.value.page.content;
+    }
+  }
+  assert.equal(output, 'bootstrap-once\n');
+
+  await fixture.host.interact({
+    stateRoot: fixture.stateRoot,
+    threadId: SYSTEM_SESSION_OWNER,
+    owner: 'system',
+    outputRef: first.outputRef,
+    terminate: true,
+    yieldTimeMs: 2_000,
+  });
+});
+
+void test(
+  'initial stdin write failure rejects start instead of orphaning an empty child',
+  { timeout: 10_000 },
+  async (t) => {
+    const fixture = await makeFixture(t);
+    const started = await fixture.host.start(
+      startArgs(
+        fixture,
+        threadId(9036),
+        'process.stdin.destroy(); process.exit(0);',
+        {
+          owner: 'system',
+          runId: 'provider-responses',
+          callId: 'initial-stdin-write-failure',
+          requiresIdempotentStart: true,
+          stdinMode: 'open',
+          streamMode: 'lossless',
+          initialStdin: 'x'.repeat(4 * 1024 * 1024),
+        },
+      ),
+    );
+
+    assert.equal(started.ok, false);
+    if (!started.ok) {
+      assert.equal(started.reasonCode, 'spawn_failed');
+    }
+  },
+);
+
 void test('authoritative abort before claim discards the session without residue', async (t) => {
   const fixture = await makeFixture(t);
   const thread = threadId(9004);
@@ -359,6 +501,110 @@ void test('explicit terminate uses the graceful path and persists lru-style reas
   }
   await restarted.closeAll();
 });
+
+void test(
+  'native Windows termination reaps the direct child and its descendant',
+  { skip: process.platform !== 'win32' },
+  async (t) => {
+    const fixture = await makeFixture(t);
+    const thread = threadId(9055);
+    const pidPath = join(fixture.stateRoot, 'windows-process-tree.json');
+    let descendantPid: number | undefined;
+    t.after(() => {
+      if (descendantPid === undefined || !isProcessAlive(descendantPid)) {
+        return;
+      }
+      try {
+        process.kill(descendantPid, 'SIGKILL');
+      } catch {
+        // The product cleanup may win the race after the liveness check.
+      }
+    });
+    const started = await fixture.host.start(
+      startArgs(
+        fixture,
+        thread,
+        `
+const { spawn } = require('node:child_process');
+const { writeFileSync } = require('node:fs');
+const descendant = spawn(
+  process.execPath,
+  ['-e', 'setInterval(() => undefined, 1000);'],
+  { stdio: 'ignore', windowsHide: true },
+);
+writeFileSync(
+  ${JSON.stringify(pidPath)},
+  JSON.stringify({ parentPid: process.pid, descendantPid: descendant.pid }),
+);
+setInterval(() => undefined, 1000);
+`,
+      ),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+    const claimed = await fixture.host.waitForInitialResult({
+      stateRoot: fixture.stateRoot,
+      outputRef: started.outputRef,
+      yieldTimeMs: 25,
+    });
+    assert.equal(claimed.ok, true);
+
+    let parentPid: number | undefined;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        const pids = JSON.parse(await readFile(pidPath, 'utf8')) as {
+          parentPid: number;
+          descendantPid: number;
+        };
+        parentPid = pids.parentPid;
+        descendantPid = pids.descendantPid;
+        break;
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    assert.ok(
+      parentPid !== undefined && Number.isSafeInteger(parentPid),
+      'the fixture publishes its direct child pid',
+    );
+    assert.ok(
+      descendantPid !== undefined && Number.isSafeInteger(descendantPid),
+      'the fixture publishes its descendant pid',
+    );
+    assert.equal(isProcessAlive(parentPid), true);
+    assert.equal(isProcessAlive(descendantPid), true);
+
+    const terminated = await fixture.host.interact({
+      stateRoot: fixture.stateRoot,
+      threadId: thread,
+      outputRef: started.outputRef,
+      terminate: true,
+      yieldTimeMs: 2_500,
+    });
+    assert.equal(terminated.ok, true);
+    await pollUntilTerminal(fixture.host, fixture, thread, started.outputRef);
+
+    for (
+      let attempt = 0;
+      attempt < 100 &&
+      (isProcessAlive(parentPid) || isProcessAlive(descendantPid));
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(isProcessAlive(parentPid), false);
+    assert.equal(
+      isProcessAlive(descendantPid),
+      false,
+      'taskkill /T /F reaps the full native Windows process tree',
+    );
+  },
+);
 
 void test('caller timeout force-kills with caller_timeout reason', async (t) => {
   const fixture = await makeFixture(t);
@@ -615,7 +861,7 @@ void test('T20: subscribe barrier partitions past output from future notificatio
       fixture,
       thread,
       "process.stdout.write('before'); " +
-        'setTimeout(() => process.stdout.write("after"), 60); ' +
+        'setTimeout(() => process.stdout.write("after"), 2_000); ' +
         'setInterval(() => {}, 1000);',
     ),
   );
@@ -1504,6 +1750,115 @@ void test('P7.6: a protocol stream loses no bytes when the reader keeps up', asy
   assert.equal(readBytes, totalBytes, 'every byte reached the reader');
 });
 
+void test('P7.6: a deferred lossless page remains readable until explicitly released', async (t) => {
+  const fixture = await makeFixture(t, {
+    inlineMaxBytes: 4096,
+    tailRingBytes: 4096,
+  });
+  const thread = threadId(989);
+  const started = await fixture.host.start(
+    startArgs(
+      fixture,
+      thread,
+      'process.stdout.write("abcdef"); setInterval(() => undefined, 1_000);',
+      { owner: 'system', streamMode: 'lossless' },
+    ),
+  );
+  assert.equal(started.ok, true);
+  if (!started.ok) {
+    return;
+  }
+
+  let stdoutBytes = 0;
+  for (let attempt = 0; attempt < 100 && stdoutBytes < 6; attempt += 1) {
+    const observed = await fixture.host.interact({
+      stateRoot: fixture.stateRoot,
+      threadId: thread,
+      owner: 'system',
+      outputRef: started.outputRef,
+      yieldTimeMs: 20,
+    });
+    assert.equal(observed.ok, true);
+    if (!observed.ok) {
+      return;
+    }
+    stdoutBytes = observed.value.snapshot.stdoutBytes;
+  }
+  assert.equal(stdoutBytes, 6);
+
+  const first = await fixture.host.interact({
+    stateRoot: fixture.stateRoot,
+    threadId: thread,
+    owner: 'system',
+    outputRef: started.outputRef,
+    yieldTimeMs: 0,
+    page: {
+      stream: 'stdout',
+      offsetBytes: 0,
+      limitBytes: 3,
+      deferRelease: true,
+    },
+  });
+  assert.equal(first.ok, true);
+  if (!first.ok) {
+    return;
+  }
+  assert.equal(first.value.page?.content, 'abc');
+  assert.equal(first.value.page?.offsetBytes, 0);
+
+  const repeated = await fixture.host.interact({
+    stateRoot: fixture.stateRoot,
+    threadId: thread,
+    owner: 'system',
+    outputRef: started.outputRef,
+    yieldTimeMs: 0,
+    page: {
+      stream: 'stdout',
+      offsetBytes: 0,
+      limitBytes: 3,
+      deferRelease: true,
+    },
+  });
+  assert.equal(repeated.ok, true);
+  if (!repeated.ok) {
+    return;
+  }
+  assert.equal(repeated.value.page?.content, 'abc');
+  assert.equal(repeated.value.page?.offsetBytes, 0);
+
+  const released = await fixture.host.interact({
+    stateRoot: fixture.stateRoot,
+    threadId: thread,
+    owner: 'system',
+    outputRef: started.outputRef,
+    yieldTimeMs: 0,
+    page: {
+      stream: 'stdout',
+      offsetBytes: 3,
+      limitBytes: 3,
+      deferRelease: true,
+      releaseUpToBytes: 3,
+    },
+  });
+  assert.equal(released.ok, true);
+  if (!released.ok) {
+    return;
+  }
+  assert.equal(released.value.page?.content, 'def');
+  assert.equal(released.value.page?.offsetBytes, 3);
+  assert.equal(released.value.page?.earliestAvailableOffset, 3);
+
+  const terminated = await fixture.host.interact({
+    stateRoot: fixture.stateRoot,
+    threadId: thread,
+    owner: 'system',
+    outputRef: started.outputRef,
+    terminate: true,
+    yieldTimeMs: 0,
+  });
+  assert.equal(terminated.ok, true);
+});
+
 void test('P7.6: lossless stderr pauses at its budget and resumes after page release', async (t) => {
   const tailRingBytes = 4096;
   const fixture = await makeFixture(t, {
@@ -1799,4 +2154,73 @@ void test('P7.6: backpressure holds the source instead of overwriting output', a
       yieldTimeMs: 0,
     });
   }
+});
+
+// 명령이 자손을 백그라운드로 띄우고 먼저 끝나면 자손이 같은 stdout을 물고
+// 있어 Node의 'close'가 오지 않는다. 그동안 출력은 더 올 수 있으므로 status는
+// running이 맞지만, 프로세스가 이미 끝났다는 사실이 어디에도 없으면 관찰자는
+// 끝난 명령을 계속 관찰한다.
+void test('a command that outlives its stdout through a background descendant reports its process exit', async (t) => {
+  const fixture = await makeFixture(t);
+  const thread = threadId(9401);
+  const started = await fixture.host.start(
+    startArgs(
+      fixture,
+      thread,
+      // 손자가 부모의 stdout을 물려받고 부모보다 오래 산다. `unref`가 없으면
+      // 부모가 자식 핸들 때문에 살아 있어서 이 상황이 재현되지 않는다.
+      "const {spawn}=require('node:child_process');" +
+        "const child=spawn(process.execPath,['-e','setTimeout(()=>{},4000)'],{stdio:['ignore','inherit','inherit']});" +
+        'child.unref();' +
+        "process.stdout.write('parent-done');",
+    ),
+  );
+  assert.equal(started.ok, true);
+  if (!started.ok) {
+    return;
+  }
+  const outputRef = started.outputRef;
+  assert.ok(outputRef !== null);
+
+  let processExit: HostCommandSnapshot['processExit'];
+  let statusWhileDraining: HostCommandSnapshot['status'] | undefined;
+  let outputCompleteWhileDraining: boolean | undefined;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const polled = await fixture.host.interact({
+      stateRoot: fixture.stateRoot,
+      threadId: thread,
+      outputRef,
+      yieldTimeMs: 25,
+    });
+    assert.equal(polled.ok, true);
+    if (!polled.ok) {
+      return;
+    }
+    if (polled.value.snapshot.processExit !== undefined) {
+      processExit = polled.value.snapshot.processExit;
+      statusWhileDraining = polled.value.snapshot.status;
+      outputCompleteWhileDraining = polled.value.snapshot.outputComplete;
+      break;
+    }
+  }
+
+  assert.ok(
+    processExit !== undefined,
+    'the finished process must be observable while its output stream is still open',
+  );
+  assert.equal(processExit.status, 'exit');
+  assert.equal(processExit.exitCode, 0);
+  // 출력이 더 올 수 있는 동안에는 완결을 주장하지 않는다. status도 그대로
+  // running이어야 한다 — 그 필드로 종료를 판정하는 소비자들이 미완결 출력을
+  // 완결로 읽으면 안 된다.
+  assert.equal(statusWhileDraining, 'running');
+  assert.equal(outputCompleteWhileDraining, false);
+
+  await fixture.host.interact({
+    stateRoot: fixture.stateRoot,
+    threadId: thread,
+    outputRef,
+    terminate: true,
+    yieldTimeMs: 0,
+  });
 });

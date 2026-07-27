@@ -23,6 +23,7 @@ import {
 } from '@geulbat/protocol/subagent-terminal';
 import type { PermissionMode } from '@geulbat/protocol/run-approval';
 import {
+  isRunModelId as isProtocolRunModelId,
   resolveRunModelDescriptor as resolveProtocolRunModelDescriptor,
   type RunProviderTransitionRecovery,
   type RunServiceTier,
@@ -103,6 +104,12 @@ export function resolveAgentRunModelDescriptor(
   modelId: RunProviderTransitionRecovery['sourceModelId'],
 ) {
   return resolveProtocolRunModelDescriptor(modelId);
+}
+
+export function isAgentRunModelId(
+  modelId: string,
+): modelId is RunProviderTransitionRecovery['sourceModelId'] {
+  return isProtocolRunModelId(modelId);
 }
 
 export const AGENT_ARTIFACT_START_PREFIX = ARTIFACT_START_PREFIX;

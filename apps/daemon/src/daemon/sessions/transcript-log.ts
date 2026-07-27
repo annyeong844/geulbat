@@ -334,7 +334,7 @@ async function collectUnreachableHostCommandOutputs(args: {
   });
 }
 
-function collectTranscriptDurableOutputRefs(
+export function collectTranscriptDurableOutputRefs(
   entries: readonly TranscriptEntry[],
 ): {
   toolOutputs: Set<string>;
@@ -355,6 +355,19 @@ function collectTranscriptDurableOutputRefs(
           collectTranscriptDurableOutputRef(item.outputRef, refs);
         }
       }
+    }
+    if (
+      entry.role === 'compaction' &&
+      isRecord(entry.compactionData) &&
+      Array.isArray(entry.compactionData.expandedEvidencePages)
+    ) {
+      for (const page of entry.compactionData.expandedEvidencePages) {
+        if (isRecord(page)) {
+          collectTranscriptDurableOutputRef(page.outputRef, refs);
+        }
+      }
+    }
+    if (entry.role === 'compaction') {
       continue;
     }
     if (entry.role !== 'tool_result') {
@@ -378,6 +391,108 @@ function collectTranscriptDurableOutputRefs(
     }
   }
   return refs;
+}
+
+export function rewriteTranscriptDurableOutputRefs(
+  entries: readonly TranscriptEntry[],
+  replacements: ReadonlyMap<string, string>,
+): TranscriptEntry[] {
+  return entries.map((entry) => {
+    if (
+      entry.role === 'compaction' &&
+      'kind' in entry.compactionData &&
+      entry.compactionData.kind === 'provider_native'
+    ) {
+      const evidence = entry.compactionData.evidence?.map((item) => ({
+        ...item,
+        outputRef: replacements.get(item.outputRef) ?? item.outputRef,
+      }));
+      const expandedEvidencePages =
+        entry.compactionData.expandedEvidencePages?.map((page) => ({
+          ...page,
+          outputRef: replacements.get(page.outputRef) ?? page.outputRef,
+        }));
+      return {
+        ...entry,
+        compactionData: {
+          ...entry.compactionData,
+          ...(evidence === undefined ? {} : { evidence }),
+          ...(expandedEvidencePages === undefined
+            ? {}
+            : { expandedEvidencePages }),
+        },
+      };
+    }
+    if (entry.role !== 'tool_result') {
+      return entry;
+    }
+    const content = rewriteToolResultDurableOutputRefs(
+      entry.content,
+      replacements,
+    );
+    return content === entry.content ? entry : { ...entry, content };
+  });
+}
+
+function rewriteToolResultDurableOutputRefs(
+  content: string,
+  replacements: ReadonlyMap<string, string>,
+): string {
+  const envelope = tryParseJson(content);
+  if (!envelope.ok || !isRecord(envelope.value)) {
+    return content;
+  }
+  const rawOutput = envelope.value.output;
+  const parsedOutput =
+    typeof rawOutput === 'string'
+      ? tryParseJson(rawOutput)
+      : { ok: true, value: rawOutput };
+  if (!parsedOutput.ok || !isRecord(parsedOutput.value)) {
+    return content;
+  }
+
+  const outputRef = replaceDurableOutputRef(
+    parsedOutput.value.outputRef,
+    replacements,
+  );
+  const snapshot = isRecord(parsedOutput.value.snapshot)
+    ? parsedOutput.value.snapshot
+    : undefined;
+  const snapshotOutputRef =
+    snapshot === undefined
+      ? undefined
+      : replaceDurableOutputRef(snapshot.outputRef, replacements);
+  if (outputRef === undefined && snapshotOutputRef === undefined) {
+    return content;
+  }
+  const rewrittenOutput = {
+    ...parsedOutput.value,
+    ...(outputRef === undefined ? {} : { outputRef }),
+    ...(snapshot === undefined || snapshotOutputRef === undefined
+      ? {}
+      : { snapshot: { ...snapshot, outputRef: snapshotOutputRef } }),
+  };
+  const rewrittenEnvelope = {
+    ...envelope.value,
+    output:
+      typeof rawOutput === 'string'
+        ? JSON.stringify(rewrittenOutput)
+        : rewrittenOutput,
+  };
+  return JSON.stringify(rewrittenEnvelope);
+}
+
+function replaceDurableOutputRef(
+  value: unknown,
+  replacements: ReadonlyMap<string, string>,
+): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const replacement = replacements.get(value);
+  return replacement === undefined || replacement === value
+    ? undefined
+    : replacement;
 }
 
 function collectTranscriptDurableOutputRef(

@@ -32,29 +32,6 @@ void test('shell auth module keeps parser internals private', () => {
   assert.equal('hasShellAuthCookie' in shellAuth, false);
 });
 
-void test('shell auth reports malformed auth cookie values through the public seam', () => {
-  const originalWarn = console.warn;
-  const warnings: unknown[][] = [];
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args);
-  };
-  try {
-    withTokenEnv('test-token-123456', () => {
-      assert.equal(
-        isAuthorizedShellHeaders({
-          cookie: 'geulbat_dev_auth=%',
-        }),
-        false,
-      );
-    });
-  } finally {
-    console.warn = originalWarn;
-  }
-
-  assert.equal(warnings.length, 1);
-  assert.match(String(warnings[0]?.[0]), /shell auth cookie decode failed/);
-});
-
 void test('shell auth seam shares the same header name and unauthorized message', () => {
   assert.equal(DEV_TOKEN_HEADER_NAME, 'X-Geulbat-Dev-Token');
   assert.equal(
@@ -64,7 +41,7 @@ void test('shell auth seam shares the same header name and unauthorized message'
   assert.equal(SHELL_AUTH_ALLOWED_HEADERS, 'Content-Type, X-Geulbat-Dev-Token');
 });
 
-void test('shell auth seam validates both HTTP headers and websocket tokens', () => {
+void test('shell auth seam validates explicit HTTP headers and websocket tokens', () => {
   withTokenEnv('test-token-123456', () => {
     assert.equal(
       isAuthorizedShellHeaders({
@@ -83,6 +60,12 @@ void test('shell auth seam validates both HTTP headers and websocket tokens', ()
         cookie: 'geulbat_dev_auth=test-token-123456',
       }),
       true,
+    );
+    assert.equal(
+      isAuthorizedShellHeaders({
+        cookie: 'geulbat_dev_auth=wrong-token',
+      }),
+      false,
     );
     assert.equal(isAuthorizedShellWebSocketToken('test-token-123456'), true);
     assert.equal(isAuthorizedShellWebSocketToken('wrong-token'), false);

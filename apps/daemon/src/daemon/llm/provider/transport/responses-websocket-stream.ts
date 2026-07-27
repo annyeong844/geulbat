@@ -21,6 +21,29 @@ export interface ResponsesWebSocketEventSource {
   off(event: 'close', listener: (event: unknown) => void): void;
 }
 
+export async function* iterateWebSocketEventsAfterDispatch(
+  socket: ResponsesWebSocketEventSource,
+  dispatch: () => void,
+  signal?: AbortSignal,
+  completionEventTypes: readonly string[] = DEFAULT_COMPLETION_EVENT_TYPES,
+): AsyncGenerator<Record<string, unknown>> {
+  const iterator = iterateWebSocketEvents(socket, signal, completionEventTypes);
+  let pending = iterator.next();
+  try {
+    dispatch();
+    for (;;) {
+      const result = await pending;
+      if (result.done) {
+        return;
+      }
+      pending = iterator.next();
+      yield result.value;
+    }
+  } finally {
+    await iterator.return(undefined);
+  }
+}
+
 export async function* iterateWebSocketEvents(
   socket: ResponsesWebSocketEventSource,
   signal?: AbortSignal,

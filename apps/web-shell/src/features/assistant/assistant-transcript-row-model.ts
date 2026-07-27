@@ -79,6 +79,13 @@ interface ParsedToolMessage {
   failed: boolean;
 }
 
+interface SettledAskUserMessageAnalysis {
+  askUserCallIds: ReadonlySet<string>;
+  askUserResultFailureByCallId: ReadonlyMap<string, boolean>;
+  suppressedLegacyAskUserEchoIndexes: ReadonlySet<number>;
+  hasLaterUserMessage: readonly boolean[];
+}
+
 const TRANSCRIPT_ROW_ESTIMATE = 120;
 const TRANSCRIPT_TOOL_GROUP_ROW_ESTIMATE = 44;
 const TRANSCRIPT_REASONING_COLLAPSED_ROW_ESTIMATE = 44;
@@ -151,6 +158,78 @@ export function estimateTranscriptMessageRowSize(
     : textEstimate;
 }
 
+function analyzeSettledAskUserMessages(
+  messages: readonly ThreadMessage[],
+): SettledAskUserMessageAnalysis {
+  const askUserCallIds = new Set<string>();
+  const askUserResultFailureByCallId = new Map<string, boolean>();
+  const askUserResultIndexByCallId = new Map<string, number>();
+  const suppressedLegacyAskUserEchoIndexes = new Set<number>();
+  const hasLaterUserMessage = new Array<boolean>(messages.length).fill(false);
+  let sawUserMessage = false;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    hasLaterUserMessage[index] = sawUserMessage;
+    if (messages[index]?.role === 'user') {
+      sawUserMessage = true;
+    }
+  }
+
+  for (const message of messages) {
+    if (message.role !== 'tool_call') {
+      continue;
+    }
+    const parsed = parseToolMessage(message);
+    if (parsed.tool === ASK_USER_TOOL_NAME && parsed.callId !== null) {
+      askUserCallIds.add(parsed.callId);
+    }
+  }
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    if (message.role !== 'tool_result') {
+      continue;
+    }
+    const parsed = parseToolMessage(message);
+    if (parsed.callId !== null && askUserCallIds.has(parsed.callId)) {
+      askUserResultFailureByCallId.set(parsed.callId, parsed.failed);
+      askUserResultIndexByCallId.set(parsed.callId, index);
+    }
+  }
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message?.role !== 'tool_call') {
+      continue;
+    }
+    const parsed = parseToolMessage(message);
+    if (parsed.tool !== ASK_USER_TOOL_NAME || parsed.callId === null) {
+      continue;
+    }
+    const resultIndex = askUserResultIndexByCallId.get(parsed.callId) ?? -1;
+    const echoIndex = resultIndex + 1;
+    const echo = resultIndex > index ? messages[echoIndex] : undefined;
+    const view = readAskUserCardViewFromToolArgs(
+      readCanonicalJsonRecordField(message.content, 'args') ?? {},
+    );
+    if (
+      echo?.role === 'assistant' &&
+      view !== null &&
+      echo.content.includes(view.question) &&
+      view.options.every((option) => echo.content.includes(option.label))
+    ) {
+      suppressedLegacyAskUserEchoIndexes.add(echoIndex);
+    }
+  }
+
+  return {
+    askUserCallIds,
+    askUserResultFailureByCallId,
+    suppressedLegacyAskUserEchoIndexes,
+    hasLaterUserMessage,
+  };
+}
+
 export function buildSettledTranscriptRows(args: {
   messages: ThreadMessage[];
   messageKeys: string[];
@@ -164,66 +243,12 @@ export function buildSettledTranscriptRows(args: {
 }): TranscriptVirtualRowCollection {
   const rows: TranscriptVirtualRow[] = [];
   const visualizeRowIndexes: number[] = [];
-  const askUserCallIds = new Set<string>();
-  const askUserResultFailureByCallId = new Map<string, boolean>();
-  const askUserResultIndexByCallId = new Map<string, number>();
-  const suppressedLegacyAskUserEchoIndexes = new Set<number>();
-  const hasLaterUserMessage = new Array<boolean>(args.messages.length).fill(
-    false,
-  );
-  let sawUserMessage = false;
-
-  for (let index = args.messages.length - 1; index >= 0; index -= 1) {
-    hasLaterUserMessage[index] = sawUserMessage;
-    if (args.messages[index]?.role === 'user') {
-      sawUserMessage = true;
-    }
-  }
-
-  for (const message of args.messages) {
-    if (message.role !== 'tool_call') {
-      continue;
-    }
-    const parsed = parseToolMessage(message);
-    if (parsed.tool === ASK_USER_TOOL_NAME && parsed.callId !== null) {
-      askUserCallIds.add(parsed.callId);
-    }
-  }
-  for (let index = 0; index < args.messages.length; index += 1) {
-    const message = args.messages[index]!;
-    if (message.role !== 'tool_result') {
-      continue;
-    }
-    const parsed = parseToolMessage(message);
-    if (parsed.callId !== null && askUserCallIds.has(parsed.callId)) {
-      askUserResultFailureByCallId.set(parsed.callId, parsed.failed);
-      askUserResultIndexByCallId.set(parsed.callId, index);
-    }
-  }
-  for (let index = 0; index < args.messages.length; index += 1) {
-    const message = args.messages[index];
-    if (message?.role !== 'tool_call') {
-      continue;
-    }
-    const parsed = parseToolMessage(message);
-    if (parsed.tool !== ASK_USER_TOOL_NAME || parsed.callId === null) {
-      continue;
-    }
-    const resultIndex = askUserResultIndexByCallId.get(parsed.callId) ?? -1;
-    const echoIndex = resultIndex + 1;
-    const echo = resultIndex > index ? args.messages[echoIndex] : undefined;
-    const view = readAskUserCardViewFromToolArgs(
-      readCanonicalJsonRecordField(message.content, 'args') ?? {},
-    );
-    if (
-      echo?.role === 'assistant' &&
-      view !== null &&
-      echo.content.includes(view.question) &&
-      view.options.every((option) => echo.content.includes(option.label))
-    ) {
-      suppressedLegacyAskUserEchoIndexes.add(echoIndex);
-    }
-  }
+  const {
+    askUserCallIds,
+    askUserResultFailureByCallId,
+    suppressedLegacyAskUserEchoIndexes,
+    hasLaterUserMessage,
+  } = analyzeSettledAskUserMessages(args.messages);
   for (let index = 0; index < args.messages.length;) {
     const message = args.messages[index]!;
     if (suppressedLegacyAskUserEchoIndexes.has(index)) {

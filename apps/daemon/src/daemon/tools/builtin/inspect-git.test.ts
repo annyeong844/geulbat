@@ -23,6 +23,7 @@ void test('inspect_git exposes only fixed read operations without approval', () 
   assert.equal(inspectGitTool.sideEffectLevel, 'read');
   assert.equal(inspectGitTool.mayMutateComputerFiles, false);
   assert.equal(inspectGitTool.requiresApproval, false);
+  assert.equal(inspectGitTool.recoveryStrategy, 'replay_safe');
   assert.ok(isToolObjectParameters(inspectGitTool.parameters));
   assert.deepEqual(inspectGitTool.parameters.required, ['operation']);
   assert.deepEqual(

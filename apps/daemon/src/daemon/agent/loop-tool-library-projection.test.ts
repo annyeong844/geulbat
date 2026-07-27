@@ -24,18 +24,86 @@ void test('createAgentToolCapabilityPolicy canonicalizes the current direct and 
   assert.deepEqual(policy.callbackRegistryNames, ['read_file']);
   assert.equal(policy.writeCallbackEnabled, false);
 
+  registry.registerTool({
+    name: 'external_deferred_probe',
+    description:
+      'A run-authorized external tool that stays out of hot schemas.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+    strict: true,
+    sideEffectLevel: 'read',
+    mayMutateComputerFiles: false,
+    requiresApproval: false,
+    exposure: {
+      directHot: false,
+      sdkVisible: true,
+      inCellCallable: true,
+      directOnly: false,
+      effectClass: 'readOnly',
+    },
+    parseArgs() {
+      return { ok: true, value: {} };
+    },
+    async executeParsed() {
+      return { ok: true, output: '{}' };
+    },
+  });
   const rootPolicy = createAgentToolCapabilityPolicy({ registry });
   const allRegistryNames = [...registry.getAllRegisteredToolNames()].sort();
-  const directHotRegistryNames = allRegistryNames.filter(
-    (name) => registry.getToolMeta(name)?.exposure.directHot === true,
-  );
-  assert.deepEqual(rootPolicy.directRegistryNames, directHotRegistryNames);
+  assert.deepEqual(rootPolicy.directRegistryNames, [
+    'agent_retry',
+    'agent_send_input',
+    'agent_set_priority',
+    'agent_spawn',
+    'agent_stop',
+    'agent_wait',
+    'apply_patch',
+    'ask_user',
+    'exec',
+    'exec_command',
+    'inspect_git',
+    'list_files',
+    'manage_files',
+    'propose_plan',
+    'read_file',
+    'read_tool_output',
+    'search_files',
+    'search_memory_index',
+    'tool_search',
+    'update_goal',
+    'update_plan',
+    'wait',
+    'write_file',
+    'write_stdin',
+  ]);
   assert.deepEqual(rootPolicy.allowedRegistryNames, allRegistryNames);
   assert.deepEqual(
     rootPolicy.allowedRegistryNames.filter(
       (name) => !rootPolicy.directRegistryNames.includes(name),
     ),
-    [],
+    [
+      'browser_navigate',
+      'browser_page_load_evidence',
+      'browser_text_evidence',
+      'cite_memory',
+      'external_deferred_probe',
+      'fetch_url',
+      'generate_image',
+      'generate_video',
+      'list_commands',
+      'refresh_memory_index',
+      'set_thread_title',
+      'skill_search',
+      'submit_result_report',
+      'suggest_followup',
+      'visualize',
+      'web_search',
+      'write_memory_note',
+    ],
   );
   assert.equal(
     rootPolicy.callbackRegistryNames.every((name) =>
@@ -114,6 +182,9 @@ void test('createAgentLoopToolLibraryProjectionPort delegates to the daemon proj
         writtenFiles: [],
       };
     },
+    async rehydrateProjectionMount() {
+      assert.fail('fresh projection test must not rehydrate');
+    },
   });
 
   const result = await port.resolveProjection({
@@ -142,6 +213,9 @@ void test('createAgentLoopToolLibraryProjectionPort preserves sanitized failure 
         message: 'Tool library projection failed',
         diagnostics: { errorName: 'Error', errorCode: 'EACCES' },
       };
+    },
+    async rehydrateProjectionMount() {
+      assert.fail('fresh projection failure test must not rehydrate');
     },
   });
 
@@ -181,6 +255,9 @@ void test('createAgentLoopToolLibraryProjectionPort forwards one full capability
         message: 'expected test stop',
       };
     },
+    async rehydrateProjectionMount() {
+      assert.fail('fresh capability-policy test must not rehydrate');
+    },
   });
 
   assert.deepEqual(
@@ -191,4 +268,82 @@ void test('createAgentLoopToolLibraryProjectionPort forwards one full capability
     }),
     { ok: false, message: 'expected test stop' },
   );
+});
+
+void test('createAgentLoopToolLibraryProjectionPort rehydrates an exact recorded identity without fresh resolution', async () => {
+  const expectedIdentity = {
+    sdkVersion: 'sdk-replay-v1',
+    sdkProjectionHash:
+      'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    policyId: 'policy-replay-v1',
+  } as const;
+  let freshResolutionCount = 0;
+  const port = createAgentLoopToolLibraryProjectionPort({
+    async resolveProjection() {
+      freshResolutionCount += 1;
+      assert.fail('recorded projection replay must not resolve a fresh pin');
+    },
+    async rehydrateProjectionMount(args) {
+      assert.deepEqual(args, {
+        stateRoot: '/home-state',
+        threadId: 'thread-replay',
+        expectedIdentity,
+      });
+      return {
+        ok: false,
+        reason: 'projection_failed',
+        message: 'expected replay stop',
+      };
+    },
+  });
+
+  assert.deepEqual(
+    await port.resolveProjection({
+      stateRoot: '/home-state',
+      threadId: 'thread-replay',
+      expectedIdentity,
+    }),
+    { ok: false, message: 'expected replay stop' },
+  );
+  assert.equal(freshResolutionCount, 0);
+});
+
+void test('createAgentLoopToolLibraryProjectionPort rejects recorded identity policy drift before projection access', async () => {
+  const toolCapabilityPolicy = createToolCapabilityPolicy({
+    directRegistryNames: ['list_files'],
+    allowedRegistryNames: ['list_files'],
+    callbackRegistryNames: [],
+    writeCallbackEnabled: false,
+  });
+  let projectionAccessCount = 0;
+  const port = createAgentLoopToolLibraryProjectionPort({
+    async resolveProjection() {
+      projectionAccessCount += 1;
+      assert.fail('policy drift must stop before fresh resolution');
+    },
+    async rehydrateProjectionMount() {
+      projectionAccessCount += 1;
+      assert.fail('policy drift must stop before rehydration');
+    },
+  });
+
+  assert.deepEqual(
+    await port.resolveProjection({
+      stateRoot: '/home-state',
+      threadId: 'thread-policy-drift',
+      toolCapabilityPolicy,
+      expectedIdentity: {
+        sdkVersion: 'sdk-replay-v1',
+        sdkProjectionHash:
+          'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        policyId: 'stale-policy',
+      },
+    }),
+    {
+      ok: false,
+      message:
+        'Recorded tool library projection identity does not match the run capability policy',
+    },
+  );
+  assert.equal(projectionAccessCount, 0);
 });

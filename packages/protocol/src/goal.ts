@@ -1,5 +1,6 @@
 import { isThreadId, type ThreadId } from './ids.js';
 import {
+  hasOnlyKeys,
   isCanonicalIsoTimestamp,
   isRecord,
   isString,
@@ -85,12 +86,4 @@ export function isGoalCommand(value: unknown): value is GoalCommand {
 
 function isNonBlankString(value: unknown): value is string {
   return isString(value) && value.trim().length > 0;
-}
-
-function hasOnlyKeys(
-  value: Record<string, unknown>,
-  allowedKeys: readonly string[],
-): boolean {
-  const allowed = new Set(allowedKeys);
-  return Object.keys(value).every((key) => allowed.has(key));
 }

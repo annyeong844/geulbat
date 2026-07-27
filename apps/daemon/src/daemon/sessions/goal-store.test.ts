@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -8,7 +8,7 @@ import { assertRunId, assertThreadId } from '@geulbat/protocol/ids';
 import { createGoalStore } from './goal-store.js';
 
 const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174080');
-const verificationRunId = assertRunId('run-goal-verification');
+const completionRunId = assertRunId('run-goal-completion');
 
 function executionTemplate() {
   return {
@@ -17,7 +17,7 @@ function executionTemplate() {
   };
 }
 
-void test('Goal state persists work, private verification evidence, pause, resume, and completion', async () => {
+void test('Goal state persists work, pause, resume, and deterministic completion admission', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'goal-store-'));
   let tick = 0;
   const store = createGoalStore({
@@ -37,51 +37,6 @@ void test('Goal state persists work, private verification evidence, pause, resum
   if (started === null) {
     return;
   }
-
-  assert.equal(
-    (
-      await store.requestVerification({
-        threadId,
-        goalId: started.goalId,
-        runId: verificationRunId,
-      })
-    ).state,
-    'verifying',
-  );
-  const continuing = await store.recordVerification({
-    threadId,
-    goalId: started.goalId,
-    runId: verificationRunId,
-    outcome: {
-      kind: 'incomplete',
-      unmetRequirements: ['Run the focused verification'],
-    },
-    votes: [
-      {
-        verdict: 'not_achieved',
-        unmetRequirements: ['Run the focused verification'],
-      },
-      {
-        verdict: 'not_achieved',
-        unmetRequirements: ['Run the focused verification'],
-      },
-      { verdict: 'achieved' },
-    ],
-  });
-  assert.equal(continuing.state, 'continuing');
-  assert.equal('votes' in continuing, false);
-
-  const persisted = JSON.parse(
-    await readFile(
-      join(stateRoot, '.geulbat', 'goals', `${threadId}.json`),
-      'utf8',
-    ),
-  ) as {
-    current: {
-      verificationAttempts: Array<{ votes: unknown[] }>;
-    };
-  };
-  assert.equal(persisted.current.verificationAttempts[0]?.votes.length, 3);
 
   const paused = await store.applyCommand({
     kind: 'pause',
@@ -103,32 +58,46 @@ void test('Goal state persists work, private verification evidence, pause, resum
   });
   assert.equal(resumed.state, 'working');
 
-  const completionRunId = assertRunId('run-goal-completion');
-  await store.requestVerification({
+  assert.equal(
+    (
+      await store.requestCompletion({
+        threadId,
+        goalId: started.goalId,
+        runId: completionRunId,
+      })
+    ).state,
+    'verifying',
+  );
+  await store.admitCompletion({
     threadId,
     goalId: started.goalId,
     runId: completionRunId,
   });
-  await store.recordVerification({
-    threadId,
-    goalId: started.goalId,
-    runId: completionRunId,
-    outcome: { kind: 'achieved' },
-    votes: [
-      { verdict: 'achieved' },
-      { verdict: 'achieved' },
-      {
-        verdict: 'not_achieved',
-        unmetRequirements: ['Minor dissent'],
-      },
-    ],
-  });
+
+  const persisted = JSON.parse(
+    await readFile(
+      join(stateRoot, '.geulbat', 'goals', `${threadId}.json`),
+      'utf8',
+    ),
+  ) as {
+    schemaVersion: number;
+    current: {
+      completionAdmissions: Array<{ runId: string; admittedAt: string }>;
+      legacyVerificationAttempts: unknown[];
+    };
+  };
+  assert.equal(persisted.schemaVersion, 2);
+  assert.equal(
+    persisted.current.completionAdmissions[0]?.runId,
+    completionRunId,
+  );
+  assert.equal(persisted.current.legacyVerificationAttempts.length, 0);
 
   const restarted = createGoalStore({ stateRoot });
   assert.equal((await restarted.readThread(threadId))?.state, 'completed');
 });
 
-void test('an interrupted verification recovers as unavailable instead of silently completing', async () => {
+void test('an interrupted completion admission recovers as unavailable instead of silently completing', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'goal-recovery-'));
   const store = createGoalStore({
     stateRoot,
@@ -141,10 +110,10 @@ void test('an interrupted verification recovers as unavailable instead of silent
     executionTemplate: executionTemplate(),
   });
   assert.ok(started);
-  await store.requestVerification({
+  await store.requestCompletion({
     threadId,
     goalId: started.goalId,
-    runId: verificationRunId,
+    runId: completionRunId,
   });
 
   const restarted = createGoalStore({ stateRoot });
@@ -152,4 +121,64 @@ void test('an interrupted verification recovers as unavailable instead of silent
     (await restarted.readThread(threadId))?.state,
     'verification_unavailable',
   );
+});
+
+void test('version 1 panel evidence remains readable and is preserved by a version 2 completion admission', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'goal-store-migration-'));
+  const goalDirectory = join(stateRoot, '.geulbat', 'goals');
+  await mkdir(goalDirectory, { recursive: true });
+  await writeFile(
+    join(goalDirectory, `${threadId}.json`),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      current: {
+        snapshot: {
+          goalId: 'goal-legacy',
+          threadId,
+          objective: 'Preserve legacy panel evidence',
+          state: 'working',
+          createdAt: '2026-07-26T00:00:00.000Z',
+          updatedAt: '2026-07-26T00:01:00.000Z',
+        },
+        executionTemplate: executionTemplate(),
+        verificationAttempts: [
+          {
+            runId: 'run-legacy-panel',
+            attemptedAt: '2026-07-26T00:01:00.000Z',
+            outcome: { kind: 'achieved' },
+            votes: [{ verdict: 'achieved' }, { verdict: 'achieved' }],
+          },
+        ],
+      },
+    })}\n`,
+    'utf8',
+  );
+  const store = createGoalStore({ stateRoot });
+  const legacy = await store.readThread(threadId);
+  assert.equal(legacy?.state, 'working');
+  assert.ok(legacy);
+
+  await store.requestCompletion({
+    threadId,
+    goalId: legacy.goalId,
+    runId: completionRunId,
+  });
+  await store.admitCompletion({
+    threadId,
+    goalId: legacy.goalId,
+    runId: completionRunId,
+  });
+
+  const migrated = JSON.parse(
+    await readFile(join(goalDirectory, `${threadId}.json`), 'utf8'),
+  ) as {
+    schemaVersion: number;
+    current: {
+      completionAdmissions: unknown[];
+      legacyVerificationAttempts: Array<{ votes: unknown[] }>;
+    };
+  };
+  assert.equal(migrated.schemaVersion, 2);
+  assert.equal(migrated.current.completionAdmissions.length, 1);
+  assert.equal(migrated.current.legacyVerificationAttempts[0]?.votes.length, 2);
 });

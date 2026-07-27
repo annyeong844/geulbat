@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   mkdtemp,
   readFile,
+  realpath,
   symlink,
   utimes,
   writeFile,
@@ -85,6 +86,69 @@ void test('file state cache reloads when mtime changes and after manual invalida
   await cache.invalidatePath(target);
   assert.equal(await cache.read(target, load), 'new\n');
   assert.equal(loadCount, 3);
+});
+
+void test('file state cache reloads when file size changes with the same mtime', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'geulbat-file-state-cache-'));
+  const target = join(root, 'notes.md');
+  const fixedTimestamp = new Date('2030-01-01T00:00:00Z');
+  await writeFile(target, 'old\n', 'utf8');
+  await utimes(target, fixedTimestamp, fixedTimestamp);
+  const cache = createFileStateCache();
+
+  assert.equal(
+    await cache.read(target, (canonicalAbsolutePath) =>
+      readFile(canonicalAbsolutePath, 'utf8'),
+    ),
+    'old\n',
+  );
+
+  await writeFile(target, 'longer\n', 'utf8');
+  await utimes(target, fixedTimestamp, fixedTimestamp);
+
+  assert.equal(
+    await cache.read(target, (canonicalAbsolutePath) =>
+      readFile(canonicalAbsolutePath, 'utf8'),
+    ),
+    'longer\n',
+  );
+});
+
+void test('file state cache does not repopulate an invalidated key from an in-flight load', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'geulbat-file-state-cache-'));
+  const target = join(root, 'notes.md');
+  await writeFile(target, 'old\n', 'utf8');
+  const cache = createFileStateCache();
+
+  let reportContentLoaded!: () => void;
+  const contentLoaded = new Promise<void>((resolve) => {
+    reportContentLoaded = resolve;
+  });
+  let releaseLoad!: () => void;
+  const loadReleased = new Promise<void>((resolve) => {
+    releaseLoad = resolve;
+  });
+
+  const inFlightRead = cache.read(target, async (canonicalAbsolutePath) => {
+    const content = await readFile(canonicalAbsolutePath, 'utf8');
+    reportContentLoaded();
+    await loadReleased;
+    return content;
+  });
+
+  await contentLoaded;
+  await writeFile(target, 'new\n', 'utf8');
+  cache.invalidateCacheKey(await realpath(target));
+  releaseLoad();
+
+  assert.equal(await inFlightRead, 'old\n');
+  assert.equal(cache.getStats().entryCount, 0);
+  assert.equal(
+    await cache.read(target, (canonicalAbsolutePath) =>
+      readFile(canonicalAbsolutePath, 'utf8'),
+    ),
+    'new\n',
+  );
 });
 
 void test('file state cache evicts least recently used entries by entry and byte limits', async () => {

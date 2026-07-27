@@ -6,7 +6,13 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test, { after } from 'node:test';
 
+import { createAgentToolCapabilityPolicy } from '../agent/loop-tool-library-projection.js';
 import { createCommandSessionHost } from '../../command-host/session-core.js';
+import { createTestProjectionPort } from '../../test-support/tool-library-projection.js';
+import {
+  buildToolSearchCatalog,
+  createToolSearchTool,
+} from '../tools/builtin/tool-search.js';
 import { executeTool } from '../tools/executor.js';
 import { createToolRegistryStore } from '../tools/registry.js';
 import {
@@ -240,6 +246,63 @@ void test('global MCP keeps discovery lightweight and persists only explicitly i
         notFor:
           'Calls that do not require this configured external MCP server.',
       },
+    );
+
+    const capabilityPolicy = createAgentToolCapabilityPolicy({
+      registry: firstRegistry,
+    });
+    assert.deepEqual(capabilityPolicy.directRegistryNames, []);
+    assert.deepEqual(capabilityPolicy.allowedRegistryNames, [projectedName]);
+    assert.deepEqual(capabilityPolicy.callbackRegistryNames, [projectedName]);
+    assert.equal(capabilityPolicy.writeCallbackEnabled, false);
+
+    const searchTool = createToolSearchTool({
+      getCatalog: () =>
+        buildToolSearchCatalog(
+          capabilityPolicy.allowedRegistryNames.flatMap((name) => {
+            const tool = firstRegistry.getTool(name);
+            return tool === undefined ? [] : [tool];
+          }),
+        ),
+    });
+    const searched = await searchTool.execute(
+      { query: 'Echo server external MCP tool' },
+      {
+        callId: 'mcp-tool-search',
+        allowedRegistryNames: capabilityPolicy.allowedRegistryNames,
+      },
+    );
+    assert.equal(searched.ok, true);
+    const searchOutput = JSON.parse(searched.output) as {
+      results: Array<{ publicName: string; signatureRef: string }>;
+    };
+    assert.deepEqual(
+      searchOutput.results.map((result) => result.publicName),
+      [projectedName],
+    );
+    const selectedSignatureRef = searchOutput.results[0]?.signatureRef;
+    assert.equal(typeof selectedSignatureRef, 'string');
+
+    const projectionResult = await createTestProjectionPort({
+      registry: firstRegistry,
+    }).resolveProjection({
+      stateRoot: homeStateRoot,
+      threadId: 'global-external-mcp-tool-test',
+      allowedRegistryNames: capabilityPolicy.callbackRegistryNames,
+    });
+    assert.equal(projectionResult.ok, true);
+    if (!projectionResult.ok) {
+      assert.fail('expected the selected external MCP tool to project');
+    }
+    assert.deepEqual(projectionResult.projection.allowedPublicNames, [
+      projectedName,
+    ]);
+    assert.deepEqual(projectionResult.projection.allowedCallbackNames, [
+      projectedName,
+    ]);
+    assert.equal(
+      projectionResult.projection.tools[0]?.signatureRef,
+      selectedSignatureRef,
     );
 
     const blocked = await executeTool(

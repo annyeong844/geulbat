@@ -81,6 +81,34 @@ void test('WebSocket error extraction preserves authentication handshake failure
   assert.equal(Reflect.get(upstreamFailure, 'llmCode'), 'llm_connection_lost');
 });
 
+void test('WebSocket error extraction stops retrying certificate verification failures', () => {
+  // 로컬에서 자가서명 인증서로 확인한 실제 형태다. `ws`의 error 이벤트가
+  // Node의 구조화된 코드를 그대로 넘긴다.
+  const certificateFailure = extractWebSocketError(
+    Object.assign(
+      new Error(
+        'self-signed certificate; if the root CA is installed locally, try running Node.js with --use-system-ca',
+      ),
+      { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' },
+    ),
+  );
+
+  assert.equal(
+    Reflect.get(certificateFailure, 'llmCode'),
+    'llm_tls_verification_failed',
+  );
+  // 원문 메시지는 진단용으로 보존한다.
+  assert.match(certificateFailure.message, /self-signed certificate/u);
+
+  // 전송 중 TLS alert은 일시적 장애이므로 재시도 가능한 연결 유실로 남는다.
+  const transientAlert = extractWebSocketError(
+    Object.assign(new Error('write EPROTO ... ssl alert bad record mac'), {
+      code: 'EPROTO',
+    }),
+  );
+  assert.equal(Reflect.get(transientAlert, 'llmCode'), 'llm_connection_lost');
+});
+
 void test('WebSocket handshake rejection preserves provider Retry-After evidence', async () => {
   const server = createServer();
   server.on('upgrade', (_request, socket) => {
@@ -291,6 +319,69 @@ void test('streamResponsesOverWebSocket rejects incompatible native history befo
     /provider-native compaction history is incompatible/u,
   );
   assert.equal(acquireCalls, 0);
+});
+
+void test('streamResponsesOverWebSocket selects the stable request owner without direct-socket fallback', async () => {
+  let durableCalls = 0;
+  let directSocketCalls = 0;
+  const providerWebSocketSessions = {
+    async acquireWebSocket() {
+      directSocketCalls += 1;
+      throw new Error('direct socket path must not run');
+    },
+    async *streamDurableResponseEvents(input: {
+      serializedPayload: string;
+    }): AsyncIterable<Record<string, unknown>> {
+      durableCalls += 1;
+      assert.match(input.serializedPayload, /"type":"response.create"/u);
+      yield {
+        type: 'response.completed',
+        response: { usage: { input_tokens: 1, output_tokens: 0 } },
+      };
+    },
+  };
+
+  await streamResponsesOverWebSocket({
+    body: baseBody,
+    headers: new Headers({ Authorization: 'Bearer private-token' }),
+    historyProjection: 'provider_output',
+    history: [],
+    providerSessionId: 'provider-session',
+    webSocketReusePolicy: TEST_REUSE_POLICY,
+    providerWebSocketSessions,
+  });
+
+  assert.equal(durableCalls, 1);
+  assert.equal(directSocketCalls, 0);
+});
+
+void test('streamResponsesOverWebSocket propagates stable-owner failure without direct-socket fallback', async () => {
+  let directSocketCalls = 0;
+
+  await assert.rejects(
+    streamResponsesOverWebSocket({
+      body: baseBody,
+      headers: new Headers({ Authorization: 'Bearer private-token' }),
+      historyProjection: 'provider_output',
+      history: [],
+      providerSessionId: 'provider-session',
+      webSocketReusePolicy: TEST_REUSE_POLICY,
+      providerWebSocketSessions: {
+        async acquireWebSocket() {
+          directSocketCalls += 1;
+          throw new Error('direct socket path must not run');
+        },
+        async *streamDurableResponseEvents(): AsyncIterable<
+          Record<string, unknown>
+        > {
+          throw new Error('stable owner unavailable');
+        },
+      },
+    }),
+    /stable owner unavailable/u,
+  );
+
+  assert.equal(directSocketCalls, 0);
 });
 
 void test('streamResponsesOverWebSocket forwards provider Retry-After evidence to the shared session owner', async () => {

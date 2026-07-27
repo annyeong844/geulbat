@@ -1,4 +1,5 @@
 import {
+  hasOnlyKeys,
   isBoolean,
   isCanonicalIsoTimestamp,
   isRecord,
@@ -685,11 +686,4 @@ function isSha256Digest(value: unknown): value is string {
 
 function isNonEmptyString(value: unknown): value is string {
   return isString(value) && value.trim().length > 0;
-}
-
-function hasOnlyKeys(
-  value: Record<string, unknown>,
-  allowedKeys: readonly string[],
-): boolean {
-  return Object.keys(value).every((key) => allowedKeys.includes(key));
 }

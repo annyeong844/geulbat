@@ -1,4 +1,9 @@
-import { isBoolean, isRecord, isString } from './wire-value-guards.js';
+import {
+  hasOnlyKeys,
+  isBoolean,
+  isRecord,
+  isString,
+} from './wire-value-guards.js';
 
 // The named schema version is the public contract owner, not an inline policy literal.
 // eslint-disable-next-line @typescript-eslint/no-magic-numbers
@@ -286,11 +291,4 @@ function isOptionalPositiveSafeInteger(value: unknown): boolean {
     value === undefined ||
     (typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
   );
-}
-
-function hasOnlyKeys(
-  value: Record<string, unknown>,
-  allowedKeys: readonly string[],
-): boolean {
-  return Object.keys(value).every((key) => allowedKeys.includes(key));
 }

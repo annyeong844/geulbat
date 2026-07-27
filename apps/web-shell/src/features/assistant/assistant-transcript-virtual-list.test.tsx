@@ -1,18 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
-import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
 
 import { createAssistantProps } from '../../test-support/create-assistant-props.js';
-import { createArtifactsByRefMap } from '../artifacts/artifact-transcript-lookup.js';
+import { toolMessage } from '../../test-support/transcript-message-fixtures.js';
 import {
-  getRunTranscriptEntryBaseKey,
-  getThreadMessageBaseKey,
-} from './assistant-transcript-content.js';
-import {
-  estimateTranscriptMessageRowSize,
   extractTranscriptVirtualRange,
   VirtualizedTranscriptRows,
 } from './assistant-transcript-virtual-list.js';
@@ -23,35 +17,6 @@ import { Assistant } from './Assistant.js';
     IS_REACT_ACT_ENVIRONMENT?: boolean;
   }
 ).IS_REACT_ACT_ENVIRONMENT = true;
-
-void test('message render identity uses entryId instead of copying message content', () => {
-  const message = toolMessage(
-    'stable-entry-id',
-    'tool_result',
-    'LARGE_OUTPUT_SENTINEL'.repeat(10_000),
-  );
-
-  assert.equal(getThreadMessageBaseKey(message), 'message:stable-entry-id');
-  assert.equal(
-    getRunTranscriptEntryBaseKey({
-      kind: 'assistant_text',
-      text: 'STREAMING_OUTPUT_SENTINEL'.repeat(10_000),
-    }),
-    'assistant_text',
-  );
-  assert.equal(
-    getRunTranscriptEntryBaseKey({
-      kind: 'tool_activity',
-      tool: 'read_file',
-      state: 'running',
-    }),
-    getRunTranscriptEntryBaseKey({
-      kind: 'tool_activity',
-      tool: 'read_file',
-      state: 'completed',
-    }),
-  );
-});
 
 void test('virtual range retains all visualize rows and the keyboard-focused row', () => {
   assert.deepEqual(
@@ -66,85 +31,6 @@ void test('virtual range retains all visualize rows and the keyboard-focused row
       focusedIndex: 15,
     }),
     [2, 4, 5, 6, 7, 8, 9, 15],
-  );
-});
-
-void test('message row estimates grow with wrapped prose but not one long code line', () => {
-  const proseMessage = assistantMessage('prose-estimate', 'x'.repeat(280));
-  const longUserPrompt: ThreadMessage = {
-    entryId: 'user-prompt-estimate',
-    role: 'user',
-    content: 'x'.repeat(280),
-    timestamp: '2026-07-20T00:00:00.000Z',
-  };
-  const codeMessage = assistantMessage(
-    'code-estimate',
-    `\`\`\`ts\n${'x'.repeat(1_000)}\n\`\`\``,
-  );
-  const reasoningMessage: ThreadMessage = {
-    ...assistantMessage('reasoning-estimate', 'x'.repeat(10_000)),
-    metadata: { phase: 'commentary' },
-  };
-
-  assert.equal(estimateTranscriptMessageRowSize(proseMessage, new Map()), 280);
-  assert.equal(
-    estimateTranscriptMessageRowSize(longUserPrompt, new Map()),
-    280,
-  );
-  assert.equal(estimateTranscriptMessageRowSize(codeMessage, new Map()), 140);
-  assert.equal(
-    estimateTranscriptMessageRowSize(reasoningMessage, new Map()),
-    44,
-  );
-});
-
-void test('assistant row estimates include inline images added after text caching', () => {
-  const artifactId = 'artifact-inline-image';
-  const message: ThreadMessage = {
-    ...assistantMessage('inline-image-estimate', 'Image ready.'),
-    metadata: {
-      phase: 'final_answer',
-      activeArtifactRef: { artifactId, version: 1 },
-    },
-  };
-  const artifact: ThreadArtifactVersion = {
-    artifactId,
-    version: 1,
-    parentVersion: null,
-    baseVersion: null,
-    renderer: 'image',
-    payload: JSON.stringify({
-      schemaVersion: 1,
-      kind: 'generated_image',
-      mimeType: 'image/png',
-      byteLength: 8,
-      digest: { algorithm: 'sha256', encoding: 'hex', value: 'ab12' },
-      source: { type: 'inline_base64', dataBase64: 'cG5nLWJvZHk=' },
-      provenance: {
-        providerId: 'test',
-        model: 'test-image-model',
-        capability: 'image_generation',
-        prompt: 'a pelican',
-        generatedAt: '2026-07-20T00:00:00.000Z',
-      },
-    }),
-    digest: 'digest-inline-image',
-    contentHash: 'hash-inline-image',
-    createdAt: '2026-07-20T00:00:00.000Z',
-    createdByRunId: 'run-inline-image',
-    previewValidation: { ok: true },
-    title: null,
-    persistenceEpoch: 0,
-    sourceRef: null,
-  };
-
-  assert.equal(estimateTranscriptMessageRowSize(message, new Map()), 120);
-  assert.equal(
-    estimateTranscriptMessageRowSize(
-      message,
-      createArtifactsByRefMap([artifact]),
-    ),
-    600,
   );
 });
 
@@ -191,7 +77,7 @@ void test('commentary stays conversational while adjacent tool history remains c
         transcriptEntryKeys={[]}
         artifactsByRef={new Map()}
         isRunning={false}
-        onStartArtifactRun={() => {}}
+        rowInteractions={{ onStartArtifactRun: () => {} }}
       />,
     );
   });
@@ -247,7 +133,7 @@ void test('live commentary is not folded into a running tool activity row', asyn
         transcriptEntryKeys={['commentary', 'tool']}
         artifactsByRef={new Map()}
         isRunning={true}
-        onStartArtifactRun={() => {}}
+        rowInteractions={{ onStartArtifactRun: () => {} }}
       />,
     );
   });
@@ -296,7 +182,7 @@ void test('PTC resource admission stays visible on live and settled collapsed to
         transcriptEntryKeys={['ptc-call', 'ptc-result']}
         artifactsByRef={new Map()}
         isRunning={true}
-        onStartArtifactRun={() => {}}
+        rowInteractions={{ onStartArtifactRun: () => {} }}
       />,
     );
   });
@@ -350,7 +236,7 @@ void test('PTC resource admission stays visible on live and settled collapsed to
         transcriptEntryKeys={[]}
         artifactsByRef={new Map()}
         isRunning={false}
-        onStartArtifactRun={() => {}}
+        rowInteractions={{ onStartArtifactRun: () => {} }}
       />,
     );
   });
@@ -397,9 +283,11 @@ void test('live ask_user renders as one card instead of a tool group', async () 
         transcriptEntryKeys={['ask-call', 'ask-result']}
         artifactsByRef={new Map()}
         isRunning={true}
-        onStartArtifactRun={() => {}}
-        onAskUserAnswer={(request) => {
-          answers.push(request);
+        rowInteractions={{
+          onStartArtifactRun: () => {},
+          onAskUserAnswer: (request) => {
+            answers.push(request);
+          },
         }}
       />,
     );
@@ -436,11 +324,13 @@ void test('live ask_user renders as one card instead of a tool group', async () 
         transcriptEntryKeys={['ask-call', 'ask-result']}
         artifactsByRef={new Map()}
         isRunning={true}
-        onStartArtifactRun={() => {}}
-        onAskUserAnswer={(request) => {
-          answers.push(request);
+        rowInteractions={{
+          onStartArtifactRun: () => {},
+          onAskUserAnswer: (request) => {
+            answers.push(request);
+          },
+          answeredAskUserRequestKeys: new Set(['call-ask-live']),
         }}
-        answeredAskUserRequestKeys={new Set(['call-ask-live'])}
       />,
     );
   });
@@ -500,8 +390,10 @@ void test('settled ask_user card disappears after the next user message', async 
         transcriptEntryKeys={[]}
         artifactsByRef={new Map()}
         isRunning={false}
-        onStartArtifactRun={() => {}}
-        onAskUserAnswer={() => {}}
+        rowInteractions={{
+          onStartArtifactRun: () => {},
+          onAskUserAnswer: () => {},
+        }}
       />,
     );
   });
@@ -535,8 +427,10 @@ void test('settled ask_user card disappears after the next user message', async 
         transcriptEntryKeys={[]}
         artifactsByRef={new Map()}
         isRunning={false}
-        onStartArtifactRun={() => {}}
-        onAskUserAnswer={() => {}}
+        rowInteractions={{
+          onStartArtifactRun: () => {},
+          onAskUserAnswer: () => {},
+        }}
       />,
     );
   });
@@ -604,8 +498,10 @@ void test('settled ask_user keeps only the newest unanswered card across consecu
         transcriptEntryKeys={[]}
         artifactsByRef={new Map()}
         isRunning={false}
-        onStartArtifactRun={() => {}}
-        onAskUserAnswer={() => {}}
+        rowInteractions={{
+          onStartArtifactRun: () => {},
+          onAskUserAnswer: () => {},
+        }}
       />,
     );
   });
@@ -656,7 +552,7 @@ void test('active child activity stays in the shelf while terminal activity rema
         )}
         artifactsByRef={new Map()}
         isRunning={true}
-        onStartArtifactRun={() => {}}
+        rowInteractions={{ onStartArtifactRun: () => {} }}
       />,
     );
   });
@@ -699,7 +595,7 @@ void test('consecutive completed explorers collapse into one transcript group', 
         )}
         artifactsByRef={new Map()}
         isRunning={false}
-        onStartArtifactRun={() => {}}
+        rowInteractions={{ onStartArtifactRun: () => {} }}
       />,
     );
   });
@@ -758,7 +654,7 @@ void test('long transcripts mount only the viewport rows', async () => {
         transcriptEntryKeys={[]}
         artifactsByRef={new Map()}
         isRunning={false}
-        onStartArtifactRun={() => {}}
+        rowInteractions={{ onStartArtifactRun: () => {} }}
       />,
     );
   });
@@ -814,12 +710,14 @@ void test('past questions edit through the branch path while the last question k
         transcriptEntryKeys={[]}
         artifactsByRef={new Map()}
         isRunning={false}
-        onStartArtifactRun={() => {}}
-        onEditLastUserPrompt={(nextPrompt) => {
-          lastEdits.push(nextPrompt);
-        }}
-        onEditPastUserPrompt={(entryId, nextPrompt) => {
-          pastEdits.push({ entryId, nextPrompt });
+        rowInteractions={{ onStartArtifactRun: () => {} }}
+        messageEditActions={{
+          onEditLastUserPrompt: (nextPrompt) => {
+            lastEdits.push(nextPrompt);
+          },
+          onEditPastUserPrompt: (entryId, nextPrompt) => {
+            pastEdits.push({ entryId, nextPrompt });
+          },
         }}
       />,
     );
@@ -897,28 +795,6 @@ void test('typing stays inside the composer without remounting transcript rows',
   });
 });
 
-function toolMessage(
-  entryId: string,
-  role: 'tool_call' | 'tool_result',
-  content: string,
-): ThreadMessage {
-  return {
-    entryId,
-    role,
-    content,
-    timestamp: '2026-07-12T00:00:00.000Z',
-  };
-}
-
-function assistantMessage(entryId: string, content: string): ThreadMessage {
-  return {
-    entryId,
-    role: 'assistant',
-    content,
-    timestamp: '2026-07-20T00:00:00.000Z',
-  };
-}
-
 void test('settled reasoning disclosure stays separate from the final answer', async () => {
   const messages: ThreadMessage[] = [
     {
@@ -949,7 +825,7 @@ void test('settled reasoning disclosure stays separate from the final answer', a
         transcriptEntryKeys={[]}
         artifactsByRef={new Map()}
         isRunning={false}
-        onStartArtifactRun={() => {}}
+        rowInteractions={{ onStartArtifactRun: () => {} }}
       />,
     );
   });

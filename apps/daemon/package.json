@@ -22,6 +22,10 @@
       "types": "./dist/daemon/agent/loop-implementation-admission.d.ts",
       "import": "./dist/daemon/agent/loop-implementation-admission.js"
     },
+    "./instance-admission-lock": {
+      "types": "./dist/daemon/daemon-instance-admission-lock.d.ts",
+      "import": "./dist/daemon/daemon-instance-admission-lock.js"
+    },
     "./home-state-root": {
       "types": "./dist/home-state-root.d.ts",
       "import": "./dist/home-state-root.js"

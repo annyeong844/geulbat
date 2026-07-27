@@ -253,6 +253,9 @@ export function ensureThreadBackgroundSubscription(
               ...(result.resultDigest === undefined
                 ? {}
                 : { resultDigest: result.resultDigest }),
+              ...(result.resultReport === undefined
+                ? {}
+                : { resultReport: result.resultReport }),
               completedAt: result.completedAt,
               ...(result.elapsedMs !== undefined
                 ? { elapsedMs: result.elapsedMs }

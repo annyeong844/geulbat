@@ -64,8 +64,9 @@ interface GrokOAuthResponsesStreamInput extends GrokOAuthResponsesBodyInput {
   accessToken: string;
   providerWebSocketSessions: Pick<
     ResponsesWebSocketSessionStore,
-    'acquireWebSocket'
+    'acquireWebSocket' | 'streamDurableResponseEvents'
   >;
+  requestAttempt?: number;
   signal?: AbortSignal;
   discoverySink?: ResponsesWireDiscoverySink;
   onRequestPrepared?: ResponsesRequestPreparedHandler;
@@ -248,6 +249,7 @@ export async function streamGrokOAuthResponses(
     }),
     historyProjection: 'provider_output',
     providerSessionId: input.providerSessionId,
+    requestAttempt: input.requestAttempt ?? 0,
     webSocketReusePolicy: GROK_OAUTH_RESPONSES_WEBSOCKET_REUSE_POLICY,
     providerWebSocketSessions: input.providerWebSocketSessions,
     normalizeEvent: normalizeGrokOAuthResponseEventForParser,

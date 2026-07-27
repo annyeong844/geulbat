@@ -1,3 +1,5 @@
+import { createLogger } from '@geulbat/structured-logger/logger';
+
 import { isRecord, tryParseJson } from '../runtime-json.js';
 import type { HistoryItem, FunctionCall } from '../llm/index.js';
 import { toolError } from '../tools/result.js';
@@ -13,6 +15,7 @@ import {
 import type { AgentEventEmitter, ToolCallArgs } from './events.js';
 import type { ErrorCode } from '../error-codes.js';
 import type { RunContext } from '../run-context.js';
+import type { RunCheckpointStore } from '../sessions/run-checkpoint-store.js';
 import { measureResponseWireFunctionCallOutputAppendBytes } from '../llm/provider/transport/responses-wire-input.js';
 import {
   maybeOffloadToolResult,
@@ -20,8 +23,20 @@ import {
 } from './tool-output-offload.js';
 import type { ToolCallSource } from './tool-call-source.js';
 import type { ToolResultObservation } from './observer/agent-loop-observer.js';
+import { assertAgentRunId } from './contract.js';
+import {
+  deleteToolResultReady,
+  persistToolResultReady,
+  type DurableToolResultHistoryMode,
+  type DurableToolResultReady,
+} from './tool-result-ready-store.js';
 
 type TranscriptContext = RunContext;
+type ToolResultReadyCheckpointStore = Pick<
+  RunCheckpointStore,
+  'recordToolResultReady' | 'completeToolResultReady'
+>;
+const logger = createLogger('agent/tool-result-ready');
 
 interface TranscriptToolCallRecord {
   id: string;
@@ -75,6 +90,7 @@ interface RecordToolResultContext {
   emit: AgentEventEmitter;
   projectionRound?: ToolOutputProjectionRound | undefined;
   observeToolResult?: (observation: ToolResultObservation) => void;
+  runCheckpoints?: ToolResultReadyCheckpointStore;
 }
 
 interface ToolResultTranscriptEntry {
@@ -131,7 +147,7 @@ function formatDisplayText(
   return output;
 }
 
-type ToolResultHistoryMode = 'model_visible' | 'audit_only';
+type ToolResultHistoryMode = DurableToolResultHistoryMode;
 
 function projectAuditOnlyReadToolOutputResult(
   functionCall: FunctionCall,
@@ -230,7 +246,7 @@ async function emitAndPersistToolResult(
     RecordToolResultContext & {
       pendingTranscriptEntries?: ToolResultTranscriptEntry[];
     },
-): Promise<void> {
+): Promise<ToolResultReadySettlement | undefined> {
   const {
     functionCall,
     round,
@@ -246,8 +262,8 @@ async function emitAndPersistToolResult(
     projectionRound,
     observeToolResult,
     pendingTranscriptEntries,
+    runCheckpoints,
   } = args;
-  const sourcePayload = toToolCallSourcePayload(source);
   const auditProjectedToolResult = projectAuditOnlyReadToolOutputResult(
     functionCall,
     toolResult,
@@ -276,6 +292,138 @@ async function emitAndPersistToolResult(
     },
     toolResult: auditProjectedToolResult,
   });
+  const ready: DurableToolResultReady = {
+    functionCall,
+    round,
+    toolResult: recordedToolResult,
+    computerFilesMayHaveChanged,
+    ...(source === undefined ? {} : { source }),
+    ...(historyMode === 'model_visible' ? {} : { historyMode }),
+  };
+  const settlement =
+    runCheckpoints === undefined
+      ? undefined
+      : await persistPreparedToolResult({
+          ready,
+          runContext,
+          runId,
+          runCheckpoints,
+        });
+  await emitAndAppendPreparedToolResult({
+    ready,
+    runContext,
+    history,
+    emit,
+    ...(pendingTranscriptEntries === undefined
+      ? {}
+      : { pendingTranscriptEntries }),
+  });
+  if (
+    settlement !== undefined &&
+    runCheckpoints !== undefined &&
+    pendingTranscriptEntries === undefined
+  ) {
+    await completePreparedToolResult({
+      settlement,
+      runContext,
+      runId,
+      runCheckpoints,
+    });
+  }
+  return settlement;
+}
+
+interface ToolResultReadySettlement {
+  callId: string;
+  resultRef: string;
+}
+
+async function persistPreparedToolResult(args: {
+  ready: DurableToolResultReady;
+  runContext: TranscriptContext;
+  runId: string;
+  runCheckpoints: ToolResultReadyCheckpointStore;
+}): Promise<ToolResultReadySettlement> {
+  const { ready, runContext, runId, runCheckpoints } = args;
+  const resultRef = await persistToolResultReady({
+    stateRoot: runContext.stateRoot,
+    threadId: runContext.threadId,
+    runId,
+    ready,
+  });
+  const checkpointResult = await runCheckpoints.recordToolResultReady({
+    threadId: runContext.threadId,
+    runId: assertAgentRunId(runId),
+    ready: {
+      callId: ready.functionCall.callId,
+      toolName: ready.functionCall.name,
+      resultRef,
+    },
+  });
+  if (!checkpointResult.ok) {
+    throw new Error(
+      `tool result readiness checkpoint failed: ${checkpointResult.code}`,
+    );
+  }
+  return { callId: ready.functionCall.callId, resultRef };
+}
+
+async function completePreparedToolResult(args: {
+  settlement: ToolResultReadySettlement;
+  runContext: TranscriptContext;
+  runId: string;
+  runCheckpoints: ToolResultReadyCheckpointStore;
+}): Promise<void> {
+  const { settlement, runContext, runId, runCheckpoints } = args;
+  const checkpointResult = await runCheckpoints.completeToolResultReady({
+    threadId: runContext.threadId,
+    runId: assertAgentRunId(runId),
+    callId: settlement.callId,
+    resultRef: settlement.resultRef,
+  });
+  if (!checkpointResult.ok) {
+    throw new Error(
+      `tool result readiness completion failed: ${checkpointResult.code}`,
+    );
+  }
+  try {
+    await deleteToolResultReady({
+      stateRoot: runContext.stateRoot,
+      threadId: runContext.threadId,
+      resultRef: settlement.resultRef,
+    });
+  } catch {
+    logger.warn('failed to delete completed tool result readiness record:', {
+      callId: settlement.callId,
+      resultRef: settlement.resultRef,
+      runId,
+      threadId: runContext.threadId,
+    });
+  }
+}
+
+async function emitAndAppendPreparedToolResult(args: {
+  ready: DurableToolResultReady;
+  runContext: TranscriptContext;
+  history: HistoryItem[];
+  emit: AgentEventEmitter;
+  pendingTranscriptEntries?: ToolResultTranscriptEntry[];
+}): Promise<void> {
+  const {
+    ready: {
+      functionCall,
+      round,
+      toolResult: recordedToolResult,
+      computerFilesMayHaveChanged,
+      source,
+      historyMode = 'model_visible',
+    },
+    runContext,
+    history,
+    emit,
+    pendingTranscriptEntries,
+  } = args;
+  const sourcePayload = toToolCallSourcePayload(source);
   const parsedResult = parseToolResultRaw(recordedToolResult.output);
   const modelOutput = buildFunctionCallOutput(recordedToolResult, parsedResult);
   let readToolOutputAuditDisplayText: string | null = null;
@@ -381,6 +529,35 @@ async function emitAndPersistToolResult(
   );
 }
 
+export async function settleReadyToolResult(args: {
+  ready: DurableToolResultReady;
+  resultRef: string;
+  transcriptRecorded: boolean;
+  runContext: TranscriptContext;
+  runId: string;
+  history: HistoryItem[];
+  emit: AgentEventEmitter;
+  runCheckpoints: ToolResultReadyCheckpointStore;
+}): Promise<void> {
+  if (!args.transcriptRecorded) {
+    await emitAndAppendPreparedToolResult({
+      ready: args.ready,
+      runContext: args.runContext,
+      history: args.history,
+      emit: args.emit,
+    });
+  }
+  await completePreparedToolResult({
+    settlement: {
+      callId: args.ready.functionCall.callId,
+      resultRef: args.resultRef,
+    },
+    runContext: args.runContext,
+    runId: args.runId,
+    runCheckpoints: args.runCheckpoints,
+  });
+}
+
 export async function recordToolCalls(args: {
   calls: readonly RecordToolCallInput[];
   runContext: TranscriptContext;
@@ -442,18 +619,32 @@ export async function recordToolResults(
 ): Promise<void> {
   const { results, ...context } = args;
   const pendingTranscriptEntries: ToolResultTranscriptEntry[] = [];
+  const settlements: ToolResultReadySettlement[] = [];
   for (const result of results) {
-    await emitAndPersistToolResult({
+    const settlement = await emitAndPersistToolResult({
       ...context,
       ...result,
       pendingTranscriptEntries,
     });
+    if (settlement !== undefined) {
+      settlements.push(settlement);
+    }
   }
   await appendTranscriptEntries(
     context.runContext.stateRoot,
     context.runContext.threadId,
     pendingTranscriptEntries,
   );
+  if (context.runCheckpoints !== undefined) {
+    for (const settlement of settlements) {
+      await completePreparedToolResult({
+        settlement,
+        runContext: context.runContext,
+        runId: context.runId,
+        runCheckpoints: context.runCheckpoints,
+      });
+    }
+  }
 }
 
 export async function recordToolResult(
@@ -476,6 +667,7 @@ export async function recordInvalidToolArguments(args: {
   historyMode?: ToolResultHistoryMode;
   projectionRound?: ToolOutputProjectionRound | undefined;
   observeToolResult?: (observation: ToolResultObservation) => void;
+  runCheckpoints?: ToolResultReadyCheckpointStore;
 }): Promise<void> {
   const {
     functionCall,
@@ -518,6 +710,9 @@ export async function recordInvalidToolArguments(args: {
     runId,
     history,
     emit,
+    ...(args.runCheckpoints === undefined
+      ? {}
+      : { runCheckpoints: args.runCheckpoints }),
     ...(source ? { source } : {}),
     ...(historyMode ? { historyMode } : {}),
   });

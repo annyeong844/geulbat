@@ -25,7 +25,7 @@ import {
 import { toPascalCase } from './projection-naming.js';
 
 export const TOOL_LIBRARY_PROJECTION_GENERATOR_VERSION =
-  'geulbat-tool-library-projection-v11';
+  'geulbat-tool-library-projection-v12';
 
 export function buildToolLibraryProjectionImportableModules(args: {
   importSpecifier: string;
@@ -548,7 +548,7 @@ function objectParametersToTsInterfaceBody(
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, schema]) => {
       const optional = required.has(name) ? '' : '?';
-      return `  ${JSON.stringify(name)}${optional}: ${propertySchemaToTsType(
+      return `  ${JSON.stringify(name)}${optional}: ${jsonSchemaToTsType(
         schema,
       )};`;
     });
@@ -558,19 +558,75 @@ function objectParametersToTsInterfaceBody(
   return ['{', ...propertyLines, '}'].join('\n');
 }
 
-function propertySchemaToTsType(schema: unknown): string {
+function jsonSchemaToTsType(
+  schema: unknown,
+  ancestors: ReadonlySet<object> = new Set(),
+): string {
   if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) {
     return 'unknown';
   }
+  if (ancestors.has(schema)) {
+    return 'unknown';
+  }
+  const nextAncestors = new Set(ancestors);
+  nextAncestors.add(schema);
+
   const enumValue: unknown = Reflect.get(schema, 'enum');
   if (Array.isArray(enumValue)) {
-    return enumValue.map(literalToTsType).join(' | ');
+    return withNullableSchema(
+      schema,
+      joinTsUnion(enumValue.map(literalToTsType)),
+    );
   }
   if (Reflect.has(schema, 'const')) {
     const constantValue: unknown = Reflect.get(schema, 'const');
-    return literalToTsType(constantValue);
+    return withNullableSchema(schema, literalToTsType(constantValue));
   }
+
+  const oneOf: unknown = Reflect.get(schema, 'oneOf');
+  if (Array.isArray(oneOf)) {
+    return withNullableSchema(
+      schema,
+      joinTsUnion(
+        oneOf.map((branch) => jsonSchemaToTsType(branch, nextAncestors)),
+      ),
+    );
+  }
+  const anyOf: unknown = Reflect.get(schema, 'anyOf');
+  if (Array.isArray(anyOf)) {
+    return withNullableSchema(
+      schema,
+      joinTsUnion(
+        anyOf.map((branch) => jsonSchemaToTsType(branch, nextAncestors)),
+      ),
+    );
+  }
+  const allOf: unknown = Reflect.get(schema, 'allOf');
+  if (Array.isArray(allOf)) {
+    const intersection = [
+      ...new Set(
+        allOf.map((branch) => jsonSchemaToTsType(branch, nextAncestors)),
+      ),
+    ].join(' & ');
+    return withNullableSchema(schema, intersection || 'unknown');
+  }
+
   const typeValue: unknown = Reflect.get(schema, 'type');
+  const resolved = Array.isArray(typeValue)
+    ? joinTsUnion(
+        typeValue.map((branchType) =>
+          jsonSchemaTypeNameToTsType(branchType, schema, nextAncestors),
+        ),
+      )
+    : jsonSchemaTypeNameToTsType(typeValue, schema, nextAncestors);
+  return withNullableSchema(schema, resolved);
+}
+
+function jsonSchemaTypeNameToTsType(
+  typeValue: unknown,
+  schema: object,
+  ancestors: ReadonlySet<object>,
+): string {
   switch (typeValue) {
     case 'string':
       return 'string';
@@ -579,12 +635,115 @@ function propertySchemaToTsType(schema: unknown): string {
       return 'number';
     case 'boolean':
       return 'boolean';
+    case 'null':
+      return 'null';
+    case 'array':
+      return jsonArraySchemaToTsType(schema, ancestors);
+    case 'object':
+      return jsonObjectSchemaToTsType(schema, ancestors);
     default:
-      return 'unknown';
+      return Reflect.has(schema, 'properties') ||
+        Reflect.has(schema, 'additionalProperties')
+        ? jsonObjectSchemaToTsType(schema, ancestors)
+        : 'unknown';
   }
 }
 
+function jsonArraySchemaToTsType(
+  schema: object,
+  ancestors: ReadonlySet<object>,
+): string {
+  const prefixItems: unknown = Reflect.get(schema, 'prefixItems');
+  if (Array.isArray(prefixItems)) {
+    return `[${prefixItems
+      .map((item) => jsonSchemaToTsType(item, ancestors))
+      .join(', ')}]`;
+  }
+  const items: unknown = Reflect.get(schema, 'items');
+  if (Array.isArray(items)) {
+    return `[${items
+      .map((item) => jsonSchemaToTsType(item, ancestors))
+      .join(', ')}]`;
+  }
+  return `Array<${items === undefined ? 'unknown' : jsonSchemaToTsType(items, ancestors)}>`;
+}
+
+function jsonObjectSchemaToTsType(
+  schema: object,
+  ancestors: ReadonlySet<object>,
+): string {
+  const propertiesValue: unknown = Reflect.get(schema, 'properties');
+  const properties =
+    typeof propertiesValue === 'object' &&
+    propertiesValue !== null &&
+    !Array.isArray(propertiesValue)
+      ? (propertiesValue as Record<string, unknown>)
+      : {};
+  const requiredValue: unknown = Reflect.get(schema, 'required');
+  const required = new Set(
+    Array.isArray(requiredValue)
+      ? requiredValue.filter(
+          (propertyName): propertyName is string =>
+            typeof propertyName === 'string',
+        )
+      : [],
+  );
+  const propertyEntries = Object.entries(properties)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, propertySchema]) => {
+      const optional = required.has(name) ? '' : '?';
+      const type = jsonSchemaToTsType(propertySchema, ancestors);
+      return {
+        line: `${JSON.stringify(name)}${optional}: ${type};`,
+        optional: optional.length > 0,
+        type,
+      };
+    });
+  const propertyLines = propertyEntries.map((entry) => entry.line);
+  const additionalProperties: unknown = Reflect.get(
+    schema,
+    'additionalProperties',
+  );
+  if (additionalProperties === true) {
+    propertyLines.push('[key: string]: unknown;');
+  } else if (
+    typeof additionalProperties === 'object' &&
+    additionalProperties !== null &&
+    !Array.isArray(additionalProperties)
+  ) {
+    const additionalType = jsonSchemaToTsType(additionalProperties, ancestors);
+    propertyLines.push(
+      `[key: string]: ${joinTsUnion([
+        additionalType,
+        ...propertyEntries.map((entry) => entry.type),
+        ...(propertyEntries.some((entry) => entry.optional)
+          ? ['undefined']
+          : []),
+      ])};`,
+    );
+  } else if (additionalProperties !== false) {
+    propertyLines.push('[key: string]: unknown;');
+  }
+  return propertyLines.length === 0
+    ? 'Record<string, never>'
+    : `{ ${propertyLines.join(' ')} }`;
+}
+
+function withNullableSchema(schema: object, type: string): string {
+  return Reflect.get(schema, 'nullable') === true
+    ? joinTsUnion([type, 'null'])
+    : type;
+}
+
+function joinTsUnion(types: readonly string[]): string {
+  const unique = [...new Set(types)];
+  return unique.length === 0 ? 'unknown' : unique.join(' | ');
+}
+
 function literalToTsType(value: unknown): string {
+  if (value === null) {
+    return 'null';
+  }
   if (
     typeof value === 'string' ||
     typeof value === 'number' ||

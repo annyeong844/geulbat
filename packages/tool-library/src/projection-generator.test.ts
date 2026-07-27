@@ -49,6 +49,37 @@ const sampleTool: ToolLibraryProjectionGeneratedTool = {
       url: { type: 'string' },
       timeoutMs: { type: 'integer' },
       responseMode: { enum: ['text', 'headers'] },
+      options: {
+        type: 'object',
+        properties: {
+          headers: {
+            type: 'object',
+            additionalProperties: { type: 'string' },
+          },
+          metadata: {
+            type: 'object',
+            properties: {
+              source: { type: 'string' },
+            },
+            additionalProperties: { type: 'integer' },
+          },
+          mode: { enum: ['fast', 'safe', null] },
+          tags: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['headers', 'tags'],
+        additionalProperties: false,
+      },
+      selector: {
+        oneOf: [
+          { type: 'string' },
+          {
+            type: 'object',
+            properties: { index: { type: 'integer' } },
+            required: ['index'],
+            additionalProperties: false,
+          },
+        ],
+      },
     },
     required: ['url'],
     additionalProperties: false,
@@ -79,7 +110,7 @@ const sampleManifest: ToolLibraryProjectionManifest = {
 void test('projection generator builds importable module descriptors', () => {
   assert.equal(
     TOOL_LIBRARY_PROJECTION_GENERATOR_VERSION,
-    'geulbat-tool-library-projection-v11',
+    'geulbat-tool-library-projection-v12',
   );
   const importableModules = buildToolLibraryProjectionImportableModules({
     importSpecifier: '@geulbat/generated-tools',
@@ -170,6 +201,14 @@ void test('projection generator emits importable files from descriptors', async 
   );
   const wrapperDeclaration = byPath.get('tools/fetch-url.d.ts')?.content;
   assert.ok(wrapperDeclaration);
+  assert.match(
+    wrapperDeclaration,
+    /"options"\?: \{ "headers": \{ \[key: string\]: string; \}; "metadata"\?: \{ "source"\?: string; \[key: string\]: number \| string \| undefined; \}; "mode"\?: "fast" \| "safe" \| null; "tags": Array<string>; \};/u,
+  );
+  assert.match(
+    wrapperDeclaration,
+    /"selector"\?: string \| \{ "index": number; \};/u,
+  );
   assert.match(
     wrapperDeclaration,
     /export type GeulbatInlineToolValue =[\s\S]*ok: true; output: string[\s\S]*ok: false; output: string; errorCode: string; error: string/u,

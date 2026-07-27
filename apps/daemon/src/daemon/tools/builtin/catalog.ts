@@ -36,6 +36,7 @@ import { submitResultReportTool } from './submit-result-report.js';
 import { visualizeTool } from './visualize.js';
 import { waitTool } from './wait.js';
 import { fetchUrlTool } from './web-fetch.js';
+import { webSearchTool } from './web-search.js';
 import { writeStdinTool } from './write-stdin.js';
 import { writeFileTool } from './write-file.js';
 import {
@@ -83,6 +84,7 @@ function getCanonicalBuiltinTools(
     citeMemoryTool,
     skillSearchTool,
     fetchUrlTool,
+    webSearchTool,
     generateImageTool,
     generateVideoTool,
     browserNavigateTool,

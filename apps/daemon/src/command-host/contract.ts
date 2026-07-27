@@ -128,11 +128,27 @@ export interface HostCommandRuntime {
     streamMode?: CommandSessionStreamMode;
     runId: string;
     callId: string;
+    /**
+     * 같은 owner/runId/callId의 세션이 이미 있으면 새 자식을 만들지 않고
+     * 그 outputRef를 돌려준다. 지원하지 않는 worker에는 요청을 보내지 않는다.
+     */
+    requiresIdempotentStart?: true;
     stdinMode: 'closed' | 'open';
+    /**
+     * 자식의 첫 stdin 바이트를 start RPC 안에서 넘긴다. command-host는 이를
+     * argv·env·journal·metadata에 기록하지 않고, 새 자식을 만들 때 한 번만
+     * 쓴다. 멱등 start가 기존 세션에 합류하면 다시 쓰지 않는다.
+     */
+    initialStdin?: string;
     timeoutMs?: number;
     /** outputRedaction이 적용된 뒤의 스트림 바이트 기준 상한. */
     maxOutputBytesPerStream?: number;
     outputRedaction?: CommandSessionOutputRedaction;
+    /**
+     * lossless 페이지를 응답과 동시에 놓지 않고 다음 명시적 확인까지
+     * 보존할 수 있는 worker만 허용한다.
+     */
+    requiresDeferredOutputRelease?: true;
     signal?: AbortSignal;
     onOutput?: (chunk: HostCommandOutputChunk) => void;
   }): Promise<HostCommandStartResult>;
@@ -161,9 +177,10 @@ export interface HostCommandRuntime {
     closeStdin?: boolean;
     terminate?: boolean;
     /**
-     * 부수효과(chars·closeStdin·terminate)를 가진 요청의 재시도 식별자
-     * (§4.7). 없으면 중복 판정 없이 그대로 적용된다 — 인라인 배치처럼
-     * 응답이 유실될 수 없는 경로가 여기에 해당한다.
+     * 부수효과(chars·closeStdin·terminate)의 재시도 식별자(§4.7). durable
+     * invocation은 체크포인트에 기록한 pair를 넘길 수 있고, 일반 호출자가
+     * 생략하면 daemon facade가 자기 pair를 할당한다. 인라인 배치처럼 응답이
+     * 유실될 수 없는 경로는 없이 호출해 중복 판정을 생략할 수 있다.
      */
     operation?: CommandHostOperation;
     afterRevision?: number;
@@ -172,6 +189,16 @@ export interface HostCommandRuntime {
       stream: HostCommandOutputStream;
       offsetBytes: number;
       limitBytes: number;
+      /**
+       * 읽은 페이지를 이번 응답에서는 놓지 않는다. lossless 스트림에서만
+       * 유효하며, 소비자는 다음 요청의 releaseUpToBytes로 확인한다.
+       */
+      deferRelease?: boolean;
+      /**
+       * 이전 deferred 응답 가운데 소비가 끝난 바이트의 끝 offset.
+       * 현재 요청 offset보다 클 수 없다.
+       */
+      releaseUpToBytes?: number;
     };
     signal?: AbortSignal;
   }): Promise<HostCommandInteractionResult>;
@@ -259,6 +286,12 @@ export interface CommandSessionListEntry {
   outputRef: string;
   threadId: string;
   stateRoot: string;
+  /**
+   * 재시작한 데몬이 같은 도구 호출의 세션만 재입양하는 내부 상관관계.
+   * 구 워커와의 재접속은 허용하되 재실행은 금지해야 하므로 optional이다.
+   */
+  runId?: string | undefined;
+  callId?: string | undefined;
   running: boolean;
   revision: number;
   /** 무엇을 돌리고 있는지 — 열거를 사람이 읽을 수 있게 하는 최소 정보. */

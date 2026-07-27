@@ -36,6 +36,7 @@ import {
   type PtcExecuteCodeStartedCellProcess,
 } from './execute-code-cell-settlement.js';
 import type {
+  PtcExecuteCodeCellCoordinate,
   PtcExecuteCodeCellId,
   PtcExecuteCodeModuleFormat,
   PtcExecuteCodePlacementResourceSnapshotRef,
@@ -71,6 +72,7 @@ interface PtcExecuteCodeValidatedRequest {
 interface PtcExecuteCodeCallbackBridgeFactory {
   (args: {
     callbackRuntime: PtcExecuteCodeCallbackRuntime;
+    cellId?: PtcExecuteCodeCellId;
     identity: PtcSessionDockerIdentity;
     sessionManager: PtcSessionDockerManager;
     createEpochBridge: PtcExecuteCodeEpochBridgeFactory | undefined;
@@ -134,6 +136,7 @@ interface RunExecuteCodeCellRuntimeAttemptArgs {
   batchRunner: PtcExecuteCodePlacementBatchRunner;
   buildCommand: PtcExecuteCodeCommandBuilder;
   callbackRuntime: PtcExecuteCodeCallbackRuntime;
+  cellId?: PtcExecuteCodeCellId;
   cellRegistry: ReturnType<CreatePtcExecuteCodeCellRegistry>;
   closeCallbackBridge: PtcExecuteCodeCallbackBridgeCloser;
   createEpochBridge: PtcExecuteCodeEpochBridgeFactory | undefined;
@@ -157,6 +160,25 @@ interface RunExecuteCodeCellRuntimeAttemptArgs {
     threadId: string;
     cellId: PtcExecuteCodeCellId;
   }) => Promise<void> | void;
+  persistCellCoordinate?: (
+    coordinate: PtcExecuteCodeCellCoordinate,
+  ) => Promise<void> | void;
+  persistRunningExecDelivery?: (args: {
+    cellId: PtcExecuteCodeCellId;
+    stdout: string;
+    stderr: string;
+    durationMs: number;
+    toolCallbackCount: number;
+    outputReadOffsets: {
+      stdoutBytes: number;
+      stderrBytes: number;
+    };
+  }) => Promise<void> | void;
+  deleteCellCoordinate?: (args: {
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+  }) => Promise<void> | void;
+  runningCellReapAfterMs?: number;
   startCellProcess: StartPtcExecuteCodeCellProcess;
   store?: PtcExecuteCodeStore;
   finalizePlacement?: () => Promise<PtcExecuteCodePlacementReleaseResult>;
@@ -176,6 +198,7 @@ export async function runExecuteCodeCellRuntimeAttempt(
 ): Promise<PtcExecuteCodeRuntimeResult> {
   const admittedCell = args.cellRegistry.reserveAdmittingCell({
     threadId: args.identity.threadId,
+    ...(args.cellId === undefined ? {} : { cellId: args.cellId }),
   });
   if (!admittedCell.ok) {
     const isUnclaimedResult =
@@ -564,6 +587,7 @@ async function createCellCommandEnvelope(args: {
       };
   const bridgeResult = await runtimeArgs.maybeCreateCallbackBridge({
     callbackRuntime,
+    cellId: args.cellId,
     identity: runtimeArgs.identity,
     sessionManager: runtimeArgs.sessionManager,
     createEpochBridge: runtimeArgs.createEpochBridge,
@@ -666,12 +690,160 @@ async function startPromotedCellProcess(args: {
     };
   }
 
+  const processOutputRef = started.handle.outputRef;
+  if (
+    runtimeArgs.persistCellCoordinate !== undefined &&
+    processOutputRef === undefined
+  ) {
+    started.handle.terminate({
+      graceMs: PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS,
+    });
+    await started.handle.exit;
+    const bridgeClosed = await runtimeArgs.closeCallbackBridge(args.bridge);
+    const taint = await closeTaintedPtcDockerSession({
+      identity: runtimeArgs.identity,
+      sessionManager: runtimeArgs.sessionManager,
+    });
+    return {
+      ok: false,
+      result: cellCleanupFailure({
+        message:
+          'PTC execute_code cell process did not expose a durable output coordinate',
+        diagnostics: {
+          processOutputRefMissing: true,
+          ...(bridgeClosed.ok ? {} : { callbackBridgeCloseFailed: true }),
+          ...(toPtcSessionTaintCloseDiagnostics(taint) ?? {}),
+        },
+      }),
+    };
+  }
+  if (
+    runtimeArgs.persistCellCoordinate !== undefined &&
+    args.bridge !== undefined &&
+    args.bridge.callbackProcessOutputRef === undefined
+  ) {
+    started.handle.terminate({
+      graceMs: PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS,
+    });
+    await started.handle.exit;
+    const bridgeClosed = await runtimeArgs.closeCallbackBridge(args.bridge);
+    const taint = await closeTaintedPtcDockerSession({
+      identity: runtimeArgs.identity,
+      sessionManager: runtimeArgs.sessionManager,
+    });
+    return {
+      ok: false,
+      result: cellCleanupFailure({
+        message:
+          'PTC execute_code callback process did not expose a durable output coordinate',
+        diagnostics: {
+          callbackOutputRefMissing: true,
+          ...(bridgeClosed.ok ? {} : { callbackBridgeCloseFailed: true }),
+          ...(toPtcSessionTaintCloseDiagnostics(taint) ?? {}),
+        },
+      }),
+    };
+  }
+
+  if (
+    runtimeArgs.persistCellCoordinate !== undefined &&
+    processOutputRef !== undefined
+  ) {
+    try {
+      await runtimeArgs.persistCellCoordinate({
+        stateRoot: runtimeArgs.identity.stateRoot,
+        threadId: runtimeArgs.identity.threadId,
+        cellId: args.cellId,
+        createdAtMs: startedAtMs,
+        effectiveTimeoutMs: runtimeArgs.request.timeoutMs,
+        ...(runtimeArgs.runningCellReapAfterMs === undefined
+          ? {}
+          : {
+              orphanReapAtMs: startedAtMs + runtimeArgs.runningCellReapAfterMs,
+            }),
+        processOutputRef,
+        ...(args.bridge?.callbackProcessOutputRef === undefined
+          ? {}
+          : { callbackOutputRef: args.bridge.callbackProcessOutputRef }),
+        trustContextId: runtimeArgs.identity.trustContextId,
+        ...(runtimeArgs.identity.ephemeralBurstId === undefined
+          ? {}
+          : {
+              ephemeralBurstId: runtimeArgs.identity.ephemeralBurstId,
+            }),
+        ...(runtimeArgs.identity.sdkProjectionMount === undefined
+          ? {}
+          : {
+              sdkProjectionMount: {
+                ...runtimeArgs.identity.sdkProjectionMount,
+              },
+            }),
+        containerId: session.value.containerId,
+        maxBufferedBytesPerStream:
+          runtimeArgs.admission.labPolicy?.shell.maxBufferedBytesPerStream ?? 0,
+        callbackToolNames: runtimeArgs.sdkHelpBundle.callbacks.tools.map(
+          (tool) => tool.name,
+        ),
+        storeCallbacksEnabled: runtimeArgs.finalizeStore !== undefined,
+      });
+    } catch {
+      started.handle.terminate({
+        graceMs: PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS,
+      });
+      await started.handle.exit;
+      const bridgeClosed = await runtimeArgs.closeCallbackBridge(args.bridge);
+      let coordinateDeleted = true;
+      if (runtimeArgs.deleteCellCoordinate !== undefined) {
+        try {
+          await runtimeArgs.deleteCellCoordinate({
+            threadId: runtimeArgs.identity.threadId,
+            cellId: args.cellId,
+          });
+        } catch {
+          coordinateDeleted = false;
+        }
+      }
+      const taint = await closeTaintedPtcDockerSession({
+        identity: runtimeArgs.identity,
+        sessionManager: runtimeArgs.sessionManager,
+      });
+      return {
+        ok: false,
+        result: cellCleanupFailure({
+          message:
+            'PTC execute_code cell coordinate could not be persisted before promotion',
+          diagnostics: {
+            cellCoordinatePersistFailed: true,
+            ...(bridgeClosed.ok ? {} : { callbackBridgeCloseFailed: true }),
+            ...(coordinateDeleted ? {} : { cellCoordinateDeleteFailed: true }),
+            ...(toPtcSessionTaintCloseDiagnostics(taint) ?? {}),
+          },
+        }),
+      };
+    }
+  }
+
   const promoted = runtimeArgs.cellRegistry.promoteAdmittedCell({
     threadId: runtimeArgs.identity.threadId,
     cellId: args.cellId,
     resources: {
       effectiveTimeoutMs: runtimeArgs.request.timeoutMs,
       handle: started.handle,
+      terminalResultStateRoot: runtimeArgs.identity.stateRoot,
+      ...(runtimeArgs.deleteCellCoordinate === undefined
+        ? {}
+        : {
+            finalizeCoordinate: () =>
+              runtimeArgs.deleteCellCoordinate?.({
+                threadId: runtimeArgs.identity.threadId,
+                cellId: args.cellId,
+              }),
+          }),
+      ...(args.bridge?.replaceCallbackHandler === undefined
+        ? {}
+        : {
+            replaceCallbackHandler: args.bridge.replaceCallbackHandler,
+          }),
       closeBridge: async () => {
         const closed = await runtimeArgs.closeCallbackBridge(args.bridge);
         if (!closed.ok) {
@@ -699,12 +871,27 @@ async function startPromotedCellProcess(args: {
     });
     await started.handle.exit;
     const bridgeClosed = await runtimeArgs.closeCallbackBridge(args.bridge);
+    let coordinateDeleted = true;
+    if (runtimeArgs.deleteCellCoordinate !== undefined) {
+      try {
+        await runtimeArgs.deleteCellCoordinate({
+          threadId: runtimeArgs.identity.threadId,
+          cellId: args.cellId,
+        });
+      } catch {
+        coordinateDeleted = false;
+      }
+    }
     const taint = await closeTaintedPtcDockerSession({
       identity: runtimeArgs.identity,
       sessionManager: runtimeArgs.sessionManager,
     });
     const taintDiagnostics = toPtcSessionTaintCloseDiagnostics(taint);
-    if (!bridgeClosed.ok || taintDiagnostics !== undefined) {
+    if (
+      !bridgeClosed.ok ||
+      !coordinateDeleted ||
+      taintDiagnostics !== undefined
+    ) {
       return {
         ok: false,
         result: cellCleanupFailure({
@@ -712,6 +899,7 @@ async function startPromotedCellProcess(args: {
           diagnostics: {
             cellAdmissionLost: true,
             ...(bridgeClosed.ok ? {} : { callbackBridgeCloseFailed: true }),
+            ...(coordinateDeleted ? {} : { cellCoordinateDeleteFailed: true }),
             ...(taintDiagnostics ?? {}),
           },
         }),

@@ -1,42 +1,23 @@
 import type {
   InstalledPluginView,
-  PluginMarketplaceAddRequest,
   PluginMarketplaceEntryView,
-  PluginMarketplaceInstallRequest,
-  PluginMarketplaceListResponse,
 } from '@geulbat/protocol/plugins';
-import { getErrorMessage } from '../../lib/error-message.js';
 import type { FormEvent } from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
-import {
-  addPluginMarketplace,
-  ensureOfficialPluginMarketplace,
-  installMarketplacePlugin,
-  listPluginMarketplaces,
-  removePlugin,
-  removePluginMarketplace,
-} from '../../lib/api/plugins.js';
 import {
   filterVisibleMarketplaceEntries,
   groupMarketplaceEntries,
   selectFeaturedMarketplaceEntries,
 } from './marketplace-entry-grouping.js';
 import { MarketplaceEntryRow } from './MarketplaceEntryRow.js';
+import {
+  usePluginMarketplaceController,
+  type PluginMarketplaceClient,
+} from './plugin-marketplace-controller.js';
 import { SectionMoreButton } from './SectionMoreButton.js';
 
-export interface PluginMarketplaceClient {
-  list(): Promise<PluginMarketplaceListResponse>;
-  ensureOfficial(): ReturnType<typeof ensureOfficialPluginMarketplace>;
-  add(
-    request: PluginMarketplaceAddRequest,
-  ): ReturnType<typeof addPluginMarketplace>;
-  install(
-    request: PluginMarketplaceInstallRequest,
-  ): ReturnType<typeof installMarketplacePlugin>;
-  uninstall?: typeof removePlugin;
-  remove(marketplaceId: string): ReturnType<typeof removePluginMarketplace>;
-}
+export type { PluginMarketplaceClient } from './plugin-marketplace-controller.js';
 
 interface Props {
   disabled?: boolean;
@@ -50,27 +31,12 @@ interface Props {
   onManageInstalled?: (installationId: string) => void;
 }
 
-const DEFAULT_CLIENT: PluginMarketplaceClient = {
-  list: listPluginMarketplaces,
-  ensureOfficial: ensureOfficialPluginMarketplace,
-  add: addPluginMarketplace,
-  install: installMarketplacePlugin,
-  uninstall: removePlugin,
-  remove: removePluginMarketplace,
-};
-
-const EMPTY_CATALOG: PluginMarketplaceListResponse = {
-  sources: [],
-  entries: [],
-  diagnostics: [],
-};
-
 const SECTION_PREVIEW_ENTRY_COUNT = 6;
 const FEATURED_SECTION_KEY = 'featured';
 
 export function PluginMarketplacePanel({
   disabled = false,
-  client = DEFAULT_CLIENT,
+  client,
   query = '',
   capabilityFilter = 'all',
   showManagement = true,
@@ -79,21 +45,11 @@ export function PluginMarketplacePanel({
   onUninstalled,
   onManageInstalled,
 }: Props) {
-  const [catalog, setCatalog] =
-    useState<PluginMarketplaceListResponse>(EMPTY_CATALOG);
-  const [loadStatus, setLoadStatus] = useState<'loading' | 'loaded' | 'failed'>(
-    'loading',
-  );
-  const [officialStatus, setOfficialStatus] = useState<
-    'idle' | 'connecting' | 'connected' | 'failed'
-  >('idle');
   const [sourceFilter, setSourceFilter] = useState<'official' | 'custom'>(
     'official',
   );
-  const [error, setError] = useState<string | null>(null);
   const [sourceUrl, setSourceUrl] = useState('');
   const [sourceRef, setSourceRef] = useState('');
-  const [busyKey, setBusyKey] = useState<string | null>(null);
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [expandedSections, setExpandedSections] = useState<readonly string[]>(
@@ -101,178 +57,47 @@ export function PluginMarketplacePanel({
   );
   const [filterOpen, setFilterOpen] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    setLoadStatus('loading');
-    setError(null);
-    void client
-      .list()
-      .then(async (listed) => {
-        if (!active) {
-          return;
-        }
-        setCatalog(listed);
-        setLoadStatus('loaded');
-        if (listed.sources.some((source) => source.sourceRole === 'official')) {
-          setOfficialStatus('connected');
-          return;
-        }
-        if (disabled) {
-          setOfficialStatus('idle');
-          return;
-        }
-        setOfficialStatus('connecting');
-        try {
-          await client.ensureOfficial();
-          const connected = await client.list();
-          if (active) {
-            setCatalog(connected);
-            setOfficialStatus('connected');
-          }
-        } catch (connectError: unknown) {
-          if (active) {
-            setOfficialStatus('failed');
-            setError(
-              `Codex 공식 marketplace에 연결하지 못했습니다. ${getErrorMessage(connectError)}`,
-            );
-          }
-        }
-      })
-      .catch((loadError: unknown) => {
-        if (active) {
-          setError(
-            `플러그인 marketplace를 불러오지 못했습니다. ${getErrorMessage(loadError)}`,
-          );
-          setLoadStatus('failed');
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [client, disabled, refreshToken]);
-
-  const refresh = async () => {
-    setCatalog(await client.list());
-    setLoadStatus('loaded');
-  };
-
-  const addSource = async (request: PluginMarketplaceAddRequest) => {
-    setError(null);
-    setBusyKey('add-source');
-    try {
-      await client.add(request);
-      await refresh();
-      setSourceFilter('custom');
-      setSourceUrl('');
-      setSourceRef('');
-    } catch (addError: unknown) {
-      setError(
-        `개인 marketplace를 추가하지 못했습니다. ${getErrorMessage(addError)}`,
-      );
-    } finally {
-      setBusyKey(null);
-    }
-  };
+  const {
+    catalog,
+    loadStatus,
+    officialStatus,
+    error,
+    busy,
+    canUninstall,
+    addSource,
+    install,
+    uninstall,
+    removeSource,
+  } = usePluginMarketplaceController({
+    client,
+    disabled,
+    refreshToken,
+    onInstalled,
+    onUninstalled,
+  });
 
   const submitSource = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const url = sourceUrl.trim();
     const ref = sourceRef.trim();
-    if (!url || disabled || busyKey !== null || loadStatus !== 'loaded') {
+    if (!url || disabled || busy || loadStatus !== 'loaded') {
       return;
     }
-    await addSource({
+    const added = await addSource({
       sourceKind: 'git',
       url,
       ...(ref ? { ref } : {}),
     });
-  };
-
-  const handleInstall = async (entry: PluginMarketplaceEntryView) => {
-    if (entry.contentDigest === null) {
-      return;
-    }
-    setError(null);
-    setBusyKey(`install:${entry.marketplaceId}:${entry.entryId}`);
-    try {
-      const response = await client.install({
-        marketplaceId: entry.marketplaceId,
-        entryId: entry.entryId,
-        expectedContentDigest: entry.contentDigest,
-      });
-      onInstalled(response.plugin);
-      setCatalog((current) => ({
-        ...current,
-        entries: current.entries.map((candidate) =>
-          candidate.marketplaceId === entry.marketplaceId &&
-          candidate.entryId === entry.entryId
-            ? {
-                ...candidate,
-                installedInstallationId: response.plugin.installationId,
-              }
-            : candidate,
-        ),
-      }));
-    } catch (installError: unknown) {
-      setError(
-        `플러그인을 설치하지 못했습니다. ${getErrorMessage(installError)}`,
-      );
-    } finally {
-      setBusyKey(null);
-    }
-  };
-
-  const handleUninstall = async (entry: PluginMarketplaceEntryView) => {
-    const installationId = entry.installedInstallationId;
-    if (installationId === null || client.uninstall === undefined) {
-      return;
-    }
-    setError(null);
-    setBusyKey(`uninstall:${installationId}`);
-    try {
-      await client.uninstall(installationId);
-      onUninstalled?.(installationId);
-      setCatalog((current) => ({
-        ...current,
-        entries: current.entries.map((candidate) =>
-          candidate.marketplaceId === entry.marketplaceId &&
-          candidate.entryId === entry.entryId
-            ? { ...candidate, installedInstallationId: null }
-            : candidate,
-        ),
-      }));
-    } catch (uninstallError: unknown) {
-      setError(
-        `플러그인을 제거하지 못했습니다. ${getErrorMessage(uninstallError)}`,
-      );
-    } finally {
-      setBusyKey(null);
+    if (added) {
+      setSourceFilter('custom');
+      setSourceUrl('');
+      setSourceRef('');
     }
   };
 
   const handleRemoveSource = async (marketplaceId: string) => {
-    setError(null);
-    setBusyKey(`remove:${marketplaceId}`);
-    try {
-      await client.remove(marketplaceId);
-      setCatalog((current) => ({
-        sources: current.sources.filter(
-          (source) => source.marketplaceId !== marketplaceId,
-        ),
-        entries: current.entries.filter(
-          (entry) => entry.marketplaceId !== marketplaceId,
-        ),
-        diagnostics: current.diagnostics.filter(
-          (diagnostic) => diagnostic.marketplaceId !== marketplaceId,
-        ),
-      }));
+    if (await removeSource(marketplaceId)) {
       setConfirmRemoveId(null);
-    } catch (removeError: unknown) {
-      setError(
-        `marketplace를 제거하지 못했습니다. ${getErrorMessage(removeError)}`,
-      );
-    } finally {
-      setBusyKey(null);
     }
   };
 
@@ -297,7 +122,6 @@ export function PluginMarketplacePanel({
   const customSourceCount = catalog.sources.filter(
     (source) => source.sourceRole === 'custom',
   ).length;
-  const busy = busyKey !== null;
   const groupedEntries = groupMarketplaceEntries(visibleEntries);
   const featuredEntries = selectFeaturedMarketplaceEntries(visibleEntries);
   const catalogTitle =
@@ -333,9 +157,7 @@ export function PluginMarketplacePanel({
             onManage: () => onManageInstalled(installationId),
           }
         : {}),
-      ...(client.uninstall
-        ? { onUninstall: () => void handleUninstall(entry) }
-        : {}),
+      ...(canUninstall ? { onUninstall: () => void uninstall(entry) } : {}),
     };
   };
 
@@ -564,7 +386,7 @@ export function PluginMarketplacePanel({
                 key={`${entry.marketplaceId}/${entry.entryId}`}
                 entry={entry}
                 disabled={disabled || busy}
-                onInstall={() => void handleInstall(entry)}
+                onInstall={() => void install(entry)}
                 {...entryActions(entry)}
               />
             ))}
@@ -587,7 +409,7 @@ export function PluginMarketplacePanel({
                     key={`${entry.marketplaceId}/${entry.entryId}`}
                     entry={entry}
                     disabled={disabled || busy}
-                    onInstall={() => void handleInstall(entry)}
+                    onInstall={() => void install(entry)}
                     {...entryActions(entry)}
                   />
                 ))}
@@ -626,7 +448,7 @@ export function PluginMarketplacePanel({
                         key={`${entry.marketplaceId}/${entry.entryId}`}
                         entry={entry}
                         disabled={disabled || busy}
-                        onInstall={() => void handleInstall(entry)}
+                        onInstall={() => void install(entry)}
                         {...entryActions(entry)}
                       />
                     ))}

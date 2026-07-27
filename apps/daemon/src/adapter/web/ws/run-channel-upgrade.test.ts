@@ -10,6 +10,7 @@ function createUpgradeRequest(args: {
   host?: string;
   remoteAddress?: string | null;
   upgradeAuthorized?: boolean;
+  cookie?: string;
 }): IncomingMessage {
   const headers: Record<string, string> = {
     host: args.host ?? '127.0.0.1:4312',
@@ -19,6 +20,9 @@ function createUpgradeRequest(args: {
   }
   if (args.upgradeAuthorized) {
     headers['x-geulbat-dev-token'] = 'test-token-123456';
+  }
+  if (args.cookie !== undefined) {
+    headers['cookie'] = args.cookie;
   }
 
   return {
@@ -55,6 +59,47 @@ void test('readRunChannelUpgrade rejects disallowed origins', () => {
     statusText: 'Forbidden',
     body: 'origin not allowed',
   });
+});
+
+void test('readRunChannelUpgrade rejects other local origins on the same machine', () => {
+  // 데몬이 shell까지 서빙하므로 소켓을 여는 페이지는 데몬 자신의 origin에서
+  // 온다. 같은 기계의 다른 포트는 shell이 아니다.
+  const result = readRunChannelUpgrade(
+    createUpgradeRequest({
+      host: '127.0.0.1:4312',
+      origin: 'http://127.0.0.1:3456',
+    }),
+    new Set<string>(),
+  );
+
+  assert.equal(result.ok, false);
+});
+
+void test('readRunChannelUpgrade authorizes the same-origin shell auth cookie', () => {
+  const previousDevToken = process.env['GEULBAT_DEV_TOKEN'];
+  process.env['GEULBAT_DEV_TOKEN'] = 'test-token-123456';
+  try {
+    const result = readRunChannelUpgrade(
+      createUpgradeRequest({
+        host: '127.0.0.1:3456',
+        origin: 'http://127.0.0.1:3456',
+        cookie: 'geulbat_dev_auth=test-token-123456',
+      }),
+      new Set<string>(),
+    );
+
+    assert.deepEqual(result, {
+      ok: true,
+      upgradeAuthorized: true,
+      remoteAddress: '127.0.0.1',
+    });
+  } finally {
+    if (previousDevToken === undefined) {
+      delete process.env['GEULBAT_DEV_TOKEN'];
+    } else {
+      process.env['GEULBAT_DEV_TOKEN'] = previousDevToken;
+    }
+  }
 });
 
 void test('readRunChannelUpgrade accepts allowed origins and returns upgrade metadata', () => {

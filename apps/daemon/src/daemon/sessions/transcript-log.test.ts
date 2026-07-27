@@ -33,7 +33,79 @@ import {
   readTranscriptEntries,
   replaceTranscriptEntries,
   resetTranscriptEntryCacheForTests,
+  rewriteTranscriptDurableOutputRefs,
 } from './transcript-log.js';
+
+void test('rewriteTranscriptDurableOutputRefs changes only structured result and compaction refs', () => {
+  const sourceRef = 'tool-output:00000000-0000-4000-8000-000000000001/run/call';
+  const targetRef = 'tool-output:00000000-0000-4000-8000-000000000002/run/call';
+  const rewritten = rewriteTranscriptDurableOutputRefs(
+    [
+      {
+        entryId: 'entry-user-ref-text',
+        role: 'user',
+        content: `do not rewrite this quoted text: ${sourceRef}`,
+        timestamp: '2026-07-27T00:00:00.000Z',
+      },
+      {
+        entryId: 'entry-tool-ref',
+        role: 'tool_result',
+        content: JSON.stringify({
+          output: JSON.stringify({
+            outputRef: sourceRef,
+            snapshot: { outputRef: sourceRef },
+          }),
+        }),
+        timestamp: '2026-07-27T00:00:01.000Z',
+      },
+      {
+        entryId: 'entry-compaction-ref',
+        role: 'compaction',
+        content: '',
+        timestamp: '2026-07-27T00:00:02.000Z',
+        compactionData: {
+          kind: 'provider_native',
+          providerId: 'openai_codex_direct',
+          model: 'gpt-fixture',
+          output: [{ type: 'compaction_summary', text: 'summary' }],
+          tokensBefore: 100,
+          contextWindow: 1_000,
+          thresholdTokens: 900,
+          evidence: [
+            {
+              callId: 'call',
+              toolName: 'search_files',
+              outcome: 'success',
+              fullOutputBytes: 10,
+              outputRef: sourceRef,
+            },
+          ],
+          expandedEvidencePages: [
+            { outputRef: sourceRef, offset: 0, endOffset: 10, totalChars: 10 },
+          ],
+        },
+      },
+    ],
+    new Map([[sourceRef, targetRef]]),
+  );
+
+  assert.match(rewritten[0]?.content ?? '', new RegExp(sourceRef));
+  assert.doesNotMatch(rewritten[1]?.content ?? '', new RegExp(sourceRef));
+  assert.match(rewritten[1]?.content ?? '', new RegExp(targetRef));
+  const compaction = rewritten[2];
+  assert.equal(compaction?.role, 'compaction');
+  if (
+    compaction?.role === 'compaction' &&
+    'kind' in compaction.compactionData &&
+    compaction.compactionData.kind === 'provider_native'
+  ) {
+    assert.equal(compaction.compactionData.evidence?.[0]?.outputRef, targetRef);
+    assert.equal(
+      compaction.compactionData.expandedEvidencePages?.[0]?.outputRef,
+      targetRef,
+    );
+  }
+});
 
 void test('readTranscriptEntries rejects malformed JSONL lines', async () => {
   resetTranscriptEntryCacheForTests();

@@ -8,8 +8,14 @@ type FileStateCacheFs = Pick<typeof fs, 'realpath' | 'stat'>;
 
 interface FileStateCacheEntry {
   content: string;
+  ctime: number;
   mtime: number;
+  sourceSizeBytes: number;
   sizeBytes: number;
+}
+
+interface InFlightCacheLoad {
+  invalidated: boolean;
 }
 
 interface FileStateCacheStats {
@@ -44,6 +50,7 @@ export function createFileStateCache(
   const maxTotalBytes =
     options.maxTotalBytes ?? DEFAULT_MAX_FILE_STATE_CACHE_BYTES;
   const entries = new Map<string, FileStateCacheEntry>();
+  const inFlightLoads = new Map<string, Set<InFlightCacheLoad>>();
   let totalBytes = 0;
 
   function deleteCacheKey(canonicalAbsolutePath: string): void {
@@ -79,7 +86,9 @@ export function createFileStateCache(
   function storeEntry(
     canonicalAbsolutePath: string,
     content: string,
+    ctime: number,
     mtime: number,
+    sourceSizeBytes: number,
   ): void {
     const sizeBytes = Buffer.byteLength(content);
     if (maxEntries < 1 || maxTotalBytes < 1 || sizeBytes > maxTotalBytes) {
@@ -90,11 +99,45 @@ export function createFileStateCache(
     deleteCacheKey(canonicalAbsolutePath);
     entries.set(canonicalAbsolutePath, {
       content,
+      ctime,
       mtime,
+      sourceSizeBytes,
       sizeBytes,
     });
     totalBytes += sizeBytes;
     evictOverflow();
+  }
+
+  function beginCacheLoad(canonicalAbsolutePath: string): InFlightCacheLoad {
+    const load = { invalidated: false };
+    const activeLoads = inFlightLoads.get(canonicalAbsolutePath);
+    if (activeLoads) {
+      activeLoads.add(load);
+    } else {
+      inFlightLoads.set(canonicalAbsolutePath, new Set([load]));
+    }
+    return load;
+  }
+
+  function finishCacheLoad(
+    canonicalAbsolutePath: string,
+    load: InFlightCacheLoad,
+  ): void {
+    const activeLoads = inFlightLoads.get(canonicalAbsolutePath);
+    if (!activeLoads) {
+      return;
+    }
+    activeLoads.delete(load);
+    if (activeLoads.size === 0) {
+      inFlightLoads.delete(canonicalAbsolutePath);
+    }
+  }
+
+  function invalidateCacheKey(canonicalAbsolutePath: string): void {
+    deleteCacheKey(canonicalAbsolutePath);
+    for (const load of inFlightLoads.get(canonicalAbsolutePath) ?? []) {
+      load.invalidated = true;
+    }
   }
 
   return {
@@ -102,18 +145,36 @@ export function createFileStateCache(
       const canonicalAbsolutePath = await cacheFs.realpath(path);
       const currentStat = await cacheFs.stat(canonicalAbsolutePath);
       const cached = entries.get(canonicalAbsolutePath);
-      if (cached && cached.mtime === currentStat.mtimeMs) {
+      if (
+        cached &&
+        cached.ctime === currentStat.ctimeMs &&
+        cached.mtime === currentStat.mtimeMs &&
+        cached.sourceSizeBytes === currentStat.size
+      ) {
         touchCacheKey(canonicalAbsolutePath, cached);
         return cached.content;
       }
 
-      const content = await loadContent(canonicalAbsolutePath);
-      storeEntry(canonicalAbsolutePath, content, currentStat.mtimeMs);
-      return content;
+      const load = beginCacheLoad(canonicalAbsolutePath);
+      try {
+        const content = await loadContent(canonicalAbsolutePath);
+        if (!load.invalidated) {
+          storeEntry(
+            canonicalAbsolutePath,
+            content,
+            currentStat.ctimeMs,
+            currentStat.mtimeMs,
+            currentStat.size,
+          );
+        }
+        return content;
+      } finally {
+        finishCacheLoad(canonicalAbsolutePath, load);
+      }
     },
     async invalidatePath(path) {
       try {
-        deleteCacheKey(await cacheFs.realpath(path));
+        invalidateCacheKey(await cacheFs.realpath(path));
       } catch (error: unknown) {
         const code = getErrorCode(error);
         if (code === 'ENOENT' || code === 'ENOTDIR') {
@@ -123,8 +184,13 @@ export function createFileStateCache(
         throw error;
       }
     },
-    invalidateCacheKey: deleteCacheKey,
+    invalidateCacheKey,
     clear() {
+      for (const activeLoads of inFlightLoads.values()) {
+        for (const load of activeLoads) {
+          load.invalidated = true;
+        }
+      }
       entries.clear();
       totalBytes = 0;
     },

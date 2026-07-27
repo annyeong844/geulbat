@@ -10,7 +10,10 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { assertRunId, assertThreadId } from '@geulbat/protocol/ids';
+import { createDaemonContext } from '../../context.js';
 import { createSymlinkOrSkip } from '../../../test-support/symlink-test.js';
+import type { ToolExecutionContext } from '../types.js';
 import { manageFilesTool } from './manage-files.js';
 
 function findManageFilesOperationBranch(operation: string) {
@@ -44,6 +47,7 @@ void test('manage_files outward parameters publish branch destination requiremen
     directOnly: true,
     effectClass: 'computerWrite',
   });
+  assert.equal(manageFilesTool.recoveryStrategy, 'reconcile_then_replay');
 });
 
 void test('manage_files create rejects destination before execution', async () => {
@@ -291,6 +295,71 @@ void test('manage_files create creates an empty file through the shared save cha
     fs.readFile(join(computerFileRoot, 'empty.txt'), 'utf8'),
   );
   assert.equal(content, '');
+});
+
+void test('manage_files records and reconciles its invocation around an agent file effect', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-manage-durable-'));
+  const runtimeServices = createDaemonContext({ homeStateRoot: stateRoot });
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174031');
+  const runId = assertRunId('run-manage-files-durable');
+  await runtimeServices.runCheckpoints.startRun({
+    threadId,
+    runId,
+    request: { workingDirectory: stateRoot, permissionMode: 'full_access' },
+  });
+  const context = {
+    kind: 'agent',
+    callId: 'call-manage-files-durable',
+    signal: undefined,
+    runSignal: undefined,
+    currentFile: undefined,
+    selection: undefined,
+    approvalGranted: true,
+    computerSessionId: 'session-manage-files-durable',
+    computerFileRoot: stateRoot,
+    permissionMode: 'full_access',
+    stateRoot,
+    threadId,
+    runId,
+    runOwnerKind: 'root_main',
+    workingDirectory: stateRoot,
+    runState: undefined,
+    memoryIndex: runtimeServices.memoryIndex,
+    runtimeServices,
+    emitAgentEvent() {},
+  } satisfies ToolExecutionContext;
+
+  const result = await manageFilesTool.execute(
+    { operation: 'create', path: 'durable.txt' },
+    context,
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(await readFile(join(stateRoot, 'durable.txt'), 'utf8'), '');
+  const invocation = (await runtimeServices.runCheckpoints.readThread(threadId))
+    ?.toolInvocations[0];
+  assert.equal(invocation?.status, 'reconciled');
+  if (invocation?.status === 'reconciled') {
+    assert.equal(invocation.callId, context.callId);
+    assert.deepEqual(invocation.result, result);
+  }
+
+  const withoutCheckpoint = await manageFilesTool.execute(
+    { operation: 'create', path: 'must-not-run-without-checkpoint.txt' },
+    {
+      ...context,
+      callId: 'call-manage-files-without-checkpoint',
+      runId: assertRunId('run-manage-files-without-checkpoint'),
+    },
+  );
+  assert.equal(withoutCheckpoint.ok, false);
+  if (!withoutCheckpoint.ok) {
+    assert.equal(withoutCheckpoint.errorCode, 'execution_failed');
+    assert.match(withoutCheckpoint.error, /durable run checkpoint/);
+  }
+  await assert.rejects(() =>
+    stat(join(stateRoot, 'must-not-run-without-checkpoint.txt')),
+  );
 });
 
 void test('manage_files delete removes an existing file through the shared delete helper', async () => {

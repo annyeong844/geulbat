@@ -380,6 +380,9 @@ void test('processFunctionCalls starts no child when same-round agent_spawn pers
       readSubagentLaunchRequestByChildRunId() {
         return undefined;
       },
+      readSubagentLaunchInput() {
+        throw new Error('not used by persistence failure test');
+      },
       readQueuedSubagentLaunchRequests() {
         return [];
       },

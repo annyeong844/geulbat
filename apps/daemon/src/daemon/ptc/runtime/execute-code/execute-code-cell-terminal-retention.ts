@@ -53,6 +53,7 @@ export type PersistPtcExecuteCodeCellTerminalResult = (args: {
   threadId: string;
   cellId: PtcExecuteCodeCellId;
   result: PtcExecuteCodeCellRetainedResult;
+  recoveryResult?: PtcExecuteCodeRuntimeResult;
 }) => Promise<PtcExecuteCodeCellDurableOutput | undefined>;
 
 export type PtcExecuteCodeCellReapCallback = () => Promise<void>;
@@ -74,6 +75,7 @@ interface TerminalRetainedCellRecord extends BaseCellRecord {
   completedAtMs: number;
   memoryExpiresAtMs?: number;
   result: PtcExecuteCodeCellRetainedResult;
+  recoveryResult?: PtcExecuteCodeRuntimeResult;
   durableOutput?: PtcExecuteCodeCellDurableOutput;
   terminalResultStateRoot?: string;
   retentionReapTimer?: PtcExecuteCodeCellReapCancel;
@@ -254,6 +256,7 @@ export function createPtcExecuteCodeCellTerminalRetentionStore(options: {
     cellId: PtcExecuteCodeCellId;
     createdAtMs: number;
     result: PtcExecuteCodeCellTerminalResult;
+    recoveryResult?: PtcExecuteCodeRuntimeResult;
     terminalResultStateRoot?: string;
   }): Promise<TerminalRetainedCellRecord> {
     const record = createTerminalRetainedCellRecord(args);
@@ -267,6 +270,7 @@ export function createPtcExecuteCodeCellTerminalRetentionStore(options: {
     cellId: PtcExecuteCodeCellId;
     createdAtMs: number;
     result: PtcExecuteCodeCellTerminalResult;
+    recoveryResult?: PtcExecuteCodeRuntimeResult;
     terminalResultStateRoot?: string;
   }): Promise<TerminalRetainedCellRecord> {
     return (
@@ -321,6 +325,7 @@ export function createPtcExecuteCodeCellTerminalRetentionStore(options: {
     message: string;
     diagnostics: Record<string, string | number | boolean>;
     terminalResult?: PtcExecuteCodeCellTerminalResult;
+    recoveryResult?: PtcExecuteCodeRuntimeResult;
     terminalResultStateRoot?: string;
   }): Promise<void> {
     const record = createTerminalRetainedCellRecord({
@@ -330,6 +335,9 @@ export function createPtcExecuteCodeCellTerminalRetentionStore(options: {
       ...(args.terminalResultStateRoot === undefined
         ? {}
         : { terminalResultStateRoot: args.terminalResultStateRoot }),
+      ...(args.recoveryResult === undefined
+        ? {}
+        : { recoveryResult: args.recoveryResult }),
       result: {
         status: 'cleanup_failed',
         message: args.message,
@@ -348,6 +356,7 @@ export function createPtcExecuteCodeCellTerminalRetentionStore(options: {
     cellId: PtcExecuteCodeCellId;
     createdAtMs: number;
     result: PtcExecuteCodeCellRetainedResult;
+    recoveryResult?: PtcExecuteCodeRuntimeResult;
     terminalResultStateRoot?: string;
   }): TerminalRetainedCellRecord {
     const completedAtMs = now();
@@ -358,6 +367,9 @@ export function createPtcExecuteCodeCellTerminalRetentionStore(options: {
       createdAtMs: args.createdAtMs,
       completedAtMs,
       result: args.result,
+      ...(args.recoveryResult === undefined
+        ? {}
+        : { recoveryResult: args.recoveryResult }),
       ...(args.terminalResultStateRoot === undefined
         ? {}
         : { terminalResultStateRoot: args.terminalResultStateRoot }),
@@ -383,6 +395,9 @@ export function createPtcExecuteCodeCellTerminalRetentionStore(options: {
           threadId: record.threadId,
           cellId: record.cellId,
           result: record.result,
+          ...(record.recoveryResult === undefined
+            ? {}
+            : { recoveryResult: record.recoveryResult }),
         });
         if (durableOutput === undefined) {
           return;

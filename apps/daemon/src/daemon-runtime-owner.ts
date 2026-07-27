@@ -41,6 +41,11 @@ type DaemonRuntimeBootPhase =
   | 'listen';
 
 interface DaemonRuntimeAdmissionLock {
+  /**
+   * bind가 끝난 뒤 접속 지점을 기록한다. 포트가 유동일 때 "지금 도는 데몬은
+   * 어디 있나"의 답이 여기서 나온다.
+   */
+  recordListeningPort?(port: number): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -62,7 +67,8 @@ interface DaemonRuntimeOwnerPolicies<App, Server, SocketServer> {
     runtimeContext: RunChannelRuntimeContext;
   }): readonly SocketServer[];
   bindProviderAuthCallback(server: Server): void;
-  listen(args: { server: Server; port: number; host: string }): Promise<void>;
+  /** bind된 실제 포트를 돌려준다 — 요청 포트가 0이면 값이 다르다. */
+  listen(args: { server: Server; port: number; host: string }): Promise<number>;
   closeForShutdown(args: {
     admissionLock: DaemonRuntimeAdmissionLock;
     runtimeSessions: DaemonRuntimeSessionClosers;
@@ -92,6 +98,7 @@ export function createDaemonRuntimeOwner<App, Server, SocketServer>(args: {
   let admissionLock: DaemonRuntimeAdmissionLock | undefined;
   let runtimeStateStore: DaemonRuntimeStateStore | undefined;
   let subagentLaunchPromotions: SubagentLaunchPromotionController | undefined;
+  let ptcCellReadoptionStarted = false;
   let server: Server | undefined;
   let webSocketServers: readonly SocketServer[] = [];
   let shutdownPromise: Promise<void> | undefined;
@@ -121,6 +128,18 @@ export function createDaemonRuntimeOwner<App, Server, SocketServer>(args: {
         daemonContext.globalMcp.attachSessionCoordinateStore(
           openedRuntimeStateStore,
         );
+        daemonContext.ptc.executeCode.attachCellCoordinateStore?.(
+          openedRuntimeStateStore,
+        );
+        ptcCellReadoptionStarted =
+          daemonContext.ptc.executeCode.reAdoptRunningCells !== undefined;
+        const ptcCellReadoption =
+          await daemonContext.ptc.executeCode.reAdoptRunningCells?.();
+        if (ptcCellReadoption !== undefined && !ptcCellReadoption.ok) {
+          throw new Error(
+            `${ptcCellReadoption.message} (${ptcCellReadoption.reasonCode})`,
+          );
+        }
         const promotionController =
           daemonContext.subagent.launchRequests === openedRuntimeStateStore &&
           daemonContext.subagent.launchPromotions !== undefined
@@ -153,17 +172,29 @@ export function createDaemonRuntimeOwner<App, Server, SocketServer>(args: {
         });
         policies.bindProviderAuthCallback(startedServer);
         startArgs.beforeListen?.();
-        await policies.listen({
+        const listeningPort = await policies.listen({
           server: startedServer,
           port: startArgs.port,
           host: startArgs.host,
         });
+        // 요청 포트가 0이면 실제 값은 OS가 정한다. 소유권을 기록한 파일이 그
+        // 접속 지점도 나르므로, CLI와 다음 실행이 이 데몬을 찾을 수 있다.
+        await admissionLock?.recordListeningPort?.(listeningPort);
         policies.onBootPhase?.('listen');
         phase = 'running';
         return runtimeContext;
       } catch (error: unknown) {
         phase = 'closed';
         const cleanupFailures: Error[] = [];
+        if (ptcCellReadoptionStarted) {
+          try {
+            await daemonContext.ptc.executeCode.closeAll();
+          } catch (closeError: unknown) {
+            cleanupFailures.push(
+              new Error('ptcExecuteCode:threw', { cause: closeError }),
+            );
+          }
+        }
         if (subagentLaunchPromotions !== undefined) {
           try {
             await subagentLaunchPromotions.close();

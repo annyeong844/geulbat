@@ -133,7 +133,7 @@ async function fetchOneProviderUsage(
     return {
       providerId,
       state: 'not_provided',
-      reason: '이 제공자는 사용량 조회를 제공하지 않습니다.',
+      reason: '',
     };
   }
 
@@ -302,15 +302,14 @@ const PROVIDER_USAGE_ADAPTERS: Partial<
 };
 
 /**
- * 제공자가 사용량 조회를 우리 자격증명으로 제공하지 않는 경우의 사유.
+ * 제공자가 사용량 조회를 우리 자격증명으로 제공하지 않는 경우.
  *
- * Grok의 크레딧 엔드포인트(`cli-chat-proxy.grok.com/v1/billing`)는 존재하지만 Grok
- * CLI 전용 proxy 자격증명을 요구하고 우리 Responses OAuth 토큰에는 401을 준다.
- * 매번 실패할 호출을 보내는 대신 이유를 그대로 알린다.
+ * Grok 크레딧 엔드포인트는 존재하지만 Responses OAuth 토큰을 받지 않으므로
+ * 매번 실패할 호출을 보내지 않는다. UI는 state만 쓰고 reason 문구는 노출하지
+ * 않으므로 wire 계약용 빈 문자열만 둔다.
  */
 const NOT_PROVIDED_REASONS: Partial<Record<ProviderAuthProviderId, string>> = {
-  grok_oauth:
-    '이 제공자는 현재 연결 방식으로 사용량 조회를 제공하지 않습니다. 크레딧 조회에 별도 자격증명이 필요합니다.',
+  grok_oauth: '',
 };
 
 /**

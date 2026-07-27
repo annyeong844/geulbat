@@ -7,6 +7,7 @@ import type { ThreadMessage } from '@geulbat/protocol/threads';
 
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
+import { buildPtcArtifactFileUrl } from '@geulbat/protocol/ptc-artifacts';
 
 import {
   type ArtifactsByRefMap,
@@ -346,6 +347,7 @@ export function ToolDiffBlock(props: { diff: ToolCallDiffView }) {
 function ToolResultBlock(props: { view: ToolResultView }) {
   const { view } = props;
   const [expanded, setExpanded] = useState(false);
+  const artifactExport = view.artifacts;
   const isPendingPtcResult =
     view.ptcStatus === 'queued' || view.ptcStatus === 'running';
   return (
@@ -372,22 +374,57 @@ function ToolResultBlock(props: { view: ToolResultView }) {
         </span>
       </button>
       {expanded ? (
-        <pre className="tool-diff-body">
-          {view.bodyLines.length === 0 ? (
-            <div className="tool-diff-line truncated">(출력 없음)</div>
-          ) : (
-            view.bodyLines.map((line, index) => (
-              <div key={index} className="tool-diff-line">
-                {line || ' '}
-              </div>
-            ))
-          )}
-          {view.truncatedLineCount > 0 ? (
-            <div className="tool-diff-line truncated">
-              … {view.truncatedLineCount}줄 더 있음
+        <div className="tool-result-expanded">
+          {artifactExport ? (
+            <div className="tool-result-artifacts" aria-label="내보낸 파일">
+              {artifactExport.files.map((file) => (
+                <div
+                  key={file.relativePath}
+                  className="tool-result-artifact-row"
+                >
+                  <span title={file.relativePath}>{file.relativePath}</span>
+                  <span>{file.bytes} B</span>
+                  <a
+                    href={buildPtcArtifactFileUrl({
+                      evidenceRef: artifactExport.evidenceRef,
+                      relativePath: file.relativePath,
+                    })}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    열기
+                  </a>
+                  <a
+                    href={buildPtcArtifactFileUrl({
+                      evidenceRef: artifactExport.evidenceRef,
+                      relativePath: file.relativePath,
+                      download: true,
+                    })}
+                    download
+                  >
+                    다운로드
+                  </a>
+                </div>
+              ))}
             </div>
           ) : null}
-        </pre>
+          <pre className="tool-diff-body">
+            {view.bodyLines.length === 0 ? (
+              <div className="tool-diff-line truncated">(출력 없음)</div>
+            ) : (
+              view.bodyLines.map((line, index) => (
+                <div key={index} className="tool-diff-line">
+                  {line || ' '}
+                </div>
+              ))
+            )}
+            {view.truncatedLineCount > 0 ? (
+              <div className="tool-diff-line truncated">
+                … {view.truncatedLineCount}줄 더 있음
+              </div>
+            ) : null}
+          </pre>
+        </div>
       ) : null}
     </div>
   );
@@ -502,7 +539,10 @@ export function TranscriptTextMessage(props: {
       {originBadge !== undefined ? (
         <div className="message-origin-badge">{originBadge}</div>
       ) : null}
-      <div style={getTranscriptMessageStyle(messageRole)}>
+      <div
+        className="transcript-message-bubble"
+        style={getTranscriptMessageStyle(messageRole)}
+      >
         {planRendering === null || planRendering === undefined ? null : (
           <code className="plan-rendering-stamp" title={planRendering.title}>
             {planRendering.label}

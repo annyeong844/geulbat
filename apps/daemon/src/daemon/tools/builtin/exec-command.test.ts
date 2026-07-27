@@ -26,11 +26,13 @@ void test('exec_command exposes a real command schema and destructive approval m
   assert.equal(execCommandTool.sideEffectLevel, 'destructive');
   assert.equal(execCommandTool.requiresApproval, true);
   assert.equal(execCommandTool.mayMutateComputerFiles, true);
+  assert.equal(execCommandTool.recoveryStrategy, 'reconcile_then_replay');
   assert.ok(isToolObjectParameters(execCommandTool.parameters));
   assert.deepEqual(execCommandTool.parameters.required, ['cmd']);
   assert.deepEqual(Object.keys(execCommandTool.parameters.properties), [
     'cmd',
     'cwd',
+    'shellMode',
     'timeoutMs',
     'yieldTimeMs',
     'stdinMode',
@@ -115,7 +117,7 @@ void test('exec_command yields a thread-bound durable result that write_stdin pa
     },
   );
 
-  assert.equal(started.ok, true);
+  assert.equal(started.ok, true, started.ok ? undefined : started.error);
   if (!started.ok) {
     return;
   }
@@ -143,7 +145,7 @@ void test('exec_command yields a thread-bound durable result that write_stdin pa
       runtimeServices: daemonContext,
     },
   );
-  assert.equal(firstPage.ok, true);
+  assert.equal(firstPage.ok, true, firstPage.ok ? undefined : firstPage.error);
   if (!firstPage.ok) {
     return;
   }
@@ -171,7 +173,7 @@ void test('exec_command yields a thread-bound durable result that write_stdin pa
         runtimeServices: daemonContext,
       },
     );
-    assert.equal(nextPage.ok, true);
+    assert.equal(nextPage.ok, true, nextPage.ok ? undefined : nextPage.error);
     if (!nextPage.ok) {
       return;
     }

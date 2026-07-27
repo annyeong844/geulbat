@@ -9,12 +9,17 @@ export {
 } from '@geulbat/protocol/artifact-runtime-host';
 export { DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN };
 
-const LOOPBACK_ORIGIN_PATTERN =
-  /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/;
-const DAEMON_PORT_PATTERN = /^https?:\/\/(?:127\.0\.0\.1|localhost):3456$/;
-
 const ARTIFACT_RUNTIME_HOST_PATH = '/artifact-runtime/host';
 
+/**
+ * 데몬이 화면을 서빙하므로 아티팩트 런타임 호스트는 언제나 same-origin이다.
+ * 개발과 제품이 같은 위상을 쓰기 때문에 고를 것이 없다 — 포트를 비교하거나
+ * 빌드 모드를 보는 분기는 위상이 둘일 때만 필요했다.
+ *
+ * `locationOrigin`이 없는 경우는 `window`가 없는 실행(Node)뿐이고, 거기에는
+ * 프레임을 띄울 문서가 아예 없다. 그때 문서화된 기본 origin을 돌려주는 것은
+ * 어느 데몬인지 추측해서가 아니라 이 정체성 값이 실제로 쓰이지 않기 때문이다.
+ */
 export function resolveArtifactRuntimeHostOrigin(
   locationOrigin?: string,
 ): string {
@@ -22,14 +27,7 @@ export function resolveArtifactRuntimeHostOrigin(
     return DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN;
   }
 
-  const normalizedOrigin = new URL(locationOrigin).origin;
-  if (!LOOPBACK_ORIGIN_PATTERN.test(normalizedOrigin)) {
-    return normalizedOrigin;
-  }
-  if (DAEMON_PORT_PATTERN.test(normalizedOrigin)) {
-    return normalizedOrigin;
-  }
-  return DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN;
+  return new URL(locationOrigin).origin;
 }
 
 export function resolveArtifactRuntimeHostUrl(locationOrigin?: string): string {

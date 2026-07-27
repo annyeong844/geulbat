@@ -130,6 +130,43 @@ void test('PTC tool results distinguish resource admission from execution state'
   assert.equal(completedWait?.summary, 'PTC 실행 완료');
 });
 
+void test('PTC completed results expose durable artifact metadata without parsing file bytes', () => {
+  const view = parseToolResultView(
+    toolResultContent({
+      tool: 'exec',
+      ok: true,
+      displayText: JSON.stringify({
+        kind: 'ptc_execute_code_result',
+        exitCode: 0,
+        stdout: 'done',
+        artifacts: {
+          evidenceRef: 'sandbox-output:sandbox-evidence-1',
+          files: [
+            {
+              relativePath: 'reports/summary.json',
+              bytes: 42,
+              sha256: 'a'.repeat(64),
+            },
+          ],
+          totalBytes: 42,
+        },
+      }),
+    }),
+  );
+
+  assert.deepEqual(view?.artifacts, {
+    evidenceRef: 'sandbox-output:sandbox-evidence-1',
+    files: [
+      {
+        relativePath: 'reports/summary.json',
+        bytes: 42,
+        sha256: 'a'.repeat(64),
+      },
+    ],
+    totalBytes: 42,
+  });
+});
+
 void test('parseToolResultView truncates long bodies and falls back on malformed content', () => {
   const long = Array.from({ length: 900 }, (_, i) => `line ${i}`).join('\n');
   const view = parseToolResultView(

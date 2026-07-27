@@ -1,7 +1,17 @@
 import { posix as pathPosix } from 'node:path';
 
+import type {
+  PtcArtifactExportPolicy,
+  PtcExecuteCodeArtifactExport,
+} from '@geulbat/protocol/ptc-artifacts';
+
 import { definedPtcProps, isPtcRecord } from '../../shared/record-shape.js';
 import type { PtcLabAdmittedProfile } from '../../lab/profile/lab-profile.js';
+import type {
+  importPtcLabArtifactWorkspaceFiles,
+  ImportPtcLabArtifactWorkspaceFilesArgs,
+} from '../../lab/artifacts/lab-artifact-workspace.js';
+import { buildPtcLabPublicSessionId } from '../../lab/shell/lab-session-public-id.js';
 import {
   adaptPtcSessionDockerCommandRunner,
   type PtcLabBatchCommandExecutionSummary,
@@ -27,6 +37,7 @@ import type {
 } from './execute-code-sdk.js';
 import {
   buildPtcExecuteCodeGeulbatFacadeSource,
+  buildPtcExecuteCodePythonFacadeSource,
   buildPtcExecuteCodeReservedSdkRequireSource,
 } from './execute-code-sdk.js';
 import {
@@ -39,11 +50,14 @@ import {
 } from './execute-code-placement-contract.js';
 import {
   PTC_EXECUTE_CODE_POLICY_ID,
+  PTC_EXECUTE_CODE_PYTHON_POLICY_ID,
   PTC_EXECUTE_CODE_TOOL_NAME,
+  type PtcExecuteCodeCellId,
+  type PtcExecuteCodeLanguage,
   type PtcExecuteCodeModuleFormat,
   type PtcExecuteCodePlacementResourceSnapshotRef,
+  type PtcExecuteCodeRuntimeCompletedSummary,
   type PtcExecuteCodeRuntimeResult,
-  type PtcExecuteCodeRuntimeSummary,
   type PtcExecuteCodeStoreError,
   type PtcExecuteCodeRuntimeToolCallbackHandler,
   type ValidatedExecuteCodeRequest,
@@ -51,6 +65,10 @@ import {
 import type { PtcExecuteCodeStoreExecution } from './execute-code-store.js';
 
 type CreatePtcSessionEpochBridge = typeof createPtcSessionEpochBridge;
+
+export type PtcExecuteCodeArtifactImporter = (
+  args: Omit<ImportPtcLabArtifactWorkspaceFilesArgs, 'attemptStore'>,
+) => ReturnType<typeof importPtcLabArtifactWorkspaceFiles>;
 
 type ExecuteCodeBatchCommandResult = Awaited<
   ReturnType<
@@ -92,10 +110,17 @@ export async function runExecuteCodeRuntimeAttempt(args: {
   request: ValidatedExecuteCodeRequest;
   sdkHelpBundle: ReturnType<typeof buildPtcExecuteCodeSdkHelpBundle>;
   installedPackagesNodePath?: string;
+  installedPackagesPythonPath?: string;
   signal: AbortSignal | undefined;
   sessionManager: PtcSessionDockerManager;
   batchRunner: PtcExecuteCodePlacementBatchRunner;
   storeExecution?: PtcExecuteCodeStoreExecution;
+  artifactExport?: {
+    policy: PtcArtifactExportPolicy;
+    stateRoot: string;
+    importFiles: PtcExecuteCodeArtifactImporter;
+    threadId: string;
+  };
 }): Promise<PtcExecuteCodeRuntimeResult> {
   const placementResult = await args.placementCoordinator.acquirePlacement({
     kind: 'batch_command',
@@ -162,23 +187,37 @@ export async function runExecuteCodeRuntimeAttempt(args: {
       };
     }
 
-    const command = buildNodeExecuteCodeCommand(args.request.code, {
-      sdkHelpBundle: args.sdkHelpBundle,
-      ...(args.request.moduleFormat === undefined
-        ? {}
-        : { moduleFormat: args.request.moduleFormat }),
-      ...(args.installedPackagesNodePath === undefined
-        ? {}
-        : { installedPackagesNodePath: args.installedPackagesNodePath }),
-      ...(bridgeResult.value.bridge === undefined
-        ? {}
+    const callbackConfig =
+      bridgeResult.value.bridge === undefined
+        ? undefined
         : {
-            callbackConfig: {
-              socketPath: bridgeResult.value.bridge.callbackSocketContainerPath,
-              token: bridgeResult.value.bridge.token,
-            },
-          }),
-    });
+            socketPath: bridgeResult.value.bridge.callbackSocketContainerPath,
+            token: bridgeResult.value.bridge.token,
+          };
+    const language = args.request.language ?? 'javascript';
+    const command =
+      language === 'python'
+        ? buildPythonExecuteCodeCommand(args.request.code, {
+            sdkHelpBundle: args.sdkHelpBundle,
+            ...(args.installedPackagesPythonPath === undefined
+              ? {}
+              : {
+                  installedPackagesPythonPath: args.installedPackagesPythonPath,
+                }),
+            ...(callbackConfig === undefined ? {} : { callbackConfig }),
+          })
+        : buildNodeExecuteCodeCommand(args.request.code, {
+            sdkHelpBundle: args.sdkHelpBundle,
+            ...(args.request.moduleFormat === undefined
+              ? {}
+              : { moduleFormat: args.request.moduleFormat }),
+            ...(args.installedPackagesNodePath === undefined
+              ? {}
+              : {
+                  installedPackagesNodePath: args.installedPackagesNodePath,
+                }),
+            ...(callbackConfig === undefined ? {} : { callbackConfig }),
+          });
     const execution = await runExecuteCodeBatchCommand({
       admission: args.admission,
       command,
@@ -229,7 +268,8 @@ export async function runExecuteCodeRuntimeAttempt(args: {
       };
     }
 
-    const summaryArgs = {
+    const summaryArgs: SummarizeExecutionArgs = {
+      language,
       toolCallbacksEnabled: args.callbackRuntime.toolCallbacksEnabled,
       toolCallbackCount: args.callbackRuntime.observedCount(),
       sdkProtocolVersion: args.sdkHelpBundle.protocolVersion,
@@ -251,6 +291,25 @@ export async function runExecuteCodeRuntimeAttempt(args: {
           ...discardStoreExecution(args.storeExecution),
         }),
       };
+    }
+
+    if (args.artifactExport !== undefined) {
+      const exported = await exportExecuteCodeArtifacts({
+        admission: args.admission,
+        identity: placement.identity,
+        policyId: execution.value.policyId,
+        sessionManager: placement.sessionManager,
+        request: args.request,
+        exportConfig: args.artifactExport,
+        signal: args.signal,
+      });
+      if (!exported.ok) {
+        return {
+          ...exported,
+          ...discardStoreExecution(args.storeExecution),
+        };
+      }
+      summaryArgs.artifacts = exported.value;
     }
 
     if (args.storeExecution !== undefined) {
@@ -395,34 +454,93 @@ export function buildNodeExecuteCodeCommand(
   ].join(' ');
 }
 
+export function buildPythonExecuteCodeCommand(
+  code: string,
+  args: {
+    callbackConfig?: { socketPath: string; token: string };
+    installedPackagesPythonPath?: string;
+    sdkHelpBundle: ReturnType<typeof buildPtcExecuteCodeSdkHelpBundle>;
+  },
+): string {
+  const facadeSource = buildPtcExecuteCodePythonFacadeSource({
+    ...(args.callbackConfig === undefined
+      ? {}
+      : { callbackConfig: args.callbackConfig }),
+    helpBundle: args.sdkHelpBundle,
+  });
+  const encodedUserCode = Buffer.from(code, 'utf8').toString('base64');
+  const runnerSource = [
+    'import base64 as _geulbat_base64',
+    ...(args.installedPackagesPythonPath === undefined
+      ? []
+      : [
+          'import sys as _geulbat_sys',
+          `_geulbat_sys.path.insert(0, ${JSON.stringify(
+            args.installedPackagesPythonPath,
+          )})`,
+        ]),
+    facadeSource,
+    `exec(compile(_geulbat_base64.b64decode(${JSON.stringify(encodedUserCode)}), "<geulbat-ptc>", "exec"), globals(), globals())`,
+  ].join('\n');
+  const encodedRunner = Buffer.from(runnerSource, 'utf8').toString('base64');
+
+  return [
+    `GEULBAT_PTC_RUNNER_B64=${shellSingleQuote(encodedRunner)};`,
+    `GEULBAT_PTC_RUNNER_SOURCE="$(printf '%s' "$GEULBAT_PTC_RUNNER_B64" | base64 --decode)" || exit $?;`,
+    'exec',
+    'python3',
+    '-I',
+    '-u',
+    '-',
+    '<<< "$GEULBAT_PTC_RUNNER_SOURCE"',
+  ].join(' ');
+}
+
+type SummarizeExecutionArgs = {
+  language: PtcExecuteCodeLanguage;
+  toolCallbacksEnabled: boolean;
+  toolCallbackCount: number;
+  sdkProtocolVersion: typeof PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION;
+  sdkCallbackToolCount: number;
+  sensitiveMarkers: string[];
+  artifacts?: PtcExecuteCodeArtifactExport;
+  store?:
+    | { committedKeys: string[]; revisions: Record<string, number> }
+    | { discardedWrites: number };
+  cleanupFailure?: {
+    message: string;
+    diagnostics: Record<string, string | number | boolean>;
+  };
+};
+
 export function summarizeExecution(
   summary: PtcLabBatchCommandExecutionSummary,
-  args: {
-    toolCallbacksEnabled: boolean;
-    toolCallbackCount: number;
-    sdkProtocolVersion: typeof PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION;
-    sdkCallbackToolCount: number;
-    sensitiveMarkers: string[];
-    store?:
-      | { committedKeys: string[]; revisions: Record<string, number> }
-      | { discardedWrites: number };
-    cleanupFailure?: {
-      message: string;
-      diagnostics: Record<string, string | number | boolean>;
-    };
-  },
+  args: SummarizeExecutionArgs & { language: 'javascript' },
 ): Extract<
-  PtcExecuteCodeRuntimeSummary,
+  PtcExecuteCodeRuntimeCompletedSummary,
   { executionSurface: 'node_via_lab_batch_command' }
-> {
-  return {
-    ok: true,
+>;
+export function summarizeExecution(
+  summary: PtcLabBatchCommandExecutionSummary,
+  args: SummarizeExecutionArgs & { language: 'python' },
+): Extract<
+  PtcExecuteCodeRuntimeCompletedSummary,
+  { executionSurface: 'python_via_lab_batch_command' }
+>;
+export function summarizeExecution(
+  summary: PtcLabBatchCommandExecutionSummary,
+  args: SummarizeExecutionArgs,
+): PtcExecuteCodeRuntimeCompletedSummary;
+export function summarizeExecution(
+  summary: PtcLabBatchCommandExecutionSummary,
+  args: SummarizeExecutionArgs,
+): PtcExecuteCodeRuntimeCompletedSummary {
+  const common = {
+    ok: true as const,
     capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
-    policyId: PTC_EXECUTE_CODE_POLICY_ID,
     labPolicyId: summary.policyId,
-    profile: 'lab',
-    executionClass: 'lab_execute_code',
-    executionSurface: 'node_via_lab_batch_command',
+    profile: 'lab' as const,
+    executionClass: 'lab_execute_code' as const,
     exitCode: summary.exitCode,
     stdout: sanitizeSensitiveMarkers(summary.stdout, args.sensitiveMarkers),
     stderr: sanitizeSensitiveMarkers(summary.stderr, args.sensitiveMarkers),
@@ -433,7 +551,7 @@ export function summarizeExecution(
       observed: args.toolCallbackCount,
     },
     sessionLifecycle: {
-      mode: 'runtime_owned_reusable',
+      mode: 'runtime_owned_reusable' as const,
       retainedAfterExecution: true,
     },
     callbackHelp: {
@@ -442,9 +560,110 @@ export function summarizeExecution(
       callbackToolCount: args.sdkCallbackToolCount,
     },
     ...(args.store === undefined ? {} : { store: args.store }),
+    ...(args.artifacts === undefined ? {} : { artifacts: args.artifacts }),
     ...(args.cleanupFailure !== undefined
       ? { cleanupFailure: args.cleanupFailure }
       : {}),
+  };
+
+  if (args.language === 'python') {
+    return {
+      ...common,
+      policyId: PTC_EXECUTE_CODE_PYTHON_POLICY_ID,
+      executionSurface: 'python_via_lab_batch_command',
+      language: 'python',
+    };
+  }
+
+  return {
+    ...common,
+    policyId: PTC_EXECUTE_CODE_POLICY_ID,
+    executionSurface: 'node_via_lab_batch_command',
+  };
+}
+
+async function exportExecuteCodeArtifacts(args: {
+  admission: PtcLabAdmittedProfile;
+  identity: PtcSessionDockerIdentity;
+  policyId: string;
+  sessionManager: PtcSessionDockerManager;
+  request: ValidatedExecuteCodeRequest;
+  exportConfig: {
+    policy: PtcArtifactExportPolicy;
+    stateRoot: string;
+    importFiles: PtcExecuteCodeArtifactImporter;
+    threadId: string;
+  };
+  signal: AbortSignal | undefined;
+}): Promise<
+  | { ok: true; value: PtcExecuteCodeArtifactExport }
+  | Extract<PtcExecuteCodeRuntimeResult, { ok: false }>
+> {
+  const relativePaths = args.request.artifacts;
+  if (relativePaths === undefined || relativePaths.length === 0) {
+    return {
+      ok: false,
+      reasonCode: 'ptc_execute_code_artifact_export_failed',
+      message: 'PTC execute_code artifact export request was lost',
+    };
+  }
+
+  let session;
+  try {
+    session = await args.sessionManager.getOrCreate(
+      args.identity,
+      args.signal === undefined ? undefined : { signal: args.signal },
+    );
+  } catch {
+    return {
+      ok: false,
+      reasonCode: 'ptc_execute_code_artifact_export_failed',
+      message: 'PTC execute_code artifact session is unavailable',
+      diagnostics: { artifactReasonCode: 'session_manager_threw' },
+    };
+  }
+  if (!session.ok) {
+    return {
+      ok: false,
+      reasonCode: 'ptc_execute_code_artifact_export_failed',
+      message: 'PTC execute_code artifact session is unavailable',
+      diagnostics: { artifactReasonCode: session.reasonCode },
+    };
+  }
+
+  const imported = await args.exportConfig.importFiles({
+    admission: args.admission,
+    session: {
+      profile: 'lab',
+      policyId: args.policyId,
+      labSessionId: buildPtcLabPublicSessionId(session.value),
+      artifactRootHostPath: session.value.artifactRootHostPath,
+      artifactRootContainerPath: session.value.artifactRootContainerPath,
+      artifactWorkspaceMountPolicyId:
+        session.value.artifactWorkspaceMountPolicyId,
+    },
+    stateRoot: args.exportConfig.stateRoot,
+    request: {
+      relativePaths,
+      policy: args.exportConfig.policy,
+    },
+    owner: { threadId: args.exportConfig.threadId },
+  });
+  if (!imported.ok) {
+    return {
+      ok: false,
+      reasonCode: 'ptc_execute_code_artifact_export_failed',
+      message: imported.message,
+      diagnostics: { artifactReasonCode: imported.reasonCode },
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      evidenceRef: imported.value.evidenceRef,
+      files: imported.value.files.map((file) => ({ ...file })),
+      totalBytes: imported.value.totalBytes,
+    },
   };
 }
 
@@ -577,6 +796,7 @@ export function createExecuteCodeStoreCallbackHandler(args: {
 
 export async function maybeCreateCallbackBridge(args: {
   callbackRuntime: ReturnType<typeof createExecuteCodeCallbackRuntime>;
+  cellId?: PtcExecuteCodeCellId;
   identity: PtcSessionDockerIdentity;
   sessionManager: Parameters<CreatePtcSessionEpochBridge>[0]['sessionManager'];
   createEpochBridge: CreatePtcSessionEpochBridge | undefined;
@@ -597,6 +817,7 @@ export async function maybeCreateCallbackBridge(args: {
     identity: args.identity,
     sessionManager: args.sessionManager,
     callbackHandler: args.callbackRuntime.callbackHandler,
+    ...(args.cellId === undefined ? {} : { processInvocationId: args.cellId }),
     callbackPolicy: args.callbackRuntime.callbackPolicy,
     ...(args.signal ? { signal: args.signal } : {}),
   });

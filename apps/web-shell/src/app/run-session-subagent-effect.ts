@@ -33,6 +33,7 @@ type TerminalSubagentActivitySource = Omit<
     | 'result'
     | 'resultRef'
     | 'resultDigest'
+    | 'resultReport'
     | 'completedAt'
     | 'elapsedMs'
     | 'usage'
@@ -167,6 +168,7 @@ function createTerminalSubagentActivityEntry(
     ...(source.result ? { result: source.result } : {}),
     ...(source.resultRef ? { resultRef: source.resultRef } : {}),
     ...(source.resultDigest ? { resultDigest: source.resultDigest } : {}),
+    ...(source.resultReport ? { resultReport: source.resultReport } : {}),
     ...(source.completedAt ? { completedAt: source.completedAt } : {}),
     ...(source.elapsedMs !== undefined ? { elapsedMs: source.elapsedMs } : {}),
     ...(source.usage !== undefined ? { usage: source.usage } : {}),

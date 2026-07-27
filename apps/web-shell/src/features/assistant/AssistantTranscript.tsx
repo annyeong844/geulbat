@@ -1,7 +1,6 @@
 import React, { useMemo } from 'react';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
-import type { RunRequest } from '@geulbat/protocol/run-contract';
 import type {
   ProviderRuntimeStatusEventPayload,
   RunUsageTotals,
@@ -17,14 +16,13 @@ import {
   getThreadMessageBaseKey,
 } from './assistant-transcript-content.js';
 import { RunStatusRow } from './assistant-run-status.js';
-import type { WidgetToolRequestHandler } from './assistant-transcript-entry-blocks.js';
 import { AssistantTranscriptLiveTail } from './assistant-transcript-live-tail.js';
 import {
-  type OpenChildSessionHandler,
+  type TranscriptMessageEditActions,
+  type TranscriptRowInteractions,
   VirtualizedTranscriptRows,
 } from './assistant-transcript-virtual-list.js';
 import { useAssistantTranscriptScrollState } from './use-assistant-transcript-scroll-state.js';
-import type { AskUserAnswerHandler } from './ask-user/ask-user-card.js';
 
 interface AssistantTranscriptProps {
   threadId: string | null;
@@ -45,26 +43,9 @@ interface AssistantTranscriptProps {
   // 실행 중 상태줄에 붙일 런 누적 토큰 사용량
   usageTotals?: RunUsageTotals | null;
   providerRuntime?: ProviderRuntimeStatusEventPayload | null;
-  onStartArtifactRun: (request: RunRequest) => Promise<void> | void;
-  attachmentImageUrl?: (attachmentId: string) => string | null;
-  // 존재하면 마지막 답변 액션에 ↻ 재시도를 붙인다 — 표시 조건은 Assistant가 판정
-  onRetryLastPrompt?: () => void;
-  // 존재하면 마지막 질문에 ✎ 편집을 붙인다 (수정본은 재생성으로 전송)
-  onEditLastUserPrompt?: (nextPrompt: string) => void;
-  // 존재하면 모든 답변에 ⑂ 여기서 새 채팅을 붙인다
-  onBranchFromMessage?: (entryId: string) => void;
-  // 존재하면 과거 질문(마지막 제외)에 ✎ 편집을 붙인다 — 브랜치 기반 재실행
-  onEditPastUserPrompt?: (entryId: string, nextPrompt: string) => void;
-  onOpenChildSession?: OpenChildSessionHandler;
-  // visualize 위젯의 sendPrompt를 기존 전송 경로로 번역하는 콜백
-  onWidgetPrompt?: (prompt: string) => Promise<void> | void;
-  // ask_user 카드 답변 — 사용자 선택이므로 아티팩트 귀속 없이 전송한다
-  onAskUserAnswer?: AskUserAnswerHandler;
-  answeredAskUserRequestKeys?: ReadonlySet<string>;
-  // 위젯 발 도구 호출(run.tool) 번역 콜백
-  onWidgetToolRequest?: WidgetToolRequestHandler;
-  // 존재하면 아티팩트는 인라인 대신 참조 칩으로 남고 중앙 패널에서 열린다
-  onOpenArtifact?: (artifact: ThreadArtifactVersion) => void;
+  // 행 상호작용 표면과 메시지 액션은 행 계층 소유 shape로 그대로 내려간다.
+  rowInteractions: TranscriptRowInteractions;
+  messageEditActions?: TranscriptMessageEditActions;
 }
 
 export const AssistantTranscript = React.memo(function AssistantTranscript({
@@ -80,19 +61,11 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
   isRunning,
   usageTotals = null,
   providerRuntime = null,
-  onStartArtifactRun,
-  attachmentImageUrl,
-  onRetryLastPrompt,
-  onEditLastUserPrompt,
-  onBranchFromMessage,
-  onEditPastUserPrompt,
-  onOpenChildSession,
-  onWidgetPrompt,
-  onAskUserAnswer,
-  answeredAskUserRequestKeys,
-  onWidgetToolRequest,
-  onOpenArtifact,
+  rowInteractions,
+  messageEditActions,
 }: AssistantTranscriptProps) {
+  const { onStartArtifactRun, onOpenArtifact } = rowInteractions;
+  const onRetryLastPrompt = messageEditActions?.onRetryLastPrompt;
   const activeArtifactKey = activeArtifact
     ? `${activeArtifact.artifactId}:${activeArtifact.version}`
     : null;
@@ -178,28 +151,8 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
           artifactsByRef={artifactsByRef}
           planningWorkflowSnapshot={planningWorkflowSnapshot}
           isRunning={isRunning}
-          onStartArtifactRun={onStartArtifactRun}
-          {...(attachmentImageUrl !== undefined ? { attachmentImageUrl } : {})}
-          {...(onRetryLastPrompt !== undefined ? { onRetryLastPrompt } : {})}
-          {...(onEditLastUserPrompt !== undefined
-            ? { onEditLastUserPrompt }
-            : {})}
-          {...(onBranchFromMessage !== undefined
-            ? { onBranchFromMessage }
-            : {})}
-          {...(onEditPastUserPrompt !== undefined
-            ? { onEditPastUserPrompt }
-            : {})}
-          {...(onOpenChildSession !== undefined ? { onOpenChildSession } : {})}
-          {...(onWidgetPrompt !== undefined ? { onWidgetPrompt } : {})}
-          {...(onAskUserAnswer !== undefined ? { onAskUserAnswer } : {})}
-          {...(answeredAskUserRequestKeys !== undefined
-            ? { answeredAskUserRequestKeys }
-            : {})}
-          {...(onWidgetToolRequest !== undefined
-            ? { onWidgetToolRequest }
-            : {})}
-          {...(onOpenArtifact !== undefined ? { onOpenArtifact } : {})}
+          rowInteractions={rowInteractions}
+          {...(messageEditActions !== undefined ? { messageEditActions } : {})}
         />
 
         <AssistantTranscriptLiveTail

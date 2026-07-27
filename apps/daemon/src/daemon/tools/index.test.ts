@@ -46,6 +46,7 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
     'update_plan',
     'visualize',
     'wait',
+    'web_search',
     'write_file',
     'write_memory_note',
     'write_stdin',
@@ -64,6 +65,7 @@ void test('createBuiltinToolRegistryStore registers the canonical builtin tool s
   assert.ok(registry.getTool('inspect_git'));
   assert.equal(registry.getTool('execute_code'), undefined);
   assert.ok(registry.getTool('fetch_url'));
+  assert.ok(registry.getTool('web_search'));
   assert.equal(registry.getTool('web_fetch'), undefined);
   assert.ok(registry.getTool('generate_image'));
   assert.ok(registry.getTool('generate_video'));

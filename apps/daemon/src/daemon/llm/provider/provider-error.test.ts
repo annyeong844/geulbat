@@ -148,3 +148,92 @@ void test('normalizeProviderErrorCode still maps non-status context length messa
     'llm_context_length_exceeded',
   );
 });
+
+void test('normalizeProviderErrorCode separates Qwen SSE max_tokens budget from input context overflow', () => {
+  // qwen_token_plan only: HTTP SSE chat completions may send max_tokens
+  // (e.g. summary compaction). Aliyun compatible-mode range rejection.
+  assert.equal(
+    normalizeProviderErrorCode(
+      Object.assign(new Error('Range of max_tokens should be [1, 65536]'), {
+        status: 400,
+      }),
+    ),
+    'llm_output_budget_exceeded',
+  );
+  // Input overflow (shared wording) stays on the context path.
+  assert.equal(
+    normalizeProviderErrorCode(
+      new Error('prompt is too long: reduce the length of the messages'),
+    ),
+    'llm_context_length_exceeded',
+  );
+  assert.equal(
+    sanitizeProviderErrorMessage('llm_output_budget_exceeded'),
+    'output token budget exceeded; lower max_tokens (this is not an input context overflow)',
+  );
+});
+
+void test('normalizeProviderErrorCode separates usage exhaustion from transient rate limits', () => {
+  // OpenAI-style quota exhaustion — do not burn rate-limit retries.
+  assert.equal(
+    normalizeProviderErrorCode(
+      Object.assign(new Error('You exceeded your current quota'), {
+        providerErrorCode: 'insufficient_quota',
+      }),
+    ),
+    'llm_usage_limit_exceeded',
+  );
+  // Grok(xAI) spending limit arrives as 403 — not auth_failed.
+  assert.equal(
+    normalizeProviderErrorCode(
+      Object.assign(new Error('spending limit reached'), {
+        status: 403,
+        providerErrorCode: 'personal-team-blocked:spending-limit',
+      }),
+    ),
+    'llm_usage_limit_exceeded',
+  );
+  // Transient usage window still rate-limits (retryable).
+  assert.equal(
+    normalizeProviderErrorCode(
+      new Error('Usage limit reached, try again in 5 minutes'),
+    ),
+    'llm_rate_limited',
+  );
+  // Plain rate limit stays rate-limited.
+  assert.equal(
+    normalizeProviderErrorCode(
+      Object.assign(new Error('Rate limit exceeded'), { status: 429 }),
+    ),
+    'llm_rate_limited',
+  );
+  assert.equal(
+    sanitizeProviderErrorMessage('llm_usage_limit_exceeded'),
+    'provider usage or credit limit exceeded; top up or change plan (this is not a transient rate limit)',
+  );
+});
+
+void test('normalizeProviderErrorCode classifies encrypted reasoning replay rejection before context overflow', () => {
+  assert.equal(
+    normalizeProviderErrorCode(
+      Object.assign(
+        new Error('The encrypted content for item rs_1 could not be verified.'),
+        { status: 400, providerErrorCode: 'invalid_encrypted_content' },
+      ),
+    ),
+    'llm_replay_state_rejected',
+  );
+  assert.equal(
+    normalizeProviderErrorCode(
+      new Error('could not decrypt the provided encrypted_content'),
+    ),
+    'llm_replay_state_rejected',
+  );
+  // Must not collapse into context length just because "content" appears.
+  assert.notEqual(
+    normalizeProviderErrorCode(
+      new Error('The encrypted content for item rs_1 could not be verified.'),
+    ),
+    'llm_context_length_exceeded',
+  );
+});

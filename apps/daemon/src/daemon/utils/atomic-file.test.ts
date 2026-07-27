@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { PathLike } from 'node:fs';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   AtomicBackupRestoreFailedError,
   AtomicReplaceConflictError,
+  copyFileAtomically,
   replaceFileAtomically,
   writeFileAtomically,
   writeTextFileAtomically,
@@ -54,6 +55,46 @@ void test('writeFileAtomically creates parent directories and writes binary cont
   await writeFileAtomically(targetPath, new Uint8Array([0x00, 0x01, 0x02]));
 
   assert.deepEqual(await readFile(targetPath), Buffer.from([0x00, 0x01, 0x02]));
+});
+
+void test('copyFileAtomically preserves the target and cleans up staging when the source copy fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'geulbat-atomic-file-'));
+  const sourcePath = join(root, 'missing.bin');
+  const targetPath = join(root, 'target.bin');
+  const original = Buffer.from([0x00, 0x01]);
+  await writeFile(targetPath, original);
+
+  await assert.rejects(() => copyFileAtomically(sourcePath, targetPath));
+
+  assert.deepEqual(await readFile(targetPath), original);
+  assert.deepEqual(await readdir(root), ['target.bin']);
+});
+
+void test('writeFileAtomically validates the target after staging and cleans up when validation rejects', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'geulbat-atomic-file-'));
+  const targetPath = join(root, 'target.bin');
+  const original = Buffer.from([0x00, 0x01]);
+  await writeFile(targetPath, original);
+  let validationCount = 0;
+
+  await assert.rejects(
+    () =>
+      writeFileAtomically(targetPath, new Uint8Array([0x02]), {
+        validateBeforeCommit: async () => {
+          validationCount += 1;
+          const stagedNames = (await readdir(root)).filter((name) =>
+            name.endsWith('.tmp'),
+          );
+          assert.equal(stagedNames.length, 1);
+          throw new Error('target changed');
+        },
+      }),
+    /target changed/,
+  );
+
+  assert.equal(validationCount, 1);
+  assert.deepEqual(await readFile(targetPath), original);
+  assert.deepEqual(await readdir(root), ['target.bin']);
 });
 
 void test('replaceFileAtomically surfaces a conflict when another writer recreates the target during fallback', async () => {

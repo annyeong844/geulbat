@@ -120,6 +120,7 @@ void test('initial lifecycle derives plan and Goal bindings, claims after checkp
   const liveRunEvents = createLiveRunEventStore();
   const threadId = testThreadId(501);
   const runId = assertRunId('run-lifecycle-initial');
+  let terminalSettlements = 0;
   const approvedPlanRef = await approvePlan(
     planningWorkflows,
     threadId,
@@ -142,6 +143,9 @@ void test('initial lifecycle derives plan and Goal bindings, claims after checkp
     goals,
     runCheckpoints,
     liveRunEvents,
+    onTerminalSettled() {
+      terminalSettlements += 1;
+    },
   });
   const delivered = startLiveDelivery({
     liveRunEvents,
@@ -173,7 +177,9 @@ void test('initial lifecycle derives plan and Goal bindings, claims after checkp
   } as const;
   await lifecycle.settleTerminal(done);
   await lifecycle.settleTerminal(done);
+  assert.equal(await lifecycle.settleFailure(done), true);
 
+  assert.equal(terminalSettlements, 1);
   assert.equal(
     (await planningWorkflows.readThread(threadId))?.state,
     'completed',
@@ -606,11 +612,11 @@ void test('recovered unavailable Goal terminates without model work and settles 
   const goal = await beforeRestartGoals.enterOrResume({
     threadId,
     requested: true,
-    objective: 'Recover Goal verification without guessing',
+    objective: 'Recover Goal completion admission without guessing',
     executionTemplate,
   });
   assert.ok(goal);
-  await beforeRestartGoals.requestVerification({
+  await beforeRestartGoals.requestCompletion({
     threadId,
     goalId: goal.goalId,
     runId,

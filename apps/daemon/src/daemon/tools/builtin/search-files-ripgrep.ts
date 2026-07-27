@@ -16,6 +16,7 @@ import {
   buildRipgrepCloseError,
   buildRipgrepResult,
   parseRipgrepMatchLine,
+  resolveSearchMatchPreviewMaxBytes,
 } from './search-files-ripgrep-result.js';
 
 type RipgrepRootClass = 'posix' | 'wsl-drive' | 'windows';
@@ -285,11 +286,13 @@ function createRipgrepMatchCollector(args: {
 } {
   const results: SearchMatch[] = [];
   let totalMatches = 0;
+  const matchPreviewMaxBytes = resolveSearchMatchPreviewMaxBytes(process.env);
   return {
     consumeLine(line) {
       const match = parseRipgrepMatchLine(line, {
         rgPath: args.rgPath,
         workspaceRoot: args.workspaceRoot,
+        matchPreviewMaxBytes,
       });
       if (!match) {
         return;

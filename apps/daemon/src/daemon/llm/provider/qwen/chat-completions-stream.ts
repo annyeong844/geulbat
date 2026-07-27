@@ -1,12 +1,15 @@
 import { parseDaemonArtifactCandidateText } from '../../../artifact-candidate.js';
-import { isRecord } from '../../../runtime-json.js';
 import type { ProviderReplayScopeId } from '../../../runtime-contracts.js';
+import { isRecord } from '../../../runtime-json.js';
 import { hashProviderTraceIdentity } from '../provider-cache-projection.js';
 import type { ResponsesRequestPreparedHandler } from '../transport/responses-websocket.js';
+import type { ResponsesWebSocketSessionStore } from '../transport/responses-websocket-cache.js';
+import { iterateJsonServerSentEvents } from '../transport/json-server-sent-events.js';
 import type {
   CallResult,
   FunctionCall,
   HistoryItem,
+  ModelRoundStopReason,
   ProviderUsageTelemetry,
   WireToolDefinition,
 } from '../wire/types.js';
@@ -31,8 +34,16 @@ export interface QwenChatCompletionsInput extends QwenStreamCallbacks {
   config: QwenTokenPlanConfig;
   history: HistoryItem[];
   providerReplayScopeId: ProviderReplayScopeId;
+  providerSessionId?: string;
+  requestAttempt?: number;
+  providerRequestSessions?: Pick<
+    ResponsesWebSocketSessionStore,
+    'streamDurableHttpSseEvents'
+  >;
   instructions?: string;
   tools?: WireToolDefinition[];
+  enableThinking?: boolean;
+  maxTokens?: number;
   signal?: AbortSignal;
   onRequestPrepared?: ResponsesRequestPreparedHandler;
   onProviderWaiting?: () => void;
@@ -52,6 +63,14 @@ export async function streamQwenChatCompletions(
   input: QwenChatCompletionsInput,
   deps: QwenChatCompletionsDependencies = { fetchImpl: fetch },
 ): Promise<CallResult> {
+  if (
+    input.maxTokens !== undefined &&
+    (!Number.isSafeInteger(input.maxTokens) || input.maxTokens <= 0)
+  ) {
+    throw new QwenStreamError(
+      'Qwen maximum output tokens must be a positive safe integer',
+    );
+  }
   const historyMessages = buildQwenChatMessages({
     history: input.history,
     providerReplayScopeId: input.providerReplayScopeId,
@@ -66,7 +85,8 @@ export async function streamQwenChatCompletions(
     messages: [...systemMessages, ...historyMessages],
     stream: true,
     stream_options: { include_usage: true },
-    enable_thinking: true,
+    enable_thinking: input.enableThinking ?? true,
+    ...(input.maxTokens === undefined ? {} : { max_tokens: input.maxTokens }),
     ...(tools === undefined || tools.length === 0
       ? {}
       : { tools, tool_choice: 'auto' }),
@@ -93,30 +113,21 @@ export async function streamQwenChatCompletions(
     accept: 'text/event-stream',
     'content-type': 'application/json',
   });
-  const response = await deps.fetchImpl(input.config.chatCompletionsUrl, {
-    method: 'POST',
+  const events = streamQwenEvents({
+    input,
+    deps,
     headers,
-    body: serializedBody,
-    ...(input.signal === undefined ? {} : { signal: input.signal }),
+    serializedBody,
   });
-  if (!response.ok) {
-    throw new QwenHttpError(response.status);
-  }
-  const contentType = response.headers.get('content-type')?.toLowerCase();
-  if (contentType?.includes('text/event-stream') !== true) {
-    throw new QwenStreamError('Qwen response is not an event stream');
-  }
-  if (response.body === null) {
-    throw new QwenStreamError('Qwen event stream body is missing');
-  }
 
   let responseId = '';
   let commentaryText = '';
   let finalText = '';
   let providerUsageTelemetry: ProviderUsageTelemetry | undefined;
+  let stopReason: ModelRoundStopReason | undefined;
   const toolCallsByIndex = new Map<number, AccumulatedQwenToolCall>();
 
-  for await (const event of iterateQwenServerSentEvents(response.body)) {
+  for await (const event of events) {
     const error = isRecord(event['error']) ? event['error'] : undefined;
     if (error !== undefined) {
       throw new QwenStreamError('Qwen event stream reported an error');
@@ -139,6 +150,10 @@ export async function streamQwenChatCompletions(
       const choiceIndex = choice['index'];
       if (choiceIndex !== undefined && choiceIndex !== 0) {
         continue;
+      }
+      const mappedStopReason = mapQwenFinishReason(choice['finish_reason']);
+      if (mappedStopReason !== undefined) {
+        stopReason = mappedStopReason;
       }
       const delta = choice['delta'];
       if (!isRecord(delta)) {
@@ -216,7 +231,31 @@ export async function streamQwenChatCompletions(
     finalText,
     ...(artifactCandidate === undefined ? {} : { artifactCandidate }),
     ...(providerUsageTelemetry === undefined ? {} : { providerUsageTelemetry }),
+    ...(stopReason === undefined ? {} : { stopReason }),
   };
+}
+
+/**
+ * Qwen HTTP SSE chat completions `finish_reason` only.
+ * null/빈 값은 스트림 중간 조각이라 무시하고, 마지막 non-null 값을 남긴다.
+ * Responses WebSocket 경로에서는 호출하지 않는다.
+ */
+function mapQwenFinishReason(value: unknown): ModelRoundStopReason | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new QwenStreamError('Qwen finish_reason is invalid');
+  }
+  switch (value) {
+    case 'stop':
+    case 'tool_calls':
+    case 'length':
+    case 'content_filter':
+      return value;
+    default:
+      return 'unknown';
+  }
 }
 
 function toQwenToolDefinition(
@@ -275,89 +314,63 @@ function measureSerializedValue(value: unknown): number {
     : Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
-async function* iterateQwenServerSentEvents(
-  body: ReadableStream<Uint8Array>,
-): AsyncGenerator<Record<string, unknown>> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let completed = false;
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) {
-        buffer += decoder.decode();
-        break;
-      }
-      buffer += decoder.decode(next.value, { stream: true });
-      const drained = drainSseBlocks(buffer);
-      buffer = drained.remainder;
-      for (const block of drained.blocks) {
-        const event = parseQwenSseBlock(block);
-        if (event === 'done') {
-          completed = true;
-          return;
-        }
-        if (event !== undefined) {
-          yield event;
-        }
-      }
+function streamQwenEvents(args: {
+  input: QwenChatCompletionsInput;
+  deps: QwenChatCompletionsDependencies;
+  headers: Headers;
+  serializedBody: string;
+}): AsyncIterable<Record<string, unknown>> {
+  if (args.input.providerRequestSessions !== undefined) {
+    const streamDurableHttpSseEvents =
+      args.input.providerRequestSessions.streamDurableHttpSseEvents;
+    if (streamDurableHttpSseEvents === undefined) {
+      throw new QwenStreamError(
+        'Qwen durable provider request transport is unavailable',
+      );
     }
-    if (buffer.trim() !== '') {
-      const event = parseQwenSseBlock(buffer);
-      if (event !== undefined && event !== 'done') {
-        yield event;
-      }
+    if (args.input.providerSessionId === undefined) {
+      throw new QwenStreamError(
+        'Qwen durable provider session identity is unavailable',
+      );
     }
-    completed = true;
-  } finally {
-    if (!completed) {
-      try {
-        await reader.cancel();
-      } catch {
-        // The owned fetch stream is already closing; cancellation is best-effort.
-      }
-    }
-    reader.releaseLock();
+    return streamDurableHttpSseEvents({
+      requestUrl: args.input.config.chatCompletionsUrl,
+      headers: args.headers,
+      serializedPayload: args.serializedBody,
+      providerSessionId: args.input.providerSessionId,
+      requestAttempt: args.input.requestAttempt ?? 0,
+      ...(args.input.signal === undefined ? {} : { signal: args.input.signal }),
+    });
   }
+  return streamDirectQwenEvents(args);
 }
 
-function drainSseBlocks(value: string): {
-  blocks: string[];
-  remainder: string;
-} {
-  const normalized = value.replaceAll('\r\n', '\n');
-  const parts = normalized.split('\n\n');
-  return {
-    blocks: parts.slice(0, -1),
-    remainder: parts.at(-1) ?? '',
-  };
-}
-
-function parseQwenSseBlock(
-  block: string,
-): Record<string, unknown> | 'done' | undefined {
-  const data = block
-    .split('\n')
-    .filter((line) => line.startsWith('data:'))
-    .map((line) => line.slice(5).trimStart())
-    .join('\n');
-  if (data === '') {
-    return undefined;
+async function* streamDirectQwenEvents(args: {
+  input: QwenChatCompletionsInput;
+  deps: QwenChatCompletionsDependencies;
+  headers: Headers;
+  serializedBody: string;
+}): AsyncGenerator<Record<string, unknown>> {
+  const response = await args.deps.fetchImpl(
+    args.input.config.chatCompletionsUrl,
+    {
+      method: 'POST',
+      headers: args.headers,
+      body: args.serializedBody,
+      ...(args.input.signal === undefined ? {} : { signal: args.input.signal }),
+    },
+  );
+  if (!response.ok) {
+    throw new QwenHttpError(response.status);
   }
-  if (data === '[DONE]') {
-    return 'done';
+  const contentType = response.headers.get('content-type')?.toLowerCase();
+  if (contentType?.includes('text/event-stream') !== true) {
+    throw new QwenStreamError('Qwen response is not an event stream');
   }
-  let value: unknown;
-  try {
-    value = JSON.parse(data);
-  } catch {
-    throw new QwenStreamError('Qwen event stream contains invalid JSON');
+  if (response.body === null) {
+    throw new QwenStreamError('Qwen event stream body is missing');
   }
-  if (!isRecord(value)) {
-    throw new QwenStreamError('Qwen event stream contains a non-object event');
-  }
-  return value;
+  yield* iterateJsonServerSentEvents(response.body);
 }
 
 function readOptionalDeltaString(

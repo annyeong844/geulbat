@@ -12,6 +12,10 @@
   display: flex;
   flex: 1;
   flex-direction: column;
+  /* 원본 크기 영상처럼 자리보다 큰 콘텐츠가 들어와도 이 표면은 넓어지지
+     않는다. min-width가 auto로 남으면 flex 항목의 content 최소 크기가 살아
+     있어서, 안쪽 무대가 스크롤하는 대신 표면째로 밀려 나간다. */
+  min-width: 0;
   min-height: 0;
   gap: 10px;
 }
@@ -140,11 +144,13 @@
   display: flex;
   flex: 1;
   flex-direction: column;
+  min-width: 0;
   min-height: 420px;
 }
 
 .artifact-editor-body .artifact-preview-surface {
   flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -155,13 +161,17 @@
 
 /* ─────────────────────────────────────
    미디어 아티팩트 프리뷰 — 감상 표면. 파일 뷰어의 스테이지/풋터 문법을
-   그대로 잇는다: 동영상은 웜 블랙 매트, 이미지는 종이 위에, 프롬프트는
-   풋터에서 한 줄로 접혀 있다가 클릭하면 펼쳐진다.
+   그대로 잇는다: 동영상과 이미지 모두 무대 위에 놓이고, 프롬프트는 풋터에서
+   한 줄로 접혀 있다가 클릭하면 펼쳐진다.
    ───────────────────────────────────── */
 .artifact-media-figure {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* 원본 크기 영상은 이 자리보다 클 수 있다. min-*: 0이 없으면 flex 항목의
+     content 최소 크기가 살아 있어서, 무대가 스크롤하는 대신 조상이 함께
+     넓어지며 아티팩트 창 밖으로 밀려난다. */
+  min-width: 0;
   min-height: 0;
   margin: 0;
 }
@@ -175,17 +185,6 @@
   padding: 4px;
   border-radius: calc(var(--radius-lg) - 8px);
   overflow: hidden;
-}
-
-/* 필름 매트 — 파일 뷰어의 비디오 스테이지와 같은 웜 블랙 */
-.artifact-media-stage.dark {
-  background: color-mix(in srgb, var(--primary) 55%, black);
-}
-
-.artifact-media-video {
-  max-width: 100%;
-  max-height: 100%;
-  display: block;
 }
 
 .artifact-media-image {
@@ -206,6 +205,104 @@
   font-family: var(--font-ui-label);
   font-size: 12px;
   color: var(--on-surface-muted);
+}
+
+/* ─────────────────────────────────────
+   동영상 무대 — 아티팩트가 차지한 자리에서 그대로 재생한다. 화면 맞춤이
+   기본이고, 원본 크기(1:1)는 영역보다 클 수 있으므로 무대가 스크롤을 갖는다.
+   ───────────────────────────────────── */
+.artifact-video-stage {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 240px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary) 55%, black);
+}
+
+/* 스크롤은 안쪽이 갖는다. 크기 전환 버튼을 이 바깥에 두어야 원본 크기로
+   훑는 동안에도 버튼이 같은 자리에 남는다. */
+.artifact-video-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.artifact-video-canvas {
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: clamp(4px, 1vw, 12px);
+}
+
+.artifact-video-canvas.fit {
+  width: 100%;
+  height: 100%;
+}
+
+/* 가득 채우기는 여백 없이 네모칸에 딱 맞춘다 — 여백을 남기면 "가득"이 아니다 */
+.artifact-video-canvas.fill {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+}
+
+.artifact-video {
+  display: block;
+  flex: none;
+}
+
+.artifact-video.fit {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* 비율은 지키고 영역을 채운다 — 넘치는 가장자리는 잘린다. 늘려서 채우면
+   인물과 글자가 일그러지므로 cover이지 fill이 아니다. */
+.artifact-video.fill {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: cover;
+}
+
+.artifact-video.original {
+  max-width: none;
+  max-height: none;
+}
+
+/* 영상 위에 얹는다 — 네이티브 컨트롤은 아래쪽에 있어 위 모서리가 비어 있다. */
+.artifact-video-sizing {
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  right: 8px;
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, black 45%, transparent);
+  color: #fff;
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.artifact-video-sizing:hover,
+.artifact-video-sizing.active {
+  background: color-mix(in srgb, black 68%, transparent);
 }
 
 .artifact-media-prompt {

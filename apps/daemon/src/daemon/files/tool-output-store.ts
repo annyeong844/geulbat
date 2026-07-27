@@ -55,6 +55,58 @@ export function buildToolOutputRef(args: {
   return `tool-output:${encodeRefPart(args.threadId)}/${encodeRefPart(args.runId)}/${encodeRefPart(args.callId)}`;
 }
 
+export function rebindToolOutputSnapshotThread(args: {
+  snapshot: unknown;
+  targetThreadId: string;
+}): ToolOutputSnapshot {
+  if (
+    args.targetThreadId.trim() === '' ||
+    !isRecord(args.snapshot) ||
+    typeof args.snapshot.outputRef !== 'string'
+  ) {
+    throw new Error('invalid tool output snapshot transfer input');
+  }
+  const parsedRef = parseToolOutputRef(args.snapshot.outputRef);
+  if (
+    !parsedRef.ok ||
+    !isToolOutputSnapshot(
+      args.snapshot,
+      args.snapshot.outputRef,
+      parsedRef.value,
+    ) ||
+    args.snapshot.fullOutputBytes !==
+      Buffer.byteLength(args.snapshot.output, 'utf8') ||
+    args.snapshot.fullOutputChars !== args.snapshot.output.length ||
+    args.snapshot.contentType !==
+      (tryParseJson(args.snapshot.output).ok ? 'json' : 'text')
+  ) {
+    throw new Error('tool output snapshot does not match its transfer schema');
+  }
+
+  const source = normalizeToolOutputSnapshotSource(args.snapshot.source);
+  if (!source.ok) {
+    throw new Error('tool output snapshot source is invalid');
+  }
+  return {
+    schemaVersion: TOOL_OUTPUT_OFFLOAD_SCHEMA_VERSION,
+    outputRef: buildToolOutputRef({
+      threadId: args.targetThreadId,
+      runId: args.snapshot.runId,
+      callId: args.snapshot.callId,
+    }),
+    threadId: args.targetThreadId,
+    runId: args.snapshot.runId,
+    callId: args.snapshot.callId,
+    toolName: args.snapshot.toolName,
+    createdAt: args.snapshot.createdAt,
+    contentType: args.snapshot.contentType,
+    fullOutputBytes: args.snapshot.fullOutputBytes,
+    fullOutputChars: args.snapshot.fullOutputChars,
+    output: args.snapshot.output,
+    ...(source.value === undefined ? {} : { source: source.value }),
+  };
+}
+
 export async function writeToolOutputSnapshot(args: {
   stateRoot: string;
   snapshot: ToolOutputSnapshot;
@@ -68,6 +120,36 @@ export async function writeToolOutputSnapshot(args: {
     }),
     JSON.stringify(args.snapshot, null, 2) + '\n',
   );
+}
+
+export async function deleteToolOutputSnapshot(args: {
+  stateRoot: string;
+  threadId: string;
+  outputRef: string;
+}): Promise<boolean> {
+  const parsedRef = parseToolOutputRef(args.outputRef);
+  if (!parsedRef.ok) {
+    throw new Error(parsedRef.message);
+  }
+  if (parsedRef.value.threadId !== args.threadId) {
+    throw new Error('outputRef does not belong to this thread.');
+  }
+  try {
+    await rm(
+      buildToolOutputSnapshotPath({
+        stateRoot: args.stateRoot,
+        threadId: parsedRef.value.threadId,
+        runId: parsedRef.value.runId,
+        callId: parsedRef.value.callId,
+      }),
+    );
+    return true;
+  } catch (error: unknown) {
+    if (getErrorCode(error) === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
 }
 
 export async function deleteThreadToolOutputs(args: {
@@ -308,4 +390,34 @@ function isToolOutputSnapshot(
     typeof value.fullOutputChars === 'number' &&
     typeof value.output === 'string'
   );
+}
+
+function normalizeToolOutputSnapshotSource(
+  value: unknown,
+): { ok: true; value: ToolOutputSnapshot['source'] } | { ok: false } {
+  if (value === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (
+    !isRecord(value) ||
+    (value.root !== undefined &&
+      value.root !== 'workspace' &&
+      value.root !== 'computer') ||
+    (value.path !== undefined && typeof value.path !== 'string') ||
+    (value.query !== undefined && typeof value.query !== 'string') ||
+    (value.url !== undefined && typeof value.url !== 'string') ||
+    (value.finalUrl !== undefined && typeof value.finalUrl !== 'string')
+  ) {
+    return { ok: false };
+  }
+  return {
+    ok: true,
+    value: {
+      ...(value.root === undefined ? {} : { root: value.root }),
+      ...(value.path === undefined ? {} : { path: value.path }),
+      ...(value.query === undefined ? {} : { query: value.query }),
+      ...(value.url === undefined ? {} : { url: value.url }),
+      ...(value.finalUrl === undefined ? {} : { finalUrl: value.finalUrl }),
+    },
+  };
 }

@@ -5,7 +5,7 @@ import { connect } from 'node:net';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createLocalDevAuthEnv } from '../../../scripts/local-dev-auth-token.mjs';
+import { DEV_DAEMON_PORT } from '../../../scripts/dev-daemon-port.mjs';
 import {
   createDaemonDevBundleBuilder,
   getDaemonDevWatchRoots,
@@ -17,7 +17,6 @@ const daemonSourceRoots = getDaemonDevWatchRoots(repoRoot);
 const sourceFilePattern = /\.(?:[cm]?ts|tsx)$/u;
 const testFilePattern = /\.(?:test|spec)\.(?:[cm]?ts|tsx)$/u;
 const ignoredDirectoryNames = new Set(['__tests__', 'test-support', 'tests']);
-const DEFAULT_DAEMON_PORT = 3_456;
 const DEFAULT_WATCH_POLLING_INTERVAL_MS = 5_000;
 
 function relativePathWithinSourceRoots(sourceRoots, candidatePath) {
@@ -78,7 +77,7 @@ function readPositiveIntegerEnv(env, key, defaultValue) {
 }
 
 function readDevPort(env) {
-  const port = readPositiveIntegerEnv(env, 'PORT', DEFAULT_DAEMON_PORT);
+  const port = readPositiveIntegerEnv(env, 'PORT', DEV_DAEMON_PORT);
   if (port > 65_535) {
     throw new Error('invalid PORT: expected integer between 1 and 65535');
   }
@@ -95,31 +94,75 @@ function connectHostForBindHost(host) {
   return host;
 }
 
+// 이 probe는 "이미 켜져 있는 데몬"만 잡는다. 점유의 유일한 증거는 완료된 TCP
+// connect다. drop/timeout/unreachable은 응답한 listener가 없다는 뜻이므로 점유
+// 근거가 아니다. 예: WSL `networkingMode=mirrored`에서는 Linux ephemeral 범위
+// 밖의 닫힌 loopback 포트가 RST 대신 drop되어 `ETIMEDOUT`으로 돌아온다.
+const DEFAULT_PORT_PROBE_TIMEOUT_MS = 2_000;
+
+async function probeDaemonDevPort({ host, port, createConnection, timeoutMs }) {
+  return new Promise((resolveOutcome) => {
+    let settled = false;
+    const socket = createConnection({ host, port });
+    const settle = (outcome) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolveOutcome(outcome);
+    };
+    const timer = setTimeout(() => {
+      settle({
+        state: 'unanswered',
+        reason: `no response within ${timeoutMs}ms`,
+      });
+    }, timeoutMs);
+    timer.unref?.();
+    socket.once('connect', () => settle({ state: 'listening' }));
+    socket.once('error', (error) => {
+      if (error?.code === 'ECONNREFUSED') {
+        settle({ state: 'refused' });
+        return;
+      }
+      settle({
+        state: 'unanswered',
+        reason: error?.code ?? String(error?.message ?? error),
+      });
+    });
+  });
+}
+
 export async function assertDaemonDevPortAvailable({
   env = process.env,
   createConnection = connect,
+  reportInfo = logSupervisor,
 } = {}) {
   const port = readDevPort(env);
   const host = connectHostForBindHost(env.HOST ?? '127.0.0.1');
-  await new Promise((resolveAvailable, rejectUnavailable) => {
-    const socket = createConnection({ host, port });
-    socket.once('connect', () => {
-      socket.destroy();
-      rejectUnavailable(
-        new Error(
-          `daemon development port ${host}:${port} is already in use; stop the existing daemon before starting another one`,
-        ),
-      );
-    });
-    socket.once('error', (error) => {
-      socket.destroy();
-      if (error?.code === 'ECONNREFUSED') {
-        resolveAvailable();
-        return;
-      }
-      rejectUnavailable(error);
-    });
+  const outcome = await probeDaemonDevPort({
+    host,
+    port,
+    createConnection,
+    timeoutMs: readPositiveIntegerEnv(
+      env,
+      'GEULBAT_DEV_PORT_PROBE_TIMEOUT_MS',
+      DEFAULT_PORT_PROBE_TIMEOUT_MS,
+    ),
   });
+  if (outcome.state === 'listening') {
+    throw new Error(
+      `daemon development port ${host}:${port} is already in use; stop the existing daemon before starting another one`,
+    );
+  }
+  if (outcome.state === 'unanswered') {
+    // 조용히 넘기지 않는다. 실제 bind는 아래에서 자식이 수행하고, 점유 상태라면
+    // `EADDRINUSE`로 실패한다.
+    reportInfo(
+      `port precheck for ${host}:${port} could not confirm a listener (${outcome.reason}); continuing because no daemon answered`,
+    );
+  }
 }
 
 export async function createDaemonSourceWatcher({
@@ -259,7 +302,14 @@ export async function runDaemonDevSupervisor({
   reportError = (error) => console.error('[daemon-dev-supervisor]', error),
   reportInfo = logSupervisor,
 } = {}) {
-  const childEnv = createLocalDevAuthEnv(baseEnv);
+  // 복사본이다. 아래에서 `PORT`를 정하는데, 그것을 넘겨받은 환경에 직접 쓰면
+  // supervisor 자기 프로세스의 환경까지 바뀐다.
+  const childEnv = { ...baseEnv };
+  // 개발 포트는 고정이다: 개발자가 브라우저에 남겨둔 주소가 재시작마다 살아
+  // 있어야 하고, precheck가 같은 주소의 점유를 확인한다. 데몬은 `PORT`가 없으면
+  // OS가 고른 포트로 열리므로(제품 경로), 개발 흐름은 결정한 값을 자식에게
+  // 명시적으로 넘겨야 한다.
+  childEnv.PORT = String(readDevPort(childEnv));
   const noWatch = readBooleanEnv(childEnv, 'GEULBAT_DEV_NO_WATCH', false);
   const usePolling = readBooleanEnv(
     childEnv,
@@ -477,7 +527,7 @@ export async function runDaemonDevSupervisor({
   try {
     signalSource.on('SIGINT', handleSigint);
     signalSource.on('SIGTERM', handleSigterm);
-    await assertPortAvailable({ env: childEnv });
+    await assertPortAvailable({ env: childEnv, reportInfo });
     const initialSpawnSpec = await prepareSpawnSpec();
     if (terminationPromise !== undefined || initialSpawnSpec === undefined) {
       return completion;

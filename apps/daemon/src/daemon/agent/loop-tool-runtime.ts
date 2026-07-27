@@ -1,6 +1,7 @@
 import type { AgentToolExecutionContextBase } from '../tools/types.js';
 import type { RunContext } from '../run-context.js';
 import type { ToolExecutionRegistry } from '../tools/tool-registry-model.js';
+import type { RunCheckpointStore } from '../sessions/run-checkpoint-store.js';
 import type {
   AgentMemoryIndex,
   AgentRuntimeServices,
@@ -29,6 +30,10 @@ export type AgentToolCallRuntimeBase = {
   toolRegistry: ToolExecutionRegistry;
   approvalGrants: AgentRuntimeServices['approvalGrants'];
   executionContextBase: AgentLoopToolExecutionContextBase;
+  runCheckpoints?: Pick<
+    RunCheckpointStore,
+    'recordToolResultReady' | 'completeToolResultReady'
+  >;
 };
 
 export interface AgentToolCallExecutionRuntime extends AgentToolCallRuntimeBase {
@@ -123,6 +128,10 @@ export function buildToolCallExecutionRuntime(args: {
   approvalGate: Pick<ApprovalGate, 'waitForApproval'>;
   approvalGrants: AgentRuntimeServices['approvalGrants'];
   executionContextBase: AgentLoopToolExecutionContextBase;
+  runCheckpoints?: Pick<
+    RunCheckpointStore,
+    'recordToolResultReady' | 'completeToolResultReady'
+  >;
 }): AgentToolCallExecutionRuntime {
   return {
     approvalContext: args.approvalContext,
@@ -130,6 +139,9 @@ export function buildToolCallExecutionRuntime(args: {
     toolRegistry: args.toolRegistry,
     approvalGrants: args.approvalGrants,
     executionContextBase: args.executionContextBase,
+    ...(args.runCheckpoints === undefined
+      ? {}
+      : { runCheckpoints: args.runCheckpoints }),
     approvalGate: args.approvalGate,
   };
 }

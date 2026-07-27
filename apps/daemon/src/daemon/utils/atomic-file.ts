@@ -5,6 +5,7 @@ import { createLogger } from '@geulbat/structured-logger/logger';
 import { getErrorCode, getErrorMessage, isNotFoundError } from './error.js';
 
 type RenameLike = Pick<typeof fs, 'rename' | 'unlink'>;
+type AtomicReplaceLike = Pick<typeof fs, 'mkdir' | 'rename' | 'unlink'>;
 export type AtomicWriteLike = Pick<
   typeof fs,
   'mkdir' | 'writeFile' | 'rename' | 'unlink'
@@ -13,7 +14,8 @@ const logger = createLogger('atomic-file');
 
 interface AtomicWriteOptions {
   mode?: number;
-  atomicFs?: AtomicWriteLike;
+  atomicFs?: AtomicWriteLike | undefined;
+  validateBeforeCommit?: (() => Promise<void>) | undefined;
 }
 
 export class AtomicReplaceConflictError extends Error {
@@ -59,7 +61,9 @@ export async function replaceFileAtomically(
   tempPath: string,
   targetPath: string,
   renameLike: RenameLike = fs,
+  validateBeforeCommit?: () => Promise<void>,
 ): Promise<void> {
+  await validateBeforeCommit?.();
   try {
     await renameLike.rename(tempPath, targetPath);
     return;
@@ -69,6 +73,8 @@ export async function replaceFileAtomically(
       throw error;
     }
   }
+
+  await validateBeforeCommit?.();
 
   // The PID + UUID suffix keeps Windows fallback backups collision-resistant per replace attempt.
   const backupPath = `${targetPath}.${process.pid}.${randomUUID()}.bak`;
@@ -119,34 +125,43 @@ export async function writeFileAtomically(
   content: string | Uint8Array,
   options: AtomicWriteOptions & { encoding?: BufferEncoding } = {},
 ): Promise<void> {
-  const { mode, atomicFs = fs, encoding = 'utf-8' } = options;
-  await atomicFs.mkdir(dirname(targetPath), { recursive: true });
-  const tempPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
+  const {
+    mode,
+    atomicFs = fs,
+    encoding = 'utf-8',
+    validateBeforeCommit,
+  } = options;
+  await commitTemporaryFileAtomically(
+    targetPath,
+    (tempPath) =>
+      atomicFs.writeFile(
+        tempPath,
+        content,
+        typeof content === 'string'
+          ? {
+              encoding,
+              ...(mode === undefined ? {} : { mode }),
+            }
+          : mode === undefined
+            ? {}
+            : { mode },
+      ),
+    atomicFs,
+    validateBeforeCommit,
+  );
+}
 
-  try {
-    await atomicFs.writeFile(
-      tempPath,
-      content,
-      typeof content === 'string'
-        ? {
-            encoding,
-            ...(mode === undefined ? {} : { mode }),
-          }
-        : mode === undefined
-          ? {}
-          : { mode },
-    );
-    await replaceFileAtomically(tempPath, targetPath, atomicFs);
-  } catch (error: unknown) {
-    try {
-      await atomicFs.unlink(tempPath);
-    } catch (cleanupError: unknown) {
-      if (!isNotFoundError(cleanupError)) {
-        logger.warn('temp cleanup failed:', getErrorMessage(cleanupError));
-      }
-    }
-    throw error;
-  }
+export async function copyFileAtomically(
+  sourcePath: string,
+  targetPath: string,
+  options: Pick<AtomicWriteOptions, 'validateBeforeCommit'> = {},
+): Promise<void> {
+  await commitTemporaryFileAtomically(
+    targetPath,
+    (tempPath) => fs.copyFile(sourcePath, tempPath, fs.constants.COPYFILE_EXCL),
+    fs,
+    options.validateBeforeCommit,
+  );
 }
 
 export async function writeTextFileAtomically(
@@ -158,4 +173,33 @@ export async function writeTextFileAtomically(
     ...options,
     encoding: 'utf-8',
   });
+}
+
+async function commitTemporaryFileAtomically(
+  targetPath: string,
+  createTemporaryFile: (tempPath: string) => Promise<void>,
+  atomicFs: AtomicReplaceLike,
+  validateBeforeCommit?: () => Promise<void>,
+): Promise<void> {
+  await atomicFs.mkdir(dirname(targetPath), { recursive: true });
+  const tempPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
+
+  try {
+    await createTemporaryFile(tempPath);
+    await replaceFileAtomically(
+      tempPath,
+      targetPath,
+      atomicFs,
+      validateBeforeCommit,
+    );
+  } catch (error: unknown) {
+    try {
+      await atomicFs.unlink(tempPath);
+    } catch (cleanupError: unknown) {
+      if (!isNotFoundError(cleanupError)) {
+        logger.warn('temp cleanup failed:', getErrorMessage(cleanupError));
+      }
+    }
+    throw error;
+  }
 }

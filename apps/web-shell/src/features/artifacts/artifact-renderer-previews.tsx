@@ -6,6 +6,8 @@ import type {
 } from '@geulbat/protocol/artifacts';
 
 import { saveBlobToLocalFile } from '../../lib/save-local-file.js';
+import { buildArtifactThreadMediaUrl } from './artifact-thread-media-url.js';
+import { ArtifactVideoSurface } from './artifact-video-viewer.js';
 
 // 저장 파일명 제안용 — mimeType에서 확장자를 뽑는다
 const MEDIA_FILE_EXTENSIONS: Record<string, string> = {
@@ -152,7 +154,7 @@ export function renderImageArtifactPreview(
     manifest.source.type === 'inline_base64'
       ? `data:${manifest.mimeType};base64,${manifest.source.dataBase64}`
       : threadId !== undefined
-        ? `/api/threads/${encodeURIComponent(threadId)}/media/${encodeURIComponent(manifest.source.mediaRef)}`
+        ? buildArtifactThreadMediaUrl(threadId, manifest.source.mediaRef)
         : null;
   if (src === null) {
     // thread_media인데 스레드 스코프를 모르면 잘못된 URL 대신 캡션만
@@ -189,33 +191,24 @@ export function renderImageArtifactPreview(
   );
 }
 
-// 동영상 미리보기(video-generation-open §3/D-V6) — 인라인 재생이 1급이고
-// 저장은 선택 링크다. 바이트는 인증 media 라우트가 Range로 스트리밍한다.
-// 감상 표면 문법: 웜 블랙 스테이지에 크게, 프롬프트는 풋터에서 한 줄로
-// 접혀 있다가 클릭하면 펼쳐진다.
-// VideoArtifactPayloadV1 owns a media reference but no caption-track reference.
-// Do not add an empty track that would falsely claim captions are available.
-/* oxlint-disable jsx-a11y/media-has-caption */
+// 동영상은 이미지와 같은 자리에 같은 방식으로 놓인다: 무대 + provenance
+// footer. 재생과 크기 전환은 무대가 소유한다.
 export function renderVideoArtifactPreview(
   manifest: VideoArtifactPayloadV1,
   threadId: string,
 ): ReactNode {
   const { provenance } = manifest;
-  const mediaUrl = `/api/threads/${encodeURIComponent(threadId)}/media/${encodeURIComponent(manifest.source.mediaRef)}`;
+  const mediaUrl = buildArtifactThreadMediaUrl(
+    threadId,
+    manifest.source.mediaRef,
+  );
   const durationLabel =
     manifest.durationSeconds !== undefined
       ? ` · ${manifest.durationSeconds}초`
       : '';
   return (
     <figure className="artifact-media-figure">
-      <div className="artifact-media-stage dark">
-        <video
-          className="artifact-media-video"
-          src={mediaUrl}
-          controls
-          preload="metadata"
-        />
-      </div>
+      <ArtifactVideoSurface manifest={manifest} threadId={threadId} />
       <figcaption className="artifact-media-footer">
         <details className="artifact-media-prompt">
           <summary title="프롬프트 펼치기/접기">{provenance.prompt}</summary>
@@ -232,7 +225,6 @@ export function renderVideoArtifactPreview(
     </figure>
   );
 }
-/* oxlint-enable jsx-a11y/media-has-caption */
 
 export function renderDiffArtifactPreview(payload: string): ReactNode {
   const lines = payload.replace(/\r\n/g, '\n').split('\n');

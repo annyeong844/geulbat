@@ -4,7 +4,10 @@ import {
   ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
   createArtifactRuntimeHostReadyMessage,
 } from '@geulbat/protocol/artifact-runtime-host';
-import { isAllowedBrowserOrigin } from '#web/origin-policy.js';
+import {
+  isAllowedBrowserOrigin,
+  readRequestSelfOrigin,
+} from '#web/origin-policy.js';
 
 const ARTIFACT_RUNTIME_HOST_PATH = '/artifact-runtime/host';
 const ARTIFACT_RUNTIME_CACHE_PROBE_PATH = '/artifact-runtime/probe-cache.txt';
@@ -161,6 +164,7 @@ export function createArtifactRuntimeHostRoutes(args?: {
     const parentOrigin = normalizeArtifactRuntimeParentOrigin(
       req.query['parentOrigin'],
       configuredAllowedOrigins,
+      readRequestSelfOrigin(req.headers.host),
     );
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
@@ -273,17 +277,16 @@ function buildArtifactRuntimeHostHtml(parentOrigin: string | null): string {
 `;
 }
 
+/**
+ * 이 호스트를 감싸는 것은 shell 화면이고, 데몬이 그 화면까지 서빙하므로 감쌀 수
+ * 있는 곳은 `'self'`다. loopback 와일드카드는 shell이 다른 포트에 살던 위상의
+ * 잔재이며, 그동안 같은 기계의 아무 로컬 페이지나 이 호스트를 액자에 넣을 수
+ * 있게 두었다.
+ */
 function buildArtifactRuntimeHostFrameAncestors(
   configuredAllowedOrigins: ReadonlySet<string>,
 ): string {
-  const sources = new Set<string>([
-    "'self'",
-    'http://127.0.0.1:*',
-    'http://localhost:*',
-    'https://127.0.0.1:*',
-    'https://localhost:*',
-    ...configuredAllowedOrigins,
-  ]);
+  const sources = new Set<string>(["'self'", ...configuredAllowedOrigins]);
   return `frame-ancestors ${Array.from(sources).join(' ')}`;
 }
 
@@ -299,6 +302,7 @@ function buildArtifactRuntimeHostContentSecurityPolicy(
 function normalizeArtifactRuntimeParentOrigin(
   value: unknown,
   configuredAllowedOrigins: ReadonlySet<string>,
+  selfOrigin: string | undefined,
 ): string | null {
   if (typeof value !== 'string' || value.trim() === '') {
     return null;
@@ -309,7 +313,11 @@ function normalizeArtifactRuntimeParentOrigin(
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       return null;
     }
-    return isAllowedBrowserOrigin(url.origin, configuredAllowedOrigins)
+    return isAllowedBrowserOrigin(
+      url.origin,
+      configuredAllowedOrigins,
+      selfOrigin,
+    )
       ? url.origin
       : null;
   } catch {

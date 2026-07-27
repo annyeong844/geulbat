@@ -2,11 +2,13 @@ import http from 'node:http';
 
 import { createLogger } from '@geulbat/structured-logger/logger';
 
-import { getConfiguredDevToken } from './adapter/web/auth/token.js';
+import { setResolvedShellAccessToken } from './adapter/web/auth/token.js';
+import { ensureShellAccessToken } from './daemon/auth/shell-access-token.js';
+import { shellAccessTokenPath } from './home-state-root.js';
 import { readPublicWebConformanceFixturesEnabled } from './adapter/web/public-web-conformance.js';
 import { attachPublicWebFixtureWebSocketServer } from './adapter/web/ws/public-web-fixtures.js';
 import { attachRunChannelServer } from './adapter/web/ws/run-channel.js';
-import { recoverDurableRunsAtDaemonStartup } from './adapter/web/ws/run-channel-start.js';
+import { recoverDurableRunsAtDaemonStartup } from './daemon/durable-run-execution.js';
 import { createDaemon } from './create-daemon.js';
 import { createDaemonRuntimeOwner } from './daemon-runtime-owner.js';
 import {
@@ -28,6 +30,12 @@ export interface LaunchDaemonHostOptions {
   readonly agentLoopImplementationAdmission?: AgentLoopImplementationAdmission;
   readonly bundledCreatorPluginRoot?: string;
   readonly computerSessionId: string;
+  /**
+   * 빌드된 web-shell 산출물의 루트. 주어지면 데몬이 같은 origin에서 shell을
+   * 서빙하므로 포트가 하나로 합쳐진다. 이 위치를 찾는 것은 제품 진입점의
+   * 일이며, 데몬은 넘겨받은 경로만 서빙한다.
+   */
+  readonly shellAssetRoot?: string;
 }
 
 export async function launchDaemonHost(
@@ -43,7 +51,11 @@ export async function launchDaemonHost(
   };
 
   logBootPhase('start');
-  getConfiguredDevToken();
+  // 토큰은 사용자가 만들지 않는다. 데몬이 이 Geulbat Home의 값을 확보하고
+  // 프로세스에 고정한다 — 없으면 만들고, 있으면 재사용한다.
+  setResolvedShellAccessToken(
+    ensureShellAccessToken({ tokenPath: shellAccessTokenPath() }),
+  );
   logBootPhase('auth-token');
   const enablePublicWebConformanceFixtures =
     readPublicWebConformanceFixturesEnabled(process.env);
@@ -86,6 +98,9 @@ export async function launchDaemonHost(
           await createDaemon({
             daemonContext,
             enablePublicWebConformanceFixtures,
+            ...(options.shellAssetRoot === undefined
+              ? {}
+              : { shellAssetRoot: options.shellAssetRoot }),
           })
         ).app,
       createHttpServer: (app) => http.createServer(app),

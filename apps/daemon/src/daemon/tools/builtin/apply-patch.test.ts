@@ -4,16 +4,139 @@ import {
   mkdtemp,
   mkdir,
   readFile as fsReadFile,
+  rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  assertRunId,
+  assertThreadId,
+  type RunId,
+  type ThreadId,
+} from '@geulbat/protocol/ids';
 import { createSymlinkOrSkip } from '../../../test-support/symlink-test.js';
+import { createDaemonContext } from '../../context.js';
+import {
+  operationManifestToJsonValue,
+  prepareOperationManifest,
+  type OperationManifest,
+} from '../../files/operation-manifest.js';
 import { readFile } from '../../files/read-file.js';
-import { isToolObjectParameters } from '../types.js';
+import {
+  countTextLines,
+  normalizeTextContent,
+} from '../../files/text-content.js';
+import { createVersionToken } from '../../files/version-token.js';
+import type { JsonValue } from '../../runtime-json.js';
+import { isToolObjectParameters, type ToolExecutionContext } from '../types.js';
 import { applyPatchTool } from './apply-patch.js';
 import { manageFilesTool } from './manage-files.js';
+
+function buildApplyPatchAgentContext(args: {
+  stateRoot: string;
+  threadId: ThreadId;
+  runId: RunId;
+  callId: string;
+  runtimeServices: ReturnType<typeof createDaemonContext>;
+}): ToolExecutionContext {
+  return {
+    kind: 'agent',
+    callId: args.callId,
+    signal: undefined,
+    runSignal: undefined,
+    currentFile: undefined,
+    selection: undefined,
+    approvalGranted: true,
+    computerSessionId: 'session-apply-patch-durable',
+    computerFileRoot: args.stateRoot,
+    permissionMode: 'full_access',
+    stateRoot: args.stateRoot,
+    threadId: args.threadId,
+    runId: args.runId,
+    runOwnerKind: 'root_main',
+    workingDirectory: args.stateRoot,
+    runState: undefined,
+    memoryIndex: args.runtimeServices.memoryIndex,
+    runtimeServices: args.runtimeServices,
+    emitAgentEvent() {},
+  };
+}
+
+function buildApplyPatchManifest(args: {
+  runId: RunId;
+  callId: string;
+  targetPath: string;
+  relativePath: string;
+  content: string;
+  expectedVersionToken?: string;
+}): OperationManifest {
+  const canonicalContent = normalizeTextContent(args.content);
+  const isUpdate = args.expectedVersionToken !== undefined;
+  return prepareOperationManifest({
+    operationId: args.callId,
+    manifestRevision: '1',
+    operationKind: isUpdate ? 'overwrite' : 'create_file',
+    authorityId: 'computer',
+    actor: { kind: 'assistant', runId: args.runId },
+    targets: [
+      {
+        role: isUpdate ? 'single' : 'destination',
+        path: args.relativePath,
+        canonicalTargetId: args.targetPath,
+        ...(args.expectedVersionToken === undefined
+          ? {}
+          : {
+              expectedKind: 'file' as const,
+              expectedVersionToken: args.expectedVersionToken,
+            }),
+      },
+    ],
+    approval: { required: true },
+    payloadDigest: {
+      kind: 'content',
+      digest: createVersionToken(canonicalContent),
+    },
+    atomicity: 'atomic',
+    createdAt: '2026-07-27T00:00:00.000Z',
+  });
+}
+
+function buildApplyPatchRecoveryState(args: {
+  manifest: OperationManifest;
+  patch: string;
+}): JsonValue {
+  return {
+    manifest: operationManifestToJsonValue(args.manifest),
+    patchDigest: createVersionToken(normalizeTextContent(args.patch)),
+  };
+}
+
+async function injectApplyPatchInvocation(args: {
+  runtimeServices: ReturnType<typeof createDaemonContext>;
+  threadId: ThreadId;
+  runId: RunId;
+  callId: string;
+  manifest: OperationManifest;
+  patch: string;
+}): Promise<void> {
+  const recorded =
+    await args.runtimeServices.runCheckpoints.recordToolInvocation({
+      threadId: args.threadId,
+      runId: args.runId,
+      invocation: {
+        callId: args.callId,
+        toolName: applyPatchTool.name,
+        recoveryStrategy: 'reconcile_then_replay',
+        recoveryState: buildApplyPatchRecoveryState({
+          manifest: args.manifest,
+          patch: args.patch,
+        }),
+      },
+    });
+  assert.equal(recorded.ok, true);
+}
 
 void test('apply_patch publishes only the patch text contract', () => {
   const parameters = applyPatchTool.parameters;
@@ -28,6 +151,381 @@ void test('apply_patch publishes only the patch text contract', () => {
     directOnly: true,
     effectClass: 'computerWrite',
   });
+});
+
+void test('apply_patch declares reconcile-then-replay recovery', () => {
+  assert.equal(applyPatchTool.recoveryStrategy, 'reconcile_then_replay');
+});
+
+void test('apply_patch checkpoints and reconciles an agent update before returning', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-apply-patch-durable-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runtimeServices = createDaemonContext({ homeStateRoot: stateRoot });
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174042');
+  const runId = assertRunId('run-apply-patch-durable');
+  const targetPath = join(stateRoot, 'durable.txt');
+  await writeFile(targetPath, 'before\n', 'utf8');
+  await runtimeServices.runCheckpoints.startRun({
+    threadId,
+    runId,
+    request: { workingDirectory: stateRoot, permissionMode: 'full_access' },
+  });
+  const context = buildApplyPatchAgentContext({
+    stateRoot,
+    threadId,
+    runId,
+    callId: 'call-apply-patch-durable',
+    runtimeServices,
+  });
+
+  const result = await applyPatchTool.execute(
+    { patch: updatePatch('durable.txt', 'before\n', 'after\n') },
+    context,
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(await fsReadFile(targetPath, 'utf8'), 'after\n');
+  const invocation = (await runtimeServices.runCheckpoints.readThread(threadId))
+    ?.toolInvocations[0];
+  assert.equal(invocation?.status, 'reconciled');
+  if (invocation?.status === 'reconciled') {
+    assert.equal(invocation.callId, context.callId);
+    assert.deepEqual(invocation.result, result);
+  }
+
+  const withoutCheckpoint = await applyPatchTool.execute(
+    { patch: updatePatch('durable.txt', 'after\n', 'must not land\n') },
+    {
+      ...context,
+      callId: 'call-apply-patch-without-checkpoint',
+      runId: assertRunId('run-apply-patch-without-checkpoint'),
+    },
+  );
+  assert.equal(withoutCheckpoint.ok, false);
+  if (!withoutCheckpoint.ok) {
+    assert.equal(withoutCheckpoint.errorCode, 'execution_failed');
+    assert.match(withoutCheckpoint.error, /durable run checkpoint/);
+  }
+  assert.equal(await fsReadFile(targetPath, 'utf8'), 'after\n');
+});
+
+void test('apply_patch restart recovery replays an add whose effect did not start', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-apply-patch-recovery-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runtimeServices = createDaemonContext({ homeStateRoot: stateRoot });
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174043');
+  const runId = assertRunId('run-apply-patch-add-recovery');
+  const callId = 'call-apply-patch-add-recovery';
+  const relativePath = 'restart-created.txt';
+  const targetPath = join(stateRoot, relativePath);
+  const content = 'created after restart\n';
+  const patch = addPatch(relativePath, content);
+  await runtimeServices.runCheckpoints.startRun({
+    threadId,
+    runId,
+    request: { workingDirectory: stateRoot, permissionMode: 'full_access' },
+  });
+  await injectApplyPatchInvocation({
+    runtimeServices,
+    threadId,
+    runId,
+    callId,
+    manifest: buildApplyPatchManifest({
+      runId,
+      callId,
+      targetPath,
+      relativePath,
+      content,
+    }),
+    patch,
+  });
+
+  const result = await applyPatchTool.execute(
+    { patch },
+    buildApplyPatchAgentContext({
+      stateRoot,
+      threadId,
+      runId,
+      callId,
+      runtimeServices,
+    }),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(await fsReadFile(targetPath, 'utf8'), content);
+  if (result.ok) {
+    assert.deepEqual(JSON.parse(result.output), {
+      ok: true,
+      root: 'computer',
+      operation: 'add',
+      path: relativePath,
+      versionToken: createVersionToken(content),
+      totalLines: countTextLines(content),
+      linesChanged: countTextLines(content),
+    });
+  }
+  const invocation = (await runtimeServices.runCheckpoints.readThread(threadId))
+    ?.toolInvocations[0];
+  assert.equal(invocation?.status, 'reconciled');
+});
+
+void test('apply_patch restart recovery refuses a different patch for the same durable call', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-apply-patch-recovery-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runtimeServices = createDaemonContext({ homeStateRoot: stateRoot });
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174047');
+  const runId = assertRunId('run-apply-patch-identity-conflict');
+  const callId = 'call-apply-patch-identity-conflict';
+  const relativePath = 'restart-identity-conflict.txt';
+  const targetPath = join(stateRoot, relativePath);
+  const originalContent = 'before\n';
+  const recordedContent = 'recorded after\n';
+  const conflictingContent = 'different after\n';
+  const recordedPatch = updatePatch(
+    relativePath,
+    originalContent,
+    recordedContent,
+  );
+  await writeFile(targetPath, originalContent, 'utf8');
+  const original = await readFile(stateRoot, relativePath);
+  await runtimeServices.runCheckpoints.startRun({
+    threadId,
+    runId,
+    request: { workingDirectory: stateRoot, permissionMode: 'full_access' },
+  });
+  await injectApplyPatchInvocation({
+    runtimeServices,
+    threadId,
+    runId,
+    callId,
+    manifest: buildApplyPatchManifest({
+      runId,
+      callId,
+      targetPath,
+      relativePath,
+      content: recordedContent,
+      expectedVersionToken: original.versionToken,
+    }),
+    patch: recordedPatch,
+  });
+
+  const result = await applyPatchTool.execute(
+    {
+      patch: updatePatch(relativePath, originalContent, conflictingContent),
+    },
+    buildApplyPatchAgentContext({
+      stateRoot,
+      threadId,
+      runId,
+      callId,
+      runtimeServices,
+    }),
+  );
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.errorCode, 'execution_failed');
+    assert.match(result.error, /recovery manifest is invalid/);
+  }
+  assert.equal(await fsReadFile(targetPath, 'utf8'), originalContent);
+  const invocation = (await runtimeServices.runCheckpoints.readThread(threadId))
+    ?.toolInvocations[0];
+  assert.equal(invocation?.status, 'in_flight');
+});
+
+void test('apply_patch restart recovery replays an update whose original version is unchanged', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-apply-patch-recovery-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runtimeServices = createDaemonContext({ homeStateRoot: stateRoot });
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174046');
+  const runId = assertRunId('run-apply-patch-update-replay');
+  const callId = 'call-apply-patch-update-replay';
+  const relativePath = 'restart-update-replay.txt';
+  const targetPath = join(stateRoot, relativePath);
+  const before = 'before\n';
+  const after = 'after\n';
+  const patch = updatePatch(relativePath, before, after);
+  await writeFile(targetPath, before, 'utf8');
+  const original = await readFile(stateRoot, relativePath);
+  await runtimeServices.runCheckpoints.startRun({
+    threadId,
+    runId,
+    request: { workingDirectory: stateRoot, permissionMode: 'full_access' },
+  });
+  await injectApplyPatchInvocation({
+    runtimeServices,
+    threadId,
+    runId,
+    callId,
+    manifest: buildApplyPatchManifest({
+      runId,
+      callId,
+      targetPath,
+      relativePath,
+      content: after,
+      expectedVersionToken: original.versionToken,
+    }),
+    patch,
+  });
+
+  const result = await applyPatchTool.execute(
+    { patch },
+    buildApplyPatchAgentContext({
+      stateRoot,
+      threadId,
+      runId,
+      callId,
+      runtimeServices,
+    }),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(await fsReadFile(targetPath, 'utf8'), after);
+  const invocation = (await runtimeServices.runCheckpoints.readThread(threadId))
+    ?.toolInvocations[0];
+  assert.equal(invocation?.status, 'reconciled');
+  if (invocation?.status === 'reconciled') {
+    assert.deepEqual(invocation.result, result);
+  }
+});
+
+void test('apply_patch restart recovery restores an update completed before result persistence', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-apply-patch-recovery-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runtimeServices = createDaemonContext({ homeStateRoot: stateRoot });
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174044');
+  const runId = assertRunId('run-apply-patch-update-recovery');
+  const callId = 'call-apply-patch-update-recovery';
+  const relativePath = 'restart-updated.txt';
+  const targetPath = join(stateRoot, relativePath);
+  const before = 'before\n';
+  const after = 'after\nextra\n';
+  const patch = updatePatch(relativePath, before, after);
+  await writeFile(targetPath, before, 'utf8');
+  const original = await readFile(stateRoot, relativePath);
+  await runtimeServices.runCheckpoints.startRun({
+    threadId,
+    runId,
+    request: { workingDirectory: stateRoot, permissionMode: 'full_access' },
+  });
+  await injectApplyPatchInvocation({
+    runtimeServices,
+    threadId,
+    runId,
+    callId,
+    manifest: buildApplyPatchManifest({
+      runId,
+      callId,
+      targetPath,
+      relativePath,
+      content: after,
+      expectedVersionToken: original.versionToken,
+    }),
+    patch,
+  });
+  await writeFile(targetPath, after, 'utf8');
+
+  const result = await applyPatchTool.execute(
+    { patch },
+    buildApplyPatchAgentContext({
+      stateRoot,
+      threadId,
+      runId,
+      callId,
+      runtimeServices,
+    }),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(await fsReadFile(targetPath, 'utf8'), after);
+  if (result.ok) {
+    assert.deepEqual(JSON.parse(result.output), {
+      ok: true,
+      root: 'computer',
+      operation: 'update',
+      path: relativePath,
+      versionToken: createVersionToken(after),
+      totalLines: countTextLines(after),
+      linesChanged: 1,
+    });
+  }
+  const invocation = (await runtimeServices.runCheckpoints.readThread(threadId))
+    ?.toolInvocations[0];
+  assert.equal(invocation?.status, 'reconciled');
+  if (invocation?.status === 'reconciled') {
+    assert.deepEqual(invocation.result, result);
+  }
+});
+
+void test('apply_patch restart recovery rejects a stale replacement without patching it', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-apply-patch-recovery-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runtimeServices = createDaemonContext({ homeStateRoot: stateRoot });
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174045');
+  const runId = assertRunId('run-apply-patch-stale-recovery');
+  const callId = 'call-apply-patch-stale-recovery';
+  const relativePath = 'restart-stale.txt';
+  const targetPath = join(stateRoot, relativePath);
+  const before = 'before\n';
+  const after = 'after\n';
+  const replacement = 'replacement from another writer\n';
+  const patch = updatePatch(relativePath, before, after);
+  await writeFile(targetPath, before, 'utf8');
+  const original = await readFile(stateRoot, relativePath);
+  await runtimeServices.runCheckpoints.startRun({
+    threadId,
+    runId,
+    request: { workingDirectory: stateRoot, permissionMode: 'full_access' },
+  });
+  await injectApplyPatchInvocation({
+    runtimeServices,
+    threadId,
+    runId,
+    callId,
+    manifest: buildApplyPatchManifest({
+      runId,
+      callId,
+      targetPath,
+      relativePath,
+      content: after,
+      expectedVersionToken: original.versionToken,
+    }),
+    patch,
+  });
+  await writeFile(targetPath, replacement, 'utf8');
+
+  const result = await applyPatchTool.execute(
+    { patch },
+    buildApplyPatchAgentContext({
+      stateRoot,
+      threadId,
+      runId,
+      callId,
+      runtimeServices,
+    }),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'conflict_stale_write');
+  assert.equal(await fsReadFile(targetPath, 'utf8'), replacement);
+  const invocation = (await runtimeServices.runCheckpoints.readThread(threadId))
+    ?.toolInvocations[0];
+  assert.equal(invocation?.status, 'reconciled');
+  if (invocation?.status === 'reconciled') {
+    assert.deepEqual(invocation.result, result);
+  }
 });
 
 void test('apply_patch rejects the removed legacy root selector', async () => {
@@ -493,6 +991,20 @@ function updatePatch(path: string, oldText: string, newText: string): string {
     '@@',
     ...oldLines.map((line) => `-${line}`),
     ...newLines.map((line) => `+${line}`),
+    '*** End Patch',
+    '',
+  ].join('\n');
+}
+
+function addPatch(path: string, content: string): string {
+  const lines = content.endsWith('\n')
+    ? content.slice(0, -1).split('\n')
+    : content.split('\n');
+  return [
+    '*** Begin Patch',
+    `*** Add File: ${path}`,
+    ...lines.map((line) => `+${line}`),
+    ...(content.endsWith('\n') ? [] : ['*** End of File']),
     '*** End Patch',
     '',
   ].join('\n');

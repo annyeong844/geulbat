@@ -5,6 +5,8 @@ import {
   evaluateRelocationPreconditions,
   evaluateOperationTargetPrecondition,
   operationCommitOutcomeFromPreconditionResult,
+  operationManifestToJsonValue,
+  parseOperationManifest,
   prepareOperationManifest,
   type OperationManifestDraft,
 } from './operation-manifest.js';
@@ -82,9 +84,56 @@ void test('prepareOperationManifest hashes approval-relevant data without volati
       },
     ],
   });
+  const changedIdentity = prepareOperationManifest({
+    ...baseDraft(),
+    targets: [
+      {
+        role: 'source',
+        path: 'drafts/chapter1.md',
+        canonicalTargetId: '/workspace/drafts/chapter1.md',
+        expectedIdentityToken: 'identity-2',
+      },
+      {
+        role: 'destination',
+        path: 'drafts/chapter-one.md',
+        canonicalTargetId: '/workspace/drafts/chapter-one.md',
+      },
+    ],
+  });
 
   assert.equal(first.manifestHash, second.manifestHash);
   assert.notEqual(first.manifestHash, changedPrecondition.manifestHash);
+  assert.notEqual(first.manifestHash, changedIdentity.manifestHash);
+});
+
+void test('parseOperationManifest restores a hashed manifest and rejects changed preconditions', () => {
+  const manifest = prepareOperationManifest({
+    ...baseDraft(),
+    targets: [
+      {
+        role: 'source',
+        path: 'drafts/chapter1.md',
+        canonicalTargetId: '/workspace/drafts/chapter1.md',
+        expectedKind: 'file',
+        expectedIdentityToken: 'identity-1',
+        expectedVersionToken: 'version-1',
+      },
+      {
+        role: 'destination',
+        path: 'drafts/chapter-one.md',
+        canonicalTargetId: '/workspace/drafts/chapter-one.md',
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    parseOperationManifest(operationManifestToJsonValue(manifest)),
+    manifest,
+  );
+
+  const changed = structuredClone(manifest);
+  changed.targets[0]!.expectedVersionToken = 'replacement-version';
+  assert.equal(parseOperationManifest(changed), null);
 });
 
 void test('prepareOperationManifest snapshots mutable candidate-owned fields', () => {

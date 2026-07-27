@@ -17,10 +17,9 @@ import {
   getDaemonDevWatchRoots,
 } from './dev-daemon-bundle.mjs';
 
-const validAuthEnv = {
-  GEULBAT_DEV_TOKEN: 'daemon-supervisor-test-token',
-  VITE_GEULBAT_DEV_TOKEN: 'daemon-supervisor-test-token',
-};
+// supervisor는 접속 토큰을 만들지도 넘기지도 않는다. 그것은 데몬이 부팅 때
+// 자기 Home에서 확보한다. 여기서 필요한 것은 자식에게 복사될 빈 환경뿐이다.
+const supervisorBaseEnv = {};
 
 function nextTurn() {
   return new Promise((resolveTurn) => setImmediate(resolveTurn));
@@ -139,6 +138,14 @@ test('daemon development bundle resolves workspace packages from source', async 
     assert.deepEqual(buildOptions.entryPoints, {
       index: entryPoint,
       'command-host': join(appRoot, 'src/command-host/main.ts'),
+      'ptc-callback-host': join(
+        appRoot,
+        'src/daemon/ptc/callback/epoch-callback-host-main.ts',
+      ),
+      'responses-request-host': join(
+        appRoot,
+        'src/daemon/llm/provider/transport/responses-durable-request-host-main.ts',
+      ),
       'daemon-lifecycle-worker': join(
         root,
         'packages/daemon-lifecycle/src/worker.ts',
@@ -182,6 +189,28 @@ test('daemon development bundle resolves workspace packages from source', async 
         path: join(
           root,
           'apps/daemon/src/daemon/agent/loop-implementation-admission.ts',
+        ),
+      },
+    );
+    assert.deepEqual(
+      resolveWorkspacePackage({
+        path: '@geulbat/daemon/instance-admission-lock',
+      }),
+      {
+        path: join(
+          root,
+          'apps/daemon/src/daemon/daemon-instance-admission-lock.ts',
+        ),
+      },
+    );
+    assert.deepEqual(
+      resolveWorkspacePackage({
+        path: '@geulbat/daemon/process-fatal-logging',
+      }),
+      {
+        path: join(
+          root,
+          'apps/daemon/src/daemon/utils/process-fatal-logging.ts',
         ),
       },
     );
@@ -234,11 +263,88 @@ test('daemon supervisor rejects an occupied port before startup work', async () 
   }
 });
 
+test('daemon supervisor proceeds when a closed dev port drops the probe instead of refusing', async () => {
+  // WSL `networkingMode=mirrored`는 Linux ephemeral 범위 밖의 닫힌 loopback
+  // 포트로 가는 SYN을 RST 없이 버린다. 응답이 없다는 것은 점유 근거가 아니다.
+  const reportedInfo = [];
+  const silentSockets = [];
+  await assertDaemonDevPortAvailable({
+    env: {
+      HOST: '127.0.0.1',
+      PORT: '3456',
+      GEULBAT_DEV_PORT_PROBE_TIMEOUT_MS: '25',
+    },
+    createConnection: () => {
+      const socket = new EventEmitter();
+      socket.destroyCalls = 0;
+      socket.destroy = () => {
+        socket.destroyCalls += 1;
+      };
+      silentSockets.push(socket);
+      return socket;
+    },
+    reportInfo: (message) => reportedInfo.push(message),
+  });
+
+  assert.equal(silentSockets.length, 1);
+  assert.equal(silentSockets[0].destroyCalls, 1);
+  assert.equal(reportedInfo.length, 1);
+  assert.match(reportedInfo[0], /could not confirm a listener \(no response/u);
+});
+
+test('daemon supervisor proceeds when the dev port probe fails with ETIMEDOUT', async () => {
+  const reportedInfo = [];
+  await assertDaemonDevPortAvailable({
+    env: { HOST: '127.0.0.1', PORT: '3456' },
+    createConnection: () => {
+      const socket = new EventEmitter();
+      socket.destroy = () => {};
+      setImmediate(() => {
+        const error = new Error('connect ETIMEDOUT 127.0.0.1:3456');
+        error.code = 'ETIMEDOUT';
+        socket.emit('error', error);
+      });
+      return socket;
+    },
+    reportInfo: (message) => reportedInfo.push(message),
+  });
+
+  assert.equal(reportedInfo.length, 1);
+  assert.match(reportedInfo[0], /ETIMEDOUT/u);
+});
+
+test('daemon supervisor reports nothing when the dev port refuses the probe', async () => {
+  const server = createServer();
+  await new Promise((resolveListening) =>
+    server.listen(0, '127.0.0.1', resolveListening),
+  );
+  const { port } = server.address();
+  await new Promise((resolveClosed) => server.close(resolveClosed));
+
+  const reportedInfo = [];
+  await assertDaemonDevPortAvailable({
+    env: { HOST: '127.0.0.1', PORT: String(port) },
+    createConnection: () => {
+      const socket = new EventEmitter();
+      socket.destroy = () => {};
+      setImmediate(() => {
+        const error = new Error('connect ECONNREFUSED');
+        error.code = 'ECONNREFUSED';
+        socket.emit('error', error);
+      });
+      return socket;
+    },
+    reportInfo: (message) => reportedInfo.push(message),
+  });
+
+  assert.deepEqual(reportedInfo, []);
+});
+
 test('daemon supervisor treats an unexpected child close as terminal', async () => {
   const boundaries = createFakeSupervisorBoundaries();
   const reportedErrors = [];
   const completion = runDaemonDevSupervisor({
-    baseEnv: validAuthEnv,
+    baseEnv: supervisorBaseEnv,
     assertPortAvailable: boundaries.assertPortAvailable,
     createBundleBuilder: boundaries.createBundleBuilder,
     createWatcher: boundaries.createWatcher,
@@ -263,7 +369,7 @@ test('daemon supervisor treats an unexpected child close as terminal', async () 
 test('daemon supervisor coalesces changes while awaiting the old child close', async () => {
   const boundaries = createFakeSupervisorBoundaries();
   const completion = runDaemonDevSupervisor({
-    baseEnv: validAuthEnv,
+    baseEnv: supervisorBaseEnv,
     assertPortAvailable: boundaries.assertPortAvailable,
     createBundleBuilder: boundaries.createBundleBuilder,
     createWatcher: boundaries.createWatcher,
@@ -306,7 +412,7 @@ test('daemon supervisor coalesces changes while awaiting the old child close', a
 test('daemon supervisor does not kill a child twice when shutdown races a restart', async () => {
   const boundaries = createFakeSupervisorBoundaries();
   const completion = runDaemonDevSupervisor({
-    baseEnv: validAuthEnv,
+    baseEnv: supervisorBaseEnv,
     assertPortAvailable: boundaries.assertPortAvailable,
     createBundleBuilder: boundaries.createBundleBuilder,
     createWatcher: boundaries.createWatcher,
@@ -336,7 +442,7 @@ test('daemon supervisor shuts down a live child after a watcher failure', async 
   const watcherError = new Error('polling failed');
   const reportedErrors = [];
   const completion = runDaemonDevSupervisor({
-    baseEnv: validAuthEnv,
+    baseEnv: supervisorBaseEnv,
     assertPortAvailable: boundaries.assertPortAvailable,
     createBundleBuilder: boundaries.createBundleBuilder,
     createWatcher: boundaries.createWatcher,
@@ -363,7 +469,7 @@ test('daemon supervisor launches the child before the watcher finishes when no-w
     resolveWatcher = resolveGate;
   });
   const completion = runDaemonDevSupervisor({
-    baseEnv: validAuthEnv,
+    baseEnv: supervisorBaseEnv,
     assertPortAvailable: boundaries.assertPortAvailable,
     createBundleBuilder: boundaries.createBundleBuilder,
     createWatcher: async (callbacks) => {
@@ -393,7 +499,7 @@ test('daemon supervisor can run without a watcher', async () => {
   let createWatcherCalls = 0;
   const completion = runDaemonDevSupervisor({
     baseEnv: {
-      ...validAuthEnv,
+      ...supervisorBaseEnv,
       GEULBAT_DEV_NO_WATCH: '1',
     },
     assertPortAvailable: boundaries.assertPortAvailable,
@@ -424,7 +530,7 @@ test('daemon supervisor disposes a bundle builder that resolves during shutdown'
     resolveBuilder = resolveGate;
   });
   const completion = runDaemonDevSupervisor({
-    baseEnv: validAuthEnv,
+    baseEnv: supervisorBaseEnv,
     assertPortAvailable: boundaries.assertPortAvailable,
     createBundleBuilder: () => builderGate,
     createWatcher: boundaries.createWatcher,
@@ -541,7 +647,7 @@ test(
     let child;
     let childReady;
     const completion = runDaemonDevSupervisor({
-      baseEnv: validAuthEnv,
+      baseEnv: supervisorBaseEnv,
       assertPortAvailable: async () => {},
       createBundleBuilder: async () => ({
         entryPath: '/fake/daemon-dev.mjs',

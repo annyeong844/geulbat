@@ -15,7 +15,10 @@ import type { PtcExecuteCodePackageInstallRuntimeConfig } from './execute-code-p
 import {
   PTC_EXECUTE_CODE_INSTALLED_PACKAGES_NODE_PATH,
   PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX,
+  PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH,
   PTC_PACKAGE_INSTALL_TOOL_NAME,
+  type PtcExecuteCodeLanguage,
+  type PtcPackageInstallManager,
   type PtcPackageInstallRequestedPackage,
   type PtcPackageInstallResolvedPackage,
   type PtcPackageInstallRuntimeRequest,
@@ -23,8 +26,9 @@ import {
 } from './execute-code-runtime-contract.js';
 
 const PTC_PACKAGE_INSTALL_PROVENANCE_DIRNAME = 'package-provenance';
-const PTC_NPM_VERSION_SPEC_MAX_LEN = 256;
+const PTC_PACKAGE_VERSION_SPEC_MAX_LEN = 256;
 const PTC_NPM_DEFAULT_VERSION_SPEC = 'latest';
+const PTC_PYTHON_DEFAULT_VERSION_SPEC = 'latest';
 
 // Registry version ranges and dist-tags only. The charset excludes ':' and '/'
 // (which blocks file:/git+https:/github:owner/repo/./local source specifiers)
@@ -35,9 +39,51 @@ const PTC_NPM_DEFAULT_VERSION_SPEC = 'latest';
 export function isSafeNpmVersionSpec(value: string): boolean {
   return (
     value.length > 0 &&
-    value.length <= PTC_NPM_VERSION_SPEC_MAX_LEN &&
+    value.length <= PTC_PACKAGE_VERSION_SPEC_MAX_LEN &&
     /^[A-Za-z0-9.^~><=|*\-+_ ]+$/u.test(value)
   );
+}
+
+export function isSafePythonPackageName(value: string): boolean {
+  return (
+    /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,212}[A-Za-z0-9])?$/u.test(value) &&
+    !value.includes('..')
+  );
+}
+
+export function isSafePythonVersionSpec(value: string): boolean {
+  if (
+    value.length === 0 ||
+    value.length > PTC_PACKAGE_VERSION_SPEC_MAX_LEN ||
+    value.includes(' ')
+  ) {
+    return false;
+  }
+  return value
+    .split(',')
+    .every((clause) =>
+      /^(?:(?:===|~=|==|!=|<=|>=|<|>)?[0-9][A-Za-z0-9.*+!_-]*)$/u.test(clause),
+    );
+}
+
+function normalizePythonPackageName(value: string): string {
+  return value.toLowerCase().replace(/[-_.]+/gu, '-');
+}
+
+function normalizePythonVersionSpec(
+  value: string | undefined,
+): string | undefined {
+  if (value === undefined || value.length === 0) {
+    return '';
+  }
+  const normalized = /^[0-9]/u.test(value) ? `==${value}` : value;
+  return isSafePythonVersionSpec(normalized) ? normalized : undefined;
+}
+
+export function resolvePtcPackageInstallManager(
+  language: PtcExecuteCodeLanguage | undefined,
+): PtcPackageInstallManager {
+  return language === 'python' ? 'pip' : 'npm';
 }
 
 type EnabledPtcExecuteCodePackageInstallConfig = Extract<
@@ -56,7 +102,11 @@ interface PtcPackageInstallProvenanceEntry {
 
 export function decodePtcPackageInstallProvenanceEntries(
   value: unknown,
+  manager: PtcPackageInstallManager = 'npm',
 ): PtcPackageInstallProvenanceEntry[] | undefined {
+  if (manager === 'pip') {
+    return decodePipInspectProvenanceEntries(value);
+  }
   if (!Array.isArray(value)) {
     return undefined;
   }
@@ -81,6 +131,38 @@ export function decodePtcPackageInstallProvenanceEntries(
       role: candidate.role,
     });
   }
+  return entries;
+}
+
+function decodePipInspectProvenanceEntries(
+  value: unknown,
+): PtcPackageInstallProvenanceEntry[] | undefined {
+  if (
+    !isPtcRecord(value) ||
+    value.version !== '1' ||
+    !Array.isArray(value.installed)
+  ) {
+    return undefined;
+  }
+
+  const entries: PtcPackageInstallProvenanceEntry[] = [];
+  for (const candidate of value.installed) {
+    if (
+      !isPtcRecord(candidate) ||
+      !isPtcRecord(candidate.metadata) ||
+      typeof candidate.metadata.name !== 'string' ||
+      typeof candidate.metadata.version !== 'string'
+    ) {
+      return undefined;
+    }
+    entries.push({
+      path: `python/${normalizePythonPackageName(candidate.metadata.name)}`,
+      name: candidate.metadata.name,
+      version: candidate.metadata.version,
+      role: 'prod',
+    });
+  }
+  entries.sort((first, second) => first.path.localeCompare(second.path));
   return entries;
 }
 
@@ -111,10 +193,11 @@ interface RunPtcExecuteCodePackageInstallArgs {
   now?: () => number;
 }
 
-// Effective spec sent to npm: the requested version or 'latest' when omitted.
+// Effective registry spec plus the stable model-visible form.
 interface PtcValidatedInstallPackage {
   name: string;
   spec: string;
+  requestedSpec: string;
 }
 
 export function validatePtcPackageInstallRequest(args: {
@@ -124,6 +207,14 @@ export function validatePtcPackageInstallRequest(args: {
   | { ok: true; value: PtcValidatedInstallPackage[] }
   | Extract<PtcPackageInstallRuntimeResult, { ok: false }> {
   const packages = args.request.packages;
+  if (
+    args.request.language !== undefined &&
+    args.request.language !== 'javascript' &&
+    args.request.language !== 'python'
+  ) {
+    return requestInvalid();
+  }
+  const manager = resolvePtcPackageInstallManager(args.request.language);
   if (
     !Array.isArray(packages) ||
     packages.length === 0 ||
@@ -135,21 +226,40 @@ export function validatePtcPackageInstallRequest(args: {
   const seenNames = new Set<string>();
   const validated: PtcValidatedInstallPackage[] = [];
   for (const pkg of packages) {
-    if (typeof pkg?.name !== 'string' || !isSafeNpmPackageName(pkg.name)) {
+    if (
+      typeof pkg?.name !== 'string' ||
+      (manager === 'npm'
+        ? !isSafeNpmPackageName(pkg.name)
+        : !isSafePythonPackageName(pkg.name))
+    ) {
       return requestInvalid();
     }
     if (pkg.version !== undefined && typeof pkg.version !== 'string') {
       return requestInvalid();
     }
     const spec =
-      pkg.version === undefined || pkg.version.length === 0
-        ? PTC_NPM_DEFAULT_VERSION_SPEC
-        : pkg.version;
-    if (!isSafeNpmVersionSpec(spec) || seenNames.has(pkg.name)) {
+      manager === 'npm'
+        ? pkg.version === undefined || pkg.version.length === 0
+          ? PTC_NPM_DEFAULT_VERSION_SPEC
+          : pkg.version
+        : normalizePythonVersionSpec(pkg.version);
+    if (
+      spec === undefined ||
+      (manager === 'npm' && !isSafeNpmVersionSpec(spec))
+    ) {
       return requestInvalid();
     }
-    seenNames.add(pkg.name);
-    validated.push({ name: pkg.name, spec });
+    const identityName =
+      manager === 'npm' ? pkg.name : normalizePythonPackageName(pkg.name);
+    if (seenNames.has(identityName)) {
+      return requestInvalid();
+    }
+    seenNames.add(identityName);
+    validated.push({
+      name: pkg.name,
+      spec,
+      requestedSpec: spec.length === 0 ? PTC_PYTHON_DEFAULT_VERSION_SPEC : spec,
+    });
   }
   validated.sort((first, second) => first.name.localeCompare(second.name));
   return { ok: true, value: validated };
@@ -157,7 +267,26 @@ export function validatePtcPackageInstallRequest(args: {
 
 export function buildPtcPackageInstallCommand(
   packages: PtcValidatedInstallPackage[],
+  manager: PtcPackageInstallManager = 'npm',
 ): string {
+  if (manager === 'pip') {
+    return [
+      'set -eu',
+      `mkdir -p '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
+      [
+        'python3 -m pip --isolated install',
+        '--disable-pip-version-check',
+        '--no-input',
+        "--only-binary ':all:'",
+        '--upgrade',
+        '--no-compile',
+        `--cache-dir '${PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT}/pip'`,
+        `--target '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
+        ...packages.map((pkg) => `'${pkg.name}${pkg.spec}'`),
+      ].join(' '),
+    ].join('\n');
+  }
+
   const prefix = PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX;
   return [
     'set -eu',
@@ -184,7 +313,21 @@ export function buildPtcPackageInstallCommand(
 // installed dependency closure as one JSON line (child spec §6.3: closure, not
 // only top-level requests). Daemon-authored; double quotes only so the shell
 // single-quote envelope stays intact.
-export function buildPtcPackageInstallProvenanceCommand(): string {
+export function buildPtcPackageInstallProvenanceCommand(
+  manager: PtcPackageInstallManager = 'npm',
+): string {
+  if (manager === 'pip') {
+    return [
+      'python3',
+      '-m',
+      'pip',
+      '--isolated',
+      'inspect',
+      '--path',
+      `'${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
+    ].join(' ');
+  }
+
   const script = [
     `const lock = require("${PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX}/package-lock.json");`,
     'const entries = Object.entries(lock.packages || {})',
@@ -226,6 +369,7 @@ export async function runPtcExecuteCodePackageInstall(
   if (!validated.ok) {
     return validated;
   }
+  const manager = resolvePtcPackageInstallManager(args.request.language);
 
   const now = args.now ?? (() => performance.now());
   const start = now();
@@ -243,7 +387,7 @@ export async function runPtcExecuteCodePackageInstall(
       admission: args.admission,
       identity: args.identity,
       request: {
-        command: buildPtcPackageInstallCommand(validated.value),
+        command: buildPtcPackageInstallCommand(validated.value, manager),
         timeoutMs: args.config.maxInstallMs,
       },
       ...(runner === undefined ? {} : { runner }),
@@ -263,45 +407,66 @@ export async function runPtcExecuteCodePackageInstall(
   }
 
   const requestedPackages: PtcPackageInstallRequestedPackage[] =
-    validated.value.map((pkg) => ({ name: pkg.name, version: pkg.spec }));
+    validated.value.map((pkg) => ({
+      name: pkg.name,
+      version: pkg.requestedSpec,
+    }));
   const closure = await observePtcPackageInstallClosure({
     ...args,
+    manager,
     installSucceeded: execution.value.exitCode === 0,
   });
   const provenance = await writePtcPackageInstallProvenanceRecord({
     runtimeRoot: args.runtimeRoot,
     labPolicyId: args.admission.labPolicy?.policyId,
+    manager,
     requestedPackages,
     installSucceeded: execution.value.exitCode === 0,
     closure,
   });
 
+  const valueBase = {
+    ok: true as const,
+    capabilityId: PTC_PACKAGE_INSTALL_TOOL_NAME,
+    labPolicyId: execution.value.policyId,
+    profile: 'lab' as const,
+    installMode: 'open_network' as const,
+    packages: requestedPackages,
+    resolvedPackages: derivePtcResolvedPackages({
+      manager,
+      packages: validated.value,
+      closure: closure.entries,
+    }),
+    exitCode: execution.value.exitCode,
+    stdout: redactNetworkIdentifiersFromExcerpt(execution.value.stdout),
+    stderr: redactNetworkIdentifiersFromExcerpt(execution.value.stderr),
+    effectiveTimeoutMs: execution.value.effectiveTimeoutMs,
+    durationMs: Math.max(0, now() - start),
+    sessionLifecycle: {
+      mode: 'runtime_owned_reusable' as const,
+      retainedAfterExecution: true,
+    },
+    provenance,
+  };
+
   return {
     ok: true,
-    value: {
-      ok: true,
-      capabilityId: PTC_PACKAGE_INSTALL_TOOL_NAME,
-      labPolicyId: execution.value.policyId,
-      profile: 'lab',
-      manager: 'npm',
-      installMode: 'open_network',
-      packages: requestedPackages,
-      resolvedPackages: derivePtcResolvedPackages({
-        packages: validated.value,
-        closure: closure.entries,
-      }),
-      exitCode: execution.value.exitCode,
-      stdout: redactNetworkIdentifiersFromExcerpt(execution.value.stdout),
-      stderr: redactNetworkIdentifiersFromExcerpt(execution.value.stderr),
-      effectiveTimeoutMs: execution.value.effectiveTimeoutMs,
-      durationMs: Math.max(0, now() - start),
-      installedPackagesNodePath: PTC_EXECUTE_CODE_INSTALLED_PACKAGES_NODE_PATH,
-      sessionLifecycle: {
-        mode: 'runtime_owned_reusable',
-        retainedAfterExecution: true,
-      },
-      provenance,
-    },
+    value:
+      manager === 'pip'
+        ? {
+            ...valueBase,
+            manager: 'pip',
+            language: 'python',
+            installedPackagesPythonPath:
+              PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH,
+          }
+        : {
+            ...valueBase,
+            manager: 'npm',
+            language: 'javascript',
+            installedPackagesNodePath:
+              PTC_EXECUTE_CODE_INSTALLED_PACKAGES_NODE_PATH,
+          },
   };
 }
 
@@ -313,16 +478,22 @@ interface PtcPackageInstallClosure {
 // Maps each requested top-level package to the exact version npm resolved it to,
 // read from the installed dependency closure (path === node_modules/<name>).
 export function derivePtcResolvedPackages(args: {
+  manager?: PtcPackageInstallManager;
   packages: PtcValidatedInstallPackage[];
   closure: PtcPackageInstallProvenanceEntry[];
 }): PtcPackageInstallResolvedPackage[] {
+  const manager = args.manager ?? 'npm';
   return args.packages.map((pkg) => {
+    const expectedPath =
+      manager === 'pip'
+        ? `python/${normalizePythonPackageName(pkg.name)}`
+        : `node_modules/${pkg.name}`;
     const entry = args.closure.find(
-      (candidate) => candidate.path === `node_modules/${pkg.name}`,
+      (candidate) => candidate.path === expectedPath,
     );
     return {
       name: pkg.name,
-      requestedSpec: pkg.spec,
+      requestedSpec: pkg.requestedSpec,
       resolvedVersion: entry?.version ?? null,
       integrity: entry?.integrity ?? null,
     };
@@ -330,7 +501,10 @@ export function derivePtcResolvedPackages(args: {
 }
 
 async function observePtcPackageInstallClosure(
-  args: RunPtcExecuteCodePackageInstallArgs & { installSucceeded: boolean },
+  args: RunPtcExecuteCodePackageInstallArgs & {
+    installSucceeded: boolean;
+    manager: PtcPackageInstallManager;
+  },
 ): Promise<PtcPackageInstallClosure> {
   if (!args.installSucceeded) {
     return { observation: 'skipped_failed_install', entries: [] };
@@ -344,7 +518,7 @@ async function observePtcPackageInstallClosure(
       admission: args.admission,
       identity: args.identity,
       request: {
-        command: buildPtcPackageInstallProvenanceCommand(),
+        command: buildPtcPackageInstallProvenanceCommand(args.manager),
         timeoutMs: args.config.maxInstallMs,
       },
       ...(runner === undefined ? {} : { runner }),
@@ -353,7 +527,10 @@ async function observePtcPackageInstallClosure(
     });
     if (observed.ok && observed.value.exitCode === 0) {
       const parsed: unknown = JSON.parse(observed.value.stdout);
-      const entries = decodePtcPackageInstallProvenanceEntries(parsed);
+      const entries = decodePtcPackageInstallProvenanceEntries(
+        parsed,
+        args.manager,
+      );
       if (entries !== undefined) {
         return {
           observation: 'observed',
@@ -370,6 +547,7 @@ async function observePtcPackageInstallClosure(
 async function writePtcPackageInstallProvenanceRecord(args: {
   runtimeRoot: string;
   labPolicyId: string | undefined;
+  manager: PtcPackageInstallManager;
   requestedPackages: PtcPackageInstallRequestedPackage[];
   installSucceeded: boolean;
   closure: PtcPackageInstallClosure;
@@ -387,6 +565,7 @@ async function writePtcPackageInstallProvenanceRecord(args: {
         {
           installId,
           labPolicyId: args.labPolicyId,
+          manager: args.manager,
           requestedPackages: args.requestedPackages,
           installSucceeded: args.installSucceeded,
           closureObservation: args.closure.observation,

@@ -72,6 +72,7 @@ function cloneTool(tool: RegisteredToolLike): NormalizedTool {
     ...(tool.parallelBatchKind
       ? { parallelBatchKind: tool.parallelBatchKind }
       : {}),
+    ...(tool.abortSettlement ? { abortSettlement: tool.abortSettlement } : {}),
     ...(tool.timeoutMs !== undefined ? { timeoutMs: tool.timeoutMs } : {}),
     requiresApproval: tool.requiresApproval,
     ...(tool.approvalClass === undefined
@@ -102,11 +103,18 @@ function cloneTool(tool: RegisteredToolLike): NormalizedTool {
 
 function createRegistryEntry(tool: RegisteredToolLike): RegistryEntry {
   const normalizedTool = cloneTool(tool);
+  const abortSettlement =
+    normalizedTool.abortSettlement ??
+    (normalizedTool.sideEffectLevel === 'write' ||
+    normalizedTool.sideEffectLevel === 'destructive'
+      ? 'await_execution'
+      : 'immediate');
   const executionHandle: ToolExecutionHandle = Object.freeze({
     ...(normalizedTool.timeoutMs === undefined
       ? {}
       : { timeoutMs: normalizedTool.timeoutMs }),
     requiresApproval: normalizedTool.requiresApproval,
+    abortSettlement,
     parseArgs: (raw) => normalizedTool.parseArgs(raw),
     executeParsed: (args, ctx) => normalizedTool.executeParsed(args, ctx),
   });

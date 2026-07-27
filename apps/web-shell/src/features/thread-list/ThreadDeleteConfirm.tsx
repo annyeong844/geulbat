@@ -1,6 +1,6 @@
 import type { ThreadSummary } from '@geulbat/protocol/threads';
 
-interface Props {
+export interface ThreadDeleteConfirmProps {
   thread: ThreadSummary;
   busy: boolean;
   onConfirm: () => Promise<void> | void;
@@ -12,7 +12,7 @@ export function ThreadDeleteConfirm({
   busy,
   onConfirm,
   onCancel,
-}: Props) {
+}: ThreadDeleteConfirmProps) {
   return (
     <section className="thread-delete-confirm" role="alertdialog">
       <strong>Delete thread?</strong>

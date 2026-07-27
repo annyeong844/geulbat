@@ -1,66 +1,29 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-
 import { sha256StableJson } from '@geulbat/content-identity/stable-json';
-import {
-  assertRunId,
-  assertThreadId,
-  isRunId,
-  type RunId,
-  type ThreadId,
-} from '@geulbat/protocol/ids';
-import {
-  isApprovedPlanRef,
-  isPlanDraftV1,
-  isPlanningWorkflowSnapshot,
-  type ApprovedPlanRef,
-  type PlanDraftV1,
-  type PlanModeDepth,
-  type PlanModeIntensity,
-  type PlanningWorkflowSnapshot,
-  type PlanWorkflowCommand,
+import { assertRunId, type RunId, type ThreadId } from '@geulbat/protocol/ids';
+import type {
+  ApprovedPlanRef,
+  PlanDraftV1,
+  PlanModeDepth,
+  PlanModeIntensity,
+  PlanningWorkflowSnapshot,
+  PlanWorkflowCommand,
 } from '@geulbat/protocol/planning-workflow';
 import {
   PLAN_APPROVAL_REQUIRED,
   PLAN_REVISION_APPROVAL_REQUIRED,
-  type PlanApprovalRecord,
 } from '../planning-approval.js';
-import { isRecord } from '../runtime-json.js';
-import { writeTextFileAtomically } from '../utils/atomic-file.js';
-import { getErrorMessage, isNotFoundError } from '../utils/error.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
+import { loadPlanState, savePlanState } from '../plan-state-store.js';
+import type { RunExecutionTemplate } from './run-execution-template.js';
 import {
-  loadPlanState,
-  savePlanState,
-  type PlanItem,
-} from '../plan-state-store.js';
-import {
-  isRunExecutionTemplate,
-  type RunExecutionTemplate,
-} from './run-execution-template.js';
-
-const PLANNING_WORKFLOW_SCHEMA_VERSION = 2;
-const LEGACY_PLANNING_WORKFLOW_SCHEMA_VERSION = 1;
+  createPlanningWorkflowPersistence,
+  snapshotRef,
+  type StoredApproval,
+  type StoredPlanningWorkflowState,
+} from './planning-workflow-persistence.js';
 
 type PlanningExecutionTemplate = RunExecutionTemplate;
-
-interface StoredCurrentWorkflow {
-  snapshot: PlanningWorkflowSnapshot;
-  executionTemplate: PlanningExecutionTemplate;
-}
-
-interface StoredApproval {
-  record: PlanApprovalRecord;
-  draft: PlanDraftV1;
-  executionTemplate: PlanningExecutionTemplate;
-}
-
-interface StoredPlanningWorkflowState {
-  schemaVersion: typeof PLANNING_WORKFLOW_SCHEMA_VERSION;
-  current: StoredCurrentWorkflow | null;
-  approvals: StoredApproval[];
-}
 
 type PlanExecutionCompletionAssessment =
   | { kind: 'complete' }
@@ -148,102 +111,22 @@ export function createPlanningWorkflowStore(args: {
   now?: () => string;
   createId?: () => string;
 }): PlanningWorkflowStore {
-  const root = join(args.stateRoot, '.geulbat', 'planning-workflows');
   const now = args.now ?? (() => new Date().toISOString());
   const createId = args.createId ?? randomUUID;
   const runMutationSerial = createKeyedSerialRunner();
 
-  function workflowPath(threadId: ThreadId): string {
-    return join(root, `${assertThreadId(threadId)}.json`);
-  }
-
-  async function readState(
-    threadId: ThreadId,
-  ): Promise<StoredPlanningWorkflowState> {
-    try {
-      const raw: unknown = JSON.parse(
-        await readFile(workflowPath(threadId), 'utf8'),
-      );
-      const state = parseStoredState(raw);
-      if (
-        isRecord(raw) &&
-        raw.schemaVersion === LEGACY_PLANNING_WORKFLOW_SCHEMA_VERSION
-      ) {
-        await writeState(threadId, state);
-      }
-      return state;
-    } catch (error: unknown) {
-      if (isNotFoundError(error)) {
-        return createEmptyState();
-      }
-      throw new Error(
-        `invalid planning workflow state: ${getErrorMessage(error)}`,
-      );
-    }
-  }
-
-  async function writeState(
-    threadId: ThreadId,
-    state: StoredPlanningWorkflowState,
-  ): Promise<void> {
-    await writeTextFileAtomically(
-      workflowPath(threadId),
-      `${JSON.stringify(state, null, 2)}\n`,
-    );
-  }
-
-  async function publishApprovedDraft(
-    threadId: ThreadId,
-    current: StoredCurrentWorkflow,
-  ): Promise<void> {
-    const snapshot = requireDraftSnapshot(current.snapshot);
-    await loadPlanState(args.stateRoot, threadId);
-    const createdAt = Date.parse(snapshot.updatedAt);
-    const items: PlanItem[] = snapshot.draft.steps.map((step) => ({
-      id: step.id,
-      text: step.text,
-      status: 'pending',
-      createdAt,
-    }));
-    await savePlanState(args.stateRoot, threadId, {
-      nextId: items.length + 1,
-      items,
-      execution: {
-        approvedPlanRef: snapshotRef(snapshot),
-      },
-    });
-  }
-
-  async function recoverPendingPublish(
-    threadId: ThreadId,
-    state: StoredPlanningWorkflowState,
-  ): Promise<StoredPlanningWorkflowState> {
-    const current = state.current;
-    if (current?.snapshot.state !== 'approved_pending_publish') {
-      return state;
-    }
-    await publishApprovedDraft(threadId, current);
-    const updatedAt = now();
-    const recovered: StoredPlanningWorkflowState = {
-      ...state,
-      current: {
-        ...current,
-        snapshot: {
-          ...current.snapshot,
-          state: 'approved',
-          updatedAt,
-        },
-      },
-    };
-    await writeState(threadId, recovered);
-    return recovered;
-  }
-
-  async function readRecoveredState(
-    threadId: ThreadId,
-  ): Promise<StoredPlanningWorkflowState> {
-    return await recoverPendingPublish(threadId, await readState(threadId));
-  }
+  /**
+   * 디스크 표현과 발행·복구는 별도 소유자에게 있다. store는 그 위에서
+   * 워크플로 상태 전이와 실행 수명만 판정한다.
+   */
+  const {
+    publishApprovedDraft,
+    readRecoveredState,
+    readState,
+    recoverPendingPublish,
+    workflowPath,
+    writeState,
+  } = createPlanningWorkflowPersistence({ now, stateRoot: args.stateRoot });
 
   async function readThread(
     threadId: ThreadId,
@@ -369,6 +252,17 @@ export function createPlanningWorkflowStore(args: {
     return await runMutationSerial(path, async () => {
       const state = await readState(threadId);
       const current = state.current;
+      const assertedProposalRunId = assertRunId(proposalRunId);
+      const draftDigest = sha256StableJson(draft);
+      const digest: `sha256:${string}` = `sha256:${draftDigest}`;
+      if (
+        current?.snapshot.state === 'awaiting_approval' &&
+        current.snapshot.proposalRunId === assertedProposalRunId &&
+        current.snapshot.digest === digest &&
+        sha256StableJson(current.snapshot.draft) === draftDigest
+      ) {
+        return current.snapshot;
+      }
       if (current?.snapshot.state !== 'collecting') {
         throw planningError(
           PLAN_APPROVAL_REQUIRED,
@@ -389,9 +283,9 @@ export function createPlanningWorkflowStore(args: {
         depth: current.snapshot.depth,
         planId,
         revision,
-        digest: `sha256:${sha256StableJson(draft)}`,
+        digest,
         draft,
-        proposalRunId: assertRunId(proposalRunId),
+        proposalRunId: assertedProposalRunId,
         createdAt: current.snapshot.createdAt,
         updatedAt: timestamp,
       };
@@ -898,127 +792,6 @@ export function createPlanningWorkflowStore(args: {
   };
 }
 
-function createEmptyState(): StoredPlanningWorkflowState {
-  return {
-    schemaVersion: PLANNING_WORKFLOW_SCHEMA_VERSION,
-    current: null,
-    approvals: [],
-  };
-}
-
-function parseStoredState(value: unknown): StoredPlanningWorkflowState {
-  const normalized = migrateStoredPlanningWorkflowV1(value);
-  if (
-    !isRecord(normalized) ||
-    normalized.schemaVersion !== PLANNING_WORKFLOW_SCHEMA_VERSION ||
-    !Array.isArray(normalized.approvals)
-  ) {
-    throw new Error('invalid planning workflow store');
-  }
-  return {
-    schemaVersion: PLANNING_WORKFLOW_SCHEMA_VERSION,
-    current:
-      normalized.current === null
-        ? null
-        : parseStoredCurrent(normalized.current),
-    approvals: normalized.approvals.map(parseStoredApproval),
-  };
-}
-
-function migrateStoredPlanningWorkflowV1(value: unknown): unknown {
-  if (
-    !isRecord(value) ||
-    value.schemaVersion !== LEGACY_PLANNING_WORKFLOW_SCHEMA_VERSION
-  ) {
-    return value;
-  }
-  if (value.current === null) {
-    return {
-      ...value,
-      schemaVersion: PLANNING_WORKFLOW_SCHEMA_VERSION,
-    };
-  }
-  if (!isRecord(value.current) || !isRecord(value.current.snapshot)) {
-    throw new Error('invalid legacy planning workflow store');
-  }
-  // v1 predates the independent interrogation-depth axis. Its behaviour is
-  // exactly the v2 standard depth, so migration names that semantic mapping
-  // once and immediately rewrites the durable record as v2.
-  return {
-    ...value,
-    schemaVersion: PLANNING_WORKFLOW_SCHEMA_VERSION,
-    current: {
-      ...value.current,
-      snapshot: {
-        ...value.current.snapshot,
-        depth: 'standard',
-      },
-    },
-  };
-}
-
-function parseStoredCurrent(value: unknown): StoredCurrentWorkflow {
-  if (
-    !isRecord(value) ||
-    !isPlanningWorkflowSnapshot(value.snapshot) ||
-    !isRunExecutionTemplate(value.executionTemplate)
-  ) {
-    throw new Error('invalid current planning workflow');
-  }
-  return {
-    snapshot: value.snapshot,
-    executionTemplate: value.executionTemplate,
-  };
-}
-
-function parseStoredApproval(value: unknown): StoredApproval {
-  const approvedPlanRef =
-    isRecord(value) && isRecord(value.record)
-      ? {
-          workflowId: value.record.workflowId,
-          planId: value.record.planId,
-          revision: value.record.revision,
-          digest: value.record.digest,
-        }
-      : undefined;
-  if (
-    !isRecord(value) ||
-    !isRecord(value.record) ||
-    !isApprovedPlanRef(approvedPlanRef) ||
-    !isStringField(value.record.proposalRunId) ||
-    !isRunId(value.record.proposalRunId) ||
-    !isStringField(value.record.decidedAt) ||
-    (value.record.executionRunId !== undefined &&
-      (!isStringField(value.record.executionRunId) ||
-        !isRunId(value.record.executionRunId))) ||
-    !isPlanDraftV1(value.draft) ||
-    !isRunExecutionTemplate(value.executionTemplate)
-  ) {
-    throw new Error('invalid planning approval record');
-  }
-  return {
-    record: {
-      ...approvedPlanRef,
-      proposalRunId: value.record.proposalRunId,
-      ...(value.record.executionRunId === undefined
-        ? {}
-        : { executionRunId: value.record.executionRunId }),
-      decidedAt: value.record.decidedAt,
-    },
-    draft: value.draft,
-    executionTemplate: value.executionTemplate,
-  };
-}
-
-function requireDraftSnapshot(
-  snapshot: PlanningWorkflowSnapshot,
-): Extract<PlanningWorkflowSnapshot, { state: 'approved_pending_publish' }> {
-  if (snapshot.state !== 'approved_pending_publish') {
-    throw new Error('planning workflow is not pending publication');
-  }
-  return snapshot;
-}
-
 function commandRef(
   command: Exclude<PlanWorkflowCommand, { kind: 'cancel' }>,
 ): ApprovedPlanRef {
@@ -1027,17 +800,6 @@ function commandRef(
     planId: command.planId,
     revision: command.revision,
     digest: command.digest,
-  };
-}
-
-function snapshotRef(
-  snapshot: Extract<PlanningWorkflowSnapshot, { planId: string }>,
-): ApprovedPlanRef {
-  return {
-    workflowId: snapshot.workflowId,
-    planId: snapshot.planId,
-    revision: snapshot.revision,
-    digest: snapshot.digest,
   };
 }
 
@@ -1056,8 +818,4 @@ function planningConflict(message: string): Error {
 
 function planningError(code: string, message: string): Error {
   return Object.assign(new Error(`${code}: ${message}`), { code });
-}
-
-function isStringField(value: unknown): value is string {
-  return typeof value === 'string';
 }

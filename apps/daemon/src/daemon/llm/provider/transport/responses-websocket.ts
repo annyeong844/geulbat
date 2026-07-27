@@ -21,7 +21,7 @@ import {
   resolveCodexResponsesUrl,
   resolveCodexWebSocketUrl,
 } from './responses-websocket-url.js';
-import { iterateWebSocketEvents } from './responses-websocket-stream.js';
+import { iterateWebSocketEventsAfterDispatch } from './responses-websocket-stream.js';
 import type { HistoryItem, WireRequestBase } from '../wire/types.js';
 
 const CODEX_WS_BETA_HEADER =
@@ -102,8 +102,9 @@ interface ResponsesWebSocketStreamBase {
   webSocketReusePolicy: ResponsesWebSocketReusePolicy;
   providerWebSocketSessions: Pick<
     ResponsesWebSocketSessionStore,
-    'acquireWebSocket' | 'deferProviderRequests'
+    'acquireWebSocket' | 'deferProviderRequests' | 'streamDurableResponseEvents'
   >;
+  requestAttempt?: number;
   signal?: AbortSignal;
   discoverySink?: ResponsesWireDiscoverySink;
   onRequestPrepared?: ResponsesRequestPreparedHandler;
@@ -157,6 +158,51 @@ export async function streamResponsesOverWebSocket(
       preparationReason: admission.reason,
     });
   }
+  const streamDurableResponseEvents =
+    input.providerWebSocketSessions.streamDurableResponseEvents;
+  if (streamDurableResponseEvents !== undefined) {
+    try {
+      const events = streamDurableResponseEvents({
+        webSocketUrl,
+        headers,
+        serializedPayload,
+        providerSessionId: input.providerSessionId,
+        requestAttempt: input.requestAttempt ?? 0,
+        ...(input.completionEventTypes === undefined
+          ? {}
+          : { completionEventTypes: input.completionEventTypes }),
+        onDispatched: () =>
+          input.discoverySink?.recordRequest(
+            sanitizeOAuthWireDiscoveryRequest({ headers, payload }),
+          ),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        ...(input.onAdmissionState === undefined
+          ? {}
+          : { onAdmissionState: input.onAdmissionState }),
+      });
+      return await parseResponseEvents(
+        tapDiscoveryEvents(events, input.discoverySink, input.normalizeEvent),
+        input.onAssistantDelta,
+        {
+          ...(input.onFunctionCallArgsDelta !== undefined
+            ? { onFunctionCallArgsDelta: input.onFunctionCallArgsDelta }
+            : {}),
+          ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
+          historyProjection: input.historyProjection,
+          ...(input.signal !== undefined ? { signal: input.signal } : {}),
+        },
+      );
+    } catch (error: unknown) {
+      const retryAfterMs = readRetryAfterMs(error);
+      if (retryAfterMs !== undefined) {
+        input.providerWebSocketSessions.deferProviderRequests?.(
+          webSocketUrl,
+          retryAfterMs,
+        );
+      }
+      throw error;
+    }
+  }
   let socketHandle:
     | Awaited<ReturnType<ResponsesWebSocketSessionStore['acquireWebSocket']>>
     | undefined;
@@ -197,12 +243,12 @@ export async function streamResponsesOverWebSocket(
       );
       socketHandleReleased = false;
     }
-    socketHandle.socket.send(serializedPayload);
-
+    const activeSocket = socketHandle.socket;
     const result = await parseResponseEvents(
       tapDiscoveryEvents(
-        iterateWebSocketEvents(
-          socketHandle.socket,
+        iterateWebSocketEventsAfterDispatch(
+          activeSocket,
+          () => activeSocket.send(serializedPayload),
           input.signal,
           input.completionEventTypes,
         ),

@@ -11,6 +11,7 @@ import { testThreadId } from '../../../test-support/thread-id.js';
 void test('update_plan publishes whole-plan parameters without legacy todo actions', () => {
   const parameters = updatePlanTool.parameters;
   assert.equal(updatePlanTool.name, 'update_plan');
+  assert.equal(updatePlanTool.recoveryStrategy, 'replay_safe');
   assert.ok('type' in parameters);
   assert.equal(parameters.type, 'object');
   assert.deepEqual(parameters.required, ['plan']);

@@ -16,7 +16,77 @@ import {
   DaemonInstanceAdmissionLockConflictError,
   acquireDaemonInstanceAdmissionLock,
   getDaemonInstanceAdmissionLockPath,
+  readDaemonInstanceAdmissionLockOwner,
 } from './daemon-instance-admission-lock.js';
+
+/**
+ * 포트가 유동이면 "지금 도는 데몬은 어디 있나"를 사람이 알 수 없다. 그 답을
+ * 이미 존재하는 admission lock이 나른다: 소유권을 기록하는 파일이 소유자의
+ * 접속 지점도 함께 기록한다. lock은 listen 전에 잡히므로 포트는 나중에 붙는다.
+ */
+void test('the admission lock records the listening port after the server binds', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-admission-port-'));
+  const lock = await acquireDaemonInstanceAdmissionLock({
+    ownerId: 'port-owner',
+    stateRoot,
+  });
+
+  try {
+    assert.equal(lock.owner.port, undefined);
+
+    await lock.recordListeningPort(41234);
+
+    const discovered = await readDaemonInstanceAdmissionLockOwner(stateRoot);
+    assert.equal(discovered?.port, 41234);
+    assert.equal(discovered?.ownerId, 'port-owner');
+  } finally {
+    await lock.release();
+    await rm(stateRoot, { force: true, recursive: true });
+  }
+});
+
+void test('discovering the listening port reports nothing once the daemon released the lock', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-admission-gone-'));
+  const lock = await acquireDaemonInstanceAdmissionLock({
+    ownerId: 'released-owner',
+    stateRoot,
+  });
+  await lock.recordListeningPort(41235);
+  await lock.release();
+
+  try {
+    // 죽은 데몬의 포트를 살아있는 것처럼 돌려주면 CLI가 없는 주소를 연다.
+    assert.equal(await readDaemonInstanceAdmissionLockOwner(stateRoot), null);
+  } finally {
+    await rm(stateRoot, { force: true, recursive: true });
+  }
+});
+
+void test('a superseded owner cannot overwrite the recorded port', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-admission-stale-'));
+  const lock = await acquireDaemonInstanceAdmissionLock({
+    ownerId: 'live-owner',
+    stateRoot,
+  });
+
+  try {
+    await lock.recordListeningPort(41236);
+    // 같은 경로를 다른 소유자가 잡은 뒤 이전 소유자가 늦게 기록하는 경우.
+    await writeFile(
+      lock.lockPath,
+      `${JSON.stringify({ ...lock.owner, ownerId: 'other-owner', port: 41237 }, null, 2)}\n`,
+      'utf8',
+    );
+
+    await assert.rejects(() => lock.recordListeningPort(41238));
+    assert.equal(
+      (await readDaemonInstanceAdmissionLockOwner(stateRoot))?.port,
+      41237,
+    );
+  } finally {
+    await rm(stateRoot, { force: true, recursive: true });
+  }
+});
 
 void test('daemon instance admission lock creates a missing state root on first launch', async () => {
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'geulbat-admission-fresh-'));

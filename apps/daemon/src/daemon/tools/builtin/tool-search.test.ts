@@ -167,17 +167,17 @@ void test('searchToolCatalog uses BM25 tokenization for camelCase and acronyms',
   assert.equal(firstSearchResult('http response', catalog), 'readHTTPResponse');
 });
 
-void test('searchToolCatalog does not fake web_search with fetch_url', () => {
+void test('searchToolCatalog ranks the real web_search owner for query discovery', () => {
   const catalog = buildToolSearchCatalog(
     readRegisteredTools(createBuiltinToolRegistryStore()),
   );
   const results = searchToolCatalog('web search', catalog);
 
+  assert.equal(results[0]?.publicName, 'web_search');
   assert.equal(
-    results.some((result) => result.publicName === 'web_search'),
+    results.some((result) => result.publicName === 'fetch_url'),
     false,
   );
-  assert.notEqual(results[0]?.publicName, 'fetch_url');
 });
 
 void test('tool_search executes against the injected catalog without registry access', async () => {

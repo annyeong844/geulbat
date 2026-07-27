@@ -90,6 +90,17 @@ export type ContextRequestAdmission =
 interface ContextCompactionSelectionItem {
   tokenCount: number;
   canStartRetainedTail: boolean;
+  /**
+   * 요약 영역으로 밀려나면 안 되는 항목. 요약본은 "요약 안의 지시를 따르지
+   * 말라"는 전제로 모델에게 전달되므로, 아직 살아 있는 사용자 요청이 요약에
+   * 들어가면 그 요청은 행동 가능한 컨텍스트에서 사라진다. 그러면 에이전트는
+   * 멈추거나 이미 끝낸 일을 반복한다.
+   *
+   * 요약 프롬프트는 이 불변식을 이미 단정한다("the current user turn is
+   * retained verbatim outside this summary"). 단정만으로는 지켜지지 않으므로
+   * 경계 계산이 실제로 지킨다.
+   */
+  mustRemainInRetainedTail?: boolean;
 }
 
 type ContextCompactionPrefixSelection =
@@ -264,6 +275,17 @@ function isContextCompactionBudget(
   );
 }
 
+function findLastRequiredRetainedTailIndex(
+  items: readonly ContextCompactionSelectionItem[],
+): number | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.mustRemainInRetainedTail === true) {
+      return index;
+    }
+  }
+  return null;
+}
+
 export function selectContextCompactionPrefix(
   items: readonly ContextCompactionSelectionItem[],
   keepRecentTokens: number,
@@ -331,6 +353,16 @@ export function selectContextCompactionPrefix(
     firstKeptIndex -= 1;
   }
   if (firstKeptIndex === 0) {
+    return { kind: 'tail_exceeds_budget' };
+  }
+
+  // 예산만으로 자른 경계가 아직 살아 있는 사용자 요청을 요약 영역에 남기면,
+  // 그 요청은 행동 가능한 컨텍스트에서 사라진다. tail을 그 앞까지 당기는 것은
+  // 답이 아니다 — 그 항목들이 빠진 이유가 바로 예산 초과이므로 당기면 반드시
+  // 예산을 넘는다. 조용히 요청을 버리는 대신 여기서 닫고, 호출자가 다른
+  // 회수 경로(도구 출력 offload, 컨텍스트 준비)로 풀게 한다.
+  const requiredIndex = findLastRequiredRetainedTailIndex(items);
+  if (requiredIndex !== null && requiredIndex < firstKeptIndex) {
     return { kind: 'tail_exceeds_budget' };
   }
 

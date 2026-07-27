@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   rm,
   symlink,
@@ -26,8 +27,10 @@ import {
 } from './execute-code-runtime-contract.js';
 import { createPtcExecuteCodeRuntime } from './execute-code-runtime.js';
 import { PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_COMMAND_MS } from '../../lab/profile/lab-profile-contract.js';
+import { importPtcLabArtifactWorkspaceFiles } from '../../lab/artifacts/lab-artifact-workspace.js';
 import {
   createPtcSessionDockerLocalBatchCommandPolicy,
+  PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_SDK_PROJECTION_MOUNT_POLICY_ID,
   type PtcSessionDockerManager,
@@ -35,6 +38,7 @@ import {
 import type { PtcSessionDockerCommandInvocation } from '../../lab/session/session-docker-contract.js';
 import { buildToolLibraryProjection } from '../../../tools/tool-library-projection.js';
 import { createBuiltinToolRegistryStore } from '../../../tools/builtin/catalog.js';
+import { createSandboxAttemptStore } from '../../../sandbox/attempt-store.js';
 
 const PRIVATE_TEST_PATH = '/tmp/geulbat-private/.geulbat/ptc/private-token';
 const TEST_CALLBACK_TRANSPORT_POLICY = Object.freeze({
@@ -106,6 +110,99 @@ void test('createPtcExecuteCodeRuntime delegates restart residue cleanup without
   } finally {
     await runtime.closeAll();
     assert.equal(closeAllCount, 1);
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime exports explicitly requested artifact files as durable metadata', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-artifact-runtime-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-artifact-runtime-state-'),
+  );
+  let artifactRoot: string | undefined;
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    commandResult: async (invocation) => {
+      if (invocation.args[0] === 'create') {
+        artifactRoot = readPtcSessionDockerBindMountHostPath(
+          invocation,
+          PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
+        );
+        return undefined;
+      }
+      if (invocation.args[0] === 'exec') {
+        assert.ok(artifactRoot);
+        await mkdir(join(artifactRoot, 'reports'), { recursive: true });
+        await writeFile(
+          join(artifactRoot, 'reports', 'summary.json'),
+          '{"result":"ok"}',
+          'utf8',
+        );
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: 'done\n',
+          stderr: '',
+        };
+      }
+      return undefined;
+    },
+  });
+  const attemptStore = createSandboxAttemptStore();
+  const runtime = createPtcExecuteCodeRuntime({
+    commandRunner: fixture.runner,
+    runtimeRootForState: () => runtimeRoot,
+    artifactExport: {
+      resolvePolicy: () => ({
+        maxFiles: 2,
+        maxFileBytes: 1024,
+        maxTotalBytes: 2048,
+      }),
+      importFiles: (args) =>
+        importPtcLabArtifactWorkspaceFiles({
+          ...args,
+          attemptStore,
+        }),
+    },
+  });
+
+  try {
+    const result = await runtime.executeCode({
+      runContext: makeRunContext({
+        threadId: testThreadId(900),
+        stateRoot,
+      }),
+      request: {
+        code: 'console.log("done")',
+        artifacts: ['reports/summary.json'],
+      },
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) {
+      return;
+    }
+    assert.equal(result.value.executionSurface, 'node_via_lab_batch_command');
+    assert.deepEqual(
+      result.value.artifacts?.files.map((file) => file.relativePath),
+      ['reports/summary.json'],
+    );
+    assert.match(
+      result.value.artifacts?.evidenceRef ?? '',
+      /^sandbox-output:/u,
+    );
+    const evidenceRoot =
+      attemptStore.getAttempts().records[0]?.outputRef?.rootPath;
+    assert.ok(evidenceRoot);
+    assert.equal(
+      await readFile(join(evidenceRoot, 'reports', 'summary.json'), 'utf8'),
+      '{"result":"ok"}',
+    );
+  } finally {
+    await runtime.closeAll();
     await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }

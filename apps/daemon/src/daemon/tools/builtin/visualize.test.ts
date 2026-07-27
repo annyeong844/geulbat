@@ -25,6 +25,7 @@ void test('visualize는 code 필수 스키마를 노출한다', () => {
   assert.equal(visualizeTool.sideEffectLevel, 'none');
   assert.equal(visualizeTool.requiresApproval, false);
   assert.equal(visualizeTool.mayMutateComputerFiles, false);
+  assert.equal(visualizeTool.recoveryStrategy, 'replay_safe');
 });
 
 void test('builtin registry가 visualize를 노출한다', () => {

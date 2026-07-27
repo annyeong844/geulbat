@@ -46,6 +46,7 @@ const executeSearchFiles: typeof searchFilesTool.execute = (args, ctx) =>
 void test('search_files projects parser-owned scalar constraints into tool parameters', () => {
   const parameters = searchFilesTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
+  assert.equal(searchFilesTool.recoveryStrategy, 'replay_safe');
   assert.deepEqual(parameters.properties.include, {
     type: 'string',
     description:
@@ -601,7 +602,12 @@ void test('search_files content mode uses the bundled ripgrep backend', async ()
   assert.equal(payload.backend, 'ripgrep');
   assert.equal(payload.total, 1);
   assert.deepEqual(payload.results, [
-    { path: 'docs/note.md', line: 2, text: 'hello content search' },
+    {
+      path: 'docs/note.md',
+      line: 2,
+      text: 'hello content search',
+      textBytes: 20,
+    },
   ]);
 });
 
@@ -638,6 +644,7 @@ void test('search_files infers the computer root for an admitted absolute path',
       path: 'downloads/note.md',
       line: 1,
       text: 'outside content search',
+      textBytes: 22,
     },
   ]);
 });
@@ -887,7 +894,7 @@ void test('search_files content mode treats dash-prefixed patterns as literals',
   assert.equal(payload.backend, 'ripgrep');
   assert.equal(payload.total, 1);
   assert.deepEqual(payload.results, [
-    { path: 'docs/dash.md', line: 2, text: '--literal-needle' },
+    { path: 'docs/dash.md', line: 2, text: '--literal-needle', textBytes: 16 },
   ]);
 });
 

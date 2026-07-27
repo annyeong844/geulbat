@@ -1,10 +1,16 @@
 import WebSocket from 'ws';
 import type { ResponsesWebSocketEventSource } from './responses-websocket-stream.js';
+import type {
+  DurableHttpSseRequestStreamArgs,
+  ResponsesDurableRequestStreamArgs,
+  ResponsesDurableRequestTransport,
+} from './responses-durable-request.js';
 
 import {
   closeWebSocketSilently,
   connectWebSocket,
 } from './responses-websocket-connection.js';
+import { createResponsesWebSocketProviderAdmission } from './responses-websocket-provider-admission.js';
 
 export interface ResponsesWebSocketReusePolicy {
   readonly idleRetentionMs: number;
@@ -32,25 +38,6 @@ interface TrackedConnection {
   busy: boolean;
 }
 
-interface ProviderAdmissionLease {
-  release(): void;
-}
-
-interface ProviderCooldownWaiter {
-  resolve: (lease: ProviderAdmissionLease | undefined) => void;
-  reject: (error: Error) => void;
-  signal: AbortSignal | undefined;
-  onAbort: () => void;
-}
-
-interface ProviderCooldownState {
-  untilMs: number;
-  timer: ReturnType<typeof setTimeout> | undefined;
-  probe: symbol | undefined;
-  probeRejected: boolean;
-  waiters: Set<ProviderCooldownWaiter>;
-}
-
 interface SocketHandle {
   socket: ResponsesWebSocketSessionSocket;
   readonly reused: boolean;
@@ -74,6 +61,7 @@ interface ResponsesWebSocketSessionStoreDeps {
     code?: number,
     reason?: string,
   ) => void;
+  durableRequestTransport?: ResponsesDurableRequestTransport;
 }
 
 export interface ResponsesWebSocketPressureScopeSnapshot {
@@ -107,6 +95,14 @@ export type ResponsesWebSocketAdmissionObserver = (
   observation: ResponsesWebSocketAdmissionObservation,
 ) => void;
 
+export interface ResponsesDurableRequestStreamInput extends ResponsesDurableRequestStreamArgs {
+  onAdmissionState?: ResponsesWebSocketAdmissionObserver;
+}
+
+export interface DurableHttpSseRequestStreamInput extends DurableHttpSseRequestStreamArgs {
+  onAdmissionState?: ResponsesWebSocketAdmissionObserver;
+}
+
 export interface ResponsesWebSocketSessionStore {
   acquireWebSocket(
     url: string,
@@ -116,6 +112,12 @@ export interface ResponsesWebSocketSessionStore {
     signal?: AbortSignal,
     onAdmissionState?: ResponsesWebSocketAdmissionObserver,
   ): Promise<SocketHandle>;
+  streamDurableResponseEvents?(
+    input: ResponsesDurableRequestStreamInput,
+  ): AsyncIterable<Record<string, unknown>>;
+  streamDurableHttpSseEvents?(
+    input: DurableHttpSseRequestStreamInput,
+  ): AsyncIterable<Record<string, unknown>>;
   deferProviderRequests?(url: string, retryAfterMs: number): void;
 }
 
@@ -134,13 +136,17 @@ export function createResponsesWebSocketSessionStore(
     TrackedConnection
   >();
   const connectingByScopeAndSession = new Map<string, number>();
-  const cooldownByProviderScope = new Map<string, ProviderCooldownState>();
   const shutdownController = new AbortController();
   let peakSocketCount = 0;
   let closed = false;
   const now = deps?.now ?? Date.now;
   const scheduleTimeout = deps?.scheduleTimeout ?? setTimeout;
   const clearScheduledTimeout = deps?.clearScheduledTimeout ?? clearTimeout;
+  const providerAdmission = createResponsesWebSocketProviderAdmission({
+    now,
+    scheduleTimeout,
+    clearScheduledTimeout,
+  });
   const connectWebSocketImpl: NonNullable<
     ResponsesWebSocketSessionStoreDeps['connectWebSocket']
   > = deps?.connectWebSocket ?? connectWebSocket;
@@ -227,200 +233,6 @@ export function createResponsesWebSocketSessionStore(
     }
   }
 
-  function settleProviderCooldownWaiter(
-    waiter: ProviderCooldownWaiter,
-    lease: ProviderAdmissionLease | undefined,
-  ): void {
-    waiter.signal?.removeEventListener('abort', waiter.onAbort);
-    waiter.resolve(lease);
-  }
-
-  function rejectProviderCooldownWaiter(
-    waiter: ProviderCooldownWaiter,
-    error: Error,
-  ): void {
-    waiter.signal?.removeEventListener('abort', waiter.onAbort);
-    waiter.reject(error);
-  }
-
-  function createProviderProbeLease(
-    providerScope: string,
-    state: ProviderCooldownState,
-    probe: symbol,
-  ): ProviderAdmissionLease {
-    let released = false;
-    return {
-      release() {
-        if (released) {
-          return;
-        }
-        released = true;
-        if (
-          cooldownByProviderScope.get(providerScope) !== state ||
-          state.probe !== probe
-        ) {
-          return;
-        }
-
-        state.probe = undefined;
-        const probeRejected = state.probeRejected;
-        state.probeRejected = false;
-        if (probeRejected || state.untilMs > now()) {
-          scheduleProviderCooldown(providerScope, state);
-          return;
-        }
-
-        if (state.timer) {
-          clearScheduledTimeout(state.timer);
-          state.timer = undefined;
-        }
-        cooldownByProviderScope.delete(providerScope);
-        const waiters = [...state.waiters];
-        state.waiters.clear();
-        for (const waiter of waiters) {
-          settleProviderCooldownWaiter(waiter, undefined);
-        }
-      },
-    };
-  }
-
-  function admitNextProviderProbe(
-    providerScope: string,
-    state: ProviderCooldownState,
-  ): void {
-    if (
-      closed ||
-      cooldownByProviderScope.get(providerScope) !== state ||
-      state.probe !== undefined
-    ) {
-      return;
-    }
-    const next = state.waiters.values().next();
-    if (next.done) {
-      return;
-    }
-    const waiter = next.value;
-    state.waiters.delete(waiter);
-    const probe = Symbol();
-    state.probe = probe;
-    state.probeRejected = false;
-    settleProviderCooldownWaiter(
-      waiter,
-      createProviderProbeLease(providerScope, state, probe),
-    );
-  }
-
-  function scheduleProviderCooldown(
-    providerScope: string,
-    state: ProviderCooldownState,
-  ): void {
-    if (closed || cooldownByProviderScope.get(providerScope) !== state) {
-      return;
-    }
-    if (state.timer) {
-      clearScheduledTimeout(state.timer);
-      state.timer = undefined;
-    }
-    const remainingMs = state.untilMs - now();
-    if (remainingMs <= 0) {
-      admitNextProviderProbe(providerScope, state);
-      return;
-    }
-    state.timer = scheduleTimeout(() => {
-      state.timer = undefined;
-      if (closed || cooldownByProviderScope.get(providerScope) !== state) {
-        return;
-      }
-      if (state.untilMs > now()) {
-        scheduleProviderCooldown(providerScope, state);
-        return;
-      }
-      admitNextProviderProbe(providerScope, state);
-    }, remainingMs);
-    state.timer.unref?.();
-  }
-
-  function deferProviderScope(
-    providerScope: string,
-    retryAfterMs: number,
-  ): void {
-    if (!Number.isFinite(retryAfterMs) || retryAfterMs <= 0 || closed) {
-      return;
-    }
-    let state = cooldownByProviderScope.get(providerScope);
-    if (state === undefined) {
-      state = {
-        untilMs: 0,
-        timer: undefined,
-        probe: undefined,
-        probeRejected: false,
-        waiters: new Set(),
-      };
-      cooldownByProviderScope.set(providerScope, state);
-    }
-    state.untilMs = Math.max(state.untilMs, now() + retryAfterMs);
-    if (state.probe !== undefined) {
-      state.probeRejected = true;
-    }
-    scheduleProviderCooldown(providerScope, state);
-  }
-
-  async function waitForProviderAdmission(
-    providerScope: string,
-    signal?: AbortSignal,
-    onAdmissionState?: ResponsesWebSocketAdmissionObserver,
-  ): Promise<ProviderAdmissionLease | undefined> {
-    if (closed) {
-      throw new Error('responses websocket session store is closed');
-    }
-    if (signal?.aborted) {
-      throw signal.reason instanceof Error
-        ? signal.reason
-        : new Error('provider cooldown wait aborted');
-    }
-    const state = cooldownByProviderScope.get(providerScope);
-    if (state === undefined) {
-      return undefined;
-    }
-    if (state.untilMs <= now() && state.probe === undefined) {
-      const probe = Symbol();
-      state.probe = probe;
-      state.probeRejected = false;
-      return createProviderProbeLease(providerScope, state, probe);
-    }
-
-    onAdmissionState?.({ state: 'rate_limit_waiting' });
-    return await new Promise<ProviderAdmissionLease | undefined>(
-      (resolve, reject) => {
-        const waiter: ProviderCooldownWaiter = {
-          resolve,
-          reject,
-          signal,
-          onAbort: () => {
-            if (!state.waiters.delete(waiter)) {
-              return;
-            }
-            rejectProviderCooldownWaiter(
-              waiter,
-              signal?.reason instanceof Error
-                ? signal.reason
-                : new Error('provider cooldown wait aborted'),
-            );
-          },
-        };
-        state.waiters.add(waiter);
-        signal?.addEventListener('abort', waiter.onAbort, { once: true });
-        if (signal?.aborted) {
-          waiter.onAbort();
-          return;
-        }
-        if (state.timer === undefined && state.untilMs > now()) {
-          scheduleProviderCooldown(providerScope, state);
-        }
-      },
-    );
-  }
-
   function createTemporarySocketHandle(
     socket: ResponsesWebSocketSessionSocket,
   ): SocketHandle {
@@ -444,9 +256,9 @@ export function createResponsesWebSocketSessionStore(
 
   function attachProviderAdmission(
     handle: SocketHandle,
-    admission: ProviderAdmissionLease | undefined,
+    releaseProviderAdmission: (() => void) | undefined,
   ): SocketHandle {
-    if (admission === undefined) {
+    if (releaseProviderAdmission === undefined) {
       return handle;
     }
     return {
@@ -456,7 +268,7 @@ export function createResponsesWebSocketSessionStore(
         try {
           handle.release(options);
         } finally {
-          admission.release();
+          releaseProviderAdmission();
         }
       },
     };
@@ -505,7 +317,99 @@ export function createResponsesWebSocketSessionStore(
     entry.idleTimer.unref?.();
   }
 
+  async function* streamDurableResponseEvents(
+    input: ResponsesDurableRequestStreamInput,
+  ): AsyncGenerator<Record<string, unknown>> {
+    const durableRequestTransport = deps?.durableRequestTransport;
+    if (durableRequestTransport === undefined) {
+      throw new Error('durable provider request transport is unavailable');
+    }
+    const acquisitionSignal =
+      input.signal === undefined
+        ? shutdownController.signal
+        : AbortSignal.any([input.signal, shutdownController.signal]);
+    const providerScope = buildProviderScope(input.webSocketUrl);
+    let waitedForProviderAdmission = false;
+    const releaseProviderAdmission = await providerAdmission.waitForAdmission(
+      providerScope,
+      acquisitionSignal,
+      () => {
+        waitedForProviderAdmission = true;
+        input.onAdmissionState?.({ state: 'rate_limit_waiting' });
+      },
+    );
+    if (waitedForProviderAdmission) {
+      input.onAdmissionState?.({ state: 'admitted' });
+    }
+    try {
+      const { onAdmissionState: _onAdmissionState, ...request } = input;
+      yield* durableRequestTransport.streamEvents({
+        ...request,
+        signal: acquisitionSignal,
+      });
+    } catch (error: unknown) {
+      const retryAfterMs = readRetryAfterMs(error);
+      if (retryAfterMs !== undefined) {
+        providerAdmission.defer(providerScope, retryAfterMs);
+      }
+      throw error;
+    } finally {
+      releaseProviderAdmission?.();
+    }
+  }
+
+  async function* streamDurableHttpSseEvents(
+    input: DurableHttpSseRequestStreamInput,
+  ): AsyncGenerator<Record<string, unknown>> {
+    const durableRequestTransport = deps?.durableRequestTransport;
+    const streamHttpSseEvents =
+      durableRequestTransport?.streamHttpSseEvents?.bind(
+        durableRequestTransport,
+      );
+    if (streamHttpSseEvents === undefined) {
+      throw new Error('durable provider HTTP request transport is unavailable');
+    }
+    const acquisitionSignal =
+      input.signal === undefined
+        ? shutdownController.signal
+        : AbortSignal.any([input.signal, shutdownController.signal]);
+    const providerScope = buildProviderScope(input.requestUrl);
+    let waitedForProviderAdmission = false;
+    const releaseProviderAdmission = await providerAdmission.waitForAdmission(
+      providerScope,
+      acquisitionSignal,
+      () => {
+        waitedForProviderAdmission = true;
+        input.onAdmissionState?.({ state: 'rate_limit_waiting' });
+      },
+    );
+    if (waitedForProviderAdmission) {
+      input.onAdmissionState?.({ state: 'admitted' });
+    }
+    try {
+      const { onAdmissionState: _onAdmissionState, ...request } = input;
+      yield* streamHttpSseEvents({
+        ...request,
+        signal: acquisitionSignal,
+      });
+    } catch (error: unknown) {
+      const retryAfterMs = readRetryAfterMs(error);
+      if (retryAfterMs !== undefined) {
+        providerAdmission.defer(providerScope, retryAfterMs);
+      }
+      throw error;
+    } finally {
+      releaseProviderAdmission?.();
+    }
+  }
+
   return {
+    ...(deps?.durableRequestTransport === undefined
+      ? {}
+      : { streamDurableResponseEvents }),
+    ...(deps?.durableRequestTransport?.streamHttpSseEvents === undefined
+      ? {}
+      : { streamDurableHttpSseEvents }),
     async acquireWebSocket(
       url,
       headers,
@@ -520,12 +424,12 @@ export function createResponsesWebSocketSessionStore(
           : AbortSignal.any([signal, shutdownController.signal]);
       const providerScope = buildProviderScope(url);
       let waitedForProviderAdmission = false;
-      const providerAdmission = await waitForProviderAdmission(
+      const releaseProviderAdmission = await providerAdmission.waitForAdmission(
         providerScope,
         acquisitionSignal,
-        (observation) => {
+        () => {
           waitedForProviderAdmission = true;
-          onAdmissionState?.(observation);
+          onAdmissionState?.({ state: 'rate_limit_waiting' });
         },
       );
       if (waitedForProviderAdmission) {
@@ -586,7 +490,7 @@ export function createResponsesWebSocketSessionStore(
                   scheduleSessionWebSocketExpiry(cacheKey, cached);
                 },
               },
-              providerAdmission,
+              releaseProviderAdmission,
             );
           }
 
@@ -601,7 +505,7 @@ export function createResponsesWebSocketSessionStore(
             });
             return attachProviderAdmission(
               createTemporarySocketHandle(socket),
-              providerAdmission,
+              releaseProviderAdmission,
             );
           }
 
@@ -622,7 +526,7 @@ export function createResponsesWebSocketSessionStore(
         if (websocketSessionCache.has(cacheKey)) {
           return attachProviderAdmission(
             createTemporarySocketHandle(socket),
-            providerAdmission,
+            releaseProviderAdmission,
           );
         }
         const connectedAtMs = now();
@@ -664,26 +568,25 @@ export function createResponsesWebSocketSessionStore(
               scheduleSessionWebSocketExpiry(cacheKey, entry);
             },
           },
-          providerAdmission,
+          releaseProviderAdmission,
         );
       } catch (error: unknown) {
         const retryAfterMs = readRetryAfterMs(error);
         if (retryAfterMs !== undefined) {
-          deferProviderScope(providerScope, retryAfterMs);
+          providerAdmission.defer(providerScope, retryAfterMs);
         }
-        providerAdmission?.release();
+        releaseProviderAdmission?.();
         throw error;
       }
     },
     deferProviderRequests(url, retryAfterMs) {
-      deferProviderScope(buildProviderScope(url), retryAfterMs);
+      providerAdmission.defer(buildProviderScope(url), retryAfterMs);
     },
     readPressureSnapshot() {
       return buildPressureSnapshot({
         trackedConnections,
         connectingByScopeAndSession,
-        cooldownByProviderScope,
-        nowMs: now(),
+        providerAdmission,
         peakSocketCount,
       });
     },
@@ -701,18 +604,7 @@ export function createResponsesWebSocketSessionStore(
       const storeClosedError = new Error(
         'responses websocket session store is closed',
       );
-      for (const state of cooldownByProviderScope.values()) {
-        if (state.timer) {
-          clearScheduledTimeout(state.timer);
-          state.timer = undefined;
-        }
-        const waiters = [...state.waiters];
-        state.waiters.clear();
-        for (const waiter of waiters) {
-          rejectProviderCooldownWaiter(waiter, storeClosedError);
-        }
-      }
-      cooldownByProviderScope.clear();
+      providerAdmission.close(storeClosedError);
       for (const socket of trackedConnections.keys()) {
         closeTrackedSocket(socket, 1000, 'daemon_shutdown');
       }
@@ -742,10 +634,19 @@ function buildPressureSnapshot(args: {
     TrackedConnection
   >;
   connectingByScopeAndSession: ReadonlyMap<string, number>;
-  cooldownByProviderScope: ReadonlyMap<string, ProviderCooldownState>;
-  nowMs: number;
+  providerAdmission: ReturnType<
+    typeof createResponsesWebSocketProviderAdmission
+  >;
   peakSocketCount: number;
 }): ResponsesWebSocketPressureSnapshot {
+  const providerAdmissionPressure =
+    args.providerAdmission.readPressureSnapshot();
+  const admissionScopesByProviderScope = new Map(
+    providerAdmissionPressure.scopes.map((scope) => [
+      scope.providerScope,
+      scope,
+    ]),
+  );
   const scopes = new Map<
     string,
     {
@@ -788,13 +689,13 @@ function buildPressureSnapshot(args: {
     scope.providerSessions.add(providerSessionId);
     scope.connectingSocketCount += count;
   }
-  for (const providerScope of args.cooldownByProviderScope.keys()) {
-    readScope(providerScope);
+  for (const admissionScope of providerAdmissionPressure.scopes) {
+    readScope(admissionScope.providerScope);
   }
 
   const scopeSnapshots = [...scopes.entries()]
     .map(([providerScope, scope]) => {
-      const cooldown = args.cooldownByProviderScope.get(providerScope);
+      const admissionScope = admissionScopesByProviderScope.get(providerScope);
       return {
         providerScope,
         providerSessionCount: scope.providerSessions.size,
@@ -802,12 +703,9 @@ function buildPressureSnapshot(args: {
         busySocketCount: scope.busySocketCount,
         temporarySocketCount: scope.temporarySocketCount,
         connectingSocketCount: scope.connectingSocketCount,
-        cooldownRemainingMs: Math.max(
-          0,
-          (cooldown?.untilMs ?? args.nowMs) - args.nowMs,
-        ),
-        cooldownWaiterCount: cooldown?.waiters.size ?? 0,
-        cooldownProbeActive: cooldown?.probe !== undefined,
+        cooldownRemainingMs: admissionScope?.cooldownRemainingMs ?? 0,
+        cooldownWaiterCount: admissionScope?.cooldownWaiterCount ?? 0,
+        cooldownProbeActive: admissionScope?.cooldownProbeActive ?? false,
       };
     })
     .sort((left, right) =>
@@ -825,13 +723,8 @@ function buildPressureSnapshot(args: {
     connectingSocketCount: [
       ...args.connectingByScopeAndSession.values(),
     ].reduce((total, count) => total + count, 0),
-    cooldownWaiterCount: [...args.cooldownByProviderScope.values()].reduce(
-      (total, state) => total + state.waiters.size,
-      0,
-    ),
-    cooldownProbeCount: [...args.cooldownByProviderScope.values()].filter(
-      (state) => state.probe !== undefined,
-    ).length,
+    cooldownWaiterCount: providerAdmissionPressure.cooldownWaiterCount,
+    cooldownProbeCount: providerAdmissionPressure.cooldownProbeCount,
     peakSocketCount: args.peakSocketCount,
     scopes: scopeSnapshots,
   };

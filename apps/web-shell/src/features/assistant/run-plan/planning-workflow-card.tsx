@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type {
   PlanningWorkflowSnapshot,
@@ -33,7 +33,15 @@ export function PlanningWorkflowCard({
     PlanWorkflowCommand['kind'] | null
   >(null);
   const [error, setError] = useState<string | null>(null);
+  const autoExplainKeyRef = useRef<string | null>(null);
   const actionsDisabled = workflow.busy || pendingCommand !== null;
+  // visual 강도는 그림을 먼저 보여 준 뒤에만 승인한다 — 텍스트 카드가 앞서 뜨는
+  // 흐름을 호스트에서 막는다.
+  const visualAwaitingDiagram =
+    snapshot.state === 'awaiting_approval' &&
+    snapshot.intensity === 'visual' &&
+    visualization === null;
+  const approveDisabled = actionsDisabled || visualAwaitingDiagram;
 
   const submit = async (command: PlanWorkflowCommand) => {
     setPendingCommand(command.kind);
@@ -50,6 +58,46 @@ export function PlanningWorkflowCard({
       setPendingCommand(null);
     }
   };
+
+  useEffect(() => {
+    if (
+      snapshot.state !== 'awaiting_approval' ||
+      snapshot.intensity !== 'visual'
+    ) {
+      return;
+    }
+    if (visualization !== null || workflow.busy || pendingCommand !== null) {
+      return;
+    }
+    const planKey = `${snapshot.workflowId}:${snapshot.planId}:${snapshot.revision}:${snapshot.digest}`;
+    if (autoExplainKeyRef.current === planKey) {
+      return;
+    }
+    autoExplainKeyRef.current = planKey;
+    // 모델이 같은 턴에 visualize를 빠뜨린 경우 호스트가 그림을 먼저 채운다.
+    void (async () => {
+      setPendingCommand('explain_visual');
+      setError(null);
+      try {
+        await workflow.onCommand({
+          kind: 'explain_visual',
+          threadId: snapshot.threadId,
+          workflowId: snapshot.workflowId,
+          planId: snapshot.planId,
+          revision: snapshot.revision,
+          digest: snapshot.digest,
+        });
+      } catch (reason: unknown) {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : '계획 그림을 만들지 못했습니다.',
+        );
+      } finally {
+        setPendingCommand(null);
+      }
+    })();
+  }, [pendingCommand, snapshot, visualization, workflow]);
 
   const cancel = () =>
     submit({
@@ -208,12 +256,26 @@ export function PlanningWorkflowCard({
       <div className="planning-workflow-card-header">
         <div>
           <strong>{snapshot.draft.outcome}</strong>
-          <p>아래 내용과 digest가 함께 승인됩니다.</p>
+          <p>
+            {visualAwaitingDiagram
+              ? '그림을 먼저 준비한 뒤 승인할 수 있습니다.'
+              : '아래 내용과 digest가 함께 승인됩니다.'}
+          </p>
         </div>
-        <span className="planning-workflow-state">승인 대기</span>
+        <span className="planning-workflow-state">
+          {visualAwaitingDiagram ? '그림 준비' : '승인 대기'}
+        </span>
       </div>
 
-      {visualization === null ? null : (
+      {visualization === null ? (
+        snapshot.intensity === 'visual' ? (
+          <p className="planning-workflow-note" role="status">
+            {workflow.busy || pendingCommand === 'explain_visual'
+              ? '관계 그림을 그리는 중… 완성되면 이 카드 맨 위에 표시됩니다.'
+              : '시각 계획이라 그림이 준비된 뒤에만 승인할 수 있습니다.'}
+          </p>
+        ) : null
+      ) : (
         <div className="planning-workflow-visualization">
           <VisualizeWidget
             view={visualization}
@@ -285,7 +347,12 @@ export function PlanningWorkflowCard({
         <button
           type="button"
           className="planning-workflow-button primary"
-          disabled={actionsDisabled}
+          disabled={approveDisabled}
+          title={
+            visualAwaitingDiagram
+              ? '그림이 준비된 뒤에 승인할 수 있습니다.'
+              : undefined
+          }
           onClick={() => void submit({ kind: 'approve', ...target })}
         >
           이 계획 승인
@@ -309,7 +376,11 @@ export function PlanningWorkflowCard({
             type="button"
             className="planning-workflow-button"
             disabled={actionsDisabled}
-            onClick={() => void submit({ kind: 'explain_visual', ...target })}
+            onClick={() => {
+              // 수동 재시도는 같은 revision에 다시 그림을 요청할 수 있게 키를 연다.
+              autoExplainKeyRef.current = null;
+              void submit({ kind: 'explain_visual', ...target });
+            }}
           >
             {workflow.busy || pendingCommand === 'explain_visual'
               ? '그림을 만들고 있어요…'
@@ -328,10 +399,10 @@ export function PlanningWorkflowCard({
         </button>
       </div>
 
-      {workflow.busy ? (
+      {workflow.busy || pendingCommand === 'explain_visual' ? (
         <p className="planning-workflow-note">
           {snapshot.intensity === 'visual'
-            ? '그림이 완성되면 이 승인 카드 안에 바로 표시됩니다.'
+            ? '그림이 완성되면 이 승인 카드 맨 위에 바로 표시됩니다.'
             : '현재 계획 턴이 정리되면 버튼이 다시 열립니다.'}
         </p>
       ) : null}

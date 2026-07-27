@@ -88,15 +88,6 @@ export interface FrameToolClient {
 
 export type RunToolFailure = Extract<RunToolResultPayload, { ok: false }>;
 
-// 위젯/프레임이 올린 도구 호출 의도 — 데이터만 담고, 신뢰 컨텍스트
-// (threadId/workingDirectory)는 이 컨트롤러가 주입한다.
-export interface WidgetToolRequestIntent {
-  requestId: string;
-  toolName: string;
-  args: Record<string, unknown>;
-  scopeHandle: string;
-}
-
 export interface CancelActionState {
   phase: RunSessionPhase;
   activeRunId: string | null;

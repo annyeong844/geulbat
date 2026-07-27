@@ -7,6 +7,7 @@ import {
   isPrepareProviderTransitionResponse,
   isProviderNativeCompactionEntryData,
   isProviderTransitionCompactionEntryData,
+  isThreadArchiveImportResponse,
   isThreadBranchResponse,
   isThreadDeleteResponse,
   isThreadDetailDiagnostics,
@@ -142,6 +143,15 @@ void test('thread response guards validate Home thread identities without projec
     }),
     true,
   );
+  assert.equal(
+    isThreadArchiveImportResponse({
+      ok: true,
+      threadId: VALID_THREAD_ID,
+      archiveId: `sha256:${'a'.repeat(64)}`,
+      importedMessageCount: 3,
+    }),
+    true,
+  );
 });
 
 void test('thread detail validates durable terminal worker history diagnostics', () => {
@@ -149,6 +159,11 @@ void test('thread detail validates durable terminal worker history diagnostics',
     deliveryId: 'delivery-worker-terminal',
     resultRef: 'subagent-result:delivery-worker-terminal',
     resultDigest: `sha256:${'a'.repeat(64)}`,
+    resultReport: {
+      summary: '재시작 전에 확보한 결과를 보고합니다.',
+      sourceResultRef: 'subagent-result:delivery-worker-terminal',
+      sourceResultDigest: `sha256:${'a'.repeat(64)}`,
+    },
     parentRunId: 'run-parent',
     childRunId: 'run-child-retry',
     childThreadId: VALID_THREAD_ID,
@@ -165,6 +180,17 @@ void test('thread detail validates durable terminal worker history diagnostics',
       },
       partialOutputAvailable: true,
       previousChildRunId: 'run-child-original',
+      providerRequest: {
+        startedAt: '2026-07-23T09:59:59.000Z',
+        endedAt: '2026-07-23T10:00:00.000Z',
+        durationMs: 1000,
+        attemptCount: 2,
+        retry: {
+          available: false,
+          performed: true,
+          outcome: 'recovered',
+        },
+      },
     },
     terminalState: 'failed',
     reason: 'daemon_restart',
@@ -181,6 +207,16 @@ void test('thread detail validates durable terminal worker history diagnostics',
   };
 
   assert.equal(isThreadSubagentTerminalOutcome(terminalOutcome), true);
+  assert.equal(
+    isThreadSubagentTerminalOutcome({
+      ...terminalOutcome,
+      resultReport: {
+        ...terminalOutcome.resultReport,
+        sourceResultDigest: `sha256:${'b'.repeat(64)}`,
+      },
+    }),
+    false,
+  );
   assert.equal(
     isThreadSubagentTerminalOutcome({
       ...terminalOutcome,
@@ -220,6 +256,23 @@ void test('thread detail validates durable terminal worker history diagnostics',
       runtime: {
         ...terminalOutcome.runtime,
         previousChildRunId: '../not-a-run',
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isThreadSubagentTerminalOutcome({
+      ...terminalOutcome,
+      runtime: {
+        ...terminalOutcome.runtime,
+        providerRequest: {
+          ...terminalOutcome.runtime.providerRequest,
+          retry: {
+            available: true,
+            performed: true,
+            outcome: 'invented',
+          },
+        },
       },
     }),
     false,
@@ -677,6 +730,23 @@ void test('every declared thread contract field is actually validated', () => {
       threadId: '../escape',
       sourceThreadId: '../escape',
       copiedMessageCount: 'x',
+    },
+  );
+
+  assertEveryFieldIsValidated(
+    'ThreadArchiveImportResponse',
+    isThreadArchiveImportResponse,
+    {
+      ok: true,
+      threadId: VALID_THREAD_ID as ThreadId,
+      archiveId: `sha256:${'a'.repeat(64)}`,
+      importedMessageCount: 2,
+    },
+    {
+      ok: false,
+      threadId: '../escape',
+      archiveId: 'sha256:bad',
+      importedMessageCount: -1,
     },
   );
 

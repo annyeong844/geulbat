@@ -11,6 +11,77 @@ import { createToolCapabilityPolicy } from '@geulbat/tool-library/tool-capabilit
 
 import { createRunCheckpointStore } from './run-checkpoint-store.js';
 
+void test('a torn journal isolates its own thread instead of blocking every running run', async (t) => {
+  // 데몬이 저널에 한 줄을 append하다 죽으면 그 줄이 반쪽으로 남는다. 반쪽
+  // 기록으로 런을 이어가면 안 되므로 그 스레드의 저널은 거부되어야 한다.
+  // 그러나 그 거부가 **다른 스레드의 복구까지 막으면** 손상 하나가 제품
+  // 전체를 세운다 — 부팅 복구가 이 열거로 시작하기 때문이다.
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-torn-journal-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const store = createRunCheckpointStore({ stateRoot });
+
+  const healthyRunId = assertRunId(randomUUID());
+  const healthyThreadId = assertThreadId(randomUUID());
+  const tornRunId = assertRunId(randomUUID());
+  const tornThreadId = assertThreadId(randomUUID());
+
+  for (const [runId, threadId] of [
+    [healthyRunId, healthyThreadId],
+    [tornRunId, tornThreadId],
+  ] as const) {
+    await store.startRun({
+      runId,
+      threadId,
+      request: { workingDirectory: '/workspace', permissionMode: 'basic' },
+    });
+    await store.appendRunEvents({
+      threadId,
+      runId,
+      events: [
+        {
+          seq: 0,
+          event: { type: 'commentary_delta', payload: { text: 'progress' } },
+        },
+      ],
+    });
+  }
+
+  // 한 스레드의 저널 마지막 줄을 잘라 크래시 중 append를 재현한다.
+  const tornJournalPath = join(
+    stateRoot,
+    '.geulbat',
+    'run-event-journals',
+    tornThreadId,
+    `${tornRunId}.jsonl`,
+  );
+  const tornJournal = await readFile(tornJournalPath, 'utf8');
+  const tornLines = tornJournal.replace(/\n$/u, '').split('\n');
+  const lastLine = tornLines[tornLines.length - 1] ?? '';
+  assert.ok(lastLine.length > 10, '자를 마지막 배치 줄이 있어야 한다');
+  tornLines[tornLines.length - 1] = lastLine.slice(
+    0,
+    Math.floor(lastLine.length / 2),
+  );
+  await writeFile(tornJournalPath, `${tornLines.join('\n')}\n`, 'utf8');
+
+  const reloaded = createRunCheckpointStore({ stateRoot });
+
+  // 손상된 스레드를 **명시적으로** 물으면 실패가 숨겨지지 않는다.
+  await assert.rejects(
+    reloaded.readThread(tornThreadId),
+    /run event journal/u,
+    '손상된 저널은 그 스레드를 물었을 때 거부되어야 한다',
+  );
+
+  // 그러나 열거는 손상되지 않은 런을 계속 돌려주어야 한다.
+  const running = await reloaded.listRunning();
+  assert.deepEqual(
+    running.map((checkpoint) => checkpoint.runId),
+    [healthyRunId],
+    '한 스레드의 손상이 다른 스레드의 복구를 막아서는 안 된다',
+  );
+});
+
 void test('run checkpoints survive store recreation and settle monotonically', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
   t.after(async () => rm(stateRoot, { recursive: true, force: true }));
@@ -31,6 +102,12 @@ void test('run checkpoints survive store recreation and settle monotonically', a
     callbackRegistryNames: ['read_file'],
     writeCallbackEnabled: false,
   });
+  const toolLibraryProjectionIdentity = {
+    sdkVersion: 'sdk-checkpoint-v1',
+    sdkProjectionHash:
+      'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    policyId: toolCapabilityPolicy.toolCapabilityPolicyId,
+  } as const;
 
   const started = await store.startRun({
     runId,
@@ -50,6 +127,7 @@ void test('run checkpoints survive store recreation and settle monotonically', a
         sourceReasoningEffort: 'high',
       },
       toolCapabilityPolicy,
+      toolLibraryProjectionIdentity,
     },
   });
   assert.equal(started.ok, true);
@@ -62,6 +140,8 @@ void test('run checkpoints survive store recreation and settle monotonically', a
       applyingInterject: started.checkpoint.applyingInterject,
       pendingInterjects: started.checkpoint.pendingInterjects,
       approvals: started.checkpoint.approvals,
+      toolInvocations: started.checkpoint.toolInvocations,
+      toolResultsReady: started.checkpoint.toolResultsReady,
       terminal: started.checkpoint.terminal,
     },
     {
@@ -69,6 +149,8 @@ void test('run checkpoints survive store recreation and settle monotonically', a
       applyingInterject: null,
       pendingInterjects: [],
       approvals: [],
+      toolInvocations: [],
+      toolResultsReady: [],
       terminal: null,
     },
   );
@@ -89,6 +171,7 @@ void test('run checkpoints survive store recreation and settle monotonically', a
       sourceReasoningEffort: 'high',
     },
     toolCapabilityPolicy,
+    toolLibraryProjectionIdentity,
   });
   assert.deepEqual(
     (await reloaded.listRunning()).map((checkpoint) => checkpoint.runId),
@@ -143,6 +226,235 @@ void test('run checkpoints survive store recreation and settle monotonically', a
   });
   assert.equal(duplicate.ok && !duplicate.changed, true);
   assert.deepEqual(await reloaded.listUnacknowledgedTerminal(), []);
+});
+
+void test('run checkpoints reject projection identity fields outside the observer-safe contract', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const root = join(stateRoot, '.geulbat', 'run-checkpoints');
+  await mkdir(root, { recursive: true });
+  await writeFile(
+    join(root, `${threadId}.json`),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      revision: 1,
+      status: 'running',
+      runId,
+      threadId,
+      request: {
+        workingDirectory: '/workspace',
+        permissionMode: 'basic',
+        toolLibraryProjectionIdentity: {
+          sdkVersion: 'sdk-checkpoint-v1',
+          sdkProjectionHash:
+            'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          policyId: 'policy-checkpoint-v1',
+          projectionRootPath: '/private/projection',
+        },
+      },
+      createdAt: '2026-07-18T00:00:00.000Z',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    })}\n`,
+    'utf8',
+  );
+
+  await assert.rejects(
+    createRunCheckpointStore({ stateRoot }).readThread(threadId),
+    /invalid recoverable tool library projection identity/u,
+  );
+});
+
+void test('ready tool result refs survive restart and block terminal settlement until projected', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const store = createRunCheckpointStore({ stateRoot });
+  await store.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: '/workspace', permissionMode: 'basic' },
+  });
+  const ready = {
+    callId: 'call-result-ready',
+    toolName: 'write_file',
+    resultRef: 'tool-output:thread/run/result-ready',
+  };
+
+  const recorded = await store.recordToolResultReady({
+    threadId,
+    runId,
+    ready,
+  });
+  assert.equal(recorded.ok && recorded.changed, true);
+  assert.deepEqual(
+    (await createRunCheckpointStore({ stateRoot }).readThread(threadId))
+      ?.toolResultsReady,
+    [ready],
+  );
+  const duplicate = await store.recordToolResultReady({
+    threadId,
+    runId,
+    ready,
+  });
+  assert.equal(duplicate.ok && !duplicate.changed, true);
+  assert.deepEqual(
+    await store.recordToolResultReady({
+      threadId,
+      runId,
+      ready: { ...ready, resultRef: `${ready.resultRef}-conflict` },
+    }),
+    { ok: false, code: 'tool_result_conflict' },
+  );
+  await assert.rejects(
+    store.settleRun({
+      threadId,
+      runId,
+      terminal: {
+        eventCursor: 1,
+        event: {
+          type: 'done',
+          payload: { answer: 'must wait', ok: true },
+        },
+      },
+    }),
+    /still has ready tool results/,
+  );
+
+  const completed = await store.completeToolResultReady({
+    threadId,
+    runId,
+    callId: ready.callId,
+    resultRef: ready.resultRef,
+  });
+  assert.equal(completed.ok && completed.changed, true);
+  const repeatedCompletion = await store.completeToolResultReady({
+    threadId,
+    runId,
+    callId: ready.callId,
+    resultRef: ready.resultRef,
+  });
+  assert.equal(repeatedCompletion.ok && !repeatedCompletion.changed, true);
+  assert.deepEqual((await store.readThread(threadId))?.toolResultsReady, []);
+});
+
+void test('in-flight tool invocations survive restart and clear atomically with their projected result', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const store = createRunCheckpointStore({ stateRoot });
+  await store.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: '/workspace', permissionMode: 'full_access' },
+  });
+  const invocation = {
+    callId: 'call-reconcile',
+    toolName: 'manage_files',
+    recoveryStrategy: 'reconcile_then_replay' as const,
+    recoveryState: {
+      operationId: 'call-reconcile',
+      manifestHash: 'manifest-hash',
+    },
+  };
+
+  const recorded = await store.recordToolInvocation({
+    threadId,
+    runId,
+    invocation,
+  });
+  assert.equal(recorded.ok && recorded.changed, true);
+  assert.deepEqual(
+    (await createRunCheckpointStore({ stateRoot }).readThread(threadId))
+      ?.toolInvocations,
+    [{ status: 'in_flight', ...invocation }],
+  );
+  assert.deepEqual(
+    await store.recordToolResultReady({
+      threadId,
+      runId,
+      ready: {
+        callId: invocation.callId,
+        toolName: invocation.toolName,
+        resultRef: 'tool-output:thread/run/reconcile',
+      },
+    }),
+    { ok: false, code: 'tool_result_conflict' },
+  );
+  await assert.rejects(
+    store.settleRun({
+      threadId,
+      runId,
+      terminal: {
+        eventCursor: 1,
+        event: {
+          type: 'done',
+          payload: { answer: 'must reconcile', ok: true },
+        },
+      },
+    }),
+    /tool invocations/,
+  );
+
+  const result = { ok: true as const, output: '{"ok":true}' };
+  const reconciled = await store.recordToolInvocationResult({
+    threadId,
+    runId,
+    callId: invocation.callId,
+    toolName: invocation.toolName,
+    result,
+  });
+  assert.equal(reconciled.ok && reconciled.changed, true);
+  assert.equal(
+    (
+      await store.recordToolInvocationResult({
+        threadId,
+        runId,
+        callId: invocation.callId,
+        toolName: invocation.toolName,
+        result,
+      })
+    ).ok,
+    true,
+  );
+  assert.deepEqual(
+    await store.completeToolResultReady({
+      threadId,
+      runId,
+      callId: invocation.callId,
+      resultRef: 'tool-output:thread/run/not-ready',
+    }),
+    { ok: false, code: 'tool_result_conflict' },
+  );
+
+  const ready = {
+    callId: invocation.callId,
+    toolName: invocation.toolName,
+    resultRef: 'tool-output:thread/run/reconcile',
+  };
+  const readyRecorded = await store.recordToolResultReady({
+    threadId,
+    runId,
+    ready,
+  });
+  assert.equal(readyRecorded.ok && readyRecorded.changed, true);
+  const completed = await store.completeToolResultReady({
+    threadId,
+    runId,
+    callId: ready.callId,
+    resultRef: ready.resultRef,
+  });
+  assert.equal(completed.ok && completed.changed, true);
+  assert.deepEqual(
+    {
+      toolInvocations: (await store.readThread(threadId))?.toolInvocations,
+      toolResultsReady: (await store.readThread(threadId))?.toolResultsReady,
+    },
+    { toolInvocations: [], toolResultsReady: [] },
+  );
 });
 
 void test('run checkpoints hydrate append-only event history without duplicating it in checkpoint JSON', async (t) => {

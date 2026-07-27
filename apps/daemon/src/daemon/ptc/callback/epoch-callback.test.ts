@@ -351,7 +351,7 @@ void unixTest(
         callbackTimeoutMs: 10,
         handler: async (invocation) => {
           observed.signal = invocation.signal;
-          observed.entered = invocation.enterLongWait();
+          observed.entered = await invocation.enterLongWait();
           await delay(50);
           return { ok: true, result: 'late-ok' };
         },
@@ -390,7 +390,7 @@ void unixTest(
         handler: async (invocation) => {
           observed.signal = invocation.signal;
           await delay(50);
-          observed.entered = invocation.enterLongWait();
+          observed.entered = await invocation.enterLongWait();
           resolveHandlerFinished();
           return { ok: true, result: 'too-late' };
         },
@@ -618,6 +618,34 @@ void unixTest(
         assert.doesNotMatch(
           JSON.stringify(response),
           /\.geulbat|secret|\/home/u,
+        );
+      } finally {
+        await channel.close();
+      }
+    });
+  },
+);
+
+void unixTest(
+  'callback channel preserves a transported no-value success when JSON omits result',
+  async () => {
+    await withTempRoot(async (root) => {
+      const channel = await createPtcEpochCallbackChannel({
+        rootDir: root,
+        handler: async () => ({ ok: true }),
+      });
+
+      try {
+        assert.deepEqual(
+          await sendFrame(channel.socketPath, {
+            requestId: 'req-no-value-success',
+            token: channel.token,
+            kind: 'store_set',
+          }),
+          {
+            requestId: 'req-no-value-success',
+            ok: true,
+          },
         );
       } finally {
         await channel.close();

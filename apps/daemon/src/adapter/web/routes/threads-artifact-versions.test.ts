@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { threadProjectionPinDeletionPort } from '../../../daemon/tools/tool-library-projection-store.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -34,6 +35,15 @@ async function startHarness(): Promise<RouteHarness> {
         backgroundNotifications: {
           clearThreadBackgroundResults() {},
           readThreadBackgroundResultHistory: () => [],
+        },
+        threadProjectionPins: threadProjectionPinDeletionPort,
+        threadArchiveTransfer: {
+          async exportArchive() {
+            throw new Error('thread archive is outside this harness');
+          },
+          async importArchive() {
+            throw new Error('thread archive is outside this harness');
+          },
         },
         providerTransitionCompaction: {
           prepare: async () => {

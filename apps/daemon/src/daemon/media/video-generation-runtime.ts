@@ -8,7 +8,6 @@ import {
 
 import { forceRefreshProviderAuth, getProviderAuth } from '../auth/access.js';
 import type { ProviderAuthRuntimeStore } from '../auth/runtime-state.js';
-import { normalizeProviderErrorCode } from '../llm/provider/provider-error.js';
 import {
   commitThreadArtifactVersion,
   loadThreadArtifactVersionsByRefs,
@@ -28,7 +27,10 @@ import {
   type GeneratedVideoProvenance,
   type VideoGenerationRuntime,
 } from './contract.js';
-import { acquireGenerationProviderAuthOrFailClosed } from './generation-provider-auth.js';
+import {
+  acquireGenerationProviderAuthOrFailClosed,
+  generateWithProviderAuthRetry,
+} from './generation-provider-auth.js';
 import { generateVideoViaGrok } from './providers/grok-video-provider.js';
 import { withVideoGenerationRequestDefaults } from './video-generation-request-defaults.js';
 
@@ -87,20 +89,6 @@ function buildVideoArtifactTitle(prompt: string): string {
   return `${singleLine.slice(0, VIDEO_ARTIFACT_TITLE_MAX_LENGTH - 1)}…`;
 }
 
-function isProviderAuthFailure(error: unknown): boolean {
-  if (error instanceof ImageGenerationError) {
-    return error.surface === 'provider_auth';
-  }
-  return normalizeProviderErrorCode(error) === 'llm_auth_failed';
-}
-
-function isProviderNotConnectedFailure(error: unknown): boolean {
-  return (
-    error instanceof ImageGenerationError &&
-    error.reasonCode === 'provider_not_connected'
-  );
-}
-
 export function createVideoGenerationRuntime(
   deps: VideoGenerationRuntimeDeps,
 ): VideoGenerationRuntime {
@@ -109,7 +97,19 @@ export function createVideoGenerationRuntime(
       input: GenerateVideoArtifactInput,
     ): Promise<GenerateVideoArtifactResult> {
       const source = await resolveSourceImage(input, deps);
-      const generated = await generateWithAuthRetry(input, deps, source);
+      const generated = await generateWithProviderAuthRetry({
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+        runAttempt: (options) =>
+          generateVideoOnce(input, deps, source, options),
+        forceRefresh: async () => {
+          const forceRefresh =
+            deps.forceRefreshProviderAuthImpl ?? forceRefreshProviderAuth;
+          await forceRefresh({
+            providerId: 'grok_oauth',
+            runtimeStore: deps.providerAuthRuntime,
+          });
+        },
+      });
       return downloadValidateAndCommit(input, deps, source, generated);
     },
     withRequestDefaults(defaults) {
@@ -211,36 +211,6 @@ async function readThreadMediaAsBase64(
       reasonCode: 'source_artifact_not_found',
       message: 'source image media file could not be read',
       cause: error,
-    });
-  }
-}
-
-async function generateWithAuthRetry(
-  input: GenerateVideoArtifactInput,
-  deps: VideoGenerationRuntimeDeps,
-  source: ResolvedSourceImage,
-): Promise<Awaited<ReturnType<typeof generateVideoViaGrok>>> {
-  try {
-    return await generateVideoOnce(input, deps, source, {
-      allowRefresh: true,
-    });
-  } catch (error: unknown) {
-    if (
-      isProviderNotConnectedFailure(error) ||
-      !isProviderAuthFailure(error) ||
-      input.signal?.aborted === true
-    ) {
-      throw error;
-    }
-    // 잡 시작 전 401만 여기 온다 — 한 번의 강제 리프레시 후 재시도(승계)
-    const forceRefresh =
-      deps.forceRefreshProviderAuthImpl ?? forceRefreshProviderAuth;
-    await forceRefresh({
-      providerId: 'grok_oauth',
-      runtimeStore: deps.providerAuthRuntime,
-    });
-    return await generateVideoOnce(input, deps, source, {
-      allowRefresh: false,
     });
   }
 }

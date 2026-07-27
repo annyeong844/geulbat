@@ -21,6 +21,7 @@ function runtimeWithExecuteCode(ptcExecuteCode: PtcExecuteCodeRuntime) {
 void test('wait description teaches the exec running-cell protocol', () => {
   const parameters = waitTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
+  assert.equal(waitTool.recoveryStrategy, 'durable_handle');
   const cellIdProperty = parameters.properties.cell_id as {
     description?: string;
   };
@@ -33,6 +34,7 @@ void test('wait description teaches the exec running-cell protocol', () => {
   assert.match(waitTool.description, /status "running"/u);
   assert.match(waitTool.description, /cellId/u);
   assert.match(waitTool.description, /cell_id/u);
+  assert.match(waitTool.description, /call wait again with the same cell_id/u);
   assert.match(cellIdProperty.description ?? '', /cellId/u);
   assert.match(cellIdProperty.description ?? '', /cellId is not accepted/u);
   assert.match(cellIdProperty.description ?? '', /status "queued"/u);
@@ -173,6 +175,12 @@ void test('wait reads exec cell results through the current thread runtime', asy
   let observedCellId = '';
   let observedTerminate = false;
   let observedYieldTimeMs = 0;
+  let observedInvocation:
+    | {
+        runId: string;
+        callId: string;
+      }
+    | undefined;
   const ptcExecuteCode: PtcExecuteCodeRuntime = {
     async executeCode() {
       throw new Error('exec was not expected');
@@ -182,6 +190,7 @@ void test('wait reads exec cell results through the current thread runtime', asy
       observedCellId = args.request.cellId;
       observedTerminate = args.request.terminate === true;
       observedYieldTimeMs = args.request.yieldTimeMs ?? 0;
+      observedInvocation = args.invocation;
       return {
         ok: true,
         value: {
@@ -210,6 +219,7 @@ void test('wait reads exec cell results through the current thread runtime', asy
     { cell_id: 'ptc_cell_done', terminate: true, 'yield-time_ms': 1_000 },
     {
       callId: 'call-wait-completed',
+      runId: 'run-wait-completed',
       stateRoot: '/workspace/home-state',
 
       workingDirectory: 'project',
@@ -223,6 +233,10 @@ void test('wait reads exec cell results through the current thread runtime', asy
   assert.equal(observedCellId, 'ptc_cell_done');
   assert.equal(observedTerminate, true);
   assert.equal(observedYieldTimeMs, 1_000);
+  assert.deepEqual(observedInvocation, {
+    runId: 'run-wait-completed',
+    callId: 'call-wait-completed',
+  });
   assert.deepEqual(JSON.parse(result.output), {
     kind: 'ptc_execute_code_cell_wait',
     capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,

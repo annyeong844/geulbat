@@ -100,14 +100,15 @@ export function resolveRunPlanHistory(
   return { plansByRunId, pendingPlan };
 }
 
-// 라이브 엔트리(최신) → settled 메시지 순으로 뒤에서부터 훑어 가장 최근
-// 계획을 찾는다.
-export function resolveLatestRunPlan(args: {
-  messages: readonly ThreadMessage[];
-  transcriptEntries: readonly RunTranscriptEntry[];
-}): RunPlanStep[] | null {
-  for (let index = args.transcriptEntries.length - 1; index >= 0; index -= 1) {
-    const entry = args.transcriptEntries[index];
+/**
+ * 라이브 엔트리(최신)에서만 계획을 찾는다. `transcriptEntries`는 현재 런의
+ * 것이므로 이 조회는 런 길이에 묶이고, 스트리밍 델타마다 불려도 저렴하다.
+ */
+export function resolveLatestLiveRunPlan(
+  transcriptEntries: readonly RunTranscriptEntry[],
+): RunPlanStep[] | null {
+  for (let index = transcriptEntries.length - 1; index >= 0; index -= 1) {
+    const entry = transcriptEntries[index];
     if (
       entry?.kind === 'tool_activity' &&
       entry.tool === UPDATE_PLAN_TOOL_NAME &&
@@ -120,7 +121,23 @@ export function resolveLatestRunPlan(args: {
     }
   }
 
-  return resolveRunPlanHistory(args.messages).pendingPlan;
+  return null;
+}
+
+// 라이브 엔트리(최신) → settled 메시지 순으로 뒤에서부터 훑어 가장 최근
+// 계획을 찾는다.
+//
+// settled 기록 전체를 훑는 부분은 `messages`에만 의존한다. 두 계산을 한
+// 재계산 단위에 묶고 싶지 않은 호출자는 `resolveLatestLiveRunPlan`과
+// `resolveRunPlanHistory`를 따로 불러 각자의 의존에 맡긴다.
+export function resolveLatestRunPlan(args: {
+  messages: readonly ThreadMessage[];
+  transcriptEntries: readonly RunTranscriptEntry[];
+}): RunPlanStep[] | null {
+  return (
+    resolveLatestLiveRunPlan(args.transcriptEntries) ??
+    resolveRunPlanHistory(args.messages).pendingPlan
+  );
 }
 
 function isRunPlanStepStatus(value: unknown): value is RunPlanStepStatus {

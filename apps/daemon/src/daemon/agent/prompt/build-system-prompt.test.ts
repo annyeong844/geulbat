@@ -164,6 +164,10 @@ void test('buildSystemPrompt includes tool and mutation recovery guidance', () =
   );
   assert.match(
     prompt,
+    /Use web_search for query-based current public-web discovery/,
+  );
+  assert.match(
+    prompt,
     /Choose between dedicated typed tools and exec_command by semantic ownership and expected round\/result cost/,
   );
   assert.match(prompt, /Use inspect_git for repository status/);
@@ -193,6 +197,19 @@ void test('buildSystemPrompt includes tool and mutation recovery guidance', () =
     /rediscover the new path with the dedicated list_files or search_files tool/,
   );
   assert.doesNotMatch(prompt, /list_files\/search_files SDK wrappers/u);
+});
+
+void test('buildSystemPrompt omits cold-discovery guidance when tool_search is not exposed', () => {
+  const prompt = buildSystemPrompt({
+    profile: 'root',
+    computerSessionAvailable: true,
+    directRegistryNames: ['list_files', 'read_file'],
+  });
+
+  assert.doesNotMatch(prompt, /tool_search/u);
+  assert.doesNotMatch(prompt, /geulbat-sdk signature/u);
+  assert.match(prompt, /Use skill_search with invocation=implicit/u);
+  assert.match(prompt, /Use fetch_url only when/u);
 });
 
 void test('buildSystemPrompt describes a general agent and the actual host boundary', () => {

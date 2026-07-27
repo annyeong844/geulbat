@@ -49,6 +49,19 @@ export interface HostCommandSnapshot {
   stderrOmittedBytes?: number;
   terminationReason?: string;
   outputPersistFailed?: boolean;
+  /**
+   * 프로세스는 끝났지만 출력 스트림이 아직 닫히지 않은 동안에만 실린다.
+   *
+   * 명령이 자손을 백그라운드로 띄우면(`cmd & exit 0`) 자손이 같은 stdout을
+   * 물고 있어 Node의 `'close'`가 오지 않는다. 그동안 `status`는 계속
+   * `running`이며 — 출력이 더 올 수 있으므로 그게 맞다 — 프로세스가 이미
+   * 끝났다는 사실은 이 필드로만 알 수 있다. `status`에 섞으면 그 필드로
+   * 종료를 판정하는 소비자들이 미완결 출력을 완결로 읽는다.
+   */
+  processExit?: {
+    status: Exclude<HostCommandStatus, 'running'>;
+    exitCode: number | null;
+  };
 }
 
 export interface HostCommandOutputPage {
@@ -105,6 +118,11 @@ export interface HostCommandMetadata {
   terminationReason?: string;
   finalRevision?: number;
   outputPersistFailed?: boolean;
+  /**
+   * stdoutFull/stderrFull이 각 스트림의 offset 0부터 총량까지 전부 담고
+   * 있음을 뜻한다. 생략된 구 산출물은 기존 tail 파일 의미론을 유지한다.
+   */
+  fullOutputAvailable?: true;
 }
 
 export interface HostCommandPaths {
@@ -112,9 +130,12 @@ export interface HostCommandPaths {
   metadata: string;
   stdout: string;
   stderr: string;
+  stdoutFull: string;
+  stderrFull: string;
+  fullOutputState: string;
 }
 
-interface PersistedHostCommand {
+export interface PersistedHostCommand {
   metadata: HostCommandMetadata;
   paths: HostCommandPaths;
 }
@@ -136,6 +157,79 @@ export function buildHostCommandOutputRef(args: {
   sessionId: string;
 }): string {
   return `${OUTPUT_REF_PREFIX}${encodeRefPart(args.threadId)}/${args.sessionId}`;
+}
+
+export function rebindHostCommandMetadataThread(args: {
+  metadata: unknown;
+  targetThreadId: string;
+}): HostCommandMetadata {
+  if (
+    args.targetThreadId.trim() === '' ||
+    !isRecord(args.metadata) ||
+    typeof args.metadata['outputRef'] !== 'string' ||
+    typeof args.metadata['threadId'] !== 'string' ||
+    !isHostCommandMetadata(
+      args.metadata,
+      args.metadata['outputRef'],
+      args.metadata['threadId'],
+    )
+  ) {
+    throw new Error('host command metadata does not match its transfer schema');
+  }
+  const parsedRef = parseHostCommandOutputRef(args.metadata.outputRef);
+  if (
+    !parsedRef.ok ||
+    (args.metadata.sessionId !== undefined &&
+      args.metadata.sessionId !== parsedRef.sessionId)
+  ) {
+    throw new Error('host command metadata reference is invalid');
+  }
+
+  return {
+    formatVersion: HOST_COMMAND_ARTIFACT_FORMAT_VERSION,
+    schemaVersion: 1,
+    sessionId: parsedRef.sessionId,
+    outputRef: buildHostCommandOutputRef({
+      threadId: args.targetThreadId,
+      sessionId: parsedRef.sessionId,
+    }),
+    threadId: args.targetThreadId,
+    runId: args.metadata.runId,
+    callId: args.metadata.callId,
+    status: args.metadata.status,
+    exitCode: args.metadata.exitCode,
+    stdoutBytes: args.metadata.stdoutBytes,
+    stderrBytes: args.metadata.stderrBytes,
+    stdoutChars: args.metadata.stdoutChars,
+    stderrChars: args.metadata.stderrChars,
+    startedAtMs: args.metadata.startedAtMs,
+    finishedAtMs: args.metadata.finishedAtMs,
+    firstOutputAfterMs: args.metadata.firstOutputAfterMs,
+    revision: args.metadata.revision,
+    stdinOpen: args.metadata.stdinOpen,
+    outputLimitExceeded:
+      args.metadata.outputLimitExceeded === null
+        ? null
+        : { ...args.metadata.outputLimitExceeded },
+    ...(args.metadata.stdoutBaseOffset === undefined
+      ? {}
+      : { stdoutBaseOffset: args.metadata.stdoutBaseOffset }),
+    ...(args.metadata.stderrBaseOffset === undefined
+      ? {}
+      : { stderrBaseOffset: args.metadata.stderrBaseOffset }),
+    ...(args.metadata.terminationReason === undefined
+      ? {}
+      : { terminationReason: args.metadata.terminationReason }),
+    ...(args.metadata.finalRevision === undefined
+      ? {}
+      : { finalRevision: args.metadata.finalRevision }),
+    ...(args.metadata.outputPersistFailed === undefined
+      ? {}
+      : { outputPersistFailed: args.metadata.outputPersistFailed }),
+    ...(args.metadata.fullOutputAvailable === true
+      ? { fullOutputAvailable: true as const }
+      : {}),
+  };
 }
 
 export function parseHostCommandOutputRef(
@@ -200,6 +294,9 @@ export function buildHostCommandPaths(args: {
     metadata: join(directory, 'metadata.json'),
     stdout: join(directory, 'stdout.txt'),
     stderr: join(directory, 'stderr.txt'),
+    stdoutFull: join(directory, 'stdout.full.txt'),
+    stderrFull: join(directory, 'stderr.full.txt'),
+    fullOutputState: join(directory, 'full-output-state.json'),
   };
 }
 
@@ -311,6 +408,7 @@ export async function readHostCommandOutputPage(args: {
       }
     | undefined;
   inlineMaxBytes: number;
+  fullOutputAvailable?: boolean;
 }): Promise<
   | { ok: true; value: HostCommandOutputPage | null }
   | {
@@ -330,9 +428,152 @@ export async function readHostCommandOutputPage(args: {
     };
   }
   return await readUtf8OutputPage({
-    path: args.page.stream === 'stdout' ? args.paths.stdout : args.paths.stderr,
+    path:
+      args.page.stream === 'stdout'
+        ? args.fullOutputAvailable === true
+          ? args.paths.stdoutFull
+          : args.paths.stdout
+        : args.fullOutputAvailable === true
+          ? args.paths.stderrFull
+          : args.paths.stderr,
     ...args.page,
   });
+}
+
+export async function readHostCommandFullOutputArchivePage(args: {
+  paths: HostCommandPaths;
+  stream: HostCommandOutputStream;
+  offsetBytes: number;
+  limitBytes: number;
+  archivedBytes: number;
+  totalBytes: number;
+  inlineMaxBytes: number;
+}): Promise<
+  | { ok: true; value: HostCommandOutputPage }
+  | {
+      ok: false;
+      reasonCode: 'invalid_args' | 'not_found' | 'output_store_failed';
+      message: string;
+    }
+> {
+  if (
+    !Number.isSafeInteger(args.archivedBytes) ||
+    !Number.isSafeInteger(args.totalBytes) ||
+    args.archivedBytes < 0 ||
+    args.totalBytes < args.archivedBytes
+  ) {
+    return {
+      ok: false,
+      reasonCode: 'output_store_failed',
+      message: 'host command full-output archive offsets are invalid.',
+    };
+  }
+  if (args.limitBytes > args.inlineMaxBytes) {
+    return {
+      ok: false,
+      reasonCode: 'invalid_args',
+      message: `limitBytes exceeds the configured inline result budget of ${args.inlineMaxBytes} bytes.`,
+    };
+  }
+  const path =
+    args.stream === 'stdout' ? args.paths.stdoutFull : args.paths.stderrFull;
+  try {
+    await stat(path);
+  } catch (error: unknown) {
+    if (getErrorCode(error) === 'ENOENT') {
+      return {
+        ok: false,
+        reasonCode: 'not_found',
+        message: 'host command full-output archive was not found.',
+      };
+    }
+    return {
+      ok: false,
+      reasonCode: 'output_store_failed',
+      message: getErrorMessage(error),
+    };
+  }
+  return await readUtf8OutputPage({
+    path,
+    stream: args.stream,
+    offsetBytes: args.offsetBytes,
+    limitBytes: args.limitBytes,
+    availableBytes: args.archivedBytes,
+    totalBytes: args.totalBytes,
+  });
+}
+
+export async function commitHostCommandFullOutputArchive(args: {
+  stateRoot: string;
+  threadId: string;
+  outputRef: string;
+}): Promise<
+  | { ok: true; metadata: HostCommandMetadata }
+  | {
+      ok: false;
+      reasonCode: 'not_found' | 'output_store_failed';
+      message: string;
+    }
+> {
+  const persisted = await readPersistedHostCommand(args);
+  if (!persisted.ok) {
+    return persisted;
+  }
+  if (persisted.value.metadata.status === 'running') {
+    return {
+      ok: false,
+      reasonCode: 'output_store_failed',
+      message:
+        'host command full-output archive cannot be committed before terminal metadata.',
+    };
+  }
+  let stdoutBytes: number;
+  let stderrBytes: number;
+  try {
+    const [stdoutStats, stderrStats] = await Promise.all([
+      stat(persisted.value.paths.stdoutFull),
+      stat(persisted.value.paths.stderrFull),
+    ]);
+    stdoutBytes = stdoutStats.size;
+    stderrBytes = stderrStats.size;
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      reasonCode: 'output_store_failed',
+      message: getErrorMessage(error),
+    };
+  }
+  if (
+    stdoutBytes !== persisted.value.metadata.stdoutBytes ||
+    stderrBytes !== persisted.value.metadata.stderrBytes
+  ) {
+    return {
+      ok: false,
+      reasonCode: 'output_store_failed',
+      message:
+        'host command full-output archive byte counts do not match terminal metadata.',
+    };
+  }
+  const metadata: HostCommandMetadata = {
+    ...persisted.value.metadata,
+    stdoutBaseOffset: 0,
+    stderrBaseOffset: 0,
+    fullOutputAvailable: true,
+  };
+  delete metadata.outputPersistFailed;
+  try {
+    await writeHostCommandMetadata({
+      paths: persisted.value.paths,
+      metadata,
+    });
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      reasonCode: 'output_store_failed',
+      message: getErrorMessage(error),
+    };
+  }
+  return { ok: true, metadata };
 }
 
 export function snapshotFromHostCommandMetadata(
@@ -544,6 +785,8 @@ async function readUtf8OutputPage(args: {
   stream: HostCommandOutputStream;
   offsetBytes: number;
   limitBytes: number;
+  availableBytes?: number;
+  totalBytes?: number;
 }): Promise<
   | { ok: true; value: HostCommandOutputPage }
   | {
@@ -556,9 +799,22 @@ async function readUtf8OutputPage(args: {
   try {
     handle = await open(args.path, 'r');
     const fileStats = await handle.stat();
-    const totalBytes = fileStats.size;
-    const offsetBytes = Math.min(args.offsetBytes, totalBytes);
-    if (offsetBytes < totalBytes) {
+    const availableBytes = args.availableBytes ?? fileStats.size;
+    const totalBytes = args.totalBytes ?? availableBytes;
+    if (
+      fileStats.size < availableBytes ||
+      totalBytes < availableBytes ||
+      availableBytes < 0
+    ) {
+      return {
+        ok: false,
+        reasonCode: 'output_store_failed',
+        message:
+          'host command output archive is shorter than its committed byte range.',
+      };
+    }
+    const offsetBytes = Math.min(args.offsetBytes, availableBytes);
+    if (offsetBytes < availableBytes) {
       const first = Buffer.allocUnsafe(1);
       await handle.read(first, 0, 1, offsetBytes);
       if ((first[0]! & 0xc0) === 0x80) {
@@ -569,7 +825,10 @@ async function readUtf8OutputPage(args: {
         };
       }
     }
-    const requestedBytes = Math.min(args.limitBytes, totalBytes - offsetBytes);
+    const requestedBytes = Math.min(
+      args.limitBytes,
+      availableBytes - offsetBytes,
+    );
     const buffer = Buffer.allocUnsafe(requestedBytes);
     const { bytesRead } = await handle.read(
       buffer,
@@ -693,7 +952,9 @@ function isHostCommandMetadata(
     (value['finalRevision'] === undefined ||
       isNonNegativeInteger(value['finalRevision'])) &&
     (value['outputPersistFailed'] === undefined ||
-      typeof value['outputPersistFailed'] === 'boolean')
+      typeof value['outputPersistFailed'] === 'boolean') &&
+    (value['fullOutputAvailable'] === undefined ||
+      value['fullOutputAvailable'] === true)
   );
 }
 

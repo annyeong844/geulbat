@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 
-import { iterateWebSocketEvents } from './responses-websocket-stream.js';
+import {
+  iterateWebSocketEvents,
+  iterateWebSocketEventsAfterDispatch,
+} from './responses-websocket-stream.js';
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -42,6 +45,32 @@ void test('iterateWebSocketEvents yields parsed frames and completes on response
     value: { type: 'response.completed' },
   });
 
+  assert.deepEqual(await iterator.next(), { done: true, value: undefined });
+});
+
+void test('iterateWebSocketEventsAfterDispatch observes a synchronous provider response', async () => {
+  const socket = createFakeSocket();
+  const iterator = iterateWebSocketEventsAfterDispatch(socket, () => {
+    socket.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({ type: 'response.output_text.delta', delta: 'fast' }),
+      ),
+    );
+    socket.emit(
+      'message',
+      Buffer.from(JSON.stringify({ type: 'response.completed' })),
+    );
+  });
+
+  assert.deepEqual(await iterator.next(), {
+    done: false,
+    value: { type: 'response.output_text.delta', delta: 'fast' },
+  });
+  assert.deepEqual(await iterator.next(), {
+    done: false,
+    value: { type: 'response.completed' },
+  });
   assert.deepEqual(await iterator.next(), { done: true, value: undefined });
 });
 

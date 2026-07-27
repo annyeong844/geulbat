@@ -34,3 +34,10 @@ export function isNumber(value: unknown): value is number {
 export function isBoolean(value: unknown): value is boolean {
   return typeof value === 'boolean';
 }
+
+export function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+): boolean {
+  return Object.keys(value).every((key) => allowedKeys.includes(key));
+}

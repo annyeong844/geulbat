@@ -1,6 +1,11 @@
 import type { RunId, ThreadId } from './ids.js';
 import { isRunId, isThreadId } from './ids.js';
-import { isBoolean, isRecord, isString } from './wire-value-guards.js';
+import {
+  hasOnlyKeys,
+  isBoolean,
+  isRecord,
+  isString,
+} from './wire-value-guards.js';
 import {
   isSideEffectLevel,
   type SideEffectLevel,
@@ -155,11 +160,4 @@ export function isApprovalRequired(value: unknown): value is ApprovalRequired {
 
 export function isApprovalResponse(value: unknown): value is ApprovalResponse {
   return isRecord(value) && isBoolean(value.ok);
-}
-
-function hasOnlyKeys(
-  value: Record<string, unknown>,
-  allowedKeys: readonly string[],
-): boolean {
-  return Object.keys(value).every((key) => allowedKeys.includes(key));
 }

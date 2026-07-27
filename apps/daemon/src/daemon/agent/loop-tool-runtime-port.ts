@@ -15,6 +15,7 @@ import type { ToolResultContextBudget } from './memory/compaction-loop.js';
 import { createToolOutputProjectionRound } from './tool-output-offload.js';
 import type { ToolResultObservation } from './observer/agent-loop-observer.js';
 import type { ToolExecutionRegistry } from '../tools/tool-registry-model.js';
+import { assertAgentRunId } from './contract.js';
 
 interface ProcessAgentLoopToolCallsArgs {
   functionCalls: FunctionCall[];
@@ -61,6 +62,13 @@ export function createAgentLoopToolRuntimePort(
                   : undefined,
               resultCount: args.functionCalls.length,
             });
+      const runCheckpoints =
+        (await runtimeServices.runCheckpoints.hasRunningRun({
+          threadId: args.runContext.threadId,
+          runId: assertAgentRunId(args.runId),
+        }))
+          ? runtimeServices.runCheckpoints
+          : undefined;
       const executionContextBase = buildAgentToolExecutionContextBase({
         runContext: args.runContext,
         runId: args.runId,
@@ -105,6 +113,7 @@ export function createAgentLoopToolRuntimePort(
         approvalGate: runtimeServices.approvalGate,
         approvalGrants: runtimeServices.approvalGrants,
         executionContextBase,
+        ...(runCheckpoints === undefined ? {} : { runCheckpoints }),
       });
       return await processFunctionCalls({
         functionCalls: args.functionCalls,

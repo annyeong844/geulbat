@@ -10,6 +10,7 @@ import {
   createPtcExecuteCodeCellRegistry,
   PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS,
 } from './execute-code-cell-registry.js';
+import type { PtcExecuteCodeCellRetainedResult } from './execute-code-cell-terminal-retention.js';
 import type {
   PtcExecuteCodeCellDurableOutput,
   PtcExecuteCodeCellId,
@@ -199,9 +200,9 @@ void test('execute_code cell registry blocks admission while durable terminal ha
 
   assert.deepEqual(registry.reserveAdmittingCell({ threadId: THREAD_ID }), {
     ok: false,
-    reasonCode: 'cell_result_unclaimed',
+    reasonCode: 'cell_active',
     cellId: admitted.cellId,
-    state: 'terminal_retained',
+    state: 'running',
   });
 
   releasePersistence();
@@ -294,7 +295,24 @@ void test('execute_code cell registry lets termination own a stale terminal reco
   });
   assert.equal(handle.terminatedCount(), 1);
   assert.deepEqual(taintReasons, ['terminate']);
-  assert.equal(registry.readCellState({ threadId: THREAD_ID }), null);
+  assert.deepEqual(registry.readCellState({ threadId: THREAD_ID }), {
+    cellId: admitted.cellId,
+    state: 'terminal_retained',
+  });
+  assert.deepEqual(
+    registry.takeTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    {
+      ok: true,
+      value: {
+        status: 'terminated',
+        output: makeSegment({ stdout: 'terminated output\n' }),
+        exit: { kind: 'signal', exitCode: null, processTerminated: false },
+      },
+    },
+  );
 });
 
 void test('execute_code cell registry retains terminal cleanup failure until claimed', async () => {
@@ -877,6 +895,24 @@ void test('execute_code cell registry terminates running cell once and taints se
     PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS,
   ]);
   assert.deepEqual(calls, ['bridge', 'taint:terminate']);
+  assert.deepEqual(registry.readCellState({ threadId: THREAD_ID }), {
+    cellId: admitted.cellId,
+    state: 'terminal_retained',
+  });
+  assert.deepEqual(
+    registry.takeTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    {
+      ok: true,
+      value: {
+        status: 'terminated',
+        output,
+        exit: { kind: 'signal', exitCode: null, processTerminated: false },
+      },
+    },
+  );
   assert.equal(registry.readCellState({ threadId: THREAD_ID }), null);
 
   const secondClose = await registry.closeCell({
@@ -888,6 +924,129 @@ void test('execute_code cell registry terminates running cell once and taints se
   assert.equal(handle.terminatedCount(), 1);
   assert.deepEqual(handle.terminateGraceMsValues(), [
     PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS,
+  ]);
+});
+
+void test('execute_code cell registry persists explicit termination before deleting its restart coordinate', async () => {
+  const persistence = createDeferred<void>();
+  const persistenceStarted = createDeferred<void>();
+  const calls: string[] = [];
+  const output = makeSegment({ stdout: 'durable before coordinate delete\n' });
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: makeCellIdFactory('ptc_cell_terminate_linearized'),
+    persistTerminalResult: async ({ cellId, result }) => {
+      calls.push(`persist:${result.status}`);
+      persistenceStarted.resolve();
+      await persistence.promise;
+      return {
+        outputRef: `tool-output://ptc-test/${cellId}`,
+        fullOutputBytes: 32,
+        fullOutputChars: 32,
+        status: 'terminated',
+        exitCode: null,
+      };
+    },
+  });
+  const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) {
+    return;
+  }
+  registry.promoteAdmittedCell({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    resources: {
+      effectiveTimeoutMs: 60_000,
+      handle: makeHandle({
+        output,
+        exit: { kind: 'signal', exitCode: null, processTerminated: false },
+      }),
+      closeBridge: () => {
+        calls.push('bridge');
+      },
+      taintSession: () => {
+        calls.push('taint');
+        return true;
+      },
+      finalizeCoordinate: () => {
+        calls.push('coordinate');
+      },
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
+    },
+  });
+
+  const closing = registry.closeCell({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    reason: 'terminate',
+  });
+  await persistenceStarted.promise;
+  assert.deepEqual(calls, ['persist:terminated']);
+
+  persistence.resolve();
+  assert.equal((await closing).ok, true);
+  assert.deepEqual(calls, [
+    'persist:terminated',
+    'bridge',
+    'coordinate',
+    'taint',
+  ]);
+});
+
+void test('execute_code cell registry persists natural completion before deleting its restart coordinate', async () => {
+  const persistence = createDeferred<void>();
+  const persistenceStarted = createDeferred<void>();
+  const calls: string[] = [];
+  let persistenceCalls = 0;
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: makeCellIdFactory('ptc_cell_complete_linearized'),
+    persistTerminalResult: async ({ cellId, result }) => {
+      persistenceCalls += 1;
+      calls.push(`persist:${result.status}`);
+      if (persistenceCalls === 1) {
+        persistenceStarted.resolve();
+        await persistence.promise;
+      }
+      return makeDurableOutput(cellId);
+    },
+  });
+  const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) {
+    return;
+  }
+  registry.promoteAdmittedCell({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    resources: {
+      effectiveTimeoutMs: 60_000,
+      handle: makeHandle({ output: makeSegment() }),
+      closeBridge: () => {
+        calls.push('bridge');
+      },
+      taintSession: () => true,
+      finalizeCoordinate: () => {
+        calls.push('coordinate');
+      },
+      terminalResultStateRoot: '/tmp/geulbat-ptc-test-state',
+    },
+  });
+
+  const recording = registry.recordTerminalCellResult({
+    threadId: THREAD_ID,
+    cellId: admitted.cellId,
+    result: makeTerminalResult({ stdout: 'completed durably\n' }),
+  });
+  await persistenceStarted.promise;
+  assert.deepEqual(calls, ['bridge', 'persist:completed']);
+
+  persistence.resolve();
+  assert.equal((await recording).ok, true);
+  assert.deepEqual(calls, [
+    'bridge',
+    'persist:completed',
+    'coordinate',
+    'persist:completed',
   ]);
 });
 
@@ -933,7 +1092,38 @@ void test('execute_code cell registry releases ownership when taint close is not
       sessionTainted: true,
     },
   });
-  assert.equal(registry.readCellState({ threadId: THREAD_ID }), null);
+  assert.deepEqual(registry.readCellState({ threadId: THREAD_ID }), {
+    cellId: admitted.cellId,
+    state: 'terminal_retained',
+  });
+  assert.deepEqual(registry.reserveAdmittingCell({ threadId: THREAD_ID }), {
+    ok: false,
+    reasonCode: 'cell_result_unclaimed',
+    cellId: admitted.cellId,
+    state: 'terminal_retained',
+  });
+  assert.deepEqual(
+    registry.takeTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    {
+      ok: true,
+      value: {
+        status: 'cleanup_failed',
+        message: 'PTC execute_code explicit termination cleanup failed',
+        diagnostics: {
+          sessionCloseFailed: true,
+          sessionTainted: true,
+        },
+        terminalResult: {
+          status: 'terminated',
+          output: makeSegment({ stdout: 'unsafe\n' }),
+          exit: { kind: 'signal', exitCode: null, processTerminated: false },
+        },
+      },
+    },
+  );
   assert.deepEqual(registry.reserveAdmittingCell({ threadId: THREAD_ID }), {
     ok: true,
     cellId: 'ptc_cell_taint_fail_2',
@@ -1305,9 +1495,20 @@ void test('execute_code queued cell cancellation owns no running resource and fi
   const settle = createDeferred<void>();
   let cancelCount = 0;
   let finalizedCount = 0;
+  const persistedResults: PtcExecuteCodeCellRetainedResult[] = [];
   const registry = createPtcExecuteCodeCellRegistry({
     allowConcurrentCells: true,
     createCellId: makeCellIdFactory('ptc_cell_queued'),
+    persistTerminalResult: async ({ cellId, result }) => {
+      persistedResults.push(result);
+      return {
+        outputRef: `tool-output://ptc-test/${cellId}`,
+        fullOutputBytes: 1,
+        fullOutputChars: 1,
+        status: 'terminated',
+        exitCode: null,
+      };
+    },
   });
   const admitted = registry.reserveAdmittingCell({ threadId: THREAD_ID });
   assert.equal(admitted.ok, true);
@@ -1353,12 +1554,51 @@ void test('execute_code queued cell cancellation owns no running resource and fi
   );
   assert.equal(cancelCount, 1);
   assert.equal(finalizedCount, 1);
-  assert.equal(
+  assert.deepEqual(persistedResults, [
+    {
+      status: 'terminated',
+      output: makeSegment(),
+      exit: { kind: 'signal', exitCode: null, processTerminated: false },
+      store: { discardedWrites: 2 },
+    },
+  ]);
+  assert.deepEqual(
     registry.readCellState({
       threadId: THREAD_ID,
       cellId: admitted.cellId,
     }),
-    null,
+    {
+      cellId: admitted.cellId,
+      state: 'terminal_retained',
+    },
+  );
+  assert.deepEqual(
+    registry.readTerminalCellDurableOutput({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    {
+      outputRef: `tool-output://ptc-test/${admitted.cellId}`,
+      fullOutputBytes: 1,
+      fullOutputChars: 1,
+      status: 'terminated',
+      exitCode: null,
+    },
+  );
+  assert.deepEqual(
+    registry.takeTerminalCellResult({
+      threadId: THREAD_ID,
+      cellId: admitted.cellId,
+    }),
+    {
+      ok: true,
+      value: {
+        status: 'terminated',
+        output: makeSegment(),
+        exit: { kind: 'signal', exitCode: null, processTerminated: false },
+        store: { discardedWrites: 2 },
+      },
+    },
   );
 });
 

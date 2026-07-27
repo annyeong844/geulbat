@@ -19,6 +19,12 @@ import {
   type ProviderNativeCompactionPolicy,
 } from '../../llm/provider/provider-native-compaction.js';
 import { normalizeProviderErrorCode } from '../../llm/provider/provider-error.js';
+import { hashProviderTraceIdentity } from '../../llm/provider/provider-cache-projection.js';
+import {
+  measureQwenChatHistoryBytes,
+  summarizeQwenHistory,
+  type QwenContextCapacityPolicy,
+} from '../../llm/provider/qwen/index.js';
 import { measureResponseWireInputBytes } from '../../llm/provider/transport/responses-wire-input.js';
 import type {
   HistoryItem,
@@ -27,8 +33,12 @@ import type {
 import type { ProviderRequestOptions } from '../../llm/provider/provider-options.js';
 import type { ToolDefinition } from '../../tools/types.js';
 import type { AgentEventPayloadMap } from '../events.js';
-import { loadInitialHistory } from '../loop-history.js';
-import { compactThreadContextNative } from './compaction-run.js';
+import { loadExistingHistory, loadInitialHistory } from '../loop-history.js';
+import type { BudgetProfile } from '../contract.js';
+import {
+  compactThreadContextNative,
+  compactThreadContextSummary,
+} from './compaction-run.js';
 
 interface AgentLoopMemoryRequestContext {
   workspaceRoot: string;
@@ -36,6 +46,7 @@ interface AgentLoopMemoryRequestContext {
   history: HistoryItem[];
   systemPrompt: string;
   tools: ToolDefinition[];
+  deferredTools?: ToolDefinition[];
   providerAuthRuntime: ProviderNativeCompactionInput['providerAuthRuntime'];
   providerRequestOptions: ProviderRequestOptions;
   providerReplayScopeId?: ProviderReplayScopeId;
@@ -59,7 +70,7 @@ type PreDispatchAdmission =
   | {
       kind: 'near_policy' | 'over_window';
       estimatedInputTokens: number;
-      policy: ProviderNativeCompactionPolicy;
+      policy: ProviderContextCapacityPolicy;
     };
 
 type PrepareBeforeModelRoundResult =
@@ -102,11 +113,7 @@ export type ToolResultContextBudget =
 type CompactAfterModelRoundResult =
   | {
       kind: 'not_needed';
-      reason:
-        | 'provider_not_supported'
-        | 'usage_unavailable'
-        | 'under_threshold'
-        | 'no_material_growth';
+      reason: 'usage_unavailable' | 'under_threshold' | 'no_material_growth';
     }
   | {
       kind: 'compacted';
@@ -118,11 +125,13 @@ type CompactAfterModelRoundResult =
       reason:
         | 'policy_resolution_failed'
         | 'trigger_invalid'
+        | 'compaction_measurement_unavailable'
         | 'provider_compaction_failed'
         | 'provider_compaction_output_invalid'
         | 'provider_history_invalid'
         | 'evidence_recovery_failed'
         | 'no_summarizable_prefix'
+        | 'retained_context_exceeds_budget'
         | 'compaction_ineffective'
         | 'stale_snapshot'
         | 'transcript_empty';
@@ -146,8 +155,11 @@ interface AgentLoopMemoryPortDependencies {
   resolvePolicy: typeof resolveProviderContextCapacityPolicy;
   compactHistory: typeof compactProviderNativeHistory;
   compactThread: typeof compactThreadContextNative;
+  compactSummaryThread?: typeof compactThreadContextSummary;
+  summarizeQwenHistory?: typeof summarizeQwenHistory;
   prepareTransition?: typeof prepareProviderTransitionCompaction;
   loadHistory?: typeof loadInitialHistory;
+  loadCompactedHistory?: typeof loadExistingHistory;
   measureHistoryBytes?: (context: AgentLoopMemoryRequestContext) => number;
   resolveEvidencePages?: NonNullable<
     Parameters<typeof compactThreadContextNative>[0]['resolveEvidencePages']
@@ -159,8 +171,11 @@ const defaultAgentLoopMemoryPortDependencies: AgentLoopMemoryPortDependencies =
     resolvePolicy: resolveProviderContextCapacityPolicy,
     compactHistory: compactProviderNativeHistory,
     compactThread: compactThreadContextNative,
+    compactSummaryThread: compactThreadContextSummary,
+    summarizeQwenHistory,
     prepareTransition: prepareProviderTransitionCompaction,
     loadHistory: loadInitialHistory,
+    loadCompactedHistory: loadExistingHistory,
   };
 
 const logger = createLogger('agent/memory/compaction-loop');
@@ -173,12 +188,12 @@ function createContextModelKey(options: ProviderRequestOptions): string {
   return `${options.providerId}\0${options.model}`;
 }
 
-function supportsProviderNativeCompaction(
+function isQwenSummaryCompactionPolicy(
   policy: ProviderContextCapacityPolicy,
-): policy is ProviderNativeCompactionPolicy {
+): policy is QwenContextCapacityPolicy {
   return (
-    policy.providerId === 'openai_codex_direct' ||
-    policy.providerId === 'grok_oauth'
+    policy.providerId === 'qwen_token_plan' &&
+    policy.compactionMethod === 'summary'
   );
 }
 
@@ -192,6 +207,52 @@ function estimateInputTokens(
   return Number.isSafeInteger(estimate) && estimate >= 0 ? estimate : undefined;
 }
 
+function buildQwenSummaryBudgetProfile(args: {
+  context: AgentLoopMemoryRequestContext;
+  policy: QwenContextCapacityPolicy;
+  inputTokens: number;
+  requestBytes: number;
+  requestHistoryBytes: number;
+}): BudgetProfile | undefined {
+  if (
+    args.requestBytes <= 0 ||
+    args.requestHistoryBytes < 0 ||
+    args.requestHistoryBytes > args.requestBytes
+  ) {
+    return undefined;
+  }
+  const requestOverheadTokens = estimateInputTokens(
+    args.requestBytes - args.requestHistoryBytes,
+    {
+      requestBytes: args.requestBytes,
+      inputTokens: args.inputTokens,
+    },
+  );
+  if (requestOverheadTokens === undefined) {
+    return undefined;
+  }
+  return {
+    model: args.policy.model,
+    contextWindow: args.policy.contextWindow,
+    reserveTokens: args.policy.contextWindow - args.policy.thresholdTokens,
+    thresholdTokens: args.policy.thresholdTokens,
+    keepRecentTokens: args.policy.contextWindow - args.policy.thresholdTokens,
+    summaryBudgetTokens: args.policy.summaryMaxOutputTokens,
+    requestOverheadTokens,
+    requestProfileHash: hashProviderTraceIdentity(
+      JSON.stringify({
+        providerId: args.policy.providerId,
+        model: args.policy.model,
+        systemPrompt: args.context.systemPrompt,
+        tools: args.context.tools,
+        deferredTools: args.context.deferredTools,
+        providerRequestOptions: args.context.providerRequestOptions,
+      }),
+    ),
+    compactionVersion: args.policy.compactionVersion,
+  };
+}
+
 function toProviderNativeCompactionInput(
   context: AgentLoopMemoryRequestContext,
 ): ProviderNativeCompactionInput {
@@ -199,6 +260,9 @@ function toProviderNativeCompactionInput(
     history: context.history,
     systemPrompt: context.systemPrompt,
     tools: context.tools,
+    ...(context.deferredTools === undefined
+      ? {}
+      : { deferredTools: context.deferredTools }),
     providerSessionId: context.threadId,
     providerAuthRuntime: context.providerAuthRuntime,
     providerRequestOptions: context.providerRequestOptions,
@@ -241,18 +305,35 @@ export function createAgentLoopMemoryPort(
     AgentLoopContextBudgetRound,
     number
   >();
+  const requestHistoryBytesByRound = new WeakMap<
+    AgentLoopContextBudgetRound,
+    number
+  >();
   const ineffectiveAttemptByContext = new Map<string, string>();
+  const compactSummaryThread =
+    deps.compactSummaryThread ?? compactThreadContextSummary;
+  const summarizeQwenHistoryImpl =
+    deps.summarizeQwenHistory ?? summarizeQwenHistory;
+  const loadCompactedHistory = deps.loadCompactedHistory ?? loadExistingHistory;
   const measureHistoryBytes =
     deps.measureHistoryBytes ??
-    ((context: AgentLoopMemoryRequestContext) =>
-      measureResponseWireInputBytes(context.history, {
+    ((context: AgentLoopMemoryRequestContext) => {
+      if (context.providerRequestOptions.providerId === 'qwen_token_plan') {
+        return measureQwenChatHistoryBytes({
+          history: context.history,
+          ...(context.providerReplayScopeId === undefined
+            ? {}
+            : { providerReplayScopeId: context.providerReplayScopeId }),
+        });
+      }
+      return measureResponseWireInputBytes(context.history, {
         providerId: context.providerRequestOptions.providerId,
         model: context.providerRequestOptions.model,
         ...(context.providerReplayScopeId === undefined
           ? {}
           : { providerReplayScopeId: context.providerReplayScopeId }),
-      }));
-  let reportedUnsupportedProvider = false;
+      });
+    });
   let reportedMissingUsage = false;
 
   const resolvePolicy = async (
@@ -467,6 +548,209 @@ export function createAgentLoopMemoryPort(
     }
   };
 
+  const commitQwenSummaryCompaction = async (args: {
+    context: AgentLoopMemoryRequestContext;
+    contextBudgetRound: AgentLoopContextBudgetRound;
+    contextUsage: {
+      quality: 'exact' | 'estimated';
+      modelId: string;
+      inputTokens: number;
+      contextWindow: number;
+      thresholdTokens: number;
+      requestBytes?: number;
+    };
+    policy: QwenContextCapacityPolicy;
+    requestBytes: number | undefined;
+    requestHistoryBytes: number | undefined;
+  }): Promise<CompactAfterModelRoundResult> => {
+    if (
+      args.requestBytes === undefined ||
+      args.requestHistoryBytes === undefined
+    ) {
+      return {
+        kind: 'failed',
+        reason: 'compaction_measurement_unavailable',
+        message: 'context compaction request measurement is unavailable',
+      };
+    }
+    const requestBytes = args.requestBytes;
+    const requestHistoryBytes = args.requestHistoryBytes;
+    const budgetProfile = buildQwenSummaryBudgetProfile({
+      context: args.context,
+      policy: args.policy,
+      inputTokens: args.contextUsage.inputTokens,
+      requestBytes,
+      requestHistoryBytes,
+    });
+    if (budgetProfile === undefined) {
+      return {
+        kind: 'failed',
+        reason: 'compaction_measurement_unavailable',
+        message: 'context compaction request measurement is invalid',
+      };
+    }
+
+    const historyBytesBefore = measureHistoryBytes(args.context);
+    let providerUsageTelemetry: ProviderUsageTelemetry | undefined;
+    try {
+      const result = await compactSummaryThread({
+        workspaceRoot: args.context.workspaceRoot,
+        threadId: args.context.threadId,
+        history: args.context.history,
+        currentRequestTokens: args.contextUsage.inputTokens,
+        budgetProfile,
+        tokenCounter: {
+          countHistoryTokens(history) {
+            const historyBytes = measureQwenChatHistoryBytes({
+              history: [...history],
+              ...(args.context.providerReplayScopeId === undefined
+                ? {}
+                : {
+                    providerReplayScopeId: args.context.providerReplayScopeId,
+                  }),
+            });
+            const estimatedTokens = estimateInputTokens(historyBytes, {
+              requestBytes,
+              inputTokens: args.contextUsage.inputTokens,
+            });
+            if (estimatedTokens === undefined) {
+              throw new Error(
+                'Qwen retained context token estimate is invalid',
+              );
+            }
+            return estimatedTokens;
+          },
+        },
+        summarizer: {
+          async summarizeContext(request) {
+            const summary = await summarizeQwenHistoryImpl(
+              {
+                historyPrefix: request.historyPrefix,
+                model: args.policy.model,
+                ...(args.context.providerReplayScopeId === undefined
+                  ? {}
+                  : {
+                      providerReplayScopeId: args.context.providerReplayScopeId,
+                    }),
+                ...(request.signal === undefined
+                  ? {}
+                  : { signal: request.signal }),
+              },
+              args.policy,
+            );
+            providerUsageTelemetry = summary.providerUsageTelemetry;
+            return summary;
+          },
+        },
+        ...(args.context.signal === undefined
+          ? {}
+          : { signal: args.context.signal }),
+      });
+      if (result.kind === 'compacted') {
+        const compactedHistory = await loadCompactedHistory(
+          args.context.workspaceRoot,
+          args.context.threadId,
+          {
+            providerId: args.policy.providerId,
+            model: args.policy.model,
+            ...(args.context.providerReplayScopeId === undefined
+              ? {}
+              : { replayScopeId: args.context.providerReplayScopeId }),
+          },
+        );
+        args.context.history.splice(
+          0,
+          args.context.history.length,
+          ...compactedHistory,
+        );
+        const historyBytesAfter = measureHistoryBytes(args.context);
+        logger.info('Qwen summary context compaction committed', {
+          providerId: args.policy.providerId,
+          model: args.policy.model,
+          tokensBefore: args.contextUsage.inputTokens,
+          measurementQuality: args.contextUsage.quality,
+          thresholdTokens: args.policy.thresholdTokens,
+          retainedTokens: result.retainedTokens,
+          summaryTokens: result.summaryTokens,
+          historyBytesBefore,
+          historyBytesAfter,
+        });
+        if (
+          args.contextUsage.quality === 'exact' &&
+          historyBytesAfter < historyBytesBefore
+        ) {
+          args.contextBudgetRound.publish({
+            state: 'compacted',
+            quality: 'exact',
+            modelId: args.contextUsage.modelId,
+            inputTokens: args.contextUsage.inputTokens,
+            contextWindow: args.contextUsage.contextWindow,
+            thresholdTokens: args.contextUsage.thresholdTokens,
+            ...(args.contextUsage.requestBytes === undefined
+              ? {}
+              : { requestBytes: args.contextUsage.requestBytes }),
+            compactionEntryId: result.checkpoint.entryId,
+            historyBytesBefore,
+            historyBytesAfter,
+          });
+        }
+        return {
+          kind: 'compacted',
+          providerRoundAnchorEntryId: result.providerRoundAnchorEntryId,
+          ...(providerUsageTelemetry === undefined
+            ? {}
+            : { providerUsageTelemetry }),
+        };
+      }
+      if (result.kind === 'no_summarizable_prefix') {
+        return {
+          kind: 'failed',
+          reason: 'no_summarizable_prefix',
+          message:
+            'context compaction cannot replace the current active user turn',
+        };
+      }
+      if (result.kind === 'tail_exceeds_budget') {
+        return {
+          kind: 'failed',
+          reason: 'retained_context_exceeds_budget',
+          message:
+            'the current active user turn exceeds the retained context budget',
+        };
+      }
+      if (result.kind === 'summary_invalid') {
+        return {
+          kind: 'failed',
+          reason: 'provider_compaction_output_invalid',
+          message: `Qwen summary compaction output is invalid: ${result.reason}`,
+        };
+      }
+      if (result.kind === 'stale_snapshot') {
+        return {
+          kind: 'failed',
+          reason: 'stale_snapshot',
+          message: 'context changed while compaction was being committed',
+        };
+      }
+      return {
+        kind: 'failed',
+        reason: 'transcript_empty',
+        message: 'context compaction requires a persisted transcript',
+      };
+    } catch (error: unknown) {
+      logger.warn('Qwen summary compaction failed', {
+        providerId: args.policy.providerId,
+        model: args.policy.model,
+        code: normalizeProviderErrorCode(error),
+      });
+      return {
+        kind: 'failed',
+        reason: 'provider_compaction_failed',
+        message: 'Qwen summary context compaction failed',
+      };
+    }
+  };
+
   return {
     beginContextBudgetRound(args) {
       const modelKey = createContextModelKey(args.providerRequestOptions);
@@ -478,6 +762,10 @@ export function createAgentLoopMemoryPort(
         async onProviderRequestPrepared(measurement) {
           requestBytes = measurement.serializedBytes;
           requestHistoryBytes = measurement.serializedBytesBySource.history;
+          requestHistoryBytesByRound.set(
+            contextBudgetRound,
+            requestHistoryBytes,
+          );
           let policy = resolvedPolicyByModel.get(modelKey);
           if (policy === undefined) {
             try {
@@ -570,13 +858,11 @@ export function createAgentLoopMemoryPort(
           admission =
             classification.kind === 'fitting'
               ? classification
-              : supportsProviderNativeCompaction(policy)
-                ? {
-                    ...classification,
-                    estimatedInputTokens,
-                    policy,
-                  }
-                : { kind: 'unknown' };
+              : {
+                  ...classification,
+                  estimatedInputTokens,
+                  policy,
+                };
           logger.info('provider request context admission evaluated', {
             providerId: policy.providerId,
             model: policy.model,
@@ -589,25 +875,7 @@ export function createAgentLoopMemoryPort(
             dominantPressureSource: measurement.dominantPressureSource,
             serializedBytesBySource: measurement.serializedBytesBySource,
           });
-          if (
-            classification.kind !== 'fitting' &&
-            !supportsProviderNativeCompaction(policy)
-          ) {
-            logger.warn(
-              'provider request reached the context pressure threshold without a native compaction path',
-              {
-                providerId: policy.providerId,
-                model: policy.model,
-                admission: classification.kind,
-                measurementQuality: contextUsage.quality,
-                inputTokens: estimatedInputTokens,
-                contextWindow: policy.contextWindow,
-                thresholdTokens: policy.thresholdTokens,
-              },
-            );
-          }
-          return classification.kind === 'fitting' ||
-            !supportsProviderNativeCompaction(policy)
+          return classification.kind === 'fitting'
             ? { kind: 'send' }
             : { kind: 'prepare', reason: classification.kind };
         },
@@ -633,13 +901,24 @@ export function createAgentLoopMemoryPort(
             thresholdTokens: preparationAdmission.policy.thresholdTokens,
             ...(requestBytes === undefined ? {} : { requestBytes }),
           };
-          const result = await commitProviderNativeCompaction({
-            context: args,
-            contextBudgetRound,
-            contextUsage,
-            policy: preparationAdmission.policy,
-            tokensBefore: preparationAdmission.estimatedInputTokens,
-          });
+          const result = isQwenSummaryCompactionPolicy(
+            preparationAdmission.policy,
+          )
+            ? await commitQwenSummaryCompaction({
+                context: args,
+                contextBudgetRound,
+                contextUsage,
+                policy: preparationAdmission.policy,
+                requestBytes,
+                requestHistoryBytes,
+              })
+            : await commitProviderNativeCompaction({
+                context: args,
+                contextBudgetRound,
+                contextUsage,
+                policy: preparationAdmission.policy,
+                tokensBefore: preparationAdmission.estimatedInputTokens,
+              });
           if (result.kind === 'compacted') {
             return { kind: 'prepared' };
           }
@@ -758,7 +1037,7 @@ export function createAgentLoopMemoryPort(
       if (args.inputTokens === undefined) {
         if (!reportedMissingUsage) {
           logger.info(
-            'provider-native compaction trigger skipped because exact input usage is unavailable',
+            'context compaction trigger skipped because exact input usage is unavailable',
             {
               providerId: args.providerRequestOptions.providerId,
               model: args.providerRequestOptions.model,
@@ -774,7 +1053,7 @@ export function createAgentLoopMemoryPort(
       try {
         policy = await resolvePolicy(args);
       } catch (error: unknown) {
-        logger.warn('provider-native compaction policy resolution failed', {
+        logger.warn('context compaction policy resolution failed', {
           providerId: args.providerRequestOptions.providerId,
           model: args.providerRequestOptions.model,
           code: normalizeProviderErrorCode(error),
@@ -792,7 +1071,7 @@ export function createAgentLoopMemoryPort(
         thresholdTokens: policy.thresholdTokens,
       });
       if (trigger.kind === 'invalid') {
-        logger.warn('provider-native compaction trigger is invalid', {
+        logger.warn('context compaction trigger is invalid', {
           providerId: policy.providerId,
           model: policy.model,
           reason: trigger.reason,
@@ -822,23 +1101,22 @@ export function createAgentLoopMemoryPort(
         });
       }
       args.contextBudgetRound.publish(contextUsage);
-      if (!supportsProviderNativeCompaction(policy)) {
-        if (!reportedUnsupportedProvider) {
-          logger.info(
-            'provider-native compaction is unavailable for the selected provider',
-            {
-              providerId: policy.providerId,
-              model: policy.model,
-            },
-          );
-          reportedUnsupportedProvider = true;
-        }
-        return { kind: 'not_needed', reason: 'provider_not_supported' };
-      }
       if (trigger.kind === 'under_threshold') {
         return { kind: 'not_needed', reason: 'under_threshold' };
       }
 
+      if (isQwenSummaryCompactionPolicy(policy)) {
+        return await commitQwenSummaryCompaction({
+          context: args,
+          contextBudgetRound: args.contextBudgetRound,
+          contextUsage,
+          policy,
+          requestBytes,
+          requestHistoryBytes: requestHistoryBytesByRound.get(
+            args.contextBudgetRound,
+          ),
+        });
+      }
       return await commitProviderNativeCompaction({
         context: args,
         contextBudgetRound: args.contextBudgetRound,

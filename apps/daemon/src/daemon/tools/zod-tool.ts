@@ -6,6 +6,7 @@ import type {
   ToolExecutionContext,
   ExecuteResult,
   ParallelToolBatchKind,
+  ToolAbortSettlement,
   ToolCatalogSearchMetadata,
   ToolExposure,
   ToolObjectParameters,
@@ -25,6 +26,7 @@ interface ZodToolOptions<TSchema extends AnyZodObject> {
   sideEffectLevel: SideEffectLevel;
   mayMutateComputerFiles: boolean;
   parallelBatchKind?: ParallelToolBatchKind;
+  abortSettlement?: ToolAbortSettlement;
   timeoutMs?: number;
   requiresApproval: boolean;
   exposure?: ToolExposure;
@@ -53,6 +55,9 @@ export function defineZodTool<TSchema extends AnyZodObject>(
     mayMutateComputerFiles: options.mayMutateComputerFiles,
     ...(options.parallelBatchKind
       ? { parallelBatchKind: options.parallelBatchKind }
+      : {}),
+    ...(options.abortSettlement
+      ? { abortSettlement: options.abortSettlement }
       : {}),
     ...(options.timeoutMs !== undefined
       ? { timeoutMs: options.timeoutMs }

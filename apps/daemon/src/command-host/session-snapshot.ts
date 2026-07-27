@@ -16,6 +16,8 @@ export function describeSession(entry: SessionEntry): CommandSessionListEntry {
     outputRef: entry.outputRef,
     threadId: entry.threadId,
     stateRoot: entry.stateRoot,
+    runId: entry.runId,
+    callId: entry.callId,
     running: entry.terminal === null,
     revision: entry.revision,
     command: entry.command,
@@ -65,6 +67,16 @@ export function buildSnapshot(
       ? {}
       : { terminationReason: terminal.terminationReason }),
     ...(entry.outputPersistFailed ? { outputPersistFailed: true } : {}),
+    // terminal이 있으면 `status`가 이미 그 사실을 나른다. 아직 정착하지
+    // 않았는데 프로세스가 사라진 경우만 따로 알린다.
+    ...(terminal === null && entry.processExit !== null
+      ? {
+          processExit: {
+            status: entry.processExit.status,
+            exitCode: entry.processExit.exitCode,
+          },
+        }
+      : {}),
   };
 }
 

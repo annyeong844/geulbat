@@ -84,6 +84,10 @@
       "types": "./dist/provider-usage.d.ts",
       "import": "./dist/provider-usage.js"
     },
+    "./ptc-artifacts": {
+      "types": "./dist/ptc-artifacts.d.ts",
+      "import": "./dist/ptc-artifacts.js"
+    },
     "./mcp": {
       "types": "./dist/mcp.d.ts",
       "import": "./dist/mcp.js"

@@ -5,15 +5,32 @@ import path from 'node:path';
 const DEFAULT_BUNDLED_PROVIDER_AUTH_CONFIG_PATH =
   'apps/daemon/provider-auth.config.json';
 
-const PROVIDER_AUTH_ENV_OVERRIDES = [
+// 이 목록의 기준은 endpoint·모델 노브가 아니라 **자격증명 식별자와 config·
+// 자격증명 파일 해석 경로**다. 릴리스 검증 환경에서 이 값들이 설정되어 있으면
+// 아티팩트가 자기 것이 아닌 자격증명이나 경로로 판정된다.
+export const PROVIDER_AUTH_ENV_OVERRIDES = [
+  // default provider (OAuth client id/secret + config·credential 파일 해석)
   'PROVIDER_AUTH_CLIENT_ID',
   'PROVIDER_AUTH_CLIENT_SECRET',
   'GEULBAT_PROVIDER_AUTH_INSTALLED_CONFIG_PATH',
   'GEULBAT_PROVIDER_AUTH_BUNDLED_CONFIG_PATH',
   'GEULBAT_PROVIDER_AUTH_FILE_PATH',
+  // Grok OAuth route — client id가 이 경로의 유일한 자격증명 식별자다.
+  'GROK_OAUTH_CLIENT_ID',
+  // Qwen Token Plan route — API key 인증이므로 key 자체가 비밀이다.
+  'BAILIAN_TOKEN_PLAN_API_KEY',
+  'GEULBAT_QWEN_CREDENTIAL_FILE_PATH',
 ];
 
-const MODULE_RESOLUTION_ENV_OVERRIDES = [
+/**
+ * 홈 디렉터리에 남은 provider 자격증명. installed config 검사와 같은 의도다:
+ * 이 게이트는 아무 provider도 연결되지 않은 환경에서 아티팩트를 판정해야
+ * 한다. `.geulbat/auth`는 default provider의 `provider.json`과 Qwen의
+ * `qwen-token-plan.json`을 함께 담으므로 provider별 목록을 따로 두지 않는다.
+ */
+const HOME_CREDENTIAL_MATERIAL_PATHS = ['.geulbat/auth'];
+
+export const MODULE_RESOLUTION_ENV_OVERRIDES = [
   'NODE_OPTIONS',
   'NODE_PATH',
   'TS_NODE_PROJECT',
@@ -88,6 +105,7 @@ export async function collectProviderAuthReleaseValidationViolations(options) {
     ...collectEnvOverrideViolations(env),
     ...collectModuleResolutionEnvViolations(env),
     ...(await collectDefaultInstalledConfigViolations(homeDir)),
+    ...(await collectHomeCredentialMaterialViolations(homeDir)),
     ...(await collectLocalOverrideMaterialViolations(artifactRoot)),
     ...(await collectCredentialMaterialViolations(artifactRoot)),
   ];
@@ -209,6 +227,18 @@ async function collectDefaultInstalledConfigViolations(homeDir) {
       path: installedConfigPath,
     },
   ];
+}
+
+async function collectHomeCredentialMaterialViolations(homeDir) {
+  const relativePaths = await collectExistingPaths(
+    homeDir,
+    HOME_CREDENTIAL_MATERIAL_PATHS,
+  );
+  return relativePaths.map((relativePath) => ({
+    code: 'home_credential_material_present',
+    message: `release validation home directory contains provider credential material: ${relativePath}`,
+    path: path.join(homeDir, relativePath),
+  }));
 }
 
 async function collectCredentialMaterialViolations(artifactRoot) {

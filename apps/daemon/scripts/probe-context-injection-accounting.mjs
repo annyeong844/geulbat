@@ -40,7 +40,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-export const SCHEMA_VERSION = 'context_injection_accounting_v1';
+export const SCHEMA_VERSION = 'context_injection_accounting_v2';
 
 // The inline byte budget above which a tool result is offloaded behind a
 // reference (tool-output-offload.ts DEFAULT_TOOL_OUTPUT_INLINE_MAX_BYTES).
@@ -369,7 +369,7 @@ export function parseProbeOptions(argv) {
 // ---------------------------------------------------------------------------
 // Section 1 — whole-request composition.
 // ---------------------------------------------------------------------------
-async function measureWholeRequest(mods, opts, directHotDefs, history) {
+async function measureWholeRequest(mods, opts, directDefs, history) {
   const systemPrompt = mods.buildSystemPrompt({
     profile: opts.profile,
     computerSessionAvailable: false,
@@ -377,7 +377,7 @@ async function measureWholeRequest(mods, opts, directHotDefs, history) {
   const body = mods.buildResponsesRequestBody(
     {
       systemPrompt,
-      tools: directHotDefs,
+      tools: directDefs,
       providerSessionId: 'probe-session',
       providerRequestOptions: {
         model: 'gpt-5-codex',
@@ -404,16 +404,17 @@ function measureToolCallInjection(mods, opts) {
   const registry = mods.createBuiltinToolRegistryStore();
   const allDefs = registry.buildToolDefinitions();
   const directPort = mods.createAgentLoopToolDefinitionPort(registry);
-  const directHotDefs = directPort.buildToolDefinitions({});
+  const directDefs = directPort.buildToolDefinitions({});
+  const directNames = new Set(directDefs.map((definition) => definition.name));
 
   const deferredNames = allDefs
-    .filter((d) => registry.getToolMeta(d.name)?.exposure.directHot !== true)
-    .map((d) => d.name);
+    .filter((definition) => !directNames.has(definition.name))
+    .map((definition) => definition.name);
 
-  const injectedBytes = encodeJsonBytes(directHotDefs);
+  const injectedBytes = encodeJsonBytes(directDefs);
   const allBuiltinBytes = encodeJsonBytes(allDefs);
 
-  const perTool = directHotDefs
+  const perTool = directDefs
     .map((d) => ({ name: d.name, bytes: encodeJsonBytes(d) }))
     .sort((a, b) => b.bytes - a.bytes);
 
@@ -425,13 +426,13 @@ function measureToolCallInjection(mods, opts) {
     return {
       deferredMcpTools: count,
       injectedBytes, // constant — deferred tools never enter the request
-      injectAllBytes: encodeJsonBytes([...directHotDefs, ...synthetic]),
+      injectAllBytes: encodeJsonBytes([...directDefs, ...synthetic]),
     };
   });
 
   return {
     totalRegisteredTools: allDefs.length,
-    directHotToolsInjected: directHotDefs.length,
+    directToolsInjected: directDefs.length,
     deferredBuiltins: deferredNames,
     injectedBytes,
     allBuiltinBytes,
@@ -439,7 +440,7 @@ function measureToolCallInjection(mods, opts) {
     heaviestInjectedTools: perTool.slice(0, 8),
     mcpTemplateBytes,
     deferralSweep: sweep,
-    directHotDefs,
+    directDefs,
   };
 }
 
@@ -592,7 +593,7 @@ function renderReport(result) {
   L.push('-'.repeat(78));
   L.push(
     `  registered tools: ${t.totalRegisteredTools}   ` +
-      `injected (directHot): ${t.directHotToolsInjected}   ` +
+      `injected (root direct): ${t.directToolsInjected}   ` +
       `deferred builtins: ${t.deferredBuiltins.join(', ')}`,
   );
   L.push(
@@ -620,7 +621,7 @@ function renderReport(result) {
     );
   }
   L.push(
-    '  → injected cost is O(directHot)+const, flat as the deferred pool grows.',
+    '  → injected cost is O(root-direct)+const, flat as the deferred pool grows.',
   );
   L.push('');
 
@@ -689,7 +690,7 @@ async function runProbe(opts) {
   const wholeRequest = await measureWholeRequest(
     mods,
     opts,
-    toolCall.directHotDefs,
+    toolCall.directDefs,
     history,
   );
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-ctx-injection-'));
@@ -701,9 +702,9 @@ async function runProbe(opts) {
   }
   const compaction = measureCompactionAccounting(mods, opts, history);
 
-  // Drop the bulky directHotDefs from the serialized report.
-  const { directHotDefs, ...toolCallReport } = toolCall;
-  void directHotDefs;
+  // Drop the bulky direct definitions from the serialized report.
+  const { directDefs, ...toolCallReport } = toolCall;
+  void directDefs;
   return {
     schemaVersion: SCHEMA_VERSION,
     params: {

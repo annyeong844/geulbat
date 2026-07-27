@@ -23,6 +23,7 @@ import {
   compactThreadContextForProviderTransition,
   compactThreadContextNative,
   compactThreadContext,
+  compactThreadContextSummary,
   type ContextCompactionSummarizer,
 } from './compaction-run.js';
 import type { HistoryItem } from '../../llm/provider/wire/types.js';
@@ -81,6 +82,78 @@ void test('compaction appends one checkpoint without rewriting source entries', 
     }
     assert.deepEqual(history.slice(1), [
       { kind: 'assistant', phase: 'final_answer', text: 'kept' },
+    ]);
+  });
+});
+
+void test('provider summary compaction replaces older history and retains the active user turn', async () => {
+  await withThread(async ({ workspaceRoot, threadId }) => {
+    await appendMessage(workspaceRoot, threadId, 'user', 'older request');
+    await appendMessage(workspaceRoot, threadId, 'assistant', 'older answer');
+    const current = await appendMessage(
+      workspaceRoot,
+      threadId,
+      'user',
+      'current request',
+    );
+    const result = await compactThreadContextSummary({
+      workspaceRoot,
+      threadId,
+      history: [
+        { kind: 'user', text: 'older request' },
+        {
+          kind: 'assistant',
+          phase: 'final_answer',
+          text: 'older answer',
+        },
+        { kind: 'user', text: 'current request' },
+      ],
+      currentRequestTokens: TEST_BUDGET_PROFILE.thresholdTokens,
+      budgetProfile: TEST_BUDGET_PROFILE,
+      tokenCounter: {
+        countHistoryTokens(history) {
+          const last = history.at(-1);
+          assert.deepEqual(last, {
+            kind: 'user',
+            text: 'current request',
+          });
+          return history.length === 1 ? 30 : 40;
+        },
+      },
+      summarizer: {
+        async summarizeContext(request) {
+          assert.deepEqual(request.historyPrefix, [
+            { kind: 'user', text: 'older request' },
+            {
+              kind: 'assistant',
+              phase: 'final_answer',
+              text: 'older answer',
+            },
+          ]);
+          return {
+            summary: 'Older work was completed.',
+            shortSummary: 'Older work completed.',
+            summaryTokens: 10,
+          };
+        },
+      },
+    });
+
+    assert.equal(result.kind, 'compacted');
+    if (result.kind !== 'compacted') {
+      assert.fail('expected provider summary compaction');
+    }
+    assert.equal(result.providerRoundAnchorEntryId, current.entryId);
+    const history = buildCompactionAwareHistory(
+      await readTranscriptEntries(workspaceRoot, threadId),
+      threadId,
+    );
+    assert.equal(history[0]?.kind, 'user');
+    if (history[0]?.kind === 'user') {
+      assert.match(history[0].text, /Older work was completed/u);
+    }
+    assert.deepEqual(history.slice(1), [
+      { kind: 'user', text: 'current request' },
     ]);
   });
 });

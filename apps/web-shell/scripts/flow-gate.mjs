@@ -106,10 +106,8 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
   let daemonOrigin;
   let devToken;
   let temporaryRoot;
-  let webShell;
   let closing;
   const daemonLogs = [];
-  const webLogs = [];
 
   const requestFixture = async (pathname, body) => {
     const response = await fetch(new URL(pathname, daemonOrigin), {
@@ -136,10 +134,7 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
 
   const close = () => {
     closing ??= (async () => {
-      const stopResults = await Promise.allSettled([
-        stopProcess(webShell),
-        stopProcess(daemon),
-      ]);
+      const stopResults = await Promise.allSettled([stopProcess(daemon)]);
       const stopFailures = stopResults
         .filter((result) => result.status === 'rejected')
         .map((result) => result.reason);
@@ -167,14 +162,10 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
     devToken = randomBytes(32).toString('hex');
     const daemonPort = await reserveFreePort();
     signal?.throwIfAborted();
-    let webPort = await reserveFreePort();
-    signal?.throwIfAborted();
-    while (webPort === daemonPort) {
-      webPort = await reserveFreePort();
-      signal?.throwIfAborted();
-    }
     daemonOrigin = `http://127.0.0.1:${daemonPort}`;
-    appUrl = `http://127.0.0.1:${webPort}/`;
+    // 데몬이 화면까지 서빙한다. 게이트는 제품과 같은 단일 origin 위상을
+    // 검증해야 하므로 별도 dev server 포트를 두지 않는다.
+    appUrl = `${daemonOrigin}/`;
     daemon = spawnCapturedProcess(
       process.execPath,
       ['--import', 'tsx', 'scripts/flow-gate-fixture.mjs'],
@@ -200,6 +191,12 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
           GEULBAT_FLOW_GATE_SUBAGENT_PARENT_PROMPT: SUBAGENT_PARENT_PROMPT,
           GEULBAT_FLOW_GATE_THREAD_TITLE: RECOVERY_THREAD_TITLE,
           GEULBAT_FLOW_GATE_WORKING_DIRECTORY: repoRoot,
+          GEULBAT_FLOW_GATE_SHELL_ASSET_ROOT: path.join(
+            repoRoot,
+            'apps',
+            'web-shell',
+            'dist',
+          ),
           GEULBAT_HOME_STATE_ROOT: homeStateRoot,
           GEULBAT_LLM_PROVIDER: 'openai_codex_direct',
           GEULBAT_PROVIDER_AUTH_FILE_PATH: path.join(
@@ -218,32 +215,8 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
       signal,
     });
     signal?.throwIfAborted();
-    webShell = spawnCapturedProcess(
-      process.execPath,
-      [
-        path.join(repoRoot, 'node_modules', 'vite', 'bin', 'vite.js'),
-        '--host',
-        '127.0.0.1',
-        '--port',
-        String(webPort),
-        '--strictPort',
-      ],
-      {
-        cwd: path.join(repoRoot, 'apps', 'web-shell'),
-        env: {
-          ...process.env,
-          GEULBAT_DEV_TOKEN: devToken,
-          VITE_GEULBAT_DAEMON_ORIGIN: daemonOrigin,
-          VITE_GEULBAT_DEV_TOKEN: devToken,
-        },
-      },
-      webLogs,
-    );
-    signal?.throwIfAborted();
-    await waitForDaemonReady(appUrl, webLogs, { signal });
-    signal?.throwIfAborted();
   } catch (error) {
-    const detail = [...daemonLogs.slice(-12), ...webLogs.slice(-12)].join('\n');
+    const detail = daemonLogs.slice(-24).join('\n');
     await close();
     throw new Error(
       `${error instanceof Error ? error.message : String(error)}${
@@ -255,6 +228,7 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
   return {
     appUrl,
     approvalTargetPath,
+    daemonOrigin,
     async publishBufferedCommentary(text, onDisconnected) {
       const disconnected = await requestFixture(
         '/api/flow-gate/recovery/disconnect',
@@ -342,19 +316,19 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
 }
 
 async function preflight(appUrl) {
-  const viteReachable = await fetch(appUrl)
+  const shellReachable = await fetch(appUrl)
     .then((response) => response.ok)
     .catch(() => false);
   assert(
-    viteReachable,
-    `isolated web-shell dev server is not reachable: ${appUrl}`,
+    shellReachable,
+    `isolated daemon does not serve the built web shell: ${appUrl} (run \`npm run build:app -w apps/web-shell\` first)`,
   );
   const daemonReachable = await fetch(new URL('api/health', appUrl))
     .then((response) => response.ok)
     .catch(() => false);
   assert(
     daemonReachable,
-    'isolated daemon /api/health is not reachable through the Vite proxy',
+    'isolated daemon /api/health is not reachable at the shell origin',
   );
 }
 
@@ -572,6 +546,119 @@ async function runApprovalFlow(page, harness) {
   assert(
     countOccurrences(reloadedTranscript, APPROVAL_FINAL_TEXT) === 1,
     'reloaded approval transcript did not preserve the answer exactly once',
+  );
+}
+
+async function runArtifactSameOriginAuthFlow(page, harness) {
+  await page.goto(harness.appUrl, { waitUntil: 'domcontentloaded' });
+  const shellCookies = await page.context().cookies(harness.appUrl);
+  const shellAuthCookie = shellCookies.find(
+    (cookie) => cookie.name === 'geulbat_dev_auth',
+  );
+  assert(
+    shellAuthCookie?.httpOnly === true && shellAuthCookie.sameSite === 'Strict',
+    `single-origin shell did not install its HttpOnly strict auth cookie (${JSON.stringify(
+      shellAuthCookie,
+    )})`,
+  );
+
+  const artifactHostUrl = new URL(
+    '/artifact-runtime/host',
+    harness.daemonOrigin,
+  );
+  artifactHostUrl.searchParams.set(
+    'parentOrigin',
+    new URL(harness.appUrl).origin,
+  );
+  await page.goto(artifactHostUrl.toString(), {
+    waitUntil: 'domcontentloaded',
+  });
+
+  const directHttpStatuses = await page.evaluate(async () => {
+    const fetchResponse = await fetch('/api/files/computer-scope', {
+      credentials: 'include',
+    });
+    const xhrStatus = await new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', '/api/files/computer-scope');
+      xhr.withCredentials = true;
+      xhr.addEventListener('loadend', () => resolve(xhr.status), {
+        once: true,
+      });
+      xhr.send();
+    });
+    return {
+      fetch: fetchResponse.status,
+      xhr: xhrStatus,
+    };
+  });
+  assert(
+    directHttpStatuses.fetch === 200 && directHttpStatuses.xhr === 200,
+    `same-origin artifact did not inherit shell API authority (fetch=${String(
+      directHttpStatuses.fetch,
+    )}, xhr=${String(directHttpStatuses.xhr)})`,
+  );
+
+  const websocketOutcome = await page.evaluate(async (daemonOrigin) => {
+    const url = new URL('/api/ws', daemonOrigin);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    return await new Promise((resolve) => {
+      const socket = new WebSocket(url);
+      let settled = false;
+      let timeout;
+      const finish = (outcome) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        socket.close();
+        resolve(outcome);
+      };
+      timeout = setTimeout(() => finish({ kind: 'timeout' }), 5_000);
+      socket.addEventListener(
+        'open',
+        () => {
+          socket.send(
+            JSON.stringify({
+              type: 'run.auth',
+              requestId: 'artifact-same-origin-auth-probe',
+              token: 'not-the-dev-token',
+            }),
+          );
+        },
+        { once: true },
+      );
+      socket.addEventListener(
+        'message',
+        (event) => {
+          try {
+            finish({
+              kind: 'message',
+              message: JSON.parse(String(event.data)),
+            });
+          } catch {
+            finish({ kind: 'invalid_message' });
+          }
+        },
+        { once: true },
+      );
+      socket.addEventListener(
+        'error',
+        () => finish({ kind: 'transport_error' }),
+        { once: true },
+      );
+      socket.addEventListener('close', () => finish({ kind: 'closed' }), {
+        once: true,
+      });
+    });
+  }, harness.daemonOrigin);
+  assert(
+    websocketOutcome.kind === 'message' &&
+      websocketOutcome.message?.type === 'run.auth.ok',
+    `same-origin artifact did not inherit websocket authority (${JSON.stringify(
+      websocketOutcome,
+    )})`,
   );
 }
 
@@ -1013,6 +1100,13 @@ async function main() {
         browser,
         'approval-pauses-write-and-resumes-through-real-tool-boundary',
         (page) => runApprovalFlow(page, harness),
+      ),
+    );
+    results.push(
+      await executeBrowserFlow(
+        browser,
+        'same-origin-artifact-inherits-shell-api-authority',
+        (page) => runArtifactSameOriginAuthFlow(page, harness),
       ),
     );
     results.push(

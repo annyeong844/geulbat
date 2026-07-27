@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ThreadSummary } from '@geulbat/protocol/threads';
 import {
   getThreadButtonStyle,
@@ -6,14 +6,19 @@ import {
   threadListStyles,
 } from './thread-list-styles.js';
 
-interface Props {
+export interface ThreadListProps {
   threads: ThreadSummary[];
   selectedThreadId: string | null;
   deletingThreadId?: string | null;
+  exportingThreadId?: string | null;
+  importingThreadArchive?: boolean;
+  transferNotice?: string | null;
   uiError?: string | null;
   onLoad: () => Promise<void> | void;
   onSelect: (threadId: string) => Promise<void> | void;
   onDeleteRequest: (threadId: string) => Promise<void> | void;
+  onExport?: (threadId: string) => Promise<void> | void;
+  onImport?: (archive: Blob) => Promise<void> | void;
   // 있으면 목록 상단에 전체 관리 화면으로 나가는 확장 버튼을 그린다
   onOpenManager?: () => void;
   onRenameRequest?: (threadId: string, title: string) => Promise<void> | void;
@@ -24,18 +29,24 @@ export function ThreadList({
   threads,
   selectedThreadId,
   deletingThreadId,
+  exportingThreadId,
+  importingThreadArchive = false,
+  transferNotice,
   uiError,
   onLoad,
   onSelect,
   onDeleteRequest,
+  onExport,
+  onImport,
   onOpenManager,
   onRenameRequest,
   onTogglePin,
-}: Props) {
+}: ThreadListProps) {
   const [menuThreadId, setMenuThreadId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [sortBy, setSortBy] = useState<'recent' | 'title' | 'messages'>(
     'recent',
   );
@@ -79,6 +90,43 @@ export function ThreadList({
             ↖
           </button>
         ) : null}
+        {onImport !== undefined ? (
+          <>
+            {/* 옆의 세션 관리(↖)·정렬(⇅)과 같은 글리프 한 자. 이 줄에서 이
+                버튼만 문장이면 두 이웃을 밀어내고 줄의 무게가 한쪽으로 쏠린다.
+                진행 중이라는 사실은 사라지지 않는다 — 글자 대신 맥동으로
+                남고, 이름은 title·aria-label이 계속 말한다. */}
+            <button
+              type="button"
+              className={`thread-import-button${
+                importingThreadArchive ? ' is-busy' : ''
+              }`}
+              aria-label={
+                importingThreadArchive ? '대화 가져오는 중' : '대화 가져오기'
+              }
+              title={importingThreadArchive ? '가져오는 중…' : '대화 가져오기…'}
+              aria-busy={importingThreadArchive}
+              disabled={importingThreadArchive || exportingThreadId !== null}
+              onClick={() => importInputRef.current?.click()}
+              style={styles.managerButton}
+            >
+              ⤓
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json"
+              hidden
+              onChange={(event) => {
+                const archive = event.currentTarget.files?.[0];
+                event.currentTarget.value = '';
+                if (archive !== undefined) {
+                  void onImport(archive);
+                }
+              }}
+            />
+          </>
+        ) : null}
         <span className="thread-row-menu-anchor">
           <button
             type="button"
@@ -120,6 +168,11 @@ export function ThreadList({
       {uiError ? (
         <div style={threadListAlertStyle} role="alert">
           {uiError}
+        </div>
+      ) : null}
+      {transferNotice ? (
+        <div style={threadListAlertStyle} role="status">
+          {transferNotice}
         </div>
       ) : null}
       {orderedThreads.length === 0 ? (
@@ -204,6 +257,23 @@ export function ThreadList({
                             }}
                           >
                             이름 변경
+                          </button>
+                        ) : null}
+                        {onExport !== undefined ? (
+                          <button
+                            type="button"
+                            disabled={
+                              importingThreadArchive ||
+                              exportingThreadId !== null
+                            }
+                            onClick={() => {
+                              setMenuThreadId(null);
+                              void onExport(t.threadId);
+                            }}
+                          >
+                            {exportingThreadId === t.threadId
+                              ? '내보내는 중…'
+                              : '대화 내보내기…'}
                           </button>
                         ) : null}
                         <button

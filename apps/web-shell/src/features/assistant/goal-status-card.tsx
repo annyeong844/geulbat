@@ -17,20 +17,20 @@ const GOAL_STATE_COPY = {
     description: '완료 조건이 남아 있어 다음 작업을 이어갑니다.',
   },
   verifying: {
-    title: '완료 확인 중…',
-    description: '목표를 실제로 달성했는지 독립적으로 확인하고 있어요.',
+    title: '완료 조건 확인 중…',
+    description: '현재 실행에 남은 필수 완료 조건이 있는지 확인하고 있어요.',
   },
   completed: {
     title: '목표 완료',
-    description: '완료 조건이 충족된 것으로 확인되었습니다.',
+    description: '요청된 작업과 확인 가능한 완료 조건이 마무리되었습니다.',
   },
   paused: {
     title: '목표 일시 중단',
     description: '원할 때 같은 목표를 다시 이어갈 수 있어요.',
   },
   verification_unavailable: {
-    title: '완료 확인을 다시 시작해 주세요',
-    description: '목표는 끝내지 않았으며, 확인을 재개할 수 있어요.',
+    title: '완료 처리를 다시 시작해 주세요',
+    description: '목표는 끝내지 않았으며, 같은 작업을 이어갈 수 있어요.',
   },
 } as const;
 

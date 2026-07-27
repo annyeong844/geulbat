@@ -10,13 +10,18 @@ import {
 } from 'node:fs/promises';
 import { platform, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import {
+  isPtcArtifactExportPolicy,
+  isPtcArtifactRelativePath,
+  type PtcArtifactExportPolicy,
+} from '@geulbat/protocol/ptc-artifacts';
 import type {
   SandboxAttemptOwner,
   SandboxAttemptStore,
+  SandboxOutputFileRef,
 } from '../../../sandbox/attempt-store.js';
 import { importSandboxOutputEvidence } from '../../../sandbox/output-evidence-store.js';
 import type { CollectedSandboxOutput } from '../../../sandbox/output-validation.js';
-import { PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT } from '../packages/lab-package-cache-contract.js';
 import type { PtcLabAdmittedProfile } from '../profile/lab-profile.js';
 import { admitPtcLabPolicy, ptcFailure } from '../../shared/lab-spine.js';
 import { sanitizePtcPrivateMarkers } from '../../shared/output-redaction.js';
@@ -36,8 +41,10 @@ type PtcLabArtifactWorkspaceImportFailureReason =
   | 'ptc_lab_artifact_workspace_unsupported_platform'
   | 'ptc_lab_artifact_request_invalid'
   | 'ptc_lab_artifact_path_invalid'
+  | 'ptc_lab_artifact_file_limit_exceeded'
   | 'ptc_lab_artifact_file_missing'
   | 'ptc_lab_artifact_file_too_large'
+  | 'ptc_lab_artifact_total_too_large'
   | 'ptc_lab_artifact_file_unsupported'
   | 'ptc_lab_artifact_file_changed'
   | 'ptc_lab_artifact_import_failed';
@@ -65,12 +72,27 @@ interface PtcLabArtifactWorkspaceImportRequest {
   maxBytes?: number;
 }
 
-interface PtcLabArtifactWorkspaceImportSummary {
+export interface PtcLabArtifactWorkspaceImportSummary {
   profile: 'lab';
   policyId: string;
   workspaceId: string;
   exportPolicyId: string;
   artifactRelativePath: string;
+  evidenceRef: string;
+  files: Array<{ relativePath: string; bytes: number; sha256: string }>;
+  totalBytes: number;
+}
+
+export interface PtcLabArtifactWorkspaceImportFilesRequest {
+  relativePaths: readonly string[];
+  policy: PtcArtifactExportPolicy;
+}
+
+export interface PtcLabArtifactWorkspaceImportFilesSummary {
+  profile: 'lab';
+  policyId: string;
+  workspaceId: string;
+  exportPolicyId: string;
   evidenceRef: string;
   files: Array<{ relativePath: string; bytes: number; sha256: string }>;
   totalBytes: number;
@@ -82,6 +104,16 @@ interface ImportPtcLabArtifactWorkspaceFileArgs {
   stateRoot: string;
   attemptStore: SandboxAttemptStore;
   request: PtcLabArtifactWorkspaceImportRequest;
+  owner?: SandboxAttemptOwner;
+  now?: () => string;
+}
+
+export interface ImportPtcLabArtifactWorkspaceFilesArgs {
+  admission: PtcLabAdmittedProfile | undefined;
+  session: PtcLabArtifactWorkspaceSessionHandle | undefined;
+  stateRoot: string;
+  attemptStore: SandboxAttemptStore;
+  request: PtcLabArtifactWorkspaceImportFilesRequest;
   owner?: SandboxAttemptOwner;
   now?: () => string;
 }
@@ -104,30 +136,14 @@ function validateRelativePath(
     );
   }
 
-  const segments = relativePath.split('/');
-  if (
-    relativePath.trim().length === 0 ||
-    relativePath.includes('\0') ||
-    relativePath.startsWith('/') ||
-    relativePath.startsWith(`${PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT}/`) ||
-    relativePath.startsWith(
-      `${PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT}/`,
-    ) ||
-    relativePath.includes('\\') ||
-    segments.some(
-      (segment) => segment === '' || segment === '.' || segment === '..',
-    ) ||
-    segments.some(
-      (segment) => segment === '.geulbat' || segment === 'node_modules',
-    )
-  ) {
+  if (!isPtcArtifactRelativePath(relativePath)) {
     return failure(
       'ptc_lab_artifact_path_invalid',
       'PTC lab artifact import path is invalid',
     );
   }
 
-  return { ok: true, value: segments.join('/') };
+  return { ok: true, value: relativePath };
 }
 
 function validateMaxBytes(
@@ -233,81 +249,122 @@ async function snapshotArtifactFile(args: {
     collectedOutput: CollectedSandboxOutput;
   }>
 > {
-  const opened = await openArtifactFileWithoutSymlinkAncestors({
+  return await snapshotArtifactFiles({
     artifactRootHostPath: args.artifactRootHostPath,
-    relativePath: args.relativePath,
+    relativePaths: [args.relativePath],
+    policy: {
+      maxFiles: 1,
+      maxFileBytes: args.maxBytes,
+      maxTotalBytes: args.maxBytes,
+    },
   });
-  if (!opened.ok) {
-    return opened;
-  }
+}
 
-  const handle = opened.value;
+async function snapshotArtifactFiles(args: {
+  artifactRootHostPath: string;
+  relativePaths: readonly string[];
+  policy: PtcArtifactExportPolicy;
+}): Promise<
+  PtcLabArtifactWorkspaceImportResult<{
+    snapshotRoot: string;
+    collectedOutput: CollectedSandboxOutput;
+  }>
+> {
   let snapshotRoot: string | undefined;
+  let succeeded = false;
   try {
-    const before = await handle.stat();
-    if (!before.isFile()) {
-      return failure(
-        'ptc_lab_artifact_file_unsupported',
-        'PTC lab artifact file is unsupported',
-      );
-    }
-    if (before.size > args.maxBytes) {
-      return failure(
-        'ptc_lab_artifact_file_too_large',
-        'PTC lab artifact file exceeds byte limit',
-      );
-    }
-
-    const buffer = await handle.readFile();
-    const after = await handle.stat();
-    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
-      return failure(
-        'ptc_lab_artifact_file_changed',
-        'PTC lab artifact file changed during import',
-      );
-    }
-    if (buffer.byteLength > args.maxBytes) {
-      return failure(
-        'ptc_lab_artifact_file_too_large',
-        'PTC lab artifact file exceeds byte limit',
-      );
-    }
-
-    const sha256 = hashPtcSha256Hex(buffer);
     snapshotRoot = await mkdtemp(
       join(tmpdir(), 'geulbat-ptc-artifact-import-'),
     );
-    const snapshotPath = join(snapshotRoot, args.relativePath);
-    await mkdir(dirname(snapshotPath), { recursive: true });
-    await writeFile(snapshotPath, buffer);
+    const files: SandboxOutputFileRef[] = [];
+    let totalBytes = 0;
 
+    for (const relativePath of args.relativePaths) {
+      const opened = await openArtifactFileWithoutSymlinkAncestors({
+        artifactRootHostPath: args.artifactRootHostPath,
+        relativePath,
+      });
+      if (!opened.ok) {
+        return opened;
+      }
+      const handle = opened.value;
+      try {
+        const before = await handle.stat();
+        if (!before.isFile()) {
+          return failure(
+            'ptc_lab_artifact_file_unsupported',
+            'PTC lab artifact file is unsupported',
+          );
+        }
+        if (before.size > args.policy.maxFileBytes) {
+          return failure(
+            'ptc_lab_artifact_file_too_large',
+            'PTC lab artifact file exceeds per-file byte limit',
+          );
+        }
+        if (totalBytes + before.size > args.policy.maxTotalBytes) {
+          return failure(
+            'ptc_lab_artifact_total_too_large',
+            'PTC lab artifact files exceed total byte limit',
+          );
+        }
+
+        const buffer = await handle.readFile();
+        const after = await handle.stat();
+        if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+          return failure(
+            'ptc_lab_artifact_file_changed',
+            'PTC lab artifact file changed during import',
+          );
+        }
+        if (buffer.byteLength > args.policy.maxFileBytes) {
+          return failure(
+            'ptc_lab_artifact_file_too_large',
+            'PTC lab artifact file exceeds per-file byte limit',
+          );
+        }
+        if (totalBytes + buffer.byteLength > args.policy.maxTotalBytes) {
+          return failure(
+            'ptc_lab_artifact_total_too_large',
+            'PTC lab artifact files exceed total byte limit',
+          );
+        }
+
+        const snapshotPath = join(snapshotRoot, relativePath);
+        await mkdir(dirname(snapshotPath), { recursive: true });
+        await writeFile(snapshotPath, buffer);
+        files.push({
+          relativePath,
+          bytes: buffer.byteLength,
+          sha256: hashPtcSha256Hex(buffer),
+        });
+        totalBytes += buffer.byteLength;
+      } finally {
+        await handle.close().catch(() => {});
+      }
+    }
+
+    succeeded = true;
     return {
       ok: true,
       value: {
         snapshotRoot,
         collectedOutput: {
           rootPath: snapshotRoot,
-          files: [
-            {
-              relativePath: args.relativePath,
-              bytes: buffer.byteLength,
-              sha256,
-            },
-          ],
-          totalBytes: buffer.byteLength,
+          files,
+          totalBytes,
         },
       },
     };
   } catch {
-    if (snapshotRoot !== undefined) {
-      await rm(snapshotRoot, { recursive: true, force: true }).catch(() => {});
-    }
     return failure(
       'ptc_lab_artifact_import_failed',
       'PTC lab artifact import failed',
     );
   } finally {
-    await handle.close().catch(() => {});
+    if (!succeeded && snapshotRoot !== undefined) {
+      await rm(snapshotRoot, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 
@@ -522,6 +579,153 @@ export async function importPtcLabArtifactWorkspaceFile(
         workspaceId: artifactPolicy.workspaceId,
         exportPolicyId: artifactPolicy.exportPolicyId,
         artifactRelativePath: relativePath.value,
+        evidenceRef: outputRef.evidenceRef,
+        files: outputRef.files.map((file) => ({ ...file })),
+        totalBytes: outputRef.totalBytes,
+      },
+    };
+  } catch (error: unknown) {
+    args.attemptStore.markTerminal(attempt.attemptId, {
+      status: 'failed',
+      diagnostics: 'ptc_lab_artifact_import_failed',
+    });
+    return failure(
+      'ptc_lab_artifact_import_failed',
+      'PTC lab artifact import failed',
+      error instanceof Error
+        ? { error: sanitizeDiagnosticValue(error.message) }
+        : undefined,
+    );
+  } finally {
+    await rm(snapshot.value.snapshotRoot, { recursive: true, force: true });
+  }
+}
+
+export async function importPtcLabArtifactWorkspaceFiles(
+  args: ImportPtcLabArtifactWorkspaceFilesArgs,
+): Promise<
+  PtcLabArtifactWorkspaceImportResult<PtcLabArtifactWorkspaceImportFilesSummary>
+> {
+  const labPolicy = admitPtcLabPolicy(args.admission);
+  if (!labPolicy.ok) {
+    return failure(
+      'ptc_lab_admission_required',
+      'PTC lab artifact import requires an admitted lab profile',
+    );
+  }
+
+  const artifactPolicy = labPolicy.value.mounts.artifactWorkspace;
+  if (artifactPolicy.enabled !== true) {
+    return failure(
+      'ptc_lab_artifact_workspace_disabled',
+      'PTC lab artifact workspace is disabled',
+    );
+  }
+  if (
+    args.session === undefined ||
+    args.session.profile !== 'lab' ||
+    args.session.policyId !== labPolicy.value.policyId ||
+    args.session.artifactRootContainerPath !==
+      PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT ||
+    args.session.artifactWorkspaceMountPolicyId !==
+      PTC_SESSION_DOCKER_ARTIFACT_WORKSPACE_MOUNT_POLICY_ID ||
+    isPackageCacheLikeHostPath(args.session.artifactRootHostPath)
+  ) {
+    return failure(
+      'ptc_lab_artifact_policy_mismatch',
+      'PTC lab artifact workspace session does not match admitted policy',
+    );
+  }
+  if (
+    !isPtcArtifactExportPolicy(args.request.policy) ||
+    !Array.isArray(args.request.relativePaths) ||
+    args.request.relativePaths.length === 0
+  ) {
+    return failure(
+      'ptc_lab_artifact_request_invalid',
+      'PTC lab artifact export request is invalid',
+    );
+  }
+  if (args.request.relativePaths.length > args.request.policy.maxFiles) {
+    return failure(
+      'ptc_lab_artifact_file_limit_exceeded',
+      'PTC lab artifact export exceeds file count limit',
+    );
+  }
+
+  const relativePaths: string[] = [];
+  const observedPaths = new Set<string>();
+  for (const requestedPath of args.request.relativePaths) {
+    const relativePath = validateRelativePath(requestedPath);
+    if (!relativePath.ok) {
+      return relativePath;
+    }
+    if (observedPaths.has(relativePath.value)) {
+      return failure(
+        'ptc_lab_artifact_request_invalid',
+        'PTC lab artifact export paths must be unique',
+      );
+    }
+    observedPaths.add(relativePath.value);
+    relativePaths.push(relativePath.value);
+  }
+
+  const attempt = args.attemptStore.createAttempt({
+    jobKind: 'ptc_execute_code_artifact_export',
+    adapterKind: 'ptc_lab_artifact_workspace',
+    ...(args.owner ? { owner: args.owner } : {}),
+    capability: {
+      schemaVersion: 1,
+      capabilityId: 'ptc_execute_code_artifact_export_v1',
+      capabilityClass: 'candidate_generation',
+      executionClass: 'sandbox_job',
+      commitBehavior: 'candidate_only',
+      policies: {
+        workspaceId: artifactPolicy.workspaceId,
+        exportPolicyId: artifactPolicy.exportPolicyId,
+        artifactWorkspaceMountPolicyId:
+          args.session.artifactWorkspaceMountPolicyId,
+        maxFiles: args.request.policy.maxFiles,
+        maxFileBytes: args.request.policy.maxFileBytes,
+        maxTotalBytes: args.request.policy.maxTotalBytes,
+      },
+    },
+  });
+  args.attemptStore.markRunning(attempt.attemptId, {
+    rootPath: args.session.artifactRootContainerPath,
+  });
+
+  const snapshot = await snapshotArtifactFiles({
+    artifactRootHostPath: args.session.artifactRootHostPath,
+    relativePaths,
+    policy: args.request.policy,
+  });
+  if (!snapshot.ok) {
+    args.attemptStore.markTerminal(attempt.attemptId, {
+      status: 'failed',
+      diagnostics: snapshot.reasonCode,
+    });
+    return snapshot;
+  }
+
+  try {
+    const outputRef = await importSandboxOutputEvidence({
+      workspaceRoot: args.stateRoot,
+      attempt,
+      collectedOutput: snapshot.value.collectedOutput,
+      ...(args.now ? { now: args.now } : {}),
+    });
+    args.attemptStore.markTerminal(attempt.attemptId, {
+      status: 'succeeded',
+      outputRef,
+    });
+    return {
+      ok: true,
+      value: {
+        profile: 'lab',
+        policyId: labPolicy.value.policyId,
+        workspaceId: artifactPolicy.workspaceId,
+        exportPolicyId: artifactPolicy.exportPolicyId,
         evidenceRef: outputRef.evidenceRef,
         files: outputRef.files.map((file) => ({ ...file })),
         totalBytes: outputRef.totalBytes,

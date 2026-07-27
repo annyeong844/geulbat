@@ -1,5 +1,6 @@
 import type { GenericApiError } from '../error-codes.js';
 import {
+  cloneProviderCredential,
   deleteProviderAuthFile,
   hardenProviderAuthFilePermissions,
   resolveProviderAuthCredentialProviderId,
@@ -65,17 +66,6 @@ interface ProviderAuthRuntimeProviderState {
   cachedLoadError: ProviderAuthLoadError | null;
   cachedRefreshError: ProviderAuthLoadError | null;
   hydratedProviderAuth: boolean;
-}
-
-function cloneProviderCredential(
-  credential: ProviderCredential,
-): ProviderCredential {
-  return {
-    accessToken: credential.accessToken,
-    refreshToken: credential.refreshToken,
-    accountId: credential.accountId,
-    expiresAt: credential.expiresAt,
-  };
 }
 
 function cloneProviderAuthLoadError(

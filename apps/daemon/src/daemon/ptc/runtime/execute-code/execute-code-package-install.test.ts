@@ -6,10 +6,16 @@ import {
   decodePtcPackageInstallProvenanceEntries,
   derivePtcResolvedPackages,
   isSafeNpmVersionSpec,
+  isSafePythonPackageName,
+  isSafePythonVersionSpec,
   redactNetworkIdentifiersFromExcerpt,
+  resolvePtcPackageInstallManager,
   validatePtcPackageInstallRequest,
 } from './execute-code-package-install.js';
-import { PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX } from './execute-code-runtime-contract.js';
+import {
+  PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX,
+  PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH,
+} from './execute-code-runtime-contract.js';
 
 void test('package install validation admits exact packages and sorts them', () => {
   const result = validatePtcPackageInstallRequest({
@@ -43,8 +49,8 @@ void test('package install validation resolves omitted or empty versions to late
     return;
   }
   assert.deepEqual(result.value, [
-    { name: 'express', spec: 'latest' },
-    { name: 'lodash', spec: 'latest' },
+    { name: 'express', spec: 'latest', requestedSpec: 'latest' },
+    { name: 'lodash', spec: 'latest', requestedSpec: 'latest' },
   ]);
 });
 
@@ -137,6 +143,86 @@ void test('isSafeNpmVersionSpec blocks separators and quotes but allows range gr
   assert.equal(isSafeNpmVersionSpec('1'.repeat(257)), false);
 });
 
+void test('python package validation admits wheel registry requirements and normalizes versions', () => {
+  const result = validatePtcPackageInstallRequest({
+    request: {
+      language: 'python',
+      packages: [
+        { name: 'urllib3', version: '>=2.2,<3' },
+        { name: 'Requests', version: '2.32.3' },
+        { name: 'idna' },
+      ],
+    },
+    maxPackages: 8,
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) {
+    return;
+  }
+  assert.deepEqual(result.value, [
+    { name: 'idna', spec: '', requestedSpec: 'latest' },
+    { name: 'Requests', spec: '==2.32.3', requestedSpec: '==2.32.3' },
+    { name: 'urllib3', spec: '>=2.2,<3', requestedSpec: '>=2.2,<3' },
+  ]);
+  assert.equal(resolvePtcPackageInstallManager('python'), 'pip');
+  assert.equal(resolvePtcPackageInstallManager('javascript'), 'npm');
+  assert.equal(resolvePtcPackageInstallManager(undefined), 'npm');
+});
+
+void test('python package validation rejects direct references, extras, and normalized duplicates', () => {
+  const invalidRequests = [
+    [{ name: 'https://evil.example/pkg.whl', version: '1.0.0' }],
+    [{ name: '../escape', version: '1.0.0' }],
+    [{ name: 'requests[security]', version: '2.32.3' }],
+    [{ name: 'requests', version: 'https://evil.example/pkg.whl' }],
+    [{ name: 'requests', version: 'git+https://evil.example/repo.git' }],
+    [{ name: 'requests', version: '2.32.3 ; python_version > "3"' }],
+    [
+      { name: 'my.pkg', version: '1.0.0' },
+      { name: 'MY-pkg', version: '1.0.0' },
+    ],
+  ];
+  for (const packages of invalidRequests) {
+    const result = validatePtcPackageInstallRequest({
+      request: { language: 'python', packages },
+      maxPackages: 8,
+    });
+    assert.equal(
+      result.ok,
+      false,
+      `expected rejection for ${JSON.stringify(packages)}`,
+    );
+  }
+});
+
+void test('python package validators keep the first slice registry-only', () => {
+  for (const name of ['requests', 'typing-extensions', 'zope.interface']) {
+    assert.equal(isSafePythonPackageName(name), true, name);
+  }
+  for (const name of ['requests[security]', 'owner/pkg', '.hidden', 'a..b']) {
+    assert.equal(isSafePythonPackageName(name), false, name);
+  }
+  for (const spec of [
+    '2.32.3',
+    '==2.32.3',
+    '>=2.31,<3',
+    '~=2.32.0',
+    '!=2.32.1',
+  ]) {
+    assert.equal(isSafePythonVersionSpec(spec), true, spec);
+  }
+  for (const spec of [
+    '',
+    'latest',
+    '^2',
+    '>=2.31, <3',
+    'https://example.test/pkg.whl',
+    '2.32.3;python_version>"3"',
+  ]) {
+    assert.equal(isSafePythonVersionSpec(spec), false, spec);
+  }
+});
+
 void test('package install validation enforces the knob-provided package count limit', () => {
   const packages = Array.from({ length: 3 }, (_, index) => ({
     name: `pkg-${index}`,
@@ -156,7 +242,7 @@ void test('package install validation enforces the knob-provided package count l
 
 void test('package install command targets the cumulative prefix with hardened npm flags', () => {
   const command = buildPtcPackageInstallCommand([
-    { name: 'left-pad', spec: '^1.3.0' },
+    { name: 'left-pad', spec: '^1.3.0', requestedSpec: '^1.3.0' },
   ]);
   assert.ok(
     command.includes(
@@ -178,12 +264,35 @@ void test('package install command targets the cumulative prefix with hardened n
   assert.ok(command.includes('--globalconfig'));
 });
 
+void test('python package install command is wheel-only and targets the reusable session path', () => {
+  const command = buildPtcPackageInstallCommand(
+    [
+      {
+        name: 'requests',
+        spec: '==2.32.3',
+        requestedSpec: '==2.32.3',
+      },
+    ],
+    'pip',
+  );
+  assert.ok(command.includes('python3 -m pip --isolated install'));
+  assert.ok(command.includes("--only-binary ':all:'"));
+  assert.ok(command.includes("--cache-dir '/geulbat/package-cache/pip'"));
+  assert.ok(
+    command.includes(
+      `--target '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
+    ),
+  );
+  assert.ok(command.includes("'requests==2.32.3'"));
+  assert.doesNotMatch(command, /\bnpm\b/u);
+});
+
 void test('derivePtcResolvedPackages maps requested specs to resolved closure versions', () => {
   const resolved = derivePtcResolvedPackages({
     packages: [
-      { name: 'express', spec: 'latest' },
-      { name: '@scope/pkg', spec: '^1.0.0' },
-      { name: 'absent', spec: 'latest' },
+      { name: 'express', spec: 'latest', requestedSpec: 'latest' },
+      { name: '@scope/pkg', spec: '^1.0.0', requestedSpec: '^1.0.0' },
+      { name: 'absent', spec: 'latest', requestedSpec: 'latest' },
     ],
     closure: [
       {
@@ -229,6 +338,71 @@ void test('derivePtcResolvedPackages maps requested specs to resolved closure ve
       integrity: null,
     },
   ]);
+});
+
+void test('python provenance decoder and resolver use normalized distribution names', () => {
+  const report = {
+    version: '1',
+    pip_version: '26.0',
+    installed: [
+      {
+        metadata: {
+          metadata_version: '2.4',
+          name: 'Typing_Extensions',
+          version: '4.15.0',
+        },
+        metadata_location: '/tmp/geulbat-python-packages',
+        installer: 'pip',
+        requested: true,
+      },
+      {
+        metadata: {
+          metadata_version: '2.4',
+          name: 'zipp',
+          version: '3.23.0',
+        },
+        metadata_location: '/tmp/geulbat-python-packages',
+        installer: 'pip',
+        requested: false,
+      },
+    ],
+  };
+  const closure = decodePtcPackageInstallProvenanceEntries(report, 'pip');
+  assert.deepEqual(closure, [
+    {
+      path: 'python/typing-extensions',
+      name: 'Typing_Extensions',
+      version: '4.15.0',
+      role: 'prod',
+    },
+    {
+      path: 'python/zipp',
+      name: 'zipp',
+      version: '3.23.0',
+      role: 'prod',
+    },
+  ]);
+  assert.deepEqual(
+    derivePtcResolvedPackages({
+      manager: 'pip',
+      packages: [
+        {
+          name: 'typing-extensions',
+          spec: '>=4.12',
+          requestedSpec: '>=4.12',
+        },
+      ],
+      closure: closure ?? [],
+    }),
+    [
+      {
+        name: 'typing-extensions',
+        requestedSpec: '>=4.12',
+        resolvedVersion: '4.15.0',
+        integrity: null,
+      },
+    ],
+  );
 });
 
 void test('package install provenance decoder rejects malformed closure entries', () => {
@@ -291,6 +465,14 @@ void test('provenance command reads the prefix lockfile with a daemon-authored s
     ),
   );
   assert.ok(command.includes('node_modules/'));
+});
+
+void test('python provenance command uses pip inspect against the installed target', () => {
+  const command = buildPtcPackageInstallProvenanceCommand('pip');
+  assert.equal(
+    command,
+    `python3 -m pip --isolated inspect --path '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
+  );
 });
 
 void test('network redaction removes registry urls and bare hostnames from excerpts', () => {

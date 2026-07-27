@@ -9,6 +9,7 @@ import { ProviderReplayScopeMismatchError } from '../llm/provider/provider-repla
 import { createLogger } from '@geulbat/structured-logger/logger';
 import {
   appendTranscriptEntry,
+  readLastTranscriptEntryId,
   readTranscriptEntries,
 } from '../sessions/transcript-log.js';
 import {
@@ -19,6 +20,7 @@ import { readRunAttachment } from '../sessions/run-attachment-store.js';
 import type { PendingInterject } from '../sessions/active-run-interject-buffer.js';
 import type { TranscriptEntry } from '../sessions/transcript-log.js';
 import {
+  appendProviderRound,
   readProviderRoundHistory,
   type ProviderRoundJournalRecord,
 } from '../sessions/provider-round-journal.js';
@@ -49,11 +51,20 @@ interface LoadInitialHistoryArgs {
   providerTarget: ProviderHistoryTarget;
 }
 
+type RecordProviderRoundArgs = Omit<
+  Parameters<typeof appendProviderRound>[0],
+  'stateRoot' | 'precedingTranscriptEntryId' | 'now'
+> & {
+  workspaceRoot: string;
+  precedingTranscriptEntryId?: string;
+};
+
 export interface AgentLoopHistoryPort {
   loadInitialHistory(args: LoadInitialHistoryArgs): Promise<HistoryItem[]>;
+  recordProviderRound?(args: RecordProviderRoundArgs): Promise<void>;
 }
 
-export function createAgentLoopHistoryPort(): AgentLoopHistoryPort {
+export function createAgentLoopHistoryPort(): Required<AgentLoopHistoryPort> {
   return {
     async loadInitialHistory(args) {
       return await loadInitialHistory(
@@ -62,6 +73,21 @@ export function createAgentLoopHistoryPort(): AgentLoopHistoryPort {
         args.prompt,
         args.providerTarget,
       );
+    },
+    async recordProviderRound(args) {
+      const {
+        workspaceRoot,
+        precedingTranscriptEntryId: suppliedTranscriptEntryId,
+        ...providerRound
+      } = args;
+      const precedingTranscriptEntryId =
+        suppliedTranscriptEntryId ??
+        (await readLastTranscriptEntryId(workspaceRoot, args.threadId));
+      await appendProviderRound({
+        ...providerRound,
+        stateRoot: workspaceRoot,
+        precedingTranscriptEntryId,
+      });
     },
   };
 }

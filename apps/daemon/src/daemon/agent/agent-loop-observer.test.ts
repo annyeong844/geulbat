@@ -8,7 +8,9 @@ import { pathToFileURL } from 'node:url';
 import { agentLoopKernelImplementation } from '@geulbat/agent-loop/kernel';
 
 import {
+  recordAgentLoopObserverCompletionGap,
   rehydrateToolLibraryProjectionFromObserverSnapshot,
+  type AgentLoopCompletionGapObservation,
   type AgentLoopObserverDiagnostic,
   type AgentLoopObserverEvent,
   type AgentLoopObserverSnapshot,
@@ -917,7 +919,9 @@ void test('runAgentLoop materializes an importable default tool library projecti
       withFileTypes: true,
     });
     const threadDirectoryNames = threadEntries
-      .filter((entry) => entry.isDirectory())
+      .filter(
+        (entry) => entry.isDirectory() && entry.name.startsWith('thread-'),
+      )
       .map((entry) => entry.name);
     assert.equal(threadDirectoryNames.length, 1);
 
@@ -934,6 +938,7 @@ void test('runAgentLoop materializes an importable default tool library projecti
     }
 
     const mountResult = await readVerifiedToolLibraryProjectionMount({
+      contentRootPath: join(projectionPortRoot, 'content'),
       threadProjectionRootPath,
       expectedIdentity: observedIdentity,
       importSpecifier: 'geulbat-sdk',
@@ -1172,6 +1177,43 @@ void test('runAgentLoop stops before model calls when tool library projection fa
       message: 'Tool library projection failed (Error EACCES)',
     },
   });
+});
+
+void test('completion-gap observer failure remains non-authoritative', () => {
+  const diagnostics: AgentLoopObserverDiagnostic[] = [];
+  const observation: AgentLoopCompletionGapObservation = {
+    schemaVersion: 1,
+    runId: testRunId('completion-gap-observer-failure'),
+    threadId: testThreadId(44),
+    source: 'natural',
+    obligation: 'approved_plan_execution',
+    gapFingerprint: `sha256:${'1'.repeat(64)}`,
+    evidenceRevision: `sha256:${'2'.repeat(64)}`,
+    repeatCount: 2,
+    sameGapAndEvidenceAsPrevious: true,
+  };
+
+  recordAgentLoopObserverCompletionGap(
+    {
+      recordSnapshot() {},
+      recordEvent() {},
+      recordCompletionGap() {
+        throw new Error('observer unavailable');
+      },
+      recordDiagnostic(diagnostic) {
+        diagnostics.push(diagnostic);
+      },
+    },
+    observation,
+  );
+
+  assert.deepEqual(diagnostics, [
+    {
+      schemaVersion: 1,
+      kind: 'observer_delivery_failed',
+      operation: 'record_completion_gap',
+    },
+  ]);
 });
 
 function asRecord(value: unknown): Record<string, unknown> | null {

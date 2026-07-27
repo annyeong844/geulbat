@@ -192,6 +192,37 @@ void test('commitPreparedRelocation reports conflict when source kind changes af
   await assert.rejects(() => stat(join(workspaceRoot, 'to')));
 });
 
+void test('commitPreparedRelocation preserves a same-kind source replacement after preparation', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-relocate-source-replacement-'),
+  );
+  const sourcePath = join(workspaceRoot, 'from.txt');
+  const destinationPath = join(workspaceRoot, 'to.txt');
+  await writeFile(sourcePath, 'original\n', 'utf8');
+
+  const prepared = await prepareRelocationPaths(
+    workspaceRoot,
+    'from.txt',
+    'to.txt',
+  );
+  await rm(sourcePath);
+  await writeFile(sourcePath, 'replacement with a different version\n', 'utf8');
+
+  await assert.rejects(
+    () => commitPreparedRelocation(prepared),
+    (error: unknown) => {
+      assert.equal(getAppErrorCode(error), 'conflict');
+      return true;
+    },
+  );
+
+  assert.equal(
+    await readFile(sourcePath, 'utf8'),
+    'replacement with a different version\n',
+  );
+  await assert.rejects(() => stat(destinationPath));
+});
+
 void test('commitPreparedRelocation reports already_exists when destination parent becomes a file', async () => {
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-relocate-parent-'),
@@ -304,6 +335,34 @@ void test('commitPreparedDeletion reports conflict when target kind changes afte
   assert.equal(
     await readFile(join(targetPath, 'replacement.txt'), 'utf8'),
     'replacement\n',
+  );
+});
+
+void test('commitPreparedDeletion preserves a same-kind target replacement after preparation', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-delete-replacement-'),
+  );
+  const targetPath = join(workspaceRoot, 'delete-me.txt');
+  await writeFile(targetPath, 'original\n', 'utf8');
+
+  const prepared = await prepareResolvedMutatingPath(
+    workspaceRoot,
+    'delete-me.txt',
+  );
+  await rm(targetPath);
+  await writeFile(targetPath, 'replacement with a different version\n', 'utf8');
+
+  await assert.rejects(
+    () => commitPreparedDeletion(prepared),
+    (error: unknown) => {
+      assert.equal(getAppErrorCode(error), 'conflict');
+      return true;
+    },
+  );
+
+  assert.equal(
+    await readFile(targetPath, 'utf8'),
+    'replacement with a different version\n',
   );
 });
 

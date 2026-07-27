@@ -51,13 +51,7 @@ const failureExpectations = [
     correlation: 'approvedPlanId="plan-terminal-diagnostic"',
   },
   {
-    operation: 'goal_completion_verifier',
-    causeName: 'UnknownError',
-    causeCode: 'llm_overloaded',
-    correlation: 'goalId="goal-terminal-diagnostic"',
-  },
-  {
-    operation: 'goal_verification_record',
+    operation: 'goal_completion_admission',
     causeName: 'Error',
     causeCode: 'ENOSPC',
     correlation: 'goalId="goal-terminal-diagnostic"',
@@ -140,11 +134,6 @@ void test('runAgentLoop preserves safe owner diagnostics for every terminal plan
           ? {}
           : { approvedPlan: failureInput.approvedPlan }),
         ...(failureInput.goal === undefined ? {} : { goal: failureInput.goal }),
-        ...(failureInput.goalCompletionVerifier === undefined
-          ? {}
-          : {
-              goalCompletionVerifier: failureInput.goalCompletionVerifier,
-            }),
         onEvent(event) {
           events.push(event);
         },
@@ -214,11 +203,7 @@ function terminalVerificationFailureInput(args: {
   daemonContext: ReturnType<typeof createDaemonContext>;
 }): Pick<
   AgentInput,
-  | 'runtimeServices'
-  | 'planningWorkflow'
-  | 'approvedPlan'
-  | 'goal'
-  | 'goalCompletionVerifier'
+  'runtimeServices' | 'planningWorkflow' | 'approvedPlan' | 'goal'
 > {
   const goal = {
     goalId: 'goal-terminal-diagnostic',
@@ -296,30 +281,7 @@ function terminalVerificationFailureInput(args: {
         },
       };
     }
-    case 'goal_completion_verifier': {
-      const error = Object.assign(new Error(SENSITIVE_CAUSE), {
-        name: 'ProviderTokenSecretError',
-        llmCode: 'llm_overloaded',
-      });
-      return {
-        runtimeServices: {
-          ...args.daemonContext,
-          goals: {
-            ...args.daemonContext.goals,
-            async readForRun() {
-              return verifyingGoal;
-            },
-          },
-        },
-        goal,
-        goalCompletionVerifier: {
-          async verify() {
-            throw error;
-          },
-        },
-      };
-    }
-    case 'goal_verification_record': {
+    case 'goal_completion_admission': {
       const error = Object.assign(new Error(SENSITIVE_CAUSE), {
         code: 'ENOSPC',
       });
@@ -331,24 +293,12 @@ function terminalVerificationFailureInput(args: {
             async readForRun() {
               return verifyingGoal;
             },
-            async recordVerification() {
+            async admitCompletion() {
               throw error;
             },
           },
         },
         goal,
-        goalCompletionVerifier: {
-          async verify() {
-            return {
-              outcome: { kind: 'achieved' },
-              votes: [
-                { verdict: 'achieved' },
-                { verdict: 'achieved' },
-                { verdict: 'achieved' },
-              ],
-            };
-          },
-        },
       };
     }
   }

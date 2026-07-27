@@ -1,4 +1,4 @@
-import { appendFile, readFile } from 'node:fs/promises';
+import { appendFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
@@ -134,6 +134,26 @@ export function createRunEventJournalStore(args: {
 
 function journalPath(root: string, threadId: ThreadId, runId: RunId): string {
   return join(root, threadId, `${runId}.jsonl`);
+}
+
+/**
+ * 스레드 삭제 시 그 스레드의 run event journal 디렉터리를 함께 지운다. 삭제
+ * 경로에서 빠지면 스레드가 사라진 뒤에도 run 기록만 남아 orphan이 된다.
+ */
+export async function deleteThreadRunEventJournals(
+  stateRoot: string,
+  threadId: ThreadId,
+): Promise<boolean> {
+  const path = join(stateRoot, '.geulbat', 'run-event-journals', threadId);
+  try {
+    await rm(path, { recursive: true });
+    return true;
+  } catch (error: unknown) {
+    if (isMissingFileError(error)) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function parseRunEventJournal(

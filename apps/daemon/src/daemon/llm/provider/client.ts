@@ -68,6 +68,7 @@ import type {
 import type {
   HistoryItem,
   FunctionCall,
+  ModelRoundStopReason,
   ProviderArtifactCandidate,
   ProviderStructuredOutput,
   ProviderUsageTelemetry,
@@ -110,6 +111,7 @@ export type LLMChunk =
       artifactCandidate?: ProviderArtifactCandidate;
       structuredOutputs?: ProviderStructuredOutput[];
       providerUsageTelemetry?: ProviderUsageTelemetry;
+      stopReason?: ModelRoundStopReason;
     }
   | { type: 'error'; code: string; message: string };
 
@@ -127,10 +129,13 @@ export interface CallModelInput {
   systemPrompt: string;
   promptContext?: string;
   tools?: WireToolDefinition[];
+  deferredTools?: WireToolDefinition[];
   providerSessionId: string;
   providerWebSocketSessions: Pick<
     ResponsesWebSocketSessionStore,
-    'acquireWebSocket'
+    | 'acquireWebSocket'
+    | 'streamDurableResponseEvents'
+    | 'streamDurableHttpSseEvents'
   >;
   providerAuthRuntime: ProviderAuthRuntimeStore;
   providerRequestOptions: ProviderRequestOptions;
@@ -178,7 +183,9 @@ export async function* callModelWithDependencies(
     conversationIdentityHash: hashProviderTraceIdentity(
       input.providerSessionId,
     ),
-    toolCount: input.tools?.length ?? 0,
+    toolCount: (input.tools?.length ?? 0) + (input.deferredTools?.length ?? 0),
+    directToolCount: input.tools?.length ?? 0,
+    deferredToolCount: input.deferredTools?.length ?? 0,
   };
   const providerLogger = logger.withContext(logMeta);
   const signal = input.signal
@@ -206,6 +213,7 @@ export async function* callModelWithDependencies(
         artifactCandidate,
         structuredOutputs,
         providerUsageTelemetry,
+        stopReason,
       } = result;
       providerLogger.info('provider stream completed', {
         toolCallCount: functionCalls.length,
@@ -233,6 +241,7 @@ export async function* callModelWithDependencies(
         ...(providerUsageTelemetry !== undefined
           ? { providerUsageTelemetry }
           : {}),
+        ...(stopReason !== undefined ? { stopReason } : {}),
       });
       channel.finish();
     })
@@ -271,6 +280,7 @@ export async function* callModelWithDependencies(
 interface CallResponsesOnceOptions {
   allowRefresh?: boolean;
   onAssistantDeltaCommitted?: () => void;
+  requestAttempt?: number;
 }
 
 function buildProviderStreamCallbacks(
@@ -319,7 +329,17 @@ async function callResponsesOnce(
   artifactCandidate?: ProviderArtifactCandidate;
   structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
+  stopReason?: ModelRoundStopReason;
 }> {
+  if (
+    input.deferredTools !== undefined &&
+    input.deferredTools.length > 0 &&
+    input.providerRequestOptions.providerId !== 'openai_codex_direct'
+  ) {
+    throw new Error(
+      'deferred provider tools require the OpenAI Codex direct adapter',
+    );
+  }
   if (input.providerRequestOptions.providerId === 'qwen_token_plan') {
     return callQwenResponsesOnce(input, channel, deps, options);
   }
@@ -342,6 +362,7 @@ async function callQwenResponsesOnce(
   artifactCandidate?: ProviderArtifactCandidate;
   structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
+  stopReason?: ModelRoundStopReason;
 }> {
   const config = await loadQwenTokenPlanConfig({
     model: input.providerRequestOptions.model,
@@ -359,6 +380,9 @@ async function callQwenResponsesOnce(
     config,
     history: input.history,
     providerReplayScopeId,
+    providerSessionId: input.providerSessionId,
+    requestAttempt: options?.requestAttempt ?? 0,
+    providerRequestSessions: input.providerWebSocketSessions,
     ...(instructions === undefined ? {} : { instructions }),
     ...(input.tools === undefined ? {} : { tools: input.tools }),
     ...(input.onProviderRequestPrepared === undefined
@@ -392,6 +416,9 @@ async function callQwenResponsesOnce(
     ...(result.providerUsageTelemetry === undefined
       ? {}
       : { providerUsageTelemetry: result.providerUsageTelemetry }),
+    ...(result.stopReason === undefined
+      ? {}
+      : { stopReason: result.stopReason }),
   };
 }
 
@@ -408,6 +435,7 @@ async function callCodexDirectResponsesOnce(
   artifactCandidate?: ProviderArtifactCandidate;
   structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
+  stopReason?: ModelRoundStopReason;
 }> {
   const auth = await getSelectedProviderAuth(input, deps, options);
   const promptCacheProjection = buildCodexDirectPromptCacheProjection(input);
@@ -432,6 +460,7 @@ async function callCodexDirectResponsesOnce(
     history: input.history,
     providerReplayScopeId,
     providerSessionId: input.providerSessionId,
+    requestAttempt: options?.requestAttempt ?? 0,
     webSocketReusePolicy: CODEX_DIRECT_RESPONSES_WEBSOCKET_REUSE_POLICY,
     providerWebSocketSessions: input.providerWebSocketSessions,
     ...(input.oauthWireDiscoverySink !== undefined
@@ -465,6 +494,9 @@ async function callCodexDirectResponsesOnce(
     ...(result.providerUsageTelemetry !== undefined
       ? { providerUsageTelemetry: result.providerUsageTelemetry }
       : {}),
+    ...(result.stopReason !== undefined
+      ? { stopReason: result.stopReason }
+      : {}),
   };
 }
 
@@ -481,6 +513,7 @@ async function callGrokOAuthResponsesOnce(
   artifactCandidate?: ProviderArtifactCandidate;
   structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
+  stopReason?: ModelRoundStopReason;
 }> {
   const auth = await getSelectedProviderAuth(input, deps, options);
   const model = resolveGrokOAuthModelDescriptor(
@@ -502,6 +535,7 @@ async function callGrokOAuthResponsesOnce(
       accessToken: auth.accessToken,
       providerReplayScopeId,
       providerSessionId: input.providerSessionId,
+      requestAttempt: options?.requestAttempt ?? 0,
       history: input.history,
       reasoningEffort: input.providerRequestOptions.reasoning.effort,
       providerWebSocketSessions: input.providerWebSocketSessions,
@@ -538,6 +572,9 @@ async function callGrokOAuthResponsesOnce(
       : {}),
     ...(result.providerUsageTelemetry !== undefined
       ? { providerUsageTelemetry: result.providerUsageTelemetry }
+      : {}),
+    ...(result.stopReason !== undefined
+      ? { stopReason: result.stopReason }
       : {}),
   };
 }
@@ -635,12 +672,14 @@ async function callResponsesWithRetryPolicy(
   artifactCandidate?: ProviderArtifactCandidate;
   structuredOutputs?: ProviderStructuredOutput[];
   providerUsageTelemetry?: ProviderUsageTelemetry;
+  stopReason?: ModelRoundStopReason;
 }> {
   let authRefreshAttempts = 0;
 
   for (;;) {
     let assistantDeltaCommitted = false;
     const attemptOptions: CallResponsesOnceOptions = {
+      requestAttempt: authRefreshAttempts,
       onAssistantDeltaCommitted: () => {
         assistantDeltaCommitted = true;
       },

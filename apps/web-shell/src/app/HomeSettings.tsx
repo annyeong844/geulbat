@@ -7,8 +7,9 @@ import {
 import { ProviderAuthCard } from '../features/provider-auth/ProviderAuthCard.js';
 import { ProviderUsageCard } from '../features/provider-usage/ProviderUsageCard.js';
 import { fetchProviderUsage } from '../lib/api/provider-usage.js';
+import { PtcArtifactExportSettingsPanel } from '../features/settings/PtcArtifactExportSettingsPanel.js';
 
-type SettingsSection = 'providers' | 'usage' | 'mcp';
+type SettingsSection = 'providers' | 'usage' | 'mcp' | 'ptc';
 
 interface HomeSettingsProps {
   providerAuthCard: ComponentProps<typeof ProviderAuthCard>;
@@ -125,6 +126,18 @@ export function HomeSettings({
             </span>
             <span>MCP 서버</span>
           </button>
+          <button
+            type="button"
+            className={activeSection === 'ptc' ? 'active' : ''}
+            aria-label="PTC 아티팩트 설정"
+            aria-current={activeSection === 'ptc' ? 'page' : undefined}
+            onClick={() => setActiveSection('ptc')}
+          >
+            <span className="settings-nav-icon" aria-hidden="true">
+              ◫
+            </span>
+            <span>PTC 아티팩트</span>
+          </button>
         </nav>
 
         <div className="settings-page">
@@ -140,6 +153,7 @@ export function HomeSettings({
               {...(mcpClient ? { client: mcpClient } : {})}
             />
           ) : null}
+          {activeSection === 'ptc' ? <PtcArtifactExportSettingsPanel /> : null}
         </div>
       </div>
     </section>

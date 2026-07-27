@@ -87,7 +87,9 @@ export const inspectGitTool = defineZodTool({
   argsSchema: inspectGitArgsSchema,
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
+  abortSettlement: 'await_execution',
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   resultProjection: {
     exactDurableRecovery: true,
     modelProjection: 'runtime_summary',

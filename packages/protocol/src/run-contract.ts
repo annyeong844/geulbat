@@ -15,6 +15,7 @@ import {
   type ProviderAuthProviderId,
 } from './provider-auth.js';
 import {
+  hasOnlyKeys,
   isBoolean,
   isNumber,
   isRecord,
@@ -80,6 +81,8 @@ export const RUN_MODEL_CATALOG = [
     reasoningEfforts: RUN_REASONING_EFFORTS,
     defaultReasoningEffort: 'medium',
     serviceTiers: RUN_SERVICE_TIERS,
+    supportsHostedToolSearch: true,
+    supportsGeneratedSdkToolDiscovery: true,
   },
   {
     id: 'gpt-5.6-terra',
@@ -88,6 +91,8 @@ export const RUN_MODEL_CATALOG = [
     reasoningEfforts: RUN_REASONING_EFFORTS,
     defaultReasoningEffort: 'medium',
     serviceTiers: RUN_SERVICE_TIERS,
+    supportsHostedToolSearch: true,
+    supportsGeneratedSdkToolDiscovery: false,
   },
   {
     id: 'gpt-5.6-luna',
@@ -96,6 +101,8 @@ export const RUN_MODEL_CATALOG = [
     reasoningEfforts: RUN_REASONING_EFFORTS,
     defaultReasoningEffort: 'medium',
     serviceTiers: RUN_SERVICE_TIERS,
+    supportsHostedToolSearch: true,
+    supportsGeneratedSdkToolDiscovery: false,
   },
   {
     id: 'grok-4.5',
@@ -104,6 +111,8 @@ export const RUN_MODEL_CATALOG = [
     reasoningEfforts: ['low', 'medium', 'high'],
     defaultReasoningEffort: 'high',
     serviceTiers: ['standard'],
+    supportsHostedToolSearch: false,
+    supportsGeneratedSdkToolDiscovery: false,
   },
   {
     id: 'qwen3.8-max-preview',
@@ -112,6 +121,8 @@ export const RUN_MODEL_CATALOG = [
     reasoningEfforts: RUN_REASONING_EFFORTS,
     defaultReasoningEffort: 'high',
     serviceTiers: ['standard'],
+    supportsHostedToolSearch: false,
+    supportsGeneratedSdkToolDiscovery: false,
   },
 ] as const satisfies readonly {
   id: string;
@@ -120,6 +131,8 @@ export const RUN_MODEL_CATALOG = [
   reasoningEfforts: readonly RunReasoningEffort[];
   defaultReasoningEffort: RunReasoningEffort;
   serviceTiers: readonly RunServiceTier[];
+  supportsHostedToolSearch: boolean;
+  supportsGeneratedSdkToolDiscovery: boolean;
 }[];
 
 type RunModelDescriptor = (typeof RUN_MODEL_CATALOG)[number];
@@ -432,13 +445,6 @@ function isStringArray(value: unknown): value is string[] {
 
 function isNonEmptyString(value: unknown): value is string {
   return isString(value) && value.length > 0;
-}
-
-function hasOnlyKeys(
-  value: Record<string, unknown>,
-  allowedKeys: readonly string[],
-): boolean {
-  return Object.keys(value).every((key) => allowedKeys.includes(key));
 }
 
 export function isSubagentModelSelectionSource(

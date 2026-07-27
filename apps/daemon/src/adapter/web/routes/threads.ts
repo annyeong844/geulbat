@@ -1,6 +1,8 @@
 import { createReadStream } from 'node:fs';
 
+import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
+import { TextDecoder } from 'node:util';
 
 import { Router, type Request, type Response } from 'express';
 import {
@@ -11,7 +13,10 @@ import {
 import { isThreadId, type ThreadId } from '@geulbat/protocol/ids';
 import { resolveRunModelDescriptor } from '@geulbat/protocol/run-contract';
 import type { ThreadMessageAttachment } from '@geulbat/protocol/thread-metadata';
-import { isPrepareProviderTransitionRequest } from '@geulbat/protocol/threads';
+import {
+  isPrepareProviderTransitionRequest,
+  THREAD_ARCHIVE_MEDIA_TYPE,
+} from '@geulbat/protocol/threads';
 import { isRecord } from '../../../daemon/runtime-json.js';
 import { statThreadMediaFile } from '../../../daemon/sessions/media-file-store.js';
 import { branchThreadSession } from '../../../daemon/sessions/branch-thread.js';
@@ -47,12 +52,16 @@ export function createThreadsRoutes(args: {
     backgroundNotifications,
     homeStateRoot,
     providerTransitionCompaction,
+    threadArchiveTransfer,
+    threadProjectionPins,
   } = args.context;
   return createThreadsRoutesInternal({
     activeRuns,
     backgroundNotifications,
+    threadProjectionPins,
     homeStateRoot,
     providerTransitionCompaction,
+    threadArchiveTransfer,
   });
 }
 
@@ -61,6 +70,8 @@ function createThreadsRoutesInternal(args: {
   backgroundNotifications: ThreadsRoutesContext['backgroundNotifications'];
   homeStateRoot: string;
   providerTransitionCompaction: ThreadsRoutesContext['providerTransitionCompaction'];
+  threadArchiveTransfer: ThreadsRoutesContext['threadArchiveTransfer'];
+  threadProjectionPins: ThreadsRoutesContext['threadProjectionPins'];
 }): Router {
   const router = Router();
   const {
@@ -68,6 +79,8 @@ function createThreadsRoutesInternal(args: {
     backgroundNotifications,
     homeStateRoot,
     providerTransitionCompaction,
+    threadArchiveTransfer,
+    threadProjectionPins,
   } = args;
 
   router.get('/api/threads', async (_req, res) => {
@@ -385,6 +398,77 @@ function createThreadsRoutesInternal(args: {
     },
   );
 
+  router.get('/api/threads/:threadId/archive', async (req, res) => {
+    const threadId = readThreadIdOrSendError(req, res);
+    if (!threadId) {
+      return;
+    }
+    try {
+      const exported = await threadArchiveTransfer.exportArchive({ threadId });
+      if (!exported.ok) {
+        sendApiError(
+          res,
+          exported.code === 'not_found' ? 'not_found' : 'conflict',
+          exported.message,
+        );
+        return;
+      }
+      res.setHeader('Content-Type', THREAD_ARCHIVE_MEDIA_TYPE);
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="geulbat-thread-${threadId}.json"`,
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-Geulbat-Archive-Id', exported.archiveId);
+      res.send(Buffer.from(exported.serializedArchive, 'utf8'));
+    } catch (err: unknown) {
+      sendUnexpectedApiError(res, 'threads/archive-export', err);
+    }
+  });
+
+  router.post('/api/thread-archives/import', async (req, res) => {
+    if (!isThreadArchiveContentType(req.headers['content-type'])) {
+      sendApiError(
+        res,
+        'invalid_args',
+        `Content-Type must be ${THREAD_ARCHIVE_MEDIA_TYPE}`,
+      );
+      return;
+    }
+    let serializedArchive: string;
+    try {
+      serializedArchive = await readThreadArchiveRequest(req);
+    } catch {
+      sendApiError(res, 'invalid_args', 'thread archive must be valid UTF-8');
+      return;
+    }
+    try {
+      const imported = await threadArchiveTransfer.importArchive({
+        serializedArchive,
+      });
+      if (!imported.ok) {
+        sendApiError(
+          res,
+          imported.code === 'invalid_archive'
+            ? 'invalid_args'
+            : imported.code === 'projection_incompatible'
+              ? 'conflict'
+              : 'internal',
+          imported.message,
+        );
+        return;
+      }
+      res.json({
+        ok: true,
+        threadId: imported.threadId,
+        archiveId: imported.archiveId,
+        importedMessageCount: imported.importedMessageCount,
+      });
+    } catch (err: unknown) {
+      sendUnexpectedApiError(res, 'threads/archive-import', err);
+    }
+  });
+
   // 스레드 브랜치 — upToEntryId 포함 prefix를 복제한 새 스레드를 만든다.
   // 원 스레드는 불변이므로 active run이 있어도 안전하다(디스크에 settle된
   // 엔트리까지만 스냅샷 복사).
@@ -509,7 +593,11 @@ function createThreadsRoutesInternal(args: {
     }
 
     try {
-      const deleted = await deleteThreadSession(homeStateRoot, threadId);
+      const deleted = await deleteThreadSession(
+        homeStateRoot,
+        threadId,
+        threadProjectionPins,
+      );
       if (!deleted) {
         sendApiError(res, 'not_found', `thread not found: ${threadId}`);
         return;
@@ -642,6 +730,33 @@ function readOptionalUpToEntryId(
   }
   return { ok: true, value: upToEntryId };
 }
+
+function isThreadArchiveContentType(value: string | undefined): boolean {
+  return (
+    value?.split(';', 1)[0]?.trim().toLowerCase() === THREAD_ARCHIVE_MEDIA_TYPE
+  );
+}
+
+async function readThreadArchiveRequest(req: Request): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(readThreadArchiveChunk(chunk));
+  }
+  return new TextDecoder('utf-8', { fatal: true }).decode(
+    Buffer.concat(chunks),
+  );
+}
+
+function readThreadArchiveChunk(value: unknown): Buffer {
+  if (typeof value === 'string') {
+    return Buffer.from(value, 'utf8');
+  }
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value);
+  }
+  throw new Error('thread archive request emitted an invalid body chunk');
+}
+
 function readThreadIdOrSendError(req: Request, res: Response): ThreadId | null {
   const threadId = req.params['threadId'];
   if (typeof threadId !== 'string' || threadId.length === 0) {

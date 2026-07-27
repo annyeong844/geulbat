@@ -5,7 +5,11 @@ import {
   type PromptCacheProjection,
 } from './provider-cache-projection.js';
 import type { ProviderRequestOptions } from './provider-options.js';
-import type { WireRequestBase, WireToolDefinition } from './wire/types.js';
+import type {
+  WireRequestBase,
+  WireResponsesToolDefinition,
+  WireToolDefinition,
+} from './wire/types.js';
 
 const BETA_HEADER = process.env.GEULBAT_BETA_HEADER ?? 'responses=experimental';
 const ORIGINATOR_HEADER = process.env.GEULBAT_ORIGINATOR ?? 'codex_cli_rs';
@@ -16,6 +20,7 @@ interface ProviderPromptInput {
   systemPrompt: string;
   promptContext?: string;
   tools?: WireToolDefinition[];
+  deferredTools?: WireToolDefinition[];
   providerSessionId: string;
   providerRequestOptions: ProviderRequestOptions;
 }
@@ -39,6 +44,7 @@ export function buildResponsesRequestBody(
 ): WireRequestBase {
   const requestOptions = input.providerRequestOptions;
   const instructions = buildProviderInstructions(input);
+  const tools = buildCodexDirectWireTools(input);
   const body: WireRequestBase = {
     model: requestOptions.model,
     service_tier: resolveCodexWireServiceTier(requestOptions.serviceTier),
@@ -53,12 +59,30 @@ export function buildResponsesRequestBody(
     ...(instructions !== undefined ? { instructions } : {}),
   };
 
-  if (input.tools && input.tools.length > 0) {
-    body.tools = input.tools;
+  if (tools !== undefined) {
+    body.tools = tools;
     body.tool_choice = 'auto';
   }
 
   return body;
+}
+
+export function buildCodexDirectWireTools(
+  input: Pick<ProviderPromptInput, 'tools' | 'deferredTools'>,
+): WireResponsesToolDefinition[] | undefined {
+  const directTools = input.tools ?? [];
+  const deferredTools = input.deferredTools ?? [];
+  if (directTools.length === 0 && deferredTools.length === 0) {
+    return undefined;
+  }
+  if (deferredTools.length === 0) {
+    return [...directTools];
+  }
+  return [
+    ...directTools,
+    ...deferredTools.map((tool) => ({ ...tool, defer_loading: true as const })),
+    { type: 'tool_search' },
+  ];
 }
 
 export function buildProviderInstructions(
@@ -89,6 +113,8 @@ export function buildProviderVisiblePrefixMaterial(
 export function buildCodexDirectPromptCacheProjection(
   input: ProviderPromptInput,
 ): CodexDirectPromptCacheProjection {
+  const instructions = buildProviderInstructions(input);
+  const tools = buildCodexDirectWireTools(input);
   const projection = buildPromptCacheProjection({
     profile: CODEX_DIRECT_PROVIDER_CACHE_PROFILE,
     identities: {
@@ -99,7 +125,10 @@ export function buildCodexDirectPromptCacheProjection(
     routeFamily: 'openai_codex_responses',
     modelId: input.providerRequestOptions.model,
     includeSessionId: true,
-    prefixMaterial: buildProviderVisiblePrefixMaterial(input),
+    prefixMaterial: {
+      ...(instructions !== undefined ? { instructions } : {}),
+      ...(tools === undefined ? {} : { tools }),
+    },
   });
   if (projection.wire.prompt_cache_key === undefined) {
     throw new Error('Codex direct prompt cache projection is missing key');

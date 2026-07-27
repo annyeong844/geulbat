@@ -7,23 +7,24 @@ const updateGoalArgsSchema = z.strictObject({
   status: z
     .literal('complete')
     .describe(
-      'Request independent completion verification after the Goal is actually achieved.',
+      'Request host completion admission after concrete execution evidence shows the Goal is achieved.',
     ),
 });
 
 export const updateGoalTool = defineZodTool({
   name: 'update_goal',
   description:
-    'Request completion of the active Goal. This ends the current tool round and starts the hidden independent completion verification panel; it does not complete the Goal by itself.',
+    'Request completion of the active Goal. This ends the current tool round so the host can check deterministic completion obligations before admitting completion.',
   argsSchema: updateGoalArgsSchema,
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
+  abortSettlement: 'await_execution',
   requiresApproval: false,
   endsTurnAfterSuccess: true,
   catalogSearchMetadata: {
     family: 'planning',
-    searchHints: ['goal complete', 'finish goal', 'verify completion'],
-    tags: ['goal', 'completion', 'verification'],
+    searchHints: ['goal complete', 'finish goal', 'admit completion'],
+    tags: ['goal', 'completion'],
     whenToUse:
       'Only in an explicit Goal run, after concrete execution evidence shows the objective is complete.',
     notFor:
@@ -43,10 +44,10 @@ export const updateGoalTool = defineZodTool({
       if (goal === null) {
         return toolError(
           'execution_failed',
-          'no active Goal is available for completion verification.',
+          'no active Goal is available for completion admission.',
         );
       }
-      const snapshot = await ctx.runtimeServices.goals.requestVerification({
+      const snapshot = await ctx.runtimeServices.goals.requestCompletion({
         threadId: ctx.threadId,
         goalId: goal.goalId,
         runId: assertRunId(ctx.runId),
@@ -59,7 +60,7 @@ export const updateGoalTool = defineZodTool({
         ok: true,
         output: JSON.stringify({
           ok: true,
-          status: 'verifying',
+          status: 'completion_requested',
         }),
       };
     } catch (error: unknown) {

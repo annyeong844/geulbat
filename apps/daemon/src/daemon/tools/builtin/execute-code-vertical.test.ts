@@ -309,7 +309,6 @@ void test('WO6-V3 search_memory_index stays usable through the pinned multi-tool
     const waitOutput = JSON.parse(waitResult.output) as Record<string, unknown>;
     assert.equal(waitOutput.kind, 'ptc_execute_code_cell_wait');
     assert.equal(waitOutput.status, 'completed');
-    assert.equal(waitOutput.exitCode, 0, JSON.stringify(waitOutput));
     assert.equal(waitOutput.offloaded, true);
     assert.equal(waitOutput.recoveryTool, 'read_tool_output');
     const outputRef = waitOutput.outputRef;
@@ -348,6 +347,11 @@ void test('WO6-V3 search_memory_index stays usable through the pinned multi-tool
       string,
       unknown
     >;
+    assert.equal(
+      waitOutput.exitCode,
+      0,
+      JSON.stringify({ waitOutput, terminalOutput }),
+    );
     assert.equal(terminalOutput.kind, 'ptc_execute_code_cell_wait');
     assert.equal(terminalOutput.status, 'completed');
     assert.equal(terminalOutput.exitCode, 0);

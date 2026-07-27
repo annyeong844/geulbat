@@ -22,8 +22,16 @@ export {
   type QwenTokenPlanCredential,
   type QwenTokenPlanRegion,
 } from './credential-store.js';
-export { buildQwenChatMessages } from './chat-wire.js';
+export {
+  buildQwenChatMessages,
+  measureQwenChatHistoryBytes,
+} from './chat-wire.js';
 export {
   streamQwenChatCompletions,
   type QwenChatCompletionsInput,
 } from './chat-completions-stream.js';
+export {
+  summarizeQwenHistory,
+  type QwenHistorySummary,
+  type QwenHistorySummaryInput,
+} from './compaction.js';

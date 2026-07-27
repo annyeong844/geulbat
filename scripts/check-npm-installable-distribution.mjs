@@ -9,6 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { collectNpmPackageValidationViolations } from './npm-installable-distribution-validation.mjs';
+import {
+  MODULE_RESOLUTION_ENV_OVERRIDES,
+  PROVIDER_AUTH_ENV_OVERRIDES,
+} from './provider-auth-release-validation.mjs';
 
 const execFileAsync = promisify(execFile);
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -72,16 +76,12 @@ const PACKAGE_WORKSPACES = [
   },
 ];
 
+// 검증기가 "설정되어 있으면 위반"이라고 판정하는 값들은 그대로 위생 처리
+// 대상이다. 두 목록이 갈라지면 개발자 환경의 정상 설정이 게이트를 깨뜨리므로
+// 목록을 복제하지 않고 검증기에서 가져온다.
 const ENV_KEYS_TO_SANITIZE = [
-  'PROVIDER_AUTH_CLIENT_ID',
-  'PROVIDER_AUTH_CLIENT_SECRET',
-  'GEULBAT_PROVIDER_AUTH_INSTALLED_CONFIG_PATH',
-  'GEULBAT_PROVIDER_AUTH_BUNDLED_CONFIG_PATH',
-  'GEULBAT_PROVIDER_AUTH_FILE_PATH',
-  'NODE_OPTIONS',
-  'NODE_PATH',
-  'TS_NODE_PROJECT',
-  'TS_NODE_TRANSPILE_ONLY',
+  ...PROVIDER_AUTH_ENV_OVERRIDES,
+  ...MODULE_RESOLUTION_ENV_OVERRIDES,
 ];
 
 export function parseCheckNpmInstallableDistributionArgs(input) {

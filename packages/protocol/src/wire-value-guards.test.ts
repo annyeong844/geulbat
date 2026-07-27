@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  hasOnlyKeys,
   isBoolean,
   isNumber,
   isPlainRecord,
@@ -31,4 +32,10 @@ void test('wire scalar guards accept only their finite runtime shapes', () => {
   assert.equal(isNumber(Number.POSITIVE_INFINITY), false);
   assert.equal(isBoolean(false), true);
   assert.equal(isBoolean('false'), false);
+});
+
+void test('wire key guard rejects fields outside the declared set', () => {
+  assert.equal(hasOnlyKeys({ kind: 'start' }, ['kind']), true);
+  assert.equal(hasOnlyKeys({ kind: 'start', extra: true }, ['kind']), false);
+  assert.equal(hasOnlyKeys({}, []), true);
 });

@@ -1,4 +1,6 @@
 import type { AgentLoopTerminalCandidateDecision } from '@geulbat/agent-loop/kernel';
+import { sha256Digest } from '@geulbat/content-identity/sha256';
+import { stableStringify } from '@geulbat/content-identity/stable-json';
 import { createLogger } from '@geulbat/structured-logger/logger';
 
 import type { RunExecutionAgentBindings } from '../sessions/run-execution-lifecycle.js';
@@ -8,20 +10,17 @@ import {
   closeInterjectBuffer,
   hasPendingInterject,
 } from '../sessions/active-run-interject-buffer.js';
-import type { ProviderReplayScopeId } from '../runtime-contracts.js';
-import type { HistoryItem, CallModelInput } from '../llm/index.js';
-import { normalizeProviderErrorCode } from '../llm/provider/provider-error.js';
 import { getErrorCode } from '../utils/error.js';
 import {
   describeAgentResultForTextSurface,
   type AgentResult,
 } from './agent-result.js';
 import type { AgentEventEmitter } from './events.js';
+import type { AgentLoopCompletionGapObservation } from './observer/agent-loop-observer.js';
 import {
-  verifyGoalCompletion,
-  type GoalCompletionVerifier,
-} from './goal-completion-verifier.js';
-import type { CallModelFn } from './loop-types.js';
+  shouldStopForNoProgress,
+  type AgentNoProgressPolicy,
+} from './no-progress-policy.js';
 import type { RunState } from './runtime/run-state.js';
 import type { RunId, ThreadId } from './contract.js';
 
@@ -36,27 +35,26 @@ type TerminalVerificationFailureOperation =
   | 'planning_workflow_read'
   | 'goal_read'
   | 'approved_plan_assessment'
-  | 'goal_completion_verifier'
-  | 'goal_verification_record';
+  | 'goal_completion_admission';
 
 interface CreateAgentRunCompletionPolicyArgs extends RunExecutionAgentBindings {
   runId: RunId;
   threadId: ThreadId;
-  history: readonly HistoryItem[];
   runState?: RunState;
   planningWorkflows: Pick<
     PlanningWorkflowStore,
     'readThread' | 'assessExecutionCompletion'
   >;
-  goals: Pick<GoalStore, 'readForRun' | 'recordVerification'>;
+  goals: Pick<GoalStore, 'readForRun' | 'admitCompletion'>;
   emit: AgentEventEmitter;
-  providerAuthRuntime: CallModelInput['providerAuthRuntime'];
-  providerWebSocketSessions: CallModelInput['providerWebSocketSessions'];
-  providerRequestOptions: CallModelInput['providerRequestOptions'];
-  providerReplayScopeId?: ProviderReplayScopeId;
-  callModelImpl?: CallModelFn;
-  goalCompletionVerifier?: GoalCompletionVerifier;
-  signal?: AbortSignal;
+  observeCompletionGap?: (
+    observation: AgentLoopCompletionGapObservation,
+  ) => void;
+  /**
+   * Operator-owned no-progress policy. Absent means observation only, which
+   * keeps the shipped behaviour of the fingerprinting step.
+   */
+  noProgressPolicy?: AgentNoProgressPolicy | undefined;
 }
 
 function safeTerminalVerificationErrorName(error: unknown): string {
@@ -76,29 +74,7 @@ function safeTerminalVerificationErrorName(error: unknown): string {
   }
 }
 
-function safeTerminalVerificationErrorCode(
-  operation: TerminalVerificationFailureOperation,
-  error: unknown,
-): string | undefined {
-  if (operation === 'goal_completion_verifier') {
-    const code = normalizeProviderErrorCode(error);
-    switch (code) {
-      case 'aborted':
-      case 'internal':
-      case 'llm_auth_failed':
-      case 'llm_connect_timeout':
-      case 'llm_context_length_exceeded':
-      case 'llm_context_preparation_required':
-      case 'llm_idle_timeout':
-      case 'llm_overloaded':
-      case 'llm_rate_limited':
-      case 'provider_transition_required':
-        return code;
-      default:
-        return 'internal';
-    }
-  }
-
+function safeTerminalVerificationErrorCode(error: unknown): string | undefined {
   const code = getErrorCode(error);
   switch (code) {
     case 'ABORT_ERR':
@@ -144,7 +120,7 @@ function recordTerminalVerificationFailure(args: {
       approvedPlanId: args.approvedPlanId,
       goalId: args.goalId,
       causeName: safeTerminalVerificationErrorName(args.error),
-      causeCode: safeTerminalVerificationErrorCode(args.operation, args.error),
+      causeCode: safeTerminalVerificationErrorCode(args.error),
     })
     .error('terminal verification failed');
   return {
@@ -180,18 +156,143 @@ export function createAgentRunCompletionPolicy(
     result: AgentResult;
   }): Promise<AgentLoopTerminalCandidateDecision>;
 } {
+  let previousCompletionGap:
+    | Pick<
+        AgentLoopCompletionGapObservation,
+        'evidenceRevision' | 'gapFingerprint' | 'repeatCount'
+      >
+    | undefined;
+
+  function observeCompletionGap(input: {
+    source: TerminalCandidateSource;
+    obligation: AgentLoopCompletionGapObservation['obligation'];
+    gapIdentity: unknown;
+    evidenceIdentity: unknown;
+  }):
+    | Extract<AgentLoopTerminalCandidateDecision, { kind: 'no_progress' }>
+    | undefined {
+    // 같은 내용이면 같은 지문이어야 repeatCount가 "같은 격차의 반복"을 뜻한다.
+    // 키 순서에 흔들리지 않는 판정은 content-identity가 소유한다 — JSON.stringify는
+    // 삽입 순서를 따르므로 동일 내용에 다른 지문을 낼 수 있다.
+    const gapFingerprint = sha256Digest(
+      stableStringify(['agent-completion-gap-v1', input.gapIdentity]),
+    );
+    const evidenceRevision = sha256Digest(
+      stableStringify(['agent-completion-evidence-v1', input.evidenceIdentity]),
+    );
+    const previous = previousCompletionGap;
+    const sameGapAndEvidenceAsPrevious =
+      previous?.gapFingerprint === gapFingerprint &&
+      previous.evidenceRevision === evidenceRevision;
+    const repeatCount =
+      previous !== undefined && sameGapAndEvidenceAsPrevious
+        ? previous.repeatCount + 1
+        : 1;
+    previousCompletionGap = {
+      gapFingerprint,
+      evidenceRevision,
+      repeatCount,
+    };
+    const stopForNoProgress = shouldStopForNoProgress({
+      policy: args.noProgressPolicy,
+      repeatCount,
+      sameGapAndEvidenceAsPrevious,
+    });
+    terminalVerificationLogger
+      .withContext({
+        diagnosticCode: 'terminal_verification.completion_gap_observed',
+        runId: args.runId,
+        threadId: args.threadId,
+        source: input.source,
+        obligation: input.obligation,
+        gapFingerprint,
+        evidenceRevision,
+        repeatCount,
+        sameGapAndEvidenceAsPrevious,
+        noProgressAction: args.noProgressPolicy?.action ?? 'unconfigured',
+        stopForNoProgress,
+      })
+      .info('completion gap observed');
+    args.observeCompletionGap?.({
+      schemaVersion: 1,
+      runId: args.runId,
+      threadId: args.threadId,
+      source: input.source,
+      obligation: input.obligation,
+      gapFingerprint,
+      evidenceRevision,
+      repeatCount,
+      sameGapAndEvidenceAsPrevious,
+    });
+    if (!stopForNoProgress) {
+      return undefined;
+    }
+    // 사용자에게 남기는 이유는 무엇이 막혔는지와 무엇이 바뀌어야 풀리는지다.
+    // gap/evidence identity는 hash로만 남기므로 objective나 plan 본문을 노출하지
+    // 않는다.
+    return {
+      kind: 'no_progress',
+      message:
+        `Stopped after ${repeatCount} identical ${input.obligation} completion gaps with unchanged evidence. ` +
+        'The same requirement stayed unmet and nothing the run did changed it. ' +
+        'Revise the objective, supply the missing authority or input, or resume after changing the underlying state.',
+    };
+  }
+
+  // 유저 스티어가 이미 들어 있으면 모델/검증이 "끝"이라고 말해도 루프를 연다.
+  // await 전 검사만으로는 plan/goal I/O yield 중 도착한 스티어가 terminal 닫힘에
+  // 먹히므로, 모든 hard-stop 직전에도 같은 판정을 다시 쓴다 (CL-05 TOCTOU).
+  function continueForPendingInterject(
+    source: TerminalCandidateSource,
+    result: AgentResult,
+  ):
+    | Extract<AgentLoopTerminalCandidateDecision, { kind: 'continue' }>
+    | undefined {
+    if (
+      args.runState === undefined ||
+      !hasPendingInterject(args.runState.interject)
+    ) {
+      return undefined;
+    }
+    previousCompletionGap = undefined;
+    return source === 'structured_output'
+      ? {
+          kind: 'continue',
+          historyText: describeAgentResultForTextSurface(result),
+        }
+      : { kind: 'continue' };
+  }
+
+  function finalizeTerminal(
+    source: TerminalCandidateSource,
+    result: AgentResult,
+  ): AgentLoopTerminalCandidateDecision {
+    const pending = continueForPendingInterject(source, result);
+    if (pending !== undefined) {
+      return pending;
+    }
+    if (args.runState !== undefined) {
+      closeInterjectBuffer(args.runState.interject);
+    }
+    return { kind: 'terminal' };
+  }
+
+  function preferPendingInterjectOverHardStop(
+    source: TerminalCandidateSource,
+    result: AgentResult,
+    decision: Extract<
+      AgentLoopTerminalCandidateDecision,
+      { kind: 'no_progress' | 'verification_unavailable' }
+    >,
+  ): AgentLoopTerminalCandidateDecision {
+    return continueForPendingInterject(source, result) ?? decision;
+  }
+
   return {
     async resolveTerminalCandidate({ source, result }) {
-      if (
-        args.runState !== undefined &&
-        hasPendingInterject(args.runState.interject)
-      ) {
-        return source === 'structured_output'
-          ? {
-              kind: 'continue',
-              historyText: describeAgentResultForTextSurface(result),
-            }
-          : { kind: 'continue' };
+      const earlyContinue = continueForPendingInterject(source, result);
+      if (earlyContinue !== undefined) {
+        return earlyContinue;
       }
       if (
         args.planningWorkflow !== undefined &&
@@ -206,12 +307,32 @@ export function createAgentRunCompletionPolicy(
             snapshot === null ||
             snapshot.workflowId !== args.planningWorkflow.workflowId
           ) {
-            return {
+            return preferPendingInterjectOverHardStop(source, result, {
               kind: 'verification_unavailable',
               message: 'planning workflow completion verification is stale',
-            };
+            });
           }
           if (snapshot.state === 'collecting') {
+            const noProgress = observeCompletionGap({
+              source,
+              obligation: 'planning_workflow',
+              gapIdentity: {
+                kind: 'planning_workflow_incomplete',
+                workflowId: snapshot.workflowId,
+              },
+              evidenceIdentity: {
+                state: snapshot.state,
+                revision: snapshot.revision ?? null,
+                updatedAt: snapshot.updatedAt,
+              },
+            });
+            if (noProgress !== undefined) {
+              return preferPendingInterjectOverHardStop(
+                source,
+                result,
+                noProgress,
+              );
+            }
             const incomplete = JSON.stringify({
               kind: 'planning_workflow_incomplete',
               requiredNextAction:
@@ -227,15 +348,19 @@ export function createAgentRunCompletionPolicy(
             };
           }
         } catch (error: unknown) {
-          return recordTerminalVerificationFailure({
-            operation: 'planning_workflow_read',
-            error,
-            userMessage:
-              'planning workflow completion verification is unavailable.',
-            runId: args.runId,
-            threadId: args.threadId,
-            planningWorkflowId: args.planningWorkflow.workflowId,
-          });
+          return preferPendingInterjectOverHardStop(
+            source,
+            result,
+            recordTerminalVerificationFailure({
+              operation: 'planning_workflow_read',
+              error,
+              userMessage:
+                'planning workflow completion verification is unavailable.',
+              runId: args.runId,
+              threadId: args.threadId,
+              planningWorkflowId: args.planningWorkflow.workflowId,
+            }),
+          );
         }
       }
       let goalSnapshot;
@@ -246,21 +371,25 @@ export function createAgentRunCompletionPolicy(
             ref: { goalId: args.goal.goalId },
           });
           if (snapshot === null) {
-            return {
+            return preferPendingInterjectOverHardStop(source, result, {
               kind: 'verification_unavailable',
-              message: 'Goal completion verification is stale',
-            };
+              message: 'Goal completion admission is stale',
+            });
           }
           goalSnapshot = snapshot;
         } catch (error: unknown) {
-          return recordTerminalVerificationFailure({
-            operation: 'goal_read',
-            error,
-            userMessage: 'Goal completion verification is unavailable.',
-            runId: args.runId,
-            threadId: args.threadId,
-            goalId: args.goal.goalId,
-          });
+          return preferPendingInterjectOverHardStop(
+            source,
+            result,
+            recordTerminalVerificationFailure({
+              operation: 'goal_read',
+              error,
+              userMessage: 'Goal completion admission is unavailable.',
+              runId: args.runId,
+              threadId: args.threadId,
+              goalId: args.goal.goalId,
+            }),
+          );
         }
       }
       if (
@@ -275,6 +404,34 @@ export function createAgentRunCompletionPolicy(
               executionRunId: args.runId,
             });
           if (assessment.kind === 'incomplete') {
+            const noProgress = observeCompletionGap({
+              source,
+              obligation: 'approved_plan_execution',
+              gapIdentity: {
+                kind: 'approved_plan_execution',
+                ref: {
+                  workflowId: args.approvedPlan.ref.workflowId,
+                  planId: args.approvedPlan.ref.planId,
+                  revision: args.approvedPlan.ref.revision,
+                  digest: args.approvedPlan.ref.digest,
+                },
+                requirementIds: assessment.items.map((item) => item.id).sort(),
+              },
+              evidenceIdentity: {
+                requirements: assessment.items
+                  .map(({ id, status }) => ({ id, status }))
+                  .sort((left, right) =>
+                    left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+                  ),
+              },
+            });
+            if (noProgress !== undefined) {
+              return preferPendingInterjectOverHardStop(
+                source,
+                result,
+                noProgress,
+              );
+            }
             const assessmentText = formatIncompleteApprovedPlanAssessment(
               assessment.items,
             );
@@ -287,126 +444,67 @@ export function createAgentRunCompletionPolicy(
             };
           }
         } catch (error: unknown) {
-          return recordTerminalVerificationFailure({
-            operation: 'approved_plan_assessment',
-            error,
-            userMessage:
-              'approved plan completion verification is unavailable.',
-            runId: args.runId,
-            threadId: args.threadId,
-            approvedPlanWorkflowId: args.approvedPlan.ref.workflowId,
-            approvedPlanId: args.approvedPlan.ref.planId,
-          });
+          return preferPendingInterjectOverHardStop(
+            source,
+            result,
+            recordTerminalVerificationFailure({
+              operation: 'approved_plan_assessment',
+              error,
+              userMessage:
+                'approved plan completion verification is unavailable.',
+              runId: args.runId,
+              threadId: args.threadId,
+              approvedPlanWorkflowId: args.approvedPlan.ref.workflowId,
+              approvedPlanId: args.approvedPlan.ref.planId,
+            }),
+          );
         }
       }
       if (args.goal !== undefined && goalSnapshot !== undefined) {
         const snapshot = goalSnapshot;
         if (snapshot.state === 'verifying') {
-          let panel: Awaited<ReturnType<GoalCompletionVerifier['verify']>>;
           try {
-            panel =
-              args.goalCompletionVerifier === undefined
-                ? await verifyGoalCompletion({
-                    goal: snapshot,
-                    history: args.history,
-                    runId: args.runId,
-                    providerAuthRuntime: args.providerAuthRuntime,
-                    providerWebSocketSessions: args.providerWebSocketSessions,
-                    providerRequestOptions: args.providerRequestOptions,
-                    ...(args.providerReplayScopeId === undefined
-                      ? {}
-                      : {
-                          providerReplayScopeId: args.providerReplayScopeId,
-                        }),
-                    ...(args.callModelImpl === undefined
-                      ? {}
-                      : { callModelImpl: args.callModelImpl }),
-                    ...(args.signal === undefined
-                      ? {}
-                      : { signal: args.signal }),
-                  })
-                : await args.goalCompletionVerifier.verify({
-                    goal: snapshot,
-                    history: args.history,
-                    runId: args.runId,
-                    ...(args.signal === undefined
-                      ? {}
-                      : { signal: args.signal }),
-                  });
+            const completed = await args.goals.admitCompletion({
+              threadId: args.threadId,
+              goalId: args.goal.goalId,
+              runId: args.runId,
+            });
+            args.emit('goal_updated', completed);
           } catch (error: unknown) {
-            return recordTerminalVerificationFailure({
-              operation: 'goal_completion_verifier',
-              error,
-              userMessage: 'Goal completion verification is unavailable.',
-              runId: args.runId,
-              threadId: args.threadId,
-              goalId: args.goal.goalId,
-            });
-          }
-          let verified;
-          try {
-            verified = await args.goals.recordVerification({
-              threadId: args.threadId,
-              goalId: args.goal.goalId,
-              runId: args.runId,
-              outcome: panel.outcome,
-              votes: panel.votes,
-            });
-          } catch (error: unknown) {
-            return recordTerminalVerificationFailure({
-              operation: 'goal_verification_record',
-              error,
-              userMessage: 'Goal completion verification is unavailable.',
-              runId: args.runId,
-              threadId: args.threadId,
-              goalId: args.goal.goalId,
-            });
-          }
-          args.emit('goal_updated', verified);
-          if (panel.outcome.kind === 'achieved') {
-            return {
-              kind: 'continue',
-              historyText: JSON.stringify({
-                kind: 'goal_completion_verified',
-                instruction:
-                  'Give the user the concise final answer now. Do not call update_goal again.',
+            return preferPendingInterjectOverHardStop(
+              source,
+              result,
+              recordTerminalVerificationFailure({
+                operation: 'goal_completion_admission',
+                error,
+                userMessage: 'Goal completion admission is unavailable.',
+                runId: args.runId,
+                threadId: args.threadId,
+                goalId: args.goal.goalId,
               }),
-            };
-          }
-          if (panel.outcome.kind === 'incomplete') {
-            return {
-              kind: 'continue',
-              historyText: JSON.stringify({
-                kind: 'goal_completion_assessment',
-                verdict: 'not_achieved',
-                unmetRequirements: panel.outcome.unmetRequirements,
-                instruction:
-                  'Continue the Goal and address these requirements before requesting verification again.',
-              }),
-            };
+            );
           }
           return {
-            kind: 'verification_unavailable',
-            message: panel.outcome.message,
+            kind: 'continue',
+            historyText: JSON.stringify({
+              kind: 'goal_completion_admitted',
+              basis: 'deterministic_host_obligations_satisfied',
+              instruction:
+                'Give the user the concise final answer now. Do not call update_goal again.',
+            }),
           };
         }
         if (snapshot.state === 'completed') {
-          if (args.runState !== undefined) {
-            closeInterjectBuffer(args.runState.interject);
-          }
-          return { kind: 'terminal' };
+          return finalizeTerminal(source, result);
         }
         if (snapshot.state === 'verification_unavailable') {
-          return {
+          return preferPendingInterjectOverHardStop(source, result, {
             kind: 'verification_unavailable',
-            message: 'Goal completion verification is unavailable',
-          };
+            message: 'Goal completion admission is unavailable',
+          });
         }
         if (snapshot.state === 'paused' || source === 'tool_completion') {
-          if (args.runState !== undefined) {
-            closeInterjectBuffer(args.runState.interject);
-          }
-          return { kind: 'terminal' };
+          return finalizeTerminal(source, result);
         }
         const continuation = JSON.stringify({
           kind: 'goal_incomplete',
@@ -414,6 +512,25 @@ export function createAgentRunCompletionPolicy(
           instruction:
             'Continue working. Call update_goal only after concrete evidence shows the Goal is complete.',
         });
+        const goalNoProgress = observeCompletionGap({
+          source,
+          obligation: 'goal_completion',
+          gapIdentity: {
+            kind: 'goal_incomplete',
+            goalId: snapshot.goalId,
+          },
+          evidenceIdentity: {
+            state: snapshot.state,
+            updatedAt: snapshot.updatedAt,
+          },
+        });
+        if (goalNoProgress !== undefined) {
+          return preferPendingInterjectOverHardStop(
+            source,
+            result,
+            goalNoProgress,
+          );
+        }
         return {
           kind: 'continue',
           historyText:
@@ -422,10 +539,7 @@ export function createAgentRunCompletionPolicy(
               : continuation,
         };
       }
-      if (args.runState !== undefined) {
-        closeInterjectBuffer(args.runState.interject);
-      }
-      return { kind: 'terminal' };
+      return finalizeTerminal(source, result);
     },
   };
 }

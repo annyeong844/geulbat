@@ -70,6 +70,8 @@ export interface PtcSessionEpochBridge {
   token: string;
   callbackSocketHostPath: string;
   callbackSocketContainerPath: string;
+  callbackProcessOutputRef?: string;
+  replaceCallbackHandler?(handler: PtcEpochCallbackHandler): void;
   session: PtcSessionDockerHandle;
   close(): Promise<void>;
 }
@@ -78,6 +80,7 @@ export interface CreatePtcSessionEpochBridgeArgs {
   identity: PtcSessionDockerIdentity;
   sessionManager: PtcSessionDockerManager;
   callbackHandler: PtcEpochCallbackHandler;
+  processInvocationId?: string;
   callbackPolicy?: PtcSessionEpochBridgeCallbackPolicy;
   callbackFactory?: PtcEpochCallbackChannelFactory;
   signal?: AbortSignal;
@@ -153,6 +156,9 @@ export async function createPtcSessionEpochBridge(
     channel = await (args.callbackFactory ?? createPtcEpochCallbackChannel)({
       rootDir: handle.callbackRootHostPath,
       handler: args.callbackHandler,
+      ...(args.processInvocationId === undefined
+        ? {}
+        : { processInvocationId: args.processInvocationId }),
       ...(args.callbackPolicy ?? {}),
     });
   } catch (error: unknown) {
@@ -186,6 +192,15 @@ export async function createPtcSessionEpochBridge(
       token: channel.token,
       callbackSocketHostPath: channel.socketPath,
       callbackSocketContainerPath: projected.value,
+      ...(channel.processOutputRef === undefined
+        ? {}
+        : { callbackProcessOutputRef: channel.processOutputRef }),
+      ...(channel.replaceHandler === undefined
+        ? {}
+        : {
+            replaceCallbackHandler: (handler) =>
+              channel.replaceHandler?.(handler),
+          }),
       session: handle,
       close: async () => {
         if (closed) {

@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import type { ProviderReplayScopeId } from '../../../runtime-contracts.js';
 import type { HistoryItem } from '../wire/types.js';
-import { buildQwenChatMessages } from './index.js';
+import { buildQwenChatMessages, measureQwenChatHistoryBytes } from './index.js';
 
 void test('Qwen chat wire groups reasoning, final text, tool calls, and tool outputs', () => {
   const history: HistoryItem[] = [
@@ -47,6 +47,13 @@ void test('Qwen chat wire groups reasoning, final text, tool calls, and tool out
       content: '{"content":"Geulbat"}',
     },
   ]);
+  assert.equal(
+    measureQwenChatHistoryBytes({ history }),
+    Buffer.byteLength(
+      JSON.stringify(buildQwenChatMessages({ history })),
+      'utf8',
+    ),
+  );
 });
 
 void test('Qwen chat wire converts image and text attachments without losing user text', () => {

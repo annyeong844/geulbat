@@ -408,9 +408,9 @@ export function HomeShell(props: HomeShellProps) {
                   closeSessionManager();
                 }}
                 onRefresh={leftPanelView.threadList.onLoad}
-                onSelectedThreadDeleted={leftPanelView.threadList.onNewSession}
+                onSelectedThreadDeleted={leftPanelView.onNewSession}
                 onNewSession={() => {
-                  leftPanelView.threadList.onNewSession();
+                  leftPanelView.onNewSession();
                   setRightTab('chat');
                   closeSessionManager();
                 }}
@@ -524,7 +524,7 @@ export function HomeShell(props: HomeShellProps) {
                 title="새 세션"
                 aria-label="새 세션"
                 onClick={() => {
-                  leftPanelView.threadList.onNewSession();
+                  leftPanelView.onNewSession();
                   setRightTab('chat');
                 }}
               >

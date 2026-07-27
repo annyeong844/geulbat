@@ -46,14 +46,23 @@ void test('RunTranscriptEntryBlock renders run transcript leaf entries', () => {
         childRunId: 'child-run-1',
         subagentType: 'explorer',
         state: 'completed',
-        result: 'summary',
+        result: '정확한 원문',
+        resultRef: 'subagent-result:delivery-report',
+        resultDigest: `sha256:${'a'.repeat(64)}`,
+        resultReport: {
+          summary: '짧은 결과 보고',
+          sourceResultRef: 'subagent-result:delivery-report',
+          sourceResultDigest: `sha256:${'a'.repeat(64)}`,
+        },
       }}
     />,
   );
 
   // 작가-facing 한 줄 요약 + expand (§3.3.2 #5)
   assert.match(subagentHtml, /explorer 작업 완료/);
-  assert.match(subagentHtml, /summary/);
+  assert.match(subagentHtml, /결과 보고: 짧은 결과 보고/);
+  assert.match(subagentHtml, /원문 결과: 정확한 원문/);
+  assert.match(subagentHtml, /원문 결과 참조: subagent-result:delivery-report/);
   assert.match(subagentHtml, /<details/);
 });
 
@@ -198,7 +207,17 @@ void test('RunTranscriptEntryBlock renders subagent terminal telemetry as CC-sty
     />,
   );
 
-  assert.match(subagentHtml, /7m 55s/);
+  // 접힌 요약줄은 제목과 경과 시간만 말한다. capability·도구 표면·토큰 누적을
+  // 여기 옮겨 적으면 제목이 계측에 밀린다.
+  const summaryHtml = subagentHtml.slice(
+    subagentHtml.indexOf('<summary'),
+    subagentHtml.indexOf('</summary>'),
+  );
+  assert.match(summaryHtml, /explorer 작업 완료/);
+  assert.match(summaryHtml, /7m 55s/);
+  assert.doesNotMatch(summaryHtml, /capability|도구:|런 누적/);
+
+  // 펼친 본문이 계측의 정본이다.
   assert.match(subagentHtml, /도구: 읽기·검색 \+ PTC/);
   assert.match(subagentHtml, /capability: PTC/);
   assert.match(
@@ -210,7 +229,7 @@ void test('RunTranscriptEntryBlock renders subagent terminal telemetry as CC-sty
     /토큰 \(런 누적\): 총 입력 15.9k · 그중 캐시 900 · 출력 1.2k/,
   );
 
-  // Telemetry-free entries keep the bare title (no empty parentheses).
+  // 말할 시간이 없으면 자리 자체를 만들지 않는다.
   const bareHtml = renderToStaticMarkup(
     <RunTranscriptEntryBlock
       entry={{
@@ -221,7 +240,7 @@ void test('RunTranscriptEntryBlock renders subagent terminal telemetry as CC-sty
       }}
     />,
   );
-  assert.doesNotMatch(bareHtml, /\(/);
+  assert.doesNotMatch(bareHtml, /subagent-work-elapsed/);
 });
 
 void test('RunTranscriptEntryBlock renders durable live diagnostics and exact failure reason', () => {

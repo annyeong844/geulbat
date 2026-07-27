@@ -21,13 +21,13 @@ interface Props {
 
 const MAX_APPROVAL_PREVIEW_CHARS = 1200;
 
-// 허용 범위 — 셀렉트 대신 칩. run은 사용자에게 "이번 답변"이 실체다.
+// 허용 범위 — 셀렉트 대신 칩. run은 현재 durable 실행의 수명이다.
 const SCOPE_OPTIONS: ReadonlyArray<{
   value: ApprovalGrantScope;
   label: string;
 }> = [
   { value: 'once', label: '이번만' },
-  { value: 'run', label: '이번 답변' },
+  { value: 'run', label: '현재 실행' },
   { value: 'session', label: '이 컴퓨터 세션' },
 ];
 

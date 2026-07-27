@@ -34,6 +34,10 @@ void test('Qwen context capacity is explicit for the admitted preview model and 
     model: 'qwen3.8-max-preview',
     contextWindow: 1_000_000,
     thresholdTokens: 850_000,
+    compactionMethod: 'summary',
+    summaryMaxOutputTokens: 20_000,
+    summaryThinkingEnabled: true,
+    compactionVersion: 1,
   });
   assert.throws(
     () => resolveQwenContextCapacityPolicy('qwen-future-model'),

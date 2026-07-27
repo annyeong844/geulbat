@@ -1,13 +1,8 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import type { ErrorCode } from '@geulbat/protocol/errors';
-import type { PermissionMode } from '@geulbat/protocol/run-approval';
 import type {
   RunAttachmentInput,
-  RunModelId,
-  RunReasoningSelection,
   RunRequest,
-  RunServiceTier,
-  RunSubagentModelRouting,
 } from '@geulbat/protocol/run-contract';
 import {
   DEFAULT_RUN_SERVICE_TIER,
@@ -15,10 +10,6 @@ import {
   resolveMaximumReasoningEffort,
 } from '@geulbat/protocol/run-contract';
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
-import type {
-  PlanModeDepth,
-  PlanModeIntensity,
-} from '@geulbat/protocol/planning-workflow';
 import { isSamePlanRenderingStamp } from '@geulbat/protocol/planning-workflow';
 import type {
   PrepareProviderTransitionRequest,
@@ -37,10 +28,17 @@ import {
 } from '../../lib/run-transcript-entry.js';
 import {
   AssistantComposer,
+  type AssistantComposerControls,
   type AssistantComposerDraftRequest,
   type ComposerAttachment,
 } from './AssistantComposer.js';
+export type { AssistantComposerControls };
 import { AssistantTranscript } from './AssistantTranscript.js';
+import { PendingSteerList } from './PendingSteerList.js';
+import type {
+  TranscriptMessageEditActions,
+  TranscriptRowInteractions,
+} from './assistant-transcript-virtual-list.js';
 import type { WidgetToolRequestHandler } from './visualize/visualize-widget.js';
 import { readVisualizeWidgetViewFromToolCallContent } from './visualize/visualize-widget-view.js';
 import { assistantStyles } from './assistant-styles.js';
@@ -49,9 +47,11 @@ import {
   ChildSessionViewer,
   type ChildSessionTarget,
 } from './ChildSessionViewer.js';
-import { PendingSteerList } from './PendingSteerList.js';
 import { ProviderTransitionDialog } from './provider-transition-dialog.js';
-import { resolveLatestRunPlan } from './run-plan/run-plan.js';
+import {
+  resolveLatestLiveRunPlan,
+  resolveRunPlanHistory,
+} from './run-plan/run-plan.js';
 import { useAssistantProviderTransition } from './use-assistant-provider-transition.js';
 import { useAskUserAnswerHandoff } from './use-ask-user-answer-handoff.js';
 import { useComposerAttachments } from './use-composer-attachments.js';
@@ -65,28 +65,6 @@ import {
   type AssistantPlanningWorkflow,
 } from './run-plan/planning-workflow-card.js';
 import { GoalStatusCard, type AssistantGoal } from './goal-status-card.js';
-
-// 컴포저 상단 컨트롤 한 벌 — 값과 변경 핸들러가 항상 짝으로 움직여
-// AssistantComposer 한 곳으로 흘러간다. onModelIdChange만 소비처가 둘이다:
-// 컴포저에는 제공자 전환 훅이 감싼 requestModelChange가 대신 간다.
-export interface AssistantComposerControls {
-  permissionMode: PermissionMode;
-  onPermissionModeChange: (mode: PermissionMode) => Promise<void> | void;
-  planModeRequested: boolean;
-  onPlanModeRequestedChange: (planModeRequested: boolean) => void;
-  planModeIntensity: PlanModeIntensity;
-  onPlanModeIntensityChange: (intensity: PlanModeIntensity) => void;
-  planModeDepth: PlanModeDepth;
-  onPlanModeDepthChange: (depth: PlanModeDepth) => void;
-  modelId: RunModelId;
-  onModelIdChange: (modelId: RunModelId) => void;
-  reasoningEffort: RunReasoningSelection;
-  onReasoningEffortChange: (effort: RunReasoningSelection) => void;
-  serviceTier: RunServiceTier;
-  onServiceTierChange: (serviceTier: RunServiceTier) => void;
-  subagentModelRouting: RunSubagentModelRouting;
-  onSubagentModelRoutingChange: (routing: RunSubagentModelRouting) => void;
-}
 
 // HomeShell은 런 세션 뷰를 통째로 spread해 이 컴포넌트에 넘긴다. 그래서
 // 여기 prop이 늘어나도 배선 누락은 타입이 아니라 "화면에서 조용히 사라짐"으로
@@ -352,6 +330,9 @@ export function Assistant({
   // 번들 언팩 — 렌더는 기존 로컬 이름을 그대로 쓴다
   const workspaceInput = { ...EMPTY_WORKSPACE, ...workspace };
   const workingDirectoryPicker = useWorkingDirectoryPicker(workspaceInput);
+  // 3단 구성: 컴포저 위의 바가 보낸 말들을 모아 두고(1), 거기서 즉시 반영으로
+  // 큐 전체를 앞당기고(2), 대화에서 반짝이는 그 말풍선을 누르면 바로
+  // 적용된다(3). 셋은 같은 큐를 다른 거리에서 다룬다.
   const pendingSteers = steering?.pendingSteers ?? EMPTY_PENDING_STEERS;
   const onCancelSteer = steering?.onCancelSteer;
   const onFlushSteers = steering?.onFlushSteers;
@@ -557,10 +538,22 @@ export function Assistant({
 
   // 진행 상황 체크리스트 — live update_plan이 있으면 그것이 현재 계획이고,
   // 없으면 아직 final answer로 닫히지 않은 settled 호출만 사용한다.
+  //
+  // 비싼 계산과 싼 계산을 서로 다른 의존에 묶는다. settled 기록 전체를 훑는
+  // `resolveRunPlanHistory`는 `messages`만 보므로 스트리밍 델타로 다시 돌 이유가
+  // 없다. 반면 라이브 엔트리 역방향 조회는 현재 런 안에서만 돌아 저렴하다
+  // (`transcriptEntries`는 런/스레드 전환에서 `createEmptyActiveRunView`로 새로
+  // 시작한다). 둘을 한 memo에 두면 토큰이 도착할 때마다 기록 전체를 다시 훑는데,
+  // 계획을 쓰지 않는 대화에서는 그것이 매 델타의 순수 헛일이 된다.
+  const settledPendingRunPlan = useMemo(
+    () => resolveRunPlanHistory(messages).pendingPlan,
+    [messages],
+  );
   const activeRunPlan = useMemo(() => {
-    const plan = resolveLatestRunPlan({ messages, transcriptEntries });
+    const plan =
+      resolveLatestLiveRunPlan(transcriptEntries) ?? settledPendingRunPlan;
     return plan?.some((step) => step.status !== 'completed') ? plan : null;
-  }, [messages, transcriptEntries]);
+  }, [settledPendingRunPlan, transcriptEntries]);
   const planningWorkflowSnapshot = planningWorkflow?.snapshot ?? null;
   const planningVisualization = useMemo(() => {
     const snapshot = planningWorkflowSnapshot;
@@ -655,6 +648,81 @@ export function Assistant({
     [attachments, clearAttachments, isBusy, onSend, uploadPending],
   );
 
+  // 행 계층으로 내려가는 상호작용 표면 — VirtualizedTranscriptRows와 행
+  // 콘텐츠가 React.memo이므로 객체 identity를 렌더마다 새로 만들지 않는다.
+  const transcriptRowInteractions = useMemo<TranscriptRowInteractions>(
+    () => ({
+      onStartArtifactRun,
+      ...(attachmentImageUrl !== undefined ? { attachmentImageUrl } : {}),
+      onOpenChildSession: setChildSessionTarget,
+      // visualize 위젯의 sendPrompt — 컴포저와 같은 전송 경로로 합류시켜
+      // 실행 중이면 스티어, 아니면 새 턴이 된다. 전용 경로가 배선되면
+      // 턴이 아티팩트 발로 귀속 렌더된다.
+      onWidgetPrompt: onWidgetPrompt ?? onSend,
+      // 아직 읽히지 않은 내 말 되돌리기 — 그 말풍선이 가진 동작이다
+      ...(onCancelSteer === undefined
+        ? {}
+        : {
+            onCancelPendingSteer: (receivedSeq: number) => {
+              void onCancelSteer(receivedSeq);
+            },
+          }),
+      // 반짝이는 말풍선을 누르면 지금 반영 — 앞당길 대상과 버튼을 한 자리에
+      ...(onFlushSteers === undefined
+        ? {}
+        : {
+            onFlushPendingSteer: () => {
+              void onFlushSteers();
+            },
+          }),
+      // ask_user 답변은 현재 run이 done/settle된 뒤 정확히 한 번의 새
+      // 사용자 턴으로 보낸다. 실행 중 스티어 경로로는 보내지 않는다.
+      onAskUserAnswer: handleAskUserAnswer,
+      answeredAskUserRequestKeys,
+      ...(onWidgetToolRequest !== undefined ? { onWidgetToolRequest } : {}),
+      ...(onOpenArtifact !== undefined ? { onOpenArtifact } : {}),
+    }),
+    [
+      answeredAskUserRequestKeys,
+      attachmentImageUrl,
+      handleAskUserAnswer,
+      onCancelSteer,
+      onFlushSteers,
+      onOpenArtifact,
+      onSend,
+      onStartArtifactRun,
+      onWidgetPrompt,
+      onWidgetToolRequest,
+      setChildSessionTarget,
+    ],
+  );
+  // 표시 조건은 여기서 판정한다 — 조건이 거짓이면 콜백을 넣지 않아 행이
+  // 해당 액션을 그리지 않는다.
+  const transcriptMessageEditActions = useMemo<TranscriptMessageEditActions>(
+    () => ({
+      ...(canRetryLastPrompt ? { onRetryLastPrompt: retryLastPrompt } : {}),
+      ...(canEditLastUserPrompt
+        ? { onEditLastUserPrompt: editLastUserPrompt }
+        : {}),
+      ...(canBranchFromMessage
+        ? { onBranchFromMessage: branchFromMessage }
+        : {}),
+      ...(canEditPastUserPrompt
+        ? { onEditPastUserPrompt: editPastUserPrompt }
+        : {}),
+    }),
+    [
+      branchFromMessage,
+      canBranchFromMessage,
+      canEditLastUserPrompt,
+      canEditPastUserPrompt,
+      canRetryLastPrompt,
+      editLastUserPrompt,
+      editPastUserPrompt,
+      retryLastPrompt,
+    ],
+  );
+
   return (
     <section className="assistant" style={assistantStyles.section}>
       <AssistantTranscript
@@ -670,29 +738,8 @@ export function Assistant({
         isRunning={isRunning}
         usageTotals={usageTotals}
         providerRuntime={providerRuntime}
-        onStartArtifactRun={onStartArtifactRun}
-        {...(attachmentImageUrl !== undefined ? { attachmentImageUrl } : {})}
-        {...(canRetryLastPrompt ? { onRetryLastPrompt: retryLastPrompt } : {})}
-        {...(canEditLastUserPrompt
-          ? { onEditLastUserPrompt: editLastUserPrompt }
-          : {})}
-        {...(canBranchFromMessage
-          ? { onBranchFromMessage: branchFromMessage }
-          : {})}
-        {...(canEditPastUserPrompt
-          ? { onEditPastUserPrompt: editPastUserPrompt }
-          : {})}
-        onOpenChildSession={setChildSessionTarget}
-        // visualize 위젯의 sendPrompt — 컴포저와 같은 전송 경로로 합류시켜
-        // 실행 중이면 스티어, 아니면 새 턴이 된다. 전용 경로가 배선되면
-        // 턴이 아티팩트 발로 귀속 렌더된다.
-        onWidgetPrompt={onWidgetPrompt ?? onSend}
-        // ask_user 답변은 현재 run이 done/settle된 뒤 정확히 한 번의 새
-        // 사용자 턴으로 보낸다. 실행 중 스티어 경로로는 보내지 않는다.
-        onAskUserAnswer={handleAskUserAnswer}
-        answeredAskUserRequestKeys={answeredAskUserRequestKeys}
-        {...(onWidgetToolRequest !== undefined ? { onWidgetToolRequest } : {})}
-        {...(onOpenArtifact !== undefined ? { onOpenArtifact } : {})}
+        rowInteractions={transcriptRowInteractions}
+        messageEditActions={transcriptMessageEditActions}
       />
 
       {childSessionTarget !== null ? (
@@ -718,44 +765,45 @@ export function Assistant({
         </div>
       ) : null}
 
-      {approvalPanel}
-      {planningWorkflow === null ? null : (
-        <PlanningWorkflowCard
-          key={`${planningWorkflow.snapshot.workflowId}:${'revision' in planningWorkflow.snapshot ? (planningWorkflow.snapshot.revision ?? 0) : 0}:${planningWorkflow.snapshot.state}`}
-          workflow={planningWorkflow}
-          visualization={planningVisualization}
-          onWidgetPrompt={onWidgetPrompt ?? onSend}
-        />
-      )}
-      {goal === null ? null : (
-        <GoalStatusCard
-          key={`${goal.snapshot.goalId}:${goal.snapshot.state}`}
-          goal={goal}
-        />
-      )}
-
-      {onCancelSteer !== undefined ? (
-        <PendingSteerList
-          steers={pendingSteers}
-          flushRequested={pendingSteerFlushRequested}
-          onCancel={(receivedSeq) => {
-            void onCancelSteer(receivedSeq);
-          }}
-          {...(onFlushSteers !== undefined
-            ? {
-                onFlush: () => {
-                  void onFlushSteers();
-                },
-              }
-            : {})}
-        />
-      ) : null}
-
       <WorkingDirectoryPickerDialog overlay={workingDirectoryPicker.overlay} />
 
-      {/* 컨텍스트 줄·셸프·컴포저를 한 읽기 컬럼으로 묶어 본문과 함께 가운데로
-          모은다. 넓은 모니터에서 왼쪽 끝에 홀로 남지 않게 한다. */}
+      {/* 계획/승인/스티어·컨텍스트·셸프·컴포저를 같은 읽기 컬럼에 묶는다.
+          채팅만 모드처럼 패널이 넓어져도 본문·카드·입력이 서로 다른 폭으로
+          어긋나지 않게 한다. */}
       <div className="composer-region">
+        {approvalPanel}
+        {planningWorkflow === null ? null : (
+          <PlanningWorkflowCard
+            key={`${planningWorkflow.snapshot.workflowId}:${'revision' in planningWorkflow.snapshot ? (planningWorkflow.snapshot.revision ?? 0) : 0}:${planningWorkflow.snapshot.state}`}
+            workflow={planningWorkflow}
+            visualization={planningVisualization}
+            onWidgetPrompt={onWidgetPrompt ?? onSend}
+          />
+        )}
+        {goal === null ? null : (
+          <GoalStatusCard
+            key={`${goal.snapshot.goalId}:${goal.snapshot.state}`}
+            goal={goal}
+          />
+        )}
+
+        {onCancelSteer !== undefined ? (
+          <PendingSteerList
+            steers={pendingSteers}
+            flushRequested={pendingSteerFlushRequested}
+            onCancel={(receivedSeq) => {
+              void onCancelSteer(receivedSeq);
+            }}
+            {...(onFlushSteers !== undefined
+              ? {
+                  onFlush: () => {
+                    void onFlushSteers();
+                  },
+                }
+              : {})}
+          />
+        ) : null}
+
         {/* 컨텍스트 줄 — 어시스턴트가 보고 있는 시작 위치. 클릭 = 위치 변경.
           활동 셸프(진행 상황)가 떠 있는 동안은 숨긴다 — 카드 위에 떠서
           시각 소음이 된다. 셸프가 컴포저 바로 위 계약을 갖는다. */}
@@ -797,27 +845,13 @@ export function Assistant({
           onDismissFollowupSuggestion={onDismissFollowupSuggestion}
           isBusy={isBusy}
           isRunning={canInterject}
-          permissionMode={composerControls.permissionMode}
-          modelId={composerControls.modelId}
+          controls={{
+            ...composerControls,
+            // 모델 변경만 제공자 전환 훅을 거친다 — 문맥 한계에 걸리면
+            // 압축 확인을 띄우고 통과하면 원래 컨트롤 핸들러로 내린다.
+            onModelIdChange: requestModelChange,
+          }}
           contextUsage={contextUsage}
-          reasoningEffort={composerControls.reasoningEffort}
-          serviceTier={composerControls.serviceTier}
-          subagentModelRouting={composerControls.subagentModelRouting}
-          onPermissionModeChange={composerControls.onPermissionModeChange}
-          planModeRequested={composerControls.planModeRequested}
-          onPlanModeRequestedChange={composerControls.onPlanModeRequestedChange}
-          planModeIntensity={composerControls.planModeIntensity}
-          onPlanModeIntensityChange={composerControls.onPlanModeIntensityChange}
-          planModeDepth={composerControls.planModeDepth}
-          onPlanModeDepthChange={composerControls.onPlanModeDepthChange}
-          // 모델 변경만 제공자 전환 훅을 거친다 — 문맥 한계에 걸리면 압축
-          // 확인을 띄우고 통과하면 composerControls.onModelIdChange로 내린다.
-          onModelIdChange={requestModelChange}
-          onReasoningEffortChange={composerControls.onReasoningEffortChange}
-          onServiceTierChange={composerControls.onServiceTierChange}
-          onSubagentModelRoutingChange={
-            composerControls.onSubagentModelRoutingChange
-          }
           workingDirectory={workspaceInput.workingDirectory}
           browseStartPath={workspaceInput.browseStartPath}
           workingDirectorySelectionPending={

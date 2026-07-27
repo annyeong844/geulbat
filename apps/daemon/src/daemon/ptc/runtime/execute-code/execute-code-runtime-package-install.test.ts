@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { runHostRoutedDockerCommandForTest } from '../../../../test-support/host-routed-docker-command.js';
 import { createPtcSessionDockerCommandFixture } from '../../../../test-support/ptc-session-docker.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { makeRunContext } from '../../../../test-support/run-context.js';
@@ -23,6 +24,7 @@ import {
 import {
   PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX,
   PTC_EXECUTE_CODE_INSTALLED_PACKAGES_NODE_PATH,
+  PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH,
   type PtcExecuteCodeRuntimeSdkProjection,
 } from './execute-code-runtime-contract.js';
 
@@ -180,6 +182,7 @@ void test('enabled package install exposes one shared session to CommonJS and ex
   const fixture = createPtcSessionDockerCommandFixture({
     policy: createPtcSessionDockerOpenNetworkPackageInstallPolicy({
       tmpTmpfsSize: TEST_PACKAGE_INSTALL_CONFIG.tmpTmpfsSize,
+      packageManagerFamilies: ['npm', 'pip'],
     }),
     commandResult: (invocation) => {
       const command = execCommandOf(invocation);
@@ -229,6 +232,9 @@ void test('enabled package install exposes one shared session to CommonJS and ex
     assert.equal(install.ok, true);
     if (!install.ok) {
       return;
+    }
+    if (install.value.manager !== 'npm') {
+      assert.fail(`expected npm summary, received ${install.value.manager}`);
     }
     assert.equal(
       install.value.labPolicyId,
@@ -382,6 +388,141 @@ void test('enabled package install exposes one shared session to CommonJS and ex
   }
 });
 
+void test('enabled Python package install and exec reuse one pip-aware session', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-python-pkg-enabled-ws-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-python-pkg-enabled-rt-'),
+  );
+  let installCommand: string | undefined;
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerOpenNetworkPackageInstallPolicy({
+      tmpTmpfsSize: TEST_PACKAGE_INSTALL_CONFIG.tmpTmpfsSize,
+      packageManagerFamilies: ['npm', 'pip'],
+    }),
+    commandResult: (invocation) => {
+      const command = execCommandOf(invocation);
+      if (command === undefined) {
+        return undefined;
+      }
+      if (command.includes('pip --isolated install')) {
+        installCommand = command;
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: 'Successfully installed requests-2.32.3\n',
+          stderr: '',
+        };
+      }
+      if (command.includes('pip --isolated inspect')) {
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: JSON.stringify({
+            version: '1',
+            pip_version: '26.0',
+            installed: [
+              {
+                metadata: {
+                  metadata_version: '2.4',
+                  name: 'requests',
+                  version: '2.32.3',
+                },
+                metadata_location:
+                  PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH,
+                installer: 'pip',
+                requested: true,
+              },
+            ],
+          }),
+          stderr: '',
+        };
+      }
+      if (command.includes('exec python3 -I -u -')) {
+        return {
+          kind: 'exit',
+          exitCode: 0,
+          stdout: '2.32.3\n',
+          stderr: '',
+        };
+      }
+      return undefined;
+    },
+  });
+  const runtime = createPtcExecuteCodeRuntime({
+    callbackTransportPolicy: TEST_CALLBACK_TRANSPORT_POLICY,
+    commandRunner: fixture.runner,
+    runtimeRootForState: () => runtimeRoot,
+    packageInstall: TEST_PACKAGE_INSTALL_CONFIG,
+  });
+
+  try {
+    const runContext = makeRunContext({
+      threadId: testThreadId(922_2),
+      stateRoot,
+    });
+    const install = await runtime.installPackages({
+      runContext,
+      request: {
+        language: 'python',
+        packages: [{ name: 'requests', version: '2.32.3' }],
+      },
+    });
+    assert.equal(install.ok, true);
+    if (!install.ok) {
+      return;
+    }
+    assert.equal(install.value.manager, 'pip');
+    assert.equal(install.value.language, 'python');
+    assert.equal(
+      install.value.installedPackagesPythonPath,
+      PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH,
+    );
+    assert.deepEqual(install.value.resolvedPackages, [
+      {
+        name: 'requests',
+        requestedSpec: '==2.32.3',
+        resolvedVersion: '2.32.3',
+        integrity: null,
+      },
+    ]);
+    assert.ok(installCommand);
+    assert.ok(installCommand.includes("--only-binary ':all:'"));
+    assert.ok(
+      installCommand.includes(
+        `--target '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
+      ),
+    );
+
+    const exec = await runtime.executeCode({
+      runContext,
+      request: {
+        language: 'python',
+        code: 'import requests\nprint(requests.__version__)',
+      },
+    });
+    if (!exec.ok) {
+      assert.fail(`Python package exec failed: ${JSON.stringify(exec)}`);
+    }
+    if (!('language' in exec.value)) {
+      assert.fail('expected a completed Python batch summary');
+    }
+    assert.equal(exec.value.language, 'python');
+    assert.equal(exec.value.stdout, '2.32.3\n');
+    assert.equal(
+      fixture.invocations.filter(
+        (invocation) => invocation.args[0] === 'create',
+      ).length,
+      1,
+    );
+  } finally {
+    await runtime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
 void test('package install uses a monotonic duration clock when the wall clock does not advance', async (t) => {
   const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-pkg-duration-ws-'),
@@ -392,6 +533,7 @@ void test('package install uses a monotonic duration clock when the wall clock d
   const fixture = createPtcSessionDockerCommandFixture({
     policy: createPtcSessionDockerOpenNetworkPackageInstallPolicy({
       tmpTmpfsSize: TEST_PACKAGE_INSTALL_CONFIG.tmpTmpfsSize,
+      packageManagerFamilies: ['npm', 'pip'],
     }),
     commandResult: async (invocation) => {
       const command = execCommandOf(invocation);
@@ -452,7 +594,14 @@ void test(
     const runtimeRoot = await mkdtemp(
       join(tmpdir(), 'geulbat-ptc-pkg-live-rt-'),
     );
+    const hostCommandStateRoot = await mkdtemp(
+      join(tmpdir(), 'geulbat-ptc-pkg-live-host-command-'),
+    );
     const runtime = createPtcExecuteCodeRuntime({
+      commandRunner: (invocation) =>
+        runHostRoutedDockerCommandForTest(invocation, {
+          stateRoot: hostCommandStateRoot,
+        }),
       realpathStateRoot: async () => stateRoot,
       runtimeRootForState: () => runtimeRoot,
       packageInstall: TEST_PACKAGE_INSTALL_CONFIG,
@@ -471,6 +620,9 @@ void test(
       });
       if (!install.ok) {
         assert.fail(`live package install failed: ${JSON.stringify(install)}`);
+      }
+      if (install.value.manager !== 'npm') {
+        assert.fail(`expected npm summary, received ${install.value.manager}`);
       }
 
       assert.equal(install.value.exitCode, 0);
@@ -569,6 +721,102 @@ void test(
       assert.notEqual(callerCwd, PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX);
     } finally {
       assert.deepEqual(await runtime.closeAll(), { ok: true });
+      await rm(hostCommandStateRoot, { recursive: true, force: true });
+      await rm(runtimeRoot, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+void test(
+  'real registry Python wheel install is importable in the same Docker session',
+  {
+    skip: process.env.GEULBAT_RUN_PTC_PACKAGE_INSTALL_NETWORK_E2E !== '1',
+  },
+  async () => {
+    const stateRoot = await mkdtemp(
+      join(tmpdir(), 'geulbat-ptc-python-pkg-live-ws-'),
+    );
+    const runtimeRoot = await mkdtemp(
+      join(tmpdir(), 'geulbat-ptc-python-pkg-live-rt-'),
+    );
+    const hostCommandStateRoot = await mkdtemp(
+      join(tmpdir(), 'geulbat-ptc-python-pkg-live-host-command-'),
+    );
+    const runtime = createPtcExecuteCodeRuntime({
+      commandRunner: (invocation) =>
+        runHostRoutedDockerCommandForTest(invocation, {
+          stateRoot: hostCommandStateRoot,
+        }),
+      realpathStateRoot: async () => stateRoot,
+      runtimeRootForState: () => runtimeRoot,
+      packageInstall: TEST_PACKAGE_INSTALL_CONFIG,
+    });
+
+    try {
+      const runContext = makeRunContext({
+        threadId: testThreadId(922_3),
+        stateRoot,
+      });
+      const install = await runtime.installPackages({
+        runContext,
+        request: {
+          language: 'python',
+          packages: [{ name: 'idna', version: '3.10' }],
+        },
+      });
+      if (!install.ok) {
+        assert.fail(
+          `live Python package install failed: ${JSON.stringify(install)}`,
+        );
+      }
+      assert.equal(install.value.manager, 'pip');
+      assert.equal(install.value.language, 'python');
+      assert.equal(install.value.exitCode, 0);
+      assert.equal(install.value.provenance.recorded, true);
+      assert.deepEqual(install.value.resolvedPackages, [
+        {
+          name: 'idna',
+          requestedSpec: '==3.10',
+          resolvedVersion: '3.10',
+          integrity: null,
+        },
+      ]);
+
+      const exec = await runtime.executeCode({
+        runContext,
+        request: {
+          language: 'python',
+          code: [
+            'import idna',
+            'import json',
+            'print(json.dumps({"version": idna.__version__, "runtime": geulbat.help()["runtime"]}, separators=(",", ":")))',
+          ].join('\n'),
+        },
+      });
+      if (!exec.ok) {
+        assert.fail(
+          `live Python package import failed: ${JSON.stringify(exec)}`,
+        );
+      }
+      if (!('language' in exec.value)) {
+        assert.fail('expected a completed Python batch summary');
+      }
+      assert.equal(exec.value.executionSurface, 'python_via_lab_batch_command');
+      assert.equal(exec.value.language, 'python');
+      assert.equal(exec.value.exitCode, 0);
+      assert.deepEqual(JSON.parse(exec.value.stdout), {
+        version: '3.10',
+        runtime: {
+          language: 'python',
+          executionSurface: 'python_via_lab_batch_command',
+          sessionLifecycle: 'runtime_owned_reusable',
+        },
+      });
+      assert.equal(exec.value.stderr, '');
+    } finally {
+      assert.deepEqual(await runtime.closeAll(), { ok: true });
+      await rm(hostCommandStateRoot, { recursive: true, force: true });
       await rm(runtimeRoot, { recursive: true, force: true });
       await rm(stateRoot, { recursive: true, force: true });
     }
@@ -590,4 +838,12 @@ void test('open-network package install policy has a distinct session identity f
   assert.deepEqual(batchPolicy.packageManagerFamilies, []);
   assert.equal(openPolicy.network.mode, 'open');
   assert.equal(batchPolicy.network.mode, 'disabled');
+
+  const npmAndPipPolicy = createPtcSessionDockerOpenNetworkPackageInstallPolicy(
+    {
+      tmpTmpfsSize: '512m',
+      packageManagerFamilies: ['npm', 'pip'],
+    },
+  );
+  assert.deepEqual(npmAndPipPolicy.packageManagerFamilies, ['npm', 'pip']);
 });

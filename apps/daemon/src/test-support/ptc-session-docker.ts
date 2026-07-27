@@ -3,6 +3,7 @@ import { access, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT } from '../daemon/ptc/lab/packages/lab-package-cache-contract.js';
+import { buildPtcPackageCacheRoot } from '../daemon/ptc/lab/packages/lab-package-cache-root.js';
 import { createPtcSessionDockerManager } from '../daemon/ptc/lab/session/session-docker.js';
 import {
   PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
@@ -16,9 +17,15 @@ import {
   type PtcSessionDockerIdentity,
   type PtcSessionDockerManager,
   type PtcSessionDockerPolicy,
+  type PtcSessionDockerReuseKey,
 } from '../daemon/ptc/lab/session/session-docker-contract.js';
 
 export const PTC_TEST_SESSION_DOCKER_CONTAINER_ID = 'container-ptc-test-1';
+export const PTC_TEST_SESSION_DOCKER_IDENTITY: PtcSessionDockerIdentity = {
+  threadId: 'thread-ptc-1',
+  stateRoot: '/workspace/project-a',
+  trustContextId: 'local-default-v1',
+};
 export const PTC_TEST_SESSION_DOCKER_HOST_USER: PtcSessionDockerHostUser = {
   hostUserPolicyId: PTC_SESSION_DOCKER_HOST_USER_POLICY_ID,
   uid: 1000,
@@ -50,6 +57,40 @@ export interface PtcSessionDockerManagerFixture extends PtcSessionDockerCommandF
   runtimeRoot: string;
 }
 
+export async function withTempPtcSessionDockerRuntimeRoot<T>(
+  fn: (runtimeRoot: string) => Promise<T>,
+): Promise<T> {
+  const runtimeRoot = await mkdtemp(join(tmpdir(), 'geulbat-ptc-session-'));
+  try {
+    return await fn(runtimeRoot);
+  } finally {
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+}
+
+export function buildPtcSessionDockerPackageCacheHostRoot(args: {
+  runtimeRoot: string;
+  reuseKey: PtcSessionDockerReuseKey;
+}): string {
+  return buildPtcPackageCacheRoot({
+    runtimeRoot: args.runtimeRoot,
+    identity: {
+      trustContextId: args.reuseKey.trustContextId,
+      stateRootRealpath: args.reuseKey.stateRootRealpath,
+      ...(args.reuseKey.ephemeralBurstId === undefined
+        ? {}
+        : { ephemeralBurstId: args.reuseKey.ephemeralBurstId }),
+      labPolicyId: args.reuseKey.labPolicyId,
+      packageCacheId: args.reuseKey.packageCacheId,
+      packageCacheMountPolicyId: args.reuseKey.packageCacheMountPolicyId,
+      packageManagerFamilies: args.reuseKey.packageManagerFamilies,
+      lifecycleScriptsPolicyId: args.reuseKey.lifecycleScriptsPolicyId,
+      networkInstallPolicyId: args.reuseKey.networkInstallPolicyId,
+      cacheIdentityHash: args.reuseKey.packageCacheIdentityHash,
+    },
+  }).hostPath;
+}
+
 export async function withRealPtcSessionDockerManager<T>(
   args: PtcSessionDockerCommandFixtureArgs & {
     identity: PtcSessionDockerIdentity;
@@ -58,8 +99,7 @@ export async function withRealPtcSessionDockerManager<T>(
   },
   fn: (fixture: PtcSessionDockerManagerFixture) => Promise<T>,
 ): Promise<T> {
-  const runtimeRoot = await mkdtemp(join(tmpdir(), 'geulbat-ptc-session-'));
-  try {
+  return await withTempPtcSessionDockerRuntimeRoot(async (runtimeRoot) => {
     const fixture = createPtcSessionDockerCommandFixture(args);
     const manager = createPtcSessionDockerManager({
       runtimeRoot,
@@ -75,9 +115,7 @@ export async function withRealPtcSessionDockerManager<T>(
     });
 
     return await fn({ ...fixture, manager, runtimeRoot });
-  } finally {
-    await rm(runtimeRoot, { recursive: true, force: true });
-  }
+  });
 }
 
 export function createPtcSessionDockerCommandFixture(

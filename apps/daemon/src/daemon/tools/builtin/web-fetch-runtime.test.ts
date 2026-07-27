@@ -22,6 +22,30 @@ void test('fetchWebUrl shapes successful text content and labels it untrusted', 
   assert.equal(result.title, 'Hello');
   assert.equal(result.untrusted, true);
   assert.match(result.content, /Hello web/);
+  assert.equal(result.contentFormat, 'line_preserved_text_v1');
+  assert.equal(result.contentLineCount, 1);
+});
+
+void test('fetchWebUrl preserves HTML block boundaries as addressable lines', async () => {
+  const result = await fetchWebUrl({
+    url: 'https://example.com/article',
+    extractMode: 'text',
+    requestWebFetchUrl: async () => ({
+      status: 200,
+      location: null,
+      contentType: 'text/html; charset=utf-8',
+      body: Buffer.from(
+        '<main><h1>Heading</h1><p>First <strong>paragraph</strong>.</p><p>Second line.</p></main>',
+      ),
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.content,
+    ['Heading', 'First paragraph.', 'Second line.'].join('\n'),
+  );
+  assert.equal(result.contentLineCount, 3);
 });
 
 void test('fetchWebUrl rejects redirects to unsafe targets', async () => {
@@ -86,6 +110,7 @@ void test('fetchWebUrl preserves successful text content without maxChars trunca
 
   assert.equal(result.ok, true);
   assert.equal(result.content, 'abcdef');
+  assert.equal(result.contentLineCount, 1);
   assert.ok(!('truncated' in result));
   assert.ok(!('truncationReason' in result));
 });
@@ -105,6 +130,7 @@ void test('fetchWebUrl treats non-2xx text responses as fetched responses with s
   assert.equal(result.ok, true);
   assert.equal(result.status, 404);
   assert.equal(result.content, 'missing page');
+  assert.equal(result.contentLineCount, 1);
 });
 
 void test('fetchWebUrl preserves large injected text content for output offload', async () => {
@@ -123,6 +149,7 @@ void test('fetchWebUrl preserves large injected text content for output offload'
   assert.equal(result.ok, true);
   assert.equal(result.content.length, content.length);
   assert.equal(result.content, content);
+  assert.equal(result.contentLineCount, 1);
 });
 
 void test('fetchWebUrl rejects redirect loops without a numeric redirect budget', async () => {

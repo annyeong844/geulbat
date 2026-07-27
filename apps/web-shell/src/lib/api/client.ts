@@ -69,6 +69,26 @@ export async function apiFetchBlob(path: string): Promise<Blob> {
   return res.blob();
 }
 
+export async function apiFetchOpaqueBlob(
+  path: string,
+  options?: RequestInit,
+): Promise<Blob> {
+  const headers = new Headers(buildShellAuthHeaders());
+  new Headers(options?.headers).forEach((value, name) => {
+    headers.set(name, value);
+  });
+  const res = await fetch(`${BASE_URL}${path}`, {
+    ...options,
+    credentials: 'same-origin',
+    headers,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiFetchError(res.status, text);
+  }
+  return res.blob();
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit | undefined,

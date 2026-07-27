@@ -2,7 +2,6 @@ import {
   constants as fsConstants,
   copyFile,
   mkdir,
-  readFile as fsReadFile,
   writeFile as fsWriteFile,
 } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -18,6 +17,12 @@ import {
 import { runSourceMutationSerial } from './file-mutation-serial.js';
 import { hasErrorCode } from '../utils/error.js';
 import {
+  AtomicReplaceConflictError,
+  copyFileAtomically,
+  type AtomicWriteLike,
+  writeFileAtomically,
+} from '../utils/atomic-file.js';
+import {
   AlreadyExistsWriteTargetError,
   FileAccessError,
   MissingWriteTargetError,
@@ -26,12 +31,16 @@ import {
 
 type SaveBinaryFileResult = FileSaveResponse;
 
+export interface ReplaceBinaryFileOptions {
+  atomicFs?: AtomicWriteLike;
+}
+
 /**
  * Binary save pipeline owner:
  * 1. resolve target
- * 2. serialize by absolute path
+ * 2. serialize by canonical target path
  * 3. validate exists / CAS state
- * 4. write bytes
+ * 4. create exclusively or replace atomically
  * 5. compute version token + result
  */
 export async function saveBinaryFile(
@@ -108,7 +117,6 @@ async function saveResolvedBinaryFileFromPath(
   } = resolvedPath;
   return runSourceMutationSerial(canonicalAbsolutePath, async () => {
     await mkdir(dirname(absolutePath), { recursive: true });
-    const versionToken = await createBinaryVersionTokenFromFile(inputPath);
     try {
       await copyFile(inputPath, absolutePath, fsConstants.COPYFILE_EXCL);
     } catch (error: unknown) {
@@ -121,6 +129,9 @@ async function saveResolvedBinaryFileFromPath(
       }
       throw error;
     }
+    const versionToken = await createBinaryVersionTokenFromFile(
+      canonicalAbsolutePath,
+    );
 
     return {
       path: normalized,
@@ -136,6 +147,7 @@ export async function replaceBinaryFile(
   relativePath: string,
   content: Uint8Array,
   expectedToken: string,
+  options?: ReplaceBinaryFileOptions,
 ): Promise<SaveBinaryFileResult> {
   const resolvedPath = await resolveSourceMutationTarget(
     workspaceRoot,
@@ -144,7 +156,12 @@ export async function replaceBinaryFile(
       allowMissingLeaf: true,
     },
   );
-  return replaceResolvedBinaryFile(resolvedPath, content, expectedToken);
+  return replaceResolvedBinaryFile(
+    resolvedPath,
+    content,
+    expectedToken,
+    options,
+  );
 }
 
 export async function replaceBinaryFileFromPath(
@@ -171,16 +188,15 @@ async function replaceResolvedBinaryFile(
   resolvedPath: SourceMutationTarget,
   content: Uint8Array,
   expectedToken: string,
+  options?: ReplaceBinaryFileOptions,
 ): Promise<SaveBinaryFileResult> {
-  const {
-    relativePath: normalized,
-    absolutePath,
-    canonicalAbsolutePath,
-  } = resolvedPath;
+  const { relativePath: normalized, canonicalAbsolutePath } = resolvedPath;
   return runSourceMutationSerial(canonicalAbsolutePath, async () => {
-    let currentContent: Uint8Array;
+    let currentToken: string;
     try {
-      currentContent = await fsReadFile(absolutePath);
+      currentToken = await createBinaryVersionTokenFromFile(
+        canonicalAbsolutePath,
+      );
     } catch (error: unknown) {
       if (hasErrorCode(error, 'ENOENT')) {
         throw new MissingWriteTargetError(normalized, { cause: error });
@@ -191,12 +207,32 @@ async function replaceResolvedBinaryFile(
       throw error;
     }
 
-    const currentToken = createBinaryVersionToken(currentContent);
     if (currentToken !== expectedToken) {
       throw new StaleWriteError(normalized, currentToken);
     }
 
-    await fsWriteFile(absolutePath, content);
+    try {
+      await writeFileAtomically(canonicalAbsolutePath, content, {
+        atomicFs: options?.atomicFs,
+        validateBeforeCommit: () =>
+          assertBinaryVersionUnchangedBeforeCommit(
+            canonicalAbsolutePath,
+            normalized,
+            currentToken,
+          ),
+      });
+    } catch (error: unknown) {
+      if (error instanceof AtomicReplaceConflictError) {
+        const conflictToken = await readCurrentBinaryVersionToken(
+          canonicalAbsolutePath,
+        );
+        if (conflictToken !== null) {
+          throw new StaleWriteError(normalized, conflictToken);
+        }
+      }
+      throw error;
+    }
+
     return {
       path: normalized,
       versionToken: createBinaryVersionToken(content),
@@ -211,15 +247,13 @@ async function replaceResolvedBinaryFileFromPath(
   inputPath: string,
   expectedToken: string,
 ): Promise<SaveBinaryFileResult> {
-  const {
-    relativePath: normalized,
-    absolutePath,
-    canonicalAbsolutePath,
-  } = resolvedPath;
+  const { relativePath: normalized, canonicalAbsolutePath } = resolvedPath;
   return runSourceMutationSerial(canonicalAbsolutePath, async () => {
     let currentToken: string;
     try {
-      currentToken = await createBinaryVersionTokenFromFile(absolutePath);
+      currentToken = await createBinaryVersionTokenFromFile(
+        canonicalAbsolutePath,
+      );
     } catch (error: unknown) {
       if (hasErrorCode(error, 'ENOENT')) {
         throw new MissingWriteTargetError(normalized, { cause: error });
@@ -234,8 +268,29 @@ async function replaceResolvedBinaryFileFromPath(
       throw new StaleWriteError(normalized, currentToken);
     }
 
-    const versionToken = await createBinaryVersionTokenFromFile(inputPath);
-    await copyFile(inputPath, absolutePath);
+    try {
+      await copyFileAtomically(inputPath, canonicalAbsolutePath, {
+        validateBeforeCommit: () =>
+          assertBinaryVersionUnchangedBeforeCommit(
+            canonicalAbsolutePath,
+            normalized,
+            currentToken,
+          ),
+      });
+    } catch (error: unknown) {
+      if (error instanceof AtomicReplaceConflictError) {
+        const conflictToken = await readCurrentBinaryVersionToken(
+          canonicalAbsolutePath,
+        );
+        if (conflictToken !== null) {
+          throw new StaleWriteError(normalized, conflictToken);
+        }
+      }
+      throw error;
+    }
+    const versionToken = await createBinaryVersionTokenFromFile(
+      canonicalAbsolutePath,
+    );
     return {
       path: normalized,
       versionToken,
@@ -243,4 +298,34 @@ async function replaceResolvedBinaryFileFromPath(
       ok: true,
     };
   });
+}
+
+async function readCurrentBinaryVersionToken(
+  canonicalAbsolutePath: string,
+): Promise<string | null> {
+  try {
+    return await createBinaryVersionTokenFromFile(canonicalAbsolutePath);
+  } catch (error: unknown) {
+    if (hasErrorCode(error, 'ENOENT')) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function assertBinaryVersionUnchangedBeforeCommit(
+  canonicalAbsolutePath: string,
+  normalizedPath: string,
+  expectedCurrentToken: string,
+): Promise<void> {
+  const commitToken = await readCurrentBinaryVersionToken(
+    canonicalAbsolutePath,
+  );
+  if (commitToken === expectedCurrentToken) {
+    return;
+  }
+  if (commitToken === null) {
+    throw new MissingWriteTargetError(normalizedPath);
+  }
+  throw new StaleWriteError(normalizedPath, commitToken);
 }

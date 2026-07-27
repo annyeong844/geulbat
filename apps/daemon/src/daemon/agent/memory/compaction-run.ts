@@ -21,6 +21,8 @@ import type {
 import { measureResponseWireInputBytes } from '../../llm/provider/transport/responses-wire-input.js';
 import { isRecord, tryParseJsonRecord } from '../../runtime-json.js';
 import {
+  buildContextSummaryHistoryItem,
+  CompactionTokenCountError,
   getActiveTranscriptEntries,
   prepareContextCompaction,
   type ContextCompactionTokenCounter,
@@ -54,6 +56,22 @@ export interface ContextCompactionSummarizer {
   ): Promise<ContextCompactionSummary>;
 }
 
+interface ContextHistoryCompactionSummaryRequest {
+  historyPrefix: readonly HistoryItem[];
+  summaryBudgetTokens: number;
+  signal?: AbortSignal;
+}
+
+export interface ContextHistoryCompactionSummarizer {
+  summarizeContext(
+    request: ContextHistoryCompactionSummaryRequest,
+  ): Promise<ContextCompactionSummary>;
+}
+
+export interface ContextHistoryCompactionTokenCounter {
+  countHistoryTokens(history: readonly HistoryItem[]): number;
+}
+
 type CompactThreadContextResult =
   | Exclude<PrepareContextCompactionResult, PreparedContextCompaction>
   | {
@@ -74,6 +92,20 @@ type CompactThreadContextResult =
       kind: 'compacted';
       checkpoint: CompactionTranscriptEntry;
       prefixTokens: number;
+      retainedTokens: number;
+      summaryTokens: number;
+    };
+
+type CompactThreadContextSummaryResult =
+  | { kind: 'transcript_empty' }
+  | { kind: 'no_summarizable_prefix' }
+  | { kind: 'tail_exceeds_budget' }
+  | Extract<CompactThreadContextResult, { kind: 'summary_invalid' }>
+  | Extract<CompactThreadContextResult, { kind: 'stale_snapshot' }>
+  | {
+      kind: 'compacted';
+      checkpoint: CompactionTranscriptEntry;
+      providerRoundAnchorEntryId: string;
       retainedTokens: number;
       summaryTokens: number;
     };
@@ -878,7 +910,11 @@ export async function compactThreadContext(args: {
     summaryBudgetTokens: prepared.budgetProfile.summaryBudgetTokens,
     ...(args.signal === undefined ? {} : { signal: args.signal }),
   });
-  const summaryValidation = validateSummary(summary, prepared);
+  const summaryValidation = validateSummary(
+    summary,
+    prepared.budgetProfile,
+    prepared.retainedTokens,
+  );
   if (summaryValidation !== undefined) {
     return summaryValidation;
   }
@@ -925,9 +961,129 @@ export async function compactThreadContext(args: {
   };
 }
 
+export async function compactThreadContextSummary(args: {
+  workspaceRoot: string;
+  threadId: string;
+  history: readonly HistoryItem[];
+  currentRequestTokens: number;
+  budgetProfile: BudgetProfile;
+  tokenCounter: ContextHistoryCompactionTokenCounter;
+  summarizer: ContextHistoryCompactionSummarizer;
+  signal?: AbortSignal;
+  now?: () => Date;
+}): Promise<CompactThreadContextSummaryResult> {
+  const entries = await readTranscriptEntries(
+    args.workspaceRoot,
+    args.threadId,
+  );
+  const snapshotLastEntry = entries.at(-1);
+  if (snapshotLastEntry === undefined) {
+    return { kind: 'transcript_empty' };
+  }
+  const active = getActiveTranscriptEntries(entries, args.threadId);
+  let firstKeptEntry: TranscriptEntry | undefined;
+  for (let index = active.activeEntries.length - 1; index >= 0; index -= 1) {
+    const entry = active.activeEntries[index];
+    if (entry?.role === 'user') {
+      firstKeptEntry = entry;
+      break;
+    }
+  }
+  let firstKeptHistoryIndex = -1;
+  for (let index = args.history.length - 1; index >= 0; index -= 1) {
+    if (args.history[index]?.kind === 'user') {
+      firstKeptHistoryIndex = index;
+      break;
+    }
+  }
+  if (firstKeptEntry === undefined || firstKeptHistoryIndex <= 0) {
+    return { kind: 'no_summarizable_prefix' };
+  }
+
+  const historyPrefix = args.history.slice(0, firstKeptHistoryIndex);
+  const retainedHistory = args.history.slice(firstKeptHistoryIndex);
+  const retainedTokens = args.tokenCounter.countHistoryTokens(retainedHistory);
+  if (!Number.isSafeInteger(retainedTokens) || retainedTokens < 0) {
+    throw new CompactionTokenCountError('retained_history', retainedTokens);
+  }
+  if (retainedTokens > args.budgetProfile.keepRecentTokens) {
+    return { kind: 'tail_exceeds_budget' };
+  }
+
+  const summary = await args.summarizer.summarizeContext({
+    historyPrefix,
+    summaryBudgetTokens: args.budgetProfile.summaryBudgetTokens,
+    ...(args.signal === undefined ? {} : { signal: args.signal }),
+  });
+  const compactedHistoryTokens = args.tokenCounter.countHistoryTokens([
+    buildContextSummaryHistoryItem(summary.summary),
+    ...retainedHistory,
+  ]);
+  if (
+    !Number.isSafeInteger(compactedHistoryTokens) ||
+    compactedHistoryTokens < 0
+  ) {
+    throw new CompactionTokenCountError(
+      'compacted_history',
+      compactedHistoryTokens,
+    );
+  }
+  const summaryValidation = validateSummary(
+    summary,
+    args.budgetProfile,
+    retainedTokens,
+    compactedHistoryTokens,
+  );
+  if (summaryValidation !== undefined) {
+    return summaryValidation;
+  }
+
+  let appended: TranscriptEntry;
+  try {
+    appended = await appendTranscriptEntry(
+      args.workspaceRoot,
+      args.threadId,
+      {
+        role: 'compaction',
+        content: '',
+        timestamp: (args.now?.() ?? new Date()).toISOString(),
+        compactionData: {
+          summary: summary.summary,
+          shortSummary: summary.shortSummary,
+          firstKeptEntryId: firstKeptEntry.entryId,
+          tokensBefore: args.currentRequestTokens,
+          budgetProfile: args.budgetProfile,
+        },
+      },
+      { expectedLastEntryId: snapshotLastEntry.entryId },
+    );
+  } catch (error: unknown) {
+    if (error instanceof CompareAndAppendMismatchError) {
+      return {
+        kind: 'stale_snapshot',
+        expectedLastEntryId: error.expectedLastEntryId,
+        actualLastEntryId: error.actualLastEntryId,
+      };
+    }
+    throw error;
+  }
+  if (appended.role !== 'compaction') {
+    throw new Error('compaction append returned a non-compaction entry');
+  }
+  return {
+    kind: 'compacted',
+    checkpoint: appended,
+    providerRoundAnchorEntryId: snapshotLastEntry.entryId,
+    retainedTokens,
+    summaryTokens: summary.summaryTokens,
+  };
+}
+
 function validateSummary(
   summary: ContextCompactionSummary,
-  prepared: PreparedContextCompaction,
+  budgetProfile: BudgetProfile,
+  retainedTokens: number,
+  compactedHistoryTokens?: number,
 ):
   | Extract<CompactThreadContextResult, { kind: 'summary_invalid' }>
   | undefined {
@@ -946,17 +1102,19 @@ function validateSummary(
       reason: 'summary_token_count_not_positive_safe_integer',
     };
   }
-  if (summary.summaryTokens > prepared.budgetProfile.summaryBudgetTokens) {
+  if (summary.summaryTokens > budgetProfile.summaryBudgetTokens) {
     return { kind: 'summary_invalid', reason: 'summary_exceeds_budget' };
   }
 
   const compactedRequestTokens =
-    prepared.budgetProfile.requestOverheadTokens +
-    summary.summaryTokens +
-    prepared.retainedTokens;
+    budgetProfile.requestOverheadTokens +
+    Math.max(
+      summary.summaryTokens + retainedTokens,
+      compactedHistoryTokens ?? 0,
+    );
   if (
     !Number.isSafeInteger(compactedRequestTokens) ||
-    compactedRequestTokens > prepared.budgetProfile.thresholdTokens
+    compactedRequestTokens > budgetProfile.thresholdTokens
   ) {
     return {
       kind: 'summary_invalid',

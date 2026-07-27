@@ -10,6 +10,7 @@ import {
   admitPtcExecutionProfile,
   createPtcLabLocalDockerBatchCommandPolicyProjection,
   createPtcLabLocalDockerOpenEgressBrowserPolicyProjection,
+  createPtcLabLocalDockerOpenNetworkPackageInstallPolicyProjection,
   createPtcLabLocalDockerPolicyProjection,
   describePtcLabWorkspaceReadEgressDecision,
 } from './lab-profile.js';
@@ -162,6 +163,20 @@ void test('createPtcLabLocalDockerBatchCommandPolicyProjection opens only the ba
   assert.equal(policy.browser.enabled, false);
   assert.equal(policy.packageManager.enabled, false);
   assert.equal(policy.mounts.artifactWorkspace.enabled, true);
+});
+
+void test('open-network package install projection admits only the selected manager', () => {
+  const policy =
+    createPtcLabLocalDockerOpenNetworkPackageInstallPolicyProjection({
+      manager: 'pip',
+      maxInstallMs: 120_000,
+      maxInstallOutputBytes: 16 * 1024 * 1024,
+    });
+
+  assert.equal(policy.network.mode, 'open');
+  assert.equal(policy.packageManager.enabled, true);
+  assert.deepEqual(policy.packageManager.managers, ['pip']);
+  assert.equal(policy.packageManager.installMode, 'open_network');
 });
 
 void test('admitPtcExecutionProfile returns a fresh default lab policy for each admission', () => {

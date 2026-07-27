@@ -66,14 +66,15 @@ void test('a provider that does not report usage says so instead of showing zero
       {
         providerId: 'grok_oauth',
         state: 'not_provided',
-        reason: '이 제공자는 사용량 조회를 제공하지 않습니다.',
+        reason: '',
       },
     ],
   }));
 
   const markup = text();
   assert.match(markup, /제공 안 함/u);
-  assert.match(markup, /제공하지 않습니다/u);
+  assert.doesNotMatch(markup, /자격증명/u);
+  assert.doesNotMatch(markup, /제공하지 않습니다/u);
   // 0%로 채운 계량기를 만들지 않는다.
   assert.equal(renderer.root.findAllByProps({ role: 'meter' }).length, 0);
   await act(async () => {

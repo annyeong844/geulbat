@@ -1,4 +1,5 @@
 import { lstat, mkdir, rename, rm, unlink } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   resolveSourceMutationTarget,
@@ -22,10 +23,17 @@ import type { FileStateCache } from '../utils/file-state-cache.js';
 
 type PreparedPathKind = 'file' | 'directory';
 
+export interface PreparedPathFingerprint {
+  pathIdentityToken: string;
+  pathVersionToken: string;
+}
+
 interface PreparedMutatingFilePath {
   resolvedPath: SourceMutationTarget;
   exists: boolean;
   pathKind?: PreparedPathKind;
+  pathIdentityToken?: string;
+  pathVersionToken?: string;
 }
 
 interface PreparedPatchFile {
@@ -36,11 +44,15 @@ interface PreparedPatchFile {
 interface PreparedResolvedPath {
   resolvedPath: SourceMutationTarget;
   pathKind?: PreparedPathKind;
+  pathIdentityToken?: string;
+  pathVersionToken?: string;
 }
 
 interface PreparedRelocationPaths {
   sourcePath: SourceMutationTarget;
   sourceKind: 'file' | 'directory';
+  sourceIdentityToken: string;
+  sourceVersionToken: string;
   destinationPath: SourceMutationTarget;
   destinationExists: boolean;
 }
@@ -65,11 +77,11 @@ export async function prepareMutatingFilePath(
         }
       : undefined,
   );
-  const pathKind = await getExistingPathKind(resolvedPath.absolutePath);
+  const pathSnapshot = await getExistingPathSnapshot(resolvedPath.absolutePath);
   return {
     resolvedPath,
-    exists: pathKind !== undefined,
-    ...(pathKind !== undefined ? { pathKind } : {}),
+    exists: pathSnapshot !== undefined,
+    ...(pathSnapshot === undefined ? {} : pathSnapshot),
   };
 }
 
@@ -105,10 +117,10 @@ export async function prepareResolvedMutatingPath(
         }
       : undefined,
   );
-  const pathKind = await getExistingPathKind(resolvedPath.absolutePath);
+  const pathSnapshot = await getExistingPathSnapshot(resolvedPath.absolutePath);
   return {
     resolvedPath,
-    ...(pathKind !== undefined ? { pathKind } : {}),
+    ...(pathSnapshot === undefined ? {} : pathSnapshot),
   };
 }
 
@@ -122,6 +134,11 @@ export async function prepareRelocationPaths(
     inputPath,
   );
   const sourceStats = await lstat(sourcePath.absolutePath);
+  const sourceKind = sourceStats.isDirectory() ? 'directory' : 'file';
+  const sourceFingerprint = createPreparedPathFingerprint(
+    sourceStats,
+    sourceKind,
+  );
   const destinationPath = await resolveSourceMutationTarget(
     fileAuthorityRoot,
     destination,
@@ -132,7 +149,9 @@ export async function prepareRelocationPaths(
 
   return {
     sourcePath,
-    sourceKind: sourceStats.isDirectory() ? 'directory' : 'file',
+    sourceKind,
+    sourceIdentityToken: sourceFingerprint.pathIdentityToken,
+    sourceVersionToken: sourceFingerprint.pathVersionToken,
     destinationPath,
     destinationExists:
       sourcePath.absolutePath !== destinationPath.absolutePath &&
@@ -200,6 +219,22 @@ export async function commitPreparedRelocation(
         ? 'directory'
         : 'file';
       if (currentSourceKind !== prepared.sourceKind) {
+        throw new FileAccessError(
+          'conflict',
+          `source changed before relocation: ${prepared.sourcePath.relativePath}`,
+          prepared.sourcePath.relativePath,
+        );
+      }
+      const currentSourceFingerprint = createPreparedPathFingerprint(
+        sourceStats,
+        currentSourceKind,
+      );
+      if (
+        currentSourceFingerprint.pathIdentityToken !==
+          prepared.sourceIdentityToken ||
+        currentSourceFingerprint.pathVersionToken !==
+          prepared.sourceVersionToken
+      ) {
         throw new FileAccessError(
           'conflict',
           `source changed before relocation: ${prepared.sourcePath.relativePath}`,
@@ -294,6 +329,23 @@ export async function commitPreparedDeletion(
           prepared.resolvedPath.relativePath,
         );
       }
+      const currentFingerprint = createPreparedPathFingerprint(
+        stats,
+        currentPathKind,
+      );
+      if (
+        (prepared.pathIdentityToken !== undefined &&
+          currentFingerprint.pathIdentityToken !==
+            prepared.pathIdentityToken) ||
+        (prepared.pathVersionToken !== undefined &&
+          currentFingerprint.pathVersionToken !== prepared.pathVersionToken)
+      ) {
+        throw new FileAccessError(
+          'conflict',
+          `target changed before deletion: ${prepared.resolvedPath.relativePath}`,
+          prepared.resolvedPath.relativePath,
+        );
+      }
 
       try {
         if (stats.isDirectory()) {
@@ -355,21 +407,50 @@ export async function commitPreparedDirectoryCreation(
 }
 
 async function pathExists(path: string): Promise<boolean> {
-  return (await getExistingPathKind(path)) !== undefined;
+  return (await getExistingPathSnapshot(path)) !== undefined;
 }
 
-async function getExistingPathKind(
+async function getExistingPathSnapshot(
   path: string,
-): Promise<PreparedPathKind | undefined> {
+): Promise<
+  (PreparedPathFingerprint & { pathKind: PreparedPathKind }) | undefined
+> {
   try {
     const stats = await lstat(path);
-    return stats.isDirectory() ? 'directory' : 'file';
+    const pathKind = stats.isDirectory() ? 'directory' : 'file';
+    return {
+      pathKind,
+      ...createPreparedPathFingerprint(stats, pathKind),
+    };
   } catch (error: unknown) {
     if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {
       return undefined;
     }
     throw error;
   }
+}
+
+export function createPreparedPathFingerprint(
+  stats: Stats,
+  pathKind: PreparedPathKind,
+): PreparedPathFingerprint {
+  const identity = [
+    'fs-entry-v1',
+    pathKind,
+    stats.dev,
+    stats.ino,
+    stats.birthtimeMs,
+  ];
+  return {
+    pathIdentityToken: JSON.stringify(identity),
+    pathVersionToken: JSON.stringify([
+      ...identity,
+      stats.mode,
+      stats.size,
+      stats.mtimeMs,
+      stats.ctimeMs,
+    ]),
+  };
 }
 
 function invalidateResolvedPath(

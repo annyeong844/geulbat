@@ -18,7 +18,7 @@ type ProviderAuthErrorByProvider = Record<
   string | null
 >;
 
-interface Props {
+export interface ProviderAuthCardProps {
   statuses: ProviderAuthStatusByProvider;
   busyProviderId: ProviderAuthProviderId | null;
   uiErrors?: ProviderAuthErrorByProvider;
@@ -40,7 +40,7 @@ export function ProviderAuthCard({
   uiErrors,
   onConnect,
   onDisconnect,
-}: Props) {
+}: ProviderAuthCardProps) {
   return (
     <section
       className="provider-auth-card"

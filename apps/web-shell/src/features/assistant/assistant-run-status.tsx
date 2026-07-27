@@ -98,6 +98,7 @@ export function RunStatusRow(props: {
     props.providerRuntime ?? null,
   );
   const activeTool = activity?.kind === 'tool' ? activity.label : null;
+  const contextLabel = activity?.kind === 'context' ? activity.label : null;
   const usage = props.usageTotals ?? null;
   const activityAge =
     props.providerRuntime === null || props.providerRuntime === undefined
@@ -105,12 +106,14 @@ export function RunStatusRow(props: {
       : `활동 경과 ${formatElapsedDuration(
           Math.max(0, nowMs - Date.parse(props.providerRuntime.observedAt)),
         )}`;
-  const metaItems = [
-    formatElapsedDuration(elapsedMs),
-    ...(activity?.kind === 'context' ? [activity.label] : []),
+  // 줄에는 "지금 무엇을 하는가"와 "얼마나 걸렸는가"만 남긴다. 나머지 계측은
+  // 사람이 물어볼 때만 답한다 — 매 초 갱신되는 줄에 숫자를 더 얹으면 읽어야
+  // 할 것과 흘려도 되는 것이 구분되지 않는다.
+  const detailItems = [
     ...(activityAge === null ? [] : [activityAge]),
     ...(usage === null ? [] : [formatRunUsageMeta(usage)]),
   ];
+  const detail = detailItems.length === 0 ? null : detailItems.join(' · ');
 
   return (
     <div
@@ -119,6 +122,7 @@ export function RunStatusRow(props: {
       }`}
       role="status"
       aria-live="off"
+      {...(detail === null ? {} : { title: detail })}
     >
       <span className="run-status-glyph" aria-hidden="true">
         ✻
@@ -136,7 +140,12 @@ export function RunStatusRow(props: {
           <span className="run-status-active-tool-name">{activeTool}</span>
         </span>
       )}
-      <span className="run-status-meta">{metaItems.join(' · ')}</span>
+      {contextLabel === null ? null : (
+        <span className="run-status-context">{contextLabel}</span>
+      )}
+      <span className="run-status-meta">
+        {formatElapsedDuration(elapsedMs)}
+      </span>
     </div>
   );
 }

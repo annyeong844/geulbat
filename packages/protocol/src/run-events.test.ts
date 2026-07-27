@@ -172,100 +172,6 @@ void test('RunEvent envelope enforces producer sequence and timestamp contract',
   }
 });
 
-void test('provider runtime status distinguishes response, auth, and rate-limit waits', () => {
-  const providerWaiting = {
-    phase: 'provider_waiting',
-    observedAt: '2026-07-23T11:30:00.000Z',
-  } as const;
-  const authWaiting = {
-    phase: 'auth_waiting',
-    observedAt: '2026-07-23T11:30:00.500Z',
-  } as const;
-  const rateLimitWaiting = {
-    phase: 'rate_limit_waiting',
-    observedAt: '2026-07-23T11:30:01.000Z',
-  } as const;
-
-  assert.equal(isProviderRuntimeStatusEventPayload(providerWaiting), true);
-  assert.equal(isProviderRuntimeStatusEventPayload(authWaiting), true);
-  assert.equal(isProviderRuntimeStatusEventPayload(rateLimitWaiting), true);
-  assert.equal(
-    isRunEvent({
-      runId: RUN_ID,
-      threadId: THREAD_ID,
-      seq: 1,
-      type: 'provider_status',
-      ts: '2026-07-23T11:30:01.000Z',
-      payload: rateLimitWaiting,
-    }),
-    true,
-  );
-  assert.equal(
-    isProviderRuntimeStatusEventPayload({
-      ...rateLimitWaiting,
-      phase: 'thinking',
-    }),
-    false,
-  );
-  assert.equal(
-    isProviderRuntimeStatusEventPayload({
-      ...rateLimitWaiting,
-      observedAt: 'later',
-    }),
-    false,
-  );
-});
-
-void test('provider request diagnostics preserve request timing and factual retry outcome', () => {
-  const request = {
-    startedAt: '2026-07-23T11:30:00.000Z',
-    lastEventAt: '2026-07-23T11:30:02.000Z',
-    endedAt: '2026-07-23T11:30:03.000Z',
-    durationMs: 3_000,
-    attemptCount: 2,
-    retry: {
-      available: false,
-      performed: true,
-      outcome: 'recovered',
-    },
-  } as const;
-
-  assert.equal(isProviderRequestDiagnostics(request), true);
-  assert.equal(
-    isProviderRuntimeStatusEventPayload({
-      phase: 'provider_streaming',
-      observedAt: request.endedAt,
-      request,
-    }),
-    true,
-  );
-  assert.equal(
-    isProviderRequestDiagnostics({
-      ...request,
-      attemptCount: 0,
-    }),
-    false,
-  );
-  assert.equal(
-    isProviderRequestDiagnostics({
-      ...request,
-      endedAt: undefined,
-    }),
-    false,
-  );
-  assert.equal(
-    isProviderRequestDiagnostics({
-      ...request,
-      retry: {
-        available: true,
-        performed: false,
-        outcome: 'scheduled',
-      },
-    }),
-    false,
-  );
-});
-
 void test('context usage payloads distinguish exact, estimated, and unknown measurements', () => {
   const payload = {
     state: 'measured' as const,
@@ -772,10 +678,34 @@ void test('subagent lifecycle payload guards preserve terminal metadata contract
       result: 'cancelled',
       resultRef: 'subagent-result:delivery-timeout',
       resultDigest: `sha256:${'a'.repeat(64)}`,
+      resultReport: {
+        summary: '작업이 재시작으로 취소되었습니다.',
+        sourceResultRef: 'subagent-result:delivery-timeout',
+        sourceResultDigest: `sha256:${'a'.repeat(64)}`,
+      },
       completedAt: '2026-07-26T12:00:00.000Z',
       runtime,
     }),
     true,
+  );
+  assert.equal(
+    isSubagentTerminalEventPayload({
+      deliveryId: 'delivery-mismatched-report',
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      subagentType: 'worker',
+      terminalState: 'completed',
+      ok: true,
+      result: 'done',
+      resultRef: 'subagent-result:delivery-mismatched-report',
+      resultDigest: `sha256:${'a'.repeat(64)}`,
+      resultReport: {
+        summary: '다른 결과를 가리키는 보고',
+        sourceResultRef: 'subagent-result:other-delivery',
+        sourceResultDigest: `sha256:${'a'.repeat(64)}`,
+      },
+    }),
+    false,
   );
   assert.equal(
     isSubagentTerminalEventPayload({
@@ -1033,6 +963,9 @@ void test('subagent tool result guards accept owned success and rejection shapes
             terminalState: 'completed',
             ok: true,
             result: 'done',
+            resultRef: 'subagent-result:delivery-1',
+            resultDigest:
+              'sha256:0000000000000000000000000000000000000000000000000000000000000000',
             resultReport: {
               summary: 'compact handoff',
               sourceResultRef: 'subagent-result:delivery-1',

@@ -37,6 +37,7 @@ import {
   resolvePtcExecuteCodeWriteCallbackConfigFromEnv,
 } from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
 import {
+  isPtcExecuteCodeDelegatedApprovalCallbackToolMetaAllowed,
   isPtcExecuteCodeWriteCallbackToolMetaAllowed,
   isRuntimeSourcedReadOnlyToolAllowed,
 } from '../tools/builtin/ptc-callback-tool-surface.js';
@@ -133,10 +134,11 @@ export async function executeFunctionCall(args: {
     isPtcCodeVisible &&
     runtime.approvalContext.permissionMode === 'full_access';
   if ((isPtcCodeVisible && !bypassPtcSurfaceGate) || isArtifactFrameDataOnly) {
-    // PTC 콜백과 아티팩트 프레임은 같은 runtime-소스 surface를 공유한다
-    // (포크 금지): read-only 게이트 통과분 + write-callback이 켜져 있으면
-    // 같은 write allowlist. 승인 필요 판정은 아래 approvalState가 그대로
-    // 중재한다 — 프레임/콜백 직통이 승인을 우회하지 않는다.
+    // PTC 콜백과 아티팩트 프레임은 read-only 게이트와 opt-in built-in
+    // write allowlist를 공유한다. 모델이 작성한 PTC 코드만 설치형 외부
+    // 도구의 delegated approval lane을 더 받는다. 승인 필요 판정은 아래
+    // approvalState가 그대로 중재한다 — 프레임/콜백 직통이 승인을
+    // 우회하지 않는다.
     const isAdmittedReadCallback = isRuntimeSourcedReadOnlyToolAllowed(
       functionCall.name,
       meta ?? {},
@@ -145,12 +147,17 @@ export async function executeFunctionCall(args: {
     const writeCallbackConfig =
       resolvePtcExecuteCodeWriteCallbackConfigFromEnv();
     const isAdmittedWriteCallback =
-      writeCallbackConfig.enabled &&
       runtimeSideEffectLevel === 'write' &&
-      isPtcExecuteCodeWriteCallbackToolMetaAllowed(
-        functionCall.name,
-        meta ?? {},
-      );
+      ((isPtcCodeVisible &&
+        isPtcExecuteCodeDelegatedApprovalCallbackToolMetaAllowed(
+          functionCall.name,
+          meta ?? {},
+        )) ||
+        (writeCallbackConfig.enabled &&
+          isPtcExecuteCodeWriteCallbackToolMetaAllowed(
+            functionCall.name,
+            meta ?? {},
+          )));
     if (!isAdmittedReadCallback && !isAdmittedWriteCallback) {
       if (isArtifactFrameDataOnly) {
         // 프레임에는 코드 가시 채널이 없다 — 거부를 데이터 응답으로 돌려
@@ -164,9 +171,7 @@ export async function executeFunctionCall(args: {
         };
       }
       throw new Error(
-        writeCallbackConfig.enabled
-          ? 'PTC callback dispatch rejected a tool outside the admitted callback surface'
-          : 'PTC callback dispatch currently supports only read-only no-approval tools',
+        'PTC callback dispatch rejected a tool outside the admitted callback surface',
       );
     }
   }

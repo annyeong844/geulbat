@@ -5,6 +5,7 @@ import { getThread } from '../../lib/api/threads.js';
 import type { RunTranscriptEntry } from '../../lib/run-transcript-entry.js';
 import { formatSubagentActivityMeta } from './assistant-transcript-entry-blocks.js';
 import { AssistantTranscript } from './AssistantTranscript.js';
+import type { TranscriptRowInteractions } from './assistant-transcript-virtual-list.js';
 
 export type ChildSessionTarget = Extract<
   RunTranscriptEntry,
@@ -19,6 +20,12 @@ type ChildSessionLoadState =
 function ignoreArtifactRun(): void {
   // This viewer is read-only; artifacts may render but cannot start a new run.
 }
+
+// 자식 세션 뷰어는 읽기 전용이므로 행 상호작용 표면에 실행 경로만 두고
+// 나머지 콜백은 배선하지 않는다. 모듈 상수라 행 memo도 유지된다.
+const CHILD_TRANSCRIPT_ROW_INTERACTIONS: TranscriptRowInteractions = {
+  onStartArtifactRun: ignoreArtifactRun,
+};
 
 const DIALOG_FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -162,7 +169,7 @@ export function ChildSessionViewer(props: {
               activeArtifact={null}
               streamError={null}
               isRunning={false}
-              onStartArtifactRun={ignoreArtifactRun}
+              rowInteractions={CHILD_TRANSCRIPT_ROW_INTERACTIONS}
             />
           )}
         </div>

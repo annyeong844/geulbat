@@ -385,12 +385,18 @@
   color: var(--primary);
 }
 
-/* 컨텍스트 줄·셸프·컴포저 묶음 — 본문 읽기 컬럼과 같은 폭·가운데 정렬 */
+/* 계획/승인/스티어·컨텍스트·셸프·컴포저 묶음 — 본문 읽기 컬럼과 같은 폭·가운데
+   정렬. 채팅만 모드에서도 카드가 패널 전체 폭으로 늘어나지 않게 한 컨테이너로
+   고정한다. */
 .composer-region {
   display: flex;
+  flex: none;
   flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
   width: 100%;
   max-width: var(--reading-column, 760px);
+  min-width: 0;
   margin-inline: auto;
 }
 
@@ -751,8 +757,20 @@
 .planning-workflow-card {
   display: grid;
   gap: 12px;
-  margin: 0 18px 12px;
+  /* 긴 계획 단계·가정이 어시스턴트 패널 밖으로 잘리지 않게 —
+     카드 자체가 스크롤되고 승인 버튼 영역은 sticky로 남긴다.
+     가로 폭은 .composer-region 읽기 컬럼이 소유한다. */
+  flex: none;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-height: min(52vh, 560px);
+  margin: 0;
   padding: 16px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid
     color-mix(in srgb, var(--secondary) 38%, var(--outline-variant));
   border-radius: var(--radius-lg);
@@ -906,9 +924,20 @@
 }
 
 .planning-workflow-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
+  margin: 0 -4px;
+  padding: 10px 4px 2px;
+  /* 카드 스크롤 시 본문이 버튼 밑으로 비치지 않게 같은 표면으로 덮는다 */
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-container-low) 0%, transparent) 0%,
+    var(--surface-container-low) 28%
+  );
 }
 
 .planning-workflow-button {
@@ -946,10 +975,6 @@
 }
 
 @media (max-width: 640px) {
-  .planning-workflow-card {
-    margin-inline: 10px;
-  }
-
   .planning-workflow-card-header {
     gap: 8px;
   }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
+import { THREAD_ARCHIVE_MEDIA_TYPE } from '@geulbat/protocol/threads';
 
 import { useThreadSessions } from './use-thread-sessions.js';
 import {
@@ -40,6 +41,145 @@ void test('useThreadSessions surfaces openThread failures', async () => {
   );
   assert.equal(hook.result.current.selectedThreadId, null);
   assert.deepEqual(hook.result.current.messages, []);
+  hook.unmount();
+});
+
+void test('useThreadSessions imports opaque archive bytes, refreshes the list, and opens the fresh thread', async () => {
+  restoreDocument = installShellAuthDocument();
+  const fetchMock = installFetchSequence(
+    (_url, init) => {
+      assert.equal(init?.method, 'POST');
+      assert.equal(
+        new Headers(init?.headers).get('Content-Type'),
+        THREAD_ARCHIVE_MEDIA_TYPE,
+      );
+      assert.ok(init?.body instanceof Blob);
+      return jsonResponse({
+        ok: true,
+        threadId: OTHER_THREAD_ID,
+        archiveId:
+          'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        importedMessageCount: 1,
+      });
+    },
+    () =>
+      jsonResponse({
+        threads: [
+          {
+            threadId: OTHER_THREAD_ID,
+            title: 'Imported thread',
+            lastUpdated: '2026-07-27T00:00:00.000Z',
+            messageCount: 1,
+          },
+        ],
+      }),
+    () =>
+      jsonResponse({
+        threadId: OTHER_THREAD_ID,
+        snapshotVersion: '2026-07-27T00:00:00.000Z',
+        messages: [
+          {
+            entryId: 'entry-imported',
+            role: 'assistant',
+            content: 'restored',
+            timestamp: '2026-07-27T00:00:00.000Z',
+          },
+        ],
+        artifacts: [],
+      }),
+  );
+  restoreFetch = fetchMock.restore;
+  const hook = await renderHook(useThreadSessions, undefined);
+
+  await hook.run((current) =>
+    current.importThread(new Blob(['opaque archive bytes'])),
+  );
+
+  assert.equal(fetchMock.calls[0]?.url, '/api/thread-archives/import');
+  assert.equal(fetchMock.calls[1]?.url, '/api/threads');
+  assert.equal(fetchMock.calls[2]?.url, `/api/threads/${OTHER_THREAD_ID}`);
+  assert.equal(hook.result.current.selectedThreadId, OTHER_THREAD_ID);
+  assert.equal(hook.result.current.messages[0]?.content, 'restored');
+  assert.equal(
+    hook.result.current.threadTransferNotice,
+    '대화를 가져왔습니다 · 메시지 1개',
+  );
+  assert.equal(hook.result.current.threadError, null);
+  assert.equal(hook.result.current.importingThreadArchive, false);
+  hook.unmount();
+});
+
+void test('useThreadSessions surfaces archive import refusal without changing selection', async () => {
+  restoreDocument = installShellAuthDocument();
+  const fetchMock = installFetchSequence(() =>
+    textResponse(422, 'archive digest mismatch'),
+  );
+  restoreFetch = fetchMock.restore;
+  const hook = await renderHook(useThreadSessions, undefined);
+
+  await hook.run((current) =>
+    current.importThread(new Blob(['tampered archive'])),
+  );
+
+  assert.equal(hook.result.current.selectedThreadId, null);
+  assert.equal(hook.result.current.threadTransferNotice, null);
+  assert.equal(hook.result.current.importingThreadArchive, false);
+  assert.equal(
+    hook.result.current.threadError,
+    '대화를 가져오지 못했습니다. API 422: archive digest mismatch',
+  );
+  hook.unmount();
+});
+
+void test('useThreadSessions exports opaque archive bytes through the OS save surface', async (t) => {
+  restoreDocument = installShellAuthDocument();
+  const writtenArchives: Blob[] = [];
+  let writableClosed = false;
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      showSaveFilePicker: async () => ({
+        createWritable: async () => ({
+          write: async (archive: Blob) => {
+            writtenArchives.push(archive);
+          },
+          close: async () => {
+            writableClosed = true;
+          },
+        }),
+      }),
+    },
+  });
+  t.after(() => {
+    if (originalWindow === undefined) {
+      Reflect.deleteProperty(globalThis, 'window');
+      return;
+    }
+    Object.defineProperty(globalThis, 'window', originalWindow);
+  });
+  const fetchMock = installFetchSequence(
+    () =>
+      new Response('opaque export bytes', {
+        status: 200,
+        headers: { 'Content-Type': THREAD_ARCHIVE_MEDIA_TYPE },
+      }),
+  );
+  restoreFetch = fetchMock.restore;
+  const hook = await renderHook(useThreadSessions, undefined);
+
+  await hook.run((current) => current.exportThread(THREAD_ID));
+
+  assert.equal(fetchMock.calls[0]?.url, `/api/threads/${THREAD_ID}/archive`);
+  const writtenArchive = writtenArchives[0];
+  assert.ok(writtenArchive);
+  assert.equal(await writtenArchive.text(), 'opaque export bytes');
+  assert.equal(writableClosed, true);
+  assert.equal(
+    hook.result.current.threadTransferNotice,
+    '대화 아카이브를 내보냈습니다.',
+  );
+  assert.equal(hook.result.current.exportingThreadId, null);
   hook.unmount();
 });
 

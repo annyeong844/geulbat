@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   PTC_EXECUTE_CODE_CELL_EXEC_MAX_YIELD_MS,
   PTC_EXECUTE_CODE_CELL_EXEC_MIN_YIELD_MS,
+  PTC_EXECUTE_CODE_PYTHON_SDK_IMPORT_MODULE,
   PTC_EXECUTE_CODE_TOOL_NAME,
   type PtcExecuteCodePlacementContinuityProvenance,
   type PtcExecuteCodePlacementResourceSnapshotRef,
@@ -41,13 +42,19 @@ const executeCodeArgsSchema = z.strictObject({
     .string()
     .min(1, 'code is required.')
     .describe(
-      'JavaScript or Node-native TypeScript for PTC Docker. Node transforms types, enums, runtime namespaces, and parameter properties without type checking; TSX, decorators, and tsconfig transforms are unsupported.',
+      'Code for PTC Docker. The default language is JavaScript with Node-native TypeScript syntax; Python runs with the standard library in the batch lane.',
+    ),
+  language: z
+    .enum(['javascript', 'python'])
+    .optional()
+    .describe(
+      `Omit or use "javascript" for JavaScript and Node-native TypeScript. Use "python" for Python standard-library batch execution with from ${PTC_EXECUTE_CODE_PYTHON_SDK_IMPORT_MODULE} import <tool_name> or geulbat.call_tool(name, args); Python does not accept moduleFormat or yield-time_ms.`,
     ),
   moduleFormat: z
     .enum(['commonjs', 'esm'])
     .optional()
     .describe(
-      'Omit for CommonJS require()/return; use "esm" for static import/export and top-level await. ESM writes results to stdout. Packages resolve from this PTC session.',
+      'JavaScript only. Omit for CommonJS require()/return; use "esm" for static import/export and top-level await. ESM writes results to stdout. npm packages resolve from this PTC session.',
     ),
   timeoutMs: z
     .number()
@@ -64,7 +71,14 @@ const executeCodeArgsSchema = z.strictObject({
     .max(PTC_EXECUTE_CODE_CELL_EXEC_MAX_YIELD_MS)
     .optional()
     .describe(
-      'Optional initial observation window in milliseconds. The key is exactly "yield-time_ms", with a hyphen; status "queued" or "running" continues through wait.',
+      'JavaScript detached-cell only. Optional initial observation window in milliseconds. The key is exactly "yield-time_ms", with a hyphen; status "queued" or "running" continues through wait.',
+    ),
+  artifacts: z
+    .array(z.string().min(1))
+    .min(1)
+    .optional()
+    .describe(
+      'Files to export from /geulbat/artifacts after a successful batch execution. Use unique paths relative to that directory, for example ["reports/summary.json"]. Artifact bytes stay out of model history; the result returns durable evidence metadata and UI open/download links. Artifact export does not accept yield-time_ms and requires operator-configured limits.',
     ),
 });
 
@@ -72,13 +86,14 @@ type ExecuteCodeArgs = z.output<typeof executeCodeArgsSchema>;
 
 export const executeCodeTool = defineZodTool({
   name: PTC_EXECUTE_CODE_TOOL_NAME,
-  description:
-    'Run JavaScript or Node-native TypeScript in PTC Docker; use moduleFormat for ESM. PTC has no direct host filesystem mount. Before a host callback, call geulbat.help() and require callbacks.enabled. When disabled, do not infer host inspection; report that operator callback transport policy is required. Use a generated CommonJS wrapper such as const { readFile } = require(\'geulbat-sdk/files/readFile\'). Low-level geulbat.callTool returns raw { ok, output, errorCode?, error? }, not the generated wrapper\'s kind/value envelope. Generated wrappers return { kind: "inline", value: { ok: true, output: string } | { ok: false, output: string, errorCode: string, error: string } } or { kind: "offloaded", outputRef: string, ... }. Check result.kind and result.value.ok before result.value.output; wrapper values do not use status or content fields. For a batch, preserve each request path or name and report its errorCode and error rather than a generic message. For readFile, parse result.value.output and require payload.hasMore === false before treating payload.content as complete. Relative callback paths start from the user-selected run cwd; do not assume a repository cwd. If exec returns status "queued" or status "running" with cellId, call wait with cell_id.',
+  description: `Run JavaScript, Node-native TypeScript, or Python in PTC Docker; use moduleFormat for JavaScript ESM. Python is standard-library batch execution: print the final value and prefer a generated wrapper such as from ${PTC_EXECUTE_CODE_PYTHON_SDK_IMPORT_MODULE} import read_file; geulbat.call_tool(name, args) and geulbat.tools.<tool_name>(args) remain available as low-level callbacks. Python does not accept moduleFormat or yield-time_ms. PTC has no direct host filesystem mount. Before a host callback, call geulbat.help() and require callbacks.enabled. When disabled, do not infer host inspection; report that operator callback transport policy is required. In JavaScript, use a generated CommonJS wrapper such as const { readFile } = require('geulbat-sdk/files/readFile'). Low-level geulbat.callTool returns raw { ok, output, errorCode?, error? }; Python geulbat.call_tool returns the same shape, not the generated wrapper's kind/value envelope. Generated wrappers return { kind: "inline", value: { ok: true, output: string } | { ok: false, output: string, errorCode: string, error: string } } or { kind: "offloaded", outputRef: string, ... }. Check result.kind and result.value.ok before result.value.output; wrapper values do not use status or content fields. For a batch, preserve each request path or name and report its errorCode and error rather than a generic message. For read_file/readFile, parse result.value.output and require payload.hasMore === false before treating payload.content as complete. Relative callback paths start from the user-selected run cwd; do not assume a repository cwd. To return a durable user file, write it below /geulbat/artifacts and list its relative path in artifacts; this runs to batch completion and returns metadata rather than file bytes. If exec returns status "queued" or status "running" with cellId, call wait with cell_id.`,
   argsSchema: executeCodeArgsSchema,
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
   parallelBatchKind: 'ptc_cell',
+  abortSettlement: 'await_execution',
   requiresApproval: false,
+  recoveryStrategy: 'durable_handle',
   resultProjection: {
     exactDurableRecovery: true,
     modelProjection: 'runtime_summary',
@@ -93,11 +108,12 @@ export const executeCodeTool = defineZodTool({
       'node code',
       'typescript code',
       'typescript enum code',
+      'python code',
       'exec cell',
     ],
     tags: ['ptc', 'code', 'execution'],
     whenToUse:
-      'Run JavaScript or Node-native TypeScript code in the PTC execution environment.',
+      'Run JavaScript, Node-native TypeScript, or Python code in the PTC execution environment.',
     notFor: 'Generic shell commands or discovering tool names.',
   },
   async executeParsed(args: ExecuteCodeArgs, ctx) {
@@ -135,10 +151,13 @@ export const executeCodeTool = defineZodTool({
       ctx,
       callbackToolSurface,
     );
-    const sdkProjectionResult = await resolvePtcExecuteCodeToolSdkProjection(
-      ctx,
-      callbackToolSurface,
-    );
+    const sdkProjectionResult =
+      args.language === 'python'
+        ? ({ ok: true, projection: undefined } as const)
+        : await resolvePtcExecuteCodeToolSdkProjection(
+            ctx,
+            callbackToolSurface,
+          );
     if (!sdkProjectionResult.ok) {
       return toolError('execution_failed', sdkProjectionResult.message);
     }
@@ -159,6 +178,7 @@ export const executeCodeTool = defineZodTool({
             snapshotId: placementResourceSnapshotId,
             source: 'agent_resource_budget_provider',
           };
+    const invocationRunId = ctx.runId ?? ctx.runState?.runId;
     const runtimeArgs = {
       runContext: {
         ...createRunContext({
@@ -168,9 +188,13 @@ export const executeCodeTool = defineZodTool({
         }),
         ownerKind,
       },
+      ...(invocationRunId === undefined
+        ? {}
+        : { invocation: { runId: invocationRunId, callId: ctx.callId } }),
       invocationId: ctx.callId,
       request: {
         code: args.code,
+        ...(args.language === undefined ? {} : { language: args.language }),
         ...(args.moduleFormat === undefined
           ? {}
           : { moduleFormat: args.moduleFormat }),
@@ -178,6 +202,9 @@ export const executeCodeTool = defineZodTool({
         ...(args['yield-time_ms'] !== undefined
           ? { yieldTimeMs: args['yield-time_ms'] }
           : {}),
+        ...(args.artifacts === undefined
+          ? {}
+          : { artifacts: [...args.artifacts] }),
       },
       ...(placementResourceSnapshotRef === undefined
         ? {}
@@ -254,6 +281,7 @@ function stringifyExecuteCodeSummary(
     profile: summary.profile,
     executionClass: summary.executionClass,
     executionSurface: summary.executionSurface,
+    ...(summary.language === undefined ? {} : { language: summary.language }),
     exitCode: summary.exitCode,
     stdout: summary.stdout,
     stderr: summary.stderr,
@@ -264,6 +292,9 @@ function stringifyExecuteCodeSummary(
     sessionLifecycle: summary.sessionLifecycle,
     callbackHelp: summary.callbackHelp,
     ...(summary.store === undefined ? {} : { store: summary.store }),
+    ...(summary.artifacts === undefined
+      ? {}
+      : { artifacts: summary.artifacts }),
   });
 }
 
@@ -309,6 +340,7 @@ function sanitizeFailureDiagnostics(
     'executeCodeRuntimeThrew',
     'expectedProtocolVersion',
     'receivedProtocolVersion',
+    'artifactReasonCode',
   ]) {
     const value = diagnostics[key];
     if (
@@ -328,6 +360,7 @@ function executeCodeFailureToToolErrorCode(
   switch (reasonCode) {
     case 'ptc_execute_code_invalid':
     case 'ptc_execute_code_callback_bridge_unavailable':
+    case 'ptc_execute_code_artifact_export_disabled':
     case 'ptc_execute_code_lab_admission_failed':
     case 'ptc_lab_admission_required':
     case 'ptc_lab_shell_disabled':
@@ -350,6 +383,7 @@ function executeCodeFailureToToolErrorCode(
     case 'ptc_execute_code_session_cleanup_failed':
     case 'ptc_execute_code_store_unavailable':
     case 'ptc_execute_code_store_commit_failed':
+    case 'ptc_execute_code_artifact_export_failed':
     case 'ptc_sdk_protocol_mismatch':
       return 'execution_failed';
   }

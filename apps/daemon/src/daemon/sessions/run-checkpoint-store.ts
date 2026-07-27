@@ -1,136 +1,69 @@
-import { readdir, readFile } from 'node:fs/promises';
+// 런 체크포인트의 **원자적 상태 전이**를 소유한다.
+//
+// 체크포인트는 스레드당 파일 하나이고(`checkpointPath`), 모든 갱신은 그 레코드
+// 전체를 원자적으로 교체하며(`writeCheckpoint` → atomic write) 스레드 키로
+// 직렬화된다(`createKeyedSerialRunner`). 그래서 approval·interject·tool 결과·런
+// 수명은 **관심사가 달라 보여도 store를 나눌 수 없다** — 나누면 여러 owner가 같은
+// 파일을 쓰게 되어 그 원자성이 깨진다. 크기를 이유로 다시 쪼개지 않는다.
+//
+// 저장된 값을 도메인 값으로 바꾸는 일은 이 파일의 일이 아니다. 그 경계는
+// `run-checkpoint-persistence`가 소유하고, 여기서는 파싱 결과를 값으로 받는다.
+
+import { readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import {
-  assertRunId,
   assertThreadId,
-  isRunId,
-  isThreadId,
   type RunId,
   type ThreadId,
 } from '@geulbat/protocol/ids';
-import {
-  isImageGenerationModelId,
-  isRunModelId,
-  isRunProviderId,
-  isRunProviderTransitionRecovery,
-  isRunReasoningEffort,
-  isRunServiceTier,
-  isRunSubagentModelRouting,
-  isVideoGenerationModelId,
-  isVideoGenerationSettings,
-  resolveRunModelDescriptor,
-  type ImageGenerationModelId,
-  type RunProviderTransitionRecovery,
-  type RunProviderId,
-  type RunReasoningEffort,
-  type RunServiceTier,
-  type RunSubagentModelRouting,
-  type VideoGenerationModelId,
-  type VideoGenerationSettings,
-} from '@geulbat/protocol/run-contract';
-import {
-  isApprovalClass,
-  isApprovalGrantScope,
-  isPermissionMode,
-  type ApprovalClass,
-  type ApprovalGrantScope,
-  type PermissionMode,
+import type {
+  ApprovalClass,
+  ApprovalGrantScope,
+  PermissionMode,
 } from '@geulbat/protocol/run-approval';
-import { isErrorEventPayload } from '@geulbat/protocol/run-events';
-import {
-  isApprovedPlanRef,
-  type ApprovedPlanRef,
-} from '@geulbat/protocol/planning-workflow';
-import {
-  validateToolCapabilityPolicy,
-  type ToolCapabilityPolicy,
-} from '@geulbat/tool-library/tool-capability-policy';
-import { isRecord } from '../runtime-json.js';
+import { createLogger } from '@geulbat/structured-logger/logger';
+
+import type { JsonValue } from '../runtime-json.js';
 
 import { writeTextFileAtomically } from '../utils/atomic-file.js';
+import { getErrorMessage } from '../utils/error.js';
 import { createKeyedSerialRunner } from '../utils/keyed-serial.js';
-import type { TerminalAgentEvent } from '../runtime-contracts.js';
+import {
+  RUN_CHECKPOINT_SCHEMA_VERSION,
+  isMissingFileError,
+  parseRunCheckpoint,
+} from './run-checkpoint-persistence.js';
+import type {
+  RecoverableRunRequest,
+  RunCheckpoint,
+  RunCheckpointApproval,
+  RunCheckpointTerminalSnapshot,
+  RunCheckpointToolResultReady,
+} from './run-checkpoint-persistence.js';
+import type {
+  ExecuteResult,
+  RunCheckpointToolInvocation,
+} from '../runtime-contracts.js';
 import type { PendingInterject } from './active-run-interject-buffer.js';
 import {
   createRunEventJournalStore,
   type RunCheckpointEvent,
 } from './run-event-journal.js';
 
+const logger = createLogger('sessions/run-checkpoint-store');
+
 export type { RunCheckpointEvent } from './run-event-journal.js';
+export type { RunCheckpointToolInvocation } from '../runtime-contracts.js';
 
-const RUN_CHECKPOINT_SCHEMA_VERSION = 1;
-
-export interface RecoverableRunRequest {
-  workingDirectory: string;
-  permissionMode: PermissionMode;
-  planningWorkflow?: {
-    workflowId: string;
-  };
-  approvedPlanRef?: ApprovedPlanRef;
-  goal?: {
-    goalId: string;
-  };
-  loopImplementation?: {
-    readonly implementationId: string;
-    readonly contractVersion: string;
-  };
-  providerModel?: { providerId: RunProviderId; model: string };
-  providerTransitionRecovery?: RunProviderTransitionRecovery;
-  currentFile?: string;
-  selection?: { startLine: number; endLine: number; text: string };
-  ultraReasoning?: boolean;
-  reasoningEffort?: RunReasoningEffort;
-  serviceTier?: RunServiceTier;
-  subagentModelRouting?: RunSubagentModelRouting;
-  toolSurface?: {
-    directRegistryNames: string[];
-    allowedRegistryNames: string[];
-  };
-  toolCapabilityPolicy?: ToolCapabilityPolicy;
-  imageGenerationModel?: ImageGenerationModelId;
-  videoGenerationModel?: VideoGenerationModelId;
-  videoGenerationSettings?: VideoGenerationSettings;
-}
-
-export type RunCheckpointApproval =
-  | {
-      status: 'pending';
-      callId: string;
-      approvalClass: ApprovalClass;
-    }
-  | {
-      status: 'decided';
-      callId: string;
-      approvalClass: ApprovalClass;
-      decision: 'approved' | 'denied';
-      grantScope: ApprovalGrantScope;
-    };
-
-export type RunCheckpointTerminalEvent = TerminalAgentEvent;
-
-interface RunCheckpointTerminalSnapshot {
-  event: RunCheckpointTerminalEvent;
-  eventCursor: number;
-  acknowledged: boolean;
-}
-
-export interface RunCheckpoint {
-  schemaVersion: typeof RUN_CHECKPOINT_SCHEMA_VERSION;
-  revision: number;
-  status: 'running' | 'terminal';
-  runId: RunId;
-  threadId: ThreadId;
-  request: RecoverableRunRequest;
-  interjectSeq: number;
-  applyingInterject: PendingInterject | null;
-  pendingInterjects: PendingInterject[];
-  approvals: RunCheckpointApproval[];
-  eventHistory: RunCheckpointEvent[];
-  terminal: RunCheckpointTerminalSnapshot | null;
-  createdAt: string;
-  updatedAt: string;
-}
+export type {
+  RecoverableRunRequest,
+  RunCheckpoint,
+  RunCheckpointApproval,
+  RunCheckpointTerminalEvent,
+  RunCheckpointToolResultReady,
+} from './run-checkpoint-persistence.js';
 
 type RunCheckpointUnavailableResult = {
   ok: false;
@@ -165,8 +98,19 @@ type RunCheckpointTerminalAckMutationResult =
       code: 'not_found' | 'not_terminal' | 'cursor_conflict';
     };
 
+type RunCheckpointToolResultMutationResult =
+  | { ok: true; checkpoint: RunCheckpoint; changed: boolean }
+  | RunCheckpointUnavailableResult
+  | { ok: false; code: 'tool_result_conflict' };
+
+type RunCheckpointToolInvocationMutationResult =
+  | { ok: true; checkpoint: RunCheckpoint; changed: boolean }
+  | RunCheckpointUnavailableResult
+  | { ok: false; code: 'tool_invocation_conflict' };
+
 export interface RunCheckpointStore {
   readThread(threadId: ThreadId): Promise<RunCheckpoint | null>;
+  hasRunningRun(args: { threadId: ThreadId; runId: RunId }): Promise<boolean>;
   listRunning(): Promise<RunCheckpoint[]>;
   listUnacknowledgedTerminal(): Promise<RunCheckpoint[]>;
   startRun(args: {
@@ -210,6 +154,32 @@ export interface RunCheckpointStore {
     grantScope: ApprovalGrantScope;
     permissionMode?: PermissionMode;
   }): Promise<RunCheckpointApprovalMutationResult>;
+  recordToolResultReady(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    ready: RunCheckpointToolResultReady;
+  }): Promise<RunCheckpointToolResultMutationResult>;
+  recordToolInvocation(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    invocation: Omit<
+      Extract<RunCheckpointToolInvocation, { status: 'in_flight' }>,
+      'status'
+    >;
+  }): Promise<RunCheckpointToolInvocationMutationResult>;
+  recordToolInvocationResult(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    callId: string;
+    toolName: string;
+    result: ExecuteResult;
+  }): Promise<RunCheckpointToolInvocationMutationResult>;
+  completeToolResultReady(args: {
+    threadId: ThreadId;
+    runId: RunId;
+    callId: string;
+    resultRef: string;
+  }): Promise<RunCheckpointToolResultMutationResult>;
   appendRunEvents(args: {
     threadId: ThreadId;
     runId: RunId;
@@ -289,26 +259,51 @@ export function createRunCheckpointStore(args: {
       }
       throw error;
     }
-    return await Promise.all(
-      names
-        .filter((name) => name.endsWith('.json'))
-        .sort()
-        .map(async (name) => {
-          const checkpoint = parseRunCheckpoint(
-            JSON.parse(await readFile(join(root, name), 'utf8')),
-          );
-          if (checkpoint.status === 'running') {
-            runningRunIdByThread.set(checkpoint.threadId, checkpoint.runId);
-          } else {
-            runningRunIdByThread.delete(checkpoint.threadId);
-          }
-          return await hydrateEventHistory(checkpoint);
-        }),
+    const checkpointNames = names
+      .filter((name) => name.endsWith('.json'))
+      .sort();
+    // 열거는 스레드 하나의 손상을 그 스레드에 가둔다. 체크포인트나 저널이
+    // 깨지는 일은 실제로 일어난다(예: append 중 크래시로 저널 마지막 줄이
+    // 반쪽으로 남는다). 그때 이 열거가 통째로 실패하면 부팅 복구가 첫 줄에서
+    // 죽어 데몬이 서지 못하고, 재시작해도 같은 파일을 다시 읽으므로 손상 하나가
+    // 제품 전체를 영구히 세운다.
+    //
+    // 손상된 것을 조용히 성공으로 만들지는 않는다: 그 스레드는 열거에서 빠지고
+    // 이유가 진단으로 남으며, `readThread`로 그 스레드를 **명시적으로** 물으면
+    // 여전히 거부된다.
+    const settled = await Promise.allSettled(
+      checkpointNames.map(async (name) => {
+        const checkpoint = parseRunCheckpoint(
+          JSON.parse(await readFile(join(root, name), 'utf8')),
+        );
+        if (checkpoint.status === 'running') {
+          runningRunIdByThread.set(checkpoint.threadId, checkpoint.runId);
+        } else {
+          runningRunIdByThread.delete(checkpoint.threadId);
+        }
+        return await hydrateEventHistory(checkpoint);
+      }),
     );
+    const checkpoints: RunCheckpoint[] = [];
+    for (const [index, result] of settled.entries()) {
+      if (result.status === 'fulfilled') {
+        checkpoints.push(result.value);
+        continue;
+      }
+      logger.error('run checkpoint excluded from enumeration:', {
+        checkpointFile: checkpointNames[index],
+        message: getErrorMessage(result.reason),
+      });
+    }
+    return checkpoints;
   }
 
   return {
     readThread,
+    async hasRunningRun({ threadId, runId }) {
+      const checkpoint = await readCheckpointFile(threadId);
+      return checkpoint?.status === 'running' && checkpoint.runId === runId;
+    },
     async listRunning() {
       const checkpoints = await listCheckpoints();
       return checkpoints.filter(
@@ -346,6 +341,8 @@ export function createRunCheckpointStore(args: {
           applyingInterject: null,
           pendingInterjects: [],
           approvals: [],
+          toolInvocations: [],
+          toolResultsReady: [],
           eventHistory: [],
           terminal: null,
           createdAt: timestamp,
@@ -607,6 +604,193 @@ export function createRunCheckpointStore(args: {
         };
       });
     },
+    async recordToolInvocation({ threadId, runId, invocation }) {
+      const path = checkpointPath(root, threadId);
+      return await runMutationSerial(path, async () => {
+        const resolution = resolveRunMutationCheckpoint(
+          await readThread(threadId),
+          runId,
+        );
+        if (!resolution.ok) {
+          return resolution;
+        }
+        const previous = resolution.checkpoint;
+        const existing = previous.toolInvocations.find(
+          (candidate) => candidate.callId === invocation.callId,
+        );
+        if (existing !== undefined) {
+          return existing.toolName === invocation.toolName &&
+            existing.recoveryStrategy === invocation.recoveryStrategy &&
+            isSameJsonValue(existing.recoveryState, invocation.recoveryState)
+            ? { ok: true, checkpoint: previous, changed: false }
+            : { ok: false, code: 'tool_invocation_conflict' };
+        }
+        const checkpoint: RunCheckpoint = {
+          ...previous,
+          revision: previous.revision + 1,
+          toolInvocations: [
+            ...previous.toolInvocations,
+            {
+              status: 'in_flight',
+              callId: invocation.callId,
+              toolName: invocation.toolName,
+              recoveryStrategy: invocation.recoveryStrategy,
+              recoveryState: structuredClone(invocation.recoveryState),
+            },
+          ],
+          updatedAt: now(),
+        };
+        await writeCheckpoint(path, checkpoint);
+        return { ok: true, checkpoint, changed: true };
+      });
+    },
+    async recordToolInvocationResult({
+      threadId,
+      runId,
+      callId,
+      toolName,
+      result,
+    }) {
+      const path = checkpointPath(root, threadId);
+      return await runMutationSerial(path, async () => {
+        const resolution = resolveRunMutationCheckpoint(
+          await readThread(threadId),
+          runId,
+        );
+        if (!resolution.ok) {
+          return resolution;
+        }
+        const previous = resolution.checkpoint;
+        const index = previous.toolInvocations.findIndex(
+          (invocation) => invocation.callId === callId,
+        );
+        const existing = previous.toolInvocations[index];
+        if (existing === undefined || existing.toolName !== toolName) {
+          return { ok: false, code: 'tool_invocation_conflict' };
+        }
+        if (existing.status === 'reconciled') {
+          return isSameExecuteResult(existing.result, result)
+            ? { ok: true, checkpoint: previous, changed: false }
+            : { ok: false, code: 'tool_invocation_conflict' };
+        }
+        const toolInvocations = [...previous.toolInvocations];
+        toolInvocations[index] = {
+          ...existing,
+          status: 'reconciled',
+          result: structuredClone(result),
+        };
+        const checkpoint: RunCheckpoint = {
+          ...previous,
+          revision: previous.revision + 1,
+          toolInvocations,
+          updatedAt: now(),
+        };
+        await writeCheckpoint(path, checkpoint);
+        return { ok: true, checkpoint, changed: true };
+      });
+    },
+    async recordToolResultReady({ threadId, runId, ready }) {
+      const path = checkpointPath(root, threadId);
+      return await runMutationSerial(path, async () => {
+        const resolution = resolveRunMutationCheckpoint(
+          await readThread(threadId),
+          runId,
+        );
+        if (!resolution.ok) {
+          return resolution;
+        }
+        const previous = resolution.checkpoint;
+        const invocation = previous.toolInvocations.find(
+          (candidate) => candidate.callId === ready.callId,
+        );
+        if (
+          invocation?.status === 'in_flight' ||
+          (invocation !== undefined && invocation.toolName !== ready.toolName)
+        ) {
+          return { ok: false, code: 'tool_result_conflict' };
+        }
+        const existing = previous.toolResultsReady.find(
+          (result) =>
+            result.callId === ready.callId ||
+            result.resultRef === ready.resultRef,
+        );
+        if (existing !== undefined) {
+          return existing.callId === ready.callId &&
+            existing.toolName === ready.toolName &&
+            existing.resultRef === ready.resultRef
+            ? { ok: true, checkpoint: previous, changed: false }
+            : { ok: false, code: 'tool_result_conflict' };
+        }
+        const checkpoint: RunCheckpoint = {
+          ...previous,
+          revision: previous.revision + 1,
+          toolResultsReady: [...previous.toolResultsReady, { ...ready }],
+          updatedAt: now(),
+        };
+        await writeCheckpoint(path, checkpoint);
+        return { ok: true, checkpoint, changed: true };
+      });
+    },
+    async completeToolResultReady({ threadId, runId, callId, resultRef }) {
+      const path = checkpointPath(root, threadId);
+      return await runMutationSerial(path, async () => {
+        const resolution = resolveRunMutationCheckpoint(
+          await readThread(threadId),
+          runId,
+        );
+        if (!resolution.ok) {
+          return resolution;
+        }
+        const previous = resolution.checkpoint;
+        const index = previous.toolResultsReady.findIndex(
+          (ready) => ready.callId === callId,
+        );
+        const invocationIndex = previous.toolInvocations.findIndex(
+          (invocation) => invocation.callId === callId,
+        );
+        const invocation = previous.toolInvocations[invocationIndex];
+        if (invocation?.status === 'in_flight') {
+          return { ok: false, code: 'tool_result_conflict' };
+        }
+        if (index < 0) {
+          if (
+            previous.toolResultsReady.some(
+              (ready) => ready.resultRef === resultRef,
+            )
+          ) {
+            return { ok: false, code: 'tool_result_conflict' };
+          }
+          if (invocation !== undefined) {
+            return { ok: false, code: 'tool_result_conflict' };
+          }
+          return { ok: true, checkpoint: previous, changed: false };
+        }
+        if (previous.toolResultsReady[index]?.resultRef !== resultRef) {
+          return { ok: false, code: 'tool_result_conflict' };
+        }
+        if (
+          invocation !== undefined &&
+          invocation.toolName !== previous.toolResultsReady[index]?.toolName
+        ) {
+          return { ok: false, code: 'tool_result_conflict' };
+        }
+        const toolResultsReady = [...previous.toolResultsReady];
+        toolResultsReady.splice(index, 1);
+        const toolInvocations = [...previous.toolInvocations];
+        if (invocation !== undefined) {
+          toolInvocations.splice(invocationIndex, 1);
+        }
+        const checkpoint: RunCheckpoint = {
+          ...previous,
+          revision: previous.revision + 1,
+          toolInvocations,
+          toolResultsReady,
+          updatedAt: now(),
+        };
+        await writeCheckpoint(path, checkpoint);
+        return { ok: true, checkpoint, changed: true };
+      });
+    },
     async appendRunEvents({ threadId, runId, events }) {
       if (events.length === 0) {
         return;
@@ -647,6 +831,16 @@ export function createRunCheckpointStore(args: {
         ) {
           throw new Error(
             `run checkpoint still has pending interjects: ${runId}`,
+          );
+        }
+        if (previous.toolResultsReady.length > 0) {
+          throw new Error(
+            `run checkpoint still has ready tool results: ${runId}`,
+          );
+        }
+        if (previous.toolInvocations.length > 0) {
+          throw new Error(
+            `run checkpoint still has tool invocations: ${runId}`,
           );
         }
         const checkpoint: RunCheckpoint = {
@@ -694,6 +888,29 @@ function checkpointPath(root: string, threadId: ThreadId): string {
   return join(root, `${assertThreadId(threadId)}.json`);
 }
 
+/**
+ * 스레드 삭제 시 그 스레드의 run checkpoint를 함께 지운다. 남겨두면 사라진
+ * 스레드의 복구 후보가 계속 목록에 오른다.
+ */
+export async function deleteThreadRunCheckpoint(
+  stateRoot: string,
+  threadId: ThreadId,
+): Promise<boolean> {
+  const path = checkpointPath(
+    join(stateRoot, '.geulbat', 'run-checkpoints'),
+    threadId,
+  );
+  try {
+    await rm(path);
+    return true;
+  } catch (error: unknown) {
+    if (isMissingFileError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 function isSameTerminalSnapshot(
   previous: RunCheckpointTerminalSnapshot,
   next: Omit<RunCheckpointTerminalSnapshot, 'acknowledged'>,
@@ -733,199 +950,6 @@ async function writeCheckpoint(
   );
 }
 
-function parseRunCheckpoint(value: unknown): RunCheckpoint {
-  if (
-    !isRecord(value) ||
-    value.schemaVersion !== RUN_CHECKPOINT_SCHEMA_VERSION ||
-    !Number.isSafeInteger(value.revision) ||
-    typeof value.revision !== 'number' ||
-    value.revision < 1 ||
-    (value.status !== 'running' && value.status !== 'terminal') ||
-    typeof value.runId !== 'string' ||
-    !isRunId(value.runId) ||
-    typeof value.threadId !== 'string' ||
-    !isThreadId(value.threadId) ||
-    typeof value.createdAt !== 'string' ||
-    typeof value.updatedAt !== 'string'
-  ) {
-    throw new Error('invalid run checkpoint');
-  }
-  const interjectSeq = parseInterjectSeq(value.interjectSeq);
-  const applyingInterject =
-    value.applyingInterject === undefined || value.applyingInterject === null
-      ? null
-      : parsePendingInterject(value.applyingInterject);
-  const pendingInterjects =
-    value.pendingInterjects === undefined
-      ? []
-      : parsePendingInterjects(value.pendingInterjects);
-  const approvals =
-    value.approvals === undefined
-      ? []
-      : parseCheckpointApprovals(value.approvals);
-  const terminal =
-    value.terminal === undefined || value.terminal === null
-      ? null
-      : parseRunCheckpointTerminalSnapshot(value.terminal);
-  if (value.status === 'running' && terminal !== null) {
-    throw new Error('running checkpoint cannot have terminal snapshot');
-  }
-  const orderedInterjects = [
-    ...(applyingInterject === null ? [] : [applyingInterject]),
-    ...pendingInterjects,
-  ];
-  if (
-    orderedInterjects.some(
-      (interject, index) =>
-        interject.receivedSeq > interjectSeq ||
-        (index > 0 &&
-          interject.receivedSeq <=
-            (orderedInterjects[index - 1]?.receivedSeq ?? 0)),
-    )
-  ) {
-    throw new Error('invalid run checkpoint interject order');
-  }
-  return {
-    schemaVersion: RUN_CHECKPOINT_SCHEMA_VERSION,
-    revision: value.revision,
-    status: value.status,
-    runId: assertRunId(value.runId),
-    threadId: assertThreadId(value.threadId),
-    request: parseRecoverableRunRequest(value.request),
-    interjectSeq,
-    applyingInterject,
-    pendingInterjects,
-    approvals,
-    eventHistory: [],
-    terminal,
-    createdAt: value.createdAt,
-    updatedAt: value.updatedAt,
-  };
-}
-
-function parseRunCheckpointTerminalSnapshot(
-  value: unknown,
-): RunCheckpointTerminalSnapshot {
-  if (
-    !isRecord(value) ||
-    !Number.isSafeInteger(value.eventCursor) ||
-    typeof value.eventCursor !== 'number' ||
-    value.eventCursor < 0 ||
-    typeof value.acknowledged !== 'boolean' ||
-    !isRecord(value.event) ||
-    !isRecord(value.event.payload)
-  ) {
-    throw new Error('invalid run checkpoint terminal snapshot');
-  }
-  if (
-    value.event.type === 'done' &&
-    typeof value.event.payload.answer === 'string' &&
-    typeof value.event.payload.ok === 'boolean'
-  ) {
-    return {
-      eventCursor: value.eventCursor,
-      acknowledged: value.acknowledged,
-      event: {
-        type: 'done',
-        payload: {
-          answer: value.event.payload.answer,
-          ok: value.event.payload.ok,
-        },
-      },
-    };
-  }
-  if (
-    value.event.type === 'error' &&
-    isErrorEventPayload(value.event.payload)
-  ) {
-    return {
-      eventCursor: value.eventCursor,
-      acknowledged: value.acknowledged,
-      event: {
-        type: 'error',
-        payload: value.event.payload,
-      },
-    };
-  }
-  throw new Error('invalid run checkpoint terminal event');
-}
-
-function parseInterjectSeq(value: unknown): number {
-  if (value === undefined) {
-    return 0;
-  }
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error('invalid run checkpoint interject sequence');
-  }
-  return value;
-}
-
-function parsePendingInterjects(value: unknown): PendingInterject[] {
-  if (!Array.isArray(value)) {
-    throw new Error('invalid run checkpoint pending interjects');
-  }
-  return value.map(parsePendingInterject);
-}
-
-function parsePendingInterject(value: unknown): PendingInterject {
-  if (
-    !isRecord(value) ||
-    typeof value.text !== 'string' ||
-    typeof value.receivedSeq !== 'number' ||
-    !Number.isSafeInteger(value.receivedSeq) ||
-    value.receivedSeq < 1
-  ) {
-    throw new Error('invalid run checkpoint pending interject');
-  }
-  return { text: value.text, receivedSeq: value.receivedSeq };
-}
-
-function parseCheckpointApprovals(value: unknown): RunCheckpointApproval[] {
-  if (!Array.isArray(value)) {
-    throw new Error('invalid run checkpoint approvals');
-  }
-  const approvals = value.map(parseCheckpointApproval);
-  if (
-    new Set(approvals.map((approval) => approval.callId)).size !==
-    approvals.length
-  ) {
-    throw new Error('invalid run checkpoint approval identities');
-  }
-  return approvals;
-}
-
-function parseCheckpointApproval(value: unknown): RunCheckpointApproval {
-  if (
-    !isRecord(value) ||
-    typeof value.callId !== 'string' ||
-    value.callId.length === 0 ||
-    !isApprovalClass(value.approvalClass)
-  ) {
-    throw new Error('invalid run checkpoint approval');
-  }
-  if (value.status === 'pending') {
-    return {
-      status: value.status,
-      callId: value.callId,
-      approvalClass: value.approvalClass,
-    };
-  }
-  if (
-    value.status === 'decided' &&
-    (value.decision === 'approved' || value.decision === 'denied') &&
-    isApprovalGrantScope(value.grantScope)
-  ) {
-    return {
-      status: value.status,
-      callId: value.callId,
-      approvalClass: value.approvalClass,
-      decision: value.decision,
-      grantScope: value.grantScope,
-    };
-  }
-  throw new Error('invalid run checkpoint approval state');
-}
-
 function resolveRunMutationCheckpoint(
   checkpoint: RunCheckpoint | null,
   runId: RunId,
@@ -939,250 +963,13 @@ function resolveRunMutationCheckpoint(
   return { ok: true, checkpoint };
 }
 
-function parseRecoverableRunRequest(value: unknown): RecoverableRunRequest {
-  if (
-    !isRecord(value) ||
-    typeof value.workingDirectory !== 'string' ||
-    !isPermissionMode(value.permissionMode)
-  ) {
-    throw new Error('invalid recoverable run request');
-  }
-  const providerModel = parseProviderModel(value.providerModel);
-  const providerTransitionRecovery = parseProviderTransitionRecovery(
-    value.providerTransitionRecovery,
-    providerModel,
-  );
-  const loopImplementation = parseAgentLoopImplementationIdentity(
-    value.loopImplementation,
-  );
-  const selection = parseSelection(value.selection);
-  const toolSurface = parseToolSurface(value.toolSurface);
-  const toolCapabilityPolicy = parseCheckpointToolCapabilityPolicy(
-    value.toolCapabilityPolicy,
-  );
-  const planningWorkflow = parsePlanningWorkflowBinding(value.planningWorkflow);
-  const goal = parseGoalBinding(value.goal);
-  if (
-    (value.currentFile !== undefined &&
-      typeof value.currentFile !== 'string') ||
-    (value.ultraReasoning !== undefined &&
-      typeof value.ultraReasoning !== 'boolean') ||
-    (value.reasoningEffort !== undefined &&
-      !isRunReasoningEffort(value.reasoningEffort)) ||
-    (value.serviceTier !== undefined && !isRunServiceTier(value.serviceTier)) ||
-    (value.serviceTier === 'fast' &&
-      providerModel?.providerId !== 'openai_codex_direct') ||
-    (value.subagentModelRouting !== undefined &&
-      !isRunSubagentModelRouting(value.subagentModelRouting)) ||
-    (value.imageGenerationModel !== undefined &&
-      !isImageGenerationModelId(value.imageGenerationModel)) ||
-    (value.videoGenerationModel !== undefined &&
-      !isVideoGenerationModelId(value.videoGenerationModel)) ||
-    (value.videoGenerationSettings !== undefined &&
-      !isVideoGenerationSettings(value.videoGenerationSettings)) ||
-    (value.approvedPlanRef !== undefined &&
-      !isApprovedPlanRef(value.approvedPlanRef)) ||
-    (planningWorkflow !== undefined && value.approvedPlanRef !== undefined) ||
-    (planningWorkflow !== undefined && goal !== undefined)
-  ) {
-    throw new Error('invalid recoverable run request');
-  }
-  if (toolSurface !== undefined && toolCapabilityPolicy !== undefined) {
-    throw new Error(
-      'recoverable run request cannot contain both toolSurface and toolCapabilityPolicy',
-    );
-  }
-  return {
-    workingDirectory: value.workingDirectory,
-    permissionMode: value.permissionMode,
-    ...(planningWorkflow === undefined ? {} : { planningWorkflow }),
-    ...(value.approvedPlanRef === undefined
-      ? {}
-      : { approvedPlanRef: value.approvedPlanRef }),
-    ...(goal === undefined ? {} : { goal }),
-    ...(loopImplementation === undefined ? {} : { loopImplementation }),
-    ...(providerModel === undefined ? {} : { providerModel }),
-    ...(providerTransitionRecovery === undefined
-      ? {}
-      : { providerTransitionRecovery }),
-    ...(value.currentFile === undefined
-      ? {}
-      : { currentFile: value.currentFile }),
-    ...(selection === undefined ? {} : { selection }),
-    ...(value.ultraReasoning === undefined
-      ? {}
-      : { ultraReasoning: value.ultraReasoning }),
-    ...(value.reasoningEffort === undefined
-      ? {}
-      : { reasoningEffort: value.reasoningEffort }),
-    ...(value.serviceTier === undefined
-      ? {}
-      : { serviceTier: value.serviceTier }),
-    ...(value.subagentModelRouting === undefined
-      ? {}
-      : { subagentModelRouting: value.subagentModelRouting }),
-    ...(toolSurface === undefined ? {} : { toolSurface }),
-    ...(toolCapabilityPolicy === undefined ? {} : { toolCapabilityPolicy }),
-    ...(value.imageGenerationModel === undefined
-      ? {}
-      : { imageGenerationModel: value.imageGenerationModel }),
-    ...(value.videoGenerationModel === undefined
-      ? {}
-      : { videoGenerationModel: value.videoGenerationModel }),
-    ...(value.videoGenerationSettings === undefined
-      ? {}
-      : { videoGenerationSettings: value.videoGenerationSettings }),
-  };
+function isSameJsonValue(left: JsonValue, right: JsonValue): boolean {
+  return isDeepStrictEqual(left, right);
 }
 
-function parsePlanningWorkflowBinding(
-  value: unknown,
-): RecoverableRunRequest['planningWorkflow'] {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (
-    !isRecord(value) ||
-    typeof value.workflowId !== 'string' ||
-    value.workflowId.trim() === ''
-  ) {
-    throw new Error('invalid recoverable planning workflow binding');
-  }
-  return {
-    workflowId: value.workflowId,
-  };
-}
-
-function parseGoalBinding(value: unknown): RecoverableRunRequest['goal'] {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (
-    !isRecord(value) ||
-    typeof value.goalId !== 'string' ||
-    value.goalId.trim() === ''
-  ) {
-    throw new Error('invalid recoverable Goal binding');
-  }
-  return {
-    goalId: value.goalId,
-  };
-}
-
-function parseProviderTransitionRecovery(
-  value: unknown,
-  target: RecoverableRunRequest['providerModel'],
-): RunProviderTransitionRecovery | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (
-    target === undefined ||
-    !isRunModelId(target.model) ||
-    resolveRunModelDescriptor(target.model).providerId !== target.providerId ||
-    !isRunProviderTransitionRecovery(value, target.model)
-  ) {
-    throw new Error('invalid recoverable provider transition recovery');
-  }
-  return value;
-}
-
-function parseAgentLoopImplementationIdentity(
-  value: unknown,
-): RecoverableRunRequest['loopImplementation'] {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (
-    !isRecord(value) ||
-    typeof value.implementationId !== 'string' ||
-    value.implementationId.trim().length === 0 ||
-    typeof value.contractVersion !== 'string' ||
-    value.contractVersion.trim().length === 0
-  ) {
-    throw new Error('invalid recoverable agent loop implementation identity');
-  }
-  return {
-    implementationId: value.implementationId,
-    contractVersion: value.contractVersion,
-  };
-}
-
-function parseProviderModel(
-  value: unknown,
-): RecoverableRunRequest['providerModel'] {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (
-    !isRecord(value) ||
-    !isRunProviderId(value.providerId) ||
-    typeof value.model !== 'string'
-  ) {
-    throw new Error('invalid run checkpoint provider model');
-  }
-  return { providerId: value.providerId, model: value.model };
-}
-
-function parseSelection(value: unknown): RecoverableRunRequest['selection'] {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (
-    !isRecord(value) ||
-    !Number.isInteger(value.startLine) ||
-    typeof value.startLine !== 'number' ||
-    !Number.isInteger(value.endLine) ||
-    typeof value.endLine !== 'number' ||
-    typeof value.text !== 'string'
-  ) {
-    throw new Error('invalid run checkpoint selection');
-  }
-  return {
-    startLine: value.startLine,
-    endLine: value.endLine,
-    text: value.text,
-  };
-}
-
-function parseCheckpointToolCapabilityPolicy(
-  value: unknown,
-): ToolCapabilityPolicy | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  try {
-    return validateToolCapabilityPolicy(value);
-  } catch {
-    throw new Error('invalid run checkpoint tool capability policy');
-  }
-}
-
-function parseToolSurface(
-  value: unknown,
-): RecoverableRunRequest['toolSurface'] {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (
-    !isRecord(value) ||
-    !isStringArray(value.directRegistryNames) ||
-    !isStringArray(value.allowedRegistryNames)
-  ) {
-    throw new Error('invalid run checkpoint tool surface');
-  }
-  return {
-    directRegistryNames: [...value.directRegistryNames],
-    allowedRegistryNames: [...value.allowedRegistryNames],
-  };
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return (
-    Array.isArray(value) && value.every((entry) => typeof entry === 'string')
-  );
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return isRecord(error) && error.code === 'ENOENT';
+function isSameExecuteResult(
+  left: ExecuteResult,
+  right: ExecuteResult,
+): boolean {
+  return isDeepStrictEqual(left, right);
 }

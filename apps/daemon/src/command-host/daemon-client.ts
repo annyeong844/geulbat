@@ -1,59 +1,42 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
+import {
+  connectCommandHostWorkerLink,
+  type CommandHostWorkerLink,
+} from './daemon-worker-link.js';
 import { createCommandSessionHost } from './session-core.js';
 import {
   isProcessAlive,
   readCommandHostLock,
   resolveCommandHostPaths,
-  type CommandHostPaths,
 } from './runtime-paths.js';
 import {
-  buildNotification,
-  buildRequest,
   COMMAND_HOST_CONNECT_ATTEMPTS,
   COMMAND_HOST_CONNECT_BACKOFF_MS,
   COMMAND_HOST_METHODS,
-  COMMAND_HOST_NOTIFICATIONS,
-  COMMAND_HOST_PROTOCOL_VERSION,
-  encodeFrame,
-  FrameDecoder,
-  initializeResultSchema,
-  jsonRpcResponseSchema,
   listResultSchema,
-  outputNotificationSchema,
-  REQUEST_CANCELLED_CODE,
-  type DecodedFrame,
-  type JsonRpcId,
 } from './protocol.js';
 import type {
   CommandSessionHostConfig,
   HostCommandActiveSessions,
   HostCommandInitialResult,
   HostCommandInteractionResult,
-  HostCommandOutputChunk,
   HostCommandRuntime,
   HostCommandStartResult,
 } from './contract.js';
 
 // P7.5 spec v4 §7 — 데몬 쪽 HostCommandRuntime 파사드. 도구는 이 파사드가
-// 인라인 코어인지 워커 RPC인지 모른다. AbortSignal은 프로세스 경계를
-// 넘지 않으므로 여기서 $/cancelRequest 알림으로 번역한다.
+// 인라인 코어인지 워커 RPC인지 모른다. 이 파일은 spawn/reconnect와 명령
+// 재시도 정책을 소유하고, 소켓·handshake·AbortSignal 번역은 worker link가
+// 소유한다.
 
 const CONNECT_ATTEMPTS = COMMAND_HOST_CONNECT_ATTEMPTS;
 const CONNECT_BACKOFF_MS = COMMAND_HOST_CONNECT_BACKOFF_MS; // §3 허용 타이머.
-
-/**
- * 응답을 받지 못한 채 연결이 끊긴 요청의 결과값. 결과 모양(reasonCode)만
- * 보고는 "워커가 거절했다"와 구별할 수 없는데, 재시도 가능 여부는 정확히
- * 그 구별에 달려 있다 (§4.7).
- */
-const CONNECTION_LOST = Symbol('command-host connection lost');
 
 function connectionLostResult(): {
   ok: false;
@@ -71,24 +54,6 @@ interface CommandHostClientOptions {
   config: CommandSessionHostConfig;
   /** 워커 엔트리 실행 스펙. 기본은 빌드 산출물 경로다. */
   workerCommand?: { execPath: string; args: string[] };
-}
-
-interface PendingRequest {
-  resolve: (value: unknown) => void;
-  cancelled: boolean;
-  detachAbort?: () => void;
-}
-
-interface WorkerLink {
-  socket: net.Socket;
-  pending: Map<JsonRpcId, PendingRequest>;
-  outputListeners: Map<string, (chunk: HostCommandOutputChunk) => void>;
-  capabilities: {
-    losslessStdio: boolean;
-    prePersistenceOutputRedaction: boolean;
-  };
-  nextId: number;
-  closedReason: string | null;
 }
 
 /**
@@ -118,7 +83,7 @@ function resolveWorkerEntry(): string | undefined {
 export function createCommandHostClient(
   options: CommandHostClientOptions,
 ): HostCommandRuntime & HostCommandActiveSessions {
-  const links = new Map<string, Promise<WorkerLink>>();
+  const links = new Map<string, Promise<CommandHostWorkerLink>>();
   /** 마지막 워커 spawn 실패 사유 — 접속 실패 진단에 실어 보낸다. */
   let lastSpawnFailure: string | undefined;
   /**
@@ -133,11 +98,11 @@ export function createCommandHostClient(
   // 세션을 만들지 않으므로 소유권과 충돌하지 않는다.
   const persistedReader = createCommandSessionHost(options.config);
 
-  async function ensureLink(stateRoot: string): Promise<WorkerLink> {
+  async function ensureLink(stateRoot: string): Promise<CommandHostWorkerLink> {
     const existing = links.get(stateRoot);
     if (existing !== undefined) {
       const link = await existing.catch(() => undefined);
-      if (link !== undefined && link.closedReason === null) {
+      if (link !== undefined && !link.isClosed()) {
         return link;
       }
       links.delete(stateRoot);
@@ -147,16 +112,18 @@ export function createCommandHostClient(
     return await created;
   }
 
-  async function establishLink(stateRoot: string): Promise<WorkerLink> {
+  async function establishLink(
+    stateRoot: string,
+  ): Promise<CommandHostWorkerLink> {
     const paths = await resolveCommandHostPaths(stateRoot);
     let spawned = false;
     for (let attempt = 0; attempt < CONNECT_ATTEMPTS; attempt += 1) {
-      const socket = await connectOnce(paths.socketPath);
-      if (socket !== undefined) {
-        const link = await initializeLink(socket, paths);
-        if (link !== undefined) {
-          return link;
-        }
+      const link = await connectCommandHostWorkerLink(
+        paths.socketPath,
+        paths.stateRootFingerprint,
+      );
+      if (link !== undefined) {
+        return link;
       }
       if (!spawned) {
         const launched = spawnWorker(stateRoot);
@@ -219,163 +186,9 @@ export function createCommandHostClient(
     return { ok: true };
   }
 
-  async function connectOnce(
-    socketPath: string,
-  ): Promise<net.Socket | undefined> {
-    return await new Promise((resolve) => {
-      const socket = net.connect(socketPath);
-      socket.once('connect', () => {
-        socket.removeAllListeners('error');
-        resolve(socket);
-      });
-      socket.once('error', () => {
-        resolve(undefined);
-      });
-    });
-  }
-
-  async function initializeLink(
-    socket: net.Socket,
-    paths: CommandHostPaths,
-  ): Promise<WorkerLink | undefined> {
-    const link: WorkerLink = {
-      socket,
-      pending: new Map(),
-      outputListeners: new Map(),
-      capabilities: {
-        losslessStdio: false,
-        prePersistenceOutputRedaction: false,
-      },
-      nextId: 1,
-      closedReason: null,
-    };
-    const decoder = new FrameDecoder();
-    socket.on('data', (chunk: Buffer) => {
-      let frames: DecodedFrame[];
-      try {
-        frames = decoder.push(chunk);
-      } catch {
-        socket.destroy();
-        return;
-      }
-      for (const frame of frames) {
-        handleInbound(link, frame.message);
-      }
-    });
-    const closeLink = () => {
-      if (link.closedReason === null) {
-        link.closedReason = 'connection closed';
-      }
-      for (const pending of link.pending.values()) {
-        pending.detachAbort?.();
-        pending.resolve(CONNECTION_LOST);
-      }
-      link.pending.clear();
-      link.outputListeners.clear();
-    };
-    socket.on('close', closeLink);
-    socket.on('error', closeLink);
-
-    const initialized = await request(link, COMMAND_HOST_METHODS.initialize, {
-      protocolVersion: COMMAND_HOST_PROTOCOL_VERSION,
-      stateRootFingerprint: paths.stateRootFingerprint,
-    });
-    const parsed = initializeResultSchema.safeParse(initialized);
-    if (!parsed.success) {
-      socket.destroy();
-      return undefined;
-    }
-    link.capabilities = {
-      losslessStdio: parsed.data.capabilities['losslessStdio'] === true,
-      prePersistenceOutputRedaction:
-        parsed.data.capabilities['prePersistenceOutputRedaction'] === true,
-    };
-    return link;
-  }
-
-  function handleInbound(link: WorkerLink, message: unknown): void {
-    const response = jsonRpcResponseSchema.safeParse(message);
-    if (response.success) {
-      const pending = link.pending.get(response.data.id);
-      if (pending !== undefined) {
-        link.pending.delete(response.data.id);
-        pending.detachAbort?.();
-        if ('result' in response.data) {
-          pending.resolve(response.data.result);
-        } else if (response.data.error.code === REQUEST_CANCELLED_CODE) {
-          pending.resolve({
-            ok: false,
-            reasonCode: 'wait_aborted',
-            message: 'host command wait was aborted.',
-          });
-        } else {
-          pending.resolve({
-            ok: false,
-            reasonCode: 'output_store_failed',
-            message: response.data.error.message,
-          });
-        }
-      }
-      return;
-    }
-    const asObject = message as { method?: string; params?: unknown };
-    if (asObject.method === COMMAND_HOST_NOTIFICATIONS.output) {
-      const output = outputNotificationSchema.safeParse(asObject.params);
-      if (output.success) {
-        link.outputListeners.get(output.data.outputRef)?.({
-          stream: output.data.stream,
-          text: output.data.chunk,
-        });
-      }
-    }
-    // resyncRequired는 best-effort 스트리밍에선 무시한다 — 정확 복구는
-    // 페이지 조회가 담당한다 (§7.5).
-  }
-
-  function request(
-    link: WorkerLink,
-    method: string,
-    params: unknown,
-    signal?: AbortSignal,
-  ): Promise<unknown> {
-    const id = link.nextId;
-    link.nextId += 1;
-    return new Promise((resolve) => {
-      const pending: PendingRequest = { resolve, cancelled: false };
-      link.pending.set(id, pending);
-      if (signal !== undefined) {
-        const onAbort = () => {
-          const pending = link.pending.get(id);
-          if (pending !== undefined && !pending.cancelled) {
-            pending.cancelled = true;
-            link.socket.write(
-              encodeFrame(
-                buildNotification(COMMAND_HOST_NOTIFICATIONS.cancelRequest, {
-                  id,
-                }),
-              ),
-            );
-          }
-        };
-        if (!signal.aborted) {
-          signal.addEventListener('abort', onAbort, { once: true });
-          pending.detachAbort = () => {
-            signal.removeEventListener('abort', onAbort);
-          };
-        }
-        link.socket.write(encodeFrame(buildRequest(id, method, params)));
-        if (signal.aborted) {
-          onAbort();
-        }
-      } else {
-        link.socket.write(encodeFrame(buildRequest(id, method, params)));
-      }
-    });
-  }
-
   return {
     async start(args) {
-      let link: WorkerLink;
+      let link: CommandHostWorkerLink;
       try {
         link = await ensureLink(args.stateRoot);
       } catch (error: unknown) {
@@ -407,13 +220,46 @@ export function createCommandHostClient(
             'command-host worker does not support lossless stdout/stderr sessions.',
         };
       }
+      if (
+        args.requiresDeferredOutputRelease === true &&
+        !link.capabilities.deferredOutputRelease
+      ) {
+        return {
+          ok: false,
+          reasonCode: 'spawn_failed',
+          message:
+            'command-host worker does not support deferred lossless output release.',
+        };
+      }
+      if (
+        args.requiresIdempotentStart === true &&
+        !link.capabilities.idempotentStartByInvocation
+      ) {
+        return {
+          ok: false,
+          reasonCode: 'spawn_failed',
+          message:
+            'command-host worker does not support idempotent start reconciliation.',
+        };
+      }
+      if (
+        args.initialStdin !== undefined &&
+        !link.capabilities.initialStdinOnStart
+      ) {
+        return {
+          ok: false,
+          reasonCode: 'spawn_failed',
+          message:
+            'command-host worker does not support non-persisted initial stdin on start.',
+        };
+      }
       const env: Record<string, string> = {};
       for (const [key, value] of Object.entries(args.env)) {
         if (value !== undefined) {
           env[key] = value;
         }
       }
-      const answered = await request(link, COMMAND_HOST_METHODS.start, {
+      const answered = await link.request(COMMAND_HOST_METHODS.start, {
         executable: args.executable,
         args: args.args,
         cwd: args.cwd,
@@ -422,7 +268,13 @@ export function createCommandHostClient(
         threadId: args.threadId,
         runId: args.runId,
         callId: args.callId,
+        ...(args.requiresIdempotentStart === undefined
+          ? {}
+          : { requiresIdempotentStart: args.requiresIdempotentStart }),
         stdinMode: args.stdinMode,
+        ...(args.initialStdin === undefined
+          ? {}
+          : { initialStdin: args.initialStdin }),
         ...(args.owner === undefined ? {} : { owner: args.owner }),
         ...(args.streamMode === undefined
           ? {}
@@ -431,6 +283,11 @@ export function createCommandHostClient(
         ...(args.maxOutputBytesPerStream === undefined
           ? {}
           : { maxOutputBytesPerStream: args.maxOutputBytesPerStream }),
+        ...(args.requiresDeferredOutputRelease === undefined
+          ? {}
+          : {
+              requiresDeferredOutputRelease: args.requiresDeferredOutputRelease,
+            }),
         ...(args.outputRedaction === undefined
           ? {}
           : {
@@ -440,15 +297,15 @@ export function createCommandHostClient(
               },
             }),
       });
-      if (answered === CONNECTION_LOST) {
+      if (answered === link.connectionLost) {
         // spawn 요청이 나갔는지조차 알 수 없다. 자동 재시도는 명령을 두 번
         // 실행할 수 있으므로 하지 않는다 — 여기서 멈추는 것이 §4.7이다.
         return connectionLostResult();
       }
       const started = answered as HostCommandStartResult;
       if (started.ok && args.onOutput !== undefined) {
-        link.outputListeners.set(started.outputRef, args.onOutput);
-        void request(link, COMMAND_HOST_METHODS.subscribe, {
+        link.subscribeOutput(started.outputRef, args.onOutput);
+        void link.request(COMMAND_HOST_METHODS.subscribe, {
           outputRef: started.outputRef,
         });
       }
@@ -475,8 +332,7 @@ export function createCommandHostClient(
         };
       }
       try {
-        const answered = await request(
-          link,
+        const answered = await link.request(
           COMMAND_HOST_METHODS.waitInitial,
           {
             outputRef: args.outputRef,
@@ -488,18 +344,18 @@ export function createCommandHostClient(
         );
         // claim은 그 자체로 멱등하므로 재시도는 호출자 몫이다 — 커밋된
         // claim은 재접속 뒤 같은 답으로 합류한다(§8.2).
-        return answered === CONNECTION_LOST
+        return answered === link.connectionLost
           ? connectionLostResult()
           : (answered as HostCommandInitialResult);
       } finally {
         // 스트리밍 창은 초기 대기까지다 — 리스너를 세션마다 남기면 링크
         // 수명 동안 누적된다.
-        link.outputListeners.delete(args.outputRef);
+        link.unsubscribeOutput(args.outputRef);
       }
     },
 
     async interact(args) {
-      let link: WorkerLink | undefined;
+      let link: CommandHostWorkerLink | undefined;
       try {
         link = await ensureLinkIfOwnerAlive(args.stateRoot);
       } catch {
@@ -509,14 +365,28 @@ export function createCommandHostClient(
         // 워커 부재 — 종료 세션의 디스크 직접 읽기 (§8.2).
         return await persistedReader.interact(args);
       }
-      // 부수효과가 있는 요청만 재시도 식별자를 단다. 관찰만 하는 요청은
-      // 두 번 처리돼도 같은 결과이므로 번호를 소모할 이유가 없다 (§4.7).
+      if (
+        (args.page?.deferRelease === true ||
+          args.page?.releaseUpToBytes !== undefined) &&
+        !link.capabilities.deferredOutputRelease
+      ) {
+        return {
+          ok: false,
+          reasonCode: 'invalid_args',
+          message:
+            'command-host worker does not support deferred lossless output release.',
+        };
+      }
+      // durable 호출자가 체크포인트의 operation을 주면 그대로 보존하고,
+      // 일반 호출자가 생략한 부수효과에만 이 facade의 pair를 할당한다.
+      // 관찰 요청은 두 번 처리돼도 같은 결과이므로 번호를 소모하지 않는다
+      // (§4.7).
       const hasSideEffect =
         args.chars !== undefined ||
         args.closeStdin === true ||
         args.terminate === true;
-      let operation: { clientId: string; seq: number } | undefined;
-      if (hasSideEffect) {
+      let operation = args.operation;
+      if (hasSideEffect && operation === undefined) {
         lastOperationSeq += 1;
         operation = { clientId, seq: lastOperationSeq };
       }
@@ -539,13 +409,12 @@ export function createCommandHostClient(
         ...(args.page === undefined ? {} : { page: args.page }),
         ...(operation === undefined ? {} : { operation }),
       };
-      const answered = await request(
-        link,
+      const answered = await link.request(
         COMMAND_HOST_METHODS.interact,
         params,
         args.signal,
       );
-      if (answered !== CONNECTION_LOST) {
+      if (answered !== link.connectionLost) {
         return answered as HostCommandInteractionResult;
       }
       if (operation === undefined || args.signal?.aborted === true) {
@@ -556,7 +425,7 @@ export function createCommandHostClient(
       // 응답만 유실된 경우다: 썼는지 아닌지 여기서는 알 수 없다. 같은
       // operation으로 정확히 한 번 다시 보내면, 이미 적용됐다면 워커가
       // 중복으로 걸러 관찰만 돌려주고 아니면 그때 적용된다.
-      let retryLink: WorkerLink | undefined;
+      let retryLink: CommandHostWorkerLink | undefined;
       try {
         retryLink = await ensureLinkIfOwnerAlive(args.stateRoot);
       } catch {
@@ -569,13 +438,12 @@ export function createCommandHostClient(
       // 대기는 이미 한 번 썼다. 재전송은 부수효과를 확정하러 가는 것이지
       // 관찰 창을 새로 사는 것이 아니므로 폴로 보낸다 — 그러지 않으면 한
       // 턴의 최악 대기가 §4.6 상한의 두 배가 된다.
-      const retried = await request(
-        retryLink,
+      const retried = await retryLink.request(
         COMMAND_HOST_METHODS.interact,
         { ...params, yieldTimeMs: 0 },
         args.signal,
       );
-      return retried === CONNECTION_LOST
+      return retried === retryLink.connectionLost
         ? connectionLostResult()
         : (retried as HostCommandInteractionResult);
     },
@@ -588,7 +456,7 @@ export function createCommandHostClient(
       if (link === undefined) {
         return [];
       }
-      const listed = await request(link, COMMAND_HOST_METHODS.list, {});
+      const listed = await link.request(COMMAND_HOST_METHODS.list, {});
       const parsed = listResultSchema.safeParse(listed);
       return parsed.success
         ? parsed.data.filter(
@@ -602,7 +470,7 @@ export function createCommandHostClient(
     async activeOutputRefs(stateRoot) {
       // §5.6 fail-closed — 워커가 살아 있는데 응답을 얻지 못하면 삭제를
       // 건너뛰어야 하므로 실패를 값으로 돌려준다.
-      let link: WorkerLink | undefined;
+      let link: CommandHostWorkerLink | undefined;
       try {
         link = await ensureLinkIfOwnerAlive(stateRoot);
       } catch (error: unknown) {
@@ -618,7 +486,7 @@ export function createCommandHostClient(
         // lock owner 사망 확인 = 워커 부재 확정. 살아 있는 세션은 없다.
         return { ok: true, refs: new Set<string>() };
       }
-      const listed = await request(link, COMMAND_HOST_METHODS.list, {});
+      const listed = await link.request(COMMAND_HOST_METHODS.list, {});
       const parsed = listResultSchema.safeParse(listed);
       if (!parsed.success) {
         return { ok: false, reason: 'session/list response was not readable' };
@@ -638,8 +506,7 @@ export function createCommandHostClient(
       for (const pendingLink of links.values()) {
         const link = await pendingLink.catch(() => undefined);
         if (link !== undefined) {
-          link.closedReason = 'daemon disconnect';
-          link.socket.destroy();
+          link.close('daemon disconnect');
         }
       }
       links.clear();
@@ -647,18 +514,20 @@ export function createCommandHostClient(
     },
   };
 
-  async function linkFor(stateRoot: string): Promise<WorkerLink | undefined> {
+  async function linkFor(
+    stateRoot: string,
+  ): Promise<CommandHostWorkerLink | undefined> {
     const pendingLink = links.get(stateRoot);
     if (pendingLink === undefined) {
       return undefined;
     }
     const link = await pendingLink.catch(() => undefined);
-    return link !== undefined && link.closedReason === null ? link : undefined;
+    return link !== undefined && !link.isClosed() ? link : undefined;
   }
 
   async function ensureLinkIfOwnerAlive(
     stateRoot: string,
-  ): Promise<WorkerLink | undefined> {
+  ): Promise<CommandHostWorkerLink | undefined> {
     const paths = await resolveCommandHostPaths(stateRoot);
     const lock = await readCommandHostLock(paths.lockPath);
     if (lock === 'missing') {

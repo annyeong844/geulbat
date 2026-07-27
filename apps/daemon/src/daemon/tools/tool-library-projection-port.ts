@@ -32,7 +32,7 @@ interface ResolveToolLibraryProjectionArgs {
   toolCapabilityPolicy?: ToolCapabilityPolicy;
 }
 
-type ResolveToolLibraryProjectionPortResult =
+export type ResolveToolLibraryProjectionPortResult =
   | {
       ok: true;
       mount: ToolLibraryProjectionMount;
@@ -44,12 +44,21 @@ type ResolveToolLibraryProjectionPortResult =
     }
   | ToolLibraryProjectionFailureResult;
 
-type RehydrateToolLibraryProjectionMountResult =
+export type RehydrateToolLibraryProjectionMountResult =
   | (Extract<ReadVerifiedToolLibraryProjectionMountResult, { ok: true }> & {
       projection: ToolLibraryProjection;
     })
   | Exclude<ReadVerifiedToolLibraryProjectionMountResult, { ok: true }>
   | ToolLibraryProjectionFailureResult;
+
+export type ToolLibraryProjectionBundleExportResult =
+  | {
+      ok: true;
+      bundleId: `sha256:${string}`;
+      identity: ToolLibraryProjectionIdentity;
+      serializedBundle: string;
+    }
+  | Exclude<RehydrateToolLibraryProjectionMountResult, { ok: true }>;
 
 export interface ToolLibraryProjectionFailureDiagnostics {
   errorCode?: string;
@@ -71,6 +80,19 @@ export interface ToolLibraryProjectionPort {
     stateRoot: string;
     threadId: string;
     expectedIdentity: ToolLibraryProjectionIdentity;
+  }): Promise<RehydrateToolLibraryProjectionMountResult>;
+}
+
+export interface ToolLibraryProjectionTransferPort extends ToolLibraryProjectionPort {
+  exportProjectionBundle(args: {
+    stateRoot: string;
+    threadId: string;
+    expectedIdentity?: ToolLibraryProjectionIdentity;
+  }): Promise<ToolLibraryProjectionBundleExportResult>;
+  importProjectionBundle(args: {
+    stateRoot: string;
+    threadId: string;
+    serializedBundle: string;
   }): Promise<RehydrateToolLibraryProjectionMountResult>;
 }
 

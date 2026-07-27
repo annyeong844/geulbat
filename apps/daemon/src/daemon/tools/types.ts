@@ -2,14 +2,16 @@ import type {
   ApprovalClass,
   PermissionMode,
 } from '@geulbat/protocol/run-approval';
-import type { ToolFailureDiagnostics } from '@geulbat/protocol/errors';
 import type { ThreadId } from '@geulbat/protocol/ids';
 import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 import type { SideEffectLevel } from '@geulbat/protocol/run-events';
 import type { ToolLibraryProjectionIdentity } from '@geulbat/tool-library/projection-codec';
 import type { ToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
-import type { ErrorCode } from '../error-codes.js';
-import type { AgentEvent, ToolRunState } from '../runtime-contracts.js';
+import type {
+  AgentEvent,
+  ExecuteResult,
+  ToolRunState,
+} from '../runtime-contracts.js';
 import type {
   AgentMemoryIndex,
   AgentRuntimeServices,
@@ -21,6 +23,7 @@ import type {
 import type { FileStateCache } from '../utils/file-state-cache.js';
 import type {
   ParallelToolBatchKind,
+  ToolAbortSettlement,
   ToolCatalogSearchMetadata,
   ToolExposure,
   ToolParameters,
@@ -32,9 +35,11 @@ export {
   isToolAnyOfParameters,
   isToolObjectParameters,
 } from './tool-registry-model.js';
+export type { ExecuteResult } from '../runtime-contracts.js';
 export type {
   ParallelToolBatchKind,
   HostToolEffect,
+  ToolAbortSettlement,
   ToolCatalogSearchFamily,
   ToolCatalogSearchMetadata,
   ToolAnyOfParameters,
@@ -187,16 +192,6 @@ export function isAgentToolExecutionContext(
   return value.kind === 'agent';
 }
 
-export type ExecuteResult =
-  | { ok: true; output: string; errorCode?: undefined; error?: undefined }
-  | {
-      ok: false;
-      output: string;
-      errorCode: ErrorCode;
-      error: string;
-      diagnostics?: ToolFailureDiagnostics;
-    };
-
 export interface CallbackToolDispatcher {
   dispatch(args: {
     toolName: string;
@@ -215,6 +210,11 @@ export interface ToolDescriptor {
   sideEffectLevel: SideEffectLevel;
   mayMutateComputerFiles: boolean;
   parallelBatchKind?: ParallelToolBatchKind;
+  /**
+   * Whether cancellation may return immediately or must wait until the tool
+   * handler has acknowledged cancellation and settled its owned work.
+   */
+  abortSettlement?: ToolAbortSettlement;
   timeoutMs?: number;
   requiresApproval: boolean;
   /**

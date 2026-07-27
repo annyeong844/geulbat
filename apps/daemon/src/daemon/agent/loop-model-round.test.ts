@@ -142,6 +142,7 @@ void test('runModelRound keeps instructions byte-stable while aggregating a roun
         systemPrompt: string;
         providerSessionId: string;
         onProviderRequestPrepared: unknown;
+        deferredToolNames: string[] | undefined;
       }
     | undefined;
 
@@ -150,6 +151,20 @@ void test('runModelRound keeps instructions byte-stable while aggregating a roun
     systemPrompt: 'system instructions',
     round: 0,
     toolDefs: [],
+    providerDeferredToolDefs: [
+      {
+        type: 'function',
+        name: 'mcp_external_lookup',
+        description: 'Look up an external record.',
+        parameters: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        strict: false,
+      },
+    ],
     threadId,
     providerWebSocketSessions: unusedProviderWebSocketSessions,
     providerAuthRuntime,
@@ -170,6 +185,7 @@ void test('runModelRound keeps instructions byte-stable while aggregating a roun
               systemPrompt: input.systemPrompt,
               providerSessionId: input.providerSessionId,
               onProviderRequestPrepared: input.onProviderRequestPrepared,
+              deferredToolNames: input.deferredTools?.map((tool) => tool.name),
             };
           },
         },
@@ -246,6 +262,7 @@ void test('runModelRound keeps instructions byte-stable while aggregating a roun
     systemPrompt: 'system instructions',
     providerSessionId: threadId,
     onProviderRequestPrepared,
+    deferredToolNames: ['mcp_external_lookup'],
   });
 });
 
@@ -272,10 +289,13 @@ void test('runModelRound carries provider history items without interpreting the
     providerRequestOptions: defaultProviderRequestOptions,
     emit: makeEmitter([]),
     async *callModelImpl() {
+      // usable prose keeps the round alive; opaque items are still passed
+      // through without interpretation (not treated as a visible answer by
+      // themselves).
       yield {
         type: 'done',
-        assistantText: '',
-        finalText: '',
+        assistantText: 'kept',
+        finalText: 'kept',
         itemsToAppend,
       };
     },
@@ -286,6 +306,211 @@ void test('runModelRound carries provider history items without interpreting the
     result.ok ? result.value.itemsToAppend : undefined,
     itemsToAppend,
   );
+});
+
+void test('runModelRound fails closed when the model returns no usable content', async () => {
+  const events: AgentEvent[] = [];
+  const result = await runModelRound({
+    history: [{ kind: 'user', text: 'hello' }],
+    systemPrompt: 'system',
+    round: 0,
+    toolDefs: [],
+    threadId: testThreadId(60),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter(events),
+    async *callModelImpl() {
+      yield {
+        type: 'done',
+        assistantText: '',
+        finalText: '',
+      };
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    result: { ok: false, finalProse: '' },
+  });
+  assert.deepEqual(withoutProviderStatus(events), [
+    createAgentEvent('error', {
+      code: 'execution_failed',
+      message: 'model returned no usable content',
+    }),
+  ]);
+});
+
+void test('runModelRound treats whitespace-only prose as no usable content', async () => {
+  const result = await runModelRound({
+    history: [{ kind: 'user', text: 'hello' }],
+    systemPrompt: 'system',
+    round: 0,
+    toolDefs: [],
+    threadId: testThreadId(61),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter([]),
+    async *callModelImpl() {
+      yield {
+        type: 'done',
+        assistantText: '   \n\t  ',
+        finalText: '  ',
+      };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok === false ? result.result.ok : true, false);
+});
+
+void test('runModelRound treats thinking-only opaque items without prose as no usable content', async () => {
+  const result = await runModelRound({
+    history: [{ kind: 'user', text: 'hello' }],
+    systemPrompt: 'system',
+    round: 0,
+    toolDefs: [],
+    threadId: testThreadId(62),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter([]),
+    async *callModelImpl() {
+      yield {
+        type: 'done',
+        assistantText: '',
+        finalText: '',
+        itemsToAppend: [
+          {
+            kind: 'backend_item',
+            data: {
+              id: 'rs_think',
+              type: 'reasoning',
+              encrypted_content: 'opaque-only',
+            },
+          },
+        ],
+      };
+    },
+  });
+
+  assert.equal(result.ok, false);
+});
+
+void test('runModelRound still accepts tool calls without visible prose', async () => {
+  const result = await runModelRound({
+    history: [{ kind: 'user', text: 'hello' }],
+    systemPrompt: 'system',
+    round: 0,
+    toolDefs: [],
+    threadId: testThreadId(63),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter([]),
+    async *callModelImpl() {
+      yield {
+        type: 'tool_call',
+        id: 'fc-empty-prose',
+        callId: 'call-empty-prose',
+        toolName: 'read_file',
+        argumentsJson: '{"path":"a.md"}',
+      };
+      yield {
+        type: 'done',
+        assistantText: '',
+        finalText: '',
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.ok ? result.value.functionCalls : undefined, [
+    {
+      id: 'fc-empty-prose',
+      callId: 'call-empty-prose',
+      name: 'read_file',
+      arguments: '{"path":"a.md"}',
+    },
+  ]);
+});
+
+void test('runModelRound fails closed when finish signals tool_calls but none arrived', async () => {
+  const events: AgentEvent[] = [];
+  const result = await runModelRound({
+    history: [{ kind: 'user', text: 'hello' }],
+    systemPrompt: 'system',
+    round: 0,
+    toolDefs: [],
+    threadId: testThreadId(64),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter(events),
+    async *callModelImpl() {
+      // Qwen HTTP SSE chat-completions mismatch: finish_reason=tool_calls
+      // with empty tool payload. Narration must not become a final answer.
+      // Codex/Grok Responses WS never set stopReason.
+      yield {
+        type: 'text_delta',
+        text: 'Let me read the file first.',
+        phase: 'final_answer',
+      };
+      yield {
+        type: 'done',
+        assistantText: 'Let me read the file first.',
+        finalText: 'Let me read the file first.',
+        stopReason: 'tool_calls',
+      };
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    result: { ok: false, finalProse: '' },
+  });
+  assert.deepEqual(withoutProviderStatus(events), [
+    createAgentEvent('final_answer_delta', {
+      text: 'Let me read the file first.',
+    }),
+    createAgentEvent('error', {
+      code: 'execution_failed',
+      message: 'model signaled tool calls but returned none',
+    }),
+  ]);
+});
+
+void test('runModelRound accepts stopReason tool_calls when tool calls are present', async () => {
+  const result = await runModelRound({
+    history: [{ kind: 'user', text: 'hello' }],
+    systemPrompt: 'system',
+    round: 0,
+    toolDefs: [],
+    threadId: testThreadId(65),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter([]),
+    async *callModelImpl() {
+      yield {
+        type: 'tool_call',
+        id: 'fc-ok',
+        callId: 'call-ok',
+        toolName: 'read_file',
+        argumentsJson: '{}',
+      };
+      yield {
+        type: 'done',
+        assistantText: '',
+        finalText: '',
+        stopReason: 'tool_calls',
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.ok ? result.value.functionCalls.length : 0, 1);
 });
 
 void test('createModelRoundPort delegates to the current model-round runner', async () => {
@@ -702,6 +927,168 @@ void test('runModelRound performs one consent-backed context recovery before sur
   });
   assert.deepEqual(withoutProviderStatus(events), [
     createAgentEvent('final_answer_delta', { text: 'recovered' }),
+  ]);
+});
+
+void test('runModelRound does not retry when usage limit is exhausted', async () => {
+  const events: AgentEvent[] = [];
+  let attempts = 0;
+
+  const result = await runModelRound({
+    history: [{ kind: 'user', text: 'hello' }],
+    systemPrompt: 'system',
+    round: 0,
+    toolDefs: [],
+    threadId: testThreadId(71),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter(events),
+    callModelImpl: async function* () {
+      attempts += 1;
+      yield {
+        type: 'error',
+        code: 'llm_usage_limit_exceeded',
+        message:
+          'provider usage or credit limit exceeded; top up or change plan (this is not a transient rate limit)',
+      };
+    },
+  });
+
+  assert.equal(attempts, 1);
+  assert.deepEqual(result, {
+    ok: false,
+    result: { ok: false, finalProse: '' },
+  });
+  assert.deepEqual(withoutProviderStatus(events), [
+    createAgentEvent('error', {
+      code: 'llm_usage_limit_exceeded',
+      message:
+        'provider usage or credit limit exceeded; top up or change plan (this is not a transient rate limit)',
+    }),
+  ]);
+});
+
+void test('runModelRound strips encrypted reasoning once after replay rejection', async () => {
+  const history = [
+    { kind: 'user' as const, text: 'hello' },
+    {
+      kind: 'backend_item' as const,
+      data: {
+        type: 'reasoning',
+        id: 'rs_1',
+        encrypted_content: 'opaque-blob',
+      },
+    },
+  ];
+  let attempts = 0;
+
+  const result = await runModelRound({
+    history,
+    systemPrompt: 'system',
+    round: 0,
+    toolDefs: [],
+    threadId: testThreadId(72),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter([]),
+    callModelImpl: async function* () {
+      attempts += 1;
+      if (attempts === 1) {
+        yield {
+          type: 'error',
+          code: 'llm_replay_state_rejected',
+          message: 'provider rejected encrypted reasoning replay',
+        };
+        return;
+      }
+      yield { type: 'text_delta', text: 'recovered', phase: 'final_answer' };
+      yield {
+        type: 'done',
+        assistantText: 'recovered',
+        finalText: 'recovered',
+      };
+    },
+  });
+
+  assert.equal(attempts, 2);
+  assert.equal(history.length, 1);
+  assert.deepEqual(history[0], { kind: 'user', text: 'hello' });
+  assert.equal(result.ok, true);
+  assert.equal(result.ok ? result.value.assistantText : '', 'recovered');
+});
+
+void test('runModelRound terminals replay rejection when no encrypted items remain', async () => {
+  let attempts = 0;
+  const result = await runModelRound({
+    history: [{ kind: 'user', text: 'hello' }],
+    systemPrompt: 'system',
+    round: 0,
+    toolDefs: [],
+    threadId: testThreadId(73),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter([]),
+    callModelImpl: async function* () {
+      attempts += 1;
+      yield {
+        type: 'error',
+        code: 'llm_replay_state_rejected',
+        message: 'provider rejected encrypted reasoning replay',
+      };
+    },
+  });
+
+  assert.equal(attempts, 1);
+  assert.equal(result.ok, false);
+});
+
+void test('runModelRound does not run context recovery for output-budget rejections', async () => {
+  const events: AgentEvent[] = [];
+  let recoveryCalls = 0;
+  let attempts = 0;
+
+  const result = await runModelRound({
+    history: [{ kind: 'user', text: 'continue' }],
+    systemPrompt: 'system',
+    round: 1,
+    toolDefs: [],
+    threadId: testThreadId(70),
+    providerWebSocketSessions: unusedProviderWebSocketSessions,
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: defaultProviderRequestOptions,
+    emit: makeEmitter(events),
+    onContextOverflow: async () => {
+      recoveryCalls += 1;
+      return true;
+    },
+    callModelImpl: async function* () {
+      attempts += 1;
+      // Provider rejected max_tokens — not an input overflow. Compaction must
+      // not run; the same max_tokens would fail again deterministically.
+      yield {
+        type: 'error',
+        code: 'llm_output_budget_exceeded',
+        message:
+          'output token budget exceeded; lower max_tokens (this is not an input context overflow)',
+      };
+    },
+  });
+
+  assert.equal(attempts, 1);
+  assert.equal(recoveryCalls, 0);
+  assert.deepEqual(result, {
+    ok: false,
+    result: { ok: false, finalProse: '' },
+  });
+  assert.deepEqual(withoutProviderStatus(events), [
+    createAgentEvent('error', {
+      code: 'llm_output_budget_exceeded',
+      message:
+        'output token budget exceeded; lower max_tokens (this is not an input context overflow)',
+    }),
   ]);
 });
 

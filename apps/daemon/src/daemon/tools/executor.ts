@@ -72,9 +72,14 @@ function sanitizeToolExecuteResult(
   if (result.ok) {
     return result;
   }
+  // `error`와 `output`은 계속 정제한다. 다만 `diagnostics`는 우리 코드가 만든
+  // 고정 형태(phase enum + reasonCode + 큐레이션된 retryHint)이며 업스트림 본문이나
+  // 시크릿을 담지 않는다. 이것까지 버리면 호출자에게 남는 신호가 없어 같은 실패를
+  // 반복하는 길밖에 없다(S0: exec conflict 52회 반복).
   return toolError(
     result.errorCode,
     sanitizeExecutionErrorMessage(name, result.errorCode, result.error),
+    result.diagnostics,
   );
 }
 
@@ -252,27 +257,32 @@ async function executeToolWithinActivityScope(
         signal: combinedSignal,
       }
     : ctx;
+  const abortSettlement =
+    tool.abortSettlement ??
+    ('sideEffectLevel' in tool &&
+    (tool.sideEffectLevel === 'write' || tool.sideEffectLevel === 'destructive')
+      ? 'await_execution'
+      : 'immediate');
   let abortHandler: (() => void) | undefined;
 
   try {
-    // Watchdog: if abort fires after tool resolves, still treat as abort
-    const execution = tool.executeParsed(parsedArgs, execCtx).then((raw) => {
-      if (combinedSignal?.aborted) {
-        return undefined;
-      }
-      return raw;
-    });
-    const result = combinedSignal
-      ? await Promise.race([
-          execution,
-          new Promise<undefined>((resolve) => {
-            abortHandler = () => resolve(undefined);
-            combinedSignal.addEventListener('abort', abortHandler, {
-              once: true,
-            });
-          }),
-        ])
-      : await execution;
+    const execution = tool.executeParsed(parsedArgs, execCtx);
+    const result =
+      abortSettlement === 'await_execution'
+        ? await execution
+        : combinedSignal
+          ? await Promise.race([
+              execution.then((raw) =>
+                combinedSignal.aborted ? undefined : raw,
+              ),
+              new Promise<undefined>((resolve) => {
+                abortHandler = () => resolve(undefined);
+                combinedSignal.addEventListener('abort', abortHandler, {
+                  once: true,
+                });
+              }),
+            ])
+          : await execution;
 
     if (combinedSignal?.aborted) {
       return classifyAbortOutcome({

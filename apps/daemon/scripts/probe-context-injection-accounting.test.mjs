@@ -16,7 +16,7 @@ import {
 } from './probe-context-injection-accounting.mjs';
 
 void test('schema version is stable', () => {
-  assert.equal(SCHEMA_VERSION, 'context_injection_accounting_v1');
+  assert.equal(SCHEMA_VERSION, 'context_injection_accounting_v2');
 });
 
 void test('encodeJsonBytes matches JSON utf8 byte length and treats undefined as 0', () => {

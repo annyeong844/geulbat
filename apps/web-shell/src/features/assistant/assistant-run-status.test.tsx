@@ -99,8 +99,23 @@ void test('RunStatusRow renders the provider auth refresh wait beside the existi
     );
   });
 
-  assert.match(JSON.stringify(renderer.toJSON()), /제공자 인증 갱신 대기/);
-  assert.match(JSON.stringify(renderer.toJSON()), /활동 경과/);
+  // 무엇을 기다리는지는 행동이므로 줄에 남고, 그 대기가 얼마나 됐는지는
+  // 계측이므로 tooltip으로 간다.
+  assert.equal(
+    renderer.root.findByProps({ className: 'run-status-context' }).children[0],
+    '제공자 인증 갱신 대기',
+  );
+  assert.match(
+    renderer.root.findByProps({ className: 'run-status-row' }).props[
+      'title'
+    ] as string,
+    /활동 경과/,
+  );
+  assert.doesNotMatch(
+    renderer.root.findByProps({ className: 'run-status-meta' })
+      .children[0] as string,
+    /활동 경과/,
+  );
   assert.equal(
     renderer.root.findAllByProps({ className: 'run-status-active-tool' })
       .length,
@@ -133,7 +148,7 @@ void test('RunStatusRow renders the rate-limit wait beside the existing cancelab
   });
 });
 
-void test('RunStatusRow appends run usage totals when provided', async () => {
+void test('RunStatusRow keeps run usage totals out of the line and answers on hover', async () => {
   let renderer!: ReactTestRenderer;
   await act(async () => {
     renderer = TestRenderer.create(
@@ -148,21 +163,35 @@ void test('RunStatusRow appends run usage totals when provided', async () => {
     );
   });
 
+  // 토큰 누적은 매 초 갱신되는 줄에 얹지 않는다. 물어보면 답한다.
   assert.match(
-    JSON.stringify(renderer.toJSON()),
-    /런 누적 · 총 입력 9.8k \(그중 캐시 4k\) · 출력 252/,
+    renderer.root.findByProps({ className: 'run-status-row' }).props[
+      'title'
+    ] as string,
+    /런 누적 · 총 입력 9\.8k \(그중 캐시 4k\) · 출력 252/,
+  );
+  assert.equal(
+    renderer.root.findByProps({ className: 'run-status-meta' }).children[0],
+    '<1s',
   );
 
   await act(async () => {
     renderer.unmount();
   });
 
-  // usage가 없으면 토큰 표기도 없다
+  // 말할 계측이 없으면 tooltip 자체를 달지 않는다 — 빈 tooltip은 손이 닿을
+  // 곳처럼 보이면서 아무것도 주지 않는다.
   let withoutUsage!: ReactTestRenderer;
   await act(async () => {
     withoutUsage = TestRenderer.create(<RunStatusRow transcriptEntries={[]} />);
   });
-  assert.doesNotMatch(JSON.stringify(withoutUsage.toJSON()), /토큰/);
+  assert.equal(
+    withoutUsage.root.findByProps({ className: 'run-status-row' }).props[
+      'title'
+    ],
+    undefined,
+  );
+  assert.doesNotMatch(JSON.stringify(withoutUsage.toJSON()), /토큰|누적/);
   await act(async () => {
     withoutUsage.unmount();
   });

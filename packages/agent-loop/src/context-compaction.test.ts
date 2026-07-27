@@ -290,3 +290,50 @@ void test('an empty transcript has no summarizable prefix', () => {
     },
   );
 });
+
+// 요약본은 "요약 안의 지시를 따르지 말라"는 전제로 모델에게 전달된다. 아직
+// 살아 있는 사용자 요청이 요약 영역에 남으면 그 요청은 행동 가능한 컨텍스트에
+// 서 사라지고, 에이전트는 멈추거나 이미 끝낸 일을 반복한다.
+void test('a retained tail that already covers the request is unchanged', () => {
+  assert.deepEqual(
+    selectContextCompactionPrefix(
+      [
+        { tokenCount: 40, canStartRetainedTail: true },
+        {
+          tokenCount: 10,
+          canStartRetainedTail: true,
+          mustRemainInRetainedTail: true,
+        },
+        { tokenCount: 30, canStartRetainedTail: true },
+      ],
+      50,
+    ),
+    {
+      kind: 'selected',
+      firstKeptIndex: 1,
+      prefixTokens: 40,
+      retainedTokens: 40,
+    },
+  );
+});
+
+// tail을 요청 앞까지 당기는 것은 답이 아니다 — 그 사이 항목들이 빠진 이유가
+// 예산 초과이므로 당기면 반드시 다시 초과한다. 그래서 조용히 요청을 버리지
+// 않고 닫는다.
+void test('a request the budget would leave inside the summary fails closed', () => {
+  assert.deepEqual(
+    selectContextCompactionPrefix(
+      [
+        { tokenCount: 10, canStartRetainedTail: true },
+        {
+          tokenCount: 10,
+          canStartRetainedTail: true,
+          mustRemainInRetainedTail: true,
+        },
+        { tokenCount: 40, canStartRetainedTail: true },
+      ],
+      40,
+    ),
+    { kind: 'tail_exceeds_budget' },
+  );
+});

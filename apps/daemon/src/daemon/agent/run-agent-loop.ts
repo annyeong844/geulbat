@@ -3,7 +3,10 @@
  * Emits internal AgentEvents; adapter/web converts to RunEventEnvelope.
  */
 
-import { agentLoopKernelImplementation } from '@geulbat/agent-loop/kernel';
+import {
+  agentLoopKernelImplementation,
+  type AgentLoopKernelFailure,
+} from '@geulbat/agent-loop/kernel';
 import {
   validateToolCapabilityPolicy,
   type ToolCapabilityPolicy,
@@ -28,28 +31,25 @@ import type { HistoryItem } from '../llm/index.js';
 import {
   buildAgentLoopObserverEvent,
   buildAgentLoopObserverSnapshot,
+  recordAgentLoopObserverCompletionGap,
   recordAgentLoopObserverEvent,
   recordAgentLoopObserverSnapshot,
   recordAgentLoopObserverToolResult,
 } from './observer/agent-loop-observer.js';
 import {
   assertAgentRunId as assertValidRunId,
+  isAgentRunModelId,
   resolveAgentRunModelDescriptor,
 } from './contract.js';
 import { accumulateRunUsageTotals } from './runtime/run-usage-totals.js';
 import {
   appendAssistantTextToHistory,
   appendFunctionCallsToHistory,
-  appendInterjectToHistory,
   createAgentLoopHistoryPort,
-  persistSingleInterjectToTranscript,
+  type AgentLoopHistoryPort,
 } from './loop-history.js';
-import {
-  clearInterjectFlushRequest,
-  closeInterjectBuffer,
-  peekPendingInterject,
-  removePendingInterjectBySeq,
-} from '../sessions/active-run-interject-buffer.js';
+import { closeInterjectBuffer } from '../sessions/active-run-interject-buffer.js';
+import { applyNextPendingInterject } from './loop-interject.js';
 import { createAgentLoopLifecyclePort } from './loop-lifecycle-port.js';
 import {
   createModelRoundPort,
@@ -73,15 +73,99 @@ import {
 } from '../llm/provider/provider-error.js';
 import { resolveProviderReplayScopeForRun } from '../llm/provider/provider-replay-scope.js';
 import { coerceGenericApiErrorCode } from '../error-codes.js';
+import type { GenericApiErrorCode } from '../error-codes.js';
+
+/**
+ * Kernel failure kinds carry distinct meanings, so the public error code must
+ * not flatten them all into `execution_failed`.
+ *
+ * `no_progress` is its own code because "the same requirement stayed unmet and
+ * nothing changed it" needs a different user response than a genuine execution
+ * error: revise the objective or supply what is missing, not retry.
+ *
+ * `blocked`, `verification_unavailable`, and the structured-output failures keep
+ * `execution_failed` for now. They stay distinguishable through the kernel
+ * failure kind and the recorded terminal source, and giving each its own public
+ * code is a separate client-visible decision rather than part of the no-progress
+ * cut. The switch is exhaustive so a new kind cannot silently inherit a code.
+ */
+function resolveKernelFailureErrorCode(
+  kind: AgentLoopKernelFailure['kind'],
+): GenericApiErrorCode {
+  switch (kind) {
+    case 'aborted':
+      return 'aborted';
+    case 'no_progress':
+      return 'run_no_progress';
+    case 'blocked':
+    case 'structured_output_failure':
+    case 'structured_output_unhandled':
+    case 'verification_unavailable':
+      return 'execution_failed';
+  }
+
+  const exhaustive: never = kind;
+  return exhaustive;
+}
 import { createAgentLoopMemoryPort } from './memory/compaction-loop.js';
-import type { RunCheckpointStore } from '../sessions/run-checkpoint-store.js';
-import { readLastTranscriptEntryId } from '../sessions/transcript-log.js';
-import { appendProviderRound } from '../sessions/provider-round-journal.js';
 import type {
   FunctionCall,
   ProviderStructuredOutput,
 } from '../llm/provider/wire/types.js';
+import { resolveAgentNoProgressPolicyFromEnv } from './no-progress-policy.js';
 import { createAgentRunCompletionPolicy } from './run-completion-policy.js';
+
+function resolveProviderToolExposure(args: {
+  toolSurface:
+    | {
+        directRegistryNames: readonly string[];
+        allowedRegistryNames: readonly string[];
+      }
+    | undefined;
+  providerId: string;
+  model: string;
+}): {
+  directRegistryNames: string[] | undefined;
+  deferredRegistryNames: string[];
+} {
+  if (args.toolSurface === undefined || !isAgentRunModelId(args.model)) {
+    return {
+      directRegistryNames: args.toolSurface
+        ? [...args.toolSurface.directRegistryNames]
+        : undefined,
+      deferredRegistryNames: [],
+    };
+  }
+  const model = resolveAgentRunModelDescriptor(args.model);
+  if (model.providerId !== args.providerId) {
+    return {
+      directRegistryNames: [...args.toolSurface.directRegistryNames],
+      deferredRegistryNames: [],
+    };
+  }
+  const directRegistryNames = new Set(args.toolSurface.directRegistryNames);
+  if (!model.supportsHostedToolSearch) {
+    if (model.supportsGeneratedSdkToolDiscovery) {
+      return {
+        directRegistryNames: [...directRegistryNames],
+        deferredRegistryNames: [],
+      };
+    }
+    return {
+      directRegistryNames: args.toolSurface.allowedRegistryNames.filter(
+        (name) => name !== 'tool_search',
+      ),
+      deferredRegistryNames: [],
+    };
+  }
+  const deferredRegistryNames = args.toolSurface.allowedRegistryNames.filter(
+    (name) => name !== 'tool_search' && !directRegistryNames.has(name),
+  );
+  return {
+    directRegistryNames: [...directRegistryNames],
+    deferredRegistryNames,
+  };
+}
 
 export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   const {
@@ -105,6 +189,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     runState,
     toolSurface,
     toolCapabilityPolicy: requestedToolCapabilityPolicy,
+    toolLibraryProjectionIdentity,
     promptProfile = 'root',
     loopImplementation = agentLoopKernelImplementation,
     runtimeServices,
@@ -115,7 +200,6 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     lifecyclePort: injectedLifecyclePort,
     memoryPort: injectedMemoryPort,
     modelRoundPort: injectedModelRoundPort,
-    goalCompletionVerifier: injectedGoalCompletionVerifier,
     structuredOutputPort: injectedStructuredOutputPort,
     toolDefinitionPort: injectedToolDefinitionPort,
     toolRuntimePort: injectedToolRuntimePort,
@@ -199,6 +283,34 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       );
     }
   }
+  const providerRequestOptions = resolveProviderRequestOptionsForRun(
+    runtimeServices.provider.requestOptions,
+    {
+      ...(providerModel !== undefined ? { providerModel } : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(serviceTier !== undefined ? { serviceTier } : {}),
+    },
+  );
+  const providerToolExposure = resolveProviderToolExposure({
+    toolSurface: effectiveToolSurface,
+    providerId: providerRequestOptions.providerId,
+    model: providerRequestOptions.model,
+  });
+  const providerDeferredToolNames =
+    providerToolExposure.deferredRegistryNames.filter(
+      (name) =>
+        (goal !== undefined || name !== 'update_goal') &&
+        (promptProfile !== 'root' || name !== 'submit_result_report'),
+    );
+  const providerHostedToolSearchEnabled = providerDeferredToolNames.length > 0;
+  const providerDirectRegistryNames =
+    providerToolExposure.directRegistryNames === undefined
+      ? undefined
+      : providerHostedToolSearchEnabled
+        ? providerToolExposure.directRegistryNames.filter(
+            (name) => name !== 'tool_search',
+          )
+        : providerToolExposure.directRegistryNames;
 
   const promptPort = injectedPromptPort ?? createAgentLoopPromptPort();
   // 작업 폴더의 geulbat.md — 없으면 undefined이고 프롬프트는 예전과 같다.
@@ -220,9 +332,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     promptProfile,
     computerSessionAvailable: runtimeServices.computerFileRoot !== undefined,
     workingDirectory: runContext.workingDirectory,
-    ...(effectiveToolSurface === undefined
+    ...(providerDirectRegistryNames === undefined
       ? {}
-      : { directRegistryNames: effectiveToolSurface.directRegistryNames }),
+      : { directRegistryNames: providerDirectRegistryNames }),
     ...(currentFile === undefined ? {} : { currentFile }),
     ...(selection === undefined ? {} : { selection }),
     ...(projectInstructions === undefined ? {} : { projectInstructions }),
@@ -240,16 +352,6 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         }),
   });
   const providerAuthRuntime = runtimeServices.provider.authRuntime;
-  // The web adapter projects public model identity to the provider-owned
-  // selection before it reaches the agent/LLM boundary.
-  const providerRequestOptions = resolveProviderRequestOptionsForRun(
-    runtimeServices.provider.requestOptions,
-    {
-      ...(providerModel !== undefined ? { providerModel } : {}),
-      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      ...(serviceTier !== undefined ? { serviceTier } : {}),
-    },
-  );
   const webSocketSessions = runtimeServices.provider.webSocketSessions;
   if (memoryConsolidationIsDue(pendingMemoryNotes.length)) {
     startMemoryConsolidationDetached({
@@ -261,7 +363,10 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       },
     });
   }
-  const historyPort = injectedHistoryPort ?? createAgentLoopHistoryPort();
+  const historyPort: Required<AgentLoopHistoryPort> = {
+    ...createAgentLoopHistoryPort(),
+    ...(injectedHistoryPort ?? {}),
+  };
   const memoryPort =
     injectedMemoryPort ??
     runtimeServices.agent.loopMemory ??
@@ -293,31 +398,48 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     createAgentLoopToolLibraryProjectionPort(
       runtimeServices.toolLibraryProjection,
     );
-  const toolDefs = [
+  const configuredDirectToolDefs = [
     ...toolDefinitionPort.buildToolDefinitions({
-      ...(effectiveToolSurface === undefined
+      ...(providerDirectRegistryNames === undefined
         ? {}
         : {
-            directRegistryNames: effectiveToolSurface.directRegistryNames,
+            directRegistryNames: providerDirectRegistryNames,
           }),
     }),
-  ].filter(
+  ];
+  const providerDeferredToolDefs =
+    providerDeferredToolNames.length === 0
+      ? undefined
+      : [
+          ...toolDefinitionPort.buildToolDefinitions({
+            directRegistryNames: providerDeferredToolNames,
+          }),
+        ];
+  const toolDefs = configuredDirectToolDefs.filter(
     (definition) =>
       (goal !== undefined || definition.name !== 'update_goal') &&
-      (promptProfile !== 'root' || definition.name !== 'submit_result_report'),
+      (promptProfile !== 'root' ||
+        definition.name !== 'submit_result_report') &&
+      (!providerHostedToolSearchEnabled || definition.name !== 'tool_search'),
   );
   if (
     goal !== undefined &&
-    !toolDefs.some((definition) => definition.name === 'update_goal')
+    ![...toolDefs, ...(providerDeferredToolDefs ?? [])].some(
+      (definition) => definition.name === 'update_goal',
+    )
   ) {
     return rejectToolAdmission(
       'Goal mode requires the update_goal tool in the admitted tool surface',
     );
   }
+  const admittedProviderToolNames: ReadonlySet<string> = new Set([
+    ...toolDefs.map((definition) => definition.name),
+    ...(providerDeferredToolDefs ?? []).map((definition) => definition.name),
+  ]);
   // 인자 스트리밍 opt-in 도구(ToolMeta.streamsArgsDelta) — 모델 라운드가
   // 이 목록에 한해 tool_call_delta를 방출한다 (visualize 실시간 렌더)
   const streamArgsToolNames: ReadonlySet<string> = new Set(
-    toolDefs
+    [...toolDefs, ...(providerDeferredToolDefs ?? [])]
       .filter(
         (definition) =>
           registry.getToolMeta(definition.name)?.streamsArgsDelta === true,
@@ -325,7 +447,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       .map((definition) => definition.name),
   );
   const turnEndingToolNames: ReadonlySet<string> = new Set(
-    toolDefs
+    [...toolDefs, ...(providerDeferredToolDefs ?? [])]
       .filter(
         (definition) =>
           registry.getToolMeta(definition.name)?.endsTurnAfterSuccess === true,
@@ -343,6 +465,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
               allowedRegistryNames: effectiveToolSurface.allowedRegistryNames,
             }
         : { toolCapabilityPolicy }),
+      ...(toolLibraryProjectionIdentity === undefined
+        ? {}
+        : { expectedIdentity: toolLibraryProjectionIdentity }),
     });
   if (!toolLibraryProjection.ok) {
     const result = lifecyclePort.createTerminalFailure({
@@ -402,29 +527,38 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
   const completionPolicy = createAgentRunCompletionPolicy({
     runId: assertValidRunId(runId),
     threadId,
-    history,
     planningWorkflows: runtimeServices.planningWorkflows,
     goals: runtimeServices.goals,
     emit,
-    providerAuthRuntime,
-    providerWebSocketSessions: webSocketSessions,
-    providerRequestOptions,
     ...(runState === undefined ? {} : { runState }),
     ...(planningWorkflow === undefined ? {} : { planningWorkflow }),
     ...(approvedPlan === undefined ? {} : { approvedPlan }),
     ...(goal === undefined ? {} : { goal }),
-    ...(providerReplayScopeId === undefined ? {} : { providerReplayScopeId }),
-    ...(callModelImpl === undefined ? {} : { callModelImpl }),
-    ...(injectedGoalCompletionVerifier === undefined
-      ? {}
-      : { goalCompletionVerifier: injectedGoalCompletionVerifier }),
-    ...(signal === undefined ? {} : { signal }),
+    observeCompletionGap(observation) {
+      recordAgentLoopObserverCompletionGap(observer, observation);
+    },
+    // 설정이 없으면 undefined가 그대로 전달돼 관측 전용 동작이 유지된다.
+    noProgressPolicy: resolveAgentNoProgressPolicyFromEnv(),
   });
   const processRoundFunctionCalls = async (args: {
     round: number;
     functionCalls: readonly FunctionCall[];
   }) => {
     endTurnAfterLastToolProcessing = false;
+    const unadmittedFunctionCall = args.functionCalls.find(
+      (functionCall) => !admittedProviderToolNames.has(functionCall.name),
+    );
+    if (unadmittedFunctionCall !== undefined) {
+      completedContextBudgetRound = undefined;
+      return {
+        ok: false as const,
+        result: lifecyclePort.createTerminalFailure({
+          emit,
+          code: 'execution_failed',
+          message: `provider requested a tool outside the admitted provider surface: ${unadmittedFunctionCall.name}`,
+        }),
+      };
+    }
     const contextBudgetRound = completedContextBudgetRound;
     completedContextBudgetRound = undefined;
     const toolResultContextBudget =
@@ -524,7 +658,6 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
           await applyNextPendingInterject({
             history,
             workspaceRoot: stateRoot,
-            threadId,
             runState,
             runCheckpoints: runtimeServices.runCheckpoints,
             emit,
@@ -539,6 +672,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
           history,
           systemPrompt,
           tools: toolDefs,
+          ...(providerDeferredToolDefs === undefined
+            ? {}
+            : { deferredTools: providerDeferredToolDefs }),
           providerAuthRuntime,
           providerRequestOptions,
           ...(providerReplayScopeId === undefined
@@ -554,6 +690,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
           systemPrompt,
           round,
           toolDefs,
+          ...(providerDeferredToolDefs === undefined
+            ? {}
+            : { providerDeferredToolDefs }),
           threadId,
           providerWebSocketSessions: webSocketSessions,
           providerAuthRuntime,
@@ -609,7 +748,27 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
             });
           };
         }
-        const modelRound = await modelRoundPort.runModelRound(modelRoundArgs);
+        // 사용자가 "지금 넣어라"라고 하면 이 라운드를 끊는다. 런 전체의 취소
+        // 신호를 쓸 수 없다 — 그것을 당기면 대화가 끝나 버린다. 그래서 라운드
+        // 수명만큼 사는 신호를 따로 만들어 버퍼의 flush 요청에 건다.
+        //
+        // 끊긴 라운드는 실패가 아니라 "할 말 다 했고 도구는 안 부름"으로
+        // 끝나므로, 완결 정책이 대기 중인 말을 보고 대화를 이어가고
+        // `beforeModelRound`가 그 말을 넣는다.
+        const roundInterrupt = new AbortController();
+        const unsubscribeInterjectFlush =
+          runState === undefined
+            ? undefined
+            : runState.interject.subscribeFlush(() => {
+                roundInterrupt.abort();
+              });
+        modelRoundArgs.interruptSignal = roundInterrupt.signal;
+        let modelRound;
+        try {
+          modelRound = await modelRoundPort.runModelRound(modelRoundArgs);
+        } finally {
+          unsubscribeInterjectFlush?.();
+        }
         if (modelRound.ok && runState !== undefined) {
           accumulateRunUsageTotals(
             runState.usageTotals,
@@ -654,6 +813,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
             history,
             systemPrompt,
             tools: toolDefs,
+            ...(providerDeferredToolDefs === undefined
+              ? {}
+              : { deferredTools: providerDeferredToolDefs }),
             providerAuthRuntime,
             providerRequestOptions,
             contextBudgetRound,
@@ -697,26 +859,33 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
             providerItems.every((item) => item.kind === 'backend_item') &&
             roundReplayScopeId !== undefined
           ) {
-            const precedingTranscriptEntryId =
-              compaction.kind === 'compacted'
-                ? compaction.providerRoundAnchorEntryId
-                : await readLastTranscriptEntryId(stateRoot, threadId);
-            await appendProviderRound({
-              stateRoot,
+            await historyPort.recordProviderRound({
+              workspaceRoot: stateRoot,
               threadId,
               runId: assertValidRunId(runId),
               round,
               providerId: providerRequestOptions.providerId,
               model: providerRequestOptions.model,
               replayScopeId: roundReplayScopeId,
-              precedingTranscriptEntryId,
+              ...(compaction.kind === 'compacted'
+                ? {
+                    precedingTranscriptEntryId:
+                      compaction.providerRoundAnchorEntryId,
+                  }
+                : {}),
               items: providerItems.map((item) => item.data),
-              functionCalls: modelRound.value.functionCalls.map((call) => ({
-                ...call,
-                replaySafe:
-                  registry.getToolMeta(call.name)?.recoveryStrategy ===
-                  'replay_safe',
-              })),
+              functionCalls: modelRound.value.functionCalls.map((call) => {
+                const recoveryStrategy = registry.getToolMeta(
+                  call.name,
+                )?.recoveryStrategy;
+                return {
+                  ...call,
+                  replaySafe: recoveryStrategy === 'replay_safe',
+                  ...(recoveryStrategy === undefined
+                    ? {}
+                    : { recoveryStrategy }),
+                };
+              }),
             });
           }
         }
@@ -763,7 +932,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         }
         return lifecyclePort.createTerminalFailure({
           emit,
-          code: failure.kind === 'aborted' ? 'aborted' : 'execution_failed',
+          code: resolveKernelFailureErrorCode(failure.kind),
           message: failure.message,
         });
       },
@@ -784,83 +953,5 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         );
       },
     },
-  });
-}
-
-async function applyNextPendingInterject(args: {
-  history: HistoryItem[];
-  workspaceRoot: string;
-  threadId: string;
-  runState: NonNullable<AgentInput['runState']>;
-  runCheckpoints: RunCheckpointStore;
-  emit: AgentEventEmitter;
-}): Promise<void> {
-  const interject = peekPendingInterject(args.runState.interject);
-  if (interject === undefined) {
-    return;
-  }
-
-  const enqueued = await args.runCheckpoints.enqueueInterject({
-    threadId: args.runState.threadId,
-    runId: args.runState.runId,
-    interject,
-  });
-  if (!enqueued.ok) {
-    if (enqueued.code === 'not_pending') {
-      removePendingInterjectBySeq(
-        args.runState.interject,
-        interject.receivedSeq,
-      );
-      return;
-    }
-    throw new Error(`interject checkpoint enqueue failed: ${enqueued.code}`);
-  }
-  const claimed = await args.runCheckpoints.claimInterject({
-    threadId: args.runState.threadId,
-    runId: args.runState.runId,
-    receivedSeq: interject.receivedSeq,
-  });
-  if (!claimed.ok) {
-    if (claimed.code === 'not_pending') {
-      removePendingInterjectBySeq(
-        args.runState.interject,
-        interject.receivedSeq,
-      );
-      return;
-    }
-    throw new Error(`interject checkpoint claim failed: ${claimed.code}`);
-  }
-  const persisted = await persistSingleInterjectToTranscript(
-    args.workspaceRoot,
-    args.threadId,
-    args.runState.runId,
-    interject,
-  );
-  const completed = await args.runCheckpoints.completeInterject({
-    threadId: args.runState.threadId,
-    runId: args.runState.runId,
-    receivedSeq: interject.receivedSeq,
-  });
-  if (!completed.ok) {
-    throw new Error(
-      `interject checkpoint completion failed: ${completed.code}`,
-    );
-  }
-  if (
-    !removePendingInterjectBySeq(args.runState.interject, interject.receivedSeq)
-  ) {
-    throw new Error(
-      `applied interject missing from live buffer: ${interject.receivedSeq}`,
-    );
-  }
-  // 즉시 반영 요청은 소비 1회로 목적을 다한다 — 남은 큐는 평소 케이던스로
-  clearInterjectFlushRequest(args.runState.interject);
-  if (persisted.appended) {
-    appendInterjectToHistory(args.history, interject);
-  }
-  args.emit('interject_applied', {
-    runId: args.runState.runId,
-    count: 1,
-    receivedSeqs: [interject.receivedSeq],
   });
 }

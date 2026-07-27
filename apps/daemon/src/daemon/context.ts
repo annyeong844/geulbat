@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import { join } from 'node:path';
+
 import {
   createApprovalGate,
   type ApprovalGate,
@@ -77,10 +79,15 @@ import {
   createResponsesWebSocketSessionStore,
   type OwnedResponsesWebSocketSessionStore,
 } from './llm/provider/transport/responses-websocket-cache.js';
+import { createHostRoutedResponsesRequestTransport } from './llm/provider/transport/responses-durable-request.js';
 import {
   resolveProviderRequestOptions,
   type ProviderRequestOptions,
 } from './llm/provider/provider-options.js';
+import {
+  createCodexWebSearchRuntime,
+  type ProviderNativeWebSearchRuntime,
+} from './llm/provider/codex-web-search.js';
 import {
   resolveReactBundleStructuredOutputIngressPolicyFromEnv,
   type ReactBundleStructuredOutputIngressPolicy,
@@ -90,13 +97,18 @@ import {
   type CreatePtcFixedEpochProbeRuntimeOptions,
 } from './ptc/runtime/probes/fixed-probe-runtime.js';
 import {
+  createPtcExecuteCodeHostRoutedEpochBridge,
+  createPtcExecuteCodeHostRoutedEpochCallbackControllerAttacher,
   createPtcExecuteCodeRuntime,
   resolvePtcExecuteCodeCallbackTransportPolicyFromEnv,
   resolvePtcExecuteCodeCellRuntimeConfigFromEnv,
   resolvePtcExecuteCodePackageInstallConfigFromEnv,
   type CreatePtcExecuteCodeRuntimeOptions,
 } from './ptc/runtime/execute-code/execute-code-runtime.js';
-import { createHostRoutedDetachedProcessStarter } from './host-routed-detached-process.js';
+import {
+  createHostRoutedDetachedProcessAttacher,
+  createHostRoutedDetachedProcessStarter,
+} from './host-routed-detached-process.js';
 import {
   PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION,
   type PtcExecuteCodePlacementResourceBudget,
@@ -115,6 +127,9 @@ import { runComputerBrowseDiscoveryLoop } from './files/computer-browse-discover
 import { createHostRoutedComputerSessionDiscoveryCommandRunner } from './computer-discovery-command-runner.js';
 import { buildDockerClientProcessEnv } from './docker-client-command.js';
 import { createHostRoutedDockerCommandRunner } from './docker-host-command.js';
+import { resolvePtcCallbackTransportPolicy } from './ptc-callback-transport-settings.js';
+import { resolvePtcArtifactExportPolicy } from './ptc/artifacts/artifact-export-policy-record.js';
+import { importPtcLabArtifactWorkspaceFiles } from './ptc/lab/artifacts/lab-artifact-workspace.js';
 import {
   createActiveRunStore,
   type ActiveRunStore,
@@ -145,7 +160,10 @@ import {
   type ApprovalGrantStore,
 } from './tools/approval-grants.js';
 import { createToolLibraryProjectionPort } from './tools/tool-library-projection.js';
-import type { ToolLibraryProjectionPort } from './tools/tool-library-projection-port.js';
+import type {
+  ToolLibraryProjectionPort,
+  ToolLibraryProjectionTransferPort,
+} from './tools/tool-library-projection-port.js';
 import type { ToolRegistryStore } from './tools/registry.js';
 import { createBuiltinToolRegistryStore } from './tools/builtin/catalog.js';
 import {
@@ -171,6 +189,10 @@ import {
   createDaemonHostCommandRuntime,
   registerHostCommandActiveSessions,
 } from '../command-host/runtime-selection.js';
+import {
+  buildHostCommandPaths,
+  SYSTEM_SESSION_OWNER,
+} from './host-command-output-store.js';
 import type { HostCommandRuntime } from '../command-host/contract.js';
 import { createSubagentRunLauncher } from './agent/subagent-support.js';
 import {
@@ -300,6 +322,7 @@ export interface DaemonContext {
   subagent: AgentRuntimeSubagentServices;
   threadIndex: AgentRuntimeServices['threadIndex'];
   toolLibraryProjection: ToolLibraryProjectionPort;
+  toolLibraryProjectionTransfer: ToolLibraryProjectionTransferPort;
   toolRegistry: ToolRegistryStore;
   createExternalToolSdkTransport<Principal>(
     options: Omit<
@@ -321,6 +344,7 @@ export interface DaemonProviderContext {
   authCallbackServer: ProviderAuthCallbackServerController;
   authRuntime: ProviderAuthRuntimeStore;
   credentialFilePermissionHardener: ProviderAuthFilePermissionHardener;
+  nativeWebSearch?: ProviderNativeWebSearchRuntime;
   requestOptions: ProviderRequestOptions;
   webSocketSessions: OwnedResponsesWebSocketSessionStore;
 }
@@ -399,6 +423,7 @@ export function createDaemonContext(
   const resolvedComputerScope = resolveComputerFileScope();
   const computerFileScope = resolvedComputerScope?.scope;
   const homeStateRoot = options.homeStateRoot ?? resolveHomeStateRoot();
+  const sandboxAttempts = createSandboxAttemptStore();
   const hostCommandInlineMaxBytes =
     options.hostCommands?.inlineMaxBytes ??
     resolveToolOutputProjectionPolicyFromEnv().inlineMaxBytes;
@@ -506,12 +531,50 @@ export function createDaemonContext(
   );
   const providerRequestOptions =
     options.providerRequestOptions ?? resolveProviderRequestOptions();
-  const providerWebSocketSessions = createResponsesWebSocketSessionStore();
+  const startHostRoutedProviderRequest = createHostRoutedDetachedProcessStarter(
+    {
+      hostCommands,
+      stateRoot: homeStateRoot,
+      pageLimitBytes: hostCommandInlineMaxBytes,
+      cwd: homeStateRoot,
+      env: process.env,
+      runId: 'provider-responses',
+    },
+  );
+  const attachHostRoutedProviderRequest =
+    createHostRoutedDetachedProcessAttacher({
+      hostCommands,
+      stateRoot: homeStateRoot,
+      pageLimitBytes: hostCommandInlineMaxBytes,
+    });
+  const durableProviderRequests = createHostRoutedResponsesRequestTransport({
+    stateRoot: homeStateRoot,
+    startProcess: startHostRoutedProviderRequest,
+    attachProcess: attachHostRoutedProviderRequest,
+    resolveTerminalArtifactPath: (outputRef) =>
+      join(
+        buildHostCommandPaths({
+          stateRoot: homeStateRoot,
+          threadId: SYSTEM_SESSION_OWNER,
+          outputRef,
+        }).directory,
+        'responses-terminal.json',
+      ),
+  });
+  registerHostCommandActiveSessions(durableProviderRequests);
+  const providerWebSocketSessions = createResponsesWebSocketSessionStore({
+    durableRequestTransport: durableProviderRequests,
+  });
+  const providerNativeWebSearch = createCodexWebSearchRuntime({
+    authRuntime: providerAuthRuntime,
+    webSocketSessions: providerWebSocketSessions,
+  });
   const provider: DaemonProviderContext = {
     authBootstrap: providerAuthBootstrap,
     authCallbackServer: providerAuthCallbackServer,
     authRuntime: providerAuthRuntime,
     credentialFilePermissionHardener: providerAuthFilePermissionHardener,
+    nativeWebSearch: providerNativeWebSearch,
     requestOptions: providerRequestOptions,
     webSocketSessions: providerWebSocketSessions,
   };
@@ -532,6 +595,16 @@ export function createDaemonContext(
   )
     ? ptcExecuteCodeRuntimeOptions.packageInstall
     : resolvePtcExecuteCodePackageInstallConfigFromEnv();
+  // PTC transition spec v7 §3 (2026-07-27) — 콜백 전송 정책은 환경변수가 이기고,
+  // 없으면 운영자가 Settings에서 확정한 Home 레코드를 쓴다. 둘 다 없으면 정책 없이
+  // 두어 bridge가 만들어지지 않는다(F003 fail-closed 유지). 호출자가 정책을 명시한
+  // 경우(테스트·별도 운영 배선)는 그 값을 건드리지 않는다.
+  const ptcCallbackTransportPolicy = Object.hasOwn(
+    ptcExecuteCodeRuntimeOptions,
+    'callbackTransportPolicy',
+  )
+    ? undefined
+    : resolvePtcCallbackTransportPolicy({ homeStateRoot }).policy;
   // P7.6 item 4 — PTC의 배치 docker 명령(세션 생성·exec·정리·패키지 설치·브라우저
   // 제어·프로브)은 데몬의 자식이 아니라 command-host 워커의 system 세션에서 돈다.
   // 세션이 사는 곳은 Home state root다 — 컨테이너와 산출물은 PTC 자신의 저장소가
@@ -556,10 +629,57 @@ export function createDaemonContext(
     env: buildDockerClientProcessEnv(),
     runId: 'ptc',
   });
+  const attachHostRoutedPtcCellProcess =
+    createHostRoutedDetachedProcessAttacher({
+      hostCommands,
+      stateRoot: homeStateRoot,
+      pageLimitBytes: hostCommandInlineMaxBytes,
+    });
+  // PTC owns the callback transport contract; command-host owns only the
+  // callback-host child lifetime. Bootstrap secrets travel over non-persisted
+  // stdin, while callback payloads use a private direct control socket.
+  const startHostRoutedPtcCallbackProcess =
+    createHostRoutedDetachedProcessStarter({
+      hostCommands,
+      stateRoot: homeStateRoot,
+      pageLimitBytes: hostCommandInlineMaxBytes,
+      cwd: homeStateRoot,
+      env: process.env,
+      runId: 'ptc-callback',
+    });
+  const attachHostRoutedPtcCallbackProcess =
+    createHostRoutedDetachedProcessAttacher({
+      hostCommands,
+      stateRoot: homeStateRoot,
+      pageLimitBytes: hostCommandInlineMaxBytes,
+    });
+  const attachHostRoutedPtcEpochCallbackController =
+    createPtcExecuteCodeHostRoutedEpochCallbackControllerAttacher({
+      attachProcess: attachHostRoutedPtcCallbackProcess,
+    });
+  const createHostRoutedPtcEpochBridge =
+    createPtcExecuteCodeHostRoutedEpochBridge({
+      startProcess: startHostRoutedPtcCallbackProcess,
+    });
   const ptcExecuteCode = createPtcExecuteCodeRuntime({
     ...ptcExecuteCodeRuntimeOptions,
+    ...(ptcCallbackTransportPolicy === undefined
+      ? {}
+      : { callbackTransportPolicy: ptcCallbackTransportPolicy }),
+    artifactExport: ptcExecuteCodeRuntimeOptions.artifactExport ?? {
+      resolvePolicy: () =>
+        resolvePtcArtifactExportPolicy({ homeStateRoot }).policy,
+      importFiles: (args) =>
+        importPtcLabArtifactWorkspaceFiles({
+          ...args,
+          attemptStore: sandboxAttempts,
+        }),
+    },
     commandRunner:
       ptcExecuteCodeRuntimeOptions.commandRunner ?? ptcDockerCommandRunner,
+    createEpochBridge:
+      ptcExecuteCodeRuntimeOptions.createEpochBridge ??
+      createHostRoutedPtcEpochBridge,
     startCellProcess:
       ptcExecuteCodeRuntimeOptions.startCellProcess ??
       ((invocation) =>
@@ -580,6 +700,12 @@ export function createDaemonContext(
             ? {}
             : { outputBufferPolicy: invocation.outputBufferPolicy }),
         })),
+    attachCellProcess:
+      ptcExecuteCodeRuntimeOptions.attachCellProcess ??
+      attachHostRoutedPtcCellProcess,
+    attachEpochCallbackController:
+      ptcExecuteCodeRuntimeOptions.attachEpochCallbackController ??
+      attachHostRoutedPtcEpochCallbackController,
     cellTerminalResultStore:
       ptcExecuteCodeRuntimeOptions.cellTerminalResultStore ??
       createPtcExecuteCodeCellTerminalResultStore(),
@@ -680,18 +806,18 @@ export function createDaemonContext(
       ? {}
       : { packageRoot: options.bundledCreatorPluginRoot }),
   });
+  const toolLibraryProjectionTransfer = createToolLibraryProjectionPort({
+    registry: toolRegistry,
+    runtimeRootForState: resolveToolLibraryProjectionPortRoot,
+    sdkVersion: TOOL_LIBRARY_SDK_VERSION,
+    sourceRegistryVersion: TOOL_LIBRARY_SOURCE_REGISTRY_VERSION,
+    runtimeCompatibilityRange: TOOL_LIBRARY_RUNTIME_COMPATIBILITY_RANGE,
+    modelFacingCatalogRef: TOOL_LIBRARY_MODEL_FACING_CATALOG_REF,
+    importSpecifier: TOOL_LIBRARY_IMPORT_SPECIFIER,
+    projectionPolicy: TOOL_LIBRARY_PTC_REACHABLE_POLICY,
+  });
   const toolLibraryProjection =
-    options.toolLibraryProjectionPort ??
-    createToolLibraryProjectionPort({
-      registry: toolRegistry,
-      runtimeRootForState: resolveToolLibraryProjectionPortRoot,
-      sdkVersion: TOOL_LIBRARY_SDK_VERSION,
-      sourceRegistryVersion: TOOL_LIBRARY_SOURCE_REGISTRY_VERSION,
-      runtimeCompatibilityRange: TOOL_LIBRARY_RUNTIME_COMPATIBILITY_RANGE,
-      modelFacingCatalogRef: TOOL_LIBRARY_MODEL_FACING_CATALOG_REF,
-      importSpecifier: TOOL_LIBRARY_IMPORT_SPECIFIER,
-      projectionPolicy: TOOL_LIBRARY_PTC_REACHABLE_POLICY,
-    });
+    options.toolLibraryProjectionPort ?? toolLibraryProjectionTransfer;
   const runCheckpoints = createRunCheckpointStore({
     stateRoot: homeStateRoot,
   });
@@ -762,10 +888,11 @@ export function createDaemonContext(
     pluginSkills,
     memoryIndex: createMemoryIndexStore(),
     ptc,
-    sandboxAttempts: createSandboxAttemptStore(),
+    sandboxAttempts,
     subagent,
     threadIndex: { loadThreadIndex, upsertThreadSummary },
     toolLibraryProjection,
+    toolLibraryProjectionTransfer,
     toolRegistry,
     createExternalToolSdkTransport: (transportOptions) =>
       createDaemonToolSdkTransport({

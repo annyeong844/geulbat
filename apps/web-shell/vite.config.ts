@@ -1,12 +1,39 @@
-import { fileURLToPath } from 'node:url';
-
-import { defineConfig, loadEnv, type Plugin } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
-const DEV_AUTH_COOKIE_NAME = 'geulbat_dev_auth';
-const DEV_AUTH_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 6;
 const ARTIFACT_RUNTIME_SOURCE_MODULE_SUFFIX =
   '/src/features/artifacts/runtime-preview/react-bundle/runtime-module-sources.js';
+
+const HASHED_ASSET_DIRECTORY_PREFIX = 'assets/';
+const HASHED_ASSET_FILE_NAME_PATTERN = /-[A-Za-z0-9_-]{8,}\.[^.]+$/u;
+
+/**
+ * `assets/` 산출물이 content hash를 갖는다는 전제를 빌드 시점에 잠근다.
+ *
+ * 데몬은 이 전제로 `assets/`를 `immutable`로 서빙한다(재검증 없이 재사용).
+ * hash가 사라지면 이름이 고정되므로 브라우저가 새 빌드를 영영 받지 못하고,
+ * 그 실패는 캐시가 만료될 때까지 조용하다. 그래서 캐시 정책을 소유한 쪽이
+ * 아니라 전제를 만드는 쪽에서 막는다.
+ */
+function createHashedAssetNamePlugin(): Plugin {
+  return {
+    name: 'geulbat-hashed-asset-name',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const unhashedFileNames = Object.keys(bundle)
+        .filter((fileName) =>
+          fileName.startsWith(HASHED_ASSET_DIRECTORY_PREFIX),
+        )
+        .filter((fileName) => !HASHED_ASSET_FILE_NAME_PATTERN.test(fileName));
+
+      if (unhashedFileNames.length > 0) {
+        this.error(
+          `Emitted ${HASHED_ASSET_DIRECTORY_PREFIX} files must carry a content hash because the daemon serves them as immutable: ${unhashedFileNames.join(', ')}.`,
+        );
+      }
+    },
+  };
+}
 
 function createArtifactRuntimeChunkBoundaryPlugin(): Plugin {
   return {
@@ -107,85 +134,15 @@ function createArtifactRuntimeChunkBoundaryPlugin(): Plugin {
   };
 }
 
-function createDevAuthCookie(devToken: string): string {
-  return [
-    `${DEV_AUTH_COOKIE_NAME}=${encodeURIComponent(devToken)}`,
-    'HttpOnly',
-    'Path=/',
-    'SameSite=Strict',
-    `Max-Age=${DEV_AUTH_COOKIE_MAX_AGE_SECONDS}`,
-  ].join('; ');
-}
-
-function appendSetCookieHeader(
-  existing: string | string[] | number | undefined,
-  value: string,
-): string[] {
-  const next = Array.isArray(existing)
-    ? existing.slice()
-    : existing === undefined
-      ? []
-      : [String(existing)];
-  if (!next.includes(value)) {
-    next.push(value);
-  }
-  return next;
-}
-
-export default defineConfig(({ mode }) => {
-  const appRoot = fileURLToPath(new URL('.', import.meta.url));
-  const env = loadEnv(mode, appRoot, 'VITE_');
-  const devToken =
-    process.env.VITE_GEULBAT_DEV_TOKEN ??
-    env.VITE_GEULBAT_DEV_TOKEN ??
-    process.env.GEULBAT_DEV_TOKEN ??
-    '';
-  const configuredDaemonOrigin =
-    process.env.VITE_GEULBAT_DAEMON_ORIGIN ??
-    env.VITE_GEULBAT_DAEMON_ORIGIN ??
-    'http://127.0.0.1:3456';
-  const daemonOriginUrl = new URL(configuredDaemonOrigin);
-  if (
-    !['http:', 'https:'].includes(daemonOriginUrl.protocol) ||
-    daemonOriginUrl.username !== '' ||
-    daemonOriginUrl.password !== '' ||
-    daemonOriginUrl.pathname !== '/' ||
-    daemonOriginUrl.search !== '' ||
-    daemonOriginUrl.hash !== ''
-  ) {
-    throw new Error('VITE_GEULBAT_DAEMON_ORIGIN must be a bare HTTP(S) origin');
-  }
-
-  return {
-    plugins: [
-      react(),
-      createArtifactRuntimeChunkBoundaryPlugin(),
-      {
-        name: 'geulbat-dev-auth-cookie',
-        configureServer(server) {
-          if (!devToken) {
-            return;
-          }
-          const cookie = createDevAuthCookie(devToken);
-          server.middlewares.use((_req, res, next) => {
-            res.setHeader(
-              'Set-Cookie',
-              appendSetCookieHeader(res.getHeader('Set-Cookie'), cookie),
-            );
-            next();
-          });
-        },
-      },
-    ],
-    server: {
-      port: 5173,
-      proxy: {
-        '/api': {
-          target: daemonOriginUrl.origin,
-          changeOrigin: true,
-          ws: true,
-        },
-      },
-    },
-  };
+/**
+ * Vite는 빌드 도구로만 쓴다. 데몬이 산출물을 서빙하므로 dev server도 proxy도
+ * 없다: 개발과 제품이 같은 단일 origin 위상을 쓰고, 접속 토큰은 데몬이 진입
+ * 문서에 심는다. HMR 대신 `vite build --watch` + 새로고침이다.
+ */
+export default defineConfig({
+  plugins: [
+    react(),
+    createArtifactRuntimeChunkBoundaryPlugin(),
+    createHashedAssetNamePlugin(),
+  ],
 });

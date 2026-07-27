@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ThreadMessage } from '@geulbat/protocol/threads';
 
+import type { RunTranscriptEntry } from '../../../lib/run-transcript-entry.js';
+
 import {
   readRunPlanFromToolArgs,
   readRunPlanFromToolCallContent,
+  resolveLatestLiveRunPlan,
   resolveLatestRunPlan,
   resolveRunPlanHistory,
 } from './run-plan.js';
@@ -56,6 +59,52 @@ void test('다른 도구의 tool_call은 계획으로 읽지 않는다', () => {
     ),
     null,
   );
+});
+
+// Assistant는 재계산 빈도를 나누기 위해 두 조각을 따로 부른다(라이브 조회는
+// 스트리밍 델타마다, settled 기록 훑기는 메시지가 바뀔 때만). 그 조합이 합성
+// 함수와 같은 답을 주지 않으면 화면의 계획이 조용히 달라진다.
+void test('나눠 부른 조각의 조합은 합성 함수와 같은 계획을 준다', () => {
+  const cases: ReadonlyArray<{
+    label: string;
+    messages: ThreadMessage[];
+    transcriptEntries: RunTranscriptEntry[];
+  }> = [
+    {
+      label: '라이브 계획이 있을 때',
+      messages: [
+        planCallMessage([{ step: '옛 계획', status: 'pending' }], 'm1'),
+      ],
+      transcriptEntries: [
+        {
+          kind: 'tool_activity',
+          tool: 'update_plan',
+          state: 'running',
+          args: { plan: [{ step: '라이브', status: 'in_progress' }] },
+        } as RunTranscriptEntry,
+      ],
+    },
+    {
+      label: '라이브 계획이 없을 때',
+      messages: [
+        planCallMessage([{ step: 'settled', status: 'pending' }], 'm1'),
+      ],
+      transcriptEntries: [],
+    },
+    {
+      label: '양쪽 모두 없을 때',
+      messages: [],
+      transcriptEntries: [],
+    },
+  ];
+
+  for (const { label, messages, transcriptEntries } of cases) {
+    const composed = resolveLatestRunPlan({ messages, transcriptEntries });
+    const split =
+      resolveLatestLiveRunPlan(transcriptEntries) ??
+      resolveRunPlanHistory(messages).pendingPlan;
+    assert.deepEqual(split, composed, label);
+  }
 });
 
 void test('라이브 엔트리가 settled 메시지보다 우선하고, 최신 계획이 이긴다', () => {

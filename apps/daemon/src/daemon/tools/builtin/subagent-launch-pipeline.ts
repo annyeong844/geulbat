@@ -18,6 +18,91 @@ import {
 import type { ExecuteResult } from '../types.js';
 import { toolError } from '../result.js';
 
+export function restoreQueuedSubagentLaunchesForParent(args: {
+  parentRunId: RunId;
+  ownerThreadId: ThreadId;
+  stateRoot: string;
+  parentRunState: ToolRunState | undefined;
+  runtimeServices: AgentRuntimeServices;
+  emitAgentEvent?: (event: AgentEvent) => void;
+  computerSessionId?: string;
+}): number {
+  const launchRequestStore = args.runtimeServices.subagent.launchRequests;
+  if (launchRequestStore === undefined) {
+    return 0;
+  }
+  const queuedRequests = launchRequestStore
+    .readQueuedSubagentLaunchRequests()
+    .filter((request) => request.parentRunId === args.parentRunId);
+  if (queuedRequests.length === 0) {
+    return 0;
+  }
+  if (args.parentRunState === undefined) {
+    throw new Error('queued subagent recovery requires the parent run state');
+  }
+  const parentRunState = args.parentRunState;
+  const launchPromotions = args.runtimeServices.subagent.launchPromotions;
+  if (launchPromotions === undefined) {
+    throw new Error('queued subagent recovery promotion is unavailable');
+  }
+
+  const recoverableLaunches = queuedRequests.map((durableRequest) => {
+    const input = launchRequestStore.readSubagentLaunchInput(
+      durableRequest.childRunId,
+    );
+    if (
+      input.parentRunId !== durableRequest.parentRunId ||
+      input.ownerThreadId !== durableRequest.ownerThreadId ||
+      input.toolCallId !== durableRequest.toolCallId ||
+      input.parentRunId !== args.parentRunId ||
+      input.ownerThreadId !== args.ownerThreadId ||
+      input.stateRoot !== args.stateRoot
+    ) {
+      throw new Error(
+        `queued subagent recovery identity conflicts: ${durableRequest.childRunId}`,
+      );
+    }
+    return { durableRequest, input };
+  });
+
+  for (const { durableRequest, input } of recoverableLaunches) {
+    launchPromotions.restoreQueuedLaunch({
+      childRunId: durableRequest.childRunId,
+      ultraReasoning: input.ultraReasoning ?? false,
+      parentRunState,
+      async start() {
+        await runSubagentLaunchPipeline({
+          task: input.task,
+          subagentType: input.subagentType,
+          capabilities: input.capabilities,
+          parentRunId: input.parentRunId,
+          ownerThreadId: input.ownerThreadId,
+          stateRoot: input.stateRoot,
+          workingDirectory: input.workingDirectory,
+          parentRunState,
+          runtimeServices: args.runtimeServices,
+          ...(args.emitAgentEvent === undefined
+            ? {}
+            : { emitAgentEvent: args.emitAgentEvent }),
+          ...(args.computerSessionId === undefined
+            ? {}
+            : { computerSessionId: args.computerSessionId }),
+          ...(input.permissionMode === undefined
+            ? {}
+            : { permissionMode: input.permissionMode }),
+          ultraReasoning: input.ultraReasoning ?? false,
+          modelPin: input.modelPin,
+          subagentModelRouting: input.subagentModelRouting,
+          childRunId: durableRequest.childRunId,
+          childThreadId: durableRequest.childThreadId,
+          durableLaunchRecorded: true,
+        });
+      },
+    });
+  }
+  return recoverableLaunches.length;
+}
+
 export async function runSubagentLaunchPipeline(args: {
   task: string;
   subagentType: SubagentType;

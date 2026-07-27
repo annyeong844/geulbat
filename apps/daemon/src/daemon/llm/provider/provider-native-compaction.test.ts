@@ -143,6 +143,20 @@ void test('resolveOpenAiNativeCompactionPolicy honors a lower catalog threshold'
 void test('compactOpenAiHistory retries OAuth once and preserves the opaque replacement without response ids', async () => {
   const input = createOpenAiNativeCompactionInput({
     promptContext: 'thread context',
+    deferredTools: [
+      {
+        type: 'function',
+        name: 'mcp_external_lookup',
+        description: 'Look up an external record.',
+        parameters: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        strict: false,
+      },
+    ],
     providerRequestOptions: {
       ...defaultProviderRequestOptions,
       model: 'gpt-test',
@@ -211,6 +225,14 @@ void test('compactOpenAiHistory retries OAuth once and preserves the opaque repl
           effort: 'medium',
           summary: 'auto',
         });
+        assert.deepEqual(body['tools'], [
+          input.tools?.[0],
+          {
+            ...input.deferredTools?.[0],
+            defer_loading: true,
+          },
+          { type: 'tool_search' },
+        ]);
         return new Response(
           JSON.stringify({
             output: [

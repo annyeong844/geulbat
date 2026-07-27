@@ -1,0 +1,51 @@
+name: PTC Session Image
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/ptc-session-image.yml'
+      - 'apps/daemon/docker/ptc-session/**'
+      - 'apps/daemon/src/daemon/ptc/lab/session/session-docker-contract.ts'
+      - 'apps/web-shell/package.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/build-ptc-session-image.mjs'
+  push:
+    branches:
+      - main
+      - p-work-from-current
+    paths:
+      - '.github/workflows/ptc-session-image.yml'
+      - 'apps/daemon/docker/ptc-session/**'
+      - 'apps/daemon/src/daemon/ptc/lab/session/session-docker-contract.ts'
+      - 'apps/web-shell/package.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/build-ptc-session-image.mjs'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Check Docker
+        run: docker version
+
+      - name: Build and verify the PTC session image
+        run: npm run build:ptc-session-image -- --verify

@@ -338,11 +338,16 @@ h3 {
   margin-inline: auto;
 }
 
-/* 채팅만은 assistant가 작업 공간 그 자체다. 채팅 중심 모드의 읽기 폭 제한을
-   상속하지 않고 transcript와 composer가 사용 가능한 전체 폭을 쓴다. */
+/* 채팅만은 assistant가 작업 공간 그 자체다. 패널은 전체 폭을 쓰고, 본문·계획
+   카드·컴포저는 공통 읽기 컬럼(--reading-column)으로 가운데 맞춘다. */
 .shell.layout-chat-only .assistant-pane .assistant-body {
   width: 100%;
   max-width: none;
   margin-inline: 0;
   padding-inline: clamp(20px, 4vw, 72px);
+}
+
+.shell.layout-chat-only {
+  /* 넓은 채팅만 화면에서도 대화·계획 승인·입력이 같은 줄에 앉도록 컬럼을 공유 */
+  --reading-column: min(760px, 100%);
 }

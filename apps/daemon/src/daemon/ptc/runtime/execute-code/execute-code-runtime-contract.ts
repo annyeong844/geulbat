@@ -1,3 +1,5 @@
+import type { PtcExecuteCodeArtifactExport } from '@geulbat/protocol/ptc-artifacts';
+
 import type { PtcLabSessionBatchCommandFailureReason } from '../../shared/lab-batch-command-contract.js';
 import type { PtcSessionDockerSdkProjectionMount } from '../../shared/sdk-projection-mount-contract.js';
 
@@ -5,6 +7,7 @@ export {
   PTC_SESSION_DOCKER_SDK_CONTAINER_ROOT,
   PTC_SESSION_DOCKER_SDK_PROJECTION_MOUNT_POLICY_ID,
 } from '../../shared/sdk-projection-mount-contract.js';
+export type { PtcSessionDockerSdkProjectionMount } from '../../shared/sdk-projection-mount-contract.js';
 
 export const PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION =
   'ptc_execute_code_sdk_v1' as const;
@@ -14,9 +17,14 @@ export const PTC_EXECUTE_CODE_FORBIDDEN_OLD_TOOL_NAME = 'execute_code' as const;
 export const PTC_EXECUTE_CODE_WAIT_TOOL_NAME = 'wait' as const;
 export const PTC_EXECUTE_CODE_POLICY_ID =
   'ptc_lab_execute_code_batch_node_v1' as const;
+export const PTC_EXECUTE_CODE_PYTHON_POLICY_ID =
+  'ptc_lab_execute_code_batch_python_v1' as const;
+export const PTC_EXECUTE_CODE_PYTHON_SDK_IMPORT_MODULE = 'geulbat_sdk' as const;
 export const PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_RUN_ID =
   'ptc-cell-terminal-result' as const;
 export const PTC_EXECUTE_CODE_TRUST_CONTEXT_ID = PTC_EXECUTE_CODE_POLICY_ID;
+export const PTC_EXECUTE_CODE_PYTHON_TRUST_CONTEXT_ID =
+  PTC_EXECUTE_CODE_PYTHON_POLICY_ID;
 export const PTC_PACKAGE_INSTALL_TOOL_NAME = 'install_packages' as const;
 // Session-lifetime cumulative install prefix. CommonJS uses NODE_PATH while
 // explicit ESM execution starts from the prefix for standard package lookup.
@@ -24,12 +32,92 @@ export const PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX =
   '/tmp/geulbat-packages' as const;
 export const PTC_EXECUTE_CODE_INSTALLED_PACKAGES_NODE_PATH =
   '/tmp/geulbat-packages/node_modules' as const;
+export const PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH =
+  '/tmp/geulbat-python-packages' as const;
+export type PtcExecuteCodeLanguage = 'javascript' | 'python';
 export type PtcExecuteCodeModuleFormat = 'commonjs' | 'esm';
+export type PtcPackageInstallManager = 'npm' | 'pip';
 export const PTC_EXECUTE_CODE_CELL_EXEC_MIN_YIELD_MS = 1_000;
 export const PTC_EXECUTE_CODE_CELL_EXEC_MAX_YIELD_MS = 60_000;
 export const PTC_EXECUTE_CODE_CELL_WAIT_MIN_YIELD_MS = 1_000;
 export const PTC_EXECUTE_CODE_CELL_WAIT_MAX_YIELD_MS = 300_000;
 export type PtcExecuteCodeCellId = `ptc_cell_${string}`;
+
+export interface PtcExecuteCodeCellOutputReadOffsets {
+  stdoutBytes: number;
+  stderrBytes: number;
+}
+
+export interface PtcExecuteCodeCellCoordinate {
+  stateRoot: string;
+  threadId: string;
+  cellId: PtcExecuteCodeCellId;
+  createdAtMs: number;
+  effectiveTimeoutMs: number;
+  orphanReapAtMs?: number;
+  processOutputRef: string;
+  callbackOutputRef?: string;
+  trustContextId: string;
+  ephemeralBurstId?: `ptc_burst_${string}`;
+  sdkProjectionMount?: PtcSessionDockerSdkProjectionMount;
+  containerId: string;
+  maxBufferedBytesPerStream: number;
+  callbackToolNames: readonly string[];
+  storeCallbacksEnabled: boolean;
+  outputReadOffsets?: PtcExecuteCodeCellOutputReadOffsets;
+}
+
+export interface PtcExecuteCodeRunningWaitDelivery {
+  threadId: string;
+  runId: string;
+  callId: string;
+  cellId: PtcExecuteCodeCellId;
+  stdout: string;
+  stderr: string;
+  outputReadOffsets: PtcExecuteCodeCellOutputReadOffsets;
+}
+
+export interface PtcExecuteCodeRunningExecDelivery {
+  threadId: string;
+  runId: string;
+  callId: string;
+  cellId: PtcExecuteCodeCellId;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  toolCallbackCount: number;
+  outputReadOffsets: PtcExecuteCodeCellOutputReadOffsets;
+}
+
+export interface PtcExecuteCodeCellCoordinateStore {
+  listPtcExecuteCodeCellCoordinates(): readonly PtcExecuteCodeCellCoordinate[];
+  persistPtcExecuteCodeCellCoordinate(
+    coordinate: PtcExecuteCodeCellCoordinate,
+  ): Promise<void> | void;
+  deletePtcExecuteCodeCellCoordinate(cellId: PtcExecuteCodeCellId): void;
+  readPtcExecuteCodeRunningWaitDelivery?(args: {
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+  }): PtcExecuteCodeRunningWaitDelivery | undefined;
+  persistPtcExecuteCodeRunningWaitDelivery?(
+    delivery: PtcExecuteCodeRunningWaitDelivery,
+  ): void;
+  deletePtcExecuteCodeRunningWaitDelivery?(args: {
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+  }): void;
+  readPtcExecuteCodeRunningExecDelivery?(args: {
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+  }): PtcExecuteCodeRunningExecDelivery | undefined;
+  persistPtcExecuteCodeRunningExecDelivery?(
+    delivery: PtcExecuteCodeRunningExecDelivery,
+  ): void;
+  deletePtcExecuteCodeRunningExecDelivery?(args: {
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+  }): void;
+}
 
 export interface PtcExecuteCodePlacementResourceSnapshotRef {
   snapshotId: string;
@@ -159,7 +247,7 @@ export type PtcExecuteCodeRuntimeToolCallbackHandler = (invocation: {
   args: Record<string, unknown>;
   cellId?: string;
   signal: AbortSignal;
-  enterLongWait?: () => boolean;
+  enterLongWait?: () => boolean | Promise<boolean>;
 }) => Promise<PtcExecuteCodeRuntimeToolCallbackResult>;
 
 export type PtcExecuteCodeRuntimeFailureReason =
@@ -168,6 +256,8 @@ export type PtcExecuteCodeRuntimeFailureReason =
   | 'ptc_execute_code_cell_busy'
   | 'ptc_execute_code_cell_result_unclaimed'
   | 'ptc_execute_code_callback_bridge_unavailable'
+  | 'ptc_execute_code_artifact_export_disabled'
+  | 'ptc_execute_code_artifact_export_failed'
   | 'ptc_execute_code_lab_admission_failed'
   | 'ptc_execute_code_session_cleanup_failed'
   | 'ptc_execute_code_store_unavailable'
@@ -177,19 +267,19 @@ export type PtcExecuteCodeRuntimeFailureReason =
 
 interface PtcExecuteCodeRuntimeRequest {
   code: string;
+  language?: PtcExecuteCodeLanguage;
   moduleFormat?: PtcExecuteCodeModuleFormat;
   timeoutMs?: number;
   yieldTimeMs?: number;
+  artifacts?: string[];
 }
 
-interface PtcExecuteCodeRuntimeCompletedSummary {
+interface PtcExecuteCodeRuntimeCompletedSummaryBase {
   ok: true;
   capabilityId: typeof PTC_EXECUTE_CODE_TOOL_NAME;
-  policyId: typeof PTC_EXECUTE_CODE_POLICY_ID;
   labPolicyId: string;
   profile: 'lab';
   executionClass: 'lab_execute_code';
-  executionSurface: 'node_via_lab_batch_command';
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -209,11 +299,27 @@ interface PtcExecuteCodeRuntimeCompletedSummary {
     callbackToolCount: number;
   };
   store?: PtcExecuteCodeRuntimeStoreSummary;
+  artifacts?: PtcExecuteCodeArtifactExport;
   cleanupFailure?: {
     message: string;
     diagnostics: Record<string, string | number | boolean>;
   };
 }
+
+export type PtcExecuteCodeRuntimeCompletedSummary =
+  PtcExecuteCodeRuntimeCompletedSummaryBase &
+    (
+      | {
+          policyId: typeof PTC_EXECUTE_CODE_POLICY_ID;
+          executionSurface: 'node_via_lab_batch_command';
+          language?: 'javascript';
+        }
+      | {
+          policyId: typeof PTC_EXECUTE_CODE_PYTHON_POLICY_ID;
+          executionSurface: 'python_via_lab_batch_command';
+          language: 'python';
+        }
+    );
 
 export type PtcExecuteCodeRuntimeStoreSummary =
   | PtcExecuteCodeStoreCommitSummary
@@ -308,6 +414,20 @@ export interface PtcExecuteCodeCellTerminalResultStore {
     cellId: PtcExecuteCodeCellId;
   }): Promise<
     | { ok: true; value: PtcExecuteCodeCellDurableOutput | undefined }
+    | { ok: false; message: string }
+  >;
+  persistRecovery?(args: {
+    stateRoot: string;
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+    result: PtcExecuteCodeRuntimeResult;
+  }): Promise<void>;
+  readRecovery?(args: {
+    stateRoot: string;
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+  }): Promise<
+    | { ok: true; value: PtcExecuteCodeRuntimeResult | undefined }
     | { ok: false; message: string }
   >;
 }
@@ -468,24 +588,24 @@ export type PtcExecuteCodeRuntimeCleanupResult =
 
 interface PtcPackageInstallRuntimeRequestPackage {
   name: string;
-  // Optional npm version spec: exact (1.3.0), range (^1.3.0, 1.x,
-  // ">=1 <2"), or dist-tag (latest, next). Omitted resolves to latest.
+  // Optional registry version spec. npm accepts its registry ranges/tags;
+  // Python accepts the wheel-only PEP 440 subset admitted by the runtime.
   version?: string;
 }
 
 export interface PtcPackageInstallRuntimeRequest {
+  language?: PtcExecuteCodeLanguage;
   packages: PtcPackageInstallRuntimeRequestPackage[];
 }
 
-// Echo of the effective spec sent to npm (requested version or 'latest').
+// Echo of the effective registry spec (requested version or 'latest').
 export interface PtcPackageInstallRequestedPackage {
   name: string;
   version: string;
 }
 
-// The exact version npm resolved the requested spec to, from the installed
-// dependency closure. resolvedVersion is null when the top-level entry was not
-// observed (e.g. closure observation failed).
+// The exact version the selected manager resolved from the installed dependency
+// closure. resolvedVersion is null when the top-level entry was not observed.
 export interface PtcPackageInstallResolvedPackage {
   name: string;
   requestedSpec: string;
@@ -501,12 +621,11 @@ export type PtcPackageInstallRuntimeFailureReason =
   | 'ptc_lab_session_unavailable'
   | PtcLabSessionBatchCommandFailureReason;
 
-export interface PtcPackageInstallRuntimeSummary {
+interface PtcPackageInstallRuntimeSummaryBase {
   ok: true;
   capabilityId: typeof PTC_PACKAGE_INSTALL_TOOL_NAME;
   labPolicyId: string;
   profile: 'lab';
-  manager: 'npm';
   installMode: 'open_network';
   packages: PtcPackageInstallRequestedPackage[];
   resolvedPackages: PtcPackageInstallResolvedPackage[];
@@ -515,7 +634,6 @@ export interface PtcPackageInstallRuntimeSummary {
   stderr: string;
   effectiveTimeoutMs: number;
   durationMs: number;
-  installedPackagesNodePath: typeof PTC_EXECUTE_CODE_INSTALLED_PACKAGES_NODE_PATH;
   sessionLifecycle: {
     mode: 'runtime_owned_reusable';
     retainedAfterExecution: boolean;
@@ -525,6 +643,21 @@ export interface PtcPackageInstallRuntimeSummary {
     dependencyClosureCount: number;
   };
 }
+
+export type PtcPackageInstallRuntimeSummary =
+  PtcPackageInstallRuntimeSummaryBase &
+    (
+      | {
+          manager: 'npm';
+          language: 'javascript';
+          installedPackagesNodePath: typeof PTC_EXECUTE_CODE_INSTALLED_PACKAGES_NODE_PATH;
+        }
+      | {
+          manager: 'pip';
+          language: 'python';
+          installedPackagesPythonPath: typeof PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH;
+        }
+    );
 
 export type PtcPackageInstallRuntimeResult =
   | { ok: true; value: PtcPackageInstallRuntimeSummary }
@@ -548,6 +681,8 @@ export interface PtcPackageInstallRuntime {
 }
 
 export interface PtcExecuteCodeRuntime {
+  attachCellCoordinateStore?(store: PtcExecuteCodeCellCoordinateStore): void;
+  reAdoptRunningCells?(): Promise<PtcExecuteCodeRuntimeCleanupResult>;
   reapRestartResidue?(args: {
     stateRoot: string;
   }): Promise<PtcExecuteCodeRuntimeCleanupResult>;
@@ -556,6 +691,10 @@ export interface PtcExecuteCodeRuntime {
       threadId: string;
       stateRoot: string;
       ownerKind?: 'root_main' | 'child';
+    };
+    invocation?: {
+      runId: string;
+      callId: string;
     };
     invocationId?: string;
     request: PtcExecuteCodeRuntimeRequest;
@@ -576,6 +715,11 @@ export interface PtcExecuteCodeRuntime {
       terminate?: boolean;
       yieldTimeMs?: number;
     };
+    invocation?: {
+      runId: string;
+      callId: string;
+    };
+    toolCallbackHandler?: PtcExecuteCodeRuntimeToolCallbackHandler;
     signal?: AbortSignal;
   }): Promise<PtcExecuteCodeRuntimeWaitResult>;
   closeAll(args?: {
@@ -630,7 +774,9 @@ export function resolvePtcExecuteCodeWriteCallbackConfigFromEnv(
 // 같은 shape를 공유한다 (구 PtcExecuteCodePlacementRuntimeRequest 병합).
 export interface ValidatedExecuteCodeRequest {
   code: string;
+  language?: PtcExecuteCodeLanguage;
   moduleFormat?: PtcExecuteCodeModuleFormat;
   timeoutMs: number;
   yieldTimeMs?: number;
+  artifacts?: string[];
 }

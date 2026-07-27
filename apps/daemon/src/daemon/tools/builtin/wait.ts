@@ -49,12 +49,14 @@ type WaitArgs = z.output<typeof waitArgsSchema>;
 export const waitTool = defineZodTool({
   name: PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
   description:
-    'Use after exec returns status "queued" or status "running" with a cellId. Pass that value as cell_id to observe admission or completion, read retained output, or cancel/terminate the PTC exec cell.',
+    'Use after exec returns status "queued" or status "running" with a cellId. Pass that value as cell_id to observe admission or completion, read retained output, or cancel/terminate the PTC exec cell. If the required cell is still queued or running after the observation window, call wait again with the same cell_id instead of ending the task.',
   argsSchema: waitArgsSchema,
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
   parallelBatchKind: 'ptc_cell',
+  abortSettlement: 'await_execution',
   requiresApproval: false,
+  recoveryStrategy: 'durable_handle',
   resultProjection: {
     exactDurableRecovery: true,
     modelProjection: 'runtime_summary',
@@ -87,6 +89,9 @@ export const waitTool = defineZodTool({
           ? { yieldTimeMs: args['yield-time_ms'] }
           : {}),
       },
+      ...(ctx.runId === undefined
+        ? {}
+        : { invocation: { runId: ctx.runId, callId: ctx.callId } }),
       ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
     });
     if (!result.ok) {

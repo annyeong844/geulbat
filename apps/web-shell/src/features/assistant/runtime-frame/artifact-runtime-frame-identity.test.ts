@@ -11,7 +11,7 @@ void test('createArtifactRuntimeFrameIdentity derives host url, revision, and pe
   const identity = createArtifactRuntimeFrameIdentity({
     renderer: 'js',
     runtimePayload: 'window.__artifact_booted__ = true;',
-    locationOrigin: 'http://127.0.0.1:5173',
+    locationOrigin: 'http://127.0.0.1:3456',
     sourceRef: {
       kind: 'thread-file',
       workingDirectory: 'stories/sample',
@@ -27,11 +27,12 @@ void test('createArtifactRuntimeFrameIdentity derives host url, revision, and pe
 
   const frameUrl = new URL(identity.runtimeFrameUrl);
 
-  assert.equal(identity.runtimeParentOrigin, 'http://127.0.0.1:5173');
+  // 데몬이 화면을 서빙하므로 부모와 런타임 호스트가 같은 origin이다.
+  assert.equal(identity.runtimeParentOrigin, 'http://127.0.0.1:3456');
   assert.equal(identity.runtimeHostOrigin, 'http://127.0.0.1:3456');
   assert.equal(
     frameUrl.href,
-    'http://127.0.0.1:3456/artifact-runtime/host?parentOrigin=http%3A%2F%2F127.0.0.1%3A5173&rev=' +
+    'http://127.0.0.1:3456/artifact-runtime/host?parentOrigin=http%3A%2F%2F127.0.0.1%3A3456&rev=' +
       identity.runtimeFrameRevision,
   );
   assert.match(identity.runtimeFrameRevision, /^rev2-/);
@@ -59,6 +60,9 @@ void test('createArtifactRuntimeFrameIdentity keeps persistence scope unavailabl
       artifactVersion: null,
       persistenceEpoch: null,
     },
+    // 이 테스트의 주제는 persistence scope다. locationOrigin을 주지 않으면
+    // 부모 origin 미상 경로까지 함께 잠그게 되어 주제가 흐려진다.
+    locationOrigin: 'http://127.0.0.1:5173',
   });
 
   assert.equal(identity.runtimeParentOrigin, 'http://127.0.0.1:5173');
@@ -71,8 +75,12 @@ void test('resolveArtifactRuntimeParentOrigin uses the browser origin when prese
     resolveArtifactRuntimeParentOrigin('https://home.example.test'),
     'https://home.example.test',
   );
-  assert.equal(
-    resolveArtifactRuntimeParentOrigin(undefined),
-    'http://127.0.0.1:5173',
-  );
+});
+
+void test('an unknown parent origin is opaque so no message can be delivered', () => {
+  // `window`가 없으면 전달할 부모가 없다. 동작할 것처럼 보이는 dev 주소를
+  // 돌려주면 그 값이 기본 부모 origin으로 오해되고, 단일 포트 제품에서는
+  // 아무 의미도 없다. opaque origin은 데몬 정규화에서 거부되어 런타임 호스트가
+  // 아무것도 보내지 않는다.
+  assert.equal(resolveArtifactRuntimeParentOrigin(undefined), 'null');
 });

@@ -380,6 +380,93 @@ void test('capacity release coalesces duplicate promotion wakes and shutdown wai
   }
 });
 
+void test('restart restoration preserves a queued launch row and promotes its original child identity', async () => {
+  const homeStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-subagent-promotion-restore-'),
+  );
+  const store = await createDaemonRuntimeStateStore({ homeStateRoot });
+  const admission = createSubagentAdmissionController({
+    policy: { maxConcurrentChildren: 1 },
+  });
+  const promotions = createSubagentLaunchPromotionController({
+    admission,
+    launchRequests: store,
+  });
+  const parentRunState = createTestRunState('restored-promotion-parent');
+  const blockingAdmission = admission.reserveSubagentLaunchSlots({
+    runState: parentRunState,
+    requestedChildren: 1,
+  });
+  assert.equal(blockingAdmission.ok, true);
+  if (!blockingAdmission.ok) {
+    throw new Error('blocking admission must succeed');
+  }
+
+  let observeStart = () => {};
+  const startObserved = new Promise<void>((resolve) => {
+    observeStart = resolve;
+  });
+
+  try {
+    const [queued] = store.enqueueSubagentLaunchBatch([
+      {
+        toolCallId: 'call-restored-promotion',
+        task: 'resume the same queued child',
+        subagentType: 'explorer',
+        capabilities: [],
+        parentRunId: testRunId('restored-promotion-parent'),
+        ownerThreadId: testThreadId(32),
+        stateRoot: homeStateRoot,
+        workingDirectory: homeStateRoot,
+        modelPin: TEST_INHERITED_SOL_MODEL_PIN,
+        subagentModelRouting: TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+      },
+    ]);
+    assert.ok(queued);
+    const [reconciled] = store.markSubagentLaunchDeferredBatch({
+      childRunIds: [queued.childRunId],
+      deferReason: 'recovery_reconciliation',
+    });
+    assert.ok(reconciled);
+
+    const restored = promotions.restoreQueuedLaunch({
+      childRunId: queued.childRunId,
+      ultraReasoning: false,
+      parentRunState,
+      async start() {
+        const transferredAdmission = admission.reserveSubagentLaunchSlots({
+          runState: parentRunState,
+          requestedChildren: 1,
+          transferExistingReservation: true,
+        });
+        assert.equal(transferredAdmission.ok, true);
+        if (!transferredAdmission.ok) {
+          throw new Error('restored reservation transfer must succeed');
+        }
+        store.markSubagentLaunchStarting(queued.childRunId);
+        transferredAdmission.reservation.release();
+        observeStart();
+      },
+    });
+    assert.equal(restored.childRunId, queued.childRunId);
+    assert.equal(restored.updatedAt, reconciled.updatedAt);
+    assert.equal(restored.deferReason, 'recovery_reconciliation');
+
+    blockingAdmission.reservation.release();
+    await startObserved;
+    assert.equal(
+      store.readSubagentLaunchRequestByChildRunId(queued.childRunId)
+        ?.launchState,
+      'starting',
+    );
+  } finally {
+    await promotions.close();
+    blockingAdmission.reservation.release();
+    store.close();
+    await rm(homeStateRoot, { recursive: true, force: true });
+  }
+});
+
 void test('resolveSubagentConcurrencyPolicyFromEnv returns undefined when env is absent', () => {
   assert.equal(resolveSubagentConcurrencyPolicyFromEnv({}), undefined);
 });

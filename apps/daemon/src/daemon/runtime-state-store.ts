@@ -36,6 +36,18 @@ import {
   readMcpSessionCoordinate,
 } from './runtime-state-mcp-session-store.js';
 import type { McpSessionCoordinateStore } from './mcp/global-mcp-contract.js';
+import type { PtcExecuteCodeCellCoordinateStore } from './ptc/runtime/execute-code/execute-code-runtime-contract.js';
+import {
+  deletePtcExecuteCodeCellCoordinate,
+  deletePtcExecuteCodeRunningExecDelivery,
+  deletePtcExecuteCodeRunningWaitDelivery,
+  listPtcExecuteCodeCellCoordinates,
+  persistPtcExecuteCodeCellCoordinate,
+  persistPtcExecuteCodeRunningExecDelivery,
+  persistPtcExecuteCodeRunningWaitDelivery,
+  readPtcExecuteCodeRunningExecDelivery,
+  readPtcExecuteCodeRunningWaitDelivery,
+} from './runtime-state-ptc-cell-store.js';
 import { hasErrorCode } from './utils/error.js';
 import {
   cancelQueuedSubagentLaunchRequest,
@@ -43,6 +55,7 @@ import {
   markSubagentLaunchDeferredBatch,
   parsePersistedSubagentLaunchInput,
   readQueuedSubagentLaunchRequests,
+  readSubagentLaunchInput,
   readSubagentLaunchRequest,
   readSubagentLaunchRequestByChildRunId,
   recordSubagentRuntimeObservation,
@@ -113,7 +126,8 @@ export interface DaemonRuntimeStateStore
   extends
     SubagentLaunchRequestStore,
     SubagentTerminalDeliveryStore,
-    McpSessionCoordinateStore {
+    McpSessionCoordinateStore,
+    PtcExecuteCodeCellCoordinateStore {
   readonly databasePath: string;
   close(): void;
   readDiagnostics(): DaemonRuntimeStateStoreDiagnostics;
@@ -311,6 +325,69 @@ export async function createDaemonRuntimeStateStore(args: {
         () => deleteMcpSessionCoordinate(database, serverId),
       );
     },
+    listPtcExecuteCodeCellCoordinates() {
+      return runRuntimeStateStoreOperation(
+        closed,
+        'list PTC execute_code cell coordinates',
+        () => listPtcExecuteCodeCellCoordinates(database),
+      );
+    },
+    persistPtcExecuteCodeCellCoordinate(coordinate) {
+      runRuntimeStateStoreOperation(
+        closed,
+        'persist PTC execute_code cell coordinate',
+        () => persistPtcExecuteCodeCellCoordinate(database, coordinate),
+      );
+    },
+    deletePtcExecuteCodeCellCoordinate(cellId) {
+      runRuntimeStateStoreOperation(
+        closed,
+        'delete PTC execute_code cell coordinate',
+        () => deletePtcExecuteCodeCellCoordinate(database, cellId),
+      );
+    },
+    readPtcExecuteCodeRunningWaitDelivery(readArgs) {
+      return runRuntimeStateStoreOperation(
+        closed,
+        'read PTC execute_code running wait delivery',
+        () => readPtcExecuteCodeRunningWaitDelivery(database, readArgs),
+      );
+    },
+    persistPtcExecuteCodeRunningWaitDelivery(delivery) {
+      runRuntimeStateStoreOperation(
+        closed,
+        'persist PTC execute_code running wait delivery',
+        () => persistPtcExecuteCodeRunningWaitDelivery(database, delivery),
+      );
+    },
+    deletePtcExecuteCodeRunningWaitDelivery(deleteArgs) {
+      runRuntimeStateStoreOperation(
+        closed,
+        'delete PTC execute_code running wait delivery',
+        () => deletePtcExecuteCodeRunningWaitDelivery(database, deleteArgs),
+      );
+    },
+    readPtcExecuteCodeRunningExecDelivery(readArgs) {
+      return runRuntimeStateStoreOperation(
+        closed,
+        'read PTC execute_code running exec delivery',
+        () => readPtcExecuteCodeRunningExecDelivery(database, readArgs),
+      );
+    },
+    persistPtcExecuteCodeRunningExecDelivery(delivery) {
+      runRuntimeStateStoreOperation(
+        closed,
+        'persist PTC execute_code running exec delivery',
+        () => persistPtcExecuteCodeRunningExecDelivery(database, delivery),
+      );
+    },
+    deletePtcExecuteCodeRunningExecDelivery(deleteArgs) {
+      runRuntimeStateStoreOperation(
+        closed,
+        'delete PTC execute_code running exec delivery',
+        () => deletePtcExecuteCodeRunningExecDelivery(database, deleteArgs),
+      );
+    },
     enqueueSubagentLaunchBatch(requests) {
       return runRuntimeStateStoreOperation(
         closed,
@@ -330,6 +407,13 @@ export async function createDaemonRuntimeStateStore(args: {
         closed,
         'read subagent launch request by child run id',
         () => readSubagentLaunchRequestByChildRunId(database, childRunId),
+      );
+    },
+    readSubagentLaunchInput(childRunId) {
+      return runRuntimeStateStoreOperation(
+        closed,
+        'read subagent launch input',
+        () => readSubagentLaunchInput(database, childRunId),
       );
     },
     readQueuedSubagentLaunchRequests() {

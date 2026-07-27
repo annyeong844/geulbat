@@ -2,6 +2,7 @@ import {
   createDefaultPtcLabPackageCachePolicy,
   createDefaultPtcLabPackageManagerPolicy,
   type PtcLabPackageCachePolicy,
+  type PtcLabPackageManagerName,
   type PtcLabPackageManagerPolicy,
 } from '../packages/lab-package-cache-contract.js';
 import {
@@ -108,7 +109,9 @@ interface AdmitPtcExecutionProfileArgs {
   labPolicy?: PtcLabPolicyProjection;
 }
 
-export function createPtcLabLocalDockerPolicyProjection(): PtcLabPolicyProjection {
+export function createPtcLabLocalDockerPolicyProjection(args?: {
+  artifactExportPolicyId?: string;
+}): PtcLabPolicyProjection {
   return {
     profile: 'lab',
     policyId: PTC_LAB_LOCAL_DOCKER_POLICY_ID,
@@ -120,7 +123,8 @@ export function createPtcLabLocalDockerPolicyProjection(): PtcLabPolicyProjectio
       artifactWorkspace: {
         enabled: true,
         workspaceId: 'ptc_lab_artifact_workspace_v1',
-        exportPolicyId: 'ptc_lab_artifact_export_pending_v1',
+        exportPolicyId:
+          args?.artifactExportPolicyId ?? 'ptc_lab_artifact_export_pending_v1',
       },
     },
     shell: {
@@ -164,9 +168,11 @@ export function createPtcLabLocalDockerOpenEgressBrowserPolicyProjection(
   };
 }
 
-export function createPtcLabLocalDockerBatchCommandPolicyProjection(): PtcLabPolicyProjection {
+export function createPtcLabLocalDockerBatchCommandPolicyProjection(args?: {
+  artifactExportPolicyId?: string;
+}): PtcLabPolicyProjection {
   return {
-    ...createPtcLabLocalDockerPolicyProjection(),
+    ...createPtcLabLocalDockerPolicyProjection(args),
     policyId: PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_POLICY_ID,
     shell: {
       mode: 'batch_command',
@@ -179,17 +185,23 @@ export function createPtcLabLocalDockerBatchCommandPolicyProjection(): PtcLabPol
 }
 
 interface CreatePtcLabOpenNetworkPackageInstallPolicyProjectionArgs {
+  manager?: Extract<PtcLabPackageManagerName, 'npm' | 'pip'>;
   maxInstallMs: number;
   maxInstallOutputBytes: number;
+  artifactExportPolicyId?: string;
 }
 
 // Operator-opt-in "package install + open-network exec" surface: batch-command
-// shell plus enabled npm (open_network, lifecycle scripts stay disabled) plus
-// explicit local open egress. Never the default projection.
+// shell plus one enabled package manager (open_network, lifecycle scripts stay
+// disabled) and explicit local open egress. Never the default projection.
 export function createPtcLabLocalDockerOpenNetworkPackageInstallPolicyProjection(
   args: CreatePtcLabOpenNetworkPackageInstallPolicyProjectionArgs,
 ): PtcLabPolicyProjection {
-  const batchCommand = createPtcLabLocalDockerBatchCommandPolicyProjection();
+  const batchCommand = createPtcLabLocalDockerBatchCommandPolicyProjection({
+    ...(args.artifactExportPolicyId === undefined
+      ? {}
+      : { artifactExportPolicyId: args.artifactExportPolicyId }),
+  });
   return {
     ...batchCommand,
     policyId: PTC_LAB_OPEN_NETWORK_PACKAGE_INSTALL_POLICY_ID,
@@ -209,7 +221,7 @@ export function createPtcLabLocalDockerOpenNetworkPackageInstallPolicyProjection
     packageManager: {
       ...createDefaultPtcLabPackageManagerPolicy(),
       enabled: true,
-      managers: ['npm'],
+      managers: [args.manager ?? 'npm'],
       installMode: 'open_network',
       maxInstallMs: args.maxInstallMs,
       maxInstallOutputBytes: args.maxInstallOutputBytes,

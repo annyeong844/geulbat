@@ -3,7 +3,6 @@ import { createLogger } from '@geulbat/structured-logger/logger';
 
 import type {
   AgentChildTerminalReason,
-  AgentLaunchAckToolRaw,
   ResolvedChildModelPin,
   SubagentCapability,
   SubagentLaunchReservation,
@@ -46,6 +45,7 @@ import { withActivityScope } from '../utils/activity-scope.js';
 import {
   buildChildLaunchPayload,
   buildChildLaunchRejected,
+  buildChildLaunchStarted,
   resolveSubagentToolSurfaceProfile,
 } from '../subagent-runtime-contracts.js';
 import {
@@ -158,24 +158,6 @@ interface LaunchSubagentBackgroundRunArgs {
   toolCapabilityPolicy?: AgentInput['toolCapabilityPolicy'];
   timeoutMs?: number;
   durableLaunchRecorded?: true;
-}
-
-function buildChildLaunchAck(args: {
-  childRunId: string;
-  childThreadId: string;
-  subagentType: SubagentType;
-  modelPin: ResolvedChildModelPin;
-}): AgentLaunchAckToolRaw {
-  return {
-    ok: true,
-    childRunId: args.childRunId,
-    childThreadId: args.childThreadId,
-    subagentType: args.subagentType,
-    launchState: 'started',
-    modelId: args.modelPin.modelId,
-    reasoningEffort: args.modelPin.providerRunSelection.reasoningEffort,
-    selectionSource: args.modelPin.selectionSource,
-  };
 }
 
 type StartManagedRunFn = typeof startManagedRun;
@@ -466,7 +448,7 @@ async function launchSubagentBackgroundRun(
   );
 
   return buildChildLaunchPayload(
-    buildChildLaunchAck({
+    buildChildLaunchStarted({
       childRunId,
       childThreadId,
       subagentType,

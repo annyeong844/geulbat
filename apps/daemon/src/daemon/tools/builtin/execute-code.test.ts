@@ -255,23 +255,30 @@ void test('public exec and wait expose explicit PTC cell scheduler metadata', ()
   assert.equal(executeCodeTool.mayMutateComputerFiles, false);
   assert.equal(executeCodeTool.requiresApproval, false);
   assert.equal(executeCodeTool.parallelBatchKind, 'ptc_cell');
+  assert.equal(executeCodeTool.recoveryStrategy, 'durable_handle');
   assert.equal(waitTool.sideEffectLevel, 'none');
   assert.equal(waitTool.mayMutateComputerFiles, false);
   assert.equal(waitTool.requiresApproval, false);
   assert.equal(waitTool.parallelBatchKind, 'ptc_cell');
 });
 
-void test('exec exposes moduleFormat, timeoutMs, and yield-time_ms without aliases', async () => {
+void test('exec exposes language, timing, and explicit artifact fields without aliases', async () => {
   const rejectedSnakeCaseYieldKey = ['yield', 'time', 'ms'].join('_');
   const parameters = executeCodeTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(Object.keys(parameters.properties), [
     'code',
+    'language',
     'moduleFormat',
     'timeoutMs',
     'yield-time_ms',
+    'artifacts',
   ]);
   assert.deepEqual(parameters.required, ['code']);
+  const languageProperty = parameters.properties.language as {
+    description?: string;
+    enum?: unknown[];
+  };
   const moduleFormatProperty = parameters.properties.moduleFormat as {
     description?: string;
     enum?: unknown[];
@@ -282,6 +289,11 @@ void test('exec exposes moduleFormat, timeoutMs, and yield-time_ms without alias
   const yieldTimeProperty = parameters.properties['yield-time_ms'] as {
     description?: string;
   };
+  assert.deepEqual(languageProperty.enum, ['javascript', 'python']);
+  assert.match(
+    languageProperty.description ?? '',
+    /Python.*geulbat\.call_tool/u,
+  );
   assert.match(
     moduleFormatProperty.description ?? '',
     /static import.*top-level await/u,
@@ -354,6 +366,10 @@ void test('exec returns compact runtime output without session identifiers', asy
       observedModuleFormat = args.request.moduleFormat;
       observedYieldTimeMs = args.request.yieldTimeMs ?? 0;
       assert.equal(args.invocationId, 'call-execute-code-success');
+      assert.deepEqual(args.invocation, {
+        runId: 'run-execute-code-success',
+        callId: 'call-execute-code-success',
+      });
       assert.equal(
         args.placementResourceSnapshotRef?.source,
         'agent_resource_budget_provider',
@@ -859,9 +875,12 @@ void test('exec callback handler fails closed before long wait when dispatcher i
 void test('exec callback handler enters long wait after admission and before slow read execution', async () => {
   const daemonContext = createDaemonContext();
   let slowToolStarted = false;
+  let longWaitAdmitted = false;
+  const events: string[] = [];
   const callbackToolDispatcher: CallbackToolDispatcher = {
     async dispatch() {
       slowToolStarted = true;
+      events.push(`dispatch:${longWaitAdmitted}`);
       await delay(20);
       return { ok: true, output: 'slow-read-ok' };
     },
@@ -902,20 +921,22 @@ void test('exec callback handler enters long wait after admission and before slo
   });
   assert.ok(handler);
 
-  const events: string[] = [];
   const result = await handler({
     requestId: 'slow-read-1',
     toolName: 'slow_read',
     args: {},
     signal: new AbortController().signal,
-    enterLongWait: () => {
+    enterLongWait: async () => {
       events.push(`enter:${slowToolStarted}`);
+      await delay(5);
+      longWaitAdmitted = true;
+      events.push('admitted');
       return true;
     },
   });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(events, ['enter:false']);
+  assert.deepEqual(events, ['enter:false', 'admitted', 'dispatch:true']);
   assert.equal(slowToolStarted, true);
 });
 

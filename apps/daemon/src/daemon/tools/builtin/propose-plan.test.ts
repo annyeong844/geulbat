@@ -16,6 +16,19 @@ void test('propose_plan stores the canonical draft and emits the daemon snapshot
   const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174027');
   const runId = assertRunId('run-propose-plan');
   const events: AgentEvent[] = [];
+  const toolArgs = {
+    outcome: 'Approve an exact plan',
+    steps: [
+      {
+        id: 'draft',
+        text: 'Store the draft',
+        acceptanceCriteria: ['Digest survives restart'],
+      },
+    ],
+    decisions: [],
+    assumptions: [],
+    openQuestions: [],
+  };
   await runtimeServices.planningWorkflows.enterOrResume({
     threadId,
     requested: true,
@@ -48,27 +61,30 @@ void test('propose_plan stores the canonical draft and emits the daemon snapshot
     emitAgentEvent: (event: AgentEvent) => events.push(event),
   } satisfies ToolExecutionContext;
 
-  const result = await proposePlanTool.execute(
-    {
-      outcome: 'Approve an exact plan',
-      steps: [
-        {
-          id: 'draft',
-          text: 'Store the draft',
-          acceptanceCriteria: ['Digest survives restart'],
-        },
-      ],
-      decisions: [],
-      assumptions: [],
-      openQuestions: [],
-    },
-    toolContext,
-  );
+  assert.equal(proposePlanTool.recoveryStrategy, 'reconcile_then_replay');
+  const result = await proposePlanTool.execute(toolArgs, toolContext);
 
   assert.equal(result.ok, true);
   assert.equal(events.at(-1)?.type, 'planning_workflow_updated');
-  assert.equal(
-    (await runtimeServices.planningWorkflows.readThread(threadId))?.state,
-    'awaiting_approval',
+  const firstSnapshot =
+    await runtimeServices.planningWorkflows.readThread(threadId);
+  assert.equal(firstSnapshot?.state, 'awaiting_approval');
+
+  const reconciled = await proposePlanTool.execute(toolArgs, toolContext);
+
+  assert.deepEqual(reconciled, result);
+  assert.deepEqual(
+    await runtimeServices.planningWorkflows.readThread(threadId),
+    firstSnapshot,
+  );
+
+  const conflicting = await proposePlanTool.execute(
+    { ...toolArgs, outcome: 'Replace the durable plan' },
+    toolContext,
+  );
+  assert.equal(conflicting.ok, false);
+  assert.match(
+    conflicting.error,
+    /plan can be proposed only while the workflow is collecting/u,
   );
 });

@@ -177,6 +177,7 @@ export function createPtcSessionDockerManager(args: {
       runtimeRoot: args.runtimeRoot,
       runDocker,
       scope: 'ephemeral',
+      preserveContainerIds: trackedContainerIds(),
     });
     return ephemeralStartupSweep;
   }
@@ -186,9 +187,16 @@ export function createPtcSessionDockerManager(args: {
       runtimeRoot: args.runtimeRoot,
       runDocker,
       scope: 'all',
+      preserveContainerIds: trackedContainerIds(),
     });
     ephemeralStartupSweep ??= restartResidueSweep;
     return restartResidueSweep;
+  }
+
+  function trackedContainerIds(): ReadonlySet<string> {
+    return new Set(
+      [...sessions.values()].map((session) => session.containerId),
+    );
   }
 
   async function buildKey(
@@ -243,6 +251,79 @@ export function createPtcSessionDockerManager(args: {
   return {
     async reapRestartResidue() {
       return await ensureRestartResidueSweep();
+    },
+    async adoptExisting(identity, adoptArgs) {
+      if (!/^[A-Za-z0-9_.:-]+$/u.test(adoptArgs.containerId)) {
+        return failureDiagnostics(
+          'container_inspect_failed',
+          'PTC session re-adoption container id is invalid',
+          { containerIdInvalid: true },
+        );
+      }
+      const reuseKey = await buildKey(identity);
+      return await serializeForKey(reuseKey.identityHash, async () => {
+        if (closingAll) {
+          return {
+            ok: false,
+            reasonCode: 'manager_closing',
+            message: 'PTC session Docker manager is closing',
+          };
+        }
+        const current = sessions.get(reuseKey.identityHash);
+        if (current !== undefined) {
+          return current.containerId === adoptArgs.containerId
+            ? { ok: true, value: current }
+            : failureDiagnostics(
+                'container_inspect_failed',
+                'PTC session re-adoption conflicts with a tracked container',
+                { trackedContainerConflict: true },
+              );
+        }
+
+        const inspect = await runDocker(
+          ['inspect', adoptArgs.containerId],
+          adoptArgs.signal,
+        );
+        const inspectReport = isSuccessfulExit(inspect)
+          ? inspectAdoptableReport({
+              stdout: inspect.stdout,
+              containerId: adoptArgs.containerId,
+              reuseKey,
+              runtimeRoot: args.runtimeRoot,
+            })
+          : { running: false };
+        if (!isSuccessfulExit(inspect) || !inspectReport.running) {
+          return failure(
+            'container_inspect_failed',
+            'PTC session container could not be re-adopted',
+            inspect,
+            inspectReport.diagnostics,
+          );
+        }
+
+        let hostDirs: Awaited<
+          ReturnType<typeof preparePtcSessionDockerHostDirs>
+        >;
+        try {
+          hostDirs = await preparePtcSessionDockerHostDirs({
+            runtimeRoot: args.runtimeRoot,
+            reuseKey,
+          });
+        } catch (error: unknown) {
+          return failureDiagnostics(
+            'container_host_root_prepare_failed',
+            'failed to validate re-adopted PTC session host roots',
+            ptcSessionDockerHostRootPrepareDiagnostics(error),
+          );
+        }
+        const handle = createPtcSessionDockerHandle({
+          containerId: adoptArgs.containerId,
+          hostDirs,
+          reuseKey,
+        });
+        sessions.set(reuseKey.identityHash, handle);
+        return { ok: true, value: handle };
+      });
     },
     async getOrCreate(identity, options) {
       const startupSweep = await ensureEphemeralStartupSweep();
@@ -526,22 +607,35 @@ async function startSessionContainer(request: {
 
   return {
     ok: true,
-    value: {
-      state: 'ready',
+    value: createPtcSessionDockerHandle({
       containerId,
+      hostDirs,
       reuseKey,
-      callbackRootHostPath: hostDirs.callbackRoot,
-      callbackRootContainerPath: PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
-      artifactRootHostPath: hostDirs.artifactRoot,
-      artifactRootContainerPath: PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
-      artifactWorkspaceMountPolicyId: reuseKey.artifactWorkspaceMountPolicyId,
-      packageCacheRootHostPath: hostDirs.packageCacheRoot,
-      packageCacheRootContainerPath:
-        PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT,
-      packageCacheMountPolicyId: reuseKey.packageCacheMountPolicyId,
-      packageCacheId: reuseKey.packageCacheId,
-      packageCacheIdentityHash: reuseKey.packageCacheIdentityHash,
-    },
+    }),
+  };
+}
+
+function createPtcSessionDockerHandle(args: {
+  containerId: string;
+  hostDirs: Awaited<ReturnType<typeof preparePtcSessionDockerHostDirs>>;
+  reuseKey: PtcSessionDockerReuseKey;
+}): PtcSessionDockerHandle {
+  return {
+    state: 'ready',
+    containerId: args.containerId,
+    reuseKey: args.reuseKey,
+    callbackRootHostPath: args.hostDirs.callbackRoot,
+    callbackRootContainerPath: PTC_SESSION_DOCKER_CALLBACK_CONTAINER_ROOT,
+    artifactRootHostPath: args.hostDirs.artifactRoot,
+    artifactRootContainerPath: PTC_SESSION_DOCKER_ARTIFACT_CONTAINER_ROOT,
+    artifactWorkspaceMountPolicyId:
+      args.reuseKey.artifactWorkspaceMountPolicyId,
+    packageCacheRootHostPath: args.hostDirs.packageCacheRoot,
+    packageCacheRootContainerPath:
+      PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT,
+    packageCacheMountPolicyId: args.reuseKey.packageCacheMountPolicyId,
+    packageCacheId: args.reuseKey.packageCacheId,
+    packageCacheIdentityHash: args.reuseKey.packageCacheIdentityHash,
   };
 }
 
@@ -624,6 +718,7 @@ async function reapPtcSessionResidue(request: {
   runtimeRoot: string;
   runDocker: PtcSessionDockerCommandExecutor;
   scope: 'all' | 'ephemeral';
+  preserveContainerIds: ReadonlySet<string>;
 }): Promise<PtcSessionDockerResult<void>> {
   const sweepFailureReason: PtcSessionDockerFailureReason =
     request.scope === 'ephemeral'
@@ -679,9 +774,11 @@ async function reapPtcSessionResidue(request: {
         : { restartResidueLabelInvalid: true },
     );
   }
-  const validRecords = records.filter(
-    (record): record is NonNullable<typeof record> => record !== undefined,
-  );
+  const validRecords = records
+    .filter(
+      (record): record is NonNullable<typeof record> => record !== undefined,
+    )
+    .filter((record) => !request.preserveContainerIds.has(record.containerId));
   if (validRecords.length === 0) {
     return { ok: true, value: undefined };
   }
@@ -956,6 +1053,56 @@ function sanitizeDockerDiagnostic(value: string): string {
 interface PtcSessionDockerInspectRunningReport {
   running: boolean;
   diagnostics?: Record<string, string | number | boolean>;
+}
+
+function inspectAdoptableReport(args: {
+  stdout: string;
+  containerId: string;
+  reuseKey: PtcSessionDockerReuseKey;
+  runtimeRoot: string;
+}): PtcSessionDockerInspectRunningReport {
+  const running = inspectRunningReport(args.stdout, args.containerId);
+  if (!running.running) {
+    return running;
+  }
+  try {
+    const parsed = JSON.parse(args.stdout) as unknown;
+    const first: unknown = Array.isArray(parsed) ? parsed[0] : undefined;
+    if (
+      !isPtcRecord(first) ||
+      !isPtcRecord(first.Config) ||
+      !isPtcRecord(first.Config.Labels)
+    ) {
+      return {
+        running: false,
+        diagnostics: { dockerInspectFailureKind: 'labels_missing' },
+      };
+    }
+    const labels = first.Config.Labels;
+    const expectedEphemeral =
+      args.reuseKey.ephemeralBurstId === undefined ? undefined : 'true';
+    if (
+      labels['geulbat.kind'] !== 'ptc-session' ||
+      labels['geulbat.owner'] !== 'daemon' ||
+      labels['geulbat.identityHash'] !== args.reuseKey.identityHash ||
+      labels['geulbat.runtimeScopeHash'] !==
+        buildPtcSessionDockerRuntimeScopeHash(args.runtimeRoot) ||
+      labels['geulbat.packageCacheIdentityHash'] !==
+        args.reuseKey.packageCacheIdentityHash ||
+      labels['geulbat.ephemeral'] !== expectedEphemeral
+    ) {
+      return {
+        running: false,
+        diagnostics: { dockerInspectFailureKind: 'labels_mismatch' },
+      };
+    }
+    return { running: true };
+  } catch {
+    return {
+      running: false,
+      diagnostics: { dockerInspectFailureKind: 'invalid_json' },
+    };
+  }
 }
 
 function inspectRunningReport(

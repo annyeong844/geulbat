@@ -13,7 +13,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { createSandboxAttemptStore } from './attempt-store.js';
-import { importSandboxOutputEvidence } from './output-evidence-store.js';
+import {
+  importSandboxOutputEvidence,
+  openSandboxOutputEvidenceFile,
+  SandboxOutputEvidenceReadError,
+} from './output-evidence-store.js';
 import { collectSandboxOutputRef } from './output-validation.js';
 
 void test('importSandboxOutputEvidence copies validated output and writes a manifest', async () => {
@@ -86,6 +90,29 @@ void test('importSandboxOutputEvidence copies validated output and writes a mani
       manifest.files.find((file) => file.relativePath === 'result.json')
         ?.sha256,
       createHash('sha256').update('{"ok":true}').digest('hex'),
+    );
+
+    const opened = await openSandboxOutputEvidenceFile({
+      workspaceRoot,
+      evidenceRef: outputRef.evidenceRef,
+      relativePath: 'result.json',
+      expectedJobKind: 'sandbox_probe',
+    });
+    try {
+      assert.equal(await opened.handle.readFile('utf8'), '{"ok":true}');
+    } finally {
+      await opened.handle.close();
+    }
+    await assert.rejects(
+      openSandboxOutputEvidenceFile({
+        workspaceRoot,
+        evidenceRef: outputRef.evidenceRef,
+        relativePath: 'result.json',
+        expectedJobKind: 'ptc_execute_code_artifact_export',
+      }),
+      (error: unknown) =>
+        error instanceof SandboxOutputEvidenceReadError &&
+        error.reasonCode === 'invalid_evidence',
     );
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });

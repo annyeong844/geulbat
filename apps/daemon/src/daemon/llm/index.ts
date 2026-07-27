@@ -15,6 +15,7 @@ export {
   type HistoryUserAttachment,
   type FunctionCall,
   type CallResult,
+  type ModelRoundStopReason,
   type ProviderStructuredOutput,
   type ProviderUsageTelemetry,
   type WireToolDefinition,

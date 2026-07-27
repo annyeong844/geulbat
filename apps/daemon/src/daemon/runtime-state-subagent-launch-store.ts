@@ -319,7 +319,7 @@ export function retryInterruptedSubagentLaunch(
       retry = {
         disposition: 'same_call_replay',
         request: sameCall,
-        input: readPersistedSubagentLaunchInput(database, sameCall.childRunId),
+        input: readSubagentLaunchInput(database, sameCall.childRunId),
       };
       return;
     }
@@ -352,15 +352,12 @@ export function retryInterruptedSubagentLaunch(
       retry = {
         disposition: 'already_retried',
         request: existingRetry,
-        input: readPersistedSubagentLaunchInput(
-          database,
-          existingRetry.childRunId,
-        ),
+        input: readSubagentLaunchInput(database, existingRetry.childRunId),
       };
       return;
     }
 
-    const previousInput = readPersistedSubagentLaunchInput(
+    const previousInput = readSubagentLaunchInput(
       database,
       previous.childRunId,
     );
@@ -476,7 +473,7 @@ function readSubagentLaunchRetryByPreviousChildRunId(
   );
 }
 
-function readPersistedSubagentLaunchInput(
+export function readSubagentLaunchInput(
   database: DatabaseSync,
   childRunId: RunId,
 ): SubagentLaunchRequestInput {

@@ -5,10 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { createToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
-import {
-  isProviderReplayScopeId,
-  type ProviderReplayScopeId,
-} from '@geulbat/protocol/provider-auth';
+import { type ProviderReplayScopeId } from '@geulbat/protocol/provider-auth';
 import type { PlanDraftV1 } from '@geulbat/protocol/planning-workflow';
 import type { ContextUsageUpdatedEventPayload } from '@geulbat/protocol/run-events';
 import { runAgentLoop } from './run-agent-loop.js';
@@ -23,6 +20,7 @@ import {
   requestInterjectFlush,
   restorePendingInterjectFront,
 } from '../sessions/active-run-interject-buffer.js';
+import { readProviderRoundHistory } from '../sessions/provider-round-journal.js';
 import { readTranscriptEntries } from '../sessions/transcript-log.js';
 import { persistSingleInterjectToTranscript } from './loop-history.js';
 import { updatePlanTool } from '../tools/builtin/update-plan.js';
@@ -262,6 +260,74 @@ void test('runAgentLoop rejects direct tools outside the allowed registry surfac
   );
 });
 
+void test('runAgentLoop fails closed when the provider calls a registered tool outside the admitted provider surface', async () => {
+  const threadId = testThreadId(1221);
+  const daemonContext = createDaemonContext();
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-loop-unadmitted-provider-tool-'),
+  );
+  const events: AgentEvent[] = [];
+  let executions = 0;
+  const toolName = 'registered_but_unadmitted_tool';
+  registerOnce(
+    daemonContext,
+    makeTestTool({
+      name: toolName,
+      description:
+        'must remain unreachable outside the admitted direct surface',
+      sideEffectLevel: 'none',
+      requiresApproval: false,
+      async executeParsed() {
+        executions += 1;
+        return { ok: true, output: 'must not execute' };
+      },
+    }),
+  );
+
+  const result = await runAgentLoop({
+    runId: 'run-loop-unadmitted-provider-tool',
+    runContext: makeRunContext({
+      threadId,
+      stateRoot: workspaceRoot,
+    }),
+    prompt: 'do not execute tools outside this run surface',
+    toolCapabilityPolicy: createToolCapabilityPolicy({
+      directRegistryNames: [],
+      allowedRegistryNames: [],
+      callbackRegistryNames: [],
+      writeCallbackEnabled: false,
+    }),
+    runtimeServices: daemonContext,
+    approvalContext: makeApprovalContext({
+      computerSessionId: 'session-loop-unadmitted-provider-tool',
+      permissionMode: 'full_access',
+    }),
+    callModelImpl: createScriptedProviderCallModel([
+      providerToolRound({ toolName }),
+      providerFinalAnswerRound('provider tool call was not rejected'),
+    ]),
+    onEvent(event) {
+      events.push(event);
+    },
+  });
+
+  assert.deepEqual(result, { ok: false, finalProse: '' });
+  assert.equal(executions, 0);
+  assert.deepEqual(
+    withoutProviderStatus(events).map((event) => event.type),
+    ['run_ack', 'commentary_delta', 'error'],
+  );
+  const terminalEvent = events.at(-1);
+  assert.equal(terminalEvent?.type, 'error');
+  if (terminalEvent?.type !== 'error') {
+    throw new Error('expected terminal error event');
+  }
+  assert.match(
+    terminalEvent.payload.message,
+    /provider requested a tool outside the admitted provider surface/u,
+  );
+});
+
 void test('runAgentLoop rejects ambiguous or unknown explicit capability authority before model execution', async () => {
   const threadId = testThreadId(2);
   const daemonContext = createDaemonContext();
@@ -332,17 +398,26 @@ void test('runAgentLoop composes one explicit tool capability policy across defi
     join(tmpdir(), 'geulbat-loop-tool-capability-policy-'),
   );
   const toolCapabilityPolicy = createToolCapabilityPolicy({
-    directRegistryNames: ['list_files'],
-    allowedRegistryNames: ['list_files', 'read_file'],
+    directRegistryNames: ['list_files', 'tool_search'],
+    allowedRegistryNames: ['list_files', 'read_file', 'tool_search'],
     callbackRegistryNames: ['read_file'],
     writeCallbackEnabled: false,
   });
+  const toolLibraryProjectionIdentity = {
+    sdkVersion: 'sdk-policy-test',
+    sdkProjectionHash:
+      'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    policyId: toolCapabilityPolicy.toolCapabilityPolicyId,
+  } as const;
   const definitionAdmissions: Array<readonly string[] | undefined> = [];
   const projectionPolicies: unknown[] = [];
+  const expectedProjectionIdentities: unknown[] = [];
   const executionPolicies: unknown[] = [];
   const executionAllowedRegistryNames: Array<readonly string[] | undefined> =
     [];
   const promptDirectRegistryNames: Array<readonly string[] | undefined> = [];
+  const modelDirectToolNames: string[][] = [];
+  const modelDeferredToolNames: Array<string[] | undefined> = [];
   const snapshots: AgentLoopObserverSnapshot[] = [];
   let modelRound = 0;
   const promptPort = createAgentLoopPromptPort();
@@ -351,7 +426,12 @@ void test('runAgentLoop composes one explicit tool capability policy across defi
     runId: 'run-loop-tool-capability-policy',
     runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
     prompt: 'use the bounded tool policy',
+    providerModel: {
+      providerId: 'openai_codex_direct',
+      model: 'gpt-5.6-sol',
+    },
     toolCapabilityPolicy,
+    toolLibraryProjectionIdentity,
     runtimeServices: daemonContext,
     approvalContext: makeApprovalContext({
       computerSessionId: 'session-loop-tool-capability-policy',
@@ -373,19 +453,19 @@ void test('runAgentLoop composes one explicit tool capability policy across defi
     toolLibraryProjectionPort: {
       async resolveProjection(args) {
         projectionPolicies.push(args.toolCapabilityPolicy);
+        expectedProjectionIdentities.push(args.expectedIdentity);
         return {
           ok: true,
-          identity: {
-            sdkVersion: 'sdk-policy-test',
-            sdkProjectionHash:
-              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-            policyId: toolCapabilityPolicy.toolCapabilityPolicyId,
-          },
+          identity: toolLibraryProjectionIdentity,
         };
       },
     },
     modelRoundPort: {
-      async runModelRound() {
+      async runModelRound(args) {
+        modelDirectToolNames.push(args.toolDefs.map((tool) => tool.name));
+        modelDeferredToolNames.push(
+          args.providerDeferredToolDefs?.map((tool) => tool.name),
+        );
         modelRound += 1;
         if (modelRound === 1) {
           return {
@@ -395,9 +475,9 @@ void test('runAgentLoop composes one explicit tool capability policy across defi
               terminalResult: { ok: true, finalProse: '' },
               functionCalls: [
                 {
-                  id: 'fc-policy-list-files',
-                  callId: 'call-policy-list-files',
-                  name: 'list_files',
+                  id: 'fc-policy-read-file',
+                  callId: 'call-policy-read-file',
+                  name: 'read_file',
                   arguments: '{}',
                 },
               ],
@@ -437,22 +517,183 @@ void test('runAgentLoop composes one explicit tool capability policy across defi
     ok: true,
     finalProse: 'bounded policy complete',
   });
-  assert.deepEqual(definitionAdmissions, [['list_files']]);
+  assert.deepEqual(definitionAdmissions, [['list_files'], ['read_file']]);
   assert.deepEqual(promptDirectRegistryNames, [['list_files']]);
+  assert.deepEqual(modelDirectToolNames, [['list_files'], ['list_files']]);
+  assert.deepEqual(modelDeferredToolNames, [['read_file'], ['read_file']]);
   assert.deepEqual(projectionPolicies, [toolCapabilityPolicy]);
+  assert.deepEqual(expectedProjectionIdentities, [
+    toolLibraryProjectionIdentity,
+  ]);
   assert.deepEqual(executionPolicies, [toolCapabilityPolicy]);
   assert.deepEqual(executionAllowedRegistryNames, [
-    ['list_files', 'read_file'],
+    ['list_files', 'read_file', 'tool_search'],
   ]);
   assert.deepEqual(snapshots[0]?.toolSurface.admission, {
     kind: 'restricted',
-    directRegistryNames: ['list_files'],
-    allowedRegistryNames: ['list_files', 'read_file'],
+    directRegistryNames: ['list_files', 'tool_search'],
+    allowedRegistryNames: ['list_files', 'read_file', 'tool_search'],
   });
   assert.equal(
     snapshots[0]?.toolSurface.toolLibraryProjection?.policyId,
     toolCapabilityPolicy.toolCapabilityPolicyId,
   );
+});
+
+void test('runAgentLoop exposes every allowed tool directly when the model has no accepted discovery path', async () => {
+  const cases = [
+    {
+      providerId: 'qwen_token_plan' as const,
+      model: 'qwen3.8-max-preview' as const,
+      expectedDirectToolNames: [
+        'external_provider_additional',
+        'external_provider_fallback',
+        'list_files',
+      ],
+      expectedDeferredToolNames: undefined,
+    },
+    {
+      providerId: 'grok_oauth' as const,
+      model: 'grok-4.5' as const,
+      expectedDirectToolNames: [
+        'external_provider_additional',
+        'external_provider_fallback',
+        'list_files',
+      ],
+      expectedDeferredToolNames: undefined,
+    },
+    {
+      providerId: 'openai_codex_direct' as const,
+      model: 'gpt-5.6-sol' as const,
+      expectedDirectToolNames: ['list_files'],
+      expectedDeferredToolNames: [
+        'external_provider_additional',
+        'external_provider_fallback',
+      ],
+    },
+  ];
+
+  for (const [index, scenario] of cases.entries()) {
+    const threadId = testThreadId(1223 + index);
+    const daemonContext = createDaemonContext();
+    const workspaceRoot = await mkdtemp(
+      join(tmpdir(), `geulbat-loop-provider-fallback-${index}-`),
+    );
+    let executions = 0;
+    let modelRound = 0;
+    registerOnce(daemonContext, {
+      ...makeTestTool({
+        name: 'external_provider_fallback',
+        description:
+          'An allowlisted external tool that falls back to direct exposure.',
+        sideEffectLevel: 'none',
+        requiresApproval: false,
+        async executeParsed() {
+          executions += 1;
+          return { ok: true, output: 'external fallback executed' };
+        },
+      }),
+      exposure: {
+        directHot: false,
+        sdkVisible: true,
+        inCellCallable: true,
+        directOnly: false,
+        effectClass: 'readOnly',
+      },
+    });
+    registerOnce(daemonContext, {
+      ...makeTestTool({
+        name: 'external_provider_additional',
+        description:
+          'A second allowlisted external tool with no tool-specific fallback metadata.',
+        sideEffectLevel: 'none',
+        requiresApproval: false,
+        async executeParsed() {
+          throw new Error('the additional external tool must not execute');
+        },
+      }),
+      exposure: {
+        directHot: false,
+        sdkVisible: true,
+        inCellCallable: true,
+        directOnly: false,
+        effectClass: 'readOnly',
+      },
+    });
+
+    const result = await runAgentLoop({
+      runId: `run-loop-provider-fallback-${index}`,
+      runContext: makeRunContext({ threadId, stateRoot: workspaceRoot }),
+      prompt: 'execute the provider fallback tool',
+      providerModel: {
+        providerId: scenario.providerId,
+        model: scenario.model,
+      },
+      toolCapabilityPolicy: createToolCapabilityPolicy({
+        directRegistryNames: ['list_files', 'tool_search'],
+        allowedRegistryNames: [
+          'external_provider_additional',
+          'external_provider_fallback',
+          'list_files',
+          'tool_search',
+        ],
+        callbackRegistryNames: [],
+        writeCallbackEnabled: false,
+      }),
+      runtimeServices: daemonContext,
+      approvalContext: makeApprovalContext({
+        computerSessionId: `session-loop-provider-fallback-${index}`,
+      }),
+      modelRoundPort: {
+        async runModelRound(args) {
+          assert.deepEqual(
+            args.toolDefs.map((tool) => tool.name),
+            scenario.expectedDirectToolNames,
+          );
+          assert.deepEqual(
+            args.providerDeferredToolDefs?.map((tool) => tool.name),
+            scenario.expectedDeferredToolNames,
+          );
+          modelRound += 1;
+          if (modelRound === 1) {
+            return {
+              ok: true,
+              value: {
+                assistantText: '',
+                terminalResult: { ok: true, finalProse: '' },
+                functionCalls: [
+                  {
+                    id: `fc-provider-fallback-${index}`,
+                    callId: `call-provider-fallback-${index}`,
+                    name: 'external_provider_fallback',
+                    arguments: '{"path":"fixture"}',
+                  },
+                ],
+              },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              assistantText: 'provider fallback complete',
+              terminalResult: {
+                ok: true,
+                finalProse: 'provider fallback complete',
+              },
+              functionCalls: [],
+            },
+          };
+        },
+      },
+      onEvent() {},
+    });
+
+    assert.deepEqual(result, {
+      ok: true,
+      finalProse: 'provider fallback complete',
+    });
+    assert.equal(executions, 1);
+  }
 });
 
 void test('runAgentLoop executes the tool identity captured before the model round', async () => {
@@ -918,7 +1159,7 @@ void test('runAgentLoop continues until the exact approved-plan execution is com
   });
 });
 
-void test('runAgentLoop exposes update_goal only in Goal mode and completes after a two-vote quorum', async () => {
+void test('runAgentLoop exposes update_goal only in Goal mode and completes after host obligations pass', async () => {
   const threadId = testThreadId(1214);
   const runId = testRunId(1214);
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-goal-'));
@@ -939,7 +1180,6 @@ void test('runAgentLoop exposes update_goal only in Goal mode and completes afte
   ];
   const events: AgentEvent[] = [];
   let modelRound = 0;
-  let verifierCalls = 0;
   const result = await runAgentLoop({
     runId,
     runContext: makeRunContext({ threadId, stateRoot }),
@@ -984,40 +1224,11 @@ void test('runAgentLoop exposes update_goal only in Goal mode and completes afte
             },
           };
         }
-        if (modelRound === 2) {
-          assert.equal(
-            history.some(
-              (item) =>
-                item.kind === 'assistant' &&
-                item.text.includes('"kind":"goal_completion_assessment"') &&
-                item.text.includes('Finish the remaining verification'),
-            ),
-            true,
-          );
-          return {
-            ok: true,
-            value: {
-              assistantText: '',
-              terminalResult: {
-                ok: true,
-                finalProse: '',
-              },
-              functionCalls: [
-                {
-                  id: 'fc-goal-complete-again',
-                  callId: 'call-goal-complete-again',
-                  name: 'update_goal',
-                  arguments: '{"status":"complete"}',
-                },
-              ],
-            },
-          };
-        }
         assert.equal(
           history.some(
             (item) =>
               item.kind === 'assistant' &&
-              item.text.includes('"kind":"goal_completion_verified"'),
+              item.text.includes('"kind":"goal_completion_admitted"'),
           ),
           true,
         );
@@ -1034,49 +1245,12 @@ void test('runAgentLoop exposes update_goal only in Goal mode and completes afte
         };
       },
     },
-    goalCompletionVerifier: {
-      async verify(args) {
-        verifierCalls += 1;
-        assert.equal(args.goal.state, 'verifying');
-        if (verifierCalls === 1) {
-          return {
-            outcome: {
-              kind: 'incomplete',
-              unmetRequirements: ['Finish the remaining verification'],
-            },
-            votes: [
-              {
-                verdict: 'not_achieved',
-                unmetRequirements: ['Finish the remaining verification'],
-              },
-              {
-                verdict: 'not_achieved',
-                unmetRequirements: ['Finish the remaining verification'],
-              },
-              { verdict: 'achieved' },
-            ],
-          };
-        }
-        return {
-          outcome: { kind: 'achieved' },
-          votes: [
-            { verdict: 'achieved' },
-            { verdict: 'achieved' },
-            {
-              verdict: 'not_achieved',
-              unmetRequirements: ['Dissenting check'],
-            },
-          ],
-        };
-      },
-    },
     onEvent(event) {
       events.push(event);
     },
   });
 
-  assert.equal(modelRound, 3);
-  assert.equal(verifierCalls, 2);
+  assert.equal(modelRound, 2);
   assert.deepEqual(result, {
     ok: true,
     finalProse: 'Goal integration is complete.',
@@ -1089,16 +1263,15 @@ void test('runAgentLoop exposes update_goal only in Goal mode and completes afte
     events
       .filter((event) => event.type === 'goal_updated')
       .map((event) => event.payload.state),
-    ['verifying', 'continuing', 'verifying', 'completed'],
+    ['verifying', 'completed'],
   );
 });
 
-void test('runAgentLoop does not expose or invoke Goal completion verification in ordinary chat', async () => {
+void test('runAgentLoop does not expose Goal completion admission in ordinary chat', async () => {
   const threadId = testThreadId(1215);
   const runId = testRunId(1215);
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-no-goal-'));
   const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
-  let verifierCalls = 0;
 
   const result = await runAgentLoop({
     runId,
@@ -1133,23 +1306,9 @@ void test('runAgentLoop does not expose or invoke Goal completion verification i
         };
       },
     },
-    goalCompletionVerifier: {
-      async verify() {
-        verifierCalls += 1;
-        return {
-          outcome: { kind: 'achieved' },
-          votes: [
-            { verdict: 'achieved' },
-            { verdict: 'achieved' },
-            { verdict: 'achieved' },
-          ],
-        };
-      },
-    },
     onEvent() {},
   });
 
-  assert.equal(verifierCalls, 0);
   assert.deepEqual(result, {
     ok: true,
     finalProse: 'Ordinary answer.',
@@ -1906,7 +2065,7 @@ void test('runAgentLoop preserves provider output items exactly once across a to
     id: 'fc_round_1',
     type: 'function_call',
     call_id: 'call_round_1',
-    name: 'lookup',
+    name: 'update_plan',
     arguments: '{"query":"continuity"}',
     status: 'completed',
   };
@@ -1950,7 +2109,7 @@ void test('runAgentLoop preserves provider output items exactly once across a to
                 {
                   id: 'fc_round_1',
                   callId: 'call_round_1',
-                  name: 'lookup',
+                  name: 'update_plan',
                   arguments: '{"query":"continuity"}',
                 },
               ],
@@ -2009,7 +2168,11 @@ void test('runAgentLoop preserves provider output items exactly once across a to
     onEvent: (event) => events.push(event),
   });
 
-  assert.deepEqual(result, { ok: true, finalProse: 'done' });
+  assert.deepEqual(
+    result,
+    { ok: true, finalProse: 'done' },
+    JSON.stringify(events),
+  );
   assert.equal(modelRound, 2);
   assert.deepEqual(history, [
     { kind: 'user', text: 'look it up' },
@@ -2027,6 +2190,20 @@ void test('runAgentLoop preserves provider output items exactly once across a to
     JSON.stringify({ events, observerRecords, transcript }),
     /opaque-reasoning-checkpoint/u,
   );
+  const providerRounds = await readProviderRoundHistory(
+    workspaceRoot,
+    threadId,
+  );
+  assert.deepEqual(providerRounds[0]?.functionCalls, [
+    {
+      id: functionCallItem.id,
+      callId: functionCallItem.call_id,
+      name: functionCallItem.name,
+      arguments: functionCallItem.arguments,
+      replaySafe: true,
+      recoveryStrategy: 'replay_safe',
+    },
+  ]);
 });
 
 void test('runAgentLoop compacts successful round input before appending the new assistant tail', async () => {
@@ -2225,20 +2402,16 @@ void test('runAgentLoop applies pending interject before the next steer-aware mo
           .filter((item) => item.kind === 'user')
           .map((item) => item.text);
         assert.deepEqual(userTurns, ['please answer once', 'please revise']);
+        // 즉시 반영은 라운드를 스트리밍 도중에 끊는다. 그래서 첫 라운드는
+        // provider가 완결한 backend_item을 남기지 못하고, 끊긴 시점까지
+        // 모델이 한 말이 assistant 항목으로 남는다 — 화면에 이미 흘렀으므로
+        // 히스토리에서 지우면 다음 라운드가 그 말을 안 한 것처럼 이어간다.
         const firstProviderItem = input.history[1];
-        assert.equal(firstProviderItem?.kind, 'backend_item');
-        if (firstProviderItem?.kind !== 'backend_item') {
+        assert.equal(firstProviderItem?.kind, 'assistant');
+        if (firstProviderItem?.kind !== 'assistant') {
           return;
         }
-        assert.ok(
-          isProviderReplayScopeId(firstProviderItem.providerReplayScopeId),
-        );
-        assert.deepEqual(firstProviderItem.data, {
-          id: 'msg_1',
-          type: 'message',
-          phase: 'final_answer',
-          content: [{ type: 'output_text', text: 'first answer' }],
-        });
+        assert.equal(firstProviderItem.text, 'first answer');
       },
     },
   ]);

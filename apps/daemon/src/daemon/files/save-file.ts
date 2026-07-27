@@ -67,16 +67,12 @@ export async function saveResolvedFile(
   expectedToken: string,
   options?: SaveFileOptions,
 ): Promise<SaveFileResult> {
-  const {
-    relativePath: normalized,
-    absolutePath,
-    canonicalAbsolutePath,
-  } = resolvedPath;
+  const { relativePath: normalized, canonicalAbsolutePath } = resolvedPath;
   return runSourceMutationSerial(canonicalAbsolutePath, async () => {
     const normalizedExpectedToken = expectedToken.trim();
     let currentToken: string | null = null;
     try {
-      const buf = await fsReadFile(absolutePath);
+      const buf = await fsReadFile(canonicalAbsolutePath);
       const currentContent = normalizeTextContent(buf.toString('utf8'));
       currentToken = createVersionToken(currentContent);
     } catch (err: unknown) {
@@ -95,14 +91,26 @@ export async function saveResolvedFile(
     const canonical = normalizeTextContent(content);
 
     try {
-      await writeAtomically(
-        resolvedPath,
-        canonical,
-        options?.atomicFs !== undefined ? { atomicFs: options.atomicFs } : {},
-      );
+      await writeAtomically(resolvedPath, canonical, {
+        atomicFs: options?.atomicFs,
+        validateBeforeCommit: async () => {
+          const commitToken = await readCurrentVersionToken(
+            canonicalAbsolutePath,
+          );
+          if (commitToken === currentToken) {
+            return;
+          }
+          if (commitToken === null) {
+            throw new MissingWriteTargetError(normalized);
+          }
+          throw new StaleWriteError(normalized, commitToken);
+        },
+      });
     } catch (error: unknown) {
       if (error instanceof AtomicReplaceConflictError) {
-        const conflictToken = await readCurrentVersionToken(absolutePath);
+        const conflictToken = await readCurrentVersionToken(
+          canonicalAbsolutePath,
+        );
         if (conflictToken !== null) {
           throw new StaleWriteError(normalized, conflictToken);
         }

@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import type { PtcEpochCallbackHandler } from '../../callback/epoch-callback.js';
 import type {
   DetachedProcessExitInfo,
   DetachedProcessHandle,
+  DetachedProcessPreparedOutputDelivery,
   DetachedProcessOutputSegment,
 } from './execute-code-cell-process.js';
 import type {
@@ -55,6 +57,8 @@ interface PtcExecuteCodeCellResources {
   finalizePlacement?: () =>
     | Promise<PtcExecuteCodeCellPlacementFinalization>
     | PtcExecuteCodeCellPlacementFinalization;
+  finalizeCoordinate?: () => Promise<void> | void;
+  replaceCallbackHandler?: (handler: PtcEpochCallbackHandler) => void;
   finalizeStore?: (
     status: PtcExecuteCodeCellTerminalResult['status'],
   ) => Promise<PtcExecuteCodeCellStoreFinalization>;
@@ -285,6 +289,7 @@ export function createPtcExecuteCodeCellRegistry(
 
   function reserveAdmittingCell(args: {
     threadId: string;
+    cellId?: PtcExecuteCodeCellId;
   }): CellAdmissionResult {
     const current = readFirstActiveCell(args.threadId);
     if (!allowConcurrentCells && current !== undefined) {
@@ -305,7 +310,7 @@ export function createPtcExecuteCodeCellRegistry(
       };
     }
 
-    const cellId = createCellId();
+    const cellId = args.cellId ?? createCellId();
     setActiveCell({
       threadId: args.threadId,
       cellId,
@@ -391,6 +396,61 @@ export function createPtcExecuteCodeCellRegistry(
     return { ok: true, value: { state: 'running' } };
   }
 
+  function adoptRunningCell(args: {
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+    createdAtMs: number;
+    orphanReapAtMs?: number;
+    resources: PtcExecuteCodeCellResources;
+  }): CellLookupResult<{ state: 'running' }> {
+    if (
+      getActiveCell(args) !== undefined ||
+      getRetainedTerminalCellRecord(args) !== undefined ||
+      (!allowConcurrentCells && hasActiveCells(args.threadId))
+    ) {
+      return { ok: false, reasonCode: 'cell_missing' };
+    }
+    const runningRecord: RunningCellRecord = {
+      threadId: args.threadId,
+      cellId: args.cellId,
+      state: 'running',
+      createdAtMs: args.createdAtMs,
+      ...args.resources,
+    };
+    const reapDelayMs =
+      args.orphanReapAtMs === undefined
+        ? runningCellReapAfterMs
+        : Math.max(0, args.orphanReapAtMs - now());
+    if (reapDelayMs !== undefined) {
+      runningRecord.orphanReapTimer = scheduleReapTimeout(async () => {
+        await closeCell({
+          threadId: args.threadId,
+          cellId: args.cellId,
+          reason: 'orphan_reap',
+        });
+      }, reapDelayMs);
+    }
+    setActiveCell(runningRecord);
+    bumpRevision(args.threadId);
+    return { ok: true, value: { state: 'running' } };
+  }
+
+  function replaceRunningCellCallbackHandler(args: {
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+    handler: PtcEpochCallbackHandler;
+  }): CellLookupResult<{ replaced: boolean }> {
+    const current = getActiveCell(args);
+    if (!isMatchingCell(current, args.cellId) || current.state !== 'running') {
+      return { ok: false, reasonCode: 'cell_missing' };
+    }
+    current.replaceCallbackHandler?.(args.handler);
+    return {
+      ok: true,
+      value: { replaced: current.replaceCallbackHandler !== undefined },
+    };
+  }
+
   function markRunningCellTerminalResultPersistence(args: {
     threadId: string;
     cellId: PtcExecuteCodeCellId;
@@ -411,6 +471,9 @@ export function createPtcExecuteCodeCellRegistry(
     threadId: string;
     cellId: PtcExecuteCodeCellId;
     result: PtcExecuteCodeCellTerminalResult;
+    buildRecoveryResult?: (
+      result: PtcExecuteCodeCellRetainedResult,
+    ) => PtcExecuteCodeRuntimeResult;
   }): Promise<
     CellLookupResult<{ bridgeClosed: boolean; sessionTainted?: boolean }>
   > {
@@ -443,6 +506,9 @@ export function createPtcExecuteCodeCellRegistry(
         cellId: current.cellId,
         createdAtMs: current.createdAtMs,
         result: terminalResult,
+        ...(args.buildRecoveryResult === undefined
+          ? {}
+          : { recoveryResult: args.buildRecoveryResult(terminalResult) }),
         ...(current.terminalResultStateRoot === undefined
           ? {}
           : { terminalResultStateRoot: current.terminalResultStateRoot }),
@@ -462,6 +528,26 @@ export function createPtcExecuteCodeCellRegistry(
       'callbackBridgeClose',
     );
     const bridgeClosed = bridgeCloseResult.ok;
+    try {
+      await retainTerminalCellResultIfMissing({
+        threadId: current.threadId,
+        cellId: current.cellId,
+        createdAtMs: current.createdAtMs,
+        result: terminalResult,
+        ...(args.buildRecoveryResult === undefined
+          ? {}
+          : { recoveryResult: args.buildRecoveryResult(terminalResult) }),
+        ...(current.terminalResultStateRoot === undefined
+          ? {}
+          : { terminalResultStateRoot: current.terminalResultStateRoot }),
+      });
+    } catch (error: unknown) {
+      clearRunningCellReapTimer(current);
+      deleteActiveCell(args);
+      bumpRevision(args.threadId);
+      throw error;
+    }
+    const coordinateFinalization = await finalizeCellCoordinate(current);
     const latest = getActiveCell(args);
     if (!isMatchingCell(latest, args.cellId)) {
       if (getRetainedTerminalCellRecord(args) !== undefined) {
@@ -471,17 +557,39 @@ export function createPtcExecuteCodeCellRegistry(
     }
 
     if (latest.state === 'terminating' && latest.reason === 'orphan_reap') {
-      if (bridgeClosed) {
+      if (bridgeClosed && coordinateFinalization.ok) {
         await retainTerminalCellResultIfMissing({
           threadId: latest.threadId,
           cellId: latest.cellId,
           createdAtMs: latest.createdAtMs,
           result: terminalResult,
+          ...(args.buildRecoveryResult === undefined
+            ? {}
+            : { recoveryResult: args.buildRecoveryResult(terminalResult) }),
           ...(latest.terminalResultStateRoot === undefined
             ? {}
             : { terminalResultStateRoot: latest.terminalResultStateRoot }),
         });
       } else {
+        const cleanupResult: PtcExecuteCodeCellRetainedResult = {
+          status: 'cleanup_failed',
+          message: 'PTC execute_code cell cleanup failed after terminal exit',
+          diagnostics: {
+            ...(!bridgeClosed
+              ? {
+                  callbackBridgeCloseFailed: true,
+                  ...bridgeCloseResult.diagnostics,
+                }
+              : {}),
+            ...(!coordinateFinalization.ok
+              ? {
+                  cellCoordinateDeleteFailed: true,
+                  ...coordinateFinalization.diagnostics,
+                }
+              : {}),
+          },
+          terminalResult,
+        };
         await retainCellCleanupFailure({
           threadId: latest.threadId,
           cellId: latest.cellId,
@@ -490,11 +598,13 @@ export function createPtcExecuteCodeCellRegistry(
           ...(latest.terminalResultStateRoot === undefined
             ? {}
             : { terminalResultStateRoot: latest.terminalResultStateRoot }),
-          message: 'PTC execute_code cell cleanup failed after terminal exit',
-          diagnostics: {
-            callbackBridgeCloseFailed: true,
-            ...bridgeCloseResult.diagnostics,
-          },
+          message: cleanupResult.message,
+          diagnostics: cleanupResult.diagnostics,
+          ...(args.buildRecoveryResult === undefined
+            ? {}
+            : {
+                recoveryResult: args.buildRecoveryResult(cleanupResult),
+              }),
         });
       }
       bumpRevision(args.threadId);
@@ -509,7 +619,7 @@ export function createPtcExecuteCodeCellRegistry(
       return { ok: false, reasonCode: 'cell_missing' };
     }
 
-    if (!bridgeClosed) {
+    if (!bridgeClosed || !coordinateFinalization.ok) {
       clearRunningCellReapTimer(latest);
       deleteActiveCell(args);
       const sessionTaintResult = await callBooleanWithoutThrow(
@@ -518,18 +628,22 @@ export function createPtcExecuteCodeCellRegistry(
       );
       const placementFinalization = await finalizeCellPlacement(latest);
       const sessionTainted = sessionTaintResult.ok;
-      await retainCellCleanupFailure({
-        threadId: latest.threadId,
-        cellId: latest.cellId,
-        createdAtMs: latest.createdAtMs,
-        terminalResult,
-        ...(latest.terminalResultStateRoot === undefined
-          ? {}
-          : { terminalResultStateRoot: latest.terminalResultStateRoot }),
+      const cleanupResult: PtcExecuteCodeCellRetainedResult = {
+        status: 'cleanup_failed',
         message: 'PTC execute_code cell cleanup failed after terminal exit',
         diagnostics: {
-          callbackBridgeCloseFailed: true,
-          ...bridgeCloseResult.diagnostics,
+          ...(!bridgeClosed
+            ? {
+                callbackBridgeCloseFailed: true,
+                ...bridgeCloseResult.diagnostics,
+              }
+            : {}),
+          ...(!coordinateFinalization.ok
+            ? {
+                cellCoordinateDeleteFailed: true,
+                ...coordinateFinalization.diagnostics,
+              }
+            : {}),
           ...(sessionTainted
             ? {}
             : {
@@ -544,15 +658,8 @@ export function createPtcExecuteCodeCellRegistry(
               }
             : {}),
         },
-      });
-      bumpRevision(args.threadId);
-      return { ok: true, value: { bridgeClosed: false, sessionTainted } };
-    }
-
-    const placementFinalization = await finalizeCellPlacement(latest);
-    if (!placementFinalization.ok) {
-      clearRunningCellReapTimer(latest);
-      deleteActiveCell(args);
+        terminalResult,
+      };
       await retainCellCleanupFailure({
         threadId: latest.threadId,
         cellId: latest.cellId,
@@ -561,11 +668,42 @@ export function createPtcExecuteCodeCellRegistry(
         ...(latest.terminalResultStateRoot === undefined
           ? {}
           : { terminalResultStateRoot: latest.terminalResultStateRoot }),
+        message: cleanupResult.message,
+        diagnostics: cleanupResult.diagnostics,
+        ...(args.buildRecoveryResult === undefined
+          ? {}
+          : { recoveryResult: args.buildRecoveryResult(cleanupResult) }),
+      });
+      bumpRevision(args.threadId);
+      return { ok: true, value: { bridgeClosed, sessionTainted } };
+    }
+
+    const placementFinalization = await finalizeCellPlacement(latest);
+    if (!placementFinalization.ok) {
+      clearRunningCellReapTimer(latest);
+      deleteActiveCell(args);
+      const cleanupResult: PtcExecuteCodeCellRetainedResult = {
+        status: 'cleanup_failed',
         message: placementFinalization.message,
         diagnostics: {
           placementReleaseFailed: true,
           ...placementFinalization.diagnostics,
         },
+        terminalResult,
+      };
+      await retainCellCleanupFailure({
+        threadId: latest.threadId,
+        cellId: latest.cellId,
+        createdAtMs: latest.createdAtMs,
+        terminalResult,
+        ...(latest.terminalResultStateRoot === undefined
+          ? {}
+          : { terminalResultStateRoot: latest.terminalResultStateRoot }),
+        message: cleanupResult.message,
+        diagnostics: cleanupResult.diagnostics,
+        ...(args.buildRecoveryResult === undefined
+          ? {}
+          : { recoveryResult: args.buildRecoveryResult(cleanupResult) }),
       });
       bumpRevision(args.threadId);
       return { ok: true, value: { bridgeClosed: true } };
@@ -578,6 +716,9 @@ export function createPtcExecuteCodeCellRegistry(
       cellId: latest.cellId,
       createdAtMs: latest.createdAtMs,
       result: terminalResult,
+      ...(args.buildRecoveryResult === undefined
+        ? {}
+        : { recoveryResult: args.buildRecoveryResult(terminalResult) }),
       ...(latest.terminalResultStateRoot === undefined
         ? {}
         : { terminalResultStateRoot: latest.terminalResultStateRoot }),
@@ -593,6 +734,7 @@ export function createPtcExecuteCodeCellRegistry(
     message: string;
     diagnostics: Record<string, string | number | boolean>;
     terminalResult?: PtcExecuteCodeCellTerminalResult;
+    terminalResultStateRoot?: string;
   }): Promise<CellLookupResult<{ retained: boolean }>> {
     const current = getActiveCell(args);
     const retained = getRetainedTerminalCellRecord(args);
@@ -601,7 +743,7 @@ export function createPtcExecuteCodeCellRegistry(
     const terminalResultStateRoot =
       current !== undefined && 'terminalResultStateRoot' in current
         ? current.terminalResultStateRoot
-        : retained?.terminalResultStateRoot;
+        : (retained?.terminalResultStateRoot ?? args.terminalResultStateRoot);
     if (current !== undefined) {
       if (current.state === 'running' || current.state === 'terminating') {
         clearRunningCellReapTimer(current);
@@ -703,6 +845,37 @@ export function createPtcExecuteCodeCellRegistry(
     return { ok: true, value: current.handle.drainNewOutput() };
   }
 
+  function prepareRunningCellOutputDelivery(args: {
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+  }):
+    | CellLookupResult<DetachedProcessPreparedOutputDelivery>
+    | { ok: false; reasonCode: 'delivery_unavailable' } {
+    const current = getActiveCell(args);
+    if (!isMatchingCell(current, args.cellId) || current.state !== 'running') {
+      return { ok: false, reasonCode: 'cell_missing' };
+    }
+    if (current.handle.prepareOutputDelivery === undefined) {
+      return { ok: false, reasonCode: 'delivery_unavailable' };
+    }
+    return { ok: true, value: current.handle.prepareOutputDelivery() };
+  }
+
+  function commitRunningCellOutputDelivery(args: {
+    threadId: string;
+    cellId: PtcExecuteCodeCellId;
+  }): CellLookupResult<{ committed: true }> {
+    const current = getActiveCell(args);
+    if (!isMatchingCell(current, args.cellId) || current.state !== 'running') {
+      return { ok: false, reasonCode: 'cell_missing' };
+    }
+    if (current.handle.commitPreparedOutputDelivery === undefined) {
+      return { ok: false, reasonCode: 'cell_missing' };
+    }
+    current.handle.commitPreparedOutputDelivery();
+    return { ok: true, value: { committed: true } };
+  }
+
   function readRunningCellOutputRevision(args: {
     threadId: string;
     cellId: PtcExecuteCodeCellId;
@@ -756,6 +929,9 @@ export function createPtcExecuteCodeCellRegistry(
     threadId: string;
     cellId: PtcExecuteCodeCellId;
     reason: PtcExecuteCodeCellCloseReason;
+    buildRecoveryResult?: (
+      result: PtcExecuteCodeCellRetainedResult,
+    ) => PtcExecuteCodeRuntimeResult;
   }): Promise<CloseCellResult> {
     const current = getActiveCell(args);
     if (!isMatchingCell(current, args.cellId)) {
@@ -801,6 +977,28 @@ export function createPtcExecuteCodeCellRegistry(
       const storeFinalization =
         (await current.finalizeStore?.('terminated')) ?? {};
       await current.settlePromise;
+      if (args.reason === 'terminate') {
+        await retainTerminalCellResult({
+          threadId: current.threadId,
+          cellId: current.cellId,
+          createdAtMs: current.createdAtMs,
+          result: {
+            status: 'terminated',
+            output: { stdout: '', stderr: '' },
+            exit: {
+              kind: 'signal',
+              exitCode: null,
+              processTerminated: false,
+            },
+            ...storeFinalization,
+          },
+          ...(current.terminalResultStateRoot === undefined
+            ? {}
+            : {
+                terminalResultStateRoot: current.terminalResultStateRoot,
+              }),
+        });
+      }
       return {
         ok: true,
         status: 'queued_cancelled',
@@ -814,7 +1012,11 @@ export function createPtcExecuteCodeCellRegistry(
       return await current.closePromise;
     }
 
-    const closePromise = closeRunningCell(current, args.reason);
+    const closePromise = closeRunningCell(
+      current,
+      args.reason,
+      args.buildRecoveryResult,
+    );
     setActiveCell({
       ...current,
       state: 'terminating',
@@ -863,6 +1065,11 @@ export function createPtcExecuteCodeCellRegistry(
   async function closeRunningCell(
     record: RunningCellRecord,
     reason: PtcExecuteCodeCellCloseReason,
+    buildRecoveryResult:
+      | ((
+          result: PtcExecuteCodeCellRetainedResult,
+        ) => PtcExecuteCodeRuntimeResult)
+      | undefined,
   ): Promise<CloseCellResult> {
     clearRunningCellReapTimer(record);
     record.handle.terminate({
@@ -872,10 +1079,36 @@ export function createPtcExecuteCodeCellRegistry(
     const output = record.handle.drainNewOutput();
     const storeFinalization =
       (await record.finalizeStore?.('terminated')) ?? {};
+    const terminalResult: PtcExecuteCodeCellTerminalResult = {
+      status: 'terminated',
+      output,
+      exit,
+      ...storeFinalization,
+    };
+    if (reason === 'terminate' || buildRecoveryResult !== undefined) {
+      // The restart-readable result must exist before the live coordinate is
+      // deleted. A daemon death after coordinate finalization can then recover
+      // the exact termination outcome instead of reporting a missing cell.
+      await retainTerminalCellResultIfMissing({
+        threadId: record.threadId,
+        cellId: record.cellId,
+        createdAtMs: record.createdAtMs,
+        result: terminalResult,
+        ...(buildRecoveryResult === undefined
+          ? {}
+          : { recoveryResult: buildRecoveryResult(terminalResult) }),
+        ...(record.terminalResultStateRoot === undefined
+          ? {}
+          : {
+              terminalResultStateRoot: record.terminalResultStateRoot,
+            }),
+      });
+    }
     const bridgeCloseResult = await callWithoutThrow(
       record.closeBridge,
       'callbackBridgeClose',
     );
+    const coordinateFinalization = await finalizeCellCoordinate(record);
     const sessionTaintResult = await callBooleanWithoutThrow(
       () => record.taintSession({ reason }),
       'sessionTaint',
@@ -895,6 +1128,12 @@ export function createPtcExecuteCodeCellRegistry(
             sessionCloseFailed: true,
             sessionTainted: true,
             ...sessionTaintResult.diagnostics,
+          }
+        : {}),
+      ...(!coordinateFinalization.ok
+        ? {
+            cellCoordinateDeleteFailed: true,
+            ...coordinateFinalization.diagnostics,
           }
         : {}),
       ...(!placementFinalization.ok
@@ -917,6 +1156,49 @@ export function createPtcExecuteCodeCellRegistry(
         exit,
         storeFinalization,
         cleanupDiagnostics,
+      });
+      bumpRevision(record.threadId);
+    } else if (reason === 'terminate') {
+      if (Object.keys(cleanupDiagnostics).length > 0) {
+        await retainCellCleanupFailure({
+          threadId: record.threadId,
+          cellId: record.cellId,
+          createdAtMs: record.createdAtMs,
+          terminalResult,
+          message: 'PTC execute_code explicit termination cleanup failed',
+          diagnostics: cleanupDiagnostics,
+          ...(record.terminalResultStateRoot === undefined
+            ? {}
+            : {
+                terminalResultStateRoot: record.terminalResultStateRoot,
+              }),
+        });
+      }
+      bumpRevision(record.threadId);
+    } else if (
+      reason === 'run_terminal' &&
+      buildRecoveryResult !== undefined &&
+      Object.keys(cleanupDiagnostics).length > 0
+    ) {
+      const cleanupResult: PtcExecuteCodeCellRetainedResult = {
+        status: 'cleanup_failed',
+        message: 'PTC execute_code cell cleanup failed after terminal signal',
+        diagnostics: cleanupDiagnostics,
+        terminalResult,
+      };
+      await retainCellCleanupFailure({
+        threadId: record.threadId,
+        cellId: record.cellId,
+        createdAtMs: record.createdAtMs,
+        terminalResult,
+        message: cleanupResult.message,
+        diagnostics: cleanupResult.diagnostics,
+        recoveryResult: buildRecoveryResult(cleanupResult),
+        ...(record.terminalResultStateRoot === undefined
+          ? {}
+          : {
+              terminalResultStateRoot: record.terminalResultStateRoot,
+            }),
       });
       bumpRevision(record.threadId);
     }
@@ -968,6 +1250,8 @@ export function createPtcExecuteCodeCellRegistry(
     releaseAdmittingCell,
     markAdmittedCellQueued,
     promoteAdmittedCell,
+    adoptRunningCell,
+    replaceRunningCellCallbackHandler,
     markRunningCellTerminalResultPersistence,
     recordTerminalCellResult,
     recordCellCleanupFailure,
@@ -976,6 +1260,8 @@ export function createPtcExecuteCodeCellRegistry(
     readTerminalCellDurableOutput,
     takeTerminalCellResult,
     drainRunningCellOutput,
+    prepareRunningCellOutputDelivery,
+    commitRunningCellOutputDelivery,
     readRunningCellOutputRevision,
     waitForRunningCellOutputChange,
     readRunningCellEffectiveTimeoutMs,
@@ -1030,6 +1316,24 @@ async function finalizeCellPlacement(
       ok: false,
       message: 'PTC execute_code placement cleanup failed',
       diagnostics: sanitizeCleanupError(error, 'placementRelease'),
+    };
+  }
+}
+
+async function finalizeCellCoordinate(
+  resources: PtcExecuteCodeCellResources,
+): Promise<PtcExecuteCodeCellPlacementFinalization> {
+  if (resources.finalizeCoordinate === undefined) {
+    return { ok: true };
+  }
+  try {
+    await resources.finalizeCoordinate();
+    return { ok: true };
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      message: 'PTC execute_code cell coordinate cleanup failed',
+      diagnostics: sanitizeCleanupError(error, 'cellCoordinateDelete'),
     };
   }
 }

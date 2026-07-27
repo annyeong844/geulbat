@@ -305,6 +305,9 @@ void test('beginBackgroundChildLifecycle durably marks started after registratio
       readSubagentLaunchRequestByChildRunId() {
         return undefined;
       },
+      readSubagentLaunchInput() {
+        throw new Error('not used by lifecycle test');
+      },
       readQueuedSubagentLaunchRequests() {
         return [];
       },

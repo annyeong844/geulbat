@@ -95,7 +95,7 @@ void test('Approvals offers only explicit once, run, and computer-session lifeti
   );
 
   assert.match(html, /이번만/u);
-  assert.match(html, /이번 답변/u);
+  assert.match(html, /현재 실행/u);
   assert.match(html, /이 컴퓨터 세션/u);
   assert.doesNotMatch(html, /<option/u);
   assert.doesNotMatch(html, /This thread|이 스레드/u);

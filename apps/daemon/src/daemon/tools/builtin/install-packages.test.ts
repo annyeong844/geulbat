@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createDaemonContext } from '../../context.js';
 import {
   PTC_EXECUTE_CODE_INSTALLED_PACKAGES_NODE_PATH,
+  PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH,
   PTC_PACKAGE_INSTALL_TOOL_NAME,
   type PtcPackageInstallRuntime,
 } from '../../ptc/runtime/execute-code/execute-code-runtime-contract.js';
@@ -19,6 +20,7 @@ void test('install_packages metadata: strict schema, no time budget field, opt-i
   const parameters = installPackagesTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(parameters.required, ['packages']);
+  assert.ok('language' in parameters.properties);
   assert.ok('packages' in parameters.properties);
   assert.ok(!('timeoutMs' in parameters.properties));
   assert.ok(!('registry' in parameters.properties));
@@ -27,9 +29,9 @@ void test('install_packages metadata: strict schema, no time budget field, opt-i
   assert.match(installPackagesTool.description, /explicit-ESM static imports/u);
   const metadata = installPackagesTool.catalogSearchMetadata;
   assert.ok(metadata);
-  assert.match(metadata.whenToUse, /explicit-ESM/u);
-  assert.match(metadata.searchHints.join(' '), /esm package import/u);
-  assert.doesNotMatch(metadata.notFor, /Version ranges|latest/u);
+  assert.match(metadata.whenToUse, /wheel-backed PyPI/u);
+  assert.match(metadata.searchHints.join(' '), /pip install/u);
+  assert.match(metadata.notFor, /source distributions/u);
 });
 
 void test('install_packages is absent from the default registry and present only with the operator opt-in', () => {
@@ -81,6 +83,7 @@ void test('install_packages delegates to the runtime and returns sanitized blata
           labPolicyId: 'ptc_lab_execute_code_open_network_package_install_v1',
           profile: 'lab',
           manager: 'npm',
+          language: 'javascript',
           installMode: 'open_network',
           packages: [{ name: 'left-pad', version: '^1.3.0' }],
           resolvedPackages: [
@@ -159,6 +162,7 @@ void test('install_packages accepts a package with no version and forwards it wi
           labPolicyId: 'ptc_lab_execute_code_open_network_package_install_v1',
           profile: 'lab',
           manager: 'npm',
+          language: 'javascript',
           installMode: 'open_network',
           packages: [{ name: 'express', version: 'latest' }],
           resolvedPackages: [
@@ -203,6 +207,83 @@ void test('install_packages accepts a package with no version and forwards it wi
 
   assert.equal(result.ok, true);
   assert.deepEqual(observed, [{ name: 'express' }]);
+});
+
+void test('install_packages forwards Python selection and returns its import path', async () => {
+  const daemonContext = createDaemonContext();
+  let observedRequest: unknown;
+  let observedSdkProjection: unknown = 'not-called';
+  const ptcPackageInstall: PtcPackageInstallRuntime = {
+    async installPackages(args) {
+      observedRequest = args.request;
+      observedSdkProjection = args.sdkProjection;
+      return {
+        ok: true,
+        value: {
+          ok: true,
+          capabilityId: PTC_PACKAGE_INSTALL_TOOL_NAME,
+          labPolicyId: 'ptc_lab_execute_code_open_network_package_install_v1',
+          profile: 'lab',
+          manager: 'pip',
+          language: 'python',
+          installMode: 'open_network',
+          packages: [{ name: 'requests', version: '==2.32.3' }],
+          resolvedPackages: [
+            {
+              name: 'requests',
+              requestedSpec: '==2.32.3',
+              resolvedVersion: '2.32.3',
+              integrity: null,
+            },
+          ],
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          effectiveTimeoutMs: 900_000,
+          durationMs: 1,
+          installedPackagesPythonPath:
+            PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH,
+          sessionLifecycle: {
+            mode: 'runtime_owned_reusable',
+            retainedAfterExecution: true,
+          },
+          provenance: { recorded: true, dependencyClosureCount: 5 },
+        },
+      };
+    },
+  };
+
+  const result = await installPackagesTool.execute(
+    {
+      language: 'python',
+      packages: [{ name: 'requests', version: '2.32.3' }],
+    },
+    {
+      callId: 'call-install-packages-python',
+      stateRoot: '/workspace/home-state',
+      workingDirectory: 'project',
+      threadId: testThreadId(944),
+      runtimeServices: {
+        ...daemonContext,
+        ptc: { ...daemonContext.ptc, packageInstall: ptcPackageInstall },
+      },
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(observedRequest, {
+    language: 'python',
+    packages: [{ name: 'requests', version: '2.32.3' }],
+  });
+  assert.equal(observedSdkProjection, undefined);
+  const output = JSON.parse(result.output) as Record<string, unknown>;
+  assert.equal(output.manager, 'pip');
+  assert.equal(output.language, 'python');
+  assert.equal(
+    output.installedPackagesPythonPath,
+    PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH,
+  );
+  assert.equal(Object.hasOwn(output, 'installedPackagesNodePath'), false);
 });
 
 void test('install_packages surfaces the disabled opt-in as a stable classified failure', async () => {

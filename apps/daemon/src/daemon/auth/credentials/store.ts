@@ -57,15 +57,8 @@ export function resolveProviderAuthCredentialProviderId(
 
 const PROVIDER_AUTH_CREDENTIAL_PROVIDER_IDS = PROVIDER_AUTH_PROVIDER_IDS;
 
-interface ProviderAuthCredentialSchema {
-  accessToken: string;
-  refreshToken: string;
-  accountId: string;
-  expiresAt: number;
-}
-
 type ProviderAuthCredentialsByProvider = Partial<
-  Record<ProviderAuthCredentialProviderId, ProviderAuthCredentialSchema>
+  Record<ProviderAuthCredentialProviderId, ProviderCredential>
 >;
 
 interface ProviderAuthFileSchema {
@@ -319,7 +312,7 @@ function cloneProviderCredentialMap(
   return cloned;
 }
 
-function cloneProviderCredential(
+export function cloneProviderCredential(
   credential: ProviderCredential,
 ): ProviderCredential {
   return {
@@ -332,7 +325,7 @@ function cloneProviderCredential(
 
 function isProviderAuthCredentialSchema(
   value: unknown,
-): value is ProviderAuthCredentialSchema {
+): value is ProviderCredential {
   return (
     isRecord(value) &&
     typeof value.accessToken === 'string' &&

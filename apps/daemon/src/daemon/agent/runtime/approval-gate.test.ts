@@ -443,6 +443,106 @@ void test('clearComputerSessionRuntime clears resolved approvals for that sessio
   );
 });
 
+void test('clearRunRuntime clears only the terminal run inside its computer session', async () => {
+  const approvalGrants = createApprovalGrantStore();
+  const gate = createTestApprovalGate(approvalGrants);
+  const threadId = testThreadId(17);
+  const terminalRunId = testRunId('approval-terminal-run');
+  const activeRunId = testRunId('approval-active-run');
+  const terminalRunContext = {
+    runId: terminalRunId,
+    computerSessionId: 'session-run-cleanup',
+    approvalClass: toApprovalClass('write_file'),
+    sideEffectLevel: 'write' as const,
+    permissionMode: 'basic' as const,
+  };
+  const activeRunContext = {
+    ...terminalRunContext,
+    runId: activeRunId,
+  };
+  const otherSessionContext = {
+    ...terminalRunContext,
+    computerSessionId: 'session-run-cleanup-other',
+  };
+  const sessionGrantContext = {
+    ...terminalRunContext,
+    approvalClass: toApprovalClass('manage_files:delete'),
+  };
+  const pendingTerminalWait = gate.waitForApproval(
+    'call-terminal-pending',
+    terminalRunId,
+    threadId,
+    terminalRunContext,
+    AbortSignal.timeout(1_000),
+  );
+  const resolvedTerminalWait = gate.waitForApproval(
+    'call-terminal-resolved',
+    terminalRunId,
+    threadId,
+    terminalRunContext,
+    AbortSignal.timeout(1_000),
+  );
+  const resolvedActiveWait = gate.waitForApproval(
+    'call-active-resolved',
+    activeRunId,
+    threadId,
+    activeRunContext,
+    AbortSignal.timeout(1_000),
+  );
+
+  assert.equal(
+    await gate.resolveApproval(
+      'call-terminal-resolved',
+      terminalRunId,
+      threadId,
+      'denied',
+    ),
+    'resolved',
+  );
+  assert.equal(
+    await gate.resolveApproval(
+      'call-active-resolved',
+      activeRunId,
+      threadId,
+      'denied',
+    ),
+    'resolved',
+  );
+  assert.equal(await resolvedTerminalWait, 'denied');
+  assert.equal(await resolvedActiveWait, 'denied');
+
+  approvalGrants.registerApprovalGrant(terminalRunContext, 'run');
+  approvalGrants.registerApprovalGrant(activeRunContext, 'run');
+  approvalGrants.registerApprovalGrant(otherSessionContext, 'run');
+  approvalGrants.registerApprovalGrant(sessionGrantContext, 'session');
+
+  gate.clearRunRuntime('session-run-cleanup', terminalRunId);
+
+  assert.equal(await pendingTerminalWait, 'aborted');
+  assert.equal(approvalGrants.hasApprovalGrant(terminalRunContext), false);
+  assert.equal(approvalGrants.hasApprovalGrant(activeRunContext), true);
+  assert.equal(approvalGrants.hasApprovalGrant(otherSessionContext), true);
+  assert.equal(approvalGrants.hasApprovalGrant(sessionGrantContext), true);
+  assert.equal(
+    await gate.resolveApproval(
+      'call-terminal-resolved',
+      terminalRunId,
+      threadId,
+      'denied',
+    ),
+    'not_found',
+  );
+  assert.equal(
+    await gate.resolveApproval(
+      'call-active-resolved',
+      activeRunId,
+      threadId,
+      'denied',
+    ),
+    'resolved',
+  );
+});
+
 void test('clearComputerSessionGrants clears grants without aborting pending approvals', async () => {
   const approvalGrants = createApprovalGrantStore();
   const gate = createTestApprovalGate(approvalGrants);

@@ -12,9 +12,10 @@ import { sendApiError } from '#web/response/send-api-error.js';
 /**
  * Dev token for Phase 1 local-first auth.
  * Set via GEULBAT_DEV_TOKEN env var. No default fallback.
- * Accepts:
- * - HttpOnly cookie: geulbat_dev_auth
- * - Legacy header: X-Geulbat-Dev-Token
+ * Accepts the explicit X-Geulbat-Dev-Token header or the HttpOnly same-origin
+ * shell session cookie. Browser-native media requests and websocket upgrades
+ * cannot attach the explicit header, and the current product policy grants
+ * same-origin artifact frames the shell API authority.
  *
  * This is shell-daemon API auth only.
  * daemon-provider auth (LLM credentials) is a separate layer.

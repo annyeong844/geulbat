@@ -1,6 +1,7 @@
 import type {
   AgentLoopImplementationIdentity,
   AgentLoopKernelEvent,
+  AgentLoopTerminalSource,
 } from '@geulbat/agent-loop/kernel';
 
 import type { ProviderRequestOptions } from '../../llm/provider/provider-options.js';
@@ -164,10 +165,26 @@ export interface ToolResultObservation {
   exactDurableRecovery: boolean;
 }
 
+export interface AgentLoopCompletionGapObservation {
+  schemaVersion: 1;
+  runId: string;
+  threadId: string;
+  source: AgentLoopTerminalSource;
+  obligation:
+    | 'approved_plan_execution'
+    | 'goal_completion'
+    | 'planning_workflow';
+  gapFingerprint: `sha256:${string}`;
+  evidenceRevision: `sha256:${string}`;
+  repeatCount: number;
+  sameGapAndEvidenceAsPrevious: boolean;
+}
+
 type AgentLoopObserverDeliveryOperation =
   | 'record_snapshot'
   | 'record_event'
-  | 'record_tool_result';
+  | 'record_tool_result'
+  | 'record_completion_gap';
 
 export interface AgentLoopObserverDiagnostic {
   schemaVersion: 1;
@@ -180,6 +197,9 @@ export interface AgentLoopObserver {
   recordSnapshot(snapshot: AgentLoopObserverSnapshot): void | Promise<void>;
   recordEvent(event: AgentLoopObserverEvent): void | Promise<void>;
   recordToolResult?(observation: ToolResultObservation): void | Promise<void>;
+  recordCompletionGap?(
+    observation: AgentLoopCompletionGapObservation,
+  ): void | Promise<void>;
   recordDiagnostic?(
     diagnostic: AgentLoopObserverDiagnostic,
   ): void | Promise<void>;
@@ -242,6 +262,15 @@ export function recordAgentLoopObserverToolResult(
 ): void {
   deliverObserverCall(observer, 'record_tool_result', () =>
     observer?.recordToolResult?.(observation),
+  );
+}
+
+export function recordAgentLoopObserverCompletionGap(
+  observer: AgentLoopObserver | undefined,
+  observation: AgentLoopCompletionGapObservation,
+): void {
+  deliverObserverCall(observer, 'record_completion_gap', () =>
+    observer?.recordCompletionGap?.(observation),
   );
 }
 

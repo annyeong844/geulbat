@@ -811,4 +811,98 @@ export const RUNTIME_STATE_MIGRATION_LADDER: readonly string[] = [
               output_ref TEXT NOT NULL
             ) STRICT;
           `,
+  // v14 -> v15: 데몬 재시작 뒤 PTC retained cell과 callback-host 세션을
+  // 재입양할 최소 좌표. callback token·socket path는 callback-host가 계속
+  // 소유하므로 디스크에 쓰지 않는다.
+  `
+            CREATE TABLE ptc_execute_code_cell_coordinates (
+              cell_id TEXT PRIMARY KEY,
+              state_root TEXT NOT NULL,
+              thread_id TEXT NOT NULL,
+              created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+              effective_timeout_ms INTEGER NOT NULL CHECK (
+                effective_timeout_ms > 0
+              ),
+              orphan_reap_at_ms INTEGER CHECK (
+                orphan_reap_at_ms IS NULL OR orphan_reap_at_ms >= 0
+              ),
+              process_output_ref TEXT NOT NULL,
+              callback_output_ref TEXT,
+              identity_json TEXT NOT NULL,
+              container_id TEXT NOT NULL,
+              max_buffered_bytes_per_stream INTEGER NOT NULL CHECK (
+                max_buffered_bytes_per_stream > 0
+              ),
+              callback_tool_names_json TEXT NOT NULL,
+              store_callbacks_enabled INTEGER NOT NULL CHECK (
+                store_callbacks_enabled IN (0, 1)
+              )
+            ) STRICT;
+
+            CREATE INDEX ptc_execute_code_cell_coordinates_owner
+              ON ptc_execute_code_cell_coordinates (
+                state_root,
+                thread_id,
+                created_at_ms,
+                cell_id
+              );
+          `,
+  // v15 -> v16: running PTC wait가 건넨 정확한 출력과 다음 read offset을
+  // 같은 트랜잭션에 정착한다. 결과가 durable tool-result가 되기 전에
+  // 데몬이 죽어도 같은 call은 delivery를 되찾고, 재입양 handle은 이미
+  // 정착된 바이트를 중복 읽지 않는다.
+  `
+            ALTER TABLE ptc_execute_code_cell_coordinates
+              ADD COLUMN stdout_read_offset_bytes INTEGER CHECK (
+                stdout_read_offset_bytes IS NULL OR
+                stdout_read_offset_bytes >= 0
+              );
+            ALTER TABLE ptc_execute_code_cell_coordinates
+              ADD COLUMN stderr_read_offset_bytes INTEGER CHECK (
+                stderr_read_offset_bytes IS NULL OR
+                stderr_read_offset_bytes >= 0
+              );
+
+            CREATE TABLE ptc_execute_code_running_wait_deliveries (
+              thread_id TEXT NOT NULL,
+              cell_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              call_id TEXT NOT NULL,
+              stdout TEXT NOT NULL,
+              stderr TEXT NOT NULL,
+              stdout_read_offset_bytes INTEGER NOT NULL CHECK (
+                stdout_read_offset_bytes >= 0
+              ),
+              stderr_read_offset_bytes INTEGER NOT NULL CHECK (
+                stderr_read_offset_bytes >= 0
+              ),
+              PRIMARY KEY (thread_id, cell_id),
+              UNIQUE (run_id, call_id)
+            ) STRICT;
+          `,
+  // v16 -> v17: model-visible exec의 첫 running 결과와 release 가능한
+  // lossless offset을 함께 정착한다. 같은 run/call 재개는 셀을 다시
+  // 시작하지 않고 이 delivery 또는 같은 좌표의 live handle을 회수한다.
+  `
+            CREATE TABLE ptc_execute_code_running_exec_deliveries (
+              thread_id TEXT NOT NULL,
+              cell_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              call_id TEXT NOT NULL,
+              stdout TEXT NOT NULL,
+              stderr TEXT NOT NULL,
+              duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+              tool_callback_count INTEGER NOT NULL CHECK (
+                tool_callback_count >= 0
+              ),
+              stdout_read_offset_bytes INTEGER NOT NULL CHECK (
+                stdout_read_offset_bytes >= 0
+              ),
+              stderr_read_offset_bytes INTEGER NOT NULL CHECK (
+                stderr_read_offset_bytes >= 0
+              ),
+              PRIMARY KEY (thread_id, cell_id),
+              UNIQUE (run_id, call_id)
+            ) STRICT;
+          `,
 ];

@@ -4,46 +4,28 @@ import {
   type HostCommandStatus,
   SYSTEM_SESSION_OWNER,
 } from './host-command-output-store.js';
+import type {
+  DetachedProcessExitInfo as HostRoutedDetachedProcessExitInfo,
+  DetachedProcessOutputBufferPolicy as HostRoutedDetachedProcessOutputBufferPolicy,
+  DetachedProcessOutputOffsets,
+  DetachedProcessPreparedOutputDelivery,
+  DetachedProcessOutputSegment as HostRoutedDetachedProcessOutputSegment,
+  DetachedProcessOutputStreamName,
+  DetachedProcessStartResult,
+  HostRoutedDetachedProcessHandle as HostRoutedDetachedProcessHandleContract,
+} from './utils/detached-process.js';
 import { runDetached } from './utils/run-detached.js';
 
-type DetachedProcessOutputStreamName = 'stdout' | 'stderr';
-
-interface HostRoutedDetachedProcessOutputBufferPolicy {
-  maxBufferedBytesPerStream: number;
+interface DetachedOutputReadState {
+  nextOffset: number;
+  unconsumedEnd: number | undefined;
+  releaseUpTo: number | undefined;
+  mayAdoptRetainedBase: boolean;
 }
 
-interface HostRoutedDetachedProcessOutputSegment {
-  stdout: string;
-  stderr: string;
-}
-
-type HostRoutedDetachedProcessExitInfo =
-  | { kind: 'exit'; exitCode: number; processTerminated: true }
-  | { kind: 'signal'; exitCode: null; processTerminated: false }
-  | { kind: 'timeout'; exitCode: null; processTerminated: false }
-  | {
-      kind: 'output_limit_exceeded';
-      exitCode: null;
-      processTerminated: false;
-      stream: DetachedProcessOutputStreamName;
-      maxBufferedBytesPerStream: number;
-    }
-  | {
-      kind: 'spawn_failed';
-      exitCode: null;
-      processTerminated: false;
-      message: string;
-    };
-
-interface HostRoutedDetachedProcessHandleContract {
-  drainNewOutput(): HostRoutedDetachedProcessOutputSegment;
-  getOutputRevision(): number;
-  waitForOutputChange(
-    afterRevision: number,
-    abortSignal?: AbortSignal,
-  ): Promise<number>;
-  readonly exit: Promise<HostRoutedDetachedProcessExitInfo>;
-  terminate(args: { graceMs: number }): void;
+interface PreparedOutputRelease {
+  stdoutBytes: number | undefined;
+  stderrBytes: number | undefined;
 }
 
 interface HostRoutedDetachedProcessInvocation {
@@ -54,11 +36,12 @@ interface HostRoutedDetachedProcessInvocation {
   redactionMarkers?: readonly string[];
   redactionReplacement?: string;
   outputBufferPolicy?: HostRoutedDetachedProcessOutputBufferPolicy;
+  stdinMode?: 'closed' | 'open';
+  initialStdin?: string;
 }
 
 type HostRoutedDetachedProcessStartResult =
-  | { ok: true; handle: HostRoutedDetachedProcessHandleContract }
-  | { ok: false; reasonCode: 'spawn_failed'; message: string };
+  DetachedProcessStartResult<HostRoutedDetachedProcessHandleContract>;
 
 /**
  * 증분 drain·output-change wait·명시 종료가 필요한 직접 자식을
@@ -77,6 +60,44 @@ export function createHostRoutedDetachedProcessStarter(args: {
 ) => Promise<HostRoutedDetachedProcessStartResult> {
   return (invocation) =>
     startHostRoutedDetachedProcess({ ...args, invocation });
+}
+
+export function createHostRoutedDetachedProcessAttacher(args: {
+  hostCommands: HostCommandRuntime;
+  stateRoot: string;
+  pageLimitBytes: number;
+}): (invocation: {
+  outputRef: string;
+  outputBufferPolicy?: HostRoutedDetachedProcessOutputBufferPolicy;
+  outputReadOffsets?: DetachedProcessOutputOffsets;
+}) => Promise<HostRoutedDetachedProcessStartResult> {
+  return async (invocation) => {
+    const claimed = await args.hostCommands.waitForInitialResult({
+      stateRoot: args.stateRoot,
+      outputRef: invocation.outputRef,
+      yieldTimeMs: 0,
+    });
+    if (!claimed.ok) {
+      return {
+        ok: false,
+        reasonCode: 'spawn_failed',
+        message: `detached command-host re-adoption failed: ${claimed.message}`,
+      };
+    }
+
+    const handle = new HostRoutedDetachedProcessHandle({
+      hostCommands: args.hostCommands,
+      stateRoot: args.stateRoot,
+      outputRef: invocation.outputRef,
+      pageLimitBytes: args.pageLimitBytes,
+      outputBufferPolicy: invocation.outputBufferPolicy,
+      ...(invocation.outputReadOffsets === undefined
+        ? {}
+        : { outputReadOffsets: invocation.outputReadOffsets }),
+    });
+    handle.begin(claimed.value);
+    return { ok: true, handle };
+  };
 }
 
 async function startHostRoutedDetachedProcess(args: {
@@ -100,9 +121,14 @@ async function startHostRoutedDetachedProcess(args: {
     threadId: SYSTEM_SESSION_OWNER,
     owner: 'system',
     streamMode: 'lossless',
+    requiresDeferredOutputRelease: true,
+    requiresIdempotentStart: true,
     runId: args.runId,
     callId: args.invocation.callId,
-    stdinMode: 'closed',
+    stdinMode: args.invocation.stdinMode ?? 'closed',
+    ...(args.invocation.initialStdin === undefined
+      ? {}
+      : { initialStdin: args.invocation.initialStdin }),
     ...(args.invocation.timeoutMs === undefined
       ? {}
       : { timeoutMs: args.invocation.timeoutMs }),
@@ -154,18 +180,43 @@ async function startHostRoutedDetachedProcess(args: {
 
 class HostRoutedDetachedProcessHandle implements HostRoutedDetachedProcessHandleContract {
   readonly exit: Promise<HostRoutedDetachedProcessExitInfo>;
+  readonly outputRef: string;
 
   private readonly hostCommands: HostCommandRuntime;
   private readonly stateRoot: string;
-  private readonly outputRef: string;
   private readonly pageLimitBytes: number;
+  private readonly hasExplicitOutputReadOffsets: boolean;
   private readonly stdout: DetachedOutputBuffer;
   private readonly stderr: DetachedOutputBuffer;
   private readonly resolveExit: (
     exit: HostRoutedDetachedProcessExitInfo,
   ) => void;
   private readonly outputWaiters = new Set<(nextRevision: number) => void>();
+  private readonly readLoopWaiters = new Set<() => void>();
+  private readonly readStates: Record<
+    DetachedProcessOutputStreamName,
+    DetachedOutputReadState
+  > = {
+    stdout: {
+      nextOffset: 0,
+      unconsumedEnd: undefined,
+      releaseUpTo: undefined,
+      mayAdoptRetainedBase: true,
+    },
+    stderr: {
+      nextOffset: 0,
+      unconsumedEnd: undefined,
+      releaseUpTo: undefined,
+      mayAdoptRetainedBase: true,
+    },
+  };
   private outputRevision = 0;
+  private readLoopRevision = 0;
+  private preparedOutputDelivery:
+    | (DetachedProcessPreparedOutputDelivery & {
+        release: PreparedOutputRelease;
+      })
+    | undefined;
   private closed = false;
   private terminationRequested = false;
   private discardFurtherOutput = false;
@@ -177,11 +228,21 @@ class HostRoutedDetachedProcessHandle implements HostRoutedDetachedProcessHandle
     outputRef: string;
     pageLimitBytes: number;
     outputBufferPolicy: HostRoutedDetachedProcessOutputBufferPolicy | undefined;
+    outputReadOffsets?: DetachedProcessOutputOffsets;
   }) {
     this.hostCommands = args.hostCommands;
     this.stateRoot = args.stateRoot;
     this.outputRef = args.outputRef;
     this.pageLimitBytes = args.pageLimitBytes;
+    this.hasExplicitOutputReadOffsets = args.outputReadOffsets !== undefined;
+    this.readStates.stdout.mayAdoptRetainedBase =
+      !this.hasExplicitOutputReadOffsets;
+    this.readStates.stderr.mayAdoptRetainedBase =
+      !this.hasExplicitOutputReadOffsets;
+    this.readStates.stdout.nextOffset =
+      args.outputReadOffsets?.stdoutBytes ?? 0;
+    this.readStates.stderr.nextOffset =
+      args.outputReadOffsets?.stderrBytes ?? 0;
     this.stdout = new DetachedOutputBuffer(args.outputBufferPolicy);
     this.stderr = new DetachedOutputBuffer(args.outputBufferPolicy);
     let resolveExit: (exit: HostRoutedDetachedProcessExitInfo) => void = () =>
@@ -199,6 +260,10 @@ class HostRoutedDetachedProcessHandle implements HostRoutedDetachedProcessHandle
       this.finish(this.terminalOverride ?? exitFromSnapshot(initial));
       return;
     }
+    if (!this.hasExplicitOutputReadOffsets) {
+      this.readStates.stdout.nextOffset = initial.stdoutOmittedBytes ?? 0;
+      this.readStates.stderr.nextOffset = initial.stderrOmittedBytes ?? 0;
+    }
     runDetached('command-host/detached-output', async () => {
       try {
         await this.readLoop(initial);
@@ -214,10 +279,58 @@ class HostRoutedDetachedProcessHandle implements HostRoutedDetachedProcessHandle
   }
 
   drainNewOutput(): HostRoutedDetachedProcessOutputSegment {
+    const prepared = this.preparedOutputDelivery;
+    if (prepared !== undefined) {
+      this.preparedOutputDelivery = undefined;
+      this.releasePreparedOutput(prepared.release);
+    }
+    const stdout = this.drainStream('stdout');
+    const stderr = this.drainStream('stderr');
     return {
-      stdout: this.stdout.drain(),
-      stderr: this.stderr.drain(),
+      stdout: (prepared?.output.stdout ?? '') + stdout,
+      stderr: (prepared?.output.stderr ?? '') + stderr,
     };
+  }
+
+  prepareOutputDelivery(): DetachedProcessPreparedOutputDelivery {
+    if (this.preparedOutputDelivery !== undefined) {
+      return {
+        output: this.preparedOutputDelivery.output,
+        offsets: this.preparedOutputDelivery.offsets,
+      };
+    }
+    const stdout = this.prepareStreamDelivery('stdout');
+    const stderr = this.prepareStreamDelivery('stderr');
+    const prepared = {
+      output: {
+        stdout: stdout.output,
+        stderr: stderr.output,
+      },
+      offsets: {
+        stdoutBytes: stdout.offsetBytes,
+        stderrBytes: stderr.offsetBytes,
+      },
+      release: {
+        stdoutBytes: stdout.releaseUpTo,
+        stderrBytes: stderr.releaseUpTo,
+      },
+    };
+    if (stdout.output.length > 0 || stderr.output.length > 0) {
+      this.preparedOutputDelivery = prepared;
+    }
+    return {
+      output: prepared.output,
+      offsets: prepared.offsets,
+    };
+  }
+
+  commitPreparedOutputDelivery(): void {
+    const prepared = this.preparedOutputDelivery;
+    if (prepared === undefined) {
+      return;
+    }
+    this.preparedOutputDelivery = undefined;
+    this.releasePreparedOutput(prepared.release);
   }
 
   getOutputRevision(): number {
@@ -259,7 +372,24 @@ class HostRoutedDetachedProcessHandle implements HostRoutedDetachedProcessHandle
     });
   }
 
-  terminate(_args: { graceMs: number }): void {
+  async writeInput(
+    chars: string,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (this.closed) {
+      return { ok: false, message: 'detached process is no longer running.' };
+    }
+    const written = await this.hostCommands.interact({
+      stateRoot: this.stateRoot,
+      threadId: SYSTEM_SESSION_OWNER,
+      owner: 'system',
+      outputRef: this.outputRef,
+      chars,
+      yieldTimeMs: 0,
+    });
+    return written.ok ? { ok: true } : { ok: false, message: written.message };
+  }
+
+  stop(): void {
     if (this.closed || this.terminationRequested) {
       return;
     }
@@ -271,63 +401,65 @@ class HostRoutedDetachedProcessHandle implements HostRoutedDetachedProcessHandle
     this.requestTermination();
   }
 
+  terminate(_args: { graceMs: number }): void {
+    this.stop();
+  }
+
   private async readLoop(initial: HostCommandSnapshot): Promise<void> {
-    const offsets: Record<DetachedProcessOutputStreamName, number> = {
-      stdout: 0,
-      stderr: 0,
-    };
     let snapshot = initial;
     for (;;) {
-      const stdout = await this.readAvailableStream('stdout', offsets.stdout);
+      if (this.closed) {
+        return;
+      }
+      const wakeRevision = this.readLoopRevision;
+      const stdout = await this.readAvailableStream('stdout');
       if (!stdout.ok) {
         this.finish(hostReadFailure(stdout.message));
         return;
       }
-      offsets.stdout = stdout.nextOffset;
       snapshot = stdout.snapshot;
 
-      const stderr = await this.readAvailableStream('stderr', offsets.stderr);
+      const stderr = await this.readAvailableStream('stderr');
       if (!stderr.ok) {
         this.finish(hostReadFailure(stderr.message));
         return;
       }
-      offsets.stderr = stderr.nextOffset;
       snapshot = stderr.snapshot;
 
-      if (stdout.hasMore || stderr.hasMore) {
+      if (stdout.hasMore || stderr.hasMore || this.hasPendingOutputRelease()) {
         continue;
       }
       if (snapshot.status !== 'running') {
         this.finish(this.terminalOverride ?? exitFromSnapshot(snapshot));
         return;
       }
-      const changed = await this.hostCommands.interact({
-        stateRoot: this.stateRoot,
-        threadId: SYSTEM_SESSION_OWNER,
-        owner: 'system',
-        outputRef: this.outputRef,
-        afterRevision: snapshot.revision,
-      });
+      const changed = await this.waitForHostOrReadLoopWake(
+        snapshot.revision,
+        wakeRevision,
+      );
       if (!changed.ok) {
         this.finish(hostReadFailure(changed.message));
         return;
       }
-      snapshot = changed.value.snapshot;
+      if (changed.snapshot !== null) {
+        snapshot = changed.snapshot;
+      }
     }
   }
 
   private async readAvailableStream(
     stream: DetachedProcessOutputStreamName,
-    offset: number,
   ): Promise<
     | {
         ok: true;
-        nextOffset: number;
         hasMore: boolean;
         snapshot: HostCommandSnapshot;
       }
     | { ok: false; message: string }
   > {
+    const state = this.readStates[stream];
+    const requestedOffset = state.nextOffset;
+    const releaseUpTo = state.releaseUpTo;
     const observed = await this.hostCommands.interact({
       stateRoot: this.stateRoot,
       threadId: SYSTEM_SESSION_OWNER,
@@ -336,37 +468,198 @@ class HostRoutedDetachedProcessHandle implements HostRoutedDetachedProcessHandle
       yieldTimeMs: 0,
       page: {
         stream,
-        offsetBytes: offset,
+        offsetBytes: requestedOffset,
         limitBytes: this.pageLimitBytes,
+        deferRelease: true,
+        ...(releaseUpTo === undefined ? {} : { releaseUpToBytes: releaseUpTo }),
       },
     });
     if (!observed.ok) {
       return { ok: false, message: observed.message };
     }
+    if (state.releaseUpTo === releaseUpTo) {
+      state.releaseUpTo = undefined;
+    }
     const page = observed.value.page;
+    const mayAdoptRetainedBase = state.mayAdoptRetainedBase;
+    state.mayAdoptRetainedBase = false;
     if (page === null) {
       return {
         ok: true,
-        nextOffset: offset,
         hasMore: false,
         snapshot: observed.value.snapshot,
       };
     }
-    if (page.offsetBytes !== offset) {
-      return {
-        ok: false,
-        message: `detached command-host output gap: requested ${offset}, received ${page.offsetBytes}.`,
-      };
+    if (page.offsetBytes !== requestedOffset) {
+      if (mayAdoptRetainedBase && page.offsetBytes > requestedOffset) {
+        state.nextOffset = page.offsetBytes;
+      } else {
+        return {
+          ok: false,
+          message: `detached command-host output gap: requested ${requestedOffset}, received ${page.offsetBytes}.`,
+        };
+      }
     }
-    if (page.endOffsetBytes > offset) {
+    if (page.endOffsetBytes > state.nextOffset) {
       this.appendPage(stream, page.content);
+      state.nextOffset = page.endOffsetBytes;
+      state.unconsumedEnd = page.endOffsetBytes;
     }
     return {
       ok: true,
-      nextOffset: page.endOffsetBytes,
       hasMore: page.hasMore,
       snapshot: observed.value.snapshot,
     };
+  }
+
+  private drainStream(stream: DetachedProcessOutputStreamName): string {
+    const buffer = stream === 'stdout' ? this.stdout : this.stderr;
+    const output = buffer.drain();
+    const state = this.readStates[stream];
+    if (output.length > 0 && state.unconsumedEnd !== undefined) {
+      state.releaseUpTo = state.unconsumedEnd;
+      state.unconsumedEnd = undefined;
+      this.wakeReadLoop();
+    }
+    return output;
+  }
+
+  private prepareStreamDelivery(stream: DetachedProcessOutputStreamName): {
+    output: string;
+    offsetBytes: number;
+    releaseUpTo: number | undefined;
+  } {
+    const buffer = stream === 'stdout' ? this.stdout : this.stderr;
+    const output = buffer.drain();
+    const state = this.readStates[stream];
+    const releaseUpTo = output.length > 0 ? state.unconsumedEnd : undefined;
+    if (releaseUpTo !== undefined) {
+      state.unconsumedEnd = undefined;
+    }
+    return {
+      output,
+      offsetBytes: releaseUpTo ?? state.nextOffset,
+      releaseUpTo,
+    };
+  }
+
+  private releasePreparedOutput(release: PreparedOutputRelease): void {
+    if (release.stdoutBytes !== undefined) {
+      this.readStates.stdout.releaseUpTo = release.stdoutBytes;
+    }
+    if (release.stderrBytes !== undefined) {
+      this.readStates.stderr.releaseUpTo = release.stderrBytes;
+    }
+    if (
+      release.stdoutBytes !== undefined ||
+      release.stderrBytes !== undefined
+    ) {
+      this.wakeReadLoop();
+    }
+  }
+
+  private hasPendingOutputRelease(): boolean {
+    return (
+      this.readStates.stdout.releaseUpTo !== undefined ||
+      this.readStates.stderr.releaseUpTo !== undefined
+    );
+  }
+
+  private async waitForHostOrReadLoopWake(
+    afterRevision: number,
+    afterWakeRevision: number,
+  ): Promise<
+    | { ok: true; snapshot: HostCommandSnapshot | null }
+    | { ok: false; message: string }
+  > {
+    const hostAbort = new AbortController();
+    const localAbort = new AbortController();
+    const hostWait = this.hostCommands
+      .interact({
+        stateRoot: this.stateRoot,
+        threadId: SYSTEM_SESSION_OWNER,
+        owner: 'system',
+        outputRef: this.outputRef,
+        afterRevision,
+        signal: hostAbort.signal,
+      })
+      .then(
+        (result) => ({ kind: 'host' as const, result }),
+        (error: unknown) => ({
+          kind: 'host_error' as const,
+          message: getErrorMessage(error),
+        }),
+      );
+    const localWait = this.waitForReadLoopWake(
+      afterWakeRevision,
+      localAbort.signal,
+    ).then(
+      () => ({ kind: 'local' as const }),
+      () => ({ kind: 'local_aborted' as const }),
+    );
+    const winner = await Promise.race([hostWait, localWait]);
+    if (winner.kind === 'local') {
+      hostAbort.abort();
+      await hostWait;
+      return { ok: true, snapshot: null };
+    }
+    localAbort.abort();
+    await localWait;
+    if (winner.kind === 'host_error') {
+      return { ok: false, message: winner.message };
+    }
+    if (winner.kind === 'local_aborted') {
+      return {
+        ok: false,
+        message: 'detached process read wait aborted unexpectedly.',
+      };
+    }
+    if (!winner.result.ok) {
+      return { ok: false, message: winner.result.message };
+    }
+    return { ok: true, snapshot: winner.result.value.snapshot };
+  }
+
+  private waitForReadLoopWake(
+    afterRevision: number,
+    abortSignal: AbortSignal,
+  ): Promise<void> {
+    if (this.readLoopRevision !== afterRevision) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.readLoopWaiters.delete(onWake);
+        abortSignal.removeEventListener('abort', onAbort);
+        fn();
+      };
+      const onAbort = () => {
+        finish(() => reject(new Error('detached process read wait aborted')));
+      };
+      const onWake = () => {
+        finish(resolve);
+      };
+      if (abortSignal.aborted) {
+        onAbort();
+        return;
+      }
+      this.readLoopWaiters.add(onWake);
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  private wakeReadLoop(): void {
+    this.readLoopRevision += 1;
+    const waiters = [...this.readLoopWaiters];
+    this.readLoopWaiters.clear();
+    for (const waiter of waiters) {
+      waiter();
+    }
   }
 
   private appendInlineOutput(
@@ -435,6 +728,7 @@ class HostRoutedDetachedProcessHandle implements HostRoutedDetachedProcessHandle
       return;
     }
     this.closed = true;
+    this.wakeReadLoop();
     this.bumpOutputRevision();
     this.resolveExit(exit);
   }

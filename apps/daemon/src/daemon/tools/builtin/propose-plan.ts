@@ -31,7 +31,9 @@ export const proposePlanTool = defineZodTool({
   argsSchema: proposePlanArgsSchema,
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
+  abortSettlement: 'await_execution',
   requiresApproval: false,
+  recoveryStrategy: 'reconcile_then_replay',
   catalogSearchMetadata: {
     family: 'planning',
     searchHints: [

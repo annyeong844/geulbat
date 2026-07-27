@@ -25,30 +25,37 @@ import {
   type RunExecutionTemplate,
 } from './run-execution-template.js';
 
-const GOAL_STORE_SCHEMA_VERSION = 1;
+const LEGACY_GOAL_STORE_SCHEMA_VERSION = 1;
+const GOAL_STORE_SCHEMA_VERSION = 2;
 
-export type GoalVerificationVoteRecord =
+type LegacyGoalVerificationVoteRecord =
   | { verdict: 'achieved' }
   | { verdict: 'not_achieved'; unmetRequirements: string[] }
   | { verdict: 'unavailable'; reason: string };
 
-export type GoalVerificationOutcome =
+type LegacyGoalVerificationOutcome =
   | { kind: 'achieved' }
   | { kind: 'incomplete'; unmetRequirements: string[] }
   | { kind: 'unavailable'; message: string };
 
-interface StoredGoalVerificationAttempt {
+interface StoredLegacyGoalVerificationAttempt {
   runId: RunId;
   attemptedAt: string;
-  outcome: GoalVerificationOutcome;
-  votes: GoalVerificationVoteRecord[];
+  outcome: LegacyGoalVerificationOutcome;
+  votes: LegacyGoalVerificationVoteRecord[];
+}
+
+interface StoredGoalCompletionAdmission {
+  runId: RunId;
+  admittedAt: string;
 }
 
 interface StoredCurrentGoal {
   snapshot: GoalSnapshot;
   executionTemplate: RunExecutionTemplate;
-  verificationRunId?: RunId;
-  verificationAttempts: StoredGoalVerificationAttempt[];
+  completionRunId?: RunId;
+  completionAdmissions: StoredGoalCompletionAdmission[];
+  legacyVerificationAttempts: StoredLegacyGoalVerificationAttempt[];
 }
 
 interface StoredGoalState {
@@ -77,17 +84,15 @@ export interface GoalStore {
     snapshot: GoalSnapshot | null;
     executionTemplate?: RunExecutionTemplate;
   }>;
-  requestVerification(args: {
+  requestCompletion(args: {
     threadId: ThreadId;
     goalId: string;
     runId: RunId;
   }): Promise<GoalSnapshot>;
-  recordVerification(args: {
+  admitCompletion(args: {
     threadId: ThreadId;
     goalId: string;
     runId: RunId;
-    outcome: GoalVerificationOutcome;
-    votes: GoalVerificationVoteRecord[];
   }): Promise<GoalSnapshot>;
 }
 
@@ -100,7 +105,7 @@ export function createGoalStore(args: {
   const now = args.now ?? (() => new Date().toISOString());
   const createId = args.createId ?? randomUUID;
   const runMutationSerial = createKeyedSerialRunner();
-  const liveVerificationThreadIds = new Set<ThreadId>();
+  const liveCompletionThreadIds = new Set<ThreadId>();
 
   function goalPath(threadId: ThreadId): string {
     return join(root, `${assertThreadId(threadId)}.json`);
@@ -136,7 +141,7 @@ export function createGoalStore(args: {
     const current = state.current;
     if (
       current?.snapshot.state !== 'verifying' ||
-      liveVerificationThreadIds.has(threadId)
+      liveCompletionThreadIds.has(threadId)
     ) {
       return state;
     }
@@ -144,7 +149,8 @@ export function createGoalStore(args: {
       ...state,
       current: {
         executionTemplate: current.executionTemplate,
-        verificationAttempts: current.verificationAttempts,
+        completionAdmissions: current.completionAdmissions,
+        legacyVerificationAttempts: current.legacyVerificationAttempts,
         snapshot: {
           ...current.snapshot,
           state: 'verification_unavailable',
@@ -216,7 +222,8 @@ export function createGoalStore(args: {
         current: {
           snapshot,
           executionTemplate,
-          verificationAttempts: [],
+          completionAdmissions: [],
+          legacyVerificationAttempts: [],
         },
       });
       return snapshot;
@@ -268,6 +275,7 @@ export function createGoalStore(args: {
           ...state,
           current: null,
         });
+        liveCompletionThreadIds.delete(command.threadId);
         return { snapshot: null };
       }
       if (command.kind === 'pause') {
@@ -333,7 +341,7 @@ export function createGoalStore(args: {
     });
   }
 
-  async function requestVerification({
+  async function requestCompletion({
     threadId,
     goalId,
     runId,
@@ -350,7 +358,7 @@ export function createGoalStore(args: {
         current.snapshot.state !== 'working' &&
         current.snapshot.state !== 'continuing'
       ) {
-        throw goalConflict('Goal is not ready for completion verification');
+        throw goalConflict('Goal is not ready for completion admission');
       }
       const snapshot: GoalSnapshot = {
         ...current.snapshot,
@@ -362,26 +370,22 @@ export function createGoalStore(args: {
         current: {
           ...current,
           snapshot,
-          verificationRunId: assertRunId(runId),
+          completionRunId: assertRunId(runId),
         },
       });
-      liveVerificationThreadIds.add(threadId);
+      liveCompletionThreadIds.add(threadId);
       return snapshot;
     });
   }
 
-  async function recordVerification({
+  async function admitCompletion({
     threadId,
     goalId,
     runId,
-    outcome,
-    votes,
   }: {
     threadId: ThreadId;
     goalId: string;
     runId: RunId;
-    outcome: GoalVerificationOutcome;
-    votes: GoalVerificationVoteRecord[];
   }): Promise<GoalSnapshot> {
     const path = goalPath(threadId);
     try {
@@ -390,41 +394,35 @@ export function createGoalStore(args: {
         const current = requireCurrentGoal(state, goalId);
         if (
           current.snapshot.state !== 'verifying' ||
-          current.verificationRunId !== runId
+          current.completionRunId !== runId
         ) {
-          throw goalConflict('Goal verification attempt is no longer current');
+          throw goalConflict('Goal completion request is no longer current');
         }
-        const attemptedAt = now();
+        const admittedAt = now();
         const snapshot: GoalSnapshot = {
           ...current.snapshot,
-          state:
-            outcome.kind === 'achieved'
-              ? 'completed'
-              : outcome.kind === 'incomplete'
-                ? 'continuing'
-                : 'verification_unavailable',
-          updatedAt: attemptedAt,
+          state: 'completed',
+          updatedAt: admittedAt,
         };
         await writeState(threadId, {
           ...state,
           current: {
             executionTemplate: current.executionTemplate,
             snapshot,
-            verificationAttempts: [
-              ...current.verificationAttempts,
+            completionAdmissions: [
+              ...current.completionAdmissions,
               {
                 runId,
-                attemptedAt,
-                outcome,
-                votes,
+                admittedAt,
               },
             ],
+            legacyVerificationAttempts: current.legacyVerificationAttempts,
           },
         });
         return snapshot;
       });
     } finally {
-      liveVerificationThreadIds.delete(threadId);
+      liveCompletionThreadIds.delete(threadId);
     }
   }
 
@@ -434,8 +432,8 @@ export function createGoalStore(args: {
     readForRun,
     resumeForRun,
     applyCommand,
-    requestVerification,
-    recordVerification,
+    requestCompletion,
+    admitCompletion,
   };
 }
 
@@ -447,7 +445,19 @@ function createEmptyGoalState(): StoredGoalState {
 }
 
 function parseStoredGoalState(value: unknown): StoredGoalState {
-  if (!isRecord(value) || value.schemaVersion !== GOAL_STORE_SCHEMA_VERSION) {
+  if (!isRecord(value)) {
+    throw new Error('invalid Goal store');
+  }
+  if (value.schemaVersion === LEGACY_GOAL_STORE_SCHEMA_VERSION) {
+    return {
+      schemaVersion: GOAL_STORE_SCHEMA_VERSION,
+      current:
+        value.current === null
+          ? null
+          : parseLegacyStoredCurrentGoal(value.current),
+    };
+  }
+  if (value.schemaVersion !== GOAL_STORE_SCHEMA_VERSION) {
     throw new Error('invalid Goal store');
   }
   return {
@@ -462,38 +472,83 @@ function parseStoredCurrentGoal(value: unknown): StoredCurrentGoal {
     !isRecord(value) ||
     !isGoalSnapshot(value.snapshot) ||
     !isRunExecutionTemplate(value.executionTemplate) ||
-    (value.verificationRunId !== undefined &&
-      (!isString(value.verificationRunId) ||
-        !isRunId(value.verificationRunId))) ||
-    !Array.isArray(value.verificationAttempts)
+    (value.completionRunId !== undefined &&
+      (!isString(value.completionRunId) || !isRunId(value.completionRunId))) ||
+    !Array.isArray(value.completionAdmissions) ||
+    !Array.isArray(value.legacyVerificationAttempts)
   ) {
     throw new Error('invalid current Goal');
   }
   return {
     snapshot: value.snapshot,
     executionTemplate: value.executionTemplate,
-    ...(value.verificationRunId === undefined
+    ...(value.completionRunId === undefined
       ? {}
-      : { verificationRunId: value.verificationRunId }),
-    verificationAttempts: value.verificationAttempts.map(
-      parseStoredVerificationAttempt,
+      : { completionRunId: value.completionRunId }),
+    completionAdmissions: value.completionAdmissions.map(
+      parseStoredCompletionAdmission,
+    ),
+    legacyVerificationAttempts: value.legacyVerificationAttempts.map(
+      parseStoredLegacyVerificationAttempt,
     ),
   };
 }
 
-function parseStoredVerificationAttempt(
+function parseLegacyStoredCurrentGoal(value: unknown): StoredCurrentGoal {
+  if (
+    !isRecord(value) ||
+    !isGoalSnapshot(value.snapshot) ||
+    !isRunExecutionTemplate(value.executionTemplate) ||
+    (value.verificationRunId !== undefined &&
+      (!isString(value.verificationRunId) ||
+        !isRunId(value.verificationRunId))) ||
+    !Array.isArray(value.verificationAttempts)
+  ) {
+    throw new Error('invalid legacy current Goal');
+  }
+  return {
+    snapshot: value.snapshot,
+    executionTemplate: value.executionTemplate,
+    ...(value.verificationRunId === undefined
+      ? {}
+      : { completionRunId: value.verificationRunId }),
+    completionAdmissions: [],
+    legacyVerificationAttempts: value.verificationAttempts.map(
+      parseStoredLegacyVerificationAttempt,
+    ),
+  };
+}
+
+function parseStoredCompletionAdmission(
   value: unknown,
-): StoredGoalVerificationAttempt {
+): StoredGoalCompletionAdmission {
+  if (
+    !isRecord(value) ||
+    !isString(value.runId) ||
+    !isRunId(value.runId) ||
+    !isTimestamp(value.admittedAt)
+  ) {
+    throw new Error('invalid Goal completion admission');
+  }
+  return {
+    runId: value.runId,
+    admittedAt: value.admittedAt,
+  };
+}
+
+function parseStoredLegacyVerificationAttempt(
+  value: unknown,
+): StoredLegacyGoalVerificationAttempt {
   if (
     !isRecord(value) ||
     !isString(value.runId) ||
     !isRunId(value.runId) ||
     !isTimestamp(value.attemptedAt) ||
-    !isGoalVerificationOutcome(value.outcome) ||
+    !isLegacyGoalVerificationOutcome(value.outcome) ||
     !Array.isArray(value.votes) ||
-    !value.votes.every(isGoalVerificationVoteRecord)
+    !value.votes.every(isLegacyGoalVerificationVoteRecord)
   ) {
-    throw new Error('invalid Goal verification attempt');
+    throw new Error('invalid legacy Goal verification attempt');
   }
   return {
     runId: value.runId,
@@ -518,9 +573,9 @@ function isGoalRunState(state: GoalSnapshot['state']): boolean {
   return state === 'working' || state === 'continuing' || state === 'verifying';
 }
 
-function isGoalVerificationOutcome(
+function isLegacyGoalVerificationOutcome(
   value: unknown,
-): value is GoalVerificationOutcome {
+): value is LegacyGoalVerificationOutcome {
   if (!isRecord(value) || !isString(value.kind)) {
     return false;
   }
@@ -540,9 +595,9 @@ function isGoalVerificationOutcome(
   );
 }
 
-function isGoalVerificationVoteRecord(
+function isLegacyGoalVerificationVoteRecord(
   value: unknown,
-): value is GoalVerificationVoteRecord {
+): value is LegacyGoalVerificationVoteRecord {
   if (!isRecord(value) || !isString(value.verdict)) {
     return false;
   }

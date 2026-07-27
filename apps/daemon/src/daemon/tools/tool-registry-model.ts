@@ -1,7 +1,10 @@
 import type { ApprovalClass } from '@geulbat/protocol/run-approval';
 import type { SideEffectLevel } from '@geulbat/protocol/run-events';
 import type { ErrorCode } from '../error-codes.js';
+import type { ToolRecoveryStrategy } from '../runtime-contracts.js';
 import { isRecord, tryParseJson } from '../runtime-json.js';
+
+export type { ToolRecoveryStrategy } from '../runtime-contracts.js';
 
 export interface ToolObjectParameters {
   type: 'object';
@@ -113,12 +116,7 @@ export type HostToolEffect =
   | 'hostStateMutation'
   | 'exclusive';
 
-export type ToolRecoveryStrategy =
-  | 'replay_safe'
-  | 'idempotency_key'
-  | 'reconcile_then_replay'
-  | 'durable_handle'
-  | 'at_least_once';
+export type ToolAbortSettlement = 'immediate' | 'await_execution';
 
 export type ToolResultProjectionKind =
   | 'fetch_url_summary'
@@ -199,6 +197,7 @@ export interface RegisteredToolLike {
   sideEffectLevel: SideEffectLevel;
   mayMutateComputerFiles: boolean;
   parallelBatchKind?: ParallelToolBatchKind;
+  abortSettlement?: ToolAbortSettlement;
   timeoutMs?: number;
   requiresApproval: boolean;
   /** 승낙이 걸리는 단위. 생략이면 도구 이름이 곧 클래스다 (ToolDescriptor 참조). */
@@ -225,7 +224,9 @@ export type ToolExecutionHandle = Readonly<
   Pick<
     RegisteredToolLike,
     'timeoutMs' | 'requiresApproval' | 'parseArgs' | 'executeParsed'
-  >
+  > & {
+    abortSettlement: ToolAbortSettlement;
+  }
 >;
 
 export interface ToolRegistrySnapshot {

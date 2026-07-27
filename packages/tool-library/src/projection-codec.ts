@@ -1,10 +1,14 @@
 import { isAbsolute } from 'node:path';
 
+import { sha256Digest } from '@geulbat/content-identity/sha256';
 import { stableStringify } from '@geulbat/content-identity/stable-json';
+
+import type { ToolLibraryProjectionFile } from './projection-descriptor.js';
 
 const TOOL_LIBRARY_PROJECTION_MANIFEST_MODULE_PREFIX =
   'export const projectionManifest = ';
 const TOOL_LIBRARY_PROJECTION_MANIFEST_MODULE_SUFFIX = ';\n';
+export const TOOL_LIBRARY_PROJECTION_BUNDLE_SCHEMA_VERSION = 1 as const;
 
 export interface ToolLibraryProjectionIdentity {
   sdkVersion: string;
@@ -47,6 +51,20 @@ export interface ToolLibraryProjectionImportableModule {
   specifier: string;
   module: string;
   role: ToolLibraryProjectionMountedModuleRole;
+}
+
+export interface ToolLibraryProjectionBundleFile {
+  path: string;
+  role: ToolLibraryProjectionFile['role'];
+  content: string;
+  contentHash: `sha256:${string}`;
+}
+
+export interface ToolLibraryProjectionBundle {
+  schemaVersion: typeof TOOL_LIBRARY_PROJECTION_BUNDLE_SCHEMA_VERSION;
+  bundleId: `sha256:${string}`;
+  manifest: ToolLibraryProjectionManifest;
+  files: readonly ToolLibraryProjectionBundleFile[];
 }
 
 type ReadToolLibraryProjectionManifestResult =
@@ -199,6 +217,229 @@ export function parseToolLibraryProjectionManifestModule(
   }
 
   return { ok: true, manifest };
+}
+
+export function createToolLibraryProjectionBundle(args: {
+  manifest: ToolLibraryProjectionManifest;
+  files: readonly ToolLibraryProjectionFile[];
+}): ToolLibraryProjectionBundle {
+  const manifestResult = parseToolLibraryProjectionManifestModule(
+    serializeToolLibraryProjectionManifestModule(args.manifest),
+  );
+  if (!manifestResult.ok) {
+    throw new Error('tool library projection bundle manifest is invalid');
+  }
+  const manifest = manifestResult.manifest;
+  const expectedFiles = new Map(
+    manifest.importableModules.map((module) => [
+      module.module,
+      projectionFileRoleForMountedModuleRole(module.role),
+    ]),
+  );
+  if (expectedFiles.size !== manifest.importableModules.length) {
+    throw new Error(
+      'tool library projection bundle manifest has duplicate file paths',
+    );
+  }
+
+  const seenPaths = new Set<string>();
+  const files = [...args.files]
+    .sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+    )
+    .map((file): ToolLibraryProjectionBundleFile => {
+      if (
+        !isValidProjectionRelativePath(file.path) ||
+        seenPaths.has(file.path)
+      ) {
+        throw new Error(
+          'tool library projection bundle has an invalid or duplicate file path',
+        );
+      }
+      seenPaths.add(file.path);
+      const expectedRole = expectedFiles.get(file.path);
+      if (expectedRole === undefined || expectedRole !== file.role) {
+        throw new Error(
+          'tool library projection bundle file does not match the manifest',
+        );
+      }
+      return {
+        path: file.path,
+        role: file.role,
+        content: file.content,
+        contentHash: sha256Digest(file.content),
+      };
+    });
+  if (
+    files.length !== expectedFiles.size ||
+    [...expectedFiles.keys()].some((path) => !seenPaths.has(path))
+  ) {
+    throw new Error(
+      'tool library projection bundle file set does not match the manifest',
+    );
+  }
+
+  const manifestModules = manifest.importableModules.filter(
+    (module) => module.role === 'manifest',
+  );
+  if (manifestModules.length !== 1) {
+    throw new Error(
+      'tool library projection bundle requires one manifest module',
+    );
+  }
+  const manifestFile = files.find(
+    (file) => file.path === manifestModules[0]?.module,
+  );
+  if (manifestFile === undefined) {
+    throw new Error(
+      'tool library projection bundle manifest module is missing',
+    );
+  }
+  if (
+    manifestFile.content !==
+    serializeToolLibraryProjectionManifestModule(manifest)
+  ) {
+    throw new Error(
+      'tool library projection bundle manifest module is not canonical',
+    );
+  }
+  const bundledManifest = parseToolLibraryProjectionManifestModule(
+    manifestFile.content,
+  );
+  if (
+    !bundledManifest.ok ||
+    !verifyToolLibraryProjectionManifest({
+      manifest: bundledManifest.manifest,
+      expectedManifest: manifest,
+    }).ok
+  ) {
+    throw new Error(
+      'tool library projection bundle manifest module does not match the manifest',
+    );
+  }
+
+  const body = {
+    schemaVersion: TOOL_LIBRARY_PROJECTION_BUNDLE_SCHEMA_VERSION,
+    manifest,
+    files,
+  };
+  return {
+    ...body,
+    bundleId: sha256Digest(stableStringify(body)),
+  };
+}
+
+export function serializeToolLibraryProjectionBundle(
+  bundle: ToolLibraryProjectionBundle,
+): string {
+  const canonical = createToolLibraryProjectionBundle({
+    manifest: bundle.manifest,
+    files: bundle.files,
+  });
+  if (canonical.bundleId !== bundle.bundleId) {
+    throw new Error(
+      'tool library projection bundleId does not match the bundle body',
+    );
+  }
+  return stableStringify(canonical);
+}
+
+export function parseToolLibraryProjectionBundle(
+  serialized: string,
+): ToolLibraryProjectionBundle {
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized);
+  } catch {
+    throw new Error('tool library projection bundle must be valid JSON');
+  }
+  const record = readExactRecord(
+    value,
+    ['bundleId', 'files', 'manifest', 'schemaVersion'],
+    'tool library projection bundle',
+  );
+  if (record.schemaVersion !== TOOL_LIBRARY_PROJECTION_BUNDLE_SCHEMA_VERSION) {
+    throw new Error('unsupported tool library projection bundle schemaVersion');
+  }
+  const bundleId = readProjectionHashField(record, 'bundleId');
+  if (bundleId === null) {
+    throw new Error('tool library projection bundleId is invalid');
+  }
+
+  const manifestRecord = readExactRecord(
+    record.manifest,
+    [
+      'allowedCallbackNames',
+      'allowedPublicNames',
+      'allowedRegistryNames',
+      'catalogModule',
+      'importSpecifier',
+      'importableModules',
+      'indexDeclarationModule',
+      'modelFacingCatalogRef',
+      'policyId',
+      'runtimeCompatibilityRange',
+      'sdkProjectionHash',
+      'sdkVersion',
+      'searchModule',
+      'searchRuntimeModule',
+      'sourceRegistryVersion',
+    ],
+    'tool library projection bundle manifest',
+  );
+  if (!Array.isArray(manifestRecord.importableModules)) {
+    throw new Error(
+      'tool library projection bundle importableModules must be an array',
+    );
+  }
+  manifestRecord.importableModules.forEach((value, index) => {
+    readExactRecord(
+      value,
+      ['module', 'role', 'specifier'],
+      `tool library projection bundle importable module ${index}`,
+    );
+  });
+  const manifest = readToolLibraryProjectionManifestValue(manifestRecord);
+  if (manifest === null) {
+    throw new Error('tool library projection bundle manifest is invalid');
+  }
+  if (!Array.isArray(record.files)) {
+    throw new Error('tool library projection bundle files must be an array');
+  }
+  const files = record.files.map((value, index): ToolLibraryProjectionFile => {
+    const file = readExactRecord(
+      value,
+      ['content', 'contentHash', 'path', 'role'],
+      `tool library projection bundle file ${index}`,
+    );
+    const path = readStringField(file, 'path');
+    const role = readProjectionFileRoleField(file, 'role');
+    const content: unknown = file.content;
+    const contentHash = readProjectionHashField(file, 'contentHash');
+    if (
+      path === null ||
+      role === null ||
+      typeof content !== 'string' ||
+      contentHash === null
+    ) {
+      throw new Error(
+        `tool library projection bundle file ${index} is invalid`,
+      );
+    }
+    if (sha256Digest(content) !== contentHash) {
+      throw new Error(
+        `tool library projection bundle file ${index} contentHash does not match`,
+      );
+    }
+    return { path, role, content };
+  });
+  const canonical = createToolLibraryProjectionBundle({ manifest, files });
+  if (canonical.bundleId !== bundleId) {
+    throw new Error(
+      'tool library projection bundleId does not match the bundle body',
+    );
+  }
+  return canonical;
 }
 
 function readToolLibraryProjectionPinValue(
@@ -415,6 +656,31 @@ function readMountedModuleRoleField(
   return typeof value === 'string' && isMountedModuleRole(value) ? value : null;
 }
 
+function readProjectionFileRoleField(
+  record: object,
+  fieldName: string,
+): ToolLibraryProjectionFile['role'] | null {
+  const value: unknown = Reflect.get(record, fieldName);
+  return typeof value === 'string' && isProjectionFileRole(value)
+    ? value
+    : null;
+}
+
+function isProjectionFileRole(
+  value: string,
+): value is ToolLibraryProjectionFile['role'] {
+  return (
+    value === 'catalog' ||
+    value === 'declaration' ||
+    value === 'index' ||
+    value === 'manifest' ||
+    value === 'search' ||
+    value === 'search_runtime' ||
+    value === 'signature' ||
+    value === 'wrapper'
+  );
+}
+
 function isMountedModuleRole(
   value: string,
 ): value is ToolLibraryProjectionMountedModuleRole {
@@ -429,6 +695,41 @@ function isMountedModuleRole(
     value === 'signature_declaration' ||
     value === 'wrapper' ||
     value === 'wrapper_declaration'
+  );
+}
+
+function projectionFileRoleForMountedModuleRole(
+  role: ToolLibraryProjectionMountedModuleRole,
+): ToolLibraryProjectionFile['role'] {
+  if (
+    role === 'index_declaration' ||
+    role === 'signature_declaration' ||
+    role === 'wrapper_declaration'
+  ) {
+    return 'declaration';
+  }
+  return role;
+}
+
+function readExactRecord(
+  value: unknown,
+  expectedKeys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  const record = readNonArrayObject(value);
+  if (record === null) {
+    throw new Error(`${label} must be an object`);
+  }
+  const actualKeys = Object.keys(record).sort();
+  const sortedExpectedKeys = [...expectedKeys].sort();
+  if (
+    actualKeys.length !== sortedExpectedKeys.length ||
+    actualKeys.some((key, index) => key !== sortedExpectedKeys[index])
+  ) {
+    throw new Error(`${label} has unexpected or missing fields`);
+  }
+  return Object.fromEntries(
+    actualKeys.map((key) => [key, Reflect.get(record, key) as unknown]),
   );
 }
 

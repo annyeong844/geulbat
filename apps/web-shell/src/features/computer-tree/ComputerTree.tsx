@@ -27,7 +27,7 @@ import { useTreeMutations } from './use-tree-mutations.js';
 import { useTreeSelection } from './use-tree-selection.js';
 import { useTreeVirtualScroll } from './use-tree-virtual-scroll.js';
 
-interface Props {
+export interface ComputerTreeProps {
   tree: FileTreeNode[];
   uiError?: string | null;
   selectedPath?: string | null;
@@ -77,7 +77,7 @@ export function ComputerTree({
   onCreateFile,
   onManageEntry,
   onInsertIntoManuscript,
-}: Props) {
+}: ComputerTreeProps) {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<TreeContextMenuState | null>(
     null,

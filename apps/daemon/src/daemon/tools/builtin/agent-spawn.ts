@@ -4,6 +4,7 @@ import {
   DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
   RUN_MODEL_CATALOG,
   RUN_REASONING_EFFORTS,
+  isRunModelId,
 } from '@geulbat/protocol/run-contract';
 import { toolError } from '../result.js';
 import { defineZodTool, formatZodToolParseError } from '../zod-tool.js';
@@ -13,6 +14,8 @@ import {
   SUBAGENT_TYPES,
   buildChildLaunchPayload,
   buildChildLaunchQueued,
+  buildChildLaunchRejected,
+  buildChildLaunchStarted,
   resolveChildModelPin,
   type DurableSubagentLaunchRequest,
   type SubagentLaunchRequestInput,
@@ -38,11 +41,15 @@ const agentSpawnSubagentTypeSchema = z
   .describe(
     'Fixed child role. explorer is read-only; worker includes write/patch/manage_files.',
   );
-const agentSpawnModelIdSchema = z
+const agentSpawnModelIdParametersSchema = z
   .enum(RUN_MODEL_CATALOG.map((model) => model.id))
   .describe(
     'Optional child model. Omit to inherit in automatic mode or use the fixed user selection.',
   );
+const agentSpawnModelIdIngressSchema = z
+  .string()
+  .trim()
+  .min(1, 'model_id must not be empty.');
 const agentSpawnReasoningEffortSchema = z
   .enum(RUN_REASONING_EFFORTS)
   .describe('Optional effort for model_id. model_id is required when set.');
@@ -61,7 +68,7 @@ const agentSpawnArgsSchema = z.strictObject({
   task: agentSpawnTaskSchema,
   subagent_type: agentSpawnSubagentTypeSchema,
   capabilities: agentSpawnCapabilitiesSchema,
-  model_id: agentSpawnModelIdSchema.optional(),
+  model_id: agentSpawnModelIdIngressSchema.optional(),
   reasoning_effort: agentSpawnReasoningEffortSchema.optional(),
   mode: z
     .enum(SPAWN_MODES)
@@ -73,7 +80,7 @@ const agentSpawnParametersSchema = z.strictObject({
   task: agentSpawnTaskSchema,
   subagent_type: agentSpawnSubagentTypeSchema,
   capabilities: agentSpawnCapabilitiesSchema,
-  model_id: agentSpawnModelIdSchema.optional(),
+  model_id: agentSpawnModelIdParametersSchema.optional(),
   reasoning_effort: agentSpawnReasoningEffortSchema.optional(),
 });
 
@@ -131,6 +138,15 @@ export function resolveAgentSpawnLaunchRequest(
       result: toolError(
         'invalid_args',
         'reasoning_effort requires model_id for agent_spawn',
+      ),
+    };
+  }
+  if (args.model_id !== undefined && !isRunModelId(args.model_id)) {
+    return {
+      ok: false,
+      result: toolError(
+        'invalid_args',
+        `unsupported agent_spawn model_id: ${args.model_id}`,
       ),
     };
   }
@@ -245,6 +261,7 @@ export function createAgentSpawnTool(
     sideEffectLevel: 'none',
     mayMutateComputerFiles: false,
     parallelBatchKind: 'subagent_launch',
+    recoveryStrategy: 'reconcile_then_replay',
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     requiresApproval: false,
     catalogSearchMetadata: {
@@ -262,9 +279,85 @@ export function createAgentSpawnTool(
         'Continuing, stopping, or collecting results from an existing agent.',
     },
     async executeParsed(args, ctx) {
-      const resolution = resolveAgentSpawnLaunchRequest(args, ctx);
-      if (!resolution.ok) {
-        return resolution.result;
+      const ctxParentRunId =
+        ctx.runId !== undefined && isRunId(ctx.runId) ? ctx.runId : undefined;
+      const ctxLaunchRequestStore =
+        ctx.runtimeServices?.subagent.launchRequests;
+      let durableRequest: DurableSubagentLaunchRequest | undefined;
+      if (ctxParentRunId !== undefined && ctxLaunchRequestStore !== undefined) {
+        try {
+          durableRequest = ctxLaunchRequestStore.readSubagentLaunchRequest({
+            parentRunId: ctxParentRunId,
+            toolCallId: ctx.callId,
+          });
+        } catch {
+          return toolError(
+            'persistence_unavailable',
+            'agent launch recovery state could not be read',
+          );
+        }
+      }
+
+      let launchResolution: ResolvedAgentSpawnLaunchRequest;
+      if (durableRequest === undefined) {
+        const resolution = resolveAgentSpawnLaunchRequest(args, ctx);
+        if (!resolution.ok) {
+          return resolution.result;
+        }
+        launchResolution = resolution.value;
+      } else {
+        if (
+          ctxParentRunId === undefined ||
+          ctx.threadId === undefined ||
+          ctx.stateRoot === undefined ||
+          ctx.runState === undefined ||
+          ctx.runtimeServices === undefined ||
+          ctxLaunchRequestStore === undefined
+        ) {
+          return toolError(
+            'persistence_unavailable',
+            'agent launch recovery context is unavailable',
+          );
+        }
+        let persistedRequest: SubagentLaunchRequestInput;
+        try {
+          persistedRequest = ctxLaunchRequestStore.readSubagentLaunchInput(
+            durableRequest.childRunId,
+          );
+        } catch {
+          return toolError(
+            'persistence_unavailable',
+            'agent launch recovery input could not be read',
+          );
+        }
+        const requestedCapabilities = args.capabilities ?? [];
+        if (
+          persistedRequest.toolCallId !== ctx.callId ||
+          persistedRequest.parentRunId !== ctxParentRunId ||
+          persistedRequest.ownerThreadId !== ctx.threadId ||
+          persistedRequest.stateRoot !== ctx.stateRoot ||
+          persistedRequest.task !== args.task ||
+          persistedRequest.subagentType !== args.subagent_type ||
+          persistedRequest.capabilities.length !==
+            requestedCapabilities.length ||
+          persistedRequest.capabilities.some(
+            (capability, index) => capability !== requestedCapabilities[index],
+          )
+        ) {
+          return toolError(
+            'persistence_unavailable',
+            'agent launch recovery input conflicts with the durable request',
+          );
+        }
+        launchResolution = {
+          request: persistedRequest,
+          parentRunState: ctx.runState,
+          runtimeServices: ctx.runtimeServices,
+          computerSessionId: ctx.computerSessionId,
+          emitAgentEvent: isAgentToolExecutionContext(ctx)
+            ? ctx.emitAgentEvent
+            : undefined,
+        };
       }
       const {
         request,
@@ -272,7 +365,7 @@ export function createAgentSpawnTool(
         runtimeServices,
         computerSessionId,
         emitAgentEvent,
-      } = resolution.value;
+      } = launchResolution;
       const launchRequestStore = runtimeServices.subagent.launchRequests;
       if (launchRequestStore === undefined) {
         return toolError(
@@ -281,12 +374,7 @@ export function createAgentSpawnTool(
         );
       }
 
-      let durableRequest: DurableSubagentLaunchRequest | undefined;
       try {
-        durableRequest = launchRequestStore.readSubagentLaunchRequest({
-          parentRunId: request.parentRunId,
-          toolCallId: request.toolCallId,
-        });
         if (durableRequest === undefined) {
           [durableRequest] = launchRequestStore.enqueueSubagentLaunchBatch([
             request,
@@ -304,10 +392,32 @@ export function createAgentSpawnTool(
           'agent launch persistence returned no durable request',
         );
       }
-      if (durableRequest.launchState !== 'queued') {
-        return toolError(
-          'persistence_unavailable',
-          `agent launch request is not startable from ${durableRequest.launchState}`,
+      if (
+        durableRequest.launchState === 'starting' ||
+        durableRequest.launchState === 'started' ||
+        durableRequest.launchState === 'interrupted'
+      ) {
+        return buildChildLaunchPayload(
+          buildChildLaunchStarted({
+            childRunId: durableRequest.childRunId,
+            childThreadId: durableRequest.childThreadId,
+            subagentType: request.subagentType,
+            modelPin: request.modelPin,
+          }),
+        );
+      }
+      if (
+        durableRequest.launchState === 'cancelled' ||
+        durableRequest.launchState === 'failed_to_start'
+      ) {
+        return buildChildLaunchPayload(
+          buildChildLaunchRejected({
+            subagentType: request.subagentType,
+            errorCode: 'execution_failed',
+            error:
+              durableRequest.failureReason ??
+              `agent launch request ${durableRequest.launchState}`,
+          }),
         );
       }
       const launch = () =>
@@ -346,16 +456,13 @@ export function createAgentSpawnTool(
           );
         }
         try {
-          const deferred = launchPromotions.deferLaunch({
-            registration: {
-              childRunId: durableRequest.childRunId,
-              ultraReasoning: request.ultraReasoning ?? false,
-              parentRunState,
-              async start() {
-                await launch();
-              },
+          const deferred = launchPromotions.restoreQueuedLaunch({
+            childRunId: durableRequest.childRunId,
+            ultraReasoning: request.ultraReasoning ?? false,
+            parentRunState,
+            async start() {
+              await launch();
             },
-            deferReason: durableRequest.deferReason,
           });
           return buildChildLaunchPayload(
             buildChildLaunchQueued({

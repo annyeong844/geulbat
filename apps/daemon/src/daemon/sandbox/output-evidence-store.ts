@@ -1,9 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { sha256Hex } from '@geulbat/content-identity/sha256';
-import { mkdir, readFile, realpath, rm } from 'node:fs/promises';
+import { constants as fsConstants, type BigIntStats } from 'node:fs';
+import {
+  mkdir,
+  lstat,
+  open,
+  readFile,
+  realpath,
+  rm,
+  type FileHandle,
+} from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { joinWorkspaceGeulbatPath } from '../files/geulbat-internal-paths.js';
 import { isSameOrDescendantPath } from '../files/normalize-path.js';
+import { isRecord } from '../runtime-json.js';
 import {
   writeFileAtomically,
   writeTextFileAtomically,
@@ -14,7 +24,10 @@ import type {
   SandboxOutputFileRef,
   SandboxOutputRef,
 } from './attempt-store.js';
-import type { CollectedSandboxOutput } from './output-validation.js';
+import {
+  isOpaqueSandboxOutputEvidenceRef,
+  type CollectedSandboxOutput,
+} from './output-validation.js';
 
 const SANDBOX_OUTPUT_EVIDENCE_SCHEMA_VERSION = 1;
 
@@ -29,6 +42,28 @@ interface SandboxOutputEvidenceManifest {
   createdAt: string;
   files: readonly SandboxOutputFileRef[];
   totalBytes: number;
+}
+
+export class SandboxOutputEvidenceReadError extends Error {
+  constructor(
+    readonly reasonCode:
+      | 'invalid_ref'
+      | 'not_found'
+      | 'invalid_evidence'
+      | 'file_not_found',
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'SandboxOutputEvidenceReadError';
+  }
+}
+
+export interface OpenedSandboxOutputEvidenceFile {
+  handle: FileHandle;
+  relativePath: string;
+  bytes: number;
+  sha256: string;
 }
 
 export async function importSandboxOutputEvidence(args: {
@@ -113,6 +148,153 @@ export async function importSandboxOutputEvidence(args: {
   }
 }
 
+export async function openSandboxOutputEvidenceFile(args: {
+  workspaceRoot: string;
+  evidenceRef: string;
+  relativePath: string;
+  expectedJobKind?: string;
+}): Promise<OpenedSandboxOutputEvidenceFile> {
+  if (!isOpaqueSandboxOutputEvidenceRef(args.evidenceRef)) {
+    throw new SandboxOutputEvidenceReadError(
+      'invalid_ref',
+      'sandbox output evidence reference is invalid',
+    );
+  }
+  assertSafeOutputRelativePath(args.relativePath);
+
+  let evidenceId: string;
+  try {
+    evidenceId = decodeURIComponent(
+      args.evidenceRef.slice('sandbox-output:'.length),
+    );
+  } catch (error: unknown) {
+    throw new SandboxOutputEvidenceReadError(
+      'invalid_ref',
+      'sandbox output evidence reference is invalid',
+      { cause: error },
+    );
+  }
+  const evidenceRoot = buildSandboxOutputEvidenceRoot({
+    workspaceRoot: args.workspaceRoot,
+    evidenceId,
+  });
+  const sandboxOutputsRoot = joinWorkspaceGeulbatPath(
+    args.workspaceRoot,
+    'sandbox-outputs',
+  );
+
+  let realOutputsRoot: string;
+  let realEvidenceRoot: string;
+  let manifestRaw: string;
+  try {
+    [realOutputsRoot, realEvidenceRoot, manifestRaw] = await Promise.all([
+      realpath(sandboxOutputsRoot),
+      realpath(evidenceRoot),
+      readFile(join(evidenceRoot, 'manifest.json'), 'utf8'),
+    ]);
+  } catch (error: unknown) {
+    throw new SandboxOutputEvidenceReadError(
+      'not_found',
+      'sandbox output evidence was not found',
+      { cause: error },
+    );
+  }
+  if (!isSameOrDescendantPath(realOutputsRoot, realEvidenceRoot)) {
+    throw new SandboxOutputEvidenceReadError(
+      'invalid_evidence',
+      'sandbox output evidence escaped its store',
+    );
+  }
+
+  const manifest = parseSandboxOutputEvidenceManifest(manifestRaw);
+  if (
+    manifest.evidenceRef !== args.evidenceRef ||
+    (args.expectedJobKind !== undefined &&
+      manifest.jobKind !== args.expectedJobKind)
+  ) {
+    throw new SandboxOutputEvidenceReadError(
+      'invalid_evidence',
+      'sandbox output evidence manifest does not match the request',
+    );
+  }
+  const file = manifest.files.find(
+    (candidate) => candidate.relativePath === args.relativePath,
+  );
+  if (file === undefined) {
+    throw new SandboxOutputEvidenceReadError(
+      'file_not_found',
+      'sandbox output evidence file was not found',
+    );
+  }
+
+  const filesRoot = join(realEvidenceRoot, 'files');
+  const targetPath = join(filesRoot, file.relativePath);
+  let realFilesRoot: string;
+  let realTargetPath: string;
+  let expectedStats: BigIntStats;
+  try {
+    [realFilesRoot, realTargetPath, expectedStats] = await Promise.all([
+      realpath(filesRoot),
+      realpath(targetPath),
+      lstat(targetPath, { bigint: true }),
+    ]);
+  } catch (error: unknown) {
+    throw new SandboxOutputEvidenceReadError(
+      'file_not_found',
+      'sandbox output evidence file was not found',
+      { cause: error },
+    );
+  }
+  if (!isSameOrDescendantPath(realFilesRoot, realTargetPath)) {
+    throw new SandboxOutputEvidenceReadError(
+      'invalid_evidence',
+      'sandbox output evidence file escaped its store',
+    );
+  }
+  if (!expectedStats.isFile() || expectedStats.isSymbolicLink()) {
+    throw new SandboxOutputEvidenceReadError(
+      'invalid_evidence',
+      'sandbox output evidence file is unsupported',
+    );
+  }
+
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(
+      targetPath,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+    );
+    const stats = await handle.stat({ bigint: true });
+    if (
+      !stats.isFile() ||
+      stats.dev !== expectedStats.dev ||
+      stats.ino !== expectedStats.ino ||
+      stats.size !== BigInt(file.bytes)
+    ) {
+      throw new SandboxOutputEvidenceReadError(
+        'invalid_evidence',
+        'sandbox output evidence file no longer matches its manifest',
+      );
+    }
+    return {
+      handle,
+      relativePath: file.relativePath,
+      bytes: file.bytes,
+      sha256: file.sha256,
+    };
+  } catch (error: unknown) {
+    await handle?.close().catch(() => {});
+    if (error instanceof SandboxOutputEvidenceReadError) {
+      throw error;
+    }
+    throw new SandboxOutputEvidenceReadError(
+      'invalid_evidence',
+      'sandbox output evidence file could not be opened',
+      { cause: error },
+    );
+  }
+}
+
 function buildSandboxOutputEvidenceRef(args: { evidenceId: string }): string {
   return `sandbox-output:${encodeURIComponent(args.evidenceId)}`;
 }
@@ -186,4 +368,93 @@ function assertSafeOutputRelativePath(relativePath: string): void {
   ) {
     throw new Error(`invalid sandbox output relative path: ${relativePath}`);
   }
+}
+
+function parseSandboxOutputEvidenceManifest(
+  raw: string,
+): SandboxOutputEvidenceManifest {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error: unknown) {
+    throw new SandboxOutputEvidenceReadError(
+      'invalid_evidence',
+      'sandbox output evidence manifest is not valid JSON',
+      { cause: error },
+    );
+  }
+  if (
+    !isRecord(parsed) ||
+    parsed['schemaVersion'] !== SANDBOX_OUTPUT_EVIDENCE_SCHEMA_VERSION ||
+    typeof parsed['evidenceRef'] !== 'string' ||
+    typeof parsed['jobId'] !== 'string' ||
+    typeof parsed['attemptId'] !== 'string' ||
+    typeof parsed['jobKind'] !== 'string' ||
+    typeof parsed['adapterKind'] !== 'string' ||
+    !isRecord(parsed['owner']) ||
+    typeof parsed['createdAt'] !== 'string' ||
+    !Array.isArray(parsed['files']) ||
+    !Number.isSafeInteger(parsed['totalBytes']) ||
+    (parsed['totalBytes'] as number) < 0
+  ) {
+    throw new SandboxOutputEvidenceReadError(
+      'invalid_evidence',
+      'sandbox output evidence manifest is invalid',
+    );
+  }
+  const files: SandboxOutputFileRef[] = [];
+  for (const value of parsed['files']) {
+    if (
+      !isRecord(value) ||
+      typeof value['relativePath'] !== 'string' ||
+      !Number.isSafeInteger(value['bytes']) ||
+      (value['bytes'] as number) < 0 ||
+      typeof value['sha256'] !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(value['sha256'])
+    ) {
+      throw new SandboxOutputEvidenceReadError(
+        'invalid_evidence',
+        'sandbox output evidence manifest file entry is invalid',
+      );
+    }
+    try {
+      assertSafeOutputRelativePath(value['relativePath']);
+    } catch (error: unknown) {
+      throw new SandboxOutputEvidenceReadError(
+        'invalid_evidence',
+        'sandbox output evidence manifest file path is invalid',
+        { cause: error },
+      );
+    }
+    files.push({
+      relativePath: value['relativePath'],
+      bytes: value['bytes'] as number,
+      sha256: value['sha256'],
+    });
+  }
+  const totalBytes = parsed['totalBytes'] as number;
+  if (files.reduce((total, file) => total + file.bytes, 0) !== totalBytes) {
+    throw new SandboxOutputEvidenceReadError(
+      'invalid_evidence',
+      'sandbox output evidence manifest total is invalid',
+    );
+  }
+  const owner = parsed['owner'];
+  return {
+    schemaVersion: SANDBOX_OUTPUT_EVIDENCE_SCHEMA_VERSION,
+    evidenceRef: parsed['evidenceRef'],
+    jobId: parsed['jobId'],
+    attemptId: parsed['attemptId'],
+    jobKind: parsed['jobKind'],
+    adapterKind: parsed['adapterKind'],
+    owner: {
+      ...(typeof owner['threadId'] === 'string'
+        ? { threadId: owner['threadId'] }
+        : {}),
+      ...(typeof owner['runId'] === 'string' ? { runId: owner['runId'] } : {}),
+    },
+    createdAt: parsed['createdAt'],
+    files,
+    totalBytes,
+  };
 }

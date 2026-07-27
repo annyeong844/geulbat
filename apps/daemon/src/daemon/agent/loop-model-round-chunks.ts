@@ -5,6 +5,7 @@ import type {
   FunctionCall,
   HistoryItem,
   LLMChunk,
+  ModelRoundStopReason,
   ProviderStructuredOutput,
   ProviderUsageTelemetry,
 } from '../llm/index.js';
@@ -43,6 +44,7 @@ interface ModelRoundChunkSuccess {
   itemsToAppend: HistoryItem[] | undefined;
   structuredOutputs: ProviderStructuredOutput[];
   providerUsageTelemetry: ProviderUsageTelemetry | undefined;
+  stopReason: ModelRoundStopReason | undefined;
 }
 
 interface ModelRoundChunkStreamError {
@@ -65,15 +67,48 @@ interface ModelRoundChunkAborted {
   kind: 'aborted';
 }
 
+/**
+ * 사용자가 대기 중인 말을 "지금" 넣으라고 해서 이 라운드를 끊었다.
+ *
+ * `aborted`(런 취소)와 다르다: 대화를 끝내려는 것이 아니라 이어가려고 끊은
+ * 것이므로 실패가 아니다. 여기까지 모델이 한 말은 그대로 싣는다 — 화면에 이미
+ * 흘렀으므로 히스토리에서 사라지면 다음 라운드가 그 말을 안 한 것처럼 이어간다.
+ *
+ * 도구 호출은 싣지 않는다. 인자가 반쯤 온 호출을 실행하면 사용자가 부탁한 적
+ * 없는 일을 하게 된다.
+ */
+interface ModelRoundChunkInterrupted {
+  kind: 'interrupted';
+  assistantText: string;
+  finalText: string;
+  itemsToAppend: HistoryItem[] | undefined;
+  structuredOutputs: ProviderStructuredOutput[];
+  providerUsageTelemetry: ProviderUsageTelemetry | undefined;
+}
+
 type ModelRoundChunkResult =
   | ModelRoundChunkSuccess
   | ModelRoundChunkStreamError
   | ModelRoundChunkThrownError
-  | ModelRoundChunkAborted;
+  | ModelRoundChunkAborted
+  | ModelRoundChunkInterrupted;
 
 export async function consumeModelRoundChunks(args: {
   chunks: AsyncIterable<LLMChunk>;
   signal: AbortSignal | undefined;
+  /**
+   * 이 라운드만 끊는 신호. 사용자가 대기 중인 말을 "지금" 넣으라고 했을 때
+   * 켜진다.
+   *
+   * 런 취소(`signal`)와 구별해야 한다: 런 취소는 대화를 끝내지만, 이쪽은
+   * 대화를 이어가려고 끊는 것이다. 그래서 여기까지 모은 말을 버리지 않고
+   * 정상 종료로 돌려준다 — 모델이 방금까지 한 말은 화면에 이미 흘렀고,
+   * 히스토리에서 사라지면 다음 라운드가 그 말을 안 한 것처럼 이어간다.
+   *
+   * 도구 호출은 싣지 않는다. 스트리밍 도중이라 인자가 반쯤 온 호출을 실행하면
+   * 사용자가 부탁한 적 없는 일을 하게 된다.
+   */
+  interruptSignal?: AbortSignal;
   emit: AgentEventEmitter;
   attemptIndex: number;
   now: () => number;
@@ -84,7 +119,7 @@ export async function consumeModelRoundChunks(args: {
   streamArgsToolNames?: ReadonlySet<string>;
   scheduleDeltaFlush?: ScheduleModelRoundDeltaFlush;
 }): Promise<ModelRoundChunkResult> {
-  const { chunks, signal, emit, attemptIndex, now } = args;
+  const { chunks, signal, interruptSignal, emit, attemptIndex, now } = args;
   const functionCalls: FunctionCall[] = [];
   let assistantText = '';
   let finalText = '';
@@ -92,6 +127,7 @@ export async function consumeModelRoundChunks(args: {
   let structuredOutputs: ProviderStructuredOutput[] = [];
   let itemsToAppend: HistoryItem[] | undefined;
   let providerUsageTelemetry: ProviderUsageTelemetry | undefined;
+  let stopReason: ModelRoundStopReason | undefined;
   let sawSemanticChunk = false;
   let lastChunkAtMs = now();
   const deltaBatcher = createModelRoundDeltaBatcher({
@@ -103,8 +139,27 @@ export async function consumeModelRoundChunks(args: {
     deltaBatcher.emit,
   );
 
+  // 런 취소가 함께 걸렸다면 그쪽이 이긴다 — 끝내라는 지시가 이어가라는
+  // 지시보다 강하다.
+  const interruptedForSteer = (): boolean =>
+    interruptSignal?.aborted === true && signal?.aborted !== true;
+  const buildInterruptedResult = (): ModelRoundChunkResult => {
+    deltaBatcher.flush();
+    return {
+      kind: 'interrupted',
+      assistantText,
+      finalText,
+      itemsToAppend,
+      structuredOutputs,
+      providerUsageTelemetry,
+    };
+  };
+
   try {
     for await (const chunk of chunks) {
+      if (interruptedForSteer()) {
+        return buildInterruptedResult();
+      }
       if (signal?.aborted) {
         deltaBatcher.flush();
         return { kind: 'aborted' };
@@ -167,6 +222,7 @@ export async function consumeModelRoundChunks(args: {
               : itemsToAppend;
           providerUsageTelemetry =
             chunk.providerUsageTelemetry ?? providerUsageTelemetry;
+          stopReason = chunk.stopReason ?? stopReason;
           break;
         case 'error':
           deltaBatcher.flush();
@@ -180,6 +236,9 @@ export async function consumeModelRoundChunks(args: {
       }
     }
 
+    if (interruptedForSteer()) {
+      return buildInterruptedResult();
+    }
     if (signal?.aborted) {
       deltaBatcher.flush();
       return { kind: 'aborted' };
@@ -206,6 +265,7 @@ export async function consumeModelRoundChunks(args: {
       itemsToAppend,
       structuredOutputs,
       providerUsageTelemetry,
+      stopReason,
     };
   } catch (error: unknown) {
     let failure = error;
@@ -213,6 +273,10 @@ export async function consumeModelRoundChunks(args: {
       deltaBatcher.flush();
     } catch (flushError: unknown) {
       failure = flushError;
+    }
+    // 요청이 인터럽트 신호로 끊기면 여기로 떨어진다 — 전송 오류가 아니다.
+    if (interruptedForSteer()) {
+      return buildInterruptedResult();
     }
     if (signal?.aborted) {
       return { kind: 'aborted' };

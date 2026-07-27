@@ -21,6 +21,8 @@ import {
   createAgentLoopImplementationAdmission,
   type AgentLoopImplementationAdmission,
 } from '../../../daemon/agent/loop-implementation-admission.js';
+import { createAgentToolCapabilityPolicy } from '../../../daemon/agent/loop-tool-library-projection.js';
+import { getToolLibraryProjectionIdentity } from '../../../daemon/tools/tool-library-projection-manifest.js';
 import { startManagedRun } from '../../../daemon/agent/runtime/managed-run.js';
 import {
   readRunPromptInputRef,
@@ -36,9 +38,9 @@ import {
   createTestSocket,
   readLastSentMessage,
 } from '../../../test-support/run-channel-test-support.js';
+import { recoverDurableRunsAtDaemonStartup } from '../../../daemon/durable-run-execution.js';
 import {
   executeRunRequest,
-  recoverDurableRunsAtDaemonStartup,
   recoverDurableRunsForSocket,
 } from './run-channel-start.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
@@ -202,28 +204,11 @@ void test('executeRunRequest releases its managed run when loop admission reject
     });
     const toolCapabilityPolicy = capturedToolCapabilityPolicy;
     assert.ok(toolCapabilityPolicy);
-    const directHotRegistryNames =
-      toolCapabilityPolicy.allowedRegistryNames.filter(
-        (name) =>
-          runtimeContext.toolRegistry.getToolMeta(name)?.exposure.directHot ===
-          true,
-      );
     assert.deepEqual(
-      toolCapabilityPolicy.directRegistryNames,
-      directHotRegistryNames,
-    );
-    assert.deepEqual(
-      toolCapabilityPolicy.allowedRegistryNames.filter(
-        (name) => !toolCapabilityPolicy.directRegistryNames.includes(name),
-      ),
-      [],
-    );
-    assert.equal(toolCapabilityPolicy.writeCallbackEnabled, false);
-    assert.equal(
-      toolCapabilityPolicy.callbackRegistryNames.every((name) =>
-        toolCapabilityPolicy.allowedRegistryNames.includes(name),
-      ),
-      true,
+      toolCapabilityPolicy,
+      createAgentToolCapabilityPolicy({
+        registry: runtimeContext.toolRegistry,
+      }),
     );
     const afterFailure = startManagedRun(
       {
@@ -240,6 +225,70 @@ void test('executeRunRequest releases its managed run when loop admission reject
     if (afterFailure.ok) {
       afterFailure.finish();
     }
+  } finally {
+    cleanupSocketState(socket, runtimeContext);
+  }
+});
+
+void test('executeRunRequest pins one observer-safe projection identity in the durable request', async (t) => {
+  const homeStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-run-projection-pin-'),
+  );
+  t.after(async () => rm(homeStateRoot, { recursive: true, force: true }));
+  const daemonContext = createDaemonContext({ homeStateRoot });
+  const socket = createTestSocket();
+  const threadId = testThreadId(45);
+  const implementation = {
+    implementationId: 'test.projection-pin-loop',
+    contractVersion: agentLoopKernelImplementation.contractVersion,
+    async run(input) {
+      const result = input.ports.createTerminalFailure({
+        kind: 'blocked',
+        message: 'projection pin test stop',
+      });
+      input.ports.settleTerminal({ result, source: 'blocked' });
+      return result;
+    },
+  } satisfies AgentLoopImplementation;
+  const runtimeContext = {
+    ...daemonContext,
+    agent: {
+      ...daemonContext.agent,
+      loopImplementationAdmission: createAgentLoopImplementationAdmission({
+        additionalImplementations: [implementation],
+        selectImplementationId: () => implementation.implementationId,
+      }),
+    },
+  };
+
+  try {
+    await executeRunRequest({
+      socket,
+      requestId: 'run-start-projection-pin',
+      request: {
+        prompt: 'pin the projection before execution',
+        threadId,
+      } satisfies RunRequest,
+      allowedPublicToolNames: undefined,
+      runtimeContext,
+    });
+
+    const checkpoint = await runtimeContext.runCheckpoints.readThread(threadId);
+    assert.equal(checkpoint?.status, 'terminal');
+    const identity = checkpoint?.request.toolLibraryProjectionIdentity;
+    assert.deepEqual(Object.keys(identity ?? {}).sort(), [
+      'policyId',
+      'sdkProjectionHash',
+      'sdkVersion',
+    ]);
+    assert.ok(identity);
+    const rehydrated =
+      await runtimeContext.toolLibraryProjection.rehydrateProjectionMount({
+        stateRoot: homeStateRoot,
+        threadId,
+        expectedIdentity: identity,
+      });
+    assert.equal(rehydrated.ok, true);
   } finally {
     cleanupSocketState(socket, runtimeContext);
   }
@@ -326,6 +375,20 @@ void test(
       callbackRegistryNames: ['read_file'],
       writeCallbackEnabled: false,
     });
+    const resolvedProjection =
+      await daemonContext.toolLibraryProjection.resolveProjection({
+        stateRoot: daemonContext.homeStateRoot,
+        threadId,
+        toolCapabilityPolicy: recoveryToolCapabilityPolicy,
+      });
+    assert.equal(resolvedProjection.ok, true);
+    if (!resolvedProjection.ok) {
+      assert.fail('expected recovery projection to resolve');
+    }
+    const toolLibraryProjectionIdentity = getToolLibraryProjectionIdentity(
+      resolvedProjection.pin,
+    );
+    let projectionRehydrationCount = 0;
     let capturedRecoveryToolCapabilityPolicy:
       | ReturnType<typeof createToolCapabilityPolicy>
       | undefined;
@@ -340,6 +403,19 @@ void test(
     };
     const runtimeContext = {
       ...daemonContext,
+      toolLibraryProjection: {
+        async resolveProjection() {
+          assert.fail(
+            'durable replay with a recorded identity must not resolve a fresh projection',
+          );
+        },
+        async rehydrateProjectionMount(args) {
+          projectionRehydrationCount += 1;
+          return await daemonContext.toolLibraryProjection.rehydrateProjectionMount(
+            args,
+          );
+        },
+      } satisfies typeof daemonContext.toolLibraryProjection,
       agent: {
         ...daemonContext.agent,
         loopImplementationAdmission: capturingRecoveryAdmission,
@@ -374,6 +450,7 @@ void test(
             contractVersion: blockingImplementation.contractVersion,
           },
           toolCapabilityPolicy: recoveryToolCapabilityPolicy,
+          toolLibraryProjectionIdentity,
         },
       });
       await runtimeContext.runCheckpoints.appendRunEvents({
@@ -407,6 +484,7 @@ void test(
         capturedRecoveryToolCapabilityPolicy,
         recoveryToolCapabilityPolicy,
       );
+      assert.equal(projectionRehydrationCount, 1);
     } finally {
       releaseLoop();
       await recoveryFinished;
@@ -533,6 +611,15 @@ void test('executeRunRequest logs request context when foreground execution fail
   const socket = createTestSocket();
   const threadId = testThreadId(32);
   const requestId = 'run-start-execute-failure';
+  const resolvedProjection =
+    await daemonContext.toolLibraryProjection.resolveProjection({
+      stateRoot: daemonContext.homeStateRoot,
+      threadId,
+    });
+  assert.equal(resolvedProjection.ok, true);
+  if (!resolvedProjection.ok) {
+    assert.fail('expected foreground failure projection to resolve');
+  }
   const errors: unknown[][] = [];
   const originalError = console.error;
   console.error = (...args: unknown[]) => {
@@ -547,6 +634,19 @@ void test('executeRunRequest logs request context when foreground execution fail
       browseStartPath: '',
       browseShortcuts: [],
     },
+    toolLibraryProjection: {
+      async resolveProjection() {
+        return resolvedProjection;
+      },
+      async rehydrateProjectionMount(args) {
+        return await daemonContext.toolLibraryProjection.rehydrateProjectionMount(
+          {
+            ...args,
+            stateRoot: daemonContext.homeStateRoot,
+          },
+        );
+      },
+    } satisfies typeof daemonContext.toolLibraryProjection,
   };
 
   try {
@@ -840,7 +940,7 @@ void test('durable recovery reconciles an already persisted final answer before 
   }
 });
 
-void test('durable Goal recovery surfaces interrupted verification without rerunning the model', async () => {
+void test('durable Goal recovery surfaces interrupted completion admission without rerunning the model', async () => {
   const homeStateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-goal-verification-recovery-'),
   );
@@ -854,14 +954,14 @@ void test('durable Goal recovery surfaces interrupted verification without rerun
     const goal = await beforeRestart.goals.enterOrResume({
       threadId,
       requested: true,
-      objective: 'Recover Goal verification safely',
+      objective: 'Recover Goal completion admission safely',
       executionTemplate: {
         workingDirectory: '',
         permissionMode: 'basic',
       },
     });
     assert.ok(goal);
-    await beforeRestart.goals.requestVerification({
+    await beforeRestart.goals.requestCompletion({
       threadId,
       goalId: goal.goalId,
       runId,
@@ -893,7 +993,7 @@ void test('durable Goal recovery surfaces interrupted verification without rerun
       assert.deepEqual(checkpoint.terminal.event.payload, {
         code: 'execution_failed',
         message:
-          'Goal completion verification is unavailable after daemon recovery',
+          'Goal completion admission is unavailable after daemon recovery',
       });
     }
 

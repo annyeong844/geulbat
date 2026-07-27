@@ -5,6 +5,7 @@ import {
   type GenericApiErrorCode,
 } from '../error-codes.js';
 import type { StreamErrorCategory } from '../llm/provider/transport/stream-error.js';
+import { resolveProviderFailureClass } from '../llm/provider/provider-failure-class.js';
 import { getErrorCode } from '../utils/error.js';
 import { calculateRetryDelayMs } from '../utils/retry.js';
 import type { ProviderModelRoundRetryPolicy } from '../llm/provider/provider-options.js';
@@ -76,25 +77,8 @@ function getModelRoundRetryRule(
   policy: ProviderModelRoundRetryPolicy,
   category: StreamErrorCategory,
 ): { maxRetries: number } | null {
-  switch (category) {
-    case 'llm_connection_lost':
-    case 'llm_idle_timeout':
-      return policy.llmConnectionLost;
-    case 'llm_overloaded':
-      return policy.llmOverloaded;
-    case 'llm_rate_limited':
-      return policy.llmRateLimited;
-    case 'llm_auth_expired':
-    case 'llm_context_overflow':
-    case 'llm_context_preparation_required':
-    case 'llm_provider_transition_required':
-    case 'oversize_input':
-    case 'llm_refused':
-    case 'abort_user':
-    case 'abort_budget':
-    case 'unknown':
-      return null;
-  }
+  const { retryBudget } = resolveProviderFailureClass(category);
+  return retryBudget === null ? null : policy[retryBudget];
 }
 
 function defaultModelRoundRetryDelayMs(args: {
@@ -119,58 +103,12 @@ function streamErrorCategoryToErrorCode(
   category: StreamErrorCategory,
   error: unknown,
 ): GenericApiErrorCode {
-  switch (category) {
-    case 'llm_idle_timeout':
-      return 'llm_idle_timeout';
-    case 'llm_connection_lost':
-      return 'llm_connect_timeout';
-    case 'llm_overloaded':
-    case 'llm_rate_limited':
-      return 'llm_rate_limited';
-    case 'llm_auth_expired':
-      return 'llm_auth_failed';
-    case 'llm_provider_transition_required':
-      return 'provider_transition_required';
-    case 'llm_context_overflow':
-    case 'llm_context_preparation_required':
-    case 'oversize_input':
-      return 'llm_context_length_exceeded';
-    case 'abort_user':
-      return 'aborted';
-    case 'llm_refused':
-    case 'abort_budget':
-      return 'execution_failed';
-    case 'unknown':
-      return coerceGenericApiErrorCode(getErrorCode(error), 'internal');
-  }
+  const { wireCode } = resolveProviderFailureClass(category);
+  // 표가 코드를 정하지 못하는 클래스는 분류 실패뿐이다. 그 경우에만 실제
+  // 오류에서 코드를 끌어온다.
+  return wireCode ?? coerceGenericApiErrorCode(getErrorCode(error), 'internal');
 }
 
 function streamErrorCategoryToMessage(category: StreamErrorCategory): string {
-  switch (category) {
-    case 'llm_idle_timeout':
-    case 'llm_connection_lost':
-      return 'provider request timed out';
-    case 'llm_overloaded':
-      return 'provider overloaded';
-    case 'llm_rate_limited':
-      return 'provider rate limited';
-    case 'llm_auth_expired':
-      return 'provider authentication failed';
-    case 'llm_context_overflow':
-      return 'context length exceeded';
-    case 'llm_context_preparation_required':
-      return 'context preparation required';
-    case 'llm_provider_transition_required':
-      return 'provider transition requires a portable context handoff';
-    case 'oversize_input':
-      return 'input exceeds retry budget';
-    case 'llm_refused':
-      return 'model refused the request';
-    case 'abort_user':
-      return 'run cancelled';
-    case 'abort_budget':
-      return 'run budget exceeded';
-    case 'unknown':
-      return 'provider request failed';
-  }
+  return resolveProviderFailureClass(category).message;
 }

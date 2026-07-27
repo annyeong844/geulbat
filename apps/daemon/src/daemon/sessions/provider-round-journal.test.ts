@@ -67,6 +67,14 @@ void test('provider round journal appends exact private provider items', async (
 
 void test('provider round journal accepts a function-call-only provider batch', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-provider-round-'));
+  const functionCall = {
+    id: 'function-call-705',
+    callId: 'call-705',
+    name: 'lookup',
+    arguments: '{"query":"continuity"}',
+    replaySafe: false,
+    recoveryStrategy: 'reconcile_then_replay' as const,
+  };
 
   try {
     const record = await appendProviderRound({
@@ -85,18 +93,63 @@ void test('provider round journal accepts a function-call-only provider batch', 
           arguments: '{"query":"continuity"}',
         },
       ],
-      functionCalls: [
+      functionCalls: [functionCall],
+    });
+
+    assert.deepEqual(record.functionCalls[0], functionCall);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('provider round journal rejects an unknown tool recovery strategy', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-provider-round-'));
+  const threadId = testThreadId(706);
+
+  try {
+    const record = await appendProviderRound({
+      stateRoot,
+      threadId,
+      runId: testRunId(706),
+      round: 0,
+      ...PROVIDER_TARGET,
+      precedingTranscriptEntryId: null,
+      items: [
         {
-          id: 'function-call-705',
-          callId: 'call-705',
+          id: 'function-call-invalid-recovery',
+          type: 'function_call',
+          call_id: 'call-invalid-recovery',
           name: 'lookup',
           arguments: '{"query":"continuity"}',
-          replaySafe: true,
+        },
+      ],
+      functionCalls: [
+        {
+          id: 'function-call-invalid-recovery',
+          callId: 'call-invalid-recovery',
+          name: 'lookup',
+          arguments: '{"query":"continuity"}',
+          replaySafe: false,
         },
       ],
     });
+    const corruptedRecord = {
+      ...record,
+      functionCalls: record.functionCalls.map((call) => ({
+        ...call,
+        recoveryStrategy: 'unsafe_replay',
+      })),
+    };
+    await writeFile(
+      providerRoundJournalPath(stateRoot, threadId),
+      `${JSON.stringify(corruptedRecord)}\n`,
+      'utf8',
+    );
 
-    assert.equal(record.functionCalls[0]?.callId, 'call-705');
+    await assert.rejects(
+      readProviderRoundHistory(stateRoot, threadId),
+      /invalid provider round journal record/u,
+    );
   } finally {
     await rm(stateRoot, { recursive: true, force: true });
   }

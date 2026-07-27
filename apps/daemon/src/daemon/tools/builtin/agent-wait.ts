@@ -132,8 +132,10 @@ function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
     strict: true,
     sideEffectLevel: 'read',
     mayMutateComputerFiles: false,
+    abortSettlement: 'await_execution',
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     requiresApproval: false,
+    recoveryStrategy: 'replay_safe',
     resultProjection: {
       exactDurableRecovery: true,
       modelProjection: 'runtime_summary',

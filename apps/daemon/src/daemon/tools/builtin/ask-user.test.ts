@@ -12,6 +12,7 @@ void test('ask_user는 question과 options 스키마를 노출한다', () => {
   assert.equal(askUserTool.sideEffectLevel, 'none');
   assert.equal(askUserTool.requiresApproval, false);
   assert.equal(askUserTool.endsTurnAfterSuccess, true);
+  assert.equal(askUserTool.recoveryStrategy, 'replay_safe');
 });
 
 void test('builtin registry가 ask_user를 노출한다', () => {

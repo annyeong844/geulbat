@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { askUserTool } from './builtin/ask-user.js';
 import { listFilesTool } from './builtin/list-files.js';
+import { searchFilesTool } from './builtin/search-files.js';
 import { writeFileTool } from './builtin/write-file.js';
 import { createToolRegistryStore } from './registry.js';
 import { isToolObjectParameters, type AnyTool } from './types.js';
@@ -180,6 +181,7 @@ void test('createToolRegistryStore caches immutable execution and metadata views
   );
   assert.equal(Object.isFrozen(executionHandle), true);
   assert.equal('parameters' in executionHandle, false);
+  assert.equal(executionHandle.abortSettlement, 'immediate');
 
   const meta = store.getToolMeta('cached_execution_tool');
   assert.ok(meta);
@@ -193,6 +195,23 @@ void test('createToolRegistryStore caches immutable execution and metadata views
     modelProjection: 'runtime_summary',
     snapshotFailure: 'inline',
   });
+});
+
+void test('createToolRegistryStore derives write settlement and preserves explicit read settlement', () => {
+  const store = createToolRegistryStore({ builtins: [searchFilesTool] });
+  store.registerTool({
+    ...makeRegistrableTestTool('settled_write_tool'),
+    sideEffectLevel: 'write',
+  });
+
+  assert.equal(
+    store.getToolExecutionHandle('settled_write_tool')?.abortSettlement,
+    'await_execution',
+  );
+  assert.equal(
+    store.getToolExecutionHandle('search_files')?.abortSettlement,
+    'await_execution',
+  );
 });
 
 void test('createToolRegistryStore keeps one captured identity while later snapshots see replacements', async () => {

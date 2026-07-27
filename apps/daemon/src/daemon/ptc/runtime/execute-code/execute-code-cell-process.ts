@@ -1,46 +1,9 @@
-type ExecuteCodeCellOutputStreamName = 'stdout' | 'stderr';
-
-interface ExecuteCodeCellOutputBufferPolicy {
-  maxBufferedBytesPerStream: number;
-}
-
-export interface DetachedProcessOutputSegment {
-  stdout: string;
-  stderr: string;
-}
-
-// `processTerminated` only describes the external docker exec child observed by
-// the injected runner. Docker exec callers must not treat it as proof that every
-// descendant inside the container is gone; container isolation remains the
-// caller's taint-close responsibility.
-export type DetachedProcessExitInfo =
-  | { kind: 'exit'; exitCode: number; processTerminated: true }
-  | { kind: 'signal'; exitCode: null; processTerminated: false }
-  | { kind: 'timeout'; exitCode: null; processTerminated: false }
-  | {
-      kind: 'output_limit_exceeded';
-      exitCode: null;
-      processTerminated: false;
-      stream: ExecuteCodeCellOutputStreamName;
-      maxBufferedBytesPerStream: number;
-    }
-  | {
-      kind: 'spawn_failed';
-      exitCode: null;
-      processTerminated: false;
-      message: string;
-    };
-
-export interface DetachedProcessHandle {
-  drainNewOutput(): DetachedProcessOutputSegment;
-  getOutputRevision?(): number;
-  waitForOutputChange?(
-    afterRevision: number,
-    abortSignal?: AbortSignal,
-  ): Promise<number>;
-  readonly exit: Promise<DetachedProcessExitInfo>;
-  terminate(args: { graceMs: number }): void;
-}
+import type {
+  DetachedProcessHandle,
+  DetachedProcessOutputBufferPolicy,
+  DetachedProcessOutputOffsets,
+  DetachedProcessStartResult,
+} from '../../../utils/detached-process.js';
 
 export interface ExecuteCodeCellProcessInvocation {
   cellId: string;
@@ -49,15 +12,29 @@ export interface ExecuteCodeCellProcessInvocation {
   timeoutMs?: number;
   redactionMarkers?: readonly string[];
   redactionReplacement?: string;
-  outputBufferPolicy?: ExecuteCodeCellOutputBufferPolicy;
+  outputBufferPolicy?: DetachedProcessOutputBufferPolicy;
 }
 
 type ExecuteCodeCellProcessStartResult =
-  | { ok: true; handle: DetachedProcessHandle }
-  | { ok: false; reasonCode: 'spawn_failed'; message: string };
+  DetachedProcessStartResult<DetachedProcessHandle>;
 
 export type StartPtcExecuteCodeCellProcess = (
   invocation: ExecuteCodeCellProcessInvocation,
 ) =>
   | ExecuteCodeCellProcessStartResult
   | Promise<ExecuteCodeCellProcessStartResult>;
+
+export type AttachPtcExecuteCodeCellProcess = (args: {
+  outputRef: string;
+  outputBufferPolicy?: DetachedProcessOutputBufferPolicy;
+  outputReadOffsets?: DetachedProcessOutputOffsets;
+}) =>
+  | ExecuteCodeCellProcessStartResult
+  | Promise<ExecuteCodeCellProcessStartResult>;
+
+export type {
+  DetachedProcessExitInfo,
+  DetachedProcessHandle,
+  DetachedProcessPreparedOutputDelivery,
+  DetachedProcessOutputSegment,
+} from '../../../utils/detached-process.js';

@@ -14,10 +14,18 @@ import { createPtcExecuteCodePlacementCoordinator } from './execute-code-placeme
 import {
   createPtcExecuteCodeCallbackEffectPolicy,
   type PtcExecuteCodePlacementCoordinator,
+  type PtcExecuteCodeSettledPlacementAcquireResult,
 } from './execute-code-placement-contract.js';
 import { waitForExecuteCodeCell } from './execute-code-cell-wait.js';
-import { PTC_EXECUTE_CODE_TOOL_NAME } from './execute-code-runtime-contract.js';
-import { createPtcExecuteCodeRuntime } from './execute-code-runtime.js';
+import {
+  PTC_EXECUTE_CODE_TOOL_NAME,
+  type PtcExecuteCodeCellCoordinate,
+  type PtcExecuteCodeCellTerminalResultStore,
+} from './execute-code-runtime-contract.js';
+import {
+  createPtcExecuteCodeRuntime,
+  derivePtcExecuteCodeCellId,
+} from './execute-code-runtime.js';
 import { createPtcExecuteCodeStore } from './execute-code-store.js';
 import { createPtcSessionDockerLocalBatchCommandPolicy } from '../../lab/session/session-docker-contract.js';
 import { PTC_LAB_LOCAL_DOCKER_BATCH_COMMAND_MAX_BUFFERED_BYTES_PER_STREAM } from '../../lab/profile/lab-profile-contract.js';
@@ -1095,6 +1103,666 @@ void test('createPtcExecuteCodeRuntime recovers a background terminal result aft
   }
 });
 
+void test('createPtcExecuteCodeRuntime replays the same durable running wait delivery without touching a cell process', async () => {
+  const threadId = testThreadId(913_015);
+  const cellId = 'ptc_cell_runtime_wait_delivery' as const;
+  const delivery = {
+    threadId,
+    runId: 'run-wait-delivery',
+    callId: 'call-wait-delivery',
+    cellId,
+    stdout: 'durable running output\n',
+    stderr: '',
+    outputReadOffsets: {
+      stdoutBytes: 23,
+      stderrBytes: 0,
+    },
+  };
+  let deleted = false;
+  let processStarts = 0;
+  const runtime = createPtcExecuteCodeRuntime({
+    ptcCell: makeTestCellConfig(1),
+    startCellProcess: () => {
+      processStarts += 1;
+      assert.fail('running wait delivery recovery must not start a process');
+    },
+  });
+  runtime.attachCellCoordinateStore?.({
+    listPtcExecuteCodeCellCoordinates: () => [],
+    persistPtcExecuteCodeCellCoordinate() {},
+    deletePtcExecuteCodeCellCoordinate() {},
+    readPtcExecuteCodeRunningWaitDelivery: () =>
+      deleted ? undefined : delivery,
+    persistPtcExecuteCodeRunningWaitDelivery() {
+      assert.fail('recovery must reuse the existing wait delivery');
+    },
+    deletePtcExecuteCodeRunningWaitDelivery() {
+      deleted = true;
+    },
+  });
+
+  try {
+    const recovered = await runtime.waitForCell({
+      runContext: { threadId },
+      invocation: {
+        runId: delivery.runId,
+        callId: delivery.callId,
+      },
+      request: { cellId },
+    });
+    assert.deepEqual(recovered, {
+      ok: true,
+      value: {
+        ok: true,
+        capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+        policyId: 'ptc_lab_execute_code_batch_node_v1',
+        executionSurface: 'node_via_lab_detached_cell',
+        status: 'running',
+        cellId,
+        stdout: delivery.stdout,
+        stderr: delivery.stderr,
+      },
+    });
+    assert.equal(processStarts, 0);
+    assert.equal(deleted, false);
+
+    const nextCall = await runtime.waitForCell({
+      runContext: { threadId },
+      invocation: {
+        runId: delivery.runId,
+        callId: 'call-wait-delivery-next',
+      },
+      request: { cellId },
+    });
+    assert.equal(nextCall.ok, true);
+    assert.equal(nextCall.ok ? nextCall.value.status : '', 'missing');
+    assert.equal(deleted, true);
+    assert.equal(processStarts, 0);
+  } finally {
+    await runtime.closeAll();
+  }
+});
+
+void test('createPtcExecuteCodeRuntime replays the same durable running exec delivery without starting another cell', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-exec-delivery-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-exec-delivery-runtime-'),
+  );
+  const threadId = testThreadId(913_016);
+  const invocation = {
+    runId: 'run-exec-delivery',
+    callId: 'call-exec-delivery',
+  };
+  const cellId = derivePtcExecuteCodeCellId({ threadId, ...invocation });
+  const delivery = {
+    threadId,
+    ...invocation,
+    cellId,
+    stdout: 'durable initial output\n',
+    stderr: 'durable initial diagnostic\n',
+    durationMs: 37,
+    toolCallbackCount: 2,
+    outputReadOffsets: {
+      stdoutBytes: 23,
+      stderrBytes: 27,
+    },
+  };
+  let processStarts = 0;
+  let execDeliveryDeleted = false;
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-exec-delivery',
+  });
+  const runtime = createPtcExecuteCodeRuntime({
+    cellTerminalResultStore: {
+      async persist() {
+        assert.fail('the running fixture must not persist a terminal result');
+      },
+      async read() {
+        return { ok: true, value: undefined };
+      },
+    },
+    commandRunner: fixture.runner,
+    ptcCell: makeTestCellConfig(1),
+    runtimeRootForState: () => runtimeRoot,
+    startCellProcess: () => {
+      processStarts += 1;
+      assert.fail('durable exec delivery recovery must not start a process');
+    },
+  });
+  runtime.attachCellCoordinateStore?.({
+    listPtcExecuteCodeCellCoordinates: () => [],
+    persistPtcExecuteCodeCellCoordinate() {},
+    deletePtcExecuteCodeCellCoordinate() {},
+    readPtcExecuteCodeRunningExecDelivery: () =>
+      execDeliveryDeleted ? undefined : delivery,
+    persistPtcExecuteCodeRunningExecDelivery() {
+      assert.fail('recovery must reuse the existing exec delivery');
+    },
+    deletePtcExecuteCodeRunningExecDelivery() {
+      execDeliveryDeleted = true;
+    },
+  });
+
+  try {
+    const recovered = await runtime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      invocation,
+      invocationId: invocation.callId,
+      request: {
+        code: 'await new Promise(() => {})',
+        timeoutMs: 60_000,
+      },
+    });
+    assert.equal(recovered.ok, true, JSON.stringify(recovered));
+    if (!recovered.ok) {
+      return;
+    }
+    assert.equal(
+      recovered.value.executionSurface,
+      'node_via_lab_detached_cell',
+    );
+    assert.equal(recovered.value.status, 'running');
+    assert.equal(recovered.value.cellId, cellId);
+    assert.equal(recovered.value.stdout, delivery.stdout);
+    assert.equal(recovered.value.stderr, delivery.stderr);
+    assert.equal(recovered.value.durationMs, delivery.durationMs);
+    assert.equal(recovered.value.toolCallbacks.observed, 2);
+    assert.equal(processStarts, 0);
+
+    const waited = await runtime.waitForCell({
+      runContext: { threadId, stateRoot },
+      request: { cellId },
+    });
+    assert.equal(waited.ok, true);
+    assert.equal(waited.ok ? waited.value.status : '', 'missing');
+    assert.equal(execDeliveryDeleted, true);
+  } finally {
+    await runtime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime refuses to duplicate an exec with retained terminal output', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-terminal-exec-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-terminal-exec-runtime-'),
+  );
+  const threadId = testThreadId(913_017);
+  const invocation = {
+    runId: 'run-terminal-exec',
+    callId: 'call-terminal-exec',
+  };
+  const cellId = derivePtcExecuteCodeCellId({ threadId, ...invocation });
+  let processStarts = 0;
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-terminal-exec',
+  });
+  const runtime = createPtcExecuteCodeRuntime({
+    cellTerminalResultStore: {
+      async persist() {
+        assert.fail('recovery must not replace retained terminal output');
+      },
+      async read(args) {
+        assert.deepEqual(args, { stateRoot, threadId, cellId });
+        return {
+          ok: true,
+          value: {
+            outputRef: 'tool-output:ptc-terminal-exec',
+            fullOutputBytes: 128,
+            fullOutputChars: 128,
+            status: 'completed',
+            exitCode: 0,
+          },
+        };
+      },
+    },
+    commandRunner: fixture.runner,
+    ptcCell: makeTestCellConfig(1),
+    runtimeRootForState: () => runtimeRoot,
+    startCellProcess: () => {
+      processStarts += 1;
+      assert.fail('retained terminal exec recovery must not start a process');
+    },
+  });
+  runtime.attachCellCoordinateStore?.({
+    listPtcExecuteCodeCellCoordinates: () => [],
+    persistPtcExecuteCodeCellCoordinate() {
+      assert.fail('recovery must not publish a replacement coordinate');
+    },
+    deletePtcExecuteCodeCellCoordinate() {},
+    readPtcExecuteCodeRunningExecDelivery: () => undefined,
+    persistPtcExecuteCodeRunningExecDelivery() {
+      assert.fail('recovery must not persist a replacement delivery');
+    },
+  });
+
+  try {
+    const recovered = await runtime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      invocation,
+      invocationId: invocation.callId,
+      request: {
+        code: 'process.stdout.write("must not run")',
+        timeoutMs: 60_000,
+      },
+    });
+    assert.equal(recovered.ok, false);
+    if (recovered.ok) {
+      return;
+    }
+    assert.equal(recovered.reasonCode, 'ptc_execute_code_store_unavailable');
+    assert.match(recovered.message, /starting duplicate code/u);
+    assert.equal(
+      recovered.diagnostics?.['terminalOutputRef'],
+      'tool-output:ptc-terminal-exec',
+    );
+    assert.equal(recovered.diagnostics?.['terminalStatus'], 'completed');
+    assert.equal(recovered.diagnostics?.['terminalExitCode'], 0);
+    assert.equal(processStarts, 0);
+  } finally {
+    await runtime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime replays the exact early terminal exec result after restart', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-terminal-replay-workspace-'),
+  );
+  const firstRuntimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-terminal-replay-runtime-1-'),
+  );
+  const secondRuntimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-terminal-replay-runtime-2-'),
+  );
+  const threadId = testThreadId(9_130_171);
+  const invocation = {
+    runId: 'run-terminal-exec-replay',
+    callId: 'call-terminal-exec-replay',
+  };
+  const cellId = derivePtcExecuteCodeCellId({ threadId, ...invocation });
+  const terminalResultStore = createPtcExecuteCodeCellTerminalResultStore();
+  let coordinate: PtcExecuteCodeCellCoordinate | undefined;
+  let processStarts = 0;
+  const coordinateStore = {
+    listPtcExecuteCodeCellCoordinates: () =>
+      coordinate === undefined ? [] : [coordinate],
+    persistPtcExecuteCodeCellCoordinate(
+      nextCoordinate: PtcExecuteCodeCellCoordinate,
+    ) {
+      coordinate = nextCoordinate;
+    },
+    deletePtcExecuteCodeCellCoordinate() {
+      coordinate = undefined;
+    },
+    readPtcExecuteCodeRunningExecDelivery: () => undefined,
+    persistPtcExecuteCodeRunningExecDelivery() {
+      assert.fail('early terminal exec must not publish a running delivery');
+    },
+  };
+  const firstFixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-terminal-replay-1',
+  });
+  const firstRuntime = createPtcExecuteCodeRuntime({
+    cellTerminalResultStore: terminalResultStore,
+    commandRunner: firstFixture.runner,
+    ptcCell: makeTestCellConfig(60_000),
+    runtimeRootForState: () => firstRuntimeRoot,
+    startCellProcess: (args) => {
+      processStarts += 1;
+      return {
+        ok: true,
+        handle: makeDetachedHandle({
+          outputRef: `command-output:system/${args.cellId}`,
+          output: makeDetachedSegment({
+            stdout: 'completed before initial yield\n',
+          }),
+        }),
+      };
+    },
+  });
+  firstRuntime.attachCellCoordinateStore?.(coordinateStore);
+  const secondFixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-terminal-replay-2',
+  });
+  const secondRuntime = createPtcExecuteCodeRuntime({
+    cellTerminalResultStore: terminalResultStore,
+    commandRunner: secondFixture.runner,
+    ptcCell: makeTestCellConfig(60_000),
+    runtimeRootForState: () => secondRuntimeRoot,
+    startCellProcess: () => {
+      processStarts += 1;
+      assert.fail('terminal replay must not start replacement code');
+    },
+  });
+  secondRuntime.attachCellCoordinateStore?.(coordinateStore);
+
+  try {
+    const original = await firstRuntime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      invocation,
+      invocationId: invocation.callId,
+      request: {
+        code: 'process.stdout.write("completed before initial yield")',
+        timeoutMs: 60_000,
+      },
+    });
+    assert.equal(original.ok, true, JSON.stringify(original));
+    assert.equal(coordinate, undefined);
+    assert.equal(processStarts, 1);
+
+    await firstRuntime.closeAll();
+    const recovered = await secondRuntime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      invocation,
+      invocationId: invocation.callId,
+      request: {
+        code: 'process.stdout.write("completed before initial yield")',
+        timeoutMs: 60_000,
+      },
+    });
+    assert.deepEqual(recovered, original);
+    assert.equal(processStarts, 1);
+    assert.equal(
+      recovered.ok ? recovered.value.executionSurface : '',
+      'node_via_lab_batch_command',
+    );
+    assert.equal(
+      recovered.ok ? recovered.value.stdout : '',
+      'completed before initial yield\n',
+    );
+    assert.equal(
+      cellId,
+      derivePtcExecuteCodeCellId({ threadId, ...invocation }),
+    );
+  } finally {
+    await firstRuntime.closeAll();
+    await secondRuntime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(firstRuntimeRoot, { recursive: true, force: true });
+    await rm(secondRuntimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime restarts a queued invocation with the same cell id and one eventual process start', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-queued-restart-workspace-'),
+  );
+  const firstRuntimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-queued-restart-first-'),
+  );
+  const secondRuntimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-queued-restart-second-'),
+  );
+  const threadId = testThreadId(913_018);
+  const invocation = {
+    runId: 'run-queued-restart',
+    callId: 'call-queued-restart',
+  };
+  const cellId = derivePtcExecuteCodeCellId({ threadId, ...invocation });
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-queued-restart',
+  });
+  let settleQueuedPlacement:
+    | ((result: PtcExecuteCodeSettledPlacementAcquireResult) => void)
+    | undefined;
+  const waitForPlacement =
+    new Promise<PtcExecuteCodeSettledPlacementAcquireResult>((resolve) => {
+      settleQueuedPlacement = resolve;
+    });
+  const createQueuedPlacementCoordinator =
+    (): PtcExecuteCodePlacementCoordinator => ({
+      acquirePlacement: () => ({
+        ok: true,
+        queued: true,
+        queueId: 'ptc_placement_queue_restart',
+        cancel: () =>
+          settleQueuedPlacement?.({
+            ok: false,
+            reasonCode: 'ptc_lab_session_busy',
+            message: 'queued placement owner stopped',
+            diagnostics: { placementLane: 'queued_restart_test' },
+          }),
+        waitForPlacement,
+        diagnostics: { placementLane: 'queued_restart_test' },
+      }),
+      releasePlacement() {
+        assert.fail('an unstarted queued placement has no lease to release');
+      },
+      beginShutdown() {},
+      finishShutdown() {},
+    });
+  const terminalResultStore: PtcExecuteCodeCellTerminalResultStore = {
+    async persist(args) {
+      return {
+        outputRef: `tool-output:${args.cellId}`,
+        fullOutputBytes: Buffer.byteLength(args.output),
+        fullOutputChars: args.output.length,
+        status: args.status,
+        exitCode: args.exitCode,
+      };
+    },
+    async read() {
+      return { ok: true as const, value: undefined };
+    },
+    async persistRecovery() {},
+    async readRecovery() {
+      return { ok: true as const, value: undefined };
+    },
+  };
+  const coordinateStore = {
+    listPtcExecuteCodeCellCoordinates: () => [],
+    persistPtcExecuteCodeCellCoordinate() {},
+    deletePtcExecuteCodeCellCoordinate() {},
+    readPtcExecuteCodeRunningExecDelivery: () => undefined,
+    persistPtcExecuteCodeRunningExecDelivery() {},
+  };
+  let firstProcessStarts = 0;
+  const firstRuntime = createPtcExecuteCodeRuntime({
+    cellTerminalResultStore: terminalResultStore,
+    commandRunner: fixture.runner,
+    createPlacementCoordinator: createQueuedPlacementCoordinator,
+    ptcCell: makeTestCellConfig(1),
+    runtimeRootForState: () => firstRuntimeRoot,
+    startCellProcess: () => {
+      firstProcessStarts += 1;
+      assert.fail('the first daemon must not start a queued cell');
+    },
+  });
+  firstRuntime.attachCellCoordinateStore?.(coordinateStore);
+
+  let secondProcessStarts = 0;
+  const startedCellIds: string[] = [];
+  const secondRuntime = createPtcExecuteCodeRuntime({
+    cellTerminalResultStore: terminalResultStore,
+    commandRunner: fixture.runner,
+    ptcCell: makeTestCellConfig(1),
+    runtimeRootForState: () => secondRuntimeRoot,
+    startCellProcess: (args) => {
+      secondProcessStarts += 1;
+      startedCellIds.push(args.cellId);
+      return {
+        ok: true,
+        handle: makeDetachedHandle({
+          outputRef: `command-output:system/${args.cellId}`,
+          output: makeDetachedSegment({ stdout: 'started once\n' }),
+        }),
+      };
+    },
+  });
+  secondRuntime.attachCellCoordinateStore?.(coordinateStore);
+
+  try {
+    const queued = await firstRuntime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      invocation,
+      invocationId: invocation.callId,
+      request: { code: 'process.stdout.write("started once")' },
+    });
+    assert.equal(queued.ok, true);
+    assert.equal(
+      queued.ok &&
+        queued.value.executionSurface === 'node_via_lab_detached_cell'
+        ? queued.value.status
+        : '',
+      'queued',
+    );
+    assert.equal(
+      queued.ok &&
+        queued.value.executionSurface === 'node_via_lab_detached_cell'
+        ? queued.value.cellId
+        : '',
+      cellId,
+    );
+    assert.equal(firstProcessStarts, 0);
+
+    const recovered = await secondRuntime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      invocation,
+      invocationId: invocation.callId,
+      request: { code: 'process.stdout.write("started once")' },
+    });
+    assert.equal(recovered.ok, true, JSON.stringify(recovered));
+    assert.deepEqual(startedCellIds, [cellId]);
+    assert.equal(secondProcessStarts, 1);
+  } finally {
+    await firstRuntime.closeAll();
+    await secondRuntime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(firstRuntimeRoot, { recursive: true, force: true });
+    await rm(secondRuntimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime persists initial running output before releasing its prepared pages', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-exec-linearization-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-exec-linearization-runtime-'),
+  );
+  const threadId = testThreadId(913_019);
+  const invocation = {
+    runId: 'run-exec-linearization',
+    callId: 'call-exec-linearization',
+  };
+  const cellId = derivePtcExecuteCodeCellId({ threadId, ...invocation });
+  const exit = deferredExit();
+  const order: string[] = [];
+  let deliveryPersisted = false;
+  let preparedCommitted = false;
+  const handle: DetachedProcessHandle = {
+    outputRef: 'command-output:system/ptc-exec-linearization',
+    drainNewOutput: () =>
+      preparedCommitted
+        ? { stdout: '', stderr: '' }
+        : { stdout: 'initial output\n', stderr: 'initial diagnostic\n' },
+    prepareOutputDelivery: () => {
+      order.push('prepare');
+      return {
+        output: {
+          stdout: 'initial output\n',
+          stderr: 'initial diagnostic\n',
+        },
+        offsets: {
+          stdoutBytes: 15,
+          stderrBytes: 19,
+        },
+      };
+    },
+    commitPreparedOutputDelivery: () => {
+      assert.equal(deliveryPersisted, true);
+      preparedCommitted = true;
+      order.push('commit');
+    },
+    exit: exit.promise,
+    terminate: () => {
+      exit.resolve({
+        kind: 'exit',
+        exitCode: 0,
+        processTerminated: true,
+      });
+    },
+  };
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-exec-linearization',
+  });
+  const runtime = createPtcExecuteCodeRuntime({
+    cellTerminalResultStore: {
+      async persist() {
+        assert.fail('the running fixture must not persist a terminal result');
+      },
+      async read() {
+        return { ok: true, value: undefined };
+      },
+    },
+    commandRunner: fixture.runner,
+    ptcCell: makeTestCellConfig(1),
+    runtimeRootForState: () => runtimeRoot,
+    startCellProcess: () => ({ ok: true, handle }),
+  });
+  runtime.attachCellCoordinateStore?.({
+    listPtcExecuteCodeCellCoordinates: () => [],
+    persistPtcExecuteCodeCellCoordinate(coordinate) {
+      assert.equal(coordinate.cellId, cellId);
+      order.push('coordinate');
+    },
+    deletePtcExecuteCodeCellCoordinate() {},
+    readPtcExecuteCodeRunningExecDelivery: () => undefined,
+    persistPtcExecuteCodeRunningExecDelivery(delivery) {
+      assert.equal(delivery.cellId, cellId);
+      assert.deepEqual(delivery.outputReadOffsets, {
+        stdoutBytes: 15,
+        stderrBytes: 19,
+      });
+      assert.equal(preparedCommitted, false);
+      deliveryPersisted = true;
+      order.push('delivery');
+    },
+  });
+
+  try {
+    const result = await runtime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      invocation,
+      invocationId: invocation.callId,
+      request: {
+        code: 'await new Promise(() => {})',
+        timeoutMs: 60_000,
+      },
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) {
+      return;
+    }
+    assert.equal(result.value.executionSurface, 'node_via_lab_detached_cell');
+    assert.equal(result.value.status, 'running');
+    assert.equal(result.value.cellId, cellId);
+    assert.deepEqual(order.slice(0, 4), [
+      'coordinate',
+      'prepare',
+      'delivery',
+      'commit',
+    ]);
+  } finally {
+    await runtime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
 void test('createPtcExecuteCodeRuntime retains an unclaimed result when its durable handoff fails', async () => {
   const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-handoff-failure-workspace-'),
@@ -1969,18 +2637,46 @@ void test('createPtcExecuteCodeRuntime reports an initial detached cell timeout'
   const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-execute-code-cell-timeout-workspace-'),
   );
-  const runtimeRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-ptc-execute-code-cell-timeout-runtime-'),
+  const firstRuntimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-timeout-runtime-1-'),
   );
+  const secondRuntimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-timeout-runtime-2-'),
+  );
+  const threadId = testThreadId(931_2);
+  const invocation = {
+    runId: 'run-initial-cell-timeout',
+    callId: 'call-initial-cell-timeout',
+  };
+  let coordinate: PtcExecuteCodeCellCoordinate | undefined;
+  const coordinateStore = {
+    listPtcExecuteCodeCellCoordinates: () =>
+      coordinate === undefined ? [] : [coordinate],
+    persistPtcExecuteCodeCellCoordinate(
+      nextCoordinate: PtcExecuteCodeCellCoordinate,
+    ) {
+      coordinate = nextCoordinate;
+    },
+    deletePtcExecuteCodeCellCoordinate() {
+      coordinate = undefined;
+    },
+    readPtcExecuteCodeRunningExecDelivery: () => undefined,
+    persistPtcExecuteCodeRunningExecDelivery() {
+      assert.fail('initial timeout must not publish a running delivery');
+    },
+  };
+  const terminalResultStore = createPtcExecuteCodeCellTerminalResultStore();
   const fixture = createPtcSessionDockerCommandFixture({
     policy: createPtcSessionDockerLocalBatchCommandPolicy(),
     containerId: 'container-agent-ptc-execute-code-cell-timeout',
   });
   const runtime = createPtcExecuteCodeRuntime({
+    cellTerminalResultStore: terminalResultStore,
     commandRunner: fixture.runner,
-    startCellProcess: () => ({
+    startCellProcess: (args) => ({
       ok: true,
       handle: makeDetachedHandle({
+        outputRef: `command-output:system/${args.cellId}`,
         output: makeDetachedSegment({ stdout: 'still running\n' }),
         exit: Promise.resolve({
           kind: 'timeout',
@@ -1990,25 +2686,65 @@ void test('createPtcExecuteCodeRuntime reports an initial detached cell timeout'
       }),
     }),
     ptcCell: makeTestCellConfig(60_000),
-    runtimeRootForState: () => runtimeRoot,
+    runtimeRootForState: () => firstRuntimeRoot,
   });
+  runtime.attachCellCoordinateStore?.(coordinateStore);
+  let restartedRuntime:
+    | ReturnType<typeof createPtcExecuteCodeRuntime>
+    | undefined;
 
   try {
     const result = await runtime.executeCode({
-      runContext: makeRunContext({
-        threadId: testThreadId(931_2),
-        stateRoot,
-      }),
+      runContext: makeRunContext({ threadId, stateRoot }),
+      invocation,
+      invocationId: invocation.callId,
       request: { code: 'await new Promise(() => {})', timeoutMs: 1_000 },
     });
 
     assert.equal(result.ok, false);
     assert.equal(result.ok ? '' : result.reasonCode, 'ptc_lab_command_timeout');
     assert.equal(result.ok ? '' : result.diagnostics?.cellExitKind, 'timeout');
+    assert.equal(coordinate, undefined);
+    const durable = await terminalResultStore.readRecovery?.({
+      stateRoot,
+      threadId,
+      cellId: derivePtcExecuteCodeCellId({ threadId, ...invocation }),
+    });
+    assert.notEqual(durable, undefined);
+    if (durable === undefined) {
+      return;
+    }
+    assert.equal(durable.ok, true, JSON.stringify(durable));
+    assert.deepEqual(durable.ok ? durable.value : undefined, result);
+
+    await runtime.closeAll();
+    const restartedFixture = createPtcSessionDockerCommandFixture({
+      policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+      containerId: 'container-agent-ptc-execute-code-cell-timeout-restarted',
+    });
+    restartedRuntime = createPtcExecuteCodeRuntime({
+      cellTerminalResultStore: terminalResultStore,
+      commandRunner: restartedFixture.runner,
+      startCellProcess: () => {
+        assert.fail('durable timeout recovery must not restart code');
+      },
+      ptcCell: makeTestCellConfig(60_000),
+      runtimeRootForState: () => secondRuntimeRoot,
+    });
+    restartedRuntime.attachCellCoordinateStore?.(coordinateStore);
+    const recovered = await restartedRuntime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      invocation,
+      invocationId: invocation.callId,
+      request: { code: 'await new Promise(() => {})', timeoutMs: 1_000 },
+    });
+    assert.deepEqual(recovered, result);
   } finally {
+    await restartedRuntime?.closeAll();
     await runtime.closeAll();
     await rm(stateRoot, { recursive: true, force: true });
-    await rm(runtimeRoot, { recursive: true, force: true });
+    await rm(firstRuntimeRoot, { recursive: true, force: true });
+    await rm(secondRuntimeRoot, { recursive: true, force: true });
   }
 });
 
@@ -2408,6 +3144,112 @@ void test('waitForExecuteCodeCell preserves terminal output when terminate races
   assert.equal(registry.readCellState({ threadId }), null);
 });
 
+void test('waitForExecuteCodeCell checkpoints prepared running output before release and retries it after persistence failure', async () => {
+  const threadId = testThreadId(914_01);
+  const registry = createPtcExecuteCodeCellRegistry({
+    createCellId: () => 'ptc_cell_wait_delivery_linearized',
+  });
+  const admitted = registry.reserveAdmittingCell({ threadId });
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok) {
+    return;
+  }
+  const order: string[] = [];
+  let commitCount = 0;
+  registry.promoteAdmittedCell({
+    threadId,
+    cellId: admitted.cellId,
+    resources: {
+      effectiveTimeoutMs: 60_000,
+      handle: {
+        drainNewOutput() {
+          assert.fail(
+            'durable wait must prepare output instead of draining it',
+          );
+        },
+        prepareOutputDelivery() {
+          order.push('prepare');
+          return {
+            output: {
+              stdout: 'checkpoint before release\n',
+              stderr: '',
+            },
+            offsets: {
+              stdoutBytes: 26,
+              stderrBytes: 0,
+            },
+          };
+        },
+        commitPreparedOutputDelivery() {
+          order.push('commit');
+          commitCount += 1;
+        },
+        getOutputRevision: () => 1,
+        exit: new Promise(() => undefined),
+        terminate() {},
+      },
+      closeBridge: () => {},
+      taintSession: () => true,
+    },
+  });
+
+  const failed = await waitForExecuteCodeCell({
+    cellRegistry: registry,
+    runContext: { threadId },
+    request: { cellId: admitted.cellId },
+    runningOutputDelivery: {
+      persist() {
+        order.push('persist-failed');
+        throw new Error('simulated durable checkpoint failure');
+      },
+    },
+    signal: undefined,
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(
+    failed.ok ? '' : failed.reasonCode,
+    'ptc_execute_code_cell_wait_unavailable',
+  );
+  assert.deepEqual(order, ['prepare', 'persist-failed']);
+  assert.equal(commitCount, 0);
+
+  const recovered = await waitForExecuteCodeCell({
+    cellRegistry: registry,
+    runContext: { threadId },
+    request: { cellId: admitted.cellId },
+    runningOutputDelivery: {
+      persist(delivery) {
+        order.push('persisted');
+        assert.deepEqual(delivery, {
+          cellId: admitted.cellId,
+          stdout: 'checkpoint before release\n',
+          stderr: '',
+          outputReadOffsets: {
+            stdoutBytes: 26,
+            stderrBytes: 0,
+          },
+        });
+      },
+    },
+    signal: undefined,
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(
+    recovered.ok && 'stdout' in recovered.value
+      ? recovered.value.stdout
+      : undefined,
+    'checkpoint before release\n',
+  );
+  assert.deepEqual(order, [
+    'prepare',
+    'persist-failed',
+    'prepare',
+    'persisted',
+    'commit',
+  ]);
+  assert.equal(commitCount, 1);
+});
+
 void test('execute_code cell registry discards store writes when model code exits nonzero', async () => {
   const threadId = testThreadId(914_1);
   const registry = createPtcExecuteCodeCellRegistry({
@@ -2587,6 +3429,132 @@ void test('createPtcExecuteCodeRuntime waitForCell terminates a running cell thr
       [['rm', '-f', 'container-agent-ptc-execute-code-cell-terminate']],
     );
   } finally {
+    await runtime.closeAll();
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+void test('createPtcExecuteCodeRuntime recovers an explicit termination result after runtime restart', async () => {
+  const stateRoot = await mkdtemp(
+    join(
+      tmpdir(),
+      'geulbat-ptc-execute-code-cell-terminate-durable-workspace-',
+    ),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-execute-code-cell-terminate-durable-runtime-'),
+  );
+  const threadId = testThreadId(914_01);
+  const cellId = 'ptc_cell_runtime_terminate_durable' as const;
+  const fixture = createPtcSessionDockerCommandFixture({
+    policy: createPtcSessionDockerLocalBatchCommandPolicy(),
+    containerId: 'container-agent-ptc-execute-code-cell-terminate-durable',
+  });
+  const cellTerminalResultStore = createPtcExecuteCodeCellTerminalResultStore();
+  const exit = deferredExit();
+  const runtime = createPtcExecuteCodeRuntime({
+    cellTerminalResultStore,
+    commandRunner: fixture.runner,
+    createCellRegistry: (options) =>
+      createPtcExecuteCodeCellRegistry({
+        ...options,
+        createCellId: () => cellId,
+      }),
+    startCellProcess: () => ({
+      ok: true,
+      handle: {
+        drainNewOutput: () =>
+          makeDetachedSegment({
+            stdout: 'durable terminate output\n',
+            stderr: 'durable terminate diagnostics\n',
+          }),
+        exit: exit.promise,
+        terminate: () => {
+          exit.resolve({
+            kind: 'signal',
+            exitCode: null,
+            processTerminated: false,
+          });
+        },
+      },
+    }),
+    ptcCell: makeTestCellConfig(1),
+    runtimeRootForState: () => runtimeRoot,
+  });
+  let restartedRuntime:
+    | ReturnType<typeof createPtcExecuteCodeRuntime>
+    | undefined;
+
+  try {
+    const started = await runtime.executeCode({
+      runContext: makeRunContext({ threadId, stateRoot }),
+      request: { code: 'await new Promise(() => {})' },
+    });
+    assert.equal(started.ok, true);
+    if (
+      !started.ok ||
+      started.value.executionSurface !== 'node_via_lab_detached_cell'
+    ) {
+      return;
+    }
+
+    const terminated = await runtime.waitForCell({
+      runContext: { threadId, stateRoot },
+      request: { cellId, terminate: true },
+    });
+    assert.equal(terminated.ok, true);
+    if (!terminated.ok) {
+      return;
+    }
+    assert.equal(terminated.value.status, 'terminated');
+    assert.equal(
+      'offloaded' in terminated.value ? terminated.value.offloaded : false,
+      true,
+    );
+    const outputRef = Reflect.get(terminated.value, 'outputRef');
+    assert.equal(typeof outputRef, 'string');
+    if (typeof outputRef !== 'string') {
+      return;
+    }
+    const snapshot = await readToolOutputSnapshot({
+      stateRoot,
+      threadId,
+      outputRef,
+    });
+    assert.equal(snapshot.ok, true);
+    if (!snapshot.ok) {
+      return;
+    }
+    assert.deepEqual(JSON.parse(snapshot.value.output), {
+      kind: 'ptc_execute_code_cell_wait',
+      capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+      policyId: 'ptc_lab_execute_code_batch_node_v1',
+      executionSurface: 'node_via_lab_detached_cell',
+      status: 'terminated',
+      cellId,
+      exitCode: null,
+      stdout: 'durable terminate output\n',
+      stderr: 'durable terminate diagnostics\n',
+    });
+
+    await runtime.closeAll();
+    restartedRuntime = createPtcExecuteCodeRuntime({
+      cellTerminalResultStore,
+      ptcCell: makeTestCellConfig(1),
+      startCellProcess: () => {
+        assert.fail(
+          'explicit termination recovery must not start a cell process',
+        );
+      },
+    });
+    const afterRestart = await restartedRuntime.waitForCell({
+      runContext: { threadId, stateRoot },
+      request: { cellId },
+    });
+    assert.deepEqual(afterRestart, terminated);
+  } finally {
+    await restartedRuntime?.closeAll();
     await runtime.closeAll();
     await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
@@ -2935,11 +3903,27 @@ void test('createPtcExecuteCodeRuntime reports cleanup failure when cell taint c
       request: { cellId: 'ptc_cell_taint_close_fail', terminate: true },
     });
 
-    assert.equal(terminated.ok, false);
-    assert.equal(
-      terminated.ok ? '' : terminated.reasonCode,
-      'ptc_execute_code_session_cleanup_failed',
-    );
+    assert.deepEqual(terminated, {
+      ok: true,
+      value: {
+        ok: true,
+        capabilityId: PTC_EXECUTE_CODE_TOOL_NAME,
+        policyId: 'ptc_lab_execute_code_batch_node_v1',
+        executionSurface: 'node_via_lab_detached_cell',
+        status: 'terminated_with_cleanup_failure',
+        cellId: 'ptc_cell_taint_close_fail',
+        exitCode: null,
+        stdout: 'still unsafe\n',
+        stderr: '',
+        cleanupFailure: {
+          message: 'PTC execute_code explicit termination cleanup failed',
+          diagnostics: {
+            sessionCloseFailed: true,
+            sessionTainted: true,
+          },
+        },
+      },
+    });
     assert.equal(registry.readCellState({ threadId: testThreadId(937) }), null);
 
     const retry = await runtime.executeCode({
@@ -3044,10 +4028,12 @@ function makeDetachedSegment(
 }
 
 function makeDetachedHandle(args: {
+  outputRef?: string;
   output: DetachedProcessOutputSegment;
   exit?: Promise<DetachedProcessExitInfo>;
 }): DetachedProcessHandle {
   return {
+    ...(args.outputRef === undefined ? {} : { outputRef: args.outputRef }),
     drainNewOutput: () => args.output,
     exit:
       args.exit ??

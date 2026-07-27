@@ -15,7 +15,11 @@ import {
   buildToolCallExecutionRuntime,
   isToolOutputRecoveryAvailable,
 } from './loop-tool-runtime.js';
-import { recordToolCall, recordToolResult } from './loop-tool-support.js';
+import {
+  recordToolCall,
+  recordToolResult,
+  settleReadyToolResult,
+} from './loop-tool-support.js';
 import type { AgentInput } from './loop-types.js';
 import type { ToolRecoveryStrategy } from '../tools/tool-registry-model.js';
 import {
@@ -23,6 +27,9 @@ import {
   PTC_EXECUTE_CODE_WAIT_TOOL_NAME,
   PTC_PACKAGE_INSTALL_TOOL_NAME,
 } from '../ptc/runtime/execute-code/execute-code-runtime-contract.js';
+import { readToolResultReady } from './tool-result-ready-store.js';
+import { restoreQueuedSubagentLaunchesForParent } from '../tools/builtin/subagent-launch-pipeline.js';
+import { assertAgentRunId } from './contract.js';
 
 interface RecoverableTranscriptToolCall {
   functionCall: FunctionCall;
@@ -41,6 +48,15 @@ export async function recoverPendingReplaySafeToolCalls(args: {
 }> {
   const { agentInput } = args;
   const { runContext, runtimeServices } = agentInput;
+  restoreQueuedSubagentLaunchesForParent({
+    parentRunId: assertAgentRunId(agentInput.runId),
+    ownerThreadId: runContext.threadId,
+    stateRoot: runContext.stateRoot,
+    parentRunState: agentInput.runState,
+    runtimeServices,
+    emitAgentEvent: agentInput.onEvent,
+    computerSessionId: agentInput.approvalContext.computerSessionId,
+  });
   const providerRequestOptions = resolveProviderRequestOptionsForRun(
     runtimeServices.provider.requestOptions,
     {
@@ -76,8 +92,11 @@ export async function recoverPendingReplaySafeToolCalls(args: {
     throw new Error('recoverable run has no persisted user input');
   }
   const currentTurn = transcript.slice(currentTurnStart);
+  const emit: AgentEventEmitter = (type, payload) => {
+    agentInput.onEvent(createAgentEvent(type, payload));
+  };
+  const transcriptResultCallIds = new Set<string>();
   const resultCallIds = new Set<string>();
-  const transcriptCallIds = new Set<string>();
   for (const entry of currentTurn) {
     if (entry.role !== 'tool_result') {
       continue;
@@ -85,16 +104,10 @@ export async function recoverPendingReplaySafeToolCalls(args: {
     const parsed = tryParseJsonRecord(entry.content);
     const callId = parsed.ok ? readString(parsed.value.callId) : undefined;
     if (callId) {
+      transcriptResultCallIds.add(callId);
       resultCallIds.add(callId);
     }
   }
-  const transcriptPendingCalls = currentTurn
-    .filter((entry) => entry.role === 'tool_call')
-    .map((entry) => parseRecoverableTranscriptToolCall(entry.content))
-    .filter((call) => {
-      transcriptCallIds.add(call.functionCall.callId);
-      return !resultCallIds.has(call.functionCall.callId);
-    });
   const history = await loadExistingHistory(
     runContext.stateRoot,
     runContext.threadId,
@@ -105,6 +118,57 @@ export async function recoverPendingReplaySafeToolCalls(args: {
       resultCallIds.add(item.callId);
     }
   }
+  let readyResultCount = 0;
+  const checkpoint = await runtimeServices.runCheckpoints.readThread(
+    runContext.threadId,
+  );
+  const correlatedRunCheckpoints =
+    checkpoint?.status === 'running' && checkpoint.runId === agentInput.runId
+      ? runtimeServices.runCheckpoints
+      : undefined;
+  const readyResults =
+    checkpoint?.status === 'running' && checkpoint.runId === agentInput.runId
+      ? checkpoint.toolResultsReady
+      : [];
+  for (const checkpointReady of readyResults) {
+    const readyResult = await readToolResultReady({
+      stateRoot: runContext.stateRoot,
+      threadId: runContext.threadId,
+      runId: agentInput.runId,
+      resultRef: checkpointReady.resultRef,
+    });
+    if (!readyResult.ok) {
+      throw new Error(
+        `durable tool result readiness record is unavailable: ${readyResult.message}`,
+      );
+    }
+    if (
+      readyResult.value.functionCall.callId !== checkpointReady.callId ||
+      readyResult.value.functionCall.name !== checkpointReady.toolName
+    ) {
+      throw new Error('durable tool result readiness identity conflicts');
+    }
+    await settleReadyToolResult({
+      ready: readyResult.value,
+      resultRef: checkpointReady.resultRef,
+      transcriptRecorded: transcriptResultCallIds.has(checkpointReady.callId),
+      runContext,
+      runId: agentInput.runId,
+      history,
+      emit,
+      runCheckpoints: runtimeServices.runCheckpoints,
+    });
+    resultCallIds.add(checkpointReady.callId);
+    readyResultCount += 1;
+  }
+  const transcriptCallIds = new Set<string>();
+  const transcriptPendingCalls = currentTurn
+    .filter((entry) => entry.role === 'tool_call')
+    .map((entry) => parseRecoverableTranscriptToolCall(entry.content))
+    .filter((call) => {
+      transcriptCallIds.add(call.functionCall.callId);
+      return !resultCallIds.has(call.functionCall.callId);
+    });
   const providerRoundRecords = await readProviderRoundHistory(
     runContext.stateRoot,
     runContext.threadId,
@@ -146,6 +210,11 @@ export async function recoverPendingReplaySafeToolCalls(args: {
         `provider function call has invalid recovery arguments: ${callId}`,
       );
     }
+    const recoveryStrategy =
+      journalCall.functionCall.recoveryStrategy ??
+      (journalCall.functionCall.replaySafe
+        ? ('replay_safe' as const)
+        : undefined);
     providerPendingCalls.push({
       functionCall: {
         id: journalCall.functionCall.id,
@@ -155,9 +224,7 @@ export async function recoverPendingReplaySafeToolCalls(args: {
       },
       toolArgs: parsedArgs.value,
       round: journalCall.round,
-      ...(journalCall.functionCall.replaySafe
-        ? { recoveryStrategy: 'replay_safe' as const }
-        : {}),
+      ...(recoveryStrategy === undefined ? {} : { recoveryStrategy }),
       transcriptRecorded: false,
     });
   }
@@ -183,9 +250,6 @@ export async function recoverPendingReplaySafeToolCalls(args: {
       }
     }
 
-    const emit: AgentEventEmitter = (type, payload) => {
-      agentInput.onEvent(createAgentEvent(type, payload));
-    };
     const executionContextBase = buildAgentToolExecutionContextBase({
       runContext,
       runId: agentInput.runId,
@@ -240,27 +304,31 @@ export async function recoverPendingReplaySafeToolCalls(args: {
             : { recoveryStrategy: pending.recoveryStrategy }),
         });
       }
-      const currentStrategy = runtimeServices.toolRegistry.getToolMeta(
+      const currentMeta = runtimeServices.toolRegistry.getToolMeta(
         pending.functionCall.name,
-      )?.recoveryStrategy;
-      const execution =
-        pending.recoveryStrategy === 'replay_safe' &&
-        currentStrategy === 'replay_safe'
-          ? await executeFunctionCall({
-              functionCall: pending.functionCall,
-              round: pending.round,
-              toolArgs: pending.toolArgs,
-              history,
-              runtime,
-              deferTerminalFailure: true,
-            })
-          : {
-              ok: true as const,
-              value: toolError(
-                'execution_failed',
-                `tool "${pending.functionCall.name}" cannot be replayed after daemon restart because its durable recovery strategy is unavailable`,
-              ),
-            };
+      );
+      const currentStrategy = currentMeta?.recoveryStrategy;
+      const canRecover =
+        pending.recoveryStrategy === currentStrategy &&
+        (currentStrategy === 'replay_safe' ||
+          currentStrategy === 'reconcile_then_replay' ||
+          currentStrategy === 'durable_handle');
+      const execution = canRecover
+        ? await executeFunctionCall({
+            functionCall: pending.functionCall,
+            round: pending.round,
+            toolArgs: pending.toolArgs,
+            history,
+            runtime,
+            deferTerminalFailure: true,
+          })
+        : {
+            ok: true as const,
+            value: toolError(
+              'execution_failed',
+              `tool "${pending.functionCall.name}" cannot be replayed after daemon restart because its durable recovery strategy is unavailable`,
+            ),
+          };
       const toolResult = execution.ok
         ? execution.value
         : toolError(
@@ -272,18 +340,22 @@ export async function recoverPendingReplaySafeToolCalls(args: {
         round: pending.round,
         toolResult,
         toolOutputRecoveryAvailable: isToolOutputRecoveryAvailable(runtime),
-        computerFilesMayHaveChanged: false,
+        computerFilesMayHaveChanged:
+          currentMeta?.mayMutateComputerFiles === true,
         runContext,
         runId: agentInput.runId,
         history,
         emit,
+        ...(correlatedRunCheckpoints === undefined
+          ? {}
+          : { runCheckpoints: correlatedRunCheckpoints }),
       });
     }
   }
 
   return {
     ...recoverableInput,
-    recoveredCallCount: pendingCalls.length,
+    recoveredCallCount: readyResultCount + pendingCalls.length,
   };
 }
 

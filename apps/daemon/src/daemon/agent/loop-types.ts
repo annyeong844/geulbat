@@ -1,4 +1,5 @@
 import type { AgentLoopImplementation } from '@geulbat/agent-loop/kernel';
+import type { ToolLibraryProjectionIdentity } from '@geulbat/tool-library/projection-codec';
 import type { ToolCapabilityPolicy } from '@geulbat/tool-library/tool-capability-policy';
 import type {
   PermissionMode,
@@ -32,7 +33,6 @@ import type { RunContext } from '../run-context.js';
 import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
 import type { RunExecutionAgentBindings } from '../sessions/run-execution-lifecycle.js';
 import type { ResolvedRunAttachment } from './run-attachments.js';
-import type { GoalCompletionVerifier } from './goal-completion-verifier.js';
 
 export interface LineSelection {
   startLine: number;
@@ -77,6 +77,7 @@ export interface AgentInput extends RunExecutionAgentBindings {
   runState?: RunState;
   toolSurface?: AgentToolSurface;
   toolCapabilityPolicy?: ToolCapabilityPolicy;
+  toolLibraryProjectionIdentity?: ToolLibraryProjectionIdentity;
   promptProfile?: AgentLoopPromptProfile;
   loopImplementation?: AgentLoopImplementation;
   // Runtime services flow through one narrow path so agent/tool layers do not
@@ -89,7 +90,6 @@ export interface AgentInput extends RunExecutionAgentBindings {
   lifecyclePort?: AgentLoopLifecyclePort;
   memoryPort?: AgentLoopMemoryPort;
   modelRoundPort?: ModelRoundPort;
-  goalCompletionVerifier?: GoalCompletionVerifier;
   structuredOutputPort?: AgentLoopStructuredOutputPort;
   toolDefinitionPort?: AgentLoopToolDefinitionPort;
   toolRuntimePort?: AgentLoopToolRuntimePort;

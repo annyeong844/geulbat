@@ -64,10 +64,6 @@ export function ProviderUsageCard({ loadUsage }: Props) {
   return (
     <section className="provider-usage-card" style={styles.section}>
       <h3>사용량</h3>
-      <p style={styles.description}>
-        제공자가 보고한 값입니다. 글밭이 직접 계산하지 않습니다. 잠시 전에 읽은
-        값을 그대로 보여주며, 다시 불러오기를 누르면 제공자에게 새로 묻습니다.
-      </p>
 
       {state.kind === 'failed' ? (
         <p style={styles.alert} role="alert">
@@ -150,7 +146,8 @@ function ProviderUsageDetail({ entry }: { entry: ProviderUsageEntry }) {
     );
   }
   if (entry.state === 'not_provided') {
-    return <p style={styles.editorIntro}>{entry.reason}</p>;
+    // 배지(제공 안 함)만으로 충분하다 — 긴 자격증명 설명을 노출하지 않는다.
+    return null;
   }
   if (entry.state === 'failed') {
     return (

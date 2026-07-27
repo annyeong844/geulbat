@@ -207,9 +207,12 @@ export const startParamsSchema = z.object({
   threadId: z.string(),
   runId: z.string(),
   callId: z.string(),
+  requiresIdempotentStart: z.literal(true).optional(),
   stdinMode: z.enum(['closed', 'open']),
+  initialStdin: z.string().optional(),
   timeoutMs: z.number().int().positive().optional(),
   maxOutputBytesPerStream: z.number().int().positive().optional(),
+  requiresDeferredOutputRelease: z.literal(true).optional(),
   outputRedaction: z
     .object({
       exactMarkers: z.array(z.string().min(1)).min(1),
@@ -242,6 +245,8 @@ export const interactParamsSchema = z.object({
       stream: outputStream,
       offsetBytes: z.number().int().min(0),
       limitBytes: z.number().int().min(1),
+      deferRelease: z.boolean().optional(),
+      releaseUpToBytes: z.number().int().min(0).optional(),
     })
     .optional(),
 });
@@ -290,6 +295,10 @@ export const listResultSchema = z.array(
     outputRef: z.string(),
     threadId: z.string(),
     stateRoot: z.string(),
+    // 구 워커가 살아 있는 업그레이드 재접속에서는 빠질 수 있다. 새 데몬은
+    // 이 둘이 모두 있는 정확한 호출만 재입양하고, 없으면 fail-closed한다.
+    runId: z.string().optional(),
+    callId: z.string().optional(),
     running: z.boolean(),
     revision: z.number(),
     command: z.string(),

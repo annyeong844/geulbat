@@ -10,85 +10,46 @@ import type {
 import type { ManageFileOperation } from '../lib/api/files.js';
 import type { OpenFileTab } from './use-computer-files.js';
 
+import type { ComputerTreeProps } from '../features/computer-tree/ComputerTree.js';
+import type { EditorProps } from '../features/editor/Editor.js';
+import type { ProviderAuthCardProps } from '../features/provider-auth/ProviderAuthCard.js';
+import type { ThreadDeleteConfirmProps } from '../features/thread-list/ThreadDeleteConfirm.js';
+import type { ThreadListProps } from '../features/thread-list/ThreadList.js';
+
 import type { createHomeRunSessionView } from './home-run-session-view.js';
 
 type HomeRunSessionView = ReturnType<typeof createHomeRunSessionView>;
 
+// 각 슬롯은 컴포넌트 owner 계약에서 파생한다 — 여기서 필드를 다시 선언하지
+// 않으므로 owner가 prop을 바꾸면 이 view가 함께 따라간다. `Omit` 키는
+// HomeShell이 호출부에서 직접 배선하는 prop을 명시한다.
 interface HomeLeftPanelView {
-  computerTree: {
-    tree: FileTreeNode[];
-    uiError: string | null;
-    selectedPath: string | null;
-    browseEnabled: boolean;
-    browsePath: string;
-    browseStartPath: string;
-    browseShortcuts: Array<{ label: string; path: string }>;
-    onNavigateUp: () => void;
-    onNavigateInto: (path: string) => void;
-    onLoad: () => Promise<void>;
-    onLoadSubtree: (path: string) => Promise<void>;
-    onSelect: (path: string) => Promise<void>;
-    onCreateFile: (path: string) => Promise<boolean>;
-    onManageEntry: (
-      operation: ManageFileOperation,
-      path: string,
-      destination?: string,
-    ) => Promise<boolean>;
-    onInsertIntoManuscript: (path: string) => Promise<void>;
-  };
-  threadList: {
-    threads: ThreadSummary[];
-    selectedThreadId: string | null;
-    deletingThreadId: string | null;
-    uiError: string | null;
-    onLoad: () => Promise<void>;
-    onSelect: (threadId: string) => Promise<void>;
-    onDeleteRequest: (threadId: string) => void;
-    onNewSession: () => void;
-  };
-  threadDeleteConfirm: {
-    thread: ThreadSummary;
-    busy: boolean;
-    onConfirm: () => Promise<void>;
-    onCancel: () => void;
-  } | null;
-}
-
-interface ProviderAuthCardView {
-  statuses: ProviderAuthStatusByProvider;
-  busyProviderId: ProviderAuthProviderId | null;
-  uiErrors: ProviderAuthErrorByProvider;
-  onConnect: (providerId: ProviderAuthProviderId) => Promise<void> | void;
-  onDisconnect: (providerId: ProviderAuthProviderId) => Promise<void> | void;
+  computerTree: Required<Omit<ComputerTreeProps, 'favoriteDirectories'>>;
+  threadList: Required<
+    Omit<ThreadListProps, 'onOpenManager' | 'onRenameRequest' | 'onTogglePin'>
+  >;
+  // ThreadList prop이 아니다 — 세션 매니저와 레일 버튼이 쓰는 shell 액션이라
+  // 목록 계약 밖에 둔다.
+  onNewSession: () => void;
+  threadDeleteConfirm: ThreadDeleteConfirmProps | null;
 }
 
 interface HomeCenterPanelView {
-  providerAuthCard: ProviderAuthCardView;
-  editor: {
-    filePath: string | null;
-    extractedDocument: 'docx' | 'xlsx' | 'hwpx' | null;
-    binaryPreview: {
-      path: string;
-      kind: 'image' | 'audio' | 'video' | 'unsupported';
-      url?: string;
-      byteSize?: number;
-    } | null;
-    content: string;
-    isDirty: boolean;
-    saving: boolean;
-    openingFile: boolean;
-    lastSavedAt: number | null;
-    uiError: string | null;
-    saveConflict: ConflictStaleWriteError | null;
-    openFiles: OpenFileTab[];
-    onSelectFileTab: (path: string) => void;
-    onCloseFileTab: (path: string) => void;
-    onChange: (content: string) => void;
-    onSave: () => Promise<void>;
-    onConflictReload: () => Promise<void>;
-    onConflictSaveAsCopy: () => Promise<void>;
-    onConflictInspect: () => Promise<string | null>;
-  };
+  providerAuthCard: Required<ProviderAuthCardProps>;
+  // HomeShell이 호출부에서 직접 배선하는 prop(읽기전용 여부, 최근 파일,
+  // 폴더/최근파일 조작, 아티팩트 표면)은 여기서 제외한다.
+  editor: Required<
+    Omit<
+      EditorProps,
+      | 'readOnly'
+      | 'recentFiles'
+      | 'onOpenFolder'
+      | 'onOpenRecentFile'
+      | 'onRemoveRecentFile'
+      | 'artifactPill'
+      | 'artifactSurface'
+    >
+  >;
 }
 
 interface HomeRightPanelView {
@@ -121,12 +82,17 @@ interface CreateHomeLeftPanelViewArgs {
   selectedThreadId: string | null;
   deletingThreadId: string | null;
   pendingDeleteThread: ThreadSummary | null;
+  exportingThreadId: string | null;
+  importingThreadArchive: boolean;
+  threadTransferNotice: string | null;
   threadError: string | null;
   loadThreads: () => Promise<void>;
   openThread: (threadId: string) => Promise<void>;
   requestDeleteThread: (threadId: string) => void;
   confirmDeleteThread: () => Promise<void>;
   cancelDeleteThread: () => void;
+  exportThread: (threadId: string) => Promise<void>;
+  importThread: (archive: Blob) => Promise<void>;
   startNewSession: () => void;
 }
 
@@ -191,12 +157,17 @@ export function createHomeLeftPanelView({
   selectedThreadId,
   deletingThreadId,
   pendingDeleteThread,
+  exportingThreadId,
+  importingThreadArchive,
+  threadTransferNotice,
   threadError,
   loadThreads,
   openThread,
   requestDeleteThread,
   confirmDeleteThread,
   cancelDeleteThread,
+  exportThread,
+  importThread,
   startNewSession,
 }: CreateHomeLeftPanelViewArgs): HomeLeftPanelView {
   return {
@@ -221,12 +192,17 @@ export function createHomeLeftPanelView({
       threads,
       selectedThreadId,
       deletingThreadId,
+      exportingThreadId,
+      importingThreadArchive,
+      transferNotice: threadTransferNotice,
       uiError: threadError,
       onLoad: loadThreads,
       onSelect: openThread,
       onDeleteRequest: requestDeleteThread,
-      onNewSession: startNewSession,
+      onExport: exportThread,
+      onImport: importThread,
     },
+    onNewSession: startNewSession,
     threadDeleteConfirm: pendingDeleteThread
       ? {
           thread: pendingDeleteThread,

@@ -215,7 +215,7 @@ function buildVideoManifestPayload(): string {
   });
 }
 
-void test('resolveStaticArtifactPreview renders video manifests as an inline player with a save link', () => {
+void test('resolveStaticArtifactPreview renders video manifests as a dedicated-viewer launcher with a save action', () => {
   assert.equal(isStaticArtifactPreviewRenderer('video'), true);
 
   const preview = resolveStaticArtifactPreview(
@@ -225,12 +225,10 @@ void test('resolveStaticArtifactPreview renders video manifests as an inline pla
   );
   assert.equal(preview.kind, 'rendered');
   const html = renderToStaticMarkup(preview.node);
-  // 인라인 재생이 1급(D-V6) — 미디어 라우트를 스트리밍 src로 쓴다
-  assert.match(html, /<video[^>]*controls/);
-  assert.match(
-    html,
-    /\/api\/threads\/11111111-1111-4111-8111-111111111111\/media\//,
-  );
+  // 이미지와 같은 자리에 같은 방식으로 — 무대에서 바로 재생한다.
+  assert.match(html, /<video/);
+  assert.match(html, /artifact-video-stage/);
+  assert.doesNotMatch(html, /감상 창/);
   // 저장은 위치를 고르는 선택 버튼(OS 저장 대화상자) — 강제 다운로드 아님
   assert.match(html, /artifact-media-save/);
   assert.match(html, /저장/);

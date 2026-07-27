@@ -1,12 +1,12 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { isPtcRecord } from '../shared/record-shape.js';
 import { runDetached } from '../../utils/run-detached.js';
 
 type PtcEpochCallbackHandlerResult =
-  | { ok: true; result: unknown }
+  | { ok: true; result?: unknown }
   | {
       ok: false;
       errorCode: string;
@@ -21,7 +21,7 @@ export interface PtcEpochCallbackHandlerInvocation {
   args: unknown;
   cellId?: string;
   signal: AbortSignal;
-  enterLongWait(this: void): boolean;
+  enterLongWait(this: void): boolean | Promise<boolean>;
 }
 
 export type PtcEpochCallbackHandler = (
@@ -33,12 +33,21 @@ export interface PtcEpochCallbackChannel {
   token: string;
   epochDir: string;
   socketPath: string;
+  processOutputRef?: string;
+  replaceHandler?(handler: PtcEpochCallbackHandler): void;
   close(): Promise<void>;
+}
+
+export interface PtcEpochCallbackChannelIdentity {
+  epochId: string;
+  token: string;
 }
 
 export interface CreatePtcEpochCallbackChannelArgs {
   rootDir: string;
   handler: PtcEpochCallbackHandler;
+  identity?: PtcEpochCallbackChannelIdentity;
+  processInvocationId?: string;
   maxFrameBytes?: number;
   maxCallbacks?: number;
   maxOpenConnections?: number;
@@ -47,7 +56,7 @@ export interface CreatePtcEpochCallbackChannelArgs {
 }
 
 type PtcWireResponse =
-  | { requestId?: string; ok: true; result: unknown }
+  | { requestId?: string; ok: true; result?: unknown }
   | {
       requestId?: string;
       ok: false;
@@ -66,14 +75,24 @@ export async function createPtcEpochCallbackChannel(
     );
   }
 
-  const epochId = randomBytes(8).toString('hex');
-  const token = randomBytes(32).toString('hex');
+  const identity = args.identity ?? {
+    epochId: randomBytes(8).toString('hex'),
+    token: randomBytes(32).toString('hex'),
+  };
+  requirePtcEpochCallbackChannelIdentity(identity);
+  const { epochId, token } = identity;
   const maxFrameBytes = args.maxFrameBytes;
   const maxCallbacks = args.maxCallbacks;
   const maxOpenConnections = args.maxOpenConnections;
   const callbackTimeoutMs = args.callbackTimeoutMs;
   const maxResponseBytes = args.maxResponseBytes;
-  const epochDir = await mkdtemp(join(args.rootDir, 'ptc-epoch-'));
+  const epochDir =
+    args.identity === undefined
+      ? await mkdtemp(join(args.rootDir, 'ptc-epoch-'))
+      : join(args.rootDir, `ptc-epoch-${epochId}`);
+  if (args.identity !== undefined) {
+    await mkdir(epochDir, { mode: 0o700 });
+  }
 
   try {
     await chmod(epochDir, 0o700);
@@ -225,6 +244,17 @@ export async function createPtcEpochCallbackChannel(
   }
 }
 
+function requirePtcEpochCallbackChannelIdentity(
+  identity: PtcEpochCallbackChannelIdentity,
+): void {
+  if (!/^[a-f0-9]{16}$/u.test(identity.epochId)) {
+    throw new Error('PTC epoch callback identity is invalid');
+  }
+  if (!/^[a-f0-9]{64}$/u.test(identity.token)) {
+    throw new Error('PTC epoch callback token is invalid');
+  }
+}
+
 interface HandleCallbackFrameArgs {
   line: string;
   socket: Socket;
@@ -244,7 +274,10 @@ function isPtcEpochCallbackHandlerResult(
     return false;
   }
   if (value.ok === true) {
-    return Object.hasOwn(value, 'result');
+    // JSON omits an explicit `undefined` result while relaying a handler
+    // success through the host process. The SDK wire already defines an
+    // omitted success result as `undefined`, so preserve that meaning here.
+    return true;
   }
   if (value.ok !== false) {
     return false;

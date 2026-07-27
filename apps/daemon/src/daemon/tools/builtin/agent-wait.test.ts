@@ -55,6 +55,10 @@ function createWaitContext(args?: {
   };
 }
 
+void test('agent_wait declares replay-safe restart recovery', () => {
+  assert.equal(agentWaitTool.recoveryStrategy, 'replay_safe');
+});
+
 void test('agent_wait snapshot projects a durably queued handle before a runtime child exists', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-agent-wait-'));
   const ownerThreadId = testThreadId(110);

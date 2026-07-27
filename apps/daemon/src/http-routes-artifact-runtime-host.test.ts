@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 
 import { withDaemonServer } from './test-support/http-routes.js';
 
-void test('artifact runtime host route is public and embeddable from loopback web-shell origins', async () => {
+void test('artifact runtime host route is public and embeddable from the shell that the daemon serves', async () => {
   await withDaemonServer(async ({ port }) => {
     const res = await fetch(
-      `http://127.0.0.1:${port}/artifact-runtime/host?parentOrigin=${encodeURIComponent('http://127.0.0.1:5173')}`,
+      `http://127.0.0.1:${port}/artifact-runtime/host?parentOrigin=${encodeURIComponent(`http://127.0.0.1:${port}`)}`,
     );
 
     assert.equal(res.status, 200);
@@ -14,9 +14,11 @@ void test('artifact runtime host route is public and embeddable from loopback we
     assert.equal(res.headers.get('cache-control'), 'no-store');
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(res.headers.get('x-frame-options'), null);
+    // 이 호스트를 감싸는 것은 데몬이 서빙한 shell 화면이다. loopback
+    // 와일드카드는 같은 기계의 아무 페이지에나 액자를 허용했다.
     assert.match(
       res.headers.get('content-security-policy') ?? '',
-      /frame-ancestors 'self' http:\/\/127\.0\.0\.1:\* http:\/\/localhost:\*/,
+      /frame-ancestors 'self'(;|$)/m,
     );
     assert.match(
       res.headers.get('content-security-policy') ?? '',
@@ -37,7 +39,7 @@ void test('artifact runtime host route is public and embeddable from loopback we
     assert.match(body, /new DOMParser\(\)/);
     assert.match(body, /replaceDocumentWithHtml\(data\.documentHtml\)/);
     assert.doesNotMatch(body, /document\.write\(data\.documentHtml\)/);
-    assert.match(body, /"http:\/\/127\.0\.0\.1:5173"/);
+    assert.match(body, new RegExp(`"http://127\\.0\\.0\\.1:${port}"`));
     assert.doesNotMatch(body, /postMessage\([^)]*['"]\*['"]\)/);
     assert.doesNotMatch(
       body,
@@ -56,6 +58,21 @@ void test('artifact runtime host drops untrusted parentOrigin query values', asy
     const body = await res.text();
     assert.match(body, /const parentOrigin = null;/);
     assert.doesNotMatch(body, /https:\/\/evil\.example/);
+  });
+});
+
+void test('artifact runtime host drops parentOrigin values from other local pages', async () => {
+  // 부모라고 주장할 수 있는 곳은 데몬이 서빙한 shell뿐이다. 이 값이 통과하면
+  // 런타임이 다른 로컬 페이지로 postMessage를 보내게 된다.
+  await withDaemonServer(async ({ port }) => {
+    const res = await fetch(
+      `http://127.0.0.1:${port}/artifact-runtime/host?parentOrigin=${encodeURIComponent('http://127.0.0.1:1')}`,
+    );
+
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /const parentOrigin = null;/);
+    assert.doesNotMatch(body, /http:\/\/127\.0\.0\.1:1"/);
   });
 });
 

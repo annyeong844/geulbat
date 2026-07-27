@@ -1,7 +1,8 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { DEV_TOKEN_HEADER_NAME } from '@geulbat/protocol/shell-auth';
-import { getErrorMessage } from '../../../daemon/utils/error.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
+
+import { getErrorMessage } from '../../../daemon/utils/error.js';
 
 import { isValidDevToken } from './token.js';
 
@@ -42,6 +43,21 @@ function readShellAuthCookie(headers: IncomingHttpHeaders): string | undefined {
   }
 
   return undefined;
+}
+
+/**
+ * 브라우저가 `<img>`, `<video>`, websocket upgrade처럼 임의 header를 붙일 수
+ * 없는 same-origin 요청에도 shell 권한을 보낼 수 있게 하는 session cookie다.
+ * 수명 숫자를 숨겨 두지 않고 browser session에 맡기며, 진입 문서를 다시
+ * 받으면 current daemon token으로 교체된다.
+ */
+export function buildShellAuthCookieHeader(token: string): string {
+  return [
+    `${DEV_AUTH_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'HttpOnly',
+    'Path=/',
+    'SameSite=Strict',
+  ].join('; ');
 }
 
 export function isAuthorizedShellHeaders(

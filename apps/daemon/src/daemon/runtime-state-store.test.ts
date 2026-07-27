@@ -57,12 +57,12 @@ void test('runtime-state store configures a real SQLite file for durable daemon 
     assert.deepEqual(store.readDiagnostics(), {
       foreignKeysEnabled: true,
       journalMode: 'wal',
-      schemaVersion: 14,
+      schemaVersion: 17,
       startupHealth: 'ok',
       startupMigration: {
         backupCreated: false,
         fromVersion: 0,
-        toVersion: 14,
+        toVersion: 17,
       },
       synchronousMode: 'full',
     });
@@ -125,13 +125,218 @@ void test('runtime-state store persists MCP re-adoption coordinates without a re
   }
 });
 
+void test('runtime-state store persists PTC cell re-adoption coordinates without callback secrets', async () => {
+  const fixtureRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-runtime-ptc-cell-'),
+  );
+  const homeStateRoot = join(fixtureRoot, 'home-state');
+  let store = await createDaemonRuntimeStateStore({ homeStateRoot });
+  const coordinate = {
+    stateRoot: homeStateRoot,
+    threadId: 'thread-ptc-cell',
+    cellId: 'ptc_cell_durable' as const,
+    createdAtMs: 1_721_000_000_000,
+    effectiveTimeoutMs: 60_000,
+    orphanReapAtMs: 1_721_000_120_000,
+    processOutputRef: 'command-output-cell-one',
+    callbackOutputRef: 'command-output-callback-one',
+    trustContextId: 'ptc_lab_execute_code_batch_node_v1',
+    containerId: 'ptc-container-one',
+    maxBufferedBytesPerStream: 2 * 1024 * 1024,
+    callbackToolNames: ['read_file', 'search_files'],
+    storeCallbacksEnabled: false,
+  };
+
+  try {
+    assert.deepEqual(store.listPtcExecuteCodeCellCoordinates(), []);
+    await store.persistPtcExecuteCodeCellCoordinate(coordinate);
+    assert.deepEqual(store.listPtcExecuteCodeCellCoordinates(), [coordinate]);
+    await store.persistPtcExecuteCodeCellCoordinate({
+      ...coordinate,
+      processOutputRef: 'command-output-cell-two',
+      callbackOutputRef: 'command-output-callback-two',
+    });
+    const execDelivery = {
+      threadId: coordinate.threadId,
+      runId: 'run-ptc-exec',
+      callId: 'call-ptc-exec',
+      cellId: coordinate.cellId,
+      stdout: 'initial output\n',
+      stderr: '',
+      durationMs: 25,
+      toolCallbackCount: 1,
+      outputReadOffsets: {
+        stdoutBytes: 15,
+        stderrBytes: 0,
+      },
+    };
+    assert.throws(
+      () =>
+        store.persistPtcExecuteCodeRunningExecDelivery?.({
+          ...execDelivery,
+          cellId: 'ptc_cell_missing',
+        }),
+      (error: unknown) =>
+        error instanceof DaemonRuntimeStateStoreError &&
+        error.stage === 'operation' &&
+        error.cause instanceof Error &&
+        /matching live cell coordinate/u.test(error.cause.message),
+    );
+    store.persistPtcExecuteCodeRunningExecDelivery?.(execDelivery);
+    assert.deepEqual(
+      store.readPtcExecuteCodeRunningExecDelivery?.({
+        threadId: coordinate.threadId,
+        cellId: coordinate.cellId,
+      }),
+      execDelivery,
+    );
+    const delivery = {
+      threadId: coordinate.threadId,
+      runId: 'run-ptc-wait',
+      callId: 'call-ptc-wait',
+      cellId: coordinate.cellId,
+      stdout: 'durable partial output\n',
+      stderr: '',
+      outputReadOffsets: {
+        stdoutBytes: 23,
+        stderrBytes: 0,
+      },
+    };
+    assert.throws(
+      () =>
+        store.persistPtcExecuteCodeRunningWaitDelivery?.({
+          ...delivery,
+          cellId: 'ptc_cell_missing',
+        }),
+      (error: unknown) =>
+        error instanceof DaemonRuntimeStateStoreError &&
+        error.stage === 'operation' &&
+        error.cause instanceof Error &&
+        /matching live cell coordinate/u.test(error.cause.message),
+    );
+    assert.equal(
+      store.readPtcExecuteCodeRunningWaitDelivery?.({
+        threadId: coordinate.threadId,
+        cellId: coordinate.cellId,
+      }),
+      undefined,
+    );
+    store.persistPtcExecuteCodeRunningWaitDelivery?.(delivery);
+    assert.deepEqual(
+      store.readPtcExecuteCodeRunningWaitDelivery?.({
+        threadId: coordinate.threadId,
+        cellId: coordinate.cellId,
+      }),
+      delivery,
+    );
+    assert.deepEqual(
+      store.readPtcExecuteCodeRunningExecDelivery?.({
+        threadId: coordinate.threadId,
+        cellId: coordinate.cellId,
+      }),
+      execDelivery,
+    );
+    store.close();
+
+    store = await createDaemonRuntimeStateStore({ homeStateRoot });
+    assert.deepEqual(store.listPtcExecuteCodeCellCoordinates(), [
+      {
+        ...coordinate,
+        processOutputRef: 'command-output-cell-two',
+        callbackOutputRef: 'command-output-callback-two',
+        outputReadOffsets: delivery.outputReadOffsets,
+      },
+    ]);
+    assert.deepEqual(
+      store.readPtcExecuteCodeRunningWaitDelivery?.({
+        threadId: coordinate.threadId,
+        cellId: coordinate.cellId,
+      }),
+      delivery,
+    );
+
+    const database = new DatabaseSync(store.databasePath, { readOnly: true });
+    try {
+      const columns = database
+        .prepare('PRAGMA table_info(ptc_execute_code_cell_coordinates)')
+        .all()
+        .map((row) => row['name']);
+      assert.deepEqual(columns, [
+        'cell_id',
+        'state_root',
+        'thread_id',
+        'created_at_ms',
+        'effective_timeout_ms',
+        'orphan_reap_at_ms',
+        'process_output_ref',
+        'callback_output_ref',
+        'identity_json',
+        'container_id',
+        'max_buffered_bytes_per_stream',
+        'callback_tool_names_json',
+        'store_callbacks_enabled',
+        'stdout_read_offset_bytes',
+        'stderr_read_offset_bytes',
+      ]);
+      assert.equal(columns.includes('token'), false);
+      assert.equal(columns.includes('callback_socket_path'), false);
+    } finally {
+      database.close();
+    }
+
+    store.deletePtcExecuteCodeCellCoordinate(coordinate.cellId);
+    assert.deepEqual(store.listPtcExecuteCodeCellCoordinates(), []);
+    assert.deepEqual(
+      store.readPtcExecuteCodeRunningWaitDelivery?.({
+        threadId: coordinate.threadId,
+        cellId: coordinate.cellId,
+      }),
+      delivery,
+      'running wait delivery survives coordinate finalization until recovery consumes it',
+    );
+    assert.deepEqual(
+      store.readPtcExecuteCodeRunningExecDelivery?.({
+        threadId: coordinate.threadId,
+        cellId: coordinate.cellId,
+      }),
+      execDelivery,
+      'running exec delivery survives coordinate finalization until wait consumes it',
+    );
+    store.deletePtcExecuteCodeRunningWaitDelivery?.({
+      threadId: coordinate.threadId,
+      cellId: coordinate.cellId,
+    });
+    assert.equal(
+      store.readPtcExecuteCodeRunningWaitDelivery?.({
+        threadId: coordinate.threadId,
+        cellId: coordinate.cellId,
+      }),
+      undefined,
+    );
+    store.deletePtcExecuteCodeRunningExecDelivery?.({
+      threadId: coordinate.threadId,
+      cellId: coordinate.cellId,
+    });
+    assert.equal(
+      store.readPtcExecuteCodeRunningExecDelivery?.({
+        threadId: coordinate.threadId,
+        cellId: coordinate.cellId,
+      }),
+      undefined,
+    );
+  } finally {
+    store.close();
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 void test('runtime-state store preserves an unsupported database instead of replacing it', async () => {
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'geulbat-runtime-state-'));
   const homeStateRoot = join(fixtureRoot, 'home-state');
   const databasePath = resolveDaemonRuntimeStateDatabasePath(homeStateRoot);
   await mkdir(dirname(databasePath), { recursive: true });
   const futureDatabase = new DatabaseSync(databasePath);
-  futureDatabase.exec('PRAGMA user_version = 15;');
+  futureDatabase.exec('PRAGMA user_version = 18;');
   futureDatabase.close();
   const originalBytes = await readFile(databasePath);
 
@@ -151,7 +356,7 @@ void test('runtime-state store preserves an unsupported database instead of repl
       const versionRow = preservedDatabase.prepare('PRAGMA user_version').get();
       assert.ok(versionRow, 'expected PRAGMA user_version to return one row');
       assert.equal(Object.hasOwn(versionRow, 'user_version'), true);
-      assert.equal(versionRow['user_version'], 15);
+      assert.equal(versionRow['user_version'], 18);
     } finally {
       preservedDatabase.close();
     }
@@ -181,7 +386,7 @@ void test('runtime-state store backs up and transactionally migrates an existing
     assert.deepEqual(firstStore.readDiagnostics().startupMigration, {
       backupCreated: true,
       fromVersion: 0,
-      toVersion: 14,
+      toVersion: 17,
     });
     firstStore.close();
 
@@ -194,7 +399,7 @@ void test('runtime-state store backs up and transactionally migrates an existing
     assert.equal(backupEntries.length, 1);
     assert.match(
       backupEntries[0] ?? '',
-      /^runtime-state-v0-to-v14-2026-07-22T15-00-00-000Z-[\da-f-]+\.sqlite3$/u,
+      /^runtime-state-v0-to-v17-2026-07-22T15-00-00-000Z-[\da-f-]+\.sqlite3$/u,
     );
 
     const backupDatabase = new DatabaseSync(
@@ -212,7 +417,7 @@ void test('runtime-state store backs up and transactionally migrates an existing
       readOnly: true,
     });
     try {
-      assert.equal(readIntegerPragma(migratedDatabase, 'user_version'), 14);
+      assert.equal(readIntegerPragma(migratedDatabase, 'user_version'), 17);
       assert.equal(readLegacyEvidence(migratedDatabase), 'preserve-me');
       // v12가 만든 run_usage_records는 v13이 되돌렸다 — 사용량은 제공자 보고를
       // 조회하는 방향으로 바뀌어 로컬 집계 테이블이 필요하지 않다.
@@ -229,7 +434,7 @@ void test('runtime-state store backs up and transactionally migrates an existing
           'SELECT version, applied_at AS appliedAt FROM runtime_schema_migrations',
         )
         .all();
-      assert.equal(migrations.length, 14);
+      assert.equal(migrations.length, 17);
       assert.equal(migrations[0]?.['version'], 1);
       assert.equal(migrations[0]?.['appliedAt'], '2026-07-22T15:00:00.000Z');
       assert.equal(migrations[1]?.['version'], 2);
@@ -248,6 +453,7 @@ void test('runtime-state store backs up and transactionally migrates an existing
       assert.equal(migrations[11]?.['version'], 12);
       assert.equal(migrations[12]?.['version'], 13);
       assert.equal(migrations[13]?.['version'], 14);
+      assert.equal(migrations[16]?.['version'], 17);
       assert.equal(migrations[4]?.['appliedAt'], '2026-07-22T15:00:00.000Z');
       assert.equal(migrations[5]?.['appliedAt'], '2026-07-22T15:00:00.000Z');
       assert.equal(migrations[6]?.['appliedAt'], '2026-07-22T15:00:00.000Z');
@@ -258,6 +464,7 @@ void test('runtime-state store backs up and transactionally migrates an existing
       assert.equal(migrations[11]?.['appliedAt'], '2026-07-22T15:00:00.000Z');
       assert.equal(migrations[12]?.['appliedAt'], '2026-07-22T15:00:00.000Z');
       assert.equal(migrations[13]?.['appliedAt'], '2026-07-22T15:00:00.000Z');
+      assert.equal(migrations[14]?.['appliedAt'], '2026-07-22T15:00:00.000Z');
     } finally {
       migratedDatabase.close();
     }
@@ -304,7 +511,7 @@ void test('runtime-state store upgrades the landed version-one database before a
       assert.deepEqual(store.readDiagnostics().startupMigration, {
         backupCreated: true,
         fromVersion: 1,
-        toVersion: 14,
+        toVersion: 17,
       });
       const accepted = store.enqueueSubagentLaunchBatch([
         makeLaunchRequest(9, 'call-after-v1-upgrade'),
@@ -323,7 +530,7 @@ void test('runtime-state store upgrades the landed version-one database before a
     assert.equal(backupEntries.length, 1);
     assert.match(
       backupEntries[0] ?? '',
-      /^runtime-state-v1-to-v14-2026-07-23T01-00-00-000Z-[\da-f-]+\.sqlite3$/u,
+      /^runtime-state-v1-to-v17-2026-07-23T01-00-00-000Z-[\da-f-]+\.sqlite3$/u,
     );
     const backupDatabase = new DatabaseSync(
       join(backupDirectory, backupEntries[0] ?? ''),
@@ -440,7 +647,7 @@ void test('runtime-state store migrates version-two launch rows without losing o
       assert.deepEqual(store.readDiagnostics().startupMigration, {
         backupCreated: true,
         fromVersion: 2,
-        toVersion: 14,
+        toVersion: 17,
       });
       const migrated = store.readSubagentLaunchRequestByChildRunId(childRunId);
       assert.ok(migrated);
@@ -471,7 +678,7 @@ void test('runtime-state store migrates version-two launch rows without losing o
     assert.equal(backupEntries.length, 1);
     assert.match(
       backupEntries[0] ?? '',
-      /^runtime-state-v2-to-v14-2026-07-23T02-00-00-000Z-[\da-f-]+\.sqlite3$/u,
+      /^runtime-state-v2-to-v17-2026-07-23T02-00-00-000Z-[\da-f-]+\.sqlite3$/u,
     );
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
@@ -759,6 +966,10 @@ void test('runtime-state store persists defer reasons and reads promotion order 
     ]);
     assert.ok(low);
     assert.ok(high);
+    assert.deepEqual(store.readSubagentLaunchInput(low.childRunId), {
+      ...makeLaunchRequest(32, 'call-defer-low'),
+      ultraReasoning: false,
+    });
     store.updateQueuedSubagentLaunchPriority({
       childRunId: low.childRunId,
       ownerThreadId,
@@ -983,9 +1194,13 @@ void test('runtime-state store migrates existing version-nine terminal history w
     versionNineDatabase.exec(`
       ALTER TABLE subagent_launch_requests
         DROP COLUMN provider_request_json;
+      DROP TABLE ptc_execute_code_running_exec_deliveries;
+      DROP TABLE ptc_execute_code_running_wait_deliveries;
+      DROP INDEX ptc_execute_code_cell_coordinates_owner;
+      DROP TABLE ptc_execute_code_cell_coordinates;
       DROP TABLE mcp_session_coordinates;
       DELETE FROM runtime_schema_migrations
-      WHERE version IN (10, 11, 12, 13, 14);
+      WHERE version IN (10, 11, 12, 13, 14, 15, 16, 17);
       PRAGMA user_version = 9;
     `);
     versionNineDatabase.close();
@@ -998,7 +1213,7 @@ void test('runtime-state store migrates existing version-nine terminal history w
     assert.deepEqual(store.readDiagnostics().startupMigration, {
       backupCreated: true,
       fromVersion: 9,
-      toVersion: 14,
+      toVersion: 17,
     });
     assert.deepEqual(
       store.readSubagentTerminalOutcomeByChildRunId(result.childRunId),

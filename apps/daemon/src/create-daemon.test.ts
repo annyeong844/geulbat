@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -11,6 +11,30 @@ import { PUBLIC_WEB_JSON_ECHO_PATH } from '@geulbat/protocol/public-web-fixtures
 import { createDaemon } from './create-daemon.js';
 import { createDaemonContext } from './daemon/context.js';
 import { createRouteTestDaemonContext } from './test-support/http-routes.js';
+
+void test('createDaemon starts without MCP when its registry cannot be read', async () => {
+  // MCP는 README가 분류한 supporting capability다. 레지스트리 파일이 손상되면
+  // 그 내용을 조용히 받아들이지 않는 것(fail-closed)은 옳지만, 그 거부가 부팅
+  // 실패로 승격되면 core 워크플로 전체가 서지 못한다. 재시작해도 같은 파일을
+  // 다시 읽으므로 감시자와 함께 재시작 루프가 되고, 사용자는 설정 파일 하나
+  // 때문에 앱을 열 수 없다.
+  //
+  // 같은 상황을 provider auth는 이미 이렇게 다룬다: `initProviderAuth`가 로드
+  // 실패를 상태로 캐시하고 부팅은 계속된다. MCP도 그 선례를 따른다.
+  const daemonContext = createRouteTestDaemonContext();
+  const registryPath = join(
+    daemonContext.homeStateRoot,
+    '.geulbat',
+    'mcp-servers.json',
+  );
+  await mkdir(join(daemonContext.homeStateRoot, '.geulbat'), {
+    recursive: true,
+  });
+  await writeFile(registryPath, '{not-json', 'utf8');
+
+  const daemon = await createDaemon({ daemonContext });
+  assert.notEqual(daemon.app, undefined, '데몬은 MCP 없이도 떠야 한다');
+});
 
 void test('createDaemon reaps prior PTC runtime residue before mounting routes', async () => {
   const daemonContext = createRouteTestDaemonContext();
@@ -39,7 +63,7 @@ void test('createDaemon fails closed when prior PTC runtime residue cannot be re
   );
 });
 
-void test('createDaemon returns loopback CORS headers for allowed preflight origins', async () => {
+void test('createDaemon returns CORS headers for its own origin', async () => {
   const { app } = await createIsolatedDaemon();
   const server = app.listen(0, '127.0.0.1');
 
@@ -51,7 +75,7 @@ void test('createDaemon returns loopback CORS headers for allowed preflight orig
       {
         method: 'OPTIONS',
         headers: {
-          Origin: 'http://127.0.0.1:5174',
+          Origin: `http://127.0.0.1:${port}`,
           'Access-Control-Request-Method': 'GET',
         },
       },
@@ -60,15 +84,49 @@ void test('createDaemon returns loopback CORS headers for allowed preflight orig
     assert.equal(res.status, 204);
     assert.equal(
       res.headers.get('access-control-allow-origin'),
-      'http://127.0.0.1:5174',
+      `http://127.0.0.1:${port}`,
     );
     assert.match(
       res.headers.get('content-security-policy') ?? '',
       /frame-ancestors 'none'/,
     );
+    assert.match(
+      res.headers.get('content-security-policy') ?? '',
+      /font-src 'self' data:/,
+    );
     assert.equal(res.headers.get('cache-control'), 'no-store');
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(res.headers.get('x-frame-options'), null);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+void test('createDaemon rejects other loopback origins on the same machine', async () => {
+  // 데몬이 화면까지 서빙하므로 붙어야 할 origin은 자기 자신 하나다. 같은
+  // 기계의 다른 포트에서 도는 페이지는 shell이 아니다 — 예전 정책은 loopback
+  // 이면 포트를 묻지 않아 그런 페이지까지 함께 열어두었다.
+  const { app } = await createIsolatedDaemon();
+  const server = app.listen(0, '127.0.0.1');
+
+  try {
+    await onceListening(server);
+    const port = (server.address() as AddressInfo).port;
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/files/tree?root=computer`,
+      {
+        method: 'OPTIONS',
+        headers: {
+          // 데몬이 고른 포트가 무엇이든 이 origin은 아니다.
+          Origin: 'http://127.0.0.1:1',
+          'Access-Control-Request-Method': 'GET',
+        },
+      },
+    );
+
+    assert.equal(res.status, 403);
+    const body = (await res.json()) as { code: string };
+    assert.equal(body.code, 'access_denied');
   } finally {
     await closeServer(server);
   }
@@ -156,7 +214,7 @@ void test('createDaemon allows explicitly configured external preflight origins'
   }
 });
 
-void test('createDaemon allows cookie-authenticated api requests when Origin is missing', async () => {
+void test('createDaemon accepts same-origin cookie authentication when Origin is missing', async () => {
   const previousToken = process.env['GEULBAT_DEV_TOKEN'];
   process.env['GEULBAT_DEV_TOKEN'] = 'geulbat-test-token-1234';
   const { app } = await createIsolatedDaemon();
@@ -229,7 +287,7 @@ void test('createDaemon does not mount shared browser routes', async () => {
       const res = await fetch(`http://127.0.0.1:${port}${path}`, {
         method: 'POST',
         headers: {
-          Cookie: 'geulbat_dev_auth=geulbat-test-token-1234',
+          'X-Geulbat-Dev-Token': 'geulbat-test-token-1234',
         },
       });
 
@@ -304,7 +362,7 @@ void test('createDaemon resolves the configured Home state root independently of
       `http://127.0.0.1:${port}/api/files/computer-scope`,
       {
         headers: {
-          Cookie: 'geulbat_dev_auth=geulbat-test-token-1234',
+          'X-Geulbat-Dev-Token': 'geulbat-test-token-1234',
         },
       },
     );

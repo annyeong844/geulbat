@@ -28,6 +28,7 @@ async function loadDaemonModules() {
     runEventJournal,
     runtimeState,
     responsesWebSocketCache,
+    shellAssets,
   ] = await Promise.all([
     import(srcUrl('create-daemon.ts')),
     import(srcUrl('daemon/context.ts')),
@@ -38,9 +39,11 @@ async function loadDaemonModules() {
     import(
       srcUrl('daemon/llm/provider/transport/responses-websocket-cache.ts')
     ),
+    import(srcUrl('adapter/web/shell-assets.ts')),
   ]);
   return {
     createDaemon: daemon.createDaemon,
+    createShellAssetRoutes: shellAssets.createShellAssetRoutes,
     createDaemonContext: context.createDaemonContext,
     attachRunChannelServer: runChannel.attachRunChannelServer,
     startManagedRun: managedRun.startManagedRun,
@@ -103,6 +106,7 @@ function readFlowGateFixtureConfig() {
   return {
     port: readPort(),
     homeStateRoot: readRequiredEnv('GEULBAT_HOME_STATE_ROOT'),
+    shellAssetRoot: readRequiredEnv('GEULBAT_FLOW_GATE_SHELL_ASSET_ROOT'),
     artifactFinalText: readRequiredEnv('GEULBAT_FLOW_GATE_ARTIFACT_FINAL_TEXT'),
     artifactPrompt: readRequiredEnv('GEULBAT_FLOW_GATE_ARTIFACT_PROMPT'),
     approvalContent: readRequiredEnv('GEULBAT_FLOW_GATE_APPROVAL_CONTENT'),
@@ -413,6 +417,7 @@ async function startFlowGateFixtureDaemon() {
     createRunEventJournalStore,
     createDaemonRuntimeStateStore,
     createResponsesWebSocketSessionStore,
+    createShellAssetRoutes,
   } = await loadDaemonModules();
   const runtimeStateStore = await createDaemonRuntimeStateStore({
     homeStateRoot: config.homeStateRoot,
@@ -468,6 +473,9 @@ async function startFlowGateFixtureDaemon() {
     recoveryFixture,
     runChannelServer,
   });
+  // shell SPA fallback은 마지막에 온다. 앞에 두면 fixture의 provider/control
+  // 라우트를 문서 200으로 삼켜서 실행이 시작조차 못 한다.
+  app.use(createShellAssetRoutes({ shellAssetRoot: config.shellAssetRoot }));
   await listen(server, config.port);
 
   const close = createFlowGateFixtureClose({

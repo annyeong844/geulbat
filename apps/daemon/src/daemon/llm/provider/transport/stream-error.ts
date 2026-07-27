@@ -4,37 +4,13 @@ import {
   getErrorStringProperty,
 } from '../../../utils/error.js';
 import { normalizeProviderErrorCode } from '../provider-error.js';
+import {
+  findProviderFailureClassByProviderCode,
+  isStreamErrorCategory,
+  type StreamErrorCategory,
+} from '../provider-failure-class.js';
 
-export type StreamErrorCategory =
-  | 'llm_idle_timeout'
-  | 'llm_connection_lost'
-  | 'llm_overloaded'
-  | 'llm_rate_limited'
-  | 'llm_auth_expired'
-  | 'llm_context_overflow'
-  | 'llm_context_preparation_required'
-  | 'llm_provider_transition_required'
-  | 'oversize_input'
-  | 'llm_refused'
-  | 'abort_user'
-  | 'abort_budget'
-  | 'unknown';
-
-const STREAM_ERROR_CATEGORY_VALUES = [
-  'llm_idle_timeout',
-  'llm_connection_lost',
-  'llm_overloaded',
-  'llm_rate_limited',
-  'llm_auth_expired',
-  'llm_context_overflow',
-  'llm_context_preparation_required',
-  'llm_provider_transition_required',
-  'oversize_input',
-  'llm_refused',
-  'abort_user',
-  'abort_budget',
-  'unknown',
-] as const satisfies ReadonlyArray<StreamErrorCategory>;
+export type { StreamErrorCategory };
 
 export function classifyStreamError(error: unknown): StreamErrorCategory {
   const explicitCategory = readExplicitStreamErrorCategory(error);
@@ -69,10 +45,6 @@ export function classifyStreamError(error: unknown): StreamErrorCategory {
   return readMessageStreamErrorCategory(error) ?? 'unknown';
 }
 
-function isStreamErrorCategory(value: string): value is StreamErrorCategory {
-  return STREAM_ERROR_CATEGORY_VALUES.some((category) => category === value);
-}
-
 function readExplicitStreamErrorCategory(
   error: unknown,
 ): StreamErrorCategory | null {
@@ -98,42 +70,16 @@ function readExplicitProviderErrorCode(error: unknown): string | null {
 function mapProviderCodeToStreamErrorCategory(
   code: string,
 ): StreamErrorCategory {
-  switch (code) {
-    case 'aborted':
-      return 'abort_user';
-    case 'llm_idle_timeout':
-      return 'llm_idle_timeout';
-    case 'llm_connect_timeout':
-      return 'llm_connection_lost';
-    case 'llm_rate_limited':
-      return 'llm_rate_limited';
-    case 'llm_auth_failed':
-      return 'llm_auth_expired';
-    case 'llm_context_length_exceeded':
-      return 'llm_context_overflow';
-    case 'provider_transition_required':
-      return 'llm_provider_transition_required';
-    case 'llm_connection_lost':
-    case 'llm_overloaded':
-    case 'llm_auth_expired':
-    case 'llm_context_overflow':
-    case 'llm_context_preparation_required':
-    case 'llm_provider_transition_required':
-    case 'oversize_input':
-    case 'llm_refused':
-    case 'abort_user':
-    case 'abort_budget':
-      return code;
-    default:
-      return 'unknown';
-  }
+  return findProviderFailureClassByProviderCode(code)?.category ?? 'unknown';
 }
 
 function readStatusStreamErrorCategory(
   error: unknown,
 ): StreamErrorCategory | null {
   const status = getErrorNumberProperty(error, 'status');
-  if (status === 529) {
+  // Qwen HTTP SSE는 본문 없이 status만 넘긴다. 503을 못 잡으면 unknown으로
+  // 떨어져 같은 경로의 429만 재시도되는 비대칭이 생긴다.
+  if (status === 503) {
     return 'llm_overloaded';
   }
   return null;

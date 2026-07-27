@@ -2,11 +2,14 @@ import {
   isThreadBranchResponse,
   isThreadDeleteResponse,
   isThreadDetailResponse,
+  isThreadArchiveImportResponse,
   isThreadListResponse,
   isThreadRenameResponse,
   isPrepareProviderTransitionResponse,
+  THREAD_ARCHIVE_MEDIA_TYPE,
   type PrepareProviderTransitionRequest,
   type PrepareProviderTransitionResponse,
+  type ThreadArchiveImportResponse,
   type ThreadBranchResponse,
   type ThreadDeleteResponse,
   type ThreadDetailResponse,
@@ -23,7 +26,12 @@ import {
   type ConflictActiveRunError,
 } from '@geulbat/protocol/errors';
 import { isRecord } from '../json.js';
-import { ApiFetchError, apiFetch } from './client.js';
+import {
+  ApiFetchError,
+  ApiShapeError,
+  apiFetch,
+  apiFetchOpaqueBlob,
+} from './client.js';
 
 export class ThreadDeleteConflictError extends Error {
   readonly conflict: ConflictActiveRunError;
@@ -57,6 +65,32 @@ export function getThread(threadId: string): Promise<ThreadDetailResponse> {
     `/api/threads/${encodeURIComponent(threadId)}`,
     undefined,
     isThreadDetailResponse,
+  );
+}
+
+export async function exportThreadArchive(threadId: string): Promise<Blob> {
+  const path = `/api/threads/${encodeURIComponent(threadId)}/archive`;
+  const archive = await apiFetchOpaqueBlob(path);
+  if (
+    archive.type.split(';', 1)[0]?.trim().toLowerCase() !==
+    THREAD_ARCHIVE_MEDIA_TYPE
+  ) {
+    throw new ApiShapeError(path);
+  }
+  return archive;
+}
+
+export function importThreadArchive(
+  archive: Blob,
+): Promise<ThreadArchiveImportResponse> {
+  return apiFetch(
+    '/api/thread-archives/import',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': THREAD_ARCHIVE_MEDIA_TYPE },
+      body: archive,
+    },
+    isThreadArchiveImportResponse,
   );
 }
 

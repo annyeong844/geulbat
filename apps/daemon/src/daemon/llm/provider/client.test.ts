@@ -389,6 +389,58 @@ void test('callModelWithDependencies dispatches Grok OAuth through the provider 
   ]);
 });
 
+void test('callModelWithDependencies rejects deferred definitions outside the Codex direct adapter', async () => {
+  const chunks = [];
+  for await (const chunk of callModelWithDependencies(
+    {
+      history: [],
+      systemPrompt: 'system',
+      deferredTools: [
+        {
+          type: 'function',
+          name: 'external_deferred_probe',
+          description: 'Must not cross a provider without hosted tool search.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            required: [],
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ],
+      providerSessionId: 'provider-session',
+      providerWebSocketSessions: unusedProviderWebSocketSessions,
+      providerAuthRuntime: createProviderAuthRuntimeStore(),
+      providerRequestOptions: {
+        ...defaultProviderRequestOptions,
+        providerId: 'grok_oauth',
+        model: 'grok-4.5',
+      },
+    },
+    {
+      getProviderAuth: async () =>
+        assert.fail('provider auth must not run for an invalid tool surface'),
+      forceRefreshProviderAuth: async () =>
+        assert.fail('provider auth refresh must not run'),
+      streamResponsesOverWebSocket: async () =>
+        assert.fail('Codex transport must not run'),
+      streamGrokOAuthResponses: async () =>
+        assert.fail('Grok transport must not run'),
+    },
+  )) {
+    chunks.push(chunk);
+  }
+
+  assert.deepEqual(chunks, [
+    {
+      type: 'error',
+      code: 'internal',
+      message: 'provider request failed',
+    },
+  ]);
+});
+
 void test('callModelWithDependencies uses Grok provider auth refresh for Grok OAuth auth failures', async () => {
   const runtimeStore = createProviderAuthRuntimeStore();
   const chunks = [];
@@ -1208,6 +1260,7 @@ void test('callModelWithDependencies forces one refresh and retries once after c
   let token = 'stale-token';
   let streamCalls = 0;
   let forcedRefreshCalls = 0;
+  const requestAttempts: unknown[] = [];
 
   for await (const chunk of callModelWithDependencies(
     {
@@ -1231,16 +1284,23 @@ void test('callModelWithDependencies forces one refresh and retries once after c
           accountId: 'account',
         };
       },
-      streamResponsesOverWebSocket: async ({ headers }) => {
+      streamResponsesOverWebSocket: async (request) => {
+        requestAttempts.push(Reflect.get(request, 'requestAttempt'));
         streamCalls += 1;
         if (streamCalls === 1) {
-          assert.equal(headers.get('Authorization'), 'Bearer stale-token');
+          assert.equal(
+            request.headers.get('Authorization'),
+            'Bearer stale-token',
+          );
           throw Object.assign(new Error('unauthorized'), {
             status: 401,
           });
         }
 
-        assert.equal(headers.get('Authorization'), 'Bearer fresh-token');
+        assert.equal(
+          request.headers.get('Authorization'),
+          'Bearer fresh-token',
+        );
         return {
           itemsToAppend,
           functionCalls: [],
@@ -1255,6 +1315,7 @@ void test('callModelWithDependencies forces one refresh and retries once after c
 
   assert.equal(forcedRefreshCalls, 1);
   assert.equal(streamCalls, 2);
+  assert.deepEqual(requestAttempts, [0, 1]);
   assert.deepEqual(chunks, [
     {
       type: 'done',
@@ -1479,7 +1540,7 @@ void test('callModelWithDependencies does not force refresh after a rate-limit f
   ]);
 });
 
-void test('callModelWithDependencies dispatches Qwen without OAuth or provider WebSockets', async () => {
+void test('callModelWithDependencies routes Qwen without OAuth or Codex WebSockets and forwards its stable request owner', async () => {
   const previousApiKey = process.env.BAILIAN_TOKEN_PLAN_API_KEY;
   process.env.BAILIAN_TOKEN_PLAN_API_KEY = 'x'.repeat(32);
   const chunks = [];
@@ -1488,6 +1549,9 @@ void test('callModelWithDependencies dispatches Qwen without OAuth or provider W
     history?: unknown[];
     instructions?: string;
     providerReplayScopeId?: ProviderReplayScopeId;
+    providerSessionId?: string;
+    requestAttempt?: number;
+    providerRequestSessions?: unknown;
   } = {};
 
   try {
@@ -1516,6 +1580,13 @@ void test('callModelWithDependencies dispatches Qwen without OAuth or provider W
           observed.model = input.config.model;
           observed.history = input.history;
           observed.providerReplayScopeId = input.providerReplayScopeId;
+          if (input.providerSessionId !== undefined) {
+            observed.providerSessionId = input.providerSessionId;
+          }
+          if (input.requestAttempt !== undefined) {
+            observed.requestAttempt = input.requestAttempt;
+          }
+          observed.providerRequestSessions = input.providerRequestSessions;
           if (input.instructions !== undefined) {
             observed.instructions = input.instructions;
           }
@@ -1565,6 +1636,12 @@ void test('callModelWithDependencies dispatches Qwen without OAuth or provider W
   assert.deepEqual(observed.history, [{ kind: 'user', text: 'hello' }]);
   assert.equal(observed.instructions, 'system\n\ncontext');
   assert.match(observed.providerReplayScopeId ?? '', /^sha256:[a-f0-9]{64}$/u);
+  assert.equal(observed.providerSessionId, 'provider-session');
+  assert.equal(observed.requestAttempt, 0);
+  assert.equal(
+    observed.providerRequestSessions,
+    unusedProviderWebSocketSessions,
+  );
   assert.deepEqual(chunks, [
     {
       type: 'text_delta',

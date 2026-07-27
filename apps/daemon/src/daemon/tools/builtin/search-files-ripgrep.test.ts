@@ -11,6 +11,10 @@ import {
 } from './search-files-ripgrep-paths.js';
 import { buildRipgrepCloseError } from './search-files-ripgrep-result.js';
 import {
+  parseRipgrepMatchLine,
+  resolveSearchMatchPreviewMaxBytes,
+} from './search-files-ripgrep-result.js';
+import {
   isRipgrepBinaryCompatibleWithRoot,
   resolveRipgrepPath,
 } from './search-files-ripgrep.js';
@@ -158,4 +162,87 @@ void test('buildRipgrepCloseError preserves non-cycle traversal failures', () =>
         'Review the ripgrep diagnostic, then correct the pattern, include glob, or filesystem access before retrying.',
     },
   );
+});
+
+function ripgrepMatchEvent(text: string): string {
+  return JSON.stringify({
+    type: 'match',
+    data: {
+      path: { text: '/workspace/generated/index.json' },
+      line_number: 1,
+      lines: { text: `${text}\n` },
+    },
+  });
+}
+
+void test('parseRipgrepMatchLine keeps a short match verbatim', () => {
+  const match = parseRipgrepMatchLine(ripgrepMatchEvent('const needle = 1;'), {
+    rgPath: '/usr/bin/rg',
+    workspaceRoot: '/workspace',
+    matchPreviewMaxBytes: 2000,
+  });
+
+  assert.deepEqual(match, {
+    path: 'generated/index.json',
+    line: 1,
+    text: 'const needle = 1;',
+    textBytes: 17,
+  });
+});
+
+void test('parseRipgrepMatchLine clamps a single oversized match line', () => {
+  // 생성된 index/minified 파일은 파일 전체가 한 줄이라 매치 하나가 수 MB가 된다.
+  const oversized = 'x'.repeat(50_000);
+  const match = parseRipgrepMatchLine(ripgrepMatchEvent(oversized), {
+    rgPath: '/usr/bin/rg',
+    workspaceRoot: '/workspace',
+    matchPreviewMaxBytes: 2000,
+  });
+
+  assert.ok(match);
+  assert.equal(match.textBytes, 50_000);
+  assert.equal(match.textTruncated, true);
+  assert.equal(match.text, `${'x'.repeat(2000)}... [truncated]`);
+});
+
+void test('parseRipgrepMatchLine never splits a multi-byte character', () => {
+  // 한글은 UTF-8 3바이트다. 바이트 상한이 문자 경계와 맞지 않아도 깨진 문자를
+  // 남기면 안 된다.
+  const match = parseRipgrepMatchLine(ripgrepMatchEvent('가'.repeat(100)), {
+    rgPath: '/usr/bin/rg',
+    workspaceRoot: '/workspace',
+    matchPreviewMaxBytes: 10,
+  });
+
+  assert.ok(match);
+  assert.equal(match.textTruncated, true);
+  assert.equal(match.textBytes, 300);
+  assert.equal(match.text, `${'가'.repeat(3)}... [truncated]`);
+  assert.ok(!match.text.includes('\uFFFD'));
+});
+
+void test('resolveSearchMatchPreviewMaxBytes defaults without configuration', () => {
+  assert.equal(resolveSearchMatchPreviewMaxBytes({}), 2000);
+});
+
+void test('resolveSearchMatchPreviewMaxBytes honours an operator override', () => {
+  assert.equal(
+    resolveSearchMatchPreviewMaxBytes({
+      GEULBAT_SEARCH_FILES_MATCH_PREVIEW_MAX_BYTES: '8192',
+    }),
+    8192,
+  );
+});
+
+void test('resolveSearchMatchPreviewMaxBytes fails closed on an unusable override', () => {
+  // 조용히 기본값으로 되돌리면 운영자가 잘못 설정한 사실을 알 수 없다.
+  for (const raw of ['0', '-1', 'abc', '2000.5', '']) {
+    assert.throws(
+      () =>
+        resolveSearchMatchPreviewMaxBytes({
+          GEULBAT_SEARCH_FILES_MATCH_PREVIEW_MAX_BYTES: raw,
+        }),
+      /GEULBAT_SEARCH_FILES_MATCH_PREVIEW_MAX_BYTES/u,
+    );
+  }
 });

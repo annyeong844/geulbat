@@ -110,6 +110,16 @@ export function buildQwenChatMessages(input: {
   return messages;
 }
 
+export function measureQwenChatHistoryBytes(input: {
+  history: HistoryItem[];
+  providerReplayScopeId?: ProviderReplayScopeId;
+}): number {
+  return Buffer.byteLength(
+    JSON.stringify(buildQwenChatMessages(input)),
+    'utf8',
+  );
+}
+
 function createPendingAssistantMessage(): PendingAssistantMessage {
   return { content: '', reasoningContent: '', toolCalls: [] };
 }

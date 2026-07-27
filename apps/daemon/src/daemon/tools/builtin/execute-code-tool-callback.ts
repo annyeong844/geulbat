@@ -131,7 +131,7 @@ export function createPtcExecuteCodeToolCallbackHandler(
         message: 'PTC execute_code callback dispatcher is unavailable',
       };
     }
-    if (invocation.enterLongWait?.() === false) {
+    if ((await invocation.enterLongWait?.()) === false) {
       return {
         ok: false,
         errorCode: 'ptc_tool_callback_watchdog_elapsed',

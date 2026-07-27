@@ -113,12 +113,16 @@ export async function closeDaemonForShutdown(args: {
   }
 }
 
+/**
+ * bind가 끝난 뒤 **실제** 포트를 돌려준다. 요청 포트가 0이면(제품 경로) 값을
+ * OS가 고르므로, 요청값은 접속 지점의 답이 아니다.
+ */
 export function listenDaemonHttpServer(args: {
   server: http.Server;
   port: number;
   host: string;
   reportExposureWarning?: (message: string) => void;
-}): Promise<void> {
+}): Promise<number> {
   if (!isLoopbackDaemonBindHost(args.host)) {
     const message = `daemon bind host "${args.host}" is not loopback; local dev-token authentication is intended for single-user local use only`;
     (args.reportExposureWarning ?? ((warning) => logger.warn(warning)))(
@@ -137,7 +141,18 @@ export function listenDaemonHttpServer(args: {
     };
     const onListening = () => {
       cleanup();
-      resolve();
+      const address = args.server.address();
+      if (address === null || typeof address === 'string') {
+        // TCP bind이 아니면 접속 지점을 알 수 없다. 조용히 요청값을 돌려주면
+        // 발견 기록이 틀린 포트를 가리킨다.
+        reject(
+          new Error(
+            'daemon http server listened without a resolvable TCP address',
+          ),
+        );
+        return;
+      }
+      resolve(address.port);
     };
 
     args.server.once('error', onError);

@@ -94,7 +94,7 @@ void test('requireAuth calls next when the dev token header matches', () => {
   });
 });
 
-void test('requireAuth calls next when the dev auth cookie matches', () => {
+void test('requireAuth accepts the same-origin shell auth cookie', () => {
   resetShellAuthFailureRateLimitForTests();
   withTokenEnv('test-token-123456', () => {
     const { capture, response } = createResponseCapture();

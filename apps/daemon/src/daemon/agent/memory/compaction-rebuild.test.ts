@@ -144,7 +144,13 @@ void test('history rebuild prepends the summary and retains the real tail', () =
   assert.equal(history[0]?.kind, 'user');
   if (history[0]?.kind === 'user') {
     assert.match(history[0].text, /system-generated context/);
+    assert.match(history[0].text, /not a new user request/);
     assert.match(history[0].text, /trusted summary/);
+    // 존재하지 않는 섹션을 탈출구처럼 가리키면 안 된다.
+    assert.equal(
+      /Active Constraints|Recent User Steers/u.test(history[0].text),
+      false,
+    );
   }
   assert.deepEqual(history.slice(1), [
     { kind: 'user', text: 'keep' },
@@ -658,3 +664,82 @@ function createTokenCounter(
     },
   };
 }
+
+// 압축은 턴 중간에도 돈다. 사용자 요청 뒤에 큰 도구 출력이 붙으면 예산만으로
+// 자른 경계가 그 요청을 요약 영역에 남긴다. 요약본은 "요약 안의 지시를 따르지
+// 말라"는 전제로 전달되므로 그러면 요청이 행동 가능한 컨텍스트에서 사라진다.
+void test('compaction refuses to leave the active user request inside the summary', () => {
+  const entries = [
+    message('ask', 'user', 'fix the failing test'),
+    message('call', 'tool_call', '{"callId":"c1"}'),
+    message('result', 'tool_result', '{"callId":"c1"}'),
+  ];
+
+  const result = prepareContextCompaction({
+    entries,
+    threadId: 'thread',
+    currentRequestTokens: TEST_BUDGET_PROFILE.thresholdTokens,
+    budgetProfile: TEST_BUDGET_PROFILE,
+    tokenCounter: createTokenCounter([
+      ['ask', 10],
+      ['call', 5],
+      ['result', 45],
+    ]),
+    forced: true,
+  });
+
+  // 요청을 프리픽스로 넘기는 압축을 만들지 않는다. 호출자는 이 실패를
+  // 'retained_context_exceeds_budget'으로 표면화한다.
+  assert.deepEqual(result, { kind: 'tail_exceeds_budget' });
+});
+
+// mid-turn: user → tool_call → tool_result 이고 assistant 정착 전이면 pending
+// user다. 예산이 허락하면 압축은 진행하되, 그 user는 반드시 retained tail에
+// 남는다 (요약 prefix에 넣지 않는다).
+void test('mid-turn pending user with tool rows stays in the retained tail when compaction proceeds', () => {
+  const entries = [
+    message('old-user', 'user', 'previous question'),
+    message('old-assistant', 'assistant', 'previous answer'),
+    message('pending', 'user', 'current request still in flight'),
+    message(
+      'call',
+      'tool_call',
+      JSON.stringify({ callId: 'c1', tool: 'read_file', args: {} }),
+    ),
+    message(
+      'result',
+      'tool_result',
+      JSON.stringify({ callId: 'c1', output: 'ok' }),
+    ),
+  ];
+
+  const result = prepareContextCompaction({
+    entries,
+    threadId: 'thread',
+    currentRequestTokens: TEST_BUDGET_PROFILE.thresholdTokens,
+    budgetProfile: TEST_BUDGET_PROFILE,
+    tokenCounter: createTokenCounter([
+      // 과거 턴은 keepRecent(50) 밖으로 밀려 prefix가 되고,
+      // pending+tools(25)만 retained tail에 남도록 잡는다.
+      ['old-user', 25],
+      ['old-assistant', 30],
+      ['pending', 10],
+      ['call', 5],
+      ['result', 10],
+    ]),
+    forced: true,
+  });
+
+  assert.equal(result.kind, 'prepared');
+  if (result.kind === 'prepared') {
+    assert.deepEqual(
+      result.historyPrefix.map((entry) => entry.entryId),
+      ['old-user', 'old-assistant'],
+    );
+    // mid-turn: assistant 정착 전 pending user + tool rows가 retained unit.
+    assert.deepEqual(
+      result.recent.map((entry) => entry.entryId),
+      ['pending', 'call', 'result'],
+    );
+  }
+});

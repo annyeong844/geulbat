@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { parseResponseEvents } from './responses-parser.js';
+import { classifyStreamError } from './stream-error.js';
 
 void test('parseResponseEvents does not emit speculative deltas before phase is known and rejects missing phase at flush', async () => {
   const deltas: Array<{
@@ -94,6 +95,60 @@ void test('parseResponseEvents rejects missing phase at item.done instead of dow
   );
 
   assert.deepEqual(deltas, []);
+});
+
+void test('parseResponseEvents preserves the provider error code alongside the message', async () => {
+  await assert.rejects(
+    parseResponseEvents(
+      toAsyncEvents([
+        {
+          type: 'response.failed',
+          response: {
+            error: {
+              code: 'server_error',
+              message: 'The server had an error while processing your request',
+            },
+          },
+        },
+      ]),
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      // message가 있으면 코드가 문자열에 뭉개져 사라지던 자리다. 분류가
+      // unknown으로 떨어졌을 때 진단할 단서가 남아야 한다.
+      assert.equal(
+        error.message,
+        'The server had an error while processing your request',
+      );
+      assert.equal(Reflect.get(error, 'providerErrorCode'), 'server_error');
+      // 분류 입력은 바뀌지 않는다.
+      assert.equal(classifyStreamError(error), 'unknown');
+      return true;
+    },
+  );
+});
+
+void test('parseResponseEvents leaves no provider error code when the provider sent none', async () => {
+  await assert.rejects(
+    parseResponseEvents(
+      toAsyncEvents([
+        {
+          type: 'response.failed',
+          response: {
+            error: {
+              message: 'rate limit reached',
+            },
+          },
+        },
+      ]),
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(Reflect.has(error, 'providerErrorCode'), false);
+      assert.equal(classifyStreamError(error), 'llm_rate_limited');
+      return true;
+    },
+  );
 });
 
 void test('parseResponseEvents preserves oversized provider error messages', async () => {

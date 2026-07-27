@@ -1,4 +1,5 @@
 import { getToolLibraryProjectionIdentity } from '../tools/tool-library-projection-manifest.js';
+import type { ToolLibraryProjectionIdentity } from '@geulbat/tool-library/projection-codec';
 import {
   createToolCapabilityPolicy,
   type ToolCapabilityPolicy,
@@ -17,12 +18,13 @@ interface ResolveAgentLoopToolLibraryProjectionArgs {
   threadId: string;
   allowedRegistryNames?: readonly string[];
   toolCapabilityPolicy?: ToolCapabilityPolicy;
+  expectedIdentity?: ToolLibraryProjectionIdentity;
 }
 
 type ResolveAgentLoopToolLibraryProjectionResult =
   | {
       ok: true;
-      identity: ReturnType<typeof getToolLibraryProjectionIdentity>;
+      identity: ToolLibraryProjectionIdentity;
     }
   | {
       ok: false;
@@ -62,27 +64,49 @@ export function createAgentToolCapabilityPolicy(args: {
 }
 
 export function createAgentLoopToolLibraryProjectionPort(
-  projectionPort: Pick<ToolLibraryProjectionPort, 'resolveProjection'>,
+  projectionPort: Pick<
+    ToolLibraryProjectionPort,
+    'resolveProjection' | 'rehydrateProjectionMount'
+  >,
 ): AgentLoopToolLibraryProjectionPort {
   return {
     async resolveProjection(args) {
-      const result = await projectionPort.resolveProjection({
-        stateRoot: args.stateRoot,
-        threadId: args.threadId,
-        ...(args.allowedRegistryNames === undefined
-          ? {}
-          : { allowedRegistryNames: args.allowedRegistryNames }),
-        ...(args.toolCapabilityPolicy === undefined
-          ? {}
-          : { toolCapabilityPolicy: args.toolCapabilityPolicy }),
-      });
+      if (
+        args.expectedIdentity !== undefined &&
+        args.toolCapabilityPolicy !== undefined &&
+        args.expectedIdentity.policyId !==
+          args.toolCapabilityPolicy.toolCapabilityPolicyId
+      ) {
+        return {
+          ok: false,
+          message:
+            'Recorded tool library projection identity does not match the run capability policy',
+        };
+      }
+      const result =
+        args.expectedIdentity === undefined
+          ? await projectionPort.resolveProjection({
+              stateRoot: args.stateRoot,
+              threadId: args.threadId,
+              ...(args.allowedRegistryNames === undefined
+                ? {}
+                : { allowedRegistryNames: args.allowedRegistryNames }),
+              ...(args.toolCapabilityPolicy === undefined
+                ? {}
+                : { toolCapabilityPolicy: args.toolCapabilityPolicy }),
+            })
+          : await projectionPort.rehydrateProjectionMount({
+              stateRoot: args.stateRoot,
+              threadId: args.threadId,
+              expectedIdentity: args.expectedIdentity,
+            });
       if (!result.ok) {
+        const diagnostics =
+          'diagnostics' in result ? result.diagnostics : undefined;
         return {
           ok: false,
           message: result.message,
-          ...(result.diagnostics === undefined
-            ? {}
-            : { diagnostics: result.diagnostics }),
+          ...(diagnostics === undefined ? {} : { diagnostics }),
         };
       }
       return {

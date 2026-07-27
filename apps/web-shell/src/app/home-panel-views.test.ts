@@ -125,6 +125,8 @@ function createApprovalPanelStub(): HomeRunSessionView['approvalPanel'] {
 void test('createHomeLeftPanelView maps file, thread, and delete-confirm state', () => {
   const thread = createThreadStub();
   const openFile = async () => {};
+  const exportThread = async () => {};
+  const importThread = async () => {};
 
   const view = createHomeLeftPanelView({
     tree: [{ name: 'draft.md', path: 'draft.md', type: 'file' }],
@@ -146,18 +148,28 @@ void test('createHomeLeftPanelView maps file, thread, and delete-confirm state',
     selectedThreadId: thread.threadId,
     deletingThreadId: thread.threadId,
     pendingDeleteThread: thread,
+    exportingThreadId: thread.threadId,
+    importingThreadArchive: true,
+    threadTransferNotice: 'transfer complete',
     threadError: 'thread failed',
     loadThreads: async () => {},
     openThread: async () => {},
     requestDeleteThread: () => {},
     confirmDeleteThread: async () => {},
     cancelDeleteThread: () => {},
+    exportThread,
+    importThread,
     startNewSession: () => {},
   });
 
   assert.equal(view.computerTree.onSelect, openFile);
   assert.equal(view.threadDeleteConfirm?.thread.threadId, thread.threadId);
   assert.equal(view.threadDeleteConfirm?.busy, true);
+  assert.equal(view.threadList.onExport, exportThread);
+  assert.equal(view.threadList.onImport, importThread);
+  assert.equal(view.threadList.exportingThreadId, THREAD_ID);
+  assert.equal(view.threadList.importingThreadArchive, true);
+  assert.equal(view.threadList.transferNotice, 'transfer complete');
 });
 
 void test('center and right panel views pass editor, provider auth, and assistant surfaces through', () => {

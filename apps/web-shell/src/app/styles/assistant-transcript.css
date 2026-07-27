@@ -209,9 +209,26 @@
   white-space: nowrap;
 }
 
+/* 지금 하는 일의 이름 — 도구 이름이 없는 대기·생성 국면에서 이 자리를 채운다.
+   행동 tier이므로 도구 알약과 같은 색을 쓰되, 알약을 두 개로 보이게 하지
+   않도록 배경 없이 글자만 강조한다. */
+.run-status-context {
+  flex: 0 0 auto;
+  color: var(--secondary);
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+/* 경과 시간 — 읽지 않아도 되는 배경 정보다. 행동보다 작고 연하게 두어
+   눈이 먼저 행동에 가도록 한다. 토큰 누적 같은 계측은 줄에 두지 않고
+   상태줄 tooltip으로 미룬다. */
 .run-status-meta {
   min-width: 0;
   color: var(--on-surface-muted);
+  font-size: 11px;
+  /* 초가 올라갈 때마다 숫자 폭이 달라지면 줄 전체가 흔들린다 */
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
 }
 
 @keyframes run-status-pulse {
@@ -253,33 +270,42 @@
   }
 }
 
-/* 대기 중 스티어 큐 — 입력창 위 CC식 행. 컴포저와 같은 읽기 컬럼으로
-   가운데 정렬해, 넓은 모니터에서 홀로 전체 폭으로 벌어지지 않게 한다. */
+/* 대기 중 쿼리 바 — 컴포저 위. 말풍선은 대화에 흩어져 앉으므로, 여러 개를
+   한눈에 보고 지우려면 모아 두는 자리가 따로 있어야 한다.
+
+   상자를 두르지 않고 왼쪽 강조선만 쓴다: 컴포저가 이미 네모라서 그 위에
+   네모를 또 얹으면 화면이 겹겹이 된다. */
 .pending-steer-list {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 4px;
   width: 100%;
-  max-width: var(--reading-column, 760px);
-  margin-inline: auto;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  /* 폭은 .composer-region 읽기 컬럼이 소유한다 */
+  margin: 0;
+  padding-left: 9px;
+  border-left: 2px solid color-mix(in srgb, var(--secondary) 45%, transparent);
 }
 
 .pending-steer-row {
   display: flex;
+  width: 100%;
   align-items: center;
   gap: 8px;
-  padding: 5px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-container);
+  padding: 3px 0;
   font-family: var(--font-ui-label);
   font-size: 12.5px;
   color: var(--on-surface-variant);
 }
 
-.pending-steer-glyph {
-  color: var(--on-surface-muted);
+/* 순번 — 여럿일 때만 붙는다. 설명이 아니라 사실이라 반복돼도 소음이 아니다. */
+.pending-steer-order {
   flex-shrink: 0;
+  min-width: 12px;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .pending-steer-text {
@@ -289,47 +315,162 @@
   white-space: nowrap;
 }
 
-.pending-steer-hint {
+.pending-steer-action {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
   flex-shrink: 0;
-  font-size: 11px;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
   color: var(--on-surface-muted);
-}
-
-.pending-steer-cancel {
-  flex-shrink: 0;
-  padding: 2px 6px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  font-size: 12px;
   cursor: pointer;
-  transition: background var(--transition-base);
+  transition:
+    background var(--transition-base),
+    color var(--transition-base);
 }
 
-.pending-steer-cancel:hover {
-  background: var(--surface-container-high);
+.pending-steer-action:hover {
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
 }
 
-.pending-steer-flush-row {
-  display: flex;
-  justify-content: flex-end;
-  padding: 0 10px;
-}
-
+/* 즉시 반영 — 큐 전체를 앞당긴다. 눌러서 요청이 걸리면 사라진다: 더 앞당길
+   것이 없다는 사실을, 없어짐으로 말한다. */
 .pending-steer-flush {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  padding: 3px 10px 3px 8px;
   border: none;
-  border-radius: var(--radius-sm);
-  padding: 2px 8px;
-  background: transparent;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--secondary) 13%, transparent);
+  color: var(--secondary);
   font-family: var(--font-ui-label);
   font-size: 11.5px;
-  color: var(--on-surface-variant);
+  font-weight: 600;
   cursor: pointer;
   transition: background var(--transition-base);
+}
+
+.pending-steer-flush-glyph {
+  font-size: 13px;
+  line-height: 1;
 }
 
 .pending-steer-flush:hover {
-  background: var(--surface-container-high);
+  background: color-mix(in srgb, var(--secondary) 24%, transparent);
+}
+
+/* 아직 모델이 읽지 않은 내 말 — 보내는 즉시 대화에 들어가되, 읽히기 전이라는
+   사실을 반짝임이 말한다. 그 반짝임이 곧 버튼이다: 누르면 다음 라운드를
+   기다리지 않고 지금 밀어넣는다.
+
+   설명 문구를 줄마다 붙이지 않는 이유: 대기라는 사실은 상태이지 읽을 문장이
+   아니다. 상태는 움직임으로, 문장은 내가 한 말로 남긴다. */
+.pending-steer-message {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.pending-steer-message.is-flushable {
+  cursor: pointer;
+}
+
+/* 반짝임은 말풍선에만 얹는다. 줄 전체에 얹으면 빈 여백이 함께 번쩍여서
+   무엇을 누르라는 것인지 가리키지 못한다. */
+.pending-steer-message .transcript-message-bubble {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.pending-steer-message .transcript-message-bubble::after {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  content: '';
+  background: linear-gradient(
+    105deg,
+    transparent 32%,
+    color-mix(in srgb, var(--secondary) 34%, transparent) 50%,
+    transparent 68%
+  );
+  transform: translateX(-130%);
+  animation: pending-steer-glint 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.pending-steer-message.is-flushable:hover .transcript-message-bubble::after,
+.pending-steer-message.is-flushable:focus-visible
+  .transcript-message-bubble::after {
+  background: color-mix(in srgb, var(--secondary) 22%, transparent);
+  transform: none;
+  animation: none;
+}
+
+.pending-steer-message.is-flushable:focus-visible {
+  outline: none;
+}
+
+.pending-steer-message.is-flushable:focus-visible .transcript-message-bubble {
+  outline: 2px solid color-mix(in srgb, var(--secondary) 60%, transparent);
+  outline-offset: 2px;
+}
+
+/* 상태와 되돌리기 — 말풍선 아래에 작고 연하게. 내 말보다 앞설 이유가 없다. */
+.pending-steer-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-end;
+  margin-top: 1px;
+  padding-right: 2px;
+  color: var(--on-surface-muted);
+  font-family: var(--font-ui-label);
+  font-size: 11px;
+}
+
+.pending-steer-badge-cancel {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    background var(--transition-base),
+    color var(--transition-base);
+}
+
+.pending-steer-badge-cancel:hover {
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+}
+
+@keyframes pending-steer-glint {
+  0%,
+  22% {
+    transform: translateX(-130%);
+  }
+  62%,
+  100% {
+    transform: translateX(130%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pending-steer-message::after {
+    transform: none;
+    animation: none;
+    background: color-mix(in srgb, var(--secondary) 12%, transparent);
+  }
 }
 
 /* ⑂ 브랜치 성공 알림 — 새 스레드로 전환됐음을 명시 */
@@ -508,6 +649,45 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--on-surface-muted);
+}
+
+.tool-result-artifacts {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--outline-variant);
+  background: var(--surface-container-low);
+}
+
+.tool-result-artifact-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-ui-mono);
+  font-size: 11.5px;
+}
+
+.tool-result-artifact-row + .tool-result-artifact-row {
+  margin-top: 6px;
+}
+
+.tool-result-artifact-row > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-result-artifact-row > span:nth-child(2) {
+  color: var(--on-surface-muted);
+}
+
+.tool-result-artifact-row a {
+  color: var(--primary);
+  font-family: var(--font-ui-label);
+  text-decoration: none;
+}
+
+.tool-result-artifact-row a:hover {
+  text-decoration: underline;
 }
 
 /* 질문 인라인 편집 */

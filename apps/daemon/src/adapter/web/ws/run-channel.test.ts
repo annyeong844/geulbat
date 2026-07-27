@@ -16,25 +16,33 @@ const TEST_DEV_TOKEN = 'test-token-123456';
 void test('run-channel enforces websocket origin policy', async (t) => {
   const cases: Array<{
     label: string;
-    origin: string;
+    // 데몬이 고른 포트를 받아 origin을 만든다 — same-origin 정책에서 origin은
+    // 서버 주소에 매여 있어 고정 문자열로 쓸 수 없다.
+    origin: (port: number) => string;
     expected: 'open' | 'reject';
     expectedStatus?: number;
     allowedOrigins?: string;
   }> = [
     {
-      label: 'accepts loopback websocket origins',
-      origin: 'http://127.0.0.1:5174',
+      label: 'accepts the origin the daemon itself serves',
+      origin: (port) => `http://127.0.0.1:${port}`,
       expected: 'open',
     },
     {
+      label: 'rejects other local origins on the same machine',
+      origin: () => 'http://127.0.0.1:1',
+      expected: 'reject',
+      expectedStatus: 403,
+    },
+    {
       label: 'rejects non-loopback websocket origins',
-      origin: 'https://evil.example',
+      origin: () => 'https://evil.example',
       expected: 'reject',
       expectedStatus: 403,
     },
     {
       label: 'allows explicitly configured external websocket origins',
-      origin: 'https://demo.trycloudflare.com',
+      origin: () => 'https://demo.trycloudflare.com',
       expected: 'open',
       allowedOrigins: 'https://demo.trycloudflare.com',
     },
@@ -48,13 +56,13 @@ void test('run-channel enforces websocket origin policy', async (t) => {
           : {},
         async ({ port }) => {
           if (testCase.expected === 'open') {
-            await expectSocketOpen(port, testCase.origin);
+            await expectSocketOpen(port, testCase.origin(port));
             return;
           }
 
           const statusCode = await getSocketRejectedStatus(
             port,
-            testCase.origin,
+            testCase.origin(port),
           );
           assert.equal(statusCode, testCase.expectedStatus);
         },
@@ -130,7 +138,7 @@ void test('run-channel rejects non-authenticated run messages and closes the soc
       closeCode: number;
     }>((resolve, reject) => {
       const socket = new WebSocket(`ws://127.0.0.1:${port}/api/ws`, {
-        origin: 'http://127.0.0.1:5174',
+        origin: `http://127.0.0.1:${port}`,
       });
       const messages: Array<{ code: string; message: string }> = [];
 
@@ -552,7 +560,7 @@ async function connectAuthenticatedSocket(
 ): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(`ws://127.0.0.1:${port}/api/ws`, {
-      origin: 'http://127.0.0.1:5174',
+      origin: `http://127.0.0.1:${port}`,
     });
 
     socket.once('open', () => {

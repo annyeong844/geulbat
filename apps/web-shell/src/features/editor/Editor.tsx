@@ -31,7 +31,7 @@ export interface OpenFileTab {
   isDirty: boolean;
 }
 
-interface Props {
+export interface EditorProps {
   filePath: string | null;
   extractedDocument?: 'docx' | 'xlsx' | 'hwpx' | null;
   binaryPreview?: {
@@ -113,7 +113,7 @@ export function Editor({
   onConflictInspect,
   artifactPill,
   artifactSurface,
-}: Props) {
+}: EditorProps) {
   // 오피스 추출본은 항상 읽기 전용 — 저장하면 원본 바이너리가 파괴된다
   const readOnly = daemonReadOnly || extractedDocument !== null;
 

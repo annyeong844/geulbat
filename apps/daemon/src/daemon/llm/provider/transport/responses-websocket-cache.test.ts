@@ -774,3 +774,108 @@ void test('responses websocket session owner re-arms cooldown when the half-open
     clearTimeout(item.handle);
   }
 });
+
+void test('responses websocket session owner applies provider admission accounting to durable requests', async () => {
+  let durableCalls = 0;
+  const deps = {
+    async connectWebSocket() {
+      throw new Error('direct socket path must not run');
+    },
+    durableRequestTransport: {
+      async *streamEvents(): AsyncIterable<Record<string, unknown>> {
+        durableCalls += 1;
+        throw Object.assign(new Error('provider rate limited'), {
+          status: 429,
+          retryAfterMs: 2_500,
+        });
+      },
+    },
+  };
+  const store = createResponsesWebSocketSessionStore(deps);
+  const streamDurableResponseEvents = Reflect.get(
+    store,
+    'streamDurableResponseEvents',
+  );
+
+  assert.equal(typeof streamDurableResponseEvents, 'function');
+  if (typeof streamDurableResponseEvents !== 'function') {
+    return;
+  }
+  const events = Reflect.apply(streamDurableResponseEvents, store, [
+    {
+      webSocketUrl: 'wss://api.example.test/v1/responses',
+      headers: new Headers({ Authorization: 'Bearer private-token' }),
+      serializedPayload: '{"type":"response.create"}',
+      providerSessionId: 'provider-session-a',
+      requestAttempt: 0,
+    },
+  ]) as AsyncIterable<Record<string, unknown>>;
+
+  await assert.rejects(async () => {
+    for await (const event of events) {
+      void event;
+    }
+  }, /provider rate limited/u);
+  assert.equal(durableCalls, 1);
+  assert.ok(
+    store
+      .readPressureSnapshot()
+      .scopes.some(
+        (scope) =>
+          scope.providerScope === 'wss://api.example.test' &&
+          scope.cooldownRemainingMs > 0,
+      ),
+  );
+  await store.closeAll();
+});
+
+void test('responses session owner applies shared provider admission to durable HTTP SSE requests', async () => {
+  let durableHttpCalls = 0;
+  let observedSignal: AbortSignal | undefined;
+  const store = createResponsesWebSocketSessionStore({
+    async connectWebSocket() {
+      throw new Error('direct socket path must not run');
+    },
+    durableRequestTransport: {
+      async *streamEvents(): AsyncIterable<Record<string, unknown>> {
+        throw new Error('responses websocket durable path must not run');
+      },
+      async *streamHttpSseEvents(
+        input,
+      ): AsyncIterable<Record<string, unknown>> {
+        durableHttpCalls += 1;
+        observedSignal = input.signal;
+        throw Object.assign(new Error('HTTP provider rate limited'), {
+          status: 429,
+          retryAfterMs: 2_500,
+        });
+      },
+    },
+  });
+  const streamDurableHttpSseEvents = store.streamDurableHttpSseEvents;
+  assert.notEqual(streamDurableHttpSseEvents, undefined);
+
+  await assert.rejects(async () => {
+    for await (const event of streamDurableHttpSseEvents?.({
+      requestUrl: 'https://api.example.test/v1/chat/completions',
+      headers: new Headers({ Authorization: 'Bearer private-token' }),
+      serializedPayload: '{"model":"test-model","stream":true}',
+      providerSessionId: 'provider-session-http',
+      requestAttempt: 0,
+    }) ?? []) {
+      void event;
+    }
+  }, /HTTP provider rate limited/u);
+  assert.equal(durableHttpCalls, 1);
+  assert.equal(observedSignal instanceof AbortSignal, true);
+  assert.ok(
+    store
+      .readPressureSnapshot()
+      .scopes.some(
+        (scope) =>
+          scope.providerScope === 'https://api.example.test' &&
+          scope.cooldownRemainingMs > 0,
+      ),
+  );
+  await store.closeAll();
+});

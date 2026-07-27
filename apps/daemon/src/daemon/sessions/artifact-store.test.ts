@@ -14,11 +14,74 @@ import {
   deleteThreadArtifactUpdateVersion,
   isArtifactStoreCorruptionError,
   loadAllThreadArtifactVersions,
+  restoreThreadArtifactVersions,
 } from './artifact-store.js';
 import {
   statThreadMediaFile,
   writeThreadMediaFile,
 } from './media-file-store.js';
+
+void test('restoreThreadArtifactVersions preserves portable versions under a fresh thread owner', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-artifact-restore-'),
+  );
+  const sourceThreadId = testThreadId(519);
+  const targetThreadId = testThreadId(520);
+  const created = await commitThreadArtifactVersion({
+    workspaceRoot,
+    threadId: sourceThreadId,
+    runId: 'run-portable-v1',
+    renderer: 'markdown',
+    payload: '# portable v1',
+    digest: null,
+    title: 'portable artifact',
+    sourceRef: null,
+    timestamp: '2026-07-27T00:00:00.000Z',
+  });
+  const updated = await commitThreadArtifactUpdateVersion({
+    workspaceRoot,
+    threadId: sourceThreadId,
+    artifactId: created.artifact.artifactId,
+    baseVersion: 1,
+    payload: '# portable v2',
+    createdByRunId: 'run-portable-v2',
+    timestamp: '2026-07-27T00:01:00.000Z',
+  });
+  assert.equal(updated.ok, true);
+
+  const sourceVersions = await loadAllThreadArtifactVersions(
+    workspaceRoot,
+    sourceThreadId,
+  );
+  await restoreThreadArtifactVersions({
+    workspaceRoot,
+    threadId: targetThreadId,
+    versions: sourceVersions,
+  });
+  assert.deepEqual(
+    await loadAllThreadArtifactVersions(workspaceRoot, targetThreadId),
+    sourceVersions,
+  );
+
+  const continued = await commitThreadArtifactUpdateVersion({
+    workspaceRoot,
+    threadId: targetThreadId,
+    artifactId: created.artifact.artifactId,
+    baseVersion: 2,
+    payload: '# portable v3',
+    createdByRunId: 'run-portable-v3',
+    timestamp: '2026-07-27T00:02:00.000Z',
+  });
+  assert.equal(continued.ok, true);
+  await assert.rejects(
+    restoreThreadArtifactVersions({
+      workspaceRoot,
+      threadId: targetThreadId,
+      versions: sourceVersions,
+    }),
+    /destination is not empty/u,
+  );
+});
 
 void test('commitThreadArtifactUpdateVersion appends the next version with lineage and bumps latestVersion', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-artifact-'));

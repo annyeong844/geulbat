@@ -69,8 +69,8 @@ void test('handleRunAuth authenticates sockets authorized during websocket upgra
   try {
     handleRunAuth(
       socket,
-      'auth-cookie-upgrade',
-      'cookie-auth',
+      'auth-proxy-upgrade',
+      'proxy-authenticated',
       daemonContext.computerSessionId,
     );
 
@@ -78,7 +78,7 @@ void test('handleRunAuth authenticates sockets authorized during websocket upgra
     assert.equal(state.authTimeout, null);
     assert.deepEqual(readLastSentMessage(socket), {
       type: 'run.auth.ok',
-      requestId: 'auth-cookie-upgrade',
+      requestId: 'auth-proxy-upgrade',
       ok: true,
       computerSessionId: daemonContext.computerSessionId,
     });

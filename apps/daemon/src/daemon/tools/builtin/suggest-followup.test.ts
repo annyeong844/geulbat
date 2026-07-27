@@ -8,6 +8,7 @@ void test('suggest_followup neither mutates nor requires approval', () => {
   assert.equal(suggestFollowupTool.sideEffectLevel, 'none');
   assert.equal(suggestFollowupTool.mayMutateComputerFiles, false);
   assert.equal(suggestFollowupTool.requiresApproval, false);
+  assert.equal(suggestFollowupTool.recoveryStrategy, 'replay_safe');
 });
 
 void test('suggest_followup takes exactly one prompt and rejects an empty one', () => {

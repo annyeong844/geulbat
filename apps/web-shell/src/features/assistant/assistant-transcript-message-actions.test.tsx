@@ -141,6 +141,59 @@ void test('tool_result renders a collapsed summary block that expands to pretty 
   });
 });
 
+void test('PTC artifact result renders open and download links after expansion', async () => {
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <TranscriptMessage
+        message={{
+          entryId: 'entry-result-artifact',
+          role: 'tool_result',
+          content: JSON.stringify({
+            callId: 'call-artifact',
+            tool: 'exec',
+            ok: true,
+            computerFilesMayHaveChanged: false,
+            displayText: JSON.stringify({
+              kind: 'ptc_execute_code_result',
+              artifacts: {
+                evidenceRef: 'sandbox-output:sandbox-evidence-1',
+                files: [
+                  {
+                    relativePath: 'reports/summary.json',
+                    bytes: 42,
+                    sha256: 'a'.repeat(64),
+                  },
+                ],
+                totalBytes: 42,
+              },
+            }),
+          }),
+          timestamp: '2026-07-27T00:00:00.000Z',
+        }}
+        artifactsByRef={new Map()}
+        isRunning={false}
+      />,
+    );
+  });
+
+  await act(async () => {
+    renderer.root
+      .findByProps({ className: 'tool-diff-header' })
+      .props.onClick();
+  });
+  const links = renderer.root.findAllByType('a');
+  assert.equal(links.length, 2);
+  assert.match(
+    links[0]?.props.href ?? '',
+    /relativePath=reports%2Fsummary\.json/u,
+  );
+  assert.match(links[1]?.props.href ?? '', /download=1/u);
+  await act(async () => {
+    renderer.unmount();
+  });
+});
+
 void test('failed tool_result shows the error in the collapsed header', async () => {
   let renderer!: ReactTestRenderer;
   await act(async () => {

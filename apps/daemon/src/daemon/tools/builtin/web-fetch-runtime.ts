@@ -142,6 +142,7 @@ async function fetchWebUrlWithRedirects(args: {
     response.contentType,
     args.extractMode,
   );
+  const content = normalizeLineEndings(text);
   const success: WebFetchSuccess = {
     ok: true,
     url: args.originalUrl,
@@ -149,7 +150,9 @@ async function fetchWebUrlWithRedirects(args: {
     status: response.status,
     contentType: response.contentType,
     ...readHtmlTitle(rawText),
-    content: text,
+    content,
+    contentFormat: 'line_preserved_text_v1',
+    contentLineCount: countTextLines(content),
     untrusted: true,
   };
   return success;
@@ -287,15 +290,53 @@ function extractResponseText(
     return rawText;
   }
 
-  // Both text and markdown modes use the same conservative first-slice HTML
-  // extraction: no scripts, no subresource loads, no browser execution.
+  // Both text and markdown modes use the same conservative HTML extraction:
+  // no scripts, no subresource loads, and no browser execution. Block
+  // boundaries stay as lines so a caller can inspect the complete text in
+  // source order instead of receiving one flattened paragraph.
   void extractMode;
-  return rawText
-    .replaceAll(/<script\b[^>]*>[\s\S]*?<\/script>/giu, ' ')
-    .replaceAll(/<style\b[^>]*>[\s\S]*?<\/style>/giu, ' ')
-    .replaceAll(/<[^>]+>/gu, ' ')
-    .replaceAll(/\s+/gu, ' ')
-    .trim();
+  return normalizeHtmlTextLines(
+    readHtmlBody(rawText)
+      .replaceAll(/<script\b[^>]*>[\s\S]*?<\/script>/giu, ' ')
+      .replaceAll(/<style\b[^>]*>[\s\S]*?<\/style>/giu, ' ')
+      .replaceAll(/<br\b[^>]*\/?>/giu, '\n')
+      .replaceAll(
+        /<\/(?:address|article|aside|blockquote|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)>/giu,
+        '\n',
+      )
+      .replaceAll(/<[^>]+>/gu, ' ')
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'"),
+  );
+}
+
+function readHtmlBody(value: string): string {
+  return /<body\b[^>]*>([\s\S]*?)<\/body>/iu.exec(value)?.[1] ?? value;
+}
+
+function normalizeHtmlTextLines(value: string): string {
+  return normalizeLineEndings(value)
+    .split('\n')
+    .map((line) =>
+      line
+        .replaceAll(/[^\S\n]+/gu, ' ')
+        .replaceAll(/\s+([,.;:!?])/gu, '$1')
+        .trim(),
+    )
+    .filter((line) => line.length > 0)
+    .join('\n');
+}
+
+function normalizeLineEndings(value: string): string {
+  return value.replaceAll(/\r\n?/gu, '\n');
+}
+
+function countTextLines(value: string): number {
+  return value.length === 0 ? 0 : value.split('\n').length;
 }
 
 function readHeader(value: string | string[] | undefined): string | null {

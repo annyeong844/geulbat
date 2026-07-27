@@ -274,6 +274,13 @@ export interface PtcSessionDockerHandle {
 
 export interface PtcSessionDockerManager {
   reapRestartResidue?(): Promise<PtcSessionDockerResult<void>>;
+  adoptExisting?(
+    identity: PtcSessionDockerIdentity,
+    args: {
+      containerId: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<PtcSessionDockerResult<PtcSessionDockerHandle>>;
   getOrCreate(
     identity: PtcSessionDockerIdentity,
     options?: { signal?: AbortSignal },
@@ -331,6 +338,10 @@ export function createPtcSessionDockerLocalBatchCommandPolicy(): PtcSessionDocke
 // disabled-network batch-command sessions.
 export function createPtcSessionDockerOpenNetworkPackageInstallPolicy(args: {
   tmpTmpfsSize: string;
+  packageManagerFamilies?: readonly Extract<
+    PtcLabPackageManagerName,
+    'npm' | 'pip'
+  >[];
 }): PtcSessionDockerPolicy {
   const network = createPtcLabOpenEgressLocalPolicy({
     metricsCoverage: 'owner_outcome_only',
@@ -338,7 +349,7 @@ export function createPtcSessionDockerOpenNetworkPackageInstallPolicy(args: {
   return {
     ...createPtcSessionDockerLocalBatchCommandPolicy(),
     labPolicyId: PTC_LAB_OPEN_NETWORK_PACKAGE_INSTALL_POLICY_ID,
-    packageManagerFamilies: ['npm'],
+    packageManagerFamilies: [...(args.packageManagerFamilies ?? ['npm'])],
     networkInstallPolicyId: network.networkPolicyId,
     network,
     tmpTmpfs: `/tmp:rw,nosuid,nodev,size=${args.tmpTmpfsSize}`,

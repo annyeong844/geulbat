@@ -1,8 +1,8 @@
 import {
   COMMAND_HOST_SESSION_CAPACITY,
   DEFAULT_TAIL_RING_BYTES,
-  MAX_STDIN_BUFFERED_BYTES_PER_SESSION,
 } from './session-core.js';
+import { MAX_STDIN_BUFFERED_BYTES_PER_SESSION } from './session-interaction.js';
 import { COMMAND_HOST_RPC_LIMITS } from './worker-server.js';
 
 // P7.5 spec v4 §4.1 — 전체 메모리 예산 표현.

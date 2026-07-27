@@ -37,6 +37,7 @@ export const askUserTool = defineZodTool({
   mayMutateComputerFiles: false,
   requiresApproval: false,
   endsTurnAfterSuccess: true,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'presentation',
     searchHints: ['ask user', 'question', 'choices', 'options', 'clarify'],

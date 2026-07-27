@@ -14,6 +14,9 @@ export const QWEN_3_8_MAX_PREVIEW_MODEL_ID = 'qwen3.8-max-preview' as const;
 export const QWEN_3_8_MAX_PREVIEW_CONTEXT_CAPACITY = {
   contextWindow: 1_000_000,
   thresholdTokens: 850_000,
+  summaryMaxOutputTokens: 20_000,
+  summaryThinkingEnabled: true,
+  compactionVersion: 1,
 } as const;
 export const QWEN_TOKEN_PLAN_GLOBAL_BASE_URL =
   'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1';
@@ -44,6 +47,10 @@ export interface QwenContextCapacityPolicy {
   model: typeof QWEN_3_8_MAX_PREVIEW_MODEL_ID;
   contextWindow: number;
   thresholdTokens: number;
+  compactionMethod: 'summary';
+  summaryMaxOutputTokens: number;
+  summaryThinkingEnabled: boolean;
+  compactionVersion: number;
 }
 
 export function resolveQwenContextCapacityPolicy(
@@ -55,6 +62,7 @@ export function resolveQwenContextCapacityPolicy(
   return {
     providerId: QWEN_TOKEN_PLAN_PROVIDER_ID,
     model: QWEN_3_8_MAX_PREVIEW_MODEL_ID,
+    compactionMethod: 'summary',
     ...QWEN_3_8_MAX_PREVIEW_CONTEXT_CAPACITY,
   };
 }

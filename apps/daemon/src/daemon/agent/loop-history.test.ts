@@ -6,7 +6,10 @@ import { tmpdir } from 'node:os';
 
 import type { FunctionCall } from '../llm/index.js';
 import { commitThreadArtifactVersion } from '../sessions/artifact-store.js';
-import { appendProviderRound } from '../sessions/provider-round-journal.js';
+import {
+  appendProviderRound,
+  readProviderRoundHistory,
+} from '../sessions/provider-round-journal.js';
 import {
   appendTranscriptEntry,
   readTranscriptEntries,
@@ -70,6 +73,75 @@ void test('createAgentLoopHistoryPort delegates to the current transcript-backed
   });
 
   assert.deepEqual(history, [{ kind: 'user', text: 'canonical prompt' }]);
+});
+
+void test('createAgentLoopHistoryPort records provider rounds against the current or supplied transcript anchor', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-loop-history-'));
+  const threadId = testThreadId(46);
+  const runId = testRunId(46);
+  const replayScopeId = `sha256:${'b'.repeat(64)}` as const;
+  const port = createAgentLoopHistoryPort();
+  const firstAnchor = await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'user',
+    content: 'first request',
+    timestamp: '2026-03-30T00:00:00.000Z',
+  });
+
+  await port.recordProviderRound({
+    workspaceRoot,
+    threadId,
+    runId,
+    round: 0,
+    providerId: 'openai_codex_direct',
+    model: 'history-port-test',
+    replayScopeId,
+    items: [
+      {
+        type: 'message',
+        id: 'message-46-0',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'first answer' }],
+      },
+    ],
+    functionCalls: [],
+  });
+
+  await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'assistant',
+    content: 'first answer',
+    timestamp: '2026-03-30T00:00:01.000Z',
+  });
+  await port.recordProviderRound({
+    workspaceRoot,
+    threadId,
+    runId,
+    round: 1,
+    providerId: 'openai_codex_direct',
+    model: 'history-port-test',
+    replayScopeId,
+    precedingTranscriptEntryId: firstAnchor.entryId,
+    items: [
+      {
+        type: 'message',
+        id: 'message-46-1',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'compacted answer' }],
+      },
+    ],
+    functionCalls: [],
+  });
+
+  const records = await readProviderRoundHistory(workspaceRoot, threadId);
+  assert.deepEqual(
+    records.map((record) => ({
+      round: record.round,
+      precedingTranscriptEntryId: record.precedingTranscriptEntryId,
+    })),
+    [
+      { round: 0, precedingTranscriptEntryId: firstAnchor.entryId },
+      { round: 1, precedingTranscriptEntryId: firstAnchor.entryId },
+    ],
+  );
 });
 
 void test('loadInitialHistory appends the current prompt when transcript tail does not match', async () => {

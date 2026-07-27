@@ -141,6 +141,10 @@ void test('memory port estimates from same-model exact usage and rebases after c
         compactCalls += 1;
         assert.notEqual(input.history, history);
         assert.deepEqual(input.history, history.slice(0, 2));
+        assert.deepEqual(
+          input.deferredTools?.map((tool) => tool.name),
+          ['mcp_external_lookup'],
+        );
         assert.match(
           input.systemPrompt,
           /Tool results in the prefix are already the model-visible/u,
@@ -169,6 +173,20 @@ void test('memory port estimates from same-model exact usage and rebases after c
       history,
       systemPrompt: 'system',
       tools: [],
+      deferredTools: [
+        {
+          type: 'function' as const,
+          name: 'mcp_external_lookup',
+          description: 'Look up an external record.',
+          parameters: {
+            type: 'object' as const,
+            properties: {},
+            required: [],
+            additionalProperties: false as const,
+          },
+          strict: false,
+        },
+      ],
       providerAuthRuntime: createProviderAuthRuntimeStore(),
       providerRequestOptions: TEST_PROVIDER_REQUEST_OPTIONS,
     };
@@ -729,7 +747,7 @@ void test('memory port reports unknown admission when policy or exact input usag
   ]);
 });
 
-void test('memory port resolves Qwen capacity and publishes exact usage without claiming native compaction', async () => {
+void test('memory port admits Qwen summary compaction with the same threshold lifecycle as native providers', async () => {
   const contextUsage: ContextUsageUpdatedEventPayload[] = [];
   const qwenOptions = {
     ...TEST_PROVIDER_REQUEST_OPTIONS,
@@ -765,7 +783,7 @@ void test('memory port resolves Qwen capacity and publishes exact usage without 
     }),
     {
       kind: 'not_needed',
-      reason: 'provider_not_supported',
+      reason: 'under_threshold',
     },
   );
   assert.deepEqual(contextUsage, [
@@ -798,7 +816,7 @@ void test('memory port resolves Qwen capacity and publishes exact usage without 
     await nearPolicyRound.onProviderRequestPrepared(
       testRequestMeasurement(1_800),
     ),
-    { kind: 'send' },
+    { kind: 'prepare', reason: 'near_policy' },
   );
   assert.deepEqual(contextUsage.at(-1), {
     state: 'measured',
@@ -808,6 +826,123 @@ void test('memory port resolves Qwen capacity and publishes exact usage without 
     contextWindow: 1_000_000,
     thresholdTokens: 850_000,
     requestBytes: 1_800,
+  });
+});
+
+void test('memory port commits a Qwen summary checkpoint and immediately rebases active history', async () => {
+  await withThread(async ({ workspaceRoot, threadId }) => {
+    await appendTranscriptEntry(workspaceRoot, threadId, {
+      role: 'user',
+      content: 'older request',
+      timestamp: '2026-07-17T00:00:00.000Z',
+    });
+    await appendTranscriptEntry(workspaceRoot, threadId, {
+      role: 'assistant',
+      content: 'older answer',
+      timestamp: '2026-07-17T00:00:01.000Z',
+    });
+    const current = await appendTranscriptEntry(workspaceRoot, threadId, {
+      role: 'user',
+      content: 'current request',
+      timestamp: '2026-07-17T00:00:02.000Z',
+    });
+    const history: HistoryItem[] = [
+      { kind: 'user', text: 'older request' },
+      {
+        kind: 'assistant',
+        phase: 'final_answer',
+        text: 'older answer',
+      },
+      { kind: 'user', text: 'current request' },
+    ];
+    let summaryCalls = 0;
+    const qwenOptions = {
+      ...TEST_PROVIDER_REQUEST_OPTIONS,
+      providerId: 'qwen_token_plan' as const,
+      model: 'qwen3.8-max-preview',
+    };
+    const port = createAgentLoopMemoryPort({
+      resolvePolicy: async () => ({
+        providerId: 'qwen_token_plan',
+        model: 'qwen3.8-max-preview',
+        contextWindow: 100,
+        thresholdTokens: 85,
+        compactionMethod: 'summary',
+        summaryMaxOutputTokens: 20,
+        summaryThinkingEnabled: true,
+        compactionVersion: 1,
+      }),
+      compactHistory: async () =>
+        assert.fail('Qwen must not use provider-native compaction'),
+      compactThread: compactThreadContextNative,
+      summarizeQwenHistory: async (input) => {
+        summaryCalls += 1;
+        assert.deepEqual(input.historyPrefix, history.slice(0, 2));
+        return {
+          summary: 'Older work was completed.',
+          shortSummary: 'Older work completed.',
+          summaryTokens: 5,
+          providerUsageTelemetry: {
+            inputTokens: 70,
+            outputTokens: 5,
+          },
+        };
+      },
+    });
+    const common = {
+      workspaceRoot,
+      threadId,
+      history,
+      systemPrompt: 'system',
+      tools: [],
+      providerAuthRuntime: createProviderAuthRuntimeStore(),
+      providerRequestOptions: qwenOptions,
+    };
+    const round = port.beginContextBudgetRound(common);
+    await round.onProviderRequestPrepared(testRequestMeasurement(1_000));
+
+    assert.deepEqual(
+      await port.compactAfterModelRound({
+        ...common,
+        contextBudgetRound: round,
+        inputTokens: 85,
+      }),
+      {
+        kind: 'compacted',
+        providerRoundAnchorEntryId: current.entryId,
+        providerUsageTelemetry: {
+          inputTokens: 70,
+          outputTokens: 5,
+        },
+      },
+    );
+    assert.equal(summaryCalls, 1);
+    assert.equal(history[0]?.kind, 'user');
+    if (history[0]?.kind === 'user') {
+      assert.match(history[0].text, /Older work was completed/u);
+    }
+    assert.deepEqual(history.slice(1), [
+      { kind: 'user', text: 'current request' },
+    ]);
+    const checkpoint = (
+      await readTranscriptEntries(workspaceRoot, threadId)
+    ).at(-1);
+    assert.equal(checkpoint?.role, 'compaction');
+    if (checkpoint?.role === 'compaction') {
+      assert.equal(
+        isProviderNativeCompactionEntryData(checkpoint.compactionData),
+        false,
+      );
+      if (
+        !isProviderNativeCompactionEntryData(checkpoint.compactionData) &&
+        !('kind' in checkpoint.compactionData)
+      ) {
+        assert.equal(
+          checkpoint.compactionData.summary,
+          'Older work was completed.',
+        );
+      }
+    }
   });
 });
 
