@@ -377,6 +377,35 @@ void test('Qwen HTTP errors preserve status for shared retry classification', as
   );
 });
 
+void test('Qwen stream errors preserve the provider payload as the operator cause', async () => {
+  const providerError = {
+    code: 'provider_capacity',
+    message: 'provider-side diagnostic',
+  };
+
+  await assert.rejects(
+    streamQwenChatCompletions(
+      {
+        config: CONFIG,
+        history: [{ kind: 'user', text: 'Hello' }],
+        providerReplayScopeId: REPLAY_SCOPE,
+      },
+      {
+        fetchImpl: (async () =>
+          sseResponse([qwenEvent({ error: providerError })])) as typeof fetch,
+      },
+    ),
+    (error: unknown) => {
+      assert.equal(error instanceof Error && error.name, 'QwenStreamError');
+      assert.deepEqual(
+        error instanceof Error ? error.cause : undefined,
+        providerError,
+      );
+      return true;
+    },
+  );
+});
+
 void test('Qwen stream records finish_reason=tool_calls even when tool payload is empty', async () => {
   const result = await streamQwenChatCompletions(
     {

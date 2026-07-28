@@ -72,7 +72,7 @@ interface PtcLabArtifactWorkspaceImportRequest {
   maxBytes?: number;
 }
 
-export interface PtcLabArtifactWorkspaceImportSummary {
+interface PtcLabArtifactWorkspaceImportSummary {
   profile: 'lab';
   policyId: string;
   workspaceId: string;
@@ -83,12 +83,12 @@ export interface PtcLabArtifactWorkspaceImportSummary {
   totalBytes: number;
 }
 
-export interface PtcLabArtifactWorkspaceImportFilesRequest {
+interface PtcLabArtifactWorkspaceImportFilesRequest {
   relativePaths: readonly string[];
   policy: PtcArtifactExportPolicy;
 }
 
-export interface PtcLabArtifactWorkspaceImportFilesSummary {
+interface PtcLabArtifactWorkspaceImportFilesSummary {
   profile: 'lab';
   policyId: string;
   workspaceId: string;

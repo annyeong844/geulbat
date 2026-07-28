@@ -37,13 +37,13 @@ export type StreamErrorCategory =
  * 예산 값 자체는 provider 설정 owner가 갖는다. 이 표는 어떤 예산을 쓰는지만
  * 가리켜서, 정책 숫자와 분류 지식이 서로 섞이지 않게 한다.
  */
-export type ProviderFailureRetryBudget =
+type ProviderFailureRetryBudget =
   | 'llmConnectionLost'
   | 'llmOverloaded'
   | 'llmRateLimited'
   | null;
 
-export interface ProviderFailureClass {
+interface ProviderFailureClass {
   category: StreamErrorCategory;
   /**
    * `normalizeProviderErrorCode`가 돌려주는 코드 중 이 클래스로 수렴하는 것들.

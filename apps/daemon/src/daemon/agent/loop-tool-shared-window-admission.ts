@@ -24,7 +24,7 @@ export type SharedToolWindowCallKind =
   | 'subagent_launch'
   | 'ptc_cell';
 
-export interface PreparedSharedToolWindowCall {
+interface PreparedSharedToolWindowCall {
   functionCall: FunctionCall;
   toolArgs: Record<string, unknown>;
   sharedKind: SharedToolWindowCallKind;

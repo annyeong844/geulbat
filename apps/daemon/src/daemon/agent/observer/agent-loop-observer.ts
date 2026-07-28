@@ -29,7 +29,7 @@ interface AgentLoopObserverToolLibraryProjectionSummary {
 }
 
 export interface AgentLoopObserverSnapshot {
-  schemaVersion: 5;
+  schemaVersion: 6;
   runId: string;
   threadId: string;
   loopImplementation: AgentLoopImplementationIdentity;
@@ -38,18 +38,6 @@ export interface AgentLoopObserverSnapshot {
     selectionProvided: boolean;
     signalProvided: boolean;
     runStateKind: AgentLoopObserverRunStateKind;
-    callModelPort: 'default_provider' | 'injected';
-    promptPort: 'default_prompt_port' | 'injected';
-    historyPort: 'default_history_port' | 'injected';
-    lifecyclePort: 'default_lifecycle_port' | 'injected';
-    memoryPort: 'default_memory_port' | 'injected';
-    modelRoundPort: 'default_model_round_port' | 'injected';
-    structuredOutputPort: 'default_structured_output_port' | 'injected';
-    toolDefinitionPort: 'default_tool_definition_port' | 'injected';
-    toolRuntimePort: 'default_tool_runtime_port' | 'injected';
-    toolLibraryProjectionPort:
-      | 'default_tool_library_projection_port'
-      | 'injected';
   };
   approval: {
     permissionMode: PermissionMode;
@@ -111,19 +99,9 @@ interface BuildAgentLoopObserverSnapshotArgs {
   toolLibraryProjection?: AgentLoopObserverToolLibraryProjectionSummary;
   toolDefs: readonly Pick<ToolDefinition, 'name'>[];
   providerRequestOptions: ProviderRequestOptions;
-  callModelImplProvided: boolean;
   currentFileProvided: boolean;
   selectionProvided: boolean;
   signalProvided: boolean;
-  promptPortProvided: boolean;
-  historyPortProvided: boolean;
-  lifecyclePortProvided: boolean;
-  memoryPortProvided: boolean;
-  modelRoundPortProvided: boolean;
-  structuredOutputPortProvided: boolean;
-  toolDefinitionPortProvided: boolean;
-  toolRuntimePortProvided: boolean;
-  toolLibraryProjectionPortProvided: boolean;
   runStateKind: AgentLoopObserverRunStateKind;
   initialHistoryItemCount: number;
   pendingBackgroundResultCount: number;
@@ -280,7 +258,7 @@ export function buildAgentLoopObserverSnapshot(
   const toolNames = args.toolDefs.map((toolDef) => toolDef.name);
   const retryPolicy = args.providerRequestOptions.modelRoundRetry;
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     runId: args.runId,
     threadId: args.runContext.threadId,
     loopImplementation: {
@@ -292,32 +270,6 @@ export function buildAgentLoopObserverSnapshot(
       selectionProvided: args.selectionProvided,
       signalProvided: args.signalProvided,
       runStateKind: args.runStateKind,
-      callModelPort: args.callModelImplProvided
-        ? 'injected'
-        : 'default_provider',
-      promptPort: args.promptPortProvided ? 'injected' : 'default_prompt_port',
-      historyPort: args.historyPortProvided
-        ? 'injected'
-        : 'default_history_port',
-      lifecyclePort: args.lifecyclePortProvided
-        ? 'injected'
-        : 'default_lifecycle_port',
-      memoryPort: args.memoryPortProvided ? 'injected' : 'default_memory_port',
-      modelRoundPort: args.modelRoundPortProvided
-        ? 'injected'
-        : 'default_model_round_port',
-      structuredOutputPort: args.structuredOutputPortProvided
-        ? 'injected'
-        : 'default_structured_output_port',
-      toolDefinitionPort: args.toolDefinitionPortProvided
-        ? 'injected'
-        : 'default_tool_definition_port',
-      toolRuntimePort: args.toolRuntimePortProvided
-        ? 'injected'
-        : 'default_tool_runtime_port',
-      toolLibraryProjectionPort: args.toolLibraryProjectionPortProvided
-        ? 'injected'
-        : 'default_tool_library_projection_port',
     },
     approval: {
       permissionMode: args.approvalContext.permissionMode,

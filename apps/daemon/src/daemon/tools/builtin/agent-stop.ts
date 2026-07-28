@@ -83,6 +83,7 @@ export const agentStopTool = defineParsedTool<AgentStopArgs>({
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'agent',
     searchHints: ['stop agent', 'cancel subagent', 'terminate agent'],

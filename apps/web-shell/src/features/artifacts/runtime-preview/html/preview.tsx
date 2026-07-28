@@ -8,7 +8,10 @@ import {
   renderedArtifactPreview,
   unavailableArtifactPreview,
 } from '../../artifact-types.js';
-import type { RenderArtifactRuntimeFrame } from '../types.js';
+import {
+  ARTIFACT_RUNTIME_SANDBOX,
+  type RenderArtifactRuntimeFrame,
+} from '../types.js';
 
 export function resolveHtmlArtifactRuntimePreview(args: {
   payload: string;
@@ -42,7 +45,7 @@ function HtmlArtifactPreviewFrame(props: {
       {renderRuntimeFrame({
         renderer: 'html5',
         title: 'html5 artifact preview',
-        sandbox: 'allow-scripts allow-forms allow-same-origin',
+        sandbox: ARTIFACT_RUNTIME_SANDBOX,
         runtimePayload: buildHtmlArtifactRuntimePayload(payload),
         sourceRef,
       })}

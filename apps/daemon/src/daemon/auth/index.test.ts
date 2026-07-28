@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { forceRefreshProviderAuth, getProviderAuth } from './access.js';
+import { refreshProviderToken } from './credentials/refresh.js';
+import type { ProviderCredential } from './credentials/store.js';
 import { getProviderAuthStatus, getProviderBootstrapStatus } from './status.js';
 import { initProviderAuth } from './init.js';
 import { createProviderAuthRuntimeStore } from './runtime-state.js';
@@ -605,6 +607,57 @@ void test('a cancelled caller leaves a shared provider auth refresh wait without
   assert.equal((await first).accessToken, 'fresh-token');
   assert.deepEqual(firstWaitingStates, ['auth_waiting']);
   assert.deepEqual(secondWaitingStates, ['auth_waiting']);
+});
+
+void test('a timed-out provider token request settles shared forced-refresh waiters and clears the mutex', async () => {
+  const { runtimeStore } = createProviderAuthTestStores();
+  await initProviderAuth({
+    runtimeStore,
+    readCredential: async () => ({
+      accessToken: 'stale-token',
+      refreshToken: 'refresh-token',
+      accountId: 'account-1',
+      expiresAt: Date.now() + 60_000,
+    }),
+  });
+
+  let fetchCalls = 0;
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    fetchCalls += 1;
+    return await new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      assert.ok(signal);
+      signal.addEventListener(
+        'abort',
+        () => reject(new Error('aborted by timeout')),
+        { once: true },
+      );
+    });
+  };
+  const refreshCredential = (current: ProviderCredential) =>
+    refreshProviderToken(current, { fetchImpl, timeoutMs: 1 });
+
+  const [first, second] = await Promise.allSettled([
+    forceRefreshProviderAuth({ runtimeStore, refreshCredential }),
+    forceRefreshProviderAuth({ runtimeStore, refreshCredential }),
+  ]);
+
+  assert.equal(fetchCalls, 1);
+  for (const result of [first, second]) {
+    assert.equal(result.status, 'rejected');
+    if (result.status === 'rejected') {
+      assert.equal(Reflect.get(result.reason, 'llmCode'), 'llm_auth_failed');
+      assert.equal(
+        Reflect.get(result.reason, 'code'),
+        'provider_auth_refresh_failed',
+      );
+      assert.match(
+        String(Reflect.get(result.reason, 'message')),
+        /Provider token refresh timed out/u,
+      );
+    }
+  }
+  assert.equal(runtimeStore.getProviderAuthRefreshPromise(), null);
 });
 
 void test('getProviderAuth can use an injected runtime store without warming the default cache', async () => {

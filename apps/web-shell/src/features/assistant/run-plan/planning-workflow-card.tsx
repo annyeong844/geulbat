@@ -16,16 +16,35 @@ export interface AssistantPlanningWorkflow {
   onCommand: (command: PlanWorkflowCommand) => Promise<void>;
 }
 
+function PlanningWorkflowDismissIcon() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      aria-hidden
+    >
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
 export function PlanningWorkflowCard({
   workflow,
   visualization = null,
   onWidgetPrompt,
   onWidgetToolRequest,
+  onDismiss,
 }: {
   workflow: AssistantPlanningWorkflow;
   visualization?: VisualizeWidgetView | null;
   onWidgetPrompt?: (prompt: string) => Promise<void> | void;
   onWidgetToolRequest?: WidgetToolRequestHandler;
+  onDismiss?: () => void;
 }) {
   const { snapshot } = workflow;
   const [feedback, setFeedback] = useState('');
@@ -214,6 +233,10 @@ export function PlanningWorkflowCard({
       ],
     } as const;
     const copy = stateCopy[snapshot.state];
+    // 진행 중인 계획은 치울 수 없다 — 실행이 끝난 기록만 사용자가 정리한다.
+    const dismissible =
+      onDismiss !== undefined &&
+      (snapshot.state === 'completed' || snapshot.state === 'execution_failed');
     return (
       <section className="planning-workflow-card" aria-label="계획 워크플로">
         <div className="planning-workflow-card-header">
@@ -222,6 +245,17 @@ export function PlanningWorkflowCard({
             <p>{copy[1]}</p>
           </div>
           <span className="planning-workflow-state">{snapshot.state}</span>
+          {dismissible ? (
+            <button
+              type="button"
+              className="planning-workflow-dismiss"
+              title="이 기록을 화면에서 치우기"
+              aria-label={`${copy[0]} 기록 치우기`}
+              onClick={onDismiss}
+            >
+              <PlanningWorkflowDismissIcon />
+            </button>
+          ) : null}
         </div>
         <code className="planning-workflow-stamp">{stamp}</code>
         {snapshot.state === 'execution_failed' ? (

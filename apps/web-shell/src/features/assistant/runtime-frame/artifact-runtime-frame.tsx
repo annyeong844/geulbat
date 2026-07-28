@@ -6,6 +6,7 @@ import type {
   GeneratedTextExportSnapshot,
   ResolvedArtifactSourceRef,
 } from '../../artifacts/artifact-types.js';
+import type { ArtifactRuntimeSandbox } from '../../artifacts/runtime-preview/types.js';
 import type {
   ArtifactRuntimeAgentInterjectIntent,
   ArtifactRuntimeAgentPromptIntent,
@@ -29,7 +30,7 @@ type ArtifactRuntimeFrameVariant = 'card' | 'inline';
 export function ArtifactRuntimeFrame(props: {
   renderer: ArtifactRuntimePersistenceRenderer;
   title: string;
-  sandbox: string;
+  sandbox: ArtifactRuntimeSandbox;
   runtimePayload: string;
   sourceRef: ResolvedArtifactSourceRef;
   readyTimeoutMs?: number;
@@ -75,28 +76,33 @@ export function ArtifactRuntimeFrame(props: {
     variant === 'inline'
       ? MIN_INLINE_ARTIFACT_RUNTIME_FRAME_HEIGHT
       : MIN_ARTIFACT_RUNTIME_FRAME_HEIGHT;
-  const { bootState, frameHeight, runtimeFrameRevision, runtimeFrameUrl } =
-    useArtifactRuntimeFrameState({
-      iframeRef,
-      renderer,
-      sourceRef,
-      runtimePayload,
-      readyTimeoutMs,
-      minFrameHeight,
-      ...(initialFrameHeight !== undefined ? { initialFrameHeight } : {}),
-      ...(onFrameHeightChange !== undefined ? { onFrameHeightChange } : {}),
-      ...(onGeneratedTextExportSnapshotChange !== undefined
-        ? { onGeneratedTextExportSnapshotChange }
-        : {}),
-      ...(onGeneratedBinaryExportSnapshotChange !== undefined
-        ? { onGeneratedBinaryExportSnapshotChange }
-        : {}),
-      ...(onAgentPromptRequest !== undefined ? { onAgentPromptRequest } : {}),
-      ...(onAgentInterjectRequest !== undefined
-        ? { onAgentInterjectRequest }
-        : {}),
-      ...(onAgentToolRequest !== undefined ? { onAgentToolRequest } : {}),
-    });
+  const {
+    bootState,
+    frameHeight,
+    runtimeFrameRevision,
+    runtimeFrameTargetOrigin,
+    runtimeFrameUrl,
+  } = useArtifactRuntimeFrameState({
+    iframeRef,
+    renderer,
+    sourceRef,
+    runtimePayload,
+    readyTimeoutMs,
+    minFrameHeight,
+    ...(initialFrameHeight !== undefined ? { initialFrameHeight } : {}),
+    ...(onFrameHeightChange !== undefined ? { onFrameHeightChange } : {}),
+    ...(onGeneratedTextExportSnapshotChange !== undefined
+      ? { onGeneratedTextExportSnapshotChange }
+      : {}),
+    ...(onGeneratedBinaryExportSnapshotChange !== undefined
+      ? { onGeneratedBinaryExportSnapshotChange }
+      : {}),
+    ...(onAgentPromptRequest !== undefined ? { onAgentPromptRequest } : {}),
+    ...(onAgentInterjectRequest !== undefined
+      ? { onAgentInterjectRequest }
+      : {}),
+    ...(onAgentToolRequest !== undefined ? { onAgentToolRequest } : {}),
+  });
   const surfaceStyles =
     variant === 'inline'
       ? artifactRuntimeFrameInlineStyles
@@ -112,11 +118,8 @@ export function ArtifactRuntimeFrame(props: {
     if (!frameWindow) {
       return;
     }
-    frameWindow.postMessage(
-      frameBroadcast.message,
-      new URL(runtimeFrameUrl).origin,
-    );
-  }, [frameBroadcast, bootState, runtimeFrameUrl]);
+    frameWindow.postMessage(frameBroadcast.message, runtimeFrameTargetOrigin);
+  }, [frameBroadcast, bootState, runtimeFrameTargetOrigin, runtimeFrameUrl]);
 
   return (
     <div style={surfaceStyles.frameWrap}>

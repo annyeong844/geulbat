@@ -1,5 +1,6 @@
 import {
   buildNotification,
+  COMMAND_HOST_CAPABILITIES,
   COMMAND_HOST_METHODS,
   COMMAND_HOST_NOTIFICATIONS,
   COMMAND_HOST_PROTOCOL_VERSION,
@@ -28,7 +29,7 @@ import type {
  * (`canAdmitInitializedConnection`)과 기록(`markServedConnection`)만 쓴다.
  */
 
-export type DispatchOutcome =
+type DispatchOutcome =
   | { kind: 'result'; value: unknown }
   | { kind: 'cancelled' }
   | {
@@ -38,7 +39,7 @@ export type DispatchOutcome =
       closeAfterResponse?: boolean;
     };
 
-export interface CommandHostRequestDispatchDeps {
+interface CommandHostRequestDispatchDeps {
   options: CommandHostServerOptions;
   /** §7.5 유계 알림 전송 — 폐기 시 resyncRequired는 서버가 처리한다. */
   sendNotification(
@@ -56,7 +57,7 @@ export interface CommandHostRequestDispatchDeps {
   markServedConnection(): void;
 }
 
-export interface CommandHostRequestDispatch {
+interface CommandHostRequestDispatch {
   dispatch(
     connection: ServerConnection,
     method: string,
@@ -115,13 +116,7 @@ export function createCommandHostRequestDispatch(
           value: {
             selectedVersion: COMMAND_HOST_PROTOCOL_VERSION,
             supportedVersions: [...COMMAND_HOST_SUPPORTED_VERSIONS],
-            capabilities: {
-              deferredOutputRelease: true,
-              idempotentStartByInvocation: true,
-              initialStdinOnStart: true,
-              losslessStdio: true,
-              prePersistenceOutputRedaction: true,
-            },
+            capabilities: COMMAND_HOST_CAPABILITIES,
             effectiveConfig: core.effectiveConfig,
           },
         };

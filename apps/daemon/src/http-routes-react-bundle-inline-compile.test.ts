@@ -78,6 +78,11 @@ void test('react bundle inline compile route returns generated manifest and serv
 
       const entryRes = await fetch(body.manifest.entryUrl);
       assert.equal(entryRes.status, 200);
+      assert.equal(entryRes.headers.get('access-control-allow-origin'), '*');
+      assert.equal(
+        entryRes.headers.get('cross-origin-resource-policy'),
+        'cross-origin',
+      );
       assert.equal(
         entryRes.headers.get('content-type'),
         'application/javascript; charset=utf-8',

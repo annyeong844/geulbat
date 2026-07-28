@@ -51,10 +51,7 @@ function renderRuntimeFrame(args: ArtifactRuntimeFrameRenderArgs) {
 void test('resolveJsArtifactRuntimePreview still renders malformed js in the sandbox iframe', () => {
   const html = resolveRenderedJsPreview('function broken(');
   assert.match(html, /<iframe/);
-  assert.match(
-    html,
-    /sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"/,
-  );
+  assert.match(html, /sandbox="allow-scripts allow-forms allow-downloads"/);
   assert.match(
     html,
     /src="http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?[^"]*rev=/,
@@ -75,10 +72,7 @@ void test('resolveJsArtifactRuntimePreview keeps fetch-json-echo style fixtures 
   );
 
   assert.match(html, /<iframe/);
-  assert.match(
-    html,
-    /sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"/,
-  );
+  assert.match(html, /sandbox="allow-scripts allow-forms allow-downloads"/);
 });
 
 void test('resolveJsArtifactRuntimePreview keeps classic xhr and EventSource fixtures rendered', () => {

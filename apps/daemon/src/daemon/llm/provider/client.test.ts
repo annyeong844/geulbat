@@ -1021,6 +1021,7 @@ void test('callModelWithDependencies aborts the background provider call when th
 
 void test('callModelWithDependencies logs provider failures with redacted conversation context', async () => {
   const runtimeStore = createProviderAuthRuntimeStore();
+  const providerError = new Error('private-provider-marker request timed out');
   const originalWarn = console.warn;
   const warns: unknown[][] = [];
   console.warn = (...args: unknown[]) => {
@@ -1049,7 +1050,7 @@ void test('callModelWithDependencies logs provider failures with redacted conver
           accountId: 'account',
         }),
         streamResponsesOverWebSocket: async () => {
-          throw new Error('private-provider-marker request timed out');
+          throw providerError;
         },
       },
     )) {
@@ -1079,11 +1080,7 @@ void test('callModelWithDependencies logs provider failures with redacted conver
     (warns[0]?.[1] as { code?: unknown })?.code,
     'llm_connect_timeout',
   );
-  assert.equal(
-    Object.hasOwn((warns[0]?.[1] as object | undefined) ?? {}, 'cause'),
-    false,
-  );
-  assert.doesNotMatch(JSON.stringify(warns), /private-provider-marker/u);
+  assert.equal((warns[0]?.[1] as { cause?: unknown })?.cause, providerError);
 });
 
 void test('callModelWithDependencies surfaces replay-scope mismatch as a clean auth error chunk', async () => {

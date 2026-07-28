@@ -252,6 +252,7 @@ void test('adaptRunSessionMessage keeps queued and rejected PTC admission distin
     }),
     {
       kind: 'transcript_activity_added',
+      runId: RUN_ID,
       threadId: THREAD_ID,
       entry: {
         kind: 'tool_activity',

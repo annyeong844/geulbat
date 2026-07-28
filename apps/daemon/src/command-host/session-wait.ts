@@ -9,7 +9,7 @@ import type { SessionEntry } from './session-core.js';
  * terminal·waiter 집합만 읽는다.
  */
 
-export function createYieldTimer(yieldTimeMs: number): {
+function createYieldTimer(yieldTimeMs: number): {
   promise: Promise<void>;
   cancel(): void;
 } {

@@ -148,7 +148,7 @@ export async function downgradeRegistryFixture(args: {
   );
 }
 
-export async function readCurrentRegistryFixture(homeRoot: string): Promise<{
+async function readCurrentRegistryFixture(homeRoot: string): Promise<{
   schemaVersion: number;
   plugins: PersistedPluginRecordFixture[];
 }> {

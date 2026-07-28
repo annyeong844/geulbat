@@ -45,7 +45,8 @@ void test('handleArtifactRuntimeFrameMessageEvent delegates persistence messages
     {
       iframeRef: createIframeRef(frameWindow),
       runtimeDocument: RUNTIME_DOCUMENT,
-      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameMessageOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameTargetOrigin: '*',
       scopeHandle: SCOPE_HANDLE,
       bridgeResponder: createBridgeResponder(async (source, messageData) => {
         bridgeCalls.push({ source, data: messageData });
@@ -65,7 +66,7 @@ void test('handleArtifactRuntimeFrameMessageEvent delegates persistence messages
   assert.deepEqual(frameWindow.postedMessages, [
     {
       message: response,
-      targetOrigin: RUNTIME_HOST_ORIGIN,
+      targetOrigin: '*',
     },
   ]);
 });
@@ -103,7 +104,8 @@ void test('handleArtifactRuntimeFrameMessageEvent drops stale bridge responses a
     {
       iframeRef,
       runtimeDocument: RUNTIME_DOCUMENT,
-      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameMessageOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameTargetOrigin: '*',
       scopeHandle: SCOPE_HANDLE,
       bridgeResponder: createBridgeResponder(() => responsePromise),
       markHostReady() {},

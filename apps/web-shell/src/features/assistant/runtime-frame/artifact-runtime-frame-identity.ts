@@ -29,12 +29,15 @@ import {
  * 않는다 — 모르는 부모에게 fail-closed다.
  */
 const UNKNOWN_ARTIFACT_RUNTIME_PARENT_ORIGIN = 'null';
+const ARTIFACT_RUNTIME_OPAQUE_MESSAGE_ORIGIN = 'null';
+const ARTIFACT_RUNTIME_OPAQUE_TARGET_ORIGIN = '*';
 
 interface ArtifactRuntimeFrameIdentity {
   runtimeParentOrigin: string;
   runtimeFrameRevision: string;
   runtimeFrameUrl: string;
-  runtimeHostOrigin: string;
+  runtimeFrameMessageOrigin: string;
+  runtimeFrameTargetOrigin: string;
   scope: ArtifactRuntimePersistenceScopeRequest | null;
   scopeHandle: string;
 }
@@ -66,7 +69,6 @@ export function createArtifactRuntimeFrameIdentity(args: {
   const scopeHandle =
     createArtifactRuntimePersistenceScopeHandle(runtimeFrameRevision);
   const runtimeHostUrl = resolveArtifactRuntimeHostUrl(args.locationOrigin);
-  const runtimeHostOrigin = new URL(runtimeHostUrl).origin;
   const runtimeFrameUrl = createArtifactRuntimeFrameUrl({
     runtimeHostUrl,
     runtimeParentOrigin,
@@ -77,7 +79,8 @@ export function createArtifactRuntimeFrameIdentity(args: {
     runtimeParentOrigin,
     runtimeFrameRevision,
     runtimeFrameUrl,
-    runtimeHostOrigin,
+    runtimeFrameMessageOrigin: ARTIFACT_RUNTIME_OPAQUE_MESSAGE_ORIGIN,
+    runtimeFrameTargetOrigin: ARTIFACT_RUNTIME_OPAQUE_TARGET_ORIGIN,
     scope,
     scopeHandle,
   };

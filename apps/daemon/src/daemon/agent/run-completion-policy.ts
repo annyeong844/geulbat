@@ -6,6 +6,7 @@ import { createLogger } from '@geulbat/structured-logger/logger';
 import type { RunExecutionAgentBindings } from '../sessions/run-execution-lifecycle.js';
 import type { PlanningWorkflowStore } from '../sessions/planning-workflow-store.js';
 import type { GoalStore } from '../sessions/goal-store.js';
+import type { AgentRuntimeServices } from '../daemon-runtime-contract.js';
 import {
   closeInterjectBuffer,
   hasPendingInterject,
@@ -35,7 +36,8 @@ type TerminalVerificationFailureOperation =
   | 'planning_workflow_read'
   | 'goal_read'
   | 'approved_plan_assessment'
-  | 'goal_completion_admission';
+  | 'goal_completion_admission'
+  | 'subagent_terminal_read';
 
 interface CreateAgentRunCompletionPolicyArgs extends RunExecutionAgentBindings {
   runId: RunId;
@@ -46,6 +48,10 @@ interface CreateAgentRunCompletionPolicyArgs extends RunExecutionAgentBindings {
     'readThread' | 'assessExecutionCompletion'
   >;
   goals: Pick<GoalStore, 'readForRun' | 'admitCompletion'>;
+  backgroundNotifications: Pick<
+    AgentRuntimeServices['backgroundNotifications'],
+    'readThreadBackgroundResults'
+  >;
   emit: AgentEventEmitter;
   observeCompletionGap?: (
     observation: AgentLoopCompletionGapObservation,
@@ -263,11 +269,73 @@ export function createAgentRunCompletionPolicy(
       : { kind: 'continue' };
   }
 
+  function continueForPendingChildTerminal(
+    source: TerminalCandidateSource,
+    result: AgentResult,
+  ): AgentLoopTerminalCandidateDecision | undefined {
+    try {
+      const pendingResults = args.backgroundNotifications
+        .readThreadBackgroundResults(args.threadId)
+        .filter((entry) => entry.parentRunId === args.runId);
+      if (pendingResults.length === 0) {
+        return undefined;
+      }
+      previousCompletionGap = undefined;
+      const continuation = JSON.stringify({
+        kind: 'pending_child_terminal_updates',
+        childRunIds: pendingResults.map((entry) => entry.childRunId),
+        outcomes: pendingResults.map((entry) => ({
+          childRunId: entry.childRunId,
+          terminalState: entry.terminalState,
+          reason: entry.reason ?? null,
+        })),
+        requiredNextAction:
+          'Call agent_wait with these childRunIds before finalizing, inspect every terminal outcome, and decide whether the promised work is still complete.',
+        continuationOptions: {
+          daemonInterrupted:
+            'Use agent_retry only when the same interrupted task is still required.',
+          preservedChildContext:
+            'Use agent_send_input when continuing the same terminal child thread is useful.',
+          newIndependentWork:
+            'A terminal child does not disable agent_spawn; launch a fresh child when new independent work remains.',
+          noLongerNeeded:
+            'If no further child work is needed, continue locally after accounting for the terminal result.',
+        },
+      });
+      return {
+        kind: 'continue',
+        historyText:
+          source === 'structured_output'
+            ? `${describeAgentResultForTextSurface(result)}\n${continuation}`
+            : continuation,
+      };
+    } catch (error: unknown) {
+      return recordTerminalVerificationFailure({
+        operation: 'subagent_terminal_read',
+        error,
+        userMessage:
+          'Subagent terminal completion verification is unavailable.',
+        runId: args.runId,
+        threadId: args.threadId,
+      });
+    }
+  }
+
+  function continueForPendingRuntimeWork(
+    source: TerminalCandidateSource,
+    result: AgentResult,
+  ): AgentLoopTerminalCandidateDecision | undefined {
+    return (
+      continueForPendingInterject(source, result) ??
+      continueForPendingChildTerminal(source, result)
+    );
+  }
+
   function finalizeTerminal(
     source: TerminalCandidateSource,
     result: AgentResult,
   ): AgentLoopTerminalCandidateDecision {
-    const pending = continueForPendingInterject(source, result);
+    const pending = continueForPendingRuntimeWork(source, result);
     if (pending !== undefined) {
       return pending;
     }
@@ -277,7 +345,7 @@ export function createAgentRunCompletionPolicy(
     return { kind: 'terminal' };
   }
 
-  function preferPendingInterjectOverHardStop(
+  function preferPendingRuntimeWorkOverHardStop(
     source: TerminalCandidateSource,
     result: AgentResult,
     decision: Extract<
@@ -285,12 +353,12 @@ export function createAgentRunCompletionPolicy(
       { kind: 'no_progress' | 'verification_unavailable' }
     >,
   ): AgentLoopTerminalCandidateDecision {
-    return continueForPendingInterject(source, result) ?? decision;
+    return continueForPendingRuntimeWork(source, result) ?? decision;
   }
 
   return {
     async resolveTerminalCandidate({ source, result }) {
-      const earlyContinue = continueForPendingInterject(source, result);
+      const earlyContinue = continueForPendingRuntimeWork(source, result);
       if (earlyContinue !== undefined) {
         return earlyContinue;
       }
@@ -307,7 +375,7 @@ export function createAgentRunCompletionPolicy(
             snapshot === null ||
             snapshot.workflowId !== args.planningWorkflow.workflowId
           ) {
-            return preferPendingInterjectOverHardStop(source, result, {
+            return preferPendingRuntimeWorkOverHardStop(source, result, {
               kind: 'verification_unavailable',
               message: 'planning workflow completion verification is stale',
             });
@@ -327,7 +395,7 @@ export function createAgentRunCompletionPolicy(
               },
             });
             if (noProgress !== undefined) {
-              return preferPendingInterjectOverHardStop(
+              return preferPendingRuntimeWorkOverHardStop(
                 source,
                 result,
                 noProgress,
@@ -348,7 +416,7 @@ export function createAgentRunCompletionPolicy(
             };
           }
         } catch (error: unknown) {
-          return preferPendingInterjectOverHardStop(
+          return preferPendingRuntimeWorkOverHardStop(
             source,
             result,
             recordTerminalVerificationFailure({
@@ -371,14 +439,14 @@ export function createAgentRunCompletionPolicy(
             ref: { goalId: args.goal.goalId },
           });
           if (snapshot === null) {
-            return preferPendingInterjectOverHardStop(source, result, {
+            return preferPendingRuntimeWorkOverHardStop(source, result, {
               kind: 'verification_unavailable',
               message: 'Goal completion admission is stale',
             });
           }
           goalSnapshot = snapshot;
         } catch (error: unknown) {
-          return preferPendingInterjectOverHardStop(
+          return preferPendingRuntimeWorkOverHardStop(
             source,
             result,
             recordTerminalVerificationFailure({
@@ -426,7 +494,7 @@ export function createAgentRunCompletionPolicy(
               },
             });
             if (noProgress !== undefined) {
-              return preferPendingInterjectOverHardStop(
+              return preferPendingRuntimeWorkOverHardStop(
                 source,
                 result,
                 noProgress,
@@ -444,7 +512,7 @@ export function createAgentRunCompletionPolicy(
             };
           }
         } catch (error: unknown) {
-          return preferPendingInterjectOverHardStop(
+          return preferPendingRuntimeWorkOverHardStop(
             source,
             result,
             recordTerminalVerificationFailure({
@@ -471,7 +539,7 @@ export function createAgentRunCompletionPolicy(
             });
             args.emit('goal_updated', completed);
           } catch (error: unknown) {
-            return preferPendingInterjectOverHardStop(
+            return preferPendingRuntimeWorkOverHardStop(
               source,
               result,
               recordTerminalVerificationFailure({
@@ -498,7 +566,7 @@ export function createAgentRunCompletionPolicy(
           return finalizeTerminal(source, result);
         }
         if (snapshot.state === 'verification_unavailable') {
-          return preferPendingInterjectOverHardStop(source, result, {
+          return preferPendingRuntimeWorkOverHardStop(source, result, {
             kind: 'verification_unavailable',
             message: 'Goal completion admission is unavailable',
           });
@@ -525,7 +593,7 @@ export function createAgentRunCompletionPolicy(
           },
         });
         if (goalNoProgress !== undefined) {
-          return preferPendingInterjectOverHardStop(
+          return preferPendingRuntimeWorkOverHardStop(
             source,
             result,
             goalNoProgress,

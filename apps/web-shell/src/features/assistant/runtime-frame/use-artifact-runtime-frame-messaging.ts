@@ -17,7 +17,8 @@ import type { RunToolResultPayload } from '@geulbat/protocol/run-channel';
 export function useArtifactRuntimeFrameMessaging(args: {
   iframeRef: { current: HTMLIFrameElement | null };
   runtimeDocument: string;
-  runtimeHostOrigin: string;
+  runtimeFrameMessageOrigin: string;
+  runtimeFrameTargetOrigin: string;
   scope: ArtifactRuntimePersistenceScopeRequest | null;
   scopeHandle: string;
   minFrameHeight?: number;
@@ -40,7 +41,8 @@ export function useArtifactRuntimeFrameMessaging(args: {
   const {
     iframeRef,
     runtimeDocument,
-    runtimeHostOrigin,
+    runtimeFrameMessageOrigin,
+    runtimeFrameTargetOrigin,
     scope,
     scopeHandle,
     minFrameHeight,
@@ -72,7 +74,8 @@ export function useArtifactRuntimeFrameMessaging(args: {
       void handleArtifactRuntimeFrameMessageEvent(event, {
         iframeRef,
         runtimeDocument,
-        runtimeHostOrigin,
+        runtimeFrameMessageOrigin,
+        runtimeFrameTargetOrigin,
         scopeHandle,
         ...(minFrameHeight !== undefined ? { minFrameHeight } : {}),
         bridgeResponder,
@@ -107,7 +110,8 @@ export function useArtifactRuntimeFrameMessaging(args: {
     onGeneratedBinaryExportSnapshotChange,
     onGeneratedTextExportSnapshotChange,
     runtimeDocument,
-    runtimeHostOrigin,
+    runtimeFrameMessageOrigin,
+    runtimeFrameTargetOrigin,
     scopeHandle,
     setFrameHeight,
   ]);

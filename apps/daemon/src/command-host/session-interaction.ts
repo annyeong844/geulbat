@@ -35,7 +35,7 @@ import { waitForChange } from './session-wait.js';
 /** §7.5 — 세션당 stdin 버퍼 상한. 초과는 `stdin_backpressure`. */
 export const MAX_STDIN_BUFFERED_BYTES_PER_SESSION = 1024 * 1024;
 
-export interface SessionInteractionDeps {
+interface SessionInteractionDeps {
   /** §4.6 인라인 결과 예산 — 페이지 요청의 상한이다. */
   inlineMaxBytes: number;
   /** 미지정 yieldTimeMs를 호스트 상한으로 접는다 (§4.6). */
@@ -54,7 +54,7 @@ export interface SessionInteractionDeps {
   ): void;
 }
 
-export interface SessionInteraction {
+interface SessionInteraction {
   interactWithResident(
     entry: SessionEntry,
     args: Parameters<HostCommandRuntime['interact']>[0],

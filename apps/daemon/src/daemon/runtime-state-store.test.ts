@@ -831,6 +831,69 @@ void test('runtime-state store atomically enqueues a same-round launch batch wit
   }
 });
 
+void test('runtime-state restart reconciliation preserves only checkpoint-correlated active children', async () => {
+  const fixtureRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-runtime-child-recovery-'),
+  );
+  const homeStateRoot = join(fixtureRoot, 'home-state');
+  let store = await createDaemonRuntimeStateStore({ homeStateRoot });
+  const [accepted] = store.enqueueSubagentLaunchBatch([
+    makeLaunchRequest(2, 'call-recoverable-started-child'),
+  ]);
+  assert.ok(accepted);
+  store.markSubagentLaunchStarting(accepted.childRunId);
+  store.markSubagentLaunchStarted(accepted.childRunId);
+  store.close();
+
+  try {
+    store = await createDaemonRuntimeStateStore({
+      homeStateRoot,
+      deferSubagentRestartReconciliation: true,
+    });
+    assert.equal(
+      store.readSubagentLaunchRequestByChildRunId(accepted.childRunId)
+        ?.launchState,
+      'started',
+    );
+    store.reconcileSubagentLaunchesAfterRestart?.({
+      recoverableChildRunIds: [accepted.childRunId],
+      recoverableParentRunIds: [],
+    });
+    assert.equal(
+      store.readSubagentLaunchRequestByChildRunId(accepted.childRunId)
+        ?.launchState,
+      'started',
+    );
+    assert.equal(
+      store.readSubagentTerminalOutcomeByChildRunId(accepted.childRunId),
+      undefined,
+    );
+    store.close();
+
+    store = await createDaemonRuntimeStateStore({
+      homeStateRoot,
+      deferSubagentRestartReconciliation: true,
+    });
+    store.reconcileSubagentLaunchesAfterRestart?.({
+      recoverableChildRunIds: [],
+      recoverableParentRunIds: [],
+    });
+    const interrupted = store.readSubagentLaunchRequestByChildRunId(
+      accepted.childRunId,
+    );
+    assert.equal(interrupted?.launchState, 'interrupted');
+    assert.equal(interrupted?.failureReason, 'daemon_restart_interrupted');
+    assert.equal(
+      store.readSubagentTerminalOutcomeByChildRunId(accepted.childRunId)?.result
+        .reason,
+      'daemon_restart',
+    );
+  } finally {
+    store.close();
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 void test('runtime-state store persists provider admission phases used by reconnect diagnostics', async () => {
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'geulbat-runtime-state-'));
   const homeStateRoot = join(fixtureRoot, 'home-state');
@@ -1271,6 +1334,58 @@ void test('runtime-state store makes terminal recording idempotent but rejects d
       store.readPendingSubagentTerminalDeliveries(ownerThreadId),
       [first.outcome],
     );
+  } finally {
+    store.close();
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+void test('runtime-state restart reconciliation preserves queued children only for recoverable parents', async () => {
+  const fixtureRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-runtime-queued-parent-recovery-'),
+  );
+  const homeStateRoot = join(fixtureRoot, 'home-state');
+  let store = await createDaemonRuntimeStateStore({ homeStateRoot });
+  const [recoverable, orphaned] = store.enqueueSubagentLaunchBatch([
+    makeLaunchRequest(3, 'call-recoverable-queued-child'),
+    makeLaunchRequest(4, 'call-orphaned-queued-child'),
+  ]);
+  assert.ok(recoverable);
+  assert.ok(orphaned);
+  store.close();
+
+  try {
+    store = await createDaemonRuntimeStateStore({
+      homeStateRoot,
+      deferSubagentRestartReconciliation: true,
+    });
+    store.reconcileSubagentLaunchesAfterRestart?.({
+      recoverableChildRunIds: [],
+      recoverableParentRunIds: [recoverable.parentRunId],
+    });
+
+    const preserved = store.readSubagentLaunchRequestByChildRunId(
+      recoverable.childRunId,
+    );
+    assert.equal(preserved?.launchState, 'queued');
+    assert.equal(preserved?.deferReason, 'recovery_reconciliation');
+    assert.equal(
+      store.readSubagentTerminalOutcomeByChildRunId(recoverable.childRunId),
+      undefined,
+    );
+
+    const interrupted = store.readSubagentLaunchRequestByChildRunId(
+      orphaned.childRunId,
+    );
+    assert.equal(interrupted?.launchState, 'interrupted');
+    assert.equal(interrupted?.deferReason, null);
+    assert.equal(interrupted?.failureReason, 'daemon_restart_interrupted');
+    const outcome = store.readSubagentTerminalOutcomeByChildRunId(
+      orphaned.childRunId,
+    );
+    assert.ok(outcome);
+    assert.equal(outcome.result.reason, 'daemon_restart');
+    assert.match(outcome.result.result, /parent run could not be recovered/u);
   } finally {
     store.close();
     await rm(fixtureRoot, { recursive: true, force: true });

@@ -49,7 +49,7 @@ export interface BackgroundChildLifecycle {
   childThreadId: RunContext['threadId'];
   childRunState: RunState;
   isTimedOut(): boolean;
-  publishTerminalOutcome(outcome: ChildTerminalOutcome): void;
+  publishTerminalOutcome(outcome: ChildTerminalOutcome): boolean;
 }
 
 export function beginBackgroundChildLifecycle(args: {
@@ -65,7 +65,9 @@ export function beginBackgroundChildLifecycle(args: {
   subagentModelRouting: RunSubagentModelRouting;
   emitAgentEvent: ((event: AgentEvent) => void) | undefined;
   timeoutMs?: number;
+  timeoutAt?: string;
   durableLaunchRecorded?: true;
+  recoveringDurableLaunch?: true;
 }): BackgroundChildLifecycle {
   const {
     subagentType,
@@ -80,7 +82,9 @@ export function beginBackgroundChildLifecycle(args: {
     subagentModelRouting,
     emitAgentEvent,
     timeoutMs,
+    timeoutAt,
     durableLaunchRecorded,
+    recoveringDurableLaunch,
   } = args;
   const {
     runId: childRunId,
@@ -88,18 +92,35 @@ export function beginBackgroundChildLifecycle(args: {
     runState: childRunState,
     finish,
   } = startedChildRun;
+  const effectiveTimeoutAt =
+    timeoutAt ??
+    (timeoutMs === undefined
+      ? undefined
+      : new Date(Date.now() + timeoutMs).toISOString());
   const timeoutController =
-    timeoutMs !== undefined ? new AbortController() : null;
-  const timeout =
-    timeoutController && timeoutMs !== undefined
-      ? setTimeout(() => timeoutController.abort('child timeout'), timeoutMs)
-      : null;
+    effectiveTimeoutAt === undefined ? null : new AbortController();
   const childAbortForwarder = () => {
     childRunState.abortController.abort(timeoutController?.signal.reason);
   };
   timeoutController?.signal.addEventListener('abort', childAbortForwarder, {
     once: true,
   });
+  const remainingTimeoutMs =
+    effectiveTimeoutAt === undefined
+      ? undefined
+      : Math.max(0, Date.parse(effectiveTimeoutAt) - Date.now());
+  const timeout =
+    timeoutController === null || remainingTimeoutMs === undefined
+      ? null
+      : remainingTimeoutMs === 0
+        ? null
+        : setTimeout(
+            () => timeoutController.abort('child timeout'),
+            remainingTimeoutMs,
+          );
+  if (timeoutController !== null && remainingTimeoutMs === 0) {
+    timeoutController.abort('child timeout');
+  }
 
   const handle = registerChildRun(parentRunState, {
     childRunId,
@@ -158,7 +179,16 @@ export function beginBackgroundChildLifecycle(args: {
       if (launchRequestStore === undefined) {
         throw new Error('durable agent launch store is unavailable');
       }
-      launchRequestStore.markSubagentLaunchStarted(childRunId);
+      if (
+        recoveringDurableLaunch !== true ||
+        durableLaunch?.launchState === 'starting'
+      ) {
+        launchRequestStore.markSubagentLaunchStarted(childRunId);
+      } else if (durableLaunch?.launchState !== 'started') {
+        throw new Error(
+          `durable child launch is not recoverable: ${childRunId}`,
+        );
+      }
       launchRequestStore.recordSubagentRuntimeObservation({
         childRunId,
         runtime,
@@ -207,7 +237,7 @@ export function beginBackgroundChildLifecycle(args: {
     },
     publishTerminalOutcome(outcome) {
       cleanupChildLifecycle();
-      publishBackgroundChildTerminalOutcome({
+      return publishBackgroundChildTerminalOutcome({
         outcome,
         runtimeServices,
         ownerThreadId,
@@ -236,7 +266,7 @@ function publishBackgroundChildTerminalOutcome(args: {
   elapsedMs: number | undefined;
   usageTotals: RunUsageTotals;
   modelPin: ResolvedChildModelPin;
-}): void {
+}): boolean {
   const {
     outcome,
     runtimeServices,
@@ -261,50 +291,53 @@ function publishBackgroundChildTerminalOutcome(args: {
   });
   const runtime = runtimeServices.childRuns.getChildRun(childRunId)?.runtime;
   const deliveryId = randomUUID();
-  runChildLifecycleStep('publish background child terminal result', () => {
-    runtimeServices.backgroundNotifications.enqueueThreadBackgroundResult(
-      ownerThreadId,
-      {
-        deliveryId,
-        parentRunId,
-        childRunId,
-        childThreadId,
-        subagentType,
-        capabilities,
-        toolSurface: resolveSubagentToolSurfaceProfile({
+  return runChildLifecycleStep(
+    'publish background child terminal result',
+    () => {
+      runtimeServices.backgroundNotifications.enqueueThreadBackgroundResult(
+        ownerThreadId,
+        {
+          deliveryId,
+          parentRunId,
+          childRunId,
+          childThreadId,
           subagentType,
           capabilities,
-        }),
-        ...(runtime === undefined ? {} : { runtime }),
-        terminalState: outcome.terminalState,
-        ...(outcome.terminalReason ? { reason: outcome.terminalReason } : {}),
-        result: outcome.terminalResult,
-        ...(outcome.resultReportSummary === undefined
-          ? {}
-          : { resultReportSummary: outcome.resultReportSummary }),
-        completedAt: new Date().toISOString(),
-        ...(elapsedMs !== undefined ? { elapsedMs } : {}),
-        ...(hasRunUsageTotals(usageTotals) ? { usage: usageTotals } : {}),
-        modelId: modelPin.modelId,
-        reasoningEffort: modelPin.providerRunSelection.reasoningEffort,
-      },
-    );
-    const terminalStore = runtimeServices.subagent.terminalDeliveries;
-    if (terminalStore === undefined) {
-      return;
-    }
-    const durableOutcome =
-      terminalStore.readSubagentTerminalOutcomeByChildRunId(childRunId);
-    if (durableOutcome?.result.deliveryId !== deliveryId) {
-      throw new Error(
-        `durable child terminal result is unavailable: ${childRunId}`,
+          toolSurface: resolveSubagentToolSurfaceProfile({
+            subagentType,
+            capabilities,
+          }),
+          ...(runtime === undefined ? {} : { runtime }),
+          terminalState: outcome.terminalState,
+          ...(outcome.terminalReason ? { reason: outcome.terminalReason } : {}),
+          result: outcome.terminalResult,
+          ...(outcome.resultReportSummary === undefined
+            ? {}
+            : { resultReportSummary: outcome.resultReportSummary }),
+          completedAt: new Date().toISOString(),
+          ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+          ...(hasRunUsageTotals(usageTotals) ? { usage: usageTotals } : {}),
+          modelId: modelPin.modelId,
+          reasoningEffort: modelPin.providerRunSelection.reasoningEffort,
+        },
       );
-    }
-    runtimeServices.childRuns.claimTerminalChildRuns({
-      ownerThreadId,
-      childRunIds: [childRunId],
-    });
-  });
+      const terminalStore = runtimeServices.subagent.terminalDeliveries;
+      if (terminalStore === undefined) {
+        return;
+      }
+      const durableOutcome =
+        terminalStore.readSubagentTerminalOutcomeByChildRunId(childRunId);
+      if (durableOutcome?.result.deliveryId !== deliveryId) {
+        throw new Error(
+          `durable child terminal result is unavailable: ${childRunId}`,
+        );
+      }
+      runtimeServices.childRuns.claimTerminalChildRuns({
+        ownerThreadId,
+        childRunIds: [childRunId],
+      });
+    },
+  );
 }
 
 function readChildElapsedMs(childRunState: RunState): number | undefined {
@@ -315,10 +348,12 @@ function readChildElapsedMs(childRunState: RunState): number | undefined {
   return Math.max(0, Date.now() - startedAtMs);
 }
 
-function runChildLifecycleStep(label: string, run: () => void): void {
+function runChildLifecycleStep(label: string, run: () => void): boolean {
   try {
     run();
+    return true;
   } catch (error: unknown) {
     logger.error(`${label} failed:`, getErrorMessage(error));
+    return false;
   }
 }

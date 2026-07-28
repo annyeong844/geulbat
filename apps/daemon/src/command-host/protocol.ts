@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import type {
+  HostCommandInitialResult,
+  HostCommandInteractionResult,
+  HostCommandStartResult,
+} from './contract.js';
 
 // P7.5 spec v4 §7 — command-host JSON-RPC 2.0 계약. 전송은 워커가 listen
 // 하는 Unix 소켓 / Windows named pipe이고, 프레이밍은 4바이트 BE 길이
@@ -8,6 +13,18 @@ export const COMMAND_HOST_PROTOCOL_VERSION = '2026-07-24';
 export const COMMAND_HOST_SUPPORTED_VERSIONS = [
   COMMAND_HOST_PROTOCOL_VERSION,
 ] as const;
+
+export const COMMAND_HOST_CAPABILITIES = {
+  deferredOutputRelease: true,
+  idempotentStartByInvocation: true,
+  initialStdinOnStart: true,
+  losslessStdio: true,
+  prePersistenceOutputRedaction: true,
+} as const;
+
+export type CommandHostCapabilities = {
+  [Name in keyof typeof COMMAND_HOST_CAPABILITIES]: boolean;
+};
 
 // spec §7.5 — inbound frame 하드 상한(기본 4MiB). 프레이밍 계층에서
 // 강제하며, 초과 프레임은 파싱하지 않고 연결을 종료한다.
@@ -177,6 +194,103 @@ export function buildNotification(method: string, params?: unknown): unknown {
 // ── Method params/results ────────────────────────────────────────────
 
 const outputStream = z.enum(['stdout', 'stderr']);
+const commandStatus = z.enum([
+  'running',
+  'exit',
+  'crash',
+  'timeout',
+  'cancelled',
+  'signal',
+  'output_limit_exceeded',
+  'output_store_failed',
+  'daemon_shutdown',
+  'daemon_restart_interrupted',
+  'command_host_interrupted',
+]);
+const terminalCommandStatus = z.enum([
+  'exit',
+  'crash',
+  'timeout',
+  'cancelled',
+  'signal',
+  'output_limit_exceeded',
+  'output_store_failed',
+  'daemon_shutdown',
+  'daemon_restart_interrupted',
+  'command_host_interrupted',
+]);
+
+const commandSnapshotSchema = z
+  .object({
+    outputRef: z.string().nullable(),
+    status: commandStatus,
+    exitCode: z.number().int().nullable(),
+    stdout: z.string().nullable(),
+    stderr: z.string().nullable(),
+    outputComplete: z.boolean(),
+    stdoutBytes: z.number().int().min(0),
+    stderrBytes: z.number().int().min(0),
+    stdoutChars: z.number().int().min(0).nullable(),
+    stderrChars: z.number().int().min(0).nullable(),
+    durationMs: z.number().min(0),
+    firstOutputAfterMs: z.number().min(0).nullable(),
+    revision: z.number().int().min(0),
+    stdinOpen: z.boolean(),
+    outputLimitExceeded: z
+      .object({
+        stream: outputStream,
+        maxOutputBytesPerStream: z.number().int().positive(),
+      })
+      .nullable(),
+    stdoutOmittedBytes: z.number().int().min(0).optional(),
+    stderrOmittedBytes: z.number().int().min(0).optional(),
+    terminationReason: z.string().optional(),
+    outputPersistFailed: z.boolean().optional(),
+    processExit: z
+      .object({
+        status: terminalCommandStatus,
+        exitCode: z.number().int().nullable(),
+      })
+      .optional(),
+  })
+  .transform(
+    ({
+      stdoutOmittedBytes,
+      stderrOmittedBytes,
+      terminationReason,
+      outputPersistFailed,
+      processExit,
+      ...snapshot
+    }) => ({
+      ...snapshot,
+      ...(stdoutOmittedBytes === undefined ? {} : { stdoutOmittedBytes }),
+      ...(stderrOmittedBytes === undefined ? {} : { stderrOmittedBytes }),
+      ...(terminationReason === undefined ? {} : { terminationReason }),
+      ...(outputPersistFailed === undefined ? {} : { outputPersistFailed }),
+      ...(processExit === undefined ? {} : { processExit }),
+    }),
+  );
+
+const commandOutputPageSchema = z
+  .object({
+    stream: outputStream,
+    offsetBytes: z.number().int().min(0),
+    endOffsetBytes: z.number().int().min(0),
+    totalBytes: z.number().int().min(0),
+    limitBytes: z.number().int().positive(),
+    hasMore: z.boolean(),
+    nextOffsetBytes: z.number().int().min(0).nullable(),
+    content: z.string(),
+    contentStartOffset: z.number().int().min(0).optional(),
+    earliestAvailableOffset: z.number().int().min(0).optional(),
+  })
+  .transform(({ contentStartOffset, earliestAvailableOffset, ...page }) => ({
+    ...page,
+    ...(contentStartOffset === undefined ? {} : { contentStartOffset }),
+    ...(earliestAvailableOffset === undefined
+      ? {}
+      : { earliestAvailableOffset }),
+  }));
 
 export const initializeParamsSchema = z.object({
   protocolVersion: z.string(),
@@ -184,10 +298,19 @@ export const initializeParamsSchema = z.object({
   capabilities: z.record(z.string(), z.unknown()).optional(),
 });
 
+const commandHostCapabilitiesSchema: z.ZodType<CommandHostCapabilities> =
+  z.object({
+    deferredOutputRelease: z.boolean().default(false),
+    idempotentStartByInvocation: z.boolean().default(false),
+    initialStdinOnStart: z.boolean().default(false),
+    losslessStdio: z.boolean().default(false),
+    prePersistenceOutputRedaction: z.boolean().default(false),
+  });
+
 export const initializeResultSchema = z.object({
   selectedVersion: z.string(),
   supportedVersions: z.array(z.string()),
-  capabilities: z.record(z.string(), z.unknown()),
+  capabilities: commandHostCapabilitiesSchema,
   effectiveConfig: z.object({
     inlineMaxBytes: z.number().int().positive(),
     tailRingBytes: z.number().int().positive(),
@@ -250,6 +373,62 @@ export const interactParamsSchema = z.object({
     })
     .optional(),
 });
+
+export const startResultSchema: z.ZodType<HostCommandStartResult> =
+  z.discriminatedUnion('ok', [
+    z.object({
+      ok: z.literal(true),
+      outputRef: z.string().min(1),
+    }),
+    z.object({
+      ok: z.literal(false),
+      reasonCode: z.enum([
+        'runtime_closed',
+        'spawn_failed',
+        'output_store_failed',
+        'session_capacity_exhausted',
+      ]),
+      message: z.string(),
+    }),
+  ]);
+
+export const waitInitialResultSchema: z.ZodType<HostCommandInitialResult> =
+  z.discriminatedUnion('ok', [
+    z.object({
+      ok: z.literal(true),
+      value: commandSnapshotSchema,
+    }),
+    z.object({
+      ok: z.literal(false),
+      reasonCode: z.enum(['not_found', 'output_store_failed', 'wait_aborted']),
+      message: z.string(),
+    }),
+  ]);
+
+export const interactResultSchema: z.ZodType<HostCommandInteractionResult> =
+  z.discriminatedUnion('ok', [
+    z.object({
+      ok: z.literal(true),
+      value: z.object({
+        snapshot: commandSnapshotSchema,
+        page: commandOutputPageSchema.nullable(),
+      }),
+    }),
+    z.object({
+      ok: z.literal(false),
+      reasonCode: z.enum([
+        'access_denied',
+        'invalid_args',
+        'not_found',
+        'not_running',
+        'stdin_backpressure',
+        'operation_superseded',
+        'output_store_failed',
+        'wait_aborted',
+      ]),
+      message: z.string(),
+    }),
+  ]);
 
 export const subscribeParamsSchema = z.object({
   outputRef: z.string(),

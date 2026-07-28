@@ -23,6 +23,7 @@ function createRefreshMemoryIndexContext(
 void test('refresh_memory_index builds manifest and memory jsonl while skipping excluded files', async () => {
   assert.equal(refreshMemoryIndexTool.sideEffectLevel, 'write');
   assert.equal(refreshMemoryIndexTool.requiresApproval, true);
+  assert.equal(refreshMemoryIndexTool.recoveryStrategy, 'replay_safe');
 
   const sourceRoot = await mkdtemp(join(tmpdir(), 'geulbat-memory-refresh-'));
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-home-state-'));

@@ -228,6 +228,12 @@ test('daemon development bundle resolves workspace packages from source', async 
         join(root, 'packages/daemon-lifecycle/src'),
       ),
     );
+    for (const bundleEntryPoint of Object.values(buildOptions.entryPoints)) {
+      assert.equal(
+        await loadSourceModule({ path: bundleEntryPoint }),
+        undefined,
+      );
+    }
     const loadedSource = await loadSourceModule({ path: sourceModulePath });
     assert.equal(
       loadedSource.contents,

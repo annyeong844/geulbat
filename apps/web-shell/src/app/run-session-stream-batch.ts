@@ -68,6 +68,7 @@ function dispatchBatchedEffect(
     case 'transcript_activity_added':
       dispatch({
         type: 'transcript_activity_added',
+        runId: effect.runId,
         threadId: effect.threadId,
         entry: effect.entry,
         ...(effect.streamedToolCallId === undefined

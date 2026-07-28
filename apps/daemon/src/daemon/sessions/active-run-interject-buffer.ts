@@ -18,6 +18,30 @@ const interjectFlushListeners = new WeakMap<
   Set<() => void>
 >();
 
+// 아직 어떤 라운드에도 전달되지 않은 즉시 반영 신호.
+//
+// `flushRequested`는 소비 1회까지 남아 있어야 한다(남은 도구 호출 건너뛰기가
+// 그것을 읽는다). 하지만 라운드 중단은 요청 1건당 **한 번만** 일어나야 한다.
+// 둘을 같은 플래그로 다루면, 라운드마다 새로 구독하는 에이전트 루프가 구독
+// 즉시 중단 신호를 다시 받아 사용자가 누르지 않은 라운드까지 끊는다.
+const undeliveredFlushInterrupts = new WeakSet<RunInterjectBuffer>();
+
+// 듣는 라운드가 없으면 신호를 보관한다 — 라운드 사이에 도착한 요청은 다음
+// 라운드가 구독할 때 전달되어야 한다.
+function deliverFlushInterrupt(buffer: RunInterjectBuffer): void {
+  if (!undeliveredFlushInterrupts.has(buffer)) {
+    return;
+  }
+  const listeners = interjectFlushListeners.get(buffer);
+  if (listeners === undefined || listeners.size === 0) {
+    return;
+  }
+  undeliveredFlushInterrupts.delete(buffer);
+  for (const listener of [...listeners]) {
+    listener();
+  }
+}
+
 function subscribeInterjectFlush(
   buffer: RunInterjectBuffer,
   listener: () => void,
@@ -28,9 +52,7 @@ function subscribeInterjectFlush(
     interjectFlushListeners.set(buffer, listeners);
   }
   listeners.add(listener);
-  if (buffer.flushRequested && buffer.items.length > 0) {
-    listener();
-  }
+  deliverFlushInterrupt(buffer);
   return () => {
     listeners?.delete(listener);
     if (listeners?.size === 0) {
@@ -115,6 +137,7 @@ export function removePendingInterjectBySeq(
   buffer.items.splice(index, 1);
   if (buffer.items.length === 0) {
     buffer.flushRequested = false;
+    undeliveredFlushInterrupts.delete(buffer);
   }
   return true;
 }
@@ -125,9 +148,8 @@ export function requestInterjectFlush(buffer: RunInterjectBuffer): boolean {
     return false;
   }
   buffer.flushRequested = true;
-  for (const listener of interjectFlushListeners.get(buffer) ?? []) {
-    listener();
-  }
+  undeliveredFlushInterrupts.add(buffer);
+  deliverFlushInterrupt(buffer);
   return true;
 }
 
@@ -137,4 +159,6 @@ export function isInterjectFlushRequested(buffer: RunInterjectBuffer): boolean {
 
 export function clearInterjectFlushRequest(buffer: RunInterjectBuffer): void {
   buffer.flushRequested = false;
+  // 요청이 목적을 다했으면 아직 전달되지 않은 중단 신호도 버린다.
+  undeliveredFlushInterrupts.delete(buffer);
 }

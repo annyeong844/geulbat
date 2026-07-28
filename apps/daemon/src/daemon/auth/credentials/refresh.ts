@@ -15,6 +15,7 @@ import { isRecord } from '../../runtime-json.js';
 import {
   GROK_OAUTH_TOKEN_URL,
   getProviderAuthBootstrapProfile,
+  resolveProviderAuthTokenRequestTimeoutMs,
 } from '../bootstrap/config.js';
 import { INVALID_PROVIDER_CREDENTIAL_MESSAGE } from '../shared.js';
 
@@ -46,6 +47,7 @@ type GrokOAuthRefreshTokenResponse = OAuthRefreshTokenResponse;
 type RefreshOptions = {
   fetchImpl?: typeof fetch;
   nowMs?: () => number;
+  timeoutMs?: number;
 };
 
 type ProviderAuthInvalidError = Error & {
@@ -176,51 +178,65 @@ async function refreshProviderCredentialWithProfile(
     refreshToken: current.refreshToken,
     errorPrefix: 'provider OAuth',
   });
-  const response = await (options?.fetchImpl ?? fetch)(
-    request.url,
-    request.init,
-  );
+  const timeoutMs =
+    options?.timeoutMs ?? resolveProviderAuthTokenRequestTimeoutMs();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw createInvalidCredentialError(
-        profile.invalidCredentialMessage,
-        response.status,
+  try {
+    const response = await (options?.fetchImpl ?? fetch)(request.url, {
+      ...request.init,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw createInvalidCredentialError(
+          profile.invalidCredentialMessage,
+          response.status,
+        );
+      }
+
+      const text = await readResponseText(response);
+      throw new Error(
+        `${profile.failureMessagePrefix} (${response.status}): ${text}`,
       );
     }
 
-    const text = await readResponseText(response);
-    throw new Error(
-      `${profile.failureMessagePrefix} (${response.status}): ${text}`,
+    const data = parseOAuthRefreshTokenResponse(
+      await readJsonResponse(response, profile),
+      profile,
     );
+    const accessToken = requireResponseAccessToken(
+      data.accessToken,
+      profile.missingAccessTokenMessage,
+    );
+    const refreshToken =
+      data.refreshToken !== undefined
+        ? normalizeResponseRefreshToken(data.refreshToken, profile)
+        : current.refreshToken;
+    const nowMs = options?.nowMs ?? Date.now;
+    const expiresAt =
+      data.expiresIn !== undefined
+        ? nowMs() + data.expiresIn * 1000
+        : profile.defaultExpiresInSeconds !== undefined
+          ? nowMs() + profile.defaultExpiresInSeconds * 1000
+          : 0;
+
+    return {
+      accessToken,
+      refreshToken,
+      accountId: current.accountId,
+      expiresAt,
+    };
+  } catch (error: unknown) {
+    if (controller.signal.aborted) {
+      throw new Error('Provider token refresh timed out.', { cause: error });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const data = parseOAuthRefreshTokenResponse(
-    await readJsonResponse(response, profile),
-    profile,
-  );
-  const accessToken = requireResponseAccessToken(
-    data.accessToken,
-    profile.missingAccessTokenMessage,
-  );
-  const refreshToken =
-    data.refreshToken !== undefined
-      ? normalizeResponseRefreshToken(data.refreshToken, profile)
-      : current.refreshToken;
-  const nowMs = options?.nowMs ?? Date.now;
-  const expiresAt =
-    data.expiresIn !== undefined
-      ? nowMs() + data.expiresIn * 1000
-      : profile.defaultExpiresInSeconds !== undefined
-        ? nowMs() + profile.defaultExpiresInSeconds * 1000
-        : 0;
-
-  return {
-    accessToken,
-    refreshToken,
-    accountId: current.accountId,
-    expiresAt,
-  };
 }
 
 function buildOAuthRefreshTokenRequest(input: {

@@ -103,6 +103,17 @@ void test('the command host mode defaults to worker with an explicit way back', 
   );
 });
 
+void test('a lock read failure other than absence is classified as unparsable', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-lock-read-'));
+  t.after(async () => {
+    await rm(stateRoot, { recursive: true, force: true });
+  });
+  const paths = await resolveCommandHostPaths(stateRoot);
+  await mkdir(paths.lockPath);
+
+  assert.equal(await readCommandHostLock(paths.lockPath), 'unparsable');
+});
+
 void test('§6.2: an unowned state root is leased inline and recovered', async (t) => {
   const stateRoot = await makeStateRoot(t);
   const runtime = makeRuntime('inline');
@@ -619,23 +630,18 @@ void test('a worker that never appears fails with a reachability diagnostic', as
 });
 
 void test('T6: daemons racing to spawn a worker converge on exactly one', async (t) => {
-  const stateRoot = await makeStateRoot(t);
-  const paths = await resolveCommandHostPaths(stateRoot);
-  // 서로를 모르는 데몬 넷이 동시에 같은 stateRoot를 처음 건드린다.
+  // `after` 훅은 등록 순서로 돈다. 그래서 데몬 종료를 `makeStateRoot`보다 먼저
+  // 등록해야 한다. 그렇지 않으면 세션 넷이 살아 있는 동안 작업공간 삭제가 먼저
+  // 실행되어, 워커가 저널을 쓰는 도중 디렉터리가 사라지고 `ENOTEMPTY`가 난다.
+  // 워커 종료와 대기는 `removeCommandHostWorkspace`가 이미 소유한다.
   const daemons = Array.from({ length: 4 }, () => makeRuntime('worker'));
   t.after(async () => {
     for (const daemon of daemons) {
       await daemon.closeAll();
     }
-    const lock = await readCommandHostLock(paths.lockPath);
-    if (lock !== 'missing' && lock !== 'unparsable') {
-      try {
-        process.kill(lock.pid, 'SIGTERM');
-      } catch {
-        // 이미 스스로 나갔다.
-      }
-    }
   });
+  const stateRoot = await makeStateRoot(t);
+  const paths = await resolveCommandHostPaths(stateRoot);
 
   const started = await Promise.all(
     daemons.map((daemon, index) =>

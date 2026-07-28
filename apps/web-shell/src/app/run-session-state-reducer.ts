@@ -193,19 +193,38 @@ function reduceSingleRunSessionState(
         action.threadId,
         action.entry,
       );
+      const terminalToolCallId =
+        action.entry.kind === 'tool_activity' &&
+        action.entry.state !== 'running'
+          ? action.entry.callId
+          : undefined;
+      const matchingApproval =
+        terminalToolCallId === undefined
+          ? undefined
+          : appended.pendingApprovals.find(
+              (approval) =>
+                approval.callId === terminalToolCallId &&
+                approval.runId === action.runId &&
+                approval.threadId === action.threadId,
+            );
+      const afterApprovalSettlement =
+        matchingApproval === undefined
+          ? appended
+          : clearResolvedPendingApproval(appended, matchingApproval);
       // 완성본 tool_call이 도착하면 해당 스트리밍 누적은 닫는다
       const clearsStreaming =
         action.streamedToolCallId !== undefined &&
-        appended.streamingToolCall?.callId === action.streamedToolCallId;
+        afterApprovalSettlement.streamingToolCall?.callId ===
+          action.streamedToolCallId;
       return {
         ...state,
         activeRunView: clearsStreaming
           ? {
-              ...appended,
+              ...afterApprovalSettlement,
               streamingToolCall: null,
               providerRuntime: null,
             }
-          : { ...appended, providerRuntime: null },
+          : { ...afterApprovalSettlement, providerRuntime: null },
       };
     }
     case 'tool_call_args_streamed': {

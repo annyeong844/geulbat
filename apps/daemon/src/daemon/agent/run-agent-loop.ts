@@ -115,6 +115,17 @@ import type {
 import { resolveAgentNoProgressPolicyFromEnv } from './no-progress-policy.js';
 import { createAgentRunCompletionPolicy } from './run-completion-policy.js';
 
+const RUN_MODEL_TOOL_DISCOVERY_BY_ID = {
+  'gpt-5.6-sol': 'hosted_tool_search',
+  'gpt-5.6-terra': 'hosted_tool_search',
+  'gpt-5.6-luna': 'hosted_tool_search',
+  'grok-4.5': 'direct_only',
+  'qwen3.8-max-preview': 'direct_only',
+} as const satisfies Record<
+  Parameters<typeof resolveAgentRunModelDescriptor>[0],
+  'hosted_tool_search' | 'direct_only'
+>;
+
 function resolveProviderToolExposure(args: {
   toolSurface:
     | {
@@ -144,13 +155,7 @@ function resolveProviderToolExposure(args: {
     };
   }
   const directRegistryNames = new Set(args.toolSurface.directRegistryNames);
-  if (!model.supportsHostedToolSearch) {
-    if (model.supportsGeneratedSdkToolDiscovery) {
-      return {
-        directRegistryNames: [...directRegistryNames],
-        deferredRegistryNames: [],
-      };
-    }
+  if (RUN_MODEL_TOOL_DISCOVERY_BY_ID[model.id] === 'direct_only') {
     return {
       directRegistryNames: args.toolSurface.allowedRegistryNames.filter(
         (name) => name !== 'tool_search',
@@ -529,6 +534,7 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
     threadId,
     planningWorkflows: runtimeServices.planningWorkflows,
     goals: runtimeServices.goals,
+    backgroundNotifications: runtimeServices.backgroundNotifications,
     emit,
     ...(runState === undefined ? {} : { runState }),
     ...(planningWorkflow === undefined ? {} : { planningWorkflow }),
@@ -615,20 +621,9 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
       toolLibraryProjection: toolLibraryProjection.identity,
       toolDefs,
       providerRequestOptions,
-      callModelImplProvided: callModelImpl !== undefined,
       currentFileProvided: currentFile !== undefined,
       selectionProvided: selection !== undefined,
       signalProvided: signal !== undefined,
-      promptPortProvided: injectedPromptPort !== undefined,
-      historyPortProvided: injectedHistoryPort !== undefined,
-      lifecyclePortProvided: injectedLifecyclePort !== undefined,
-      memoryPortProvided: injectedMemoryPort !== undefined,
-      modelRoundPortProvided: injectedModelRoundPort !== undefined,
-      structuredOutputPortProvided: injectedStructuredOutputPort !== undefined,
-      toolDefinitionPortProvided: injectedToolDefinitionPort !== undefined,
-      toolRuntimePortProvided: injectedToolRuntimePort !== undefined,
-      toolLibraryProjectionPortProvided:
-        injectedToolLibraryProjectionPort !== undefined,
       runStateKind:
         runState === undefined
           ? 'none'

@@ -12,9 +12,9 @@ export { DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN };
 const ARTIFACT_RUNTIME_HOST_PATH = '/artifact-runtime/host';
 
 /**
- * 데몬이 화면을 서빙하므로 아티팩트 런타임 호스트는 언제나 same-origin이다.
- * 개발과 제품이 같은 위상을 쓰기 때문에 고를 것이 없다 — 포트를 비교하거나
- * 빌드 모드를 보는 분기는 위상이 둘일 때만 필요했다.
+ * 데몬이 같은 URL origin에서 런타임 호스트 문서를 서빙하지만, iframe은
+ * `allow-same-origin` 없이 mount되어 실제 document origin이 opaque(`null`)다.
+ * 호스트 URL을 별도 포트로 추측하지 않고 현재 데몬에 고정하는 함수다.
  *
  * `locationOrigin`이 없는 경우는 `window`가 없는 실행(Node)뿐이고, 거기에는
  * 프레임을 띄울 문서가 아예 없다. 그때 문서화된 기본 origin을 돌려주는 것은

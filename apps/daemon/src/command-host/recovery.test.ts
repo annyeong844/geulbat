@@ -249,6 +249,26 @@ void test('§5.2: claim-metadata-less directories, temp files and strays are col
   assert.equal(await pathExists(kept.directory), true);
 });
 
+void test('recovery preserves a session when metadata cannot be read for a reason other than absence', async (t) => {
+  const stateRoot = await makeStateRoot(t);
+  const seeded = await seedSession({
+    stateRoot,
+    sessionId: sessionId(18),
+  });
+  const paths = buildHostCommandPaths({
+    stateRoot,
+    threadId: THREAD_ID,
+    outputRef: seeded.outputRef,
+  });
+  await rm(paths.metadata);
+  await mkdir(paths.metadata);
+
+  await assert.rejects(recoverCommandHostState({ stateRoot }), {
+    code: 'EISDIR',
+  });
+  assert.equal(await pathExists(seeded.directory), true);
+});
+
 void test('§5.2: an open row with an unverifiable birth token is never killed', async (t) => {
   const stateRoot = await makeStateRoot(t);
   const journal = await openSpawnJournal({

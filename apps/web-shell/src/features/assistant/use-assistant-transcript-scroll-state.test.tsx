@@ -51,8 +51,9 @@ function TranscriptScrollProbe(props: {
   messageCount: number;
   onLayout: (scrollTop: number) => void;
   onProgrammaticScrollProbe?: (isProgrammatic: boolean) => void;
+  onUnreadChange?: (hasUnread: boolean) => void;
 }) {
-  const { messageCount, onLayout } = props;
+  const { messageCount, onLayout, onUnreadChange } = props;
   const scrollState = useAssistantTranscriptScrollState({
     isRunning: false,
     messageCount,
@@ -66,6 +67,10 @@ function TranscriptScrollProbe(props: {
   useLayoutEffect(() => {
     onLayout(scrollState.transcriptRef.current?.scrollTop ?? -1);
   }, [messageCount, onLayout, scrollState.transcriptRef]);
+
+  useLayoutEffect(() => {
+    onUnreadChange?.(scrollState.hasUnreadStreamContent);
+  }, [onUnreadChange, scrollState.hasUnreadStreamContent]);
 
   return (
     <div
@@ -244,6 +249,73 @@ void test('a delayed auto-follow scroll event cannot lock out a newer bottom lay
   });
 
   assert.equal(transcriptNode.scrollTop, 800);
+
+  await act(async () => renderer.unmount());
+});
+
+void test('a settling answer that shrinks the transcript keeps the reader in place', async () => {
+  // 답변이 끝나면 스트리밍 라이브 테일이 정착 메시지로 교체되면서 콘텐츠
+  // 높이가 줄어든다. 그것은 "바닥으로 내려가라"는 신호가 아니다.
+  const transcriptNode = createTranscriptNode({
+    scrollHeight: 1_200,
+    clientHeight: 400,
+  });
+  const unreadStates: boolean[] = [];
+  let renderer!: ReactTestRenderer;
+
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <TranscriptScrollProbe
+        messageCount={1}
+        onLayout={() => {}}
+        onUnreadChange={(unread) => unreadStates.push(unread)}
+      />,
+      {
+        createNodeMock(element) {
+          const elementProps = element.props;
+          if (
+            typeof elementProps === 'object' &&
+            elementProps !== null &&
+            'data-node' in elementProps &&
+            elementProps['data-node'] === 'transcript'
+          ) {
+            return transcriptNode;
+          }
+          return {};
+        },
+      },
+    );
+  });
+  assert.equal(transcriptNode.scrollTop, 800);
+
+  // 사용자가 위로 올려 읽는다.
+  transcriptNode.scrollTop = 250;
+  await act(async () => {
+    renderer.root.findByProps({ 'data-node': 'transcript' }).props.onScroll();
+  });
+  assert.equal(transcriptNode.scrollTop, 250);
+  unreadStates.length = 0;
+
+  // 답변 정착으로 높이가 줄어 250이 바닥 근처(690-250-400=40)가 된다.
+  transcriptNode.scrollHeight = 690;
+  await act(async () => {
+    renderer.update(
+      <TranscriptScrollProbe
+        messageCount={2}
+        onLayout={() => {}}
+        onUnreadChange={(unread) => unreadStates.push(unread)}
+      />,
+    );
+  });
+
+  // 읽던 자리를 지킨다 — 새 바닥(290)으로 끌어내리지 않는다.
+  assert.equal(transcriptNode.scrollTop, 250);
+  // 줄어든 것은 새 내용이 아니므로 "새 메시지 보기"를 띄우지 않는다.
+  assert.equal(
+    unreadStates.includes(true),
+    false,
+    'a shrinking transcript must not announce unread content',
+  );
 
   await act(async () => renderer.unmount());
 });

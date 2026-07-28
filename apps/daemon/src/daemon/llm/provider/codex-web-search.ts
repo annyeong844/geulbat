@@ -1,3 +1,5 @@
+import { createLogger } from '@geulbat/structured-logger/logger';
+
 import {
   forceRefreshProviderAuth,
   getProviderAuth,
@@ -15,7 +17,9 @@ import type { ResponsesWebSocketSessionStore } from './transport/responses-webso
 import { streamResponsesOverWebSocket } from './transport/responses-websocket.js';
 import type { ResponsesParseResult } from './transport/responses-parser-shared.js';
 
-export type ProviderNativeWebSearchFailureReason =
+const logger = createLogger('llm/provider/codex-web-search');
+
+type ProviderNativeWebSearchFailureReason =
   | 'provider_not_configured'
   | 'provider_unauthorized'
   | 'provider_rate_limited'
@@ -23,13 +27,13 @@ export type ProviderNativeWebSearchFailureReason =
   | 'invalid_response'
   | 'aborted';
 
-export interface ProviderNativeWebSearchResultCard {
+interface ProviderNativeWebSearchResultCard {
   title: string;
   url: string;
   snippet: string;
 }
 
-export type ProviderNativeWebSearchOutcome =
+type ProviderNativeWebSearchOutcome =
   | {
       ok: true;
       answer?: string;
@@ -66,8 +70,9 @@ class CodexWebSearchError extends Error {
   constructor(
     readonly reasonCode: ProviderNativeWebSearchFailureReason,
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
 }
 
@@ -123,6 +128,10 @@ export async function searchCodexWeb(args: {
       };
     }
     if (error instanceof CodexWebSearchError) {
+      logger.warn('Codex native web search failed', {
+        reasonCode: error.reasonCode,
+        cause: error.cause ?? error,
+      });
       return {
         ok: false,
         reasonCode: error.reasonCode,
@@ -130,9 +139,14 @@ export async function searchCodexWeb(args: {
       };
     }
     const code = normalizeProviderErrorCode(error);
+    const reasonCode = mapProviderErrorCode(code);
+    logger.warn('Codex native web search failed', {
+      reasonCode,
+      cause: error,
+    });
     return {
       ok: false,
-      reasonCode: mapProviderErrorCode(code),
+      reasonCode,
       message: sanitizeProviderErrorMessage(code),
     };
   }
@@ -200,6 +214,7 @@ async function requestCodexWebSearch(args: {
         throw new CodexWebSearchError(
           mapProviderErrorCode(decision.code),
           decision.message,
+          { cause: error },
         );
       }
       authRefreshAttempts += 1;
@@ -214,6 +229,7 @@ async function requestCodexWebSearch(args: {
         throw new CodexWebSearchError(
           mapProviderErrorCode(code),
           sanitizeProviderErrorMessage(code),
+          { cause: refreshError },
         );
       }
     }

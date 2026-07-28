@@ -9,7 +9,10 @@ import {
 } from '../../artifact-types.js';
 import { buildReactBundleArtifactRuntimePayload } from './document.js';
 import { validateReactBundleArtifactPayload } from '../../react-bundle/validator.js';
-import type { RenderArtifactRuntimeFrame } from '../types.js';
+import {
+  ARTIFACT_RUNTIME_SANDBOX,
+  type RenderArtifactRuntimeFrame,
+} from '../types.js';
 
 export function resolveReactBundleArtifactRuntimePreview(args: {
   payload: string;
@@ -84,7 +87,7 @@ export function renderReactBundleArtifactRuntimePreview(args: {
     renderRuntimeFrame({
       renderer: 'react_bundle',
       title: 'react bundle artifact preview',
-      sandbox: 'allow-scripts allow-forms allow-same-origin',
+      sandbox: ARTIFACT_RUNTIME_SANDBOX,
       runtimePayload: buildReactBundleArtifactRuntimePayload(
         validation.manifest,
       ),

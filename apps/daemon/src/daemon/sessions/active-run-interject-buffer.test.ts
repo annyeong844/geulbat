@@ -142,3 +142,60 @@ void test('removePendingInterjectBySeq clears the flush request when the queue e
   assert.equal(removePendingInterjectBySeq(buffer, second.receivedSeq), true);
   assert.equal(isInterjectFlushRequested(buffer), false);
 });
+
+// 에이전트 루프는 모델 라운드마다 새로 구독한다. 중단 신호가 요청 1건당 여러
+// 라운드에 전달되면, 사용자가 누르지 않은 라운드까지 즉시 끊겨 답변과 실행 중인
+// 도구가 사라진다.
+void test('a flush interrupt reaches only the round that was listening', () => {
+  const buffer = createRunInterjectBuffer();
+  pushPendingInterject(buffer, 'CSS부터요');
+
+  let firstRoundInterrupts = 0;
+  const unsubscribeFirstRound = buffer.subscribeFlush(() => {
+    firstRoundInterrupts += 1;
+  });
+  assert.equal(requestInterjectFlush(buffer), true);
+  assert.equal(firstRoundInterrupts, 1);
+  unsubscribeFirstRound();
+
+  // 큐는 아직 비지 않았고 `flushRequested`도 남아 있다(남은 도구 호출
+  // 건너뛰기가 그것을 읽는다). 그래도 다음 라운드는 끊기지 않아야 한다.
+  assert.equal(isInterjectFlushRequested(buffer), true);
+  let secondRoundInterrupts = 0;
+  const unsubscribeSecondRound = buffer.subscribeFlush(() => {
+    secondRoundInterrupts += 1;
+  });
+  assert.equal(secondRoundInterrupts, 0);
+  unsubscribeSecondRound();
+});
+
+void test('a flush requested between rounds interrupts the next round', () => {
+  const buffer = createRunInterjectBuffer();
+  pushPendingInterject(buffer, '먼저 이것부터요');
+
+  // 듣는 라운드가 없는 사이에 도착한 요청은 버려지지 않는다.
+  assert.equal(requestInterjectFlush(buffer), true);
+
+  let interrupts = 0;
+  const unsubscribe = buffer.subscribeFlush(() => {
+    interrupts += 1;
+  });
+  assert.equal(interrupts, 1);
+  unsubscribe();
+});
+
+void test('applying the interject drops an undelivered flush interrupt', () => {
+  const buffer = createRunInterjectBuffer();
+  pushPendingInterject(buffer, 'a');
+  pushPendingInterject(buffer, 'b');
+  requestInterjectFlush(buffer);
+  // 소비가 먼저 일어나 요청이 목적을 다한 경우.
+  clearInterjectFlushRequest(buffer);
+
+  let interrupts = 0;
+  const unsubscribe = buffer.subscribeFlush(() => {
+    interrupts += 1;
+  });
+  assert.equal(interrupts, 0);
+  unsubscribe();
+});

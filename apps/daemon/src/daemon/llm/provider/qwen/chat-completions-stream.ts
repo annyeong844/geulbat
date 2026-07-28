@@ -130,7 +130,9 @@ export async function streamQwenChatCompletions(
   for await (const event of events) {
     const error = isRecord(event['error']) ? event['error'] : undefined;
     if (error !== undefined) {
-      throw new QwenStreamError('Qwen event stream reported an error');
+      throw new QwenStreamError('Qwen event stream reported an error', {
+        cause: error,
+      });
     }
     if (typeof event['id'] === 'string' && event['id'].trim() !== '') {
       responseId = event['id'];
@@ -576,8 +578,8 @@ class QwenHttpError extends Error {
 }
 
 class QwenStreamError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'QwenStreamError';
   }
 }

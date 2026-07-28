@@ -92,7 +92,7 @@ void test('resolveArtifactRuntimePreview keeps svg gradient/filter/fragment html
   assert.equal(preview.kind, 'rendered');
   const html = renderToStaticMarkup(preview.node);
   assert.match(html, /<iframe/);
-  assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
+  assert.match(html, /sandbox="allow-scripts allow-forms"/);
   assert.match(html, /renderer=html5&amp;rev=fake/);
 });
 
@@ -116,7 +116,7 @@ void test('resolveArtifactRuntimePreview keeps ordinary external stylesheet and 
   const html = renderToStaticMarkup(preview.node);
   assert.match(html, /<iframe/);
   assert.doesNotMatch(html, /sanitize_rejected/);
-  assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
+  assert.match(html, /sandbox="allow-scripts allow-forms"/);
   assert.match(html, /renderer=html5&amp;rev=fake/);
 });
 
@@ -138,7 +138,7 @@ void test('resolveArtifactRuntimePreview keeps data-url image and script html5 f
   const html = renderToStaticMarkup(preview.node);
   assert.match(html, /<iframe/);
   assert.doesNotMatch(html, /sanitize_rejected/);
-  assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
+  assert.match(html, /sandbox="allow-scripts allow-forms"/);
   assert.match(html, /renderer=html5&amp;rev=fake/);
 });
 
@@ -180,8 +180,5 @@ void test('resolveArtifactRuntimePreview preserves generated export callbacks th
   );
   const html = renderToStaticMarkup(preview.node);
   assert.match(html, /<iframe/);
-  assert.match(
-    html,
-    /sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"/,
-  );
+  assert.match(html, /sandbox="allow-scripts allow-forms allow-downloads"/);
 });

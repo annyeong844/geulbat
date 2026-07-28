@@ -820,6 +820,35 @@
   gap: 16px;
 }
 
+/* 상태 배지 옆에 붙는 치우기 버튼 — 끝난 기록은 사용자가 직접 닫는다.
+   보이지 않으면 닫을 수 있다는 사실도 전달되지 않으므로 항상 노출한다. */
+.planning-workflow-dismiss {
+  flex: none;
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--on-surface-muted);
+  cursor: pointer;
+  transition:
+    background var(--transition-base),
+    color var(--transition-base);
+}
+
+.planning-workflow-dismiss:hover {
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .planning-workflow-dismiss {
+    transition: none;
+  }
+}
+
 .planning-workflow-card-header strong {
   color: var(--on-surface);
   font-size: 15px;

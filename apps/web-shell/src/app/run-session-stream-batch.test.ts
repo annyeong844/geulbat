@@ -29,6 +29,7 @@ void test('createRunSessionStreamBatchController flushes queued stream and displ
   });
   controller.queueDisplayEffect({
     kind: 'transcript_activity_added',
+    runId: 'run-1',
     threadId: 'thread-1',
     streamedToolCallId: 'call-1',
     entry: {
@@ -74,6 +75,7 @@ void test('createRunSessionStreamBatchController flushes queued stream and displ
     },
     {
       type: 'transcript_activity_added',
+      runId: 'run-1',
       threadId: 'thread-1',
       streamedToolCallId: 'call-1',
       entry: {

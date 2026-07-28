@@ -19,24 +19,21 @@ export type PtcCallbackTransportPolicy = PtcSessionEpochBridgeCallbackPolicy;
 // 환경변수가 이긴다. 환경으로 관리되는 배포에서 저장된 레코드가 조용히 다른 한도를
 // 적용하면 운영자가 본 값과 실제 값이 갈라지기 때문이다.
 
-export const PTC_CALLBACK_TRANSPORT_POLICY_RELATIVE_PATH = join(
+const PTC_CALLBACK_TRANSPORT_POLICY_RELATIVE_PATH = join(
   '.geulbat',
   'ptc-callback-transport.json',
 );
 
-export const PTC_CALLBACK_TRANSPORT_POLICY_SCHEMA_VERSION = 1 as const;
+const PTC_CALLBACK_TRANSPORT_POLICY_SCHEMA_VERSION = 1 as const;
 
-export interface PersistedPtcCallbackTransportPolicy {
+interface PersistedPtcCallbackTransportPolicy {
   schemaVersion: typeof PTC_CALLBACK_TRANSPORT_POLICY_SCHEMA_VERSION;
   policy: PtcCallbackTransportPolicy;
 }
 
-export type PtcCallbackTransportPolicySource =
-  | 'environment'
-  | 'settings'
-  | 'disabled';
+type PtcCallbackTransportPolicySource = 'environment' | 'settings' | 'disabled';
 
-export interface ResolvedPtcCallbackTransportPolicy {
+interface ResolvedPtcCallbackTransportPolicy {
   source: PtcCallbackTransportPolicySource;
   policy?: PtcCallbackTransportPolicy;
 }

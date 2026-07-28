@@ -12,7 +12,7 @@ interface ComputerFileToolContext {
   workingDirectory?: string;
 }
 
-export interface ComputerFileToolPath {
+interface ComputerFileToolPath {
   root: 'computer';
   absoluteRoot: string;
   path: string;

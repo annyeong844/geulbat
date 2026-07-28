@@ -184,37 +184,59 @@ void test('Codex native web search retries one auth failure through the existing
 });
 
 void test('Codex native web search returns a sanitized auth failure after refresh cannot recover', async () => {
-  const result = await searchCodexWeb({
-    query: 'current release',
-    model: 'gpt-5.6-sol',
-    providerSessionId: 'run-search-auth-failure',
-    runtime: {
-      authRuntime: createProviderAuthRuntimeStore(),
-      webSocketSessions: createResponsesWebSocketSessionStore(),
-      dependencies: {
-        getAuth: async () => {
-          throw Object.assign(new Error('sensitive missing session detail'), {
-            llmCode: 'llm_auth_failed',
-          });
-        },
-        forceRefreshAuth: async () => {
-          throw Object.assign(new Error('sensitive refresh detail'), {
-            llmCode: 'llm_auth_failed',
-          });
+  const originalWarn = console.warn;
+  const warns: unknown[][] = [];
+  const refreshError = Object.assign(new Error('sensitive refresh detail'), {
+    llmCode: 'llm_auth_failed',
+  });
+  console.warn = (...args: unknown[]) => {
+    warns.push(args);
+  };
+
+  try {
+    const result = await searchCodexWeb({
+      query: 'current release',
+      model: 'gpt-5.6-sol',
+      providerSessionId: 'run-search-auth-failure',
+      runtime: {
+        authRuntime: createProviderAuthRuntimeStore(),
+        webSocketSessions: createResponsesWebSocketSessionStore(),
+        dependencies: {
+          getAuth: async () => {
+            throw Object.assign(new Error('sensitive missing session detail'), {
+              llmCode: 'llm_auth_failed',
+            });
+          },
+          forceRefreshAuth: async () => {
+            throw refreshError;
+          },
         },
       },
-    },
-  });
+    });
 
-  assert.deepEqual(result, {
-    ok: false,
-    reasonCode: 'provider_unauthorized',
-    message: 'provider authentication failed',
-  });
-  assert.doesNotMatch(
-    JSON.stringify(result),
-    /sensitive missing session detail|sensitive refresh detail/u,
+    assert.deepEqual(result, {
+      ok: false,
+      reasonCode: 'provider_unauthorized',
+      message: 'provider authentication failed',
+    });
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      /sensitive missing session detail|sensitive refresh detail/u,
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(warns.length, 1);
+  assert.match(
+    String(warns[0]?.[0] ?? ''),
+    /warn \[llm\/provider\/codex-web-search\] Codex native web search failed/u,
   );
+  assert.equal(
+    (warns[0]?.[1] as { reasonCode?: unknown })?.reasonCode,
+    'provider_unauthorized',
+  );
+  assert.equal((warns[0]?.[1] as { cause?: unknown })?.cause, refreshError);
 });
 
 void test('Codex native web search rejects an empty provider result visibly', async () => {

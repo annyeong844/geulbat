@@ -18,7 +18,7 @@ import { hasErrorCode } from '../utils/error.js';
 /** §토큰 강도 — 32바이트 hex. 사람이 외우거나 입력할 값이 아니다. */
 const SHELL_ACCESS_TOKEN_BYTES = 32;
 
-export const MIN_SHELL_ACCESS_TOKEN_LENGTH = 16;
+const MIN_SHELL_ACCESS_TOKEN_LENGTH = 16;
 
 /**
  * 이 Geulbat Home의 토큰. 없으면 만든다.

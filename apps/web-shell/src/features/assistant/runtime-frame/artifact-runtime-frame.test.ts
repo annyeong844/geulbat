@@ -7,7 +7,6 @@ import { ArtifactRuntimeFrame } from './artifact-runtime-frame.js';
 import {
   ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
   ARTIFACT_RUNTIME_HOST_READY_ACTION,
-  resolveArtifactRuntimeHostUrl,
 } from './artifact-runtime-host.js';
 import type { ResolvedArtifactSourceRef } from '../../artifacts/artifact-types.js';
 
@@ -63,7 +62,6 @@ class FakeFrameWindow {
 
 interface ArtifactRuntimeFrameHarness {
   readonly frameWindow: FakeFrameWindow;
-  readonly hostOrigin: string;
   renderText(): string;
   emitReady(): Promise<void>;
   emitRuntimeMessage(data: unknown): Promise<void>;
@@ -117,7 +115,7 @@ async function createArtifactRuntimeFrameHarness(
   const baseProps: ComponentProps<typeof ArtifactRuntimeFrame> = {
     renderer: 'js',
     title: 'Artifact Runtime',
-    sandbox: 'allow-scripts',
+    sandbox: 'allow-scripts allow-forms',
     runtimePayload: 'window.__artifact_booted__ = true;',
     sourceRef: createResolvedSourceRef(),
     readyTimeoutMs: 20,
@@ -142,13 +140,8 @@ async function createArtifactRuntimeFrameHarness(
     await Promise.resolve();
   });
 
-  const hostOrigin = new URL(
-    resolveArtifactRuntimeHostUrl(fakeWindow.location.origin),
-  ).origin;
-
   return {
     frameWindow,
-    hostOrigin,
     renderText() {
       return JSON.stringify(renderer.toJSON());
     },
@@ -156,7 +149,7 @@ async function createArtifactRuntimeFrameHarness(
       await act(async () => {
         fakeWindow.emitMessage({
           source: frameWindow,
-          origin: hostOrigin,
+          origin: 'null',
           data: {
             kind: ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
             action: ARTIFACT_RUNTIME_HOST_READY_ACTION,
@@ -169,7 +162,7 @@ async function createArtifactRuntimeFrameHarness(
       await act(async () => {
         fakeWindow.emitMessage({
           source: frameWindow,
-          origin: hostOrigin,
+          origin: 'null',
           data,
         });
         await Promise.resolve();
@@ -236,7 +229,7 @@ void test('ArtifactRuntimeFrame boots immediately when the host reports ready be
     const bootMessage = harness.frameWindow.postedMessages[0];
     assert.ok(bootMessage);
     assert.equal(harness.frameWindow.postedMessages.length, 1);
-    assert.equal(bootMessage.targetOrigin, harness.hostOrigin);
+    assert.equal(bootMessage.targetOrigin, '*');
     assert.equal(
       (bootMessage.message as { kind?: unknown }).kind,
       ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
@@ -258,7 +251,7 @@ void test('ArtifactRuntimeFrame boots immediately when the host reports ready be
 void test('ArtifactRuntimeFrame keeps react bundle boot non-blocking on persistence preload', async () => {
   const harness = await createArtifactRuntimeFrameHarness({
     renderer: 'react_bundle',
-    sandbox: 'allow-scripts allow-forms allow-same-origin',
+    sandbox: 'allow-scripts allow-forms',
     readyTimeoutMs: 30,
   });
 
@@ -294,7 +287,7 @@ void test('ArtifactRuntimeFrame ignores unrelated host messages before the ready
     const bootMessage = harness.frameWindow.postedMessages[0];
     assert.ok(bootMessage);
     assert.equal(harness.frameWindow.postedMessages.length, 1);
-    assert.equal(bootMessage.targetOrigin, harness.hostOrigin);
+    assert.equal(bootMessage.targetOrigin, '*');
     assert.equal((bootMessage.message as { action?: unknown }).action, 'boot');
     assert.doesNotMatch(
       harness.renderText(),

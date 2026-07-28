@@ -105,32 +105,20 @@ void test('runAgentLoop records a daemon-neutral observer snapshot and round tra
 
   assert.equal(result.ok, true);
   assert.equal(snapshots.length, 1);
-  assert.equal(snapshots[0]?.schemaVersion, 5);
+  assert.equal(snapshots[0]?.schemaVersion, 6);
   assert.deepEqual(snapshots[0]?.loopImplementation, {
     implementationId: loopImplementation.implementationId,
     contractVersion: loopImplementation.contractVersion,
   });
   assert.equal(snapshots[0]?.runId, runId);
   assert.equal(snapshots[0]?.threadId, threadId);
-  assert.equal(snapshots[0]?.input.promptPort, 'default_prompt_port');
+  assert.deepEqual(snapshots[0]?.input, {
+    currentFileProvided: false,
+    selectionProvided: false,
+    signalProvided: false,
+    runStateKind: 'none',
+  });
   assert.equal(snapshots[0]?.promptPorts.prompt, 'AgentLoopPromptPort');
-  assert.equal(snapshots[0]?.input.historyPort, 'default_history_port');
-  assert.equal(snapshots[0]?.input.lifecyclePort, 'default_lifecycle_port');
-  assert.equal(snapshots[0]?.input.memoryPort, 'default_memory_port');
-  assert.equal(snapshots[0]?.input.modelRoundPort, 'default_model_round_port');
-  assert.equal(
-    snapshots[0]?.input.structuredOutputPort,
-    'default_structured_output_port',
-  );
-  assert.equal(
-    snapshots[0]?.input.toolDefinitionPort,
-    'default_tool_definition_port',
-  );
-  assert.equal(
-    snapshots[0]?.input.toolRuntimePort,
-    'default_tool_runtime_port',
-  );
-  assert.equal(snapshots[0]?.input.toolLibraryProjectionPort, 'injected');
   assert.equal(snapshots[0]?.loopPorts.prompt, 'AgentLoopPromptPort');
   assert.equal(snapshots[0]?.loopPorts.history, 'AgentLoopHistoryPort');
   assert.equal(snapshots[0]?.loopPorts.lifecycle, 'AgentLoopLifecyclePort');
@@ -310,7 +298,6 @@ void test('runAgentLoop can build model prompts through an injected prompt port'
     },
   ]);
   assert.equal(snapshots.length, 1);
-  assert.equal(snapshots[0]?.input.promptPort, 'injected');
   assert.equal(snapshots[0]?.promptPorts.prompt, 'AgentLoopPromptPort');
   assert.equal(snapshots[0]?.loopPorts.prompt, 'AgentLoopPromptPort');
   const serializedTrace = JSON.stringify(snapshots);
@@ -373,7 +360,6 @@ void test('runAgentLoop can load initial history through an injected history por
     },
   ]);
   assert.equal(snapshots.length, 1);
-  assert.equal(snapshots[0]?.input.historyPort, 'injected');
   assert.equal(snapshots[0]?.history.initialItemCount, 1);
   assert.equal(snapshots[0]?.loopPorts.history, 'AgentLoopHistoryPort');
 });
@@ -468,9 +454,7 @@ void test('runAgentLoop can execute model rounds through an injected model-round
   assert.equal(calls[0]?.historyItemCount, 1);
   assert.ok((calls[0]?.toolDefinitionCount ?? 0) > 0);
   assert.equal(snapshots.length, 1);
-  assert.equal(snapshots[0]?.input.memoryPort, 'injected');
   assert.equal(snapshots[0]?.loopPorts.memory, 'AgentLoopMemoryPort');
-  assert.equal(snapshots[0]?.input.modelRoundPort, 'injected');
   assert.equal(snapshots[0]?.loopPorts.modelRound, 'ModelRoundPort');
 });
 
@@ -521,7 +505,6 @@ void test('runAgentLoop settles through an injected lifecycle port', async () =>
   });
   assert.deepEqual(settledResults, [result]);
   assert.equal(snapshots.length, 1);
-  assert.equal(snapshots[0]?.input.lifecyclePort, 'injected');
   assert.equal(snapshots[0]?.loopPorts.lifecycle, 'AgentLoopLifecyclePort');
 });
 
@@ -603,7 +586,6 @@ void test('runAgentLoop can build model tool definitions through an injected too
   assert.deepEqual(calls, [{ directRegistryNames: ['fetch_url'] }]);
   assert.deepEqual(modelToolNames, [['projected_tool']]);
   assert.equal(snapshots.length, 1);
-  assert.equal(snapshots[0]?.input.toolDefinitionPort, 'injected');
   assert.deepEqual(snapshots[0]?.toolSurface.definitions, {
     count: 1,
     names: ['projected_tool'],
@@ -741,7 +723,6 @@ void test('runAgentLoop can process function calls through an injected tool-runt
     },
   ]);
   assert.equal(snapshots.length, 1);
-  assert.equal(snapshots[0]?.input.toolRuntimePort, 'injected');
   assert.equal(snapshots[0]?.loopPorts.toolRuntime, 'AgentLoopToolRuntimePort');
   assert.deepEqual(toolResultObservations, [
     {
@@ -848,7 +829,6 @@ void test('runAgentLoop can process structured outputs through an injected struc
     },
   ]);
   assert.equal(snapshots.length, 1);
-  assert.equal(snapshots[0]?.input.structuredOutputPort, 'injected');
   assert.equal(
     snapshots[0]?.loopPorts.structuredOutputs,
     'AgentLoopStructuredOutputPort',
@@ -900,10 +880,6 @@ void test('runAgentLoop materializes an importable default tool library projecti
       directRegistryNames: ['read_file'],
       allowedRegistryNames: ['read_file'],
     });
-    assert.equal(
-      snapshots[0]?.input.toolLibraryProjectionPort,
-      'default_tool_library_projection_port',
-    );
     assert.equal(
       snapshots[0]?.loopPorts.toolLibraryProjection,
       'AgentLoopToolLibraryProjectionPort',

@@ -41,7 +41,7 @@ import {
 // 계속 가져간다 (이동 전 공개 표면 유지).
 export { estimateTranscriptMessageRowSize } from './assistant-transcript-row-model.js';
 
-export type OpenChildSessionHandler = NonNullable<
+type OpenChildSessionHandler = NonNullable<
   Parameters<typeof RunTranscriptEntryBlock>[0]['onOpenChildSession']
 >;
 
@@ -222,6 +222,22 @@ export const VirtualizedTranscriptRows = React.memo(
         } else {
           next.add(key);
         }
+        return next;
+      });
+    }, []);
+    // 끝난 보조 작업 카드는 스스로 사라지지 않는다 — 무엇이 돌았는지는 기록이다.
+    // 대신 사용자가 치울 수 있게 둔다. 이 치움은 화면 상태이며 트랜스크립트를
+    // 지우지 않는다(다시 열면 기록은 그대로 있다).
+    const [dismissedGroups, setDismissedGroups] = useState<ReadonlySet<string>>(
+      () => new Set(),
+    );
+    const dismissGroup = useCallback((key: string) => {
+      setDismissedGroups((current) => {
+        if (current.has(key)) {
+          return current;
+        }
+        const next = new Set(current);
+        next.add(key);
         return next;
       });
     }, []);
@@ -413,6 +429,8 @@ export const VirtualizedTranscriptRows = React.memo(
                 }
                 expanded={expandedGroups.has(row.key)}
                 onToggleGroup={toggleGroup}
+                dismissed={dismissedGroups.has(row.key)}
+                onDismissGroup={dismissGroup}
                 rowInteractions={rowInteractions}
                 {...(messageEditActions !== undefined
                   ? { messageEditActions }
@@ -441,6 +459,8 @@ const TranscriptVirtualRowContent = React.memo(
     deferVisualizeRuntimeBoot: boolean;
     expanded: boolean;
     onToggleGroup: (key: string) => void;
+    dismissed: boolean;
+    onDismissGroup: (key: string) => void;
   }) {
     const {
       row,
@@ -454,6 +474,8 @@ const TranscriptVirtualRowContent = React.memo(
       deferVisualizeRuntimeBoot,
       expanded,
       onToggleGroup,
+      dismissed,
+      onDismissGroup,
     } = props;
     const {
       onStartArtifactRun,
@@ -513,7 +535,9 @@ const TranscriptVirtualRowContent = React.memo(
           {...(onFlushPendingSteer !== undefined
             ? { onFlushPendingSteer }
             : {})}
-          {...(onAskUserAnswer !== undefined ? { onAskUserAnswer } : {})}
+          {...(onAskUserAnswer !== undefined && row.askUserAnswered !== true
+            ? { onAskUserAnswer }
+            : {})}
           {...(onWidgetToolRequest !== undefined
             ? { onWidgetToolRequest }
             : {})}
@@ -543,11 +567,15 @@ const TranscriptVirtualRowContent = React.memo(
     }
 
     if (row.kind === 'subagent_group') {
+      if (dismissed) {
+        return null;
+      }
       return (
         <SubagentActivityGroup
           row={row}
           expanded={expanded}
           onToggle={() => onToggleGroup(row.key)}
+          onDismiss={() => onDismissGroup(row.key)}
           {...(onOpenChildSession === undefined ? {} : { onOpenChildSession })}
         />
       );
@@ -563,13 +591,31 @@ const TranscriptVirtualRowContent = React.memo(
   },
 );
 
+function SubagentGroupDismissIcon() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      aria-hidden
+    >
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
 function SubagentActivityGroup(props: {
   row: Extract<TranscriptVirtualRow, { kind: 'subagent_group' }>;
   expanded: boolean;
   onToggle: () => void;
+  onDismiss?: () => void;
   onOpenChildSession?: OpenChildSessionHandler;
 }) {
-  const { row, expanded, onToggle, onOpenChildSession } = props;
+  const { row, expanded, onToggle, onDismiss, onOpenChildSession } = props;
   const failed = row.entries.some(
     (entry) => entry.state === 'failed' || entry.state === 'cancelled',
   );
@@ -598,6 +644,17 @@ function SubagentActivityGroup(props: {
           {expanded ? '⌃' : '›'}
         </span>
       </button>
+      {onDismiss === undefined ? null : (
+        <button
+          type="button"
+          className="subagent-work-dismiss"
+          title="이 기록을 화면에서 치우기"
+          aria-label={`${label} 기록 치우기`}
+          onClick={onDismiss}
+        >
+          <SubagentGroupDismissIcon />
+        </button>
+      )}
       {expanded ? (
         <div className="subagent-work-group-detail">
           {row.entries.map((entry) => (

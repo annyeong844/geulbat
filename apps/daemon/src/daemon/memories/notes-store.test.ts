@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
 import {
+  allocateMemoryNoteFileName,
   appendMemoryNote,
   archiveConsolidatedMemoryNotes,
   listPendingMemoryNotes,
@@ -49,6 +50,41 @@ void test('a written note is pending until it is archived', async () => {
       'utf8',
     ),
     '수연은 존댓말을 쓴다\n',
+  );
+});
+
+void test('a prepared note identity survives replay and archival without duplication', async () => {
+  const stateRoot = await makeStateRoot();
+  const preparedFileName = allocateMemoryNoteFileName();
+  const first = await appendMemoryNote(stateRoot, '한 번만 남는 노트', {
+    preparedFileName,
+  });
+  const replay = await appendMemoryNote(stateRoot, '한 번만 남는 노트', {
+    preparedFileName,
+  });
+
+  assert.deepEqual(replay, first);
+  const pending = await listPendingMemoryNotes(stateRoot);
+  assert.equal(pending.length, 1);
+  await archiveConsolidatedMemoryNotes(stateRoot, pending);
+
+  const replayAfterArchive = await appendMemoryNote(
+    stateRoot,
+    '한 번만 남는 노트',
+    { preparedFileName },
+  );
+  assert.equal(
+    replayAfterArchive.path,
+    join(resolveHistoricalMemoryNotesDirectory(stateRoot), preparedFileName),
+  );
+  assert.deepEqual(await listPendingMemoryNotes(stateRoot), []);
+  await assert.rejects(
+    async () =>
+      await appendMemoryNote(stateRoot, '같은 좌표의 다른 내용', {
+        preparedFileName,
+      }),
+    (error: unknown) =>
+      (error as { code?: unknown }).code === 'persistence_unavailable',
   );
 });
 

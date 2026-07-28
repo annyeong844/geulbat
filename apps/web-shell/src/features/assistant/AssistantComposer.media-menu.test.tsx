@@ -61,7 +61,7 @@ void test('plus menu image subpanel selects a default image model with gates app
     afterSelect,
     /기본 이미지 모델을 그록 퀄리티\(으\)로 설정했어요/,
   );
-  assert.doesNotMatch(afterSelect, /검증 대기/); // 메뉴 닫힘
+  assert.equal(renderer.root.findAllByProps({ role: 'menu' }).length, 0);
   const dismissNotice = renderer.root.findByProps({
     'aria-label': '모델 설정 알림 닫기',
   });

@@ -228,6 +228,7 @@ function sendGeneratedJavascriptAsset(
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.status(200).send(body);
 }

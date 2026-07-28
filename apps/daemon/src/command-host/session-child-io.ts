@@ -21,7 +21,7 @@ const MAX_NOTIFICATION_CHUNK_BYTES = 64 * 1024;
 // 요청 기반 종료 유예 — PTC 선례와 동일 값 (spec §4.5).
 const REQUESTED_TERMINATION_GRACE_MS = 1_000;
 
-export interface SessionChildIoDeps {
+interface SessionChildIoDeps {
   /** §4.1 스트림당 tail 링 예산 — 역압 판정의 기준선. */
   tailRingBytes: number;
   /**
@@ -31,7 +31,7 @@ export interface SessionChildIoDeps {
   finalizeTerminal(entry: SessionEntry): Promise<void>;
 }
 
-export interface SessionChildIo {
+interface SessionChildIo {
   attachChildProcess(entry: SessionEntry): void;
   applyStreamBackpressure(
     entry: SessionEntry,

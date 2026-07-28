@@ -81,7 +81,10 @@ export async function launchDaemonHost(
       acquireAdmissionLock: (lockArgs) =>
         acquireDaemonInstanceAdmissionLock(lockArgs),
       openRuntimeStateStore: ({ homeStateRoot }) =>
-        createDaemonRuntimeStateStore({ homeStateRoot }),
+        createDaemonRuntimeStateStore({
+          homeStateRoot,
+          deferSubagentRestartReconciliation: true,
+        }),
       initProviderAuth: () =>
         initProviderAuth({ runtimeStore: daemonContext.provider.authRuntime }),
       recoverDurableRunsAtStartup: async (runtimeContext) => {

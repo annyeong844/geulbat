@@ -10,7 +10,10 @@ import {
   createThreadBackgroundNotificationQueue,
   type BackgroundNotificationQueue,
 } from './background-notification-queue.js';
-import type { BackgroundChildResult } from '../../subagent-runtime-contracts.js';
+import type {
+  BackgroundChildResult,
+  BackgroundChildResultInput,
+} from '../../subagent-runtime-contracts.js';
 import { testRunId } from '../../../test-support/run-id.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { createDaemonRuntimeStateStore } from '../../runtime-state-store.js';
@@ -247,6 +250,81 @@ void test('thread background notification queue replays and acknowledges through
       result,
     );
   } finally {
+    store.close();
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+void test('thread background notification queue retains live delivery and retries rejected durable writes with the same identity', async () => {
+  const fixtureRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-background-queue-retry-'),
+  );
+  const homeStateRoot = join(fixtureRoot, 'home-state');
+  const threadId = testThreadId(174014);
+  const result: BackgroundChildResultInput = {
+    deliveryId: 'delivery-durable-retry',
+    parentRunId: testRunId('parent-durable-retry'),
+    childRunId: testRunId('child-durable-retry'),
+    childThreadId: testThreadId(174015),
+    subagentType: 'worker',
+    terminalState: 'failed',
+    reason: 'child_error',
+    result: 'terminal despite the first durable write failure',
+    resultReportSummary: 'retry must preserve this report',
+    completedAt: '2026-07-28T11:00:00.000Z',
+  };
+  const store = await createDaemonRuntimeStateStore({ homeStateRoot });
+  const originalRecord = store.recordSubagentTerminalDelivery;
+  let recordAttempts = 0;
+  store.recordSubagentTerminalDelivery = (args) => {
+    recordAttempts += 1;
+    if (recordAttempts <= 2) {
+      throw new Error('transient terminal store failure');
+    }
+    return originalRecord(args);
+  };
+  const queue = createThreadBackgroundNotificationQueue();
+  queue.attachDurableStore(store);
+  const seen: BackgroundChildResult[] = [];
+  const unsubscribe = queue.subscribeThreadBackgroundResults(
+    threadId,
+    (delivery) => seen.push(delivery),
+  );
+
+  try {
+    assert.throws(
+      () => queue.enqueueThreadBackgroundResult(threadId, result),
+      /transient terminal store failure/u,
+    );
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.deliveryId, result.deliveryId);
+    assert.equal(seen[0]?.result, result.result);
+    assert.equal(seen[0]?.resultReport, undefined);
+
+    await Promise.resolve();
+
+    assert.equal(recordAttempts, 2);
+    assert.equal(seen.length, 1);
+    assert.equal(
+      store.readSubagentTerminalOutcomeByChildRunId(result.childRunId),
+      undefined,
+    );
+
+    const [pending] = queue.readThreadBackgroundResults(threadId);
+    assert.equal(recordAttempts, 3);
+    assert.equal(pending?.deliveryId, result.deliveryId);
+    assert.deepEqual(pending?.resultReport, {
+      summary: result.resultReportSummary,
+      sourceResultRef: pending?.resultRef,
+      sourceResultDigest: pending?.resultDigest,
+    });
+    assert.equal(
+      store.readSubagentTerminalOutcomeByChildRunId(result.childRunId)?.result
+        .deliveryId,
+      result.deliveryId,
+    );
+  } finally {
+    unsubscribe();
     store.close();
     await rm(fixtureRoot, { recursive: true, force: true });
   }

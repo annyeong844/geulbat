@@ -108,8 +108,9 @@ export function useArtifactRuntimeFrameState(args: {
   const {
     runtimeParentOrigin,
     runtimeFrameRevision,
+    runtimeFrameMessageOrigin,
+    runtimeFrameTargetOrigin,
     runtimeFrameUrl,
-    runtimeHostOrigin,
     scope,
     scopeHandle,
   } = runtimeFrameIdentity;
@@ -141,7 +142,8 @@ export function useArtifactRuntimeFrameState(args: {
   useArtifactRuntimeFrameMessaging({
     iframeRef,
     runtimeDocument,
-    runtimeHostOrigin,
+    runtimeFrameMessageOrigin,
+    runtimeFrameTargetOrigin,
     scope,
     scopeHandle,
     ...(minFrameHeight !== undefined ? { minFrameHeight } : {}),
@@ -164,6 +166,7 @@ export function useArtifactRuntimeFrameState(args: {
     bootState,
     frameHeight,
     runtimeFrameRevision,
+    runtimeFrameTargetOrigin,
     runtimeFrameUrl,
   };
 }

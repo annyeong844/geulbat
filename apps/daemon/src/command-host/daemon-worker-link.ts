@@ -13,6 +13,7 @@ import {
   jsonRpcResponseSchema,
   outputNotificationSchema,
   REQUEST_CANCELLED_CODE,
+  type CommandHostCapabilities,
   type DecodedFrame,
   type JsonRpcId,
 } from './protocol.js';
@@ -24,13 +25,7 @@ interface PendingRequest {
 }
 
 export interface CommandHostWorkerLink {
-  readonly capabilities: {
-    deferredOutputRelease: boolean;
-    idempotentStartByInvocation: boolean;
-    initialStdinOnStart: boolean;
-    losslessStdio: boolean;
-    prePersistenceOutputRedaction: boolean;
-  };
+  readonly capabilities: CommandHostCapabilities;
   /**
    * JSON-RPC 결과에는 나타날 수 없는 연결별 식별자다. 요청이 응답 없이
    * 끊겼을 때만 `request()`가 이 값을 돌려준다.
@@ -93,7 +88,7 @@ async function initializeWorkerLink(
     (chunk: HostCommandOutputChunk) => void
   >();
   const connectionLost = Symbol('command-host connection lost');
-  let capabilities = {
+  let capabilities: CommandHostCapabilities = {
     deferredOutputRelease: false,
     idempotentStartByInvocation: false,
     initialStdinOnStart: false,
@@ -197,17 +192,7 @@ async function initializeWorkerLink(
     socket.destroy();
     return undefined;
   }
-  capabilities = {
-    deferredOutputRelease:
-      parsed.data.capabilities['deferredOutputRelease'] === true,
-    idempotentStartByInvocation:
-      parsed.data.capabilities['idempotentStartByInvocation'] === true,
-    initialStdinOnStart:
-      parsed.data.capabilities['initialStdinOnStart'] === true,
-    losslessStdio: parsed.data.capabilities['losslessStdio'] === true,
-    prePersistenceOutputRedaction:
-      parsed.data.capabilities['prePersistenceOutputRedaction'] === true,
-  };
+  capabilities = parsed.data.capabilities;
   return link;
 
   function handleInbound(message: unknown): void {

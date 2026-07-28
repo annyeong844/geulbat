@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -13,12 +14,15 @@ import { startCommandHostServer } from './worker-server.js';
 import {
   buildNotification,
   buildRequest,
+  COMMAND_HOST_CAPABILITIES,
   COMMAND_HOST_METHODS,
   COMMAND_HOST_NOTIFICATIONS,
   COMMAND_HOST_PROTOCOL_VERSION,
   encodeFrame,
-  REQUEST_CANCELLED_CODE,
   FrameDecoder,
+  initializeResultSchema,
+  METHOD_NOT_FOUND_CODE,
+  REQUEST_CANCELLED_CODE,
   type JsonRpcId,
 } from './protocol.js';
 
@@ -249,16 +253,10 @@ void test('worker redacts split markers before returning either lossless stream'
   const client = new TestRpcClient();
   await client.connect(harness.socketPath);
   const initialized = await client.initialize();
-  const capabilities = (
-    initialized['result'] as {
-      capabilities: Record<string, unknown>;
-    }
+  const capabilities = initializeResultSchema.parse(
+    initialized['result'],
   ).capabilities;
-  assert.equal(capabilities['deferredOutputRelease'], true);
-  assert.equal(capabilities['idempotentStartByInvocation'], true);
-  assert.equal(capabilities['initialStdinOnStart'], true);
-  assert.equal(capabilities['losslessStdio'], true);
-  assert.equal(capabilities['prePersistenceOutputRedaction'], true);
+  assert.deepEqual(capabilities, COMMAND_HOST_CAPABILITIES);
 
   const marker = 'worker-private-marker-split-across-writes';
   const replacement = '[redacted:worker]';
@@ -305,6 +303,29 @@ void test('fingerprint mismatch is rejected and disconnected', async (t) => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.equal(client.closedByPeer, true);
+});
+
+void test('malformed JSON tears down only that live connection', async (t) => {
+  const harness = await makeHarness(t);
+  const malformedClient = net.connect(harness.socketPath);
+  t.after(() => {
+    malformedClient.destroy();
+  });
+  await once(malformedClient, 'connect');
+  const closed = once(malformedClient, 'close');
+  const malformedFrame = Buffer.alloc(5);
+  malformedFrame.writeUInt32BE(1, 0);
+  malformedFrame[4] = '{'.charCodeAt(0);
+
+  malformedClient.write(malformedFrame);
+  await closed;
+
+  assert.equal(harness.server.connectionCount(), 0);
+  const healthyClient = new TestRpcClient();
+  await healthyClient.connect(harness.socketPath);
+  const initialized = await healthyClient.initialize();
+  assert.ok(initialized['result'] !== undefined);
+  healthyClient.destroy();
 });
 
 void test('startup fails closed when the accepted Unix endpoint cannot be chmodded', async (t) => {
@@ -450,6 +471,24 @@ void test('requests before initialize are refused', async (t) => {
   await client.connect(harness.socketPath);
   const listed = await client.request(COMMAND_HOST_METHODS.list);
   assert.ok(listed['error'] !== undefined);
+  client.destroy();
+});
+
+void test('unknown methods return -32601 and keep the initialized connection alive', async (t) => {
+  const harness = await makeHarness(t);
+  const client = new TestRpcClient();
+  await client.connect(harness.socketPath);
+  await client.initialize();
+
+  const unknown = await client.request('test/unknown-method');
+  const error = unknown['error'] as Record<string, unknown>;
+  assert.equal(error['code'], METHOD_NOT_FOUND_CODE);
+  assert.equal(error['message'], 'unknown method: test/unknown-method');
+  assert.deepEqual(
+    (await client.request(COMMAND_HOST_METHODS.list))['result'],
+    [],
+  );
+  assert.equal(client.closedByPeer, false);
   client.destroy();
 });
 

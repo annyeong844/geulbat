@@ -80,12 +80,18 @@ function isWithinSourceRoot(sourceRoots, candidatePath) {
   });
 }
 
-function createPreserveSourceModuleUrlPlugin(sourceRoots) {
+function createPreserveSourceModuleUrlPlugin(sourceRoots, bundleEntryPoints) {
+  const bundleEntryPointPaths = new Set(
+    bundleEntryPoints.map((entryPoint) => resolve(entryPoint)),
+  );
   return {
     name: 'geulbat-preserve-source-module-url',
     setup(build) {
       build.onLoad({ filter: /\.tsx?$/ }, async (args) => {
-        if (!isWithinSourceRoot(sourceRoots, args.path)) {
+        if (
+          bundleEntryPointPaths.has(resolve(args.path)) ||
+          !isWithinSourceRoot(sourceRoots, args.path)
+        ) {
           return undefined;
         }
         const source = await readFile(args.path, 'utf8');
@@ -136,17 +142,18 @@ export async function createDaemonDevBundleBuilder({
 } = {}) {
   const outputDirectory = join(appRoot, 'dist-dev');
   const entryPath = join(outputDirectory, 'index.mjs');
+  const entryPoints = {
+    index: entryPoint,
+    'command-host': commandHostEntryPoint,
+    'ptc-callback-host': ptcCallbackHostEntryPoint,
+    'responses-request-host': responsesRequestHostEntryPoint,
+    'daemon-lifecycle-worker': daemonLifecycleWorkerEntryPoint,
+  };
   await mkdir(outputDirectory, { recursive: true });
 
   const buildContext = await createContext({
     absWorkingDir: root,
-    entryPoints: {
-      index: entryPoint,
-      'command-host': commandHostEntryPoint,
-      'ptc-callback-host': ptcCallbackHostEntryPoint,
-      'responses-request-host': responsesRequestHostEntryPoint,
-      'daemon-lifecycle-worker': daemonLifecycleWorkerEntryPoint,
-    },
+    entryPoints,
     bundle: true,
     external: ['@vscode/ripgrep', 'esbuild'],
     format: 'esm',
@@ -155,7 +162,10 @@ export async function createDaemonDevBundleBuilder({
     platform: 'node',
     plugins: [
       createWorkspaceSourcePlugin(root),
-      createPreserveSourceModuleUrlPlugin(sourceRoots),
+      createPreserveSourceModuleUrlPlugin(
+        sourceRoots,
+        Object.values(entryPoints),
+      ),
     ],
     sourcemap: 'linked',
     banner: {

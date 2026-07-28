@@ -9,7 +9,7 @@ import {
 import type { ErrorCode } from '../error-codes.js';
 import { getAppErrorCode, getErrorMessage } from '../utils/error.js';
 
-export { isToolFailureDiagnostics, parseExecuteResult };
+export { parseExecuteResult };
 
 export function toolError(
   errorCode: ErrorCode,

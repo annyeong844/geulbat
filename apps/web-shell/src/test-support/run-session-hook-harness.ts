@@ -17,9 +17,9 @@ import { THREAD_ID } from './run-session-fixtures.js';
 // run-session-fixtures.ts가 같은 이름으로 다른 fixture(고정 메시지, 인자 없음)를
 // 이미 export하므로, 동명 export 두 개를 만들지 않기 위해 여기서는
 // `createPersistedThreadDetailWithOverrides`로 두고 호출부가 별칭 import한다.
-export type UseRunSessionArgs = Parameters<typeof useRunSession>[0];
+type UseRunSessionArgs = Parameters<typeof useRunSession>[0];
 
-export interface RunSessionClientHarness {
+interface RunSessionClientHarness {
   createClient: () => RunSessionControllerClient;
   emit: (message: RunChannelServerMessage) => void;
   createClientCalls: () => number;

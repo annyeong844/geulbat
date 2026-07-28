@@ -29,7 +29,8 @@ export interface ArtifactRuntimeAgentToolIntent {
 interface ArtifactRuntimeFrameMessageHandlerArgs {
   iframeRef: { current: HTMLIFrameElement | null };
   runtimeDocument: string;
-  runtimeHostOrigin: string;
+  runtimeFrameMessageOrigin: string;
+  runtimeFrameTargetOrigin: string;
   scopeHandle: string;
   // 프레임 높이 하한 — 카드/인라인 variant가 서로 다른 값을 주입한다
   minFrameHeight?: number;
@@ -60,7 +61,10 @@ export function handleArtifactRuntimeFrameMessageEvent(
   args: ArtifactRuntimeFrameMessageHandlerArgs,
 ): Promise<void> | void {
   const frameWindow = args.iframeRef.current?.contentWindow;
-  if (event.source !== frameWindow || event.origin !== args.runtimeHostOrigin) {
+  if (
+    event.source !== frameWindow ||
+    event.origin !== args.runtimeFrameMessageOrigin
+  ) {
     return;
   }
 
@@ -79,7 +83,7 @@ export function handleArtifactRuntimeFrameMessageEvent(
         postRuntimeBootMessage({
           target: event.source,
           runtimeDocument: args.runtimeDocument,
-          runtimeHostOrigin: args.runtimeHostOrigin,
+          runtimeFrameTargetOrigin: args.runtimeFrameTargetOrigin,
         });
         break;
       case 'host_resize':
@@ -142,7 +146,7 @@ export function handleArtifactRuntimeFrameMessageEvent(
       ) {
         return;
       }
-      event.source.postMessage(response, args.runtimeHostOrigin);
+      event.source.postMessage(response, args.runtimeFrameTargetOrigin);
     });
 }
 
@@ -192,21 +196,21 @@ function respondWithAgentToolResult(
   }
   event.source.postMessage(
     createArtifactRuntimeAgentToolResultMessage(reply),
-    args.runtimeHostOrigin,
+    args.runtimeFrameTargetOrigin,
   );
 }
 
 function postRuntimeBootMessage(args: {
   target: MessageEventSource | null;
   runtimeDocument: string;
-  runtimeHostOrigin: string;
+  runtimeFrameTargetOrigin: string;
 }) {
   if (!isPostMessageTarget(args.target)) {
     return;
   }
   args.target.postMessage(
     createArtifactRuntimeHostBootMessage(args.runtimeDocument),
-    args.runtimeHostOrigin,
+    args.runtimeFrameTargetOrigin,
   );
 }
 

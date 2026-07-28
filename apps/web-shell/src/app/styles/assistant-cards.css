@@ -459,6 +459,45 @@
   text-align: left;
 }
 
+/* 치우기 버튼은 요약줄 위에 겹쳐 놓는다 — 토글 버튼 안에 두면 카드를 펼치려는
+   클릭이 치우기로 새고, 옆에 나란히 두면 요약 제목이 그만큼 좁아진다. */
+.subagent-work-group {
+  position: relative;
+}
+
+.subagent-work-group-toggle {
+  padding-inline-end: 30px;
+}
+
+.subagent-work-dismiss {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-end: 6px;
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--on-surface-muted);
+  cursor: pointer;
+  transition:
+    background var(--transition-base),
+    color var(--transition-base);
+}
+
+.subagent-work-dismiss:hover {
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subagent-work-dismiss {
+    transition: none;
+  }
+}
+
 .subagent-work-group-detail {
   display: grid;
   gap: 4px;
@@ -477,8 +516,48 @@
   background: var(--on-surface-muted);
 }
 
-.subagent-state-dot.spawned {
+/* 작업 중 — 초록 불이 숨쉰다. 끝난 카드는 깜박이지 않으므로, 움직임 자체가
+   "아직 일하는 중"이라는 뜻이 된다. */
+.subagent-state-dot.spawned,
+.subagent-state-dot.approval_required {
+  background: var(--secondary);
+  animation: subagent-state-breathe 1.4s ease-in-out infinite;
+}
+
+@keyframes subagent-state-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--secondary) 55%, transparent);
+  }
+  50% {
+    opacity: 0.45;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--secondary) 0%, transparent);
+  }
+}
+
+/* 승인 대기는 사용자 차례다 — 색으로 구분하되 숨쉬기는 유지한다. */
+.subagent-state-dot.approval_required {
   background: var(--tertiary);
+  animation-name: subagent-state-breathe-attention;
+}
+
+@keyframes subagent-state-breathe-attention {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* 움직임을 줄이도록 설정한 사용자에게는 색만 남긴다. */
+@media (prefers-reduced-motion: reduce) {
+  .subagent-state-dot.spawned,
+  .subagent-state-dot.approval_required {
+    animation: none;
+  }
 }
 
 .subagent-state-dot.completed {
@@ -527,10 +606,27 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* 부모 `.transcript-message.from-assistant`가 `align-items: flex-start`라서
+     폭을 주지 않으면 내용 크기로 줄어든다. 선택지 카드는 본문과 같은 폭으로
+     읽혀야 하므로 다른 블록 카드처럼 컬럼을 채운다. */
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   padding: 12px 14px;
   border: 1px solid var(--surface-container-high);
   border-radius: var(--radius-md);
   background: var(--surface-container-lowest);
+}
+
+/* 이미 답한 질문은 기록이다 — 살아 있는 질문보다 한 걸음 물러나 보인다. */
+.ask-user-card.is-answered {
+  background: transparent;
+  border-style: dashed;
+}
+
+.ask-user-card.is-answered .ask-user-option {
+  cursor: default;
+  opacity: 0.72;
 }
 
 .ask-user-question {

@@ -84,11 +84,19 @@ export const assistantStyles = {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
+    minWidth: 0,
     margin: '4px 0',
     padding: '4px 6px',
     color: 'var(--on-surface-muted)',
     fontSize: 12,
     fontFamily: 'var(--font-ui-label)',
+  },
+  // 라벨은 줄지 않는다. flex 자식은 기본으로 줄어들고 한글은 글자 사이에서
+  // 줄바꿈되므로, 옆의 `nowrap` 명령문과 폭을 다투면 "승 / 인 / 요 / 청"처럼
+  // 세로로 무너진다. 줄어드는 쪽은 ellipsis를 가진 detail이어야 한다.
+  approvalNoticeLabel: {
+    flex: 'none',
+    whiteSpace: 'nowrap',
   },
   approvalNoticeDetail: {
     minWidth: 0,

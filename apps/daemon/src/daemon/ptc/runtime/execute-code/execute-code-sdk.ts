@@ -10,10 +10,7 @@ import {
   type PtcExecuteCodeRuntimeSdkProjection,
 } from './execute-code-runtime-contract.js';
 
-export {
-  PTC_EXECUTE_CODE_PYTHON_SDK_IMPORT_MODULE,
-  PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION,
-};
+export { PTC_EXECUTE_CODE_SDK_PROTOCOL_VERSION };
 export const PTC_EXECUTE_CODE_RESERVED_SDK_IMPORT_SPECIFIER =
   'geulbat-sdk' as const;
 

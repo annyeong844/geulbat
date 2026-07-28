@@ -130,3 +130,80 @@ void test('directory picker uses discovered host locations and the Computer tree
 
   await act(async () => renderer.unmount());
 });
+
+void test('directory picker retries the current folder after a transient fetch failure', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const requestedPaths: string[] = [];
+  let requestCount = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), 'http://localhost');
+    requestedPaths.push(url.searchParams.get('path') ?? '');
+    requestCount += 1;
+    if (requestCount === 1) {
+      throw new TypeError('Failed to fetch');
+    }
+    return new Response(
+      JSON.stringify({
+        root: 'computer',
+        tree: [
+          {
+            name: 'src',
+            path: 'home/writer/project/src',
+            type: 'directory',
+          },
+        ],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <ComputerDirectoryPickerDialog
+        title="시작 위치 선택"
+        confirmLabel="이 폴더 사용"
+        initialPath="home/writer/project"
+        browsePath="home/writer/project"
+        browseStartPath="home/writer"
+        browseShortcuts={[]}
+        onSelect={() => {}}
+        onClose={() => {}}
+      />,
+    );
+  });
+
+  assert.deepEqual(requestedPaths, ['home/writer/project']);
+  assert.equal(
+    renderer.root.findByProps({ role: 'alert' }).children.join(''),
+    '데몬 연결이 잠시 끊겼습니다. 다시 시도해 주세요.',
+  );
+
+  await act(async () => {
+    renderer.root
+      .findAllByType('button')
+      .find((button) => button.children.join('') === '다시 시도')
+      ?.props.onClick();
+  });
+
+  assert.deepEqual(requestedPaths, [
+    'home/writer/project',
+    'home/writer/project',
+  ]);
+  assert.equal(renderer.root.findAllByProps({ role: 'alert' }).length, 0);
+  assert.equal(
+    renderer.root.findAllByProps({ 'aria-label': '폴더 열기: src' }).length,
+    1,
+  );
+  assert.equal(
+    renderer.root
+      .findAllByType('button')
+      .some((button) => button.children.join('') === '이 폴더 사용'),
+    true,
+  );
+
+  await act(async () => renderer.unmount());
+});

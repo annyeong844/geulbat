@@ -18,23 +18,20 @@ export const PTC_ARTIFACT_EXPORT_MAX_FILE_BYTES_ENV =
 export const PTC_ARTIFACT_EXPORT_MAX_TOTAL_BYTES_ENV =
   'GEULBAT_PTC_ARTIFACT_MAX_TOTAL_BYTES';
 
-export const PTC_ARTIFACT_EXPORT_POLICY_RELATIVE_PATH = join(
+const PTC_ARTIFACT_EXPORT_POLICY_RELATIVE_PATH = join(
   '.geulbat',
   'ptc-artifact-export.json',
 );
-export const PTC_ARTIFACT_EXPORT_POLICY_SCHEMA_VERSION = 1 as const;
+const PTC_ARTIFACT_EXPORT_POLICY_SCHEMA_VERSION = 1 as const;
 
-export interface PersistedPtcArtifactExportPolicy {
+interface PersistedPtcArtifactExportPolicy {
   schemaVersion: typeof PTC_ARTIFACT_EXPORT_POLICY_SCHEMA_VERSION;
   policy: PtcArtifactExportPolicy;
 }
 
-export type PtcArtifactExportPolicySource =
-  | 'environment'
-  | 'settings'
-  | 'disabled';
+type PtcArtifactExportPolicySource = 'environment' | 'settings' | 'disabled';
 
-export interface ResolvedPtcArtifactExportPolicy {
+interface ResolvedPtcArtifactExportPolicy {
   source: PtcArtifactExportPolicySource;
   policy?: PtcArtifactExportPolicy;
 }
@@ -48,13 +45,11 @@ export class PtcArtifactExportPolicyRecordError extends Error {
 
 type PtcArtifactExportPolicyEnv = Readonly<Record<string, string | undefined>>;
 
-export function ptcArtifactExportPolicyRecordPath(
-  homeStateRoot: string,
-): string {
+function ptcArtifactExportPolicyRecordPath(homeStateRoot: string): string {
   return join(homeStateRoot, PTC_ARTIFACT_EXPORT_POLICY_RELATIVE_PATH);
 }
 
-export function readStoredPtcArtifactExportPolicy(
+function readStoredPtcArtifactExportPolicy(
   homeStateRoot: string,
 ): PtcArtifactExportPolicy | undefined {
   const path = ptcArtifactExportPolicyRecordPath(homeStateRoot);

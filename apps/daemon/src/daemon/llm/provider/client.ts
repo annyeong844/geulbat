@@ -253,6 +253,7 @@ export async function* callModelWithDependencies(
       } else {
         providerLogger.warn('provider stream failed', {
           code,
+          cause: err,
         });
       }
       channel.push({ type: 'error', code, message });

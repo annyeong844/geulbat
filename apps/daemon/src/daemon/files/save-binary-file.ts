@@ -31,7 +31,7 @@ import {
 
 type SaveBinaryFileResult = FileSaveResponse;
 
-export interface ReplaceBinaryFileOptions {
+interface ReplaceBinaryFileOptions {
   atomicFs?: AtomicWriteLike;
 }
 

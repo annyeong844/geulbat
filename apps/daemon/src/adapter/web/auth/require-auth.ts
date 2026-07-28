@@ -15,7 +15,8 @@ import { sendApiError } from '#web/response/send-api-error.js';
  * Accepts the explicit X-Geulbat-Dev-Token header or the HttpOnly same-origin
  * shell session cookie. Browser-native media requests and websocket upgrades
  * cannot attach the explicit header, and the current product policy grants
- * same-origin artifact frames the shell API authority.
+ * browser-native shell requests the shell API authority. Artifact runtime
+ * frames are opaque-origin and must use the mediated postMessage bridge.
  *
  * This is shell-daemon API auth only.
  * daemon-provider auth (LLM credentials) is a separate layer.

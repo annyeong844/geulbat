@@ -75,9 +75,11 @@ export function ComputerDirectoryPickerDialog({
       }
       setDirectories([]);
       setLoadError(
-        error instanceof Error && error.message.trim() !== ''
-          ? error.message
-          : '폴더 목록을 불러오지 못했습니다.',
+        error instanceof TypeError
+          ? '데몬 연결이 잠시 끊겼습니다. 다시 시도해 주세요.'
+          : error instanceof Error && error.message.trim() !== ''
+            ? error.message
+            : '폴더 목록을 불러오지 못했습니다.',
       );
     } finally {
       if (requestEpoch === requestEpochRef.current) {
@@ -302,10 +304,16 @@ export function ComputerDirectoryPickerDialog({
               <button
                 type="button"
                 className="video-settings-save"
-                disabled={loading || loadError !== null}
-                onClick={() => onSelect(currentPath)}
+                disabled={loading}
+                onClick={() => {
+                  if (loadError !== null) {
+                    void loadDirectory(currentPath);
+                    return;
+                  }
+                  onSelect(currentPath);
+                }}
               >
-                {confirmLabel}
+                {loadError === null ? confirmLabel : '다시 시도'}
               </button>
             </div>
           </div>

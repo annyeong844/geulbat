@@ -110,40 +110,14 @@ void test('artifact runtime host frame ancestors include configured external bro
   }
 });
 
-void test('artifact runtime service worker probe is public and same-origin registerable', async () => {
+void test('artifact runtime host does not expose obsolete same-origin probe routes', async () => {
   await withDaemonServer(async ({ port }) => {
-    const res = await fetch(
-      `http://127.0.0.1:${port}/artifact-runtime/probe-sw.js`,
-    );
-
-    assert.equal(res.status, 200);
-    assert.equal(
-      res.headers.get('service-worker-allowed'),
-      '/artifact-runtime/',
-    );
-    assert.equal(res.headers.get('cache-control'), 'no-store');
-    assert.equal(
-      res.headers.get('content-type'),
-      'application/javascript; charset=utf-8',
-    );
-
-    const body = await res.text();
-    assert.match(body, /self\.skipWaiting\(\)/);
-    assert.match(body, /self\.clients\.claim\(\)/);
-    assert.match(body, /geulbat\.artifact_runtime_sw_probe/);
-  });
-});
-
-void test('artifact runtime cache probe is public and same-origin cacheable by the runtime', async () => {
-  await withDaemonServer(async ({ port }) => {
-    const res = await fetch(
-      `http://127.0.0.1:${port}/artifact-runtime/probe-cache.txt`,
-    );
-
-    assert.equal(res.status, 200);
-    assert.equal(res.headers.get('cache-control'), 'no-store');
-    assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
-    assert.equal(res.headers.get('content-type'), 'text/plain; charset=utf-8');
-    assert.equal(await res.text(), 'geulbat-artifact-runtime-cache-probe');
+    for (const path of [
+      '/artifact-runtime/probe-sw.js',
+      '/artifact-runtime/probe-cache.txt',
+    ]) {
+      const res = await fetch(`http://127.0.0.1:${port}${path}`);
+      assert.equal(res.status, 404, path);
+    }
   });
 });

@@ -179,6 +179,10 @@ export interface SubagentLaunchRequestStore {
     childRunId: RunId;
     reason: string;
   }): void;
+  reconcileSubagentLaunchesAfterRestart?(args: {
+    recoverableChildRunIds: readonly RunId[];
+    recoverableParentRunIds: readonly RunId[];
+  }): void;
 }
 
 type ChildModelPinResolution =

@@ -12,7 +12,7 @@ import { RunChannelClient } from '../lib/run-channel/client.js';
 // 하네스를 쓰도록 여기로 올렸다. 본문은 이동 전과 동일하다.
 export const TEST_COMPUTER_SESSION_ID = 'computer-session-harness';
 
-export class ManualScheduler {
+class ManualScheduler {
   private nextId = 1;
   private tasks = new Map<number, { callback: () => void; delayMs: number }>();
 
@@ -59,7 +59,7 @@ type FakeSocketEventMap = {
   error: undefined;
 };
 
-export class FakeSocket {
+class FakeSocket {
   readyState = 0;
   sent: string[] = [];
 

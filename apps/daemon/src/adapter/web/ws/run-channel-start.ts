@@ -218,59 +218,58 @@ export async function executeRunRequest({
       : { videoGenerationSettings }),
   } satisfies RunExecutionTemplate;
 
-  const durableRun = await runtimeContext.runCheckpoints.readThread(threadId);
-  if (durableRun?.status === 'running' && durableRun.runId !== runId) {
-    startedRun.finish();
-    sendError(
-      socket,
-      requestId,
-      409,
-      'conflict_active_run',
-      `thread ${threadId} has recoverable run ${durableRun.runId}`,
-    );
-    return;
-  }
-
-  let executionLifecycle: Awaited<
-    ReturnType<typeof createRunExecutionLifecycle>
-  >;
+  let liveRunStarted = false;
   try {
-    executionLifecycle = await createRunExecutionLifecycle({
-      kind: 'initial',
-      runId,
-      threadId,
-      prompt,
-      executionTemplate: runExecutionTemplate,
-      planning: {
-        requested: planModeRequested,
-        intensity: planModeIntensity,
-        depth: planModeDepth,
-        ...(approvedPlanRef === undefined ? {} : { approvedPlanRef }),
-      },
-      goal: {
-        requested: goalModeRequested,
-        ...(goalRef === undefined ? {} : { ref: goalRef }),
-      },
-      planningWorkflows: runtimeContext.planningWorkflows,
-      goals: runtimeContext.goals,
-      runCheckpoints: runtimeContext.runCheckpoints,
-      liveRunEvents: runtimeContext.liveRunEvents,
-      onTerminalSettled() {
-        runtimeContext.approvalGate.clearRunRuntime(
-          socketState.computerSessionId,
-          runId,
-        );
-      },
-    });
-  } catch (error: unknown) {
-    startedRun.finish();
-    sendError(socket, requestId, 409, 'conflict', getErrorMessage(error));
-    return;
-  }
+    const durableRun = await runtimeContext.runCheckpoints.readThread(threadId);
+    if (durableRun?.status === 'running' && durableRun.runId !== runId) {
+      sendError(
+        socket,
+        requestId,
+        409,
+        'conflict_active_run',
+        `thread ${threadId} has recoverable run ${durableRun.runId}`,
+      );
+      return;
+    }
 
-  const admittedLoopImplementation =
-    await runtimeContext.agent.loopImplementationAdmission
-      .admitRun({
+    let executionLifecycle: Awaited<
+      ReturnType<typeof createRunExecutionLifecycle>
+    >;
+    try {
+      executionLifecycle = await createRunExecutionLifecycle({
+        kind: 'initial',
+        runId,
+        threadId,
+        prompt,
+        executionTemplate: runExecutionTemplate,
+        planning: {
+          requested: planModeRequested,
+          intensity: planModeIntensity,
+          depth: planModeDepth,
+          ...(approvedPlanRef === undefined ? {} : { approvedPlanRef }),
+        },
+        goal: {
+          requested: goalModeRequested,
+          ...(goalRef === undefined ? {} : { ref: goalRef }),
+        },
+        planningWorkflows: runtimeContext.planningWorkflows,
+        goals: runtimeContext.goals,
+        runCheckpoints: runtimeContext.runCheckpoints,
+        liveRunEvents: runtimeContext.liveRunEvents,
+        onTerminalSettled() {
+          runtimeContext.approvalGate.clearRunRuntime(
+            socketState.computerSessionId,
+            runId,
+          );
+        },
+      });
+    } catch (error: unknown) {
+      sendError(socket, requestId, 409, 'conflict', getErrorMessage(error));
+      return;
+    }
+
+    const admittedLoopImplementation =
+      await runtimeContext.agent.loopImplementationAdmission.admitRun({
         runId,
         threadId,
         stateRoot: runtimeContext.homeStateRoot,
@@ -281,58 +280,51 @@ export async function executeRunRequest({
           ...(serviceTier === undefined ? {} : { serviceTier }),
         },
         toolCapabilityPolicy: requestedToolCapabilityPolicy,
-      })
-      .catch((error: unknown) => {
-        startedRun.finish();
-        throw error;
       });
-  if (!admittedLoopImplementation.ok) {
-    startedRun.finish();
-    sendError(
-      socket,
-      requestId,
-      503,
-      'execution_failed',
-      admittedLoopImplementation.message,
-    );
-    return;
-  }
+    if (!admittedLoopImplementation.ok) {
+      sendError(
+        socket,
+        requestId,
+        503,
+        'execution_failed',
+        admittedLoopImplementation.message,
+      );
+      return;
+    }
 
-  const toolLibraryProjectionPort = createAgentLoopToolLibraryProjectionPort(
-    runtimeServices.toolLibraryProjection,
-  );
-  const toolLibraryProjection =
-    await toolLibraryProjectionPort.resolveProjection({
-      stateRoot: runtimeContext.homeStateRoot,
-      threadId,
-      ...(admittedLoopImplementation.toolCapabilityPolicy === undefined
-        ? requestedToolSurface === undefined
-          ? {}
+    const toolLibraryProjectionPort = createAgentLoopToolLibraryProjectionPort(
+      runtimeServices.toolLibraryProjection,
+    );
+    const toolLibraryProjection =
+      await toolLibraryProjectionPort.resolveProjection({
+        stateRoot: runtimeContext.homeStateRoot,
+        threadId,
+        ...(admittedLoopImplementation.toolCapabilityPolicy === undefined
+          ? requestedToolSurface === undefined
+            ? {}
+            : {
+                allowedRegistryNames: requestedToolSurface.allowedRegistryNames,
+              }
           : {
-              allowedRegistryNames: requestedToolSurface.allowedRegistryNames,
-            }
-        : {
-            toolCapabilityPolicy:
-              admittedLoopImplementation.toolCapabilityPolicy,
-          }),
-    });
-  if (!toolLibraryProjection.ok) {
-    startedRun.finish();
-    sendError(
-      socket,
-      requestId,
-      503,
-      'execution_failed',
-      formatToolLibraryProjectionFailureMessage(toolLibraryProjection),
-    );
-    return;
-  }
+              toolCapabilityPolicy:
+                admittedLoopImplementation.toolCapabilityPolicy,
+            }),
+      });
+    if (!toolLibraryProjection.ok) {
+      sendError(
+        socket,
+        requestId,
+        503,
+        'execution_failed',
+        formatToolLibraryProjectionFailureMessage(toolLibraryProjection),
+      );
+      return;
+    }
 
-  const approvalContext = {
-    computerSessionId: socketState.computerSessionId,
-    permissionMode,
-  } satisfies ApprovalContext;
-  try {
+    const approvalContext = {
+      computerSessionId: socketState.computerSessionId,
+      permissionMode,
+    } satisfies ApprovalContext;
     runtimeContext.liveRunEvents.startRun({
       runId,
       threadId,
@@ -361,146 +353,149 @@ export async function executeRunRequest({
         );
       },
     });
-  } catch (error: unknown) {
-    startedRun.finish();
-    throw error;
-  }
-  socketState.activeRunIds.add(runId);
-  socketState.ownedRunIds.add(runId);
-  ensureThreadBackgroundSubscription(socket, threadId, runtimeContext);
-  sendMessage(socket, {
-    type: 'plan.workflow',
-    threadId,
-    snapshot: executionLifecycle.planningSnapshot,
-  });
-  sendMessage(socket, {
-    type: 'goal.state',
-    threadId,
-    snapshot: executionLifecycle.goalSnapshot,
-  });
-  const runLogger = logger.withContext({
-    requestId,
-    runId,
-    threadId,
-  });
-  const recoverableRequest: RecoverableRunRequest = {
-    workingDirectory,
-    permissionMode,
-    ...executionLifecycle.checkpointBindings,
-    ultraReasoning,
-    loopImplementation: admittedLoopImplementation.identity,
-    providerModel: runProviderModel,
-    ...(providerTransitionRecovery === undefined
-      ? {}
-      : { providerTransitionRecovery }),
-    ...(currentFile === undefined ? {} : { currentFile }),
-    ...(selection === undefined ? {} : { selection }),
-    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-    ...(serviceTier === undefined ? {} : { serviceTier }),
-    ...(subagentModelRouting === undefined ? {} : { subagentModelRouting }),
-    ...(admittedLoopImplementation.toolCapabilityPolicy === undefined
-      ? requestedToolSurface === undefined
+    liveRunStarted = true;
+    socketState.activeRunIds.add(runId);
+    socketState.ownedRunIds.add(runId);
+    ensureThreadBackgroundSubscription(socket, threadId, runtimeContext);
+    sendMessage(socket, {
+      type: 'plan.workflow',
+      threadId,
+      snapshot: executionLifecycle.planningSnapshot,
+    });
+    sendMessage(socket, {
+      type: 'goal.state',
+      threadId,
+      snapshot: executionLifecycle.goalSnapshot,
+    });
+    const runLogger = logger.withContext({
+      requestId,
+      runId,
+      threadId,
+    });
+    const recoverableRequest: RecoverableRunRequest = {
+      workingDirectory,
+      permissionMode,
+      ...executionLifecycle.checkpointBindings,
+      ultraReasoning,
+      loopImplementation: admittedLoopImplementation.identity,
+      providerModel: runProviderModel,
+      ...(providerTransitionRecovery === undefined
         ? {}
-        : {
-            toolSurface: {
-              directRegistryNames: [
-                ...requestedToolSurface.directRegistryNames,
-              ],
-              allowedRegistryNames: [
-                ...requestedToolSurface.allowedRegistryNames,
-              ],
-            },
-          }
-      : {
-          toolCapabilityPolicy: admittedLoopImplementation.toolCapabilityPolicy,
-        }),
-    toolLibraryProjectionIdentity: toolLibraryProjection.identity,
-    ...(imageGenerationModel === undefined ? {} : { imageGenerationModel }),
-    ...(videoGenerationModel === undefined ? {} : { videoGenerationModel }),
-    ...(videoGenerationSettings === undefined
-      ? {}
-      : { videoGenerationSettings }),
-  };
-
-  try {
-    await executeForegroundRun({
-      regenerate,
-      silentPrompt,
-      ...(promptOrigin !== undefined ? { promptOrigin } : {}),
-      agentInput: {
-        runId,
-        runContext,
-        prompt,
-        approvalContext,
-        signal: abortController.signal,
-        runState,
-        loopImplementation: admittedLoopImplementation.implementation,
-        runtimeServices,
-        providerModel: runProviderModel,
-        ultraReasoning,
-        ...(providerTransitionRecovery === undefined
+        : { providerTransitionRecovery }),
+      ...(currentFile === undefined ? {} : { currentFile }),
+      ...(selection === undefined ? {} : { selection }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      ...(serviceTier === undefined ? {} : { serviceTier }),
+      ...(subagentModelRouting === undefined ? {} : { subagentModelRouting }),
+      ...(admittedLoopImplementation.toolCapabilityPolicy === undefined
+        ? requestedToolSurface === undefined
           ? {}
-          : { providerTransitionRecovery }),
-        ...(currentFile !== undefined ? { currentFile } : {}),
-        ...(executionLifecycle.planningWorkflow === undefined
-          ? {}
-          : { planningWorkflow: executionLifecycle.planningWorkflow }),
-        ...(executionLifecycle.approvedPlan === undefined
-          ? {}
-          : { approvedPlan: executionLifecycle.approvedPlan }),
-        ...(executionLifecycle.goal === undefined
-          ? {}
-          : { goal: executionLifecycle.goal }),
-        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-        ...(serviceTier !== undefined ? { serviceTier } : {}),
-        ...(subagentModelRouting !== undefined ? { subagentModelRouting } : {}),
-        ...(selection !== undefined ? { selection } : {}),
-        ...(attachments.length > 0 ? { attachments } : {}),
-        ...(admittedLoopImplementation.toolCapabilityPolicy === undefined
-          ? requestedToolSurface === undefined
-            ? {}
-            : { toolSurface: requestedToolSurface }
           : {
-              toolCapabilityPolicy:
-                admittedLoopImplementation.toolCapabilityPolicy,
-            }),
-        toolLibraryProjectionIdentity: toolLibraryProjection.identity,
-        toolLibraryProjectionPort,
-        onEvent: (agentEvent) => {
-          publishLiveAgentEvent(
-            runtimeContext.liveRunEvents,
-            runId,
-            agentEvent,
-          );
+              toolSurface: {
+                directRegistryNames: [
+                  ...requestedToolSurface.directRegistryNames,
+                ],
+                allowedRegistryNames: [
+                  ...requestedToolSurface.allowedRegistryNames,
+                ],
+              },
+            }
+        : {
+            toolCapabilityPolicy:
+              admittedLoopImplementation.toolCapabilityPolicy,
+          }),
+      toolLibraryProjectionIdentity: toolLibraryProjection.identity,
+      ...(imageGenerationModel === undefined ? {} : { imageGenerationModel }),
+      ...(videoGenerationModel === undefined ? {} : { videoGenerationModel }),
+      ...(videoGenerationSettings === undefined
+        ? {}
+        : { videoGenerationSettings }),
+    };
+
+    try {
+      await executeForegroundRun({
+        regenerate,
+        silentPrompt,
+        ...(promptOrigin !== undefined ? { promptOrigin } : {}),
+        agentInput: {
+          runId,
+          runContext,
+          prompt,
+          approvalContext,
+          signal: abortController.signal,
+          runState,
+          loopImplementation: admittedLoopImplementation.implementation,
+          runtimeServices,
+          providerModel: runProviderModel,
+          ultraReasoning,
+          ...(providerTransitionRecovery === undefined
+            ? {}
+            : { providerTransitionRecovery }),
+          ...(currentFile !== undefined ? { currentFile } : {}),
+          ...(executionLifecycle.planningWorkflow === undefined
+            ? {}
+            : { planningWorkflow: executionLifecycle.planningWorkflow }),
+          ...(executionLifecycle.approvedPlan === undefined
+            ? {}
+            : { approvedPlan: executionLifecycle.approvedPlan }),
+          ...(executionLifecycle.goal === undefined
+            ? {}
+            : { goal: executionLifecycle.goal }),
+          ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+          ...(serviceTier !== undefined ? { serviceTier } : {}),
+          ...(subagentModelRouting !== undefined
+            ? { subagentModelRouting }
+            : {}),
+          ...(selection !== undefined ? { selection } : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+          ...(admittedLoopImplementation.toolCapabilityPolicy === undefined
+            ? requestedToolSurface === undefined
+              ? {}
+              : { toolSurface: requestedToolSurface }
+            : {
+                toolCapabilityPolicy:
+                  admittedLoopImplementation.toolCapabilityPolicy,
+              }),
+          toolLibraryProjectionIdentity: toolLibraryProjection.identity,
+          toolLibraryProjectionPort,
+          onEvent: (agentEvent) => {
+            publishLiveAgentEvent(
+              runtimeContext.liveRunEvents,
+              runId,
+              agentEvent,
+            );
+          },
         },
-      },
-      transcriptPrompt,
-      async onInputPersisted() {
-        await executionLifecycle.beginDurableExecution(recoverableRequest);
-      },
-      async onTerminalEvent({ event }) {
-        await executionLifecycle.settleTerminal(event);
-      },
-    });
-  } catch (err: unknown) {
-    runLogger.error('unexpected error:', {
-      message: getErrorMessage(err),
-    });
-    if (!executionLifecycle.checkpointPrepared) {
-      sendError(socket, requestId, 500, 'internal', 'internal server error');
-    } else {
-      const settled = await executionLifecycle.settleFailure({
-        type: 'error',
-        payload: { code: 'internal', message: 'internal server error' },
+        transcriptPrompt,
+        async onInputPersisted() {
+          await executionLifecycle.beginDurableExecution(recoverableRequest);
+        },
+        async onTerminalEvent({ event }) {
+          await executionLifecycle.settleTerminal(event);
+        },
       });
-      if (!settled) {
-        runLogger.warn(
-          'run checkpoint retained because interject recovery is pending',
-        );
+    } catch (err: unknown) {
+      runLogger.error('unexpected error:', {
+        message: getErrorMessage(err),
+      });
+      if (!executionLifecycle.checkpointPrepared) {
+        sendError(socket, requestId, 500, 'internal', 'internal server error');
+      } else {
+        const settled = await executionLifecycle.settleFailure({
+          type: 'error',
+          payload: { code: 'internal', message: 'internal server error' },
+        });
+        if (!settled) {
+          runLogger.warn(
+            'run checkpoint retained because interject recovery is pending',
+          );
+        }
       }
     }
   } finally {
-    runtimeContext.liveRunEvents.finishRun(runId);
+    if (liveRunStarted) {
+      runtimeContext.liveRunEvents.finishRun(runId);
+    }
     startedRun.finish();
     socketState.activeRunIds.delete(runId);
   }
@@ -519,6 +514,9 @@ export async function recoverDurableRunsForSocket(
     await runtimeContext.runCheckpoints.listUnacknowledgedTerminal();
   let recoveredCount = 0;
   for (const checkpoint of terminalCheckpoints) {
+    if (checkpoint.request.backgroundChild !== undefined) {
+      continue;
+    }
     if (
       !runtimeContext.liveRunEvents.hasRun(checkpoint.runId) &&
       (await projectDurableTerminalCheckpoint(
@@ -535,6 +533,9 @@ export async function recoverDurableRunsForSocket(
   const runningCheckpoints = await runtimeContext.runCheckpoints.listRunning();
   const recovered = await Promise.all(
     runningCheckpoints.map(async (checkpoint) => {
+      if (checkpoint.request.backgroundChild !== undefined) {
+        return false;
+      }
       if (runtimeContext.liveRunEvents.hasRun(checkpoint.runId)) {
         return false;
       }

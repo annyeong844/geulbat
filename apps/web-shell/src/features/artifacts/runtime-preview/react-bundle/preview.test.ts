@@ -60,10 +60,7 @@ function resolveRenderedReactBundlePreview(payload: string) {
   assert.equal(runtimeFrameArgs.length, 1);
   assert.equal(runtimeFrameArgs[0]?.renderer, 'react_bundle');
   assert.equal(runtimeFrameArgs[0]?.title, 'react bundle artifact preview');
-  assert.equal(
-    runtimeFrameArgs[0]?.sandbox,
-    'allow-scripts allow-forms allow-same-origin',
-  );
+  assert.equal(runtimeFrameArgs[0]?.sandbox, 'allow-scripts allow-forms');
   assert.equal(
     runtimeFrameArgs[0]?.sourceRef.threadId,
     brandThreadId('00000000-0000-4000-8000-000000000001'),
@@ -79,7 +76,7 @@ void test('resolveReactBundleArtifactRuntimePreview renders supported fixtures t
   );
 
   assert.match(html, /<iframe/);
-  assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
+  assert.match(html, /sandbox="allow-scripts allow-forms"/);
   assert.doesNotMatch(html, /allow-downloads/);
   assert.match(
     html,
@@ -96,7 +93,7 @@ void test('resolveReactBundleArtifactRuntimePreview keeps public CDN manifest en
 
   assert.match(html, /<iframe/);
   assert.doesNotMatch(html, /sanitize_rejected/);
-  assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
+  assert.match(html, /sandbox="allow-scripts allow-forms"/);
 });
 
 void test('resolveReactBundleArtifactRuntimePreview keeps personal-local manifest entry URLs rendered', () => {
@@ -110,7 +107,7 @@ void test('resolveReactBundleArtifactRuntimePreview keeps personal-local manifes
 
     assert.match(html, /<iframe/);
     assert.doesNotMatch(html, /sanitize_rejected/);
-    assert.match(html, /sandbox="allow-scripts allow-forms allow-same-origin"/);
+    assert.match(html, /sandbox="allow-scripts allow-forms"/);
   }
 });
 

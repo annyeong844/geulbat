@@ -242,7 +242,9 @@ export function RunTranscriptEntryBlock(props: {
               }
             />
           ) : null}
-          <span>{`승인 요청 · ${summary.label}`}</span>
+          <span style={assistantStyles.approvalNoticeLabel}>
+            {`승인 요청 · ${summary.label}`}
+          </span>
           {summary.detail ? (
             <span style={assistantStyles.approvalNoticeDetail}>
               {summary.detail}

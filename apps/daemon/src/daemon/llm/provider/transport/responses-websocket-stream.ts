@@ -28,7 +28,15 @@ export async function* iterateWebSocketEventsAfterDispatch(
   completionEventTypes: readonly string[] = DEFAULT_COMPLETION_EVENT_TYPES,
 ): AsyncGenerator<Record<string, unknown>> {
   const iterator = iterateWebSocketEvents(socket, signal, completionEventTypes);
-  let pending = iterator.next();
+  const prefetch = () => {
+    const next = iterator.next();
+    // `await next` below still propagates the provider failure to an active
+    // consumer. This observer only prevents a prefetched rejection from
+    // becoming process-global when the consumer closes while suspended.
+    next.catch(() => undefined);
+    return next;
+  };
+  let pending = prefetch();
   try {
     dispatch();
     for (;;) {
@@ -36,7 +44,7 @@ export async function* iterateWebSocketEventsAfterDispatch(
       if (result.done) {
         return;
       }
-      pending = iterator.next();
+      pending = prefetch();
       yield result.value;
     }
   } finally {

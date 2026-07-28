@@ -155,6 +155,54 @@ void test('executeRunRequest does not start a run for a closed socket', async ()
   }
 });
 
+void test('foreground socket recovery ignores internally owned child checkpoints', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
+  const socket = createTestSocket();
+  const threadId = testThreadId(46);
+  const runId = assertRunId('run-internal-child-checkpoint');
+
+  try {
+    await daemonContext.runCheckpoints.startRun({
+      runId,
+      threadId,
+      request: {
+        workingDirectory: '',
+        permissionMode: 'basic',
+        backgroundChild: {
+          parentRunId: assertRunId('run-internal-child-parent'),
+          ownerThreadId: testThreadId(47),
+          computerSessionId: 'internal-child-session',
+        },
+      },
+    });
+    assert.equal(await recoverDurableRunsForSocket(socket, daemonContext), 0);
+    assert.equal(socket.sentFrames.length, 0);
+
+    await daemonContext.runCheckpoints.settleRun({
+      runId,
+      threadId,
+      terminal: {
+        eventCursor: 0,
+        event: {
+          type: 'done',
+          payload: { answer: 'child terminal', ok: true },
+        },
+      },
+    });
+    assert.equal(await recoverDurableRunsForSocket(socket, daemonContext), 0);
+    assert.equal(socket.sentFrames.length, 0);
+    assert.equal(await recoverDurableRunsAtDaemonStartup(daemonContext), 1);
+    assert.equal(
+      (await daemonContext.runCheckpoints.readThread(threadId))?.terminal
+        ?.acknowledged,
+      true,
+    );
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+    await rm(daemonContext.homeStateRoot, { recursive: true, force: true });
+  }
+});
+
 void test('executeRunRequest releases its managed run when loop admission rejects the contract', async () => {
   const daemonContext = createRunChannelTestDaemonContext();
   const socket = createTestSocket();
@@ -227,6 +275,103 @@ void test('executeRunRequest releases its managed run when loop admission reject
     }
   } finally {
     cleanupSocketState(socket, runtimeContext);
+  }
+});
+
+void test('executeRunRequest releases its managed run when checkpoint lookup rejects', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
+  const socket = createTestSocket();
+  const threadId = testThreadId(48);
+  const checkpointFailure = new Error('checkpoint read failed');
+  const runtimeContext = {
+    ...daemonContext,
+    runCheckpoints: {
+      ...daemonContext.runCheckpoints,
+      async readThread() {
+        throw checkpointFailure;
+      },
+    },
+  };
+
+  try {
+    await assert.rejects(
+      executeRunRequest({
+        socket,
+        requestId: 'run-start-checkpoint-read-failure',
+        request: { prompt: 'hello', threadId } satisfies RunRequest,
+        allowedPublicToolNames: undefined,
+        runtimeContext,
+      }),
+      checkpointFailure,
+    );
+
+    const afterFailure = startManagedRun(
+      {
+        runId: 'run-after-checkpoint-read-failure',
+        runContext: {
+          threadId,
+          stateRoot: runtimeContext.homeStateRoot,
+          workingDirectory: '',
+        },
+      },
+      { activeRuns: runtimeContext.activeRuns },
+    );
+    assert.equal(afterFailure.ok, true);
+    if (afterFailure.ok) {
+      afterFailure.finish();
+    }
+  } finally {
+    cleanupSocketState(socket, runtimeContext);
+  }
+});
+
+void test('executeRunRequest releases live and managed run ownership when initial socket delivery throws', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
+  const socket = createTestSocket();
+  const socketState = getSocketState(socket);
+  const threadId = testThreadId(49);
+  const deliveryFailure = new Error('initial socket delivery failed');
+  Object.defineProperty(socket, 'send', {
+    configurable: true,
+    value() {
+      throw deliveryFailure;
+    },
+  });
+
+  try {
+    await assert.rejects(
+      executeRunRequest({
+        socket,
+        requestId: 'run-start-initial-socket-delivery-failure',
+        request: { prompt: 'hello', threadId } satisfies RunRequest,
+        allowedPublicToolNames: undefined,
+        runtimeContext: daemonContext,
+      }),
+      deliveryFailure,
+    );
+
+    const ownedRunId = [...socketState.ownedRunIds].at(-1);
+    assert.ok(ownedRunId);
+    assert.equal(socketState.activeRunIds.size, 0);
+    assert.equal(daemonContext.liveRunEvents.hasRun(ownedRunId), false);
+
+    const afterFailure = startManagedRun(
+      {
+        runId: 'run-after-initial-socket-delivery-failure',
+        runContext: {
+          threadId,
+          stateRoot: daemonContext.homeStateRoot,
+          workingDirectory: '',
+        },
+      },
+      { activeRuns: daemonContext.activeRuns },
+    );
+    assert.equal(afterFailure.ok, true);
+    if (afterFailure.ok) {
+      afterFailure.finish();
+    }
+  } finally {
+    cleanupSocketState(socket, daemonContext);
   }
 });
 

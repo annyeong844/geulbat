@@ -200,7 +200,7 @@ function readProviderMessageErrorCode(message: string): string | null {
  * 크레딧·구독·쿼터 **소진** (일시 스로틀 아님).
  * Codex/OpenAI·Grok(xAI)·Qwen(Aliyun) 공통 문구·코드만. OpenRouter 전용 없음.
  */
-export function isUsageLimitExhaustedMessage(message: string): boolean {
+function isUsageLimitExhaustedMessage(message: string): boolean {
   const lower = message.toLowerCase();
   return (
     lower.includes('insufficient_quota') ||
@@ -236,7 +236,7 @@ function isUsageLimitMessage(message: string): boolean {
  * usage/quota 문구이지만 창이 리셋되는 일시 한도.
  * "try again in 5 minutes" 류 → rate-limit 재시도 유지.
  */
-export function isTransientUsageLimitMessage(message: string): boolean {
+function isTransientUsageLimitMessage(message: string): boolean {
   const lower = message.toLowerCase();
   return (
     lower.includes('try again') ||
@@ -262,7 +262,7 @@ function isGrokSpendingLimitError(err: Error): boolean {
  * Responses WS encrypted reasoning blob 검증 실패.
  * context overflow 휴리스틱보다 먼저 써야 한다.
  */
-export function isInvalidEncryptedContentMessage(message: string): boolean {
+function isInvalidEncryptedContentMessage(message: string): boolean {
   const lower = message.toLowerCase();
   if (lower.includes('invalid_encrypted_content')) {
     return true;
@@ -288,7 +288,7 @@ export function isInvalidEncryptedContentMessage(message: string): boolean {
  * - openai_codex_direct / grok_oauth 는 Responses WebSocket 본문에
  *   max_tokens / max_output_tokens 를 넣지 않는다.
  */
-export function isOutputBudgetExceededMessage(message: string): boolean {
+function isOutputBudgetExceededMessage(message: string): boolean {
   const lower = message.toLowerCase();
   // qwen_token_plan · Aliyun MaaS compatible-mode SSE chat completions only.
   return lower.includes('range of max_tokens should be');

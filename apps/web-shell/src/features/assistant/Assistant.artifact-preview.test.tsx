@@ -175,10 +175,7 @@ void test('assistant renders html5 artifact inside a sandboxed iframe', async ()
 
   const iframe = renderer.root.findByType('iframe');
   const renderedTree = JSON.stringify(renderer.toJSON());
-  assert.equal(
-    iframe.props.sandbox,
-    'allow-scripts allow-forms allow-same-origin',
-  );
+  assert.equal(iframe.props.sandbox, 'allow-scripts allow-forms');
   assert.match(
     String(iframe.props.src),
     /^http:\/\/127\.0\.0\.1:3456\/artifact-runtime\/host\?.*rev=/,
@@ -223,7 +220,7 @@ void test('assistant renders js artifact inside a download-capable sandboxed ifr
   const renderedTree = JSON.stringify(renderer.toJSON());
   assert.equal(
     iframe.props.sandbox,
-    'allow-scripts allow-forms allow-same-origin allow-downloads',
+    'allow-scripts allow-forms allow-downloads',
   );
   assert.match(
     String(iframe.props.src),

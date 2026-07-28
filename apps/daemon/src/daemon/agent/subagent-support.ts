@@ -17,6 +17,8 @@ import type { ToolRunState, AgentEvent } from '../runtime-contracts.js';
 import type { AgentResult } from './agent-result.js';
 import type { AgentInput } from './loop-types.js';
 import type { RunSubagentModelRouting } from './contract.js';
+import { loadExistingHistory } from './loop-history.js';
+import { recoverPendingReplaySafeToolCalls } from './loop-tool-recovery.js';
 import { startManagedRun } from './runtime/managed-run.js';
 import { runAgentLoop as runDefaultAgentLoop } from './run-agent-loop.js';
 import {
@@ -37,9 +39,11 @@ import { routeChildAgentEvent } from './subagent-event-routing.js';
 import { createRunContext, type RunContext } from '../run-context.js';
 import type {
   AgentRuntimeServices,
+  RecoverSubagentBackgroundRunArgs,
   StartSubagentBackgroundRunArgs,
   SubagentRunLauncher,
 } from '../daemon-runtime-contract.js';
+import type { RunCheckpoint } from '../sessions/run-checkpoint-store.js';
 import { getErrorMessage } from '../utils/error.js';
 import { withActivityScope } from '../utils/activity-scope.js';
 import {
@@ -178,6 +182,13 @@ export function createSubagentRunLauncher(
   return {
     startBackgroundRun(args) {
       return startSubagentBackgroundRun(args, {
+        startManagedRun: managedRunStarter,
+        runAgentLoop: agentLoop,
+        loopImplementationAdmission,
+      });
+    },
+    recoverBackgroundRun(args) {
+      return recoverSubagentBackgroundRun(args, {
         startManagedRun: managedRunStarter,
         runAgentLoop: agentLoop,
         loopImplementationAdmission,
@@ -333,6 +344,167 @@ async function startSubagentBackgroundRun(
   });
 }
 
+async function recoverSubagentBackgroundRun(
+  args: RecoverSubagentBackgroundRunArgs,
+  runtime: {
+    startManagedRun: StartManagedRunFn;
+    runAgentLoop: RunAgentLoopFn;
+    loopImplementationAdmission: AgentLoopImplementationAdmission;
+  },
+): Promise<{
+  runState: ToolRunState;
+  completion: Promise<void>;
+} | null> {
+  const { checkpoint, launchInput, parentRunState, runtimeServices } = args;
+  const backgroundChild = checkpoint.request.backgroundChild;
+  if (backgroundChild === undefined) {
+    return null;
+  }
+  const startedChildRun = runtime.startManagedRun(
+    {
+      runId: checkpoint.runId,
+      runContext: {
+        threadId: checkpoint.threadId,
+        stateRoot: launchInput.stateRoot,
+        workingDirectory: checkpoint.request.workingDirectory,
+      },
+      ownerThreadId: backgroundChild.ownerThreadId,
+      parentRunId: backgroundChild.parentRunId,
+    },
+    { activeRuns: runtimeServices.activeRuns },
+  );
+  if (!startedChildRun.ok) {
+    args.launchReservation.release();
+    return null;
+  }
+
+  const requestedToolCapabilityPolicy =
+    checkpoint.request.toolCapabilityPolicy ??
+    createAgentToolCapabilityPolicy({
+      registry: runtimeServices.toolRegistry,
+      ...(checkpoint.request.toolSurface === undefined
+        ? {}
+        : { toolSurface: checkpoint.request.toolSurface }),
+    });
+  let admittedLoopImplementation;
+  try {
+    admittedLoopImplementation =
+      await runtime.loopImplementationAdmission.admitRun({
+        runId: checkpoint.runId,
+        threadId: checkpoint.threadId,
+        stateRoot: launchInput.stateRoot,
+        ...(checkpoint.request.loopImplementation === undefined
+          ? {}
+          : { requiredIdentity: checkpoint.request.loopImplementation }),
+        modelConfiguration: {
+          providerId:
+            launchInput.modelPin.providerRunSelection.providerModel.providerId,
+          model: launchInput.modelPin.providerRunSelection.providerModel.model,
+          reasoningEffort:
+            launchInput.modelPin.providerRunSelection.reasoningEffort,
+          ...(launchInput.modelPin.providerRunSelection.serviceTier ===
+          undefined
+            ? {}
+            : {
+                serviceTier:
+                  launchInput.modelPin.providerRunSelection.serviceTier,
+              }),
+        },
+        toolCapabilityPolicy: requestedToolCapabilityPolicy,
+      });
+  } catch (error: unknown) {
+    args.launchReservation.release();
+    startedChildRun.finish();
+    logger.error('recovered child loop admission failed:', {
+      childRunId: checkpoint.runId,
+      cause: getErrorMessage(error),
+    });
+    return null;
+  }
+  if (!admittedLoopImplementation.ok) {
+    args.launchReservation.release();
+    startedChildRun.finish();
+    return null;
+  }
+
+  const toolSurface =
+    checkpoint.request.toolSurface ??
+    resolveSubagentToolSurface({
+      ultraReasoning: checkpoint.request.ultraReasoning ?? false,
+      subagentType: launchInput.subagentType,
+      capabilities: launchInput.capabilities,
+    });
+  let lifecycle: BackgroundChildLifecycle;
+  try {
+    lifecycle = beginBackgroundChildLifecycle({
+      subagentType: launchInput.subagentType,
+      capabilities: launchInput.capabilities,
+      parentRunId: backgroundChild.parentRunId,
+      ownerThreadId: backgroundChild.ownerThreadId,
+      startedChildRun: {
+        runId: checkpoint.runId,
+        threadId: checkpoint.threadId,
+        runState: startedChildRun.runState,
+        finish: startedChildRun.finish,
+      },
+      parentRunState,
+      runtimeServices,
+      launchReservation: args.launchReservation,
+      modelPin: launchInput.modelPin,
+      subagentModelRouting: launchInput.subagentModelRouting,
+      emitAgentEvent: undefined,
+      ...(backgroundChild.timeoutAt === undefined
+        ? {}
+        : { timeoutAt: backgroundChild.timeoutAt }),
+      durableLaunchRecorded: true,
+      recoveringDurableLaunch: true,
+    });
+  } catch (error: unknown) {
+    logger.error('recovered child lifecycle registration failed:', {
+      childRunId: checkpoint.runId,
+      cause: getErrorMessage(error),
+    });
+    return null;
+  }
+
+  const completion = withActivityScope(
+    { runId: checkpoint.runId, threadId: checkpoint.threadId },
+    () =>
+      runBackgroundChild({
+        task: '',
+        subagentType: launchInput.subagentType,
+        capabilities: launchInput.capabilities,
+        parentRunId: backgroundChild.parentRunId,
+        ownerThreadId: backgroundChild.ownerThreadId,
+        stateRoot: launchInput.stateRoot,
+        workingDirectory: checkpoint.request.workingDirectory,
+        computerSessionId: backgroundChild.computerSessionId,
+        permissionMode: checkpoint.request.permissionMode,
+        ultraReasoning: checkpoint.request.ultraReasoning ?? false,
+        modelPin: launchInput.modelPin,
+        subagentModelRouting: launchInput.subagentModelRouting,
+        emitAgentEvent: undefined,
+        runAgentLoop: runtime.runAgentLoop,
+        loopImplementation: admittedLoopImplementation.implementation,
+        toolSurface,
+        ...(admittedLoopImplementation.toolCapabilityPolicy === undefined
+          ? checkpoint.request.toolCapabilityPolicy === undefined
+            ? {}
+            : {
+                toolCapabilityPolicy: checkpoint.request.toolCapabilityPolicy,
+              }
+          : {
+              toolCapabilityPolicy:
+                admittedLoopImplementation.toolCapabilityPolicy,
+            }),
+        runtimeServices,
+        lifecycle,
+        recoveryCheckpoint: checkpoint,
+      }),
+  );
+  return { runState: startedChildRun.runState, completion };
+}
+
 function assertManagedRunId(value: string): RunId {
   if (!isRunId(value)) {
     throw new Error(`invalid runId: ${value}`);
@@ -403,21 +575,87 @@ async function launchSubagentBackgroundRun(
     );
   }
 
-  const lifecycle = beginBackgroundChildLifecycle({
-    subagentType,
-    capabilities,
-    parentRunId,
-    ownerThreadId,
-    startedChildRun,
-    parentRunState,
-    runtimeServices,
-    launchReservation,
-    modelPin,
-    subagentModelRouting,
-    emitAgentEvent,
-    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-    ...(durableLaunchRecorded === true ? { durableLaunchRecorded: true } : {}),
+  const timeoutAt =
+    timeoutMs === undefined
+      ? undefined
+      : new Date(Date.now() + timeoutMs).toISOString();
+  const checkpointStart = await runtimeServices.runCheckpoints.startRun({
+    runId: childRunId,
+    threadId: childThreadId,
+    request: {
+      workingDirectory,
+      permissionMode: permissionMode ?? DEFAULT_CHILD_PERMISSION_MODE,
+      ultraReasoning,
+      loopImplementation: {
+        implementationId: loopImplementation.implementationId,
+        contractVersion: loopImplementation.contractVersion,
+      },
+      providerModel: modelPin.providerRunSelection.providerModel,
+      reasoningEffort: modelPin.providerRunSelection.reasoningEffort,
+      ...(modelPin.providerRunSelection.serviceTier === undefined
+        ? {}
+        : { serviceTier: modelPin.providerRunSelection.serviceTier }),
+      subagentModelRouting,
+      ...(toolCapabilityPolicy === undefined
+        ? {
+            toolSurface: {
+              directRegistryNames: [...toolSurface.directRegistryNames],
+              allowedRegistryNames: [...toolSurface.allowedRegistryNames],
+            },
+          }
+        : { toolCapabilityPolicy }),
+      backgroundChild: {
+        parentRunId,
+        ownerThreadId,
+        computerSessionId,
+        ...(timeoutAt === undefined ? {} : { timeoutAt }),
+      },
+    },
   });
+  if (!checkpointStart.ok) {
+    launchReservation?.release();
+    finish();
+    return buildChildLaunchPayload(
+      buildChildLaunchRejected({
+        subagentType,
+        errorCode: 'execution_failed',
+        error: `child thread has recoverable run ${checkpointStart.activeRunId}`,
+      }),
+    );
+  }
+
+  let lifecycle: BackgroundChildLifecycle;
+  try {
+    lifecycle = beginBackgroundChildLifecycle({
+      subagentType,
+      capabilities,
+      parentRunId,
+      ownerThreadId,
+      startedChildRun,
+      parentRunState,
+      runtimeServices,
+      launchReservation,
+      modelPin,
+      subagentModelRouting,
+      emitAgentEvent,
+      ...(timeoutAt === undefined ? {} : { timeoutAt }),
+      ...(durableLaunchRecorded === true
+        ? { durableLaunchRecorded: true }
+        : {}),
+    });
+  } catch (error: unknown) {
+    await settleBackgroundChildCheckpoint({
+      runtimeServices,
+      childRunId,
+      childThreadId,
+      outcome: {
+        terminalState: 'failed',
+        terminalReason: 'child_error',
+        terminalResult: 'sub-agent launch failed',
+      },
+    });
+    throw error;
+  }
 
   // 배경 자식은 호출자에서 분리되어 돈다. 그 안에서 죽음이 올라오면 소유자는
   // 부모 run이 아니라 이 자식이므로, 스코프를 분리 지점에서 연다.
@@ -507,6 +745,7 @@ async function runBackgroundChild(args: {
   toolCapabilityPolicy?: AgentInput['toolCapabilityPolicy'];
   runtimeServices: AgentRuntimeServices;
   lifecycle: BackgroundChildLifecycle;
+  recoveryCheckpoint?: RunCheckpoint;
 }): Promise<void> {
   const {
     task,
@@ -528,6 +767,7 @@ async function runBackgroundChild(args: {
     toolCapabilityPolicy,
     runtimeServices,
     lifecycle,
+    recoveryCheckpoint,
   } = args;
   const { childRunId, childThreadId, childRunState } = lifecycle;
   let terminalMessage = '';
@@ -539,7 +779,7 @@ async function runBackgroundChild(args: {
   };
 
   try {
-    const result = await runAgentLoop({
+    const agentInput: AgentInput = {
       runId: childRunId,
       runContext: createRunContext({
         threadId: childThreadId,
@@ -590,7 +830,25 @@ async function runBackgroundChild(args: {
           terminalReason = message.reason;
         }
       },
-    });
+    };
+    let loopInput = agentInput;
+    if (recoveryCheckpoint !== undefined) {
+      const recovered = await recoverPendingReplaySafeToolCalls({ agentInput });
+      loopInput = {
+        ...agentInput,
+        prompt: recovered.modelPrompt,
+        historyPort: {
+          async loadInitialHistory(historyArgs) {
+            return await loadExistingHistory(
+              historyArgs.workspaceRoot,
+              historyArgs.threadId,
+              historyArgs.providerTarget,
+            );
+          },
+        },
+      };
+    }
+    const result = await runAgentLoop(loopInput);
 
     terminalOutcome = buildChildResultTerminalOutcome({
       abortSignal: childRunState.abortController.signal,
@@ -625,13 +883,90 @@ async function runBackgroundChild(args: {
       terminalReason,
     });
   } finally {
-    lifecycle.publishTerminalOutcome(
+    let published = lifecycle.publishTerminalOutcome(
       childRunState.subagentResultReportSummary === undefined
         ? terminalOutcome
         : {
             ...terminalOutcome,
             resultReportSummary: childRunState.subagentResultReportSummary,
           },
+    );
+    if (
+      !published &&
+      runtimeServices.subagent.terminalDeliveries !== undefined
+    ) {
+      await Promise.resolve();
+      try {
+        const durableOutcome =
+          runtimeServices.subagent.terminalDeliveries.readSubagentTerminalOutcomeByChildRunId(
+            childRunId,
+          );
+        published = durableOutcome !== undefined;
+        if (published) {
+          runtimeServices.childRuns.claimTerminalChildRuns({
+            ownerThreadId,
+            childRunIds: [childRunId],
+          });
+        }
+      } catch (error: unknown) {
+        logger.error(
+          'retried child terminal publication reconciliation failed:',
+          {
+            childRunId,
+            childThreadId,
+            cause: getErrorMessage(error),
+          },
+        );
+      }
+    }
+    if (published) {
+      try {
+        await settleBackgroundChildCheckpoint({
+          runtimeServices,
+          childRunId,
+          childThreadId,
+          outcome: terminalOutcome,
+        });
+      } catch (error: unknown) {
+        logger.error('child checkpoint terminal settlement failed:', {
+          childRunId,
+          childThreadId,
+          cause: getErrorMessage(error),
+        });
+      }
+    }
+  }
+}
+
+async function settleBackgroundChildCheckpoint(args: {
+  runtimeServices: Pick<AgentRuntimeServices, 'runCheckpoints'>;
+  childRunId: RunId;
+  childThreadId: RunContext['threadId'];
+  outcome: ChildTerminalOutcome;
+}): Promise<void> {
+  const terminal = await args.runtimeServices.runCheckpoints.settleRun({
+    threadId: args.childThreadId,
+    runId: args.childRunId,
+    terminal: {
+      eventCursor: 0,
+      event: {
+        type: 'done',
+        payload: {
+          answer: args.outcome.terminalResult,
+          ok: args.outcome.terminalState === 'completed',
+        },
+      },
+    },
+  });
+  const acknowledged =
+    await args.runtimeServices.runCheckpoints.acknowledgeTerminalEvent({
+      threadId: args.childThreadId,
+      runId: args.childRunId,
+      eventCursor: terminal.terminal?.eventCursor ?? 0,
+    });
+  if (!acknowledged.ok) {
+    throw new Error(
+      `child checkpoint terminal acknowledgement failed: ${acknowledged.code}`,
     );
   }
 }

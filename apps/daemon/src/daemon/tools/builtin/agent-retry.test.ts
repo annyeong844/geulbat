@@ -77,6 +77,7 @@ void test('agent_retry launches one fresh approved attempt and preserves the int
         };
       },
     });
+    assert.equal(retryTool.recoveryStrategy, 'reconcile_then_replay');
     const parentRunId = testRunId('retry-current-parent');
     const parentState = createRunState({
       runId: parentRunId,

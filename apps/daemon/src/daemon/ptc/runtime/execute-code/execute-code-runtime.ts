@@ -72,19 +72,18 @@ import {
   resolvePtcExecuteCodeStandbyPlacementConfigFromEnv,
   type PtcExecuteCodeStandbyPlacementConfig,
 } from './execute-code-standby-pool.js';
+import { createPtcExecuteCodeCellRegistry } from './execute-code-cell-registry.js';
 import {
-  createPtcExecuteCodeCellRegistry,
-  PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS,
-} from './execute-code-cell-registry.js';
+  createPtcExecuteCodeCellReadoptionLedger,
+  type PtcExecuteCodeEpochCallbackController,
+} from './execute-code-cell-readoption.js';
 import {
   PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS,
   type PtcExecuteCodeCellRetainedResult,
 } from './execute-code-cell-terminal-retention.js';
 import { runExecuteCodeCellRuntimeAttempt } from './execute-code-cell-runtime.js';
-import { trackAdoptedRunningCellCompletion } from './execute-code-cell-settlement.js';
 import type {
   AttachPtcExecuteCodeCellProcess,
-  DetachedProcessHandle,
   StartPtcExecuteCodeCellProcess,
 } from './execute-code-cell-process.js';
 import { waitForExecuteCodeCell } from './execute-code-cell-wait.js';
@@ -105,7 +104,6 @@ import {
   isPtcExecuteCodeRuntimeCellTerminalStatus,
   stringifyPtcExecuteCodeWaitSummary,
   type PtcExecuteCodeCellId,
-  type PtcExecuteCodeCellCoordinate,
   type PtcExecuteCodeCellCoordinateStore,
   type PtcExecuteCodeLanguage,
   type PtcExecuteCodeModuleFormat,
@@ -127,10 +125,7 @@ import {
 import {
   buildPtcExecuteCodeStateRuntime,
   type CreatePtcExecuteCodePlacementCoordinator,
-  type CreatePtcExecuteCodeStandbyPool,
-  type CreatePtcLabSessionBatchCommandRunner,
   type CreatePtcSessionDockerManager,
-  type ExecuteCodeStateRuntime,
 } from './execute-code-state-runtime.js';
 import { validatePtcExecuteCodeSdkProjection } from './execute-code-sdk-projection-validation.js';
 
@@ -138,11 +133,6 @@ const logger = createPtcLogger('execute-code/runtime');
 
 type CreatePtcSessionEpochBridge = typeof createPtcSessionEpochBridge;
 type CreatePtcExecuteCodeCellRegistry = typeof createPtcExecuteCodeCellRegistry;
-
-interface PtcExecuteCodeEpochCallbackController {
-  replaceHandler(handler: PtcEpochCallbackHandler): void;
-  close(): Promise<void>;
-}
 
 type ExecuteCodeRuntimeRunArgs = Parameters<
   PtcExecuteCodeRuntime['executeCode']
@@ -211,9 +201,7 @@ export interface CreatePtcExecuteCodeRuntimeOptions {
   dockerPath?: string;
   commandRunner?: PtcSessionDockerCommandRunner;
   createSessionManager?: CreatePtcSessionDockerManager;
-  createBatchCommandRunner?: CreatePtcLabSessionBatchCommandRunner;
   createPlacementCoordinator?: CreatePtcExecuteCodePlacementCoordinator;
-  createStandbyPool?: CreatePtcExecuteCodeStandbyPool;
   placementResourceBudgetProvider?: () => PtcExecuteCodePlacementResourceBudget;
   getPlacementContinuityProvenance?: PtcExecuteCodePlacementContinuityProvenanceProvider;
   createEpochBridge?: CreatePtcSessionEpochBridge;
@@ -478,14 +466,6 @@ export function createPtcExecuteCodeRuntime(
       ? undefined
       : PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH;
   const cellTerminalResultStore = options.cellTerminalResultStore;
-  let cellCoordinateStore: PtcExecuteCodeCellCoordinateStore | undefined;
-  const adoptedCellCoordinatesByKey = new Map<
-    string,
-    PtcExecuteCodeCellCoordinate
-  >();
-  let cellReadoptionPromise:
-    | Promise<PtcExecuteCodeRuntimeCleanupResult>
-    | undefined;
   const persistTerminalResult =
     cellTerminalResultStore === undefined
       ? undefined
@@ -592,340 +572,20 @@ export function createPtcExecuteCodeRuntime(
         }),
   });
 
-  const cellCoordinateKey = (coordinate: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): string => `${coordinate.threadId}\u0000${coordinate.cellId}`;
-
-  const recoveringCallbackHandler: PtcEpochCallbackHandler = async () => ({
-    ok: false,
-    errorCode: 'ptc_callback_controller_recovering',
-    message:
-      'PTC execute_code callback delivery is unavailable until the cell is claimed through wait',
+  const cellReadoptionLedger = createPtcExecuteCodeCellReadoptionLedger({
+    attachCellProcess: options.attachCellProcess,
+    attachEpochCallbackController: options.attachEpochCallbackController,
+    cellRegistry,
+    getStateRuntime: runtimeState.getStateRuntime,
   });
-
-  async function finalizeFailedCellReadoption(args: {
-    coordinate: PtcExecuteCodeCellCoordinate;
-    stateRuntime: ExecuteCodeStateRuntime;
-    sessionAdopted: boolean;
-    handle?: DetachedProcessHandle;
-    callbackController?: PtcExecuteCodeEpochCallbackController;
-    diagnostics: Record<string, string | number | boolean>;
-  }): Promise<PtcExecuteCodeRuntimeCleanupResult> {
-    const cleanupDiagnostics: Record<string, string | number | boolean> = {
-      ...args.diagnostics,
-    };
-    let cleanupProven = true;
-
-    if (args.handle !== undefined) {
-      try {
-        args.handle.terminate({
-          graceMs: PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS,
-        });
-        await args.handle.exit;
-      } catch {
-        cleanupProven = false;
-        cleanupDiagnostics.cellProcessCleanupFailed = true;
-      }
-    }
-    if (args.callbackController !== undefined) {
-      try {
-        await args.callbackController.close();
-      } catch {
-        cleanupProven = false;
-        cleanupDiagnostics.callbackProcessCleanupFailed = true;
-      }
-    }
-    if (args.sessionAdopted) {
-      const sessionCleanup = await args.stateRuntime.sessionManager.close(
-        sessionIdentityFromCoordinate(args.coordinate),
-      );
-      if (!sessionCleanup.ok) {
-        cleanupProven = false;
-        cleanupDiagnostics.sessionCloseFailed = true;
-        cleanupDiagnostics.sessionReasonCode = sessionCleanup.reasonCode;
-      }
-    }
-    try {
-      cellCoordinateStore?.deletePtcExecuteCodeCellCoordinate(
-        args.coordinate.cellId,
-      );
-    } catch {
-      cleanupProven = false;
-      cleanupDiagnostics.cellCoordinateDeleteFailed = true;
-    }
-
-    if (!cleanupProven) {
-      return {
-        ok: false,
-        reasonCode: 'ptc_execute_code_session_cleanup_failed',
-        message:
-          'PTC execute_code cell re-adoption failed and cleanup was incomplete',
-        diagnostics: cleanupDiagnostics,
-      };
-    }
-
-    if (cellRegistry !== undefined) {
-      await cellRegistry.recordCellCleanupFailure({
-        threadId: args.coordinate.threadId,
-        cellId: args.coordinate.cellId,
-        terminalResultStateRoot: args.coordinate.stateRoot,
-        message: 'PTC execute_code running cell could not be re-adopted',
-        diagnostics: cleanupDiagnostics,
-      });
-    }
-    return { ok: true };
-  }
-
-  async function reAdoptPersistedRunningCells(): Promise<PtcExecuteCodeRuntimeCleanupResult> {
-    const store = cellCoordinateStore;
-    if (store === undefined) {
-      return { ok: true };
-    }
-    let coordinates: readonly PtcExecuteCodeCellCoordinate[];
-    try {
-      coordinates = store.listPtcExecuteCodeCellCoordinates();
-    } catch {
-      return {
-        ok: false,
-        reasonCode: 'ptc_execute_code_session_cleanup_failed',
-        message: 'PTC execute_code cell coordinates could not be read',
-        diagnostics: { cellCoordinateListFailed: true },
-      };
-    }
-    if (coordinates.length === 0) {
-      return { ok: true };
-    }
-    const callbackProcessAttacherRequired = coordinates.some(
-      (coordinate) => coordinate.callbackOutputRef !== undefined,
-    );
-    if (
-      options.attachCellProcess === undefined ||
-      (callbackProcessAttacherRequired &&
-        options.attachEpochCallbackController === undefined)
-    ) {
-      return {
-        ok: false,
-        reasonCode: 'ptc_execute_code_session_cleanup_failed',
-        message:
-          'PTC execute_code cell re-adoption is unavailable for persisted cells',
-        diagnostics: {
-          cellProcessAttacherMissing: options.attachCellProcess === undefined,
-          callbackProcessAttacherMissing:
-            callbackProcessAttacherRequired &&
-            options.attachEpochCallbackController === undefined,
-        },
-      };
-    }
-
-    for (const coordinate of coordinates) {
-      const stateRuntimeResult = await runtimeState.getStateRuntime(
-        coordinate.stateRoot,
-      );
-      if (!stateRuntimeResult.ok) {
-        return {
-          ok: false,
-          reasonCode: 'ptc_execute_code_session_cleanup_failed',
-          message:
-            'PTC execute_code cell re-adoption could not open its persisted state',
-          diagnostics: stateRuntimeResult.diagnostics,
-        };
-      }
-      const stateRuntime = stateRuntimeResult.value;
-      const diagnostics: Record<string, string | number | boolean> = {};
-
-      let sessionAdopted = false;
-      const adoptExisting = stateRuntime.sessionManager.adoptExisting;
-      if (adoptExisting === undefined) {
-        return {
-          ok: false,
-          reasonCode: 'ptc_execute_code_session_cleanup_failed',
-          message: 'PTC execute_code session re-adoption is unavailable',
-          diagnostics: { sessionAdopterMissing: true },
-        };
-      }
-      const sessionIdentity = sessionIdentityFromCoordinate(coordinate);
-      const adoptedSession = await adoptExisting(sessionIdentity, {
-        containerId: coordinate.containerId,
-      });
-      if (adoptedSession.ok) {
-        sessionAdopted = true;
-      } else {
-        diagnostics.containerAdoptionFailed = true;
-        diagnostics.sessionReasonCode = adoptedSession.reasonCode;
-      }
-
-      let handle: DetachedProcessHandle | undefined;
-      try {
-        const attached = await options.attachCellProcess({
-          outputRef: coordinate.processOutputRef,
-          outputBufferPolicy: {
-            maxBufferedBytesPerStream: coordinate.maxBufferedBytesPerStream,
-          },
-          ...(coordinate.outputReadOffsets === undefined
-            ? {}
-            : { outputReadOffsets: coordinate.outputReadOffsets }),
-        });
-        if (attached.ok) {
-          handle = attached.handle;
-        } else {
-          diagnostics.cellProcessAdoptionFailed = true;
-        }
-      } catch {
-        diagnostics.cellProcessAdoptionFailed = true;
-      }
-
-      let callbackController: PtcExecuteCodeEpochCallbackController | undefined;
-      if (coordinate.callbackOutputRef !== undefined) {
-        const attachCallbackController = options.attachEpochCallbackController;
-        if (attachCallbackController === undefined) {
-          diagnostics.callbackProcessAdoptionFailed = true;
-        } else {
-          try {
-            callbackController = await attachCallbackController({
-              outputRef: coordinate.callbackOutputRef,
-              handler: recoveringCallbackHandler,
-            });
-          } catch {
-            diagnostics.callbackProcessAdoptionFailed = true;
-          }
-        }
-      }
-
-      if (cellRegistry === undefined) {
-        diagnostics.cellRuntimeDisabled = true;
-      }
-      if (coordinate.storeCallbacksEnabled) {
-        diagnostics.storeCallbackReadoptionUnsupported = true;
-      }
-      if (
-        coordinate.callbackToolNames.length > 0 &&
-        coordinate.callbackOutputRef === undefined
-      ) {
-        diagnostics.callbackCoordinateMissing = true;
-      }
-
-      if (
-        !sessionAdopted ||
-        handle === undefined ||
-        cellRegistry === undefined ||
-        coordinate.storeCallbacksEnabled ||
-        (coordinate.callbackOutputRef !== undefined &&
-          callbackController === undefined) ||
-        (coordinate.callbackToolNames.length > 0 &&
-          coordinate.callbackOutputRef === undefined)
-      ) {
-        const finalized = await finalizeFailedCellReadoption({
-          coordinate,
-          stateRuntime,
-          sessionAdopted,
-          ...(handle === undefined ? {} : { handle }),
-          ...(callbackController === undefined ? {} : { callbackController }),
-          diagnostics,
-        });
-        if (!finalized.ok) {
-          return finalized;
-        }
-        continue;
-      }
-
-      const adoptedCell = cellRegistry.adoptRunningCell({
-        threadId: coordinate.threadId,
-        cellId: coordinate.cellId,
-        createdAtMs: coordinate.createdAtMs,
-        ...(coordinate.orphanReapAtMs === undefined
-          ? {}
-          : { orphanReapAtMs: coordinate.orphanReapAtMs }),
-        resources: {
-          effectiveTimeoutMs: coordinate.effectiveTimeoutMs,
-          handle,
-          closeBridge:
-            callbackController === undefined
-              ? () => undefined
-              : () => callbackController.close(),
-          ...(callbackController === undefined
-            ? {}
-            : {
-                replaceCallbackHandler: (handler) =>
-                  callbackController.replaceHandler(handler),
-              }),
-          taintSession: async () => {
-            const closed =
-              await stateRuntime.sessionManager.close(sessionIdentity);
-            return closed.ok;
-          },
-          finalizeCoordinate: () => {
-            store.deletePtcExecuteCodeCellCoordinate(coordinate.cellId);
-            adoptedCellCoordinatesByKey.delete(cellCoordinateKey(coordinate));
-          },
-          terminalResultStateRoot: coordinate.stateRoot,
-        },
-      });
-      if (!adoptedCell.ok) {
-        const finalized = await finalizeFailedCellReadoption({
-          coordinate,
-          stateRuntime,
-          sessionAdopted: true,
-          handle,
-          ...(callbackController === undefined ? {} : { callbackController }),
-          diagnostics: { cellRegistryAdoptionFailed: true },
-        });
-        if (!finalized.ok) {
-          return finalized;
-        }
-        continue;
-      }
-
-      adoptedCellCoordinatesByKey.set(
-        cellCoordinateKey(coordinate),
-        coordinate,
-      );
-      trackAdoptedRunningCellCompletion({
-        cellRegistry,
-        threadId: coordinate.threadId,
-        cellId: coordinate.cellId,
-        handle,
-        onSettled: () => {
-          adoptedCellCoordinatesByKey.delete(cellCoordinateKey(coordinate));
-        },
-      });
-    }
-    return { ok: true };
-  }
-
-  function sessionIdentityFromCoordinate(
-    coordinate: PtcExecuteCodeCellCoordinate,
-  ): PtcSessionDockerIdentity {
-    return {
-      threadId: coordinate.threadId,
-      stateRoot: coordinate.stateRoot,
-      trustContextId: coordinate.trustContextId,
-      ...(coordinate.ephemeralBurstId === undefined
-        ? {}
-        : { ephemeralBurstId: coordinate.ephemeralBurstId }),
-      ...(coordinate.sdkProjectionMount === undefined
-        ? {}
-        : {
-            sdkProjectionMount: {
-              ...coordinate.sdkProjectionMount,
-            },
-          }),
-    };
-  }
 
   return {
     attachCellCoordinateStore(store: PtcExecuteCodeCellCoordinateStore): void {
-      if (cellCoordinateStore !== undefined && cellCoordinateStore !== store) {
-        throw new Error(
-          'PTC execute_code cell coordinate store is already attached',
-        );
-      }
-      cellCoordinateStore = store;
+      cellReadoptionLedger.attachStore(store);
     },
 
     async reAdoptRunningCells(): Promise<PtcExecuteCodeRuntimeCleanupResult> {
-      cellReadoptionPromise ??= reAdoptPersistedRunningCells();
-      return await cellReadoptionPromise;
+      return await cellReadoptionLedger.reAdoptRunningCells();
     },
 
     async reapRestartResidue(args: {
@@ -1193,11 +853,7 @@ export function createPtcExecuteCodeRuntime(
           : undefined;
 
       if (invocationCellId !== undefined && execInvocation !== undefined) {
-        const deliveryStore = cellCoordinateStore;
-        if (
-          deliveryStore?.readPtcExecuteCodeRunningExecDelivery === undefined ||
-          deliveryStore.persistPtcExecuteCodeRunningExecDelivery === undefined
-        ) {
+        if (!cellReadoptionLedger.supportsRunningExecDelivery()) {
           return {
             ok: false,
             reasonCode: 'ptc_execute_code_store_unavailable',
@@ -1205,19 +861,14 @@ export function createPtcExecuteCodeRuntime(
               'PTC execute_code durable running-result recovery is unavailable',
           };
         }
-        let retainedDelivery:
-          | ReturnType<
-              NonNullable<
-                PtcExecuteCodeCellCoordinateStore['readPtcExecuteCodeRunningExecDelivery']
-              >
-            >
-          | undefined;
+        let retainedDelivery: ReturnType<
+          typeof cellReadoptionLedger.readRunningExecDelivery
+        >;
         try {
-          retainedDelivery =
-            deliveryStore.readPtcExecuteCodeRunningExecDelivery({
-              threadId: args.runContext.threadId,
-              cellId: invocationCellId,
-            });
+          retainedDelivery = cellReadoptionLedger.readRunningExecDelivery({
+            threadId: args.runContext.threadId,
+            cellId: invocationCellId,
+          });
         } catch {
           return {
             ok: false,
@@ -1239,12 +890,10 @@ export function createPtcExecuteCodeRuntime(
           };
         }
 
-        const adoptedCoordinate = adoptedCellCoordinatesByKey.get(
-          cellCoordinateKey({
-            threadId: args.runContext.threadId,
-            cellId: invocationCellId,
-          }),
-        );
+        const adoptedCoordinate = cellReadoptionLedger.getAdoptedCoordinate({
+          threadId: args.runContext.threadId,
+          cellId: invocationCellId,
+        });
         if (
           adoptedCoordinate !== undefined &&
           adoptedCoordinate.callbackToolNames.length > 0
@@ -1398,7 +1047,7 @@ export function createPtcExecuteCodeRuntime(
           );
           const toolCallbackCount = callbackRuntime.observedCount();
           try {
-            deliveryStore.persistPtcExecuteCodeRunningExecDelivery({
+            cellReadoptionLedger.persistRunningExecDelivery({
               threadId: args.runContext.threadId,
               runId: execInvocation.runId,
               callId: execInvocation.callId,
@@ -1444,14 +1093,16 @@ export function createPtcExecuteCodeRuntime(
         }
       }
 
-      if (adoptedCellCoordinatesByKey.size > 0) {
+      const adoptedRunningCellCount =
+        cellReadoptionLedger.getAdoptedRunningCellCount();
+      if (adoptedRunningCellCount > 0) {
         return {
           ok: false,
           reasonCode: 'ptc_lab_session_busy',
           message:
             'PTC execute_code cannot start another execution while a re-adopted cell is still running',
           diagnostics: {
-            reAdoptedRunningCellCount: adoptedCellCoordinatesByKey.size,
+            reAdoptedRunningCellCount: adoptedRunningCellCount,
           },
         };
       }
@@ -1507,32 +1158,11 @@ export function createPtcExecuteCodeRuntime(
             sessionManager: stateRuntime.sessionManager,
             signal: args.signal,
             startCellProcess,
-            ...(cellCoordinateStore === undefined
-              ? {}
-              : {
-                  persistCellCoordinate: (coordinate) =>
-                    cellCoordinateStore?.persistPtcExecuteCodeCellCoordinate(
-                      coordinate,
-                    ),
-                  ...(execInvocation === undefined
-                    ? {}
-                    : {
-                        persistRunningExecDelivery: (delivery) =>
-                          cellCoordinateStore?.persistPtcExecuteCodeRunningExecDelivery?.(
-                            {
-                              threadId: args.runContext.threadId,
-                              runId: execInvocation.runId,
-                              callId: execInvocation.callId,
-                              ...delivery,
-                            },
-                          ),
-                      }),
-                  deleteCellCoordinate: ({ cellId }) =>
-                    cellCoordinateStore?.deletePtcExecuteCodeCellCoordinate(
-                      cellId,
-                    ),
-                  runningCellReapAfterMs: ptcCellConfig.runningCellReapAfterMs,
-                }),
+            ...(cellReadoptionLedger.createRunningCellPersistence({
+              threadId: args.runContext.threadId,
+              invocation: execInvocation,
+              runningCellReapAfterMs: ptcCellConfig.runningCellReapAfterMs,
+            }) ?? {}),
             ...(stateRuntime.store === undefined
               ? {}
               : { store: stateRuntime.store }),
@@ -1715,11 +1345,10 @@ export function createPtcExecuteCodeRuntime(
       runtimeState.refreshQueuedPlacements();
 
       const validatedCellId = validateCellId(args.request.cellId);
-      const deliveryStore = cellCoordinateStore;
       const invocation = args.invocation;
       if (validatedCellId !== undefined) {
         try {
-          deliveryStore?.deletePtcExecuteCodeRunningExecDelivery?.({
+          cellReadoptionLedger.deleteRunningExecDelivery({
             threadId: args.runContext.threadId,
             cellId: validatedCellId,
           });
@@ -1733,25 +1362,20 @@ export function createPtcExecuteCodeRuntime(
         }
       }
       if (validatedCellId !== undefined && invocation !== undefined) {
-        let retainedDelivery:
-          | ReturnType<
-              NonNullable<
-                PtcExecuteCodeCellCoordinateStore['readPtcExecuteCodeRunningWaitDelivery']
-              >
-            >
-          | undefined;
+        let retainedDelivery: ReturnType<
+          typeof cellReadoptionLedger.readRunningWaitDelivery
+        >;
         try {
-          retainedDelivery =
-            deliveryStore?.readPtcExecuteCodeRunningWaitDelivery?.({
-              threadId: args.runContext.threadId,
-              cellId: validatedCellId,
-            });
+          retainedDelivery = cellReadoptionLedger.readRunningWaitDelivery({
+            threadId: args.runContext.threadId,
+            cellId: validatedCellId,
+          });
           if (
             retainedDelivery !== undefined &&
             (retainedDelivery.runId !== invocation.runId ||
               retainedDelivery.callId !== invocation.callId)
           ) {
-            deliveryStore?.deletePtcExecuteCodeRunningWaitDelivery?.({
+            cellReadoptionLedger.deleteRunningWaitDelivery({
               threadId: args.runContext.threadId,
               cellId: validatedCellId,
             });
@@ -1779,9 +1403,10 @@ export function createPtcExecuteCodeRuntime(
         }
       }
 
-      const adoptedCoordinate = adoptedCellCoordinatesByKey.get(
-        `${args.runContext.threadId}\u0000${args.request.cellId}`,
-      );
+      const adoptedCoordinate = cellReadoptionLedger.getAdoptedCoordinate({
+        threadId: args.runContext.threadId,
+        cellId: args.request.cellId,
+      });
       if (
         adoptedCoordinate !== undefined &&
         adoptedCoordinate.callbackToolNames.length > 0 &&
@@ -1833,14 +1458,7 @@ export function createPtcExecuteCodeRuntime(
           : {
               runningOutputDelivery: {
                 persist: (delivery) => {
-                  const persistDelivery =
-                    deliveryStore?.persistPtcExecuteCodeRunningWaitDelivery;
-                  if (persistDelivery === undefined) {
-                    throw new Error(
-                      'PTC running wait delivery store is unavailable',
-                    );
-                  }
-                  persistDelivery({
+                  cellReadoptionLedger.persistRunningWaitDelivery({
                     threadId: args.runContext.threadId,
                     runId: invocation.runId,
                     callId: invocation.callId,

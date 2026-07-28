@@ -10,11 +10,6 @@ import {
 } from '#web/origin-policy.js';
 
 const ARTIFACT_RUNTIME_HOST_PATH = '/artifact-runtime/host';
-const ARTIFACT_RUNTIME_CACHE_PROBE_PATH = '/artifact-runtime/probe-cache.txt';
-const ARTIFACT_RUNTIME_SERVICE_WORKER_PROBE_PATH =
-  '/artifact-runtime/probe-sw.js';
-const ARTIFACT_RUNTIME_CACHE_PROBE_BODY =
-  'geulbat-artifact-runtime-cache-probe';
 const ARTIFACT_RUNTIME_HOST_BASE_CSP_DIRECTIVES = [
   "default-src 'none'",
   "base-uri 'none'",
@@ -128,28 +123,6 @@ const ARTIFACT_RUNTIME_HOST_DOCUMENT_REPLACER = String.raw`async (html) => {
   await replaceContainer(document.head, parsedDocument.head);
   await replaceContainer(document.body, parsedDocument.body);
 }`;
-const ARTIFACT_RUNTIME_SERVICE_WORKER_PROBE_SOURCE = `self.addEventListener('install', (event) => {
-  self.skipWaiting();
-});
-
-self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
-});
-
-self.addEventListener('message', (event) => {
-  if (!event.data || typeof event.data !== 'object') {
-    return;
-  }
-  if (event.data.kind === 'geulbat.artifact_runtime_sw_probe') {
-    event.source?.postMessage({
-      kind: 'geulbat.artifact_runtime_sw_probe',
-      ok: true,
-      scope: self.registration.scope,
-    });
-  }
-});
-`;
-
 export function createArtifactRuntimeHostRoutes(args?: {
   configuredAllowedOrigins?: ReadonlySet<string>;
 }) {
@@ -172,23 +145,6 @@ export function createArtifactRuntimeHostRoutes(args?: {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', contentSecurityPolicy);
     res.status(200).send(buildArtifactRuntimeHostHtml(parentOrigin));
-  });
-
-  router.get(ARTIFACT_RUNTIME_CACHE_PROBE_PATH, (_req, res) => {
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.status(200).send(ARTIFACT_RUNTIME_CACHE_PROBE_BODY);
-  });
-
-  router.get(ARTIFACT_RUNTIME_SERVICE_WORKER_PROBE_PATH, (_req, res) => {
-    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Service-Worker-Allowed', '/artifact-runtime/');
-    res.status(200).send(ARTIFACT_RUNTIME_SERVICE_WORKER_PROBE_SOURCE);
   });
 
   return router;

@@ -11,6 +11,7 @@
 // 어댑터 타입을 알지 못한다. 그것이 경계다.
 
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 import {
   VIDEO_GENERATION_MODEL_CATALOG,
@@ -28,9 +29,14 @@ import type { AgentLoopImplementationAdmission } from './agent/loop-implementati
 import type { AgentInput, ApprovalContext } from './agent/loop-types.js';
 import type { ApprovalGate } from './agent/runtime/approval-gate.js';
 import { startManagedRun } from './agent/runtime/managed-run.js';
+import { createRunState, type RunState } from './agent/runtime/run-state.js';
 import type { AgentRuntimeServices } from './daemon-runtime-contract.js';
 import { createRunContext } from './run-context.js';
-import type { AgentEvent } from './runtime-contracts.js';
+import type { AgentEvent, ToolRunState } from './runtime-contracts.js';
+import type {
+  BackgroundChildResult,
+  SubagentLaunchRequestInput,
+} from './subagent-runtime-contracts.js';
 import { restorePendingInterjectFront } from './sessions/active-run-interject-buffer.js';
 import {
   assertSessionRunId as assertValidRunId,
@@ -56,7 +62,7 @@ const logger = createLogger('daemon/durable-run-execution');
  * 이 모듈이 런을 실행하려면 필요한 것. 데몬 런타임 서비스 전체에 체크포인트·
  * 라이브 이벤트·상태 루트를 더한 것이고, 그 이상은 요구하지 않는다.
  */
-export type DurableRunExecutionServices = Omit<
+type DurableRunExecutionServices = Omit<
   AgentRuntimeServices,
   'agent' | 'approvalGate'
 > & {
@@ -84,7 +90,7 @@ export function publishLiveAgentEvent(
   liveRunEvents.publishRunEvent(runId, event);
 }
 
-export interface DurableRunRecoveryDelivery {
+interface DurableRunRecoveryDelivery {
   ownerId: string;
   sink: LiveRunEventSink;
   replayAfterSeq?: number;
@@ -98,53 +104,372 @@ export interface DurableRunRecoveryDelivery {
 export async function recoverDurableRunsAtDaemonStartup(
   runtimeContext: DurableRunExecutionServices,
 ): Promise<number> {
-  const runningCheckpoints = await runtimeContext.runCheckpoints.listRunning();
-  const recovered = await Promise.all(
-    runningCheckpoints.map(async (checkpoint) => {
-      if (runtimeContext.liveRunEvents.hasRun(checkpoint.runId)) {
-        return false;
-      }
-      const reconciled = await reconcilePersistedTerminalCheckpoint(
-        runtimeContext,
-        checkpoint,
-      );
-      if (reconciled !== null) {
-        return true;
-      }
+  let recoveredCount = 0;
+  const unacknowledgedTerminal =
+    await runtimeContext.runCheckpoints.listUnacknowledgedTerminal();
+  for (const checkpoint of unacknowledgedTerminal) {
+    if (checkpoint.request.backgroundChild === undefined) {
+      continue;
+    }
+    const terminal = checkpoint.terminal;
+    if (terminal === null) {
+      continue;
+    }
+    const acknowledged =
+      await runtimeContext.runCheckpoints.acknowledgeTerminalEvent({
+        threadId: checkpoint.threadId,
+        runId: checkpoint.runId,
+        eventCursor: terminal.eventCursor,
+      });
+    if (acknowledged.ok) {
+      recoveredCount += 1;
+    }
+  }
 
-      const ownerId = `daemon-recovery:${randomUUID()}`;
-      const recovery = await startDurableRunRecovery(
-        runtimeContext,
-        checkpoint,
-        {
-          ownerId,
-          sink: () => false,
-          onStarted() {
-            runtimeContext.liveRunEvents.detachOwner(ownerId);
-          },
-        },
+  const runningCheckpoints = await runtimeContext.runCheckpoints.listRunning();
+  const rootCheckpoints = runningCheckpoints.filter(
+    (checkpoint) => checkpoint.request.backgroundChild === undefined,
+  );
+  const childCheckpoints = runningCheckpoints.filter(
+    (checkpoint) => checkpoint.request.backgroundChild !== undefined,
+  );
+  const runStates = new Map<RunId, ToolRunState>();
+  const recoverableParentRunIds = new Set<RunId>();
+
+  for (const checkpoint of rootCheckpoints) {
+    if (runtimeContext.liveRunEvents.hasRun(checkpoint.runId)) {
+      recoverableParentRunIds.add(checkpoint.runId);
+      continue;
+    }
+    const reconciled = await reconcilePersistedTerminalCheckpoint(
+      runtimeContext,
+      checkpoint,
+    );
+    if (reconciled !== null) {
+      recoveredCount += 1;
+      continue;
+    }
+
+    const ownerId = `daemon-recovery:${randomUUID()}`;
+    const recovery = await startDurableRunRecovery(runtimeContext, checkpoint, {
+      ownerId,
+      sink: () => false,
+      onStarted() {
+        runtimeContext.liveRunEvents.detachOwner(ownerId);
+      },
+    });
+    if (recovery === null) {
+      continue;
+    }
+    runStates.set(checkpoint.runId, recovery.runState);
+    recoverableParentRunIds.add(checkpoint.runId);
+    runDetached('daemon/durable-run-recovery', () =>
+      recovery.completion.catch((error: unknown) => {
+        logger
+          .withContext({
+            runId: checkpoint.runId,
+            threadId: checkpoint.threadId,
+          })
+          .error('daemon startup run recovery task failed:', {
+            message: getErrorMessage(error),
+          });
+      }),
+    );
+    recoveredCount += 1;
+  }
+
+  const allChildRunIds = new Set(
+    childCheckpoints.map((checkpoint) => checkpoint.runId),
+  );
+  const terminalHandledChildRunIds = new Set<RunId>();
+  for (const checkpoint of childCheckpoints) {
+    const durableOutcome =
+      runtimeContext.subagent.terminalDeliveries?.readSubagentTerminalOutcomeByChildRunId(
+        checkpoint.runId,
       );
-      if (recovery === null) {
-        return false;
+    if (durableOutcome === undefined) {
+      continue;
+    }
+    terminalHandledChildRunIds.add(checkpoint.runId);
+    try {
+      await settleAndAcknowledgeBackgroundChildCheckpoint(
+        runtimeContext.runCheckpoints,
+        checkpoint,
+        durableOutcome.result,
+      );
+      recoveredCount += 1;
+    } catch (error: unknown) {
+      logger
+        .withContext({
+          runId: checkpoint.runId,
+          threadId: checkpoint.threadId,
+        })
+        .error('durable child terminal checkpoint reconciliation failed:', {
+          message: getErrorMessage(error),
+        });
+    }
+  }
+
+  const recoverableChildren = new Map<RunId, RecoverableBackgroundChild>();
+  for (const checkpoint of childCheckpoints) {
+    if (terminalHandledChildRunIds.has(checkpoint.runId)) {
+      continue;
+    }
+    const child = readRecoverableBackgroundChild(runtimeContext, checkpoint);
+    if (child !== null) {
+      recoverableChildren.set(checkpoint.runId, child);
+    }
+  }
+
+  const recoveredChildRunIds = new Set<RunId>();
+  const syntheticParentStates = new Map<RunId, RunState>();
+  while (recoverableChildren.size > 0) {
+    let progressed = false;
+    for (const [childRunId, child] of recoverableChildren) {
+      const parentRunId = child.checkpoint.request.backgroundChild?.parentRunId;
+      if (parentRunId === undefined) {
+        recoverableChildren.delete(childRunId);
+        progressed = true;
+        continue;
       }
-      // 부팅 복구는 클라이언트 없이 진행되므로, 실패가 데몬 프로세스를 끝내지
-      // 않고 이 소유자에게 귀속되도록 runDetached로 넘긴다.
-      runDetached('daemon/durable-run-recovery', () =>
+      if (recoverableChildren.has(parentRunId) && !runStates.has(parentRunId)) {
+        continue;
+      }
+      if (
+        allChildRunIds.has(parentRunId) &&
+        !terminalHandledChildRunIds.has(parentRunId) &&
+        !runStates.has(parentRunId)
+      ) {
+        recoverableChildren.delete(childRunId);
+        progressed = true;
+        continue;
+      }
+      const parentRunState =
+        runStates.get(parentRunId) ??
+        readOrCreateSyntheticParentRunState({
+          states: syntheticParentStates,
+          child,
+        });
+      const admission =
+        runtimeContext.subagent.admission.reserveSubagentLaunchSlots({
+          runState: parentRunState,
+          requestedChildren: 1,
+          ultraReasoning: child.launchInput.ultraReasoning ?? false,
+        });
+      recoverableChildren.delete(childRunId);
+      progressed = true;
+      if (!admission.ok) {
+        continue;
+      }
+      const recoverBackgroundRun =
+        runtimeContext.subagent.runs.recoverBackgroundRun;
+      if (recoverBackgroundRun === undefined) {
+        admission.reservation.release();
+        continue;
+      }
+      const recovery = await recoverBackgroundRun({
+        checkpoint: child.checkpoint,
+        launchInput: child.launchInput,
+        parentRunState,
+        runtimeServices: runtimeContext,
+        launchReservation: admission.reservation,
+      });
+      if (recovery === null) {
+        continue;
+      }
+      runStates.set(childRunId, recovery.runState);
+      recoveredChildRunIds.add(childRunId);
+      recoverableParentRunIds.add(childRunId);
+      runDetached('daemon/durable-background-child-recovery', () =>
         recovery.completion.catch((error: unknown) => {
           logger
             .withContext({
-              runId: checkpoint.runId,
-              threadId: checkpoint.threadId,
+              runId: child.checkpoint.runId,
+              threadId: child.checkpoint.threadId,
             })
-            .error('daemon startup run recovery task failed:', {
+            .error('daemon startup child recovery task failed:', {
               message: getErrorMessage(error),
             });
         }),
       );
-      return true;
-    }),
+      recoveredCount += 1;
+    }
+    if (!progressed) {
+      break;
+    }
+  }
+
+  runtimeContext.subagent.launchRequests?.reconcileSubagentLaunchesAfterRestart?.(
+    {
+      recoverableChildRunIds: [...recoveredChildRunIds],
+      recoverableParentRunIds: [...recoverableParentRunIds],
+    },
   );
-  return recovered.filter(Boolean).length;
+  for (const checkpoint of childCheckpoints) {
+    if (
+      recoveredChildRunIds.has(checkpoint.runId) ||
+      terminalHandledChildRunIds.has(checkpoint.runId)
+    ) {
+      continue;
+    }
+    const interruptedOutcome =
+      runtimeContext.subagent.terminalDeliveries?.readSubagentTerminalOutcomeByChildRunId(
+        checkpoint.runId,
+      );
+    if (interruptedOutcome === undefined) {
+      continue;
+    }
+    try {
+      await settleAndAcknowledgeBackgroundChildCheckpoint(
+        runtimeContext.runCheckpoints,
+        checkpoint,
+        interruptedOutcome.result,
+      );
+    } catch (error: unknown) {
+      logger
+        .withContext({
+          runId: checkpoint.runId,
+          threadId: checkpoint.threadId,
+        })
+        .error('interrupted child checkpoint settlement failed:', {
+          message: getErrorMessage(error),
+        });
+    }
+  }
+  return recoveredCount;
+}
+
+interface RecoverableBackgroundChild {
+  checkpoint: RunCheckpoint;
+  launchInput: SubagentLaunchRequestInput;
+}
+
+function readRecoverableBackgroundChild(
+  runtimeContext: DurableRunExecutionServices,
+  checkpoint: RunCheckpoint,
+): RecoverableBackgroundChild | null {
+  const binding = checkpoint.request.backgroundChild;
+  const launchStore = runtimeContext.subagent.launchRequests;
+  if (binding === undefined || launchStore === undefined) {
+    return null;
+  }
+  try {
+    const launch = launchStore.readSubagentLaunchRequestByChildRunId(
+      checkpoint.runId,
+    );
+    if (
+      launch === undefined ||
+      (launch.launchState !== 'starting' && launch.launchState !== 'started') ||
+      launch.childThreadId !== checkpoint.threadId ||
+      launch.parentRunId !== binding.parentRunId ||
+      launch.ownerThreadId !== binding.ownerThreadId
+    ) {
+      return null;
+    }
+    const launchInput = launchStore.readSubagentLaunchInput(checkpoint.runId);
+    const expectedPermissionMode = launchInput.permissionMode ?? 'basic';
+    const expectedProviderModel =
+      launchInput.modelPin.providerRunSelection.providerModel;
+    if (
+      launchInput.parentRunId !== binding.parentRunId ||
+      launchInput.ownerThreadId !== binding.ownerThreadId ||
+      launchInput.stateRoot !== runtimeContext.homeStateRoot ||
+      launchInput.workingDirectory !== checkpoint.request.workingDirectory ||
+      expectedPermissionMode !== checkpoint.request.permissionMode ||
+      checkpoint.request.loopImplementation === undefined ||
+      (checkpoint.request.toolSurface === undefined &&
+        checkpoint.request.toolCapabilityPolicy === undefined) ||
+      checkpoint.request.planningWorkflow !== undefined ||
+      checkpoint.request.approvedPlanRef !== undefined ||
+      checkpoint.request.goal !== undefined ||
+      checkpoint.request.providerTransitionRecovery !== undefined ||
+      checkpoint.request.currentFile !== undefined ||
+      checkpoint.request.selection !== undefined ||
+      checkpoint.request.toolLibraryProjectionIdentity !== undefined ||
+      checkpoint.request.imageGenerationModel !== undefined ||
+      checkpoint.request.videoGenerationModel !== undefined ||
+      checkpoint.request.videoGenerationSettings !== undefined ||
+      !isDeepStrictEqual(
+        checkpoint.request.providerModel,
+        expectedProviderModel,
+      ) ||
+      checkpoint.request.reasoningEffort !==
+        launchInput.modelPin.providerRunSelection.reasoningEffort ||
+      checkpoint.request.serviceTier !==
+        launchInput.modelPin.providerRunSelection.serviceTier ||
+      (checkpoint.request.ultraReasoning ?? false) !==
+        (launchInput.ultraReasoning ?? false) ||
+      !isDeepStrictEqual(
+        checkpoint.request.subagentModelRouting,
+        launchInput.subagentModelRouting,
+      )
+    ) {
+      return null;
+    }
+    return { checkpoint, launchInput };
+  } catch (error: unknown) {
+    logger
+      .withContext({ runId: checkpoint.runId, threadId: checkpoint.threadId })
+      .error('durable child checkpoint correlation failed:', {
+        message: getErrorMessage(error),
+      });
+    return null;
+  }
+}
+
+function readOrCreateSyntheticParentRunState(args: {
+  states: Map<RunId, RunState>;
+  child: RecoverableBackgroundChild;
+}): RunState {
+  const binding = args.child.checkpoint.request.backgroundChild;
+  if (binding === undefined) {
+    throw new Error('recoverable child binding disappeared');
+  }
+  const existing = args.states.get(binding.parentRunId);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = createRunState({
+    runId: binding.parentRunId,
+    runContext: createRunContext({
+      threadId: binding.ownerThreadId,
+      stateRoot: args.child.launchInput.stateRoot,
+      workingDirectory: args.child.launchInput.workingDirectory,
+    }),
+  });
+  args.states.set(binding.parentRunId, created);
+  return created;
+}
+
+async function settleAndAcknowledgeBackgroundChildCheckpoint(
+  runCheckpoints: RunCheckpointStore,
+  checkpoint: RunCheckpoint,
+  result: BackgroundChildResult,
+): Promise<void> {
+  const settled = await runCheckpoints.settleRun({
+    threadId: checkpoint.threadId,
+    runId: checkpoint.runId,
+    terminal: {
+      eventCursor: 0,
+      event: {
+        type: 'done',
+        payload: {
+          answer: result.result,
+          ok: result.terminalState === 'completed',
+        },
+      },
+    },
+  });
+  const acknowledged = await runCheckpoints.acknowledgeTerminalEvent({
+    threadId: checkpoint.threadId,
+    runId: checkpoint.runId,
+    eventCursor: settled.terminal?.eventCursor ?? 0,
+  });
+  if (!acknowledged.ok) {
+    throw new Error(
+      `durable child terminal acknowledgement failed: ${acknowledged.code}`,
+    );
+  }
 }
 
 export async function reconcilePersistedTerminalCheckpoint(
@@ -194,7 +519,10 @@ export async function startDurableRunRecovery(
   runtimeContext: DurableRunExecutionServices,
   checkpoint: RunCheckpoint,
   delivery: DurableRunRecoveryDelivery,
-): Promise<{ readonly completion: Promise<void> } | null> {
+): Promise<{
+  readonly completion: Promise<void>;
+  readonly runState: RunState;
+} | null> {
   const abortController = new AbortController();
   const startedRun = startManagedRun(
     {
@@ -472,7 +800,7 @@ export async function startDurableRunRecovery(
       delivery.onFinished?.(runId);
     }
   })();
-  return Object.freeze({ completion });
+  return Object.freeze({ completion, runState: startedRun.runState });
 }
 
 export function buildRunScopedRuntimeServices(

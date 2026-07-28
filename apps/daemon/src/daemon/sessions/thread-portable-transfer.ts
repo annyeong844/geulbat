@@ -141,7 +141,7 @@ export interface ThreadArchiveTransferService {
   }): Promise<ThreadArchiveImportResult>;
 }
 
-export interface ThreadArchiveProjectionTransferPort {
+interface ThreadArchiveProjectionTransferPort {
   exportProjectionBundle(args: {
     stateRoot: string;
     threadId: string;

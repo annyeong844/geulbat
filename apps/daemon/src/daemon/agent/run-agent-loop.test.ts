@@ -540,7 +540,7 @@ void test('runAgentLoop composes one explicit tool capability policy across defi
   );
 });
 
-void test('runAgentLoop exposes every allowed tool directly when the model has no accepted discovery path', async () => {
+void test('runAgentLoop applies each model tool-discovery policy to the provider surface', async () => {
   const cases = [
     {
       providerId: 'qwen_token_plan' as const,
@@ -565,6 +565,24 @@ void test('runAgentLoop exposes every allowed tool directly when the model has n
     {
       providerId: 'openai_codex_direct' as const,
       model: 'gpt-5.6-sol' as const,
+      expectedDirectToolNames: ['list_files'],
+      expectedDeferredToolNames: [
+        'external_provider_additional',
+        'external_provider_fallback',
+      ],
+    },
+    {
+      providerId: 'openai_codex_direct' as const,
+      model: 'gpt-5.6-terra' as const,
+      expectedDirectToolNames: ['list_files'],
+      expectedDeferredToolNames: [
+        'external_provider_additional',
+        'external_provider_fallback',
+      ],
+    },
+    {
+      providerId: 'openai_codex_direct' as const,
+      model: 'gpt-5.6-luna' as const,
       expectedDirectToolNames: ['list_files'],
       expectedDeferredToolNames: [
         'external_provider_additional',

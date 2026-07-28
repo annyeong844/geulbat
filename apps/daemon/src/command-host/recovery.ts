@@ -10,6 +10,7 @@ import {
   type HostCommandPaths,
   type PersistedHostCommandLocation,
 } from '../daemon/host-command-output-store.js';
+import { isNotFoundError } from '../daemon/utils/error.js';
 import { writeDurableFile } from './durability.js';
 import {
   buildCommandHostJournalPath,
@@ -154,7 +155,10 @@ async function reconcileSession(
   let raw: string;
   try {
     raw = await readFile(session.paths.metadata, 'utf8');
-  } catch {
+  } catch (error: unknown) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
     // claim 메타가 없는 디렉터리 = 커밋되지 않은 잔재 (§5.2 5단계).
     await removeHostCommandDirectory(session.paths.directory);
     return 'removed';

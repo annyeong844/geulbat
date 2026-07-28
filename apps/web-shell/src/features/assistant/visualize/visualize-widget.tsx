@@ -6,6 +6,7 @@ import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workfl
 import { buildCanonicalArtifactSourceRef } from '../../artifacts/artifact-source-ref.js';
 import { resolvePlanRenderingStampProjection } from '../../artifacts/artifact-view-model.js';
 import { buildHtmlArtifactRuntimePayload } from '../../artifacts/runtime-preview/html/document.js';
+import { ARTIFACT_RUNTIME_SANDBOX } from '../../artifacts/runtime-preview/types.js';
 import {
   buildVisualizeWidgetDocument,
   buildVisualizeWidgetStreamDocument,
@@ -155,7 +156,7 @@ export function VisualizeStreamingWidget(props: {
       <ArtifactRuntimeFrame
         renderer="html5"
         title={view.title ?? 'visualize widget'}
-        sandbox="allow-scripts allow-forms allow-same-origin"
+        sandbox={ARTIFACT_RUNTIME_SANDBOX}
         runtimePayload={runtimePayload}
         sourceRef={sourceRef}
         variant="inline"
@@ -264,7 +265,7 @@ export function VisualizeWidget(props: {
       <ArtifactRuntimeFrame
         renderer="html5"
         title={view.title ?? 'visualize widget'}
-        sandbox="allow-scripts allow-forms allow-same-origin"
+        sandbox={ARTIFACT_RUNTIME_SANDBOX}
         runtimePayload={runtimePayload}
         sourceRef={sourceRef}
         variant="inline"

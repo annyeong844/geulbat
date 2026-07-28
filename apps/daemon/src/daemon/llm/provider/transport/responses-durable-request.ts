@@ -301,12 +301,16 @@ export function createHostRoutedResponsesRequestTransport(args: {
     }
 
     let stdoutBuffer = '';
+    // 호스트의 stderr는 이 프로세스 밖에서 죽은 이유가 남는 유일한 자리다.
+    // 버리면 사용자에게는 분류 불가 오류만 남는다.
+    let stderrBuffer = '';
     let deliveredEvents = 0;
     let reachedTerminal = false;
     try {
       for (;;) {
         const drained = handle.drainNewOutput();
         stdoutBuffer += drained.stdout;
+        stderrBuffer += drained.stderr;
         const decoded = decodeOutputFrames(stdoutBuffer);
         stdoutBuffer = decoded.remainder;
         for (const frame of decoded.frames) {
@@ -356,6 +360,7 @@ export function createHostRoutedResponsesRequestTransport(args: {
         if (wake.kind === 'exit') {
           const finalOutput = handle.drainNewOutput();
           stdoutBuffer += finalOutput.stdout;
+          stderrBuffer += finalOutput.stderr;
           const finalFrames = decodeOutputFrames(stdoutBuffer);
           stdoutBuffer = finalFrames.remainder;
           for (const frame of finalFrames.frames) {
@@ -383,7 +388,11 @@ export function createHostRoutedResponsesRequestTransport(args: {
             return;
           }
           throw outcomeUnknownError(
-            `provider request host exited (${describeProcessExit(wake.exit)})`,
+            `provider request host exited (${describeProcessExit(wake.exit)})${
+              redactHostStderr(stderrBuffer, input) === ''
+                ? ''
+                : `; host stderr: ${redactHostStderr(stderrBuffer, input)}`
+            }`,
           );
         }
       }
@@ -680,6 +689,30 @@ function isMissingFileError(error: unknown): boolean {
     typeof error === 'object' &&
     Reflect.get(error, 'code') === 'ENOENT'
   );
+}
+
+// 호스트 stderr는 provider event와 달리 호스트 안에서 redaction을 거치지 않는다.
+// 비정상 종료 진단을 살리면서도 credential이 사용자 오류 메시지로 새지 않도록,
+// event와 같은 marker 집합으로 여기서 한 번 더 지운다.
+function redactHostStderr(
+  stderr: string,
+  input: DurableProviderRequestStreamArgs,
+): string {
+  const trimmed = stderr.trim();
+  if (trimmed === '') {
+    return '';
+  }
+  let redacted = trimmed;
+  for (const marker of buildSensitiveProviderHeaderMarkers(input.headers)) {
+    if (marker === '') {
+      continue;
+    }
+    redacted = redacted.replaceAll(
+      marker,
+      RESPONSES_DURABLE_REQUEST_REDACTION_REPLACEMENT,
+    );
+  }
+  return redacted;
 }
 
 function buildSensitiveProviderHeaderMarkers(headers: Headers): string[] {

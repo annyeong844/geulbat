@@ -13,6 +13,7 @@ import { testThreadId } from '../../../test-support/thread-id.js';
 import { submitResultReportTool } from './submit-result-report.js';
 
 void test('submit_result_report records a child summary without replacing final prose', async () => {
+  assert.equal(submitResultReportTool.recoveryStrategy, 'replay_safe');
   const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-submit-result-report-'),
   );

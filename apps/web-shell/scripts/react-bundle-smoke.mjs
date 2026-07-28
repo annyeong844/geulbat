@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import net from 'node:net';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +25,6 @@ import {
   ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
   ARTIFACT_RUNTIME_HOST_READY_ACTION,
   createArtifactRuntimeHostBootMessage,
-  DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN,
 } from '../src/features/assistant/runtime-frame/artifact-runtime-host.ts';
 import { buildJsRuntimePersistenceBootstrap } from '../src/features/assistant/runtime-persistence/artifact-runtime-persistence-bootstrap.ts';
 import {
@@ -47,10 +48,13 @@ const appRoot = path.resolve(scriptDir, '..');
 const repoRoot = path.resolve(appRoot, '..', '..');
 const outputDir = path.join(repoRoot, 'output', 'playwright');
 const screenshotPath = path.join(outputDir, 'react-bundle-smoke-e2e.png');
-const daemonOrigin = DEFAULT_ARTIFACT_RUNTIME_HOST_ORIGIN;
-const daemonHostUrl = new URL('/artifact-runtime/host', `${daemonOrigin}/`);
+const daemonHost = '127.0.0.1';
+let daemonOrigin = `http://${daemonHost}:3456`;
 
 async function main() {
+  const daemonPort = await reserveFreePort();
+  daemonOrigin = `http://${daemonHost}:${daemonPort}`;
+  const daemonHostUrl = new URL('/artifact-runtime/host', `${daemonOrigin}/`);
   const smokeFixture = await resolveSmokeFixture({
     name: process.env['GEULBAT_REACT_BUNDLE_SMOKE_FIXTURE'],
     manifestFilePath: process.env['GEULBAT_REACT_BUNDLE_SMOKE_MANIFEST_FILE'],
@@ -63,24 +67,52 @@ async function main() {
   );
 
   const daemonLogs = [];
+  const harness = await createSmokeHarnessServer(smokeFixture);
+  const homeStateRoot = await fs.mkdtemp(
+    path.join(tmpdir(), 'geulbat-react-bundle-smoke-'),
+  );
   const daemon = startDaemon({
     repoRoot,
     logs: daemonLogs,
+    port: daemonPort,
     watch: true,
     enablePublicWebConformanceFixtures: true,
+    allowedOrigins: [new URL(harness.url).origin],
+    homeStateRoot,
   });
 
   try {
     await waitForDaemonReady(daemonHostUrl, daemonLogs);
-    const harness = await createSmokeHarnessServer(smokeFixture);
-    try {
-      await runSmoke(harness.url, smokeFixture, daemonOrigin);
-    } finally {
-      await closeServer(harness.server);
-    }
+    await runSmoke(harness.url, smokeFixture, daemonOrigin);
   } finally {
     await stopProcess(daemon);
+    await closeServer(harness.server);
+    await fs.rm(homeStateRoot, { recursive: true, force: true });
   }
+}
+
+async function reserveFreePort() {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, daemonHost, () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close();
+        reject(new Error('react-bundle smoke could not reserve a daemon port'));
+        return;
+      }
+      const { port } = address;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
 }
 
 async function createSmokeHarnessServer(smokeFixture) {
@@ -118,7 +150,6 @@ async function createSmokeHarnessServer(smokeFixture) {
         runtimeDocument,
         runtimeFrameUrl: runtimeFrameUrl.toString(),
         scopeHandle,
-        runtimeHostOrigin: daemonOrigin,
       }),
     );
   });
@@ -145,8 +176,7 @@ async function createSmokeHarnessServer(smokeFixture) {
 }
 
 function buildSmokeHarnessHtml(args) {
-  const { runtimeDocument, runtimeFrameUrl, scopeHandle, runtimeHostOrigin } =
-    args;
+  const { runtimeDocument, runtimeFrameUrl, scopeHandle } = args;
 
   return `<!doctype html>
 <html lang="en">
@@ -171,12 +201,13 @@ function buildSmokeHarnessHtml(args) {
     <iframe
       id="artifact-frame"
       title="react bundle smoke"
-      sandbox="allow-scripts allow-forms allow-same-origin"
+      sandbox="allow-scripts allow-forms"
       src=${JSON.stringify(runtimeFrameUrl)}
     ></iframe>
     <script>
       (() => {
-        const runtimeHostOrigin = ${JSON.stringify(runtimeHostOrigin)};
+        const runtimeFrameMessageOrigin = 'null';
+        const runtimeFrameTargetOrigin = '*';
         const scopeHandle = ${JSON.stringify(scopeHandle)};
         const runtimeDocument = ${escapeInlineScriptJson(runtimeDocument)};
         const bootMessage = ${escapeInlineScriptJson(
@@ -276,7 +307,7 @@ function buildSmokeHarnessHtml(args) {
         window.addEventListener('message', (event) => {
           if (
             event.source !== iframe.contentWindow ||
-            event.origin !== runtimeHostOrigin
+            event.origin !== runtimeFrameMessageOrigin
           ) {
             return;
           }
@@ -287,13 +318,19 @@ function buildSmokeHarnessHtml(args) {
             data.kind === ${JSON.stringify(ARTIFACT_RUNTIME_HOST_MESSAGE_KIND)} &&
             data.action === ${JSON.stringify(ARTIFACT_RUNTIME_HOST_READY_ACTION)}
           ) {
-            iframe.contentWindow?.postMessage(bootMessage, runtimeHostOrigin);
+            iframe.contentWindow?.postMessage(
+              bootMessage,
+              runtimeFrameTargetOrigin,
+            );
             return;
           }
 
           const response = handlePersistenceRequest(data);
           if (response) {
-            iframe.contentWindow?.postMessage(response, runtimeHostOrigin);
+            iframe.contentWindow?.postMessage(
+              response,
+              runtimeFrameTargetOrigin,
+            );
           }
         });
       })();

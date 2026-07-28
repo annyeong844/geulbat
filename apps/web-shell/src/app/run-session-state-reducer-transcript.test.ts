@@ -10,8 +10,79 @@ import {
 import {
   OTHER_THREAD_ID_VALUE,
   RUN_ID,
+  THREAD_ID,
   THREAD_ID_VALUE,
 } from '../test-support/run-session-fixtures.js';
+import { makeApprovalRequiredFixture } from '../test-support/protocol-fixtures.js';
+
+void test('terminal tool activity clears only the matching pending approval and reveals the next one', () => {
+  const firstApproval = makeApprovalRequiredFixture({
+    callId: 'approval-call-1',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+  });
+  const secondApproval = makeApprovalRequiredFixture({
+    callId: 'approval-call-2',
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+  });
+  const running = reduceRunSessionState(
+    reduceRunSessionState(createInitialRunSessionState(), {
+      type: 'run_start_requested',
+      threadId: THREAD_ID_VALUE,
+    }),
+    {
+      type: 'run_started',
+      threadId: THREAD_ID_VALUE,
+      runId: RUN_ID,
+    },
+  );
+  const withApprovals = reduceRunSessionState(
+    reduceRunSessionState(running, {
+      type: 'approval_requested',
+      threadId: THREAD_ID_VALUE,
+      pendingApproval: firstApproval,
+    }),
+    {
+      type: 'approval_requested',
+      threadId: THREAD_ID_VALUE,
+      pendingApproval: secondApproval,
+    },
+  );
+
+  const afterStaleToolSettled = reduceRunSessionState(withApprovals, {
+    type: 'transcript_activity_added',
+    runId: 'run-stale',
+    threadId: THREAD_ID_VALUE,
+    entry: {
+      kind: 'tool_activity',
+      tool: 'write_file',
+      state: 'completed',
+      callId: firstApproval.callId,
+    },
+  });
+  assert.equal(
+    afterStaleToolSettled.activeRunView.pendingApproval,
+    firstApproval,
+  );
+
+  const afterToolSettled = reduceRunSessionState(afterStaleToolSettled, {
+    type: 'transcript_activity_added',
+    runId: RUN_ID,
+    threadId: THREAD_ID_VALUE,
+    entry: {
+      kind: 'tool_activity',
+      tool: 'write_file',
+      state: 'completed',
+      callId: firstApproval.callId,
+    },
+  });
+
+  assert.equal(afterToolSettled.activeRunView.pendingApproval, secondApproval);
+  assert.deepEqual(afterToolSettled.activeRunView.pendingApprovals, [
+    secondApproval,
+  ]);
+});
 
 void test('run transcript entries stay structured instead of flattening tool events into commentary text', () => {
   const withEntries = reduceRunSessionState(
@@ -36,6 +107,7 @@ void test('run transcript entries stay structured instead of flattening tool eve
     ),
     {
       type: 'transcript_activity_added',
+      runId: 'run-1',
       threadId: THREAD_ID_VALUE,
       entry: {
         kind: 'tool_activity',
@@ -47,6 +119,7 @@ void test('run transcript entries stay structured instead of flattening tool eve
 
   const finished = reduceRunSessionState(withEntries, {
     type: 'transcript_activity_added',
+    runId: 'run-1',
     threadId: THREAD_ID_VALUE,
     entry: {
       kind: 'tool_activity',
@@ -414,6 +487,7 @@ void test('tool_call_args_streamed accumulates into a live entry and the full to
   // 완성본 tool_call이 스트리밍을 닫고 일반 엔트리가 대체한다
   const settled = reduceRunSessionState(mismatched, {
     type: 'transcript_activity_added',
+    runId: 'run-stream-1',
     threadId: THREAD_ID_VALUE,
     streamedToolCallId: 'call_viz',
     entry: {
@@ -449,6 +523,7 @@ void test('tool_output_streamed accumulates only on the matching live tool call'
   });
   const withCall = reduceRunSessionState(running, {
     type: 'transcript_activity_added',
+    runId: 'run-stream-output',
     threadId: THREAD_ID_VALUE,
     entry: {
       kind: 'tool_activity',

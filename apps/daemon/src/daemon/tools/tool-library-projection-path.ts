@@ -24,7 +24,7 @@ export function toolLibraryProjectionsRootPath(stateRoot: string): string {
   return joinWorkspaceGeulbatPath(stateRoot, 'tool-library', 'projections');
 }
 
-export const TOOL_LIBRARY_PROJECTION_CONTENT_DIRECTORY = 'content';
+const TOOL_LIBRARY_PROJECTION_CONTENT_DIRECTORY = 'content';
 
 export function toolLibraryProjectionContentRootPath(
   projectionsRootPath: string,

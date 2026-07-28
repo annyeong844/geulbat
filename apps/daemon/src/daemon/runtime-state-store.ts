@@ -81,6 +81,8 @@ const SQLITE_SYNCHRONOUS_FULL = 2;
 const DAEMON_RESTART_INTERRUPTION_REASON = 'daemon_restart_interrupted';
 const DAEMON_RESTART_INTERRUPTION_RESULT =
   'sub-agent interrupted because the daemon restarted before a durable terminal outcome was recorded';
+const DAEMON_RESTART_QUEUED_INTERRUPTION_RESULT =
+  'sub-agent launch was interrupted because its parent run could not be recovered after the daemon restarted';
 
 type DaemonRuntimeStateStoreErrorStage =
   | 'backup'
@@ -145,6 +147,7 @@ export function resolveDaemonRuntimeStateDatabasePath(
 export async function createDaemonRuntimeStateStore(args: {
   homeStateRoot: string;
   now?: (() => Date) | undefined;
+  deferSubagentRestartReconciliation?: true;
 }): Promise<DaemonRuntimeStateStore> {
   const databasePath = resolveDaemonRuntimeStateDatabasePath(
     args.homeStateRoot,
@@ -291,15 +294,17 @@ export async function createDaemonRuntimeStateStore(args: {
     );
   }
 
-  try {
-    reconcileSubagentLaunchesAfterRestart(database, now);
-  } catch (error: unknown) {
-    closeDatabase(database);
-    throw new DaemonRuntimeStateStoreError(
-      'recovery',
-      'daemon runtime-state restart reconciliation failed; active launch state was not partially recovered',
-      error,
-    );
+  if (args.deferSubagentRestartReconciliation !== true) {
+    try {
+      reconcileSubagentLaunchesAfterRestart(database, now, new Set());
+    } catch (error: unknown) {
+      closeDatabase(database);
+      throw new DaemonRuntimeStateStoreError(
+        'recovery',
+        'daemon runtime-state restart reconciliation failed; active launch state was not partially recovered',
+        error,
+      );
+    }
   }
 
   return {
@@ -559,6 +564,19 @@ export async function createDaemonRuntimeStateStore(args: {
         () => isSubagentResultReaderInOwnerScope(database, scopeArgs),
       );
     },
+    reconcileSubagentLaunchesAfterRestart(reconcileArgs) {
+      runRuntimeStateStoreOperation(
+        closed,
+        'reconcile subagent launches after restart',
+        () =>
+          reconcileSubagentLaunchesAfterRestart(
+            database,
+            now,
+            new Set(reconcileArgs.recoverableChildRunIds),
+            new Set(reconcileArgs.recoverableParentRunIds),
+          ),
+      );
+    },
     close() {
       if (closed) {
         return;
@@ -623,6 +641,8 @@ function readRuntimeStateStoreDiagnostics(
 function reconcileSubagentLaunchesAfterRestart(
   database: DatabaseSync,
   now: () => Date,
+  recoverableChildRunIds: ReadonlySet<RunId>,
+  recoverableParentRunIds?: ReadonlySet<RunId>,
 ): void {
   const timestamp = now().toISOString();
   runImmediateTransaction(database, () => {
@@ -642,7 +662,7 @@ function reconcileSubagentLaunchesAfterRestart(
       )
       .run(timestamp);
 
-    const activeRows = database
+    const unsettledRows = database
       .prepare(
         `
           SELECT
@@ -650,9 +670,13 @@ function reconcileSubagentLaunchesAfterRestart(
             launch.child_thread_id AS childThreadId,
             launch.parent_run_id AS parentRunId,
             launch.owner_thread_id AS ownerThreadId,
+            launch.launch_state AS launchState,
             launch.input_json AS inputJson
           FROM subagent_launch_requests AS launch
-          WHERE launch.launch_state IN ('starting', 'started')
+          WHERE (
+              launch.launch_state IN ('starting', 'started')
+              OR (? = 1 AND launch.launch_state = 'queued')
+            )
             AND NOT EXISTS (
               SELECT 1
               FROM subagent_terminal_outcomes AS terminal
@@ -661,10 +685,18 @@ function reconcileSubagentLaunchesAfterRestart(
           ORDER BY launch.enqueue_order
         `,
       )
-      .all();
+      .all(recoverableParentRunIds === undefined ? 0 : 1);
 
-    for (const rawRow of activeRows) {
+    for (const rawRow of unsettledRows) {
       const row = parseSubagentRestartRecoveryRow(rawRow);
+      if (
+        row.launchState === 'queued'
+          ? recoverableParentRunIds === undefined ||
+            recoverableParentRunIds.has(row.parentRunId)
+          : recoverableChildRunIds.has(row.childRunId)
+      ) {
+        continue;
+      }
       const launch = readSubagentLaunchRequestByChildRunId(
         database,
         row.childRunId,
@@ -688,7 +720,10 @@ function reconcileSubagentLaunchesAfterRestart(
         runtime: launch.runtime,
         terminalState: 'failed',
         reason: 'daemon_restart',
-        result: DAEMON_RESTART_INTERRUPTION_RESULT,
+        result:
+          row.launchState === 'queued'
+            ? DAEMON_RESTART_QUEUED_INTERRUPTION_RESULT
+            : DAEMON_RESTART_INTERRUPTION_RESULT,
         completedAt: timestamp,
         modelId: row.modelId,
         reasoningEffort: row.reasoningEffort,
@@ -708,13 +743,18 @@ function reconcileSubagentLaunchesAfterRestart(
               failure_reason = ?,
               updated_at = ?
             WHERE child_run_id = ?
-              AND launch_state IN ('starting', 'started')
+              AND launch_state = ?
           `,
         )
-        .run(DAEMON_RESTART_INTERRUPTION_REASON, timestamp, row.childRunId);
+        .run(
+          DAEMON_RESTART_INTERRUPTION_REASON,
+          timestamp,
+          row.childRunId,
+          row.launchState,
+        );
       if (Number(transition.changes) !== 1) {
         throw new Error(
-          `subagent restart reconciliation lost active launch ${row.childRunId}`,
+          `subagent restart reconciliation lost ${row.launchState} launch ${row.childRunId}`,
         );
       }
     }
@@ -726,6 +766,7 @@ function parseSubagentRestartRecoveryRow(row: unknown): {
   childThreadId: ThreadId;
   parentRunId: RunId;
   ownerThreadId: ThreadId;
+  launchState: 'queued' | 'starting' | 'started';
   subagentType: SubagentLaunchRequestInput['subagentType'];
   capabilities: SubagentLaunchRequestInput['capabilities'];
   modelId: string;
@@ -737,9 +778,12 @@ function parseSubagentRestartRecoveryRow(row: unknown): {
     typeof row['childThreadId'] !== 'string' ||
     typeof row['parentRunId'] !== 'string' ||
     typeof row['ownerThreadId'] !== 'string' ||
+    (row['launchState'] !== 'queued' &&
+      row['launchState'] !== 'starting' &&
+      row['launchState'] !== 'started') ||
     typeof row['inputJson'] !== 'string'
   ) {
-    throw new Error('active subagent restart recovery row is invalid');
+    throw new Error('subagent restart recovery row is invalid');
   }
   const input = parsePersistedSubagentLaunchInput(row['inputJson']);
   return {
@@ -747,6 +791,7 @@ function parseSubagentRestartRecoveryRow(row: unknown): {
     childThreadId: assertThreadId(row['childThreadId']),
     parentRunId: assertRunId(row['parentRunId']),
     ownerThreadId: assertThreadId(row['ownerThreadId']),
+    launchState: row['launchState'],
     subagentType: input['subagentType'],
     capabilities: [...input['capabilities']],
     modelId: input['modelPin']['modelId'],

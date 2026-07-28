@@ -22,6 +22,11 @@ import type { HostCommandRuntime } from '../../command-host/contract.js';
 import { createDaemonContext } from '../context.js';
 import { createDaemonRuntimeStateStore } from '../runtime-state-store.js';
 import {
+  commitMemoryEntries,
+  readMemoryEntries,
+} from '../memories/entries-store.js';
+import { listPendingMemoryNotes } from '../memories/notes-store.js';
+import {
   buildToolOutputRef,
   buildToolOutputSnapshot,
   writeToolOutputSnapshot,
@@ -42,7 +47,10 @@ import {
 } from '../sessions/transcript-log.js';
 import { appendProviderRound } from '../sessions/provider-round-journal.js';
 import { defineZodTool } from '../tools/zod-tool.js';
+import { agentStopTool } from '../tools/builtin/agent-stop.js';
+import { citeMemoryTool } from '../tools/builtin/cite-memory.js';
 import { execCommandTool } from '../tools/builtin/exec-command.js';
+import { writeMemoryNoteTool } from '../tools/builtin/write-memory-note.js';
 import {
   createScriptedProviderCallModel,
   providerFinalAnswerRound,
@@ -447,6 +455,252 @@ void test('restart recovery rehydrates a settled queued agent_spawn and starts t
       ?.launchState,
     'started',
   );
+});
+
+void test('restart recovery reconciles agent_retry to the one durable replacement child', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-recovery-'));
+  const threadId = assertThreadId(randomUUID());
+  const parentRunId = assertRunId(randomUUID());
+  const retryCallId = 'call-agent-retry-restart';
+  let runtimeState = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  const [original] = runtimeState.enqueueSubagentLaunchBatch([
+    {
+      toolCallId: 'call-original-agent-retry-child',
+      task: 'finish the interrupted child task',
+      subagentType: 'worker',
+      capabilities: [],
+      parentRunId,
+      ownerThreadId: threadId,
+      stateRoot,
+      workingDirectory: stateRoot,
+      permissionMode: 'full_access',
+      ultraReasoning: true,
+      modelPin: TEST_INHERITED_SOL_MODEL_PIN,
+      subagentModelRouting: TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+    },
+  ]);
+  assert.ok(original);
+  runtimeState.markSubagentLaunchStarting(original.childRunId);
+  runtimeState.markSubagentLaunchStarted(original.childRunId);
+  runtimeState.close();
+  runtimeState = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  t.after(async () => {
+    runtimeState.close();
+    await rm(stateRoot, { recursive: true, force: true });
+  });
+  assert.equal(
+    runtimeState.readSubagentLaunchRequestByChildRunId(original.childRunId)
+      ?.launchState,
+    'interrupted',
+  );
+  const created = runtimeState.retryInterruptedSubagentLaunch({
+    previousChildRunId: original.childRunId,
+    ownerThreadId: threadId,
+    parentRunId,
+    toolCallId: retryCallId,
+    stateRoot,
+    workingDirectory: stateRoot,
+    permissionMode: 'full_access',
+  });
+  assert.equal(created.disposition, 'created');
+  runtimeState.markSubagentLaunchStarting(created.request.childRunId);
+  runtimeState.markSubagentLaunchStarted(created.request.childRunId);
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'user',
+    content: 'retry the interrupted child once',
+    timestamp: '2026-07-28T00:00:00.000Z',
+  });
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'tool_call',
+    content: JSON.stringify({
+      id: 'item-agent-retry-restart',
+      callId: retryCallId,
+      tool: 'agent_retry',
+      args: { child_run_id: original.childRunId },
+      round: 1,
+      recoveryStrategy: 'reconcile_then_replay',
+    }),
+    timestamp: '2026-07-28T00:00:01.000Z',
+  });
+  const daemonContext = createDaemonContext({
+    homeStateRoot: stateRoot,
+    subagentLaunchRequests: runtimeState,
+    subagentTerminalDeliveries: runtimeState,
+  });
+  const runContext = createRunContext({
+    threadId,
+    stateRoot,
+    workingDirectory: stateRoot,
+  });
+
+  const recovered = await recoverPendingReplaySafeToolCalls({
+    agentInput: {
+      runId: parentRunId,
+      runContext,
+      prompt: 'unused during recovery',
+      runtimeServices: daemonContext,
+      approvalContext: {
+        computerSessionId: 'replacement-session',
+        permissionMode: 'full_access',
+      },
+      runState: createRunState({ runId: parentRunId, runContext }),
+      onEvent() {},
+    },
+  });
+
+  assert.equal(recovered.recoveredCallCount, 1);
+  const sameRetry = runtimeState.retryInterruptedSubagentLaunch({
+    previousChildRunId: original.childRunId,
+    ownerThreadId: threadId,
+    parentRunId,
+    toolCallId: retryCallId,
+    stateRoot,
+    workingDirectory: stateRoot,
+    permissionMode: 'full_access',
+  });
+  assert.equal(sameRetry.disposition, 'same_call_replay');
+  assert.equal(sameRetry.request.childRunId, created.request.childRunId);
+  const entries = await readTranscriptEntries(stateRoot, threadId);
+  const resultEntry = entries.find((entry) => entry.role === 'tool_result');
+  assert.equal(resultEntry?.role, 'tool_result');
+  if (resultEntry?.role !== 'tool_result') {
+    assert.fail('expected the recovered agent_retry result');
+  }
+  const storedResult = JSON.parse(resultEntry.content) as {
+    ok: boolean;
+    output?: string;
+  };
+  assert.equal(storedResult.ok, true);
+  const output = JSON.parse(storedResult.output ?? '{}') as {
+    previousChildRunId?: string;
+    childRunId?: string;
+    childThreadId?: string;
+    retryDisposition?: string;
+    launchState?: string;
+  };
+  assert.equal(output.previousChildRunId, original.childRunId);
+  assert.equal(output.childRunId, created.request.childRunId);
+  assert.equal(output.childThreadId, created.request.childThreadId);
+  assert.equal(output.retryDisposition, 'same_call_replay');
+  assert.equal(output.launchState, 'started');
+});
+
+void test('restart recovery settles a queued agent_stop whose cancellation already committed', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-recovery-'));
+  const threadId = assertThreadId(randomUUID());
+  const runId = assertRunId(randomUUID());
+  const callId = 'call-agent-stop-restart';
+  let runtimeState = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  const [queued] = runtimeState.enqueueSubagentLaunchBatch([
+    {
+      toolCallId: 'call-agent-stop-child',
+      task: 'cancel this queued child once',
+      subagentType: 'worker',
+      capabilities: [],
+      parentRunId: runId,
+      ownerThreadId: threadId,
+      stateRoot,
+      workingDirectory: stateRoot,
+      permissionMode: 'basic',
+      ultraReasoning: false,
+      modelPin: TEST_INHERITED_SOL_MODEL_PIN,
+      subagentModelRouting: TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+    },
+  ]);
+  assert.ok(queued);
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'user',
+    content: 'stop the queued child after restart',
+    timestamp: '2026-07-28T00:00:00.000Z',
+  });
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'tool_call',
+    content: JSON.stringify({
+      id: 'item-agent-stop-restart',
+      callId,
+      tool: 'agent_stop',
+      args: { child_run_id: queued.childRunId },
+      round: 1,
+      recoveryStrategy: 'replay_safe',
+    }),
+    timestamp: '2026-07-28T00:00:01.000Z',
+  });
+  const original = createDaemonContext({
+    homeStateRoot: stateRoot,
+    subagentLaunchRequests: runtimeState,
+  });
+  const stopped = await agentStopTool.execute(
+    { child_run_id: queued.childRunId },
+    {
+      callId,
+      stateRoot,
+      threadId,
+      runId,
+      runtimeServices: original,
+    },
+  );
+  assert.equal(stopped.ok, true);
+  assert.equal(JSON.parse(stopped.output).stopState, 'cancelled_before_start');
+  runtimeState.close();
+
+  runtimeState = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  t.after(async () => {
+    runtimeState.close();
+    await rm(stateRoot, { recursive: true, force: true });
+  });
+  const replacement = createDaemonContext({
+    homeStateRoot: stateRoot,
+    subagentLaunchRequests: runtimeState,
+  });
+  const recovered = await recoverPendingReplaySafeToolCalls({
+    agentInput: {
+      runId,
+      runContext: createRunContext({
+        threadId,
+        stateRoot,
+        workingDirectory: stateRoot,
+      }),
+      prompt: 'unused during recovery',
+      runtimeServices: replacement,
+      approvalContext: {
+        computerSessionId: 'replacement-session',
+        permissionMode: 'basic',
+      },
+      onEvent() {},
+    },
+  });
+
+  assert.equal(recovered.recoveredCallCount, 1);
+  assert.equal(
+    runtimeState.readSubagentLaunchRequestByChildRunId(queued.childRunId)
+      ?.launchState,
+    'cancelled',
+  );
+  const resultEntry = (await readTranscriptEntries(stateRoot, threadId)).find(
+    (entry) => entry.role === 'tool_result',
+  );
+  assert.equal(resultEntry?.role, 'tool_result');
+  if (resultEntry?.role !== 'tool_result') {
+    assert.fail('expected the recovered agent_stop result');
+  }
+  const result = JSON.parse(resultEntry.content) as {
+    ok: boolean;
+    output?: string;
+  };
+  assert.equal(result.ok, true);
+  assert.deepEqual(JSON.parse(result.output ?? '{}'), {
+    ok: true,
+    childRunId: queued.childRunId,
+    stopState: 'already_terminal',
+  });
 });
 
 void test('restart recovery replays a reconcile-then-replay create whose effect never started', async (t) => {
@@ -1221,6 +1475,383 @@ void test('restart recovery replays pure presentation tools through the product 
       recoveryCase.tool,
     );
   }
+});
+
+void test('restart recovery rebuilds the derived memory index through the product registry', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-recovery-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const threadId = assertThreadId(randomUUID());
+  const runId = assertRunId(randomUUID());
+  await mkdir(join(stateRoot, 'notes'), { recursive: true });
+  await writeFile(
+    join(stateRoot, 'notes', 'restart-memory.md'),
+    '# Recovery\nrebuild the derived memory index\n',
+    'utf8',
+  );
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'user',
+    content: 'refresh memory after restart',
+    timestamp: '2026-07-28T00:00:00.000Z',
+  });
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'tool_call',
+    content: JSON.stringify({
+      id: 'item-refresh-memory-index-restart',
+      callId: 'call-refresh-memory-index-restart',
+      tool: 'refresh_memory_index',
+      args: {},
+      round: 1,
+      recoveryStrategy: 'replay_safe',
+    }),
+    timestamp: '2026-07-28T00:00:01.000Z',
+  });
+  const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
+  daemonContext.computerFileRoot = stateRoot;
+
+  const recovered = await recoverPendingReplaySafeToolCalls({
+    agentInput: {
+      runId,
+      runContext: createRunContext({
+        threadId,
+        stateRoot,
+        workingDirectory: stateRoot,
+      }),
+      prompt: 'unused during recovery',
+      runtimeServices: daemonContext,
+      approvalContext: {
+        computerSessionId: 'replacement-session',
+        permissionMode: 'full_access',
+      },
+      onEvent() {},
+    },
+  });
+
+  assert.equal(recovered.recoveredCallCount, 1);
+  const manifest = JSON.parse(
+    await readFile(
+      join(stateRoot, '.geulbat', 'index', 'manifest.json'),
+      'utf8',
+    ),
+  ) as { files: Array<{ path: string }> };
+  assert.equal(
+    manifest.files.some((file) => file.path === 'notes/restart-memory.md'),
+    true,
+  );
+  const entries = await readTranscriptEntries(stateRoot, threadId);
+  const resultEntry = entries.find((entry) => entry.role === 'tool_result');
+  assert.equal(resultEntry?.role, 'tool_result');
+  if (resultEntry?.role !== 'tool_result') {
+    assert.fail('expected the recovered refresh_memory_index result');
+  }
+  assert.equal((JSON.parse(resultEntry.content) as { ok: boolean }).ok, true);
+});
+
+void test('restart recovery reconciles one written memory note without appending it twice', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-recovery-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const threadId = assertThreadId(randomUUID());
+  const runId = assertRunId(randomUUID());
+  const callId = 'call-write-memory-note-restart';
+  const note = '크래시 창을 지나도 이 노트는 하나만 남는다';
+  const original = createDaemonContext({ homeStateRoot: stateRoot });
+  const runContext = createRunContext({
+    threadId,
+    stateRoot,
+    workingDirectory: stateRoot,
+  });
+  const runState = createRunState({ runId, runContext });
+  await original.runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: stateRoot, permissionMode: 'basic' },
+  });
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'user',
+    content: 'remember this after restart',
+    timestamp: '2026-07-28T00:00:00.000Z',
+  });
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'tool_call',
+    content: JSON.stringify({
+      id: 'item-write-memory-note-restart',
+      callId,
+      tool: 'write_memory_note',
+      args: { note },
+      round: 1,
+      recoveryStrategy: 'reconcile_then_replay',
+    }),
+    timestamp: '2026-07-28T00:00:01.000Z',
+  });
+
+  const interruptedResult = await writeMemoryNoteTool.execute(
+    { note },
+    {
+      kind: 'agent',
+      runOwnerKind: 'root_main',
+      callId,
+      stateRoot,
+      workingDirectory: stateRoot,
+      threadId,
+      runId,
+      runState,
+      signal: undefined,
+      runSignal: undefined,
+      currentFile: undefined,
+      selection: undefined,
+      approvalGranted: true,
+      computerSessionId: 'original-session',
+      permissionMode: 'basic',
+      emitAgentEvent() {},
+      memoryIndex: original.memoryIndex,
+      runtimeServices: {
+        ...original,
+        runCheckpoints: {
+          ...original.runCheckpoints,
+          async recordToolInvocationResult() {
+            assert.deepEqual(
+              (await listPendingMemoryNotes(stateRoot)).map(
+                (memoryNote) => memoryNote.text,
+              ),
+              [note],
+            );
+            throw new Error(
+              'simulated daemon loss after memory note persistence',
+            );
+          },
+        },
+      },
+    },
+  );
+  assert.equal(interruptedResult.ok, false);
+
+  const replacement = createDaemonContext({ homeStateRoot: stateRoot });
+  const recovered = await recoverPendingReplaySafeToolCalls({
+    agentInput: {
+      runId,
+      runContext,
+      prompt: 'unused during recovery',
+      runtimeServices: replacement,
+      approvalContext: {
+        computerSessionId: 'replacement-session',
+        permissionMode: 'basic',
+      },
+      runState,
+      onEvent() {},
+    },
+  });
+
+  assert.equal(recovered.recoveredCallCount, 1);
+  assert.deepEqual(
+    (await listPendingMemoryNotes(stateRoot)).map(
+      (memoryNote) => memoryNote.text,
+    ),
+    [note],
+  );
+  const resultEntries = (
+    await readTranscriptEntries(stateRoot, threadId)
+  ).filter((entry) => entry.role === 'tool_result');
+  assert.equal(resultEntries.length, 1);
+  assert.equal(
+    (
+      JSON.parse(resultEntries[0]!.content) as {
+        ok: boolean;
+      }
+    ).ok,
+    true,
+  );
+});
+
+void test('restart recovery reconciles one memory citation without counting it twice', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-recovery-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const threadId = assertThreadId(randomUUID());
+  const runId = assertRunId(randomUUID());
+  const callId = 'call-cite-memory-restart';
+  const { entryIds } = await commitMemoryEntries(stateRoot, [
+    { id: undefined, text: 'restart-safe cited memory' },
+  ]);
+  const entryId = entryIds[0]!;
+  const original = createDaemonContext({ homeStateRoot: stateRoot });
+  const runContext = createRunContext({
+    threadId,
+    stateRoot,
+    workingDirectory: stateRoot,
+  });
+  const runState = createRunState({ runId, runContext });
+  await original.runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: stateRoot, permissionMode: 'basic' },
+  });
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'user',
+    content: 'cite this memory after restart',
+    timestamp: '2026-07-28T00:00:00.000Z',
+  });
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'tool_call',
+    content: JSON.stringify({
+      id: 'item-cite-memory-restart',
+      callId,
+      tool: 'cite_memory',
+      args: { entryIds: [entryId] },
+      round: 1,
+      recoveryStrategy: 'reconcile_then_replay',
+    }),
+    timestamp: '2026-07-28T00:00:01.000Z',
+  });
+
+  const interruptedResult = await citeMemoryTool.execute(
+    { entryIds: [entryId] },
+    {
+      kind: 'agent',
+      runOwnerKind: 'root_main',
+      callId,
+      stateRoot,
+      workingDirectory: stateRoot,
+      threadId,
+      runId,
+      runState,
+      signal: undefined,
+      runSignal: undefined,
+      currentFile: undefined,
+      selection: undefined,
+      approvalGranted: true,
+      computerSessionId: 'original-session',
+      permissionMode: 'basic',
+      emitAgentEvent() {},
+      memoryIndex: original.memoryIndex,
+      runtimeServices: {
+        ...original,
+        runCheckpoints: {
+          ...original.runCheckpoints,
+          async recordToolInvocationResult() {
+            assert.equal(
+              (await readMemoryEntries(stateRoot))[0]?.usageCount,
+              1,
+            );
+            throw new Error(
+              'simulated daemon loss after memory citation persistence',
+            );
+          },
+        },
+      },
+    },
+  );
+  assert.equal(interruptedResult.ok, false);
+
+  const replacement = createDaemonContext({ homeStateRoot: stateRoot });
+  const recovered = await recoverPendingReplaySafeToolCalls({
+    agentInput: {
+      runId,
+      runContext,
+      prompt: 'unused during recovery',
+      runtimeServices: replacement,
+      approvalContext: {
+        computerSessionId: 'replacement-session',
+        permissionMode: 'basic',
+      },
+      runState,
+      onEvent() {},
+    },
+  });
+
+  assert.equal(recovered.recoveredCallCount, 1);
+  assert.equal((await readMemoryEntries(stateRoot))[0]?.usageCount, 1);
+  const resultEntries = (
+    await readTranscriptEntries(stateRoot, threadId)
+  ).filter((entry) => entry.role === 'tool_result');
+  assert.equal(resultEntries.length, 1);
+  const recoveredResult = JSON.parse(resultEntries[0]!.content) as {
+    ok: boolean;
+    output?: string;
+  };
+  assert.equal(recoveredResult.ok, true);
+  assert.deepEqual(JSON.parse(recoveredResult.output ?? '{}'), {
+    ok: true,
+    recorded: [entryId],
+    unknown: [],
+  });
+});
+
+void test('restart recovery restores one child result report summary on the replacement run state', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-recovery-'));
+  const runtimeState = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  t.after(async () => {
+    runtimeState.close();
+    await rm(stateRoot, { recursive: true, force: true });
+  });
+  const threadId = assertThreadId(randomUUID());
+  const runId = assertRunId(randomUUID());
+  const parentRunId = assertRunId(randomUUID());
+  const runContext = createRunContext({
+    threadId,
+    stateRoot,
+    workingDirectory: stateRoot,
+  });
+  const runState = createRunState({
+    runId,
+    parentRunId,
+    runContext,
+  });
+  const summary = 'replacement child retained its compact handoff';
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'user',
+    content: 'record the child result report',
+    timestamp: '2026-07-28T00:00:00.000Z',
+  });
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'tool_call',
+    content: JSON.stringify({
+      id: 'item-submit-result-report-restart',
+      callId: 'call-submit-result-report-restart',
+      tool: 'submit_result_report',
+      args: { summary },
+      round: 1,
+      recoveryStrategy: 'replay_safe',
+    }),
+    timestamp: '2026-07-28T00:00:01.000Z',
+  });
+  const daemonContext = createDaemonContext({
+    homeStateRoot: stateRoot,
+    subagentTerminalDeliveries: runtimeState,
+  });
+  daemonContext.childRuns.registerChildRun({
+    childRunId: runId,
+    childThreadId: threadId,
+    parentRunId,
+    ownerThreadId: assertThreadId(randomUUID()),
+    subagentType: 'explorer',
+    modelPin: TEST_INHERITED_SOL_MODEL_PIN,
+    subagentModelRouting: TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+  });
+
+  const recovered = await recoverPendingReplaySafeToolCalls({
+    agentInput: {
+      runId,
+      runContext,
+      prompt: 'unused during recovery',
+      runtimeServices: daemonContext,
+      approvalContext: {
+        computerSessionId: 'replacement-session',
+        permissionMode: 'basic',
+      },
+      runState,
+      onEvent() {},
+    },
+  });
+
+  assert.equal(recovered.recoveredCallCount, 1);
+  assert.equal(runState.subagentResultReportSummary, summary);
+  const entries = await readTranscriptEntries(stateRoot, threadId);
+  const resultEntry = entries.find((entry) => entry.role === 'tool_result');
+  assert.equal(resultEntry?.role, 'tool_result');
+  if (resultEntry?.role !== 'tool_result') {
+    assert.fail('expected the recovered submit_result_report result');
+  }
+  assert.equal((JSON.parse(resultEntry.content) as { ok: boolean }).ok, true);
 });
 
 void test('restart recovery replays update_plan after its durable replacement while preserving execution binding', async (t) => {

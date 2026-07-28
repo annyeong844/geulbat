@@ -47,6 +47,7 @@ async function makeScriptedWorker(
     dropFirstInteractResponse: boolean;
     capabilities?: Record<string, unknown>;
     holdInitialWait?: boolean;
+    malformedResultMethods?: readonly string[];
   },
 ): Promise<ScriptedWorker> {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-retry-'));
@@ -118,10 +119,15 @@ async function makeScriptedWorker(
           state.starts.push(params as Record<string, unknown>);
           socket.write(
             encodeFrame(
-              buildResultResponse(id, {
-                ok: true,
-                outputRef: 'command-output:system/scripted-start',
-              }),
+              buildResultResponse(
+                id,
+                options.malformedResultMethods?.includes(method)
+                  ? { ok: true, outputRef: 42 }
+                  : {
+                      ok: true,
+                      outputRef: 'command-output:system/scripted-start',
+                    },
+              ),
             ),
           );
           continue;
@@ -133,11 +139,16 @@ async function makeScriptedWorker(
           }
           socket.write(
             encodeFrame(
-              buildResultResponse(id, {
-                ok: false,
-                reasonCode: 'not_found',
-                message: 'scripted session was not found',
-              }),
+              buildResultResponse(
+                id,
+                options.malformedResultMethods?.includes(method)
+                  ? { ok: false, reasonCode: 'unknown_reason', message: 42 }
+                  : {
+                      ok: false,
+                      reasonCode: 'not_found',
+                      message: 'scripted session was not found',
+                    },
+              ),
             ),
           );
           continue;
@@ -156,17 +167,34 @@ async function makeScriptedWorker(
         }
         socket.write(
           encodeFrame(
-            buildResultResponse(id, {
-              ok: true,
-              value: {
-                snapshot: {
-                  outputRef: (params as { outputRef: string }).outputRef,
-                  status: 'running',
-                  revision: 1,
-                },
-                page: null,
-              },
-            }),
+            buildResultResponse(
+              id,
+              options.malformedResultMethods?.includes(method)
+                ? { ok: true, value: { snapshot: null, page: 'invalid' } }
+                : {
+                    ok: true,
+                    value: {
+                      snapshot: {
+                        outputRef: (params as { outputRef: string }).outputRef,
+                        status: 'running',
+                        exitCode: null,
+                        stdout: null,
+                        stderr: null,
+                        outputComplete: false,
+                        stdoutBytes: 0,
+                        stderrBytes: 0,
+                        stdoutChars: null,
+                        stderrChars: null,
+                        durationMs: 0,
+                        firstOutputAfterMs: null,
+                        revision: 1,
+                        stdinOpen: true,
+                        outputLimitExceeded: null,
+                      },
+                      page: null,
+                    },
+                  },
+            ),
           ),
         );
       }
@@ -206,6 +234,60 @@ async function makeScriptedWorker(
   });
   return state;
 }
+
+void test('malformed worker results fail closed at every response boundary', async (t) => {
+  const worker = await makeScriptedWorker(t, {
+    dropFirstInteractResponse: false,
+    malformedResultMethods: [
+      COMMAND_HOST_METHODS.start,
+      COMMAND_HOST_METHODS.waitInitial,
+      COMMAND_HOST_METHODS.interact,
+    ],
+  });
+  const client = createCommandHostClient({
+    config: { inlineMaxBytes: 1024, tailRingBytes: 4096 },
+  });
+  t.after(async () => {
+    await client.closeAll();
+  });
+
+  const started = await client.start({
+    executable: process.execPath,
+    args: ['-e', 'process.exit(0)'],
+    cwd: worker.stateRoot,
+    env: process.env,
+    stateRoot: worker.stateRoot,
+    threadId: THREAD,
+    runId: 'run-malformed-result',
+    callId: 'call-malformed-result',
+    stdinMode: 'closed',
+  });
+  const initial = await client.waitForInitialResult({
+    stateRoot: worker.stateRoot,
+    outputRef: 'command-output:system/malformed',
+  });
+  const interaction = await client.interact({
+    stateRoot: worker.stateRoot,
+    threadId: THREAD,
+    outputRef: 'command-output:system/malformed',
+  });
+
+  assert.deepEqual(started, {
+    ok: false,
+    reasonCode: 'output_store_failed',
+    message: 'command-host session/start response was not readable.',
+  });
+  assert.deepEqual(initial, {
+    ok: false,
+    reasonCode: 'output_store_failed',
+    message: 'command-host session/waitInitial response was not readable.',
+  });
+  assert.deepEqual(interaction, {
+    ok: false,
+    reasonCode: 'output_store_failed',
+    message: 'command-host session/interact response was not readable.',
+  });
+});
 
 void test('output redaction and lossless stdio fail closed against an older worker', async (t) => {
   const worker = await makeScriptedWorker(t, {

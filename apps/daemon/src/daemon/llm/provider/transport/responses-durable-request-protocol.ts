@@ -226,8 +226,11 @@ export function parseResponsesDurableRequestTerminalArtifact(
 export function serializeResponsesDurableRequestError(
   error: unknown,
 ): ResponsesDurableRequestSerializedError {
-  const message =
-    error instanceof Error ? error.message : 'provider request failed';
+  // 원인을 generic 문구로 덮지 않는다. 여기서 값을 버리면 `llmCode`도 함께
+  // 사라져 데몬은 분류에 실패하고, 사용자는 원인이 지워진
+  // `[internal] provider request failed`만 받는다. 이 message는 호출부에서
+  // credential redaction을 거친다.
+  const message = describeDurableRequestError(error);
   if (error === null || typeof error !== 'object') {
     return { message };
   }
@@ -244,6 +247,37 @@ export function serializeResponsesDurableRequestError(
       ? { retryAfterMs }
       : {}),
   };
+}
+
+// provider 호스트는 별도 프로세스다. 여기서 만든 문장이 그 프로세스 밖으로
+// 나가는 유일한 원인 기록이므로, `Error`가 아닌 값도 알아볼 수 있게 남긴다.
+function describeDurableRequestError(error: unknown): string {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    return message === ''
+      ? `provider request failed (${error.name} without a message)`
+      : message;
+  }
+  if (typeof error === 'string') {
+    const text = error.trim();
+    return text === '' ? 'provider request failed (empty string thrown)' : text;
+  }
+  if (error === undefined) {
+    return 'provider request failed (undefined thrown)';
+  }
+  if (error === null) {
+    return 'provider request failed (null thrown)';
+  }
+  return `provider request failed (${typeof error} thrown: ${safeDescribeValue(error)})`;
+}
+
+function safeDescribeValue(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    // 순환 참조나 throw하는 getter — 형태만이라도 남긴다.
+    return Object.prototype.toString.call(value);
+  }
 }
 
 export function hydrateResponsesDurableRequestError(

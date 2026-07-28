@@ -9,14 +9,14 @@
  * 파일시스템 없이 그 규칙을 잠근다.
  */
 
-export interface DiscoveredDaemonShell {
+interface DiscoveredDaemonShell {
   /** 브라우저로 열 주소. */
   url: string;
   /** 기록을 남긴 데몬 프로세스. 살아있는지는 호출부가 판정한다. */
   pid: number;
 }
 
-export interface DaemonShellDiscoveryDeps {
+interface DaemonShellDiscoveryDeps {
   /** admission lock의 소유자 기록. 없으면 `null`. */
   readLockOwner: () => Promise<{ pid: number; port?: number } | null>;
   /** 기록된 프로세스가 살아있는가. */

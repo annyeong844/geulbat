@@ -25,6 +25,10 @@ import {
 import { testThreadId } from '../../../test-support/thread-id.js';
 import { assertRunId, type RunId } from '@geulbat/protocol/ids';
 
+void test('agent_stop declares restart-safe cancellation replay', () => {
+  assert.equal(agentStopTool.recoveryStrategy, 'replay_safe');
+});
+
 async function waitForChildTerminal(args: {
   daemonContext: ReturnType<typeof createDaemonContext>;
   childRunId: RunId;

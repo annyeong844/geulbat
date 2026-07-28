@@ -75,6 +75,7 @@ function createPolicy(args: {
     planningWorkflows:
       options.planningWorkflows ?? args.daemonContext.planningWorkflows,
     goals: options.goals ?? args.daemonContext.goals,
+    backgroundNotifications: args.daemonContext.backgroundNotifications,
     emit: options.emit ?? (() => {}),
     ...(options.runState === undefined ? {} : { runState: options.runState }),
     ...(options.planningWorkflow === undefined
@@ -134,6 +135,53 @@ async function createClaimedPlan(args: {
 function assertInterjectBufferOpen(buffer: RunInterjectBuffer): void {
   assert.equal(buffer.accepting, true);
 }
+
+void test('a pending terminal child update keeps the parent alive until it inspects the child', async () => {
+  const daemonContext = createDaemonContext();
+  const threadId = testThreadId(1200);
+  const childThreadId = testThreadId(1201);
+  const runId = testRunId('parent-with-interrupted-child');
+  const childRunId = testRunId('daemon-interrupted-child');
+  daemonContext.backgroundNotifications.enqueueThreadBackgroundResult(
+    threadId,
+    {
+      deliveryId: 'delivery-daemon-interrupted-child',
+      parentRunId: runId,
+      childRunId,
+      childThreadId,
+      subagentType: 'explorer',
+      terminalState: 'failed',
+      reason: 'daemon_restart',
+      result: 'sub-agent interrupted because the daemon restarted',
+      completedAt: '2026-07-28T10:00:00.000Z',
+    },
+  );
+  const policy = createPolicy({ daemonContext, runId, threadId });
+
+  const pending = await policy.resolveTerminalCandidate({
+    source: 'natural',
+    result: candidateResult,
+  });
+
+  assert.equal(pending.kind, 'continue');
+  if (pending.kind === 'continue') {
+    assert.match(pending.historyText ?? '', /agent_wait/u);
+    assert.match(pending.historyText ?? '', new RegExp(childRunId, 'u'));
+    assert.match(pending.historyText ?? '', /agent_spawn/u);
+  }
+
+  daemonContext.backgroundNotifications.acknowledgeThreadBackgroundResults(
+    threadId,
+    ['delivery-daemon-interrupted-child'],
+  );
+  assert.deepEqual(
+    await policy.resolveTerminalCandidate({
+      source: 'natural',
+      result: candidateResult,
+    }),
+    { kind: 'terminal' },
+  );
+});
 
 void test('pending interject admission precedes stale planning and Goal state', async () => {
   const stateRoot = await mkdtemp(

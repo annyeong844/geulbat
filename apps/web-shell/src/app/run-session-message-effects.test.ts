@@ -276,6 +276,7 @@ void test('handleRunSessionMessage marks tree refresh when daemon reports comput
   assert.deepEqual(actions, [
     {
       type: 'transcript_activity_added',
+      runId: RUN_ID,
       threadId: THREAD_ID,
       entry: {
         kind: 'tool_activity',

@@ -61,6 +61,7 @@ export function createAgentRetryTool(
     sideEffectLevel: 'write',
     mayMutateComputerFiles: true,
     requiresApproval: true,
+    recoveryStrategy: 'reconcile_then_replay',
     catalogSearchMetadata: {
       family: 'agent',
       searchHints: [

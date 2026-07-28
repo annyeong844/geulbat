@@ -444,7 +444,7 @@ void test('settled ask_user card disappears after the next user message', async 
   });
 });
 
-void test('settled ask_user keeps only the newest unanswered card across consecutive calls', async () => {
+void test('settled ask_user keeps answered questions as read-only records while only the newest stays interactive', async () => {
   const buildAskCall = (entryId: string, callId: string, question: string) =>
     toolMessage(
       entryId,
@@ -506,12 +506,34 @@ void test('settled ask_user keeps only the newest unanswered card across consecu
     );
   });
 
+  // 답한 질문은 기록으로 남고, 상호작용은 최신 미답변 카드에만 열린다.
+  // 질문이 사라지면 남은 답변만으로는 무엇에 답했는지 알 수 없다.
+  const liveCards = renderer.root.findAllByProps({
+    className: 'ask-user-card',
+  });
+  const answeredCards = renderer.root.findAllByProps({
+    className: 'ask-user-card is-answered',
+  });
+  assert.equal(liveCards.length, 1, 'only the newest card stays interactive');
+  assert.equal(answeredCards.length, 1, 'the answered question is preserved');
+
+  const markup = JSON.stringify(renderer.toJSON());
+  assert.match(markup, /첫 번째 질문/u);
+  assert.match(markup, /두 번째 질문/u);
+
+  // 기록 카드의 선택지는 다시 고를 수 없다.
   assert.equal(
-    renderer.root.findAllByProps({ className: 'ask-user-card' }).length,
-    1,
+    answeredCards[0]
+      ?.findAllByProps({ className: 'ask-user-option' })
+      .every((option) => option.props.disabled === true),
+    true,
+    'answered options must not be re-submittable',
   );
-  assert.doesNotMatch(JSON.stringify(renderer.toJSON()), /첫 번째 질문/u);
-  assert.match(JSON.stringify(renderer.toJSON()), /두 번째 질문/u);
+  // 이미 답한 질문에는 자유 답변 안내를 남기지 않는다.
+  assert.equal(
+    answeredCards[0]?.findAllByProps({ className: 'ask-user-hint' }).length,
+    0,
+  );
   await act(async () => {
     renderer.unmount();
   });

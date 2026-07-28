@@ -27,6 +27,8 @@ export function startDaemon(args) {
     port,
     watch = false,
     enablePublicWebConformanceFixtures = false,
+    allowedOrigins = [],
+    homeStateRoot,
   } = args;
   const daemonArgs = watch
     ? ['--watch', '--import', 'tsx', 'src/index.ts']
@@ -44,7 +46,20 @@ export function startDaemon(args) {
       GEULBAT_DEV_TOKEN:
         process.env['GEULBAT_DEV_TOKEN'] ?? DEFAULT_SMOKE_DEV_TOKEN,
       GEULBAT_REPO_ROOT: repoRoot,
+      GEULBAT_COMMAND_HOST: 'inline',
       ...(port === undefined ? {} : { PORT: String(port) }),
+      ...(homeStateRoot === undefined
+        ? {}
+        : {
+            GEULBAT_HOME_STATE_ROOT: homeStateRoot,
+            GEULBAT_PROVIDER_AUTH_FILE_PATH: path.join(
+              homeStateRoot,
+              'provider-auth.json',
+            ),
+          }),
+      ...(allowedOrigins.length === 0
+        ? {}
+        : { GEULBAT_ALLOWED_ORIGINS: allowedOrigins.join(',') }),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { isNotFoundError } from '../daemon/utils/error.js';
 import { verifyProcessBirthToken } from './process-identity.js';
 
 // P7.5 spec v4 §6.1·§6.2·§6.4 — 소켓·lock은 stateRoot 아래가 아니라
@@ -139,8 +140,8 @@ export async function readCommandHostLock(
   let raw: string;
   try {
     raw = await readFile(lockPath, 'utf8');
-  } catch {
-    return 'missing';
+  } catch (error: unknown) {
+    return isNotFoundError(error) ? 'missing' : 'unparsable';
   }
   try {
     const parsed: unknown = JSON.parse(raw);

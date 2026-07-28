@@ -32,7 +32,7 @@ interface ResolveToolLibraryProjectionArgs {
   toolCapabilityPolicy?: ToolCapabilityPolicy;
 }
 
-export type ResolveToolLibraryProjectionPortResult =
+type ResolveToolLibraryProjectionPortResult =
   | {
       ok: true;
       mount: ToolLibraryProjectionMount;
@@ -51,7 +51,7 @@ export type RehydrateToolLibraryProjectionMountResult =
   | Exclude<ReadVerifiedToolLibraryProjectionMountResult, { ok: true }>
   | ToolLibraryProjectionFailureResult;
 
-export type ToolLibraryProjectionBundleExportResult =
+type ToolLibraryProjectionBundleExportResult =
   | {
       ok: true;
       bundleId: `sha256:${string}`;

@@ -119,6 +119,7 @@ export type RunSessionStateAction =
   | { type: 'artifact_text_streamed'; threadId: string; text: string }
   | {
       type: 'transcript_activity_added';
+      runId: string;
       threadId: string;
       entry: Exclude<RunTranscriptEntry, { kind: 'assistant_text' }>;
       // 이 완성본이 닫는 스트리밍 도구 호출 (tool_call 이벤트의 callId)

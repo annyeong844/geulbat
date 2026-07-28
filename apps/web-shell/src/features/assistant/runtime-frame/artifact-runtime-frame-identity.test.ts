@@ -27,9 +27,11 @@ void test('createArtifactRuntimeFrameIdentity derives host url, revision, and pe
 
   const frameUrl = new URL(identity.runtimeFrameUrl);
 
-  // 데몬이 화면을 서빙하므로 부모와 런타임 호스트가 같은 origin이다.
+  // URL은 같은 데몬이 서빙하지만 sandbox가 프레임의 실제 origin을 opaque로
+  // 만든다. 부모→프레임 전송은 exact WindowProxy와 wildcard target을 함께 쓴다.
   assert.equal(identity.runtimeParentOrigin, 'http://127.0.0.1:3456');
-  assert.equal(identity.runtimeHostOrigin, 'http://127.0.0.1:3456');
+  assert.equal(identity.runtimeFrameMessageOrigin, 'null');
+  assert.equal(identity.runtimeFrameTargetOrigin, '*');
   assert.equal(
     frameUrl.href,
     'http://127.0.0.1:3456/artifact-runtime/host?parentOrigin=http%3A%2F%2F127.0.0.1%3A3456&rev=' +

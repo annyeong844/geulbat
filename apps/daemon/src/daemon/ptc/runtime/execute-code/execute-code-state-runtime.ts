@@ -36,18 +36,14 @@ import type { PtcExecuteCodePlacementResourceBudget } from './execute-code-runti
 
 export type CreatePtcSessionDockerManager =
   typeof createPtcSessionDockerManager;
-export type CreatePtcLabSessionBatchCommandRunner =
-  typeof createPtcLabSessionBatchCommandRunner;
 export type CreatePtcExecuteCodePlacementCoordinator =
   typeof createPtcExecuteCodePlacementCoordinator;
-export type CreatePtcExecuteCodeStandbyPool =
-  typeof createPtcExecuteCodeStandbyPool;
 
 export interface ExecuteCodeStateRuntime {
   canonicalStateRoot: string;
   runtimeRoot: string;
   sessionManager: PtcSessionDockerManager;
-  batchRunner: ReturnType<CreatePtcLabSessionBatchCommandRunner>;
+  batchRunner: ReturnType<typeof createPtcLabSessionBatchCommandRunner>;
   placementCoordinator: PtcExecuteCodePlacementCoordinator;
   store?: PtcExecuteCodeStore;
 }
@@ -58,9 +54,7 @@ interface PtcExecuteCodeStateRuntimeWiringOptions {
   dockerPath?: string;
   commandRunner?: PtcSessionDockerCommandRunner;
   createSessionManager?: CreatePtcSessionDockerManager;
-  createBatchCommandRunner?: CreatePtcLabSessionBatchCommandRunner;
   createPlacementCoordinator?: CreatePtcExecuteCodePlacementCoordinator;
-  createStandbyPool?: CreatePtcExecuteCodeStandbyPool;
   placementResourceBudgetProvider?: () => PtcExecuteCodePlacementResourceBudget;
   storeRootForState?: (stateRoot: string) => string;
 }
@@ -117,13 +111,11 @@ export function buildPtcExecuteCodeStateRuntime(args: {
   const standbyPool =
     standbyPlacementConfig === undefined || burstPlacementConfig === undefined
       ? undefined
-      : (options.createStandbyPool ?? createPtcExecuteCodeStandbyPool)({
+      : createPtcExecuteCodeStandbyPool({
           config: standbyPlacementConfig,
           perIdentityReadyLimit: standbyPlacementConfig.readySlotTarget,
           sessionManager,
         });
-  const createBatchCommandRunner =
-    options.createBatchCommandRunner ?? createPtcLabSessionBatchCommandRunner;
   const createPlacementCoordinator =
     options.createPlacementCoordinator ??
     createPtcExecuteCodePlacementCoordinator;
@@ -131,7 +123,7 @@ export function buildPtcExecuteCodeStateRuntime(args: {
     canonicalStateRoot,
     runtimeRoot,
     sessionManager,
-    batchRunner: createBatchCommandRunner({ sessionManager }),
+    batchRunner: createPtcLabSessionBatchCommandRunner({ sessionManager }),
     placementCoordinator: createPlacementCoordinator({
       ...(burstPlacementConfig === undefined
         ? {}

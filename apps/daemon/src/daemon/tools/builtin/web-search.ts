@@ -44,7 +44,7 @@ type NativeWebSearchRuntime = NonNullable<
 type DuckDuckGoVariant =
   (typeof DUCKDUCKGO_SEARCH_ENDPOINTS)[number]['variant'];
 
-export interface WebSearchResultCard {
+interface WebSearchResultCard {
   ref: `web_search_result:sha256:${string}`;
   title: string;
   url: string;
@@ -52,7 +52,7 @@ export interface WebSearchResultCard {
   source: string;
 }
 
-export type WebSearchFailureReason =
+type WebSearchFailureReason =
   | 'provider_not_available'
   | 'provider_not_configured'
   | 'provider_unauthorized'
@@ -62,7 +62,7 @@ export type WebSearchFailureReason =
   | 'network_error'
   | 'aborted';
 
-export interface WebSearchProviderAttempt {
+interface WebSearchProviderAttempt {
   provider: WebSearchProvider;
   status: 'failed' | 'skipped';
   reasonCode: WebSearchFailureReason;
@@ -70,7 +70,7 @@ export interface WebSearchProviderAttempt {
   endpoint?: DuckDuckGoVariant;
 }
 
-export interface WebSearchSuccess {
+interface WebSearchSuccess {
   ok: true;
   provider: WebSearchProvider;
   providerVariant?: DuckDuckGoVariant;
@@ -82,7 +82,7 @@ export interface WebSearchSuccess {
   untrusted: true;
 }
 
-export interface WebSearchFailure {
+interface WebSearchFailure {
   ok: false;
   provider: WebSearchProvider;
   query: string;
@@ -92,7 +92,7 @@ export interface WebSearchFailure {
   untrusted: true;
 }
 
-export type WebSearchOutput = WebSearchSuccess | WebSearchFailure;
+type WebSearchOutput = WebSearchSuccess | WebSearchFailure;
 
 interface WebSearchHttpResponse {
   status: number;

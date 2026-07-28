@@ -32,7 +32,7 @@ interface TerminalState {
   exitCode: number;
 }
 
-export async function runResponsesDurableRequestHost(): Promise<number> {
+async function runResponsesDurableRequestHost(): Promise<number> {
   process.stdin.setEncoding('utf8');
   let inputBuffer = '';
   let initialized: InitializedRequest | undefined;
@@ -404,8 +404,17 @@ if (
   runDetached('provider/responses-durable-request-host', async () => {
     try {
       process.exitCode = await runResponsesDurableRequestHost();
-    } catch {
-      process.stderr.write('provider request host failed\n');
+    } catch (error: unknown) {
+      // 원인을 지우지 않는다. 이 호스트는 별도 프로세스이고, 여기서 버린 원인은
+      // 어디에도 남지 않는다. 데몬은 호스트가 죽은 것만 보고, 사용자는
+      // `[internal] provider request failed`만 받는다.
+      process.stderr.write(
+        `provider request host failed: ${
+          error instanceof Error
+            ? (error.stack ?? `${error.name}: ${error.message}`)
+            : String(error)
+        }\n`,
+      );
       process.exitCode = 1;
     }
   });

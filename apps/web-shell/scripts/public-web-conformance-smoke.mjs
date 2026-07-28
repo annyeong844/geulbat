@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -75,29 +76,42 @@ async function main() {
   );
 
   const daemonLogs = [];
-  const daemon = startDaemon({
-    repoRoot,
-    logs: daemonLogs,
-    port: daemonPort,
-    enablePublicWebConformanceFixtures: true,
-  });
+  const harnesses = [];
+  const homeStateRoot = await fs.mkdtemp(
+    path.join(tmpdir(), 'geulbat-public-web-smoke-'),
+  );
+  let daemon;
 
   try {
-    await waitForDaemonReady(daemonHostUrl, daemonLogs);
     for (const fixture of conformanceFixtures) {
-      console.log(`public-web conformance smoke: fixture=${fixture.name}`);
-      const harness = await createConformanceHarnessServer(
+      harnesses.push({
         fixture,
-        daemonOrigin,
-      );
-      try {
-        await runSmoke(harness.url, fixture);
-      } finally {
-        await closeServer(harness.server);
-      }
+        harness: await createConformanceHarnessServer(fixture, daemonOrigin),
+      });
+    }
+    daemon = startDaemon({
+      repoRoot,
+      logs: daemonLogs,
+      port: daemonPort,
+      enablePublicWebConformanceFixtures: true,
+      allowedOrigins: harnesses.map(
+        ({ harness }) => new URL(harness.url).origin,
+      ),
+      homeStateRoot,
+    });
+    await waitForDaemonReady(daemonHostUrl, daemonLogs);
+    for (const { fixture, harness } of harnesses) {
+      console.log(`public-web conformance smoke: fixture=${fixture.name}`);
+      await runSmoke(harness.url, fixture);
     }
   } finally {
-    await stopProcess(daemon);
+    if (daemon !== undefined) {
+      await stopProcess(daemon);
+    }
+    for (const { harness } of harnesses) {
+      await closeServer(harness.server);
+    }
+    await fs.rm(homeStateRoot, { recursive: true, force: true });
   }
 }
 
@@ -624,7 +638,6 @@ async function createConformanceHarnessServer(fixture, daemonOrigin) {
         runtimeDocument,
         runtimeFrameUrl: runtimeFrameUrl.toString(),
         scopeHandle,
-        runtimeHostOrigin: daemonOrigin,
       }),
     );
   });
@@ -653,8 +666,7 @@ async function createConformanceHarnessServer(fixture, daemonOrigin) {
 }
 
 function buildConformanceHarnessHtml(args) {
-  const { runtimeDocument, runtimeFrameUrl, scopeHandle, runtimeHostOrigin } =
-    args;
+  const { runtimeDocument, runtimeFrameUrl, scopeHandle } = args;
 
   return `<!doctype html>
 <html lang="en">
@@ -679,12 +691,13 @@ function buildConformanceHarnessHtml(args) {
     <iframe
       id="artifact-frame"
       title="public-web conformance smoke"
-      sandbox="allow-scripts allow-forms allow-same-origin"
+      sandbox="allow-scripts allow-forms"
       src=${JSON.stringify(runtimeFrameUrl)}
     ></iframe>
     <script>
       (() => {
-        const runtimeHostOrigin = ${JSON.stringify(runtimeHostOrigin)};
+        const runtimeFrameMessageOrigin = 'null';
+        const runtimeFrameTargetOrigin = '*';
         const scopeHandle = ${JSON.stringify(scopeHandle)};
         const bootMessage = ${escapeInlineScriptJson(
           createArtifactRuntimeHostBootMessage(runtimeDocument),
@@ -782,7 +795,7 @@ function buildConformanceHarnessHtml(args) {
         window.addEventListener('message', (event) => {
           if (
             event.source !== iframe.contentWindow ||
-            event.origin !== runtimeHostOrigin
+            event.origin !== runtimeFrameMessageOrigin
           ) {
             return;
           }
@@ -793,13 +806,19 @@ function buildConformanceHarnessHtml(args) {
             data.kind === ${JSON.stringify(ARTIFACT_RUNTIME_HOST_MESSAGE_KIND)} &&
             data.action === ${JSON.stringify(ARTIFACT_RUNTIME_HOST_READY_ACTION)}
           ) {
-            iframe.contentWindow?.postMessage(bootMessage, runtimeHostOrigin);
+            iframe.contentWindow?.postMessage(
+              bootMessage,
+              runtimeFrameTargetOrigin,
+            );
             return;
           }
 
           const response = handlePersistenceRequest(data);
           if (response) {
-            iframe.contentWindow?.postMessage(response, runtimeHostOrigin);
+            iframe.contentWindow?.postMessage(
+              response,
+              runtimeFrameTargetOrigin,
+            );
           }
         });
       })();

@@ -38,7 +38,10 @@ export function attachPublicWebFixtureWebSocketServer(
     }
 
     markUpgradeHandled(req);
-    if (!isAllowedWebSocketOrigin(req, configuredAllowedOrigins)) {
+    if (
+      req.headers.origin !== 'null' &&
+      !isAllowedWebSocketOrigin(req, configuredAllowedOrigins)
+    ) {
       rejectUpgrade(socket, 403, 'Forbidden', 'origin not allowed');
       return;
     }

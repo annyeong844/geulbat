@@ -23,7 +23,7 @@ import type { FileStateCache } from '../utils/file-state-cache.js';
 
 type PreparedPathKind = 'file' | 'directory';
 
-export interface PreparedPathFingerprint {
+interface PreparedPathFingerprint {
   pathIdentityToken: string;
   pathVersionToken: string;
 }

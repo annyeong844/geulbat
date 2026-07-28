@@ -30,6 +30,8 @@ export type TranscriptVirtualRow =
       key: string;
       message: ThreadMessage;
       messageIndex: number;
+      // 답변이 끝난 ask_user 카드. 기록으로 남기되 다시 고를 수는 없다.
+      askUserAnswered?: boolean;
     }
   | {
       kind: 'settled_tool_group';
@@ -267,11 +269,21 @@ export function buildSettledTranscriptRows(args: {
       const failed =
         parsedMessage.callId !== null &&
         askUserResultFailureByCallId.get(parsedMessage.callId) === true;
-      if (
-        answered ||
-        failed ||
-        args.answeredAskUserRequestKeys.has(requestKey)
-      ) {
+      if (failed) {
+        index += 1;
+        continue;
+      }
+      if (answered || args.answeredAskUserRequestKeys.has(requestKey)) {
+        // 답변한 질문은 지우지 않는다. 이야기를 이어가는 대화에서 질문이
+        // 사라지면 남은 답변만으로는 무엇에 답한 것인지 알 수 없다.
+        // 다시 고르지 못하게 읽기 전용으로만 남긴다.
+        rows.push({
+          kind: 'message',
+          key: args.messageKeys[index] ?? message.entryId,
+          message,
+          messageIndex: index,
+          askUserAnswered: true,
+        });
         index += 1;
         continue;
       }

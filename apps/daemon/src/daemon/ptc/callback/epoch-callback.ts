@@ -38,7 +38,7 @@ export interface PtcEpochCallbackChannel {
   close(): Promise<void>;
 }
 
-export interface PtcEpochCallbackChannelIdentity {
+interface PtcEpochCallbackChannelIdentity {
   epochId: string;
   token: string;
 }

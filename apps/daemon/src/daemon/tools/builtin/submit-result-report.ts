@@ -21,6 +21,7 @@ export const submitResultReportTool = defineZodTool({
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'agent',
     searchHints: ['child report', 'result summary', 'submit report'],

@@ -440,10 +440,11 @@ void test('agent_wait returns a durable mixed-outcome result-ref bundle after re
 void test('agent_wait returns completed children immediately', async () => {
   const { daemonContext, executionContext } = createWaitContext();
   const childRunId = testRunId('child-1');
+  const childThreadId = testThreadId(2);
   daemonContext.childRuns.registerChildRun({
     ...TEST_CHILD_MODEL_REGISTRATION,
     childRunId,
-    childThreadId: testThreadId(2),
+    childThreadId,
     parentRunId: testRunId('parent-run'),
     ownerThreadId: executionContext.threadId,
     subagentType: 'explorer',
@@ -453,6 +454,19 @@ void test('agent_wait returns completed children immediately', async () => {
     terminalState: 'completed',
     result: 'child complete',
   });
+  daemonContext.backgroundNotifications.enqueueThreadBackgroundResult(
+    executionContext.threadId,
+    {
+      deliveryId: 'delivery-child-1',
+      parentRunId: testRunId('parent-run'),
+      childRunId,
+      childThreadId,
+      subagentType: 'explorer',
+      terminalState: 'completed',
+      result: 'child complete',
+      completedAt: '2026-07-28T10:00:00.000Z',
+    },
+  );
 
   const result = await agentWaitTool.execute(
     {
@@ -478,6 +492,12 @@ void test('agent_wait returns completed children immediately', async () => {
   assert.deepEqual(payload.pending, []);
   assert.deepEqual(payload.blocked, []);
   assert.equal(daemonContext.childRuns.getChildRun(childRunId), undefined);
+  assert.deepEqual(
+    daemonContext.backgroundNotifications.readThreadBackgroundResults(
+      executionContext.threadId,
+    ),
+    [],
+  );
 });
 
 void test('agent_wait defaults to an immediate snapshot while a child is still running', async () => {

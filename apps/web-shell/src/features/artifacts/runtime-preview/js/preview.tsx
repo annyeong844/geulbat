@@ -7,7 +7,10 @@ import {
   type ResolvedArtifactSourceRef,
 } from '../../artifact-types.js';
 import { validateJsArtifactPayload } from '../../js/validator.js';
-import type { RenderArtifactRuntimeFrame } from '../types.js';
+import {
+  ARTIFACT_RUNTIME_DOWNLOAD_SANDBOX,
+  type RenderArtifactRuntimeFrame,
+} from '../types.js';
 
 export function resolveJsArtifactRuntimePreview(args: {
   payload: string;
@@ -38,7 +41,7 @@ export function resolveJsArtifactRuntimePreview(args: {
     renderRuntimeFrame({
       renderer: 'js',
       title: 'js artifact preview',
-      sandbox: 'allow-scripts allow-forms allow-same-origin allow-downloads',
+      sandbox: ARTIFACT_RUNTIME_DOWNLOAD_SANDBOX,
       runtimePayload: payload,
       sourceRef,
       ...(onGeneratedTextExportSnapshotChange !== undefined

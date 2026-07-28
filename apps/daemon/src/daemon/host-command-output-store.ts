@@ -135,7 +135,7 @@ export interface HostCommandPaths {
   fullOutputState: string;
 }
 
-export interface PersistedHostCommand {
+interface PersistedHostCommand {
   metadata: HostCommandMetadata;
   paths: HostCommandPaths;
 }

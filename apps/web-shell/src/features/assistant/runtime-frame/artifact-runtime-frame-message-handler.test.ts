@@ -39,7 +39,8 @@ void test('handleArtifactRuntimeFrameMessageEvent ignores messages outside the r
     {
       iframeRef: createIframeRef(frameWindow),
       runtimeDocument: RUNTIME_DOCUMENT,
-      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameMessageOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameTargetOrigin: '*',
       scopeHandle: SCOPE_HANDLE,
       bridgeResponder: responder,
       markHostReady() {
@@ -58,7 +59,8 @@ void test('handleArtifactRuntimeFrameMessageEvent ignores messages outside the r
     {
       iframeRef: createIframeRef(frameWindow),
       runtimeDocument: RUNTIME_DOCUMENT,
-      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameMessageOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameTargetOrigin: '*',
       scopeHandle: SCOPE_HANDLE,
       bridgeResponder: responder,
       markHostReady() {
@@ -80,12 +82,14 @@ void test('handleArtifactRuntimeFrameMessageEvent completes the host ready hands
   await handleArtifactRuntimeFrameMessageEvent(
     createMessageEvent({
       source: frameWindow,
+      origin: 'null',
       data: createReadyMessage(),
     }),
     {
       iframeRef: createIframeRef(frameWindow),
       runtimeDocument: RUNTIME_DOCUMENT,
-      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameMessageOrigin: 'null',
+      runtimeFrameTargetOrigin: '*',
       scopeHandle: SCOPE_HANDLE,
       bridgeResponder: createBridgeResponder(),
       markHostReady() {
@@ -99,7 +103,7 @@ void test('handleArtifactRuntimeFrameMessageEvent completes the host ready hands
   assert.deepEqual(frameWindow.postedMessages, [
     {
       message: createArtifactRuntimeHostBootMessage(RUNTIME_DOCUMENT),
-      targetOrigin: RUNTIME_HOST_ORIGIN,
+      targetOrigin: '*',
     },
   ]);
 });
@@ -114,7 +118,8 @@ void test('handleArtifactRuntimeFrameMessageEvent applies resize and generated s
   const baseArgs = {
     iframeRef,
     runtimeDocument: RUNTIME_DOCUMENT,
-    runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+    runtimeFrameMessageOrigin: RUNTIME_HOST_ORIGIN,
+    runtimeFrameTargetOrigin: '*',
     scopeHandle: SCOPE_HANDLE,
     bridgeResponder: createBridgeResponder(),
     markHostReady() {},
@@ -231,7 +236,8 @@ void test('handleArtifactRuntimeFrameMessageEvent round-trips agent tool request
     {
       iframeRef: createIframeRef(frameWindow),
       runtimeDocument: RUNTIME_DOCUMENT,
-      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameMessageOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameTargetOrigin: '*',
       scopeHandle: SCOPE_HANDLE,
       bridgeResponder: createBridgeResponder(),
       markHostReady() {},
@@ -258,7 +264,7 @@ void test('handleArtifactRuntimeFrameMessageEvent round-trips agent tool request
         requestId: 'af-1',
         result: { ok: true, output: 'tool-output' },
       },
-      targetOrigin: RUNTIME_HOST_ORIGIN,
+      targetOrigin: '*',
     },
   ]);
 });
@@ -282,7 +288,8 @@ void test('handleArtifactRuntimeFrameMessageEvent answers unwired or failing too
     {
       iframeRef: createIframeRef(frameWindow),
       runtimeDocument: RUNTIME_DOCUMENT,
-      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameMessageOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameTargetOrigin: '*',
       scopeHandle: SCOPE_HANDLE,
       bridgeResponder: createBridgeResponder(),
       markHostReady() {},
@@ -306,7 +313,8 @@ void test('handleArtifactRuntimeFrameMessageEvent answers unwired or failing too
     {
       iframeRef: createIframeRef(frameWindow),
       runtimeDocument: RUNTIME_DOCUMENT,
-      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameMessageOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameTargetOrigin: '*',
       scopeHandle: SCOPE_HANDLE,
       bridgeResponder: createBridgeResponder(),
       markHostReady() {},
@@ -342,7 +350,8 @@ void test('handleArtifactRuntimeFrameMessageEvent drops prompt intents over the 
   const baseArgs = {
     iframeRef: createIframeRef(frameWindow),
     runtimeDocument: RUNTIME_DOCUMENT,
-    runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+    runtimeFrameMessageOrigin: RUNTIME_HOST_ORIGIN,
+    runtimeFrameTargetOrigin: '*',
     scopeHandle: SCOPE_HANDLE,
     bridgeResponder: createBridgeResponder(),
     markHostReady() {},
@@ -380,7 +389,8 @@ void test('handleArtifactRuntimeFrameMessageEvent settles tool requests over bud
   const baseArgs = {
     iframeRef: createIframeRef(frameWindow),
     runtimeDocument: RUNTIME_DOCUMENT,
-    runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+    runtimeFrameMessageOrigin: RUNTIME_HOST_ORIGIN,
+    runtimeFrameTargetOrigin: '*',
     scopeHandle: SCOPE_HANDLE,
     bridgeResponder: createBridgeResponder(),
     markHostReady() {},
@@ -443,7 +453,8 @@ void test('handleArtifactRuntimeFrameMessageEvent ignores tool requests with a s
     {
       iframeRef: createIframeRef(frameWindow),
       runtimeDocument: RUNTIME_DOCUMENT,
-      runtimeHostOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameMessageOrigin: RUNTIME_HOST_ORIGIN,
+      runtimeFrameTargetOrigin: '*',
       scopeHandle: SCOPE_HANDLE,
       bridgeResponder: createBridgeResponder(),
       markHostReady() {},

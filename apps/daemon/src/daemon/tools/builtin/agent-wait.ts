@@ -20,6 +20,10 @@ import type {
 // launch/terminal stores — nothing else from the runtime bag.
 type AgentWaitServices = {
   childRuns: AgentRuntimeServices['childRuns'];
+  backgroundNotifications: Pick<
+    AgentRuntimeServices['backgroundNotifications'],
+    'acknowledgeThreadBackgroundResults' | 'readThreadBackgroundResults'
+  >;
   subagent: Pick<
     AgentRuntimeSubagentServices,
     'launchRequests' | 'terminalDeliveries'
@@ -476,6 +480,26 @@ function createAgentWaitTool(options: { timeoutMs?: number } = {}) {
           (entry) => !durableTerminalChildRunIds.has(entry.childRunId),
         ),
       };
+      const completedChildRunIds = new Set(
+        completed.map((entry) => entry.childRunId),
+      );
+      try {
+        const deliveryIds = services.backgroundNotifications
+          .readThreadBackgroundResults(ownerThreadId)
+          .filter((entry) => completedChildRunIds.has(entry.childRunId))
+          .map((entry) => entry.deliveryId);
+        if (deliveryIds.length > 0) {
+          services.backgroundNotifications.acknowledgeThreadBackgroundResults(
+            ownerThreadId,
+            deliveryIds,
+          );
+        }
+      } catch {
+        return toolError(
+          'persistence_unavailable',
+          'agent terminal notification could not be acknowledged',
+        );
+      }
       registry.claimTerminalChildRuns({
         ownerThreadId,
         childRunIds: completed.map((entry) => entry.childRunId),

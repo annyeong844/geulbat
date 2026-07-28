@@ -10,7 +10,7 @@ const MATCH_PREVIEW_MAX_BYTES_ENV =
 const DEFAULT_MATCH_PREVIEW_MAX_BYTES = 2000;
 const MATCH_PREVIEW_TRUNCATION_SUFFIX = '... [truncated]';
 
-export interface SearchMatchPreviewEnv {
+interface SearchMatchPreviewEnv {
   GEULBAT_SEARCH_FILES_MATCH_PREVIEW_MAX_BYTES?: string | undefined;
 }
 

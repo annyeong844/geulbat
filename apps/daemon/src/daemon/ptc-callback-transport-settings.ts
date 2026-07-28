@@ -12,7 +12,7 @@ export type { PtcCallbackTransportPolicy };
 // 라우트는 그 포트만 쓴다. 라우트가 Home 경로나 레코드 형식을 알면 저장 위치가 두 곳에서
 // 정의되기 때문이다.
 
-export type PtcCallbackTransportSettingsStatus =
+type PtcCallbackTransportSettingsStatus =
   | { state: 'disabled' }
   | {
       state: 'ready';

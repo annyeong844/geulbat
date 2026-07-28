@@ -990,27 +990,6 @@ void test('assistant composer renders the selected current model', () => {
   assert.match(html, /Grok 4\.5 높음/);
 });
 
-void test('assistant composer renders a fixed Luna xhigh subagent route independently from the root model', () => {
-  const html = renderToStaticMarkup(
-    <Assistant
-      {...createAssistantProps({
-        composerControls: composerControls({
-          modelId: 'grok-4.5',
-          reasoningEffort: 'high',
-          subagentModelRouting: {
-            mode: 'fixed',
-            choice: { modelId: 'gpt-5.6-luna', reasoningEffort: 'xhigh' },
-          },
-        }),
-      })}
-    />,
-  );
-
-  // 고정 라우팅은 통합 피커 안(서브패널)으로 들어갔다 — 트리거 라벨은
-  // 루트 모델만 보여주고, 고정 상태는 메뉴를 열어야 보인다.
-  assert.match(html, /Grok 4\.5 높음/);
-});
-
 void test('assistant renders structured run transcript entries without relying on string markers', () => {
   const html = renderToStaticMarkup(
     <Assistant

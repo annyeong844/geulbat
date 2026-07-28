@@ -285,7 +285,8 @@ function sendJavascriptFixture(res: Response, source: string): void {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.status(200).send(source);
 }
 
@@ -294,7 +295,8 @@ function sendCssFixture(res: Response, source: string): void {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.status(200).send(source);
 }
 
@@ -303,7 +305,8 @@ function sendJsonFixture(res: Response, body: Record<string, string>): void {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.status(200).send(JSON.stringify(body));
 }
 
@@ -312,7 +315,8 @@ function sendEventStreamFixture(res: Response, message: string): void {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.status(200).send(formatServerSentEventData(message));
 }
 

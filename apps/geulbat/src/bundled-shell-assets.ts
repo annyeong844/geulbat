@@ -18,7 +18,7 @@ const BUNDLED_SHELL_ASSET_RELATIVE_PATH = '../../web-shell/dist';
 /** 산출물이 실제로 존재하는지 판정하는 표식. 빌드 없이는 이 파일이 없다. */
 const SHELL_ENTRY_DOCUMENT_NAME = 'index.html';
 
-export interface BundledShellAssetResolution {
+interface BundledShellAssetResolution {
   /** 서빙 가능한 산출물 루트. 없으면 `null`. */
   shellAssetRoot: string | null;
   /** 판정에 사용한 경로 — 없을 때 진단에 그대로 실어야 한다. */

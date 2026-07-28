@@ -59,7 +59,7 @@ export class SandboxOutputEvidenceReadError extends Error {
   }
 }
 
-export interface OpenedSandboxOutputEvidenceFile {
+interface OpenedSandboxOutputEvidenceFile {
   handle: FileHandle;
   relativePath: string;
   bytes: number;

@@ -8,6 +8,3 @@
  * 열리고(`EPHEMERAL_DAEMON_PORT`), 실제 포트는 admission lock에 기록된다.
  */
 export const DEV_DAEMON_PORT = 3456;
-
-/** Vite dev proxy와 supervisor precheck가 공유하는 접속 지점. */
-export const DEV_DAEMON_ORIGIN = `http://127.0.0.1:${DEV_DAEMON_PORT}`;

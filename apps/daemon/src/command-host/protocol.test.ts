@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  COMMAND_HOST_CAPABILITIES,
   DEFAULT_MAX_FRAME_BYTES,
   FrameDecoder,
   FrameTooLargeError,
@@ -10,11 +11,15 @@ import {
   buildResultResponse,
   encodeFrame,
   initializeParamsSchema,
+  initializeResultSchema,
+  interactResultSchema,
   interactParamsSchema,
   jsonRpcRequestSchema,
   REQUEST_CANCELLED_CODE,
+  startResultSchema,
   startParamsSchema,
   subscribeResultSchema,
+  waitInitialResultSchema,
 } from './protocol.js';
 
 void test('framing round-trips messages split across arbitrary chunk boundaries', () => {
@@ -149,6 +154,106 @@ void test('method param schemas validate required shapes', () => {
       threadId: 't',
       outputRef: 'command-output:t/s',
       page: { stream: 'stdout', offsetBytes: 0, limitBytes: 0 },
+    }).success,
+    false,
+  );
+});
+
+void test('initialize result defaults omitted known capabilities to disabled', () => {
+  const parsed = initializeResultSchema.parse({
+    selectedVersion: '2026-07-24',
+    supportedVersions: ['2026-07-24'],
+    capabilities: {
+      losslessStdio: true,
+      futureCapability: true,
+    },
+    effectiveConfig: {
+      inlineMaxBytes: 1024,
+      tailRingBytes: 4096,
+    },
+  });
+
+  assert.deepEqual(parsed.capabilities, {
+    deferredOutputRelease: false,
+    idempotentStartByInvocation: false,
+    initialStdinOnStart: false,
+    losslessStdio: true,
+    prePersistenceOutputRedaction: false,
+  });
+});
+
+void test('initialize result accepts the protocol-owned capability set', () => {
+  const parsed = initializeResultSchema.parse({
+    selectedVersion: '2026-07-24',
+    supportedVersions: ['2026-07-24'],
+    capabilities: COMMAND_HOST_CAPABILITIES,
+    effectiveConfig: {
+      inlineMaxBytes: 1024,
+      tailRingBytes: 4096,
+    },
+  });
+
+  assert.deepEqual(parsed.capabilities, COMMAND_HOST_CAPABILITIES);
+});
+
+void test('session result schemas reject malformed worker payloads', () => {
+  const snapshot = {
+    outputRef: 'command-output:t/s',
+    status: 'running',
+    exitCode: null,
+    stdout: null,
+    stderr: null,
+    outputComplete: false,
+    stdoutBytes: 0,
+    stderrBytes: 0,
+    stdoutChars: null,
+    stderrChars: null,
+    durationMs: 0,
+    firstOutputAfterMs: null,
+    revision: 1,
+    stdinOpen: true,
+    outputLimitExceeded: null,
+  };
+
+  assert.equal(
+    startResultSchema.safeParse({
+      ok: true,
+      outputRef: 'command-output:t/s',
+    }).success,
+    true,
+  );
+  assert.equal(
+    startResultSchema.safeParse({ ok: true, outputRef: 42 }).success,
+    false,
+  );
+
+  assert.equal(
+    waitInitialResultSchema.safeParse({ ok: true, value: snapshot }).success,
+    true,
+  );
+  assert.equal(
+    waitInitialResultSchema.safeParse({
+      ok: false,
+      reasonCode: 'unknown_reason',
+      message: 'not a command-host result',
+    }).success,
+    false,
+  );
+
+  assert.equal(
+    interactResultSchema.safeParse({
+      ok: true,
+      value: { snapshot, page: null },
+    }).success,
+    true,
+  );
+  assert.equal(
+    interactResultSchema.safeParse({
+      ok: true,
+      value: {
+        snapshot: { outputRef: 'command-output:t/s', status: 'running' },
+        page: null,
+      },
     }).success,
     false,
   );

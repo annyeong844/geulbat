@@ -36,6 +36,9 @@ export function useAssistantTranscriptScrollState(args: {
   // 추론할 수 없다. transcript owner가 마지막으로 실제 적용한 위치를 기록해
   // 지연 도착한 내부 이벤트와 새 사용자 이동을 구분한다.
   const lastProgrammaticScrollTopRef = useRef<number | null>(null);
+  // 마지막으로 관찰한 콘텐츠 높이. 높이가 줄어드는 것은 새 내용이 아니라
+  // 재구성이다(스트리밍 라이브 테일이 정착 메시지로 교체되는 순간이 대표적).
+  const lastObservedScrollHeightRef = useRef<number | null>(null);
 
   const syncContentLayout = useCallback((behavior: ScrollBehavior) => {
     const transcript = transcriptRef.current;
@@ -44,9 +47,15 @@ export function useAssistantTranscriptScrollState(args: {
     }
 
     const scrollHeight = transcript.scrollHeight;
-    const shouldFollow =
-      !autoScrollLockedRef.current ||
-      isTranscriptNearBottom(transcript, scrollHeight);
+    const previousScrollHeight = lastObservedScrollHeightRef.current;
+    lastObservedScrollHeightRef.current = scrollHeight;
+    // 사용자가 위를 읽는 중이면 바닥을 따라가지 않는다.
+    //
+    // 여기서 "바닥에 가까운가"로 팔로우를 되살리면 안 된다. 잠금은 실제 스크롤
+    // 이벤트에서만 걸리므로, 잠긴 상태에서 바닥에 가까워지는 경우는 콘텐츠가
+    // 줄어들어 위치가 바닥 쪽으로 밀린 때뿐이다. 답변이 끝나는 순간이 바로
+    // 그때이고, 그것을 팔로우 신호로 읽으면 읽던 자리를 잃는다.
+    const shouldFollow = !autoScrollLockedRef.current;
     if (shouldFollow) {
       lastProgrammaticScrollTopRef.current = scrollAssistantTranscript(
         transcript,
@@ -61,8 +70,12 @@ export function useAssistantTranscriptScrollState(args: {
       return;
     }
 
-    setHasUnreadStreamContent(true);
     setIsAwayFromBottom(true);
+    // 높이가 자란 경우에만 아래에 못 읽은 것이 생긴다. 재구성으로 줄어든
+    // 것을 "새 메시지"로 알리면, 사용자가 보내지 않은 알림이 뜬다.
+    if (previousScrollHeight === null || scrollHeight > previousScrollHeight) {
+      setHasUnreadStreamContent(true);
+    }
   }, []);
 
   // entry 개수 변화 없이 내용 높이만 자라는 경우(iframe 아티팩트 로드,

@@ -19,6 +19,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DEV_TOKEN_HEADER_NAME } from '@geulbat/protocol/shell-auth';
+import {
+  ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
+  ARTIFACT_RUNTIME_HOST_READY_ACTION,
+  createArtifactRuntimeHostBootMessage,
+} from '@geulbat/protocol/artifact-runtime-host';
 import { chromium } from 'playwright';
 
 import {
@@ -549,7 +554,7 @@ async function runApprovalFlow(page, harness) {
   );
 }
 
-async function runArtifactSameOriginAuthFlow(page, harness) {
+async function runArtifactOpaqueOriginIsolationFlow(page, harness) {
   await page.goto(harness.appUrl, { waitUntil: 'domcontentloaded' });
   const shellCookies = await page.context().cookies(harness.appUrl);
   const shellAuthCookie = shellCookies.find(
@@ -562,103 +567,169 @@ async function runArtifactSameOriginAuthFlow(page, harness) {
     )})`,
   );
 
+  const parentOrigin = new URL(harness.appUrl).origin;
   const artifactHostUrl = new URL(
     '/artifact-runtime/host',
     harness.daemonOrigin,
   );
-  artifactHostUrl.searchParams.set(
-    'parentOrigin',
-    new URL(harness.appUrl).origin,
-  );
-  await page.goto(artifactHostUrl.toString(), {
-    waitUntil: 'domcontentloaded',
-  });
-
-  const directHttpStatuses = await page.evaluate(async () => {
-    const fetchResponse = await fetch('/api/files/computer-scope', {
-      credentials: 'include',
-    });
-    const xhrStatus = await new Promise((resolve) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('GET', '/api/files/computer-scope');
-      xhr.withCredentials = true;
-      xhr.addEventListener('loadend', () => resolve(xhr.status), {
-        once: true,
-      });
-      xhr.send();
-    });
-    return {
-      fetch: fetchResponse.status,
-      xhr: xhrStatus,
-    };
-  });
-  assert(
-    directHttpStatuses.fetch === 200 && directHttpStatuses.xhr === 200,
-    `same-origin artifact did not inherit shell API authority (fetch=${String(
-      directHttpStatuses.fetch,
-    )}, xhr=${String(directHttpStatuses.xhr)})`,
-  );
-
-  const websocketOutcome = await page.evaluate(async (daemonOrigin) => {
-    const url = new URL('/api/ws', daemonOrigin);
-    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    return await new Promise((resolve) => {
-      const socket = new WebSocket(url);
-      let settled = false;
-      let timeout;
-      const finish = (outcome) => {
-        if (settled) {
-          return;
+  artifactHostUrl.searchParams.set('parentOrigin', parentOrigin);
+  const probeKind = 'geulbat.artifact_runtime_isolation_probe';
+  const runtimeDocument = `<!doctype html>
+<html>
+  <body>
+    <script>
+      void (async () => {
+        const parentOrigin = ${JSON.stringify(parentOrigin)};
+        let parentDomReachable = false;
+        try {
+          parentDomReachable = window.parent.document.body !== null;
+        } catch {
+          parentDomReachable = false;
         }
-        settled = true;
-        clearTimeout(timeout);
-        socket.close();
-        resolve(outcome);
-      };
-      timeout = setTimeout(() => finish({ kind: 'timeout' }), 5_000);
-      socket.addEventListener(
-        'open',
-        () => {
-          socket.send(
-            JSON.stringify({
-              type: 'run.auth',
-              requestId: 'artifact-same-origin-auth-probe',
-              token: 'not-the-dev-token',
-            }),
+
+        let cookieReadable = false;
+        try {
+          cookieReadable = document.cookie.length > 0;
+        } catch {
+          cookieReadable = false;
+        }
+
+        let fetchOutcome;
+        try {
+          const response = await fetch('/api/files/computer-scope', {
+            credentials: 'include',
+          });
+          fetchOutcome = { kind: 'response', status: response.status };
+        } catch {
+          fetchOutcome = { kind: 'blocked' };
+        }
+
+        const websocketOutcome = await new Promise((resolve) => {
+          const url = new URL('/api/ws', window.location.href);
+          url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+          const socket = new WebSocket(url);
+          let settled = false;
+          const finish = (outcome) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            window.clearTimeout(timeoutId);
+            socket.close();
+            resolve(outcome);
+          };
+          const timeoutId = window.setTimeout(
+            () => finish({ kind: 'timeout' }),
+            3_000,
           );
-        },
-        { once: true },
-      );
-      socket.addEventListener(
-        'message',
-        (event) => {
-          try {
-            finish({
-              kind: 'message',
-              message: JSON.parse(String(event.data)),
-            });
-          } catch {
-            finish({ kind: 'invalid_message' });
+          socket.addEventListener(
+            'open',
+            () => finish({ kind: 'opened' }),
+            { once: true },
+          );
+          socket.addEventListener(
+            'error',
+            () => finish({ kind: 'transport_error' }),
+            { once: true },
+          );
+          socket.addEventListener(
+            'close',
+            () => finish({ kind: 'closed' }),
+            { once: true },
+          );
+        });
+
+        window.parent.postMessage(
+          {
+            kind: ${JSON.stringify(probeKind)},
+            parentDomReachable,
+            cookieReadable,
+            fetchOutcome,
+            websocketOutcome,
+          },
+          parentOrigin,
+        );
+      })();
+    </script>
+  </body>
+</html>`;
+  const bootMessage = createArtifactRuntimeHostBootMessage(runtimeDocument);
+
+  const outcome = await page.evaluate(
+    async ({
+      bootMessage,
+      frameUrl,
+      hostMessageKind,
+      hostReadyAction,
+      probeKind,
+    }) =>
+      await new Promise((resolve, reject) => {
+        const iframe = document.createElement('iframe');
+        iframe.setAttribute('sandbox', 'allow-scripts allow-forms');
+        iframe.src = frameUrl;
+        let readyOrigin = null;
+        const timeoutId = window.setTimeout(() => {
+          cleanup();
+          reject(new Error('artifact opaque-origin probe timed out'));
+        }, 10_000);
+        const cleanup = () => {
+          window.clearTimeout(timeoutId);
+          window.removeEventListener('message', handleMessage);
+          iframe.remove();
+        };
+        const handleMessage = (event) => {
+          if (event.source !== iframe.contentWindow) {
+            return;
           }
-        },
-        { once: true },
-      );
-      socket.addEventListener(
-        'error',
-        () => finish({ kind: 'transport_error' }),
-        { once: true },
-      );
-      socket.addEventListener('close', () => finish({ kind: 'closed' }), {
-        once: true,
-      });
-    });
-  }, harness.daemonOrigin);
+          const data = event.data;
+          if (
+            data &&
+            typeof data === 'object' &&
+            data.kind === hostMessageKind &&
+            data.action === hostReadyAction
+          ) {
+            readyOrigin = event.origin;
+            iframe.contentWindow?.postMessage(bootMessage, '*');
+            return;
+          }
+          if (data && typeof data === 'object' && data.kind === probeKind) {
+            const result = {
+              ...data,
+              readyOrigin,
+              probeOrigin: event.origin,
+            };
+            cleanup();
+            resolve(result);
+          }
+        };
+        window.addEventListener('message', handleMessage);
+        document.body.appendChild(iframe);
+      }),
+    {
+      bootMessage,
+      frameUrl: artifactHostUrl.toString(),
+      hostMessageKind: ARTIFACT_RUNTIME_HOST_MESSAGE_KIND,
+      hostReadyAction: ARTIFACT_RUNTIME_HOST_READY_ACTION,
+      probeKind,
+    },
+  );
+
   assert(
-    websocketOutcome.kind === 'message' &&
-      websocketOutcome.message?.type === 'run.auth.ok',
-    `same-origin artifact did not inherit websocket authority (${JSON.stringify(
-      websocketOutcome,
-    )})`,
+    outcome.readyOrigin === 'null' && outcome.probeOrigin === 'null',
+    `artifact frame did not receive an opaque origin (${JSON.stringify(outcome)})`,
+  );
+  assert(
+    outcome.parentDomReachable === false && outcome.cookieReadable === false,
+    `opaque artifact retained parent DOM or cookie access (${JSON.stringify(outcome)})`,
+  );
+  assert(
+    outcome.fetchOutcome?.kind !== 'response' ||
+      outcome.fetchOutcome.status !== 200,
+    `opaque artifact retained direct shell HTTP authority (${JSON.stringify(outcome)})`,
+  );
+  assert(
+    outcome.websocketOutcome?.kind !== 'opened',
+    `opaque artifact retained direct shell websocket authority (${JSON.stringify(outcome)})`,
   );
 }
 
@@ -1105,8 +1176,8 @@ async function main() {
     results.push(
       await executeBrowserFlow(
         browser,
-        'same-origin-artifact-inherits-shell-api-authority',
-        (page) => runArtifactSameOriginAuthFlow(page, harness),
+        'artifact-frame-is-opaque-and-cannot-inherit-shell-authority',
+        (page) => runArtifactOpaqueOriginIsolationFlow(page, harness),
       ),
     );
     results.push(

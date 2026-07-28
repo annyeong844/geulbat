@@ -18,6 +18,9 @@ const PROVIDER_AUTH_INSTALLED_CONFIG_PATH_ENV =
   'GEULBAT_PROVIDER_AUTH_INSTALLED_CONFIG_PATH';
 const PROVIDER_AUTH_BUNDLED_CONFIG_PATH_ENV =
   'GEULBAT_PROVIDER_AUTH_BUNDLED_CONFIG_PATH';
+const PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS_ENV =
+  'GEULBAT_PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS';
+const PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_DEFAULT_MS = 60_000;
 
 const PROVIDER_AUTH_AUTHORIZE_URL =
   process.env['PROVIDER_AUTH_AUTHORIZE_URL'] ??
@@ -117,7 +120,25 @@ export const PROVIDER_AUTH_REVOCATION_URL = trimToUndefined(
 export const PROVIDER_AUTH_PENDING_TTL_MS = 10 * 60 * 1000;
 export const PROVIDER_AUTH_POLL_AFTER_MS = 1000;
 export const PROVIDER_AUTH_REFRESH_MARGIN_MS = 60_000;
-export const PROVIDER_AUTH_EXCHANGE_TIMEOUT_MS = 10_000;
+
+export function resolveProviderAuthTokenRequestTimeoutMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = trimToUndefined(
+    env[PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS_ENV],
+  );
+  if (raw === undefined) {
+    return PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_DEFAULT_MS;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `${PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS_ENV} must be a positive safe integer`,
+    );
+  }
+  return parsed;
+}
 
 export interface ProviderAuthBootstrapProfile {
   providerId: ProviderAuthCredentialProviderId;

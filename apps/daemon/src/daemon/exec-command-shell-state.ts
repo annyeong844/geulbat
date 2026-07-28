@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 export type ExecCommandShellMode = 'isolated' | 'persistent';
 
-export type PreparePersistentShellInvocationResult =
+type PreparePersistentShellInvocationResult =
   | {
       ok: true;
       executable: string;

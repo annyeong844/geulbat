@@ -95,6 +95,37 @@ void test('refreshProviderToken preserves the current refresh token when the pro
   assert.equal(refreshed.refreshToken, 'current-refresh-token');
 });
 
+void test('refreshProviderToken times out when the token endpoint never settles', async () => {
+  let observedSignal: AbortSignal | undefined;
+
+  await assert.rejects(
+    () =>
+      refreshProviderToken(
+        {
+          accessToken: 'access-token',
+          refreshToken: 'refresh-token',
+          accountId: 'account-1',
+          expiresAt: 0,
+        },
+        {
+          timeoutMs: 1,
+          fetchImpl: async (_url, init) =>
+            await new Promise<Response>((_resolve, reject) => {
+              observedSignal = init?.signal ?? undefined;
+              observedSignal?.addEventListener(
+                'abort',
+                () => reject(new Error('aborted by timeout')),
+                { once: true },
+              );
+            }),
+        },
+      ),
+    /Provider token refresh timed out/u,
+  );
+
+  assert.equal(observedSignal?.aborted, true);
+});
+
 void test('refreshProviderToken fails fast when provider auth client id is not configured', async () => {
   const previousClientId = process.env['PROVIDER_AUTH_CLIENT_ID'];
   const previousInstalledConfigPath =

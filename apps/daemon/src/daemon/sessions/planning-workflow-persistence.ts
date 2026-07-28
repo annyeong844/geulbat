@@ -35,7 +35,7 @@ import {
 const PLANNING_WORKFLOW_SCHEMA_VERSION = 2;
 const LEGACY_PLANNING_WORKFLOW_SCHEMA_VERSION = 1;
 
-export interface StoredCurrentWorkflow {
+interface StoredCurrentWorkflow {
   snapshot: PlanningWorkflowSnapshot;
   executionTemplate: RunExecutionTemplate;
 }
@@ -52,7 +52,7 @@ export interface StoredPlanningWorkflowState {
   approvals: StoredApproval[];
 }
 
-export interface PlanningWorkflowPersistence {
+interface PlanningWorkflowPersistence {
   /** 스레드의 상태 파일 경로 — 변경 직렬화의 키이기도 하다. */
   workflowPath(threadId: ThreadId): string;
   readState(threadId: ThreadId): Promise<StoredPlanningWorkflowState>;

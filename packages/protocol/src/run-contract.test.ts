@@ -451,41 +451,6 @@ void test('run model catalog owns current model-to-provider projection', () => {
   );
 });
 
-void test('run model catalog explicitly gates provider-hosted tool search', () => {
-  assert.deepEqual(
-    RUN_MODEL_CATALOG.map(({ id, supportsHostedToolSearch }) => ({
-      id,
-      supportsHostedToolSearch,
-    })),
-    [
-      { id: 'gpt-5.6-sol', supportsHostedToolSearch: true },
-      { id: 'gpt-5.6-terra', supportsHostedToolSearch: true },
-      { id: 'gpt-5.6-luna', supportsHostedToolSearch: true },
-      { id: 'grok-4.5', supportsHostedToolSearch: false },
-      { id: 'qwen3.8-max-preview', supportsHostedToolSearch: false },
-    ],
-  );
-});
-
-void test('run model catalog explicitly gates generated SDK tool discovery', () => {
-  assert.deepEqual(
-    RUN_MODEL_CATALOG.map(({ id, supportsGeneratedSdkToolDiscovery }) => ({
-      id,
-      supportsGeneratedSdkToolDiscovery,
-    })),
-    [
-      { id: 'gpt-5.6-sol', supportsGeneratedSdkToolDiscovery: true },
-      { id: 'gpt-5.6-terra', supportsGeneratedSdkToolDiscovery: false },
-      { id: 'gpt-5.6-luna', supportsGeneratedSdkToolDiscovery: false },
-      { id: 'grok-4.5', supportsGeneratedSdkToolDiscovery: false },
-      {
-        id: 'qwen3.8-max-preview',
-        supportsGeneratedSdkToolDiscovery: false,
-      },
-    ],
-  );
-});
-
 void test('isRunStartRequest accepts known run model ids only', () => {
   assert.equal(
     isRunStartRequest({

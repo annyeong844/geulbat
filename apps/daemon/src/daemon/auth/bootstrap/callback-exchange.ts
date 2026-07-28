@@ -4,8 +4,8 @@ import { isRecord } from '../../runtime-json.js';
 import type { ErrorCode } from '../contract.js';
 
 import {
-  PROVIDER_AUTH_EXCHANGE_TIMEOUT_MS,
   getProviderAuthBootstrapProfile,
+  resolveProviderAuthTokenRequestTimeoutMs,
 } from './config.js';
 import type { ProviderAuthCredentialProviderId } from '../credentials/store.js';
 
@@ -37,15 +37,14 @@ export async function exchangeAuthorizationCode(
   },
 ): Promise<TokenExchangeResponse> {
   const profile = await getProviderAuthBootstrapProfile(options?.providerId);
+  const timeoutMs =
+    options?.timeoutMs ?? resolveProviderAuthTokenRequestTimeoutMs();
   let attempt = 0;
 
   while (true) {
     attempt += 1;
     const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      options?.timeoutMs ?? PROVIDER_AUTH_EXCHANGE_TIMEOUT_MS,
-    );
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
       client_id: profile.clientId,
@@ -73,8 +72,6 @@ export async function exchangeAuthorizationCode(
         signal: controller.signal,
       });
 
-      clearTimeout(timeout);
-
       if (!res.ok) {
         const message = await res.text().catch(() => '');
         throw withProviderAuthCode(
@@ -85,8 +82,6 @@ export async function exchangeAuthorizationCode(
 
       return parseTokenExchangeResponse((await res.json()) as unknown);
     } catch (err: unknown) {
-      clearTimeout(timeout);
-
       if (controller.signal.aborted) {
         throw withProviderAuthCode(
           'provider_auth_exchange_timeout',
@@ -106,6 +101,8 @@ export async function exchangeAuthorizationCode(
         'provider_auth_exchange_failed',
         err instanceof Error ? err.message : 'Provider token exchange failed.',
       );
+    } finally {
+      clearTimeout(timeout);
     }
   }
 }

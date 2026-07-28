@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 
 import {
   iterateWebSocketEvents,
@@ -72,6 +73,59 @@ void test('iterateWebSocketEventsAfterDispatch observes a synchronous provider r
     value: { type: 'response.completed' },
   });
   assert.deepEqual(await iterator.next(), { done: true, value: undefined });
+});
+
+void test('iterateWebSocketEventsAfterDispatch observes a prefetched rejection after the consumer closes', async () => {
+  const socket = createFakeSocket();
+  const iterator = iterateWebSocketEventsAfterDispatch(socket, () => {
+    socket.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({ type: 'response.output_text.delta', delta: 'first' }),
+      ),
+    );
+  });
+
+  assert.deepEqual(await iterator.next(), {
+    done: false,
+    value: { type: 'response.output_text.delta', delta: 'first' },
+  });
+
+  const unhandledRejections: unknown[] = [];
+  const onUnhandledRejection = (reason: unknown): void => {
+    unhandledRejections.push(reason);
+  };
+  process.on('unhandledRejection', onUnhandledRejection);
+  try {
+    const closed = iterator.return(undefined);
+    socket.emit('error', new Error('late provider failure'));
+    await closed;
+    await nextTurn();
+    assert.deepEqual(unhandledRejections, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandledRejection);
+  }
+});
+
+void test('iterateWebSocketEventsAfterDispatch still propagates a prefetched failure to an active consumer', async () => {
+  const socket = createFakeSocket();
+  const iterator = iterateWebSocketEventsAfterDispatch(socket, () => {
+    socket.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({ type: 'response.output_text.delta', delta: 'first' }),
+      ),
+    );
+  });
+
+  assert.deepEqual(await iterator.next(), {
+    done: false,
+    value: { type: 'response.output_text.delta', delta: 'first' },
+  });
+
+  const nextFrame = iterator.next();
+  socket.emit('error', new Error('provider failed'));
+  await assert.rejects(nextFrame, /provider failed/);
 });
 
 void test('iterateWebSocketEvents waits for the selected completion event type', async () => {

@@ -6,7 +6,9 @@ import { join } from 'node:path';
 
 import {
   commitMemoryEntries,
+  prepareMemoryEntryUsage,
   readMemoryEntries,
+  recordPreparedMemoryEntryUsage,
   recordMemoryEntryUsage,
   resolveMemoryEntriesDirectory,
 } from './entries-store.js';
@@ -69,9 +71,14 @@ void test('an entry dropped by consolidation loses its file and its measurement'
   const entries = await readMemoryEntries(stateRoot);
   const dropped = entries.find((entry) => entry.text === 'drop me')!;
   const kept = entries.find((entry) => entry.text === 'keep me')!;
-  await recordMemoryEntryUsage(stateRoot, [dropped.id, kept.id]);
+  const prepared = await prepareMemoryEntryUsage(stateRoot, [
+    dropped.id,
+    kept.id,
+  ]);
+  await recordPreparedMemoryEntryUsage(stateRoot, prepared);
 
   await commitMemoryEntries(stateRoot, [{ id: kept.id, text: 'keep me' }]);
+  await recordPreparedMemoryEntryUsage(stateRoot, prepared);
 
   const remaining = await readMemoryEntries(stateRoot);
   assert.deepEqual(
@@ -100,6 +107,27 @@ void test('citing an unknown address is reported instead of inventing history', 
 
   assert.deepEqual(outcome.recorded, [entryIds[0]]);
   assert.deepEqual(outcome.unknown, ['m-deadbeef']);
+  assert.equal((await readMemoryEntries(stateRoot))[0]?.usageCount, 1);
+});
+
+void test('replaying one prepared citation keeps one usage measurement', async () => {
+  const stateRoot = await makeStateRoot();
+  const { entryIds } = await commitMemoryEntries(stateRoot, [
+    { id: undefined, text: 'count one durable citation' },
+  ]);
+  const prepared = await prepareMemoryEntryUsage(stateRoot, [
+    entryIds[0]!,
+    'm-deadbeef',
+  ]);
+
+  const first = await recordPreparedMemoryEntryUsage(stateRoot, prepared);
+  const replay = await recordPreparedMemoryEntryUsage(stateRoot, prepared);
+
+  assert.deepEqual(first, {
+    recorded: [entryIds[0]],
+    unknown: ['m-deadbeef'],
+  });
+  assert.deepEqual(replay, first);
   assert.equal((await readMemoryEntries(stateRoot))[0]?.usageCount, 1);
 });
 

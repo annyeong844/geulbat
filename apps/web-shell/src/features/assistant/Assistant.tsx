@@ -339,6 +339,21 @@ export function Assistant({
   const pendingSteerFlushRequested =
     steering?.pendingSteerFlushRequested ?? false;
 
+  // 끝난 계획 카드는 스스로 사라지지 않는다 — 무엇을 승인해 실행했는지는
+  // 기록이다. 대신 사용자가 치울 수 있게 둔다. revision과 state를 키에 담아,
+  // 같은 계획이 다시 진행되면 새 카드로 다시 나타난다.
+  const planCardKey =
+    planningWorkflow === null
+      ? null
+      : `${planningWorkflow.snapshot.workflowId}:${
+          'revision' in planningWorkflow.snapshot
+            ? (planningWorkflow.snapshot.revision ?? 0)
+            : 0
+        }:${planningWorkflow.snapshot.state}`;
+  const [dismissedPlanCardKey, setDismissedPlanCardKey] = useState<
+    string | null
+  >(null);
+
   // silent 사용자 턴(아티팩트 ♻ 등 UI 발 자동 요청)은 채팅에도, 재시도/편집
   // 대상에도 넣지 않는다.
   const visibleMessages = useMemo(
@@ -772,12 +787,16 @@ export function Assistant({
           어긋나지 않게 한다. */}
       <div className="composer-region">
         {approvalPanel}
-        {planningWorkflow === null ? null : (
+        {planningWorkflow === null ||
+        planCardKey === dismissedPlanCardKey ? null : (
           <PlanningWorkflowCard
-            key={`${planningWorkflow.snapshot.workflowId}:${'revision' in planningWorkflow.snapshot ? (planningWorkflow.snapshot.revision ?? 0) : 0}:${planningWorkflow.snapshot.state}`}
+            key={planCardKey}
             workflow={planningWorkflow}
             visualization={planningVisualization}
             onWidgetPrompt={onWidgetPrompt ?? onSend}
+            {...(planCardKey === null
+              ? {}
+              : { onDismiss: () => setDismissedPlanCardKey(planCardKey) })}
           />
         )}
         {goal === null ? null : (

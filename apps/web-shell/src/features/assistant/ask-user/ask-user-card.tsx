@@ -34,7 +34,9 @@ export function AskUserCard(props: {
   };
 
   return (
-    <div className="ask-user-card">
+    <div
+      className={`ask-user-card${onAnswer === undefined ? ' is-answered' : ''}`}
+    >
       <div className="ask-user-question">{view.question}</div>
       <div className="ask-user-options" role="list">
         {view.options.map((option, index) => (
@@ -62,9 +64,12 @@ export function AskUserCard(props: {
           </button>
         ))}
       </div>
-      <div className="ask-user-hint">
-        다른 답은 아래 입력창에 직접 적어 주세요.
-      </div>
+      {/* 이미 답한 질문은 기록이다 — 다시 답하라는 안내를 남기지 않는다. */}
+      {onAnswer === undefined ? null : (
+        <div className="ask-user-hint">
+          다른 답은 아래 입력창에 직접 적어 주세요.
+        </div>
+      )}
     </div>
   );
 }

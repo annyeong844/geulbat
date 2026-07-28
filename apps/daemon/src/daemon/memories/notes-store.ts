@@ -7,7 +7,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { createLogger } from '@geulbat/structured-logger/logger';
 
@@ -64,7 +64,7 @@ export function memoryConsolidationIsDue(pendingNoteCount: number): boolean {
   return pendingNoteCount >= CONSOLIDATION_PENDING_NOTE_THRESHOLD;
 }
 
-function createNoteFileName(): string {
+export function allocateMemoryNoteFileName(): string {
   const timestampMs = Math.max(
     Date.now(),
     lastAllocatedMemoryNoteTimestampMs + 1,
@@ -74,9 +74,41 @@ function createNoteFileName(): string {
   return `${timestamp}-${randomBytes(4).toString('hex')}${NOTE_FILE_EXTENSION}`;
 }
 
+async function readPreparedMemoryNote(args: {
+  stateRoot: string;
+  fileName: string;
+  expectedText: string;
+}): Promise<{ path: string } | undefined> {
+  const expectedContents = `${args.expectedText}\n`;
+  const candidates = [
+    join(resolveCurrentMemoryNotesDirectory(args.stateRoot), args.fileName),
+    join(resolveHistoricalMemoryNotesDirectory(args.stateRoot), args.fileName),
+  ];
+  for (const path of candidates) {
+    try {
+      if ((await readFile(path, 'utf8')) !== expectedContents) {
+        throw Object.assign(
+          new Error(
+            'memory note recovery identity conflicts with its content.',
+          ),
+          { code: 'persistence_unavailable' },
+        );
+      }
+      return { path };
+    } catch (error: unknown) {
+      if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return undefined;
+}
+
 export async function appendMemoryNote(
   stateRoot: string,
   note: string,
+  options: { preparedFileName?: string } = {},
 ): Promise<{ path: string }> {
   const text = note.trim();
   if (text === '') {
@@ -84,10 +116,47 @@ export async function appendMemoryNote(
       code: 'invalid_args',
     });
   }
+  const fileName = options.preparedFileName ?? allocateMemoryNoteFileName();
+  if (
+    basename(fileName) !== fileName ||
+    !fileName.endsWith(NOTE_FILE_EXTENSION)
+  ) {
+    throw Object.assign(new Error('memory note file identity is invalid.'), {
+      code: 'persistence_unavailable',
+    });
+  }
+  if (options.preparedFileName !== undefined) {
+    const existing = await readPreparedMemoryNote({
+      stateRoot,
+      fileName,
+      expectedText: text,
+    });
+    if (existing !== undefined) {
+      return existing;
+    }
+  }
   const directory = resolveCurrentMemoryNotesDirectory(stateRoot);
-  const path = join(directory, createNoteFileName());
+  const path = join(directory, fileName);
   await mkdir(directory, { recursive: true });
-  await writeFile(path, `${text}\n`, { encoding: 'utf8', flag: 'wx' });
+  try {
+    await writeFile(path, `${text}\n`, { encoding: 'utf8', flag: 'wx' });
+  } catch (error: unknown) {
+    if (
+      options.preparedFileName === undefined ||
+      !hasErrorCode(error, 'EEXIST')
+    ) {
+      throw error;
+    }
+    const existing = await readPreparedMemoryNote({
+      stateRoot,
+      fileName,
+      expectedText: text,
+    });
+    if (existing !== undefined) {
+      return existing;
+    }
+    throw error;
+  }
   return { path };
 }
 

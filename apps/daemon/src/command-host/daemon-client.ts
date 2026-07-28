@@ -19,15 +19,15 @@ import {
   COMMAND_HOST_CONNECT_ATTEMPTS,
   COMMAND_HOST_CONNECT_BACKOFF_MS,
   COMMAND_HOST_METHODS,
+  interactResultSchema,
   listResultSchema,
+  startResultSchema,
+  waitInitialResultSchema,
 } from './protocol.js';
 import type {
   CommandSessionHostConfig,
   HostCommandActiveSessions,
-  HostCommandInitialResult,
-  HostCommandInteractionResult,
   HostCommandRuntime,
-  HostCommandStartResult,
 } from './contract.js';
 
 // P7.5 spec v4 §7 — 데몬 쪽 HostCommandRuntime 파사드. 도구는 이 파사드가
@@ -47,6 +47,18 @@ function connectionLostResult(): {
     ok: false,
     reasonCode: 'output_store_failed',
     message: 'command-host connection was lost.',
+  };
+}
+
+function unreadableWorkerResponseResult(method: string): {
+  ok: false;
+  reasonCode: 'output_store_failed';
+  message: string;
+} {
+  return {
+    ok: false,
+    reasonCode: 'output_store_failed',
+    message: `command-host ${method} response was not readable.`,
   };
 }
 
@@ -302,7 +314,11 @@ export function createCommandHostClient(
         // 실행할 수 있으므로 하지 않는다 — 여기서 멈추는 것이 §4.7이다.
         return connectionLostResult();
       }
-      const started = answered as HostCommandStartResult;
+      const parsed = startResultSchema.safeParse(answered);
+      if (!parsed.success) {
+        return unreadableWorkerResponseResult(COMMAND_HOST_METHODS.start);
+      }
+      const started = parsed.data;
       if (started.ok && args.onOutput !== undefined) {
         link.subscribeOutput(started.outputRef, args.onOutput);
         void link.request(COMMAND_HOST_METHODS.subscribe, {
@@ -344,9 +360,13 @@ export function createCommandHostClient(
         );
         // claim은 그 자체로 멱등하므로 재시도는 호출자 몫이다 — 커밋된
         // claim은 재접속 뒤 같은 답으로 합류한다(§8.2).
-        return answered === link.connectionLost
-          ? connectionLostResult()
-          : (answered as HostCommandInitialResult);
+        if (answered === link.connectionLost) {
+          return connectionLostResult();
+        }
+        const parsed = waitInitialResultSchema.safeParse(answered);
+        return parsed.success
+          ? parsed.data
+          : unreadableWorkerResponseResult(COMMAND_HOST_METHODS.waitInitial);
       } finally {
         // 스트리밍 창은 초기 대기까지다 — 리스너를 세션마다 남기면 링크
         // 수명 동안 누적된다.
@@ -415,7 +435,10 @@ export function createCommandHostClient(
         args.signal,
       );
       if (answered !== link.connectionLost) {
-        return answered as HostCommandInteractionResult;
+        const parsed = interactResultSchema.safeParse(answered);
+        return parsed.success
+          ? parsed.data
+          : unreadableWorkerResponseResult(COMMAND_HOST_METHODS.interact);
       }
       if (operation === undefined || args.signal?.aborted === true) {
         // 관찰 요청은 호출자가 다시 물어보면 그만이고, 취소된 요청은
@@ -443,9 +466,13 @@ export function createCommandHostClient(
         { ...params, yieldTimeMs: 0 },
         args.signal,
       );
-      return retried === retryLink.connectionLost
-        ? connectionLostResult()
-        : (retried as HostCommandInteractionResult);
+      if (retried === retryLink.connectionLost) {
+        return connectionLostResult();
+      }
+      const parsed = interactResultSchema.safeParse(retried);
+      return parsed.success
+        ? parsed.data
+        : unreadableWorkerResponseResult(COMMAND_HOST_METHODS.interact);
     },
 
     async listThreadSessions(args) {

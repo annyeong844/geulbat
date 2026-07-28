@@ -507,6 +507,7 @@ void test('useRunSessionConnection batches consecutive stream and display update
     },
     {
       type: 'transcript_activity_added',
+      runId: RUN_ID,
       threadId: THREAD_ID,
       streamedToolCallId: 'call-1',
       entry: {

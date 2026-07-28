@@ -197,6 +197,33 @@ void test('최종 답변이 먼저 나와도 미완료 계획은 백그라운드
   ]);
 });
 
+void test('실행 중 스티어링 질문은 진행 중인 계획을 끄지 않는다', () => {
+  const plan = [
+    { step: '원인 확인', status: 'completed' },
+    { step: '회귀 검증', status: 'in_progress' },
+  ];
+  const messages: ThreadMessage[] = [
+    planCallMessage(plan, 'steer-plan'),
+    {
+      entryId: 'steer-question',
+      role: 'user',
+      content: '그럼 승인 창은 왜 아직 남아 있나요?',
+      timestamp: '2026-07-17T09:01:00.000Z',
+      metadata: { source: 'interject' },
+    } as ThreadMessage,
+  ];
+
+  assert.deepEqual(resolveRunPlanHistory(messages).pendingPlan, plan);
+
+  messages.push({
+    entryId: 'next-turn',
+    role: 'user',
+    content: '새 작업을 시작해 주세요.',
+    timestamp: '2026-07-17T09:02:00.000Z',
+  });
+  assert.equal(resolveRunPlanHistory(messages).pendingPlan, null);
+});
+
 void test('한 스레드의 여러 계획은 각각 뒤따르는 최종 답변 run에 귀속된다', () => {
   const messages: ThreadMessage[] = [
     planCallMessage([{ step: '첫 계획', status: 'completed' }], 'plan-1'),

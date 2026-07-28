@@ -15,8 +15,6 @@ import {
   writeStoredPtcArtifactExportPolicy,
 } from './ptc/artifacts/artifact-export-policy-record.js';
 
-export type { PtcArtifactExportPolicy, PtcArtifactExportSettingsStatus };
-
 interface PtcArtifactExportFile {
   handle: FileHandle;
   relativePath: string;

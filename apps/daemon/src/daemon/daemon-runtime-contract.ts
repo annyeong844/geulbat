@@ -3,6 +3,7 @@ import type { ProviderAuthRuntimeStore } from './auth/runtime-state.js';
 import type { ProviderRequestOptions } from './llm/provider/provider-options.js';
 import type { ProviderNativeWebSearchRuntime } from './llm/provider/codex-web-search.js';
 import type { ReactBundleStructuredOutputIngressPolicy } from './agent/react-bundle-structured-output-ingress-policy.js';
+import type { AgentLoopImplementationAdmission } from './agent/loop-implementation-admission.js';
 import type { ResponsesWebSocketSessionStore } from './llm/provider/transport/responses-websocket-cache.js';
 import type { ActiveRunStore } from './sessions/active-runs.js';
 import type { SandboxAttemptStore } from './sandbox/attempt-store.js';
@@ -23,6 +24,7 @@ import type {
   ResolvedChildModelPin,
   RunSubagentModelRouting,
   SubagentCapability,
+  SubagentLaunchRequestInput,
   SubagentLaunchRequestStore,
   SubagentLaunchReservation,
   SubagentTerminalDeliveryStore,
@@ -45,7 +47,10 @@ import type {
 } from './media/contract.js';
 import type { ToolLibraryProjectionPort } from './tools/tool-library-projection-port.js';
 import type { PluginSkillRuntime } from './extensions/plugin-skill-runtime.js';
-import type { RunCheckpointStore } from './sessions/run-checkpoint-store.js';
+import type {
+  RunCheckpoint,
+  RunCheckpointStore,
+} from './sessions/run-checkpoint-store.js';
 import type { PlanningWorkflowStore } from './sessions/planning-workflow-store.js';
 import type { GoalStore } from './sessions/goal-store.js';
 import type { AgentLoopMemoryPort } from './agent/memory/compaction-loop.js';
@@ -79,6 +84,18 @@ export interface StartSubagentBackgroundRunArgs {
   durableLaunchRecorded?: true;
 }
 
+export interface RecoverSubagentBackgroundRunArgs {
+  checkpoint: RunCheckpoint;
+  launchInput: SubagentLaunchRequestInput;
+  parentRunState: ToolRunState;
+  runtimeServices: AgentRuntimeServices & {
+    agent: AgentRuntimeServices['agent'] & {
+      loopImplementationAdmission: AgentLoopImplementationAdmission;
+    };
+  };
+  launchReservation: SubagentLaunchReservation;
+}
+
 export interface SubagentRunLauncher {
   startBackgroundRun(
     this: void,
@@ -87,6 +104,13 @@ export interface SubagentRunLauncher {
     ok: true;
     output: string;
   }>;
+  recoverBackgroundRun?(
+    this: void,
+    args: RecoverSubagentBackgroundRunArgs,
+  ): Promise<{
+    runState: ToolRunState;
+    completion: Promise<void>;
+  } | null>;
 }
 
 export interface PtcFixedEpochProbeRuntime {

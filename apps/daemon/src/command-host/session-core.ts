@@ -98,7 +98,7 @@ export interface SessionTerminalState {
  * 그래서 두 사실을 각각 남긴다: 여기서 프로세스 생존을, `terminal`에서 출력
  * 완결을 확정한다. 스냅샷의 `outputComplete`가 후자를 나른다.
  */
-export interface SessionProcessExit {
+interface SessionProcessExit {
   status: Exclude<HostCommandStatus, 'running'>;
   exitCode: number | null;
   finishedAtMs: number;

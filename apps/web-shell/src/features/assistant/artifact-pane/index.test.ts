@@ -30,7 +30,7 @@ void test('renderArtifactRuntimeFrame injects the concrete assistant runtime fra
   const node = renderArtifactRuntimeFrame({
     renderer: 'html5',
     title: 'Preview',
-    sandbox: 'allow-scripts allow-forms allow-same-origin',
+    sandbox: 'allow-scripts allow-forms',
     runtimePayload: '<!doctype html><p>hello</p>',
     sourceRef,
   });
@@ -42,10 +42,7 @@ void test('renderArtifactRuntimeFrame injects the concrete assistant runtime fra
   assert.equal(node.type, ArtifactRuntimeFrame);
   assert.equal(node.props.renderer, 'html5');
   assert.equal(node.props.title, 'Preview');
-  assert.equal(
-    node.props.sandbox,
-    'allow-scripts allow-forms allow-same-origin',
-  );
+  assert.equal(node.props.sandbox, 'allow-scripts allow-forms');
   assert.equal(node.props.runtimePayload, '<!doctype html><p>hello</p>');
   assert.equal(node.props.sourceRef, sourceRef);
 });

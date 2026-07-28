@@ -102,6 +102,12 @@ export interface RecoverableRunRequest {
   imageGenerationModel?: ImageGenerationModelId;
   videoGenerationModel?: VideoGenerationModelId;
   videoGenerationSettings?: VideoGenerationSettings;
+  backgroundChild?: {
+    parentRunId: RunId;
+    ownerThreadId: ThreadId;
+    computerSessionId: string;
+    timeoutAt?: string;
+  };
 }
 
 export type RunCheckpointApproval =
@@ -491,6 +497,7 @@ function parseRecoverableRunRequest(value: unknown): RecoverableRunRequest {
     );
   const planningWorkflow = parsePlanningWorkflowBinding(value.planningWorkflow);
   const goal = parseGoalBinding(value.goal);
+  const backgroundChild = parseBackgroundChildBinding(value.backgroundChild);
   if (
     (value.currentFile !== undefined &&
       typeof value.currentFile !== 'string') ||
@@ -564,7 +571,43 @@ function parseRecoverableRunRequest(value: unknown): RecoverableRunRequest {
     ...(value.videoGenerationSettings === undefined
       ? {}
       : { videoGenerationSettings: value.videoGenerationSettings }),
+    ...(backgroundChild === undefined ? {} : { backgroundChild }),
   };
+}
+
+function parseBackgroundChildBinding(
+  value: unknown,
+): RecoverableRunRequest['backgroundChild'] {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    !isRecord(value) ||
+    typeof value.parentRunId !== 'string' ||
+    !isRunId(value.parentRunId) ||
+    typeof value.ownerThreadId !== 'string' ||
+    !isThreadId(value.ownerThreadId) ||
+    typeof value.computerSessionId !== 'string' ||
+    value.computerSessionId.trim().length === 0 ||
+    (value.timeoutAt !== undefined &&
+      (typeof value.timeoutAt !== 'string' ||
+        !isCanonicalTimestamp(value.timeoutAt)))
+  ) {
+    throw new Error('invalid recoverable background child binding');
+  }
+  return {
+    parentRunId: assertRunId(value.parentRunId),
+    ownerThreadId: assertThreadId(value.ownerThreadId),
+    computerSessionId: value.computerSessionId,
+    ...(value.timeoutAt === undefined ? {} : { timeoutAt: value.timeoutAt }),
+  };
+}
+
+function isCanonicalTimestamp(value: string): boolean {
+  const timestamp = Date.parse(value);
+  return (
+    Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value
+  );
 }
 
 function parsePlanningWorkflowBinding(

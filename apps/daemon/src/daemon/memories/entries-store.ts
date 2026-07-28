@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   appendFile,
   mkdir,
@@ -19,6 +19,7 @@ const ENTRIES_DIRECTORY_NAME = 'entries';
 const USAGE_LOG_FILE_NAME = 'usage.jsonl';
 const ENTRY_FILE_EXTENSION = '.md';
 const ENTRY_ID_PATTERN = /^m-[0-9a-f]{8}$/u;
+const USAGE_OPERATION_ID_PATTERN = /^memory-usage-[0-9a-f]{32}$/u;
 
 const logger = createLogger('memories/entries-store');
 
@@ -45,35 +46,183 @@ function createMemoryEntryId(): string {
   return `m-${randomBytes(4).toString('hex')}`;
 }
 
-/**
- * 사용량은 append-only 로그로 쌓는다. 여러 런이 동시에 같은 항목을 인용해도
- * read-modify-write 경합으로 카운트가 사라지지 않는다. 집계는 읽을 때 한다.
- */
-export async function recordMemoryEntryUsage(
+function createMemoryUsageOperationId(): string {
+  return `memory-usage-${randomBytes(16).toString('hex')}`;
+}
+
+function buildMemoryUsageEntryIdsDigest(entryIds: readonly string[]): string {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify(entryIds))
+    .digest('hex')}`;
+}
+
+export type PreparedMemoryEntryUsage = {
+  schemaVersion: 1;
+  operationId: string;
+  at: string;
+  requested: string[];
+  recorded: string[];
+  unknown: string[];
+  recordedDigest: string;
+};
+
+type MemoryUsageRecord =
+  | { kind: 'legacy'; entryId: string; at: string }
+  | {
+      kind: 'operation';
+      operationId: string;
+      at: string;
+      entryIds: string[];
+      recordedDigest: string;
+    };
+
+function parseMemoryUsageRecord(line: string): MemoryUsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return null;
+  }
+  if (!('at' in parsed) || typeof parsed.at !== 'string') {
+    return null;
+  }
+  if ('entryId' in parsed && typeof parsed.entryId === 'string') {
+    return { kind: 'legacy', entryId: parsed.entryId, at: parsed.at };
+  }
+  if (
+    !('operationId' in parsed) ||
+    typeof parsed.operationId !== 'string' ||
+    !('entryIds' in parsed) ||
+    !Array.isArray(parsed.entryIds) ||
+    !parsed.entryIds.every((entryId) => typeof entryId === 'string') ||
+    !('recordedDigest' in parsed) ||
+    typeof parsed.recordedDigest !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    kind: 'operation',
+    operationId: parsed.operationId,
+    at: parsed.at,
+    entryIds: parsed.entryIds,
+    recordedDigest: parsed.recordedDigest,
+  };
+}
+
+function assertPreparedMemoryEntryUsage(
+  prepared: PreparedMemoryEntryUsage,
+): void {
+  const requested = [...new Set(prepared.requested)];
+  const partition = new Set([...prepared.recorded, ...prepared.unknown]);
+  if (
+    prepared.schemaVersion !== 1 ||
+    !USAGE_OPERATION_ID_PATTERN.test(prepared.operationId) ||
+    !Number.isFinite(Date.parse(prepared.at)) ||
+    requested.length !== prepared.requested.length ||
+    partition.size !== prepared.requested.length ||
+    prepared.requested.some((entryId) => !partition.has(entryId)) ||
+    prepared.recorded.some((entryId) => prepared.unknown.includes(entryId)) ||
+    prepared.recordedDigest !==
+      buildMemoryUsageEntryIdsDigest(prepared.recorded)
+  ) {
+    throw Object.assign(new Error('memory usage recovery state is invalid.'), {
+      code: 'persistence_unavailable',
+    });
+  }
+}
+
+export async function prepareMemoryEntryUsage(
   stateRoot: string,
   entryIds: readonly string[],
-): Promise<{ recorded: readonly string[]; unknown: readonly string[] }> {
+): Promise<PreparedMemoryEntryUsage> {
   const known = new Set(await listMemoryEntryIds(stateRoot));
+  const requested = [...new Set(entryIds)];
   const recorded: string[] = [];
   const unknown: string[] = [];
-  for (const entryId of new Set(entryIds)) {
+  for (const entryId of requested) {
     if (known.has(entryId)) {
       recorded.push(entryId);
     } else {
       unknown.push(entryId);
     }
   }
-  if (recorded.length === 0) {
-    return { recorded, unknown };
+  return {
+    schemaVersion: 1,
+    operationId: createMemoryUsageOperationId(),
+    at: new Date().toISOString(),
+    requested,
+    recorded,
+    unknown,
+    recordedDigest: buildMemoryUsageEntryIdsDigest(recorded),
+  };
+}
+
+export async function recordPreparedMemoryEntryUsage(
+  stateRoot: string,
+  prepared: PreparedMemoryEntryUsage,
+): Promise<{ recorded: readonly string[]; unknown: readonly string[] }> {
+  assertPreparedMemoryEntryUsage(prepared);
+  const path = resolveUsageLogPath(stateRoot);
+  let raw = '';
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch (error: unknown) {
+    if (!hasErrorCode(error, 'ENOENT') && !hasErrorCode(error, 'ENOTDIR')) {
+      throw error;
+    }
   }
-  const at = new Date().toISOString();
-  await mkdir(resolveMemoriesRoot(stateRoot), { recursive: true });
-  await appendFile(
-    resolveUsageLogPath(stateRoot),
-    `${recorded.map((entryId) => JSON.stringify({ entryId, at })).join('\n')}\n`,
-    'utf8',
+  let matchingOperationFound = false;
+  for (const line of raw.split('\n')) {
+    const record = parseMemoryUsageRecord(line);
+    if (
+      record?.kind !== 'operation' ||
+      record.operationId !== prepared.operationId
+    ) {
+      continue;
+    }
+    if (
+      record.at !== prepared.at ||
+      record.recordedDigest !== prepared.recordedDigest
+    ) {
+      throw Object.assign(
+        new Error('memory usage recovery identity conflicts with its event.'),
+        { code: 'persistence_unavailable' },
+      );
+    }
+    matchingOperationFound = true;
+  }
+  if (!matchingOperationFound) {
+    await mkdir(resolveMemoriesRoot(stateRoot), { recursive: true });
+    await appendFile(
+      path,
+      `\n${JSON.stringify({
+        operationId: prepared.operationId,
+        at: prepared.at,
+        entryIds: prepared.recorded,
+        recordedDigest: prepared.recordedDigest,
+      })}\n`,
+      'utf8',
+    );
+  }
+  return { recorded: prepared.recorded, unknown: prepared.unknown };
+}
+
+/**
+ * 사용량은 invocation event를 append-only 로그로 쌓는다. 여러 런이 동시에 같은
+ * 항목을 인용해도 read-modify-write 경합으로 카운트가 사라지지 않고, 같은
+ * operation replay는 집계에서 한 번만 센다.
+ */
+export async function recordMemoryEntryUsage(
+  stateRoot: string,
+  entryIds: readonly string[],
+): Promise<{ recorded: readonly string[]; unknown: readonly string[] }> {
+  return await recordPreparedMemoryEntryUsage(
+    stateRoot,
+    await prepareMemoryEntryUsage(stateRoot, entryIds),
   );
-  return { recorded, unknown };
 }
 
 interface UsageAggregate {
@@ -102,30 +251,30 @@ async function readUsageAggregates(
   }
 
   const aggregates = new Map<string, UsageAggregate>();
+  const seenOperationIds = new Set<string>();
   for (const line of raw.split('\n')) {
-    if (line.trim() === '') {
+    const record = parseMemoryUsageRecord(line);
+    if (record === null) {
       continue;
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      // 잘린 마지막 줄은 다음 append가 이어 쓰지 않는다. 한 줄을 버릴 뿐
-      // 나머지 측정을 잃지 않는다.
-      continue;
+    if (record.kind === 'operation') {
+      if (seenOperationIds.has(record.operationId)) {
+        continue;
+      }
+      seenOperationIds.add(record.operationId);
     }
-    const record = parsed as { entryId?: unknown; at?: unknown };
-    if (typeof record.entryId !== 'string' || typeof record.at !== 'string') {
-      continue;
+    const entryIds =
+      record.kind === 'legacy' ? [record.entryId] : new Set(record.entryIds);
+    for (const entryId of entryIds) {
+      const current = aggregates.get(entryId);
+      aggregates.set(entryId, {
+        usageCount: (current?.usageCount ?? 0) + 1,
+        lastUsedAt:
+          current?.lastUsedAt !== undefined && current.lastUsedAt > record.at
+            ? current.lastUsedAt
+            : record.at,
+      });
     }
-    const current = aggregates.get(record.entryId);
-    aggregates.set(record.entryId, {
-      usageCount: (current?.usageCount ?? 0) + 1,
-      lastUsedAt:
-        current?.lastUsedAt !== undefined && current.lastUsedAt > record.at
-          ? current.lastUsedAt
-          : record.at,
-    });
   }
   return aggregates;
 }
@@ -259,26 +408,38 @@ async function pruneUsageLog(
     }
     throw error;
   }
-  const retained = raw
-    .split('\n')
-    .filter((line) => {
-      if (line.trim() === '') {
-        return false;
-      }
-      try {
-        const record = JSON.parse(line) as { entryId?: unknown };
-        return (
-          typeof record.entryId === 'string' && keptIds.has(record.entryId)
+  const retained: string[] = [];
+  const seenOperationIds = new Set<string>();
+  for (const line of raw.split('\n')) {
+    const record = parseMemoryUsageRecord(line);
+    if (record === null) {
+      continue;
+    }
+    if (record.kind === 'legacy') {
+      if (keptIds.has(record.entryId)) {
+        retained.push(
+          JSON.stringify({ entryId: record.entryId, at: record.at }),
         );
-      } catch {
-        return false;
       }
-    })
-    .join('\n');
+      continue;
+    }
+    if (seenOperationIds.has(record.operationId)) {
+      continue;
+    }
+    seenOperationIds.add(record.operationId);
+    retained.push(
+      JSON.stringify({
+        operationId: record.operationId,
+        at: record.at,
+        entryIds: record.entryIds.filter((entryId) => keptIds.has(entryId)),
+        recordedDigest: record.recordedDigest,
+      }),
+    );
+  }
   const temporaryPath = `${path}.${randomBytes(4).toString('hex')}.tmp`;
   await writeFile(
     temporaryPath,
-    retained === '' ? '' : `${retained}\n`,
+    retained.length === 0 ? '' : `${retained.join('\n')}\n`,
     'utf8',
   );
   await rename(temporaryPath, path);

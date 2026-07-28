@@ -10,7 +10,7 @@ import { createRunChannelTestDaemonContext } from '../../../test-support/run-cha
 import { attachPublicWebFixtureWebSocketServer } from './public-web-fixtures.js';
 import { attachRunChannelServer } from './run-channel.js';
 
-void test('public web websocket echo fixture coexists with the run channel upgrade listener', async () => {
+void test('public web websocket echo fixture accepts an opaque artifact origin and coexists with the run channel upgrade listener', async () => {
   const server = createServer();
   const publicWebSockets = attachPublicWebFixtureWebSocketServer(server);
   const runChannelSockets = attachRunChannelServer(server, {
@@ -20,7 +20,7 @@ void test('public web websocket echo fixture coexists with the run channel upgra
 
   try {
     const port = (server.address() as AddressInfo).port;
-    const message = await echoWebSocketMessage(port, 'hello websocket');
+    const message = await echoWebSocketMessage(port, 'hello websocket', 'null');
 
     assert.equal(message, 'hello websocket');
   } finally {
@@ -30,14 +30,32 @@ void test('public web websocket echo fixture coexists with the run channel upgra
   }
 });
 
+void test('public web websocket echo fixture rejects unrelated non-opaque origins', async () => {
+  const server = createServer();
+  const publicWebSockets = attachPublicWebFixtureWebSocketServer(server);
+  await listen(server);
+
+  try {
+    const port = (server.address() as AddressInfo).port;
+    await assert.rejects(
+      echoWebSocketMessage(port, 'blocked', 'https://untrusted.example'),
+      /unexpected status: 403/u,
+    );
+  } finally {
+    publicWebSockets.close();
+    await close(server);
+  }
+});
+
 async function echoWebSocketMessage(
   port: number,
   message: string,
+  origin: string,
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const socket = new WebSocket(
       `ws://127.0.0.1:${port}${PUBLIC_WEB_WEBSOCKET_ECHO_PATH}`,
-      { origin: `http://127.0.0.1:${port}` },
+      { origin },
     );
 
     socket.once('open', () => {

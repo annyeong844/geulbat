@@ -1382,6 +1382,104 @@ void test('agent_spawn catches async publish failures without leaking unhandled 
   }
 });
 
+void test('agent_spawn settles the child checkpoint after a transient terminal-store publish failure', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-child-terminal-retry-'),
+  );
+  const threadId = testThreadId(21);
+  const store = await createDaemonRuntimeStateStore({
+    homeStateRoot: stateRoot,
+  });
+  const originalRecord = store.recordSubagentTerminalDelivery;
+  let recordAttempts = 0;
+  store.recordSubagentTerminalDelivery = (args) => {
+    recordAttempts += 1;
+    if (recordAttempts === 1) {
+      throw new Error('transient terminal store failure');
+    }
+    return originalRecord(args);
+  };
+  const daemonContext = createDaemonContext({
+    homeStateRoot: stateRoot,
+    subagentTerminalDeliveries: store,
+  });
+  const parentRunId = testRunId('top-run-terminal-retry');
+  const parentState = createRunState({
+    runId: parentRunId,
+    runContext: makeRunContext({
+      threadId,
+      stateRoot,
+    }),
+  });
+  const testAgentSpawnTool = createAgentSpawnTool({
+    startBackgroundRun: createSubagentRunLauncher({
+      runAgentLoop: async () => ({
+        ok: true,
+        finalProse: 'terminal retry completed',
+      }),
+    }).startBackgroundRun,
+  });
+
+  try {
+    const result = await testAgentSpawnTool.execute(
+      {
+        task: 'finish despite one rejected terminal write',
+        subagent_type: 'explorer',
+      },
+      {
+        callId: 'call-terminal-retry',
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot,
+        workingDirectory: stateRoot,
+        threadId,
+        runId: parentRunId,
+        runState: parentState,
+        signal: new AbortController().signal,
+        runSignal: new AbortController().signal,
+        runtimeServices: daemonContext,
+        computerSessionId: 'terminal-retry-session',
+      },
+    );
+    assert.equal(result.ok, true);
+    const payload = JSON.parse(result.output) as {
+      childRunId: string;
+      childThreadId: string;
+    };
+    const childRunId = assertRunId(payload.childRunId);
+    const childThreadId = assertThreadId(payload.childThreadId);
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (
+        (await daemonContext.runCheckpoints.readThread(childThreadId))
+          ?.status === 'terminal'
+      ) {
+        break;
+      }
+      await delay(10);
+    }
+
+    assert.equal(recordAttempts, 2);
+    const checkpoint =
+      await daemonContext.runCheckpoints.readThread(childThreadId);
+    assert.equal(checkpoint?.status, 'terminal');
+    assert.equal(checkpoint?.terminal?.acknowledged, true);
+    assert.equal(
+      store.readSubagentTerminalOutcomeByChildRunId(childRunId)?.result.result,
+      'terminal retry completed',
+    );
+    assert.equal(daemonContext.childRuns.getChildRun(childRunId), undefined);
+    const [pending] =
+      daemonContext.backgroundNotifications.readThreadBackgroundResults(
+        threadId,
+      );
+    assert.equal(pending?.childRunId, childRunId);
+    assert.equal(pending?.result, 'terminal retry completed');
+  } finally {
+    store.close();
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
 void test('agent_spawn keeps terminal notification independent from registry publish failure', async () => {
   const threadId = testThreadId(19);
   const daemonContext = createDaemonContext();

@@ -11,10 +11,13 @@ import {
   readConfiguredProviderAuthClientId,
   resolveBundledProviderAuthConfigPath,
   resolveInstalledProviderAuthConfigPath,
+  resolveProviderAuthTokenRequestTimeoutMs,
 } from './config.js';
 
 const INSTALLED_PATH_ENV = 'GEULBAT_PROVIDER_AUTH_INSTALLED_CONFIG_PATH';
 const BUNDLED_PATH_ENV = 'GEULBAT_PROVIDER_AUTH_BUNDLED_CONFIG_PATH';
+const TOKEN_REQUEST_TIMEOUT_ENV =
+  'GEULBAT_PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS';
 
 function restoreEnv(key: string, previous: string | undefined): void {
   if (previous === undefined) {
@@ -23,6 +26,40 @@ function restoreEnv(key: string, previous: string | undefined): void {
   }
   process.env[key] = previous;
 }
+
+void test('provider token requests allow one minute by default', () => {
+  assert.equal(resolveProviderAuthTokenRequestTimeoutMs({}), 60_000);
+  assert.equal(
+    resolveProviderAuthTokenRequestTimeoutMs({
+      [TOKEN_REQUEST_TIMEOUT_ENV]: '   ',
+    }),
+    60_000,
+  );
+});
+
+void test('provider token request timeout accepts a positive operator override', () => {
+  assert.equal(
+    resolveProviderAuthTokenRequestTimeoutMs({
+      [TOKEN_REQUEST_TIMEOUT_ENV]: ' 300000 ',
+    }),
+    300_000,
+  );
+});
+
+void test('provider token request timeout rejects invalid operator policy', () => {
+  for (const value of ['0', '-1', '1.5', 'NaN', '9007199254740992']) {
+    assert.throws(
+      () =>
+        resolveProviderAuthTokenRequestTimeoutMs({
+          [TOKEN_REQUEST_TIMEOUT_ENV]: value,
+        }),
+      new RegExp(
+        `${TOKEN_REQUEST_TIMEOUT_ENV} must be a positive safe integer`,
+        'u',
+      ),
+    );
+  }
+});
 
 void test('readConfiguredProviderAuthClientId prefers explicit env over installed and bundled config', async () => {
   const tempRoot = await mkdtemp(path.join(tmpdir(), 'geulbat-auth-config-'));

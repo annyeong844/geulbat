@@ -50,6 +50,7 @@ export type RunSessionMessageEffect =
   | { kind: 'artifact_text_streamed'; threadId: string; text: string }
   | {
       kind: 'transcript_activity_added';
+      runId: string;
       threadId: string;
       streamedToolCallId?: string;
       entry:
@@ -297,6 +298,7 @@ export function adaptRunSessionMessage(
       }
       return {
         kind: 'transcript_activity_added',
+        runId: event.runId,
         threadId: event.threadId,
         streamedToolCallId: event.payload.callId,
         entry: {
@@ -333,6 +335,7 @@ export function adaptRunSessionMessage(
       });
       return {
         kind: 'transcript_activity_added',
+        runId: event.runId,
         threadId: event.threadId,
         entry: {
           kind: 'tool_activity',
@@ -525,6 +528,7 @@ async function applyRunSessionMessageEffect({
       }
       dispatch({
         type: 'transcript_activity_added',
+        runId: effect.runId,
         threadId: effect.threadId,
         entry: effect.entry,
         ...(effect.streamedToolCallId !== undefined

@@ -1039,3 +1039,58 @@ void test('run checkpoints persist the isolated Qwen provider model pin', async 
     },
   );
 });
+
+void test('run checkpoints persist fail-closed background child recovery ownership', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-child-run-checkpoint-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const parentRunId = assertRunId(randomUUID());
+  const ownerThreadId = assertThreadId(randomUUID());
+  const store = createRunCheckpointStore({ stateRoot });
+
+  await store.startRun({
+    runId,
+    threadId,
+    request: {
+      workingDirectory: '/workspace',
+      permissionMode: 'basic',
+      backgroundChild: {
+        parentRunId,
+        ownerThreadId,
+        computerSessionId: 'durable-computer-session',
+        timeoutAt: '2026-07-28T01:02:03.000Z',
+      },
+    },
+  });
+
+  const reloaded = createRunCheckpointStore({ stateRoot });
+  assert.deepEqual(
+    (await reloaded.readThread(threadId))?.request.backgroundChild,
+    {
+      parentRunId,
+      ownerThreadId,
+      computerSessionId: 'durable-computer-session',
+      timeoutAt: '2026-07-28T01:02:03.000Z',
+    },
+  );
+
+  const checkpointPath = join(
+    stateRoot,
+    '.geulbat',
+    'run-checkpoints',
+    `${threadId}.json`,
+  );
+  const persisted = JSON.parse(await readFile(checkpointPath, 'utf8')) as {
+    request: { backgroundChild: { timeoutAt: string } };
+  };
+  persisted.request.backgroundChild.timeoutAt = 'not-a-timestamp';
+  await writeFile(checkpointPath, `${JSON.stringify(persisted)}\n`, 'utf8');
+
+  await assert.rejects(
+    createRunCheckpointStore({ stateRoot }).readThread(threadId),
+    /invalid recoverable background child binding/u,
+  );
+});

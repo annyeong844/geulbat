@@ -13,6 +13,7 @@ export const refreshMemoryIndexTool = defineZodTool({
   sideEffectLevel: 'write',
   mayMutateComputerFiles: false,
   requiresApproval: true,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'memory',
     searchHints: ['refresh memory', 'rebuild memory index', 'index memory'],
