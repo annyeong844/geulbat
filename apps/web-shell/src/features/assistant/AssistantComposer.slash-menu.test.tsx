@@ -66,6 +66,35 @@ void test('typing slash opens the four native composer commands and filters them
   await act(async () => renderer.unmount());
 });
 
+void test('slash token at the caret opens after whitespace but not inside paths or URLs', async () => {
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = renderComposer();
+  });
+
+  typeIntoComposer(renderer, '먼저 설명하고 /');
+  assert.equal(renderer.root.findAllByProps({ role: 'option' }).length, 4);
+
+  typeIntoComposer(renderer, '앞 /mc 뒤', 5);
+  assert.deepEqual(
+    renderer.root
+      .findAllByProps({ role: 'option' })
+      .map((option) => renderedText(option)),
+    ['MCP/mcpMCP 서버와 연결된 도구를 관리합니다'],
+  );
+
+  for (const value of ['https://example.com/', 'C:/Users/user', '폴더/파일']) {
+    typeIntoComposer(renderer, value);
+    assert.equal(
+      renderer.root.findAllByProps({ role: 'listbox' }).length,
+      0,
+      `slash palette must stay closed for ${value}`,
+    );
+  }
+
+  await act(async () => renderer.unmount());
+});
+
 void test('goal selection leaves a writable goal command without sending', async () => {
   let sendCount = 0;
   let renderer!: ReactTestRenderer;
@@ -169,9 +198,15 @@ function composerInput(renderer: ReactTestRenderer): ReactTestInstance {
   return renderer.root.findByProps({ name: 'assistant-message' });
 }
 
-function typeIntoComposer(renderer: ReactTestRenderer, value: string): void {
+function typeIntoComposer(
+  renderer: ReactTestRenderer,
+  value: string,
+  selectionStart = value.length,
+): void {
   act(() => {
-    composerInput(renderer).props.onChange({ target: { value } });
+    composerInput(renderer).props.onChange({
+      target: { value, selectionStart },
+    });
   });
 }
 

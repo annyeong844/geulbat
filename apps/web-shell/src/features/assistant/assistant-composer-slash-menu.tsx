@@ -1,3 +1,11 @@
+import {
+  useEffect,
+  useState,
+  type Dispatch,
+  type KeyboardEvent,
+  type RefObject,
+  type SetStateAction,
+} from 'react';
 import type { GoalSnapshot } from '@geulbat/protocol/goal';
 import type { ContextUsageUpdatedEventPayload } from '@geulbat/protocol/run-events';
 import type {
@@ -69,6 +77,160 @@ export function getComposerSlashCommandSuggestions(
         keyword.toLocaleLowerCase('ko-KR').includes(normalizedQuery),
       ),
   );
+}
+
+interface UseAssistantComposerSlashMenuArgs {
+  input: string;
+  setInput: Dispatch<SetStateAction<string>>;
+  inputRef: RefObject<HTMLTextAreaElement | null>;
+  isBusy: boolean;
+  otherMenuOpen: boolean;
+  onOpenSkills?: (() => void) | undefined;
+  onOpenMcpSettings?: (() => void) | undefined;
+}
+
+function readSlashQueryAtCaret(input: string, caretPosition: number) {
+  const inputBeforeCaret = input.slice(0, caretPosition);
+  const slashMatch = /(?:^|\s)\/([^\s/]*)$/u.exec(inputBeforeCaret);
+  return slashMatch?.[1] ?? null;
+}
+
+export function useAssistantComposerSlashMenu({
+  input,
+  setInput,
+  inputRef,
+  isBusy,
+  otherMenuOpen,
+  onOpenSkills,
+  onOpenMcpSettings,
+}: UseAssistantComposerSlashMenuArgs) {
+  const [dismissed, setDismissed] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [caretPosition, setCaretPosition] = useState(0);
+  const slashQuery = readSlashQueryAtCaret(input, caretPosition);
+  const query = slashQuery ?? '';
+  const suggestions =
+    slashQuery === null ? [] : getComposerSlashCommandSuggestions(query);
+  const menuOpen =
+    slashQuery !== null && !dismissed && !otherMenuOpen && !isBusy;
+
+  useEffect(() => {
+    setActiveIndex(0);
+    setStatusOpen(false);
+  }, [query]);
+
+  useEffect(() => {
+    if (activeIndex < suggestions.length) {
+      return;
+    }
+    setActiveIndex(Math.max(0, suggestions.length - 1));
+  }, [activeIndex, suggestions.length]);
+
+  const select = (command: ComposerSlashCommandId) => {
+    if (command === 'goal') {
+      setInput('/goal ');
+      setDismissed(true);
+      inputRef.current?.focus();
+      return;
+    }
+    if (command === 'skills') {
+      if (onOpenSkills === undefined) {
+        setInput('/skills ');
+        setDismissed(true);
+        inputRef.current?.focus();
+        return;
+      }
+      setInput('');
+      setDismissed(true);
+      onOpenSkills();
+      return;
+    }
+    if (command === 'mcp') {
+      if (onOpenMcpSettings === undefined) {
+        setInput('/mcp ');
+        setDismissed(true);
+        inputRef.current?.focus();
+        return;
+      }
+      setInput('');
+      setDismissed(true);
+      onOpenMcpSettings();
+      return;
+    }
+    setStatusOpen(true);
+  };
+
+  const selectActive = (): boolean => {
+    if (!menuOpen) {
+      return false;
+    }
+    const suggestion = suggestions[activeIndex];
+    if (suggestion !== undefined) {
+      select(suggestion.id);
+    }
+    return true;
+  };
+
+  const handleKeyDown = (event: KeyboardEvent): boolean => {
+    if (!menuOpen) {
+      return false;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      if (statusOpen) {
+        setStatusOpen(false);
+      } else {
+        setDismissed(true);
+      }
+      return true;
+    }
+    if (!statusOpen && event.key === 'ArrowDown') {
+      event.preventDefault();
+      setActiveIndex((current) =>
+        suggestions.length === 0 ? 0 : (current + 1) % suggestions.length,
+      );
+      return true;
+    }
+    if (!statusOpen && event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActiveIndex((current) =>
+        suggestions.length === 0
+          ? 0
+          : (current - 1 + suggestions.length) % suggestions.length,
+      );
+      return true;
+    }
+    if (
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing
+    ) {
+      event.preventDefault();
+      if (!statusOpen) {
+        selectActive();
+      }
+      return true;
+    }
+    return false;
+  };
+
+  return {
+    activeIndex,
+    handleKeyDown,
+    menuOpen,
+    onBackFromStatus: () => setStatusOpen(false),
+    onCaretMove: setCaretPosition,
+    onInputChange: (nextCaretPosition: number) => {
+      setCaretPosition(nextCaretPosition);
+      setDismissed(false);
+    },
+    onOtherMenuOpen: () => setDismissed(true),
+    select,
+    selectActive,
+    statusOpen,
+    suggestions,
+  };
 }
 
 interface AssistantComposerSlashMenuProps {

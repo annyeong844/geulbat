@@ -55,8 +55,7 @@ import { AssistantComposerApprovalMenu } from './assistant-composer-approval-men
 import { AssistantComposerModelMenu } from './assistant-composer-model-menu.js';
 import {
   AssistantComposerSlashMenu,
-  getComposerSlashCommandSuggestions,
-  type ComposerSlashCommandId,
+  useAssistantComposerSlashMenu,
 } from './assistant-composer-slash-menu.js';
 import { readGoalStartCommand } from './goal-command.js';
 
@@ -188,9 +187,15 @@ export function AssistantComposer({
   }, [activeSuggestion, onDismissFollowupSuggestion]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
-  const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
-  const [slashStatusOpen, setSlashStatusOpen] = useState(false);
-  const [activeSlashIndex, setActiveSlashIndex] = useState(0);
+  const slashMenu = useAssistantComposerSlashMenu({
+    input,
+    setInput,
+    inputRef,
+    isBusy,
+    otherMenuOpen: openMenu !== null,
+    onOpenSkills,
+    onOpenMcpSettings,
+  });
   // [+] 메뉴 내부 페이지 — '이미지 ›' 서브패널(스펙 v3 §3)
   const [plusMenuPage, setPlusMenuPage] = useState<'root' | 'image'>('root');
   useEffect(() => {
@@ -281,7 +286,7 @@ export function AssistantComposer({
   const toggleMenu = (menu: Exclude<OpenMenu, null>) => {
     setImageModelNotice(null);
     setPlusMenuPage('root');
-    setSlashMenuDismissed(true);
+    slashMenu.onOtherMenuOpen();
     setOpenMenu((prev) => (prev === menu ? null : menu));
   };
 
@@ -290,65 +295,8 @@ export function AssistantComposer({
     setPlusMenuPage('root');
   };
 
-  const slashMatch = /^\/([^\s/]*)$/u.exec(input);
-  const slashQuery = slashMatch?.[1] ?? '';
-  const slashSuggestions =
-    slashMatch === null ? [] : getComposerSlashCommandSuggestions(slashQuery);
-  const slashMenuOpen =
-    slashMatch !== null && !slashMenuDismissed && openMenu === null && !isBusy;
-
-  useEffect(() => {
-    setActiveSlashIndex(0);
-    setSlashStatusOpen(false);
-  }, [slashQuery]);
-
-  useEffect(() => {
-    if (activeSlashIndex < slashSuggestions.length) {
-      return;
-    }
-    setActiveSlashIndex(Math.max(0, slashSuggestions.length - 1));
-  }, [activeSlashIndex, slashSuggestions.length]);
-
-  const selectSlashCommand = (command: ComposerSlashCommandId) => {
-    if (command === 'goal') {
-      setInput('/goal ');
-      setSlashMenuDismissed(true);
-      inputRef.current?.focus();
-      return;
-    }
-    if (command === 'skills') {
-      if (onOpenSkills === undefined) {
-        setInput('/skills ');
-        setSlashMenuDismissed(true);
-        inputRef.current?.focus();
-        return;
-      }
-      setInput('');
-      setSlashMenuDismissed(true);
-      onOpenSkills();
-      return;
-    }
-    if (command === 'mcp') {
-      if (onOpenMcpSettings === undefined) {
-        setInput('/mcp ');
-        setSlashMenuDismissed(true);
-        inputRef.current?.focus();
-        return;
-      }
-      setInput('');
-      setSlashMenuDismissed(true);
-      onOpenMcpSettings();
-      return;
-    }
-    setSlashStatusOpen(true);
-  };
-
   const handleSend = async () => {
-    if (slashMenuOpen) {
-      const suggestion = slashSuggestions[activeSlashIndex];
-      if (suggestion !== undefined) {
-        selectSlashCommand(suggestion.id);
-      }
+    if (slashMenu.selectActive()) {
       return;
     }
     const submittedInput = input;
@@ -359,48 +307,8 @@ export function AssistantComposer({
   };
 
   const handleKeyDown = (event: KeyboardEvent) => {
-    if (slashMenuOpen) {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        if (slashStatusOpen) {
-          setSlashStatusOpen(false);
-        } else {
-          setSlashMenuDismissed(true);
-        }
-        return;
-      }
-      if (!slashStatusOpen && event.key === 'ArrowDown') {
-        event.preventDefault();
-        setActiveSlashIndex((current) =>
-          slashSuggestions.length === 0
-            ? 0
-            : (current + 1) % slashSuggestions.length,
-        );
-        return;
-      }
-      if (!slashStatusOpen && event.key === 'ArrowUp') {
-        event.preventDefault();
-        setActiveSlashIndex((current) =>
-          slashSuggestions.length === 0
-            ? 0
-            : (current - 1 + slashSuggestions.length) % slashSuggestions.length,
-        );
-        return;
-      }
-      if (
-        event.key === 'Enter' &&
-        !event.shiftKey &&
-        !event.nativeEvent.isComposing
-      ) {
-        event.preventDefault();
-        if (!slashStatusOpen) {
-          const suggestion = slashSuggestions[activeSlashIndex];
-          if (suggestion !== undefined) {
-            selectSlashCommand(suggestion.id);
-          }
-        }
-        return;
-      }
+    if (slashMenu.handleKeyDown(event)) {
+      return;
     }
     if (event.key === 'Escape' && isRunning) {
       event.preventDefault();
@@ -422,6 +330,8 @@ export function AssistantComposer({
   const selectedWorkingDirectory = workingDirectory ?? browseStartPath;
   const workingDirectoryLabel =
     selectedWorkingDirectory === '' ? '컴퓨터 루트' : selectedWorkingDirectory;
+  const activeSlashOptionId =
+    slashMenu.suggestions[slashMenu.activeIndex]?.id ?? null;
   const workingDirectorySelectionDisabled =
     onOpenWorkingDirectoryPicker === undefined ||
     isBusy ||
@@ -532,18 +442,24 @@ export function AssistantComposer({
           value={input}
           onChange={(event) => {
             setInput(event.target.value);
-            setSlashMenuDismissed(false);
+            slashMenu.onInputChange(event.target.selectionStart);
           }}
           onKeyDown={handleKeyDown}
-          aria-controls={
-            slashMenuOpen ? 'assistant-composer-slash-menu' : undefined
+          onKeyUp={(event) =>
+            slashMenu.onCaretMove(event.currentTarget.selectionStart)
           }
-          aria-expanded={slashMenuOpen}
+          onSelect={(event) =>
+            slashMenu.onCaretMove(event.currentTarget.selectionStart)
+          }
+          aria-controls={
+            slashMenu.menuOpen ? 'assistant-composer-slash-menu' : undefined
+          }
+          aria-expanded={slashMenu.menuOpen}
           aria-activedescendant={
-            slashMenuOpen &&
-            !slashStatusOpen &&
-            slashSuggestions[activeSlashIndex] !== undefined
-              ? `assistant-composer-slash-option-${slashSuggestions[activeSlashIndex].id}`
+            slashMenu.menuOpen &&
+            !slashMenu.statusOpen &&
+            activeSlashOptionId !== null
+              ? `assistant-composer-slash-option-${activeSlashOptionId}`
               : undefined
           }
           placeholder={
@@ -554,11 +470,11 @@ export function AssistantComposer({
           disabled={isBusy}
           rows={2}
         />
-        {slashMenuOpen ? (
+        {slashMenu.menuOpen ? (
           <AssistantComposerSlashMenu
-            suggestions={slashSuggestions}
-            activeIndex={activeSlashIndex}
-            statusOpen={slashStatusOpen}
+            suggestions={slashMenu.suggestions}
+            activeIndex={slashMenu.activeIndex}
+            statusOpen={slashMenu.statusOpen}
             goalSnapshot={goalSnapshot}
             isBusy={isBusy}
             isRunning={isRunning}
@@ -566,8 +482,8 @@ export function AssistantComposer({
             reasoningEffort={reasoningEffort}
             contextUsage={contextUsage}
             workingDirectoryLabel={workingDirectoryLabel}
-            onSelect={selectSlashCommand}
-            onBackFromStatus={() => setSlashStatusOpen(false)}
+            onSelect={slashMenu.select}
+            onBackFromStatus={slashMenu.onBackFromStatus}
           />
         ) : null}
         {activeSuggestion !== null && !isBusy ? (

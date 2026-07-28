@@ -1413,18 +1413,19 @@ void test('runModelRound classifies thrown stream failures before retrying', asy
   ]);
 });
 
-void test('runModelRound logs a warning when chunks stall', async () => {
+void test('runModelRound does not classify a five-minute inter-chunk gap as a stall', async () => {
   const events: AgentEvent[] = [];
   const providerAuthRuntime = createProviderAuthRuntimeStore();
   const originalWarn = console.warn;
   const warnings: unknown[][] = [];
-  const nowValues = [0, 0, 0, 0, 10_001];
+  const nowValues = [0, 0, 0, 0, 300_001];
 
   console.warn = (...args: unknown[]) => {
     warnings.push(args);
   };
+  let result: Awaited<ReturnType<typeof runModelRound>>;
   try {
-    await runModelRound({
+    result = await runModelRound({
       history: [],
       systemPrompt: 'system',
       round: 1,
@@ -1444,8 +1445,11 @@ void test('runModelRound logs a warning when chunks stall', async () => {
     console.warn = originalWarn;
   }
 
-  assert.equal(warnings.length, 1);
-  assert.match(String(warnings[0]?.[0]), /model stream stalled between chunks/);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.assistantText, 'ab');
+  }
+  assert.deepEqual(warnings, []);
 });
 
 void test('runModelRound returns aborted terminal failure when the model throws after cancellation', async () => {

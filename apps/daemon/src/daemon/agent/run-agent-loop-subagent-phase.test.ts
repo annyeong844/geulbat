@@ -177,6 +177,25 @@ async function runSubagentLoopScenario(args: {
 
 void test('runAgentLoop records same-round agent_spawn handles for model follow-up', async () => {
   const seenChildRunIds: string[] = [];
+  const waitRound: ProviderRoundFixture = {
+    events: [],
+    inspectInput(input) {
+      seenChildRunIds.push(
+        readSpawnChildRunId(input.history, 'call-inspect-a'),
+        readSpawnChildRunId(input.history, 'call-inspect-b'),
+      );
+      waitRound.events =
+        providerToolRound({
+          toolName: 'agent_wait',
+          functionCallId: 'fc-wait-inspectors',
+          callId: 'call-wait-inspectors',
+          argumentsJson: JSON.stringify({
+            child_run_ids: seenChildRunIds,
+            wait_mode: 'all',
+          }),
+        }).events ?? [];
+    },
+  };
   const result = await runSubagentLoopScenario({
     threadIdNumber: 1301,
     prompt: 'spawn two independent inspectors',
@@ -201,12 +220,16 @@ void test('runAgentLoop records same-round agent_spawn handles for model follow-
           }),
         }),
       ),
+      waitRound,
       {
         ...providerFinalAnswerRound('handles recorded'),
         inspectInput(input) {
-          seenChildRunIds.push(
-            readSpawnChildRunId(input.history, 'call-inspect-a'),
-            readSpawnChildRunId(input.history, 'call-inspect-b'),
+          assert.deepEqual(
+            readCompletedWaitResults(input.history, 'call-wait-inspectors'),
+            [
+              'child complete: Inspect subsystem A',
+              'child complete: Inspect subsystem B',
+            ],
           );
         },
       },
@@ -228,6 +251,25 @@ void test('runAgentLoop threads parent provider selection into spawned children'
     providerId: 'grok_oauth',
     model: 'grok-4.5',
   } as const;
+  const waitRound: ProviderRoundFixture = {
+    events: [],
+    inspectInput(input) {
+      const childRunId = readSpawnChildRunId(
+        input.history,
+        'call-inspect-provider',
+      );
+      waitRound.events =
+        providerToolRound({
+          toolName: 'agent_wait',
+          functionCallId: 'fc-wait-inspect-provider',
+          callId: 'call-wait-inspect-provider',
+          argumentsJson: JSON.stringify({
+            child_run_ids: [childRunId],
+            wait_mode: 'all',
+          }),
+        }).events ?? [];
+    },
+  };
   const result = await runSubagentLoopScenario({
     threadIdNumber: 1304,
     prompt: 'spawn an inspector on the parent provider',
@@ -243,7 +285,19 @@ void test('runAgentLoop threads parent provider selection into spawned children'
           subagent_type: 'explorer',
         }),
       }),
-      providerFinalAnswerRound('provider threaded'),
+      waitRound,
+      {
+        ...providerFinalAnswerRound('provider threaded'),
+        inspectInput(input) {
+          assert.deepEqual(
+            readCompletedWaitResults(
+              input.history,
+              'call-wait-inspect-provider',
+            ),
+            ['child complete: Inspect subsystem A'],
+          );
+        },
+      },
     ],
   });
 
@@ -341,6 +395,25 @@ void test('runAgentLoop starts a dependent subagent only after wait output is vi
         }).events ?? [];
     },
   };
+  const dependentWaitRound: ProviderRoundFixture = {
+    events: [],
+    inspectInput(input) {
+      const verificationChildRunId = readSpawnChildRunId(
+        input.history,
+        'call-verify',
+      );
+      dependentWaitRound.events =
+        providerToolRound({
+          toolName: 'agent_wait',
+          functionCallId: 'fc-wait-verify',
+          callId: 'call-wait-verify',
+          argumentsJson: JSON.stringify({
+            child_run_ids: [verificationChildRunId],
+            wait_mode: 'all',
+          }),
+        }).events ?? [];
+    },
+  };
 
   const result = await runSubagentLoopScenario({
     threadIdNumber: 1303,
@@ -357,13 +430,14 @@ void test('runAgentLoop starts a dependent subagent only after wait output is vi
       }),
       waitRound,
       dependentSpawnRound,
+      dependentWaitRound,
       {
         ...providerFinalAnswerRound('dependent phase started'),
         inspectInput(input) {
           assert.equal(sawInspectionWaitOutput, true);
-          assert.equal(
-            typeof readSpawnChildRunId(input.history, 'call-verify'),
-            'string',
+          assert.deepEqual(
+            readCompletedWaitResults(input.history, 'call-wait-verify'),
+            ['child complete: Verify subsystem A finding'],
           );
         },
       },

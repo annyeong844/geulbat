@@ -1,5 +1,4 @@
 import { AGENT_ARTIFACT_START_PREFIX as ARTIFACT_START_PREFIX } from './contract.js';
-import { createLogger } from '@geulbat/structured-logger/logger';
 
 import type {
   FunctionCall,
@@ -20,8 +19,6 @@ import {
   type AgentEventEmitter,
 } from './events.js';
 
-const logger = createLogger('agent/model-round');
-const MODEL_ROUND_STALL_WARNING_MS = 10_000;
 // Match the established web projection cadence so the daemon reduces journal
 // and transport churn without adding a slower second buffering horizon.
 const MODEL_ROUND_DELTA_BATCH_WINDOW_MS = 48;
@@ -119,7 +116,7 @@ export async function consumeModelRoundChunks(args: {
   streamArgsToolNames?: ReadonlySet<string>;
   scheduleDeltaFlush?: ScheduleModelRoundDeltaFlush;
 }): Promise<ModelRoundChunkResult> {
-  const { chunks, signal, interruptSignal, emit, attemptIndex, now } = args;
+  const { chunks, signal, interruptSignal, emit, now } = args;
   const functionCalls: FunctionCall[] = [];
   let assistantText = '';
   let finalText = '';
@@ -129,7 +126,6 @@ export async function consumeModelRoundChunks(args: {
   let providerUsageTelemetry: ProviderUsageTelemetry | undefined;
   let stopReason: ModelRoundStopReason | undefined;
   let sawSemanticChunk = false;
-  let lastChunkAtMs = now();
   const deltaBatcher = createModelRoundDeltaBatcher({
     emit,
     scheduleFlush:
@@ -167,11 +163,6 @@ export async function consumeModelRoundChunks(args: {
 
       const chunkReceivedAtMs = now();
       args.onProviderEventObserved?.(chunkReceivedAtMs);
-      warnIfModelRoundStalled({
-        attemptIndex,
-        elapsedMs: chunkReceivedAtMs - lastChunkAtMs,
-      });
-      lastChunkAtMs = chunkReceivedAtMs;
 
       switch (chunk.type) {
         case 'text_delta': {
@@ -525,17 +516,4 @@ function isPotentialArtifactOnlyEnvelopePrefix(text: string): boolean {
 // 이때부터 artifact_stream_delta 라이브 스트림을 흘린다.
 function isConfirmedArtifactEnvelopePrefix(text: string): boolean {
   return text.trimStart().startsWith(ARTIFACT_START_PREFIX);
-}
-
-function warnIfModelRoundStalled(args: {
-  attemptIndex: number;
-  elapsedMs: number;
-}): void {
-  if (args.elapsedMs <= MODEL_ROUND_STALL_WARNING_MS) {
-    return;
-  }
-  logger.warn('model stream stalled between chunks', {
-    attemptIndex: args.attemptIndex,
-    elapsedMs: args.elapsedMs,
-  });
 }

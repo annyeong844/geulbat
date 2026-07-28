@@ -51,7 +51,7 @@ function createManualDeltaFlushScheduler(): {
 void test('consumeModelRoundChunks reports exact provider event observation times without changing chunk ownership', async () => {
   const events: AgentEvent[] = [];
   const observedAtMs: number[] = [];
-  const nowValues = [0, 1_000, 1_250];
+  const nowValues = [1_000, 1_250];
 
   const result = await consumeModelRoundChunks({
     chunks: chunks([
