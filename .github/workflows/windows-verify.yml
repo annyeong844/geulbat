@@ -20,6 +20,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
+      - name: Preserve canonical LF line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
       - name: Checkout
         uses: actions/checkout@v6
 
