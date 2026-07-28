@@ -1,15 +1,16 @@
 import type { CancelRequest } from '@geulbat/protocol/cancel';
 import type { ThreadId } from '@geulbat/protocol/ids';
 
+import type { LiveRunEventSink } from '../../../daemon/sessions/live-run-events.js';
 import type { RunChannelSocketCleanupContext } from './run-channel-runtime-context.js';
 
 interface RunChannelCleanupSocketState {
-  computerSessionId: string;
   activeRunIds: Set<CancelRequest['runId']>;
   ownedRunIds: Set<CancelRequest['runId']>;
   runStartInFlightRequestId: string | null;
   threadSeqByThread: Map<ThreadId, number>;
   threadUnsubscribes: Map<ThreadId, () => void>;
+  runEventSink: LiveRunEventSink | null;
   authTimeout: NodeJS.Timeout | null;
   heartbeatInterval: NodeJS.Timeout | null;
   heartbeatTimeout: NodeJS.Timeout | null;
@@ -38,7 +39,6 @@ export function cleanupSocketRuntimeState(
   cleanupContext: RunChannelSocketCleanupContext,
 ): void {
   const {
-    computerSessionId,
     activeRunIds,
     ownedRunIds,
     authTimeout,
@@ -49,10 +49,13 @@ export function cleanupSocketRuntimeState(
     clearTimeout(authTimeout);
   }
   clearSocketHeartbeatRuntime(state);
-  // 승인 grant/대기 상태는 소켓이 아니라 명시적 computer session의
-  // 소유다. 같은 computerSessionId를 제시한 재연결만 이어받을 수 있으므로
-  // close 시점에는 이벤트 sink만 떼고 승인 상태는 남긴다.
-  cleanupContext.liveRunEvents.detachOwner(computerSessionId);
+  // 승인 grant/대기 상태는 소켓이 아니라 host-issued computer session의
+  // 소유다. close 시점에는 이 소켓의 이벤트 sink만 떼고 같은 session의
+  // 승인 상태와 다른 소켓 subscriber는 남긴다.
+  if (state.runEventSink !== null) {
+    cleanupContext.liveRunEvents.detachSink(state.runEventSink);
+    state.runEventSink = null;
+  }
   for (const unsubscribe of threadUnsubscribes.values()) {
     unsubscribe();
   }

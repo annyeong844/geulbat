@@ -94,6 +94,10 @@ void test('createDaemon returns CORS headers for its own origin', async () => {
       res.headers.get('content-security-policy') ?? '',
       /font-src 'self' data:/,
     );
+    assert.match(
+      res.headers.get('content-security-policy') ?? '',
+      /img-src 'self' blob: data:/,
+    );
     assert.equal(res.headers.get('cache-control'), 'no-store');
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(res.headers.get('x-frame-options'), null);

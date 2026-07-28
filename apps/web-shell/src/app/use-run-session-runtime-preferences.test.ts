@@ -138,7 +138,7 @@ void test('useRunSession remembers approval and runtime choices separately for e
   hook.unmount();
 });
 
-void test('useRunSession carries last-used non-security choices into a newly created chat session', async () => {
+void test('useRunSession carries last-used model choices but not cwd or approval into a new chat session', async () => {
   const harness = createRunSessionClientHarness();
   const hook = await renderHook(
     useRunSession,
@@ -169,17 +169,14 @@ void test('useRunSession carries last-used non-security choices into a newly cre
     }),
   );
   assert.equal(hook.result.current.permissionMode, 'basic');
-  assert.equal(
-    hook.result.current.workingDirectory,
-    'home/user/projects/old-session',
-  );
+  assert.equal(hook.result.current.workingDirectory, null);
   assert.equal(hook.result.current.modelId, 'grok-4.5');
   assert.equal(hook.result.current.reasoningEffort, 'high');
   assert.equal(hook.result.current.streamError, null);
   hook.unmount();
 });
 
-void test('useRunSession restores validated run and plan choices after a shell reload', async () => {
+void test('useRunSession restores validated model and plan choices without leaking cwd after a shell reload', async () => {
   const storage = installMemoryLocalStorage();
   try {
     const firstHarness = createRunSessionClientHarness();
@@ -205,10 +202,7 @@ void test('useRunSession restores validated run and plan choices after a shell r
       createRunSessionArgs({ createClient: secondHarness.createClient }),
     );
 
-    assert.equal(
-      second.result.current.workingDirectory,
-      'home/user/projects/kept-after-reload',
-    );
+    assert.equal(second.result.current.workingDirectory, null);
     assert.equal(second.result.current.permissionMode, 'basic');
     assert.equal(second.result.current.modelId, 'qwen3.8-max-preview');
     assert.equal(second.result.current.reasoningEffort, 'medium');
@@ -216,6 +210,13 @@ void test('useRunSession restores validated run and plan choices after a shell r
     assert.equal(second.result.current.planModeDepth, 'deep');
     assert.equal(second.result.current.planModeIntensity, 'quiet');
     assert.equal(storage.values.size, 1);
+    const stored = JSON.parse(
+      storage.values.get('geulbat.shell.run-session-preferences.v1') ?? '{}',
+    ) as { preferences?: Record<string, unknown> };
+    assert.equal(
+      Object.hasOwn(stored.preferences ?? {}, 'workingDirectory'),
+      false,
+    );
     second.unmount();
   } finally {
     storage.restore();

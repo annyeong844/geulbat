@@ -1928,68 +1928,79 @@ void test('agent_spawn durably queues a launch blocked by daemon-owned capacity'
   assert.equal(typeof payload.childThreadId, 'string');
 });
 
-void test('agent_spawn reports timeout separately from user_interrupt', async () => {
-  const threadId = testThreadId(9);
-  const daemonContext = createDaemonContext();
-  const parentState = createRunState({
-    runId: 'top-run-timeout',
-    runContext: makeRunContext({
-      threadId,
-      stateRoot: '/tmp/home-state',
-    }),
-  });
-
-  const testAgentSpawnTool = createAgentSpawnTool({
-    timeoutMs: 5,
-    startBackgroundRun: createSubagentRunLauncher({
-      runAgentLoop: async ({ signal }) => {
-        if (!signal) {
-          throw new Error('expected child run signal');
-        }
-        return new Promise((resolve, reject) => {
-          signal.addEventListener(
-            'abort',
-            () => reject(new Error('child aborted')),
-            { once: true },
-          );
-        });
-      },
-    }).startBackgroundRun,
-  });
-
-  const result = await testAgentSpawnTool.execute(
-    {
-      task: 'read files',
-      subagent_type: 'explorer',
-    },
-    {
-      callId: 'call-timeout',
-      providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
-      stateRoot: '/tmp/home-state',
-      threadId,
+void test(
+  'agent_spawn reports timeout separately from user_interrupt',
+  { timeout: 10_000 },
+  async (t) => {
+    const threadId = testThreadId(9);
+    const daemonContext = createDaemonContext();
+    const parentState = createRunState({
       runId: 'top-run-timeout',
-      runState: parentState,
-      signal: new AbortController().signal,
-      runSignal: new AbortController().signal,
-      runtimeServices: daemonContext,
-      computerSessionId: 'timeout-session',
-    },
-  );
+      runContext: makeRunContext({
+        threadId,
+        stateRoot: '/tmp/home-state',
+      }),
+    });
 
-  assert.equal(result.ok, true);
-  const payload = JSON.parse(result.output) as {
-    childRunId: string;
-  };
-  const childRunId = assertRunId(payload.childRunId);
+    const testAgentSpawnTool = createAgentSpawnTool({
+      timeoutMs: 5,
+      startBackgroundRun: createSubagentRunLauncher({
+        runAgentLoop: async ({ signal }) => {
+          if (!signal) {
+            throw new Error('expected child run signal');
+          }
+          return new Promise((resolve, reject) => {
+            signal.addEventListener(
+              'abort',
+              () => reject(new Error('child aborted')),
+              { once: true },
+            );
+          });
+        },
+      }).startBackgroundRun,
+    });
 
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const snapshot = daemonContext.childRuns.getChildRun(childRunId);
-    if (snapshot?.status === 'cancelled') {
-      assert.equal(snapshot.reason, 'timeout');
-      return;
+    const result = await testAgentSpawnTool.execute(
+      {
+        task: 'read files',
+        subagent_type: 'explorer',
+      },
+      {
+        callId: 'call-timeout',
+        providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+        stateRoot: '/tmp/home-state',
+        threadId,
+        runId: 'top-run-timeout',
+        runState: parentState,
+        signal: new AbortController().signal,
+        runSignal: new AbortController().signal,
+        runtimeServices: daemonContext,
+        computerSessionId: 'timeout-session',
+      },
+    );
+
+    assert.equal(result.ok, true);
+    const payload = JSON.parse(result.output) as {
+      childRunId: string;
+    };
+    const childRunId = assertRunId(payload.childRunId);
+
+    let childRuns = daemonContext.childRuns.getChildRuns([childRunId]);
+    assert.equal(childRuns.records.length, 1);
+    while (true) {
+      const snapshot = childRuns.records[0];
+      assert.ok(snapshot);
+      if (snapshot.completedAt !== null) {
+        assert.equal(snapshot.status, 'cancelled');
+        assert.equal(snapshot.reason, 'timeout');
+        return;
+      }
+      await daemonContext.childRuns.waitForRevisionChange(
+        childRuns.revision,
+        t.signal,
+      );
+      childRuns = daemonContext.childRuns.getChildRuns([childRunId]);
+      assert.equal(childRuns.records.length, 1);
     }
-    await delay(10);
-  }
-
-  assert.fail('expected child run to settle as timeout');
-});
+  },
+);

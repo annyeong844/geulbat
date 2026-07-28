@@ -20,12 +20,7 @@ import {
 } from '@geulbat/protocol/errors';
 import { getErrorMessage } from '../error-message.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
-import {
-  ApiFetchError,
-  apiFetch,
-  apiFetchBlob,
-  isApiOkResponse,
-} from './client.js';
+import { ApiFetchError, apiFetch, isApiOkResponse } from './client.js';
 
 const logger = createLogger('api/files');
 
@@ -302,16 +297,6 @@ async function apiFetchWithSaveConflict(
     }
     throw error;
   }
-}
-
-// 이미지 등 바이너리 미리보기 — JSON이 아니라 원본 바이트를 받는다
-export async function fetchRawFileBlob(
-  scope: FileApiScope,
-  path: string,
-): Promise<Blob> {
-  const params = fileScopeSearchParams(scope);
-  params.set('path', path);
-  return apiFetchBlob(`/api/files/raw?${params.toString()}`);
 }
 
 // 미디어 태그(src)용 raw URL — HttpOnly 인증 쿠키가 같이 전송되고,

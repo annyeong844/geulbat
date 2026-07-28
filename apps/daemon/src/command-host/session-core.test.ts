@@ -1041,7 +1041,7 @@ void test('LRU: the 65th start evicts the least-recently-touched claimed session
   }
 });
 
-void test('a started session is journaled before it runs and retired when it finishes', async (t) => {
+void test('a started session is journaled and retired when it finishes', async (t) => {
   const fixture = await makeFixture(t);
   const thread = threadId(71);
   const started = await fixture.host.start(
@@ -1058,9 +1058,11 @@ void test('a started session is journaled before it runs and retired when it fin
     const row = duringRun.open.find(
       (candidate) => candidate.outputRef === started.outputRef,
     );
-    // GO는 이 행이 fdatasync된 뒤에만 쓰였다 (§5.1).
-    assert.ok(row !== undefined, 'the open row exists before the child runs');
-    assert.equal(row?.gated, true);
+    // POSIX의 GO는 이 행이 fdatasync된 뒤에만 쓰인다(§5.1). Windows는
+    // spawn-time gate를 지원하지 않는 명시적 ungated downgrade지만, start가
+    // 돌아오기 전 open row가 durable하다는 공통 계약은 그대로 유지한다.
+    assert.ok(row !== undefined, 'the open row exists before start returns');
+    assert.equal(row?.gated, process.platform !== 'win32');
     assert.ok((row?.pid ?? 0) > 0);
   }
 
@@ -2160,67 +2162,76 @@ void test('P7.6: backpressure holds the source instead of overwriting output', a
 // 있어 Node의 'close'가 오지 않는다. 그동안 출력은 더 올 수 있으므로 status는
 // running이 맞지만, 프로세스가 이미 끝났다는 사실이 어디에도 없으면 관찰자는
 // 끝난 명령을 계속 관찰한다.
-void test('a command that outlives its stdout through a background descendant reports its process exit', async (t) => {
-  const fixture = await makeFixture(t);
-  const thread = threadId(9401);
-  const started = await fixture.host.start(
-    startArgs(
-      fixture,
-      thread,
-      // 손자가 부모의 stdout을 물려받고 부모보다 오래 산다. `unref`가 없으면
-      // 부모가 자식 핸들 때문에 살아 있어서 이 상황이 재현되지 않는다.
-      "const {spawn}=require('node:child_process');" +
-        "const child=spawn(process.execPath,['-e','setTimeout(()=>{},4000)'],{stdio:['ignore','inherit','inherit']});" +
-        'child.unref();' +
-        "process.stdout.write('parent-done');",
-    ),
-  );
-  assert.equal(started.ok, true);
-  if (!started.ok) {
-    return;
-  }
-  const outputRef = started.outputRef;
-  assert.ok(outputRef !== null);
+void test(
+  'a command that outlives its stdout through a background descendant reports its process exit',
+  {
+    // Windows does not preserve the POSIX inherited-pipe exit→close drain
+    // window used by this test. Native Windows descendant-tree termination is
+    // covered separately with a real child and descendant.
+    skip: process.platform === 'win32',
+  },
+  async (t) => {
+    const fixture = await makeFixture(t);
+    const thread = threadId(9401);
+    const started = await fixture.host.start(
+      startArgs(
+        fixture,
+        thread,
+        // 손자가 부모의 stdout을 물려받고 부모보다 오래 산다. `unref`가 없으면
+        // 부모가 자식 핸들 때문에 살아 있어서 이 상황이 재현되지 않는다.
+        "const {spawn}=require('node:child_process');" +
+          "const child=spawn(process.execPath,['-e','setTimeout(()=>{},4000)'],{stdio:['ignore','inherit','inherit']});" +
+          'child.unref();' +
+          "process.stdout.write('parent-done');",
+      ),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+    const outputRef = started.outputRef;
+    assert.ok(outputRef !== null);
 
-  let processExit: HostCommandSnapshot['processExit'];
-  let statusWhileDraining: HostCommandSnapshot['status'] | undefined;
-  let outputCompleteWhileDraining: boolean | undefined;
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const polled = await fixture.host.interact({
+    let processExit: HostCommandSnapshot['processExit'];
+    let statusWhileDraining: HostCommandSnapshot['status'] | undefined;
+    let outputCompleteWhileDraining: boolean | undefined;
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const polled = await fixture.host.interact({
+        stateRoot: fixture.stateRoot,
+        threadId: thread,
+        outputRef,
+        yieldTimeMs: 25,
+      });
+      assert.equal(polled.ok, true);
+      if (!polled.ok) {
+        return;
+      }
+      if (polled.value.snapshot.processExit !== undefined) {
+        processExit = polled.value.snapshot.processExit;
+        statusWhileDraining = polled.value.snapshot.status;
+        outputCompleteWhileDraining = polled.value.snapshot.outputComplete;
+        break;
+      }
+    }
+
+    assert.ok(
+      processExit !== undefined,
+      'the finished process must be observable while its output stream is still open',
+    );
+    assert.equal(processExit.status, 'exit');
+    assert.equal(processExit.exitCode, 0);
+    // 출력이 더 올 수 있는 동안에는 완결을 주장하지 않는다. status도 그대로
+    // running이어야 한다 — 그 필드로 종료를 판정하는 소비자들이 미완결 출력을
+    // 완결로 읽으면 안 된다.
+    assert.equal(statusWhileDraining, 'running');
+    assert.equal(outputCompleteWhileDraining, false);
+
+    await fixture.host.interact({
       stateRoot: fixture.stateRoot,
       threadId: thread,
       outputRef,
-      yieldTimeMs: 25,
+      terminate: true,
+      yieldTimeMs: 0,
     });
-    assert.equal(polled.ok, true);
-    if (!polled.ok) {
-      return;
-    }
-    if (polled.value.snapshot.processExit !== undefined) {
-      processExit = polled.value.snapshot.processExit;
-      statusWhileDraining = polled.value.snapshot.status;
-      outputCompleteWhileDraining = polled.value.snapshot.outputComplete;
-      break;
-    }
-  }
-
-  assert.ok(
-    processExit !== undefined,
-    'the finished process must be observable while its output stream is still open',
-  );
-  assert.equal(processExit.status, 'exit');
-  assert.equal(processExit.exitCode, 0);
-  // 출력이 더 올 수 있는 동안에는 완결을 주장하지 않는다. status도 그대로
-  // running이어야 한다 — 그 필드로 종료를 판정하는 소비자들이 미완결 출력을
-  // 완결로 읽으면 안 된다.
-  assert.equal(statusWhileDraining, 'running');
-  assert.equal(outputCompleteWhileDraining, false);
-
-  await fixture.host.interact({
-    stateRoot: fixture.stateRoot,
-    threadId: thread,
-    outputRef,
-    terminate: true,
-    yieldTimeMs: 0,
-  });
-});
+  },
+);

@@ -13,6 +13,7 @@ const FLOW_GATE_COMMENTARY_PATH = '/api/flow-gate/recovery/commentary';
 const FLOW_GATE_DISCONNECT_PATH = '/api/flow-gate/recovery/disconnect';
 const FLOW_GATE_FINISH_PATH = '/api/flow-gate/recovery/finish';
 const FLOW_GATE_HOT_PATH_METRICS_PATH = '/api/flow-gate/hot-path/metrics';
+const FLOW_GATE_MEDIA_PREPARE_PATH = '/api/flow-gate/media/prepare';
 const FLOW_GATE_PROVIDER_COMPLETE_PATH = '/api/flow-gate/run/complete';
 const FLOW_GATE_PROVIDER_MODELS_PATH = '/flow-gate/provider/codex/models';
 const FLOW_GATE_SUBAGENT_STATUS_PATH = '/api/flow-gate/subagent/status';
@@ -31,6 +32,8 @@ async function loadDaemonModules() {
     runtimeState,
     responsesWebSocketCache,
     shellAssets,
+    mediaFiles,
+    durableRunExecution,
   ] = await Promise.all([
     import(srcUrl('create-daemon.ts')),
     import(srcUrl('daemon/context.ts')),
@@ -42,6 +45,8 @@ async function loadDaemonModules() {
       srcUrl('daemon/llm/provider/transport/responses-websocket-cache.ts')
     ),
     import(srcUrl('adapter/web/shell-assets.ts')),
+    import(srcUrl('daemon/sessions/media-file-store.ts')),
+    import(srcUrl('daemon/durable-run-execution.ts')),
   ]);
   return {
     createDaemon: daemon.createDaemon,
@@ -53,6 +58,9 @@ async function loadDaemonModules() {
     createDaemonRuntimeStateStore: runtimeState.createDaemonRuntimeStateStore,
     createResponsesWebSocketSessionStore:
       responsesWebSocketCache.createResponsesWebSocketSessionStore,
+    recoverDurableRunsAtDaemonStartup:
+      durableRunExecution.recoverDurableRunsAtDaemonStartup,
+    writeThreadMediaFile: mediaFiles.writeThreadMediaFile,
   };
 }
 
@@ -332,9 +340,11 @@ function registerFlowGateStatusRoutes({
 
 function registerFlowGateControlRoutes({
   app,
+  config,
   deterministicProvider,
   recoveryFixture,
   runChannelServer,
+  writeThreadMediaFile,
 }) {
   app.post(FLOW_GATE_DISCONNECT_PATH, async (_request, response) => {
     const clients = [...runChannelServer.clients];
@@ -397,6 +407,33 @@ function registerFlowGateControlRoutes({
       });
     }
   });
+  app.post(FLOW_GATE_MEDIA_PREPARE_PATH, async (_request, response) => {
+    try {
+      const threadId = randomUUID();
+      const bytes = Buffer.from(
+        'flow-gate media survives the daemon process replacement',
+        'utf8',
+      );
+      const media = await writeThreadMediaFile({
+        workspaceRoot: config.homeStateRoot,
+        threadId,
+        extension: 'mp4',
+        bytes,
+        maxBytes: bytes.byteLength,
+      });
+      response.json({
+        ok: true,
+        threadId,
+        mediaRef: media.mediaRef,
+        expectedText: bytes.toString('utf8'),
+      });
+    } catch (error) {
+      response.status(500).json({
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
 }
 
 function createFlowGateFixtureClose({
@@ -446,6 +483,8 @@ async function startFlowGateFixtureDaemon() {
     createDaemonRuntimeStateStore,
     createResponsesWebSocketSessionStore,
     createShellAssetRoutes,
+    recoverDurableRunsAtDaemonStartup,
+    writeThreadMediaFile,
   } = await loadDaemonModules();
   const runtimeStateStore = await createDaemonRuntimeStateStore({
     homeStateRoot: config.homeStateRoot,
@@ -480,6 +519,7 @@ async function startFlowGateFixtureDaemon() {
   };
   daemonContext.computerFileRoot = config.workingDirectory;
 
+  await recoverDurableRunsAtDaemonStartup(daemonContext);
   const recoveryFixture = await startFlowGateRecoveryFixture({
     config,
     daemonContext,
@@ -501,9 +541,11 @@ async function startFlowGateFixtureDaemon() {
   });
   registerFlowGateControlRoutes({
     app,
+    config,
     deterministicProvider,
     recoveryFixture,
     runChannelServer,
+    writeThreadMediaFile,
   });
   // shell SPA fallback은 마지막에 온다. 앞에 두면 fixture의 provider/control
   // 라우트를 문서 200으로 삼켜서 실행이 시작조차 못 한다.

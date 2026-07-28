@@ -65,12 +65,40 @@ void test('a torn journal isolates its own thread instead of blocking every runn
   await writeFile(tornJournalPath, `${tornLines.join('\n')}\n`, 'utf8');
 
   const reloaded = createRunCheckpointStore({ stateRoot });
+  const tornCheckpointPath = join(
+    stateRoot,
+    '.geulbat',
+    'run-checkpoints',
+    `${tornThreadId}.json`,
+  );
+  const checkpointBeforeRejectedMutation = await readFile(
+    tornCheckpointPath,
+    'utf8',
+  );
 
   // 손상된 스레드를 **명시적으로** 물으면 실패가 숨겨지지 않는다.
   await assert.rejects(
     reloaded.readThread(tornThreadId),
     /run event journal/u,
     '손상된 저널은 그 스레드를 물었을 때 거부되어야 한다',
+  );
+  // 재시작 직후의 metadata mutation도 checkpoint 파일만 믿고 진행하면 안 된다.
+  // 먼저 durable journal 전체를 검증하고, 손상 시 checkpoint는 한 바이트도
+  // 바꾸지 않아야 이후 복구가 같은 사실을 관찰한다.
+  await assert.rejects(
+    reloaded.recordApprovalPending({
+      threadId: tornThreadId,
+      runId: tornRunId,
+      callId: 'call-after-torn-journal',
+      approvalClass: toApprovalClass('write_file:computer'),
+    }),
+    /run event journal/u,
+    '재시작 뒤 mutation은 손상된 durable journal을 우회하면 안 된다',
+  );
+  assert.equal(
+    await readFile(tornCheckpointPath, 'utf8'),
+    checkpointBeforeRejectedMutation,
+    '거부된 mutation은 checkpoint를 부분 갱신하면 안 된다',
   );
 
   // 그러나 열거는 손상되지 않은 런을 계속 돌려주어야 한다.

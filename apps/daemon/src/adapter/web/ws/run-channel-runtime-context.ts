@@ -32,7 +32,10 @@ type RunChannelActiveRuns = AgentRuntimeServices['activeRuns'] &
 type RunChannelApprovalGate = AgentRuntimeServices['approvalGate'] &
   Pick<
     ApprovalGate,
-    'clearRunRuntime' | 'hasApprovalDecisionAuthority' | 'resolveApproval'
+    | 'clearRunRuntime'
+    | 'hasApprovalDecisionAuthority'
+    | 'rebindPendingRunApprovals'
+    | 'resolveApproval'
   >;
 
 type RunChannelBackgroundNotifications =

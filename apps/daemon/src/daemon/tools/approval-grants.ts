@@ -24,6 +24,11 @@ interface ApprovalGrantBucket {
 export interface ApprovalGrantStore {
   clearComputerSession(computerSessionId: string): void;
   clearRun(computerSessionId: string, runId: string): void;
+  rebindRun(
+    previousComputerSessionId: string,
+    nextComputerSessionId: string,
+    runId: string,
+  ): void;
   registerApprovalGrant(
     approvalGrantContext: ApprovalGrantContext,
     grantScope: ApprovalGrantScope,
@@ -101,6 +106,32 @@ export function createApprovalGrantStore(): ApprovalGrantStore {
       }
       if (store.run.size === 0 && store.session.size === 0) {
         approvalGrantsByComputerSession.delete(computerSessionId);
+      }
+    },
+    rebindRun(previousComputerSessionId, nextComputerSessionId, runId) {
+      if (previousComputerSessionId === nextComputerSessionId) {
+        return;
+      }
+      const previous = approvalGrantsByComputerSession.get(
+        previousComputerSessionId,
+      );
+      if (!previous) {
+        return;
+      }
+      const runKeyPrefix = `${runId}::`;
+      const matchingRunGrants = [...previous.run].filter((approvalKey) =>
+        approvalKey.startsWith(runKeyPrefix),
+      );
+      if (matchingRunGrants.length === 0) {
+        return;
+      }
+      const next = getApprovalGrantBucket(nextComputerSessionId);
+      for (const approvalKey of matchingRunGrants) {
+        previous.run.delete(approvalKey);
+        next.run.add(approvalKey);
+      }
+      if (previous.run.size === 0 && previous.session.size === 0) {
+        approvalGrantsByComputerSession.delete(previousComputerSessionId);
       }
     },
     registerApprovalGrant(approvalGrantContext, grantScope) {

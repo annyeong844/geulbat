@@ -121,6 +121,69 @@ void test('live run events replay only events after the reconnect cursor', async
   );
 });
 
+void test('coalesced history persistence preserves reconnect cursor sequence', async () => {
+  const store = createLiveRunEventStore();
+  const runId = assertSessionRunId('run-live-events-batched-replay');
+  const threadId = testThreadId(311);
+  const persistedBatches: number[][] = [];
+  const journal: RunCheckpointEvent[] = [];
+  let durableReplayReads = 0;
+
+  store.startRun({
+    runId,
+    threadId,
+    ownerId: 'socket-session-a',
+    sink: () => true,
+    async persistRunEvents(events) {
+      await Promise.resolve();
+      persistedBatches.push(events.map(({ seq }) => seq));
+      journal.push(...events);
+    },
+    async readPersistedRunEvents(throughSeq) {
+      durableReplayReads += 1;
+      return journal.filter(({ seq }) => seq <= throughSeq);
+    },
+  });
+
+  for (const text of ['zero', 'one', 'two', 'three']) {
+    store.publishRunEvent(runId, {
+      type: 'commentary_delta',
+      payload: { text },
+    });
+  }
+  await store.flushRunEventHistory(runId);
+
+  assert.ok(
+    persistedBatches.some((batch) => batch.length > 1),
+    `expected backpressure coalescing: ${JSON.stringify(persistedBatches)}`,
+  );
+  assert.deepEqual(
+    persistedBatches.flat(),
+    [0, 1, 2, 3],
+    'persistence batch boundaries must not change sequence',
+  );
+
+  await store.commitTerminalRunEvent({
+    runId,
+    event: doneEvent,
+    async persist() {},
+  });
+  store.detachOwner('socket-session-a');
+
+  const replayed: number[] = [];
+  await store.bindRuns({
+    ownerId: 'socket-session-b',
+    afterSeqByRun: new Map([[runId, 1]]),
+    sink: (envelope) => {
+      replayed.push(envelope.seq);
+      return true;
+    },
+  });
+
+  assert.equal(durableReplayReads, 1);
+  assert.deepEqual(replayed, [2, 3, 4]);
+});
+
 void test('live run events deliver transient output without persistence or replay', async () => {
   const store = createLiveRunEventStore();
   const runId = assertSessionRunId('run-live-events-transient-output');
@@ -273,6 +336,62 @@ void test('live run events broadcast one active run to concurrent socket subscri
   );
   assert.deepEqual(firstOwnerEvents, [0, 1]);
   assert.deepEqual(secondOwnerEvents, [0, 1, 2]);
+});
+
+void test('live run events detach one sink without dropping a same-owner sibling', async () => {
+  const store = createLiveRunEventStore();
+  const runId = assertSessionRunId('run-live-events-same-owner-subscribers');
+  const threadId = testThreadId(313);
+  const firstSinkEvents: number[] = [];
+  const secondSinkEvents: number[] = [];
+  const firstSink: LiveRunEventSink = (envelope) => {
+    firstSinkEvents.push(envelope.seq);
+    return true;
+  };
+  const secondSink: LiveRunEventSink = (envelope) => {
+    secondSinkEvents.push(envelope.seq);
+    return true;
+  };
+
+  store.startRun({
+    runId,
+    threadId,
+    ownerId: 'shared-computer-session',
+    sink: firstSink,
+    async persistRunEvents() {},
+  });
+  assert.deepEqual(
+    await store.bindRuns({
+      ownerId: 'shared-computer-session',
+      sink: secondSink,
+    }),
+    [{ runId, threadId, terminal: false }],
+  );
+
+  store.publishRunEvent(runId, startedEvent);
+  assert.deepEqual(firstSinkEvents, [0]);
+  assert.deepEqual(secondSinkEvents, [0]);
+
+  store.detachSink(firstSink);
+  assert.deepEqual(
+    store.publishRunEvent(runId, {
+      type: 'commentary_delta',
+      payload: { text: 'sibling remains attached' },
+    }),
+    { seq: 1, delivery: 'delivered' },
+  );
+  assert.deepEqual(firstSinkEvents, [0]);
+  assert.deepEqual(secondSinkEvents, [0, 1]);
+
+  store.detachOwner('shared-computer-session');
+  assert.deepEqual(
+    store.publishRunEvent(runId, {
+      type: 'commentary_delta',
+      payload: { text: 'owner authority detached' },
+    }),
+    { seq: 2, delivery: 'buffered' },
+  );
+  assert.deepEqual(secondSinkEvents, [0, 1]);
 });
 
 void test('live run events retain a frame when the current sink cannot deliver it', async () => {

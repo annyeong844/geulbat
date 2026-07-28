@@ -15,11 +15,9 @@ import {
   closeServer,
   resolveChromiumLaunchEnv,
 } from './smoke-harness-utils.mjs';
+import { writePrivatePerformanceReport } from '../../../scripts/performance-report-support.mjs';
 import { buildAssistantTranscriptPerformanceReport } from './assistant-transcript-performance-report.mjs';
-import {
-  collectBrowserPerformanceEnvironment,
-  writePrivatePerformanceReport,
-} from './performance-report-support.mjs';
+import { collectBrowserPerformanceEnvironment } from './performance-report-support.mjs';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(scriptPath);

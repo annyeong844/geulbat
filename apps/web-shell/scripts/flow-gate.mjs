@@ -35,14 +35,17 @@ import {
   buildFlowGateHotPathReport,
   observeFlowGateRunEventFrames,
 } from './flow-gate-hot-path-report.mjs';
-import {
-  collectBrowserPerformanceEnvironment,
-  writePrivatePerformanceReport,
-} from './performance-report-support.mjs';
+import { buildFlowGateUserVisiblePerformanceSample } from './flow-gate-user-visible-performance-report.mjs';
+import { writePrivatePerformanceReport } from '../../../scripts/performance-report-support.mjs';
+import { collectBrowserPerformanceEnvironment } from './performance-report-support.mjs';
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const screenshotDir = path.join(repoRoot, 'output', 'playwright', 'flow-gate');
 const hotPathOutputPath = readStringOption('--hot-path-output');
+const restartEvidenceOutputPath = readStringOption('--restart-evidence-output');
+const userVisiblePerformanceOutputPath = readStringOption(
+  '--user-visible-performance-output',
+);
 const INITIAL_RECOVERY_COMMENTARY =
   'flow-gate: output visible before disconnect';
 const BUFFERED_RECOVERY_COMMENTARY =
@@ -66,6 +69,15 @@ const ARTIFACT_FINAL_TEXT = `<!-- GEULBAT_ARTIFACT {"renderer":"markdown","diges
 const SUBAGENT_PARENT_PROMPT = 'flow-gate subagent control proof';
 const SUBAGENT_CHILD_TASK = 'inspect the isolated flow-gate child session';
 const SUBAGENT_FINAL_TEXT = 'flow-gate: subagent launched in background';
+const DEFAULT_DIRECTORY_NAME = 'default-alpha';
+const RECENT_DIRECTORY_NAME = 'recent-target';
+const RECENT_DIRECTORY_CHILD_NAMES = ['recent-child-a', 'recent-child-b'];
+const IMAGE_FILE_NAME = 'flow-gate-image.png';
+const VIDEO_FILE_NAME = 'flow-gate-video.mp4';
+const IMAGE_FILE_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+const VIDEO_FILE_BASE64 =
+  'AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAN1bW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAMgAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAp90cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAMgAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAADIAAAEAAABAAAAAAIXbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAyAAAACgBVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABwm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAYJzdGJsAAAAvnN0c2QAAAAAAAAAAQAAAK5hdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MC4zMS4xMDIgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAANGF2Y0MBZAAK/+EAF2dkAAqs2V7ARAAAAwAEAAADAMg8SJZYAQAGaOvjyyLA/fj4AAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAHZIAAB2SAAAABhzdHRzAAAAAAAAAAEAAAAFAAACAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAOGN0dHMAAAAAAAAABQAAAAEAAAQAAAAAAQAACgAAAAABAAAEAAAAAAEAAAAAAAAAAQAAAgAAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAUAAAABAAAAKHN0c3oAAAAAAAAAAAAAAAUAAALFAAAADAAAAAwAAAAMAAAADAAAABRzdGNvAAAAAAAAAAEAAAOlAAAAYnVkdGEAAABabWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAtaWxzdAAAACWpdG9vAAAAHWRhdGEAAAABAAAAAExhdmY2MC4xNi4xMDAAAAAIZnJlZQAAAv1tZGF0AAACrgYF//+q3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2NCByMzEwOCAzMWUxOWY5IC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyMyAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTI1IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAAD2WIhAAz//727L4FNhTIwQAAAAhBmiRsQr/+wAAAAAhBnkJ4hf/BgQAAAAgBnmF0Qr/EgAAAAAgBnmNqQr/EgQ==';
 const MAX_CAPTURED_LOG_LINES = 80;
 
 function assert(condition, message) {
@@ -130,8 +142,12 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
   let approvalTargetPath;
   let daemon;
   let daemonOrigin;
+  let defaultDirectory;
   let devToken;
+  let recentDirectory;
+  let spawnDaemon;
   let temporaryRoot;
+  let workspaceRoot;
   let closing;
   const daemonLogs = [];
 
@@ -184,6 +200,24 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
     );
     signal?.throwIfAborted();
     const homeStateRoot = path.join(temporaryRoot, 'home-state');
+    workspaceRoot = path.join(temporaryRoot, 'workspace');
+    defaultDirectory = path.join(workspaceRoot, DEFAULT_DIRECTORY_NAME);
+    recentDirectory = path.join(workspaceRoot, RECENT_DIRECTORY_NAME);
+    await fs.mkdir(workspaceRoot, { recursive: true });
+    await Promise.all([
+      fs.mkdir(defaultDirectory, { recursive: true }),
+      ...RECENT_DIRECTORY_CHILD_NAMES.map((name) =>
+        fs.mkdir(path.join(recentDirectory, name), { recursive: true }),
+      ),
+      fs.writeFile(
+        path.join(workspaceRoot, IMAGE_FILE_NAME),
+        Buffer.from(IMAGE_FILE_BASE64, 'base64'),
+      ),
+      fs.writeFile(
+        path.join(workspaceRoot, VIDEO_FILE_NAME),
+        Buffer.from(VIDEO_FILE_BASE64, 'base64'),
+      ),
+    ]);
     approvalTargetPath = path.join(temporaryRoot, 'approved-write.txt');
     devToken = randomBytes(32).toString('hex');
     const daemonPort = await reserveFreePort();
@@ -192,50 +226,52 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
     // 데몬이 화면까지 서빙한다. 게이트는 제품과 같은 단일 origin 위상을
     // 검증해야 하므로 별도 dev server 포트를 두지 않는다.
     appUrl = `${daemonOrigin}/`;
-    daemon = spawnCapturedProcess(
-      process.execPath,
-      ['--import', 'tsx', 'scripts/flow-gate-fixture.mjs'],
-      {
-        cwd: path.join(repoRoot, 'apps', 'daemon'),
-        env: {
-          ...process.env,
-          GEULBAT_COMMAND_HOST: 'inline',
-          GEULBAT_BACKEND_URL: `${daemonOrigin}/flow-gate/provider`,
-          GEULBAT_DEV_TOKEN: devToken,
-          GEULBAT_FLOW_GATE_ARTIFACT_FINAL_TEXT: ARTIFACT_FINAL_TEXT,
-          GEULBAT_FLOW_GATE_ARTIFACT_PROMPT: ARTIFACT_PROMPT,
-          GEULBAT_FLOW_GATE_APPROVAL_CONTENT: APPROVAL_CONTENT,
-          GEULBAT_FLOW_GATE_APPROVAL_FINAL_TEXT: APPROVAL_FINAL_TEXT,
-          GEULBAT_FLOW_GATE_APPROVAL_PROMPT: APPROVAL_PROMPT,
-          GEULBAT_FLOW_GATE_APPROVAL_TARGET_PATH: approvalTargetPath,
-          GEULBAT_FLOW_GATE_INITIAL_COMMENTARY: INITIAL_RECOVERY_COMMENTARY,
-          GEULBAT_FLOW_GATE_RUN_FINAL_SUFFIX: RUN_FINAL_SUFFIX,
-          GEULBAT_FLOW_GATE_RUN_SETTLEMENT_PROMPT: RUN_SETTLEMENT_PROMPT,
-          GEULBAT_FLOW_GATE_RUN_STREAM_PREFIX: RUN_STREAM_PREFIX,
-          GEULBAT_FLOW_GATE_SUBAGENT_CHILD_TASK: SUBAGENT_CHILD_TASK,
-          GEULBAT_FLOW_GATE_SUBAGENT_FINAL_TEXT: SUBAGENT_FINAL_TEXT,
-          GEULBAT_FLOW_GATE_SUBAGENT_PARENT_PROMPT: SUBAGENT_PARENT_PROMPT,
-          GEULBAT_FLOW_GATE_THREAD_TITLE: RECOVERY_THREAD_TITLE,
-          GEULBAT_FLOW_GATE_WORKING_DIRECTORY: repoRoot,
-          GEULBAT_FLOW_GATE_SHELL_ASSET_ROOT: path.join(
-            repoRoot,
-            'apps',
-            'web-shell',
-            'dist',
-          ),
-          GEULBAT_HOME_STATE_ROOT: homeStateRoot,
-          GEULBAT_LLM_PROVIDER: 'openai_codex_direct',
-          GEULBAT_PROVIDER_AUTH_FILE_PATH: path.join(
-            temporaryRoot,
-            'provider-auth.json',
-          ),
-          GEULBAT_REPO_ROOT: repoRoot,
-          HOST: '127.0.0.1',
-          PORT: String(daemonPort),
+    spawnDaemon = () =>
+      spawnCapturedProcess(
+        process.execPath,
+        ['--import', 'tsx', 'scripts/flow-gate-fixture.mjs'],
+        {
+          cwd: path.join(repoRoot, 'apps', 'daemon'),
+          env: {
+            ...process.env,
+            GEULBAT_COMMAND_HOST: 'inline',
+            GEULBAT_BACKEND_URL: `${daemonOrigin}/flow-gate/provider`,
+            GEULBAT_DEV_TOKEN: devToken,
+            GEULBAT_FLOW_GATE_ARTIFACT_FINAL_TEXT: ARTIFACT_FINAL_TEXT,
+            GEULBAT_FLOW_GATE_ARTIFACT_PROMPT: ARTIFACT_PROMPT,
+            GEULBAT_FLOW_GATE_APPROVAL_CONTENT: APPROVAL_CONTENT,
+            GEULBAT_FLOW_GATE_APPROVAL_FINAL_TEXT: APPROVAL_FINAL_TEXT,
+            GEULBAT_FLOW_GATE_APPROVAL_PROMPT: APPROVAL_PROMPT,
+            GEULBAT_FLOW_GATE_APPROVAL_TARGET_PATH: approvalTargetPath,
+            GEULBAT_FLOW_GATE_INITIAL_COMMENTARY: INITIAL_RECOVERY_COMMENTARY,
+            GEULBAT_FLOW_GATE_RUN_FINAL_SUFFIX: RUN_FINAL_SUFFIX,
+            GEULBAT_FLOW_GATE_RUN_SETTLEMENT_PROMPT: RUN_SETTLEMENT_PROMPT,
+            GEULBAT_FLOW_GATE_RUN_STREAM_PREFIX: RUN_STREAM_PREFIX,
+            GEULBAT_FLOW_GATE_SUBAGENT_CHILD_TASK: SUBAGENT_CHILD_TASK,
+            GEULBAT_FLOW_GATE_SUBAGENT_FINAL_TEXT: SUBAGENT_FINAL_TEXT,
+            GEULBAT_FLOW_GATE_SUBAGENT_PARENT_PROMPT: SUBAGENT_PARENT_PROMPT,
+            GEULBAT_FLOW_GATE_THREAD_TITLE: RECOVERY_THREAD_TITLE,
+            GEULBAT_FLOW_GATE_WORKING_DIRECTORY: workspaceRoot,
+            GEULBAT_FLOW_GATE_SHELL_ASSET_ROOT: path.join(
+              repoRoot,
+              'apps',
+              'web-shell',
+              'dist',
+            ),
+            GEULBAT_HOME_STATE_ROOT: homeStateRoot,
+            GEULBAT_LLM_PROVIDER: 'openai_codex_direct',
+            GEULBAT_PROVIDER_AUTH_FILE_PATH: path.join(
+              temporaryRoot,
+              'provider-auth.json',
+            ),
+            GEULBAT_REPO_ROOT: repoRoot,
+            HOST: '127.0.0.1',
+            PORT: String(daemonPort),
+          },
         },
-      },
-      daemonLogs,
-    );
+        daemonLogs,
+      );
+    daemon = spawnDaemon();
     signal?.throwIfAborted();
     await waitForDaemonReady(`${daemonOrigin}/api/health`, daemonLogs, {
       signal,
@@ -255,6 +291,13 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
     appUrl,
     approvalTargetPath,
     daemonOrigin,
+    workspace: {
+      root: workspaceRoot,
+      defaultDirectory,
+      recentDirectory,
+      imageFile: path.join(workspaceRoot, IMAGE_FILE_NAME),
+      videoFile: path.join(workspaceRoot, VIDEO_FILE_NAME),
+    },
     async publishBufferedCommentary(text, onDisconnected) {
       const disconnected = await requestFixture(
         '/api/flow-gate/recovery/disconnect',
@@ -361,6 +404,54 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
         childRequestCount: payload.childRequestCount,
       };
     },
+    async prepareRestartMedia() {
+      const payload = await requestFixture('/api/flow-gate/media/prepare', {});
+      assert(
+        typeof payload.threadId === 'string' &&
+          typeof payload.mediaRef === 'string' &&
+          typeof payload.expectedText === 'string',
+        'media restart fixture returned malformed evidence',
+      );
+      return {
+        threadId: payload.threadId,
+        mediaRef: payload.mediaRef,
+        expectedText: payload.expectedText,
+      };
+    },
+    async restartDaemon() {
+      signal?.throwIfAborted();
+      assert(daemon !== undefined, 'flow-gate daemon was not started');
+      assert(
+        spawnDaemon !== undefined,
+        'flow-gate daemon spawn owner is absent',
+      );
+      const beforePid = daemon.pid;
+      assert(
+        typeof beforePid === 'number',
+        'flow-gate daemon did not expose a process id',
+      );
+      const crashed = new Promise((resolve) => {
+        daemon.once('exit', (code, exitSignal) => {
+          resolve({ code, signal: exitSignal });
+        });
+      });
+      assert(
+        daemon.kill('SIGKILL'),
+        'flow-gate daemon rejected the requested crash signal',
+      );
+      const crash = await crashed;
+      signal?.throwIfAborted();
+      daemon = spawnDaemon();
+      await waitForDaemonReady(`${daemonOrigin}/api/health`, daemonLogs, {
+        signal,
+      });
+      const afterPid = daemon.pid;
+      assert(
+        typeof afterPid === 'number' && afterPid !== beforePid,
+        'flow-gate replacement daemon did not receive a fresh process id',
+      );
+      return { beforePid, afterPid, crash };
+    },
     close,
   };
 }
@@ -401,6 +492,29 @@ async function waitForTranscriptMarkerCount(page, expected) {
   );
 }
 
+async function waitForContextBarPath(page, expectedPath, stage) {
+  const expectedTitle = `시작 위치: ${expectedPath}`;
+  try {
+    await page.waitForFunction(
+      (title) =>
+        document
+          .querySelector('.composer-context-bar')
+          ?.getAttribute('title') === title,
+      expectedTitle,
+      { timeout: 8_000 },
+    );
+  } catch (error) {
+    const actualTitle = await page
+      .locator('.composer-context-bar')
+      .getAttribute('title')
+      .catch(() => null);
+    throw new Error(
+      `${stage} cwd did not converge: expected ${expectedTitle}, received ${String(actualTitle)}`,
+      { cause: error },
+    );
+  }
+}
+
 async function runReconnectReplayRecoveryFlow(page, harness) {
   const runEventFrames = observeFlowGateRunEventFrames(page);
   await page.goto(harness.appUrl, { waitUntil: 'domcontentloaded' });
@@ -418,9 +532,13 @@ async function runReconnectReplayRecoveryFlow(page, harness) {
   await waitForTranscriptMarkerCount(page, [
     { text: INITIAL_RECOVERY_COMMENTARY, count: 1 },
   ]);
+  const cancelRun = page.getByRole('button', { name: '중단' });
+  await cancelRun.waitFor({ state: 'visible', timeout: 15_000 });
 
   const context = page.context();
   let browserHeldOffline = false;
+  let activeRunControlStayedVisible = false;
+  let reconnectAvailableAt;
   try {
     await harness.publishBufferedCommentary(
       BUFFERED_RECOVERY_COMMENTARY,
@@ -431,15 +549,29 @@ async function runReconnectReplayRecoveryFlow(page, harness) {
     );
   } finally {
     if (browserHeldOffline) {
+      activeRunControlStayedVisible = await cancelRun.isVisible();
+      reconnectAvailableAt = performance.now();
       await context.setOffline(false);
     }
   }
 
-  await connected.waitFor({ state: 'visible', timeout: 15_000 });
-  await waitForTranscriptMarkerCount(page, [
-    { text: INITIAL_RECOVERY_COMMENTARY, count: 1 },
-    { text: BUFFERED_RECOVERY_COMMENTARY, count: 1 },
-  ]);
+  assert(
+    reconnectAvailableAt !== undefined,
+    'reconnect measurement did not observe the browser returning online',
+  );
+  const [connectedMs, transcriptVisibleMs, activeRunControlVisibleMs] =
+    await Promise.all([
+      connected
+        .waitFor({ state: 'visible', timeout: 15_000 })
+        .then(() => performance.now() - reconnectAvailableAt),
+      waitForTranscriptMarkerCount(page, [
+        { text: INITIAL_RECOVERY_COMMENTARY, count: 1 },
+        { text: BUFFERED_RECOVERY_COMMENTARY, count: 1 },
+      ]).then(() => performance.now() - reconnectAvailableAt),
+      cancelRun
+        .waitFor({ state: 'visible', timeout: 15_000 })
+        .then(() => performance.now() - reconnectAvailableAt),
+    ]);
   const transcript =
     (await page.locator('[aria-label="Assistant transcript"]').textContent()) ??
     '';
@@ -451,7 +583,15 @@ async function runReconnectReplayRecoveryFlow(page, harness) {
     countOccurrences(transcript, BUFFERED_RECOVERY_COMMENTARY) === 1,
     'buffered output did not replay exactly once after reconnect',
   );
-  return runEventFrames.readSingleRun();
+  return {
+    ...runEventFrames.readSingleRun(),
+    userVisible: {
+      connectedMs,
+      transcriptVisibleMs,
+      activeRunControlVisibleMs,
+      activeRunControlStayedVisible,
+    },
+  };
 }
 
 async function runStartAndSettlementFlow(page, harness) {
@@ -462,6 +602,41 @@ async function runStartAndSettlementFlow(page, harness) {
   await page
     .locator('.assistant-title-dot.connected')
     .waitFor({ state: 'visible', timeout: 15_000 });
+  await page
+    .locator('[role="treeitem"]')
+    .first()
+    .waitFor({ state: 'visible', timeout: 15_000 });
+  const contextBar = page.locator('.composer-context-bar');
+  await contextBar.waitFor({ state: 'visible', timeout: 15_000 });
+  await contextBar.click();
+  const workingDirectoryDialog = page.getByRole('dialog', {
+    name: '시작 위치 선택',
+  });
+  await workingDirectoryDialog.waitFor({ state: 'visible', timeout: 8_000 });
+  await workingDirectoryDialog
+    .getByRole('button', {
+      name: `폴더 열기: ${RECENT_DIRECTORY_NAME}`,
+    })
+    .click();
+  const preferenceResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/files/directory-preferences' &&
+      response.request().method() === 'POST' &&
+      response.status() === 200,
+    { timeout: 8_000 },
+  );
+  const existingSelectionStartedAt = performance.now();
+  await workingDirectoryDialog
+    .getByRole('button', { name: '이 폴더 사용' })
+    .click();
+  await workingDirectoryDialog.waitFor({ state: 'hidden', timeout: 8_000 });
+  await waitForContextBarPath(
+    page,
+    RECENT_DIRECTORY_NAME,
+    'existing selection',
+  );
+  const existingSelectionMs = performance.now() - existingSelectionStartedAt;
+  await preferenceResponse;
   await composer.fill(RUN_SETTLEMENT_PROMPT);
   await page.getByRole('button', { name: '보내기' }).click();
 
@@ -491,12 +666,21 @@ async function runStartAndSettlementFlow(page, harness) {
   await page
     .locator('.assistant-title-dot.connected')
     .waitFor({ state: 'visible', timeout: 15_000 });
+  await page.getByRole('button', { name: '새 세션' }).click();
+  await waitForContextBarPath(
+    page,
+    harness.workspace.root,
+    'new-session setup',
+  );
   await page.locator('.pref-toggle', { hasText: '세션' }).click();
   const persistedThread = page
     .locator('.thread-row > div > button')
     .filter({ hasText: RUN_SETTLEMENT_PROMPT });
   await persistedThread.waitFor({ state: 'visible', timeout: 15_000 });
+  const existingRestoreStartedAt = performance.now();
   await persistedThread.click();
+  await waitForContextBarPath(page, RECENT_DIRECTORY_NAME, 'existing restore');
+  const existingRestoreMs = performance.now() - existingRestoreStartedAt;
   await waitForTranscriptMarkerCount(page, [
     { text: RUN_SETTLEMENT_PROMPT, count: 1 },
     { text: RUN_FINAL_TEXT, count: 1 },
@@ -512,12 +696,40 @@ async function runStartAndSettlementFlow(page, harness) {
     countOccurrences(reloadedTranscript, RUN_FINAL_TEXT) === 1,
     'reloaded transcript did not preserve the settled answer exactly once',
   );
+  const newSessionResetStartedAt = performance.now();
+  await page.getByRole('button', { name: '새 세션' }).click();
+  await waitForContextBarPath(
+    page,
+    harness.workspace.root,
+    'new-session reset',
+  );
+  const newSessionResetMs = performance.now() - newSessionResetStartedAt;
   const browser = runEventFrames.readSingleRun();
   return {
     browser,
     daemon: await harness.readHotPathMetrics(browser.runId),
     provider,
+    userVisible: {
+      cwd: {
+        existingSelectionMs,
+        existingRestoreMs,
+        newSessionResetMs,
+        selectedPath: RECENT_DIRECTORY_NAME,
+        newSessionPath: harness.workspace.root,
+      },
+    },
   };
+}
+
+async function selectPersistedThread(page, prompt) {
+  const persistedThread = page
+    .locator('.thread-row > div > button')
+    .filter({ hasText: prompt });
+  if (!(await persistedThread.isVisible())) {
+    await page.locator('.pref-toggle', { hasText: '세션' }).click();
+  }
+  await persistedThread.waitFor({ state: 'visible', timeout: 15_000 });
+  await persistedThread.click();
 }
 
 async function runApprovalFlow(page, harness) {
@@ -556,6 +768,70 @@ async function runApprovalFlow(page, harness) {
       beforeApproval.providerRequestCount,
     )} provider requests before approval instead of one`,
   );
+  const media = await harness.prepareRestartMedia();
+  const restart = await harness.restartDaemon();
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await composer.waitFor({ state: 'visible', timeout: 15_000 });
+  await page
+    .locator('.assistant-title-dot.connected')
+    .waitFor({ state: 'visible', timeout: 15_000 });
+  await page.locator('.pref-toggle', { hasText: '세션' }).click();
+  const pendingThread = page
+    .locator('.thread-row')
+    .filter({ hasText: 'New Thread' })
+    .filter({ hasText: '1 messages' });
+  await pendingThread.waitFor({ state: 'visible', timeout: 15_000 });
+  assert(
+    (await pendingThread.count()) === 1,
+    'replacement daemon did not expose exactly one pending-run thread',
+  );
+  await pendingThread.locator('button').first().click();
+  await approvalDialog.waitFor({ state: 'visible', timeout: 15_000 });
+  await cancelRun.waitFor({ state: 'visible', timeout: 15_000 });
+  assert(
+    ((await approvalDialog.textContent()) ?? '').includes(
+      harness.approvalTargetPath,
+    ),
+    'replacement daemon did not restore the exact pending approval target',
+  );
+  const restoredApproval = await harness.readApprovalState();
+  assert(
+    restoredApproval.exists === false &&
+      restoredApproval.matchesExpectedContent === false,
+    'replacement daemon applied the pending write before renewed approval',
+  );
+  assert(
+    restoredApproval.providerRequestCount === 0,
+    'replacement daemon redispatched the provider before resolving the durable approval',
+  );
+
+  const rangeStart = 5;
+  const rangeEnd = 22;
+  const mediaUrl = new URL(
+    `/api/threads/${media.threadId}/media/${media.mediaRef}`,
+    harness.appUrl,
+  ).toString();
+  const mediaRange = await page.evaluate(
+    async ({ url, start, end }) => {
+      const response = await fetch(url, {
+        headers: { Range: `bytes=${start}-${end}` },
+      });
+      return {
+        status: response.status,
+        contentRange: response.headers.get('content-range'),
+        body: await response.text(),
+      };
+    },
+    { url: mediaUrl, start: rangeStart, end: rangeEnd },
+  );
+  assert(
+    mediaRange.status === 206 &&
+      mediaRange.contentRange ===
+        `bytes ${rangeStart}-${rangeEnd}/${media.expectedText.length}` &&
+      mediaRange.body === media.expectedText.slice(rangeStart, rangeEnd + 1),
+    'replacement daemon did not serve the authenticated durable media byte range',
+  );
 
   await approvalDialog
     .getByRole('button', { name: '허용', exact: true })
@@ -574,10 +850,10 @@ async function runApprovalFlow(page, harness) {
     'approved write_file did not commit the exact temporary content',
   );
   assert(
-    afterApproval.providerRequestCount === 2,
-    `approval vertical dispatched ${String(
+    afterApproval.providerRequestCount === 1,
+    `replacement approval vertical dispatched ${String(
       afterApproval.providerRequestCount,
-    )} provider requests after approval instead of two`,
+    )} provider requests instead of one final round`,
   );
 
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -585,12 +861,7 @@ async function runApprovalFlow(page, harness) {
   await page
     .locator('.assistant-title-dot.connected')
     .waitFor({ state: 'visible', timeout: 15_000 });
-  await page.locator('.pref-toggle', { hasText: '세션' }).click();
-  const persistedThread = page
-    .locator('.thread-row > div > button')
-    .filter({ hasText: APPROVAL_PROMPT });
-  await persistedThread.waitFor({ state: 'visible', timeout: 15_000 });
-  await persistedThread.click();
+  await selectPersistedThread(page, APPROVAL_PROMPT);
   await waitForTranscriptMarkerCount(page, [
     { text: APPROVAL_PROMPT, count: 1 },
     { text: APPROVAL_FINAL_TEXT, count: 1 },
@@ -606,6 +877,67 @@ async function runApprovalFlow(page, harness) {
     countOccurrences(reloadedTranscript, APPROVAL_FINAL_TEXT) === 1,
     'reloaded approval transcript did not preserve the answer exactly once',
   );
+
+  await selectPersistedThread(page, ARTIFACT_PROMPT);
+  const persistedArtifactChip = page
+    .locator('.artifact-reference-chip')
+    .filter({ hasText: 'markdown · v1' });
+  await persistedArtifactChip.waitFor({ state: 'visible', timeout: 15_000 });
+  assert(
+    (await page.locator('.artifact-reference-chip').count()) === 1,
+    'replacement daemon did not restore exactly one committed artifact reference',
+  );
+  await persistedArtifactChip.click();
+  const artifactSurface = page.locator('.artifact-editor-surface');
+  await artifactSurface.waitFor({ state: 'visible', timeout: 15_000 });
+  await artifactSurface.getByTitle('원문 보기').click();
+  const artifactSource = artifactSurface.getByLabel('아티팩트 원문', {
+    exact: true,
+  });
+  await artifactSource.waitFor({ state: 'visible', timeout: 15_000 });
+  assert(
+    (await artifactSource.inputValue()) === ARTIFACT_PAYLOAD,
+    'replacement daemon did not restore the exact committed artifact payload',
+  );
+  await artifactSurface.getByRole('button', { name: '아티팩트 닫기' }).click();
+
+  await selectPersistedThread(page, SUBAGENT_PARENT_PROMPT);
+  const persistedChild = page
+    .locator('.subagent-work-card')
+    .filter({ hasText: 'explorer 작업 취소됨' });
+  await persistedChild.waitFor({ state: 'visible', timeout: 15_000 });
+  if ((await persistedChild.getAttribute('open')) === null) {
+    await persistedChild.locator('summary').click();
+  }
+  await persistedChild
+    .locator('.subagent-work-detail')
+    .filter({ hasText: '종료 원인: 명시적 중지' })
+    .waitFor({ state: 'visible', timeout: 15_000 });
+  assert(
+    (await persistedChild.getByRole('button', { name: '중지' }).count()) === 0,
+    'replacement daemon restored a stale control for the terminal child',
+  );
+
+  return {
+    daemon: restart,
+    approval: {
+      beforeRestartProviderRequestCount: beforeApproval.providerRequestCount,
+      afterRestartProviderRequestCount: restoredApproval.providerRequestCount,
+      finalProviderRequestCount: afterApproval.providerRequestCount,
+    },
+    media: {
+      mediaRef: media.mediaRef,
+      status: mediaRange.status,
+      contentRange: mediaRange.contentRange,
+    },
+    restored: {
+      activeRun: true,
+      approval: true,
+      artifact: true,
+      childTerminalStatus: true,
+      media: true,
+    },
+  };
 }
 
 async function runArtifactOpaqueOriginIsolationFlow(page, harness) {
@@ -808,8 +1140,10 @@ async function runArtifactFlow(page, harness) {
   await waitForTranscriptMarkerCount(page, [
     { text: ARTIFACT_PROMPT, count: 1 },
   ]);
+  const artifactOpenStartedAt = performance.now();
   await artifactChip.click();
   await artifactSurface.waitFor({ state: 'visible', timeout: 15_000 });
+  const panelOpenMs = performance.now() - artifactOpenStartedAt;
   await artifactSurface
     .locator('.artifact-editor-meta')
     .filter({ hasText: 'markdown · v1' })
@@ -817,6 +1151,7 @@ async function runArtifactFlow(page, harness) {
   await page
     .getByText(ARTIFACT_PREVIEW_MARKER, { exact: true })
     .waitFor({ state: 'visible', timeout: 15_000 });
+  const firstContentMs = performance.now() - artifactOpenStartedAt;
 
   await artifactSurface.getByTitle('원문 보기').click();
   const artifactSource = artifactSurface.getByLabel('아티팩트 원문', {
@@ -884,6 +1219,12 @@ async function runArtifactFlow(page, harness) {
     (await harness.readArtifactRequestCount()) === 1,
     'artifact reload dispatched an unexpected provider request',
   );
+  return {
+    userVisible: {
+      panelOpenMs,
+      firstContentMs,
+    },
+  };
 }
 
 async function runSubagentFlow(page, harness) {
@@ -983,33 +1324,164 @@ async function runSubagentFlow(page, harness) {
   );
 }
 
+async function measureDirectoryLocation(page, dialog, args) {
+  const list = dialog.getByLabel('하위 폴더');
+  let responseFailure;
+  const responsePromise = page
+    .waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === '/api/files/tree' &&
+        response.status() === 200,
+      { timeout: 8_000 },
+    )
+    .catch((error) => {
+      responseFailure = error;
+      return null;
+    });
+  const startedAt = performance.now();
+  await dialog.getByTitle(args.path, { exact: true }).click();
+  await list
+    .getByRole('button', {
+      name: `폴더 열기: ${args.firstDirectoryName}`,
+    })
+    .waitFor({ state: 'visible', timeout: 8_000 });
+  const firstResultMs = performance.now() - startedAt;
+  const response = await responsePromise;
+  if (responseFailure !== undefined) {
+    throw responseFailure;
+  }
+  assert(
+    response !== null && response.ok(),
+    `${args.label} directory request did not succeed`,
+  );
+  await page.waitForFunction((expectedNames) => {
+    const labels = [
+      ...document.querySelectorAll(
+        '.computer-directory-picker-list button[aria-label^="폴더 열기:"]',
+      ),
+    ].map((element) => element.getAttribute('aria-label'));
+    return (
+      labels.length === expectedNames.length &&
+      expectedNames.every((name) => labels.includes(`폴더 열기: ${name}`))
+    );
+  }, args.directoryNames);
+  return {
+    firstResultMs,
+    completeMs: performance.now() - startedAt,
+    resultCount: args.directoryNames.length,
+  };
+}
+
+async function measureBinaryPreview(page, args) {
+  const treeItem = page
+    .locator('[role="treeitem"]')
+    .filter({ hasText: args.fileName });
+  await treeItem.waitFor({ state: 'visible', timeout: 15_000 });
+  const startedAt = performance.now();
+  await treeItem.click();
+  const media =
+    args.kind === 'image'
+      ? page.locator('img.binary-preview-image')
+      : page.locator('video.binary-preview-video');
+  await media.waitFor({ state: 'visible', timeout: 15_000 });
+  const panelOpenMs = performance.now() - startedAt;
+  if (args.kind === 'video') {
+    await media.evaluate((element) => {
+      element.preload = 'auto';
+      element.load();
+    });
+  }
+  await page.waitForFunction(
+    ({ kind }) => {
+      if (kind === 'image') {
+        const image = document.querySelector('img.binary-preview-image');
+        return (
+          image instanceof HTMLImageElement &&
+          image.complete &&
+          image.naturalWidth > 0
+        );
+      }
+      const video = document.querySelector('video.binary-preview-video');
+      return (
+        video instanceof HTMLVideoElement &&
+        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        video.videoWidth > 0
+      );
+    },
+    { kind: args.kind },
+  );
+  const renderedPath =
+    args.kind === 'image' ? await media.getAttribute('alt') : args.path;
+  return {
+    panelOpenMs,
+    firstFrameMs: performance.now() - startedAt,
+    path: renderedPath ?? args.path,
+    ...(args.kind === 'video' ? { decodeTrigger: 'preload_auto' } : {}),
+  };
+}
+
 // 각 흐름: 갓 mount된 페이지 하나에서 실행되며, 예외를 던지면 실패로 기록된다.
 const flows = [
   {
     name: 'app-loads-and-daemon-connected',
     // 앱이 mount되고 데몬 연결 표시등이 켜지는가 (인증 + 웹소켓 배선).
     async run(page, appUrl) {
+      const startedAt = performance.now();
       await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
-      await page
-        .locator('textarea[name="assistant-message"]')
-        .waitFor({ state: 'visible', timeout: 15_000 });
+      const composer = page.locator('textarea[name="assistant-message"]');
+      await composer.waitFor({ state: 'visible', timeout: 15_000 });
+      await page.waitForFunction(() => {
+        const input = document.querySelector(
+          'textarea[name="assistant-message"]',
+        );
+        return (
+          input instanceof HTMLTextAreaElement &&
+          !input.disabled &&
+          !input.readOnly
+        );
+      });
+      const composerEditableMs = performance.now() - startedAt;
       await page
         .locator('.assistant-title-dot.connected')
         .waitFor({ state: 'visible', timeout: 15_000 });
+      return { userVisible: { composerEditableMs } };
     },
   },
   {
     name: 'file-browser-navigates-via-daemon',
     // 컴퓨터 파일 트리 탐색이 데몬까지 왕복하는가 (브레드크럼 이동 → tree fetch).
-    async run(page, appUrl) {
+    async run(page, appUrl, harness) {
+      const directoryPreferences = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname ===
+            '/api/files/directory-preferences' &&
+          response.request().method() === 'GET' &&
+          response.status() === 200,
+        { timeout: 8_000 },
+      );
       await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+      await directoryPreferences;
       await page
         .locator('[role="treeitem"]')
         .first()
         .waitFor({ state: 'visible', timeout: 15_000 });
+      const defaultDirectory = page
+        .locator('[role="treeitem"]')
+        .filter({ hasText: DEFAULT_DIRECTORY_NAME });
+      await defaultDirectory.waitFor({ state: 'visible', timeout: 15_000 });
+      const initialNavigationResponse = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === '/api/files/tree' &&
+          response.status() === 200,
+        { timeout: 8_000 },
+      );
+      await defaultDirectory.dblclick();
+      await initialNavigationResponse;
       const [response] = await Promise.all([
         page.waitForResponse(
-          (r) => r.url().includes('/api/files/tree') && r.status() === 200,
+          (candidate) =>
+            new URL(candidate.url()).pathname === '/api/files/tree' &&
+            candidate.status() === 200,
           { timeout: 8_000 },
         ),
         page.locator('[aria-label^="경로로 이동:"]').first().click(),
@@ -1018,6 +1490,63 @@ const flows = [
         response.ok(),
         '브레드크럼 이동이 데몬 tree fetch를 트리거하지 않음',
       );
+      await defaultDirectory.waitFor({ state: 'visible', timeout: 8_000 });
+      const secondNavigationResponse = page.waitForResponse(
+        (candidate) =>
+          new URL(candidate.url()).pathname === '/api/files/tree' &&
+          candidate.status() === 200,
+        { timeout: 8_000 },
+      );
+      await defaultDirectory.dblclick();
+      await secondNavigationResponse;
+
+      const contextBar = page.locator('.composer-context-bar');
+      await contextBar.click();
+      const dialog = page.getByRole('dialog', { name: '시작 위치 선택' });
+      await dialog.waitFor({ state: 'visible', timeout: 8_000 });
+      await dialog
+        .getByTitle(harness.workspace.root, { exact: true })
+        .waitFor({ state: 'visible', timeout: 8_000 });
+      await dialog
+        .getByTitle(RECENT_DIRECTORY_NAME, { exact: true })
+        .waitFor({ state: 'visible', timeout: 8_000 });
+      const defaultPath = await measureDirectoryLocation(page, dialog, {
+        label: 'default',
+        path: harness.workspace.root,
+        firstDirectoryName: DEFAULT_DIRECTORY_NAME,
+        directoryNames: [DEFAULT_DIRECTORY_NAME, RECENT_DIRECTORY_NAME],
+      });
+      const recentPath = await measureDirectoryLocation(page, dialog, {
+        label: 'recent',
+        path: RECENT_DIRECTORY_NAME,
+        firstDirectoryName: RECENT_DIRECTORY_CHILD_NAMES[0],
+        directoryNames: RECENT_DIRECTORY_CHILD_NAMES,
+      });
+      await dialog.getByRole('button', { name: '시작 위치 선택 닫기' }).click();
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page
+        .locator('.assistant-title-dot.connected')
+        .waitFor({ state: 'visible', timeout: 15_000 });
+      const image = await measureBinaryPreview(page, {
+        kind: 'image',
+        fileName: IMAGE_FILE_NAME,
+        path: harness.workspace.imageFile,
+      });
+      const video = await measureBinaryPreview(page, {
+        kind: 'video',
+        fileName: VIDEO_FILE_NAME,
+        path: harness.workspace.videoFile,
+      });
+      return {
+        userVisible: {
+          directories: {
+            default: defaultPath,
+            recent: recentPath,
+          },
+          media: { image, video },
+        },
+      };
     },
   },
   {
@@ -1040,6 +1569,13 @@ const flows = [
     // 시작 위치(워킹디렉터리) 선택 오버레이가 열리는가.
     async run(page, appUrl) {
       await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+      await page
+        .locator('.assistant-title-dot.connected')
+        .waitFor({ state: 'visible', timeout: 15_000 });
+      await page
+        .locator('[role="treeitem"]')
+        .first()
+        .waitFor({ state: 'visible', timeout: 15_000 });
       const contextBar = page.locator('.composer-context-bar');
       await contextBar.waitFor({ state: 'visible', timeout: 15_000 });
       await contextBar.click();
@@ -1232,24 +1768,16 @@ async function main() {
     results.push(
       await executeBrowserFlow(
         browser,
-        'approval-pauses-write-and-resumes-through-real-tool-boundary',
-        (page) => runApprovalFlow(page, harness),
-      ),
-    );
-    results.push(
-      await executeBrowserFlow(
-        browser,
         'artifact-frame-is-opaque-and-cannot-inherit-shell-authority',
         (page) => runArtifactOpaqueOriginIsolationFlow(page, harness),
       ),
     );
-    results.push(
-      await executeBrowserFlow(
-        browser,
-        'artifact-commits-opens-controls-and-reloads-durably',
-        (page) => runArtifactFlow(page, harness),
-      ),
+    const artifactResult = await executeBrowserFlow(
+      browser,
+      'artifact-commits-opens-controls-and-reloads-durably',
+      (page) => runArtifactFlow(page, harness),
     );
+    results.push(artifactResult);
     results.push(
       await executeBrowserFlow(
         browser,
@@ -1257,12 +1785,19 @@ async function main() {
         (page) => runSubagentFlow(page, harness),
       ),
     );
+    const daemonRestartRecoveryResult = await executeBrowserFlow(
+      browser,
+      'daemon-restart-restores-active-approval-child-artifact-and-media',
+      (page) => runApprovalFlow(page, harness),
+    );
+    results.push(daemonRestartRecoveryResult);
+    const genericResults = new Map();
     for (const flow of flows) {
-      results.push(
-        await executeBrowserFlow(browser, flow.name, (page) =>
-          flow.run(page, harness.appUrl),
-        ),
+      const result = await executeBrowserFlow(browser, flow.name, (page) =>
+        flow.run(page, harness.appUrl, harness),
       );
+      genericResults.set(flow.name, result);
+      results.push(result);
     }
     if (
       hotPathOutputPath !== undefined &&
@@ -1280,6 +1815,52 @@ async function main() {
           }),
           reconnectRecovery: reconnectRecoveryResult.evidence,
           runSettlement: runSettlementResult.evidence,
+        }),
+      );
+    }
+    if (
+      restartEvidenceOutputPath !== undefined &&
+      daemonRestartRecoveryResult.ok &&
+      daemonRestartRecoveryResult.evidence !== undefined
+    ) {
+      await writePrivatePerformanceReport(
+        path.resolve(repoRoot, restartEvidenceOutputPath),
+        {
+          schemaVersion: 1,
+          environment: collectBrowserPerformanceEnvironment({
+            repoRoot,
+            browserVersion,
+          }),
+          ...daemonRestartRecoveryResult.evidence,
+        },
+      );
+    }
+    const appResult = genericResults.get('app-loads-and-daemon-connected');
+    const fileBrowserResult = genericResults.get(
+      'file-browser-navigates-via-daemon',
+    );
+    if (
+      userVisiblePerformanceOutputPath !== undefined &&
+      results.every((result) => result.ok) &&
+      reconnectRecoveryResult.evidence !== undefined &&
+      runSettlementResult.evidence !== undefined &&
+      artifactResult.evidence !== undefined &&
+      appResult?.evidence !== undefined &&
+      fileBrowserResult?.evidence !== undefined
+    ) {
+      await writePrivatePerformanceReport(
+        path.resolve(repoRoot, userVisiblePerformanceOutputPath),
+        buildFlowGateUserVisiblePerformanceSample({
+          environment: collectBrowserPerformanceEnvironment({
+            repoRoot,
+            browserVersion,
+          }),
+          results,
+          reconnectRecovery: reconnectRecoveryResult.evidence,
+          runSettlement: runSettlementResult.evidence,
+          artifact: artifactResult.evidence,
+          app: appResult.evidence,
+          fileBrowser: fileBrowserResult.evidence,
         }),
       );
     }

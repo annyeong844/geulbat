@@ -633,6 +633,10 @@ async function waitForPtcCallbackApprovalDecision(
       approvalContext.permissionMode = permissionMode;
       runtime.executionContextBase.permissionMode = permissionMode;
     },
+    (computerSessionId) => {
+      approvalContext.computerSessionId = computerSessionId;
+      runtime.executionContextBase.computerSessionId = computerSessionId;
+    },
   );
 }
 
@@ -698,6 +702,10 @@ export async function resolveApprovalDecision(
     (permissionMode) => {
       approvalContext.permissionMode = permissionMode;
       runtime.executionContextBase.permissionMode = permissionMode;
+    },
+    (computerSessionId) => {
+      approvalContext.computerSessionId = computerSessionId;
+      runtime.executionContextBase.computerSessionId = computerSessionId;
     },
   );
 

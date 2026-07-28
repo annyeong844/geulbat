@@ -303,7 +303,7 @@ export async function createDaemon(options: DaemonOptions = {}) {
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  "img-src 'self' blob: data:",
   "font-src 'self' data:",
   "base-uri 'none'",
   "frame-ancestors 'none'",

@@ -588,6 +588,94 @@ void test('clearComputerSessionGrants clears grants without aborting pending app
   assert.equal(await wait, 'approved');
 });
 
+void test('a live-run rebind transfers one pending approval and its run grants to the new computer session', async () => {
+  const approvalGrants = createApprovalGrantStore();
+  const gate = createTestApprovalGate(approvalGrants);
+  const runId = testRunId('approval-live-run-rebind');
+  const threadId = testThreadId(19);
+  const previousComputerSessionId = 'daemon-recovery-owner';
+  const nextComputerSessionId = 'authenticated-socket-owner';
+  const approvalClass = toApprovalClass('write_file');
+  const approvalContext = {
+    runId,
+    computerSessionId: previousComputerSessionId,
+    approvalClass,
+    sideEffectLevel: 'write' as const,
+    permissionMode: 'basic' as const,
+  };
+  approvalGrants.registerApprovalGrant(
+    {
+      ...approvalContext,
+      approvalClass: toApprovalClass('manage_files:delete'),
+    },
+    'run',
+  );
+  let observedComputerSessionId = previousComputerSessionId;
+  const wait = gate.waitForApproval(
+    'call-live-run-rebind',
+    runId,
+    threadId,
+    approvalContext,
+    AbortSignal.timeout(1_000),
+    undefined,
+    undefined,
+    (computerSessionId) => {
+      observedComputerSessionId = computerSessionId;
+    },
+  );
+
+  assert.equal(
+    gate.rebindPendingRunApprovals(runId, threadId, nextComputerSessionId),
+    1,
+  );
+  assert.equal(observedComputerSessionId, nextComputerSessionId);
+  assert.equal(
+    gate.hasApprovalDecisionAuthority(
+      'call-live-run-rebind',
+      runId,
+      threadId,
+      previousComputerSessionId,
+    ),
+    false,
+  );
+  assert.equal(
+    gate.hasApprovalDecisionAuthority(
+      'call-live-run-rebind',
+      runId,
+      threadId,
+      nextComputerSessionId,
+    ),
+    true,
+  );
+  assert.equal(
+    approvalGrants.hasApprovalGrant({
+      ...approvalContext,
+      computerSessionId: previousComputerSessionId,
+      approvalClass: toApprovalClass('manage_files:delete'),
+    }),
+    false,
+  );
+  assert.equal(
+    approvalGrants.hasApprovalGrant({
+      ...approvalContext,
+      computerSessionId: nextComputerSessionId,
+      approvalClass: toApprovalClass('manage_files:delete'),
+    }),
+    true,
+  );
+  assert.equal(
+    await gate.resolveApproval(
+      'call-live-run-rebind',
+      runId,
+      threadId,
+      'approved',
+      'once',
+    ),
+    'resolved',
+  );
+  assert.equal(await wait, 'approved');
+});
+
 void test('a pending approval is restored from the durable checkpoint after gate recreation', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-approval-gate-'));
   t.after(async () => rm(stateRoot, { recursive: true, force: true }));

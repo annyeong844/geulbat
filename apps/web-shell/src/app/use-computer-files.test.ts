@@ -12,7 +12,6 @@ import {
 
 let restoreDocument = () => {};
 let restoreFetch = () => {};
-let restoreObjectUrls = () => {};
 let restoreStorage = () => {};
 const COMPUTER_FILE_SCOPE = {
   initialComputerFileScope: { available: true as const, browseShortcuts: [] },
@@ -67,36 +66,11 @@ function installRecentFileStorage(initialValue?: string): {
   };
 }
 
-function installObjectUrlLifecycle(): {
-  createdUrl: string;
-  revokedUrls: string[];
-  restore: () => void;
-} {
-  const createObjectURL = URL.createObjectURL;
-  const revokeObjectURL = URL.revokeObjectURL;
-  const createdUrl = 'blob:computer-file-preview';
-  const revokedUrls: string[] = [];
-  URL.createObjectURL = () => createdUrl;
-  URL.revokeObjectURL = (url) => {
-    revokedUrls.push(url);
-  };
-  return {
-    createdUrl,
-    revokedUrls,
-    restore() {
-      URL.createObjectURL = createObjectURL;
-      URL.revokeObjectURL = revokeObjectURL;
-    },
-  };
-}
-
 afterEach(() => {
   restoreFetch();
   restoreFetch = () => {};
   restoreDocument();
   restoreDocument = () => {};
-  restoreObjectUrls();
-  restoreObjectUrls = () => {};
   restoreStorage();
   restoreStorage = () => {};
 });
@@ -573,7 +547,7 @@ void test('useComputerFiles ignores malformed persisted recent-file state', asyn
   hook.unmount();
 });
 
-void test('useComputerFiles opens browser-playable media as streaming URLs', async () => {
+void test('useComputerFiles opens browser-playable images and media as streaming URLs', async () => {
   restoreDocument = installShellAuthDocument();
   // 미디어는 blob 다운로드 없이 raw URL을 직접 쓴다 — fetch가 불리면 실패
   const fetchMock = installFetchSequence(() => {
@@ -581,6 +555,15 @@ void test('useComputerFiles opens browser-playable media as streaming URLs', asy
   });
   restoreFetch = fetchMock.restore;
   const hook = await renderHook(useComputerFiles, COMPUTER_FILE_SCOPE);
+
+  await hook.run((current) => current.openFile('photo.png'));
+
+  assert.equal(hook.result.current.binaryPreview?.kind, 'image');
+  assert.equal(hook.result.current.binaryPreview?.path, 'photo.png');
+  assert.match(
+    hook.result.current.binaryPreview?.url ?? '',
+    /\/api\/files\/raw\?root=computer&path=photo\.png/,
+  );
 
   await hook.run((current) => current.openFile('movie.mp4'));
 
@@ -593,96 +576,4 @@ void test('useComputerFiles opens browser-playable media as streaming URLs', asy
   assert.equal(hook.result.current.editorError, null);
   assert.equal(hook.result.current.openingFile, false);
   hook.unmount();
-});
-
-void test('useComputerFiles ignores stale binary preview responses', async () => {
-  restoreDocument = installShellAuthDocument();
-  let resolveImagePreview: ((response: Response) => void) | null = null;
-  const fetchMock = installFetchSequence(
-    () =>
-      new Promise<Response>((resolve) => {
-        resolveImagePreview = resolve;
-      }),
-    () =>
-      jsonResponse({
-        path: 'notes.md',
-        content: 'fresh text',
-        versionToken: 'v1',
-        totalLines: 1,
-        startLine: 1,
-        endLine: 1,
-      }),
-  );
-  restoreFetch = fetchMock.restore;
-  const hook = await renderHook(useComputerFiles, COMPUTER_FILE_SCOPE);
-
-  let imageOpen: Promise<void> | undefined;
-  await hook.run((current) => {
-    imageOpen = current.openFile('photo.png');
-  });
-  await Promise.resolve();
-  await hook.run((current) => current.openFile('notes.md'));
-  assert.equal(hook.result.current.selectedFile, 'notes.md');
-
-  assert.ok(resolveImagePreview);
-  const completeImagePreview: (response: Response) => void =
-    resolveImagePreview;
-  assert.ok(imageOpen);
-  await hook.run(async () => {
-    completeImagePreview(new Response(new Blob(['image-bytes'])));
-    await imageOpen;
-  });
-
-  assert.equal(hook.result.current.selectedFile, 'notes.md');
-  assert.equal(hook.result.current.binaryPreview, null);
-  assert.equal(hook.result.current.fileContent, 'fresh text');
-  hook.unmount();
-});
-
-void test('useComputerFiles releases image preview URLs when its buffer lifecycle unmounts', async () => {
-  restoreDocument = installShellAuthDocument();
-  const objectUrls = installObjectUrlLifecycle();
-  restoreObjectUrls = objectUrls.restore;
-  const fetchMock = installFetchSequence(() =>
-    Promise.resolve(new Response(new Blob(['image-bytes']))),
-  );
-  restoreFetch = fetchMock.restore;
-  const hook = await renderHook(useComputerFiles, COMPUTER_FILE_SCOPE);
-
-  await hook.run((current) => current.openFile('photo.png'));
-
-  assert.equal(hook.result.current.binaryPreview?.url, objectUrls.createdUrl);
-  hook.unmount();
-  assert.deepEqual(objectUrls.revokedUrls, [objectUrls.createdUrl]);
-});
-
-void test('useComputerFiles releases a late image preview response after unmount', async () => {
-  restoreDocument = installShellAuthDocument();
-  const objectUrls = installObjectUrlLifecycle();
-  restoreObjectUrls = objectUrls.restore;
-  let resolveImagePreview: ((response: Response) => void) | null = null;
-  const fetchMock = installFetchSequence(
-    () =>
-      new Promise<Response>((resolve) => {
-        resolveImagePreview = resolve;
-      }),
-  );
-  restoreFetch = fetchMock.restore;
-  const hook = await renderHook(useComputerFiles, COMPUTER_FILE_SCOPE);
-
-  let imageOpen: Promise<void> | undefined;
-  await hook.run((current) => {
-    imageOpen = current.openFile('photo.png');
-  });
-  await Promise.resolve();
-  hook.unmount();
-
-  assert.ok(resolveImagePreview);
-  const completeImagePreview: (response: Response) => void =
-    resolveImagePreview;
-  assert.ok(imageOpen);
-  completeImagePreview(new Response(new Blob(['image-bytes'])));
-  await imageOpen;
-
-  assert.deepEqual(objectUrls.revokedUrls, [objectUrls.createdUrl]);
 });

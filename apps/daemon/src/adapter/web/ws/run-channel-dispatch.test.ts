@@ -6,6 +6,7 @@ import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
 import { startManagedRun } from '../../../daemon/agent/runtime/managed-run.js';
 import {
   cleanupSocketState,
+  createSocketRunEventSink,
   getSocketState,
 } from './run-channel-socket-runtime.js';
 import { resetShellAuthFailureRateLimitForTests } from '#web/auth/auth-failure-rate-limit.js';
@@ -1027,7 +1028,7 @@ void test('authenticated reconnect replays detached live history once before aut
     runId,
     threadId,
     ownerId: detachedState.computerSessionId,
-    sink: () => true,
+    sink: createSocketRunEventSink(detachedSocket),
     async persistRunEvents(events) {
       await daemonContext.runCheckpoints.appendRunEvents({
         threadId,
@@ -1116,7 +1117,7 @@ void test('authenticated reconnect fails closed when detached live history canno
     runId,
     threadId,
     ownerId: detachedState.computerSessionId,
-    sink: () => true,
+    sink: createSocketRunEventSink(detachedSocket),
     async persistRunEvents(events) {
       await daemonContext.runCheckpoints.appendRunEvents({
         threadId,

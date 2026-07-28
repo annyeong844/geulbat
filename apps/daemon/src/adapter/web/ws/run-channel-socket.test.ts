@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertRunId, type RunId } from '@geulbat/protocol/ids';
@@ -293,6 +293,91 @@ void test('ensureThreadBackgroundSubscription forwards durable result reports wi
   }
 });
 
+void test('bindSocketRuns transfers a pending approval to the authenticated live-run owner', async (t) => {
+  const homeStateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-socket-approval-rebind-'),
+  );
+  t.after(async () => rm(homeStateRoot, { recursive: true, force: true }));
+  const socket = createTestSocket();
+  const daemonContext = createDaemonContext({ homeStateRoot });
+  const runId = testRunId('pending-approval-live-run-rebind');
+  const threadId = testThreadId(229);
+  const previousComputerSessionId = 'daemon-recovery-owner';
+  const nextComputerSessionId = getSocketState(socket).computerSessionId;
+  const controller = new AbortController();
+  let observedComputerSessionId = previousComputerSessionId;
+  await daemonContext.runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: homeStateRoot, permissionMode: 'basic' },
+  });
+  const wait = daemonContext.approvalGate.waitForApproval(
+    'call-socket-rebind',
+    runId,
+    threadId,
+    {
+      runId,
+      computerSessionId: previousComputerSessionId,
+      approvalClass: toApprovalClass('write_file'),
+      sideEffectLevel: 'write',
+      permissionMode: 'basic',
+    },
+    controller.signal,
+    undefined,
+    undefined,
+    (computerSessionId) => {
+      observedComputerSessionId = computerSessionId;
+    },
+  );
+  daemonContext.liveRunEvents.startRun({
+    runId,
+    threadId,
+    ownerId: previousComputerSessionId,
+    sink: () => false,
+    async persistRunEvents() {},
+  });
+  daemonContext.liveRunEvents.detachOwner(previousComputerSessionId);
+
+  try {
+    assert.equal(await bindSocketRuns(socket, daemonContext), 1);
+    assert.equal(observedComputerSessionId, nextComputerSessionId);
+    assert.equal(
+      daemonContext.approvalGate.hasApprovalDecisionAuthority(
+        'call-socket-rebind',
+        runId,
+        threadId,
+        previousComputerSessionId,
+      ),
+      false,
+    );
+    assert.equal(
+      daemonContext.approvalGate.hasApprovalDecisionAuthority(
+        'call-socket-rebind',
+        runId,
+        threadId,
+        nextComputerSessionId,
+      ),
+      true,
+    );
+    assert.equal(
+      await daemonContext.approvalGate.resolveApproval(
+        'call-socket-rebind',
+        runId,
+        threadId,
+        'approved',
+        'once',
+      ),
+      'resolved',
+    );
+    assert.equal(await wait, 'approved');
+  } finally {
+    controller.abort();
+    daemonContext.liveRunEvents.finishRun(runId);
+    cleanupSocketState(socket, daemonContext);
+    await Promise.allSettled([wait]);
+  }
+});
+
 void test('bindSocketRuns restores active background children even after their parent run settled', async () => {
   const socket = createTestSocket();
   const daemonContext = createDaemonContext();
@@ -534,7 +619,7 @@ void test('cleanupSocketState clears socket-local state and detaches active run 
     runId,
     threadId,
     ownerId: state.computerSessionId,
-    sink: () => true,
+    sink: createSocketRunEventSink(socket),
     async persistRunEvents() {},
   });
   ensureThreadBackgroundSubscription(socket, threadId, daemonContext);
@@ -549,6 +634,7 @@ void test('cleanupSocketState clears socket-local state and detaches active run 
     assert.equal(state.heartbeatInterval, null);
     assert.equal(state.heartbeatTimeout, null);
     assert.equal(state.awaitingPong, false);
+    assert.equal(state.runEventSink, null);
 
     const nextState = getSocketState(socket);
     assert.notEqual(nextState.computerSessionId, state.computerSessionId);
@@ -585,6 +671,56 @@ void test('cleanupSocketState clears socket-local state and detaches active run 
     daemonContext.liveRunEvents.finishRun(runId);
     daemonContext.activeRuns.finishRun(threadId, runId);
     cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('closing one same-session socket keeps its sibling live-run subscriber attached', async () => {
+  const firstSocket = createTestSocket();
+  const secondSocket = createTestSocket();
+  const daemonContext = createDaemonContext();
+  const threadId = testThreadId(241);
+  const runId = testRunId('same-session-socket-subscribers');
+  getSocketState(firstSocket).computerSessionId =
+    daemonContext.computerSessionId;
+  getSocketState(secondSocket).computerSessionId =
+    daemonContext.computerSessionId;
+
+  daemonContext.liveRunEvents.startRun({
+    runId,
+    threadId,
+    ownerId: daemonContext.computerSessionId,
+    sink: createSocketRunEventSink(firstSocket),
+    async persistRunEvents() {},
+  });
+
+  try {
+    assert.equal(await bindSocketRuns(secondSocket, daemonContext), 1);
+
+    assert.deepEqual(
+      daemonContext.liveRunEvents.publishRunEvent(runId, {
+        type: 'commentary_delta',
+        payload: { text: 'visible in both tabs' },
+      }),
+      { seq: 0, delivery: 'delivered' },
+    );
+    assert.equal(firstSocket.sentFrames.length, 1);
+    assert.equal(secondSocket.sentFrames.length, 1);
+
+    cleanupSocketState(firstSocket, daemonContext);
+
+    assert.deepEqual(
+      daemonContext.liveRunEvents.publishRunEvent(runId, {
+        type: 'commentary_delta',
+        payload: { text: 'second tab stays attached' },
+      }),
+      { seq: 1, delivery: 'delivered' },
+    );
+    assert.equal(firstSocket.sentFrames.length, 1);
+    assert.equal(secondSocket.sentFrames.length, 2);
+  } finally {
+    daemonContext.liveRunEvents.finishRun(runId);
+    cleanupSocketState(firstSocket, daemonContext);
+    cleanupSocketState(secondSocket, daemonContext);
   }
 });
 

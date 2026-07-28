@@ -189,7 +189,7 @@ interface RunSessionPreferences {
 
 type StoredRunSessionPreferences = Omit<
   RunSessionPreferences,
-  'permissionMode'
+  'permissionMode' | 'workingDirectory'
 >;
 
 const RUN_SESSION_PREFERENCES_STORAGE_KEY =
@@ -214,6 +214,7 @@ function readStoredRunSessionPreferences(): StoredRunSessionPreferences | null {
     const preferences = parsed.value.preferences;
     if (
       !(
+        preferences.workingDirectory === undefined ||
         preferences.workingDirectory === null ||
         typeof preferences.workingDirectory === 'string'
       ) ||
@@ -228,7 +229,6 @@ function readStoredRunSessionPreferences(): StoredRunSessionPreferences | null {
       return null;
     }
     return {
-      workingDirectory: preferences.workingDirectory,
       planModeRequested: preferences.planModeRequested,
       planModeIntensity: preferences.planModeIntensity,
       planModeDepth: preferences.planModeDepth,
@@ -258,7 +258,6 @@ function toStoredRunSessionPreferences(
   preferences: RunSessionPreferences,
 ): StoredRunSessionPreferences {
   return {
-    workingDirectory: preferences.workingDirectory,
     planModeRequested: preferences.planModeRequested,
     planModeIntensity: preferences.planModeIntensity,
     planModeDepth: preferences.planModeDepth,
@@ -290,8 +289,9 @@ function createRunSessionPreferences(
       ? restoredServiceTier
       : DEFAULT_RUN_SERVICE_TIER;
   return {
-    workingDirectory:
-      restored?.workingDirectory ?? lastUsed?.workingDirectory ?? null,
+    // cwd는 thread/session 소유다. 모델·사고 강도 같은 편의 기본값과 함께
+    // localStorage에 흘리면 새 세션이 이전 작업 폴더를 잘못 상속한다.
+    workingDirectory: restored?.workingDirectory ?? null,
     permissionMode: restored?.permissionMode ?? DEFAULT_PERMISSION_MODE,
     planModeRequested: lastUsed?.planModeRequested ?? false,
     planModeIntensity: lastUsed?.planModeIntensity ?? 'visual',

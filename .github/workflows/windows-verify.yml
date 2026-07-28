@@ -1,0 +1,72 @@
+name: Windows Verify
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+      - p-work-from-current
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  source-and-package:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Check Windows and Node
+        shell: pwsh
+        run: |
+          [System.Environment]::OSVersion.VersionString
+          node --version
+          npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Dependency vulnerability gate
+        run: npm audit --audit-level=high
+
+      - name: Docs current-truth check
+        run: npm run check:docs-current-truth
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run check
+
+      - name: Build
+        run: npm run build
+
+      - name: Npm installable distribution
+        run: npm run check:npm-installable-distribution -- --approved-client-id-file release/provider-auth-approved-client-ids.json
+
+      - name: Native child-process ownership
+        run: node --test scripts/owned-child-process.test.mjs
+
+      - name: Native Windows command-host and filesystem boundaries
+        run: >
+          npm run test:files -w apps/daemon --
+          "command-host/session-core.test.js"
+          "daemon/files/computer-session-defaults-windows.integration.test.js"
+          "daemon/files/computer-directory-picker.test.js"
+          "daemon/files/computer-browse-discovery.test.js"

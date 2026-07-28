@@ -20,6 +20,7 @@ interface PendingApprovalEntry {
   runId: string;
   threadId: string;
   approvalGrantContext: ApprovalGrantContext;
+  onComputerSessionIdChange?: (computerSessionId: string) => void;
   onPermissionModeChange?: (permissionMode: PermissionMode) => void;
   resolve: (
     decision: ApprovalDecision,
@@ -55,6 +56,11 @@ export interface ApprovalGate {
   clearComputerSessionGrants(computerSessionId: string): void;
   clearComputerSessionRuntime(computerSessionId: string): void;
   clearRunRuntime(computerSessionId: string, runId: string): void;
+  rebindPendingRunApprovals(
+    runId: string,
+    threadId: string,
+    computerSessionId: string,
+  ): number;
   // Existence probe only — does a pending approval entry exist for this triple.
   // NOT an authorization check: it ignores the caller's session. For any
   // authorization decision use hasApprovalDecisionAuthority, which binds the
@@ -78,6 +84,7 @@ export interface ApprovalGate {
     signal?: AbortSignal,
     onPending?: () => void,
     onPermissionModeChange?: (permissionMode: PermissionMode) => void,
+    onComputerSessionIdChange?: (computerSessionId: string) => void,
   ): Promise<ApprovalDecision>;
   resolveApproval(
     callId: string,
@@ -144,6 +151,31 @@ export function createApprovalGate(args: {
       }
       approvalGrants.clearRun(computerSessionId, validRunId);
     },
+    rebindPendingRunApprovals(runId, threadId, computerSessionId) {
+      const validRunId = assertAgentRunId(runId);
+      const validThreadId = assertAgentThreadId(threadId);
+      let reboundCount = 0;
+      for (const entry of pendingApprovals.values()) {
+        if (
+          entry.runId !== validRunId ||
+          entry.threadId !== validThreadId ||
+          entry.approvalGrantContext.computerSessionId === computerSessionId
+        ) {
+          continue;
+        }
+        const previousComputerSessionId =
+          entry.approvalGrantContext.computerSessionId;
+        approvalGrants.rebindRun(
+          previousComputerSessionId,
+          computerSessionId,
+          validRunId,
+        );
+        entry.approvalGrantContext.computerSessionId = computerSessionId;
+        entry.onComputerSessionIdChange?.(computerSessionId);
+        reboundCount += 1;
+      }
+      return reboundCount;
+    },
     hasPendingApprovalEntry(callId, runId, threadId) {
       const validThreadId = assertAgentThreadId(threadId);
       const identityKey = approvalRuntimeIdentityKey(
@@ -189,6 +221,7 @@ export function createApprovalGate(args: {
       signal,
       onPending,
       onPermissionModeChange,
+      onComputerSessionIdChange,
     ) {
       const validRunId = assertAgentRunId(runId);
       const validThreadId = assertAgentThreadId(threadId);
@@ -250,6 +283,9 @@ export function createApprovalGate(args: {
         ...(onPermissionModeChange === undefined
           ? {}
           : { onPermissionModeChange }),
+        ...(onComputerSessionIdChange === undefined
+          ? {}
+          : { onComputerSessionIdChange }),
         resolve: resolveOnce,
         reject: rejectOnce,
       };

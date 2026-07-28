@@ -108,6 +108,41 @@ void test('run passes are dropped per run while session passes survive', () => {
   );
 });
 
+void test('rebinding a run moves only its run grants to the next computer session', () => {
+  const store = createApprovalGrantStore();
+  const nextComputerSessionId = 'computer-session-2';
+  store.registerApprovalGrant(grantContext(), 'run');
+  store.registerApprovalGrant(
+    grantContext({ approvalClass: toApprovalClass('write_file') }),
+    'session',
+  );
+
+  store.rebindRun(COMPUTER_SESSION, nextComputerSessionId, RUN);
+
+  assert.equal(store.hasApprovalGrant(grantContext()), false);
+  assert.equal(
+    store.hasApprovalGrant(
+      grantContext({ computerSessionId: nextComputerSessionId }),
+    ),
+    true,
+  );
+  assert.equal(
+    store.hasApprovalGrant(
+      grantContext({ approvalClass: toApprovalClass('write_file') }),
+    ),
+    true,
+  );
+  assert.equal(
+    store.hasApprovalGrant(
+      grantContext({
+        computerSessionId: nextComputerSessionId,
+        approvalClass: toApprovalClass('write_file'),
+      }),
+    ),
+    false,
+  );
+});
+
 void test('clearing a computer session drops both scopes', () => {
   const store = createApprovalGrantStore();
   store.registerApprovalGrant(grantContext(), 'run');

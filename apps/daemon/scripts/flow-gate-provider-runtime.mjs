@@ -118,6 +118,8 @@ function createApprovalProviderScenario({
   prompt,
   targetPath,
 }) {
+  let finalRequestCount = 0;
+  let toolCallRequestCount = 0;
   let requestCount = 0;
 
   return {
@@ -127,10 +129,25 @@ function createApprovalProviderScenario({
         serializedRequest.includes('flow-gate-approval-call')
       );
     },
-    dispatch(socket) {
+    dispatch(socket, serializedRequest) {
+      const isFinalRound =
+        serializedRequest.includes('"type":"function_call_output"') &&
+        serializedRequest.includes('flow-gate-approval-call');
+      if (isFinalRound ? finalRequestCount !== 0 : toolCallRequestCount !== 0) {
+        throw new Error(
+          `flow-gate provider received a duplicate approval ${
+            isFinalRound ? 'final' : 'tool-call'
+          } request`,
+        );
+      }
+      if (isFinalRound) {
+        finalRequestCount += 1;
+      } else {
+        toolCallRequestCount += 1;
+      }
       requestCount += 1;
       let events;
-      if (requestCount === 1) {
+      if (!isFinalRound) {
         events = [
           {
             type: 'response.output_item.done',
@@ -156,7 +173,7 @@ function createApprovalProviderScenario({
             },
           },
         ];
-      } else if (requestCount === 2) {
+      } else {
         events = [
           {
             type: 'response.output_item.added',
@@ -193,10 +210,6 @@ function createApprovalProviderScenario({
             },
           },
         ];
-      } else {
-        throw new Error(
-          'flow-gate provider received an extra approval response request',
-        );
       }
       setImmediate(() => emitProviderEvents(socket, events));
     },
@@ -429,7 +442,7 @@ export function createDeterministicProviderRuntime(
           return;
         }
         if (approval.matches(serializedRequest)) {
-          approval.dispatch(socket);
+          approval.dispatch(socket, serializedRequest);
           return;
         }
         if (artifact.matches(serializedRequest)) {

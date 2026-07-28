@@ -67,6 +67,7 @@ export interface LiveRunEventStore {
   }): Promise<{ seq: number; delivery: 'delivered' | 'buffered' }>;
   flushRunEventHistory(runId: RunId): Promise<void>;
   finishRun(runId: RunId): void;
+  detachSink(sink: LiveRunEventSink): void;
   detachOwner(ownerId: string): void;
   bindRuns(args: {
     ownerId: string;
@@ -92,7 +93,7 @@ interface LiveRunEventEntry {
    */
   persistedThroughSeq: number;
   approvalOwnerId: string;
-  sinksByOwner: Map<string, LiveRunEventSink>;
+  ownerIdBySink: Map<LiveRunEventSink, string>;
   history: LiveRunEventEnvelope[];
   pendingHistoryPersistence: RunCheckpointEvent[];
   historyPersistenceTask: Promise<void> | undefined;
@@ -155,7 +156,7 @@ export function createLiveRunEventStore(): LiveRunEventStore {
         firstResidentSeq,
         persistedThroughSeq: firstResidentSeq + history.length - 1,
         approvalOwnerId: ownerId,
-        sinksByOwner: new Map([[ownerId, sink]]),
+        ownerIdBySink: new Map([[sink, ownerId]]),
         history,
         pendingHistoryPersistence: [],
         historyPersistenceTask: undefined,
@@ -168,7 +169,7 @@ export function createLiveRunEventStore(): LiveRunEventStore {
       entries.set(runId, entry);
       const replayEvents = selectLiveRunReplayEvents(history, replayAfterSeq);
       if (replayEvents.length > 0 && !deliverEvents(replayEvents, sink)) {
-        entry.sinksByOwner.delete(ownerId);
+        entry.ownerIdBySink.delete(sink);
       }
     },
     publishRunEvent(runId, event) {
@@ -260,15 +261,25 @@ export function createLiveRunEventStore(): LiveRunEventStore {
         return;
       }
       entry.terminal = true;
-      if (entry.sinksByOwner.size > 0) {
+      if (entry.ownerIdBySink.size > 0) {
         entries.delete(runId);
         return;
       }
       pruneDetachedTerminalHistory(entry);
     },
+    detachSink(sink) {
+      for (const entry of entries.values()) {
+        entry.ownerIdBySink.delete(sink);
+        pruneDetachedTerminalHistory(entry);
+      }
+    },
     detachOwner(ownerId) {
       for (const entry of entries.values()) {
-        entry.sinksByOwner.delete(ownerId);
+        for (const [sink, sinkOwnerId] of entry.ownerIdBySink) {
+          if (sinkOwnerId === ownerId) {
+            entry.ownerIdBySink.delete(sink);
+          }
+        }
         pruneDetachedTerminalHistory(entry);
       }
     },
@@ -293,9 +304,9 @@ export function createLiveRunEventStore(): LiveRunEventStore {
           continue;
         }
 
-        const wasDetached = entry.sinksByOwner.size === 0;
+        const wasDetached = entry.ownerIdBySink.size === 0;
         const previousOwnerId = wasDetached ? entry.approvalOwnerId : undefined;
-        entry.sinksByOwner.set(ownerId, sink);
+        entry.ownerIdBySink.set(sink, ownerId);
         if (wasDetached) {
           entry.approvalOwnerId = ownerId;
         }
@@ -376,7 +387,7 @@ async function collectReplayEvents(
 function pruneDetachedTerminalHistory(entry: LiveRunEventEntry): void {
   if (
     !entry.terminal ||
-    entry.sinksByOwner.size > 0 ||
+    entry.ownerIdBySink.size > 0 ||
     entry.history.length === 0 ||
     entry.readPersistedRunEvents === undefined ||
     entry.historyPersistenceError !== undefined ||
@@ -448,12 +459,12 @@ function deliverToSubscribers(
   envelope: LiveRunEventEnvelope,
 ): boolean {
   let delivered = false;
-  for (const [ownerId, sink] of entry.sinksByOwner) {
+  for (const sink of entry.ownerIdBySink.keys()) {
     if (deliver(sink, envelope)) {
       delivered = true;
       continue;
     }
-    entry.sinksByOwner.delete(ownerId);
+    entry.ownerIdBySink.delete(sink);
   }
   return delivered;
 }
@@ -463,7 +474,7 @@ function deliverTransientToSubscribers(
   envelope: LiveRunTransientEventEnvelope,
 ): boolean {
   let delivered = false;
-  for (const [ownerId, sink] of entry.sinksByOwner) {
+  for (const sink of entry.ownerIdBySink.keys()) {
     if (sink.transient === undefined) {
       continue;
     }
@@ -471,7 +482,7 @@ function deliverTransientToSubscribers(
       delivered = true;
       continue;
     }
-    entry.sinksByOwner.delete(ownerId);
+    entry.ownerIdBySink.delete(sink);
   }
   return delivered;
 }

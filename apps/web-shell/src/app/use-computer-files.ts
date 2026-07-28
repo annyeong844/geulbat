@@ -2,9 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ConflictStaleWriteError } from '@geulbat/protocol/errors';
 import type { ComputerFileScopeResponse } from '@geulbat/protocol/files';
 
-import { ApiFetchError, PreviewTooLargeError } from '../lib/api/client.js';
+import { ApiFetchError } from '../lib/api/client.js';
 import {
-  fetchRawFileBlob,
   rawFileUrl,
   COMPUTER_FILE_API_SCOPE,
   FileSaveConflictError,
@@ -237,42 +236,16 @@ export function useComputerFiles(options?: {
         openMediaBuffer(path, { kind: 'unsupported' });
         return;
       }
-      if (kind === 'audio' || kind === 'video') {
-        // 미디어는 전체 다운로드 없이 스트리밍 URL 직접 — 대용량도 즉시
-        // 재생되고 구간 탐색은 Range 요청으로 처리된다
-        if (requestSeq !== openRequestSeqRef.current) {
-          return;
-        }
-        openMediaBuffer(path, {
-          kind,
-          url: rawFileUrl(COMPUTER_FILE_API_SCOPE, path),
-        });
+      // 브라우저가 직접 렌더할 수 있는 바이너리는 전체 다운로드 없이 raw URL을
+      // 사용한다. 이미지도 큰 파일을 blob으로 복제하지 않고, 미디어의 Range
+      // 요청과 같은 데몬 경계를 통과한다.
+      if (requestSeq !== openRequestSeqRef.current) {
         return;
       }
-      try {
-        const blob = await fetchRawFileBlob(COMPUTER_FILE_API_SCOPE, path);
-        const url = URL.createObjectURL(blob);
-        if (requestSeq !== openRequestSeqRef.current) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        openMediaBuffer(path, { kind, url, byteSize: blob.size });
-      } catch (err: unknown) {
-        if (requestSeq !== openRequestSeqRef.current) {
-          return;
-        }
-        if (err instanceof PreviewTooLargeError) {
-          openMediaBuffer(path, { kind: 'unsupported' });
-          return;
-        }
-        setEditorError(
-          reportComputerFileError({
-            logContext: 'openBinaryPreview failed',
-            visiblePrefix: `${path} 미리보기를 불러오지 못했습니다.`,
-            error: err,
-          }),
-        );
-      }
+      openMediaBuffer(path, {
+        kind,
+        url: rawFileUrl(COMPUTER_FILE_API_SCOPE, path),
+      });
     },
     [openMediaBuffer],
   );

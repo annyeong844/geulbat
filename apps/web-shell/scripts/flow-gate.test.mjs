@@ -7,6 +7,10 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { spawnOwnedChildProcess } from '../../../scripts/owned-child-process.mjs';
+import {
+  buildFlowGateUserVisiblePerformanceBaseline,
+  buildFlowGateUserVisiblePerformanceComparison,
+} from './flow-gate-user-visible-performance-report.mjs';
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const flowGatePath = path.join(
@@ -204,3 +208,107 @@ void test(
     }
   },
 );
+
+void test('user-visible baseline aggregates only passing isolated-cold samples', () => {
+  const createSample = (value) => ({
+    schemaVersion: 'flow_gate_user_visible_performance_sample_v1',
+    environment: {
+      capturedAt: `2026-07-29T00:00:0${String(value)}.000Z`,
+      git: { head: 'test-head', dirty: false, changedPathCount: 0 },
+      runtime: { node: 'test-node', playwright: 'test', browser: 'test' },
+      host: {
+        platform: 'test',
+        release: 'test',
+        arch: 'test',
+        cpuCount: 1,
+        cpuModel: 'test',
+        totalMemoryBytes: 1,
+      },
+    },
+    cacheState: 'isolated_cold',
+    correctness: {
+      allFlowsPassed: true,
+      passedFlowCount: 15,
+      flowCount: 15,
+      flowNames: ['flow'],
+    },
+    metrics: {
+      app: { composerEditableMs: value },
+      directories: {
+        default: { firstResultMs: value, completeMs: value },
+        recent: { firstResultMs: value, completeMs: value },
+      },
+      cwd: {
+        existingSelectionMs: value,
+        existingRestoreMs: value,
+        newSessionResetMs: value,
+      },
+      surfaces: {
+        artifact: { panelOpenMs: value, firstContentMs: value },
+        image: { panelOpenMs: value, firstFrameMs: value },
+        video: { panelOpenMs: value, firstFrameMs: value },
+      },
+      reconnect: {
+        connectedMs: value,
+        transcriptVisibleMs: value,
+        activeRunControlVisibleMs: value,
+      },
+    },
+  });
+  const report = buildFlowGateUserVisiblePerformanceBaseline([
+    createSample(1),
+    createSample(3),
+  ]);
+  assert.equal(report.sampleCount, 2);
+  assert.deepEqual(report.aggregates['app.composerEditableMs'], {
+    min: 1,
+    median: 1,
+    p95: 3,
+    max: 3,
+    mean: 2,
+    standardDeviation: 1,
+  });
+  const failed = createSample(2);
+  failed.correctness.allFlowsPassed = false;
+  assert.throws(
+    () => buildFlowGateUserVisiblePerformanceBaseline([failed]),
+    /invalid or failed sample/u,
+  );
+
+  const comparison = buildFlowGateUserVisiblePerformanceComparison({
+    baseline: buildFlowGateUserVisiblePerformanceBaseline([
+      createSample(2),
+      createSample(4),
+      createSample(6),
+    ]),
+    candidate: buildFlowGateUserVisiblePerformanceBaseline([
+      createSample(1),
+      createSample(3),
+      createSample(5),
+    ]),
+    targetMetric: 'surfaces.image.firstFrameMs',
+  });
+  assert.equal(comparison.target.accepted, true);
+  assert.equal(comparison.target.medianDeltaMs, -1);
+  assert.equal(comparison.target.p95DeltaMs, -1);
+  assert.equal(
+    comparison.metrics['app.composerEditableMs'].medianDeltaPercent,
+    -25,
+  );
+
+  const mismatchedEnvironment = buildFlowGateUserVisiblePerformanceBaseline([
+    createSample(1),
+  ]);
+  mismatchedEnvironment.environment.runtime.node = 'other-node';
+  assert.throws(
+    () =>
+      buildFlowGateUserVisiblePerformanceComparison({
+        baseline: buildFlowGateUserVisiblePerformanceBaseline([
+          createSample(1),
+        ]),
+        candidate: mismatchedEnvironment,
+        targetMetric: 'surfaces.image.firstFrameMs',
+      }),
+    /matching git head, runtime, and host/u,
+  );
+});

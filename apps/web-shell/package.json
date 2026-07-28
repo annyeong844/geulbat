@@ -12,6 +12,8 @@
     "smoke:assistant-transcript": "node ./scripts/assistant-transcript-virtualization-smoke.mjs",
     "smoke:react-bundle:install-browser": "playwright install chromium",
     "gate:flows": "node ./scripts/flow-gate.mjs",
+    "baseline:user-visible": "node ./scripts/user-visible-performance-baseline.mjs",
+    "compare:user-visible": "node ./scripts/user-visible-performance-compare.mjs",
     "dev": "vite build --watch",
     "build:deps": "tsc -b ../../packages/structured-logger/tsconfig.json ../../packages/protocol/tsconfig.json ../../packages/artifact-runtime-policy/tsconfig.json",
     "build:app": "npm run check:artifact-runtime-sources && tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && vite build",

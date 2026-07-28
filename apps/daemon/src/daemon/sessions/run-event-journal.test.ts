@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { mkdtemp } from 'node:fs/promises';
 
 import { testThreadId } from '../../test-support/thread-id.js';
 import { assertSessionRunId } from './contract.js';
@@ -65,6 +64,50 @@ void test('run event journal appends contiguous batches and survives recreation'
       },
     ],
   );
+});
+
+void test('append batch partitioning preserves the same durable sequence after recreation', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-run-event-partitions-'),
+  );
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const events: RunCheckpointEvent[] = Array.from({ length: 4 }, (_, seq) => ({
+    seq,
+    event: {
+      type: 'commentary_delta',
+      payload: { text: `event-${String(seq)}` },
+    },
+  }));
+  const partitionWidths = [[4], [1, 3], [2, 2], [1, 1, 1, 1]];
+  const recreatedHistories: RunCheckpointEvent[][] = [];
+
+  for (const [scenarioIndex, widths] of partitionWidths.entries()) {
+    const threadId = testThreadId(907 + scenarioIndex);
+    const runId = assertSessionRunId(
+      `run-event-journal-partition-${String(scenarioIndex)}`,
+    );
+    const store = createRunEventJournalStore({ stateRoot });
+    let offset = 0;
+    for (const width of widths) {
+      await store.append({
+        threadId,
+        runId,
+        events: events.slice(offset, offset + width),
+      });
+      offset += width;
+    }
+    assert.equal(offset, events.length);
+    recreatedHistories.push(
+      await createRunEventJournalStore({ stateRoot }).read({
+        threadId,
+        runId,
+      }),
+    );
+  }
+
+  for (const history of recreatedHistories) {
+    assert.deepEqual(history, events);
+  }
 });
 
 void test('concurrent reads cannot rewind the append cursor', async () => {

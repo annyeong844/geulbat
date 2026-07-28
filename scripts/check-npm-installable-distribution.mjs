@@ -17,6 +17,13 @@ import {
 const execFileAsync = promisify(execFile);
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');
+const TYPESCRIPT_CLI_PATH = path.join(
+  path.dirname(
+    fileURLToPath(import.meta.resolve('@typescript/native/package.json')),
+  ),
+  'bin',
+  'tsc',
+);
 
 const PACKAGE_WORKSPACES = [
   {
@@ -160,6 +167,29 @@ export function createNpmInstallableDistributionChildEnv(options) {
   env.USERPROFILE = options.homeDir;
   env.npm_config_cache = path.join(options.homeDir, '.npm-cache');
   return env;
+}
+
+export function resolveNpmInvocation({
+  env = process.env,
+  execPath = process.execPath,
+  platform = process.platform,
+} = {}) {
+  if (platform !== 'win32') {
+    return {
+      argsPrefix: [],
+      command: 'npm',
+    };
+  }
+  const npmExecPath = env.npm_execpath;
+  if (typeof npmExecPath !== 'string' || !path.win32.isAbsolute(npmExecPath)) {
+    throw new Error(
+      'native Windows npm invocation requires an absolute npm_execpath from the parent npm process',
+    );
+  }
+  return {
+    argsPrefix: [npmExecPath],
+    command: execPath,
+  };
 }
 
 async function runNpmInstallableDistributionCheck(options) {
@@ -794,11 +824,7 @@ if (
   );
   await runCommand(
     process.execPath,
-    [
-      path.join(REPO_ROOT, 'node_modules', '.bin', 'tsc'),
-      '--project',
-      'tsconfig.json',
-    ],
+    [TYPESCRIPT_CLI_PATH, '--project', 'tsconfig.json'],
     { cwd: args.installDir, env: args.childEnv },
   );
   await runCommand(
@@ -965,11 +991,7 @@ if (!result.ok || result.value.content !== 'clean consumer\\n') {
   );
   await runCommand(
     process.execPath,
-    [
-      path.join(REPO_ROOT, 'node_modules', '.bin', 'tsc'),
-      '--project',
-      'tsconfig.json',
-    ],
+    [TYPESCRIPT_CLI_PATH, '--project', 'tsconfig.json'],
     { cwd: args.installDir, env: args.childEnv },
   );
   await runCommand(
@@ -994,11 +1016,19 @@ function readPackageInfo(packageInfos, packageName) {
 }
 
 async function runCommand(command, args, options) {
-  const result = await execFileAsync(command, args, {
-    cwd: options.cwd,
-    env: options.env,
-    maxBuffer: 1024 * 1024 * 20,
-  });
+  const invocation =
+    command === 'npm'
+      ? resolveNpmInvocation({ env: options.env })
+      : { argsPrefix: [], command };
+  const result = await execFileAsync(
+    invocation.command,
+    [...invocation.argsPrefix, ...args],
+    {
+      cwd: options.cwd,
+      env: options.env,
+      maxBuffer: 1024 * 1024 * 20,
+    },
+  );
   return result;
 }
 

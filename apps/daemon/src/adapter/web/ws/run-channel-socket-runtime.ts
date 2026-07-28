@@ -44,6 +44,7 @@ export interface RunChannelSocketState {
   runStartInFlightRequestId: string | null;
   threadSeqByThread: Map<ThreadId, number>;
   threadUnsubscribes: Map<ThreadId, () => void>;
+  runEventSink: LiveRunEventSink | null;
   messageDispatches: Set<Promise<void>>;
   authTimeout: NodeJS.Timeout | null;
   heartbeatInterval: NodeJS.Timeout | null;
@@ -78,6 +79,7 @@ export function getSocketState(socket: WebSocket): RunChannelSocketState {
     runStartInFlightRequestId: null,
     threadSeqByThread: new Map<ThreadId, number>(),
     threadUnsubscribes: new Map<ThreadId, () => void>(),
+    runEventSink: null,
     messageDispatches: new Set<Promise<void>>(),
     authTimeout: null,
     heartbeatInterval: null,
@@ -326,6 +328,10 @@ export function ensureThreadBackgroundSubscription(
 }
 
 export function createSocketRunEventSink(socket: WebSocket): LiveRunEventSink {
+  const state = getSocketState(socket);
+  if (state.runEventSink !== null) {
+    return state.runEventSink;
+  }
   const sink: LiveRunEventSink = (envelope) => {
     const { runId, threadId, seq, event } = envelope;
     const delivered = sendRunEvent(socket, runId, threadId, seq, event);
@@ -336,6 +342,7 @@ export function createSocketRunEventSink(socket: WebSocket): LiveRunEventSink {
   };
   sink.transient = ({ runId, threadId, event }) =>
     sendToolOutputDelta(socket, runId, threadId, event.payload);
+  state.runEventSink = sink;
   return sink;
 }
 
@@ -360,6 +367,11 @@ export async function bindSocketRuns(
     if (run.terminal) {
       continue;
     }
+    runtimeContext.approvalGate.rebindPendingRunApprovals(
+      run.runId,
+      run.threadId,
+      state.computerSessionId,
+    );
     state.activeRunIds.add(run.runId);
   }
   for (const child of runtimeContext.childRuns.getActiveChildRuns()) {
