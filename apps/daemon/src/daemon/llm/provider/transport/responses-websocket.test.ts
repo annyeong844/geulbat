@@ -355,6 +355,73 @@ void test('streamResponsesOverWebSocket selects the stable request owner without
   assert.equal(directSocketCalls, 0);
 });
 
+void test('streamResponsesOverWebSocket waits for durable owner cleanup before settling caller cancellation', async () => {
+  const controller = new AbortController();
+  let releaseCleanup: () => void = () => undefined;
+  const cleanupReleased = new Promise<void>((resolve) => {
+    releaseCleanup = resolve;
+  });
+  let observeCleanupStarted: () => void = () => undefined;
+  const cleanupStarted = new Promise<void>((resolve) => {
+    observeCleanupStarted = resolve;
+  });
+
+  const request = streamResponsesOverWebSocket({
+    body: baseBody,
+    headers: new Headers({ Authorization: 'Bearer private-token' }),
+    historyProjection: 'provider_output',
+    history: [],
+    providerSessionId: 'provider-session',
+    webSocketReusePolicy: TEST_REUSE_POLICY,
+    signal: controller.signal,
+    providerWebSocketSessions: {
+      async acquireWebSocket() {
+        throw new Error('direct socket path must not run');
+      },
+      async *streamDurableResponseEvents(input: {
+        signal?: AbortSignal;
+      }): AsyncIterable<Record<string, unknown>> {
+        try {
+          await new Promise<void>((_, reject) => {
+            const rejectForAbort = () => {
+              reject(new Error('stable owner aborted'));
+            };
+            if (input.signal?.aborted === true) {
+              rejectForAbort();
+              return;
+            }
+            input.signal?.addEventListener('abort', rejectForAbort, {
+              once: true,
+            });
+          });
+        } finally {
+          observeCleanupStarted();
+          await cleanupReleased;
+        }
+      },
+    },
+  });
+
+  await setImmediatePromise();
+  controller.abort('user_interrupt');
+  await cleanupStarted;
+
+  let requestSettled = false;
+  void request.then(
+    () => {
+      requestSettled = true;
+    },
+    () => {
+      requestSettled = true;
+    },
+  );
+  await setImmediatePromise();
+  assert.equal(requestSettled, false);
+
+  releaseCleanup();
+  await assert.rejects(request, /stable owner aborted/u);
+});
+
 void test('streamResponsesOverWebSocket propagates stable-owner failure without direct-socket fallback', async () => {
   let directSocketCalls = 0;
 

@@ -66,6 +66,49 @@ void test('RunTranscriptEntryBlock renders run transcript leaf entries', () => {
   assert.match(subagentHtml, /<details/);
 });
 
+void test('a pending steer bubble is the clickable one-shot flush surface', async () => {
+  let flushCount = 0;
+  const cancelled: number[] = [];
+  let renderer!: ReactTestRenderer;
+
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <RunTranscriptEntryBlock
+        entry={{
+          kind: 'user_text',
+          text: 'CSS부터요',
+          pendingSteerSeq: 7,
+        }}
+        onFlushPendingSteer={() => {
+          flushCount += 1;
+        }}
+        onCancelPendingSteer={(receivedSeq) => {
+          cancelled.push(receivedSeq);
+        }}
+      />,
+    );
+  });
+
+  const bubble = renderer.root.findByProps({
+    className: 'pending-steer-message is-flushable',
+  });
+  act(() => {
+    bubble.props.onClick();
+  });
+  assert.equal(flushCount, 1);
+
+  const cancel = renderer.root.findByProps({
+    className: 'pending-steer-badge-cancel',
+  });
+  act(() => {
+    cancel.props.onClick({ stopPropagation() {} });
+  });
+  assert.deepEqual(cancelled, [7]);
+  assert.equal(flushCount, 1);
+
+  await act(async () => renderer.unmount());
+});
+
 void test('ask_user selection reports its call identity and disables resubmission while sending', async () => {
   let resolveAnswer!: () => void;
   const pendingAnswer = new Promise<void>((resolve) => {

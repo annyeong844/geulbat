@@ -180,6 +180,8 @@ export async function streamResponsesOverWebSocket(
           ? {}
           : { onAdmissionState: input.onAdmissionState }),
       });
+      // The durable generator owns caller-signal settlement. Racing the same
+      // signal in the parser would mask host-stop or coordinate-cleanup errors.
       return await parseResponseEvents(
         tapDiscoveryEvents(events, input.discoverySink, input.normalizeEvent),
         input.onAssistantDelta,
@@ -189,7 +191,6 @@ export async function streamResponsesOverWebSocket(
             : {}),
           ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
           historyProjection: input.historyProjection,
-          ...(input.signal !== undefined ? { signal: input.signal } : {}),
         },
       );
     } catch (error: unknown) {

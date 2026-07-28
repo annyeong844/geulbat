@@ -20,7 +20,7 @@ import {
 import { createAgentEvent, type AgentEventEmitter } from './events.js';
 import type { AgentResult } from './agent-result.js';
 import type { AgentInput } from './loop-types.js';
-import { loadGeulbatInstructions } from './prompt/load-geulbat-md.js';
+import { loadOrCreateGeulbatInstructions } from './prompt/load-geulbat-md.js';
 import {
   listPendingMemoryNotes,
   memoryConsolidationIsDue,
@@ -318,10 +318,10 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentResult> {
         : providerToolExposure.directRegistryNames;
 
   const promptPort = injectedPromptPort ?? createAgentLoopPromptPort();
-  // 작업 폴더의 geulbat.md — 없으면 undefined이고 프롬프트는 예전과 같다.
-  const { instructions: projectInstructions } = await loadGeulbatInstructions(
-    runContext.workingDirectory,
-  );
+  // 기존 지침은 그대로 읽고, 전체 경로에 아무 지침도 없을 때만 프로젝트
+  // 루트에 starter geulbat.md를 만든다.
+  const { instructions: projectInstructions } =
+    await loadOrCreateGeulbatInstructions(runContext.workingDirectory);
   // 메모리는 root 런에만 싣는다. 서브에이전트는 부모가 준 과제로 일하고,
   // 사용자 장기 기억을 자식마다 복제하면 비용과 노출이 함께 늘어난다.
   const [memoryEntries, pendingMemoryNotes] =

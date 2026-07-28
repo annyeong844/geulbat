@@ -558,6 +558,12 @@ const TranscriptVirtualRowContent = React.memo(
           deferVisualizeRuntimeBoot={deferVisualizeRuntimeBoot}
           {...(onOpenChildSession !== undefined ? { onOpenChildSession } : {})}
           {...(onWidgetPrompt !== undefined ? { onWidgetPrompt } : {})}
+          {...(onCancelPendingSteer !== undefined
+            ? { onCancelPendingSteer }
+            : {})}
+          {...(onFlushPendingSteer !== undefined
+            ? { onFlushPendingSteer }
+            : {})}
           {...(onAskUserAnswer !== undefined ? { onAskUserAnswer } : {})}
           {...(onWidgetToolRequest !== undefined
             ? { onWidgetToolRequest }

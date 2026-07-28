@@ -1070,6 +1070,68 @@ void test('assistant shows a live run status row while a run is active', () => {
   assert.doesNotMatch(idleHtml, /run-status-row/);
 });
 
+void test('assistant renders one clickable pending steer and disables repeat flush after acknowledgement', async () => {
+  let flushCount = 0;
+  const steering = {
+    pendingSteers: [{ receivedSeq: 7, text: 'CSS부터요' }],
+    pendingSteerFlushRequested: false,
+    onCancelSteer: () => {},
+    onFlushSteers: () => {
+      flushCount += 1;
+    },
+  };
+  const props = createAssistantProps({
+    conversation: {
+      transcriptEntries: [
+        {
+          kind: 'user_text',
+          text: 'CSS부터요',
+          pendingSteerSeq: 7,
+        },
+      ],
+    },
+    runState: {
+      isRunning: true,
+    },
+    steering,
+  });
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(<Assistant {...props} />);
+  });
+
+  assert.equal(renderedText(renderer.root).match(/CSS부터요/gu)?.length, 1);
+  assert.equal(
+    renderer.root.findAllByProps({ className: 'pending-steer-list' }).length,
+    0,
+  );
+  const pendingBubble = renderer.root.findByProps({
+    className: 'pending-steer-message is-flushable',
+  });
+  act(() => {
+    pendingBubble.props.onClick();
+  });
+  assert.equal(flushCount, 1);
+
+  await act(async () => {
+    renderer.update(
+      <Assistant
+        {...props}
+        steering={{
+          ...steering,
+          pendingSteerFlushRequested: true,
+        }}
+      />,
+    );
+  });
+  const acknowledgedBubble = renderer.root.findByProps({
+    className: 'pending-steer-message',
+  });
+  assert.equal(acknowledgedBubble.props.onClick, undefined);
+
+  await act(async () => renderer.unmount());
+});
+
 void test('assistant sends queued attachments with a fallback prompt and clears them on success', async () => {
   const sent: Array<{
     prompt: string;

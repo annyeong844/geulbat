@@ -144,7 +144,7 @@ export function removePendingInterjectBySeq(
 
 // 큐가 비어 있으면 플러시할 것이 없으므로 false를 돌려준다(경합은 정상).
 export function requestInterjectFlush(buffer: RunInterjectBuffer): boolean {
-  if (buffer.items.length === 0) {
+  if (buffer.items.length === 0 || buffer.flushRequested) {
     return false;
   }
   buffer.flushRequested = true;

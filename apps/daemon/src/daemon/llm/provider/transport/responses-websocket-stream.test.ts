@@ -156,6 +156,34 @@ void test('iterateWebSocketEvents waits for the selected completion event type',
   assert.deepEqual(await iterator.next(), { done: true, value: undefined });
 });
 
+void test('iterateWebSocketEvents settles after yielding provider terminal failure frames', async () => {
+  for (const type of ['error', 'response.failed']) {
+    const socket = createFakeSocket();
+    const iterator = iterateWebSocketEvents(socket);
+
+    const failureFrame = iterator.next();
+    socket.emit('message', Buffer.from(JSON.stringify({ type })));
+    assert.deepEqual(await failureFrame, {
+      done: false,
+      value: { type },
+    });
+
+    const nextFrame = iterator.next();
+    const settlement = await Promise.race([
+      nextFrame.then((result) => ({ kind: 'settled' as const, result })),
+      nextTurn().then(() => ({ kind: 'pending' as const })),
+    ]);
+    if (settlement.kind === 'pending') {
+      socket.emit('error', new Error('terminal failure test cleanup'));
+      await assert.rejects(nextFrame, /terminal failure test cleanup/u);
+    }
+    assert.deepEqual(settlement, {
+      kind: 'settled',
+      result: { done: true, value: undefined },
+    });
+  }
+});
+
 void test('iterateWebSocketEvents preserves websocket frame order when decode timings differ', async () => {
   const socket = createFakeSocket();
   const iterator = iterateWebSocketEvents(socket);

@@ -61,7 +61,7 @@ export async function* iterateWebSocketEvents(
   let pending: (() => void) | null = null;
   let done = false;
   const failureState: { current: Error | null } = { current: null };
-  let sawCompletion = false;
+  let sawTerminalEvent = false;
   let closeEvent: unknown = null;
   let pendingDecodes = 0;
   let decodeChain = Promise.resolve();
@@ -84,7 +84,7 @@ export async function* iterateWebSocketEvents(
       wake();
       return;
     }
-    if (sawCompletion) {
+    if (sawTerminalEvent) {
       done = true;
       wake();
       return;
@@ -116,8 +116,12 @@ export async function* iterateWebSocketEvents(
         }
         const type =
           typeof parsed.value.type === 'string' ? parsed.value.type : '';
-        if (completionEventTypes.includes(type)) {
-          sawCompletion = true;
+        if (
+          completionEventTypes.includes(type) ||
+          type === 'error' ||
+          type === 'response.failed'
+        ) {
+          sawTerminalEvent = true;
         }
         queue.push(parsed.value);
         wake();
@@ -174,7 +178,7 @@ export async function* iterateWebSocketEvents(
     if (failure) {
       throw failure;
     }
-    if (!sawCompletion) {
+    if (!sawTerminalEvent) {
       throw new Error('WebSocket stream closed before response.completed');
     }
   } finally {

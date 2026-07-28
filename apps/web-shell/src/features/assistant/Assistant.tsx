@@ -34,7 +34,6 @@ import {
 } from './AssistantComposer.js';
 export type { AssistantComposerControls };
 import { AssistantTranscript } from './AssistantTranscript.js';
-import { PendingSteerList } from './PendingSteerList.js';
 import type {
   TranscriptMessageEditActions,
   TranscriptRowInteractions,
@@ -217,7 +216,6 @@ const DEFAULT_COMPOSER_CONTROLS: AssistantComposerControls = {
 };
 
 const EMPTY_ARTIFACTS: ThreadArtifactVersion[] = [];
-const EMPTY_PENDING_STEERS: Array<{ receivedSeq: number; text: string }> = [];
 const EMPTY_SUBAGENT_HISTORY: Extract<
   RunTranscriptEntry,
   { kind: 'subagent_activity' }
@@ -334,10 +332,8 @@ export function Assistant({
   // 번들 언팩 — 렌더는 기존 로컬 이름을 그대로 쓴다
   const workspaceInput = { ...EMPTY_WORKSPACE, ...workspace };
   const workingDirectoryPicker = useWorkingDirectoryPicker(workspaceInput);
-  // 3단 구성: 컴포저 위의 바가 보낸 말들을 모아 두고(1), 거기서 즉시 반영으로
-  // 큐 전체를 앞당기고(2), 대화에서 반짝이는 그 말풍선을 누르면 바로
-  // 적용된다(3). 셋은 같은 큐를 다른 거리에서 다룬다.
-  const pendingSteers = steering?.pendingSteers ?? EMPTY_PENDING_STEERS;
+  // 보낸 말 자체가 대기 상태와 즉시 반영 동작을 함께 소유한다. 같은 큐를
+  // 컴포저 위에 한 번 더 그리면 말이 중복되고 클릭할 표면도 갈라진다.
   const onCancelSteer = steering?.onCancelSteer;
   const onFlushSteers = steering?.onFlushSteers;
   const pendingSteerFlushRequested =
@@ -687,7 +683,7 @@ export function Assistant({
             },
           }),
       // 반짝이는 말풍선을 누르면 지금 반영 — 앞당길 대상과 버튼을 한 자리에
-      ...(onFlushSteers === undefined
+      ...(onFlushSteers === undefined || pendingSteerFlushRequested
         ? {}
         : {
             onFlushPendingSteer: () => {
@@ -707,6 +703,7 @@ export function Assistant({
       handleAskUserAnswer,
       onCancelSteer,
       onFlushSteers,
+      pendingSteerFlushRequested,
       onOpenArtifact,
       onSend,
       onStartArtifactRun,
@@ -809,23 +806,6 @@ export function Assistant({
             goal={goal}
           />
         )}
-
-        {onCancelSteer !== undefined ? (
-          <PendingSteerList
-            steers={pendingSteers}
-            flushRequested={pendingSteerFlushRequested}
-            onCancel={(receivedSeq) => {
-              void onCancelSteer(receivedSeq);
-            }}
-            {...(onFlushSteers !== undefined
-              ? {
-                  onFlush: () => {
-                    void onFlushSteers();
-                  },
-                }
-              : {})}
-          />
-        ) : null}
 
         {/* 컨텍스트 줄 — 어시스턴트가 보고 있는 시작 위치. 클릭 = 위치 변경.
           활동 셸프(진행 상황)가 떠 있는 동안은 숨긴다 — 카드 위에 떠서

@@ -343,16 +343,19 @@ function runningWithSteer(text: string, receivedSeq: number) {
   });
 }
 
-void test('a mid-run message waits in the queue until it is put on the conversation', () => {
+void test('a mid-run message appears pending immediately and waits for the next model request', () => {
   const queued = runningWithSteer('CSS부터요', 7);
 
-  // 1단: 큐에만 쌓인다.
+  // 1단: 보낸 말은 바로 대화에 보이고, pendingSteerSeq가 반짝임과 클릭을
+  // 소유한다. 모델 쪽에서는 여전히 다음 요청 전까지 큐에만 있다.
   assert.deepEqual(queued.activeRunView.pendingSteers, [
     { receivedSeq: 7, text: 'CSS부터요' },
   ]);
-  assert.deepEqual(queued.activeRunView.transcriptEntries, []);
+  assert.deepEqual(queued.activeRunView.transcriptEntries, [
+    { kind: 'user_text', text: 'CSS부터요', pendingSteerSeq: 7 },
+  ]);
 
-  // 2단: ⤵ 를 누르면 대화로 올라와 반짝인다.
+  // 2단: 반짝이는 말풍선을 누르면 표시를 복제하지 않고 중단 요청만 건다.
   const flushed = reduceRunSessionState(queued, {
     type: 'steer_flush_requested',
     runId: RUN_ID,
@@ -399,8 +402,8 @@ void test('the shimmer stops once the message is applied — whichever way it go
     false,
   );
 
-  // (b) ⤵ 를 누르지 않았는데 모델이 먼저 읽어버린 경우 — 반짝일 줄 자체가
-  // 없어야 하고, 말은 대화에 합류해야 한다.
+  // (b) 말풍선을 누르지 않았는데 모델이 다음 요청에서 먼저 읽은 경우에도
+  // 같은 말의 반짝임만 꺼진다.
   const appliedWithoutFlush = reduceRunSessionState(
     runningWithSteer('CSS부터요', 7),
     {
@@ -446,11 +449,7 @@ void test('applying one of several queued messages leaves only the rest shimmeri
 });
 
 void test('undoing a message that is already on the conversation removes it too', () => {
-  const flushed = reduceRunSessionState(runningWithSteer('취소할 말', 7), {
-    type: 'steer_flush_requested',
-    runId: RUN_ID,
-  });
-  const cancelled = reduceRunSessionState(flushed, {
+  const cancelled = reduceRunSessionState(runningWithSteer('취소할 말', 7), {
     type: 'steer_cancelled',
     runId: RUN_ID,
     receivedSeq: 7,

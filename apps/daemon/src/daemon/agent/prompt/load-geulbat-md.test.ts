@@ -1,15 +1,81 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { loadGeulbatInstructions } from './load-geulbat-md.js';
+import {
+  loadGeulbatInstructions,
+  loadOrCreateGeulbatInstructions,
+} from './load-geulbat-md.js';
 import { buildSystemPrompt } from './build-system-prompt.js';
 
 async function makeWorkspace(): Promise<string> {
   return await mkdtemp(join(tmpdir(), 'geulbat-md-'));
 }
+
+void test('first use creates a starter geulbat.md at the project root and loads it', async () => {
+  const root = await makeWorkspace();
+  const nested = join(root, 'apps', 'writing');
+  await mkdir(join(root, '.git'), { recursive: true });
+  await mkdir(nested, { recursive: true });
+
+  const loaded = await loadOrCreateGeulbatInstructions(nested);
+  const createdPath = join(root, 'geulbat.md');
+  const createdText = await readFile(createdPath, 'utf8');
+
+  assert.match(createdText, /글밭/u);
+  assert.deepEqual(loaded.sources, [createdPath]);
+  assert.equal(loaded.instructions, createdText.trim());
+});
+
+void test('an existing geulbat.md is connected byte-for-byte without overwrite', async () => {
+  const root = await makeWorkspace();
+  const existingText = '# 사용자 지침\n\n기존 내용을 그대로 지킨다.\n';
+  await writeFile(join(root, 'geulbat.md'), existingText, 'utf8');
+
+  const loaded = await loadOrCreateGeulbatInstructions(root);
+
+  assert.equal(await readFile(join(root, 'geulbat.md'), 'utf8'), existingText);
+  assert.equal(loaded.instructions, existingText.trim());
+});
+
+void test('an existing empty geulbat.md is never replaced by the starter', async () => {
+  const root = await makeWorkspace();
+  await writeFile(join(root, 'geulbat.md'), '', 'utf8');
+
+  const loaded = await loadOrCreateGeulbatInstructions(root);
+
+  assert.equal(await readFile(join(root, 'geulbat.md'), 'utf8'), '');
+  assert.equal(loaded.instructions, undefined);
+});
+
+void test('an existing local override prevents creation of a committed starter', async () => {
+  const root = await makeWorkspace();
+  const localPath = join(root, 'geulbat.local.md');
+  await writeFile(localPath, '로컬 지침', 'utf8');
+
+  const loaded = await loadOrCreateGeulbatInstructions(root);
+
+  assert.deepEqual(loaded.sources, [localPath]);
+  assert.equal(loaded.instructions, '로컬 지침');
+  await assert.rejects(readFile(join(root, 'geulbat.md'), 'utf8'), {
+    code: 'ENOENT',
+  });
+});
+
+void test('concurrent first use creates one shared geulbat.md without overwrite races', async () => {
+  const root = await makeWorkspace();
+
+  const [first, second] = await Promise.all([
+    loadOrCreateGeulbatInstructions(root),
+    loadOrCreateGeulbatInstructions(root),
+  ]);
+  const createdText = await readFile(join(root, 'geulbat.md'), 'utf8');
+
+  assert.equal(first.instructions, createdText.trim());
+  assert.equal(second.instructions, createdText.trim());
+});
 
 void test('geulbat.md is collected from the project root down to the working directory', async () => {
   const root = await makeWorkspace();

@@ -1,4 +1,5 @@
-import { readFile, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { link, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, parse } from 'node:path';
 
 import { createLogger } from '@geulbat/structured-logger/logger';
@@ -13,6 +14,12 @@ const INSTRUCTION_FILENAMES_BY_PRECEDENCE = [
 ] as const;
 const PROJECT_ROOT_MARKERS = ['.git'] as const;
 const MAX_INSTRUCTION_TOTAL_BYTES = 64 * 1024;
+const STARTER_GEULBAT_MD = [
+  '# 글밭 프로젝트 지침',
+  '',
+  '<!-- 이 폴더에서 글밭이 따라야 할 규칙과 작업 방식을 여기에 적어 주세요. -->',
+  '',
+].join('\n');
 
 const logger = createLogger('agent/prompt/geulbat-md');
 
@@ -111,6 +118,32 @@ async function readDirectoryInstruction(
   return undefined;
 }
 
+async function hasAnyGeulbatInstructionFile(
+  directories: readonly string[],
+): Promise<boolean> {
+  for (const directory of directories) {
+    for (const filename of INSTRUCTION_FILENAMES_BY_PRECEDENCE) {
+      const path = join(directory, filename);
+      try {
+        await stat(path);
+        return true;
+      } catch (error: unknown) {
+        if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ENOTDIR')) {
+          continue;
+        }
+        logger
+          .withContext({ path })
+          .warn(
+            'instruction file presence could not be checked; starter creation is skipped to preserve any existing file:',
+            getErrorMessage(error),
+          );
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export async function loadGeulbatInstructions(
   workingDirectory: string | undefined,
 ): Promise<LoadedGeulbatInstructions> {
@@ -160,4 +193,75 @@ export async function loadGeulbatInstructions(
     instructions: applied.map((entry) => entry.text).join('\n\n'),
     sources: Object.freeze(sources),
   };
+}
+
+export async function loadOrCreateGeulbatInstructions(
+  workingDirectory: string | undefined,
+): Promise<LoadedGeulbatInstructions> {
+  const loaded = await loadGeulbatInstructions(workingDirectory);
+  if (
+    loaded.sources.length > 0 ||
+    workingDirectory === undefined ||
+    !isAbsolute(workingDirectory)
+  ) {
+    return loaded;
+  }
+
+  let rootToWorkingDirectory: readonly string[];
+  try {
+    rootToWorkingDirectory =
+      await resolveDirectoriesFromRootToWorkingDirectory(workingDirectory);
+  } catch (error: unknown) {
+    logger
+      .withContext({ workingDirectory })
+      .warn(
+        'project root discovery failed during starter creation; existing files remain unchanged:',
+        getErrorMessage(error),
+      );
+    return loaded;
+  }
+  if (await hasAnyGeulbatInstructionFile(rootToWorkingDirectory)) {
+    return loaded;
+  }
+
+  const projectRoot = rootToWorkingDirectory[0] ?? workingDirectory;
+  const path = join(projectRoot, GEULBAT_MD_FILENAME);
+  const temporaryPath = join(
+    projectRoot,
+    `.geulbat.md.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    await writeFile(temporaryPath, STARTER_GEULBAT_MD, {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+    await link(temporaryPath, path);
+    logger
+      .withContext({ path })
+      .info('starter project instruction file created');
+  } catch (error: unknown) {
+    if (!hasErrorCode(error, 'EEXIST')) {
+      logger
+        .withContext({ path })
+        .warn(
+          'starter project instruction file could not be created; the run continues without changing existing files:',
+          getErrorMessage(error),
+        );
+      return loaded;
+    }
+  } finally {
+    try {
+      await unlink(temporaryPath);
+    } catch (error: unknown) {
+      if (!hasErrorCode(error, 'ENOENT')) {
+        logger
+          .withContext({ path: temporaryPath })
+          .warn(
+            'starter project instruction temporary file could not be removed:',
+            getErrorMessage(error),
+          );
+      }
+    }
+  }
+  return await loadGeulbatInstructions(workingDirectory);
 }

@@ -383,8 +383,18 @@ function reduceSingleRunSessionState(
         ...state,
         activeRunView: {
           ...state.activeRunView,
-          // 보낸 말은 여기 쌓이기만 한다. 대화로 올리는 것은 ⤵ 를 누를 때다.
+          // 보낸 말은 즉시 대화에 보이되 pendingSteerSeq를 달고 반짝인다.
+          // 모델에는 아직 넣지 않는다. 다음 요청 전 자연 소비 또는 사용자의
+          // 명시적 flush만 그 경계를 넘는다.
           pendingSteers: [...state.activeRunView.pendingSteers, action.steer],
+          transcriptEntries: [
+            ...state.activeRunView.transcriptEntries,
+            {
+              kind: 'user_text',
+              text: action.steer.text,
+              pendingSteerSeq: action.steer.receivedSeq,
+            },
+          ],
         },
       };
     case 'steer_applied': {
@@ -413,9 +423,8 @@ function reduceSingleRunSessionState(
           pendingSteers: remainingSteers,
           // 소비 1회로 플러시 요청은 목적을 다한다(데몬과 같은 규칙)
           pendingSteerFlushRequested: false,
-          // 반영되면 반짝임이 꺼진다. 이미 대화에 올라와 있던 말은 표시만
-          // 걷고, ⤵를 누르지 않아 아직 안 올라온 말은 이때 합류한다 — 어느
-          // 경로로 들어왔든 반영된 뒤에 반짝이는 말은 없어야 한다.
+          // 반영되면 이미 대화에 보이던 말의 반짝임만 걷는다. 재연결 경합 등
+          // 로컬 pending 행이 없던 경우에만 실제 적용 이벤트가 말을 보충한다.
           transcriptEntries: [
             ...state.activeRunView.transcriptEntries.map((entry) =>
               entry.kind === 'user_text' &&
@@ -480,25 +489,6 @@ function reduceSingleRunSessionState(
         activeRunView: {
           ...state.activeRunView,
           pendingSteerFlushRequested: true,
-          // 대기하던 말이 대화로 올라와 반짝인다. 이미 올라온 것은 그대로 둔다
-          // — 같은 말이 두 줄이 되면 무엇이 반영될지 알 수 없다.
-          transcriptEntries: [
-            ...state.activeRunView.transcriptEntries,
-            ...state.activeRunView.pendingSteers
-              .filter(
-                (steer) =>
-                  !state.activeRunView.transcriptEntries.some(
-                    (entry) =>
-                      entry.kind === 'user_text' &&
-                      entry.pendingSteerSeq === steer.receivedSeq,
-                  ),
-              )
-              .map((steer) => ({
-                kind: 'user_text' as const,
-                text: steer.text,
-                pendingSteerSeq: steer.receivedSeq,
-              })),
-          ],
         },
       };
     case 'subagent_activity_added':

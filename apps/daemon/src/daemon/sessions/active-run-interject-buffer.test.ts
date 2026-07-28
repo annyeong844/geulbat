@@ -125,6 +125,8 @@ void test('requestInterjectFlush is a no-op on an empty queue and one-shot per a
   pushPendingInterject(buffer, 'a');
   assert.equal(requestInterjectFlush(buffer), true);
   assert.equal(isInterjectFlushRequested(buffer), true);
+  // 같은 UI 클릭이 중복 전달돼도 다음 라운드용 중단 신호를 새로 만들지 않는다.
+  assert.equal(requestInterjectFlush(buffer), false);
 
   clearInterjectFlushRequest(buffer);
   assert.equal(isInterjectFlushRequested(buffer), false);

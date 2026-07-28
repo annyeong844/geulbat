@@ -396,6 +396,59 @@ void test(
   },
 );
 
+void test(
+  'aborting a non-shutdown subscriber stops the owner and clears its coordinate',
+  { timeout: 30_000 },
+  async (t) => {
+    let resolveProviderClosed: () => void = () => undefined;
+    const providerClosed = new Promise<void>((resolve) => {
+      resolveProviderClosed = resolve;
+    });
+    const boundary = await createProviderBoundary(
+      t,
+      'geulbat-provider-request-abort-',
+      (socket) => {
+        socket.once('close', resolveProviderClosed);
+        socket.send(
+          JSON.stringify({
+            type: 'response.output_text.delta',
+            delta: 'before abort',
+          }),
+        );
+      },
+    );
+    const runtime = boundary.createRuntime();
+    const transport = createTransport(runtime, boundary.stateRoot);
+    const controller = new AbortController();
+    const iterator = transport
+      .streamEvents({
+        webSocketUrl: boundary.webSocketUrl,
+        headers: new Headers({ Authorization: 'Bearer abort-token' }),
+        serializedPayload: '{"type":"response.create","model":"test-model"}',
+        providerSessionId: 'thread-aborted-request',
+        requestAttempt: 0,
+        signal: controller.signal,
+      })
+      [Symbol.asyncIterator]();
+
+    assert.equal(
+      (await iterator.next()).value?.['type'],
+      'response.output_text.delta',
+    );
+    const pending = iterator.next();
+    controller.abort('user_interrupt');
+
+    await assert.rejects(pending);
+    await providerClosed;
+    assert.deepEqual(
+      await readdir(
+        join(boundary.stateRoot, '.geulbat', 'provider-request-coordinates'),
+      ),
+      [],
+    );
+  },
+);
+
 async function createProviderBoundary(
   t: { after(fn: () => Promise<void> | void): void },
   statePrefix: string,
