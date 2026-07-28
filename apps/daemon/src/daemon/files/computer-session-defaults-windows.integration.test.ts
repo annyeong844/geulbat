@@ -71,15 +71,21 @@ void test(
       },
     });
 
-    assert.equal(outcome.complete, true);
     assert.equal(observations.length, 2);
     for (const observation of observations) {
       assert.match(observation.invocation.executable, /powershell\.exe$/i);
       assert.equal(observation.invocation.windowsHide, true);
-      assert.equal(observation.result.error, undefined);
+      assert.equal(
+        observation.result.error,
+        undefined,
+        `${observation.invocation.executable} failed: ${
+          observation.result.error?.message ?? 'unknown error'
+        }; status=${String(observation.result.status)}`,
+      );
       assert.equal(observation.result.status, 0);
       assert.notEqual(observation.result.stdout.trim(), '');
     }
+    assert.equal(outcome.complete, true);
 
     const drivePaths = readAbsoluteWindowsPaths(
       observations[0]?.result.stdout ?? '',
