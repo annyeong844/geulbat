@@ -102,8 +102,23 @@ void test('ComputerTree keeps daemon shortcut paths intact and labels the logica
       onManageEntry={async () => true}
     />,
   );
-  assert.match(html, /컴퓨터 \/ Users\/user\/Downloads/);
-  assert.match(html, /aria-label="현재 폴더 경로"/);
+  // 경로는 클릭 가능한 breadcrumb이 소유한다. 논리적 루트는 호스트 경로를
+  // 흉내내지 않고 `컴퓨터`로 표기하고, 그 아래 세그먼트는 그대로 보존한다.
+  assert.match(
+    html,
+    /<nav class="rail-browse-breadcrumbs" aria-label="현재 폴더 경로">/,
+  );
+  for (const label of ['컴퓨터', 'Users', 'user', 'Downloads']) {
+    assert.match(
+      html,
+      new RegExp(`aria-label="경로로 이동: ${label}"`, 'u'),
+      `breadcrumb must expose the ${label} segment`,
+    );
+  }
+  // 경로 바가 섹션 헤더 줄을 직접 차지한다 — 같은 경로를 라벨로 한 번 더
+  // 그리지 않는다(같은 경로가 두 줄로 보이던 원인).
+  assert.doesNotMatch(html, /class="rail-section-label"/);
+  assert.doesNotMatch(html, /컴퓨터 \/ Users\/user\/Downloads/);
   assert.doesNotMatch(html, /C:\//);
   assert.match(html, /<nav class="quick-access" aria-label="빠른 위치">/);
   assert.match(html, /class="quick-access-heading"[^>]*>빠른 위치</);

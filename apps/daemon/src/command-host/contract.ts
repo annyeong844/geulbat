@@ -1,4 +1,7 @@
-import type { DurabilityStageObserver } from './durability.js';
+import type {
+  DurabilityFailureObserver,
+  DurabilityStageObserver,
+} from './durability.js';
 import type {
   HostCommandOutputPage,
   HostCommandOutputStream,
@@ -236,6 +239,8 @@ export interface CommandSessionHostConfig {
    * 이 seam 없이는 해당 수용기준을 검증할 방법이 없다.
    */
   onDurabilityStage?: DurabilityStageObserver;
+  /** terminal 산출물 실패의 원인과 세션 좌표를 운영 진단 출구로 전달한다. */
+  onDurabilityFailure?: DurabilityFailureObserver;
 }
 
 // spec v4 §7.3 — 워커-facing 구독 계약. 도구는 HostCommandRuntime만 보고,

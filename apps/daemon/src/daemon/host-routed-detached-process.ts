@@ -426,6 +426,12 @@ class HostRoutedDetachedProcessHandle implements HostRoutedDetachedProcessHandle
       }
       snapshot = stderr.snapshot;
 
+      // 두 페이지 사이에 출력이나 terminal 전이가 끼면 앞서 읽은 스트림은
+      // 새 revision의 바이트를 아직 보지 못했다. 서로 다른 시점의 빈 페이지를
+      // 합쳐 terminal로 오인하지 말고 같은 revision이 될 때까지 다시 읽는다.
+      if (stdout.snapshot.revision !== stderr.snapshot.revision) {
+        continue;
+      }
       if (stdout.hasMore || stderr.hasMore || this.hasPendingOutputRelease()) {
         continue;
       }

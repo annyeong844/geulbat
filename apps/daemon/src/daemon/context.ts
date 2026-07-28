@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { join } from 'node:path';
 
+import { createLogger } from '@geulbat/structured-logger/logger';
+
 import {
   createApprovalGate,
   type ApprovalGate,
@@ -221,6 +223,9 @@ type PtcBrowserRuntimeOptions = NonNullable<
   Parameters<typeof createPtcBrowserNavigateRuntime>[0]
 >;
 
+// Inline placement emits through the daemon logger; worker placement writes the
+// same failure coordinates to its durable worker log.
+const hostCommandDurabilityLogger = createLogger('command-host/durability');
 const resolvePtcFixedProbeRuntimeRoot = createPtcRuntimeRootResolver(
   'fixed-probe-runtime',
 );
@@ -433,6 +438,17 @@ export function createDaemonContext(
       ...(options.hostCommands?.tailRingBytes === undefined
         ? {}
         : { tailRingBytes: options.hostCommands.tailRingBytes }),
+      onDurabilityFailure({ phase, metadata, error }) {
+        hostCommandDurabilityLogger
+          .withContext({
+            phase,
+            outputRef: metadata.outputRef,
+            threadId: metadata.threadId,
+            runId: metadata.runId,
+            callId: metadata.callId,
+          })
+          .error('terminal persistence failed', error);
+      },
     },
   });
   // P7.5 §5.6 — 산출물 GC가 보존 집합을 물어볼 지점을 등록한다.

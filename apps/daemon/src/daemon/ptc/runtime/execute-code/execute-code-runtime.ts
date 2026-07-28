@@ -77,6 +77,7 @@ import {
   createPtcExecuteCodeCellReadoptionLedger,
   type PtcExecuteCodeEpochCallbackController,
 } from './execute-code-cell-readoption.js';
+import { reconcilePtcExecuteCodeInvocation } from './execute-code-invocation-reconciliation.js';
 import {
   PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS,
   type PtcExecuteCodeCellRetainedResult,
@@ -90,7 +91,6 @@ import { waitForExecuteCodeCell } from './execute-code-cell-wait.js';
 import {
   summarizeWaitRetainedCell,
   summarizeWaitRunningCell,
-  summarizeRunningCell,
   validateCellId,
 } from './execute-code-cell-summary.js';
 import { createPtcExecuteCodeRuntimeStateOwner } from './execute-code-runtime-owner.js';
@@ -853,243 +853,20 @@ export function createPtcExecuteCodeRuntime(
           : undefined;
 
       if (invocationCellId !== undefined && execInvocation !== undefined) {
-        if (!cellReadoptionLedger.supportsRunningExecDelivery()) {
-          return {
-            ok: false,
-            reasonCode: 'ptc_execute_code_store_unavailable',
-            message:
-              'PTC execute_code durable running-result recovery is unavailable',
-          };
-        }
-        let retainedDelivery: ReturnType<
-          typeof cellReadoptionLedger.readRunningExecDelivery
-        >;
-        try {
-          retainedDelivery = cellReadoptionLedger.readRunningExecDelivery({
-            threadId: args.runContext.threadId,
-            cellId: invocationCellId,
-          });
-        } catch {
-          return {
-            ok: false,
-            reasonCode: 'ptc_execute_code_store_unavailable',
-            message:
-              'PTC execute_code durable running result could not be reconciled',
-          };
-        }
-        if (
-          retainedDelivery !== undefined &&
-          (retainedDelivery.runId !== execInvocation.runId ||
-            retainedDelivery.callId !== execInvocation.callId)
-        ) {
-          return {
-            ok: false,
-            reasonCode: 'ptc_execute_code_store_unavailable',
-            message:
-              'PTC execute_code durable running result identity conflicts',
-          };
-        }
-
-        const adoptedCoordinate = cellReadoptionLedger.getAdoptedCoordinate({
-          threadId: args.runContext.threadId,
+        const reconciled = await reconcilePtcExecuteCodeInvocation({
+          admission: admission.value,
+          callbackRuntime,
           cellId: invocationCellId,
+          cellReadoptionLedger,
+          cellRegistry,
+          effectiveTimeoutMs: request.value.timeoutMs,
+          invocation: execInvocation,
+          runContext: args.runContext,
+          sdkHelpBundle,
+          terminalResultStore: cellTerminalResultStore,
         });
-        if (
-          adoptedCoordinate !== undefined &&
-          adoptedCoordinate.callbackToolNames.length > 0
-        ) {
-          const replaced = cellRegistry?.replaceRunningCellCallbackHandler({
-            threadId: adoptedCoordinate.threadId,
-            cellId: adoptedCoordinate.cellId,
-            handler: (invocation) =>
-              callbackRuntime.callbackHandler({
-                ...invocation,
-                cellId: adoptedCoordinate.cellId,
-              }),
-          });
-          if (!replaced?.ok || !replaced.value.replaced) {
-            return {
-              ok: false,
-              reasonCode: 'ptc_execute_code_store_unavailable',
-              message:
-                'PTC execute_code callback authority could not be restored',
-            };
-          }
-        }
-
-        if (retainedDelivery !== undefined) {
-          return {
-            ok: true,
-            value: summarizeRunningCell({
-              admission: admission.value,
-              callbackRuntime: {
-                ...callbackRuntime,
-                observedCount: () => retainedDelivery.toolCallbackCount,
-              },
-              cellId: retainedDelivery.cellId,
-              durationMs: retainedDelivery.durationMs,
-              effectiveTimeoutMs: request.value.timeoutMs,
-              output: {
-                stdout: retainedDelivery.stdout,
-                stderr: retainedDelivery.stderr,
-              },
-              sdkHelpBundle,
-            }),
-          };
-        }
-
-        const readTerminalRecovery = cellTerminalResultStore?.readRecovery;
-        if (readTerminalRecovery !== undefined) {
-          let recovery: Awaited<ReturnType<typeof readTerminalRecovery>>;
-          try {
-            recovery = await readTerminalRecovery({
-              stateRoot: args.runContext.stateRoot,
-              threadId: args.runContext.threadId,
-              cellId: invocationCellId,
-            });
-          } catch {
-            return {
-              ok: false,
-              reasonCode: 'ptc_execute_code_store_unavailable',
-              message:
-                'PTC execute_code durable terminal recovery could not be reconciled',
-            };
-          }
-          if (!recovery.ok) {
-            return {
-              ok: false,
-              reasonCode: 'ptc_execute_code_store_unavailable',
-              message: recovery.message,
-            };
-          }
-          if (recovery.value !== undefined) {
-            return recovery.value;
-          }
-        }
-
-        if (cellTerminalResultStore === undefined) {
-          if (adoptedCoordinate === undefined) {
-            return {
-              ok: false,
-              reasonCode: 'ptc_execute_code_store_unavailable',
-              message:
-                'PTC execute_code durable terminal reconciliation is unavailable',
-            };
-          }
-        } else {
-          let terminal: Awaited<
-            ReturnType<PtcExecuteCodeCellTerminalResultStore['read']>
-          >;
-          try {
-            terminal = await cellTerminalResultStore.read({
-              stateRoot: args.runContext.stateRoot,
-              threadId: args.runContext.threadId,
-              cellId: invocationCellId,
-            });
-          } catch {
-            return {
-              ok: false,
-              reasonCode: 'ptc_execute_code_store_unavailable',
-              message:
-                'PTC execute_code durable terminal result could not be reconciled',
-            };
-          }
-          if (!terminal.ok) {
-            return {
-              ok: false,
-              reasonCode: 'ptc_execute_code_store_unavailable',
-              message: terminal.message,
-            };
-          }
-          if (terminal.value !== undefined) {
-            if (adoptedCoordinate !== undefined) {
-              terminal = { ok: true, value: undefined };
-            }
-          }
-          if (terminal.value !== undefined) {
-            return {
-              ok: false,
-              reasonCode: 'ptc_execute_code_store_unavailable',
-              message:
-                'PTC execute_code completed before restart; its durable terminal output must be claimed instead of starting duplicate code',
-              remediation:
-                'Read terminalOutputRef to recover the completed cell output.',
-              diagnostics: {
-                cellId: invocationCellId,
-                terminalOutputRef: terminal.value.outputRef,
-                terminalStatus: terminal.value.status,
-                terminalFullOutputBytes: terminal.value.fullOutputBytes,
-                terminalFullOutputChars: terminal.value.fullOutputChars,
-                ...(terminal.value.exitCode === null
-                  ? {}
-                  : { terminalExitCode: terminal.value.exitCode }),
-              },
-            };
-          }
-        }
-
-        if (adoptedCoordinate !== undefined && cellRegistry !== undefined) {
-          const prepared = cellRegistry.prepareRunningCellOutputDelivery({
-            threadId: adoptedCoordinate.threadId,
-            cellId: adoptedCoordinate.cellId,
-          });
-          if (!prepared.ok) {
-            return {
-              ok: false,
-              reasonCode: 'ptc_execute_code_store_unavailable',
-              message:
-                'PTC execute_code re-adopted output delivery is unavailable',
-            };
-          }
-          const durationMs = Math.max(
-            0,
-            Date.now() - adoptedCoordinate.createdAtMs,
-          );
-          const toolCallbackCount = callbackRuntime.observedCount();
-          try {
-            cellReadoptionLedger.persistRunningExecDelivery({
-              threadId: args.runContext.threadId,
-              runId: execInvocation.runId,
-              callId: execInvocation.callId,
-              cellId: invocationCellId,
-              stdout: prepared.value.output.stdout,
-              stderr: prepared.value.output.stderr,
-              durationMs,
-              toolCallbackCount,
-              outputReadOffsets: prepared.value.offsets,
-            });
-          } catch {
-            return {
-              ok: false,
-              reasonCode: 'ptc_execute_code_store_unavailable',
-              message:
-                'PTC execute_code re-adopted output could not be persisted',
-            };
-          }
-          const committed = cellRegistry.commitRunningCellOutputDelivery({
-            threadId: adoptedCoordinate.threadId,
-            cellId: adoptedCoordinate.cellId,
-          });
-          if (!committed.ok) {
-            return {
-              ok: false,
-              reasonCode: 'ptc_execute_code_store_unavailable',
-              message:
-                'PTC execute_code re-adopted output could not be committed',
-            };
-          }
-          return {
-            ok: true,
-            value: summarizeRunningCell({
-              admission: admission.value,
-              callbackRuntime,
-              cellId: invocationCellId,
-              durationMs,
-              effectiveTimeoutMs: request.value.timeoutMs,
-              output: prepared.value.output,
-              sdkHelpBundle,
-            }),
-          };
+        if (reconciled !== undefined) {
+          return reconciled;
         }
       }
 

@@ -1191,6 +1191,9 @@ export function createCommandSessionHost(
       ...(config.onDurabilityStage === undefined
         ? {}
         : { observe: config.onDurabilityStage }),
+      ...(config.onDurabilityFailure === undefined
+        ? {}
+        : { onFailure: config.onDurabilityFailure }),
     });
     entry.outputPersistFailed = !outcome.artifactOk;
     entry.terminalMetaDirty = !outcome.metadataOk;

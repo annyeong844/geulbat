@@ -20,6 +20,20 @@ import {
   registerOnce,
 } from '../../test-support/loop-tool-execution-test-support.js';
 
+function captureConsoleErrors(t: {
+  after(fn: () => Promise<void> | void): void;
+}): unknown[][] {
+  const calls: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    calls.push(args);
+  };
+  t.after(() => {
+    console.error = originalError;
+  });
+  return calls;
+}
+
 void test('processFunctionCalls executes same-round subagent launch batches in parallel when the tool metadata allows it', async () => {
   const threadId = testThreadId(51);
   const daemonContext = createDaemonContext();
@@ -363,16 +377,18 @@ void test('processFunctionCalls leaves zero durable rows when one same-round age
   }
 });
 
-void test('processFunctionCalls starts no child when same-round agent_spawn persistence fails', async () => {
+void test('processFunctionCalls starts no child when same-round agent_spawn persistence fails', async (t) => {
   const threadId = testThreadId(159);
   const workspaceRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-agent-spawn-persistence-failure-'),
   );
+  const persistenceFailure = new Error('simulated durable store failure');
+  const loggedErrors = captureConsoleErrors(t);
   let startCount = 0;
   const daemonContext = createDaemonContext({
     subagentLaunchRequests: {
       enqueueSubagentLaunchBatch() {
-        throw new Error('simulated durable store failure');
+        throw persistenceFailure;
       },
       readSubagentLaunchRequest() {
         return undefined;
@@ -466,7 +482,108 @@ void test('processFunctionCalls starts no child when same-round agent_spawn pers
     assert.equal(output.ok, false);
     assert.equal(output.errorCode, 'persistence_unavailable');
     assert.match(output.error ?? '', /durably accepted/u);
+    assert.doesNotMatch(output.error ?? '', /simulated durable store failure/u);
   }
+  assert.equal(
+    loggedErrors.some((args) => args.includes(persistenceFailure)),
+    true,
+    'launch persistence failure must retain the original operator cause',
+  );
+});
+
+void test('processFunctionCalls preserves failed deferral and rejection-settlement causes', async (t) => {
+  const threadId = testThreadId(160);
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-agent-spawn-deferral-failure-'),
+  );
+  const runtimeStateStore = await createDaemonRuntimeStateStore({
+    homeStateRoot: workspaceRoot,
+  });
+  t.after(() => {
+    runtimeStateStore.close();
+  });
+  const deferralFailure = new Error('simulated deferral persistence failure');
+  const settlementFailure = new Error(
+    'simulated rejection settlement persistence failure',
+  );
+  const loggedErrors = captureConsoleErrors(t);
+  const daemonContext = createDaemonContext({
+    subagentConcurrencyPolicy: { maxConcurrentChildren: 1 },
+    subagentLaunchRequests: {
+      ...runtimeStateStore,
+      markSubagentLaunchDeferredBatch() {
+        throw deferralFailure;
+      },
+      markSubagentLaunchFailedToStart() {
+        throw settlementFailure;
+      },
+    },
+  });
+  let startCount = 0;
+  const runtimeServices: DaemonContext = {
+    ...daemonContext,
+    subagent: {
+      ...daemonContext.subagent,
+      runs: {
+        async startBackgroundRun() {
+          startCount += 1;
+          throw new Error('admission failure must prevent child launch');
+        },
+      },
+    },
+  };
+  const runId = testRunId('agent-spawn-deferral-failure');
+  const runContext = makeRunContext({ threadId, stateRoot: workspaceRoot });
+  const runState = createRunState({ runId, runContext });
+  const history: HistoryItem[] = [];
+
+  const result = await processFunctionCalls({
+    functionCalls: [
+      {
+        id: 'fc-agent-spawn-deferral-failure-1',
+        callId: 'call-agent-spawn-deferral-failure-1',
+        name: 'agent_spawn',
+        arguments: JSON.stringify({
+          task: 'first over-capacity launch',
+          subagent_type: 'explorer',
+        }),
+      },
+      {
+        id: 'fc-agent-spawn-deferral-failure-2',
+        callId: 'call-agent-spawn-deferral-failure-2',
+        name: 'agent_spawn',
+        arguments: JSON.stringify({
+          task: 'second over-capacity launch',
+          subagent_type: 'explorer',
+        }),
+      },
+    ],
+    round: 0,
+    history,
+    runtime: makeExecutionRuntime(runtimeServices, {
+      runContext,
+      runId,
+      approvalContext: makeApprovalContext({
+        computerSessionId: 'session-agent-spawn-deferral-failure',
+      }),
+      emit: () => {},
+      runState,
+    }),
+  });
+
+  assert.deepEqual(result, { ok: true, value: undefined });
+  assert.equal(startCount, 0);
+  assert.equal(history.length, 2);
+  assert.equal(
+    loggedErrors.some((args) => args.includes(deferralFailure)),
+    true,
+    'deferral persistence failure must retain the original operator cause',
+  );
+  assert.equal(
+    loggedErrors.filter((args) => args.includes(settlementFailure)).length,
+    2,
+    'each failed durable rejection settlement must retain its operator cause',
+  );
 });
 
 void test('processFunctionCalls allows three same-round subagent launches under the default policy', async () => {

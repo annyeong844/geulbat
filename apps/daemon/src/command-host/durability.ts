@@ -39,6 +39,12 @@ export type DurabilityStageObserver = (
   stage: DurabilityStage,
 ) => Promise<void> | void;
 
+export type DurabilityFailureObserver = (failure: {
+  phase: 'terminal_artifacts' | 'terminal_metadata';
+  metadata: HostCommandMetadata;
+  error: unknown;
+}) => void;
+
 interface DurableWriteStages {
   afterWrite?: () => Promise<void> | void;
   afterSync?: () => Promise<void> | void;
@@ -122,6 +128,7 @@ export async function persistTerminalArtifacts(args: {
   stderrTail: Buffer;
   metadata: HostCommandMetadata;
   observe?: DurabilityStageObserver;
+  onFailure?: DurabilityFailureObserver;
 }): Promise<TerminalPersistOutcome> {
   const observe = args.observe;
   let artifactOk = true;
@@ -131,8 +138,13 @@ export async function persistTerminalArtifacts(args: {
     await writeDurableFile(args.paths.stdout, args.stdoutTail);
     await writeDurableFile(args.paths.stderr, args.stderrTail);
     await observe?.('terminal.artifacts_persisted');
-  } catch {
+  } catch (error: unknown) {
     artifactOk = false;
+    args.onFailure?.({
+      phase: 'terminal_artifacts',
+      metadata: args.metadata,
+      error,
+    });
   }
   let metadataOk = true;
   try {
@@ -145,8 +157,13 @@ export async function persistTerminalArtifacts(args: {
       `${JSON.stringify(metadata, null, 2)}\n`,
     );
     await observe?.('terminal.metadata_persisted');
-  } catch {
+  } catch (error: unknown) {
     metadataOk = false;
+    args.onFailure?.({
+      phase: 'terminal_metadata',
+      metadata: args.metadata,
+      error,
+    });
   }
   return { artifactOk, metadataOk };
 }

@@ -1,3 +1,5 @@
+import { createLogger } from '@geulbat/structured-logger/logger';
+
 import type { FunctionCall } from '../llm/index.js';
 import {
   buildChildLaunchPayload,
@@ -19,6 +21,8 @@ import {
   type AgentToolCallExecutionRuntime,
 } from './loop-tool-runtime.js';
 
+const logger = createLogger('agent/tool-shared-window-admission');
+
 export type SharedToolWindowCallKind =
   | 'read_only'
   | 'subagent_launch'
@@ -39,6 +43,10 @@ export function admitSharedToolWindow(args: {
   release(): void;
 } {
   const { preparedFunctionCalls, runtime } = args;
+  const admissionLogger = logger.withContext({
+    runId: runtime.executionContextBase.runId,
+    threadId: runtime.executionContextBase.threadId,
+  });
   const runState = getToolRuntimeRunState(runtime);
   const subagentLaunchCalls = preparedFunctionCalls.filter(
     isPreparedSubagentLaunchCall,
@@ -126,8 +134,12 @@ export function admitSharedToolWindow(args: {
         durableAcceptedRequests = launchRequestStore.enqueueSubagentLaunchBatch(
           durableLaunchRequests,
         );
-      } catch {
+      } catch (error: unknown) {
         persistenceFailed = true;
+        admissionLogger.error(
+          'subagent launch batch persistence failed',
+          error,
+        );
       }
     }
     if (persistenceFailed) {
@@ -171,8 +183,12 @@ export function admitSharedToolWindow(args: {
           deferReason: 'batch_group_wait',
         });
         deferred = true;
-      } catch {
+      } catch (error: unknown) {
         deferred = false;
+        admissionLogger.error(
+          'subagent launch deferral persistence failed',
+          error,
+        );
       }
     }
     if (!deferred) {
@@ -182,9 +198,10 @@ export function admitSharedToolWindow(args: {
             childRunId: durableRequest.childRunId,
             reason: batchAdmission.error,
           });
-        } catch {
-          // The tool result below remains an explicit rejection; the store
-          // operation already reports its own persistence diagnostic.
+        } catch (error: unknown) {
+          admissionLogger
+            .withContext({ childRunId: durableRequest.childRunId })
+            .error('subagent launch rejection settlement failed', error);
         }
       }
       for (const preparedFunctionCall of subagentLaunchCalls) {

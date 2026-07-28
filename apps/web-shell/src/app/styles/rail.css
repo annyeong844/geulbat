@@ -410,21 +410,6 @@
   background: rgba(50, 34, 20, 0.08);
 }
 
-/* 탐색 위치 경로 (컴퓨터 전체 탐색 모드) */
-.rail-browse-path {
-  position: relative;
-  display: block;
-  margin-top: 2px;
-  max-width: 100%;
-  text-transform: none;
-  letter-spacing: 0;
-  cursor: default;
-  outline: none;
-  font-family: var(--font-ui-mono);
-  font-size: 10px;
-  color: var(--on-surface-muted);
-}
-
 /* 바로가기 (탐색기 사이드바 스타일) */
 .quick-access {
   display: flex;
@@ -875,55 +860,46 @@
   color: var(--primary);
 }
 
-.rail-browse-path-short {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 전체 경로 토글 — 카드 없이 글자만, 옆으로 넓게 펼쳐진다 */
-.rail-browse-path-full {
-  display: none;
-  position: absolute;
-  top: calc(100% + 3px);
-  left: 0;
-  z-index: 70;
-  width: max-content;
-  max-width: min(520px, 70vw);
-  padding: 2px 0;
-  background: transparent;
-  color: var(--on-surface);
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: normal;
-  word-break: break-all;
-}
-
-.rail-browse-path:hover .rail-browse-path-full,
-.rail-browse-path:focus-visible .rail-browse-path-full {
-  display: block;
-}
-
+/* 경로 바 — 섹션 헤더 줄에서 액션 버튼 옆의 남은 폭을 차지한다.
+   길어지면 압축되지 말고 가로로 스크롤된다(세그먼트는 `flex: none`). */
 .rail-browse-breadcrumbs {
   display: flex;
-  flex: none;
+  flex: 1;
   align-items: center;
   gap: 3px;
   min-width: 0;
-  padding: 0 10px 6px;
   overflow-x: auto;
   color: var(--on-surface-muted);
   font-size: 11px;
   scrollbar-width: none;
 }
 
+/* 생략 표시 — 누르면 접힌 가운데 경로가 펼쳐진다 */
+.rail-browse-breadcrumb-expand {
+  border: none;
+  padding: 1px 3px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rail-browse-breadcrumb-expand:hover {
+  color: var(--on-surface);
+}
+
 .rail-browse-breadcrumbs::-webkit-scrollbar {
   display: none;
 }
 
+/* 세그먼트는 줄지 않는다 — 컨테이너가 `overflow-x: auto`이므로 좁아지면
+   압축되지 말고 가로로 넘쳐 스크롤되어야 한다. 줄어들면 한글 라벨이 글자
+   사이에서 줄바꿈되어 세로로 무너진다. */
 .rail-browse-breadcrumbs > span {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 3px;
 }

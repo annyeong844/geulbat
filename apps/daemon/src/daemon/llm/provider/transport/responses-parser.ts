@@ -64,6 +64,15 @@ export async function parseResponseEvents(
         if (parseError === undefined) {
           throw error;
         }
+        if (parseError instanceof Error) {
+          parseError.cause =
+            parseError.cause === undefined
+              ? error
+              : new AggregateError(
+                  [parseError.cause, error],
+                  'response iterator cleanup failed after the primary provider failure',
+                );
+        }
       }
     }
   }

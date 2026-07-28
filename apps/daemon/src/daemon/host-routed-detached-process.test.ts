@@ -7,12 +7,14 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import type { HostCommandRuntime } from '../command-host/contract.js';
 import { createCommandSessionHost } from '../command-host/session-core.js';
 import { createDaemonHostCommandRuntime } from '../command-host/runtime-selection.js';
 import { removeCommandHostWorkspace } from '../test-support/command-host-workspace.js';
 import {
   SYSTEM_SESSION_OWNER,
   type HostCommandOutputPage,
+  type HostCommandSnapshot,
 } from './host-command-output-store.js';
 import {
   createHostRoutedDetachedProcessAttacher,
@@ -69,6 +71,107 @@ async function start(
     ...invocation,
   });
 }
+
+void test('host-routed detached process rechecks stdout when stderr observes a newer terminal revision', async () => {
+  const outputRef = 'revision-race-output';
+  const snapshot = (
+    status: HostCommandSnapshot['status'],
+    revision: number,
+    stdoutBytes: number,
+  ): HostCommandSnapshot => ({
+    outputRef,
+    status,
+    exitCode: status === 'running' ? null : 0,
+    stdout: null,
+    stderr: null,
+    outputComplete: false,
+    stdoutBytes,
+    stderrBytes: 0,
+    stdoutChars: stdoutBytes,
+    stderrChars: 0,
+    durationMs: 1,
+    firstOutputAfterMs: stdoutBytes === 0 ? null : 1,
+    revision,
+    stdinOpen: false,
+    outputLimitExceeded: null,
+    stdoutOmittedBytes: 0,
+    stderrOmittedBytes: 0,
+  });
+  const running = snapshot('running', 0, 0);
+  const terminal = snapshot('exit', 1, Buffer.byteLength('worker-owned'));
+  let stdoutReads = 0;
+  const hostCommands: HostCommandRuntime = {
+    async start() {
+      return { ok: true, outputRef };
+    },
+    async waitForInitialResult() {
+      return { ok: true, value: running };
+    },
+    async interact(args) {
+      if (args.page?.stream === 'stdout') {
+        stdoutReads += 1;
+        return {
+          ok: true,
+          value: {
+            snapshot: stdoutReads === 1 ? running : terminal,
+            page:
+              stdoutReads === 1
+                ? null
+                : {
+                    stream: 'stdout',
+                    offsetBytes: 0,
+                    endOffsetBytes: Buffer.byteLength('worker-owned'),
+                    totalBytes: Buffer.byteLength('worker-owned'),
+                    limitBytes: 1024,
+                    hasMore: false,
+                    nextOffsetBytes: null,
+                    content: 'worker-owned',
+                  },
+          },
+        };
+      }
+      return {
+        ok: true,
+        value: {
+          snapshot: terminal,
+          page: null,
+        },
+      };
+    },
+    async listThreadSessions() {
+      return [];
+    },
+    async closeAll() {
+      return { ok: true };
+    },
+  };
+  const startDetachedProcess = createHostRoutedDetachedProcessStarter({
+    hostCommands,
+    stateRoot: '/workspace',
+    pageLimitBytes: 1024,
+    cwd: '/workspace',
+    env: {},
+    runId: 'revision-race',
+  });
+
+  const started = await startDetachedProcess({
+    callId: 'revision-race',
+    executable: process.execPath,
+    args: [],
+  });
+  assert.equal(started.ok, true);
+  if (!started.ok) {
+    return;
+  }
+
+  assert.deepEqual(await started.handle.exit, {
+    kind: 'exit',
+    exitCode: 0,
+    processTerminated: true,
+  });
+  assert.equal(stdoutReads, 2);
+  assert.equal(started.handle.drainNewOutput().stdout, 'worker-owned');
+});
 
 void test('host-routed detached process drains incremental output until terminal exit', async (t) => {
   const fixture = await makeFixture(t);

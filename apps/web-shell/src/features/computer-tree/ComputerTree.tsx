@@ -12,7 +12,11 @@ import {
 import type { FileTreeNode } from '@geulbat/protocol/files';
 
 import type { ManageFileOperation } from '../../lib/api/files.js';
-import { baseNameOf, buildPathBreadcrumbs } from '../../lib/path-name.js';
+import {
+  baseNameOf,
+  buildPathBreadcrumbs,
+  collapsePathBreadcrumbs,
+} from '../../lib/path-name.js';
 import {
   flattenVisibleTree,
   isCanvasEligibleFileName,
@@ -252,25 +256,64 @@ export function ComputerTree({
     expandDirectory,
   });
 
+  const [pathExpanded, setPathExpanded] = useState(false);
+  const breadcrumbs = buildPathBreadcrumbs(browsePath);
+  const collapsed = collapsePathBreadcrumbs(breadcrumbs);
+  const renderBreadcrumbSegment = (
+    breadcrumb: { label: string; path: string },
+    withSeparator: boolean,
+  ) => (
+    <span key={breadcrumb.path || '(root)'}>
+      {withSeparator ? <span aria-hidden="true">/</span> : null}
+      <button
+        type="button"
+        aria-label={`경로로 이동: ${breadcrumb.label}`}
+        disabled={breadcrumb.path === browsePath}
+        onClick={() => onNavigateInto?.(breadcrumb.path)}
+      >
+        {breadcrumb.label}
+      </button>
+    </span>
+  );
+  const renderBreadcrumbSegments = () => {
+    // 접을 것이 없거나 사용자가 펼쳤으면 전부 보여준다.
+    if (collapsed.hidden.length === 0 || pathExpanded) {
+      return breadcrumbs.map((breadcrumb, index) =>
+        renderBreadcrumbSegment(breadcrumb, index > 0),
+      );
+    }
+    return [
+      ...collapsed.leading.map((breadcrumb, index) =>
+        renderBreadcrumbSegment(breadcrumb, index > 0),
+      ),
+      <span key="(collapsed)">
+        <span aria-hidden="true">/</span>
+        <button
+          type="button"
+          className="rail-browse-breadcrumb-expand"
+          title={`생략된 경로 ${collapsed.hidden.length}개 펼치기`}
+          aria-label={`생략된 경로 ${collapsed.hidden.length}개 펼치기`}
+          onClick={() => setPathExpanded(true)}
+        >
+          …
+        </button>
+      </span>,
+      ...collapsed.trailing.map((breadcrumb) =>
+        renderBreadcrumbSegment(breadcrumb, true),
+      ),
+    ];
+  };
+
   return (
     <section className="computer-tree">
       <div className="rail-section-head">
-        <span className="rail-section-label">
-          {browseEnabled ? (
-            // 경로가 곧 라벨이다 — 항상 한 줄 말줄임으로 정렬을 지키고,
-            // 올리면(또는 포커스하면) 전체 경로 토글이 아래로 뜬다
-            <span className="rail-browse-path" tabIndex={0}>
-              <span className="rail-browse-path-short">
-                {browsePath === '' ? '컴퓨터' : `컴퓨터 / ${browsePath}`}
-              </span>
-              <span className="rail-browse-path-full" role="tooltip">
-                {browsePath === '' ? '컴퓨터' : `컴퓨터 / ${browsePath}`}
-              </span>
-            </span>
-          ) : (
-            '파일'
-          )}
-        </span>
+        {browseEnabled ? (
+          <nav className="rail-browse-breadcrumbs" aria-label="현재 폴더 경로">
+            {renderBreadcrumbSegments()}
+          </nav>
+        ) : (
+          <span className="rail-section-label">파일</span>
+        )}
         <span className="rail-section-actions">
           {browseEnabled ? (
             <button
@@ -306,23 +349,6 @@ export function ComputerTree({
           </button>
         </span>
       </div>
-      {browseEnabled ? (
-        <nav className="rail-browse-breadcrumbs" aria-label="현재 폴더 경로">
-          {buildPathBreadcrumbs(browsePath).map((breadcrumb, index) => (
-            <span key={breadcrumb.path || '(root)'}>
-              {index > 0 ? <span aria-hidden="true">/</span> : null}
-              <button
-                type="button"
-                aria-label={`경로로 이동: ${breadcrumb.label}`}
-                disabled={breadcrumb.path === browsePath}
-                onClick={() => onNavigateInto?.(breadcrumb.path)}
-              >
-                {breadcrumb.label}
-              </button>
-            </span>
-          ))}
-        </nav>
-      ) : null}
       {browseEnabled ? (
         <nav className="quick-access" aria-label="빠른 위치">
           <span className="quick-access-heading" aria-hidden="true">

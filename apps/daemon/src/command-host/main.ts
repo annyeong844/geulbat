@@ -98,6 +98,16 @@ async function main(): Promise<number> {
     inlineMaxBytes,
     ...(tailRingBytes > 0 ? { tailRingBytes } : {}),
     ...(maxYieldTimeMs > 0 ? { maxYieldTimeMs } : {}),
+    onDurabilityFailure({ phase, metadata, error }) {
+      log.write('terminal_persistence_failed', {
+        phase,
+        outputRef: metadata.outputRef,
+        threadId: metadata.threadId,
+        runId: metadata.runId,
+        callId: metadata.callId,
+        message: describe(error),
+      });
+    },
   });
 
   let exiting = false;

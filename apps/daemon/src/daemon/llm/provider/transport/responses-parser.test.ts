@@ -199,7 +199,8 @@ void test('parseResponseEvents preserves structured provider error details witho
 });
 
 void test('parseResponseEvents preserves the original parse failure when iterator cleanup also fails', async () => {
-  const parseError = new Error('next failed');
+  const originalCause = new Error('provider failed');
+  const parseError = new Error('next failed', { cause: originalCause });
   const cleanupError = new Error('cleanup failed');
 
   const events: AsyncIterable<Record<string, unknown>> = {
@@ -215,7 +216,37 @@ void test('parseResponseEvents preserves the original parse failure when iterato
     },
   };
 
-  await assert.rejects(parseResponseEvents(events), /next failed/);
+  await assert.rejects(parseResponseEvents(events), (error: unknown) => {
+    assert.equal(error, parseError);
+    assert.ok(parseError.cause instanceof AggregateError);
+    assert.deepEqual(parseError.cause.errors, [originalCause, cleanupError]);
+    return true;
+  });
+});
+
+void test('parseResponseEvents preserves idle timeout identity when iterator cleanup also fails', async () => {
+  const cleanupError = new Error('timeout cleanup failed');
+  const events: AsyncIterable<Record<string, unknown>> = {
+    [Symbol.asyncIterator]() {
+      return {
+        next: () =>
+          new Promise<IteratorResult<Record<string, unknown>>>(() => {}),
+        async return(): Promise<IteratorResult<Record<string, unknown>>> {
+          throw cleanupError;
+        },
+      };
+    },
+  };
+
+  await assert.rejects(
+    parseResponseEvents(events, undefined, { idleTimeoutMs: 5 }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(Reflect.get(error, 'llmCode'), 'llm_idle_timeout');
+      assert.equal(error.cause, cleanupError);
+      return true;
+    },
+  );
 });
 
 void test('parseResponseEvents rejects invalid assistant phase literals instead of downgrading to commentary', async () => {

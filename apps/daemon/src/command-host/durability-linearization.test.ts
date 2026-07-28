@@ -8,7 +8,10 @@ import {
   buildHostCommandPaths,
   type HostCommandMetadata,
 } from '../daemon/host-command-output-store.js';
-import type { DurabilityStage } from './durability.js';
+import type {
+  DurabilityFailureObserver,
+  DurabilityStage,
+} from './durability.js';
 import { recoverCommandHostState } from './recovery.js';
 import { createCommandSessionHost } from './session-core.js';
 import type { CommandSessionHost, HostCommandRuntime } from './contract.js';
@@ -38,12 +41,14 @@ interface Fixture {
 async function makeFixture(
   t: { after(fn: () => Promise<void> | void): void },
   observe?: (stage: DurabilityStage) => Promise<void> | void,
+  onDurabilityFailure?: DurabilityFailureObserver,
 ): Promise<Fixture> {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-linearize-'));
   const host = createCommandSessionHost({
     inlineMaxBytes: 64,
     tailRingBytes: 4096,
     ...(observe === undefined ? {} : { onDurabilityStage: observe }),
+    ...(onDurabilityFailure === undefined ? {} : { onDurabilityFailure }),
   });
   t.after(async () => {
     await host.closeAll();
@@ -152,12 +157,18 @@ for (const failAt of CLAIM_STAGES_BEFORE_COMMIT) {
 }
 
 void test('T3: artifact success with metadata failure keeps the terminal truth in the journal', async (t) => {
-  const fixture = await makeFixture(t, (stage) => {
-    // §5.3 3행 — artifact는 남고 terminal metadata만 실패한 창.
-    if (stage === 'terminal.metadata_begin') {
-      throw new Error('injected terminal metadata failure');
-    }
-  });
+  const failure = new Error('injected terminal metadata failure');
+  const diagnosedFailures: unknown[] = [];
+  const fixture = await makeFixture(
+    t,
+    (stage) => {
+      // §5.3 3행 — artifact는 남고 terminal metadata만 실패한 창.
+      if (stage === 'terminal.metadata_begin') {
+        throw failure;
+      }
+    },
+    ({ error }) => diagnosedFailures.push(error),
+  );
   const started = await fixture.host.start(
     startArgs(
       fixture,
@@ -204,15 +215,26 @@ void test('T3: artifact success with metadata failure keeps the terminal truth i
   assert.equal(promoted?.status, 'exit');
   assert.equal(promoted?.exitCode, 0);
   assert.equal(promoted?.stdoutBytes, 400);
+  assert.equal(
+    diagnosedFailures.includes(failure),
+    true,
+    'terminal metadata persistence must retain the original operator cause',
+  );
 });
 
 void test('T3: artifact failure is reported without losing the terminal status', async (t) => {
-  const fixture = await makeFixture(t, (stage) => {
-    // §5.3 2행 — artifact만 실패하고 metadata는 성공한다.
-    if (stage === 'terminal.artifacts_begin') {
-      throw new Error('injected artifact failure');
-    }
-  });
+  const failure = new Error('injected artifact failure');
+  const diagnosedFailures: unknown[] = [];
+  const fixture = await makeFixture(
+    t,
+    (stage) => {
+      // §5.3 2행 — artifact만 실패하고 metadata는 성공한다.
+      if (stage === 'terminal.artifacts_begin') {
+        throw failure;
+      }
+    },
+    ({ error }) => diagnosedFailures.push(error),
+  );
   const started = await fixture.host.start(
     startArgs(fixture, 'process.stdout.write("y".repeat(400));'),
   );
@@ -232,6 +254,11 @@ void test('T3: artifact failure is reported without losing the terminal status',
   const persisted = await readMetadata(fixture, started.outputRef);
   assert.equal(persisted?.status, 'exit');
   assert.equal(persisted?.outputPersistFailed, true);
+  assert.equal(
+    diagnosedFailures.includes(failure),
+    true,
+    'terminal artifact persistence must retain the original operator cause',
+  );
 });
 
 // ---------------------------------------------------------------------------
