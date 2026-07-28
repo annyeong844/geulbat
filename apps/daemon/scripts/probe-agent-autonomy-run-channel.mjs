@@ -30,6 +30,7 @@ const TASK = Object.freeze({
     'Read the root package.json and reply with exactly its top-level name value. Do not add quotes, markdown, or explanation.',
   expectedAnswer: 'geulbat-cli2',
   eligibilityReason: 'deterministic_repo_read_exact_answer',
+  allowedPublicToolNames: Object.freeze(['read_file']),
   permissionMode: 'basic',
   reasoningEffort: 'medium',
   serviceTier: 'standard',
@@ -134,8 +135,10 @@ function resolveOutput(repoRoot, value) {
   return output;
 }
 
-async function readShellToken(baseUrl, fetchImpl) {
-  const response = await fetchImpl(baseUrl);
+async function readShellToken(baseUrl, fetchImpl, timeoutMs) {
+  const response = await fetchImpl(baseUrl, {
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   if (!response.ok) {
     throw new Error(`shell_http_${response.status}`);
   }
@@ -501,6 +504,7 @@ export async function runAgentAutonomyRunChannelProbe(options = {}) {
     threadId: requestedThreadId,
     workingDirectory: repoRoot,
     modelId: model.id,
+    allowedPublicToolNames: [...TASK.allowedPublicToolNames],
     permissionMode: TASK.permissionMode,
     reasoningEffort: TASK.reasoningEffort,
     serviceTier: TASK.serviceTier,
@@ -509,7 +513,7 @@ export async function runAgentAutonomyRunChannelProbe(options = {}) {
     throw new ProbeInputError('probe task does not form a valid run request');
   }
   const fetchImpl = options.fetchImpl ?? fetch;
-  const shellToken = await readShellToken(baseUrl, fetchImpl);
+  const shellToken = await readShellToken(baseUrl, fetchImpl, parsed.timeoutMs);
   const preflight = {
     schemaVersion: 1,
     kind: 'agent_autonomy_run_channel_preflight',
@@ -537,6 +541,7 @@ export async function runAgentAutonomyRunChannelProbe(options = {}) {
     endpointScopeReferenceId: preflight.endpointScopeReferenceId,
     modelId: model.id,
     providerId: model.providerId,
+    allowedPublicToolNames: TASK.allowedPublicToolNames,
     permissionMode: TASK.permissionMode,
     reasoningEffort: TASK.reasoningEffort,
     serviceTier: TASK.serviceTier,

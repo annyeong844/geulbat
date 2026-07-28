@@ -16,9 +16,9 @@ import type {
 import { formatContextUsageSummary } from './context-usage-ring.js';
 import { formatRunModelLabel, REASONING_EFFORT_LABELS } from './model-copy.js';
 
-export type ComposerSlashCommandId = 'goal' | 'skills' | 'mcp' | 'status';
+type ComposerSlashCommandId = 'goal' | 'skills' | 'mcp' | 'status';
 
-export interface ComposerSlashCommandSuggestion {
+interface ComposerSlashCommandSuggestion {
   id: ComposerSlashCommandId;
   command: string;
   label: string;
@@ -62,7 +62,7 @@ const GOAL_STATE_LABELS: Record<GoalSnapshot['state'], string> = {
   verification_unavailable: '검증 대기',
 };
 
-export function getComposerSlashCommandSuggestions(
+function getComposerSlashCommandSuggestions(
   query: string,
 ): readonly ComposerSlashCommandSuggestion[] {
   const normalizedQuery = query.trim().toLocaleLowerCase('ko-KR');

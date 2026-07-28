@@ -22,7 +22,7 @@ export function buildPathBreadcrumbs(
   return breadcrumbs;
 }
 
-export interface CollapsedBreadcrumbs {
+interface CollapsedBreadcrumbs {
   leading: Array<{ label: string; path: string }>;
   hidden: Array<{ label: string; path: string }>;
   trailing: Array<{ label: string; path: string }>;

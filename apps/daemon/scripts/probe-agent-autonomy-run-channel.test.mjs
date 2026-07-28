@@ -69,6 +69,7 @@ class FakeRunChannelSocket {
     } else if (message.type === 'run.start') {
       assert.equal(existsSync(this.declarationPath), true);
       assert.equal(typeof message.request.threadId, 'string');
+      assert.deepEqual(message.request.allowedPublicToolNames, ['read_file']);
       this.threadId = message.request.threadId;
       this.event(1, 'run_ack', {
         runId: RUN_ID,
