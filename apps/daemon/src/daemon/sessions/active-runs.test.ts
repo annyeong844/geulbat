@@ -637,6 +637,42 @@ void test('abortAllRuns cancels every active tree and waitForIdle resolves after
   assert.equal(store.abortAllRuns('daemon_shutdown'), 0);
 });
 
+void test('waitForThreadIdle resolves for one thread without waiting for unrelated runs', async () => {
+  const store = createActiveRunStore();
+  const targetThreadId = testThreadId(46);
+  const unrelatedThreadId = testThreadId(47);
+  const targetRunId = testRunId('thread-idle-target');
+  const unrelatedRunId = testRunId('thread-idle-unrelated');
+
+  registerTestActiveRun({
+    store,
+    runId: targetRunId,
+    threadId: targetThreadId,
+    ownerThreadId: targetThreadId,
+    abortController: new AbortController(),
+  });
+  registerTestActiveRun({
+    store,
+    runId: unrelatedRunId,
+    threadId: unrelatedThreadId,
+    ownerThreadId: unrelatedThreadId,
+    abortController: new AbortController(),
+  });
+
+  let targetSettled = false;
+  const targetIdle = store.waitForThreadIdle(targetThreadId).then(() => {
+    targetSettled = true;
+  });
+
+  store.finishRun(unrelatedThreadId, unrelatedRunId);
+  await Promise.resolve();
+  assert.equal(targetSettled, false);
+
+  store.finishRun(targetThreadId, targetRunId);
+  await targetIdle;
+  assert.equal(targetSettled, true);
+});
+
 void test('waitForIdle observes caller cancellation without changing active runs', async () => {
   const store = createActiveRunStore();
   const threadId = testThreadId(44);

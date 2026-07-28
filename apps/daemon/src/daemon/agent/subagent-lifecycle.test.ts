@@ -291,6 +291,66 @@ void test('beginBackgroundChildLifecycle unloads the registry body after durable
   }
 });
 
+void test('beginBackgroundChildLifecycle does not leave a child active when terminal publication fails', () => {
+  const runtimeServices = createDaemonContext();
+  let attemptedTerminalResult: string | undefined;
+  runtimeServices.backgroundNotifications.enqueueThreadBackgroundResult = (
+    _threadId,
+    result,
+  ) => {
+    attemptedTerminalResult = result.result;
+    throw new Error('terminal publication unavailable');
+  };
+  let releaseCount = 0;
+  const { lifecycle, ownerThreadId, childRunId, parentRunState } =
+    startTestBackgroundChildLifecycle({
+      testLabel: 'subagent-lifecycle-terminal-publication-failure',
+      ownerThreadId: 75,
+      childThreadId: 76,
+      parentRunId: 'lifecycle-terminal-publication-failure-parent',
+      childRunId: 'lifecycle-terminal-publication-failure-child',
+      runtimeServices,
+      launchReservation: {
+        activate() {},
+        release() {
+          releaseCount += 1;
+        },
+      },
+    });
+  const loggerCapture = captureConsoleError();
+
+  try {
+    const durablyPublished = lifecycle.publishTerminalOutcome({
+      terminalState: 'failed',
+      terminalReason: 'persistence_error',
+      terminalResult: 'child stopped before terminal storage recovered',
+    });
+
+    assert.equal(durablyPublished, false);
+    assert.equal(releaseCount, 1);
+    assert.equal(parentRunState.childRunIds.has(childRunId), false);
+    assert.equal(parentRunState.backgroundChildRunIds.has(childRunId), false);
+    assert.deepEqual(
+      runtimeServices.childRuns.getActiveChildRunsByOwnerThread(ownerThreadId),
+      [],
+    );
+    assert.equal(
+      runtimeServices.childRuns.getChildRun(childRunId)?.status,
+      'failed',
+    );
+    assert.equal(
+      runtimeServices.childRuns.getChildRun(childRunId)?.reason,
+      'persistence_error',
+    );
+    assert.equal(
+      attemptedTerminalResult,
+      'child stopped before terminal storage recovered',
+    );
+  } finally {
+    loggerCapture.restore();
+  }
+});
+
 void test('beginBackgroundChildLifecycle durably marks started after registration and before spawn emission', () => {
   const order: string[] = [];
   let runtimeServices: AgentRuntimeServices;

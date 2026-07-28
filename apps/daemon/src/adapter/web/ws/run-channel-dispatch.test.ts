@@ -260,22 +260,16 @@ void test('handleClientMessage automatically rebinds detached run delivery after
   }
 });
 
-void test('authenticated reconnect restores the current planning workflow snapshot', async () => {
+void test('authenticated reconnect restores the current canonical planning draft', async () => {
   const socket = createTestSocket();
   const daemonContext = createRunChannelTestDaemonContext();
   const threadId = testThreadId(229);
   getSocketState(socket).upgradeAuthorized = true;
-  const collecting = await daemonContext.planningWorkflows.enterOrResume({
+  const proposal = await proposeTestPlan(
+    daemonContext,
     threadId,
-    requested: true,
-    intensity: 'visual',
-    depth: 'deep',
-    executionTemplate: {
-      workingDirectory: '/workspace',
-      permissionMode: 'basic',
-    },
-  });
-  assert.ok(collecting);
+    assertRunId('plan-reconnect-canonical-draft'),
+  );
 
   try {
     await handleClientMessage(
@@ -302,7 +296,7 @@ void test('authenticated reconnect restores the current planning workflow snapsh
     );
     assert.ok(planningMessage);
     assert.equal(planningMessage.threadId, threadId);
-    assert.deepEqual(planningMessage.snapshot, collecting);
+    assert.deepEqual(planningMessage.snapshot, proposal);
     assert.deepEqual(messages[0], {
       type: 'run.auth.ok',
       requestId: 'auth-planning-workflow-reconnect',
@@ -408,7 +402,7 @@ void test('plan approval publishes the exact revision before generated execution
   }
 });
 
-void test('plan revision feedback returns to collection before generated replanning', async () => {
+void test('plan revision interrupts visual work and waits for that thread before generated replanning', async () => {
   const socket = createTestSocket();
   const daemonContext = createRunChannelTestDaemonContext();
   const threadId = testThreadId(231);
@@ -420,6 +414,20 @@ void test('plan revision feedback returns to collection before generated replann
   const socketState = getSocketState(socket);
   socketState.authenticated = true;
   socketState.runStartInFlightRequestId = 'existing-start';
+  const visualRun = startManagedRun(
+    {
+      runId: 'plan-command-active-visual',
+      runContext: {
+        threadId,
+        stateRoot: daemonContext.homeStateRoot,
+        workingDirectory: '/workspace',
+      },
+    },
+    { activeRuns: daemonContext.activeRuns },
+  );
+  if (!visualRun.ok) {
+    assert.fail(`expected visual run to start: ${visualRun.activeRunId}`);
+  }
 
   try {
     await handleClientMessage(
@@ -441,7 +449,7 @@ void test('plan revision feedback returns to collection before generated replann
     );
 
     const messages = readSentMessages(socket);
-    assert.equal(messages.length, 3);
+    assert.equal(messages.length, 2);
     const workflowMessage = messages[0];
     assert.equal(workflowMessage?.type, 'plan.workflow');
     if (workflowMessage?.type === 'plan.workflow') {
@@ -462,7 +470,15 @@ void test('plan revision feedback returns to collection before generated replann
       assert.equal(controlMessage.commandKind, 'request_revision');
       assert.equal(controlMessage.snapshot?.state, 'collecting');
     }
-    assert.deepEqual(messages[2], {
+    assert.equal(visualRun.runState.abortController.signal.aborted, true);
+
+    visualRun.finish();
+    await Promise.resolve();
+    await daemonContext.planningWorkflows.readThread(threadId);
+    await Promise.resolve();
+    const settledMessages = readSentMessages(socket);
+    assert.equal(settledMessages.length, 3);
+    assert.deepEqual(settledMessages[2], {
       type: 'run.error',
       requestId: 'plan-revise:plan-request_revision',
       status: 409,
@@ -470,6 +486,76 @@ void test('plan revision feedback returns to collection before generated replann
       message: 'socket already has a run.start request in flight',
     });
   } finally {
+    visualRun.finish();
+    cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('plan cancellation interrupts active visual work without starting a replacement run', async () => {
+  const socket = createTestSocket();
+  const daemonContext = createRunChannelTestDaemonContext();
+  const threadId = testThreadId(234);
+  const proposal = await proposeTestPlan(
+    daemonContext,
+    threadId,
+    assertRunId('plan-command-cancel-proposal'),
+  );
+  const socketState = getSocketState(socket);
+  socketState.authenticated = true;
+  const visualRun = startManagedRun(
+    {
+      runId: 'plan-command-cancel-active-visual',
+      runContext: {
+        threadId,
+        stateRoot: daemonContext.homeStateRoot,
+        workingDirectory: '/workspace',
+      },
+    },
+    { activeRuns: daemonContext.activeRuns },
+  );
+  if (!visualRun.ok) {
+    assert.fail(`expected visual run to start: ${visualRun.activeRunId}`);
+  }
+
+  try {
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'plan.command',
+        requestId: 'plan-cancel-visual',
+        request: {
+          kind: 'cancel',
+          threadId,
+          workflowId: proposal.workflowId,
+          planId: proposal.planId,
+          revision: proposal.revision,
+        },
+      }),
+      daemonContext,
+    );
+
+    assert.equal(visualRun.runState.abortController.signal.aborted, true);
+    const messages = readSentMessages(socket);
+    assert.equal(messages.length, 2);
+    assert.deepEqual(messages[0], {
+      type: 'plan.workflow',
+      threadId,
+      snapshot: null,
+    });
+    assert.deepEqual(messages[1], {
+      type: 'run.control',
+      requestId: 'plan-cancel-visual',
+      action: 'plan.command',
+      ok: true,
+      commandKind: 'cancel',
+      snapshot: null,
+    });
+
+    visualRun.finish();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(readSentMessages(socket).length, 2);
+  } finally {
+    visualRun.finish();
     cleanupSocketState(socket, daemonContext);
   }
 });
@@ -505,6 +591,8 @@ void test('visual plan explanation preserves the approval card before generated 
       daemonContext,
     );
 
+    await daemonContext.planningWorkflows.readThread(threadId);
+    await Promise.resolve();
     const messages = readSentMessages(socket);
     assert.equal(messages.length, 3);
     const workflowMessage = messages[0];
@@ -763,6 +851,160 @@ void test('handleClientMessage durably acknowledges only the matching terminal e
       true,
     );
   } finally {
+    cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('handleClientMessage distinguishes missing and conflicting terminal event acknowledgements', async (t) => {
+  const cases = [
+    {
+      name: 'missing run',
+      threadId: testThreadId(62_1),
+      runId: assertRunId('run-terminal-event-ack-missing'),
+      seq: 1,
+      status: 404,
+      code: 'not_found',
+      message: 'run event acknowledgement rejected: not_found',
+    },
+    {
+      name: 'running run',
+      threadId: testThreadId(62_2),
+      runId: assertRunId('run-terminal-event-ack-not-terminal'),
+      seq: 1,
+      status: 409,
+      code: 'conflict',
+      message: 'run event acknowledgement rejected: not_terminal',
+    },
+  ] as const;
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const socket = createTestSocket();
+      const daemonContext = createRunChannelTestDaemonContext();
+      getSocketState(socket).authenticated = true;
+      try {
+        if (scenario.name === 'running run') {
+          await daemonContext.runCheckpoints.startRun({
+            threadId: scenario.threadId,
+            runId: scenario.runId,
+            request: { workingDirectory: '', permissionMode: 'basic' },
+          });
+        }
+
+        await handleClientMessage(
+          socket,
+          JSON.stringify({
+            type: 'run.event.ack',
+            requestId: `req-${scenario.name}`,
+            request: {
+              threadId: scenario.threadId,
+              runId: scenario.runId,
+              seq: scenario.seq,
+            },
+          }),
+          daemonContext,
+        );
+
+        assert.deepEqual(readLastSentMessage(socket), {
+          type: 'run.error',
+          requestId: `req-${scenario.name}`,
+          status: scenario.status,
+          code: scenario.code,
+          message: scenario.message,
+        });
+      } finally {
+        cleanupSocketState(socket, daemonContext);
+      }
+    });
+  }
+});
+
+void test('authenticated thread subscription publishes current workflow and Goal snapshots without starting a run', async () => {
+  const socket = createTestSocket();
+  const daemonContext = createRunChannelTestDaemonContext();
+  const threadId = testThreadId(62_3);
+  getSocketState(socket).authenticated = true;
+
+  try {
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'run.thread.subscribe',
+        requestId: 'subscribe-current-thread-state',
+        request: { threadId },
+      }),
+      daemonContext,
+    );
+
+    assert.deepEqual(readSentMessages(socket), [
+      {
+        type: 'plan.workflow',
+        threadId,
+        snapshot: null,
+      },
+      {
+        type: 'goal.state',
+        threadId,
+        snapshot: null,
+      },
+    ]);
+    assert.equal(
+      daemonContext.activeRuns.getRunByThreadId(threadId),
+      undefined,
+    );
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+  }
+});
+
+void test('Goal command reports an internal store failure after republishing the durable snapshot', async () => {
+  const socket = createTestSocket();
+  const daemonContext = createRunChannelTestDaemonContext();
+  const threadId = testThreadId(62_4);
+  const goal = await daemonContext.goals.enterOrResume({
+    threadId,
+    requested: true,
+    objective: 'Keep the durable Goal visible.',
+    executionTemplate: {
+      workingDirectory: '/workspace',
+      permissionMode: 'basic',
+    },
+  });
+  assert.ok(goal);
+  getSocketState(socket).authenticated = true;
+  const applyCommand = daemonContext.goals.applyCommand.bind(
+    daemonContext.goals,
+  );
+  daemonContext.goals.applyCommand = async () => {
+    throw new Error('goal store unavailable');
+  };
+
+  try {
+    await handleClientMessage(
+      socket,
+      JSON.stringify({
+        type: 'goal.command',
+        requestId: 'goal-store-failure',
+        request: {
+          kind: 'pause',
+          threadId,
+          goalId: goal.goalId,
+        },
+      }),
+      daemonContext,
+    );
+
+    const messages = readSentMessages(socket);
+    assert.equal(messages[0]?.type, 'goal.state');
+    assert.deepEqual(messages[1], {
+      type: 'run.error',
+      requestId: 'goal-store-failure',
+      status: 500,
+      code: 'internal',
+      message: 'goal store unavailable',
+    });
+  } finally {
+    daemonContext.goals.applyCommand = applyCommand;
     cleanupSocketState(socket, daemonContext);
   }
 });

@@ -24,6 +24,7 @@ import {
 import {
   appendTranscriptEntries,
   appendTranscriptEntry,
+  appendTranscriptEntryOnce,
   CompareAndAppendMismatchError,
   getTranscriptEntryCacheLimitForTests,
   getTranscriptEntryCacheSizeForTests,
@@ -282,6 +283,38 @@ void test('appendTranscriptEntry assigns and persists entry ids', async () => {
 
   const entries = await readTranscriptEntries(workspaceRoot, threadId);
   assert.equal(entries[0]?.entryId, appended.entryId);
+});
+
+void test('appendTranscriptEntryOnce deduplicates one prepared identity and rejects conflicting content', async () => {
+  resetTranscriptEntryCacheForTests();
+  const threadId = testThreadId(25);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-transcript-'));
+  const prepared = {
+    entryId: 'prepared-child-input',
+    role: 'user' as const,
+    content: 'deliver once',
+    timestamp: '2026-07-29T00:00:00.000Z',
+  };
+
+  const [first, second] = await Promise.all([
+    appendTranscriptEntryOnce(workspaceRoot, threadId, prepared),
+    appendTranscriptEntryOnce(workspaceRoot, threadId, prepared),
+  ]);
+
+  assert.deepEqual(second, first);
+  assert.deepEqual(await readTranscriptEntries(workspaceRoot, threadId), [
+    prepared,
+  ]);
+  await assert.rejects(
+    appendTranscriptEntryOnce(workspaceRoot, threadId, {
+      ...prepared,
+      content: 'conflicting delivery',
+    }),
+    /transcript entry identity conflicts: prepared-child-input/,
+  );
+  assert.deepEqual(await readTranscriptEntries(workspaceRoot, threadId), [
+    prepared,
+  ]);
 });
 
 void test('readTranscriptEntries assigns stable virtual entry ids to legacy entries', async () => {

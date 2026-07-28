@@ -270,9 +270,20 @@ export function buildPtcPackageInstallCommand(
   manager: PtcPackageInstallManager = 'npm',
 ): string {
   if (manager === 'pip') {
+    const target = PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH;
+    const staging = `${target}.staging`;
+    const rollback = `${target}.rollback`;
     return [
       'set -eu',
-      `mkdir -p '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
+      `if [ ! -d '${target}' ] && [ -d '${rollback}' ]; then`,
+      `  mv '${rollback}' '${target}'`,
+      'fi',
+      `rm -rf '${staging}'`,
+      `if [ -d '${target}' ]; then`,
+      `  cp -a '${target}' '${staging}'`,
+      'else',
+      `  mkdir -p '${staging}'`,
+      'fi',
       [
         'python3 -m pip --isolated install',
         '--disable-pip-version-check',
@@ -281,18 +292,38 @@ export function buildPtcPackageInstallCommand(
         '--upgrade',
         '--no-compile',
         `--cache-dir '${PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT}/pip'`,
-        `--target '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
+        `--target '${staging}'`,
         ...packages.map((pkg) => `'${pkg.name}${pkg.spec}'`),
       ].join(' '),
+      `rm -rf '${rollback}'`,
+      `if [ -d '${target}' ]; then`,
+      `  mv '${target}' '${rollback}'`,
+      'fi',
+      `if mv '${staging}' '${target}'; then`,
+      `  rm -rf '${rollback}'`,
+      'else',
+      `  if [ -d '${rollback}' ]; then mv '${rollback}' '${target}'; fi`,
+      '  exit 1',
+      'fi',
     ].join('\n');
   }
 
   const prefix = PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX;
+  const staging = `${prefix}.staging`;
+  const rollback = `${prefix}.rollback`;
   return [
     'set -eu',
-    `mkdir -p '${prefix}'`,
-    `: > '${prefix}/.empty-npmrc'`,
-    `: > '${prefix}/.empty-global-npmrc'`,
+    `if [ ! -d '${prefix}' ] && [ -d '${rollback}' ]; then`,
+    `  mv '${rollback}' '${prefix}'`,
+    'fi',
+    `rm -rf '${staging}'`,
+    `if [ -d '${prefix}' ]; then`,
+    `  cp -a '${prefix}' '${staging}'`,
+    'else',
+    `  mkdir -p '${staging}'`,
+    'fi',
+    `: > '${staging}/.empty-npmrc'`,
+    `: > '${staging}/.empty-global-npmrc'`,
     [
       'npm install',
       '--prefer-online',
@@ -301,11 +332,21 @@ export function buildPtcPackageInstallCommand(
       '--no-fund',
       '--no-update-notifier',
       `--cache '${PTC_SESSION_DOCKER_PACKAGE_CACHE_CONTAINER_ROOT}/npm'`,
-      `--userconfig '${prefix}/.empty-npmrc'`,
-      `--globalconfig '${prefix}/.empty-global-npmrc'`,
-      `--prefix '${prefix}'`,
+      `--userconfig '${staging}/.empty-npmrc'`,
+      `--globalconfig '${staging}/.empty-global-npmrc'`,
+      `--prefix '${staging}'`,
       ...packages.map((pkg) => `'${pkg.name}@${pkg.spec}'`),
     ].join(' '),
+    `rm -rf '${rollback}'`,
+    `if [ -d '${prefix}' ]; then`,
+    `  mv '${prefix}' '${rollback}'`,
+    'fi',
+    `if mv '${staging}' '${prefix}'; then`,
+    `  rm -rf '${rollback}'`,
+    'else',
+    `  if [ -d '${rollback}' ]; then mv '${rollback}' '${prefix}'; fi`,
+    '  exit 1',
+    'fi',
   ].join('\n');
 }
 

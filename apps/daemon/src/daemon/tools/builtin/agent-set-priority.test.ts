@@ -19,13 +19,13 @@ void test('agent_set_priority updates only a durably queued child and preserves 
     join(tmpdir(), 'geulbat-agent-set-priority-'),
   );
   const ownerThreadId = testThreadId(70);
-  const runtimeStateStore = await createDaemonRuntimeStateStore({
+  let runtimeStateStore = await createDaemonRuntimeStateStore({
     homeStateRoot: stateRoot,
   });
-  const daemonContext = createDaemonContext({
+  let daemonContext = createDaemonContext({
     subagentLaunchRequests: runtimeStateStore,
   });
-  const executionContext = {
+  let executionContext = {
     callId: 'call-set-priority',
     stateRoot,
     threadId: ownerThreadId,
@@ -67,6 +67,24 @@ void test('agent_set_priority updates only a durably queued child and preserves 
         ?.enqueueOrder,
       queued.enqueueOrder,
     );
+    assert.equal(agentSetPriorityTool.recoveryStrategy, 'replay_safe');
+
+    runtimeStateStore.close();
+    runtimeStateStore = await createDaemonRuntimeStateStore({
+      homeStateRoot: stateRoot,
+    });
+    daemonContext = createDaemonContext({
+      subagentLaunchRequests: runtimeStateStore,
+    });
+    executionContext = {
+      ...executionContext,
+      runtimeServices: daemonContext,
+    };
+    const reopened = runtimeStateStore.readSubagentLaunchRequestByChildRunId(
+      queued.childRunId,
+    );
+    assert.equal(reopened?.priorityClass, 'high');
+    assert.equal(reopened?.enqueueOrder, queued.enqueueOrder);
 
     const unchanged = await agentSetPriorityTool.execute(
       { child_run_id: queued.childRunId, priority: 'high' },
@@ -74,6 +92,16 @@ void test('agent_set_priority updates only a durably queued child and preserves 
     );
     assert.equal(unchanged.ok, true);
     assert.equal(JSON.parse(unchanged.output).updateState, 'unchanged');
+    assert.equal(
+      runtimeStateStore.readSubagentLaunchRequestByChildRunId(queued.childRunId)
+        ?.enqueueOrder,
+      queued.enqueueOrder,
+    );
+    assert.equal(
+      runtimeStateStore.readSubagentLaunchRequestByChildRunId(queued.childRunId)
+        ?.updatedAt,
+      reopened?.updatedAt,
+    );
 
     runtimeStateStore.markSubagentLaunchStarting(queued.childRunId);
     const notQueued = await agentSetPriorityTool.execute(
@@ -85,6 +113,23 @@ void test('agent_set_priority updates only a durably queued child and preserves 
       ok: true,
       childRunId: queued.childRunId,
       launchState: 'starting',
+      priorityClass: 'high',
+      updateState: 'not_queued',
+    });
+
+    runtimeStateStore.markSubagentLaunchFailedToStart({
+      childRunId: queued.childRunId,
+      reason: 'simulated terminal child before stale priority replay',
+    });
+    const terminal = await agentSetPriorityTool.execute(
+      { child_run_id: queued.childRunId, priority: 'low' },
+      executionContext,
+    );
+    assert.equal(terminal.ok, true);
+    assert.deepEqual(JSON.parse(terminal.output), {
+      ok: true,
+      childRunId: queued.childRunId,
+      launchState: 'failed_to_start',
       priorityClass: 'high',
       updateState: 'not_queued',
     });

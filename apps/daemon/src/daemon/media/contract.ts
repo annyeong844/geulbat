@@ -1,9 +1,106 @@
+import { createHash } from 'node:crypto';
+
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadId } from '@geulbat/protocol/ids';
+import type { JsonValue } from '@geulbat/protocol/runtime-persistence';
 
 // P6.5 artifact-media 소유 계약: 이미지 생성의 데몬-프라이빗 request/candidate
 // 형태와 런타임 서비스 인터페이스. 소비자(tools 등)는 이 contract만 import하고,
 // 구현은 composition root가 주입한다.
+
+export const MEDIA_GENERATION_OPERATION_SCHEMA_VERSION = 1;
+
+export type MediaGenerationKind = 'image' | 'video';
+
+export interface MediaGenerationRecoveryIdentity {
+  schemaVersion: typeof MEDIA_GENERATION_OPERATION_SCHEMA_VERSION;
+  kind: MediaGenerationKind;
+  operationId: string;
+  artifactId: string;
+  argsDigest: string;
+}
+
+export function createMediaGenerationRecoveryIdentity(args: {
+  kind: MediaGenerationKind;
+  threadId: ThreadId;
+  runId: string;
+  callId: string;
+  toolArgs: JsonValue;
+}): MediaGenerationRecoveryIdentity {
+  const argsDigest = digestMediaGenerationToolArgs(args.toolArgs);
+  const operationId = createHash('sha256')
+    .update(
+      [
+        MEDIA_GENERATION_OPERATION_SCHEMA_VERSION,
+        args.kind,
+        args.threadId,
+        args.runId,
+        args.callId,
+        argsDigest,
+      ].join('\0'),
+    )
+    .digest('hex');
+  return {
+    schemaVersion: MEDIA_GENERATION_OPERATION_SCHEMA_VERSION,
+    kind: args.kind,
+    operationId,
+    artifactId: `art_media_${operationId}`,
+    argsDigest,
+  };
+}
+
+export function parseMediaGenerationRecoveryIdentity(
+  value: unknown,
+): MediaGenerationRecoveryIdentity | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.schemaVersion !== MEDIA_GENERATION_OPERATION_SCHEMA_VERSION ||
+    (record.kind !== 'image' && record.kind !== 'video') ||
+    typeof record.operationId !== 'string' ||
+    !/^[a-f0-9]{64}$/u.test(record.operationId) ||
+    record.artifactId !== `art_media_${record.operationId}` ||
+    typeof record.argsDigest !== 'string' ||
+    !/^[a-f0-9]{64}$/u.test(record.argsDigest)
+  ) {
+    return null;
+  }
+  return {
+    schemaVersion: MEDIA_GENERATION_OPERATION_SCHEMA_VERSION,
+    kind: record.kind,
+    operationId: record.operationId,
+    artifactId: record.artifactId,
+    argsDigest: record.argsDigest,
+  };
+}
+
+function digestMediaGenerationToolArgs(value: JsonValue): string {
+  return createHash('sha256')
+    .update(canonicalMediaGenerationToolArgs(value))
+    .digest('hex');
+}
+
+function canonicalMediaGenerationToolArgs(value: JsonValue): string {
+  if (Array.isArray(value)) {
+    return `[${value
+      .map((item) => canonicalMediaGenerationToolArgs(item))
+      .join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${canonicalMediaGenerationToolArgs(
+            value[key] as JsonValue,
+          )}`,
+      )
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
 
 export const IMAGE_GENERATION_PROVIDER_IDS = [
   'openai_codex_direct',
@@ -78,7 +175,8 @@ type ImageGenerationFailureSurface =
   | 'provider_auth'
   | 'provider_api'
   | 'candidate_validation'
-  | 'artifact_commit';
+  | 'artifact_commit'
+  | 'recovery';
 
 export class ImageGenerationError extends Error {
   readonly surface: ImageGenerationFailureSurface;
@@ -110,6 +208,10 @@ export interface GenerateImageArtifactInput {
   workingDirectory: string;
   threadId: ThreadId;
   runId: string;
+  recovery?: {
+    callId: string;
+    identity: MediaGenerationRecoveryIdentity;
+  };
   signal?: AbortSignal;
 }
 
@@ -169,6 +271,10 @@ export interface GenerateVideoArtifactInput {
   workingDirectory: string;
   threadId: ThreadId;
   runId: string;
+  recovery?: {
+    callId: string;
+    identity: MediaGenerationRecoveryIdentity;
+  };
   signal?: AbortSignal;
 }
 

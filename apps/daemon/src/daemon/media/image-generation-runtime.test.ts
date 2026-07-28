@@ -1,10 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { ThreadId } from '@geulbat/protocol/ids';
 import { createProviderAuthRuntimeStore } from '../auth/runtime-state.js';
-import type { CommitThreadArtifactVersionArgs } from '../sessions/artifact-store.js';
 import {
+  commitThreadArtifactVersion,
+  loadAllThreadArtifactVersions,
+  type CommitThreadArtifactVersionArgs,
+} from '../sessions/artifact-store.js';
+import {
+  statThreadMediaFile,
+  writeThreadMediaFile,
+} from '../sessions/media-file-store.js';
+import {
+  createMediaGenerationRecoveryIdentity,
   ImageGenerationError,
   type GeneratedImageCandidate,
 } from './contract.js';
@@ -71,6 +83,10 @@ function buildDeps(overrides: Partial<ImageGenerationRuntimeDeps>): {
       mediaRef: `${'a'.repeat(64)}.${args.extension}`,
       sha256: 'a'.repeat(64),
       byteLength: args.bytes.byteLength,
+    }),
+    statThreadMediaFileImpl: async (args) => ({
+      path: `/tmp/home/.geulbat/media/${args.threadId}/${args.mediaRef}`,
+      byteLength: 8,
     }),
     commitThreadArtifactVersionImpl: async (
       args: CommitThreadArtifactVersionArgs,
@@ -290,4 +306,178 @@ void test('generateImageArtifact routes grok provider selection to the grok adap
 
   assert.equal(grokCalls, 1);
   assert.equal(result.provenance.providerId, 'grok_oauth');
+});
+
+void test('generateImageArtifact replacement commits one prepared media candidate without a second provider request', async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-image-recovery-'));
+  const input = {
+    ...baseInput(),
+    stateRoot,
+    runId: 'run-image-recovery',
+  };
+  const identity = createMediaGenerationRecoveryIdentity({
+    kind: 'image',
+    threadId: THREAD_ID,
+    runId: input.runId,
+    callId: 'call-image-recovery',
+    toolArgs: { prompt: 'a cat' },
+  });
+  let providerRequestCount = 0;
+  const generation = async () => {
+    providerRequestCount += 1;
+    return buildCandidate();
+  };
+  try {
+    const first = createImageGenerationRuntime(
+      buildDeps({
+        generateViaCodexImpl: generation,
+        writeThreadMediaFileImpl: writeThreadMediaFile,
+        statThreadMediaFileImpl: statThreadMediaFile,
+        commitThreadArtifactVersionImpl: async () => {
+          throw new Error('simulated daemon death before artifact settlement');
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      first.generateImageArtifact({
+        ...input,
+        recovery: { callId: 'call-image-recovery', identity },
+      }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'artifact_commit_failed',
+    );
+
+    const replacement = createImageGenerationRuntime(
+      buildDeps({
+        generateViaCodexImpl: generation,
+        writeThreadMediaFileImpl: writeThreadMediaFile,
+        statThreadMediaFileImpl: statThreadMediaFile,
+        commitThreadArtifactVersionImpl: commitThreadArtifactVersion,
+      }).deps,
+    );
+    const recovered = await replacement.generateImageArtifact({
+      ...input,
+      recovery: { callId: 'call-image-recovery', identity },
+    });
+
+    assert.equal(providerRequestCount, 1);
+    assert.equal(recovered.artifactVersion.artifactId, identity.artifactId);
+    assert.equal(
+      (await loadAllThreadArtifactVersions(stateRoot, THREAD_ID)).length,
+      1,
+    );
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('generateImageArtifact replacement fails closed when the provider outcome was not durably captured', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-image-recovery-unknown-'),
+  );
+  const input = {
+    ...baseInput(),
+    stateRoot,
+    runId: 'run-image-recovery-unknown',
+  };
+  const identity = createMediaGenerationRecoveryIdentity({
+    kind: 'image',
+    threadId: THREAD_ID,
+    runId: input.runId,
+    callId: 'call-image-recovery-unknown',
+    toolArgs: { prompt: 'a cat' },
+  });
+  let providerRequestCount = 0;
+  try {
+    const first = createImageGenerationRuntime(
+      buildDeps({
+        generateViaCodexImpl: async () => {
+          providerRequestCount += 1;
+          throw new Error('simulated process death during provider request');
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      first.generateImageArtifact({
+        ...input,
+        recovery: { callId: 'call-image-recovery-unknown', identity },
+      }),
+      /simulated process death/u,
+    );
+
+    const replacement = createImageGenerationRuntime(
+      buildDeps({
+        generateViaCodexImpl: async () => {
+          providerRequestCount += 1;
+          return buildCandidate();
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      replacement.generateImageArtifact({
+        ...input,
+        recovery: { callId: 'call-image-recovery-unknown', identity },
+      }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'provider_outcome_unknown',
+    );
+    assert.equal(providerRequestCount, 1);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('generateImageArtifact does not mark a provider effect before local auth succeeds', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-image-recovery-auth-'),
+  );
+  const input = {
+    ...baseInput(),
+    stateRoot,
+    runId: 'run-image-recovery-auth',
+  };
+  const identity = createMediaGenerationRecoveryIdentity({
+    kind: 'image',
+    threadId: THREAD_ID,
+    runId: input.runId,
+    callId: 'call-image-recovery-auth',
+    toolArgs: { prompt: 'a cat' },
+  });
+  const recovery = {
+    callId: 'call-image-recovery-auth',
+    identity,
+  };
+  try {
+    const disconnected = createImageGenerationRuntime(
+      buildDeps({
+        getProviderAuthImpl: async () => {
+          throw new Error('provider is not connected');
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      disconnected.generateImageArtifact({ ...input, recovery }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'provider_not_connected',
+    );
+
+    let providerRequests = 0;
+    const replacement = createImageGenerationRuntime(
+      buildDeps({
+        generateViaCodexImpl: async () => {
+          providerRequests += 1;
+          return buildCandidate();
+        },
+        writeThreadMediaFileImpl: writeThreadMediaFile,
+        statThreadMediaFileImpl: statThreadMediaFile,
+      }).deps,
+    );
+    await replacement.generateImageArtifact({ ...input, recovery });
+    assert.equal(providerRequests, 1);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
 });

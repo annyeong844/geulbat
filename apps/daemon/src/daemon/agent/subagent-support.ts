@@ -161,6 +161,10 @@ interface LaunchSubagentBackgroundRunArgs {
   toolSurface: NonNullable<AgentInput['toolSurface']>;
   toolCapabilityPolicy?: AgentInput['toolCapabilityPolicy'];
   timeoutMs?: number;
+  childInputPersistence?: {
+    entryId: string;
+    timestamp: string;
+  };
   durableLaunchRecorded?: true;
 }
 
@@ -338,6 +342,9 @@ async function startSubagentBackgroundRun(
           toolCapabilityPolicy: admittedLoopImplementation.toolCapabilityPolicy,
         }),
     ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+    ...(args.childInputPersistence === undefined
+      ? {}
+      : { childInputPersistence: args.childInputPersistence }),
     ...(args.durableLaunchRecorded === true
       ? { durableLaunchRecorded: true }
       : {}),
@@ -541,6 +548,7 @@ async function launchSubagentBackgroundRun(
     toolSurface,
     toolCapabilityPolicy,
     timeoutMs,
+    childInputPersistence,
     durableLaunchRecorded,
   } = args;
   const {
@@ -562,6 +570,12 @@ async function launchSubagentBackgroundRun(
       threadId: childThreadId,
       prompt: task,
       modelPrompt,
+      ...(childInputPersistence === undefined
+        ? {}
+        : {
+            entryId: childInputPersistence.entryId,
+            timestamp: childInputPersistence.timestamp,
+          }),
     });
   } catch (error: unknown) {
     launchReservation?.release();

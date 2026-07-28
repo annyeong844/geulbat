@@ -16,7 +16,10 @@ import { fileURLToPath } from 'node:url';
 
 import { createDaemonHostCommandRuntime } from '../../../command-host/runtime-selection.js';
 import { removeCommandHostWorkspace } from '../../../test-support/command-host-workspace.js';
-import { createHostRoutedDetachedProcessStarter } from '../../host-routed-detached-process.js';
+import {
+  createHostRoutedDetachedProcessAttacher,
+  createHostRoutedDetachedProcessStarter,
+} from '../../host-routed-detached-process.js';
 import { SYSTEM_SESSION_OWNER } from '../../host-command-output-store.js';
 import {
   encodePtcEpochCallbackHostFrame,
@@ -24,7 +27,10 @@ import {
   type PtcEpochCallbackDaemonFrame,
   type PtcEpochCallbackHostFrame,
 } from './epoch-callback-host-protocol.js';
-import { createHostRoutedPtcEpochCallbackChannelFactory } from './host-routed-epoch-callback.js';
+import {
+  createHostRoutedPtcEpochCallbackChannelFactory,
+  createHostRoutedPtcEpochCallbackControllerAttacher,
+} from './host-routed-epoch-callback.js';
 
 const unixTest = process.platform === 'win32' ? test.skip : test;
 
@@ -464,6 +470,170 @@ void unixTest(
     assert.deepEqual(parseHostFrame(await controlReader2.next()), {
       kind: 'closed',
     });
+  },
+);
+
+void unixTest(
+  'the product controller attacher restores callback authority and closes the adopted host exactly once',
+  async (t) => {
+    const stateRoot = await mkdtemp(
+      join(tmpdir(), 'geulbat-ptc-callback-controller-state-'),
+    );
+    const callbackRoot = await mkdtemp(
+      join(tmpdir(), 'geulbat-ptc-callback-controller-root-'),
+    );
+    const runtime1 = createWorkerRuntime();
+    const runtime2 = createWorkerRuntime();
+    let outputRef: string | undefined;
+    t.after(async () => {
+      if (outputRef !== undefined) {
+        await runtime2.interact({
+          stateRoot,
+          threadId: SYSTEM_SESSION_OWNER,
+          owner: 'system',
+          outputRef,
+          terminate: true,
+          yieldTimeMs: 0,
+        });
+      }
+      await runtime1.closeAll();
+      await runtime2.closeAll();
+      await removeCommandHostWorkspace(stateRoot);
+      await rm(callbackRoot, { recursive: true, force: true });
+    });
+
+    const epochId = randomBytes(8).toString('hex');
+    const token = randomBytes(32).toString('hex');
+    const callbackSocketPath = join(
+      callbackRoot,
+      `ptc-epoch-${epochId}`,
+      'callback.sock',
+    );
+    const initialControl = await createControlEndpoint(
+      t,
+      'ptc-callback-controller-initial',
+    );
+    const workerCommand = callbackHostWorkerCommand();
+    const started = await runtime1.start({
+      executable: workerCommand.execPath,
+      args: workerCommand.args,
+      cwd: stateRoot,
+      env: process.env,
+      stateRoot,
+      threadId: SYSTEM_SESSION_OWNER,
+      owner: 'system',
+      streamMode: 'lossless',
+      requiresDeferredOutputRelease: true,
+      requiresIdempotentStart: true,
+      runId: 'ptc-callback-controller-readoption',
+      callId: 'ptc-callback-controller-cell',
+      stdinMode: 'open',
+      outputRedaction: {
+        exactMarkers: [token, callbackSocketPath, initialControl.socketPath],
+        replacement: '[redacted:ptc-callback]',
+      },
+    });
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+    outputRef = started.outputRef;
+    assert.equal(
+      (
+        await runtime1.waitForInitialResult({
+          stateRoot,
+          outputRef,
+          yieldTimeMs: 0,
+        })
+      ).ok,
+      true,
+    );
+    const initialized = runtime1.interact({
+      stateRoot,
+      threadId: SYSTEM_SESSION_OWNER,
+      owner: 'system',
+      outputRef,
+      chars: encodePtcEpochCallbackHostFrame({
+        kind: 'initialize_or_attach',
+        rootDir: callbackRoot,
+        epochId,
+        token,
+        controlSocketPath: initialControl.socketPath,
+        policy: {
+          maxFrameBytes: 4096,
+          maxOpenConnections: 2,
+          maxCallbacks: 4,
+          callbackTimeoutMs: 1000,
+          maxResponseBytes: 4096,
+        },
+      }),
+      yieldTimeMs: 0,
+    });
+    const initialSocket = await initialControl.accepted;
+    const initialReader = new SocketLineReader(initialSocket);
+    assert.deepEqual(parseHostFrame(await initialReader.next()), {
+      kind: 'ready',
+      epochId,
+      token,
+      socketPath: callbackSocketPath,
+    });
+    assert.equal((await initialized).ok, true);
+
+    await runtime1.closeAll();
+    initialSocket.destroy();
+    await delay(20);
+
+    const attachProcess = createHostRoutedDetachedProcessAttacher({
+      hostCommands: runtime2,
+      stateRoot,
+      pageLimitBytes: 1024,
+    });
+    const attachController = createHostRoutedPtcEpochCallbackControllerAttacher(
+      { attachProcess },
+    );
+    const controller = await attachController({
+      outputRef,
+      handler: async (invocation) => ({
+        ok: true,
+        result: { owner: 'replacement', args: invocation.args },
+      }),
+    });
+    assert.equal(controller.processOutputRef, outputRef);
+    assert.deepEqual(
+      await sendCallbackFrame(callbackSocketPath, {
+        requestId: 'controller-replacement',
+        token,
+        kind: 'tool_call',
+        args: { turn: 1 },
+      }),
+      {
+        requestId: 'controller-replacement',
+        ok: true,
+        result: { owner: 'replacement', args: { turn: 1 } },
+      },
+    );
+
+    controller.replaceHandler(async (invocation) => ({
+      ok: true,
+      result: { owner: 'claimed', args: invocation.args },
+    }));
+    assert.deepEqual(
+      await sendCallbackFrame(callbackSocketPath, {
+        requestId: 'controller-claimed',
+        token,
+        kind: 'tool_call',
+        args: { turn: 2 },
+      }),
+      {
+        requestId: 'controller-claimed',
+        ok: true,
+        result: { owner: 'claimed', args: { turn: 2 } },
+      },
+    );
+
+    await controller.close();
+    await controller.close();
+    outputRef = undefined;
   },
 );
 

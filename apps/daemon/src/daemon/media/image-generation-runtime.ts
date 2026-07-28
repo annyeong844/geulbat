@@ -3,12 +3,15 @@ import { rm } from 'node:fs/promises';
 import { forceRefreshProviderAuth, getProviderAuth } from '../auth/access.js';
 import type { ProviderAuthRuntimeStore } from '../auth/runtime-state.js';
 import type { ResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-cache.js';
+import type { JsonValue } from '../runtime-json.js';
 import { commitThreadArtifactVersion } from '../sessions/artifact-store.js';
 import {
   resolveThreadMediaFilePath,
+  statThreadMediaFile,
   writeThreadMediaFile,
   type ThreadMediaExtension,
 } from '../sessions/media-file-store.js';
+import { z } from 'zod';
 import {
   ImageGenerationError,
   isImageGenerationProviderId,
@@ -23,6 +26,12 @@ import {
   acquireGenerationProviderAuthOrFailClosed,
   generateWithProviderAuthRetry,
 } from './generation-provider-auth.js';
+import {
+  markMediaGenerationEffectStarted,
+  prepareMediaGenerationOperation,
+  readMediaGenerationOperation,
+  recordMediaGenerationCandidate,
+} from './generation-operation-store.js';
 import { buildImageArtifactCandidate } from './image-artifact-candidate.js';
 import { withImageGenerationRequestDefaults } from './image-generation-request-defaults.js';
 import { generateImageViaCodexResponses } from './providers/codex-image-provider.js';
@@ -45,6 +54,7 @@ export interface ImageGenerationRuntimeDeps {
   generateViaGrokImpl?: typeof generateImageViaGrok;
   commitThreadArtifactVersionImpl?: typeof commitThreadArtifactVersion;
   writeThreadMediaFileImpl?: typeof writeThreadMediaFile;
+  statThreadMediaFileImpl?: typeof statThreadMediaFile;
   now?: () => string;
 }
 
@@ -93,6 +103,48 @@ function buildImageArtifactTitle(prompt: string): string {
   return `${singleLine.slice(0, IMAGE_ARTIFACT_TITLE_MAX_LENGTH - 1)}…`;
 }
 
+const preparedImageCandidateSchema = z.strictObject({
+  kind: z.literal('image'),
+  renderer: z.literal('image'),
+  payload: z.string(),
+  digest: z.string(),
+  title: z.string(),
+  timestamp: z.string(),
+  mediaRef: z.string(),
+  provenance: z.strictObject({
+    providerId: z.enum(['openai_codex_direct', 'grok_oauth']),
+    model: z.string(),
+    capability: z.literal('image_generation'),
+    prompt: z.string(),
+    revisedPrompt: z.string().optional(),
+    generatedAt: z.string(),
+  }),
+  asset: z.strictObject({
+    mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+    byteLength: z.number().int().nonnegative(),
+    digest: z.strictObject({
+      algorithm: z.literal('sha256'),
+      encoding: z.literal('hex'),
+      value: z.string(),
+    }),
+  }),
+});
+
+interface PreparedImageCandidate {
+  kind: 'image';
+  renderer: 'image';
+  payload: string;
+  digest: string;
+  title: string;
+  timestamp: string;
+  mediaRef: string;
+  provenance: GeneratedImageCandidate['provenance'];
+  asset: Pick<
+    GeneratedImageCandidate['asset'],
+    'mimeType' | 'byteLength' | 'digest'
+  >;
+}
+
 export function createImageGenerationRuntime(
   deps: ImageGenerationRuntimeDeps,
 ): ImageGenerationRuntime {
@@ -102,13 +154,50 @@ export function createImageGenerationRuntime(
     ): Promise<GenerateImageArtifactResult> {
       const providerId =
         input.providerId ?? resolveDefaultImageGenerationProvider();
+      if (input.recovery !== undefined) {
+        if (input.recovery.identity.kind !== 'image') {
+          throw new Error('image generation recovery identity conflicts');
+        }
+        await prepareMediaGenerationOperation({
+          stateRoot: input.stateRoot,
+          threadId: input.threadId,
+          runId: input.runId,
+          callId: input.recovery.callId,
+          identity: input.recovery.identity,
+        });
+        const operation = await readMediaGenerationOperation({
+          stateRoot: input.stateRoot,
+          threadId: input.threadId,
+          identity: input.recovery.identity,
+        });
+        if (operation.candidate !== undefined) {
+          return await commitPreparedImageCandidate(
+            input,
+            deps,
+            parsePreparedImageCandidate(operation.candidate),
+          );
+        }
+        if (operation.effectStarted) {
+          throw new ImageGenerationError({
+            surface: 'recovery',
+            reasonCode: 'provider_outcome_unknown',
+            message:
+              'image generation may have reached the provider before daemon restart; it was not replayed to avoid duplicate generation or billing',
+          });
+        }
+      }
       const candidate = await generateWithProviderAuthRetry({
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
         runAttempt: (options) =>
           generateImageOnce(input, deps, providerId, options),
         forceRefresh: () => forceRefreshSelectedProviderAuth(deps, providerId),
       });
-      return commitGeneratedImageCandidate(input, deps, candidate);
+      const prepared = await prepareGeneratedImageCandidate(
+        input,
+        deps,
+        candidate,
+      );
+      return await commitPreparedImageCandidate(input, deps, prepared);
     },
     withRequestDefaults(defaults) {
       return withImageGenerationRequestDefaults(runtime, defaults);
@@ -137,6 +226,13 @@ async function generateImageOnce(
         }),
     });
     const generate = deps.generateViaGrokImpl ?? generateImageViaGrok;
+    if (input.recovery !== undefined) {
+      await markMediaGenerationEffectStarted({
+        stateRoot: input.stateRoot,
+        threadId: input.threadId,
+        identity: input.recovery.identity,
+      });
+    }
     return generate({
       request: input.request,
       auth: { accessToken: auth.accessToken },
@@ -156,6 +252,13 @@ async function generateImageOnce(
       }),
   });
   const generate = deps.generateViaCodexImpl ?? generateImageViaCodexResponses;
+  if (input.recovery !== undefined) {
+    await markMediaGenerationEffectStarted({
+      stateRoot: input.stateRoot,
+      threadId: input.threadId,
+      identity: input.recovery.identity,
+    });
+  }
   return generate({
     request: input.request,
     auth: { accessToken: auth.accessToken, accountId: auth.accountId },
@@ -202,11 +305,11 @@ async function removeWrittenImageMediaFile(
   }
 }
 
-async function commitGeneratedImageCandidate(
+async function prepareGeneratedImageCandidate(
   input: GenerateImageArtifactInput,
   deps: ImageGenerationRuntimeDeps,
   candidate: GeneratedImageCandidate,
-): Promise<GenerateImageArtifactResult> {
+): Promise<PreparedImageCandidate> {
   // 바이트를 media 파일 스토어에 먼저 쓴다(D-V7) — 매니페스트에는 mediaRef
   // 파일명만 남고 base64는 스냅샷/와이어에 실리지 않는다. 커밋 실패 시
   // 방금 쓴 파일을 정리해 고아를 남기지 않는다(동영상과 동일 규범).
@@ -225,32 +328,131 @@ async function commitGeneratedImageCandidate(
     candidate,
     mediaRef: written.mediaRef,
   });
-  const commit =
-    deps.commitThreadArtifactVersionImpl ?? commitThreadArtifactVersion;
   const now = deps.now ?? (() => new Date().toISOString());
   const timestamp = now();
+  const prepared = {
+    kind: 'image',
+    renderer: 'image',
+    payload: artifactCandidate.payload,
+    digest: candidate.asset.digest.value,
+    title: buildImageArtifactTitle(candidate.provenance.prompt),
+    timestamp,
+    mediaRef: written.mediaRef,
+    provenance: candidate.provenance,
+    asset: {
+      mimeType: candidate.asset.mimeType,
+      byteLength: candidate.asset.byteLength,
+      digest: candidate.asset.digest,
+    },
+  } satisfies PreparedImageCandidate;
+  if (input.recovery !== undefined) {
+    await recordMediaGenerationCandidate({
+      stateRoot: input.stateRoot,
+      threadId: input.threadId,
+      identity: input.recovery.identity,
+      candidate: preparedImageCandidateToJson(prepared),
+    });
+  }
+  return prepared;
+}
+
+function parsePreparedImageCandidate(value: unknown): PreparedImageCandidate {
+  const parsed = preparedImageCandidateSchema.parse(value);
+  return {
+    ...parsed,
+    provenance: {
+      providerId: parsed.provenance.providerId,
+      model: parsed.provenance.model,
+      capability: parsed.provenance.capability,
+      prompt: parsed.provenance.prompt,
+      ...(parsed.provenance.revisedPrompt === undefined
+        ? {}
+        : { revisedPrompt: parsed.provenance.revisedPrompt }),
+      generatedAt: parsed.provenance.generatedAt,
+    },
+  };
+}
+
+function preparedImageCandidateToJson(
+  candidate: PreparedImageCandidate,
+): JsonValue {
+  return {
+    kind: candidate.kind,
+    renderer: candidate.renderer,
+    payload: candidate.payload,
+    digest: candidate.digest,
+    title: candidate.title,
+    timestamp: candidate.timestamp,
+    mediaRef: candidate.mediaRef,
+    provenance: {
+      providerId: candidate.provenance.providerId,
+      model: candidate.provenance.model,
+      capability: candidate.provenance.capability,
+      prompt: candidate.provenance.prompt,
+      ...(candidate.provenance.revisedPrompt === undefined
+        ? {}
+        : { revisedPrompt: candidate.provenance.revisedPrompt }),
+      generatedAt: candidate.provenance.generatedAt,
+    },
+    asset: {
+      mimeType: candidate.asset.mimeType,
+      byteLength: candidate.asset.byteLength,
+      digest: {
+        algorithm: candidate.asset.digest.algorithm,
+        encoding: candidate.asset.digest.encoding,
+        value: candidate.asset.digest.value,
+      },
+    },
+  };
+}
+
+async function commitPreparedImageCandidate(
+  input: GenerateImageArtifactInput,
+  deps: ImageGenerationRuntimeDeps,
+  candidate: PreparedImageCandidate,
+): Promise<GenerateImageArtifactResult> {
+  const statMedia = deps.statThreadMediaFileImpl ?? statThreadMediaFile;
+  const media = await statMedia({
+    workspaceRoot: input.stateRoot,
+    threadId: input.threadId,
+    mediaRef: candidate.mediaRef,
+  });
+  if (media === null || media.byteLength !== candidate.asset.byteLength) {
+    throw new ImageGenerationError({
+      surface: 'recovery',
+      reasonCode: 'prepared_media_unavailable',
+      message: 'prepared image media is unavailable for artifact recovery',
+    });
+  }
+  const commit =
+    deps.commitThreadArtifactVersionImpl ?? commitThreadArtifactVersion;
   let committed: Awaited<ReturnType<typeof commitThreadArtifactVersion>>;
   try {
     committed = await commit({
       workspaceRoot: input.stateRoot,
       threadId: input.threadId,
       runId: input.runId,
-      renderer: artifactCandidate.renderer,
-      payload: artifactCandidate.payload,
-      digest: artifactCandidate.digest,
-      title: buildImageArtifactTitle(candidate.provenance.prompt),
+      ...(input.recovery === undefined
+        ? {}
+        : { artifactId: input.recovery.identity.artifactId }),
+      renderer: candidate.renderer,
+      payload: candidate.payload,
+      digest: candidate.digest,
+      title: candidate.title,
       sourceRef: {
         kind: 'thread',
         workingDirectory: input.workingDirectory,
         threadId: input.threadId,
         runId: input.runId,
         filePath: null,
-        messageTimestamp: timestamp,
+        messageTimestamp: candidate.timestamp,
       },
-      timestamp,
+      timestamp: candidate.timestamp,
     });
   } catch (error: unknown) {
-    await removeWrittenImageMediaFile(input, written.mediaRef);
+    if (input.recovery === undefined) {
+      await removeWrittenImageMediaFile(input, candidate.mediaRef);
+    }
     throw new ImageGenerationError({
       surface: 'artifact_commit',
       reasonCode: 'artifact_commit_failed',
@@ -258,12 +460,6 @@ async function commitGeneratedImageCandidate(
       cause: error,
     });
   }
-
-  const mediaFilePath = resolveThreadMediaFilePath({
-    workspaceRoot: input.stateRoot,
-    threadId: input.threadId,
-    mediaRef: written.mediaRef,
-  });
 
   return {
     artifactVersion: {
@@ -273,15 +469,8 @@ async function commitGeneratedImageCandidate(
       sourceRef: committed.artifact.sourceRef ?? null,
     },
     provenance: candidate.provenance,
-    asset: {
-      mimeType: candidate.asset.mimeType,
-      byteLength: candidate.asset.byteLength,
-      digest: candidate.asset.digest,
-    },
-    media:
-      mediaFilePath === null
-        ? null
-        : { mediaRef: written.mediaRef, filePath: mediaFilePath },
+    asset: candidate.asset,
+    media: { mediaRef: candidate.mediaRef, filePath: media.path },
   };
 }
 

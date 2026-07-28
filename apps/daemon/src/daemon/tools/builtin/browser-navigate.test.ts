@@ -36,6 +36,7 @@ void test('browser_navigate exposes scalar URL schema and approval-gated metadat
   assert.equal(browserNavigateTool.sideEffectLevel, 'write');
   assert.equal(browserNavigateTool.requiresApproval, true);
   assert.equal(browserNavigateTool.mayMutateComputerFiles, false);
+  assert.equal(browserNavigateTool.recoveryStrategy, 'replay_safe');
   const parameters = browserNavigateTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(parameters.required, ['url']);
@@ -63,7 +64,7 @@ void test('browser_navigate requires an agent runtime service before navigation'
   assert.match(result.error ?? '', /runtime is required/u);
 });
 
-void test('browser_navigate returns digest-only runtime output without raw URL leaks', async () => {
+void test('browser_navigate replacement replay returns the fresh-context result without raw URL leaks', async () => {
   const daemonContext = createDaemonContext();
   let observedUrl = '';
   let observedTimeoutMs: number | undefined;
@@ -122,6 +123,41 @@ void test('browser_navigate returns digest-only runtime output without raw URL l
   assert.equal(output.artifactExported, false);
   assert.equal(Object.hasOwn(output, 'url'), false);
   assert.equal(Object.hasOwn(output, 'finalUrl'), false);
+
+  const replacementContext = createDaemonContext();
+  const replacement = await browserNavigateTool.execute(
+    {
+      url: 'https://example.com/private?access_token=secret#id_token=secret',
+      timeoutMs: 1000,
+    },
+    {
+      callId: 'call-browser-navigate-success',
+      stateRoot: '/workspace/home-state',
+      workingDirectory: 'project',
+      threadId: testThreadId(931),
+      runtimeServices: {
+        ...replacementContext,
+        ptc: {
+          ...replacementContext.ptc,
+          browserNavigate: {
+            async navigate() {
+              return {
+                ok: true,
+                value: { ...browserNavigateSummary(), durationMs: 34 },
+              };
+            },
+            async closeAll() {
+              return { ok: true };
+            },
+          },
+        },
+      },
+      approvalGranted: true,
+    },
+  );
+  assert.equal(replacement.ok, true);
+  assert.equal(JSON.parse(replacement.output).durationMs, 34);
+  assert.equal(output.durationMs, 12);
 });
 
 void test('browser_navigate strips unsafe failure diagnostics from tool output', async () => {

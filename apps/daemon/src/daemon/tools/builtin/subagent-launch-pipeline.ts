@@ -123,6 +123,10 @@ export async function runSubagentLaunchPipeline(args: {
   timeoutMs?: number;
   childRunId?: RunId;
   childThreadId?: ThreadId;
+  childInputPersistence?: {
+    entryId: string;
+    timestamp: string;
+  };
   durableLaunchRecorded?: true;
 }): Promise<ExecuteResult> {
   const launchRequestStore = args.runtimeServices.subagent.launchRequests;
@@ -242,6 +246,9 @@ export async function runSubagentLaunchPipeline(args: {
       ...(args.childThreadId !== undefined
         ? { childThreadId: args.childThreadId }
         : {}),
+      ...(args.childInputPersistence === undefined
+        ? {}
+        : { childInputPersistence: args.childInputPersistence }),
       ...(args.emitAgentEvent !== undefined
         ? { emitAgentEvent: args.emitAgentEvent }
         : {}),

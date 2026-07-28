@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,7 +16,14 @@ import { createSubagentRunLauncher } from '../../agent/subagent-support.js';
 import { createDaemonContext } from '../../context.js';
 import { createRunState } from '../../agent/runtime/run-state.js';
 import { createDaemonRuntimeStateStore } from '../../runtime-state-store.js';
-import { readTranscriptEntries } from '../../sessions/transcript-log.js';
+import {
+  appendTranscriptEntry,
+  readTranscriptEntries,
+} from '../../sessions/transcript-log.js';
+import {
+  composeAgentLoopUserPrompt,
+  createAgentLoopPromptPort,
+} from '../../agent/loop-prompt.js';
 import {
   assertRunId as assertValidRunId,
   assertThreadId as assertValidThreadId,
@@ -41,6 +49,24 @@ async function waitForChildStatus(args: {
     await delay(10);
   }
   throw new Error(`child ${args.childRunId} did not reach ${args.status}`);
+}
+
+async function waitForChildCheckpointTerminal(args: {
+  daemonContext: ReturnType<typeof createDaemonContext>;
+  childThreadId: ReturnType<typeof assertValidThreadId>;
+}): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (
+      (await args.daemonContext.runCheckpoints.readThread(args.childThreadId))
+        ?.status === 'terminal'
+    ) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error(
+    `child thread ${args.childThreadId} checkpoint did not become terminal`,
+  );
 }
 
 async function createDurableAgentToolTestContext(stateRoot: string) {
@@ -245,7 +271,12 @@ void test('agent_send_input continues the same child thread across top-level run
     assert.equal(waitPayload.completed[0]?.result, 'second child answer');
   } finally {
     runtimeStateStore.close();
-    await rm(stateRoot, { recursive: true, force: true });
+    await rm(stateRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 20,
+    });
   }
 });
 
@@ -376,7 +407,12 @@ void test('agent_send_input allows child runs to continue nested child handles',
     });
   } finally {
     runtimeStateStore.close();
-    await rm(stateRoot, { recursive: true, force: true });
+    await rm(stateRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 20,
+    });
   }
 });
 
@@ -477,7 +513,12 @@ void test('agent_send_input rejects a child handle that is still running', async
     });
   } finally {
     runtimeStateStore.close();
-    await rm(stateRoot, { recursive: true, force: true });
+    await rm(stateRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 20,
+    });
   }
 });
 
@@ -577,6 +618,11 @@ void test('agent_send_input forwards child approval events through the shared ch
         },
       }).startBackgroundRun,
     });
+    await daemonContext.runCheckpoints.startRun({
+      runId: assertValidRunId('top-run-continue'),
+      threadId,
+      request: { workingDirectory: 'workspace', permissionMode: 'basic' },
+    });
 
     const continued = await testAgentSendInputTool.execute(
       {
@@ -619,6 +665,10 @@ void test('agent_send_input forwards child approval events through the shared ch
       daemonContext,
       childRunId,
       status: 'completed',
+    });
+    await waitForChildCheckpointTerminal({
+      daemonContext,
+      childThreadId,
     });
 
     assert.deepEqual(emittedTypes.slice(0, 3), [
@@ -671,7 +721,12 @@ void test('agent_send_input forwards child approval events through the shared ch
     });
   } finally {
     runtimeStateStore.close();
-    await rm(stateRoot, { recursive: true, force: true });
+    await rm(stateRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 20,
+    });
   }
 });
 
@@ -730,8 +785,10 @@ void test('agent_send_input lets continued worker inherit current parent permiss
     assert.equal(seeded.ok, true);
     const seededPayload = JSON.parse(seeded.output) as {
       childRunId: string;
+      childThreadId: string;
     };
     const childRunId = assertValidRunId(seededPayload.childRunId);
+    const childThreadId = assertValidThreadId(seededPayload.childThreadId);
     await waitForChildStatus({
       daemonContext,
       childRunId,
@@ -756,6 +813,14 @@ void test('agent_send_input lets continued worker inherit current parent permiss
           };
         },
       }).startBackgroundRun,
+    });
+    await daemonContext.runCheckpoints.startRun({
+      runId: assertValidRunId('top-run-continue-permission'),
+      threadId,
+      request: {
+        workingDirectory: 'workspace',
+        permissionMode: 'full_access',
+      },
     });
 
     const continued = await testAgentSendInputTool.execute(
@@ -797,6 +862,10 @@ void test('agent_send_input lets continued worker inherit current parent permiss
       childRunId,
       status: 'completed',
     });
+    await waitForChildCheckpointTerminal({
+      daemonContext,
+      childThreadId,
+    });
 
     assert.deepEqual(capturedApprovalContext, {
       computerSessionId: 'session-continue-permission',
@@ -806,7 +875,12 @@ void test('agent_send_input lets continued worker inherit current parent permiss
     });
   } finally {
     runtimeStateStore.close();
-    await rm(stateRoot, { recursive: true, force: true });
+    await rm(stateRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 20,
+    });
   }
 });
 
@@ -912,14 +986,30 @@ void test('agent_send_input rejects standalone worker continuation without appro
     assert.equal(startCalled, false);
   } finally {
     runtimeStateStore.close();
-    await rm(stateRoot, { recursive: true, force: true });
+    await rm(stateRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 20,
+    });
   }
 });
 
-void test('agent_send_input continues retained terminal child handles', async () => {
+void test('agent_send_input continues retained terminal child handles', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-agent-send-input-retained-terminal-'),
+  );
+  t.after(() =>
+    rm(stateRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 20,
+    }),
+  );
   const ownerThreadId = testThreadId(36);
   const childRunId = testRunId('send-input-terminal-child');
-  const daemonContext = createDaemonContext();
+  const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
 
   daemonContext.childRuns.registerChildRun({
     childRunId,
@@ -976,6 +1066,11 @@ void test('agent_send_input continues retained terminal child handles', async ()
   });
 
   const parentRunId = testRunId('send-input-terminal-top');
+  await daemonContext.runCheckpoints.startRun({
+    runId: parentRunId,
+    threadId: ownerThreadId,
+    request: { workingDirectory: stateRoot, permissionMode: 'full_access' },
+  });
   const result = await testAgentSendInputTool.execute(
     {
       child_run_id: childRunId,
@@ -990,15 +1085,15 @@ void test('agent_send_input continues retained terminal child handles', async ()
         reasoningEffort: 'high',
       },
       subagentModelRouting: { mode: 'auto' },
-      stateRoot: '/tmp/home-state',
-      workingDirectory: '/tmp',
+      stateRoot,
+      workingDirectory: stateRoot,
       threadId: ownerThreadId,
       runId: parentRunId,
       runState: createRunState({
         runId: parentRunId,
         runContext: makeRunContext({
           threadId: ownerThreadId,
-          stateRoot: '/tmp/home-state',
+          stateRoot,
         }),
       }),
       signal: new AbortController().signal,
@@ -1017,4 +1112,192 @@ void test('agent_send_input continues retained terminal child handles', async ()
 
   assert.equal(result.ok, true);
   assert.equal(continuedTask, 'continue retained child');
+});
+
+void test('agent_send_input replays one prepared child delivery after daemon replacement without duplicating the transcript input', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-agent-send-input-restart-'),
+  );
+  const ownerThreadId = testThreadId(38);
+  const childThreadId = testThreadId(39);
+  const parentRunId = testRunId('send-input-restart-parent');
+  const childRunId = testRunId('send-input-restart-child');
+  const callId = 'call-send-input-restart';
+  const task = 'deliver this follow-up exactly once';
+  const firstContext = createDaemonContext({ homeStateRoot: stateRoot });
+  const deliveryEntryId =
+    'agent-send-input:call-send-input-restart:child-input';
+  const deliveryTimestamp = '2026-07-29T00:00:00.000Z';
+  const parentRunState = createRunState({
+    runId: parentRunId,
+    runContext: makeRunContext({
+      threadId: ownerThreadId,
+      stateRoot,
+    }),
+  });
+  const baseToolContext = {
+    kind: 'agent' as const,
+    runOwnerKind: 'root_main' as const,
+    callId,
+    providerRunSelection: TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection,
+    subagentModelRouting: { mode: 'auto' as const },
+    stateRoot,
+    workingDirectory: stateRoot,
+    threadId: ownerThreadId,
+    runId: parentRunId,
+    runState: parentRunState,
+    signal: new AbortController().signal,
+    runSignal: new AbortController().signal,
+    currentFile: undefined,
+    selection: undefined,
+    approvalGranted: true,
+    computerSessionId: 'send-input-restart-session',
+    permissionMode: 'full_access' as const,
+    ultraReasoning: false,
+    emitAgentEvent: () => {},
+    memoryIndex: undefined,
+  };
+
+  try {
+    firstContext.childRuns.registerChildRun({
+      childRunId,
+      childThreadId,
+      parentRunId: testRunId('send-input-restart-original-parent'),
+      ownerThreadId,
+      subagentType: 'explorer',
+      capabilities: [],
+      modelPin: TEST_INHERITED_SOL_MODEL_PIN,
+      subagentModelRouting: { mode: 'auto' },
+    });
+    firstContext.childRuns.markChildTerminal({
+      childRunId,
+      terminalState: 'completed',
+      result: 'original child result',
+    });
+    await firstContext.runCheckpoints.startRun({
+      runId: parentRunId,
+      threadId: ownerThreadId,
+      request: { workingDirectory: stateRoot, permissionMode: 'full_access' },
+    });
+    const recorded = await firstContext.runCheckpoints.recordToolInvocation({
+      threadId: ownerThreadId,
+      runId: parentRunId,
+      invocation: {
+        callId,
+        toolName: 'agent_send_input',
+        recoveryStrategy: 'reconcile_then_replay',
+        recoveryState: {
+          schemaVersion: 1,
+          childRunId,
+          childThreadId,
+          taskDigest: `sha256:${createHash('sha256').update(task).digest('hex')}`,
+          childInput: {
+            entryId: deliveryEntryId,
+            timestamp: deliveryTimestamp,
+          },
+          priorChildCheckpoint: null,
+        },
+      },
+    });
+    assert.equal(recorded.ok, true);
+    const { promptContext } = createAgentLoopPromptPort().buildPromptBundle({
+      threadId: childThreadId,
+    });
+    const modelPrompt = composeAgentLoopUserPrompt({
+      prompt: task,
+      promptContext,
+    });
+    await appendTranscriptEntry(stateRoot, childThreadId, {
+      entryId: deliveryEntryId,
+      role: 'user',
+      content: task,
+      timestamp: deliveryTimestamp,
+      ...(modelPrompt === task
+        ? {}
+        : { metadata: { hiddenPrompt: modelPrompt } }),
+    });
+
+    const replacementContext = createDaemonContext({
+      homeStateRoot: stateRoot,
+    });
+    replacementContext.childRuns.registerChildRun({
+      childRunId,
+      childThreadId,
+      parentRunId: testRunId('send-input-restart-original-parent'),
+      ownerThreadId,
+      subagentType: 'explorer',
+      capabilities: [],
+      modelPin: TEST_INHERITED_SOL_MODEL_PIN,
+      subagentModelRouting: { mode: 'auto' },
+    });
+    replacementContext.childRuns.markChildTerminal({
+      childRunId,
+      terminalState: 'completed',
+      result: 'original child result',
+    });
+    let replacementExecutions = 0;
+    const replacementTool = createAgentSendInputTool({
+      startBackgroundRun: createSubagentRunLauncher({
+        runAgentLoop: async () => {
+          replacementExecutions += 1;
+          return {
+            ok: true,
+            finalProse: 'replacement child result',
+          };
+        },
+      }).startBackgroundRun,
+    });
+
+    const replayed = await replacementTool.execute(
+      { child_run_id: childRunId, task },
+      { ...baseToolContext, runtimeServices: replacementContext },
+    );
+    assert.equal(replayed.ok, true);
+    await waitForChildStatus({
+      daemonContext: replacementContext,
+      childRunId,
+      status: 'completed',
+    });
+
+    const matchingInputs = (
+      await readTranscriptEntries(stateRoot, childThreadId)
+    ).filter((entry) => entry.role === 'user' && entry.content === task);
+    assert.equal(replacementExecutions, 1);
+    assert.equal(matchingInputs.length, 1);
+    const parentCheckpoint =
+      await replacementContext.runCheckpoints.readThread(ownerThreadId);
+    assert.equal(parentCheckpoint?.toolInvocations.length, 1);
+    assert.equal(parentCheckpoint?.toolInvocations[0]?.status, 'reconciled');
+    assert.deepEqual(parentCheckpoint?.toolInvocations[0]?.result, replayed);
+
+    const conflictingReplay = await replacementTool.execute(
+      {
+        child_run_id: childRunId,
+        task: 'a different follow-up must not reuse the durable delivery',
+      },
+      { ...baseToolContext, runtimeServices: replacementContext },
+    );
+    assert.equal(conflictingReplay.ok, false);
+    assert.match(
+      conflictingReplay.error ?? '',
+      /agent_send_input recovery state conflicts/,
+    );
+    assert.equal(replacementExecutions, 1);
+    assert.equal(
+      (await readTranscriptEntries(stateRoot, childThreadId)).filter(
+        (entry) =>
+          entry.role === 'user' &&
+          entry.content ===
+            'a different follow-up must not reuse the durable delivery',
+      ).length,
+      0,
+    );
+  } finally {
+    await rm(stateRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 20,
+    });
+  }
 });

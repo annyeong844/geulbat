@@ -183,6 +183,45 @@ void test('visual approval waits for a diagram and auto-requests explain_visual'
   await act(async () => renderer.unmount());
 });
 
+void test('visual approval keeps feedback, revision, and cancel usable while the diagram is rendering', async () => {
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174043');
+  const snapshot = awaitingPlanningSnapshot(threadId);
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <PlanningWorkflowCard
+        workflow={{
+          busy: true,
+          snapshot,
+          async onCommand() {},
+        }}
+      />,
+    );
+  });
+
+  const approve = findButtonByText(renderer, '이 계획 승인');
+  const revise = findButtonByText(renderer, '수정 요청');
+  const cancel = findButtonByText(renderer, '취소');
+  assert.ok(approve);
+  assert.ok(revise);
+  assert.ok(cancel);
+  assert.equal(approve.props.disabled, true);
+  assert.equal(revise.props.disabled, false);
+  assert.equal(cancel.props.disabled, false);
+  assert.equal(
+    renderer.root.findByProps({
+      placeholder: '바꿔야 할 점을 적어주세요.',
+    }).props.disabled,
+    false,
+  );
+  assert.match(
+    renderedText(renderer.root),
+    /계획을 검토·수정·취소할 수 있습니다/u,
+  );
+
+  await act(async () => renderer.unmount());
+});
+
 void test('visual approval enables only after the matching diagram is present', async () => {
   const commands: PlanWorkflowCommand[] = [];
   const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174042');
@@ -286,6 +325,100 @@ void test('the approval card restores its matching persisted visualization inlin
     1,
   );
   assert.ok(findButtonByText(renderer, '그림 다시 만들기'));
+  assert.ok(findButtonByText(renderer, '크게 보기'));
+  await act(async () => renderer.unmount());
+});
+
+void test('planning approval leads with the user goal and demotes file paths to metadata', async () => {
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174044');
+  const snapshot = awaitingPlanningSnapshot(threadId);
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <PlanningWorkflowCard
+        workflow={{
+          busy: false,
+          snapshot: {
+            ...snapshot,
+            intensity: 'quiet',
+            draft: {
+              ...snapshot.draft,
+              outcome:
+                'planning-workflow-card.tsx 한 파일의 승인 카드 경험을 개선한다.',
+              steps: [
+                {
+                  id: 'card-goal',
+                  text: '사용자 목표를 제목에 먼저 표시한다.',
+                  acceptanceCriteria: [
+                    'apps/web-shell/src/features/assistant/run-plan/planning-workflow-card.tsx는 관련 파일 메타로만 보인다.',
+                  ],
+                },
+              ],
+            },
+          },
+          async onCommand() {},
+        }}
+      />,
+    );
+  });
+
+  const title = renderer.root.findByProps({
+    className: 'planning-workflow-card-title',
+  });
+  assert.equal(renderedText(title), '승인 카드 경험을 개선한다.');
+  const targets = renderer.root.findByProps({ 'aria-label': '관련 파일' });
+  assert.match(renderedText(targets), /관련 파일/u);
+  assert.match(renderedText(targets), /planning-workflow-card\.tsx/u);
+  assert.equal(
+    targets.findAllByType('code').length,
+    1,
+    'the basename and full path should collapse to one metadata item',
+  );
+  await act(async () => renderer.unmount());
+});
+
+void test('a visual plan opens a large dialog from its compact card preview', async () => {
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174045');
+  const snapshot = awaitingPlanningSnapshot(threadId);
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <PlanningWorkflowCard
+        workflow={{
+          busy: false,
+          snapshot,
+          async onCommand() {},
+        }}
+        visualization={{
+          mode: 'svg',
+          title: '승인 흐름',
+          code: '<svg role="img" aria-label="승인 흐름"></svg>',
+          planStamp: {
+            workflowId: snapshot.workflowId,
+            planId: snapshot.planId,
+            revision: snapshot.revision,
+            digest: snapshot.digest,
+          },
+        }}
+      />,
+    );
+  });
+
+  const open = findButtonByText(renderer, '크게 보기');
+  assert.ok(open);
+  await act(async () => open.props.onClick());
+  const dialog = renderer.root.findByProps({ role: 'dialog' });
+  assert.equal(dialog.props['aria-modal'], 'true');
+  assert.match(renderedText(dialog), /승인 카드로 자동 인계/u);
+
+  const close = renderer.root.findByProps({
+    'aria-label': '계획 그림 크게 보기 닫기 (Esc)',
+  });
+  await act(async () => close.props.onClick());
+  assert.equal(
+    renderer.root.findAll((node) => node.props.role === 'dialog').length,
+    0,
+  );
   await act(async () => renderer.unmount());
 });
 
@@ -973,6 +1106,46 @@ void test('failed approved execution offers only the exact-plan retry', () => {
 
   assert.match(html, /이 계획 다시 실행/u);
   assert.doesNotMatch(html, /답변 다시 시도/u);
+});
+
+void test('a completed plan record stays dismissed for the unchanged terminal snapshot', async () => {
+  const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174034');
+  const props = createAssistantProps({
+    conversation: { threadId },
+    workflow: {
+      planningWorkflow: {
+        busy: false,
+        snapshot: {
+          ...awaitingPlanningSnapshot(threadId),
+          state: 'completed',
+          executionRunId: assertRunId('run-completed-plan-record'),
+        },
+        async onCommand() {},
+      },
+    },
+  });
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(<Assistant {...props} />);
+  });
+
+  const dismiss = renderer.root.findByProps({
+    'aria-label': '실행 완료 기록 치우기',
+  });
+  await act(async () => dismiss.props.onClick());
+  assert.equal(
+    renderer.root.findAllByProps({ className: 'planning-workflow-card' })
+      .length,
+    0,
+  );
+
+  await act(async () => renderer.update(<Assistant {...props} />));
+  assert.equal(
+    renderer.root.findAllByProps({ className: 'planning-workflow-card' })
+      .length,
+    0,
+  );
+  await act(async () => renderer.unmount());
 });
 
 void test('assistant composer renders the selected current model', () => {

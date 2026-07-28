@@ -1,16 +1,10 @@
 import assert from 'node:assert/strict';
-import {
-  appendFile,
-  mkdtemp,
-  readFile,
-  rm,
-  watch,
-  writeFile,
-} from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 import { createDaemonLifecycleClient } from './client.js';
 import { notifyDaemonLifecycleReady } from './daemon-child.js';
@@ -223,22 +217,15 @@ async function waitForLogLines(
   count: number,
   signal: AbortSignal,
 ): Promise<string[]> {
-  const watcher = watch(logPath, { signal });
-  try {
-    let lines = await readLogLines(logPath);
+  while (!signal.aborted) {
+    const lines = await readLogLines(logPath);
     if (lines.length >= count) {
       return lines;
     }
-    for await (const _event of watcher) {
-      lines = await readLogLines(logPath);
-      if (lines.length >= count) {
-        return lines;
-      }
-    }
-    throw new Error('daemon lifecycle fixture watch ended before readiness');
-  } finally {
-    await watcher.return?.();
+    await yieldToEventLoop(undefined, { signal });
   }
+  signal.throwIfAborted();
+  throw new Error('daemon lifecycle fixture wait ended before readiness');
 }
 
 async function readLogLines(logPath: string): Promise<string[]> {

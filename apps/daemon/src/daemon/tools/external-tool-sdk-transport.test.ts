@@ -7,9 +7,11 @@ import test from 'node:test';
 import {
   TOOL_SDK_RELEASE,
   createToolSdkClient,
+  type ToolSdkCompatibility,
   type ToolSdkJsonValue,
   type ToolSdkProjectionIdentity,
 } from '@geulbat/tool-sdk';
+import { assertThreadId } from '@geulbat/protocol/ids';
 
 import { createDaemonContext } from '../context.js';
 import { readFileTool } from './builtin/read-file.js';
@@ -493,6 +495,363 @@ void test('invalid authentication rejects the handshake without revealing admiss
     assert.equal(result.error.code, 'authentication_invalid');
   }
 });
+
+void test('daemon transport rejects malformed compatibility and authority transitions at every invocation boundary', async (t) => {
+  const registry = createToolRegistryStore({ builtins: [readFileTool] });
+  const authority = {
+    async authenticate() {
+      return { ok: true as const, principal: 'consumer-1' };
+    },
+    async authorizeInvocation() {
+      return {
+        ok: true as const,
+        context: { callId: 'boundary-contract' },
+      };
+    },
+  };
+  const transport = createDaemonToolSdkTransport({
+    registry,
+    getProjectionIdentity: () => PROJECTION,
+    authority,
+  });
+  const compatibility = currentCompatibility();
+  const context = {
+    credential: { scheme: 'Bearer' as const, value: 'valid-credential' },
+  };
+
+  const handshake = async (overrides: {
+    compatibility?: ToolSdkCompatibility;
+    requestedCapabilities?: Array<'tool.invoke'>;
+    requestedPublicTools?: Array<'files.read'>;
+  }) =>
+    await transport.handshake(
+      {
+        compatibility: overrides.compatibility ?? compatibility,
+        requestedCapabilities: overrides.requestedCapabilities ?? [
+          'tool.invoke',
+        ],
+        requestedPublicTools: overrides.requestedPublicTools ?? ['files.read'],
+      },
+      context,
+    );
+  assert.equal(
+    failureCode(await handshake({ requestedCapabilities: [] })),
+    'capability_unavailable',
+  );
+  assert.equal(
+    failureCode(await handshake({ requestedPublicTools: [] })),
+    'tool_not_admitted',
+  );
+  assert.equal(
+    failureCode(
+      await handshake({
+        requestedPublicTools: ['files.read', 'files.read'],
+      }),
+    ),
+    'tool_not_admitted',
+  );
+  assert.equal(
+    failureCode(
+      await handshake({
+        compatibility: {
+          ...compatibility,
+          packageVersion: `${compatibility.packageVersion}-other`,
+        },
+      }),
+    ),
+    'incompatible_sdk',
+  );
+  assert.equal(
+    failureCode(
+      await handshake({
+        compatibility: {
+          ...compatibility,
+          runtimeCompatibility: {
+            ...compatibility.runtimeCompatibility,
+            range: `${compatibility.runtimeCompatibility.range}-other`,
+          },
+        },
+      }),
+    ),
+    'incompatible_transport',
+  );
+  assert.equal(
+    failureCode(
+      await handshake({
+        compatibility: {
+          ...compatibility,
+          projection: { ...PROJECTION, policyId: 'another-policy' },
+        },
+      }),
+    ),
+    'policy_mismatch',
+  );
+
+  await t.test('projection lookup failures remain sanitized', async () => {
+    const cases = [
+      {
+        expected: 'transport_failed',
+        getProjectionIdentity: () => {
+          throw new Error('private projection storage path');
+        },
+      },
+      {
+        expected: 'projection_mismatch',
+        getProjectionIdentity: (): ToolSdkProjectionIdentity => ({
+          ...PROJECTION,
+          sdkProjectionHash: 'sha256:not-a-digest',
+        }),
+      },
+      {
+        expected: 'projection_mismatch',
+        getProjectionIdentity: (): ToolSdkProjectionIdentity => ({
+          ...PROJECTION,
+          policyId: '   ',
+        }),
+      },
+    ];
+    for (const testCase of cases) {
+      const result = await createDaemonToolSdkTransport({
+        registry,
+        getProjectionIdentity: testCase.getProjectionIdentity,
+        authority,
+      }).handshake(
+        {
+          compatibility,
+          requestedCapabilities: ['tool.invoke'],
+          requestedPublicTools: ['files.read'],
+        },
+        context,
+      );
+      assert.equal(failureCode(result), testCase.expected);
+      assert.doesNotMatch(JSON.stringify(result), /private projection/u);
+    }
+  });
+
+  await t.test(
+    'abort and thrown authority calls never reach execution',
+    async () => {
+      const aborted = new AbortController();
+      aborted.abort('user_interrupt');
+      assert.equal(
+        failureCode(
+          await transport.invoke(
+            {
+              compatibility,
+              publicTool: 'files.read',
+              input: { path: 'notes.txt' },
+            },
+            { ...context, signal: aborted.signal },
+          ),
+        ),
+        'cancelled',
+      );
+
+      const authenticationThrows = createDaemonToolSdkTransport({
+        registry,
+        getProjectionIdentity: () => PROJECTION,
+        authority: {
+          async authenticate() {
+            throw new Error('credential backend offline');
+          },
+          async authorizeInvocation() {
+            assert.fail('authorization must not run');
+          },
+        },
+      });
+      assert.equal(
+        failureCode(
+          await authenticationThrows.invoke(
+            {
+              compatibility,
+              publicTool: 'files.read',
+              input: { path: 'notes.txt' },
+            },
+            context,
+          ),
+        ),
+        'authentication_invalid',
+      );
+
+      const authorizationThrows = createDaemonToolSdkTransport({
+        registry,
+        getProjectionIdentity: () => PROJECTION,
+        authority: {
+          async authenticate() {
+            return { ok: true as const, principal: 'consumer-1' };
+          },
+          async authorizeInvocation() {
+            throw new Error('approval backend offline');
+          },
+        },
+      });
+      assert.equal(
+        failureCode(
+          await authorizationThrows.invoke(
+            {
+              compatibility,
+              publicTool: 'files.read',
+              input: { path: 'notes.txt' },
+            },
+            context,
+          ),
+        ),
+        'transport_failed',
+      );
+    },
+  );
+
+  await t.test(
+    'input snapshots and post-authorization admission are revalidated',
+    async () => {
+      assert.equal(
+        failureCode(
+          await transport.invoke(
+            {
+              compatibility,
+              publicTool: 'files.read',
+              input: { path: 'notes.txt', offset: Number.POSITIVE_INFINITY },
+            },
+            context,
+          ),
+        ),
+        'tool_not_admitted',
+      );
+
+      const mutableRegistry = createToolRegistryStore({
+        builtins: [readFileTool],
+      });
+      const revalidated = createDaemonToolSdkTransport({
+        registry: mutableRegistry,
+        getProjectionIdentity: () => PROJECTION,
+        authority: {
+          async authenticate() {
+            return { ok: true as const, principal: 'consumer-1' };
+          },
+          async authorizeInvocation() {
+            assert.equal(mutableRegistry.unregisterTool('read_file'), true);
+            return {
+              ok: true as const,
+              context: { callId: 'admission-revoked' },
+            };
+          },
+        },
+      });
+      assert.equal(
+        failureCode(
+          await revalidated.invoke(
+            {
+              compatibility,
+              publicTool: 'files.read',
+              input: { path: 'notes.txt' },
+            },
+            context,
+          ),
+        ),
+        'tool_not_admitted',
+      );
+    },
+  );
+});
+
+void test('daemon transport handles result offload failures without replacing a valid inline result with partial truth', async (t) => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-external-tool-sdk-offload-'),
+  );
+  t.after(() => rm(computerFileRoot, { recursive: true, force: true }));
+  await writeFile(join(computerFileRoot, 'notes.txt'), 'first\nsecond\n');
+  const registry = createToolRegistryStore({ builtins: [readFileTool] });
+  const authority = {
+    async authenticate() {
+      return { ok: true as const, principal: 'consumer-1' };
+    },
+    async authorizeInvocation() {
+      return {
+        ok: true as const,
+        context: { callId: 'offload-read', computerFileRoot },
+      };
+    },
+    async authorizeOutputRecovery() {
+      return {
+        ok: true as const,
+        context: {
+          callId: 'offload-recovery',
+          stateRoot: computerFileRoot,
+          threadId: assertThreadId('33333333-3333-4333-8333-333333333333'),
+        },
+      };
+    },
+  };
+  const run = async (
+    offloadResult: NonNullable<
+      Parameters<typeof createDaemonToolSdkTransport>[0]['offloadResult']
+    >,
+  ) => {
+    const client = createToolSdkClient({
+      transport: createDaemonToolSdkTransport({
+        registry,
+        getProjectionIdentity: () => PROJECTION,
+        authority,
+        offloadResult,
+      }),
+      projection: PROJECTION,
+      credentialProvider: validCredentialProvider(),
+      requestedPublicTools: ['files.read'],
+    });
+    assert.equal((await client.connect()).ok, true);
+    return await client.readFile({ path: 'notes.txt', limit: 1 });
+  };
+
+  await t.test('an unchanged projection keeps the inline value', async () => {
+    const result = await run(async ({ output }) => ({ ok: true, output }));
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.content, 'first\n');
+    }
+  });
+
+  await t.test(
+    'a thrown projection is retryable transport failure',
+    async () => {
+      const result = await run(async () => {
+        throw new Error('output projection offline');
+      });
+      assert.equal(failureCode(result), 'transport_failed');
+    },
+  );
+
+  await t.test(
+    'invalid offload claims fail instead of returning partial output',
+    async () => {
+      for (const output of [
+        'not-json',
+        JSON.stringify({ offloaded: false, outputRef: 'output-ref' }),
+        JSON.stringify({ offloaded: true, outputRef: '   ' }),
+      ]) {
+        assert.equal(
+          failureCode(await run(async () => ({ ok: true, output }))),
+          'tool_failed',
+        );
+      }
+    },
+  );
+});
+
+function currentCompatibility(): ToolSdkCompatibility {
+  return {
+    packageVersion: TOOL_SDK_RELEASE.packageVersion,
+    apiVersion: TOOL_SDK_RELEASE.apiVersion,
+    transportProtocolVersion: TOOL_SDK_RELEASE.transportProtocolVersion,
+    runtimeCompatibility: TOOL_SDK_RELEASE.runtimeCompatibility,
+    projection: PROJECTION,
+  };
+}
+
+function failureCode(
+  result: { ok: true } | { ok: false; error: { code: string } },
+): string | undefined {
+  return result.ok ? undefined : result.error.code;
+}
 
 function validCredentialProvider() {
   return {

@@ -30,8 +30,16 @@ import {
   DEFAULT_RUN_MODEL_ID,
   DEFAULT_RUN_SERVICE_TIER,
   DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
+  isRunModelId,
+  isRunReasoningSelection,
+  isRunServiceTier,
+  isRunSubagentModelRouting,
   resolveRunModelDescriptor,
 } from '@geulbat/protocol/run-contract';
+import {
+  isPlanModeDepth,
+  isPlanModeIntensity,
+} from '@geulbat/protocol/planning-workflow';
 import type {
   PrepareProviderTransitionRequest,
   ThreadDetailResponse,
@@ -64,6 +72,7 @@ import {
   readStoredContextUsageByThread,
   storeContextUsageByThread,
 } from './run-session-context-usage-cache.js';
+import { isRecord, tryParseJsonRecord } from '../lib/json.js';
 
 export interface RunSessionControllerClient
   extends
@@ -178,35 +187,122 @@ interface RunSessionPreferences {
   subagentModelRouting: RunSubagentModelRouting;
 }
 
+type StoredRunSessionPreferences = Omit<
+  RunSessionPreferences,
+  'permissionMode'
+>;
+
+const RUN_SESSION_PREFERENCES_STORAGE_KEY =
+  'geulbat.shell.run-session-preferences.v1';
+
+function readStoredRunSessionPreferences(): StoredRunSessionPreferences | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(
+      RUN_SESSION_PREFERENCES_STORAGE_KEY,
+    );
+    if (raw === null || raw === undefined) {
+      return null;
+    }
+    const parsed = tryParseJsonRecord(raw);
+    if (
+      !parsed.ok ||
+      parsed.value.version !== 1 ||
+      !isRecord(parsed.value.preferences)
+    ) {
+      return null;
+    }
+    const preferences = parsed.value.preferences;
+    if (
+      !(
+        preferences.workingDirectory === null ||
+        typeof preferences.workingDirectory === 'string'
+      ) ||
+      typeof preferences.planModeRequested !== 'boolean' ||
+      !isPlanModeIntensity(preferences.planModeIntensity) ||
+      !isPlanModeDepth(preferences.planModeDepth) ||
+      !isRunModelId(preferences.modelId) ||
+      !isRunReasoningSelection(preferences.reasoningEffort) ||
+      !isRunServiceTier(preferences.serviceTier) ||
+      !isRunSubagentModelRouting(preferences.subagentModelRouting)
+    ) {
+      return null;
+    }
+    return {
+      workingDirectory: preferences.workingDirectory,
+      planModeRequested: preferences.planModeRequested,
+      planModeIntensity: preferences.planModeIntensity,
+      planModeDepth: preferences.planModeDepth,
+      modelId: preferences.modelId,
+      reasoningEffort: preferences.reasoningEffort,
+      serviceTier: preferences.serviceTier,
+      subagentModelRouting: preferences.subagentModelRouting,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function storeRunSessionPreferences(preferences: RunSessionPreferences): void {
+  const stored = toStoredRunSessionPreferences(preferences);
+  try {
+    globalThis.localStorage?.setItem(
+      RUN_SESSION_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ version: 1, preferences: stored }),
+    );
+  } catch {
+    // 로컬 UI 기본값 저장이 막혀도 현재 세션의 exact state는 유지한다.
+  }
+}
+
+function toStoredRunSessionPreferences(
+  preferences: RunSessionPreferences,
+): StoredRunSessionPreferences {
+  return {
+    workingDirectory: preferences.workingDirectory,
+    planModeRequested: preferences.planModeRequested,
+    planModeIntensity: preferences.planModeIntensity,
+    planModeDepth: preferences.planModeDepth,
+    modelId: preferences.modelId,
+    reasoningEffort: preferences.reasoningEffort,
+    serviceTier: preferences.serviceTier,
+    subagentModelRouting: preferences.subagentModelRouting,
+  };
+}
+
 function createRunSessionPreferences(
   activeModelId: RunModelId | null,
   restored: ThreadRunPreferences | null,
+  lastUsed: StoredRunSessionPreferences | null,
 ): RunSessionPreferences {
-  const modelId = activeModelId ?? DEFAULT_RUN_MODEL_ID;
+  const modelId = activeModelId ?? lastUsed?.modelId ?? DEFAULT_RUN_MODEL_ID;
   const model = resolveRunModelDescriptor(modelId);
-  const restoredReasoningEffort = restored?.reasoningEffort;
+  const restoredReasoningEffort =
+    restored?.reasoningEffort ?? lastUsed?.reasoningEffort;
   const reasoningEffort =
     restoredReasoningEffort !== undefined &&
     model.reasoningEfforts.some((effort) => effort === restoredReasoningEffort)
       ? restoredReasoningEffort
       : model.defaultReasoningEffort;
-  const restoredServiceTier = restored?.serviceTier;
+  const restoredServiceTier = restored?.serviceTier ?? lastUsed?.serviceTier;
   const serviceTier =
     restoredServiceTier !== undefined &&
     model.serviceTiers.some((tier) => tier === restoredServiceTier)
       ? restoredServiceTier
       : DEFAULT_RUN_SERVICE_TIER;
   return {
-    workingDirectory: restored?.workingDirectory ?? null,
+    workingDirectory:
+      restored?.workingDirectory ?? lastUsed?.workingDirectory ?? null,
     permissionMode: restored?.permissionMode ?? DEFAULT_PERMISSION_MODE,
-    planModeRequested: false,
-    planModeIntensity: 'visual',
-    planModeDepth: 'standard',
+    planModeRequested: lastUsed?.planModeRequested ?? false,
+    planModeIntensity: lastUsed?.planModeIntensity ?? 'visual',
+    planModeDepth: lastUsed?.planModeDepth ?? 'standard',
     modelId,
     reasoningEffort,
     serviceTier,
     subagentModelRouting:
-      restored?.subagentModelRouting ?? DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
+      restored?.subagentModelRouting ??
+      lastUsed?.subagentModelRouting ??
+      DEFAULT_RUN_SUBAGENT_MODEL_ROUTING,
   };
 }
 
@@ -255,29 +351,41 @@ export function useRunSessionRuntime({
     selectedThreadId === null
       ? `new:${newSessionGeneration}`
       : `thread:${selectedThreadId}`;
+  const [lastUsedPreferences, setLastUsedPreferences] =
+    useState<StoredRunSessionPreferences | null>(
+      readStoredRunSessionPreferences,
+    );
   const restoredPreferences = useMemo(
-    () => createRunSessionPreferences(activeModelId, runPreferences),
-    [activeModelId, runPreferences],
+    () =>
+      createRunSessionPreferences(
+        activeModelId,
+        runPreferences,
+        lastUsedPreferences,
+      ),
+    [activeModelId, lastUsedPreferences, runPreferences],
   );
   const [preferencesBySession, setPreferencesBySession] = useState<
     Map<string, RunSessionPreferences>
   >(() => new Map());
   const preferences =
     preferencesBySession.get(sessionPreferenceKey) ?? restoredPreferences;
+  const preferencesRef = useRef(preferences);
+  preferencesRef.current = preferences;
   const updatePreferences = useCallback(
     (
       update: (current: RunSessionPreferences) => RunSessionPreferences,
     ): void => {
+      const updatedPreferences = update(preferencesRef.current);
+      preferencesRef.current = updatedPreferences;
+      setLastUsedPreferences(toStoredRunSessionPreferences(updatedPreferences));
+      storeRunSessionPreferences(updatedPreferences);
       setPreferencesBySession((current) => {
         const next = new Map(current);
-        next.set(
-          sessionPreferenceKey,
-          update(current.get(sessionPreferenceKey) ?? restoredPreferences),
-        );
+        next.set(sessionPreferenceKey, updatedPreferences);
         return next;
       });
     },
-    [restoredPreferences, sessionPreferenceKey],
+    [sessionPreferenceKey],
   );
   const setWorkingDirectory = useCallback(
     (workingDirectory: string | null) => {

@@ -1,11 +1,21 @@
 import { z } from 'zod';
 import {
+  createMediaGenerationRecoveryIdentity,
   IMAGE_GENERATION_PROVIDER_IDS,
   IMAGE_GENERATION_QUALITIES,
   IMAGE_GENERATION_SIZES,
+  parseMediaGenerationRecoveryIdentity,
+  type MediaGenerationRecoveryIdentity,
 } from '../../media/contract.js';
 import { getErrorMessage } from '../../utils/error.js';
 import { toolError } from '../result.js';
+import {
+  recordDurableToolInvocation,
+  recordDurableToolInvocationResult,
+  resolveDurableToolInvocation,
+  type DurableToolInvocationContext,
+} from '../tool-invocation-durability.js';
+import type { ExecuteResult } from '../types.js';
 import { defineZodTool } from '../zod-tool.js';
 import {
   imageGenerationFailureToolErrorCode,
@@ -64,6 +74,7 @@ export const generateImageTool = defineZodTool({
   sideEffectLevel: 'write',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'reconcile_then_replay',
   timeoutMs: resolveGenerateImageTimeoutMs(),
   catalogSearchMetadata: {
     family: 'network',
@@ -101,7 +112,55 @@ export const generateImageTool = defineZodTool({
       );
     }
 
+    let durability: DurableToolInvocationContext | undefined;
+    let recoveryIdentity: MediaGenerationRecoveryIdentity | undefined;
     try {
+      durability = await resolveDurableToolInvocation(
+        ctx,
+        generateImageTool.name,
+      );
+      if (durability !== undefined) {
+        const expected = createMediaGenerationRecoveryIdentity({
+          kind: 'image',
+          threadId: durability.threadId,
+          runId: durability.runId,
+          callId: ctx.callId,
+          toolArgs: {
+            prompt: args.prompt,
+            ...(args.provider === undefined ? {} : { provider: args.provider }),
+            ...(args.size === undefined ? {} : { size: args.size }),
+            ...(args.quality === undefined ? {} : { quality: args.quality }),
+          },
+        });
+        const invocation = durability.invocation;
+        if (invocation !== undefined) {
+          recoveryIdentity = requireImageRecoveryInvocation(
+            invocation,
+            ctx.callId,
+            expected,
+          );
+          if (invocation.status === 'reconciled') {
+            return invocation.result;
+          }
+        } else {
+          const recorded = await recordDurableToolInvocation({
+            durability,
+            callId: ctx.callId,
+            toolName: generateImageTool.name,
+            recoveryStrategy: 'reconcile_then_replay',
+            recoveryState: { ...expected },
+          });
+          recoveryIdentity = requireImageRecoveryInvocation(
+            recorded.invocation,
+            ctx.callId,
+            expected,
+          );
+          if (recorded.invocation.status === 'reconciled') {
+            return recorded.invocation.result;
+          }
+        }
+      }
+
       const result = await runtime.generateImageArtifact({
         request: {
           prompt: args.prompt,
@@ -113,6 +172,14 @@ export const generateImageTool = defineZodTool({
         workingDirectory: ctx.workingDirectory,
         threadId: ctx.threadId,
         runId: ctx.runId,
+        ...(recoveryIdentity === undefined
+          ? {}
+          : {
+              recovery: {
+                callId: ctx.callId,
+                identity: recoveryIdentity,
+              },
+            }),
         ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
       });
 
@@ -123,21 +190,60 @@ export const generateImageTool = defineZodTool({
         payload: result.artifactVersion,
       });
 
-      return {
+      const toolResult: ExecuteResult = {
         ok: true,
         output: stringifyGenerateImageOutput(result),
       };
+      await recordDurableToolInvocationResult({
+        durability,
+        callId: ctx.callId,
+        toolName: generateImageTool.name,
+        result: toolResult,
+      });
+      return toolResult;
     } catch (error: unknown) {
       const failure = stringifyGenerateImageFailure(
         error,
         getErrorMessage(error),
       );
-      return {
+      const toolResult: ExecuteResult = {
         ok: false,
         output: failure.output,
         errorCode: imageGenerationFailureToolErrorCode(error),
         error: failure.message,
       };
+      if (recoveryIdentity !== undefined) {
+        await recordDurableToolInvocationResult({
+          durability,
+          callId: ctx.callId,
+          toolName: generateImageTool.name,
+          result: toolResult,
+        });
+      }
+      return toolResult;
     }
   },
 });
+
+function requireImageRecoveryInvocation(
+  invocation: NonNullable<DurableToolInvocationContext['invocation']>,
+  callId: string,
+  expected: MediaGenerationRecoveryIdentity,
+): MediaGenerationRecoveryIdentity {
+  const identity = parseMediaGenerationRecoveryIdentity(
+    invocation.recoveryState,
+  );
+  if (
+    invocation.callId !== callId ||
+    invocation.toolName !== generateImageTool.name ||
+    invocation.recoveryStrategy !== 'reconcile_then_replay' ||
+    identity === null ||
+    identity.kind !== 'image' ||
+    identity.operationId !== expected.operationId ||
+    identity.artifactId !== expected.artifactId ||
+    identity.argsDigest !== expected.argsDigest
+  ) {
+    throw new Error('generate_image recovery invocation identity conflicts');
+  }
+  return identity;
+}

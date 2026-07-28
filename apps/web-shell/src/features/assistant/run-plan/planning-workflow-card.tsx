@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import type {
+  PlanDraftV1,
   PlanningWorkflowSnapshot,
   PlanWorkflowCommand,
 } from '@geulbat/protocol/planning-workflow';
@@ -33,6 +34,60 @@ function PlanningWorkflowDismissIcon() {
   );
 }
 
+const PLAN_FILE_REFERENCE_PATTERN =
+  /(?:[A-Za-z0-9_@.-]+\/)*[A-Za-z0-9_@.-]+\.(?:[cm]?[jt]sx?|css|scss|md|json|ya?ml|toml|py|rs|go|java|kt|swift|sh|ps1)/giu;
+
+function collectPlanFileReferences(draft: PlanDraftV1): string[] {
+  const text = [
+    draft.outcome,
+    ...draft.steps.flatMap((step) => [step.text, ...step.acceptanceCriteria]),
+    ...draft.decisions.map((decision) => decision.text),
+    ...draft.assumptions,
+    ...draft.openQuestions,
+  ].join('\n');
+  const references: string[] = [];
+  for (const match of text.match(PLAN_FILE_REFERENCE_PATTERN) ?? []) {
+    const baseName = match.split('/').at(-1);
+    const existingIndex = references.findIndex(
+      (reference) => reference.split('/').at(-1) === baseName,
+    );
+    if (existingIndex === -1) {
+      references.push(match);
+    } else if (
+      match.includes('/') &&
+      references[existingIndex]?.includes('/') !== true
+    ) {
+      references[existingIndex] = match;
+    }
+  }
+  return references;
+}
+
+function resolvePlanCardTitle(
+  outcome: string,
+  fileReferences: readonly string[],
+): string {
+  let title = outcome;
+  for (const reference of fileReferences) {
+    for (const candidate of [
+      reference,
+      reference.split('/').at(-1) ?? reference,
+    ]) {
+      title = title
+        .replaceAll(`\`${candidate}\``, ' ')
+        .replaceAll(candidate, ' ');
+    }
+  }
+  title = title
+    .replace(/^\s*(?:한\s+)?파일(?:만)?(?:의|에서|을|를)?\s*/u, '')
+    .replace(/^\s*(?:의|에서|을|를)\s*/u, '')
+    .replace(/\s{2,}/gu, ' ')
+    .replace(/\s+([,.;:])/gu, '$1')
+    .replace(/^[\s·,:;—–-]+|[\s·,:;—–-]+$/gu, '')
+    .trim();
+  return title || '계획을 검토해 주세요';
+}
+
 export function PlanningWorkflowCard({
   workflow,
   visualization = null,
@@ -51,16 +106,44 @@ export function PlanningWorkflowCard({
   const [pendingCommand, setPendingCommand] = useState<
     PlanWorkflowCommand['kind'] | null
   >(null);
+  const [visualRequestPending, setVisualRequestPending] = useState(false);
+  const [visualExpanded, setVisualExpanded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const autoExplainKeyRef = useRef<string | null>(null);
-  const actionsDisabled = workflow.busy || pendingCommand !== null;
-  // visual 강도는 그림을 먼저 보여 준 뒤에만 승인한다 — 텍스트 카드가 앞서 뜨는
-  // 흐름을 호스트에서 막는다.
+  const visualOpenButtonRef = useRef<HTMLButtonElement | null>(null);
+  const visualCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const visualDialogTitleId = useId();
+  const actionsDisabled =
+    workflow.busy || pendingCommand !== null || visualRequestPending;
   const visualAwaitingDiagram =
     snapshot.state === 'awaiting_approval' &&
     snapshot.intensity === 'visual' &&
     visualization === null;
   const approveDisabled = actionsDisabled || visualAwaitingDiagram;
+  // 시각화는 계획 초안과 별개인 보조 작업이다. 그림이 늦더라도 텍스트
+  // 계획을 읽고 수정하거나 취소할 수 있어야 한다.
+  const planEditActionsDisabled =
+    pendingCommand !== null || (workflow.busy && !visualAwaitingDiagram);
+
+  const closeExpandedVisualization = useCallback(() => {
+    setVisualExpanded(false);
+    visualOpenButtonRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!visualExpanded || typeof document === 'undefined') {
+      return;
+    }
+    visualCloseButtonRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeExpandedVisualization();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [closeExpandedVisualization, visualExpanded]);
 
   const submit = async (command: PlanWorkflowCommand) => {
     setPendingCommand(command.kind);
@@ -78,6 +161,32 @@ export function PlanningWorkflowCard({
     }
   };
 
+  const requestVisualization = useCallback(async () => {
+    if (snapshot.state !== 'awaiting_approval') {
+      return;
+    }
+    setVisualRequestPending(true);
+    setError(null);
+    try {
+      await workflow.onCommand({
+        kind: 'explain_visual',
+        threadId: snapshot.threadId,
+        workflowId: snapshot.workflowId,
+        planId: snapshot.planId,
+        revision: snapshot.revision,
+        digest: snapshot.digest,
+      });
+    } catch (reason: unknown) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : '계획 그림을 만들지 못했습니다.',
+      );
+    } finally {
+      setVisualRequestPending(false);
+    }
+  }, [snapshot, workflow]);
+
   useEffect(() => {
     if (
       snapshot.state !== 'awaiting_approval' ||
@@ -85,7 +194,12 @@ export function PlanningWorkflowCard({
     ) {
       return;
     }
-    if (visualization !== null || workflow.busy || pendingCommand !== null) {
+    if (
+      visualization !== null ||
+      workflow.busy ||
+      pendingCommand !== null ||
+      visualRequestPending
+    ) {
       return;
     }
     const planKey = `${snapshot.workflowId}:${snapshot.planId}:${snapshot.revision}:${snapshot.digest}`;
@@ -94,29 +208,15 @@ export function PlanningWorkflowCard({
     }
     autoExplainKeyRef.current = planKey;
     // 모델이 같은 턴에 visualize를 빠뜨린 경우 호스트가 그림을 먼저 채운다.
-    void (async () => {
-      setPendingCommand('explain_visual');
-      setError(null);
-      try {
-        await workflow.onCommand({
-          kind: 'explain_visual',
-          threadId: snapshot.threadId,
-          workflowId: snapshot.workflowId,
-          planId: snapshot.planId,
-          revision: snapshot.revision,
-          digest: snapshot.digest,
-        });
-      } catch (reason: unknown) {
-        setError(
-          reason instanceof Error
-            ? reason.message
-            : '계획 그림을 만들지 못했습니다.',
-        );
-      } finally {
-        setPendingCommand(null);
-      }
-    })();
-  }, [pendingCommand, snapshot, visualization, workflow]);
+    void requestVisualization();
+  }, [
+    pendingCommand,
+    snapshot,
+    visualization,
+    visualRequestPending,
+    workflow,
+    requestVisualization,
+  ]);
 
   const cancel = () =>
     submit({
@@ -285,14 +385,22 @@ export function PlanningWorkflowCard({
     );
   }
 
+  const fileReferences = collectPlanFileReferences(snapshot.draft);
+  const planCardTitle = resolvePlanCardTitle(
+    snapshot.draft.outcome,
+    fileReferences,
+  );
+
   return (
     <section className="planning-workflow-card" aria-label="계획 승인">
       <div className="planning-workflow-card-header">
-        <div>
-          <strong>{snapshot.draft.outcome}</strong>
+        <div className="planning-workflow-card-copy">
+          <strong className="planning-workflow-card-title">
+            {planCardTitle}
+          </strong>
           <p>
             {visualAwaitingDiagram
-              ? '그림을 먼저 준비한 뒤 승인할 수 있습니다.'
+              ? '그림을 준비하는 동안에도 계획을 검토·수정·취소할 수 있습니다.'
               : '아래 내용과 digest가 함께 승인됩니다.'}
           </p>
         </div>
@@ -301,27 +409,93 @@ export function PlanningWorkflowCard({
         </span>
       </div>
 
+      {fileReferences.length === 0 ? null : (
+        <div className="planning-workflow-targets" aria-label="관련 파일">
+          <span>관련 파일</span>
+          {fileReferences.map((reference) => (
+            <code key={reference} title={reference}>
+              {reference.split('/').at(-1)}
+            </code>
+          ))}
+        </div>
+      )}
+
       {visualization === null ? (
         snapshot.intensity === 'visual' ? (
           <p className="planning-workflow-note" role="status">
-            {workflow.busy || pendingCommand === 'explain_visual'
+            {workflow.busy || visualRequestPending
               ? '관계 그림을 그리는 중… 완성되면 이 카드 맨 위에 표시됩니다.'
-              : '시각 계획이라 그림이 준비된 뒤에만 승인할 수 있습니다.'}
+              : '그림이 아직 없어요. 텍스트 계획을 검토하거나 그림을 다시 요청할 수 있습니다.'}
           </p>
         ) : null
       ) : (
         <div className="planning-workflow-visualization">
-          <VisualizeWidget
-            view={visualization}
-            planningWorkflowSnapshot={snapshot}
-            playback="instant"
-            {...(onWidgetPrompt === undefined ? {} : { onWidgetPrompt })}
-            {...(onWidgetToolRequest === undefined
-              ? {}
-              : { onWidgetToolRequest })}
-          />
+          <div
+            className="planning-workflow-visualization-preview"
+            aria-hidden="true"
+            inert
+          >
+            <VisualizeWidget
+              view={visualization}
+              planningWorkflowSnapshot={snapshot}
+              playback="instant"
+            />
+          </div>
+          <button
+            ref={visualOpenButtonRef}
+            type="button"
+            className="planning-workflow-visualization-open"
+            aria-haspopup="dialog"
+            onClick={() => setVisualExpanded(true)}
+          >
+            <span>{visualization.title ?? '계획 관계도'}</span>
+            <strong>크게 보기</strong>
+          </button>
         </div>
       )}
+
+      {visualization !== null && visualExpanded ? (
+        <div className="planning-workflow-visual-dialog" role="presentation">
+          <button
+            type="button"
+            className="planning-workflow-visual-dialog-backdrop"
+            aria-label="계획 그림 크게 보기 닫기"
+            onClick={closeExpandedVisualization}
+          />
+          <section
+            className="planning-workflow-visual-dialog-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={visualDialogTitleId}
+          >
+            <header className="planning-workflow-visual-dialog-header">
+              <div>
+                <span>계획 그림</span>
+                <strong id={visualDialogTitleId}>{planCardTitle}</strong>
+              </div>
+              <button
+                ref={visualCloseButtonRef}
+                type="button"
+                aria-label="계획 그림 크게 보기 닫기 (Esc)"
+                onClick={closeExpandedVisualization}
+              >
+                ✕
+              </button>
+            </header>
+            <div className="planning-workflow-visual-dialog-body">
+              <VisualizeWidget
+                view={visualization}
+                planningWorkflowSnapshot={snapshot}
+                playback="instant"
+                {...(onWidgetPrompt === undefined ? {} : { onWidgetPrompt })}
+                {...(onWidgetToolRequest === undefined
+                  ? {}
+                  : { onWidgetToolRequest })}
+              />
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       <details className="planning-workflow-details planning-workflow-plan-details">
         <summary>계획 단계 {snapshot.draft.steps.length}개</summary>
@@ -371,7 +545,7 @@ export function PlanningWorkflowCard({
         <span>수정 요청</span>
         <textarea
           value={feedback}
-          disabled={actionsDisabled}
+          disabled={planEditActionsDisabled}
           placeholder="바꿔야 할 점을 적어주세요."
           onChange={(event) => setFeedback(event.target.value)}
         />
@@ -394,7 +568,7 @@ export function PlanningWorkflowCard({
         <button
           type="button"
           className="planning-workflow-button"
-          disabled={actionsDisabled}
+          disabled={planEditActionsDisabled}
           onClick={() =>
             void submit({
               kind: 'request_revision',
@@ -413,10 +587,10 @@ export function PlanningWorkflowCard({
             onClick={() => {
               // 수동 재시도는 같은 revision에 다시 그림을 요청할 수 있게 키를 연다.
               autoExplainKeyRef.current = null;
-              void submit({ kind: 'explain_visual', ...target });
+              void requestVisualization();
             }}
           >
-            {workflow.busy || pendingCommand === 'explain_visual'
+            {workflow.busy || visualRequestPending
               ? '그림을 만들고 있어요…'
               : visualization === null
                 ? '그림으로 설명'
@@ -426,17 +600,17 @@ export function PlanningWorkflowCard({
         <button
           type="button"
           className="planning-workflow-button quiet"
-          disabled={actionsDisabled}
+          disabled={planEditActionsDisabled}
           onClick={() => void cancel()}
         >
           취소
         </button>
       </div>
 
-      {workflow.busy || pendingCommand === 'explain_visual' ? (
+      {workflow.busy || visualRequestPending ? (
         <p className="planning-workflow-note">
           {snapshot.intensity === 'visual'
-            ? '그림이 완성되면 이 승인 카드 맨 위에 바로 표시됩니다.'
+            ? '그림을 만드는 동안에도 수정 요청을 적거나 계획을 취소할 수 있습니다.'
             : '현재 계획 턴이 정리되면 버튼이 다시 열립니다.'}
         </p>
       ) : null}

@@ -51,6 +51,7 @@ export const browserTextEvidenceTool = defineZodTool({
   sideEffectLevel: 'write',
   mayMutateComputerFiles: false,
   requiresApproval: true,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'browser',
     searchHints: ['text evidence', 'extract page text', 'browser text'],

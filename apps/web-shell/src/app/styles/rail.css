@@ -621,6 +621,25 @@
   border-radius: 2px 2px 0 0;
 }
 
+/* 새 세션 — 더하기. 획 두께와 박스는 다른 액션 아이콘과 같다. */
+.rail-action-icon.new-session::before {
+  left: 3px;
+  top: 7.3px;
+  width: 10px;
+  height: 1.4px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
+.rail-action-icon.new-session::after {
+  left: 7.3px;
+  top: 3px;
+  width: 1.4px;
+  height: 10px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
 .quick-access-icon::before,
 .quick-access-icon::after,
 .tree-icon::before,

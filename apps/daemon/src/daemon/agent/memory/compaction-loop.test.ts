@@ -100,6 +100,154 @@ void test('memory port derives the tool-result allowance from active policy and 
   });
 });
 
+void test('memory port explains every unavailable tool-result budget boundary', async (t) => {
+  const common = {
+    workspaceRoot: '/unused',
+    threadId: testThreadId(90_1),
+    history: [] as HistoryItem[],
+    systemPrompt: 'system',
+    tools: [],
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: TEST_PROVIDER_REQUEST_OPTIONS,
+  };
+
+  await t.test('request was not measured', async () => {
+    const port = createAgentLoopMemoryPort({
+      resolvePolicy: async () => ({
+        providerId: 'openai_codex_direct',
+        model: 'gpt-test',
+        contextWindow: 1_000,
+        thresholdTokens: 900,
+        supportsParallelToolCalls: true,
+      }),
+      compactHistory: async () => {
+        throw new Error('must not compact');
+      },
+      compactThread: compactThreadContextNative,
+    });
+    const round = port.beginContextBudgetRound(common);
+    assert.deepEqual(round.getToolResultContextBudget?.(), {
+      kind: 'unknown',
+      modelKey: 'openai_codex_direct\0gpt-test',
+      reason: 'request_measurement_unavailable',
+    });
+    assert.deepEqual(await round.prepareBeforeModelRound?.(), {
+      kind: 'failed',
+      message:
+        'context preparation was requested without an actionable admission',
+    });
+  });
+
+  await t.test('policy resolution failed', async () => {
+    const port = createAgentLoopMemoryPort({
+      resolvePolicy: async () => {
+        throw new Error('policy unavailable');
+      },
+      compactHistory: async () => {
+        throw new Error('must not compact');
+      },
+      compactThread: compactThreadContextNative,
+    });
+    const round = port.beginContextBudgetRound(common);
+    await round.onProviderRequestPrepared(testRequestMeasurement(100));
+    assert.deepEqual(round.getToolResultContextBudget?.(), {
+      kind: 'unknown',
+      modelKey: 'openai_codex_direct\0gpt-test',
+      reason: 'policy_unavailable',
+    });
+  });
+
+  await t.test('exact usage has not calibrated the model', async () => {
+    const port = createAgentLoopMemoryPort({
+      resolvePolicy: async () => ({
+        providerId: 'openai_codex_direct',
+        model: 'gpt-test',
+        contextWindow: 1_000,
+        thresholdTokens: 900,
+        supportsParallelToolCalls: true,
+      }),
+      compactHistory: async () => {
+        throw new Error('must not compact');
+      },
+      compactThread: compactThreadContextNative,
+    });
+    const round = port.beginContextBudgetRound(common);
+    await round.onProviderRequestPrepared(testRequestMeasurement(100));
+    assert.deepEqual(round.getToolResultContextBudget?.(), {
+      kind: 'unknown',
+      modelKey: 'openai_codex_direct\0gpt-test',
+      reason: 'usage_unavailable',
+    });
+  });
+
+  await t.test('history measurement throws after exact usage', async () => {
+    let measurementFails = false;
+    const port = createAgentLoopMemoryPort({
+      resolvePolicy: async () => ({
+        providerId: 'openai_codex_direct',
+        model: 'gpt-test',
+        contextWindow: 1_000,
+        thresholdTokens: 900,
+        supportsParallelToolCalls: true,
+      }),
+      compactHistory: async () => {
+        throw new Error('must not compact');
+      },
+      compactThread: compactThreadContextNative,
+      measureHistoryBytes: () => {
+        if (measurementFails) {
+          throw new Error('history measurement unavailable');
+        }
+        return 100;
+      },
+    });
+    const round = port.beginContextBudgetRound(common);
+    await round.onProviderRequestPrepared(testRequestMeasurement(100));
+    await port.compactAfterModelRound({
+      ...common,
+      contextBudgetRound: round,
+      inputTokens: 50,
+    });
+    measurementFails = true;
+    assert.deepEqual(round.getToolResultContextBudget?.(), {
+      kind: 'unknown',
+      modelKey: 'openai_codex_direct\0gpt-test',
+      reason: 'history_measurement_failed',
+    });
+  });
+
+  await t.test('derived byte budget is not a safe integer', async () => {
+    const port = createAgentLoopMemoryPort({
+      resolvePolicy: async () => ({
+        providerId: 'openai_codex_direct',
+        model: 'gpt-test',
+        contextWindow: 1_000,
+        thresholdTokens: 900,
+        supportsParallelToolCalls: true,
+      }),
+      compactHistory: async () => {
+        throw new Error('must not compact');
+      },
+      compactThread: compactThreadContextNative,
+      measureHistoryBytes: () => 0,
+    });
+    const round = port.beginContextBudgetRound(common);
+    await round.onProviderRequestPrepared(
+      testRequestMeasurement(Number.MAX_SAFE_INTEGER, 0),
+    );
+    await port.compactAfterModelRound({
+      ...common,
+      contextBudgetRound: round,
+      inputTokens: 1,
+    });
+    assert.deepEqual(round.getToolResultContextBudget?.(), {
+      kind: 'unknown',
+      modelKey: 'openai_codex_direct\0gpt-test',
+      reason: 'invalid_measurement',
+    });
+  });
+});
+
 void test('memory port estimates from same-model exact usage and rebases after compaction', async () => {
   await withThread(async ({ workspaceRoot, threadId }) => {
     const oldContext = 'older projected context '.repeat(200);
@@ -827,6 +975,172 @@ void test('memory port admits Qwen summary compaction with the same threshold li
     thresholdTokens: 850_000,
     requestBytes: 1_800,
   });
+});
+
+void test('memory port maps every Qwen summary compaction refusal to a stable preparation failure', async (t) => {
+  type MemoryPortDependencies = NonNullable<
+    Parameters<typeof createAgentLoopMemoryPort>[0]
+  >;
+  type CompactSummaryResult = Awaited<
+    ReturnType<NonNullable<MemoryPortDependencies['compactSummaryThread']>>
+  >;
+  const cases: Array<{
+    name: string;
+    result: CompactSummaryResult;
+    expected: {
+      kind: 'failed';
+      reason: string;
+      message: string;
+    };
+  }> = [
+    {
+      name: 'no summarizable prefix',
+      result: { kind: 'no_summarizable_prefix' },
+      expected: {
+        kind: 'failed',
+        reason: 'no_summarizable_prefix',
+        message:
+          'context compaction cannot replace the current active user turn',
+      },
+    },
+    {
+      name: 'retained tail exceeds budget',
+      result: { kind: 'tail_exceeds_budget' },
+      expected: {
+        kind: 'failed',
+        reason: 'retained_context_exceeds_budget',
+        message:
+          'the current active user turn exceeds the retained context budget',
+      },
+    },
+    {
+      name: 'invalid summary',
+      result: { kind: 'summary_invalid', reason: 'summary_empty' },
+      expected: {
+        kind: 'failed',
+        reason: 'provider_compaction_output_invalid',
+        message: 'Qwen summary compaction output is invalid: summary_empty',
+      },
+    },
+    {
+      name: 'stale snapshot',
+      result: {
+        kind: 'stale_snapshot',
+        expectedLastEntryId: 'entry-before-compaction',
+        actualLastEntryId: 'entry-after-compaction',
+      },
+      expected: {
+        kind: 'failed',
+        reason: 'stale_snapshot',
+        message: 'context changed while compaction was being committed',
+      },
+    },
+    {
+      name: 'empty transcript',
+      result: { kind: 'transcript_empty' },
+      expected: {
+        kind: 'failed',
+        reason: 'transcript_empty',
+        message: 'context compaction requires a persisted transcript',
+      },
+    },
+  ];
+  const qwenOptions = {
+    ...TEST_PROVIDER_REQUEST_OPTIONS,
+    providerId: 'qwen_token_plan' as const,
+    model: 'qwen3.8-max-preview' as const,
+  };
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const port = createAgentLoopMemoryPort({
+        resolvePolicy: async () => ({
+          providerId: 'qwen_token_plan',
+          model: qwenOptions.model,
+          contextWindow: 100,
+          thresholdTokens: 85,
+          compactionMethod: 'summary',
+          summaryMaxOutputTokens: 20,
+          summaryThinkingEnabled: true,
+          compactionVersion: 1,
+        }),
+        compactHistory: async () =>
+          assert.fail('Qwen must not use provider-native compaction'),
+        compactThread: compactThreadContextNative,
+        compactSummaryThread: async () => scenario.result,
+      });
+      const common = {
+        workspaceRoot: '/unused',
+        threadId: testThreadId(97_1),
+        history: [] as HistoryItem[],
+        systemPrompt: 'system',
+        tools: [],
+        providerAuthRuntime: createProviderAuthRuntimeStore(),
+        providerRequestOptions: qwenOptions,
+      };
+      const round = port.beginContextBudgetRound(common);
+      await round.onProviderRequestPrepared(testRequestMeasurement(1_000));
+
+      assert.deepEqual(
+        await port.compactAfterModelRound({
+          ...common,
+          contextBudgetRound: round,
+          inputTokens: 85,
+        }),
+        scenario.expected,
+      );
+    });
+  }
+});
+
+void test('memory port contains thrown Qwen summary compaction failures', async () => {
+  const qwenOptions = {
+    ...TEST_PROVIDER_REQUEST_OPTIONS,
+    providerId: 'qwen_token_plan' as const,
+    model: 'qwen3.8-max-preview' as const,
+  };
+  const port = createAgentLoopMemoryPort({
+    resolvePolicy: async () => ({
+      providerId: 'qwen_token_plan',
+      model: qwenOptions.model,
+      contextWindow: 100,
+      thresholdTokens: 85,
+      compactionMethod: 'summary',
+      summaryMaxOutputTokens: 20,
+      summaryThinkingEnabled: true,
+      compactionVersion: 1,
+    }),
+    compactHistory: async () =>
+      assert.fail('Qwen must not use provider-native compaction'),
+    compactThread: compactThreadContextNative,
+    compactSummaryThread: async () => {
+      throw new Error('summary checkpoint unavailable');
+    },
+  });
+  const common = {
+    workspaceRoot: '/unused',
+    threadId: testThreadId(97_2),
+    history: [] as HistoryItem[],
+    systemPrompt: 'system',
+    tools: [],
+    providerAuthRuntime: createProviderAuthRuntimeStore(),
+    providerRequestOptions: qwenOptions,
+  };
+  const round = port.beginContextBudgetRound(common);
+  await round.onProviderRequestPrepared(testRequestMeasurement(1_000));
+
+  assert.deepEqual(
+    await port.compactAfterModelRound({
+      ...common,
+      contextBudgetRound: round,
+      inputTokens: 85,
+    }),
+    {
+      kind: 'failed',
+      reason: 'provider_compaction_failed',
+      message: 'Qwen summary context compaction failed',
+    },
+  );
 });
 
 void test('memory port commits a Qwen summary checkpoint and immediately rebases active history', async () => {

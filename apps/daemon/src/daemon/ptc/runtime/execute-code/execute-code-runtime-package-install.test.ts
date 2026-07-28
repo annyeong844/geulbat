@@ -491,7 +491,12 @@ void test('enabled Python package install and exec reuse one pip-aware session',
     assert.ok(installCommand.includes("--only-binary ':all:'"));
     assert.ok(
       installCommand.includes(
-        `--target '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
+        `--target '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}.staging'`,
+      ),
+    );
+    assert.ok(
+      installCommand.includes(
+        `mv '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}.staging' '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
       ),
     );
 

@@ -5,8 +5,7 @@ import type {
 } from '@geulbat/protocol/plugins';
 import { isPluginInstallRequest } from '@geulbat/protocol/plugins';
 import { isPluginRecord as isRecord } from './plugin-value-guards.js';
-import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, realpath, rename, rm } from 'node:fs/promises';
+import { lstat, mkdir, realpath, rm } from 'node:fs/promises';
 import { isAbsolute, join, posix, win32 } from 'node:path';
 
 import type { ComputerFileScope } from '../files/computer-file-scope.js';
@@ -18,9 +17,9 @@ import { writeTextFileAtomically } from '../utils/atomic-file.js';
 import {
   inspectPluginPackage,
   readPluginPackageFile,
-  stagePluginPackage,
   type InspectedPluginPackage,
 } from './plugin-package-admission.js';
+import { createPluginPackageInstaller } from './plugin-package-installation.js';
 import type {
   InspectedPluginMcpServer,
   PluginMcpStdioConfig,
@@ -45,13 +44,11 @@ import {
   assertManagedDirectory,
   assertManagedDirectoryIdentity,
   assertManagedRootIdentities,
-  assertSameManagedDirectoryObject,
   captureManagedDirectoryIdentity,
   captureManagedRootIdentities,
   ensureManagedDirectory,
   lstatIfExists,
   reconcileManagedStore,
-  type ManagedDirectoryIdentity,
   type ManagedRootIdentities,
 } from './plugin-managed-directory.js';
 import {
@@ -127,6 +124,15 @@ export function createPluginStore(args: {
   let managedRootIdentities: ManagedRootIdentities | undefined;
   const state = createPluginRegistrationStateOwner({
     persistRegistry: (plugins, objectIds) => persist(plugins, objectIds),
+  });
+  const installPackageFromSource = createPluginPackageInstaller({
+    pluginsRoot,
+    stagingRoot,
+    establishManagedRoots,
+    assertManagedRootsUnchanged,
+    assertPersistedPackageMatches,
+    commitInstalled: (plugin, packageObjectId) =>
+      state.commitInstalled(plugin, packageObjectId),
   });
 
   async function persist(
@@ -378,128 +384,6 @@ export function createPluginStore(args: {
       ...pluginMcpServerSnapshot(plugin, server),
       absoluteCwd,
     };
-  }
-
-  async function installPackageFromSource(args: {
-    sourceRoot: string;
-    source:
-      | { kind: 'local-directory' }
-      | {
-          kind: 'marketplace';
-          provenance: PluginMarketplaceInstallationSourceView;
-          expectedContentDigest: string;
-        };
-  }): Promise<InstalledPluginView> {
-    const installationId = randomUUID();
-    const packageObjectId = randomUUID();
-    const stageInstallationRoot = join(stagingRoot, packageObjectId);
-    const stagePackageRoot = join(stageInstallationRoot, 'package');
-    const finalInstallationRoot = join(pluginsRoot, packageObjectId);
-    let movedToFinal = false;
-    let managedRootsAdmitted = false;
-    let stagedInstallationIdentity: ManagedDirectoryIdentity | undefined;
-
-    try {
-      await establishManagedRoots();
-      managedRootsAdmitted = true;
-      await mkdir(stagePackageRoot, { recursive: true, mode: 0o700 });
-      await assertManagedRootsUnchanged();
-      stagedInstallationIdentity = await captureManagedDirectoryIdentity(
-        stageInstallationRoot,
-        'plugin staging installation',
-      );
-      const inspected = await stagePluginPackage({
-        sourceRoot: args.sourceRoot,
-        destinationRoot: stagePackageRoot,
-      });
-      if (
-        args.source.kind === 'marketplace' &&
-        inspected.contentDigest !== args.source.expectedContentDigest
-      ) {
-        throw new PluginStoreError(
-          'conflict',
-          'marketplace plugin bytes changed after catalog selection',
-        );
-      }
-      await assertManagedRootsUnchanged();
-      await assertManagedDirectoryIdentity(
-        stageInstallationRoot,
-        'plugin staging installation',
-        stagedInstallationIdentity,
-      );
-      const now = new Date().toISOString();
-      const plugin: InstalledPluginView = {
-        installationId,
-        name: inspected.manifest.name,
-        displayName: inspected.manifest.displayName,
-        version: inspected.manifest.version,
-        description: inspected.manifest.description,
-        enabled: false,
-        contentDigest: inspected.contentDigest,
-        sourceKind: args.source.kind,
-        ...(args.source.kind === 'marketplace'
-          ? { marketplaceSource: args.source.provenance }
-          : {}),
-        installedAt: now,
-        updatedAt: now,
-        capabilities: inspected.capabilities,
-      };
-
-      await rename(stageInstallationRoot, finalInstallationRoot);
-      movedToFinal = true;
-      await assertManagedRootsUnchanged();
-      const finalInstallationIdentity = await captureManagedDirectoryIdentity(
-        finalInstallationRoot,
-        'managed plugin installation',
-      );
-      assertSameManagedDirectoryObject(
-        stagedInstallationIdentity,
-        finalInstallationIdentity,
-        'managed plugin installation',
-      );
-      stagedInstallationIdentity = finalInstallationIdentity;
-      await assertManagedDirectoryIdentity(
-        finalInstallationRoot,
-        'managed plugin installation',
-        finalInstallationIdentity,
-      );
-      const finalInspected = await inspectPluginPackage(
-        join(finalInstallationRoot, 'package'),
-      );
-      assertPersistedPackageMatches(plugin, finalInspected, false);
-      await assertManagedRootsUnchanged();
-      await state.commitInstalled(plugin, packageObjectId);
-      return plugin;
-    } catch (error: unknown) {
-      if (managedRootsAdmitted && stagedInstallationIdentity) {
-        try {
-          await assertManagedRootsUnchanged();
-          const cleanupRoot = movedToFinal
-            ? finalInstallationRoot
-            : stageInstallationRoot;
-          await assertManagedDirectoryIdentity(
-            cleanupRoot,
-            movedToFinal
-              ? 'managed plugin installation'
-              : 'plugin staging installation',
-            stagedInstallationIdentity,
-          );
-          await rm(cleanupRoot, { recursive: true, force: true });
-        } catch (cleanupError: unknown) {
-          throw safeStorageError(
-            'plugin installation failed and managed staging cleanup also failed',
-            cleanupError,
-          );
-        }
-      }
-      if (error instanceof PluginStoreError) {
-        throw error;
-      }
-      if (error instanceof PluginPackageAdmissionError) {
-        throw new PluginStoreError('invalid_request', error.message);
-      }
-      throw safeStorageError('plugin installation failed', error);
-    }
   }
 
   return {

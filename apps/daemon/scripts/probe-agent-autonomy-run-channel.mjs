@@ -8,14 +8,16 @@ import {
   isRunStartRequest,
   resolveRunModelDescriptor,
 } from '@geulbat/protocol/run-contract';
-import { isRunChannelServerMessage } from '@geulbat/protocol/run-channel';
-import { SHELL_ACCESS_TOKEN_META_NAME } from '@geulbat/protocol/shell-auth';
-import WebSocket from 'ws';
 
 import {
   createAgentAutonomyWorkloadDeclaration,
   evaluateAgentAutonomyWorkload,
 } from '../../../scripts/evaluate-agent-autonomy.mjs';
+import {
+  collectRunChannelProbeAttempt,
+  readRunChannelProbeShellToken,
+  RunChannelProbeError,
+} from './run-channel-probe-client.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(SCRIPT_PATH), '../../..');
@@ -49,17 +51,10 @@ class ProbeInputError extends Error {
   }
 }
 
-class ProbeRuntimeError extends Error {
-  constructor(code, attemptState) {
-    super(code);
-    this.name = 'ProbeRuntimeError';
-    this.code = code;
-    this.attemptState = attemptState;
-  }
-}
-
 function readSafeRuntimeErrorCode(error) {
-  return error instanceof ProbeRuntimeError ? error.code : 'unexpected_error';
+  return error instanceof RunChannelProbeError
+    ? error.code
+    : 'unexpected_error';
 }
 
 function digest(value) {
@@ -148,29 +143,6 @@ function resolveOutput(repoRoot, value) {
   return output;
 }
 
-async function readShellToken(baseUrl, fetchImpl, timeoutMs) {
-  let response;
-  try {
-    response = await fetchImpl(baseUrl, {
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch {
-    throw new ProbeRuntimeError('shell_http_unavailable');
-  }
-  if (!response.ok) {
-    throw new ProbeRuntimeError(`shell_http_${response.status}`);
-  }
-  const html = await response.text();
-  const match = new RegExp(
-    `<meta name="${SHELL_ACCESS_TOKEN_META_NAME}" content="([0-9a-f]+)">`,
-    'u',
-  ).exec(html);
-  if (match === null) {
-    throw new ProbeRuntimeError('shell_access_token_missing');
-  }
-  return match[1];
-}
-
 async function writeJsonNoReplace(path, value) {
   await mkdir(dirname(path), { recursive: true });
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -186,258 +158,6 @@ async function writeJsonNoReplace(path, value) {
     await file?.close().catch(() => {});
     await unlink(temporaryPath).catch(() => {});
   }
-}
-
-function runChannelUrl(baseUrl) {
-  const url = new URL('/api/ws', baseUrl);
-  url.protocol = 'ws:';
-  return url;
-}
-
-function collectAttempt(args) {
-  const expectedThreadId = args.request.threadId;
-  if (expectedThreadId === undefined) {
-    throw new ProbeRuntimeError('probe_thread_identity_missing');
-  }
-  const socket = args.createWebSocket(runChannelUrl(args.baseUrl), {
-    origin: args.baseUrl.origin,
-  });
-  const authRequestId = randomUUID();
-  let terminalAckRequestId;
-  let cancelSent = false;
-  let lastSeq = -1;
-  let runId;
-  let threadId;
-  let startedAt;
-  let terminal;
-  let usage;
-  let usageAt;
-  let toolInvocationCount = 0;
-  let toolFailureCount = 0;
-  let toolDurationMs = 0;
-  const openTools = new Map();
-  const interventions = [];
-
-  return new Promise((resolveAttempt, rejectAttempt) => {
-    let settled = false;
-    const snapshotAttempt = () => ({
-      interventions: [...interventions],
-      lastSeq,
-      runId,
-      startedAt,
-      threadId,
-      toolDurationMs,
-      toolFailureCount,
-      toolInvocationCount,
-      usage,
-      usageAt,
-    });
-    const cleanup = () => {
-      clearTimeout(timeout);
-      socket.removeAllListeners();
-      socket.close();
-    };
-    const fail = (error) => {
-      if (!settled) {
-        settled = true;
-        cleanup();
-        rejectAttempt(
-          new ProbeRuntimeError(
-            readSafeRuntimeErrorCode(error),
-            snapshotAttempt(),
-          ),
-        );
-      }
-    };
-    const finish = () => {
-      if (
-        settled ||
-        terminal === undefined ||
-        startedAt === undefined ||
-        runId === undefined ||
-        threadId === undefined
-      ) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      resolveAttempt({ ...snapshotAttempt(), terminal });
-    };
-    const timeout = setTimeout(() => {
-      if (runId !== undefined && !cancelSent) {
-        socket.send(
-          JSON.stringify({
-            type: 'run.cancel',
-            requestId: randomUUID(),
-            request: { runId },
-          }),
-        );
-      }
-      fail(new ProbeRuntimeError('run_channel_timeout'));
-    }, args.timeoutMs);
-
-    socket.once('open', () => {
-      socket.send(
-        JSON.stringify({
-          type: 'run.auth',
-          requestId: authRequestId,
-          token: args.shellToken,
-        }),
-      );
-    });
-    socket.on('message', (raw) => {
-      try {
-        const message = JSON.parse(String(raw));
-        if (!isRunChannelServerMessage(message)) {
-          throw new ProbeRuntimeError('invalid_run_channel_message');
-        }
-        if (
-          message.type === 'run.auth.ok' &&
-          message.requestId === authRequestId
-        ) {
-          socket.send(
-            JSON.stringify({
-              type: 'run.start',
-              requestId: randomUUID(),
-              request: args.request,
-            }),
-          );
-          return;
-        }
-        if (message.type === 'run.error') {
-          throw new ProbeRuntimeError(`run_channel_${message.code}`);
-        }
-        if (
-          message.type === 'run.control' &&
-          message.requestId === terminalAckRequestId &&
-          message.action === 'run.event.ack'
-        ) {
-          finish();
-          return;
-        }
-        if (message.type !== 'run.event') {
-          return;
-        }
-        const { event } = message;
-        // Authentication can replay other durable runs before this probe starts.
-        // The probe owns a fresh thread identity so those frames are unrelated
-        // evidence, not a sequence or identity failure for this attempt.
-        if (event.threadId !== expectedThreadId) {
-          return;
-        }
-        if (event.seq <= lastSeq) {
-          throw new ProbeRuntimeError('run_channel_event_sequence_regressed');
-        }
-        lastSeq = event.seq;
-        if (event.type === 'run_ack') {
-          if (
-            runId !== undefined ||
-            event.payload.runId !== event.runId ||
-            event.payload.threadId !== event.threadId
-          ) {
-            throw new ProbeRuntimeError('run_channel_ack_identity_mismatch');
-          }
-          runId = event.runId;
-          threadId = event.threadId;
-          startedAt = event.ts;
-          return;
-        }
-        if (
-          runId === undefined ||
-          event.runId !== runId ||
-          event.threadId !== threadId
-        ) {
-          throw new ProbeRuntimeError('run_channel_event_identity_mismatch');
-        }
-        if (event.type === 'tool_call') {
-          if (openTools.has(event.payload.callId)) {
-            throw new ProbeRuntimeError('run_channel_tool_call_repeated');
-          }
-          openTools.set(event.payload.callId, Date.parse(event.ts));
-          toolInvocationCount += 1;
-          return;
-        }
-        if (event.type === 'tool_result') {
-          const openedAt = openTools.get(event.payload.callId);
-          if (openedAt !== undefined) {
-            toolDurationMs += Math.max(0, Date.parse(event.ts) - openedAt);
-            openTools.delete(event.payload.callId);
-          }
-          toolFailureCount += Number(!event.payload.ok);
-          return;
-        }
-        if (event.type === 'usage_updated') {
-          usage = event.payload;
-          usageAt = event.ts;
-          return;
-        }
-        if (
-          event.type === 'approval_required' ||
-          event.type === 'subagent_approval_required'
-        ) {
-          const approval =
-            event.type === 'approval_required'
-              ? event.payload
-              : event.payload.approval;
-          interventions.push({
-            kind: 'intervention_required',
-            at: event.ts,
-            interventionReferenceId: digest({
-              runId,
-              callId: approval.callId,
-            }),
-            reason: 'approval_or_authority',
-          });
-          if (!cancelSent) {
-            cancelSent = true;
-            socket.send(
-              JSON.stringify({
-                type: 'run.cancel',
-                requestId: randomUUID(),
-                request: { runId },
-              }),
-            );
-          }
-          return;
-        }
-        if (event.type !== 'done' && event.type !== 'error') {
-          return;
-        }
-        const answer =
-          event.type === 'done' && event.payload.ok
-            ? event.payload.answer.trim()
-            : '';
-        terminal = {
-          answerMatched:
-            event.type === 'done' &&
-            event.payload.ok &&
-            answer === TASK.expectedAnswer,
-          at: event.ts,
-          observedAnswerReferenceId: digest(answer),
-          outcome:
-            event.type === 'done' && event.payload.ok ? 'completed' : 'failed',
-        };
-        terminalAckRequestId = randomUUID();
-        socket.send(
-          JSON.stringify({
-            type: 'run.event.ack',
-            requestId: terminalAckRequestId,
-            request: { runId, threadId, seq: event.seq },
-          }),
-        );
-      } catch (error) {
-        fail(error);
-      }
-    });
-    socket.once('error', () =>
-      fail(new ProbeRuntimeError('run_channel_socket_error')),
-    );
-    socket.once('close', () => {
-      if (!settled) {
-        fail(new ProbeRuntimeError('run_channel_closed_before_ack'));
-      }
-    });
-  });
 }
 
 function buildWorkload({ attemptReference, declaration, providerId, run }) {
@@ -538,7 +258,11 @@ export async function runAgentAutonomyRunChannelProbe(options = {}) {
     throw new ProbeInputError('probe task does not form a valid run request');
   }
   const fetchImpl = options.fetchImpl ?? fetch;
-  const shellToken = await readShellToken(baseUrl, fetchImpl, parsed.timeoutMs);
+  const shellToken = await readRunChannelProbeShellToken(
+    baseUrl,
+    fetchImpl,
+    parsed.timeoutMs,
+  );
   const preflight = {
     schemaVersion: 1,
     kind: 'agent_autonomy_run_channel_preflight',
@@ -588,23 +312,41 @@ export async function runAgentAutonomyRunChannelProbe(options = {}) {
   });
   await writeJsonNoReplace(resolve(output, 'declaration.json'), declaration);
 
-  const createWebSocket =
-    options.createWebSocket ??
-    ((url, socketOptions) => new WebSocket(url, socketOptions));
   let run;
   try {
-    run = await collectAttempt({
+    const attempt = await collectRunChannelProbeAttempt({
       baseUrl,
-      createWebSocket,
+      createWebSocket: options.createWebSocket,
       request,
       shellToken,
       timeoutMs: parsed.timeoutMs,
     });
+    const answer = attempt.terminal.answer.trim();
+    run = {
+      ...attempt,
+      interventions: attempt.interventions.map((intervention) => ({
+        kind: intervention.kind,
+        at: intervention.at,
+        interventionReferenceId: digest({
+          runId: attempt.runId,
+          callId: intervention.callId,
+        }),
+        reason: intervention.reason,
+      })),
+      terminal: {
+        answerMatched:
+          attempt.terminal.outcome === 'completed' &&
+          answer === TASK.expectedAnswer,
+        at: attempt.terminal.at,
+        observedAnswerReferenceId: digest(answer),
+        outcome: attempt.terminal.outcome,
+      },
+    };
   } catch (error) {
     const capturedAt = now().toISOString();
     const code = readSafeRuntimeErrorCode(error);
     const attemptState =
-      error instanceof ProbeRuntimeError ? error.attemptState : undefined;
+      error instanceof RunChannelProbeError ? error.attemptState : undefined;
     const primaryAttempt =
       attemptState?.runId !== undefined &&
       attemptState.startedAt !== undefined &&

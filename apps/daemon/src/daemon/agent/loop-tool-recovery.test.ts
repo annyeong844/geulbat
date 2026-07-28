@@ -20,6 +20,10 @@ import { z } from 'zod';
 
 import type { HostCommandRuntime } from '../../command-host/contract.js';
 import { createDaemonContext } from '../context.js';
+import {
+  ensureHostCommandFullOutputArchive,
+  type HostCommandFullOutputArchiveHandle,
+} from '../host-command-full-output-archive.js';
 import { createDaemonRuntimeStateStore } from '../runtime-state-store.js';
 import {
   commitMemoryEntries,
@@ -2652,6 +2656,7 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
   const original = createRecoveryContext();
   original.computerFileRoot = stateRoot;
   let originalClosed = false;
+  let interruptedArchive: HostCommandFullOutputArchiveHandle | undefined;
   let replacement: ReturnType<typeof createDaemonContext> | undefined;
   t.after(async () => {
     if (replacement !== undefined) {
@@ -2673,6 +2678,7 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
     if (!originalClosed) {
       await original.hostCommands.closeAll();
     }
+    await interruptedArchive?.completed;
     await removeCommandHostWorkspace(stateRoot);
     await rm(stateRoot, { recursive: true, force: true });
   });
@@ -2747,10 +2753,33 @@ void test('restart recovery reattaches pending exec_command to the same claimed 
     /simulated daemon loss/u,
   );
   assert.match(originalOutputRef ?? '', /^command-output:/u);
+  if (originalOutputRef === undefined) {
+    assert.fail('expected the interrupted command output reference');
+  }
+  const activeArchive = await ensureHostCommandFullOutputArchive({
+    hostCommands: interruptedHost,
+    stateRoot,
+    threadId,
+    outputRef: originalOutputRef,
+    pageLimitBytes: 128,
+    createIfMissing: false,
+    activateRelease: true,
+  });
+  assert.ok(activeArchive);
+  if (activeArchive === null) {
+    assert.fail('expected the interrupted full-output archive owner');
+  }
+  interruptedArchive = activeArchive;
 
   const disconnected = await original.hostCommands.closeAll();
   assert.equal(disconnected.ok, true);
   originalClosed = true;
+  const interruptedArchiveResult = await interruptedArchive.completed;
+  assert.equal(interruptedArchiveResult.ok, false);
+  if (interruptedArchiveResult.ok) {
+    assert.fail('expected the interrupted full-output archive to stop');
+  }
+  assert.match(interruptedArchiveResult.message, /connection was lost/u);
   replacement = createRecoveryContext();
   replacement.computerFileRoot = stateRoot;
   const recovered = await recoverPendingReplaySafeToolCalls({

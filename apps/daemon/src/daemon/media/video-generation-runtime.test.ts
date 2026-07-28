@@ -8,10 +8,20 @@ import { parseVideoArtifactPayload } from '@geulbat/protocol/artifacts';
 import type { ThreadId } from '@geulbat/protocol/ids';
 
 import { createProviderAuthRuntimeStore } from '../auth/runtime-state.js';
-import type { CommitThreadArtifactVersionArgs } from '../sessions/artifact-store.js';
-import { writeThreadMediaFile } from '../sessions/media-file-store.js';
+import {
+  commitThreadArtifactVersion,
+  loadAllThreadArtifactVersions,
+  type CommitThreadArtifactVersionArgs,
+} from '../sessions/artifact-store.js';
+import {
+  statThreadMediaFile,
+  writeThreadMediaFile,
+} from '../sessions/media-file-store.js';
 import { threadMediaDirPath } from '../sessions/paths.js';
-import { ImageGenerationError } from './contract.js';
+import {
+  createMediaGenerationRecoveryIdentity,
+  ImageGenerationError,
+} from './contract.js';
 import {
   createVideoGenerationRuntime,
   type VideoGenerationRuntimeDeps,
@@ -466,5 +476,251 @@ void test('withRequestDefaults isolates concurrent runs (singleton stays untouch
     });
     // 파생 런타임은 10초, 싱글턴은 내장 기본 5초 — 서로 오염되지 않는다
     assert.deepEqual(seenDurations, [10, 5]);
+  });
+});
+
+void test('generateVideoArtifact replacement resumes the durably captured provider request instead of creating another job', async () => {
+  await withTempRoot(async (root) => {
+    const input = {
+      ...baseInput(root),
+      runId: 'run-video-handle-recovery',
+    };
+    const identity = createMediaGenerationRecoveryIdentity({
+      kind: 'video',
+      threadId: THREAD_ID,
+      runId: input.runId,
+      callId: 'call-video-handle-recovery',
+      toolArgs: { prompt: input.request.prompt },
+    });
+    const seenRequestIds: Array<string | undefined> = [];
+
+    const first = createVideoGenerationRuntime(
+      buildDeps({
+        generateViaGrokImpl: async (providerInput) => {
+          seenRequestIds.push(providerInput.requestId);
+          assert.ok(providerInput.onRequestCreated);
+          await providerInput.onRequestCreated('request-durable');
+          throw new Error('simulated daemon death while polling');
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      first.generateVideoArtifact({
+        ...input,
+        recovery: { callId: 'call-video-handle-recovery', identity },
+      }),
+      /simulated daemon death/u,
+    );
+
+    const replacement = createVideoGenerationRuntime(
+      buildDeps({
+        generateViaGrokImpl: async (providerInput) => {
+          seenRequestIds.push(providerInput.requestId);
+          return {
+            videoUrl: 'https://signed.example/video.mp4',
+            durationSeconds: 5,
+            model: 'grok-imagine-video-1.5',
+          };
+        },
+        statThreadMediaFileImpl: statThreadMediaFile,
+        commitThreadArtifactVersionImpl: commitThreadArtifactVersion,
+      }).deps,
+    );
+    const recovered = await replacement.generateVideoArtifact({
+      ...input,
+      recovery: { callId: 'call-video-handle-recovery', identity },
+    });
+
+    assert.deepEqual(seenRequestIds, [undefined, 'request-durable']);
+    assert.equal(recovered.artifactVersion.artifactId, identity.artifactId);
+    assert.equal(
+      (await loadAllThreadArtifactVersions(root, THREAD_ID)).length,
+      1,
+    );
+  });
+});
+
+void test('generateVideoArtifact replacement commits the prepared candidate exactly once after an interrupted settlement', async () => {
+  await withTempRoot(async (root) => {
+    const input = {
+      ...baseInput(root),
+      runId: 'run-video-candidate-recovery',
+    };
+    const identity = createMediaGenerationRecoveryIdentity({
+      kind: 'video',
+      threadId: THREAD_ID,
+      runId: input.runId,
+      callId: 'call-video-candidate-recovery',
+      toolArgs: { prompt: input.request.prompt },
+    });
+    let providerRequests = 0;
+    let downloads = 0;
+    let commitAttempts = 0;
+    const generation = async () => {
+      providerRequests += 1;
+      return {
+        videoUrl: 'https://signed.example/video.mp4',
+        durationSeconds: 5,
+        model: 'grok-imagine-video-1.5',
+      };
+    };
+    const download = async () => {
+      downloads += 1;
+      return new Response(FAKE_MP4, { status: 200 });
+    };
+
+    const first = createVideoGenerationRuntime(
+      buildDeps({
+        generateViaGrokImpl: generation,
+        downloadFetchImpl: download,
+        statThreadMediaFileImpl: statThreadMediaFile,
+        commitThreadArtifactVersionImpl: async (commitInput) => {
+          commitAttempts += 1;
+          await commitThreadArtifactVersion(commitInput);
+          throw new Error('simulated daemon death after artifact write');
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      first.generateVideoArtifact({
+        ...input,
+        recovery: { callId: 'call-video-candidate-recovery', identity },
+      }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'artifact_commit_failed',
+    );
+
+    const replacement = createVideoGenerationRuntime(
+      buildDeps({
+        generateViaGrokImpl: generation,
+        downloadFetchImpl: download,
+        statThreadMediaFileImpl: statThreadMediaFile,
+        commitThreadArtifactVersionImpl: async (commitInput) => {
+          commitAttempts += 1;
+          return commitThreadArtifactVersion(commitInput);
+        },
+      }).deps,
+    );
+    const recovered = await replacement.generateVideoArtifact({
+      ...input,
+      recovery: { callId: 'call-video-candidate-recovery', identity },
+    });
+
+    assert.equal(providerRequests, 1);
+    assert.equal(downloads, 1);
+    assert.equal(commitAttempts, 2);
+    assert.equal(recovered.artifactVersion.artifactId, identity.artifactId);
+    assert.equal(recovered.artifactVersion.version, 1);
+    assert.equal(
+      (await loadAllThreadArtifactVersions(root, THREAD_ID)).length,
+      1,
+    );
+  });
+});
+
+void test('generateVideoArtifact replacement fails closed when the provider request id was not durably captured', async () => {
+  await withTempRoot(async (root) => {
+    const input = {
+      ...baseInput(root),
+      runId: 'run-video-unknown-recovery',
+    };
+    const identity = createMediaGenerationRecoveryIdentity({
+      kind: 'video',
+      threadId: THREAD_ID,
+      runId: input.runId,
+      callId: 'call-video-unknown-recovery',
+      toolArgs: { prompt: input.request.prompt },
+    });
+    let providerRequests = 0;
+
+    const first = createVideoGenerationRuntime(
+      buildDeps({
+        generateViaGrokImpl: async () => {
+          providerRequests += 1;
+          throw new Error('simulated process death before request id response');
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      first.generateVideoArtifact({
+        ...input,
+        recovery: { callId: 'call-video-unknown-recovery', identity },
+      }),
+      /simulated process death/u,
+    );
+
+    const replacement = createVideoGenerationRuntime(
+      buildDeps({
+        generateViaGrokImpl: async () => {
+          providerRequests += 1;
+          return {
+            videoUrl: 'https://signed.example/video.mp4',
+            durationSeconds: 5,
+            model: 'grok-imagine-video-1.5',
+          };
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      replacement.generateVideoArtifact({
+        ...input,
+        recovery: { callId: 'call-video-unknown-recovery', identity },
+      }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'provider_outcome_unknown',
+    );
+    assert.equal(providerRequests, 1);
+  });
+});
+
+void test('generateVideoArtifact does not mark a provider effect before local auth succeeds', async () => {
+  await withTempRoot(async (root) => {
+    const input = {
+      ...baseInput(root),
+      runId: 'run-video-auth-recovery',
+    };
+    const identity = createMediaGenerationRecoveryIdentity({
+      kind: 'video',
+      threadId: THREAD_ID,
+      runId: input.runId,
+      callId: 'call-video-auth-recovery',
+      toolArgs: { prompt: input.request.prompt },
+    });
+    const recovery = {
+      callId: 'call-video-auth-recovery',
+      identity,
+    };
+
+    const disconnected = createVideoGenerationRuntime(
+      buildDeps({
+        getProviderAuthImpl: async () => {
+          throw new Error('provider is not connected');
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      disconnected.generateVideoArtifact({ ...input, recovery }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'provider_not_connected',
+    );
+
+    let providerRequests = 0;
+    const replacement = createVideoGenerationRuntime(
+      buildDeps({
+        generateViaGrokImpl: async () => {
+          providerRequests += 1;
+          return {
+            videoUrl: 'https://signed.example/video.mp4',
+            durationSeconds: 5,
+            model: 'grok-imagine-video-1.5',
+          };
+        },
+      }).deps,
+    );
+    await replacement.generateVideoArtifact({ ...input, recovery });
+    assert.equal(providerRequests, 1);
   });
 });

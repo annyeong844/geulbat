@@ -93,6 +93,8 @@ interface GrokVideoProviderInput {
   };
   // 항상 존재한다 — 소스 없는 요청은 런타임이 투명 캔버스를 주입(D-V5)
   sourceImageDataUrl: string;
+  requestId?: string;
+  onRequestCreated?: (requestId: string) => Promise<void>;
   auth: { accessToken: string };
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
@@ -163,39 +165,49 @@ export async function generateVideoViaGrok(
     'Content-Type': 'application/json',
   };
 
-  const created = await fetchJsonOrThrow(
-    fetchImpl,
-    resolveGrokVideoGenerationsUrl(),
-    {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model,
-        prompt: input.request.prompt,
-        duration: input.request.durationSeconds,
-        image: { url: input.sourceImageDataUrl },
-        // 상세 옵션(실측 enum — 프로토콜 가드가 상류에서 강제). 미지정이면
-        // 필드 자체를 싣지 않아 프로바이더 기본을 따른다.
-        ...(input.request.aspectRatio !== undefined
-          ? { aspect_ratio: input.request.aspectRatio }
-          : {}),
-        ...(input.request.resolution !== undefined
-          ? { resolution: input.request.resolution }
-          : {}),
-      }),
-      ...(input.signal !== undefined ? { signal: input.signal } : {}),
-    },
-    'create',
-  );
-  const requestId =
-    isRecord(created) && typeof created.request_id === 'string'
-      ? created.request_id
-      : null;
-  if (requestId === null) {
+  let requestId = input.requestId;
+  if (requestId === undefined) {
+    const created = await fetchJsonOrThrow(
+      fetchImpl,
+      resolveGrokVideoGenerationsUrl(),
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model,
+          prompt: input.request.prompt,
+          duration: input.request.durationSeconds,
+          image: { url: input.sourceImageDataUrl },
+          // 상세 옵션(실측 enum — 프로토콜 가드가 상류에서 강제). 미지정이면
+          // 필드 자체를 싣지 않아 프로바이더 기본을 따른다.
+          ...(input.request.aspectRatio !== undefined
+            ? { aspect_ratio: input.request.aspectRatio }
+            : {}),
+          ...(input.request.resolution !== undefined
+            ? { resolution: input.request.resolution }
+            : {}),
+        }),
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+      },
+      'create',
+    );
+    requestId =
+      isRecord(created) && typeof created.request_id === 'string'
+        ? created.request_id
+        : undefined;
+    if (requestId === undefined || requestId.length === 0) {
+      throw new ImageGenerationError({
+        surface: 'provider_api',
+        reasonCode: 'provider_response_invalid',
+        message: 'xAI video generation did not return a request id',
+      });
+    }
+    await input.onRequestCreated?.(requestId);
+  } else if (requestId.length === 0) {
     throw new ImageGenerationError({
-      surface: 'provider_api',
-      reasonCode: 'provider_response_invalid',
-      message: 'xAI video generation did not return a request id',
+      surface: 'recovery',
+      reasonCode: 'provider_handle_invalid',
+      message: 'xAI video generation recovery request id is invalid',
     });
   }
 

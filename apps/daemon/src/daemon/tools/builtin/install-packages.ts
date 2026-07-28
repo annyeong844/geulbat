@@ -58,6 +58,7 @@ export const installPackagesTool = defineZodTool({
   sideEffectLevel: 'write',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'ptc',
     searchHints: [

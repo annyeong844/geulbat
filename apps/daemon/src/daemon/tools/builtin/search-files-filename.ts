@@ -27,6 +27,7 @@ export async function filenameSearch(
   signal?: AbortSignal,
   options: {
     consistency?: 'filesystem_snapshot' | 'eventual_index';
+    includeIgnored?: boolean;
     searchFilenameIndex?: typeof tryWindowsFilenameIndexSearch;
     /** 실행파일 탐색 주입 — 내용 검색은 rgPath를 인자로 받는데 여기만 내부에서 찾는다. */
     resolveRipgrepPathForRoot?: typeof resolveRipgrepPath;
@@ -147,7 +148,7 @@ export async function filenameSearch(
   const rgArgs = [
     '--files',
     '--hidden',
-    '--no-ignore',
+    ...(options.includeIgnored === true ? ['--no-ignore'] : []),
     '--follow',
     '--null',
     '--',

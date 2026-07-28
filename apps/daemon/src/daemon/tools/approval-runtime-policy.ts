@@ -1,7 +1,7 @@
 import { toApprovalClass } from '@geulbat/protocol/run-approval';
 import type { SideEffectLevel } from '@geulbat/protocol/run-events';
 import { resolveSourceMutationTarget } from '../files/file-platform.js';
-import { parseSingleApplyPatchTargetPath } from './builtin/apply-patch.js';
+import { parseSingleApplyPatchTargetPath } from './builtin/apply-patch-parser.js';
 import { resolveComputerFileToolPath } from './file-tool-root.js';
 import type { ToolMetaReader } from './tool-registry-model.js';
 import type {

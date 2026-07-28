@@ -15,10 +15,13 @@ import {
 import {
   MediaFileTooLargeError,
   resolveThreadMediaFilePath,
+  statThreadMediaFile,
   writeThreadMediaFileFromStream,
   type ThreadMediaExtension,
   type WrittenThreadMediaFile,
 } from '../sessions/media-file-store.js';
+import type { JsonValue } from '../runtime-json.js';
+import { z } from 'zod';
 import { blankCanvasDataUrl } from './blank-canvas.js';
 import {
   ImageGenerationError,
@@ -31,6 +34,13 @@ import {
   acquireGenerationProviderAuthOrFailClosed,
   generateWithProviderAuthRetry,
 } from './generation-provider-auth.js';
+import {
+  markMediaGenerationEffectStarted,
+  prepareMediaGenerationOperation,
+  readMediaGenerationOperation,
+  recordMediaGenerationCandidate,
+  recordMediaGenerationProviderHandle,
+} from './generation-operation-store.js';
 import { generateVideoViaGrok } from './providers/grok-video-provider.js';
 import { withVideoGenerationRequestDefaults } from './video-generation-request-defaults.js';
 
@@ -48,6 +58,7 @@ export interface VideoGenerationRuntimeDeps {
   commitThreadArtifactVersionImpl?: typeof commitThreadArtifactVersion;
   loadThreadArtifactVersionsByRefsImpl?: typeof loadThreadArtifactVersionsByRefs;
   writeThreadMediaFileFromStreamImpl?: typeof writeThreadMediaFileFromStream;
+  statThreadMediaFileImpl?: typeof statThreadMediaFile;
   now?: () => string;
 }
 
@@ -89,6 +100,42 @@ function buildVideoArtifactTitle(prompt: string): string {
   return `${singleLine.slice(0, VIDEO_ARTIFACT_TITLE_MAX_LENGTH - 1)}…`;
 }
 
+const preparedVideoCandidateSchema = z.strictObject({
+  kind: z.literal('video'),
+  payload: z.string(),
+  digest: z.string(),
+  title: z.string(),
+  timestamp: z.string(),
+  provenance: z.strictObject({
+    providerId: z.literal('grok_oauth'),
+    model: z.string(),
+    capability: z.literal('video_generation'),
+    prompt: z.string(),
+    sourceImage: z.union([
+      z.literal('blank_canvas'),
+      z.strictObject({ artifactRef: z.string() }),
+    ]),
+    generatedAt: z.string(),
+  }),
+  media: z.strictObject({
+    mimeType: z.string(),
+    byteLength: z.number().int().nonnegative(),
+    digestSha256: z.string(),
+    mediaRef: z.string(),
+    durationSeconds: z.number().positive(),
+  }),
+});
+
+interface PreparedVideoCandidate {
+  kind: 'video';
+  payload: string;
+  digest: string;
+  title: string;
+  timestamp: string;
+  provenance: GeneratedVideoProvenance;
+  media: GenerateVideoArtifactResult['media'];
+}
+
 export function createVideoGenerationRuntime(
   deps: VideoGenerationRuntimeDeps,
 ): VideoGenerationRuntime {
@@ -96,11 +143,45 @@ export function createVideoGenerationRuntime(
     async generateVideoArtifact(
       input: GenerateVideoArtifactInput,
     ): Promise<GenerateVideoArtifactResult> {
+      let providerHandle: string | undefined;
+      if (input.recovery !== undefined) {
+        if (input.recovery.identity.kind !== 'video') {
+          throw new Error('video generation recovery identity conflicts');
+        }
+        await prepareMediaGenerationOperation({
+          stateRoot: input.stateRoot,
+          threadId: input.threadId,
+          runId: input.runId,
+          callId: input.recovery.callId,
+          identity: input.recovery.identity,
+        });
+        const operation = await readMediaGenerationOperation({
+          stateRoot: input.stateRoot,
+          threadId: input.threadId,
+          identity: input.recovery.identity,
+        });
+        if (operation.candidate !== undefined) {
+          return await commitPreparedVideoCandidate(
+            input,
+            deps,
+            parsePreparedVideoCandidate(operation.candidate),
+          );
+        }
+        providerHandle = operation.providerHandle;
+        if (operation.effectStarted && providerHandle === undefined) {
+          throw new ImageGenerationError({
+            surface: 'recovery',
+            reasonCode: 'provider_outcome_unknown',
+            message:
+              'video generation may have reached the provider before its request id was durably captured; it was not replayed to avoid duplicate generation or billing',
+          });
+        }
+      }
       const source = await resolveSourceImage(input, deps);
       const generated = await generateWithProviderAuthRetry({
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
         runAttempt: (options) =>
-          generateVideoOnce(input, deps, source, options),
+          generateVideoOnce(input, deps, source, options, providerHandle),
         forceRefresh: async () => {
           const forceRefresh =
             deps.forceRefreshProviderAuthImpl ?? forceRefreshProviderAuth;
@@ -110,7 +191,13 @@ export function createVideoGenerationRuntime(
           });
         },
       });
-      return downloadValidateAndCommit(input, deps, source, generated);
+      const prepared = await downloadAndPrepareVideoCandidate(
+        input,
+        deps,
+        source,
+        generated,
+      );
+      return await commitPreparedVideoCandidate(input, deps, prepared);
     },
     withRequestDefaults(defaults) {
       return withVideoGenerationRequestDefaults(runtime, defaults);
@@ -220,7 +307,9 @@ async function generateVideoOnce(
   deps: VideoGenerationRuntimeDeps,
   source: ResolvedSourceImage,
   options: { allowRefresh: boolean },
+  providerHandle: string | undefined,
 ): Promise<Awaited<ReturnType<typeof generateVideoViaGrok>>> {
+  const recovery = input.recovery;
   const getAuth = deps.getProviderAuthImpl ?? getProviderAuth;
   const auth = await acquireGenerationProviderAuthOrFailClosed({
     mediaKind: 'video',
@@ -233,6 +322,13 @@ async function generateVideoOnce(
       }),
   });
   const generate = deps.generateViaGrokImpl ?? generateVideoViaGrok;
+  if (recovery !== undefined && providerHandle === undefined) {
+    await markMediaGenerationEffectStarted({
+      stateRoot: input.stateRoot,
+      threadId: input.threadId,
+      identity: recovery.identity,
+    });
+  }
   return generate({
     request: {
       prompt: input.request.prompt,
@@ -250,6 +346,18 @@ async function generateVideoOnce(
     },
     sourceImageDataUrl: source.dataUrl,
     auth: { accessToken: auth.accessToken },
+    ...(providerHandle === undefined ? {} : { requestId: providerHandle }),
+    ...(recovery === undefined
+      ? {}
+      : {
+          onRequestCreated: (requestId: string) =>
+            recordMediaGenerationProviderHandle({
+              stateRoot: input.stateRoot,
+              threadId: input.threadId,
+              identity: recovery.identity,
+              providerHandle: requestId,
+            }),
+        }),
     ...(input.signal !== undefined ? { signal: input.signal } : {}),
   });
 }
@@ -402,12 +510,12 @@ async function removeWrittenMediaFile(
   }
 }
 
-async function downloadValidateAndCommit(
+async function downloadAndPrepareVideoCandidate(
   input: GenerateVideoArtifactInput,
   deps: VideoGenerationRuntimeDeps,
   source: ResolvedSourceImage,
   generated: Awaited<ReturnType<typeof generateVideoViaGrok>>,
-): Promise<GenerateVideoArtifactResult> {
+): Promise<PreparedVideoCandidate> {
   const downloaded = await downloadVideoToMediaStore(
     input,
     deps,
@@ -446,6 +554,50 @@ async function downloadValidateAndCommit(
     provenance,
   };
 
+  const prepared = {
+    kind: 'video',
+    payload: JSON.stringify(manifest),
+    digest: downloaded.written.sha256,
+    title: buildVideoArtifactTitle(input.request.prompt),
+    timestamp,
+    provenance,
+    media: {
+      mimeType: downloaded.mimeType,
+      byteLength: downloaded.written.byteLength,
+      digestSha256: downloaded.written.sha256,
+      mediaRef: downloaded.written.mediaRef,
+      durationSeconds: generated.durationSeconds,
+    },
+  } satisfies PreparedVideoCandidate;
+  if (input.recovery !== undefined) {
+    await recordMediaGenerationCandidate({
+      stateRoot: input.stateRoot,
+      threadId: input.threadId,
+      identity: input.recovery.identity,
+      candidate: preparedVideoCandidateToJson(prepared),
+    });
+  }
+  return prepared;
+}
+
+async function commitPreparedVideoCandidate(
+  input: GenerateVideoArtifactInput,
+  deps: VideoGenerationRuntimeDeps,
+  candidate: PreparedVideoCandidate,
+): Promise<GenerateVideoArtifactResult> {
+  const statMedia = deps.statThreadMediaFileImpl ?? statThreadMediaFile;
+  const media = await statMedia({
+    workspaceRoot: input.stateRoot,
+    threadId: input.threadId,
+    mediaRef: candidate.media.mediaRef,
+  });
+  if (media === null || media.byteLength !== candidate.media.byteLength) {
+    throw new ImageGenerationError({
+      surface: 'recovery',
+      reasonCode: 'prepared_media_unavailable',
+      message: 'prepared video media is unavailable for artifact recovery',
+    });
+  }
   const commit =
     deps.commitThreadArtifactVersionImpl ?? commitThreadArtifactVersion;
   let committed: Awaited<ReturnType<typeof commitThreadArtifactVersion>>;
@@ -454,22 +606,27 @@ async function downloadValidateAndCommit(
       workspaceRoot: input.stateRoot,
       threadId: input.threadId,
       runId: input.runId,
+      ...(input.recovery === undefined
+        ? {}
+        : { artifactId: input.recovery.identity.artifactId }),
       renderer: 'video',
-      payload: JSON.stringify(manifest),
-      digest: downloaded.written.sha256,
-      title: buildVideoArtifactTitle(input.request.prompt),
+      payload: candidate.payload,
+      digest: candidate.digest,
+      title: candidate.title,
       sourceRef: {
         kind: 'thread',
         workingDirectory: input.workingDirectory,
         threadId: input.threadId,
         runId: input.runId,
         filePath: null,
-        messageTimestamp: timestamp,
+        messageTimestamp: candidate.timestamp,
       },
-      timestamp,
+      timestamp: candidate.timestamp,
     });
   } catch (error: unknown) {
-    await removeWrittenMediaFile(input, downloaded.written.mediaRef);
+    if (input.recovery === undefined) {
+      await removeWrittenMediaFile(input, candidate.media.mediaRef);
+    }
     throw new ImageGenerationError({
       surface: 'artifact_commit',
       reasonCode: 'artifact_commit_failed',
@@ -485,13 +642,41 @@ async function downloadValidateAndCommit(
       persistenceEpoch: committed.artifact.persistenceEpoch,
       sourceRef: committed.artifact.sourceRef ?? null,
     },
-    provenance,
+    provenance: candidate.provenance,
+    media: candidate.media,
+  };
+}
+
+function parsePreparedVideoCandidate(value: unknown): PreparedVideoCandidate {
+  return preparedVideoCandidateSchema.parse(value);
+}
+
+function preparedVideoCandidateToJson(
+  candidate: PreparedVideoCandidate,
+): JsonValue {
+  return {
+    kind: candidate.kind,
+    payload: candidate.payload,
+    digest: candidate.digest,
+    title: candidate.title,
+    timestamp: candidate.timestamp,
+    provenance: {
+      providerId: candidate.provenance.providerId,
+      model: candidate.provenance.model,
+      capability: candidate.provenance.capability,
+      prompt: candidate.provenance.prompt,
+      sourceImage:
+        candidate.provenance.sourceImage === 'blank_canvas'
+          ? 'blank_canvas'
+          : { artifactRef: candidate.provenance.sourceImage.artifactRef },
+      generatedAt: candidate.provenance.generatedAt,
+    },
     media: {
-      mimeType: downloaded.mimeType,
-      byteLength: downloaded.written.byteLength,
-      digestSha256: downloaded.written.sha256,
-      mediaRef: downloaded.written.mediaRef,
-      durationSeconds: generated.durationSeconds,
+      mimeType: candidate.media.mimeType,
+      byteLength: candidate.media.byteLength,
+      digestSha256: candidate.media.digestSha256,
+      mediaRef: candidate.media.mediaRef,
+      durationSeconds: candidate.media.durationSeconds,
     },
   };
 }

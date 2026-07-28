@@ -76,6 +76,51 @@ void test('generateVideoViaGrok posts the job, polls to done, and returns the vi
   });
 });
 
+void test('generateVideoViaGrok persists a new request id before polling and replacement polling skips POST', async () => {
+  const events: string[] = [];
+  const firstFetch: typeof fetch = (input, init) => {
+    events.push(init?.method === 'POST' ? 'post' : `poll:${String(input)}`);
+    return Promise.resolve(
+      init?.method === 'POST'
+        ? jsonResponse(200, { request_id: 'req-durable' })
+        : jsonResponse(200, {
+            status: 'done',
+            video: { url: 'https://signed.example/video.mp4', duration: 5 },
+          }),
+    );
+  };
+  await generateVideoViaGrok({
+    ...BASE_INPUT,
+    fetchImpl: firstFetch,
+    onRequestCreated: async (requestId) => {
+      events.push(`persist:${requestId}`);
+    },
+  });
+  assert.deepEqual(events.slice(0, 3), [
+    'post',
+    'persist:req-durable',
+    'poll:https://api.x.ai/v1/videos/req-durable',
+  ]);
+
+  const replacement = buildFetchScript([
+    {
+      assertUrl: (url) => assert.ok(url.endsWith('/videos/req-durable')),
+      response: jsonResponse(200, {
+        status: 'done',
+        video: { url: 'https://signed.example/video.mp4', duration: 5 },
+      }),
+    },
+  ]);
+  await generateVideoViaGrok({
+    ...BASE_INPUT,
+    requestId: 'req-durable',
+    fetchImpl: replacement.fetchImpl,
+  });
+  assert.deepEqual(replacement.calls, [
+    'GET https://api.x.ai/v1/videos/req-durable',
+  ]);
+});
+
 void test('generateVideoViaGrok classifies auth, rate-limit, failed, and expired outcomes', async () => {
   // 401 → provider_auth (런타임의 1회 리프레시 재시도 대상)
   await assert.rejects(

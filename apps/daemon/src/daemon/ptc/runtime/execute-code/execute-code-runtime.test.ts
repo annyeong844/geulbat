@@ -22,6 +22,7 @@ import { makeRunContext } from '../../../../test-support/run-context.js';
 import { runHostRoutedDockerCommandForTest } from '../../../../test-support/host-routed-docker-command.js';
 import {
   PTC_EXECUTE_CODE_TOOL_NAME,
+  type PtcExecuteCodeLanguage,
   type PtcExecuteCodeModuleFormat,
   type PtcExecuteCodeRuntimeSdkProjection,
 } from './execute-code-runtime-contract.js';
@@ -72,6 +73,232 @@ void test('createPtcExecuteCodeRuntime rejects unknown module formats before ope
   }
 });
 
+void test('createPtcExecuteCodeRuntime rejects invalid executable request combinations before opening runtime state', async (t) => {
+  type ExecuteCodeRequest = Parameters<
+    ReturnType<typeof createPtcExecuteCodeRuntime>['executeCode']
+  >[0]['request'];
+  const cases: Array<{
+    name: string;
+    request: ExecuteCodeRequest;
+    message: string;
+  }> = [
+    {
+      name: 'blank code',
+      request: { code: '   ' },
+      message: 'PTC execute_code input is invalid',
+    },
+    {
+      name: 'unknown language',
+      request: {
+        code: 'return 1',
+        language: 'ruby' as PtcExecuteCodeLanguage,
+      },
+      message: 'PTC execute_code language is invalid',
+    },
+    {
+      name: 'Python module format',
+      request: { code: 'print(1)', language: 'python', moduleFormat: 'esm' },
+      message: 'PTC Python execution does not accept moduleFormat',
+    },
+    {
+      name: 'Python yield window',
+      request: { code: 'print(1)', language: 'python', yieldTimeMs: 100 },
+      message:
+        'PTC Python execution currently runs as a batch and does not accept yieldTimeMs',
+    },
+    {
+      name: 'empty artifact list',
+      request: { code: 'return 1', artifacts: [] },
+      message: 'PTC execute_code artifact paths are invalid',
+    },
+    {
+      name: 'unsafe artifact path',
+      request: { code: 'return 1', artifacts: ['../private.txt'] },
+      message: 'PTC execute_code artifact paths are invalid',
+    },
+    {
+      name: 'duplicate artifact path',
+      request: {
+        code: 'return 1',
+        artifacts: ['report.txt', 'report.txt'],
+      },
+      message: 'PTC execute_code artifact paths are invalid',
+    },
+    {
+      name: 'artifact export with yield',
+      request: {
+        code: 'return 1',
+        artifacts: ['report.txt'],
+        yieldTimeMs: 100,
+      },
+      message:
+        'PTC execute_code artifact export runs to batch completion and does not accept yieldTimeMs',
+    },
+    {
+      name: 'zero timeout',
+      request: { code: 'return 1', timeoutMs: 0 },
+      message: 'PTC execute_code timeout is invalid',
+    },
+    {
+      name: 'yield below the protocol floor',
+      request: { code: 'return 1', timeoutMs: 1_000, yieldTimeMs: 0 },
+      message: 'PTC execute_code cell yieldTimeMs is invalid',
+    },
+    {
+      name: 'yield beyond the execution timeout',
+      request: { code: 'return 1', timeoutMs: 1_000, yieldTimeMs: 1_001 },
+      message:
+        'PTC execute_code cell yieldTimeMs exceeds the execution timeout',
+    },
+  ];
+  const runtime = createPtcExecuteCodeRuntime();
+
+  try {
+    for (const scenario of cases) {
+      await t.test(scenario.name, async () => {
+        assert.deepEqual(
+          await runtime.executeCode({
+            runContext: makeRunContext({
+              threadId: testThreadId(899_1),
+              stateRoot: '/unused/invalid-execute-code-request',
+            }),
+            request: scenario.request,
+          }),
+          {
+            ok: false,
+            reasonCode: 'ptc_execute_code_invalid',
+            message: scenario.message,
+          },
+        );
+      });
+    }
+  } finally {
+    await runtime.closeAll();
+  }
+});
+
+void test('createPtcExecuteCodeRuntime fails closed on unavailable, invalid, and over-limit artifact export policy', async (t) => {
+  const cases = [
+    {
+      name: 'unconfigured',
+      runtime: createPtcExecuteCodeRuntime(),
+      artifacts: ['report.txt'],
+      expected: {
+        ok: false,
+        reasonCode: 'ptc_execute_code_artifact_export_disabled',
+        message: 'PTC execute_code artifact export is not configured',
+        remediation:
+          'Ask the operator to configure PTC artifact export limits in Settings.',
+      },
+    },
+    {
+      name: 'policy read failure',
+      runtime: createPtcExecuteCodeRuntime({
+        artifactExport: {
+          resolvePolicy: () => {
+            throw new Error('policy store unavailable');
+          },
+          importFiles: async () => {
+            throw new Error('import must not run');
+          },
+        },
+      }),
+      artifacts: ['report.txt'],
+      expected: {
+        ok: false,
+        reasonCode: 'ptc_execute_code_artifact_export_failed',
+        message: 'PTC execute_code artifact export policy could not be read',
+        diagnostics: { artifactReasonCode: 'policy_resolution_failed' },
+      },
+    },
+    {
+      name: 'disabled policy',
+      runtime: createPtcExecuteCodeRuntime({
+        artifactExport: {
+          resolvePolicy: () => undefined,
+          importFiles: async () => {
+            throw new Error('import must not run');
+          },
+        },
+      }),
+      artifacts: ['report.txt'],
+      expected: {
+        ok: false,
+        reasonCode: 'ptc_execute_code_artifact_export_disabled',
+        message: 'PTC execute_code artifact export is disabled',
+        remediation:
+          'Ask the operator to configure PTC artifact export limits in Settings.',
+      },
+    },
+    {
+      name: 'invalid policy',
+      runtime: createPtcExecuteCodeRuntime({
+        artifactExport: {
+          resolvePolicy: () => ({
+            maxFiles: 0,
+            maxFileBytes: 1024,
+            maxTotalBytes: 2048,
+          }),
+          importFiles: async () => {
+            throw new Error('import must not run');
+          },
+        },
+      }),
+      artifacts: ['report.txt'],
+      expected: {
+        ok: false,
+        reasonCode: 'ptc_execute_code_artifact_export_failed',
+        message: 'PTC execute_code artifact export policy is invalid',
+        diagnostics: { artifactReasonCode: 'policy_invalid' },
+      },
+    },
+    {
+      name: 'file count exceeded',
+      runtime: createPtcExecuteCodeRuntime({
+        artifactExport: {
+          resolvePolicy: () => ({
+            maxFiles: 1,
+            maxFileBytes: 1024,
+            maxTotalBytes: 2048,
+          }),
+          importFiles: async () => {
+            throw new Error('import must not run');
+          },
+        },
+      }),
+      artifacts: ['first.txt', 'second.txt'],
+      expected: {
+        ok: false,
+        reasonCode: 'ptc_execute_code_invalid',
+        message:
+          'PTC execute_code artifact paths exceed the operator file count limit',
+      },
+    },
+  ] as const;
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      try {
+        assert.deepEqual(
+          await scenario.runtime.executeCode({
+            runContext: makeRunContext({
+              threadId: testThreadId(899_2),
+              stateRoot: '/unused/artifact-export-policy',
+            }),
+            request: {
+              code: 'return 1',
+              artifacts: [...scenario.artifacts],
+            },
+          }),
+          scenario.expected,
+        );
+      } finally {
+        await scenario.runtime.closeAll();
+      }
+    });
+  }
+});
+
 void test('createPtcExecuteCodeRuntime delegates restart residue cleanup without starting a session', async () => {
   const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-ptc-restart-cleanup-workspace-'),
@@ -113,6 +340,76 @@ void test('createPtcExecuteCodeRuntime delegates restart residue cleanup without
     await rm(stateRoot, { recursive: true, force: true });
     await rm(runtimeRoot, { recursive: true, force: true });
   }
+});
+
+void test('createPtcExecuteCodeRuntime reports unavailable and failed restart cleanup', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-restart-cleanup-failures-workspace-'),
+  );
+  const runtimeRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-ptc-restart-cleanup-failures-runtime-'),
+  );
+  t.after(async () => {
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true });
+  });
+  const baseManager = {
+    async getOrCreate() {
+      throw new Error('restart cleanup must not start a session');
+    },
+    async close() {
+      return { ok: true, value: undefined } as const;
+    },
+    async closeAll() {
+      return { ok: true, value: undefined } as const;
+    },
+  };
+
+  await t.test('manager has no restart cleanup capability', async () => {
+    const sessionManager: PtcSessionDockerManager = baseManager;
+    const runtime = createPtcExecuteCodeRuntime({
+      createSessionManager: () => sessionManager,
+      runtimeRootForState: () => runtimeRoot,
+    });
+    try {
+      assert.deepEqual(await runtime.reapRestartResidue?.({ stateRoot }), {
+        ok: false,
+        reasonCode: 'ptc_execute_code_session_cleanup_failed',
+        message: 'PTC execute_code restart cleanup is unavailable',
+      });
+    } finally {
+      await runtime.closeAll();
+    }
+  });
+
+  await t.test('manager reports restart residue sweep failure', async () => {
+    const sessionManager: PtcSessionDockerManager = {
+      ...baseManager,
+      async reapRestartResidue() {
+        return {
+          ok: false,
+          reasonCode: 'restart_residue_sweep_failed',
+          message: 'residue remains',
+        };
+      },
+    };
+    const runtime = createPtcExecuteCodeRuntime({
+      createSessionManager: () => sessionManager,
+      runtimeRootForState: () => runtimeRoot,
+    });
+    try {
+      assert.deepEqual(await runtime.reapRestartResidue?.({ stateRoot }), {
+        ok: false,
+        reasonCode: 'ptc_execute_code_session_cleanup_failed',
+        message: 'PTC execute_code restart cleanup failed',
+        diagnostics: {
+          cleanupReasonCode: 'restart_residue_sweep_failed',
+        },
+      });
+    } finally {
+      await runtime.closeAll();
+    }
+  });
 });
 
 void test('createPtcExecuteCodeRuntime exports explicitly requested artifact files as durable metadata', async () => {

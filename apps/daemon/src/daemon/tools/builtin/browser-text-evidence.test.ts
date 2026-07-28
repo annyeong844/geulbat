@@ -20,6 +20,7 @@ void test('browser_text_evidence exposes scalar URL schema and approval-gated me
   assert.equal(browserTextEvidenceTool.sideEffectLevel, 'write');
   assert.equal(browserTextEvidenceTool.requiresApproval, true);
   assert.equal(browserTextEvidenceTool.mayMutateComputerFiles, false);
+  assert.equal(browserTextEvidenceTool.recoveryStrategy, 'replay_safe');
   const parameters = browserTextEvidenceTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(parameters.required, ['url']);
@@ -50,7 +51,7 @@ void test('browser_text_evidence requires an agent runtime service before loadin
   assert.match(result.error ?? '', /runtime is required/u);
 });
 
-void test('browser_text_evidence returns text evidence without raw URL leaks', async () => {
+void test('browser_text_evidence replacement replay returns fresh explicit-URL evidence without raw URL leaks', async () => {
   const daemonContext = createDaemonContext();
   let observedUrl = '';
   let observedTimeoutMs: number | undefined;
@@ -111,6 +112,47 @@ void test('browser_text_evidence returns text evidence without raw URL leaks', a
   assert.equal(Object.hasOwn(output, 'html'), false);
   assert.equal(Object.hasOwn(output, 'screenshot'), false);
   assert.equal(Object.hasOwn(output, 'containerId'), false);
+  assert.equal(output.visibleText, 'Visible page text');
+
+  const replacementContext = createDaemonContext();
+  const replacement = await browserTextEvidenceTool.execute(
+    {
+      url: 'https://example.com/private?access_token=secret#id_token=secret',
+      timeoutMs: 1000,
+    },
+    {
+      callId: 'call-browser-text-evidence-success',
+      stateRoot: '/workspace/home-state',
+      workingDirectory: 'project',
+      threadId: testThreadId(956),
+      runtimeServices: {
+        ...replacementContext,
+        ptc: {
+          ...replacementContext.ptc,
+          browserTextEvidence: {
+            async collectEvidence() {
+              return {
+                ok: true,
+                value: {
+                  ...browserTextEvidenceSummary(),
+                  visibleText: 'Replacement page text',
+                },
+              };
+            },
+            async closeAll() {
+              return { ok: true };
+            },
+          },
+        },
+      },
+      approvalGranted: true,
+    },
+  );
+  assert.equal(replacement.ok, true);
+  assert.equal(
+    JSON.parse(replacement.output).visibleText,
+    'Replacement page text',
+  );
   assert.equal(output.visibleText, 'Visible page text');
 });
 

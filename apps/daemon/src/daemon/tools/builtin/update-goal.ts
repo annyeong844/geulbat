@@ -20,6 +20,7 @@ export const updateGoalTool = defineZodTool({
   mayMutateComputerFiles: false,
   abortSettlement: 'await_execution',
   requiresApproval: false,
+  recoveryStrategy: 'reconcile_then_replay',
   endsTurnAfterSuccess: true,
   catalogSearchMetadata: {
     family: 'planning',

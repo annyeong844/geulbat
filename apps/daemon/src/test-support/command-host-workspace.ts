@@ -47,5 +47,10 @@ export async function removeCommandHostWorkspace(
   stateRoot: string,
 ): Promise<void> {
   await stopCommandHostWorker(stateRoot);
-  await rm(stateRoot, { recursive: true, force: true });
+  await rm(stateRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 20,
+  });
 }

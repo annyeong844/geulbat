@@ -81,6 +81,10 @@ export interface StartSubagentBackgroundRunArgs {
   timeoutMs?: number;
   childRunId?: RunId;
   childThreadId?: ThreadId;
+  childInputPersistence?: {
+    entryId: string;
+    timestamp: string;
+  };
   durableLaunchRecorded?: true;
 }
 

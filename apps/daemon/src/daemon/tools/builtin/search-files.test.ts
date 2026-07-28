@@ -58,6 +58,11 @@ void test('search_files projects parser-owned scalar constraints into tool param
     description:
       'Filename-search consistency. The default filesystem_snapshot scans the exposed filesystem for an exact total. eventual_index performs fast bounded basename-glob discovery through Windows Search, requires maxResults, and may omit new or unindexed files.',
   });
+  assert.deepEqual(parameters.properties.includeIgnored, {
+    type: 'boolean',
+    description:
+      'Whether to include paths excluded by ignore files such as .gitignore. Defaults to false; hidden paths remain searchable.',
+  });
   assert.equal(parameters.properties.root, undefined);
 });
 
@@ -455,7 +460,7 @@ void test('search_files supports filename mode', async () => {
   ]);
 });
 
-void test('search_files filename mode includes hidden and ignored-looking paths', async () => {
+void test('search_files filename mode respects ignore files unless explicitly included', async () => {
   const computerFileRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-search-hidden-filename-'),
   );
@@ -464,6 +469,11 @@ void test('search_files filename mode includes hidden and ignored-looking paths'
     recursive: true,
   });
   await writeFile(join(computerFileRoot, '.env'), 'TOKEN=value\n', 'utf8');
+  await writeFile(
+    join(computerFileRoot, '.gitignore'),
+    'node_modules/\n',
+    'utf8',
+  );
   await writeFile(join(computerFileRoot, '.git', 'config'), '[core]\n', 'utf8');
   await writeFile(
     join(computerFileRoot, 'node_modules', 'package', 'index.js'),
@@ -471,18 +481,31 @@ void test('search_files filename mode includes hidden and ignored-looking paths'
     'utf8',
   );
 
-  const result = await executeSearchFiles(
+  const defaultResult = await executeSearchFiles(
     { pattern: '**/*', type: 'filename' },
     { callId: 'call-search-hidden-filename', computerFileRoot },
   );
+  const ignoredResult = await executeSearchFiles(
+    { pattern: '**/*', type: 'filename', includeIgnored: true },
+    { callId: 'call-search-ignored-filename', computerFileRoot },
+  );
 
-  assert.equal(result.ok, true);
-  const payload = JSON.parse(result.output) as {
+  assert.equal(defaultResult.ok, true);
+  const defaultPayload = JSON.parse(defaultResult.output) as {
     results: Array<{ path: string }>;
   };
   assert.deepEqual(
-    payload.results.map((entry) => entry.path),
-    ['.env', '.git/config', 'node_modules/package/index.js'],
+    defaultPayload.results.map((entry) => entry.path),
+    ['.env', '.git/config', '.gitignore'],
+  );
+
+  assert.equal(ignoredResult.ok, true);
+  const ignoredPayload = JSON.parse(ignoredResult.output) as {
+    results: Array<{ path: string }>;
+  };
+  assert.deepEqual(
+    ignoredPayload.results.map((entry) => entry.path),
+    ['.env', '.git/config', '.gitignore', 'node_modules/package/index.js'],
   );
 });
 
@@ -754,6 +777,55 @@ void test('search_files content mode includes hidden configuration files under t
   assert.equal(paths.includes('project/nested/.env'), true);
   assert.equal(paths.includes('project/nested/.env.production'), true);
   assert.equal(paths.includes('project/nested/.GIT/config'), true);
+});
+
+void test('search_files content mode respects ignore files unless explicitly included', async () => {
+  const computerFileRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-search-content-ignore-'),
+  );
+  await mkdir(join(computerFileRoot, '.git'));
+  await mkdir(join(computerFileRoot, 'ignored'));
+  await writeFile(join(computerFileRoot, '.gitignore'), 'ignored/\n', 'utf8');
+  await writeFile(
+    join(computerFileRoot, '.visible-config'),
+    'ignore-policy-marker\n',
+    'utf8',
+  );
+  await writeFile(
+    join(computerFileRoot, 'ignored', 'generated.txt'),
+    'ignore-policy-marker\n',
+    'utf8',
+  );
+
+  const defaultResult = await executeSearchFiles(
+    { pattern: 'ignore-policy-marker' },
+    { callId: 'call-search-content-ignore-default', computerFileRoot },
+  );
+  const ignoredResult = await executeSearchFiles(
+    { pattern: 'ignore-policy-marker', includeIgnored: true },
+    { callId: 'call-search-content-ignore-explicit', computerFileRoot },
+  );
+
+  assert.equal(defaultResult.ok, true);
+  assert.deepEqual(
+    (
+      JSON.parse(defaultResult.output) as {
+        results: Array<{ path: string }>;
+      }
+    ).results.map((entry) => entry.path),
+    ['.visible-config'],
+  );
+  assert.equal(ignoredResult.ok, true);
+  assert.deepEqual(
+    (
+      JSON.parse(ignoredResult.output) as {
+        results: Array<{ path: string }>;
+      }
+    ).results
+      .map((entry) => entry.path)
+      .sort(),
+    ['.visible-config', 'ignored/generated.txt'],
+  );
 });
 
 void test('search_files content mode returns all matches when maxResults is omitted', async () => {

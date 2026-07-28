@@ -471,6 +471,182 @@ void test('daemon replacement settles a delivered child terminal checkpoint with
   }
 });
 
+void test('daemon replacement terminalizes a child final answer persisted before terminal delivery without redispatch', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-child-transcript-terminal-window-'),
+  );
+  const ownerThreadId = testThreadId(809);
+  const parentRunId = testRunId('child-transcript-terminal-window-parent');
+  const task = 'must not execute again after its final answer is durable';
+  const persistedFinalAnswer = 'answer persisted before terminal delivery';
+  const persistedAt = '2026-07-28T00:00:03.000Z';
+  let store = await createDaemonRuntimeStateStore({ homeStateRoot: stateRoot });
+  const [launch] = store.enqueueSubagentLaunchBatch([
+    {
+      toolCallId: 'call-child-transcript-terminal-window',
+      task,
+      subagentType: 'explorer',
+      capabilities: [],
+      parentRunId,
+      ownerThreadId,
+      stateRoot,
+      workingDirectory: stateRoot,
+      permissionMode: 'basic',
+      ultraReasoning: false,
+      modelPin: TEST_INHERITED_SOL_MODEL_PIN,
+      subagentModelRouting: TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+    },
+  ]);
+  assert.ok(launch);
+  store.markSubagentLaunchStarting(launch.childRunId);
+  store.markSubagentLaunchStarted(launch.childRunId);
+  const beforeReplacement = createDaemonContext({
+    homeStateRoot: stateRoot,
+    subagentLaunchRequests: store,
+    subagentTerminalDeliveries: store,
+  });
+  await beforeReplacement.runCheckpoints.startRun({
+    runId: launch.childRunId,
+    threadId: launch.childThreadId,
+    request: {
+      workingDirectory: stateRoot,
+      permissionMode: 'basic',
+      ultraReasoning: false,
+      loopImplementation: {
+        implementationId: agentLoopKernelImplementation.implementationId,
+        contractVersion: agentLoopKernelImplementation.contractVersion,
+      },
+      providerModel:
+        TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection.providerModel,
+      reasoningEffort:
+        TEST_INHERITED_SOL_MODEL_PIN.providerRunSelection.reasoningEffort,
+      subagentModelRouting: TEST_AUTO_SUBAGENT_MODEL_ROUTING,
+      toolSurface: {
+        directRegistryNames: ['read_file'],
+        allowedRegistryNames: ['read_file'],
+      },
+      backgroundChild: {
+        parentRunId,
+        ownerThreadId,
+        computerSessionId: 'child-transcript-terminal-window-session',
+      },
+    },
+  });
+  await appendTranscriptEntry(stateRoot, launch.childThreadId, {
+    role: 'user',
+    content: task,
+    timestamp: '2026-07-28T00:00:02.000Z',
+  });
+  await appendTranscriptEntry(stateRoot, launch.childThreadId, {
+    role: 'assistant',
+    content: persistedFinalAnswer,
+    timestamp: persistedAt,
+    metadata: {
+      phase: 'final_answer',
+      sourceRunId: launch.childRunId,
+    },
+  });
+  store.close();
+
+  let releaseUnexpectedDispatch = () => {};
+  try {
+    store = await createDaemonRuntimeStateStore({
+      homeStateRoot: stateRoot,
+      deferSubagentRestartReconciliation: true,
+    });
+    const replacement = createDaemonContext({
+      homeStateRoot: stateRoot,
+      subagentLaunchRequests: store,
+      subagentTerminalDeliveries: store,
+    });
+    let replacementDispatchCount = 0;
+    const unexpectedDispatchReleased = new Promise<void>((resolve) => {
+      releaseUnexpectedDispatch = resolve;
+    });
+    replacement.subagent.runs = createSubagentRunLauncher({
+      runAgentLoop: async () => {
+        replacementDispatchCount += 1;
+        await unexpectedDispatchReleased;
+        return { ok: true, finalProse: 'duplicate child execution' };
+      },
+    });
+
+    assert.equal(await recoverDurableRunsAtDaemonStartup(replacement), 1);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (
+        replacementDispatchCount > 0 ||
+        store.readSubagentTerminalOutcomeByChildRunId(launch.childRunId) !==
+          undefined
+      ) {
+        break;
+      }
+      await delay(10);
+    }
+    assert.equal(replacementDispatchCount, 0);
+
+    const outcome = store.readSubagentTerminalOutcomeByChildRunId(
+      launch.childRunId,
+    );
+    assert.ok(outcome);
+    assert.equal(outcome.result.terminalState, 'failed');
+    assert.equal(outcome.result.reason, 'daemon_restart');
+    assert.equal(outcome.result.result, persistedFinalAnswer);
+    assert.equal(outcome.result.completedAt, persistedAt);
+    assert.equal(store.readSubagentTerminalDeliveries(ownerThreadId).length, 1);
+    const pendingBackgroundResults =
+      replacement.backgroundNotifications.readThreadBackgroundResults(
+        ownerThreadId,
+      );
+    assert.equal(pendingBackgroundResults.length, 1);
+    assert.equal(
+      pendingBackgroundResults[0]?.deliveryId,
+      outcome.result.deliveryId,
+    );
+    assert.equal(pendingBackgroundResults[0]?.childRunId, launch.childRunId);
+    assert.equal(pendingBackgroundResults[0]?.reason, 'daemon_restart');
+    assert.equal(pendingBackgroundResults[0]?.result, persistedFinalAnswer);
+
+    const replayedBackgroundResults: typeof pendingBackgroundResults = [];
+    const unsubscribe =
+      replacement.backgroundNotifications.subscribeThreadBackgroundResults(
+        ownerThreadId,
+        (result) => {
+          replayedBackgroundResults.push(result);
+        },
+      );
+    unsubscribe();
+    assert.deepEqual(replayedBackgroundResults, pendingBackgroundResults);
+    assert.deepEqual(
+      replacement.childRuns.getActiveChildRunsByOwnerThread(ownerThreadId),
+      [],
+    );
+
+    const checkpoint = await replacement.runCheckpoints.readThread(
+      launch.childThreadId,
+    );
+    assert.equal(checkpoint?.status, 'terminal');
+    assert.equal(checkpoint?.terminal?.acknowledged, true);
+    assert.deepEqual(checkpoint?.terminal?.event, {
+      type: 'done',
+      payload: { answer: persistedFinalAnswer, ok: false },
+    });
+
+    assert.equal(await recoverDurableRunsAtDaemonStartup(replacement), 0);
+    assert.equal(replacementDispatchCount, 0);
+    assert.equal(store.readSubagentTerminalDeliveries(ownerThreadId).length, 1);
+  } finally {
+    releaseUnexpectedDispatch();
+    await delay(20);
+    store.close();
+    await rm(stateRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 10,
+    });
+  }
+});
+
 void test('daemon replacement terminalizes a queued child whose parent can no longer recover', async () => {
   const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-orphaned-queued-child-'),

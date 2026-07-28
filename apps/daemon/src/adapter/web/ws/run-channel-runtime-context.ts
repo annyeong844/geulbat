@@ -26,6 +26,7 @@ type RunChannelActiveRuns = AgentRuntimeServices['activeRuns'] &
     | 'requestPendingInterjectFlush'
     | 'getRunById'
     | 'getRunByThreadId'
+    | 'waitForThreadIdle'
   >;
 
 type RunChannelApprovalGate = AgentRuntimeServices['approvalGate'] &

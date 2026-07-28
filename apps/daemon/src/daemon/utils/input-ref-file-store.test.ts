@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
-import { mkdtemp } from 'node:fs/promises';
 
 import {
   claimInputRefFilePath,
@@ -338,5 +345,153 @@ void test('input ref recovery rejects invalid refs and claim ids and resolves lo
       config: TEST_STORE,
     }),
     { ok: false, code: 'not_found', message: 'not found' },
+  );
+});
+
+void test('input refs reject directory-shaped pending and claimed entries', async (t) => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-input-ref-directory-'),
+  );
+  t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
+  const id = randomUUID();
+  const ref = `${TEST_STORE.refPrefix}${id}`;
+  const directory = join(workspaceRoot, '.geulbat', TEST_STORE.directoryName);
+  const pendingPath = join(directory, `${id}${TEST_STORE.fileExtension}`);
+  await mkdir(pendingPath, { recursive: true });
+
+  assert.deepEqual(
+    await readInputRefFilePath({ workspaceRoot, ref, config: TEST_STORE }),
+    { ok: false, code: 'bad_request', message: 'not a file' },
+  );
+  assert.deepEqual(
+    await claimInputRefFilePath({ workspaceRoot, ref, config: TEST_STORE }),
+    { ok: false, code: 'bad_request', message: 'not a file' },
+  );
+  assert.equal((await stat(pendingPath)).isDirectory(), true);
+
+  const claimId = randomUUID();
+  await mkdir(
+    join(directory, `${id}.${claimId}.claimed${TEST_STORE.fileExtension}`),
+  );
+  await writeFile(join(directory, 'ignored.txt'), 'ignored', 'utf8');
+  await writeFile(
+    join(directory, `invalid.claimed${TEST_STORE.fileExtension}`),
+    'ignored',
+    'utf8',
+  );
+  assert.deepEqual(
+    await listInputRefFiles({ workspaceRoot, config: TEST_STORE }),
+    [],
+  );
+});
+
+void test('input ref recovery fails closed across active and ambiguous claims', async (t) => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-input-ref-ambiguous-'),
+  );
+  t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
+
+  const active = await writeInputRefFileFromStream({
+    workspaceRoot,
+    input: Readable.from(['active payload']),
+    config: TEST_STORE,
+  });
+  const activeClaim = await claimInputRefFilePath({
+    workspaceRoot,
+    ref: active.ref,
+    config: TEST_STORE,
+  });
+  assert.equal(activeClaim.ok, true);
+  assert.deepEqual(
+    await recoverInputRefFile({
+      workspaceRoot,
+      ref: active.ref,
+      action: 'release',
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'conflict', message: 'already claimed' },
+  );
+  if (activeClaim.ok) {
+    await deleteInputRefFilePath(activeClaim.path);
+  }
+
+  const id = randomUUID();
+  const firstClaimId = randomUUID();
+  const secondClaimId = randomUUID();
+  const ref = `${TEST_STORE.refPrefix}${id}`;
+  const directory = join(workspaceRoot, '.geulbat', TEST_STORE.directoryName);
+  const pendingPath = join(directory, `${id}${TEST_STORE.fileExtension}`);
+  const firstClaimPath = join(
+    directory,
+    `${id}.${firstClaimId}.claimed${TEST_STORE.fileExtension}`,
+  );
+  const secondClaimPath = join(
+    directory,
+    `${id}.${secondClaimId}.claimed${TEST_STORE.fileExtension}`,
+  );
+  await writeFile(pendingPath, 'pending payload', 'utf8');
+  await writeFile(firstClaimPath, 'first interrupted payload', 'utf8');
+  await writeFile(secondClaimPath, 'second interrupted payload', 'utf8');
+
+  for (const action of ['retry', 'release'] as const) {
+    assert.deepEqual(
+      await recoverInputRefFile({
+        workspaceRoot,
+        ref,
+        action,
+        config: TEST_STORE,
+      }),
+      { ok: false, code: 'conflict', message: 'already claimed' },
+    );
+  }
+
+  await deleteInputRefFilePath(pendingPath);
+  assert.deepEqual(
+    await recoverInputRefFile({
+      workspaceRoot,
+      ref,
+      action: 'retry',
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'conflict', message: 'already claimed' },
+  );
+  assert.deepEqual(
+    await recoverInputRefFile({
+      workspaceRoot,
+      ref,
+      action: 'retry',
+      claimId: randomUUID(),
+      config: TEST_STORE,
+    }),
+    { ok: false, code: 'not_found', message: 'not found' },
+  );
+  assert.deepEqual(
+    await recoverInputRefFile({
+      workspaceRoot,
+      ref,
+      action: 'retry',
+      claimId: firstClaimId,
+      config: TEST_STORE,
+    }),
+    { ok: true, disposition: 'pending' },
+  );
+  assert.equal(
+    await readFile(pendingPath, 'utf8'),
+    'first interrupted payload',
+  );
+  await deleteInputRefFilePath(pendingPath);
+  assert.deepEqual(
+    await recoverInputRefFile({
+      workspaceRoot,
+      ref,
+      action: 'release',
+      claimId: secondClaimId,
+      config: TEST_STORE,
+    }),
+    { ok: true, disposition: 'released' },
+  );
+  assert.deepEqual(
+    await listInputRefFiles({ workspaceRoot, config: TEST_STORE }),
+    [],
   );
 });

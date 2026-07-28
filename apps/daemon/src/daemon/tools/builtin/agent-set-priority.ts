@@ -77,6 +77,7 @@ export const agentSetPriorityTool = defineParsedTool<AgentSetPriorityArgs>({
   sideEffectLevel: 'none',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'agent',
     searchHints: [

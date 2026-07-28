@@ -627,6 +627,242 @@ function rewriteCanonicalArchive(
   return `${stableStringify(archive)}\n`;
 }
 
+void test('portable thread archive parser rejects malformed nested resources before importing bytes', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-transfer-invalid-resources-'),
+  );
+  try {
+    const context = createDaemonContext({ homeStateRoot: stateRoot });
+    const projection = await context.toolLibraryProjection.resolveProjection({
+      stateRoot,
+      threadId: SOURCE_THREAD_ID,
+      allowedRegistryNames: [],
+    });
+    assert.equal(projection.ok, true);
+    if (!projection.ok) {
+      return;
+    }
+    await replaceTranscriptEntries(stateRoot, SOURCE_THREAD_ID, [
+      {
+        entryId: 'entry-invalid-resource-parser',
+        role: 'user',
+        content: 'portable parser fixture',
+        timestamp: '2026-07-27T00:00:00.000Z',
+      },
+    ]);
+    const service = createThreadArchiveTransferService({
+      stateRoot,
+      projectionTransfer: context.toolLibraryProjectionTransfer,
+      readProjectionIdentity: async () => ({
+        sdkVersion: projection.pin.sdkVersion,
+        sdkProjectionHash: projection.pin.sdkProjectionHash,
+        policyId: projection.pin.policyId,
+      }),
+    });
+    const exported = await service.exportArchive({
+      threadId: SOURCE_THREAD_ID,
+    });
+    assert.equal(exported.ok, true);
+    if (!exported.ok) {
+      return;
+    }
+
+    const oneByte = Buffer.from('a');
+    const oneByteSha256 = `sha256:${createHash('sha256')
+      .update(oneByte)
+      .digest('hex')}`;
+    const attachment = {
+      attachmentId: 'attachment-invalid-parser',
+      byteLength: oneByte.byteLength,
+      base64: oneByte.toString('base64'),
+      sha256: oneByteSha256,
+    };
+    const media = {
+      mediaRef: `${oneByteSha256.slice('sha256:'.length)}.mp4`,
+      base64: oneByte.toString('base64'),
+      sha256: oneByteSha256,
+    };
+    const malformedCases: Array<{
+      name: string;
+      expectedMessage: RegExp;
+      mutate: (archive: Record<string, unknown>) => void;
+    }> = [
+      {
+        name: 'transcript collection',
+        expectedMessage: /thread archive transcript is invalid/u,
+        mutate: (archive) => {
+          archive.transcript = {};
+        },
+      },
+      {
+        name: 'transcript entry',
+        expectedMessage: /thread archive transcript entry 0 is invalid/u,
+        mutate: (archive) => {
+          archive.transcript = [{}];
+        },
+      },
+      {
+        name: 'attachment collection',
+        expectedMessage: /thread archive attachments are invalid/u,
+        mutate: (archive) => {
+          archive.attachments = {};
+        },
+      },
+      {
+        name: 'attachment entry',
+        expectedMessage: /thread archive attachment entry is invalid/u,
+        mutate: (archive) => {
+          archive.attachments = [{}];
+        },
+      },
+      {
+        name: 'duplicate attachment',
+        expectedMessage: /duplicate thread archive attachment/u,
+        mutate: (archive) => {
+          archive.attachments = [attachment, attachment];
+        },
+      },
+      {
+        name: 'attachment size',
+        expectedMessage: /thread archive attachment size mismatch/u,
+        mutate: (archive) => {
+          archive.attachments = [{ ...attachment, byteLength: 2 }];
+        },
+      },
+      {
+        name: 'attachment digest',
+        expectedMessage: /portable byte record digest does not match/u,
+        mutate: (archive) => {
+          archive.attachments = [
+            {
+              ...attachment,
+              sha256: `sha256:${'0'.repeat(64)}`,
+            },
+          ];
+        },
+      },
+      {
+        name: 'artifact collection',
+        expectedMessage: /thread archive artifacts are invalid/u,
+        mutate: (archive) => {
+          archive.artifacts = {};
+        },
+      },
+      {
+        name: 'artifact entry',
+        expectedMessage: /thread archive artifact version is invalid/u,
+        mutate: (archive) => {
+          archive.artifacts = [{}];
+        },
+      },
+      {
+        name: 'media collection',
+        expectedMessage: /thread archive media is invalid/u,
+        mutate: (archive) => {
+          archive.media = {};
+        },
+      },
+      {
+        name: 'media entry',
+        expectedMessage: /thread archive media entry is invalid/u,
+        mutate: (archive) => {
+          archive.media = [{}];
+        },
+      },
+      {
+        name: 'duplicate media',
+        expectedMessage: /duplicate thread archive media/u,
+        mutate: (archive) => {
+          archive.media = [media, media];
+        },
+      },
+      {
+        name: 'media digest',
+        expectedMessage: /thread archive media digest mismatch/u,
+        mutate: (archive) => {
+          archive.media = [
+            {
+              ...media,
+              mediaRef: `${'0'.repeat(64)}.mp4`,
+            },
+          ];
+        },
+      },
+      {
+        name: 'tool output collection',
+        expectedMessage: /thread archive tool outputs are invalid/u,
+        mutate: (archive) => {
+          archive.toolOutputs = {};
+        },
+      },
+      {
+        name: 'host command collection',
+        expectedMessage: /thread archive host commands are invalid/u,
+        mutate: (archive) => {
+          archive.hostCommands = {};
+        },
+      },
+      {
+        name: 'host command entry',
+        expectedMessage: /thread archive host command entry is invalid/u,
+        mutate: (archive) => {
+          archive.hostCommands = [{}];
+        },
+      },
+      {
+        name: 'projection shape',
+        expectedMessage: /thread archive projection is invalid/u,
+        mutate: (archive) => {
+          archive.projection = {};
+        },
+      },
+      {
+        name: 'projection bundle',
+        expectedMessage: /thread archive projection bundle is invalid/u,
+        mutate: (archive) => {
+          archive.projection = {
+            bundleId: `sha256:${'0'.repeat(64)}`,
+            identity: {
+              sdkVersion: '1',
+              sdkProjectionHash: `sha256:${'0'.repeat(64)}`,
+              policyId: 'invalid-bundle',
+            },
+            serializedBundle: '{}',
+          };
+        },
+      },
+    ];
+
+    await t.test('invalid JSON', async () => {
+      assert.deepEqual(
+        await service.importArchive({ serializedArchive: '{' }),
+        {
+          ok: false,
+          code: 'invalid_archive',
+          message: 'thread archive is not valid JSON',
+        },
+      );
+    });
+    for (const scenario of malformedCases) {
+      await t.test(scenario.name, async () => {
+        const result = await service.importArchive({
+          serializedArchive: rewriteCanonicalArchive(
+            exported.serializedArchive,
+            scenario.mutate,
+          ),
+        });
+        assert.equal(result.ok, false);
+        if (!result.ok) {
+          assert.equal(result.code, 'invalid_archive');
+          assert.match(result.message, scenario.expectedMessage);
+        }
+      });
+    }
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
 void test('portable thread archive refuses a transcript whose referenced output is missing', async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-transfer-missing-'));
   try {

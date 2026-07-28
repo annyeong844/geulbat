@@ -4,6 +4,7 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 
+import { createFlowGateHotPathMetrics } from './flow-gate-hot-path-metrics.mjs';
 import { createDeterministicProviderRuntime } from './flow-gate-provider-runtime.mjs';
 
 const FLOW_GATE_APPROVAL_STATUS_PATH = '/api/flow-gate/approval/status';
@@ -11,6 +12,7 @@ const FLOW_GATE_ARTIFACT_STATUS_PATH = '/api/flow-gate/artifact/status';
 const FLOW_GATE_COMMENTARY_PATH = '/api/flow-gate/recovery/commentary';
 const FLOW_GATE_DISCONNECT_PATH = '/api/flow-gate/recovery/disconnect';
 const FLOW_GATE_FINISH_PATH = '/api/flow-gate/recovery/finish';
+const FLOW_GATE_HOT_PATH_METRICS_PATH = '/api/flow-gate/hot-path/metrics';
 const FLOW_GATE_PROVIDER_COMPLETE_PATH = '/api/flow-gate/run/complete';
 const FLOW_GATE_PROVIDER_MODELS_PATH = '/flow-gate/provider/codex/models';
 const FLOW_GATE_SUBAGENT_STATUS_PATH = '/api/flow-gate/subagent/status';
@@ -245,7 +247,12 @@ async function startFlowGateRecoveryFixture({
   };
 }
 
-function registerFlowGateStatusRoutes({ app, config, deterministicProvider }) {
+function registerFlowGateStatusRoutes({
+  app,
+  config,
+  deterministicProvider,
+  hotPathMetrics,
+}) {
   app.get(FLOW_GATE_APPROVAL_STATUS_PATH, async (_request, response) => {
     try {
       const content = await readFile(config.approvalTargetPath, 'utf8');
@@ -288,6 +295,26 @@ function registerFlowGateStatusRoutes({ app, config, deterministicProvider }) {
       ok: true,
       ...deterministicProvider.readSubagentState(),
     });
+  });
+  app.get(FLOW_GATE_HOT_PATH_METRICS_PATH, (request, response) => {
+    const runId =
+      typeof request.query.runId === 'string' ? request.query.runId : '';
+    if (runId.trim() === '') {
+      response.status(400).json({
+        ok: false,
+        message: 'runId is required',
+      });
+      return;
+    }
+    const metrics = hotPathMetrics.readRun(runId);
+    if (metrics === null) {
+      response.status(404).json({
+        ok: false,
+        message: 'flow-gate hot-path metrics were not found',
+      });
+      return;
+    }
+    response.json({ ok: true, metrics });
   });
   app.get(FLOW_GATE_PROVIDER_MODELS_PATH, (_request, response) => {
     response.json({
@@ -361,6 +388,7 @@ function registerFlowGateControlRoutes({
         ok: true,
         providerRequestCount:
           deterministicProvider.readRunSettlementRequestCount(),
+        providerEvents: deterministicProvider.readRunSettlementEventCounts(),
       });
     } catch (error) {
       response.status(409).json({
@@ -427,6 +455,9 @@ async function startFlowGateFixtureDaemon() {
     subagentLaunchRequests: runtimeStateStore,
     subagentTerminalDeliveries: runtimeStateStore,
   });
+  const hotPathMetrics = createFlowGateHotPathMetrics(
+    daemonContext.liveRunEvents,
+  );
   daemonContext.globalMcp.attachSessionCoordinateStore(runtimeStateStore);
   const deterministicProvider = createDeterministicProviderRuntime(
     createResponsesWebSocketSessionStore,
@@ -466,6 +497,7 @@ async function startFlowGateFixtureDaemon() {
     app,
     config,
     deterministicProvider,
+    hotPathMetrics,
   });
   registerFlowGateControlRoutes({
     app,

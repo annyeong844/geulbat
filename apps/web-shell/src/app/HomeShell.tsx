@@ -548,7 +548,30 @@ export function HomeShell(props: HomeShellProps) {
               />
               <span>어시스턴트</span>
             </div>
-            <div className="assistant-header-tabs" role="tablist">
+            <div className="assistant-header-tabs">
+              {/* 탭이 아닌 것은 tablist 밖에 둔다 — 새 세션과 레이아웃은
+                  선택지가 아니라 동작이므로, 같은 role 안에 넣으면 보조기술이
+                  "탭 1/4"처럼 잘못 읽는다. */}
+              <div className="assistant-header-tabgroup" role="tablist">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={rightTab === 'chat'}
+                  className={`pref-toggle${rightTab === 'chat' ? ' active' : ''}`}
+                  onClick={() => setRightTab('chat')}
+                >
+                  채팅
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={rightTab === 'sessions'}
+                  className={`pref-toggle${rightTab === 'sessions' ? ' active' : ''}`}
+                  onClick={() => setRightTab('sessions')}
+                >
+                  세션
+                </button>
+              </div>
               <button
                 type="button"
                 className="rail-icon-button"
@@ -559,25 +582,7 @@ export function HomeShell(props: HomeShellProps) {
                   setRightTab('chat');
                 }}
               >
-                +
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={rightTab === 'chat'}
-                className={`pref-toggle${rightTab === 'chat' ? ' active' : ''}`}
-                onClick={() => setRightTab('chat')}
-              >
-                채팅
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={rightTab === 'sessions'}
-                className={`pref-toggle${rightTab === 'sessions' ? ' active' : ''}`}
-                onClick={() => setRightTab('sessions')}
-              >
-                세션
+                <span className="rail-action-icon new-session" aria-hidden />
               </button>
               <ShellLayoutMenu
                 mode={effectiveLayoutMode}

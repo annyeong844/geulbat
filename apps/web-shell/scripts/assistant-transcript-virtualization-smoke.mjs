@@ -15,6 +15,11 @@ import {
   closeServer,
   resolveChromiumLaunchEnv,
 } from './smoke-harness-utils.mjs';
+import { buildAssistantTranscriptPerformanceReport } from './assistant-transcript-performance-report.mjs';
+import {
+  collectBrowserPerformanceEnvironment,
+  writePrivatePerformanceReport,
+} from './performance-report-support.mjs';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(scriptPath);
@@ -23,6 +28,11 @@ const repoRoot = path.resolve(appRoot, '..', '..');
 const VIRTUAL_ENTRY_ID = 'virtual:geulbat-assistant-transcript-smoke.tsx';
 const RESOLVED_VIRTUAL_ENTRY_ID = `\0${VIRTUAL_ENTRY_ID}`;
 const RUN_PERFORMANCE_PROBE = process.argv.includes('--performance');
+const PERFORMANCE_RUN_COUNT = readPositiveIntegerOption(
+  '--performance-runs',
+  1,
+);
+const PERFORMANCE_OUTPUT_PATH = readStringOption('--performance-output');
 const PERFORMANCE_MESSAGE_COUNT = 2_000;
 const PERFORMANCE_LIVE_UPDATE_COUNT = 20;
 const PERFORMANCE_BATCH_SETTLE_MS = 80;
@@ -32,6 +42,8 @@ async function main() {
   try {
     await runTranscriptSmoke(harness.url, {
       runPerformanceProbe: RUN_PERFORMANCE_PROBE,
+      performanceRunCount: PERFORMANCE_RUN_COUNT,
+      performanceOutputPath: PERFORMANCE_OUTPUT_PATH,
     });
   } finally {
     await closeServer(harness.server);
@@ -45,7 +57,7 @@ async function createTranscriptHarnessServer() {
     configFile: false,
     appType: 'custom',
     logLevel: 'error',
-    server: { middlewareMode: true, hmr: false },
+    server: { middlewareMode: true, hmr: false, watch: null },
     plugins: [
       {
         name: 'geulbat-assistant-transcript-smoke',
@@ -274,9 +286,30 @@ function recordTranscriptProfilerCommit(
 function Harness() {
   const [threadMessages, setThreadMessages] = React.useState([]);
   const [transcriptEntries, setTranscriptEntries] = React.useState([]);
+  const [finalAnswerText, setFinalAnswerText] = React.useState('');
+  const [isPerformanceRunning, setIsPerformanceRunning] =
+    React.useState(false);
+  const performanceSnapshotRef = React.useRef({
+    activityCount: 0,
+    finalAnswerText: '',
+    isRunning: false,
+    settledAnswerCount: 0,
+  });
+  performanceSnapshotRef.current = {
+    activityCount: transcriptEntries.length,
+    finalAnswerText,
+    isRunning: isPerformanceRunning,
+    settledAnswerCount: threadMessages.filter(
+      (message) => message.entryId === 'performance-settled-answer',
+    ).length,
+  };
   const performanceEntryIndexRef = React.useRef(0);
   const performanceDispatchRef = React.useRef(() => {});
   performanceDispatchRef.current = (action) => {
+    if (action.type === 'assistant_text_streamed') {
+      setFinalAnswerText((current) => current + action.text);
+      return;
+    }
     if (action.type !== 'transcript_activity_added') {
       return;
     }
@@ -288,6 +321,10 @@ function Harness() {
     }),
   );
   const handleStartArtifactRun = React.useCallback(() => {}, []);
+  const rowInteractions = React.useMemo(
+    () => ({ onStartArtifactRun: handleStartArtifactRun }),
+    [handleStartArtifactRun],
+  );
   React.useEffect(() => {
     setThreadMessages(messages);
   }, []);
@@ -297,13 +334,25 @@ function Harness() {
       performanceEntryIndexRef.current += 1;
       performanceBatchController.queueDisplayEffect({
         kind: 'transcript_activity_added',
+        runId: 'performance-run',
         threadId: 'performance-thread',
         entry: {
           kind: 'tool_activity',
           tool: 'read_file',
           state: index % 2 === 0 ? 'running' : 'completed',
+          callId: 'performance-call-' + index,
         },
         computerFilesMayHaveChanged: false,
+      });
+    };
+    const appendLiveText = () => {
+      const index = performanceEntryIndexRef.current;
+      performanceEntryIndexRef.current += 1;
+      performanceBatchController.queueStreamedTextEffect({
+        kind: 'assistant_text_streamed',
+        threadId: 'performance-thread',
+        target: 'answer',
+        text: 'performance-text-' + index + '|',
       });
     };
     globalThis.__GEULBAT_TRANSCRIPT_PERFORMANCE_CONTROL__ = {
@@ -312,6 +361,8 @@ function Harness() {
         performanceEntryIndexRef.current = 0;
         setThreadMessages(createPerformanceMessages(messageCount));
         setTranscriptEntries([]);
+        setFinalAnswerText('');
+        setIsPerformanceRunning(true);
       },
       appendLiveActivity() {
         appendLiveActivity();
@@ -322,10 +373,24 @@ function Harness() {
           appendLiveActivity();
         }
       },
+      async appendLiveTextBurst(count) {
+        for (let index = 0; index < count; index += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          appendLiveText();
+        }
+      },
       resetLiveActivity() {
         performanceBatchController.clearPendingStreamEffects();
         performanceEntryIndexRef.current = 0;
         setTranscriptEntries([]);
+      },
+      resetLiveText() {
+        performanceBatchController.clearPendingStreamEffects();
+        performanceEntryIndexRef.current = 0;
+        setFinalAnswerText('');
+      },
+      readSnapshot() {
+        return performanceSnapshotRef.current;
       },
       settle() {
         performanceBatchController.flushPendingStreamEffects();
@@ -339,6 +404,8 @@ function Harness() {
           },
         ]);
         setTranscriptEntries([]);
+        setFinalAnswerText('');
+        setIsPerformanceRunning(false);
       },
     };
     return () => {
@@ -355,15 +422,15 @@ function Harness() {
         onRender={recordTranscriptProfilerCommit}
       >
         <AssistantTranscript
+          threadId="performance-thread"
           messages={threadMessages}
           artifacts={EMPTY_ITEMS}
-          backgroundNotifications={EMPTY_ITEMS}
           transcriptEntries={transcriptEntries}
-          finalAnswerText=""
+          finalAnswerText={finalAnswerText}
           activeArtifact={null}
           streamError={null}
-          isRunning={false}
-          onStartArtifactRun={handleStartArtifactRun}
+          isRunning={isPerformanceRunning}
+          rowInteractions={rowInteractions}
         />
       </React.Profiler>
     </main>
@@ -408,7 +475,10 @@ function buildRuntimeHostDocument() {
 </html>`;
 }
 
-async function runTranscriptSmoke(harnessUrl, { runPerformanceProbe }) {
+async function runTranscriptSmoke(
+  harnessUrl,
+  { runPerformanceProbe, performanceRunCount, performanceOutputPath },
+) {
   const launchEnv = await resolveChromiumLaunchEnv({
     repoRoot,
     tolerateMissingExecutable: true,
@@ -584,9 +654,47 @@ async function runTranscriptSmoke(harnessUrl, { runPerformanceProbe }) {
         `visualize runtime overflowed: ${JSON.stringify(runtimeOverflow)}`,
       );
       if (runPerformanceProbe) {
-        const performanceResult = await runTranscriptPerformanceProbe(page);
+        const samples = [];
+        for (let index = 0; index < performanceRunCount; index += 1) {
+          const startedAt = performance.now();
+          const result = await runTranscriptPerformanceProbe(page);
+          samples.push({
+            index,
+            cacheState: index === 0 ? 'cold' : 'warm',
+            wallDurationMs: Number((performance.now() - startedAt).toFixed(3)),
+            result,
+          });
+        }
+        const performanceResult = buildAssistantTranscriptPerformanceReport({
+          environment: collectBrowserPerformanceEnvironment({
+            repoRoot,
+            browserVersion: browser.version(),
+          }),
+          fixture: {
+            messageCount: PERFORMANCE_MESSAGE_COUNT,
+            liveUpdateCount: PERFORMANCE_LIVE_UPDATE_COUNT,
+            cacheDefinition: {
+              cold: 'first performance sample in one fresh browser process after the correctness smoke',
+              warm: 'later samples in the same browser and Vite process',
+            },
+          },
+          samples,
+        });
+        const resolvedOutputPath =
+          performanceOutputPath === undefined
+            ? undefined
+            : path.resolve(repoRoot, performanceOutputPath);
+        if (resolvedOutputPath !== undefined) {
+          await writePrivatePerformanceReport(
+            resolvedOutputPath,
+            performanceResult,
+          );
+        }
         console.log(
-          `[assistant-transcript-performance] ${JSON.stringify(performanceResult)}`,
+          `[assistant-transcript-performance] ${JSON.stringify({
+            outputPath: resolvedOutputPath ?? null,
+            aggregates: performanceResult.aggregates,
+          })}`,
         );
       }
     } catch (error) {
@@ -610,6 +718,7 @@ async function runTranscriptPerformanceProbe(page) {
   );
   await waitForAnimationFrames(page, 3);
   await resetTranscriptProfilerCommits(page);
+  await startTranscriptResponsivenessObservation(page);
 
   for (let index = 0; index < PERFORMANCE_LIVE_UPDATE_COUNT; index += 1) {
     const previousCommitCount = await readTranscriptProfilerCommitCount(page);
@@ -629,6 +738,16 @@ async function runTranscriptPerformanceProbe(page) {
     globalThis.__GEULBAT_TRANSCRIPT_PERFORMANCE_CONTROL__.resetLiveActivity();
   });
   await waitForAnimationFrames(page, 2);
+  await page
+    .getByRole('log', { name: 'Assistant transcript' })
+    .evaluate((element) => {
+      element.scrollTop = Math.floor(
+        (element.scrollHeight - element.clientHeight) / 2,
+      );
+      element.dispatchEvent(new Event('scroll'));
+    });
+  await waitForAnimationFrames(page, 2);
+  const activityBurstScrollBefore = await readTranscriptScrollTop(page);
   await resetTranscriptProfilerCommits(page);
   await page.evaluate(
     (updateCount) =>
@@ -640,6 +759,36 @@ async function runTranscriptPerformanceProbe(page) {
   await page.waitForTimeout(PERFORMANCE_BATCH_SETTLE_MS);
   await waitForAnimationFrames(page, 2);
   const activityBurstCommits = await readTranscriptProfilerCommits(page);
+  const activityBurstScrollAfter = await readTranscriptScrollTop(page);
+  const activityBurstScrollJumpPx = Number(
+    (activityBurstScrollAfter - activityBurstScrollBefore).toFixed(3),
+  );
+  assert.ok(
+    Math.abs(activityBurstScrollJumpPx) <= 1,
+    `live activity moved an unpinned transcript viewport: ${activityBurstScrollJumpPx}px`,
+  );
+
+  await page.evaluate(() => {
+    globalThis.__GEULBAT_TRANSCRIPT_PERFORMANCE_CONTROL__.resetLiveText();
+  });
+  await waitForAnimationFrames(page, 2);
+  await resetTranscriptProfilerCommits(page);
+  await page.evaluate(
+    (updateCount) =>
+      globalThis.__GEULBAT_TRANSCRIPT_PERFORMANCE_CONTROL__.appendLiveTextBurst(
+        updateCount,
+      ),
+    PERFORMANCE_LIVE_UPDATE_COUNT,
+  );
+  await page.waitForTimeout(PERFORMANCE_BATCH_SETTLE_MS);
+  await waitForAnimationFrames(page, 2);
+  const textBurstCommits = await readTranscriptProfilerCommits(page);
+  const liveTextSnapshot = await readTranscriptPerformanceSnapshot(page);
+  const expectedLiveText = Array.from(
+    { length: PERFORMANCE_LIVE_UPDATE_COUNT },
+    (_, index) => `performance-text-${index}|`,
+  ).join('');
+  assert.equal(liveTextSnapshot.finalAnswerText, expectedLiveText);
 
   await resetTranscriptProfilerCommits(page);
   await page.evaluate(() => {
@@ -650,6 +799,14 @@ async function runTranscriptPerformanceProbe(page) {
   );
   await waitForAnimationFrames(page, 3);
   const settleCommits = await readTranscriptProfilerCommits(page);
+  const settledSnapshot = await readTranscriptPerformanceSnapshot(page);
+  assert.deepEqual(settledSnapshot, {
+    activityCount: 0,
+    finalAnswerText: '',
+    isRunning: false,
+    settledAnswerCount: 1,
+  });
+  const responsiveness = await stopTranscriptResponsivenessObservation(page);
 
   return {
     fixture: {
@@ -658,7 +815,16 @@ async function runTranscriptPerformanceProbe(page) {
     },
     liveUpdates: summarizeProfilerCommits(liveUpdateCommits),
     activityBurst: summarizeProfilerCommits(activityBurstCommits),
+    textBurst: summarizeProfilerCommits(textBurstCommits),
     settle: summarizeProfilerCommits(settleCommits),
+    responsiveness,
+    correctness: {
+      activityBurstScrollJumpPx,
+      duplicateSettledRows: settledSnapshot.settledAnswerCount - 1,
+      pendingActivityCount: settledSnapshot.activityCount,
+      pendingAnswerBytes: settledSnapshot.finalAnswerText.length,
+      finalRunningState: settledSnapshot.isRunning,
+    },
   };
 }
 
@@ -678,6 +844,71 @@ async function readTranscriptProfilerCommits(page) {
   return await page.evaluate(
     () => globalThis.__GEULBAT_TRANSCRIPT_PROFILER_COMMITS__,
   );
+}
+
+async function readTranscriptPerformanceSnapshot(page) {
+  return await page.evaluate(() =>
+    globalThis.__GEULBAT_TRANSCRIPT_PERFORMANCE_CONTROL__.readSnapshot(),
+  );
+}
+
+async function readTranscriptScrollTop(page) {
+  return await page
+    .getByRole('log', { name: 'Assistant transcript' })
+    .evaluate((element) => element.scrollTop);
+}
+
+async function startTranscriptResponsivenessObservation(page) {
+  await page.evaluate(() => {
+    const state = {
+      frameGaps: [],
+      lastFrameAt: performance.now(),
+      longTasks: [],
+      observer: null,
+      requestId: 0,
+    };
+    const tick = (now) => {
+      state.frameGaps.push(now - state.lastFrameAt);
+      state.lastFrameAt = now;
+      state.requestId = requestAnimationFrame(tick);
+    };
+    state.requestId = requestAnimationFrame(tick);
+    if (PerformanceObserver.supportedEntryTypes.includes('longtask')) {
+      state.observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          state.longTasks.push(entry.duration);
+        }
+      });
+      state.observer.observe({ type: 'longtask' });
+    }
+    globalThis.__GEULBAT_TRANSCRIPT_RESPONSIVENESS__ = state;
+  });
+}
+
+async function stopTranscriptResponsivenessObservation(page) {
+  return await page.evaluate(() => {
+    const state = globalThis.__GEULBAT_TRANSCRIPT_RESPONSIVENESS__;
+    cancelAnimationFrame(state.requestId);
+    state.observer?.disconnect();
+    const frameBudgetMs = 1000 / 60;
+    const droppedFrameEstimate = state.frameGaps.reduce(
+      (total, gap) => total + Math.max(0, Math.floor(gap / frameBudgetMs) - 1),
+      0,
+    );
+    const round = (value) => Number(value.toFixed(3));
+    return {
+      frameSampleCount: state.frameGaps.length,
+      droppedFrameEstimate,
+      maxFrameGapMs: round(Math.max(0, ...state.frameGaps)),
+      longTaskSupported:
+        PerformanceObserver.supportedEntryTypes.includes('longtask'),
+      longTaskCount: state.longTasks.length,
+      longTaskTotalDurationMs: round(
+        state.longTasks.reduce((total, duration) => total + duration, 0),
+      ),
+      longTaskMaxDurationMs: round(Math.max(0, ...state.longTasks)),
+    };
+  });
 }
 
 function summarizeProfilerCommits(commits) {
@@ -727,6 +958,45 @@ async function waitForAnimationFrames(page, count) {
       }),
     count,
   );
+}
+
+function readStringOption(name) {
+  const values = [];
+  for (let index = 2; index < process.argv.length; index += 1) {
+    const argument = process.argv[index];
+    if (argument === name) {
+      const value = process.argv[index + 1];
+      if (value === undefined || value.startsWith('--')) {
+        throw new Error(`${name} requires a value`);
+      }
+      values.push(value);
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith(`${name}=`)) {
+      values.push(argument.slice(name.length + 1));
+    }
+  }
+  if (values.length > 1) {
+    throw new Error(`${name} may be provided only once`);
+  }
+  const value = values[0];
+  if (value !== undefined && value.length === 0) {
+    throw new Error(`${name} requires a non-empty value`);
+  }
+  return value;
+}
+
+function readPositiveIntegerOption(name, fallback) {
+  const value = readStringOption(name);
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive safe integer`);
+  }
+  return parsed;
 }
 
 await main();

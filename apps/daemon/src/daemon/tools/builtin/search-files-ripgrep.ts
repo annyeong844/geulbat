@@ -260,13 +260,14 @@ function buildRipgrepSearchArgs(args: {
   query: string;
   rootDir: string;
   glob: string | null;
+  includeIgnored: boolean;
 }): string[] {
   return [
     '--json',
     '-j',
     '1',
     '--hidden',
-    '--no-ignore',
+    ...(args.includeIgnored ? ['--no-ignore'] : []),
     '--follow',
     ...(args.glob ? ['--glob', args.glob] : []),
     '--',
@@ -385,8 +386,15 @@ export async function runRipgrep(
   // P7.6 item 4 — 검색 자식은 command-host 워커의 system 세션에서만 돈다.
   // runtime이 없는 호출은 데몬 직접 spawn으로 강등하지 않고 상위에서 fail-closed한다.
   hostRouting: SearchFilesHostRouting,
+  includeIgnored = false,
 ): Promise<SearchFilesResult> {
-  const rgArgs = buildRipgrepSearchArgs({ rgPath, query, rootDir, glob });
+  const rgArgs = buildRipgrepSearchArgs({
+    rgPath,
+    query,
+    rootDir,
+    glob,
+    includeIgnored,
+  });
   return await runHostRoutedRipgrep({
     rgPath,
     rgArgs,

@@ -389,6 +389,40 @@ void test('commitThreadArtifactVersion serializes concurrent commits for the sam
   );
 });
 
+void test('commitThreadArtifactVersion reconciles one exact explicit artifact identity and rejects conflicting content', async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-artifact-idempotent-'),
+  );
+  const threadId = testThreadId(521_1);
+  const request = {
+    workspaceRoot,
+    threadId,
+    runId: 'run-idempotent-artifact',
+    artifactId: 'art_media_0123456789abcdef',
+    renderer: 'image' as const,
+    payload: '{"kind":"generated_image"}',
+    digest: 'digest-idempotent',
+    title: 'generated image',
+    sourceRef: null,
+    timestamp: '2026-07-29T00:00:00.000Z',
+  };
+
+  const first = await commitThreadArtifactVersion(request);
+  const replay = await commitThreadArtifactVersion(request);
+  assert.deepEqual(replay, first);
+  assert.equal(
+    (await loadAllThreadArtifactVersions(workspaceRoot, threadId)).length,
+    1,
+  );
+  await assert.rejects(
+    commitThreadArtifactVersion({
+      ...request,
+      payload: '{"kind":"different"}',
+    }),
+    /identity conflicts/u,
+  );
+});
+
 void test('loadAllThreadArtifactVersions accepts legacy unversioned artifact store files', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-artifact-'));
   const threadId = testThreadId(502);

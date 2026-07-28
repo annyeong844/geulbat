@@ -952,6 +952,8 @@
 
 .planning-workflow-card {
   display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 12px;
   /* 긴 계획 단계·가정이 어시스턴트 패널 밖으로 잘리지 않게 —
      카드 자체가 스크롤되고 승인 버튼 영역은 sticky로 남긴다.
@@ -1016,6 +1018,10 @@
   gap: 16px;
 }
 
+.planning-workflow-card-copy {
+  min-width: 0;
+}
+
 /* 상태 배지 옆에 붙는 치우기 버튼 — 끝난 기록은 사용자가 직접 닫는다.
    보이지 않으면 닫을 수 있다는 사실도 전달되지 않으므로 항상 노출한다. */
 .planning-workflow-dismiss {
@@ -1051,6 +1057,10 @@
   line-height: 1.4;
 }
 
+.planning-workflow-card-title {
+  display: block;
+}
+
 .planning-workflow-card-header p,
 .planning-workflow-note,
 .planning-workflow-error {
@@ -1068,6 +1078,34 @@
   color: var(--secondary);
   font-size: 11px;
   font-weight: 650;
+}
+
+.planning-workflow-targets {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  color: var(--on-surface-muted);
+  font-size: 10.5px;
+}
+
+.planning-workflow-targets > span {
+  margin-inline-end: 2px;
+  font-weight: 650;
+}
+
+.planning-workflow-targets code {
+  max-width: 100%;
+  padding: 2px 6px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-container);
+  color: var(--on-surface-muted);
+  font-family: var(--font-ui-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .planning-workflow-steps,
@@ -1092,10 +1130,150 @@
 }
 
 .planning-workflow-visualization {
+  position: relative;
   min-width: 0;
+  height: 148px;
   overflow: hidden;
+  border: 1px solid var(--outline-variant);
   border-radius: var(--radius-md);
   background: var(--surface-container-lowest);
+}
+
+.planning-workflow-visualization-preview {
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.planning-workflow-visualization-preview .visualize-widget {
+  opacity: 0.78;
+}
+
+.planning-workflow-visualization-open {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: none;
+  background: linear-gradient(
+    180deg,
+    transparent 30%,
+    color-mix(in srgb, var(--surface-container-lowest) 92%, transparent) 100%
+  );
+  color: var(--on-surface);
+  font: inherit;
+  text-align: left;
+  cursor: zoom-in;
+}
+
+.planning-workflow-visualization-open > span {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.planning-workflow-visualization-open > strong {
+  flex: none;
+  padding: 5px 9px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-full);
+  background: var(--surface-container-lowest);
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.planning-workflow-visualization-open:focus-visible {
+  outline: 2px solid var(--secondary);
+  outline-offset: -3px;
+}
+
+.planning-workflow-visual-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.planning-workflow-visual-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: color-mix(in srgb, var(--on-surface) 34%, transparent);
+  backdrop-filter: blur(4px);
+  cursor: zoom-out;
+}
+
+.planning-workflow-visual-dialog-panel {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1040px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-xl);
+  background: var(--surface-container-lowest);
+  box-shadow: var(--elev-floating);
+}
+
+.planning-workflow-visual-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--outline-variant);
+}
+
+.planning-workflow-visual-dialog-header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.planning-workflow-visual-dialog-header span {
+  color: var(--on-surface-muted);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.planning-workflow-visual-dialog-header strong {
+  overflow: hidden;
+  color: var(--on-surface);
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.planning-workflow-visual-dialog-header button {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+  cursor: pointer;
+}
+
+.planning-workflow-visual-dialog-body {
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.planning-workflow-visual-dialog-body .visualize-widget iframe {
+  min-height: min(70vh, 720px) !important;
 }
 
 .planning-workflow-details,
@@ -1202,5 +1380,15 @@
 @media (max-width: 640px) {
   .planning-workflow-card-header {
     gap: 8px;
+  }
+
+  .planning-workflow-visual-dialog {
+    padding: 10px;
+  }
+
+  .planning-workflow-visual-dialog-panel {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
+    border-radius: var(--radius-lg);
   }
 }

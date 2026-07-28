@@ -55,6 +55,10 @@ export interface ActiveRunStore {
   abortRunSubtree(runId: RunId, reason?: unknown): boolean;
   abortThreadTree(ownerThreadId: string, reason?: unknown): boolean;
   abortAllRuns(reason?: unknown): number;
+  waitForThreadIdle(
+    threadId: string | ThreadId,
+    signal?: AbortSignal,
+  ): Promise<void>;
   waitForIdle(signal?: AbortSignal): Promise<void>;
 }
 
@@ -78,6 +82,7 @@ export function createActiveRunStore(): ActiveRunStore {
   const parentRunIdByRunId = new Map<RunId, RunId>();
   const childrenByParentRunId = new Map<RunId, Set<RunId>>();
   const idleWaiters = new Set<() => void>();
+  const threadIdleWaiters = new Map<ThreadId, Set<() => void>>();
 
   const notifyIdleWaiters = (): void => {
     if (byRunId.size > 0) {
@@ -87,6 +92,20 @@ export function createActiveRunStore(): ActiveRunStore {
       resolve();
     }
     idleWaiters.clear();
+  };
+
+  const notifyThreadIdleWaiters = (threadId: ThreadId): void => {
+    if (byThread.has(threadId)) {
+      return;
+    }
+    const waiters = threadIdleWaiters.get(threadId);
+    if (waiters === undefined) {
+      return;
+    }
+    threadIdleWaiters.delete(threadId);
+    for (const resolve of waiters) {
+      resolve();
+    }
   };
 
   const pruneInactiveRunLineage = (runId: RunId): void => {
@@ -199,6 +218,7 @@ export function createActiveRunStore(): ActiveRunStore {
       byThread.delete(run.threadId);
       byRunId.delete(runId);
       pruneInactiveRunLineage(runId);
+      notifyThreadIdleWaiters(run.threadId);
       notifyIdleWaiters();
     },
     getRunById(runId) {
@@ -288,6 +308,42 @@ export function createActiveRunStore(): ActiveRunStore {
         aborted += 1;
       }
       return aborted;
+    },
+    waitForThreadIdle(threadId, signal) {
+      const validThreadId = assertValidThreadId(threadId);
+      if (!byThread.has(validThreadId)) {
+        return Promise.resolve();
+      }
+      if (signal?.aborted) {
+        return Promise.reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new Error('active thread idle wait aborted'),
+        );
+      }
+      return new Promise<void>((resolve, reject) => {
+        const settle = () => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        const onAbort = () => {
+          const waiters = threadIdleWaiters.get(validThreadId);
+          waiters?.delete(settle);
+          if (waiters?.size === 0) {
+            threadIdleWaiters.delete(validThreadId);
+          }
+          reject(
+            signal?.reason instanceof Error
+              ? signal.reason
+              : new Error('active thread idle wait aborted'),
+          );
+        };
+        const waiters =
+          threadIdleWaiters.get(validThreadId) ?? new Set<() => void>();
+        waiters.add(settle);
+        threadIdleWaiters.set(validThreadId, waiters);
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
     },
     waitForIdle(signal) {
       if (byRunId.size === 0) {

@@ -35,7 +35,7 @@ function LayoutGlyph(props: { mode: ShellLayoutModeId }) {
         rx="2.5"
         fill="none"
         stroke="currentColor"
-        strokeWidth="1.5"
+        strokeWidth="1.4"
       />
       {showTree ? (
         <rect

@@ -17,6 +17,7 @@ void test('install_packages metadata: strict schema, no time budget field, opt-i
   assert.equal(installPackagesTool.sideEffectLevel, 'write');
   assert.equal(installPackagesTool.requiresApproval, false);
   assert.equal(installPackagesTool.mayMutateComputerFiles, false);
+  assert.equal(installPackagesTool.recoveryStrategy, 'replay_safe');
   const parameters = installPackagesTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(parameters.required, ['packages']);

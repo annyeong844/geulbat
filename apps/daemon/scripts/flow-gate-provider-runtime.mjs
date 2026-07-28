@@ -12,8 +12,18 @@ function createRunSettlementProviderScenario({
   streamPrefix,
 }) {
   const finalText = `${streamPrefix}${finalSuffix}`;
+  let emittedEventCount = 0;
+  let emittedTextDeltaCount = 0;
   let pendingSocket;
   let requestCount = 0;
+
+  const emitRunSettlementEvents = (socket, events) => {
+    emittedEventCount += events.length;
+    emittedTextDeltaCount += events.filter(
+      (event) => event.type === 'response.output_text.delta',
+    ).length;
+    emitProviderEvents(socket, events);
+  };
 
   return {
     matches(serializedRequest) {
@@ -36,7 +46,7 @@ function createRunSettlementProviderScenario({
         if (pendingSocket !== socket) {
           return;
         }
-        emitProviderEvents(socket, [
+        emitRunSettlementEvents(socket, [
           {
             type: 'response.output_item.added',
             item: {
@@ -61,7 +71,7 @@ function createRunSettlementProviderScenario({
       }
       const socket = pendingSocket;
       pendingSocket = undefined;
-      emitProviderEvents(socket, [
+      emitRunSettlementEvents(socket, [
         {
           type: 'response.output_text.delta',
           item_id: 'flow-gate-final-answer',
@@ -92,6 +102,12 @@ function createRunSettlementProviderScenario({
     },
     readRequestCount() {
       return requestCount;
+    },
+    readEventCounts() {
+      return {
+        eventCount: emittedEventCount,
+        textDeltaCount: emittedTextDeltaCount,
+      };
     },
   };
 }
@@ -437,6 +453,7 @@ export function createDeterministicProviderRuntime(
     webSocketSessions,
     completeRunSettlement: runSettlement.complete,
     readRunSettlementRequestCount: runSettlement.readRequestCount,
+    readRunSettlementEventCounts: runSettlement.readEventCounts,
     readApprovalRequestCount: approval.readRequestCount,
     readArtifactRequestCount: artifact.readRequestCount,
     readSubagentState: subagent.readState,

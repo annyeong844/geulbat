@@ -33,9 +33,10 @@ import { createRunState, type RunState } from './agent/runtime/run-state.js';
 import type { AgentRuntimeServices } from './daemon-runtime-contract.js';
 import { createRunContext } from './run-context.js';
 import type { AgentEvent, ToolRunState } from './runtime-contracts.js';
-import type {
-  BackgroundChildResult,
-  SubagentLaunchRequestInput,
+import {
+  resolveSubagentToolSurfaceProfile,
+  type BackgroundChildResult,
+  type SubagentLaunchRequestInput,
 } from './subagent-runtime-contracts.js';
 import { restorePendingInterjectFront } from './sessions/active-run-interject-buffer.js';
 import {
@@ -213,6 +214,27 @@ export async function recoverDurableRunsAtDaemonStartup(
   const recoverableChildren = new Map<RunId, RecoverableBackgroundChild>();
   for (const checkpoint of childCheckpoints) {
     if (terminalHandledChildRunIds.has(checkpoint.runId)) {
+      continue;
+    }
+    try {
+      const reconciled = await reconcilePersistedTerminalCheckpoint(
+        runtimeContext,
+        checkpoint,
+      );
+      if (reconciled !== null) {
+        terminalHandledChildRunIds.add(checkpoint.runId);
+        recoveredCount += 1;
+        continue;
+      }
+    } catch (error: unknown) {
+      logger
+        .withContext({
+          runId: checkpoint.runId,
+          threadId: checkpoint.threadId,
+        })
+        .error('persisted child terminal reconciliation failed:', {
+          message: getErrorMessage(error),
+        });
       continue;
     }
     const child = readRecoverableBackgroundChild(runtimeContext, checkpoint);
@@ -445,7 +467,7 @@ async function settleAndAcknowledgeBackgroundChildCheckpoint(
   runCheckpoints: RunCheckpointStore,
   checkpoint: RunCheckpoint,
   result: BackgroundChildResult,
-): Promise<void> {
+): Promise<RunCheckpoint> {
   const settled = await runCheckpoints.settleRun({
     threadId: checkpoint.threadId,
     runId: checkpoint.runId,
@@ -470,6 +492,7 @@ async function settleAndAcknowledgeBackgroundChildCheckpoint(
       `durable child terminal acknowledgement failed: ${acknowledged.code}`,
     );
   }
+  return acknowledged.checkpoint;
 }
 
 export async function reconcilePersistedTerminalCheckpoint(
@@ -494,6 +517,60 @@ export async function reconcilePersistedTerminalCheckpoint(
       entry.metadata.sourceRunId !== checkpoint.runId
     ) {
       continue;
+    }
+    if (checkpoint.request.backgroundChild !== undefined) {
+      const child = readRecoverableBackgroundChild(runtimeContext, checkpoint);
+      if (child === null) {
+        return null;
+      }
+      const terminalStore = runtimeContext.subagent.terminalDeliveries;
+      const launchStore = runtimeContext.subagent.launchRequests;
+      if (terminalStore === undefined || launchStore === undefined) {
+        throw new Error(
+          `durable child terminal store is unavailable: ${checkpoint.runId}`,
+        );
+      }
+      const launch = launchStore.readSubagentLaunchRequestByChildRunId(
+        checkpoint.runId,
+      );
+      if (launch === undefined) {
+        throw new Error(
+          `durable child launch disappeared: ${checkpoint.runId}`,
+        );
+      }
+      // A final-answer transcript proves that the child loop reached its
+      // terminal persistence step, but it does not preserve whether the
+      // original outcome was completed, failed, or cancelled. Preserve the
+      // exact prose, refuse a duplicate model/tool replay, and classify the
+      // lost terminal envelope fail-closed.
+      const recorded = terminalStore.recordSubagentTerminalDelivery({
+        ownerThreadId: child.launchInput.ownerThreadId,
+        result: {
+          deliveryId: randomUUID(),
+          parentRunId: child.launchInput.parentRunId,
+          childRunId: checkpoint.runId,
+          childThreadId: checkpoint.threadId,
+          subagentType: child.launchInput.subagentType,
+          capabilities: child.launchInput.capabilities,
+          toolSurface: resolveSubagentToolSurfaceProfile({
+            subagentType: child.launchInput.subagentType,
+            capabilities: child.launchInput.capabilities,
+          }),
+          runtime: launch.runtime,
+          terminalState: 'failed',
+          reason: 'daemon_restart',
+          result: entry.content,
+          completedAt: entry.timestamp,
+          modelId: child.launchInput.modelPin.modelId,
+          reasoningEffort:
+            child.launchInput.modelPin.providerRunSelection.reasoningEffort,
+        },
+      });
+      return await settleAndAcknowledgeBackgroundChildCheckpoint(
+        runtimeContext.runCheckpoints,
+        checkpoint,
+        recorded.outcome.result,
+      );
     }
     return await runtimeContext.runCheckpoints.settleRun({
       threadId: checkpoint.threadId,

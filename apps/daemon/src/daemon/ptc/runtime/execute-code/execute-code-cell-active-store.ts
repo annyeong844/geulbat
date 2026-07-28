@@ -69,7 +69,7 @@ export interface PtcExecuteCodeCellReapTimerPolicy {
   ) => PtcExecuteCodeCellReapCancel;
 }
 
-export type CellAdmissionResult =
+type CellAdmissionResult =
   | { ok: true; cellId: PtcExecuteCodeCellId }
   | {
       ok: false;
@@ -135,7 +135,7 @@ export interface RunningCellRecord
   orphanReapTimer?: PtcExecuteCodeCellReapCancel;
 }
 
-export interface TerminatingCellRecord
+interface TerminatingCellRecord
   extends BaseCellRecord, PtcExecuteCodeCellResources {
   state: 'terminating';
   closePromise: Promise<CloseCellResult>;
@@ -143,7 +143,7 @@ export interface TerminatingCellRecord
   orphanReapTimer?: PtcExecuteCodeCellReapCancel;
 }
 
-export type CellRecord =
+type CellRecord =
   | AdmittingCellRecord
   | QueuedCellRecord
   | RunningCellRecord

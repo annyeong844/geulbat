@@ -53,6 +53,7 @@ export const browserPageLoadEvidenceTool = defineZodTool({
   sideEffectLevel: 'write',
   mayMutateComputerFiles: false,
   requiresApproval: true,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'browser',
     searchHints: [

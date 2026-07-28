@@ -34,6 +34,7 @@ void test('browser_page_load_evidence exposes scalar URL schema and approval-gat
   assert.equal(browserPageLoadEvidenceTool.sideEffectLevel, 'write');
   assert.equal(browserPageLoadEvidenceTool.requiresApproval, true);
   assert.equal(browserPageLoadEvidenceTool.mayMutateComputerFiles, false);
+  assert.equal(browserPageLoadEvidenceTool.recoveryStrategy, 'replay_safe');
   const parameters = browserPageLoadEvidenceTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(parameters.required, ['url']);
@@ -61,7 +62,7 @@ void test('browser_page_load_evidence requires an agent runtime service before l
   assert.match(result.error ?? '', /runtime is required/u);
 });
 
-void test('browser_page_load_evidence returns page-load evidence without raw URL leaks', async () => {
+void test('browser_page_load_evidence replacement replay returns fresh explicit-URL evidence without raw URL leaks', async () => {
   const daemonContext = createDaemonContext();
   let observedUrl = '';
   let observedTimeoutMs: number | undefined;
@@ -129,6 +130,44 @@ void test('browser_page_load_evidence returns page-load evidence without raw URL
     code: 200,
     source: 'final_main_resource_response',
   });
+  assert.equal(output.title, 'Example Domain');
+
+  const replacementContext = createDaemonContext();
+  const replacement = await browserPageLoadEvidenceTool.execute(
+    {
+      url: 'https://example.com/private?access_token=secret#id_token=secret',
+      timeoutMs: 1000,
+    },
+    {
+      callId: 'call-browser-page-load-evidence-success',
+      stateRoot: '/workspace/home-state',
+      workingDirectory: 'project',
+      threadId: testThreadId(952),
+      runtimeServices: {
+        ...replacementContext,
+        ptc: {
+          ...replacementContext.ptc,
+          browserPageLoadEvidence: {
+            async collectEvidence() {
+              return {
+                ok: true,
+                value: {
+                  ...browserPageLoadEvidenceSummary(),
+                  title: 'Replacement Domain',
+                },
+              };
+            },
+            async closeAll() {
+              return { ok: true };
+            },
+          },
+        },
+      },
+      approvalGranted: true,
+    },
+  );
+  assert.equal(replacement.ok, true);
+  assert.equal(JSON.parse(replacement.output).title, 'Replacement Domain');
   assert.equal(output.title, 'Example Domain');
 });
 

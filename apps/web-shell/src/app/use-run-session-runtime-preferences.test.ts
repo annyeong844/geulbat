@@ -12,6 +12,33 @@ import {
 } from '../test-support/run-session-fixtures.js';
 import { useRunSession } from './use-run-session.js';
 
+function installMemoryLocalStorage(): {
+  readonly values: Map<string, string>;
+  restore(): void;
+} {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        values.set(key, value);
+      },
+    },
+  });
+  return {
+    values,
+    restore() {
+      if (previous) {
+        Object.defineProperty(globalThis, 'localStorage', previous);
+      } else {
+        Reflect.deleteProperty(globalThis, 'localStorage');
+      }
+    },
+  };
+}
+
 void test('useRunSession restores saved runtime preferences for an existing chat session', async () => {
   const harness = createRunSessionClientHarness();
   const hook = await renderHook(
@@ -111,7 +138,7 @@ void test('useRunSession remembers approval and runtime choices separately for e
   hook.unmount();
 });
 
-void test('useRunSession resets runtime choices and a previous failure for a newly created chat session', async () => {
+void test('useRunSession carries last-used non-security choices into a newly created chat session', async () => {
   const harness = createRunSessionClientHarness();
   const hook = await renderHook(
     useRunSession,
@@ -141,12 +168,93 @@ void test('useRunSession resets runtime choices and a previous failure for a new
       newSessionGeneration: 1,
     }),
   );
-  assert.equal(hook.result.current.workingDirectory, null);
   assert.equal(hook.result.current.permissionMode, 'basic');
-  assert.equal(hook.result.current.modelId, 'gpt-5.6-sol');
-  assert.equal(hook.result.current.reasoningEffort, 'medium');
+  assert.equal(
+    hook.result.current.workingDirectory,
+    'home/user/projects/old-session',
+  );
+  assert.equal(hook.result.current.modelId, 'grok-4.5');
+  assert.equal(hook.result.current.reasoningEffort, 'high');
   assert.equal(hook.result.current.streamError, null);
   hook.unmount();
+});
+
+void test('useRunSession restores validated run and plan choices after a shell reload', async () => {
+  const storage = installMemoryLocalStorage();
+  try {
+    const firstHarness = createRunSessionClientHarness();
+    const first = await renderHook(
+      useRunSession,
+      createRunSessionArgs({ createClient: firstHarness.createClient }),
+    );
+
+    await first.run(async (current) => {
+      current.setWorkingDirectory('home/user/projects/kept-after-reload');
+      await current.setPermissionMode('full_access');
+      current.setModelId('qwen3.8-max-preview');
+      current.setReasoningEffort('medium');
+      current.setPlanModeRequested(true);
+      current.setPlanModeDepth('deep');
+      current.setPlanModeIntensity('quiet');
+    });
+    first.unmount();
+
+    const secondHarness = createRunSessionClientHarness();
+    const second = await renderHook(
+      useRunSession,
+      createRunSessionArgs({ createClient: secondHarness.createClient }),
+    );
+
+    assert.equal(
+      second.result.current.workingDirectory,
+      'home/user/projects/kept-after-reload',
+    );
+    assert.equal(second.result.current.permissionMode, 'basic');
+    assert.equal(second.result.current.modelId, 'qwen3.8-max-preview');
+    assert.equal(second.result.current.reasoningEffort, 'medium');
+    assert.equal(second.result.current.planModeRequested, true);
+    assert.equal(second.result.current.planModeDepth, 'deep');
+    assert.equal(second.result.current.planModeIntensity, 'quiet');
+    assert.equal(storage.values.size, 1);
+    second.unmount();
+  } finally {
+    storage.restore();
+  }
+});
+
+void test('useRunSession ignores an invalid stored run preference record', async () => {
+  const storage = installMemoryLocalStorage();
+  storage.values.set(
+    'geulbat.shell.run-session-preferences.v1',
+    JSON.stringify({
+      version: 1,
+      preferences: {
+        workingDirectory: 'home/user/projects/untrusted',
+        planModeRequested: true,
+        planModeIntensity: 'decorative',
+        planModeDepth: 'deep',
+        modelId: 'removed-model',
+        reasoningEffort: 'high',
+        serviceTier: 'standard',
+        subagentModelRouting: { mode: 'auto' },
+      },
+    }),
+  );
+  try {
+    const harness = createRunSessionClientHarness();
+    const hook = await renderHook(
+      useRunSession,
+      createRunSessionArgs({ createClient: harness.createClient }),
+    );
+
+    assert.equal(hook.result.current.workingDirectory, null);
+    assert.equal(hook.result.current.planModeRequested, false);
+    assert.equal(hook.result.current.planModeIntensity, 'visual');
+    assert.equal(hook.result.current.modelId, 'gpt-5.6-sol');
+    hook.unmount();
+  } finally {
+    storage.restore();
+  }
 });
 
 void test('useRunSession resets Fast synchronously when the selected model does not support it', async () => {

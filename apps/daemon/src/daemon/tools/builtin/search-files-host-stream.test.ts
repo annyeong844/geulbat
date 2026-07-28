@@ -152,27 +152,37 @@ void test('collects stderr while draining stdout and reports a non-zero exit', a
   assert.equal(sink.lines.length, 60);
 });
 
-void test('reports cancellation without inventing a search result', async (t) => {
+void test('cancellation settles the claimed child before returning', async (t) => {
   const { host, stateRoot } = await makeHost(t);
   const controller = new AbortController();
   const pending = streamHostRoutedCommandLines({
     hostCommands: host,
     stateRoot,
     executable: process.execPath,
-    // 스스로 끝나지 않는 자식 — 완료와 취소가 경합하지 않는다.
-    commandArgs: ['-e', 'setInterval(() => {}, 1000)'],
+    // 첫 출력 뒤에는 스스로 끝나지 않는다. stdout callback에서 취소하면
+    // unclaimed-discard가 아니라 claimed-session 정리 경로를 검증한다.
+    commandArgs: [
+      '-e',
+      "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)",
+    ],
     cwd: stateRoot,
     env: process.env,
     pageLimitBytes: 256,
-    onStdoutChunk: () => {},
+    onStdoutChunk: () => {
+      controller.abort();
+    },
     signal: controller.signal,
   });
-  controller.abort();
   const streamed = await pending;
   assert.equal(streamed.ok, false);
   if (!streamed.ok) {
     assert.equal(streamed.aborted, true);
   }
+  assert.equal(
+    host.listSessions().some((session) => session.running),
+    false,
+  );
+  assert.equal(host.isQuiescent(), true);
 });
 
 void test('reports a closed runtime as a failed search rather than empty results', async (t) => {

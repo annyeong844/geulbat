@@ -104,6 +104,23 @@ void test('builtin registry leaves fetch_url without outer watchdog timeout', ()
   assertToolHasNoWatchdogTimeout(registry, 'fetch_url');
 });
 
+void test('builtin registry requires an explicit recovery strategy for every model-visible tool', () => {
+  for (const includeInstallPackagesTool of [false, true]) {
+    const registry = createBuiltinToolRegistryStore({
+      includeInstallPackagesTool,
+    });
+    assert.deepEqual(
+      registry
+        .getAllRegisteredToolNames()
+        .filter(
+          (toolName) =>
+            registry.getToolMeta(toolName)?.recoveryStrategy === undefined,
+        ),
+      [],
+    );
+  }
+});
+
 function assertToolHasNoWatchdogTimeout(
   registry: ReturnType<typeof createBuiltinToolRegistryStore>,
   toolName: string,

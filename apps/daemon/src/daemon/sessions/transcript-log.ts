@@ -110,6 +110,20 @@ export async function appendTranscriptEntry(
   return appended[0]!;
 }
 
+export async function appendTranscriptEntryOnce(
+  workspaceRoot: string,
+  threadId: string,
+  entry: ThreadMessageInput & { entryId: string },
+): Promise<TranscriptEntry> {
+  const appended = await appendTranscriptEntriesInternal(
+    workspaceRoot,
+    threadId,
+    [entry],
+    { ifAbsentEntryId: entry.entryId },
+  );
+  return appended[0]!;
+}
+
 export async function appendTranscriptEntries(
   workspaceRoot: string,
   threadId: string,
@@ -127,7 +141,10 @@ async function appendTranscriptEntriesInternal(
   workspaceRoot: string,
   threadId: string,
   entries: readonly ThreadMessageInput[],
-  options: { expectedLastEntryId?: string },
+  options: {
+    expectedLastEntryId?: string;
+    ifAbsentEntryId?: string;
+  },
 ): Promise<TranscriptEntry[]> {
   if (entries.length === 0) {
     return [];
@@ -142,16 +159,44 @@ async function appendTranscriptEntriesInternal(
     if (cached === undefined || !cacheMatchesFileBeforeAppend) {
       await mkdir(dirname(filePath), { recursive: true });
     }
-    if (options.expectedLastEntryId !== undefined) {
+    const normalizedEntries = entries.map(normalizeTranscriptEntryInput);
+    if (
+      options.expectedLastEntryId !== undefined ||
+      options.ifAbsentEntryId !== undefined
+    ) {
       const currentEntries = await readTranscriptEntriesFromDisk(
         filePath,
         threadId,
       );
+      if (options.ifAbsentEntryId !== undefined) {
+        const candidate = normalizedEntries[0];
+        if (
+          normalizedEntries.length !== 1 ||
+          candidate === undefined ||
+          candidate.entryId !== options.ifAbsentEntryId
+        ) {
+          throw new Error('transcript append-once identity is invalid');
+        }
+        const existing = currentEntries.find(
+          (entry) => entry.entryId === options.ifAbsentEntryId,
+        );
+        if (existing !== undefined) {
+          if (sha256StableJson(existing) !== sha256StableJson(candidate)) {
+            throw new Error(
+              `transcript entry identity conflicts: ${options.ifAbsentEntryId}`,
+            );
+          }
+          return [existing];
+        }
+      }
       const actualLastEntryId =
         currentEntries.length === 0
           ? null
           : (currentEntries[currentEntries.length - 1]?.entryId ?? null);
-      if (actualLastEntryId !== options.expectedLastEntryId) {
+      if (
+        options.expectedLastEntryId !== undefined &&
+        actualLastEntryId !== options.expectedLastEntryId
+      ) {
         throw new CompareAndAppendMismatchError({
           threadId,
           expectedLastEntryId: options.expectedLastEntryId,
@@ -159,7 +204,6 @@ async function appendTranscriptEntriesInternal(
         });
       }
     }
-    const normalizedEntries = entries.map(normalizeTranscriptEntryInput);
     await appendFile(
       filePath,
       normalizedEntries.map((entry) => JSON.stringify(entry)).join('\n') + '\n',

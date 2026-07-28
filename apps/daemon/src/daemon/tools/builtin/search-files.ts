@@ -62,6 +62,12 @@ const searchFilesArgsSchema = z.strictObject({
     .describe(
       'Glob pattern to include files (e.g. "*.ts") or exclude them with a leading "!" (e.g. "!**/*.test.ts").',
     ),
+  includeIgnored: z
+    .boolean()
+    .optional()
+    .describe(
+      'Whether to include paths excluded by ignore files such as .gitignore. Defaults to false; hidden paths remain searchable.',
+    ),
   maxResults: z
     .number()
     .int('maxResults must be a positive integer.')
@@ -81,7 +87,7 @@ const searchFilesArgsSchema = z.strictObject({
 export const searchFilesTool = defineZodTool({
   name: 'search_files',
   description:
-    'Search filenames or file contents across the host filesystem. Relative paths start from the current directory; hidden and ignored files are included when the OS exposes them. In filename mode, a basename glob without a slash matches at any directory depth. Use explicit eventual_index consistency with maxResults for fast bounded basename discovery on indexed Windows paths; the default filesystem_snapshot mode returns an exact filesystem total.',
+    'Search filenames or file contents across the host filesystem. Relative paths start from the current directory. Hidden paths are included, while ignore files such as .gitignore are respected unless includeIgnored is true. In filename mode, a basename glob without a slash matches at any directory depth. Use explicit eventual_index consistency with maxResults for fast bounded basename discovery on indexed Windows paths; the default filesystem_snapshot mode returns an exact filesystem total.',
   argsSchema: searchFilesArgsSchema,
   sideEffectLevel: 'read',
   mayMutateComputerFiles: false,
@@ -113,6 +119,7 @@ export const searchFilesTool = defineZodTool({
     const searchPath = args.path ?? '.';
     const searchType = args.type ?? 'content';
     const glob = args.include ? args.include : null;
+    const includeIgnored = args.includeIgnored ?? false;
     const maxResults = args.maxResults;
     const consistency = args.consistency ?? 'filesystem_snapshot';
 
@@ -201,6 +208,7 @@ export const searchFilesTool = defineZodTool({
           ctx.signal,
           {
             consistency,
+            includeIgnored,
             hostRouting,
           },
         );
@@ -220,6 +228,7 @@ export const searchFilesTool = defineZodTool({
         maxResults,
         ctx.signal,
         hostRouting,
+        includeIgnored,
       );
       return {
         ok: true,

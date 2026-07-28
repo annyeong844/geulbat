@@ -52,6 +52,7 @@ export const browserNavigateTool = defineZodTool({
   sideEffectLevel: 'write',
   mayMutateComputerFiles: false,
   requiresApproval: true,
+  recoveryStrategy: 'replay_safe',
   catalogSearchMetadata: {
     family: 'browser',
     searchHints: ['browser navigate', 'open webpage in browser', 'visit url'],

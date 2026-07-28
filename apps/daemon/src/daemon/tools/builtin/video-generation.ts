@@ -1,6 +1,18 @@
 import { z } from 'zod';
+import {
+  createMediaGenerationRecoveryIdentity,
+  parseMediaGenerationRecoveryIdentity,
+  type MediaGenerationRecoveryIdentity,
+} from '../../media/contract.js';
 import { getErrorMessage } from '../../utils/error.js';
 import { toolError } from '../result.js';
+import {
+  recordDurableToolInvocation,
+  recordDurableToolInvocationResult,
+  resolveDurableToolInvocation,
+  type DurableToolInvocationContext,
+} from '../tool-invocation-durability.js';
+import type { ExecuteResult } from '../types.js';
 import { defineZodTool } from '../zod-tool.js';
 import {
   stringifyGenerateVideoFailure,
@@ -57,6 +69,7 @@ export const generateVideoTool = defineZodTool({
   sideEffectLevel: 'write',
   mayMutateComputerFiles: false,
   requiresApproval: false,
+  recoveryStrategy: 'durable_handle',
   timeoutMs: resolveGenerateVideoTimeoutMs(),
   catalogSearchMetadata: {
     family: 'network',
@@ -95,7 +108,58 @@ export const generateVideoTool = defineZodTool({
       );
     }
 
+    let durability: DurableToolInvocationContext | undefined;
+    let recoveryIdentity: MediaGenerationRecoveryIdentity | undefined;
     try {
+      durability = await resolveDurableToolInvocation(
+        ctx,
+        generateVideoTool.name,
+      );
+      if (durability !== undefined) {
+        const expected = createMediaGenerationRecoveryIdentity({
+          kind: 'video',
+          threadId: durability.threadId,
+          runId: durability.runId,
+          callId: ctx.callId,
+          toolArgs: {
+            prompt: args.prompt,
+            ...(args.sourceArtifactRef === undefined
+              ? {}
+              : { sourceArtifactRef: args.sourceArtifactRef }),
+            ...(args.durationSeconds === undefined
+              ? {}
+              : { durationSeconds: args.durationSeconds }),
+          },
+        });
+        const invocation = durability.invocation;
+        if (invocation !== undefined) {
+          recoveryIdentity = requireVideoRecoveryInvocation(
+            invocation,
+            ctx.callId,
+            expected,
+          );
+          if (invocation.status === 'reconciled') {
+            return invocation.result;
+          }
+        } else {
+          const recorded = await recordDurableToolInvocation({
+            durability,
+            callId: ctx.callId,
+            toolName: generateVideoTool.name,
+            recoveryStrategy: 'durable_handle',
+            recoveryState: { ...expected },
+          });
+          recoveryIdentity = requireVideoRecoveryInvocation(
+            recorded.invocation,
+            ctx.callId,
+            expected,
+          );
+          if (recorded.invocation.status === 'reconciled') {
+            return recorded.invocation.result;
+          }
+        }
+      }
+
       const result = await runtime.generateVideoArtifact({
         request: {
           prompt: args.prompt,
@@ -110,6 +174,14 @@ export const generateVideoTool = defineZodTool({
         workingDirectory: ctx.workingDirectory,
         threadId: ctx.threadId,
         runId: ctx.runId,
+        ...(recoveryIdentity === undefined
+          ? {}
+          : {
+              recovery: {
+                callId: ctx.callId,
+                identity: recoveryIdentity,
+              },
+            }),
         ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
       });
 
@@ -119,21 +191,60 @@ export const generateVideoTool = defineZodTool({
         payload: result.artifactVersion,
       });
 
-      return {
+      const toolResult: ExecuteResult = {
         ok: true,
         output: stringifyGenerateVideoOutput(result),
       };
+      await recordDurableToolInvocationResult({
+        durability,
+        callId: ctx.callId,
+        toolName: generateVideoTool.name,
+        result: toolResult,
+      });
+      return toolResult;
     } catch (error: unknown) {
       const failure = stringifyGenerateVideoFailure(
         error,
         getErrorMessage(error),
       );
-      return {
+      const toolResult: ExecuteResult = {
         ok: false,
         output: failure.output,
         errorCode: videoGenerationFailureToolErrorCode(error),
         error: failure.message,
       };
+      if (recoveryIdentity !== undefined) {
+        await recordDurableToolInvocationResult({
+          durability,
+          callId: ctx.callId,
+          toolName: generateVideoTool.name,
+          result: toolResult,
+        });
+      }
+      return toolResult;
     }
   },
 });
+
+function requireVideoRecoveryInvocation(
+  invocation: NonNullable<DurableToolInvocationContext['invocation']>,
+  callId: string,
+  expected: MediaGenerationRecoveryIdentity,
+): MediaGenerationRecoveryIdentity {
+  const identity = parseMediaGenerationRecoveryIdentity(
+    invocation.recoveryState,
+  );
+  if (
+    invocation.callId !== callId ||
+    invocation.toolName !== generateVideoTool.name ||
+    invocation.recoveryStrategy !== 'durable_handle' ||
+    identity === null ||
+    identity.kind !== 'video' ||
+    identity.operationId !== expected.operationId ||
+    identity.artifactId !== expected.artifactId ||
+    identity.argsDigest !== expected.argsDigest
+  ) {
+    throw new Error('generate_video recovery invocation identity conflicts');
+  }
+  return identity;
+}

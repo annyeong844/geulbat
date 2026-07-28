@@ -434,10 +434,21 @@ void test('plan mode guidance binds trusted host approval without manual mode sw
   assert.match(on, /Never tell the user to disable plan mode/u);
   assert.match(on, /trusted host approval card/u);
   assert.match(on, /propose_plan/u);
-  assert.match(on, /Consolidate related ambiguity/u);
+  assert.match(on, /rigorous requirements interview/u);
+  assert.match(on, /one focused ask_user decision per turn/u);
+  assert.match(
+    on,
+    /continue with the next most consequential unresolved issue/u,
+  );
+  assert.match(on, /do not call propose_plan until/u);
   assert.match(on, /Do not ask for permission to inspect/u);
   assert.match(on, /confirm review-only versus modification at most once/u);
   assert.match(on, /Final prose by itself does not complete planning/u);
+  assert.match(on, /title and labels in the user's language/u);
+  assert.match(on, /user's decision, the work flow, and the expected outcome/u);
+  assert.match(on, /raw ids, digests, internal state names/u);
+  assert.match(on, /concise user-facing goal/u);
+  assert.match(on, /secondary metadata beneath the goal/u);
 });
 
 void test('plan mode guidance also reaches delegated sub-agents', () => {
@@ -470,6 +481,11 @@ void test('standard and deep planning keep interrogation policy independent from
   assert.match(standard, /This is standard planning/u);
   assert.match(standard, /This is visual planning/u);
   assert.match(deep, /This is deep planning/u);
+  assert.match(
+    deep,
+    /continue with the next most consequential unresolved issue/u,
+  );
+  assert.match(deep, /Never repeat settled questions/u);
   assert.match(deep, /This is compact planning/u);
 });
 

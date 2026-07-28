@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import {
   buildPtcPackageInstallCommand,
   buildPtcPackageInstallProvenanceCommand,
   decodePtcPackageInstallProvenanceEntries,
@@ -16,6 +29,8 @@ import {
   PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX,
   PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH,
 } from './execute-code-runtime-contract.js';
+
+const execFileAsync = promisify(execFile);
 
 void test('package install validation admits exact packages and sorts them', () => {
   const result = validatePtcPackageInstallRequest({
@@ -240,13 +255,26 @@ void test('package install validation enforces the knob-provided package count l
   );
 });
 
-void test('package install command targets the cumulative prefix with hardened npm flags', () => {
+void test('package install command stages npm changes and repairs an interrupted atomic promotion', () => {
   const command = buildPtcPackageInstallCommand([
     { name: 'left-pad', spec: '^1.3.0', requestedSpec: '^1.3.0' },
   ]);
+  const stagingPrefix = `${PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX}.staging`;
+  const rollbackPrefix = `${PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX}.rollback`;
   assert.ok(
     command.includes(
-      `mkdir -p '${PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX}'`,
+      `if [ ! -d '${PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX}' ] && [ -d '${rollbackPrefix}' ]; then`,
+    ),
+  );
+  assert.ok(
+    command.includes(
+      `mv '${rollbackPrefix}' '${PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX}'`,
+    ),
+  );
+  assert.ok(command.includes(`rm -rf '${stagingPrefix}'`));
+  assert.ok(
+    command.includes(
+      `cp -a '${PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX}' '${stagingPrefix}'`,
     ),
   );
   assert.ok(command.includes('--prefer-online'));
@@ -254,17 +282,54 @@ void test('package install command targets the cumulative prefix with hardened n
   assert.ok(command.includes('--no-audit'));
   assert.ok(command.includes('--no-update-notifier'));
   assert.ok(command.includes("--cache '/geulbat/package-cache/npm'"));
-  assert.ok(
-    command.includes(
-      `--prefix '${PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX}'`,
-    ),
-  );
+  assert.ok(command.includes(`--prefix '${stagingPrefix}'`));
   assert.ok(command.includes("'left-pad@^1.3.0'"));
   assert.ok(command.includes('--userconfig'));
   assert.ok(command.includes('--globalconfig'));
+  assert.ok(
+    command.indexOf(`npm install`) <
+      command.indexOf(
+        `mv '${stagingPrefix}' '${PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX}'`,
+      ),
+  );
 });
 
-void test('python package install command is wheel-only and targets the reusable session path', () => {
+void test('npm package promotion restores the last complete prefix after a process dies between renames', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'geulbat-package-promotion-'));
+  const target = join(root, 'packages');
+  const staging = `${target}.staging`;
+  const rollback = `${target}.rollback`;
+  try {
+    await mkdir(target);
+    await writeFile(join(target, 'old.txt'), 'old\n');
+    await mkdir(staging);
+    await writeFile(join(staging, 'partial.txt'), 'partial\n');
+    await rename(target, rollback);
+
+    const command = buildPtcPackageInstallCommand([
+      { name: 'left-pad', spec: '1.3.0', requestedSpec: '1.3.0' },
+    ])
+      .replaceAll(PTC_EXECUTE_CODE_INSTALLED_PACKAGES_PREFIX, target)
+      .split('\n')
+      .map((line) =>
+        line.startsWith('npm install ')
+          ? `printf 'new\\n' > '${staging}/new.txt'`
+          : line,
+      )
+      .join('\n');
+
+    await execFileAsync('/bin/sh', ['-c', command]);
+
+    assert.equal(await readFile(join(target, 'old.txt'), 'utf8'), 'old\n');
+    assert.equal(await readFile(join(target, 'new.txt'), 'utf8'), 'new\n');
+    await assert.rejects(access(staging));
+    await assert.rejects(access(rollback));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('python package install command stages wheel-only changes before promotion', () => {
   const command = buildPtcPackageInstallCommand(
     [
       {
@@ -275,16 +340,25 @@ void test('python package install command is wheel-only and targets the reusable
     ],
     'pip',
   );
+  const stagingPath = `${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}.staging`;
+  const rollbackPath = `${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}.rollback`;
   assert.ok(command.includes('python3 -m pip --isolated install'));
   assert.ok(command.includes("--only-binary ':all:'"));
   assert.ok(command.includes("--cache-dir '/geulbat/package-cache/pip'"));
-  assert.ok(
-    command.includes(
-      `--target '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
-    ),
-  );
+  assert.ok(command.includes(`--target '${stagingPath}'`));
   assert.ok(command.includes("'requests==2.32.3'"));
   assert.doesNotMatch(command, /\bnpm\b/u);
+  assert.ok(
+    command.includes(
+      `if [ ! -d '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}' ] && [ -d '${rollbackPath}' ]; then`,
+    ),
+  );
+  assert.ok(
+    command.indexOf('python3 -m pip --isolated install') <
+      command.indexOf(
+        `mv '${stagingPath}' '${PTC_EXECUTE_CODE_INSTALLED_PYTHON_PACKAGES_PATH}'`,
+      ),
+  );
 });
 
 void test('derivePtcResolvedPackages maps requested specs to resolved closure versions', () => {

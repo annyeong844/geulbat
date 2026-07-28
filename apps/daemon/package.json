@@ -58,6 +58,7 @@
     "discover:oauth-wire": "node --import tsx ./scripts/collect-oauth-structured-output-wire-evidence.mjs",
     "probe:context-injection-accounting": "node --import tsx ./scripts/probe-context-injection-accounting.mjs",
     "probe:grok-cache": "node --import tsx ./scripts/probe-grok-prompt-cache.mjs",
+    "probe:runtime-state-fault-soak": "node --import tsx ./scripts/runtime-state-fault-soak.mjs",
     "probe:tool-result-cache-context": "node --import tsx ./scripts/probe-tool-result-cache-context.mjs",
     "reset:single-home": "node ./scripts/reset-single-home-state.mjs --root ../..",
     "test:single-home-reset": "node --test ./scripts/reset-single-home-state.test.mjs",

@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import { assertRunId, assertThreadId } from '@geulbat/protocol/ids';
+import { createRunState } from '../../agent/runtime/run-state.js';
 import { createDaemonContext } from '../../context.js';
 import type { AgentEvent } from '../../agent/events.js';
 import type {
@@ -8,8 +14,15 @@ import type {
   GenerateImageArtifactResult,
   ImageGenerationRuntime,
 } from '../../media/contract.js';
-import { ImageGenerationError } from '../../media/contract.js';
-import { isToolObjectParameters } from '../types.js';
+import {
+  createMediaGenerationRecoveryIdentity,
+  ImageGenerationError,
+} from '../../media/contract.js';
+import { createRunContext } from '../../run-context.js';
+import {
+  isToolObjectParameters,
+  type AgentToolExecutionContext,
+} from '../types.js';
 import { generateImageTool } from './image-generation.js';
 import { testThreadId } from '../../../test-support/thread-id.js';
 
@@ -58,24 +71,18 @@ function buildAgentContext(args: {
 }) {
   const daemonContext = createDaemonContext();
   return {
-    kind: 'agent' as const,
+    kind: 'standalone' as const,
     runOwnerKind: 'root_main' as const,
     callId: 'call-image-1',
     stateRoot: daemonContext.homeStateRoot,
     workingDirectory: 'stories',
     threadId,
     runId: 'run-image-1',
-    runState: undefined,
-    signal: undefined,
-    runSignal: undefined,
-    currentFile: undefined,
-    selection: undefined,
     approvalGranted: false,
     runtimeServices: {
       ...daemonContext,
       imageGeneration: args.imageGeneration,
     },
-    memoryIndex: undefined,
     emitAgentEvent: (event: AgentEvent) => {
       args.events.push(event);
     },
@@ -84,11 +91,53 @@ function buildAgentContext(args: {
   };
 }
 
+function buildDurableAgentContext(args: {
+  daemonContext: ReturnType<typeof createDaemonContext>;
+  imageGeneration: ImageGenerationRuntime;
+  stateRoot: string;
+  threadId: ReturnType<typeof assertThreadId>;
+  runId: ReturnType<typeof assertRunId>;
+  events: AgentEvent[];
+}): AgentToolExecutionContext {
+  const runContext = createRunContext({
+    threadId: args.threadId,
+    stateRoot: args.stateRoot,
+    workingDirectory: args.stateRoot,
+  });
+  const signal = new AbortController().signal;
+  return {
+    kind: 'agent',
+    runOwnerKind: 'root_main',
+    callId: 'call-image-durable',
+    stateRoot: args.stateRoot,
+    workingDirectory: args.stateRoot,
+    threadId: args.threadId,
+    runId: args.runId,
+    runState: createRunState({ runId: args.runId, runContext }),
+    signal,
+    runSignal: signal,
+    currentFile: undefined,
+    selection: undefined,
+    approvalGranted: true,
+    computerSessionId: 'image-durable-session',
+    permissionMode: 'basic',
+    emitAgentEvent(event) {
+      args.events.push(event);
+    },
+    memoryIndex: args.daemonContext.memoryIndex,
+    runtimeServices: {
+      ...args.daemonContext,
+      imageGeneration: args.imageGeneration,
+    },
+  };
+}
+
 void test('generate_image exposes prompt-first schema and no-approval write metadata', () => {
   assert.equal(generateImageTool.name, 'generate_image');
   assert.equal(generateImageTool.sideEffectLevel, 'write');
   assert.equal(generateImageTool.mayMutateComputerFiles, false);
   assert.equal(generateImageTool.requiresApproval, false);
+  assert.equal(generateImageTool.recoveryStrategy, 'reconcile_then_replay');
   const parameters = generateImageTool.parameters;
   assert.ok(isToolObjectParameters(parameters));
   assert.deepEqual(parameters.required, ['prompt']);
@@ -229,4 +278,130 @@ void test('generate_image maps provider auth failures to llm_auth_failed', async
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'llm_auth_failed');
   assert.deepEqual(events, []);
+});
+
+void test('generate_image replacement returns the reconciled checkpoint result without a second provider effect or event', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-image-tool-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const durableThreadId = assertThreadId(randomUUID());
+  const runId = assertRunId(randomUUID());
+  const firstDaemon = createDaemonContext({ homeStateRoot: stateRoot });
+  await firstDaemon.runCheckpoints.startRun({
+    runId,
+    threadId: durableThreadId,
+    request: { workingDirectory: stateRoot, permissionMode: 'basic' },
+  });
+  let providerEffects = 0;
+  const events: AgentEvent[] = [];
+  const firstRuntime: ImageGenerationRuntime = {
+    async generateImageArtifact() {
+      providerEffects += 1;
+      return buildResult();
+    },
+    withRequestDefaults() {
+      return firstRuntime;
+    },
+  };
+  const first = await generateImageTool.execute(
+    { prompt: 'durable cat' },
+    buildDurableAgentContext({
+      daemonContext: firstDaemon,
+      imageGeneration: firstRuntime,
+      stateRoot,
+      threadId: durableThreadId,
+      runId,
+      events,
+    }),
+  );
+
+  const replacementDaemon = createDaemonContext({ homeStateRoot: stateRoot });
+  const replacementRuntime: ImageGenerationRuntime = {
+    async generateImageArtifact() {
+      providerEffects += 1;
+      throw new Error('reconciled invocation must not call the provider');
+    },
+    withRequestDefaults() {
+      return replacementRuntime;
+    },
+  };
+  const recovered = await generateImageTool.execute(
+    { prompt: 'durable cat' },
+    buildDurableAgentContext({
+      daemonContext: replacementDaemon,
+      imageGeneration: replacementRuntime,
+      stateRoot,
+      threadId: durableThreadId,
+      runId,
+      events,
+    }),
+  );
+
+  assert.deepEqual(recovered, first);
+  assert.equal(providerEffects, 1);
+  assert.equal(events.length, 1);
+  const checkpoint =
+    await replacementDaemon.runCheckpoints.readThread(durableThreadId);
+  assert.equal(checkpoint?.toolInvocations.length, 1);
+  assert.equal(checkpoint?.toolInvocations[0]?.status, 'reconciled');
+  assert.equal(
+    checkpoint?.toolInvocations[0]?.recoveryStrategy,
+    'reconcile_then_replay',
+  );
+});
+
+void test('generate_image fails closed when the persisted strategy does not match the current tool contract', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-image-strategy-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const durableThreadId = assertThreadId(randomUUID());
+  const runId = assertRunId(randomUUID());
+  const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
+  await daemonContext.runCheckpoints.startRun({
+    runId,
+    threadId: durableThreadId,
+    request: { workingDirectory: stateRoot, permissionMode: 'basic' },
+  });
+  const identity = createMediaGenerationRecoveryIdentity({
+    kind: 'image',
+    threadId: durableThreadId,
+    runId,
+    callId: 'call-image-durable',
+    toolArgs: { prompt: 'strategy mismatch' },
+  });
+  const recorded = await daemonContext.runCheckpoints.recordToolInvocation({
+    threadId: durableThreadId,
+    runId,
+    invocation: {
+      callId: 'call-image-durable',
+      toolName: generateImageTool.name,
+      recoveryStrategy: 'durable_handle',
+      recoveryState: { ...identity },
+    },
+  });
+  assert.equal(recorded.ok, true);
+  let providerEffects = 0;
+  const runtime: ImageGenerationRuntime = {
+    async generateImageArtifact() {
+      providerEffects += 1;
+      return buildResult();
+    },
+    withRequestDefaults() {
+      return runtime;
+    },
+  };
+
+  const result = await generateImageTool.execute(
+    { prompt: 'strategy mismatch' },
+    buildDurableAgentContext({
+      daemonContext,
+      imageGeneration: runtime,
+      stateRoot,
+      threadId: durableThreadId,
+      runId,
+      events: [],
+    }),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? '', /recovery invocation identity conflicts/u);
+  assert.equal(providerEffects, 0);
 });

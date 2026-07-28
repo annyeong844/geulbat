@@ -74,113 +74,159 @@ export async function streamHostRoutedCommandLines(args: {
     return { ok: false, aborted: false, message: started.message };
   }
   const outputRef = started.outputRef;
+  let terminalObserved = false;
 
-  // claim해야 데몬 연결과 무관하게 세션이 살아 있고, 첫 스냅샷으로 상태를 얻는다.
-  const initial = await hostCommands.waitForInitialResult({
-    stateRoot,
-    outputRef,
-    yieldTimeMs: 0,
-    ...(signal === undefined ? {} : { signal }),
-  });
-  if (!initial.ok) {
-    return {
-      ok: false,
-      aborted: initial.reasonCode === 'wait_aborted',
-      message: initial.message,
-    };
-  }
-
-  const readOffsets: Record<StreamName, number> = { stdout: 0, stderr: 0 };
-  let stderr = '';
-  let snapshot = initial.value;
-
-  const drain = async (
-    stream: StreamName,
-  ): Promise<
-    | { ok: true; hasMore: boolean }
-    | { ok: false; aborted: boolean; message: string }
-  > => {
-    const observed = await hostCommands.interact({
+  const terminateClaimedSession = async (): Promise<void> => {
+    let terminated = await hostCommands.interact({
       stateRoot,
       threadId: SYSTEM_SESSION_OWNER,
       owner: 'system',
       outputRef,
+      terminate: true,
       yieldTimeMs: 0,
-      page: {
-        stream,
-        offsetBytes: readOffsets[stream],
-        limitBytes: pageLimitBytes,
-      },
-      ...(signal === undefined ? {} : { signal }),
     });
-    if (!observed.ok) {
-      return {
-        ok: false,
-        aborted: observed.reasonCode === 'wait_aborted',
-        message: observed.message,
-      };
+    if (!terminated.ok) {
+      if (
+        terminated.reasonCode === 'not_found' ||
+        terminated.reasonCode === 'not_running'
+      ) {
+        return;
+      }
+      throw new Error(`search command cleanup failed: ${terminated.message}`);
     }
-    snapshot = observed.value.snapshot;
-    const page = observed.value.page;
-    if (page === undefined || page === null) {
-      return { ok: true, hasMore: false };
-    }
-    if (page.endOffsetBytes > readOffsets[stream]) {
-      readOffsets[stream] = page.endOffsetBytes;
-      if (stream === 'stdout') {
-        args.onStdoutChunk(page.content);
-      } else {
-        stderr += page.content;
+    while (terminated.value.snapshot.status === 'running') {
+      terminated = await hostCommands.interact({
+        stateRoot,
+        threadId: SYSTEM_SESSION_OWNER,
+        owner: 'system',
+        outputRef,
+        afterRevision: terminated.value.snapshot.revision,
+      });
+      if (!terminated.ok) {
+        if (
+          terminated.reasonCode === 'not_found' ||
+          terminated.reasonCode === 'not_running'
+        ) {
+          return;
+        }
+        throw new Error(`search command cleanup failed: ${terminated.message}`);
       }
     }
-    return { ok: true, hasMore: page.hasMore };
   };
 
-  for (;;) {
-    // 두 스트림을 매 회차 함께 비운다 — protocol 모드는 예산이 차면 그 스트림의
-    // 소스를 멈추므로, stderr를 안 읽으면 진단을 많이 쏟는 자식이 멈춰 서게 된다.
-    const stdoutDrain = await drain('stdout');
-    if (!stdoutDrain.ok) {
-      return stdoutDrain;
-    }
-    const stderrDrain = await drain('stderr');
-    if (!stderrDrain.ok) {
-      return stderrDrain;
-    }
-    if (stdoutDrain.hasMore || stderrDrain.hasMore) {
-      continue;
-    }
-    if (snapshot.status !== 'running') {
-      break;
-    }
-    // 남은 페이지가 없으면 시간이 아니라 사건을 기다린다 — 세션의 대기 상한(§4.6)이
-    // 상한을 지키고, 출력이나 종료가 오면 즉시 깨므로 폴링이 아니다.
-    const waited = await hostCommands.interact({
+  try {
+    // claim해야 데몬 연결과 무관하게 세션이 살아 있고, 첫 스냅샷으로 상태를 얻는다.
+    const initial = await hostCommands.waitForInitialResult({
       stateRoot,
-      threadId: SYSTEM_SESSION_OWNER,
-      owner: 'system',
       outputRef,
-      afterRevision: snapshot.revision,
+      yieldTimeMs: 0,
       ...(signal === undefined ? {} : { signal }),
     });
-    if (!waited.ok) {
+    if (!initial.ok) {
       return {
         ok: false,
-        aborted: waited.reasonCode === 'wait_aborted',
-        message: waited.message,
+        aborted: initial.reasonCode === 'wait_aborted',
+        message: initial.message,
       };
     }
-    snapshot = waited.value.snapshot;
-  }
 
-  return {
-    ok: true,
-    value: {
-      status: snapshot.status,
-      exitCode: snapshot.exitCode ?? null,
-      stderr,
-    },
-  };
+    const readOffsets: Record<StreamName, number> = { stdout: 0, stderr: 0 };
+    let stderr = '';
+    let snapshot = initial.value;
+
+    const drain = async (
+      stream: StreamName,
+    ): Promise<
+      | { ok: true; hasMore: boolean }
+      | { ok: false; aborted: boolean; message: string }
+    > => {
+      const observed = await hostCommands.interact({
+        stateRoot,
+        threadId: SYSTEM_SESSION_OWNER,
+        owner: 'system',
+        outputRef,
+        yieldTimeMs: 0,
+        page: {
+          stream,
+          offsetBytes: readOffsets[stream],
+          limitBytes: pageLimitBytes,
+        },
+        ...(signal === undefined ? {} : { signal }),
+      });
+      if (!observed.ok) {
+        return {
+          ok: false,
+          aborted: observed.reasonCode === 'wait_aborted',
+          message: observed.message,
+        };
+      }
+      snapshot = observed.value.snapshot;
+      const page = observed.value.page;
+      if (page === undefined || page === null) {
+        return { ok: true, hasMore: false };
+      }
+      if (page.endOffsetBytes > readOffsets[stream]) {
+        readOffsets[stream] = page.endOffsetBytes;
+        if (stream === 'stdout') {
+          args.onStdoutChunk(page.content);
+        } else {
+          stderr += page.content;
+        }
+      }
+      return { ok: true, hasMore: page.hasMore };
+    };
+
+    for (;;) {
+      // 두 스트림을 매 회차 함께 비운다 — protocol 모드는 예산이 차면 그 스트림의
+      // 소스를 멈추므로, stderr를 안 읽으면 진단을 많이 쏟는 자식이 멈춰 서게 된다.
+      const stdoutDrain = await drain('stdout');
+      if (!stdoutDrain.ok) {
+        return stdoutDrain;
+      }
+      const stderrDrain = await drain('stderr');
+      if (!stderrDrain.ok) {
+        return stderrDrain;
+      }
+      if (stdoutDrain.hasMore || stderrDrain.hasMore) {
+        continue;
+      }
+      if (snapshot.status !== 'running') {
+        terminalObserved = true;
+        break;
+      }
+      // 남은 페이지가 없으면 시간이 아니라 사건을 기다린다 — 세션의 대기 상한(§4.6)이
+      // 상한을 지키고, 출력이나 종료가 오면 즉시 깨므로 폴링이 아니다.
+      const waited = await hostCommands.interact({
+        stateRoot,
+        threadId: SYSTEM_SESSION_OWNER,
+        owner: 'system',
+        outputRef,
+        afterRevision: snapshot.revision,
+        ...(signal === undefined ? {} : { signal }),
+      });
+      if (!waited.ok) {
+        return {
+          ok: false,
+          aborted: waited.reasonCode === 'wait_aborted',
+          message: waited.message,
+        };
+      }
+      snapshot = waited.value.snapshot;
+    }
+
+    return {
+      ok: true,
+      value: {
+        status: snapshot.status,
+        exitCode: snapshot.exitCode ?? null,
+        stderr,
+      },
+    };
+  } finally {
+    if (!terminalObserved) {
+      await terminateClaimedSession();
+    }
+  }
 }
 
 /**

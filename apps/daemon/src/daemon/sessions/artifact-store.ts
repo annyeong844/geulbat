@@ -22,6 +22,7 @@ import { isRecord, tryParseJson } from '../runtime-json.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { copyThreadMediaFiles } from './media-file-store.js';
 import { artifactStoreFilePath } from './paths.js';
 import { hasErrorCode } from '../utils/error.js';
@@ -60,6 +61,7 @@ export interface CommitThreadArtifactVersionArgs {
   workspaceRoot: string;
   threadId: ThreadId;
   runId: ArtifactRunId;
+  artifactId?: ArtifactId;
   renderer: ArtifactRenderer;
   payload: string;
   digest: string | null;
@@ -80,7 +82,7 @@ export async function commitThreadArtifactVersion(
     args.workspaceRoot,
     args.threadId,
     async (store) => {
-      const artifactId: ArtifactId = `art_${randomUUID()}`;
+      const artifactId: ArtifactId = args.artifactId ?? `art_${randomUUID()}`;
       const artifact: ArtifactRecord = {
         artifactId,
         threadId: args.threadId,
@@ -106,6 +108,28 @@ export async function commitThreadArtifactVersion(
         previewValidation: { ok: true },
         ...(args.planStamp === undefined ? {} : { planStamp: args.planStamp }),
       };
+      const existingArtifact = store.artifacts.find(
+        (candidate) => candidate.artifactId === artifactId,
+      );
+      const existingVersion = store.versions.find(
+        (candidate) =>
+          candidate.artifactId === artifactId && candidate.version === 1,
+      );
+      if (existingArtifact !== undefined || existingVersion !== undefined) {
+        if (
+          existingArtifact !== undefined &&
+          existingVersion !== undefined &&
+          isDeepStrictEqual(existingArtifact, artifact) &&
+          isDeepStrictEqual(existingVersion, version)
+        ) {
+          return {
+            artifact: existingArtifact,
+            version: existingVersion,
+            ref: { artifactId, version: 1 },
+          };
+        }
+        throw new Error(`artifact commit identity conflicts: ${artifactId}`);
+      }
 
       await saveThreadArtifactStore(args.workspaceRoot, args.threadId, {
         artifacts: [...store.artifacts, artifact],

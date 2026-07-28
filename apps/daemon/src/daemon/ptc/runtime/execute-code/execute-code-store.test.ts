@@ -15,7 +15,10 @@ import {
   type PtcExecuteCodeStoreExecution,
   type PtcExecuteCodeStoreRuntimeConfig,
 } from './execute-code-store.js';
-import { createExecuteCodeCallbackRuntime } from './execute-code-batch-runtime.js';
+import {
+  createExecuteCodeCallbackRuntime,
+  createExecuteCodeStoreCallbackHandler,
+} from './execute-code-batch-runtime.js';
 
 const TEST_STORE_CONFIG = Object.freeze({
   enabled: true,
@@ -95,6 +98,273 @@ void test('store callback kinds fail closed when the store knob is off', async (
     assert.equal(result.errorCode, 'StoreDisabled');
     assert.match(result.remediation ?? '', /GEULBAT_PTC_STORE_ENABLED/u);
   }
+});
+
+void test('callback runtime validates tool calls and routes store calls independently', async () => {
+  const signal = new AbortController().signal;
+  const enterLongWait = () => true;
+  const disabled = createExecuteCodeCallbackRuntime({
+    callbackTransportPolicy: undefined,
+    toolCallbackHandler: undefined,
+  });
+  assert.equal(disabled.enabled, false);
+  assert.deepEqual(
+    await disabled.callbackHandler({
+      requestId: 'tool-disabled',
+      kind: 'geulbat_tool_call',
+      args: { toolName: 'read_file', args: {} },
+      signal,
+      enterLongWait,
+    }),
+    {
+      ok: false,
+      errorCode: 'ptc_tool_callbacks_disabled',
+      message: 'PTC execute_code tool callbacks are disabled',
+    },
+  );
+
+  const observed: Array<{
+    requestId: string;
+    toolName: string;
+    args: Record<string, unknown>;
+    cellId?: string;
+  }> = [];
+  const tools = createExecuteCodeCallbackRuntime({
+    callbackTransportPolicy: {
+      maxFrameBytes: 8_192,
+      maxOpenConnections: 2,
+      maxCallbacks: 4,
+      callbackTimeoutMs: 5_000,
+      maxResponseBytes: 8_192,
+    },
+    toolCallbackHandler: async (invocation) => {
+      observed.push({
+        requestId: invocation.requestId,
+        toolName: invocation.toolName,
+        args: invocation.args,
+        ...(invocation.cellId === undefined
+          ? {}
+          : { cellId: invocation.cellId }),
+      });
+      return { ok: true, result: { accepted: true } };
+    },
+  });
+  assert.equal(tools.enabled, true);
+  assert.equal(tools.toolCallbacksEnabled, true);
+  assert.deepEqual(
+    await tools.callbackHandler({
+      requestId: 'tool-invalid-kind',
+      kind: 'unexpected',
+      args: {},
+      signal,
+      enterLongWait,
+    }),
+    {
+      ok: false,
+      errorCode: 'ptc_tool_callback_kind_invalid',
+      message: 'PTC execute_code callback kind is invalid',
+    },
+  );
+  assert.deepEqual(
+    await tools.callbackHandler({
+      requestId: 'tool-invalid-shape',
+      kind: 'geulbat_tool_call',
+      args: null,
+      signal,
+      enterLongWait,
+    }),
+    {
+      ok: false,
+      errorCode: 'ptc_tool_callback_args_invalid',
+      message: 'PTC execute_code callback args are invalid',
+    },
+  );
+  assert.deepEqual(
+    await tools.callbackHandler({
+      requestId: 'tool-invalid-name',
+      kind: 'geulbat_tool_call',
+      args: { toolName: '', args: {} },
+      signal,
+      enterLongWait,
+    }),
+    {
+      ok: false,
+      errorCode: 'ptc_tool_callback_args_invalid',
+      message: 'PTC execute_code callback args are invalid',
+    },
+  );
+  assert.deepEqual(
+    await tools.callbackHandler({
+      requestId: 'tool-valid',
+      kind: 'geulbat_tool_call',
+      args: { toolName: 'read_file', args: { path: 'note.txt' } },
+      cellId: 'ptc_cell_callback_routing',
+      signal,
+      enterLongWait,
+    }),
+    { ok: true, result: { accepted: true } },
+  );
+  assert.equal(tools.observedCount(), 1);
+  assert.deepEqual(observed, [
+    {
+      requestId: 'tool-valid',
+      toolName: 'read_file',
+      args: { path: 'note.txt' },
+      cellId: 'ptc_cell_callback_routing',
+    },
+  ]);
+
+  let storeCalls = 0;
+  const storeOnly = createExecuteCodeCallbackRuntime({
+    callbackTransportPolicy: tools.enabled ? tools.callbackPolicy : undefined,
+    toolCallbackHandler: undefined,
+    storeCallbackHandler: async () => {
+      storeCalls += 1;
+      return { ok: true, result: 'stored value' };
+    },
+  });
+  assert.equal(storeOnly.enabled, true);
+  assert.equal(storeOnly.toolCallbacksEnabled, false);
+  assert.deepEqual(
+    await storeOnly.callbackHandler({
+      requestId: 'store-routed',
+      kind: 'store_get',
+      args: { key: 'note' },
+      signal,
+      enterLongWait,
+    }),
+    { ok: true, result: 'stored value' },
+  );
+  assert.equal(storeCalls, 1);
+});
+
+void test('store callback handler contains cancellation, stale execution, shape, and store errors', async () => {
+  const enterLongWait = () => true;
+  const aborted = new AbortController();
+  aborted.abort();
+  const handlerWithoutExecution = createExecuteCodeStoreCallbackHandler({
+    execution: () => undefined,
+  });
+  assert.equal(
+    (
+      await handlerWithoutExecution({
+        requestId: 'store-aborted',
+        kind: 'store_get',
+        args: { key: 'note' },
+        signal: aborted.signal,
+        enterLongWait,
+      })
+    ).ok,
+    false,
+  );
+  assert.deepEqual(
+    await handlerWithoutExecution({
+      requestId: 'store-stale',
+      kind: 'store_get',
+      args: { key: 'note' },
+      signal: new AbortController().signal,
+      enterLongWait,
+    }),
+    {
+      ok: false,
+      errorCode: 'StoreDisabled',
+      message: 'PTC store is not enabled',
+      remediation:
+        'Use exec without geulbat.store or ask the operator to enable GEULBAT_PTC_STORE_ENABLED.',
+    },
+  );
+
+  const execution: PtcExecuteCodeStoreExecution = {
+    get(key) {
+      return key === 'broken'
+        ? {
+            ok: false,
+            error: {
+              errorCode: 'StorePersistenceUnavailable',
+              message: 'store read unavailable',
+              remediation: 'retry later',
+              details: { key },
+            },
+          }
+        : { ok: true, value: `value:${String(key)}` };
+    },
+    set() {
+      return { ok: true, value: undefined };
+    },
+    async commit() {
+      return {
+        ok: true,
+        value: { committedKeys: [], revisions: {} },
+      };
+    },
+    discard() {
+      return { discardedWrites: 0 };
+    },
+    pendingWriteCount() {
+      return 0;
+    },
+  };
+  const handler = createExecuteCodeStoreCallbackHandler({ execution });
+  assert.equal(
+    (
+      await handler({
+        requestId: 'store-invalid-args',
+        kind: 'store_get',
+        args: null,
+        signal: new AbortController().signal,
+        enterLongWait,
+      })
+    ).ok,
+    false,
+  );
+  assert.equal(
+    (
+      await handler({
+        requestId: 'store-invalid-kind',
+        kind: 'store_delete',
+        args: { key: 'note' },
+        signal: new AbortController().signal,
+        enterLongWait,
+      })
+    ).ok,
+    false,
+  );
+  assert.deepEqual(
+    await handler({
+      requestId: 'store-get-failed',
+      kind: 'store_get',
+      args: { key: 'broken' },
+      signal: new AbortController().signal,
+      enterLongWait,
+    }),
+    {
+      ok: false,
+      errorCode: 'StorePersistenceUnavailable',
+      message: 'store read unavailable',
+      remediation: 'retry later',
+      details: { key: 'broken' },
+    },
+  );
+  assert.deepEqual(
+    await handler({
+      requestId: 'store-get',
+      kind: 'store_get',
+      args: { key: 'note' },
+      signal: new AbortController().signal,
+      enterLongWait,
+    }),
+    { ok: true, result: 'value:note' },
+  );
+  assert.deepEqual(
+    await handler({
+      requestId: 'store-set',
+      kind: 'store_set',
+      args: { key: 'note', value: 2, options: { merge: false } },
+      signal: new AbortController().signal,
+      enterLongWait,
+    }),
+    { ok: true, result: undefined },
+  );
 });
 
 void test('store snapshots eagerly, reads its own writes, persists across restart, and isolates threads', async () => {

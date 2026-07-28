@@ -31,9 +31,18 @@ import {
   stopProcess,
   waitForDaemonReady,
 } from './smoke-harness-utils.mjs';
+import {
+  buildFlowGateHotPathReport,
+  observeFlowGateRunEventFrames,
+} from './flow-gate-hot-path-report.mjs';
+import {
+  collectBrowserPerformanceEnvironment,
+  writePrivatePerformanceReport,
+} from './performance-report-support.mjs';
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const screenshotDir = path.join(repoRoot, 'output', 'playwright', 'flow-gate');
+const hotPathOutputPath = readStringOption('--hot-path-output');
 const INITIAL_RECOVERY_COMMENTARY =
   'flow-gate: output visible before disconnect';
 const BUFFERED_RECOVERY_COMMENTARY =
@@ -63,6 +72,18 @@ function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function readStringOption(name) {
+  const index = process.argv.indexOf(name);
+  if (index < 0) {
+    return undefined;
+  }
+  const value = process.argv[index + 1];
+  if (value === undefined || value.startsWith('--') || value.trim() === '') {
+    throw new Error(`${name} requires a path`);
+  }
+  return value;
 }
 
 function appendProcessLogs(logs, chunk) {
@@ -264,6 +285,18 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
         'recovery journal did not persist the complete contiguous event history',
       );
     },
+    async readHotPathMetrics(runId) {
+      const query = new URLSearchParams({ runId });
+      const payload = await requestFixture(
+        `/api/flow-gate/hot-path/metrics?${query.toString()}`,
+        undefined,
+      );
+      assert(
+        typeof payload.metrics === 'object' && payload.metrics !== null,
+        'flow-gate fixture returned malformed hot-path metrics',
+      );
+      return payload.metrics;
+    },
     async completeProviderRun() {
       const payload = await requestFixture('/api/flow-gate/run/complete', {});
       assert(
@@ -272,6 +305,18 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
           payload.providerRequestCount,
         )} provider requests instead of one`,
       );
+      assert(
+        typeof payload.providerEvents === 'object' &&
+          payload.providerEvents !== null &&
+          typeof payload.providerEvents.eventCount === 'number' &&
+          typeof payload.providerEvents.textDeltaCount === 'number',
+        'run vertical returned malformed provider event evidence',
+      );
+      return {
+        requestCount: payload.providerRequestCount,
+        eventCount: payload.providerEvents.eventCount,
+        textDeltaCount: payload.providerEvents.textDeltaCount,
+      };
     },
     async readApprovalState() {
       const payload = await requestFixture(
@@ -357,6 +402,7 @@ async function waitForTranscriptMarkerCount(page, expected) {
 }
 
 async function runReconnectReplayRecoveryFlow(page, harness) {
+  const runEventFrames = observeFlowGateRunEventFrames(page);
   await page.goto(harness.appUrl, { waitUntil: 'domcontentloaded' });
   await page
     .locator('textarea[name="assistant-message"]')
@@ -405,9 +451,11 @@ async function runReconnectReplayRecoveryFlow(page, harness) {
     countOccurrences(transcript, BUFFERED_RECOVERY_COMMENTARY) === 1,
     'buffered output did not replay exactly once after reconnect',
   );
+  return runEventFrames.readSingleRun();
 }
 
 async function runStartAndSettlementFlow(page, harness) {
+  const runEventFrames = observeFlowGateRunEventFrames(page);
   await page.goto(harness.appUrl, { waitUntil: 'domcontentloaded' });
   const composer = page.locator('textarea[name="assistant-message"]');
   await composer.waitFor({ state: 'visible', timeout: 15_000 });
@@ -431,7 +479,7 @@ async function runStartAndSettlementFlow(page, harness) {
     'run settled before the browser released the deterministic provider',
   );
 
-  await harness.completeProviderRun();
+  const provider = await harness.completeProviderRun();
   await waitForTranscriptMarkerCount(page, [
     { text: RUN_SETTLEMENT_PROMPT, count: 1 },
     { text: RUN_FINAL_TEXT, count: 1 },
@@ -464,6 +512,12 @@ async function runStartAndSettlementFlow(page, harness) {
     countOccurrences(reloadedTranscript, RUN_FINAL_TEXT) === 1,
     'reloaded transcript did not preserve the settled answer exactly once',
   );
+  const browser = runEventFrames.readSingleRun();
+  return {
+    browser,
+    daemon: await harness.readHotPathMetrics(browser.runId),
+    provider,
+  };
 }
 
 async function runApprovalFlow(page, harness) {
@@ -1069,8 +1123,13 @@ async function executeBrowserFlow(browser, name, run) {
   page.on('pageerror', (error) => pageErrors.push(error.message.slice(0, 120)));
   const startedAt = performance.now();
   try {
-    await run(page);
-    return { name, ok: true, ms: performance.now() - startedAt };
+    const evidence = await run(page);
+    return {
+      name,
+      ok: true,
+      ms: performance.now() - startedAt,
+      ...(evidence === undefined ? {} : { evidence }),
+    };
   } catch (error) {
     await page
       .screenshot({ path: path.join(screenshotDir, `${name}.png`) })
@@ -1146,26 +1205,30 @@ async function main() {
     abortController.signal.throwIfAborted();
     browser = await chromium.launch({ headless: true, env });
     abortController.signal.throwIfAborted();
-    results.push(
-      await executeBrowserFlow(
-        browser,
-        'reconnect-replays-buffered-daemon-output-once',
-        async (page) => {
-          try {
-            await runReconnectReplayRecoveryFlow(page, harness);
-          } finally {
-            await harness.finishRecovery();
-          }
-        },
-      ),
+    const browserVersion = browser.version();
+    const reconnectRecoveryResult = await executeBrowserFlow(
+      browser,
+      'reconnect-replays-buffered-daemon-output-once',
+      async (page) => {
+        let browserEvidence;
+        try {
+          browserEvidence = await runReconnectReplayRecoveryFlow(page, harness);
+        } finally {
+          await harness.finishRecovery();
+        }
+        return {
+          browser: browserEvidence,
+          daemon: await harness.readHotPathMetrics(browserEvidence.runId),
+        };
+      },
     );
-    results.push(
-      await executeBrowserFlow(
-        browser,
-        'run-start-streams-and-settles-durably',
-        (page) => runStartAndSettlementFlow(page, harness),
-      ),
+    results.push(reconnectRecoveryResult);
+    const runSettlementResult = await executeBrowserFlow(
+      browser,
+      'run-start-streams-and-settles-durably',
+      (page) => runStartAndSettlementFlow(page, harness),
     );
+    results.push(runSettlementResult);
     results.push(
       await executeBrowserFlow(
         browser,
@@ -1199,6 +1262,25 @@ async function main() {
         await executeBrowserFlow(browser, flow.name, (page) =>
           flow.run(page, harness.appUrl),
         ),
+      );
+    }
+    if (
+      hotPathOutputPath !== undefined &&
+      reconnectRecoveryResult.ok &&
+      reconnectRecoveryResult.evidence !== undefined &&
+      runSettlementResult.ok &&
+      runSettlementResult.evidence !== undefined
+    ) {
+      await writePrivatePerformanceReport(
+        path.resolve(repoRoot, hotPathOutputPath),
+        buildFlowGateHotPathReport({
+          environment: collectBrowserPerformanceEnvironment({
+            repoRoot,
+            browserVersion,
+          }),
+          reconnectRecovery: reconnectRecoveryResult.evidence,
+          runSettlement: runSettlementResult.evidence,
+        }),
       );
     }
   } catch (error) {

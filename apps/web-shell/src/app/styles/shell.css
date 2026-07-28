@@ -173,17 +173,29 @@ h3 {
   gap: 4px;
 }
 
-/* + / 채팅 / 세션 — 헤더 컨트롤 확대 */
+/* 탭 둘은 하나의 세그먼트로 붙여 읽는다 — 옆의 아이콘 버튼(동작)과 성격이
+   다르므로, 간격으로 그 차이를 드러낸다. */
+.assistant-header-tabgroup {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-inline-end: 4px;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: var(--surface-container-lowest);
+}
+
+/* 채팅 / 세션 탭 — 헤더 컨트롤 확대 */
 .assistant-header-tabs .pref-toggle {
   padding: 6px 12px;
   border-radius: var(--radius-sm);
   font-size: 12.5px;
 }
 
+/* 아이콘으로 그리므로 글리프용 font-size가 필요하지 않다 */
 .assistant-header-tabs .rail-icon-button {
   width: 28px;
   height: 28px;
-  font-size: 18px;
 }
 
 .assistant-header-tabs .layout-cycle {

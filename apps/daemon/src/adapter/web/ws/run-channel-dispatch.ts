@@ -432,6 +432,10 @@ async function handlePlanWorkflowCommand(
   command: PlanWorkflowCommand,
   runtimeContext: RunChannelRuntimeContext,
 ): Promise<void> {
+  const replacedActiveRun =
+    command.kind === 'cancel' || command.kind === 'request_revision'
+      ? runtimeContext.activeRuns.getRunByThreadId(command.threadId)
+      : undefined;
   let result;
   try {
     result = await runtimeContext.planningWorkflows.applyCommand(command);
@@ -454,6 +458,12 @@ async function handlePlanWorkflowCommand(
       getErrorMessage(error),
     );
     return;
+  }
+  if (replacedActiveRun !== undefined) {
+    runtimeContext.activeRuns.abortRunSubtree(
+      replacedActiveRun.runId,
+      'planning_workflow_replaced',
+    );
   }
   sendMessage(socket, {
     type: 'plan.workflow',
@@ -495,7 +505,9 @@ async function handlePlanWorkflowCommand(
                 ? 'Revise the proposed plan using the current conversation and submit a new canonical revision.'
                 : `Revise the proposed plan with this trusted host feedback, then submit a new canonical revision:\n\n${command.feedback}`,
             threadId: command.threadId,
-            planModeRequested: true,
+            // 이 continuation은 기존 workflow만 이어야 한다. 사용자가 그사이
+            // 취소했다면 새 계획 workflow를 조용히 만들지 않는다.
+            planModeRequested: false,
             planModeIntensity: result.snapshot.intensity,
             planModeDepth: result.snapshot.depth,
             silentPrompt: true,
@@ -506,6 +518,7 @@ async function handlePlanWorkflowCommand(
               ...result.executionTemplate,
               prompt: [
                 'Explain the current proposed plan visually and in searchable text.',
+                "Use the user's language for the title and visible labels. Lead with the decision, work flow, and expected outcome. Keep raw ids, digests, internal state names, and file-level evidence in the adjacent searchable text instead of making them the diagram's main story.",
                 'Do not alter or resubmit the proposal. End after the explanation so the same trusted approval card remains current.',
                 `Rendering stamp: ${JSON.stringify({
                   workflowId: result.snapshot.workflowId,
@@ -516,7 +529,9 @@ async function handlePlanWorkflowCommand(
                 `Canonical plan: ${JSON.stringify(result.snapshot.draft)}`,
               ].join('\n\n'),
               threadId: command.threadId,
-              planModeRequested: true,
+              // 그림은 현재 승인 revision의 projection이다. 취소 뒤 새
+              // workflow를 만드는 요청으로 승격하지 않는다.
+              planModeRequested: false,
               planModeIntensity: result.snapshot.intensity,
               planModeDepth: result.snapshot.depth,
               silentPrompt: true,
@@ -528,14 +543,43 @@ async function handlePlanWorkflowCommand(
   const generatedRequestId = `${requestId}:plan-${command.kind}`;
   runDetached(
     'run-channel/generated-planning-workflow',
-    () =>
-      dispatchRunStart({
+    async () => {
+      if (
+        command.kind === 'request_revision' &&
+        replacedActiveRun !== undefined
+      ) {
+        await runtimeContext.activeRuns.waitForThreadIdle(command.threadId);
+      }
+      if (
+        command.kind === 'request_revision' ||
+        command.kind === 'explain_visual'
+      ) {
+        const current = await runtimeContext.planningWorkflows.readThread(
+          command.threadId,
+        );
+        const stillCurrent =
+          command.kind === 'request_revision'
+            ? current?.state === 'collecting' &&
+              current.workflowId === command.workflowId &&
+              current.planId === command.planId &&
+              current.revision === command.revision
+            : current?.state === 'awaiting_approval' &&
+              current.workflowId === command.workflowId &&
+              current.planId === command.planId &&
+              current.revision === command.revision &&
+              current.digest === command.digest;
+        if (!stillCurrent) {
+          return;
+        }
+      }
+      await dispatchRunStart({
         socket,
         requestId: generatedRequestId,
         request: generatedRequest,
         runtimeContext,
         socketState: getSocketState(socket),
-      }),
+      });
+    },
     {
       logger: logger.withContext({
         messageType: 'plan.command',
