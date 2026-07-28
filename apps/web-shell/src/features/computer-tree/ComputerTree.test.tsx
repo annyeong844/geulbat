@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
 
+import type { FileTreeNode } from '@geulbat/protocol/files';
+
 import { ComputerTree } from './ComputerTree.js';
 import { TreeContextMenu } from './TreeContextMenu.js';
-import { flattenVisibleTree } from './tree-flatten.js';
+import { countHiddenEntries, flattenVisibleTree } from './tree-flatten.js';
 
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -122,7 +124,8 @@ void test('ComputerTree keeps daemon shortcut paths intact and labels the logica
   assert.doesNotMatch(html, /C:\//);
   assert.match(html, /<nav class="quick-access" aria-label="빠른 위치">/);
   assert.match(html, /class="quick-access-heading"[^>]*>빠른 위치</);
-  assert.match(html, /class="current-directory-heading"[^>]*>현재 폴더</);
+  assert.match(html, /class="current-directory-heading"/);
+  assert.match(html, />현재 폴더</);
   assert.match(html, /role="tree" aria-label="현재 폴더 내용"/);
   assert.match(html, /quick-access-icon computer/);
   assert.doesNotMatch(html, /🏠|💻|💽|📁/u);
@@ -281,6 +284,45 @@ void test('flattenVisibleTree orders folders before files with Korean natural so
 
   // 폴더 먼저, 이후 파일 — ko 로케일은 한글을 라틴보다 앞에, 숫자는 자연 정렬 (2장 < 10장)
   assert.deepEqual(names, ['자료', 'docs', '2장.md', '10장.md', 'hello.txt']);
+});
+
+void test('flattenVisibleTree hides dot entries unless asked, at every depth', () => {
+  const tree: FileTreeNode[] = [
+    {
+      name: '자료',
+      path: '자료',
+      type: 'directory',
+      children: [
+        { name: '.DS_Store', path: '자료/.DS_Store', type: 'file' },
+        { name: '초고.md', path: '자료/초고.md', type: 'file' },
+      ],
+    },
+    { name: '.cache', path: '.cache', type: 'directory', children: [] },
+    { name: '.cargo', path: '.cargo', type: 'directory', children: [] },
+    { name: '메모.md', path: '메모.md', type: 'file' },
+  ];
+  const expanded = new Set(['자료']);
+
+  const hidden = flattenVisibleTree(tree, expanded, 0, {
+    showHiddenEntries: false,
+  });
+  assert.deepEqual(
+    hidden.map((row) => row.node.name),
+    ['자료', '초고.md', '메모.md'],
+    'dot entries must be filtered in nested levels too',
+  );
+
+  const shown = flattenVisibleTree(tree, expanded, 0, {
+    showHiddenEntries: true,
+  });
+  assert.deepEqual(
+    shown.map((row) => row.node.name),
+    ['.cache', '.cargo', '자료', '.DS_Store', '초고.md', '메모.md'],
+    'showing hidden entries must not change the existing sort',
+  );
+
+  // 토글 라벨이 쓰는 개수는 현재 레벨 기준이다.
+  assert.equal(countHiddenEntries(tree), 2);
 });
 
 void test('flattenVisibleTree only walks expanded directories', () => {

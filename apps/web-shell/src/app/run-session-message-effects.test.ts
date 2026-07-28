@@ -229,9 +229,15 @@ void test('handleRunSessionMessage ignores applied interjects from an earlier sa
   assert.deepEqual(state.activeRunView.pendingSteers, [
     { receivedSeq: 1, text: 'current-run steer' },
   ]);
-  // 지난 런의 소비 보고는 이 말을 대화로 끌어올리지 못한다. 끌어올리면
-  // 읽히지도 않은 말이 반영된 것처럼 보인다.
-  assert.deepEqual(state.activeRunView.transcriptEntries, []);
+  // 지난 런의 소비 보고는 현재 런의 말풍선에서 pending 표식을 걷지 못한다.
+  // 표식이 사라지면 읽히지도 않은 말이 반영된 것처럼 보인다.
+  assert.deepEqual(state.activeRunView.transcriptEntries, [
+    {
+      kind: 'user_text',
+      text: 'current-run steer',
+      pendingSteerSeq: 1,
+    },
+  ]);
 });
 
 void test('handleRunSessionMessage marks tree refresh when daemon reports computer file changes', async () => {

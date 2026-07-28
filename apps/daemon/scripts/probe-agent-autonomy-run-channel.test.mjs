@@ -11,9 +11,16 @@ const RUN_ID = 'run-autonomy-probe';
 const EXPECTED_ANSWER = 'geulbat-cli2';
 
 class FakeRunChannelSocket {
-  constructor({ declarationPath, approval = false }) {
+  constructor({
+    declarationPath,
+    approval = false,
+    socketError = false,
+    socketErrorAfterAck = false,
+  }) {
     this.declarationPath = declarationPath;
     this.approval = approval;
+    this.socketError = socketError;
+    this.socketErrorAfterAck = socketErrorAfterAck;
     this.listeners = new Map();
     this.sent = [];
     queueMicrotask(() => this.emit('open'));
@@ -49,6 +56,10 @@ class FakeRunChannelSocket {
     const message = JSON.parse(String(raw));
     this.sent.push(message);
     if (message.type === 'run.auth') {
+      if (this.socketError) {
+        queueMicrotask(() => this.emit('error'));
+        return;
+      }
       this.reply({
         type: 'run.event',
         event: {
@@ -71,12 +82,16 @@ class FakeRunChannelSocket {
       assert.equal(typeof message.request.threadId, 'string');
       assert.deepEqual(message.request.allowedPublicToolNames, ['read_file']);
       this.threadId = message.request.threadId;
-      this.event(1, 'run_ack', {
+      this.event(0, 'run_ack', {
         runId: RUN_ID,
         threadId: this.threadId,
       });
+      if (this.socketErrorAfterAck) {
+        queueMicrotask(() => this.emit('error'));
+        return;
+      }
       if (this.approval) {
-        this.event(2, 'approval_required', {
+        this.event(1, 'approval_required', {
           callId: 'approval-call',
           runId: RUN_ID,
           threadId: this.threadId,
@@ -87,15 +102,15 @@ class FakeRunChannelSocket {
           sideEffectLevel: 'write',
         });
       } else {
-        this.event(2, 'usage_updated', {
+        this.event(1, 'usage_updated', {
           inputTokens: 120,
           cachedInputTokens: 100,
           outputTokens: 8,
         });
-        this.event(3, 'done', { answer: EXPECTED_ANSWER, ok: true });
+        this.event(2, 'done', { answer: EXPECTED_ANSWER, ok: true });
       }
     } else if (message.type === 'run.cancel') {
-      this.event(3, 'error', { code: 'internal', message: 'cancelled' });
+      this.event(2, 'error', { code: 'internal', message: 'cancelled' });
     } else if (message.type === 'run.event.ack') {
       this.reply({
         type: 'run.control',
@@ -132,40 +147,54 @@ class FakeRunChannelSocket {
   }
 }
 
-async function runProbe(t, approval = false) {
+async function runProbe(t, options = {}) {
   const repoRoot = await mkdtemp(join(tmpdir(), 'geulbat-autonomy-probe-'));
   t.after(() => rm(repoRoot, { recursive: true, force: true }));
   const output = '.audit/agent-autonomy-live/test-attempt';
   let socket;
-  const result = await runAgentAutonomyRunChannelProbe({
-    argv: [
-      '--base-url',
-      'http://127.0.0.1:3456',
-      '--model-id',
-      'gpt-5.6-sol',
-      '--output',
-      output,
-      '--timeout-ms',
-      '10000',
-    ],
-    env: { GEULBAT_AGENT_AUTONOMY_LIVE: '1' },
-    repoRoot,
-    fetchImpl: async () => ({
-      ok: true,
-      text: async () =>
-        '<meta name="geulbat-shell-access-token" content="abcdef">',
-    }),
-    createWebSocket: () => {
-      socket = new FakeRunChannelSocket({
-        approval,
-        declarationPath: join(repoRoot, output, 'declaration.json'),
-      });
-      return socket;
-    },
-    now: () => new Date('2026-07-28T01:00:00.000Z'),
-    log: () => {},
-  });
-  return { output: join(repoRoot, output), result, socket };
+  let nowCallCount = 0;
+  let result;
+  let error;
+  try {
+    result = await runAgentAutonomyRunChannelProbe({
+      argv: [
+        '--base-url',
+        'http://127.0.0.1:3456',
+        '--model-id',
+        'gpt-5.6-sol',
+        '--output',
+        output,
+        '--timeout-ms',
+        '10000',
+      ],
+      env: { GEULBAT_AGENT_AUTONOMY_LIVE: '1' },
+      repoRoot,
+      fetchImpl: async () => ({
+        ok: true,
+        text: async () =>
+          '<meta name="geulbat-shell-access-token" content="abcdef">',
+      }),
+      createWebSocket: () => {
+        socket = new FakeRunChannelSocket({
+          approval: options.approval,
+          declarationPath: join(repoRoot, output, 'declaration.json'),
+          socketError: options.socketError,
+          socketErrorAfterAck: options.socketErrorAfterAck,
+        });
+        return socket;
+      },
+      now: () =>
+        new Date(
+          nowCallCount++ === 0
+            ? '2026-07-28T01:00:00.000Z'
+            : '2026-07-28T01:00:10.000Z',
+        ),
+      log: () => {},
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  return { error, output: join(repoRoot, output), result, socket };
 }
 
 void test('records a content-redacted exact-answer run-channel proof', async (t) => {
@@ -173,6 +202,7 @@ void test('records a content-redacted exact-answer run-channel proof', async (t)
 
   assert.equal(result.exitCode, 0);
   assert.equal(result.report.primary.passedTaskCount, 1);
+  assert.equal(result.receipt.lastEventSeq, 2);
   assert.equal(result.report.supporting.providerUsage[0].inputTokens, 120);
   assert.equal(
     socket.sent.some((message) => message.type === 'run.event.ack'),
@@ -191,7 +221,7 @@ void test('records a content-redacted exact-answer run-channel proof', async (t)
 });
 
 void test('cancels and fails closed on unexpected approval', async (t) => {
-  const { result, socket } = await runProbe(t, true);
+  const { result, socket } = await runProbe(t, { approval: true });
 
   assert.equal(result.exitCode, 1);
   assert.equal(result.report.primary.passedTaskCount, 0);
@@ -200,4 +230,37 @@ void test('cancels and fails closed on unexpected approval', async (t) => {
     socket.sent.some((message) => message.type === 'run.cancel'),
     true,
   );
+});
+
+void test('surfaces an owned safe code when the run socket disappears', async (t) => {
+  const { error, output } = await runProbe(t, { socketError: true });
+
+  assert.equal(
+    error instanceof Error && Reflect.get(error, 'code'),
+    'run_channel_socket_error',
+  );
+  const receipt = JSON.parse(
+    await readFile(join(output, 'failure-receipt.json'), 'utf8'),
+  );
+  assert.equal(receipt.phase, 'pre_run');
+  assert.equal(existsSync(join(output, 'report.json')), false);
+});
+
+void test('counts a socket loss after run_ack as a failed primary attempt', async (t) => {
+  const { error, output } = await runProbe(t, {
+    socketErrorAfterAck: true,
+  });
+
+  assert.equal(
+    error instanceof Error && Reflect.get(error, 'code'),
+    'run_channel_socket_error',
+  );
+  const [receipt, report] = await Promise.all(
+    ['failure-receipt.json', 'report.json'].map(async (name) =>
+      JSON.parse(await readFile(join(output, name), 'utf8')),
+    ),
+  );
+  assert.equal(receipt.phase, 'run');
+  assert.equal(report.primary.eligibleTaskCount, 1);
+  assert.equal(report.primary.passedTaskCount, 0);
 });

@@ -1,28 +1,28 @@
-import { randomUUID } from 'node:crypto';
-import type { PtcEpochCallbackHandler } from '../../callback/epoch-callback.js';
-import type {
-  DetachedProcessExitInfo,
-  DetachedProcessHandle,
-  DetachedProcessPreparedOutputDelivery,
-  DetachedProcessOutputSegment,
-} from './execute-code-cell-process.js';
 import type {
   PtcExecuteCodeCellDurableOutput,
   PtcExecuteCodeCellId,
   PtcExecuteCodeRuntimeResult,
-  PtcExecuteCodeRuntimeStoreSummary,
-  PtcExecuteCodeStoreError,
 } from './execute-code-runtime-contract.js';
+import {
+  createPtcExecuteCodeActiveCellStore,
+  isMatchingPtcExecuteCodeCell,
+  type CellLookupResult,
+  type CloseCellResult,
+  type PtcExecuteCodeCellCloseReason,
+  type PtcExecuteCodeCellPlacementFinalization,
+  type PtcExecuteCodeCellReapTimerPolicy,
+  type PtcExecuteCodeCellResources,
+  type PtcExecuteCodeCellState,
+  type RunningCellRecord,
+} from './execute-code-cell-active-store.js';
 import { createPtcExecuteCodeCellRevisionSignal } from './execute-code-cell-revision-signal.js';
 import {
   createPtcExecuteCodeCellTerminalRetentionStore,
   PTC_EXECUTE_CODE_CELL_TERMINAL_RESULT_MEMORY_RETENTION_DEFAULT_MS,
-  type BaseCellRecord,
   type PersistPtcExecuteCodeCellTerminalResult,
   type PtcExecuteCodeCellReapCallback,
   type PtcExecuteCodeCellReapCancel,
   type PtcExecuteCodeCellRetainedResult,
-  type PtcExecuteCodeCellStoreFinalization,
   type PtcExecuteCodeCellTerminalResult,
   type TerminalCellLookupResult,
 } from './execute-code-cell-terminal-retention.js';
@@ -31,135 +31,6 @@ import { runDetached } from '../../../utils/run-detached.js';
 export const PTC_EXECUTE_CODE_CELL_TERMINATE_GRACE_MS = 1_000;
 const CLEANUP_DIAGNOSTIC_TOKEN_MAX_LENGTH = 80;
 const CLEANUP_DIAGNOSTIC_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]*$/u;
-
-type PtcExecuteCodeCellState =
-  | 'admitting'
-  | 'queued'
-  | 'running'
-  | 'terminating'
-  | 'terminal_retained'
-  | 'terminal_expired';
-
-type PtcExecuteCodeCellCloseReason =
-  | 'terminate'
-  | 'run_abort'
-  | 'run_terminal'
-  | 'orphan_reap'
-  | 'shutdown';
-
-interface PtcExecuteCodeCellResources {
-  effectiveTimeoutMs: number;
-  handle: DetachedProcessHandle;
-  closeBridge: () => Promise<void> | void;
-  taintSession: (args: {
-    reason: PtcExecuteCodeCellCloseReason;
-  }) => Promise<boolean> | boolean;
-  finalizePlacement?: () =>
-    | Promise<PtcExecuteCodeCellPlacementFinalization>
-    | PtcExecuteCodeCellPlacementFinalization;
-  finalizeCoordinate?: () => Promise<void> | void;
-  replaceCallbackHandler?: (handler: PtcEpochCallbackHandler) => void;
-  finalizeStore?: (
-    status: PtcExecuteCodeCellTerminalResult['status'],
-  ) => Promise<PtcExecuteCodeCellStoreFinalization>;
-  terminalResultStateRoot?: string;
-}
-
-type PtcExecuteCodeCellPlacementFinalization =
-  | { ok: true }
-  | {
-      ok: false;
-      message: string;
-      diagnostics: Record<string, string | number | boolean>;
-    };
-
-interface PtcExecuteCodeCellReapTimerPolicy {
-  runningCellReapAfterMs?: number;
-  scheduleReapTimeout?: (
-    callback: PtcExecuteCodeCellReapCallback,
-    delayMs: number,
-  ) => PtcExecuteCodeCellReapCancel;
-}
-
-type CellAdmissionResult =
-  | { ok: true; cellId: PtcExecuteCodeCellId }
-  | {
-      ok: false;
-      reasonCode: 'cell_active';
-      cellId: PtcExecuteCodeCellId;
-      state: PtcExecuteCodeCellState;
-    }
-  | {
-      ok: false;
-      reasonCode: 'cell_result_unclaimed';
-      cellId: PtcExecuteCodeCellId;
-      state: 'terminal_retained';
-    };
-
-type CellLookupResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; reasonCode: 'cell_missing' };
-
-type CloseCellResult =
-  | {
-      ok: true;
-      status: 'terminated';
-      output: DetachedProcessOutputSegment;
-      exit: DetachedProcessExitInfo;
-      bridgeClosed: boolean;
-      sessionTainted: boolean;
-      store?: PtcExecuteCodeRuntimeStoreSummary;
-      storeError?: PtcExecuteCodeStoreError;
-      cleanupDiagnostics?: CleanupDiagnostics;
-    }
-  | {
-      ok: true;
-      status: 'terminal_retained_kept' | 'terminal_retained_dropped';
-      terminalResult: PtcExecuteCodeCellRetainedResult;
-    }
-  | {
-      ok: true;
-      status:
-        | 'terminal_expired_dropped'
-        | 'admission_released'
-        | 'queued_cancelled';
-      store?: PtcExecuteCodeRuntimeStoreSummary;
-    }
-  | { ok: false; reasonCode: 'cell_missing' };
-
-interface AdmittingCellRecord extends BaseCellRecord {
-  state: 'admitting';
-}
-
-interface QueuedCellRecord extends BaseCellRecord {
-  state: 'queued';
-  cancelAcquire: () => void;
-  settlePromise: Promise<void>;
-  finalizeStore?: (
-    status: PtcExecuteCodeCellTerminalResult['status'],
-  ) => Promise<PtcExecuteCodeCellStoreFinalization>;
-  terminalResultStateRoot: string;
-}
-
-interface RunningCellRecord
-  extends BaseCellRecord, PtcExecuteCodeCellResources {
-  state: 'running';
-  orphanReapTimer?: PtcExecuteCodeCellReapCancel;
-}
-
-interface TerminatingCellRecord
-  extends BaseCellRecord, PtcExecuteCodeCellResources {
-  state: 'terminating';
-  closePromise: Promise<CloseCellResult>;
-  reason: PtcExecuteCodeCellCloseReason;
-  orphanReapTimer?: PtcExecuteCodeCellReapCancel;
-}
-
-type CellRecord =
-  | AdmittingCellRecord
-  | QueuedCellRecord
-  | RunningCellRecord
-  | TerminatingCellRecord;
 
 export function createPtcExecuteCodeCellRegistry(
   options: PtcExecuteCodeCellReapTimerPolicy & {
@@ -170,13 +41,6 @@ export function createPtcExecuteCodeCellRegistry(
     persistTerminalResult?: PersistPtcExecuteCodeCellTerminalResult;
   } = {},
 ) {
-  const activeCellsByThread = new Map<
-    string,
-    Map<PtcExecuteCodeCellId, CellRecord>
-  >();
-  const createCellId =
-    options.createCellId ?? (() => `ptc_cell_${randomUUID()}`);
-  const allowConcurrentCells = options.allowConcurrentCells === true;
   const now = options.now ?? Date.now;
   const terminalResultMemoryRetentionMs =
     options.terminalResultMemoryRetentionMs ??
@@ -188,13 +52,6 @@ export function createPtcExecuteCodeCellRegistry(
     throw new Error(
       'PTC execute_code terminal result memory retention is invalid',
     );
-  }
-  const runningCellReapAfterMs = options.runningCellReapAfterMs;
-  if (
-    runningCellReapAfterMs !== undefined &&
-    (!Number.isInteger(runningCellReapAfterMs) || runningCellReapAfterMs < 1)
-  ) {
-    throw new Error('PTC execute_code running cell reap policy is invalid');
   }
   const scheduleReapTimeout =
     options.scheduleReapTimeout ?? scheduleDefaultReapTimeout;
@@ -244,228 +101,50 @@ export function createPtcExecuteCodeCellRegistry(
     bumpRevision,
   });
 
-  function getActiveCell(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): CellRecord | undefined {
-    return activeCellsByThread.get(args.threadId)?.get(args.cellId);
-  }
-
-  function readFirstActiveCell(threadId: string): CellRecord | undefined {
-    return activeCellsByThread.get(threadId)?.values().next().value;
-  }
-
-  function hasActiveCells(threadId: string): boolean {
-    return (activeCellsByThread.get(threadId)?.size ?? 0) > 0;
-  }
-
-  function setActiveCell(record: CellRecord): void {
-    const cells =
-      activeCellsByThread.get(record.threadId) ??
-      new Map<PtcExecuteCodeCellId, CellRecord>();
-    cells.set(record.cellId, record);
-    activeCellsByThread.set(record.threadId, cells);
-  }
-
-  function deleteActiveCell(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): void {
-    const cells = activeCellsByThread.get(args.threadId);
-    if (cells === undefined) {
-      return;
-    }
-    cells.delete(args.cellId);
-    if (cells.size === 0) {
-      activeCellsByThread.delete(args.threadId);
-    }
-  }
-
-  function readAllActiveCells(): CellRecord[] {
-    return [...activeCellsByThread.values()].flatMap((cells) => [
-      ...cells.values(),
-    ]);
-  }
-
-  function reserveAdmittingCell(args: {
-    threadId: string;
-    cellId?: PtcExecuteCodeCellId;
-  }): CellAdmissionResult {
-    const current = readFirstActiveCell(args.threadId);
-    if (!allowConcurrentCells && current !== undefined) {
-      return {
-        ok: false,
-        reasonCode: 'cell_active',
-        cellId: current.cellId,
-        state: current.state,
-      };
-    }
-    const retained = getFirstClaimableRetainedCell(args.threadId);
-    if (!allowConcurrentCells && retained !== undefined) {
-      return {
-        ok: false,
-        reasonCode: 'cell_result_unclaimed',
-        cellId: retained.cellId,
-        state: retained.state,
-      };
-    }
-
-    const cellId = args.cellId ?? createCellId();
-    setActiveCell({
-      threadId: args.threadId,
-      cellId,
-      state: 'admitting',
-      createdAtMs: now(),
-    });
-    bumpRevision(args.threadId);
-    return { ok: true, cellId };
-  }
-
-  function releaseAdmittingCell(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): CellLookupResult<{ released: boolean }> {
-    const current = getActiveCell(args);
-    if (!isMatchingCell(current, args.cellId)) {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-    if (current.state !== 'admitting' && current.state !== 'queued') {
-      return { ok: true, value: { released: false } };
-    }
-    deleteActiveCell(args);
-    bumpRevision(args.threadId);
-    return { ok: true, value: { released: true } };
-  }
-
-  function markAdmittedCellQueued(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-    terminalResultStateRoot: string;
-    cancelAcquire: () => void;
-    settlePromise: Promise<void>;
-    finalizeStore?: (
-      status: PtcExecuteCodeCellTerminalResult['status'],
-    ) => Promise<PtcExecuteCodeCellStoreFinalization>;
-  }): CellLookupResult<{ state: 'queued' }> {
-    const current = getActiveCell(args);
-    if (current?.state !== 'admitting') {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-    setActiveCell({
-      ...current,
-      state: 'queued',
-      cancelAcquire: args.cancelAcquire,
-      settlePromise: args.settlePromise,
-      terminalResultStateRoot: args.terminalResultStateRoot,
-      ...(args.finalizeStore === undefined
-        ? {}
-        : { finalizeStore: args.finalizeStore }),
-    });
-    bumpRevision(args.threadId);
-    return { ok: true, value: { state: 'queued' } };
-  }
-
-  function promoteAdmittedCell(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-    resources: PtcExecuteCodeCellResources;
-  }): CellLookupResult<{ state: 'running' }> {
-    const current = getActiveCell(args);
-    if (
-      !isMatchingCell(current, args.cellId) ||
-      (current.state !== 'admitting' && current.state !== 'queued')
-    ) {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-    const runningRecord: RunningCellRecord = {
-      ...current,
-      state: 'running',
-      ...args.resources,
-    };
-    if (runningCellReapAfterMs !== undefined) {
-      runningRecord.orphanReapTimer = scheduleReapTimeout(async () => {
-        await closeCell({
-          threadId: args.threadId,
-          cellId: args.cellId,
-          reason: 'orphan_reap',
-        });
-      }, runningCellReapAfterMs);
-    }
-    setActiveCell(runningRecord);
-    bumpRevision(args.threadId);
-    return { ok: true, value: { state: 'running' } };
-  }
-
-  function adoptRunningCell(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-    createdAtMs: number;
-    orphanReapAtMs?: number;
-    resources: PtcExecuteCodeCellResources;
-  }): CellLookupResult<{ state: 'running' }> {
-    if (
-      getActiveCell(args) !== undefined ||
-      getRetainedTerminalCellRecord(args) !== undefined ||
-      (!allowConcurrentCells && hasActiveCells(args.threadId))
-    ) {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-    const runningRecord: RunningCellRecord = {
-      threadId: args.threadId,
-      cellId: args.cellId,
-      state: 'running',
-      createdAtMs: args.createdAtMs,
-      ...args.resources,
-    };
-    const reapDelayMs =
-      args.orphanReapAtMs === undefined
-        ? runningCellReapAfterMs
-        : Math.max(0, args.orphanReapAtMs - now());
-    if (reapDelayMs !== undefined) {
-      runningRecord.orphanReapTimer = scheduleReapTimeout(async () => {
-        await closeCell({
-          threadId: args.threadId,
-          cellId: args.cellId,
-          reason: 'orphan_reap',
-        });
-      }, reapDelayMs);
-    }
-    setActiveCell(runningRecord);
-    bumpRevision(args.threadId);
-    return { ok: true, value: { state: 'running' } };
-  }
-
-  function replaceRunningCellCallbackHandler(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-    handler: PtcEpochCallbackHandler;
-  }): CellLookupResult<{ replaced: boolean }> {
-    const current = getActiveCell(args);
-    if (!isMatchingCell(current, args.cellId) || current.state !== 'running') {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-    current.replaceCallbackHandler?.(args.handler);
-    return {
-      ok: true,
-      value: { replaced: current.replaceCallbackHandler !== undefined },
-    };
-  }
-
-  function markRunningCellTerminalResultPersistence(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-    stateRoot: string;
-  }): CellLookupResult<{ marked: true }> {
-    const current = getActiveCell(args);
-    if (!isMatchingCell(current, args.cellId) || current.state !== 'running') {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-    setActiveCell({
-      ...current,
-      terminalResultStateRoot: args.stateRoot,
-    });
-    return { ok: true, value: { marked: true } };
-  }
+  const {
+    getActiveCell,
+    readFirstActiveCell,
+    hasActiveCells,
+    setActiveCell,
+    deleteActiveCell,
+    readAllActiveCells,
+    reserveAdmittingCell,
+    releaseAdmittingCell,
+    markAdmittedCellQueued,
+    promoteAdmittedCell,
+    adoptRunningCell,
+    replaceRunningCellCallbackHandler,
+    markRunningCellTerminalResultPersistence,
+    drainRunningCellOutput,
+    prepareRunningCellOutputDelivery,
+    commitRunningCellOutputDelivery,
+    readRunningCellOutputRevision,
+    waitForRunningCellOutputChange,
+    readRunningCellEffectiveTimeoutMs,
+    clearRunningCellReapTimer,
+  } = createPtcExecuteCodeActiveCellStore({
+    now,
+    bumpRevision,
+    getFirstClaimableRetainedCell,
+    hasRetainedTerminalCell: (args) =>
+      getRetainedTerminalCellRecord(args) !== undefined,
+    closeOrphanCell: (args) =>
+      closeCell({
+        ...args,
+        reason: 'orphan_reap',
+      }),
+    waitUntilAbort,
+    scheduleReapTimeout,
+    ...(options.createCellId === undefined
+      ? {}
+      : { createCellId: options.createCellId }),
+    ...(options.allowConcurrentCells === undefined
+      ? {}
+      : { allowConcurrentCells: options.allowConcurrentCells }),
+    ...(options.runningCellReapAfterMs === undefined
+      ? {}
+      : { runningCellReapAfterMs: options.runningCellReapAfterMs }),
+  });
 
   async function recordTerminalCellResult(args: {
     threadId: string;
@@ -478,7 +157,7 @@ export function createPtcExecuteCodeCellRegistry(
     CellLookupResult<{ bridgeClosed: boolean; sessionTainted?: boolean }>
   > {
     const current = getActiveCell(args);
-    if (!isMatchingCell(current, args.cellId)) {
+    if (!isMatchingPtcExecuteCodeCell(current, args.cellId)) {
       if (getRetainedTerminalCellRecord(args) !== undefined) {
         return { ok: true, value: { bridgeClosed: true } };
       }
@@ -549,7 +228,7 @@ export function createPtcExecuteCodeCellRegistry(
     }
     const coordinateFinalization = await finalizeCellCoordinate(current);
     const latest = getActiveCell(args);
-    if (!isMatchingCell(latest, args.cellId)) {
+    if (!isMatchingPtcExecuteCodeCell(latest, args.cellId)) {
       if (getRetainedTerminalCellRecord(args) !== undefined) {
         return { ok: true, value: { bridgeClosed } };
       }
@@ -833,98 +512,6 @@ export function createPtcExecuteCodeCellRegistry(
     return { ok: true, value: current.value.result };
   }
 
-  function drainRunningCellOutput(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): CellLookupResult<DetachedProcessOutputSegment> {
-    const current = getActiveCell(args);
-    if (!isMatchingCell(current, args.cellId) || current.state !== 'running') {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-
-    return { ok: true, value: current.handle.drainNewOutput() };
-  }
-
-  function prepareRunningCellOutputDelivery(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }):
-    | CellLookupResult<DetachedProcessPreparedOutputDelivery>
-    | { ok: false; reasonCode: 'delivery_unavailable' } {
-    const current = getActiveCell(args);
-    if (!isMatchingCell(current, args.cellId) || current.state !== 'running') {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-    if (current.handle.prepareOutputDelivery === undefined) {
-      return { ok: false, reasonCode: 'delivery_unavailable' };
-    }
-    return { ok: true, value: current.handle.prepareOutputDelivery() };
-  }
-
-  function commitRunningCellOutputDelivery(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): CellLookupResult<{ committed: true }> {
-    const current = getActiveCell(args);
-    if (!isMatchingCell(current, args.cellId) || current.state !== 'running') {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-    if (current.handle.commitPreparedOutputDelivery === undefined) {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-    current.handle.commitPreparedOutputDelivery();
-    return { ok: true, value: { committed: true } };
-  }
-
-  function readRunningCellOutputRevision(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): CellLookupResult<{ outputRevision: number }> {
-    const current = getActiveCell(args);
-    if (!isMatchingCell(current, args.cellId) || current.state !== 'running') {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-
-    return {
-      ok: true,
-      value: { outputRevision: current.handle.getOutputRevision?.() ?? 0 },
-    };
-  }
-
-  function waitForRunningCellOutputChange(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-    afterOutputRevision: number;
-    abortSignal?: AbortSignal;
-  }): Promise<number> {
-    const current = getActiveCell(args);
-    if (!isMatchingCell(current, args.cellId) || current.state !== 'running') {
-      return Promise.resolve(args.afterOutputRevision + 1);
-    }
-    if (current.handle.waitForOutputChange === undefined) {
-      return waitUntilAbort(args.abortSignal);
-    }
-    return current.handle.waitForOutputChange(
-      args.afterOutputRevision,
-      args.abortSignal,
-    );
-  }
-
-  function readRunningCellEffectiveTimeoutMs(args: {
-    threadId: string;
-    cellId: PtcExecuteCodeCellId;
-  }): CellLookupResult<{ effectiveTimeoutMs: number }> {
-    const current = getActiveCell(args);
-    if (!isMatchingCell(current, args.cellId) || current.state !== 'running') {
-      return { ok: false, reasonCode: 'cell_missing' };
-    }
-
-    return {
-      ok: true,
-      value: { effectiveTimeoutMs: current.effectiveTimeoutMs },
-    };
-  }
-
   async function closeCell(args: {
     threadId: string;
     cellId: PtcExecuteCodeCellId;
@@ -934,7 +521,7 @@ export function createPtcExecuteCodeCellRegistry(
     ) => PtcExecuteCodeRuntimeResult;
   }): Promise<CloseCellResult> {
     const current = getActiveCell(args);
-    if (!isMatchingCell(current, args.cellId)) {
+    if (!isMatchingPtcExecuteCodeCell(current, args.cellId)) {
       const retained = peekTerminalCell(args);
       if (retained === undefined) {
         return { ok: false, reasonCode: 'cell_missing' };
@@ -1145,7 +732,7 @@ export function createPtcExecuteCodeCellRegistry(
     };
 
     const current = getActiveCell(record);
-    if (isMatchingCell(current, record.cellId)) {
+    if (isMatchingPtcExecuteCodeCell(current, record.cellId)) {
       deleteActiveCell(record);
       bumpRevision(record.threadId);
     }
@@ -1273,23 +860,6 @@ export function createPtcExecuteCodeCellRegistry(
     getThreadRevision,
     waitForThreadRevisionChange,
   };
-
-  function clearRunningCellReapTimer(
-    record: RunningCellRecord | TerminatingCellRecord,
-  ): void {
-    if (record.orphanReapTimer === undefined) {
-      return;
-    }
-    record.orphanReapTimer();
-    delete record.orphanReapTimer;
-  }
-}
-
-function isMatchingCell(
-  record: CellRecord | undefined,
-  cellId: PtcExecuteCodeCellId,
-): record is CellRecord {
-  return record !== undefined && record.cellId === cellId;
 }
 
 function scheduleDefaultReapTimeout(

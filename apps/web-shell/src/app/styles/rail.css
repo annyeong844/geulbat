@@ -486,6 +486,33 @@
   flex: 1;
   height: 1px;
   background: var(--outline-variant);
+  order: 1;
+}
+
+/* 숨김 항목 토글 — 구분선 뒤(오른쪽 끝)에 앉는다. 평소에는 물러나 있고
+   숫자로 "무엇이 감춰져 있는지"만 알린다. */
+.hidden-entries-toggle {
+  order: 2;
+  flex: none;
+  border: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--on-surface-muted);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.hidden-entries-toggle:hover {
+  color: var(--on-surface-variant);
+}
+
+.hidden-entries-toggle[aria-pressed='true'] {
+  background: var(--secondary-soft);
+  color: var(--on-surface-variant);
 }
 
 .quick-access-item.active {
@@ -515,6 +542,83 @@
 
 .quick-access-item.active .quick-access-icon {
   color: var(--secondary);
+}
+
+/* 헤더 액션 아이콘 — 트리·빠른위치 아이콘과 같은 문법으로 그린다.
+   16px 박스, 1.4px currentColor. 텍스트 글리프(↑ + ⊞)를 쓰면 같은 줄에서
+   굵기와 광학 크기가 어긋난다. */
+.rail-action-icon {
+  position: relative;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: inherit;
+}
+
+.rail-action-icon::before,
+.rail-action-icon::after {
+  content: '';
+  position: absolute;
+  box-sizing: border-box;
+}
+
+/* 상위 폴더로 — 위로 향한 화살대와 머리 */
+.rail-action-icon.up::before {
+  left: 7.3px;
+  top: 3px;
+  width: 1.4px;
+  height: 10px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
+.rail-action-icon.up::after {
+  left: 4px;
+  top: 3.4px;
+  width: 8px;
+  height: 8px;
+  border-left: 1.4px solid currentColor;
+  border-top: 1.4px solid currentColor;
+  border-radius: 2px 0 0 0;
+  transform: rotate(45deg);
+  transform-origin: center;
+}
+
+/* 새 파일 — 문서 모양에 접힌 모서리(트리 file 아이콘과 같은 형태) */
+.rail-action-icon.new-file::before {
+  inset: 1px 3px;
+  border: 1.4px solid currentColor;
+  border-radius: 2px;
+}
+
+.rail-action-icon.new-file::after {
+  right: 3px;
+  top: 1px;
+  width: 4px;
+  height: 4px;
+  border-left: 1.4px solid currentColor;
+  border-bottom: 1.4px solid currentColor;
+}
+
+/* 새 폴더 — 트리 folder 아이콘과 같은 몸통에 탭 */
+.rail-action-icon.new-folder::before {
+  left: 1px;
+  top: 5px;
+  width: 14px;
+  height: 9px;
+  border: 1.4px solid currentColor;
+  border-radius: 2px;
+}
+
+.rail-action-icon.new-folder::after {
+  left: 2px;
+  top: 2px;
+  width: 7px;
+  height: 4px;
+  border: 1.4px solid currentColor;
+  border-bottom: 0;
+  border-radius: 2px 2px 0 0;
 }
 
 .quick-access-icon::before,

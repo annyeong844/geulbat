@@ -49,6 +49,19 @@ class ProbeInputError extends Error {
   }
 }
 
+class ProbeRuntimeError extends Error {
+  constructor(code, attemptState) {
+    super(code);
+    this.name = 'ProbeRuntimeError';
+    this.code = code;
+    this.attemptState = attemptState;
+  }
+}
+
+function readSafeRuntimeErrorCode(error) {
+  return error instanceof ProbeRuntimeError ? error.code : 'unexpected_error';
+}
+
 function digest(value) {
   return `sha256:${sha256StableJson(value)}`;
 }
@@ -136,11 +149,16 @@ function resolveOutput(repoRoot, value) {
 }
 
 async function readShellToken(baseUrl, fetchImpl, timeoutMs) {
-  const response = await fetchImpl(baseUrl, {
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let response;
+  try {
+    response = await fetchImpl(baseUrl, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    throw new ProbeRuntimeError('shell_http_unavailable');
+  }
   if (!response.ok) {
-    throw new Error(`shell_http_${response.status}`);
+    throw new ProbeRuntimeError(`shell_http_${response.status}`);
   }
   const html = await response.text();
   const match = new RegExp(
@@ -148,7 +166,7 @@ async function readShellToken(baseUrl, fetchImpl, timeoutMs) {
     'u',
   ).exec(html);
   if (match === null) {
-    throw new Error('shell_access_token_missing');
+    throw new ProbeRuntimeError('shell_access_token_missing');
   }
   return match[1];
 }
@@ -179,7 +197,7 @@ function runChannelUrl(baseUrl) {
 function collectAttempt(args) {
   const expectedThreadId = args.request.threadId;
   if (expectedThreadId === undefined) {
-    throw new Error('probe_thread_identity_missing');
+    throw new ProbeRuntimeError('probe_thread_identity_missing');
   }
   const socket = args.createWebSocket(runChannelUrl(args.baseUrl), {
     origin: args.baseUrl.origin,
@@ -187,7 +205,7 @@ function collectAttempt(args) {
   const authRequestId = randomUUID();
   let terminalAckRequestId;
   let cancelSent = false;
-  let lastSeq = 0;
+  let lastSeq = -1;
   let runId;
   let threadId;
   let startedAt;
@@ -202,6 +220,18 @@ function collectAttempt(args) {
 
   return new Promise((resolveAttempt, rejectAttempt) => {
     let settled = false;
+    const snapshotAttempt = () => ({
+      interventions: [...interventions],
+      lastSeq,
+      runId,
+      startedAt,
+      threadId,
+      toolDurationMs,
+      toolFailureCount,
+      toolInvocationCount,
+      usage,
+      usageAt,
+    });
     const cleanup = () => {
       clearTimeout(timeout);
       socket.removeAllListeners();
@@ -211,7 +241,12 @@ function collectAttempt(args) {
       if (!settled) {
         settled = true;
         cleanup();
-        rejectAttempt(error);
+        rejectAttempt(
+          new ProbeRuntimeError(
+            readSafeRuntimeErrorCode(error),
+            snapshotAttempt(),
+          ),
+        );
       }
     };
     const finish = () => {
@@ -226,19 +261,7 @@ function collectAttempt(args) {
       }
       settled = true;
       cleanup();
-      resolveAttempt({
-        interventions,
-        lastSeq,
-        runId,
-        startedAt,
-        terminal,
-        threadId,
-        toolDurationMs,
-        toolFailureCount,
-        toolInvocationCount,
-        usage,
-        usageAt,
-      });
+      resolveAttempt({ ...snapshotAttempt(), terminal });
     };
     const timeout = setTimeout(() => {
       if (runId !== undefined && !cancelSent) {
@@ -250,7 +273,7 @@ function collectAttempt(args) {
           }),
         );
       }
-      fail(new Error('run_channel_timeout'));
+      fail(new ProbeRuntimeError('run_channel_timeout'));
     }, args.timeoutMs);
 
     socket.once('open', () => {
@@ -266,7 +289,7 @@ function collectAttempt(args) {
       try {
         const message = JSON.parse(String(raw));
         if (!isRunChannelServerMessage(message)) {
-          throw new Error('invalid_run_channel_message');
+          throw new ProbeRuntimeError('invalid_run_channel_message');
         }
         if (
           message.type === 'run.auth.ok' &&
@@ -282,7 +305,7 @@ function collectAttempt(args) {
           return;
         }
         if (message.type === 'run.error') {
-          throw new Error(`run_channel_${message.code}`);
+          throw new ProbeRuntimeError(`run_channel_${message.code}`);
         }
         if (
           message.type === 'run.control' &&
@@ -303,7 +326,7 @@ function collectAttempt(args) {
           return;
         }
         if (event.seq <= lastSeq) {
-          throw new Error('run_channel_event_sequence_regressed');
+          throw new ProbeRuntimeError('run_channel_event_sequence_regressed');
         }
         lastSeq = event.seq;
         if (event.type === 'run_ack') {
@@ -312,7 +335,7 @@ function collectAttempt(args) {
             event.payload.runId !== event.runId ||
             event.payload.threadId !== event.threadId
           ) {
-            throw new Error('run_channel_ack_identity_mismatch');
+            throw new ProbeRuntimeError('run_channel_ack_identity_mismatch');
           }
           runId = event.runId;
           threadId = event.threadId;
@@ -324,11 +347,11 @@ function collectAttempt(args) {
           event.runId !== runId ||
           event.threadId !== threadId
         ) {
-          throw new Error('run_channel_event_identity_mismatch');
+          throw new ProbeRuntimeError('run_channel_event_identity_mismatch');
         }
         if (event.type === 'tool_call') {
           if (openTools.has(event.payload.callId)) {
-            throw new Error('run_channel_tool_call_repeated');
+            throw new ProbeRuntimeError('run_channel_tool_call_repeated');
           }
           openTools.set(event.payload.callId, Date.parse(event.ts));
           toolInvocationCount += 1;
@@ -406,10 +429,12 @@ function collectAttempt(args) {
         fail(error);
       }
     });
-    socket.once('error', () => fail(new Error('run_channel_socket_error')));
+    socket.once('error', () =>
+      fail(new ProbeRuntimeError('run_channel_socket_error')),
+    );
     socket.once('close', () => {
       if (!settled) {
-        fail(new Error('run_channel_closed_before_ack'));
+        fail(new ProbeRuntimeError('run_channel_closed_before_ack'));
       }
     });
   });
@@ -566,13 +591,78 @@ export async function runAgentAutonomyRunChannelProbe(options = {}) {
   const createWebSocket =
     options.createWebSocket ??
     ((url, socketOptions) => new WebSocket(url, socketOptions));
-  const run = await collectAttempt({
-    baseUrl,
-    createWebSocket,
-    request,
-    shellToken,
-    timeoutMs: parsed.timeoutMs,
-  });
+  let run;
+  try {
+    run = await collectAttempt({
+      baseUrl,
+      createWebSocket,
+      request,
+      shellToken,
+      timeoutMs: parsed.timeoutMs,
+    });
+  } catch (error) {
+    const capturedAt = now().toISOString();
+    const code = readSafeRuntimeErrorCode(error);
+    const attemptState =
+      error instanceof ProbeRuntimeError ? error.attemptState : undefined;
+    const primaryAttempt =
+      attemptState?.runId !== undefined &&
+      attemptState.startedAt !== undefined &&
+      attemptState.threadId !== undefined;
+    const failureReceipt = {
+      schemaVersion: 1,
+      kind: 'agent_autonomy_run_channel_probe_failure_receipt',
+      capturedAt,
+      workloadReferenceId: declaration.workloadReferenceId,
+      taskReferenceId,
+      attemptReference,
+      endpointScopeReferenceId: preflight.endpointScopeReferenceId,
+      modelId: model.id,
+      providerId: model.providerId,
+      phase: primaryAttempt ? 'run' : 'pre_run',
+      failureCode: code,
+      lastEventSeq:
+        attemptState === undefined || attemptState.lastSeq < 0
+          ? null
+          : attemptState.lastSeq,
+      ...(primaryAttempt
+        ? {
+            runId: attemptState.runId,
+            threadId: attemptState.threadId,
+          }
+        : {}),
+    };
+    await writeJsonNoReplace(
+      resolve(output, 'failure-receipt.json'),
+      failureReceipt,
+    );
+    if (primaryAttempt) {
+      const failedRun = {
+        ...attemptState,
+        terminal: {
+          answerMatched: false,
+          at: capturedAt,
+          observedAnswerReferenceId: digest(''),
+          outcome: 'failed',
+        },
+      };
+      const failedWorkload = buildWorkload({
+        attemptReference,
+        declaration,
+        providerId: model.providerId,
+        run: failedRun,
+      });
+      await writeJsonNoReplace(
+        resolve(output, 'workload.json'),
+        failedWorkload,
+      );
+      await writeJsonNoReplace(
+        resolve(output, 'report.json'),
+        evaluateAgentAutonomyWorkload(failedWorkload),
+      );
+    }
+    throw error;
+  }
   const workload = buildWorkload({
     attemptReference,
     declaration,
@@ -621,13 +711,7 @@ function safeError(error) {
   if (error instanceof ProbeInputError) {
     return error.message;
   }
-  const code =
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    typeof error.code === 'string'
-      ? error.code
-      : 'unexpected_error';
+  const code = readSafeRuntimeErrorCode(error);
   return `agent autonomy run-channel probe failed (${code})`;
 }
 

@@ -18,6 +18,7 @@ import {
   collapsePathBreadcrumbs,
 } from '../../lib/path-name.js';
 import {
+  countHiddenEntries,
   flattenVisibleTree,
   isCanvasEligibleFileName,
   type FlatTreeRow,
@@ -101,9 +102,13 @@ export function ComputerTree({
     };
   }, []);
 
+  // 기본은 숨김이다 — 홈 디렉터리에서 도구가 만든 점 항목이 목록 앞을 채우면
+  // 실제 작업 폴더가 보이지 않는다.
+  const [showHiddenEntries, setShowHiddenEntries] = useState(false);
+  const hiddenEntryCount = useMemo(() => countHiddenEntries(tree), [tree]);
   const rows = useMemo(
-    () => flattenVisibleTree(tree, expandedPaths),
-    [tree, expandedPaths],
+    () => flattenVisibleTree(tree, expandedPaths, 0, { showHiddenEntries }),
+    [tree, expandedPaths, showHiddenEntries],
   );
 
   const { treeScrollRef, visibleWindow, handleTreeScroll } =
@@ -324,7 +329,7 @@ export function ComputerTree({
               disabled={browsePath === ''}
               onClick={() => onNavigateUp?.()}
             >
-              ↑
+              <span className="rail-action-icon up" aria-hidden="true" />
             </button>
           ) : null}
           <button
@@ -334,7 +339,7 @@ export function ComputerTree({
             aria-label="새 파일"
             onClick={() => startCreate(browseEnabled ? browsePath : '', 'file')}
           >
-            +
+            <span className="rail-action-icon new-file" aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -345,7 +350,7 @@ export function ComputerTree({
               startCreate(browseEnabled ? browsePath : '', 'folder')
             }
           >
-            ⊞
+            <span className="rail-action-icon new-folder" aria-hidden="true" />
           </button>
         </span>
       </div>
@@ -414,8 +419,23 @@ export function ComputerTree({
         />
       ) : null}
       {browseEnabled ? (
-        <div className="current-directory-heading" aria-hidden="true">
-          현재 폴더
+        <div className="current-directory-heading">
+          <span aria-hidden="true">현재 폴더</span>
+          {hiddenEntryCount > 0 ? (
+            <button
+              type="button"
+              className="hidden-entries-toggle"
+              aria-pressed={showHiddenEntries}
+              title={
+                showHiddenEntries
+                  ? '숨김 항목 감추기'
+                  : `숨김 항목 ${hiddenEntryCount}개 보기`
+              }
+              onClick={() => setShowHiddenEntries((current) => !current)}
+            >
+              {showHiddenEntries ? '숨김 감추기' : `숨김 ${hiddenEntryCount}`}
+            </button>
+          ) : null}
         </div>
       ) : null}
       {rows.length === 0 && creating === null && !browseEnabled ? (
