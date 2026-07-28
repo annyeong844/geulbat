@@ -24,14 +24,7 @@ export function ContextUsageRing(props: {
           (knownSnapshot.inputTokens / knownSnapshot.thresholdTokens) * 100,
         )
       : 0;
-  const previousProgress =
-    knownSnapshot === null
-      ? 0
-      : Math.min(
-          100,
-          (knownSnapshot.inputTokens / knownSnapshot.thresholdTokens) * 100,
-        );
-  const tooltip = formatContextUsageTooltip(snapshot, previousProgress);
+  const tooltip = formatContextUsageSummary(props.contextUsage, props.modelId);
 
   return (
     <span
@@ -70,6 +63,18 @@ export function ContextUsageRing(props: {
       </svg>
     </span>
   );
+}
+
+export function formatContextUsageSummary(
+  contextUsage: ContextUsageUpdatedEventPayload | null,
+  modelId: RunModelId,
+): string {
+  const snapshot = contextUsage?.modelId === modelId ? contextUsage : null;
+  const progress =
+    snapshot === null || snapshot.quality === 'unknown'
+      ? 0
+      : Math.min(100, (snapshot.inputTokens / snapshot.thresholdTokens) * 100);
+  return formatContextUsageTooltip(snapshot, progress);
 }
 
 function formatContextUsageTooltip(

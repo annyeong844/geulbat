@@ -29,9 +29,11 @@ import {
 import {
   isAgentChildTerminalReason,
   isAgentChildTerminalState,
+  isSubagentResultDeliveryState,
   isSubagentResultReport,
   type AgentChildTerminalReason,
   type AgentChildTerminalState,
+  type SubagentResultDeliveryState,
   type SubagentResultReport,
 } from './subagent-terminal.js';
 import {
@@ -84,6 +86,8 @@ interface ThreadDetailDiagnostics {
 
 export interface ThreadSubagentTerminalOutcome {
   deliveryId: string;
+  // Optional for compatibility with older persisted HTTP projections.
+  resultDeliveryState?: SubagentResultDeliveryState;
   resultRef?: string;
   resultDigest?: `sha256:${string}`;
   resultReport?: SubagentResultReport;
@@ -589,6 +593,8 @@ export function isThreadSubagentTerminalOutcome(
     !isRecord(value) ||
     typeof value.deliveryId !== 'string' ||
     value.deliveryId.trim() === '' ||
+    (value.resultDeliveryState !== undefined &&
+      !isSubagentResultDeliveryState(value.resultDeliveryState)) ||
     (value.resultRef !== undefined &&
       (typeof value.resultRef !== 'string' || value.resultRef.trim() === '')) ||
     (value.resultDigest !== undefined &&

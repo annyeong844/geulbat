@@ -196,11 +196,16 @@ void test('thread background notification queue replays and acknowledges through
     result: 'durable terminal result',
     completedAt: '2026-07-23T04:00:00.000Z',
   };
-  const durableResult = {
+  const pendingDurableResult = {
     ...result,
+    resultDeliveryState: 'pending' as const,
     resultRef: `subagent-result:${result.deliveryId}`,
     resultDigest:
       `sha256:${createHash('sha256').update(result.result).digest('hex')}` as const,
+  };
+  const acknowledgedDurableResult = {
+    ...pendingDurableResult,
+    resultDeliveryState: 'acknowledged' as const,
   };
   let store = await createDaemonRuntimeStateStore({ homeStateRoot });
 
@@ -209,11 +214,11 @@ void test('thread background notification queue replays and acknowledges through
     firstQueue.enqueueThreadBackgroundResult(threadId, result);
     firstQueue.attachDurableStore(store);
     assert.deepEqual(firstQueue.readThreadBackgroundResults(threadId), [
-      durableResult,
+      pendingDurableResult,
     ]);
     firstQueue.enqueueThreadBackgroundResult(threadId, result);
     assert.deepEqual(firstQueue.readThreadBackgroundResults(threadId), [
-      durableResult,
+      pendingDurableResult,
     ]);
 
     store.close();
@@ -226,14 +231,14 @@ void test('thread background notification queue replays and acknowledges through
       (delivery) => replayed.push(delivery),
     );
     unsubscribe();
-    assert.deepEqual(replayed, [durableResult]);
+    assert.deepEqual(replayed, [pendingDurableResult]);
 
     replayQueue.acknowledgeThreadBackgroundResults(threadId, [
       result.deliveryId,
     ]);
     assert.deepEqual(replayQueue.readThreadBackgroundResults(threadId), []);
     assert.deepEqual(replayQueue.readThreadBackgroundResultHistory(threadId), [
-      durableResult,
+      acknowledgedDurableResult,
     ]);
 
     store.close();
@@ -243,13 +248,142 @@ void test('thread background notification queue replays and acknowledges through
     assert.deepEqual(reopenedQueue.readThreadBackgroundResults(threadId), []);
     assert.deepEqual(
       reopenedQueue.readThreadBackgroundResultHistory(threadId),
-      [durableResult],
+      [acknowledgedDurableResult],
     );
     assert.deepEqual(
       store.readSubagentTerminalOutcomeByChildRunId(result.childRunId)?.result,
       result,
     );
   } finally {
+    store.close();
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+void test('thread background notification queue publishes pending then acknowledged result delivery state', async () => {
+  const fixtureRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-background-delivery-state-'),
+  );
+  const homeStateRoot = join(fixtureRoot, 'home-state');
+  const threadId = testThreadId(174016);
+  const result: BackgroundChildResultInput = {
+    deliveryId: 'delivery-state-transition',
+    parentRunId: testRunId('parent-delivery-state'),
+    childRunId: testRunId('child-delivery-state'),
+    childThreadId: testThreadId(174017),
+    subagentType: 'worker',
+    terminalState: 'completed',
+    result: 'durable terminal result',
+    completedAt: '2026-07-28T13:10:00.000Z',
+  };
+  const store = await createDaemonRuntimeStateStore({ homeStateRoot });
+  const queue = createThreadBackgroundNotificationQueue();
+  queue.attachDurableStore(store);
+  const seen: BackgroundChildResult[] = [];
+  const unsubscribe = queue.subscribeThreadBackgroundResults(
+    threadId,
+    (delivery) => seen.push(delivery),
+  );
+
+  try {
+    queue.enqueueThreadBackgroundResult(threadId, result);
+    assert.deepEqual(
+      seen.map((delivery) => Reflect.get(delivery, 'resultDeliveryState')),
+      ['pending'],
+    );
+
+    queue.acknowledgeThreadBackgroundResults(threadId, [result.deliveryId]);
+
+    assert.deepEqual(
+      seen.map((delivery) => Reflect.get(delivery, 'resultDeliveryState')),
+      ['pending', 'acknowledged'],
+    );
+    assert.equal(
+      Reflect.get(
+        queue.readThreadBackgroundResultHistory(threadId)[0] ?? {},
+        'resultDeliveryState',
+      ),
+      'acknowledged',
+    );
+    assert.equal(
+      Reflect.get(
+        store.readSubagentTerminalOutcomeByChildRunId(result.childRunId) ?? {},
+        'resultDeliveryState',
+      ),
+      'acknowledged',
+    );
+  } finally {
+    unsubscribe();
+    store.close();
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+void test('thread background notification queue does not acknowledge a retained result before durable commit succeeds', async () => {
+  const fixtureRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-background-delivery-ack-retry-'),
+  );
+  const homeStateRoot = join(fixtureRoot, 'home-state');
+  const threadId = testThreadId(174018);
+  const result: BackgroundChildResultInput = {
+    deliveryId: 'delivery-ack-before-commit',
+    parentRunId: testRunId('parent-ack-before-commit'),
+    childRunId: testRunId('child-ack-before-commit'),
+    subagentType: 'worker',
+    terminalState: 'failed',
+    reason: 'persistence_error',
+    result: 'retain until the durable owner accepts the exact result',
+    completedAt: '2026-07-28T13:11:00.000Z',
+  };
+  const store = await createDaemonRuntimeStateStore({ homeStateRoot });
+  const originalRecord = store.recordSubagentTerminalDelivery;
+  let rejectWrites = true;
+  store.recordSubagentTerminalDelivery = (args) => {
+    if (rejectWrites) {
+      throw new Error('terminal store unavailable');
+    }
+    return originalRecord(args);
+  };
+  const queue = createThreadBackgroundNotificationQueue();
+  queue.attachDurableStore(store);
+  const seen: BackgroundChildResult[] = [];
+  const unsubscribe = queue.subscribeThreadBackgroundResults(
+    threadId,
+    (delivery) => seen.push(delivery),
+  );
+
+  try {
+    assert.throws(
+      () => queue.enqueueThreadBackgroundResult(threadId, result),
+      /terminal store unavailable/u,
+    );
+    queue.acknowledgeThreadBackgroundResults(threadId, [result.deliveryId]);
+
+    assert.deepEqual(
+      seen.map((delivery) => delivery.resultDeliveryState),
+      ['pending'],
+    );
+    assert.equal(
+      store.readSubagentTerminalOutcomeByChildRunId(result.childRunId),
+      undefined,
+    );
+
+    rejectWrites = false;
+    assert.deepEqual(
+      queue
+        .readThreadBackgroundResults(threadId)
+        .map((delivery) => delivery.deliveryId),
+      [result.deliveryId],
+    );
+    queue.acknowledgeThreadBackgroundResults(threadId, [result.deliveryId]);
+
+    assert.deepEqual(
+      seen.map((delivery) => delivery.resultDeliveryState),
+      ['pending', 'acknowledged'],
+    );
+    assert.deepEqual(queue.readThreadBackgroundResults(threadId), []);
+  } finally {
+    unsubscribe();
     store.close();
     await rm(fixtureRoot, { recursive: true, force: true });
   }

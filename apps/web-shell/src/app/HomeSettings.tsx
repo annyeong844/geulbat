@@ -9,10 +9,11 @@ import { ProviderUsageCard } from '../features/provider-usage/ProviderUsageCard.
 import { fetchProviderUsage } from '../lib/api/provider-usage.js';
 import { PtcArtifactExportSettingsPanel } from '../features/settings/PtcArtifactExportSettingsPanel.js';
 
-type SettingsSection = 'providers' | 'usage' | 'mcp' | 'ptc';
+export type SettingsSection = 'providers' | 'usage' | 'mcp' | 'ptc';
 
 interface HomeSettingsProps {
   providerAuthCard: ComponentProps<typeof ProviderAuthCard>;
+  initialSection?: SettingsSection;
   /** 사용량 조회 주입 — 테스트가 실제 네트워크 없이 상태를 잠근다. */
   loadProviderUsage?: ComponentProps<typeof ProviderUsageCard>['loadUsage'];
   mcpDisabled?: boolean;
@@ -66,13 +67,14 @@ export function HomeCenterSurface({
 
 export function HomeSettings({
   providerAuthCard,
+  initialSection = 'providers',
   loadProviderUsage = fetchProviderUsage,
   mcpDisabled = false,
   mcpClient,
   onClose,
 }: HomeSettingsProps) {
   const [activeSection, setActiveSection] =
-    useState<SettingsSection>('providers');
+    useState<SettingsSection>(initialSection);
 
   return (
     <section className="home-settings" aria-label="설정">

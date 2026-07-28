@@ -9,6 +9,7 @@ import type {
 import type {
   AgentChildTerminalReason,
   AgentChildTerminalState,
+  SubagentResultDeliveryState,
   SubagentResultReport,
 } from '@geulbat/protocol/subagent-terminal';
 import type { RunReasoningEffort } from '@geulbat/protocol/run-contract';
@@ -37,6 +38,7 @@ interface SubagentActivityEntry {
   runtime?: SubagentRuntimeDiagnostics;
   state: SubagentActivityState;
   deliveryId?: string;
+  resultDeliveryState?: SubagentResultDeliveryState;
   reason?: AgentChildTerminalReason;
   result?: string;
   resultRef?: string;
@@ -93,15 +95,30 @@ export function appendSubagentTranscriptEntry(
   entries: RunTranscriptEntry[],
   entry: Extract<RunTranscriptEntry, { kind: 'subagent_activity' }>,
 ): RunTranscriptEntry[] {
-  const alreadyPresent =
-    entry.deliveryId !== undefined &&
-    entries.some(
+  if (entry.deliveryId !== undefined) {
+    const existingDeliveryIndex = entries.findIndex(
       (existing) =>
         existing.kind === 'subagent_activity' &&
         existing.deliveryId === entry.deliveryId,
     );
-  if (alreadyPresent) {
-    return entries;
+    if (existingDeliveryIndex !== -1) {
+      const existing = entries[existingDeliveryIndex];
+      if (
+        existing?.kind !== 'subagent_activity' ||
+        entry.resultDeliveryState === undefined ||
+        existing.resultDeliveryState === entry.resultDeliveryState ||
+        (existing.resultDeliveryState === 'acknowledged' &&
+          entry.resultDeliveryState === 'pending')
+      ) {
+        return entries;
+      }
+      return entries.map((candidate, index) =>
+        index === existingDeliveryIndex &&
+        candidate.kind === 'subagent_activity'
+          ? { ...candidate, ...entry }
+          : candidate,
+      );
+    }
   }
   let existingChildIndex = -1;
   for (let index = entries.length - 1; index >= 0; index -= 1) {

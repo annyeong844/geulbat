@@ -12,6 +12,8 @@
 
 export type AgentChildTerminalState = 'completed' | 'failed' | 'cancelled';
 
+export type SubagentResultDeliveryState = 'pending' | 'acknowledged';
+
 export type AgentChildTerminalReason =
   | 'child_error'
   | 'provider_error'
@@ -34,6 +36,12 @@ export function isAgentChildTerminalState(
   value: unknown,
 ): value is AgentChildTerminalState {
   return value === 'completed' || value === 'failed' || value === 'cancelled';
+}
+
+export function isSubagentResultDeliveryState(
+  value: unknown,
+): value is SubagentResultDeliveryState {
+  return value === 'pending' || value === 'acknowledged';
 }
 
 export function isAgentChildTerminalReason(

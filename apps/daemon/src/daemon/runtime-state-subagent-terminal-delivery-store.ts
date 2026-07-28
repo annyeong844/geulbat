@@ -171,7 +171,8 @@ export function readPendingSubagentTerminalDeliveries(
           outcomes.terminal_reason AS terminalReason,
           outcomes.completed_at AS completedAt,
           outcomes.result_bytes AS resultBytes,
-          outcomes.payload_json AS payloadJson
+          outcomes.payload_json AS payloadJson,
+          deliveries.acknowledged_at AS acknowledgedAt
         FROM subagent_background_deliveries AS deliveries
         JOIN subagent_terminal_outcomes AS outcomes
           ON outcomes.child_run_id = deliveries.child_run_id
@@ -203,7 +204,8 @@ export function readSubagentTerminalDeliveries(
           outcomes.terminal_reason AS terminalReason,
           outcomes.completed_at AS completedAt,
           outcomes.result_bytes AS resultBytes,
-          outcomes.payload_json AS payloadJson
+          outcomes.payload_json AS payloadJson,
+          deliveries.acknowledged_at AS acknowledgedAt
         FROM subagent_background_deliveries AS deliveries
         JOIN subagent_terminal_outcomes AS outcomes
           ON outcomes.child_run_id = deliveries.child_run_id
@@ -273,7 +275,8 @@ export function readSubagentTerminalOutcomeByChildRunId(
           outcomes.terminal_reason AS terminalReason,
           outcomes.completed_at AS completedAt,
           outcomes.result_bytes AS resultBytes,
-          outcomes.payload_json AS payloadJson
+          outcomes.payload_json AS payloadJson,
+          deliveries.acknowledged_at AS acknowledgedAt
         FROM subagent_terminal_outcomes AS outcomes
         JOIN subagent_background_deliveries AS deliveries
           ON deliveries.child_run_id = outcomes.child_run_id
@@ -302,7 +305,8 @@ export function readSubagentTerminalOutcomeByResultRef(
           outcomes.terminal_reason AS terminalReason,
           outcomes.completed_at AS completedAt,
           outcomes.result_bytes AS resultBytes,
-          outcomes.payload_json AS payloadJson
+          outcomes.payload_json AS payloadJson,
+          deliveries.acknowledged_at AS acknowledgedAt
         FROM subagent_terminal_outcomes AS outcomes
         JOIN subagent_background_deliveries AS deliveries
           ON deliveries.child_run_id = outcomes.child_run_id
@@ -362,7 +366,10 @@ function parseSubagentTerminalOutcomeRow(
     typeof row['resultBytes'] !== 'number' ||
     !Number.isSafeInteger(row['resultBytes']) ||
     row['resultBytes'] < 0 ||
-    typeof row['payloadJson'] !== 'string'
+    typeof row['payloadJson'] !== 'string' ||
+    (row['acknowledgedAt'] !== null &&
+      (typeof row['acknowledgedAt'] !== 'string' ||
+        row['acknowledgedAt'].trim() === ''))
   ) {
     throw new Error('subagent terminal outcome row is invalid');
   }
@@ -395,6 +402,8 @@ function parseSubagentTerminalOutcomeRow(
   }
   return {
     ownerThreadId,
+    resultDeliveryState:
+      row['acknowledgedAt'] === null ? 'pending' : 'acknowledged',
     resultRef: row['resultRef'],
     resultDigest,
     result,

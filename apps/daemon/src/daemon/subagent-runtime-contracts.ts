@@ -16,6 +16,7 @@ import type {
 import type {
   AgentChildTerminalReason,
   AgentChildTerminalState,
+  SubagentResultDeliveryState,
   SubagentResultReport,
 } from '@geulbat/protocol/subagent-terminal';
 import type { PermissionMode } from '@geulbat/protocol/run-approval';
@@ -380,6 +381,9 @@ export type ChildRunSnapshot =
 
 export interface BackgroundChildResult {
   deliveryId: string;
+  // Queue projections derive this from the durable outbox acknowledgement.
+  // The stored terminal body omits it because acknowledgement is mutable.
+  resultDeliveryState?: SubagentResultDeliveryState;
   // Durable exact-result handle. Present after the runtime-state owner is
   // attached; legacy/in-memory producers remain valid without it.
   resultRef?: string;
@@ -412,13 +416,14 @@ export interface BackgroundChildResult {
 
 export type BackgroundChildResultInput = Omit<
   BackgroundChildResult,
-  'resultReport'
+  'resultDeliveryState' | 'resultReport'
 > & {
   resultReportSummary?: string;
 };
 
 export interface DurableSubagentTerminalOutcome {
   ownerThreadId: ThreadId;
+  resultDeliveryState: SubagentResultDeliveryState;
   resultRef: string;
   resultDigest: `sha256:${string}`;
   result: BackgroundChildResult;

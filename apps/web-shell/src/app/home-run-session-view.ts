@@ -38,7 +38,10 @@ type HomeAssistantView = Required<
   composerSurface: Required<
     Omit<
       NonNullable<AssistantProps['composerSurface']>,
-      'draftRequest' | 'imageProviderConnected'
+      | 'draftRequest'
+      | 'imageProviderConnected'
+      | 'onOpenSkills'
+      | 'onOpenMcpSettings'
     >
   >;
   workflow: Required<

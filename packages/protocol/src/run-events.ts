@@ -43,9 +43,11 @@ import {
 import {
   isAgentChildTerminalReason,
   isAgentChildTerminalState,
+  isSubagentResultDeliveryState,
   isSubagentResultReport,
   type AgentChildTerminalReason,
   type AgentChildTerminalState,
+  type SubagentResultDeliveryState,
   type SubagentResultReport,
 } from './subagent-terminal.js';
 import {
@@ -512,6 +514,9 @@ export type ContextUsageUpdatedEventPayload =
 
 interface SubagentTerminalEventPayload extends SubagentLifecycleDiagnostics {
   deliveryId: string;
+  // Optional for compatibility with older event producers. Current daemon
+  // projections always include it.
+  resultDeliveryState?: SubagentResultDeliveryState;
   parentRunId: RunId;
   childRunId: RunId;
   // Present on lifecycle-produced events; lets the shell open the child
@@ -1115,6 +1120,8 @@ export function isSubagentTerminalEventPayload(
   return (
     isRecord(value) &&
     isString(value.deliveryId) &&
+    (value.resultDeliveryState === undefined ||
+      isSubagentResultDeliveryState(value.resultDeliveryState)) &&
     isString(value.parentRunId) &&
     isRunId(value.parentRunId) &&
     isString(value.childRunId) &&

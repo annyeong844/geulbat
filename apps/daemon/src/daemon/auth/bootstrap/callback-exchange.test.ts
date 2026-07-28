@@ -16,6 +16,8 @@ const TEST_PROVIDER_AUTH_CLIENT_ID = 'test-provider-auth-client-id';
 const TEST_INSTALLED_CONFIG_PATH = '/__geulbat_missing__/provider-auth.json';
 const TEST_BUNDLED_CONFIG_PATH =
   '/__geulbat_missing__/provider-auth.config.json';
+const TOKEN_REQUEST_TIMEOUT_ENV =
+  'GEULBAT_PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS';
 const previousClientId = process.env['PROVIDER_AUTH_CLIENT_ID'];
 const previousInstalledConfigPath =
   process.env['GEULBAT_PROVIDER_AUTH_INSTALLED_CONFIG_PATH'];
@@ -231,30 +233,69 @@ void test('exchangeAuthorizationCode retries once after a transport failure befo
   assert.equal(result.expires_in, 90);
 });
 
-void test('exchangeAuthorizationCode maps abort-driven fetch cancellation to provider_auth_exchange_timeout', async () => {
-  await assert.rejects(
-    () =>
-      exchangeAuthorizationCode('code', 'verifier', {
-        timeoutMs: 1,
-        fetchImpl: async (_url, init) =>
-          await new Promise<Response>((_resolve, reject) => {
-            init?.signal?.addEventListener(
-              'abort',
-              () => reject(new Error('aborted by timeout')),
-              { once: true },
-            );
-          }),
-      }),
-    (error: unknown) => {
-      assert.equal(
-        extractProviderAuthErrorCode(error),
-        'provider_auth_exchange_timeout',
-      );
-      assert.ok(error instanceof Error);
-      assert.match(error.message, /timed out/i);
-      return true;
-    },
-  );
+void test('exchangeAuthorizationCode rejects invalid timeout policy before fetch', async () => {
+  const previousTimeout = process.env[TOKEN_REQUEST_TIMEOUT_ENV];
+  process.env[TOKEN_REQUEST_TIMEOUT_ENV] = '1.5';
+  let fetchCalled = false;
+
+  try {
+    await assert.rejects(
+      () =>
+        exchangeAuthorizationCode('code', 'verifier', {
+          fetchImpl: async () => {
+            fetchCalled = true;
+            throw new Error('fetch should not be called');
+          },
+        }),
+      new RegExp(
+        `${TOKEN_REQUEST_TIMEOUT_ENV} must be a positive integer no greater than 2147483647`,
+        'u',
+      ),
+    );
+    assert.equal(fetchCalled, false);
+  } finally {
+    if (previousTimeout === undefined) {
+      delete process.env[TOKEN_REQUEST_TIMEOUT_ENV];
+    } else {
+      process.env[TOKEN_REQUEST_TIMEOUT_ENV] = previousTimeout;
+    }
+  }
+});
+
+void test('exchangeAuthorizationCode honors the operator token request timeout', async () => {
+  const previousTimeout = process.env[TOKEN_REQUEST_TIMEOUT_ENV];
+  process.env[TOKEN_REQUEST_TIMEOUT_ENV] = '1';
+
+  try {
+    await assert.rejects(
+      () =>
+        exchangeAuthorizationCode('code', 'verifier', {
+          fetchImpl: async (_url, init) =>
+            await new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener(
+                'abort',
+                () => reject(new Error('aborted by timeout')),
+                { once: true },
+              );
+            }),
+        }),
+      (error: unknown) => {
+        assert.equal(
+          extractProviderAuthErrorCode(error),
+          'provider_auth_exchange_timeout',
+        );
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /timed out/i);
+        return true;
+      },
+    );
+  } finally {
+    if (previousTimeout === undefined) {
+      delete process.env[TOKEN_REQUEST_TIMEOUT_ENV];
+    } else {
+      process.env[TOKEN_REQUEST_TIMEOUT_ENV] = previousTimeout;
+    }
+  }
 });
 
 function createPkceCodeChallenge(codeVerifier: string): string {

@@ -469,6 +469,13 @@ export function formatSubagentActivityMeta(
   if (entry.reason !== undefined) {
     parts.push(`종료 원인: ${formatSubagentTerminalReason(entry.reason)}`);
   }
+  if (entry.resultDeliveryState !== undefined) {
+    parts.push(
+      entry.resultDeliveryState === 'pending'
+        ? '결과 전달: 부모 확인 대기'
+        : '결과 전달: 부모 반영 완료',
+    );
+  }
   if (entry.toolSurface !== undefined) {
     parts.push(formatSubagentToolSurface(entry.toolSurface));
   }
@@ -655,6 +662,8 @@ function formatTokenCount(count: number): string {
 function formatSubagentActivityTitle(
   entry: Extract<RunTranscriptEntry, { kind: 'subagent_activity' }>,
 ): string {
+  const deliverySuffix =
+    entry.resultDeliveryState === 'pending' ? ' · 결과 회수 대기' : '';
   switch (entry.state) {
     case 'spawned':
       return entry.runtime === undefined
@@ -663,11 +672,11 @@ function formatSubagentActivityTitle(
     case 'approval_required':
       return `${entry.subagentType} 작업 승인 대기`;
     case 'completed':
-      return `${entry.subagentType} 작업 완료`;
+      return `${entry.subagentType} 작업 완료${deliverySuffix}`;
     case 'failed':
-      return `${entry.subagentType} 작업 실패`;
+      return `${entry.subagentType} 작업 실패${deliverySuffix}`;
     case 'cancelled':
-      return `${entry.subagentType} 작업 취소됨`;
+      return `${entry.subagentType} 작업 취소됨${deliverySuffix}`;
   }
 }
 

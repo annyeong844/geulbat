@@ -174,6 +174,33 @@ void test('extension hub switches between real plugin and skill catalogs in the 
   act(() => renderer.unmount());
 });
 
+void test('extension hub can enter directly on the skills tab', async () => {
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <ExtensionHub
+        initialTab="skills"
+        skillClient={{
+          listSkills: async () => ({ skills: [], diagnostics: [] }),
+        }}
+        onClose={() => {}}
+        onStartCreator={() => {}}
+      />,
+    );
+  });
+
+  assert.equal(tabByText(renderer.root, '스킬').props['aria-selected'], true);
+  assert.equal(
+    tabByText(renderer.root, '플러그인').props['aria-selected'],
+    false,
+  );
+  assert.match(
+    renderer.root.findByProps({ type: 'search' }).props.placeholder,
+    /스킬 검색/u,
+  );
+  act(() => renderer.unmount());
+});
+
 function officialSource(): PluginMarketplaceSourceView {
   return {
     marketplaceId: 'marketplace-official',

@@ -11,11 +11,12 @@ import {
 } from './PluginSkillSettingsPanel.js';
 import type { PluginMarketplaceClient } from './PluginMarketplacePanel.js';
 
-type ExtensionHubTab = 'plugins' | 'skills';
+export type ExtensionHubTab = 'plugins' | 'skills';
 export type ExtensionCreatorKind = 'plugin' | 'skill';
 
 interface Props {
   disabled?: boolean;
+  initialTab?: ExtensionHubTab;
   marketplaceClient?: PluginMarketplaceClient;
   pluginClient?: PluginClient;
   skillClient?: PluginSkillClient;
@@ -59,13 +60,14 @@ const PLUGIN_PANEL_COPY: Record<
 
 export function ExtensionHub({
   disabled = false,
+  initialTab = 'plugins',
   marketplaceClient,
   pluginClient,
   skillClient,
   onClose,
   onStartCreator,
 }: Props) {
-  const [activeTab, setActiveTab] = useState<ExtensionHubTab>('plugins');
+  const [activeTab, setActiveTab] = useState<ExtensionHubTab>(initialTab);
   const [query, setQuery] = useState('');
   const [pluginPanel, setPluginPanel] = useState<PluginPanelRequest>('browse');
   const [refreshVersion, setRefreshVersion] = useState(0);

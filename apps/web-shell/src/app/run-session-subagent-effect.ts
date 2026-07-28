@@ -21,6 +21,7 @@ type TerminalSubagentActivitySource = Omit<
   Pick<
     ThreadSubagentTerminalOutcome,
     | 'deliveryId'
+    | 'resultDeliveryState'
     | 'parentRunId'
     | 'childRunId'
     | 'childThreadId'
@@ -150,6 +151,9 @@ function createTerminalSubagentActivityEntry(
   return {
     kind: 'subagent_activity',
     deliveryId: source.deliveryId,
+    ...(source.resultDeliveryState === undefined
+      ? {}
+      : { resultDeliveryState: source.resultDeliveryState }),
     parentRunId: source.parentRunId,
     childRunId: source.childRunId,
     ...(source.childThreadId !== undefined

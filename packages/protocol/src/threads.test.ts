@@ -157,6 +157,7 @@ void test('thread response guards validate Home thread identities without projec
 void test('thread detail validates durable terminal worker history diagnostics', () => {
   const terminalOutcome = {
     deliveryId: 'delivery-worker-terminal',
+    resultDeliveryState: 'pending',
     resultRef: 'subagent-result:delivery-worker-terminal',
     resultDigest: `sha256:${'a'.repeat(64)}`,
     resultReport: {
@@ -207,6 +208,13 @@ void test('thread detail validates durable terminal worker history diagnostics',
   };
 
   assert.equal(isThreadSubagentTerminalOutcome(terminalOutcome), true);
+  assert.equal(
+    isThreadSubagentTerminalOutcome({
+      ...terminalOutcome,
+      resultDeliveryState: 'still_running',
+    }),
+    false,
+  );
   assert.equal(
     isThreadSubagentTerminalOutcome({
       ...terminalOutcome,

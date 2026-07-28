@@ -1174,26 +1174,30 @@ void test('runtime-state store replays terminal delivery after reopen and keeps 
       ownerThreadId,
       deliveryIds: [result.deliveryId],
     });
+    const acknowledgedOutcome = {
+      ...recorded.outcome,
+      resultDeliveryState: 'acknowledged' as const,
+    };
     assert.deepEqual(
       store.readPendingSubagentTerminalDeliveries(ownerThreadId),
       [],
     );
     assert.deepEqual(store.readSubagentTerminalDeliveries(ownerThreadId), [
-      recorded.outcome,
+      acknowledgedOutcome,
     ]);
     assert.deepEqual(
       store.readSubagentTerminalOutcomeByChildRunId(result.childRunId),
-      recorded.outcome,
+      acknowledgedOutcome,
     );
 
     store.close();
     store = await createDaemonRuntimeStateStore({ homeStateRoot });
     assert.deepEqual(store.readSubagentTerminalDeliveries(ownerThreadId), [
-      recorded.outcome,
+      acknowledgedOutcome,
     ]);
     assert.deepEqual(
       store.readSubagentTerminalOutcomeByChildRunId(result.childRunId),
-      recorded.outcome,
+      acknowledgedOutcome,
     );
     store.clearSubagentTerminalDeliveries(ownerThreadId);
     assert.equal(

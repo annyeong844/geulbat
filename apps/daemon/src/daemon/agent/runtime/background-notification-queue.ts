@@ -19,6 +19,7 @@ function projectDurableOutcome(
 ): BackgroundChildResult {
   return {
     ...outcome.result,
+    resultDeliveryState: outcome.resultDeliveryState,
     resultRef: outcome.resultRef,
     resultDigest: outcome.resultDigest,
   };
@@ -29,7 +30,10 @@ function projectVolatileBackgroundResult(
 ): BackgroundChildResult {
   const projected = { ...result };
   delete projected.resultReportSummary;
-  return projected;
+  return {
+    ...projected,
+    resultDeliveryState: 'pending',
+  };
 }
 
 export interface BackgroundNotificationQueue {
@@ -142,6 +146,59 @@ export function createThreadBackgroundNotificationQueue(): BackgroundNotificatio
     return signal;
   }
 
+  function acknowledgeBackgroundResults(
+    key: ThreadId,
+    deliveryIds: readonly string[],
+  ): Set<string> {
+    if (deliveryIds.length === 0) {
+      return new Set();
+    }
+    const requested = new Set(deliveryIds);
+    retryVolatileBackgroundResults(key);
+    const acknowledgedResults =
+      durableStore === undefined
+        ? (pendingByThread.get(key)?.results ?? [])
+            .filter((result) => requested.has(result.deliveryId))
+            .map(projectVolatileBackgroundResult)
+        : durableStore
+            .readPendingSubagentTerminalDeliveries(key)
+            .map(projectDurableOutcome)
+            .filter((result) => requested.has(result.deliveryId));
+
+    if (durableStore !== undefined) {
+      durableStore.acknowledgeSubagentTerminalDeliveries({
+        ownerThreadId: key,
+        deliveryIds,
+      });
+    }
+
+    const acknowledgedIds = new Set(
+      acknowledgedResults.map((result) => result.deliveryId),
+    );
+    const pending = pendingByThread.get(key);
+    if (pending !== undefined) {
+      const remaining = pending.results.filter(
+        (result) => !acknowledgedIds.has(result.deliveryId),
+      );
+      if (remaining.length === 0) {
+        pendingByThread.delete(key);
+      } else {
+        pending.results = remaining;
+      }
+    }
+
+    const signal = listenersByThread.get(key);
+    if (signal !== undefined) {
+      for (const result of acknowledgedResults) {
+        signal.emit({
+          ...result,
+          resultDeliveryState: 'acknowledged',
+        });
+      }
+    }
+    return acknowledgedIds;
+  }
+
   return {
     attachDurableStore(store) {
       if (durableStore !== undefined) {
@@ -241,20 +298,31 @@ export function createThreadBackgroundNotificationQueue(): BackgroundNotificatio
           .filter((result) => !durableDeliveryIds.has(result.deliveryId))
           .map(projectVolatileBackgroundResult);
         const results = [...durableResults, ...volatileResults];
-        durableStore.acknowledgeSubagentTerminalDeliveries({
-          ownerThreadId: threadId,
-          deliveryIds: results.map((result) => result.deliveryId),
-        });
-        pendingByThread.delete(threadId);
-        return results;
+        const acknowledgedIds = acknowledgeBackgroundResults(
+          threadId,
+          results.map((result) => result.deliveryId),
+        );
+        return results.map((result) =>
+          acknowledgedIds.has(result.deliveryId)
+            ? { ...result, resultDeliveryState: 'acknowledged' }
+            : result,
+        );
       }
       const key = threadId;
       const pending = pendingByThread.get(key);
       if (!pending || pending.results.length === 0) {
         return [];
       }
-      pendingByThread.delete(key);
-      return pending.results.map(projectVolatileBackgroundResult);
+      const results = pending.results.map(projectVolatileBackgroundResult);
+      const acknowledgedIds = acknowledgeBackgroundResults(
+        key,
+        results.map((result) => result.deliveryId),
+      );
+      return results.map((result) =>
+        acknowledgedIds.has(result.deliveryId)
+          ? { ...result, resultDeliveryState: 'acknowledged' }
+          : result,
+      );
     },
     readThreadBackgroundResults(threadId) {
       if (durableStore !== undefined) {
@@ -301,29 +369,7 @@ export function createThreadBackgroundNotificationQueue(): BackgroundNotificatio
       );
     },
     acknowledgeThreadBackgroundResults(threadId, deliveryIds) {
-      if (deliveryIds.length === 0) {
-        return;
-      }
-      if (durableStore !== undefined) {
-        retryVolatileBackgroundResults(threadId);
-        durableStore.acknowledgeSubagentTerminalDeliveries({
-          ownerThreadId: threadId,
-          deliveryIds,
-        });
-      }
-      const pending = pendingByThread.get(threadId);
-      if (!pending) {
-        return;
-      }
-      const acknowledged = new Set(deliveryIds);
-      const remaining = pending.results.filter(
-        (result) => !acknowledged.has(result.deliveryId),
-      );
-      if (remaining.length === 0) {
-        pendingByThread.delete(threadId);
-        return;
-      }
-      pending.results = remaining;
+      acknowledgeBackgroundResults(threadId, deliveryIds);
     },
     clearThreadBackgroundResults(threadId) {
       pendingByThread.delete(threadId);
@@ -331,12 +377,19 @@ export function createThreadBackgroundNotificationQueue(): BackgroundNotificatio
     },
     subscribeThreadBackgroundResults(threadId, listener) {
       const key = threadId;
-      const delivered = new Set<string>();
+      const deliveredStateById = new Map<
+        string,
+        BackgroundChildResult['resultDeliveryState']
+      >();
       const deliverOnce = (result: BackgroundChildResult) => {
-        if (delivered.has(result.deliveryId)) {
+        if (
+          deliveredStateById.has(result.deliveryId) &&
+          deliveredStateById.get(result.deliveryId) ===
+            result.resultDeliveryState
+        ) {
           return;
         }
-        delivered.add(result.deliveryId);
+        deliveredStateById.set(result.deliveryId, result.resultDeliveryState);
         listener(result);
       };
       const unsubscribe = getOrCreateThreadSignal(key).subscribe(deliverOnce);

@@ -17,7 +17,7 @@ import {
 
 import { withPublicWebConformanceServer } from './test-support/http-routes.js';
 
-void test('public react bundle fixture entry route is unauthenticated and same-origin readable', async () => {
+void test('public react bundle fixture entry route is unauthenticated and cross-origin readable', async () => {
   await withPublicWebConformanceServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}${PUBLIC_WEB_REACT_BUNDLE_COUNTER_ENTRY_PATH}`,
@@ -27,10 +27,10 @@ void test('public react bundle fixture entry route is unauthenticated and same-o
     assert.equal(res.headers.get('cache-control'), 'no-store');
     assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
-    assert.equal(res.headers.get('access-control-allow-origin'), null);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
     assert.equal(
       res.headers.get('cross-origin-resource-policy'),
-      'same-origin',
+      'cross-origin',
     );
     assert.equal(
       res.headers.get('content-type'),
@@ -54,10 +54,10 @@ void test('public react bundle fixture chunk route exposes the multi-chunk count
     );
 
     assert.equal(res.status, 200);
-    assert.equal(res.headers.get('access-control-allow-origin'), null);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
     assert.equal(
       res.headers.get('cross-origin-resource-policy'),
-      'same-origin',
+      'cross-origin',
     );
 
     const body = await res.text();
@@ -75,10 +75,10 @@ void test('public react hello-card bundle fixture entry route is unauthenticated
     );
 
     assert.equal(res.status, 200);
-    assert.equal(res.headers.get('access-control-allow-origin'), null);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
     assert.equal(
       res.headers.get('cross-origin-resource-policy'),
-      'same-origin',
+      'cross-origin',
     );
 
     const body = await res.text();
@@ -98,10 +98,10 @@ void test('public react hello-card bundle fixture chunk route exposes a runnable
     );
 
     assert.equal(res.status, 200);
-    assert.equal(res.headers.get('access-control-allow-origin'), null);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
     assert.equal(
       res.headers.get('cross-origin-resource-policy'),
-      'same-origin',
+      'cross-origin',
     );
 
     const body = await res.text();
@@ -125,9 +125,10 @@ void test('public react runtime-dependencies bundle fixtures expose entry, modul
       entryRes.headers.get('content-type'),
       'application/javascript; charset=utf-8',
     );
+    assert.equal(entryRes.headers.get('access-control-allow-origin'), '*');
     assert.equal(
       entryRes.headers.get('cross-origin-resource-policy'),
-      'same-origin',
+      'cross-origin',
     );
     assert.match(
       await entryRes.text(),
@@ -142,6 +143,11 @@ void test('public react runtime-dependencies bundle fixtures expose entry, modul
       moduleRes.headers.get('content-type'),
       'application/javascript; charset=utf-8',
     );
+    assert.equal(moduleRes.headers.get('access-control-allow-origin'), '*');
+    assert.equal(
+      moduleRes.headers.get('cross-origin-resource-policy'),
+      'cross-origin',
+    );
     assert.match(await moduleRes.text(), /runtime dependency loaded/);
 
     const stylesheetRes = await fetch(
@@ -151,6 +157,11 @@ void test('public react runtime-dependencies bundle fixtures expose entry, modul
     assert.equal(
       stylesheetRes.headers.get('content-type'),
       'text/css; charset=utf-8',
+    );
+    assert.equal(stylesheetRes.headers.get('access-control-allow-origin'), '*');
+    assert.equal(
+      stylesheetRes.headers.get('cross-origin-resource-policy'),
+      'cross-origin',
     );
     assert.match(await stylesheetRes.text(), /\.runtime-dependency-card/);
   });
@@ -175,7 +186,7 @@ void test('public dom counter fixture route is unauthenticated and script-loadab
   });
 });
 
-void test('public json echo fixture route is unauthenticated and same-origin readable', async () => {
+void test('public json echo fixture route is unauthenticated and cross-origin readable', async () => {
   await withPublicWebConformanceServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}${PUBLIC_WEB_JSON_ECHO_PATH}?message=hello`,
@@ -189,10 +200,10 @@ void test('public json echo fixture route is unauthenticated and same-origin rea
     assert.equal(res.headers.get('cache-control'), 'no-store');
     assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
-    assert.equal(res.headers.get('access-control-allow-origin'), null);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
     assert.equal(
       res.headers.get('cross-origin-resource-policy'),
-      'same-origin',
+      'cross-origin',
     );
 
     assert.deepEqual(await res.json(), {
@@ -203,7 +214,7 @@ void test('public json echo fixture route is unauthenticated and same-origin rea
   });
 });
 
-void test('public eventsource echo fixture route is unauthenticated and same-origin readable', async () => {
+void test('public eventsource echo fixture route is unauthenticated and cross-origin readable', async () => {
   await withPublicWebConformanceServer(async ({ port }) => {
     const res = await fetch(
       `http://127.0.0.1:${port}${PUBLIC_WEB_EVENTSOURCE_ECHO_PATH}?message=stream`,
@@ -217,10 +228,10 @@ void test('public eventsource echo fixture route is unauthenticated and same-ori
     assert.equal(res.headers.get('cache-control'), 'no-store');
     assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
-    assert.equal(res.headers.get('access-control-allow-origin'), null);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
     assert.equal(
       res.headers.get('cross-origin-resource-policy'),
-      'same-origin',
+      'cross-origin',
     );
 
     assert.equal(await res.text(), 'data: stream\n\n');
@@ -248,8 +259,9 @@ void test('public request identity echo fixture route exposes request identity f
     assert.equal(res.headers['cache-control'], 'no-store');
     assert.equal(res.headers['referrer-policy'], 'no-referrer');
     assert.equal(res.headers['x-content-type-options'], 'nosniff');
-    assert.equal(res.headers['access-control-allow-origin'], undefined);
-    assert.equal(res.headers['cross-origin-resource-policy'], 'same-origin');
+    assert.equal(res.headers['access-control-allow-origin'], '*');
+    assert.equal(res.headers['access-control-allow-credentials'], undefined);
+    assert.equal(res.headers['cross-origin-resource-policy'], 'cross-origin');
 
     assert.deepEqual(JSON.parse(res.body), {
       method: 'GET',

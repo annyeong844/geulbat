@@ -225,6 +225,7 @@
 /* 입력창 (§3.3.2) */
 /* 입력 + 컨트롤 한 카드 — footer 줄까지 같은 테두리 안에 들어온다 */
 .input-shell {
+  position: relative;
   background: var(--surface-container-lowest);
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-md);
@@ -286,6 +287,201 @@
 .composer-goal-command-label {
   font-size: 11.5px;
   font-weight: 650;
+}
+
+.composer-slash-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 70;
+  max-height: min(420px, 52vh);
+  padding: 7px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-lg);
+  background: var(--surface-container-lowest);
+  box-shadow: var(--elev-floating);
+  font-family: var(--font-ui-label);
+}
+
+.composer-slash-heading {
+  padding: 4px 9px 7px;
+  color: var(--on-surface-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.composer-slash-option {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  width: 100%;
+  gap: 9px;
+  padding: 9px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--on-surface-variant);
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-slash-option:hover,
+.composer-slash-option.active {
+  background: var(--secondary-surface);
+}
+
+.composer-slash-option:focus-visible {
+  outline: 2px solid var(--secondary);
+  outline-offset: -2px;
+}
+
+.composer-slash-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-container);
+  color: var(--secondary);
+}
+
+.composer-slash-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.composer-slash-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.composer-slash-title {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.composer-slash-title strong {
+  overflow: hidden;
+  color: var(--on-surface);
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-slash-title code {
+  flex: none;
+  color: var(--on-surface-muted);
+  font-family: var(--font-ui-mono);
+  font-size: 11px;
+}
+
+.composer-slash-description {
+  overflow: hidden;
+  color: var(--on-surface-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-slash-hint {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 7px 9px 3px;
+  border-top: 1px solid var(--outline-variant);
+  color: var(--on-surface-muted);
+  font-size: 10.5px;
+}
+
+.composer-slash-empty {
+  padding: 18px 10px;
+  color: var(--on-surface-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.composer-slash-back {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px 10px;
+  border: none;
+  border-bottom: 1px solid var(--outline-variant);
+  background: transparent;
+  color: var(--on-surface);
+  font-family: var(--font-ui-label);
+  font-size: 12.5px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-slash-back span[aria-hidden='true'] {
+  color: var(--on-surface-muted);
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 0.8;
+}
+
+.composer-slash-status {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 5px 2px 2px;
+}
+
+.composer-slash-status-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+}
+
+.composer-slash-status-row:nth-child(odd) {
+  background: var(--surface-container-low);
+}
+
+.composer-slash-status-row dt {
+  color: var(--on-surface-muted);
+  font-size: 11.5px;
+}
+
+.composer-slash-status-row dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--on-surface-variant);
+  font-size: 11.5px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+  .composer-slash-menu {
+    max-height: min(360px, 48vh);
+  }
+
+  .composer-slash-hint {
+    display: none;
+  }
 }
 
 .input-send {

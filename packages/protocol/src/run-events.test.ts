@@ -669,6 +669,7 @@ void test('subagent lifecycle payload guards preserve terminal metadata contract
   assert.equal(
     isSubagentTerminalEventPayload({
       deliveryId: 'delivery-timeout',
+      resultDeliveryState: 'pending',
       parentRunId: RUN_ID,
       childRunId: RUN_ID,
       subagentType: 'worker',
@@ -687,6 +688,19 @@ void test('subagent lifecycle payload guards preserve terminal metadata contract
       runtime,
     }),
     true,
+  );
+  assert.equal(
+    isSubagentTerminalEventPayload({
+      deliveryId: 'delivery-invalid-state',
+      resultDeliveryState: 'still_running',
+      parentRunId: RUN_ID,
+      childRunId: RUN_ID,
+      subagentType: 'worker',
+      terminalState: 'completed',
+      ok: true,
+      result: 'done',
+    }),
+    false,
   );
   assert.equal(
     isSubagentTerminalEventPayload({

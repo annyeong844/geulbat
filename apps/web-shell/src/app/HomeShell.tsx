@@ -12,6 +12,7 @@ import { Approvals } from '../features/approvals/Approvals.js';
 import {
   ExtensionHub,
   type ExtensionCreatorKind,
+  type ExtensionHubTab,
 } from '../features/plugins/ExtensionHub.js';
 import type {
   AssistantComposerDraftRequest,
@@ -41,7 +42,11 @@ import {
   type DaemonConnectionState,
 } from './use-daemon-connection.js';
 import { usePanelWidths } from './use-panel-widths.js';
-import { HomeCenterSurface, HomeSettings } from './HomeSettings.js';
+import {
+  HomeCenterSurface,
+  HomeSettings,
+  type SettingsSection,
+} from './HomeSettings.js';
 
 const DAEMON_STATE_LABEL: Record<DaemonConnectionState, string> = {
   connected: '데몬 연결됨',
@@ -109,6 +114,10 @@ export function HomeShell(props: HomeShellProps) {
     useState<ShellLayoutModeId | null>(null);
   const [rightTab, setRightTab] = useState<RightPaneTab>('chat');
   const [centerSurface, setCenterSurface] = useState<CenterSurface>('editor');
+  const [extensionInitialTab, setExtensionInitialTab] =
+    useState<ExtensionHubTab>('plugins');
+  const [settingsInitialSection, setSettingsInitialSection] =
+    useState<SettingsSection>('providers');
   const [browseDirectoryPickerOpen, setBrowseDirectoryPickerOpen] =
     useState(false);
   const [composerDraftRequest, setComposerDraftRequest] =
@@ -179,6 +188,24 @@ export function HomeShell(props: HomeShellProps) {
   const isDaemonReadOnly = daemon.state === 'disconnected';
 
   const { setArtifactExpanded } = artifactSurface;
+  const openComposerCenterSurface = useCallback(
+    (surface: Extract<CenterSurface, 'extensions' | 'settings'>) => {
+      setCenterSurface(surface);
+      setArtifactExpanded(false);
+      setLayoutMode((current) =>
+        current === 'chat-only' ? 'default' : current,
+      );
+    },
+    [setArtifactExpanded],
+  );
+  const openSkills = useCallback(() => {
+    setExtensionInitialTab('skills');
+    openComposerCenterSurface('extensions');
+  }, [openComposerCenterSurface]);
+  const openMcpSettings = useCallback(() => {
+    setSettingsInitialSection('mcp');
+    openComposerCenterSurface('settings');
+  }, [openComposerCenterSurface]);
   const startCreator = useCallback(
     (kind: ExtensionCreatorKind) => {
       composerDraftSequence.current += 1;
@@ -321,11 +348,12 @@ export function HomeShell(props: HomeShellProps) {
                   centerSurface === 'extensions' ? ' active' : ''
                 }`}
                 aria-pressed={centerSurface === 'extensions'}
-                onClick={() =>
+                onClick={() => {
+                  setExtensionInitialTab('plugins');
                   setCenterSurface((current) =>
                     current === 'extensions' ? 'editor' : 'extensions',
-                  )
-                }
+                  );
+                }}
               >
                 <span className="settings-entry-icon" aria-hidden="true">
                   ◇
@@ -339,11 +367,12 @@ export function HomeShell(props: HomeShellProps) {
                   centerSurface === 'settings' ? ' active' : ''
                 }`}
                 aria-pressed={centerSurface === 'settings'}
-                onClick={() =>
+                onClick={() => {
+                  setSettingsInitialSection('providers');
                   setCenterSurface((current) =>
                     current === 'settings' ? 'editor' : 'settings',
-                  )
-                }
+                  );
+                }}
               >
                 <span className="settings-entry-icon" aria-hidden="true">
                   ⚙
@@ -469,6 +498,7 @@ export function HomeShell(props: HomeShellProps) {
             }
             extensions={
               <ExtensionHub
+                initialTab={extensionInitialTab}
                 disabled={isDaemonReadOnly}
                 onStartCreator={startCreator}
                 onClose={() => {
@@ -479,6 +509,7 @@ export function HomeShell(props: HomeShellProps) {
             }
             settings={
               <HomeSettings
+                initialSection={settingsInitialSection}
                 providerAuthCard={centerPanelView.providerAuthCard}
                 mcpDisabled={isDaemonReadOnly}
                 onClose={() => {
@@ -615,6 +646,8 @@ export function HomeShell(props: HomeShellProps) {
                 composerSurface={{
                   ...rightPanelView.assistant.composerSurface,
                   draftRequest: composerDraftRequest,
+                  onOpenSkills: openSkills,
+                  onOpenMcpSettings: openMcpSettings,
                   imageProviderConnected: {
                     grok_oauth:
                       props.providerAuthStatuses.grok_oauth?.ready === true,

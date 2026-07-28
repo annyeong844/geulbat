@@ -205,6 +205,7 @@ void test('ensureThreadBackgroundSubscription subscribes once and forwards backg
       assert.equal(message.event.seq, 0);
       assert.deepEqual(message.event.payload, {
         deliveryId: 'delivery-live',
+        resultDeliveryState: 'pending',
         parentRunId,
         childRunId,
         subagentType: 'explorer',
@@ -217,6 +218,27 @@ void test('ensureThreadBackgroundSubscription subscribes once and forwards backg
         resultDigest: `sha256:${'a'.repeat(64)}`,
         completedAt: '2026-03-30T00:00:00.000Z',
       });
+    }
+
+    daemonContext.backgroundNotifications.acknowledgeThreadBackgroundResults(
+      threadId,
+      ['delivery-live'],
+    );
+    const acknowledgedMessage = readLastSentMessage(socket);
+    assert.equal(acknowledgedMessage?.type, 'run.event');
+    if (
+      acknowledgedMessage?.type === 'run.event' &&
+      acknowledgedMessage.event.type === 'subagent_terminal'
+    ) {
+      assert.equal(acknowledgedMessage.event.seq, 1);
+      assert.equal(
+        acknowledgedMessage.event.payload.resultDeliveryState,
+        'acknowledged',
+      );
+      assert.equal(
+        acknowledgedMessage.event.payload.deliveryId,
+        'delivery-live',
+      );
     }
   } finally {
     cleanupSocketState(socket, daemonContext);

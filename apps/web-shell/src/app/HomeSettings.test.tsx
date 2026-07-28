@@ -69,6 +69,41 @@ void test('HomeSettings owns provider authentication and MCP administration', as
   act(() => renderer.unmount());
 });
 
+void test('HomeSettings can enter directly on MCP administration', async () => {
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <HomeSettings
+        initialSection="mcp"
+        providerAuthCard={{
+          statuses: {
+            openai_codex_direct: null,
+            grok_oauth: null,
+          },
+          busyProviderId: null,
+          uiErrors: {
+            openai_codex_direct: null,
+            grok_oauth: null,
+          },
+          onConnect: () => {},
+          onDisconnect: () => {},
+        }}
+        mcpClient={emptyMcpClient()}
+        onClose={() => {}}
+      />,
+    );
+  });
+
+  assert.match(renderedText(renderer.root), /연결된 MCP 서버가 없습니다/u);
+  assert.equal(
+    renderer.root.findByProps({ 'aria-label': 'MCP 서버 설정' }).props[
+      'aria-current'
+    ],
+    'page',
+  );
+  act(() => renderer.unmount());
+});
+
 void test('HomeCenterSurface keeps editor-local state across center overlays', () => {
   let renderer!: ReactTestRenderer;
   act(() => {

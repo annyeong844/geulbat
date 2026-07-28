@@ -228,6 +228,9 @@ export function ensureThreadBackgroundSubscription(
             nextSocketThreadSeq(socket, threadId),
             {
               deliveryId: result.deliveryId,
+              ...(result.resultDeliveryState === undefined
+                ? {}
+                : { resultDeliveryState: result.resultDeliveryState }),
               parentRunId: result.parentRunId,
               childRunId: result.childRunId,
               ...(result.childThreadId !== undefined

@@ -6,6 +6,7 @@ import {
   useSyncExternalStore,
   type KeyboardEvent,
 } from 'react';
+import type { GoalSnapshot } from '@geulbat/protocol/goal';
 import type { PermissionMode } from '@geulbat/protocol/run-approval';
 import type { ContextUsageUpdatedEventPayload } from '@geulbat/protocol/run-events';
 import type {
@@ -52,6 +53,11 @@ import {
 import { ContextUsageRing } from './context-usage-ring.js';
 import { AssistantComposerApprovalMenu } from './assistant-composer-approval-menu.js';
 import { AssistantComposerModelMenu } from './assistant-composer-model-menu.js';
+import {
+  AssistantComposerSlashMenu,
+  getComposerSlashCommandSuggestions,
+  type ComposerSlashCommandId,
+} from './assistant-composer-slash-menu.js';
 import { readGoalStartCommand } from './goal-command.js';
 
 // 어시스턴트에게 보낼 첨부 — 업로드된 binary-input ref를 가리키고,
@@ -96,6 +102,7 @@ interface AssistantComposerProps {
   isRunning: boolean;
   controls: AssistantComposerControls;
   contextUsage?: ContextUsageUpdatedEventPayload | null;
+  goalSnapshot?: GoalSnapshot | null;
   workingDirectory?: string | null;
   browseStartPath?: string;
   workingDirectorySelectionPending?: boolean;
@@ -113,6 +120,8 @@ interface AssistantComposerProps {
    */
   followupSuggestion?: string | null | undefined;
   onDismissFollowupSuggestion?: (() => void) | undefined;
+  onOpenSkills?: (() => void) | undefined;
+  onOpenMcpSettings?: (() => void) | undefined;
   // 이미지 모델 서브패널의 프로바이더 연결 상태 — 미연결 프로바이더의
   // 모델 행은 비활성으로 그린다(§3)
   imageProviderConnected?: {
@@ -145,6 +154,7 @@ export function AssistantComposer({
     onSubagentModelRoutingChange,
   },
   contextUsage = null,
+  goalSnapshot = null,
   workingDirectory = null,
   browseStartPath = '',
   workingDirectorySelectionPending = false,
@@ -158,6 +168,8 @@ export function AssistantComposer({
   draftRequest = null,
   followupSuggestion = null,
   onDismissFollowupSuggestion,
+  onOpenSkills,
+  onOpenMcpSettings,
   imageProviderConnected = {},
 }: AssistantComposerProps) {
   const [input, setInput] = useState('');
@@ -176,6 +188,9 @@ export function AssistantComposer({
   }, [activeSuggestion, onDismissFollowupSuggestion]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
+  const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
+  const [slashStatusOpen, setSlashStatusOpen] = useState(false);
+  const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   // [+] 메뉴 내부 페이지 — '이미지 ›' 서브패널(스펙 v3 §3)
   const [plusMenuPage, setPlusMenuPage] = useState<'root' | 'image'>('root');
   useEffect(() => {
@@ -266,6 +281,7 @@ export function AssistantComposer({
   const toggleMenu = (menu: Exclude<OpenMenu, null>) => {
     setImageModelNotice(null);
     setPlusMenuPage('root');
+    setSlashMenuDismissed(true);
     setOpenMenu((prev) => (prev === menu ? null : menu));
   };
 
@@ -274,7 +290,67 @@ export function AssistantComposer({
     setPlusMenuPage('root');
   };
 
+  const slashMatch = /^\/([^\s/]*)$/u.exec(input);
+  const slashQuery = slashMatch?.[1] ?? '';
+  const slashSuggestions =
+    slashMatch === null ? [] : getComposerSlashCommandSuggestions(slashQuery);
+  const slashMenuOpen =
+    slashMatch !== null && !slashMenuDismissed && openMenu === null && !isBusy;
+
+  useEffect(() => {
+    setActiveSlashIndex(0);
+    setSlashStatusOpen(false);
+  }, [slashQuery]);
+
+  useEffect(() => {
+    if (activeSlashIndex < slashSuggestions.length) {
+      return;
+    }
+    setActiveSlashIndex(Math.max(0, slashSuggestions.length - 1));
+  }, [activeSlashIndex, slashSuggestions.length]);
+
+  const selectSlashCommand = (command: ComposerSlashCommandId) => {
+    if (command === 'goal') {
+      setInput('/goal ');
+      setSlashMenuDismissed(true);
+      inputRef.current?.focus();
+      return;
+    }
+    if (command === 'skills') {
+      if (onOpenSkills === undefined) {
+        setInput('/skills ');
+        setSlashMenuDismissed(true);
+        inputRef.current?.focus();
+        return;
+      }
+      setInput('');
+      setSlashMenuDismissed(true);
+      onOpenSkills();
+      return;
+    }
+    if (command === 'mcp') {
+      if (onOpenMcpSettings === undefined) {
+        setInput('/mcp ');
+        setSlashMenuDismissed(true);
+        inputRef.current?.focus();
+        return;
+      }
+      setInput('');
+      setSlashMenuDismissed(true);
+      onOpenMcpSettings();
+      return;
+    }
+    setSlashStatusOpen(true);
+  };
+
   const handleSend = async () => {
+    if (slashMenuOpen) {
+      const suggestion = slashSuggestions[activeSlashIndex];
+      if (suggestion !== undefined) {
+        selectSlashCommand(suggestion.id);
+      }
+      return;
+    }
     const submittedInput = input;
     if (await onSend(submittedInput)) {
       setImageModelNotice(null);
@@ -283,6 +359,49 @@ export function AssistantComposer({
   };
 
   const handleKeyDown = (event: KeyboardEvent) => {
+    if (slashMenuOpen) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (slashStatusOpen) {
+          setSlashStatusOpen(false);
+        } else {
+          setSlashMenuDismissed(true);
+        }
+        return;
+      }
+      if (!slashStatusOpen && event.key === 'ArrowDown') {
+        event.preventDefault();
+        setActiveSlashIndex((current) =>
+          slashSuggestions.length === 0
+            ? 0
+            : (current + 1) % slashSuggestions.length,
+        );
+        return;
+      }
+      if (!slashStatusOpen && event.key === 'ArrowUp') {
+        event.preventDefault();
+        setActiveSlashIndex((current) =>
+          slashSuggestions.length === 0
+            ? 0
+            : (current - 1 + slashSuggestions.length) % slashSuggestions.length,
+        );
+        return;
+      }
+      if (
+        event.key === 'Enter' &&
+        !event.shiftKey &&
+        !event.nativeEvent.isComposing
+      ) {
+        event.preventDefault();
+        if (!slashStatusOpen) {
+          const suggestion = slashSuggestions[activeSlashIndex];
+          if (suggestion !== undefined) {
+            selectSlashCommand(suggestion.id);
+          }
+        }
+        return;
+      }
+    }
     if (event.key === 'Escape' && isRunning) {
       event.preventDefault();
       void onCancel();
@@ -411,8 +530,22 @@ export function AssistantComposer({
           ref={inputRef}
           name="assistant-message"
           value={input}
-          onChange={(event) => setInput(event.target.value)}
+          onChange={(event) => {
+            setInput(event.target.value);
+            setSlashMenuDismissed(false);
+          }}
           onKeyDown={handleKeyDown}
+          aria-controls={
+            slashMenuOpen ? 'assistant-composer-slash-menu' : undefined
+          }
+          aria-expanded={slashMenuOpen}
+          aria-activedescendant={
+            slashMenuOpen &&
+            !slashStatusOpen &&
+            slashSuggestions[activeSlashIndex] !== undefined
+              ? `assistant-composer-slash-option-${slashSuggestions[activeSlashIndex].id}`
+              : undefined
+          }
           placeholder={
             isRunning
               ? '실행 중 — 지시를 추가하면 바로 반영돼요…'
@@ -421,6 +554,22 @@ export function AssistantComposer({
           disabled={isBusy}
           rows={2}
         />
+        {slashMenuOpen ? (
+          <AssistantComposerSlashMenu
+            suggestions={slashSuggestions}
+            activeIndex={activeSlashIndex}
+            statusOpen={slashStatusOpen}
+            goalSnapshot={goalSnapshot}
+            isBusy={isBusy}
+            isRunning={isRunning}
+            modelId={modelId}
+            reasoningEffort={reasoningEffort}
+            contextUsage={contextUsage}
+            workingDirectoryLabel={workingDirectoryLabel}
+            onSelect={selectSlashCommand}
+            onBackFromStatus={() => setSlashStatusOpen(false)}
+          />
+        ) : null}
         {activeSuggestion !== null && !isBusy ? (
           <button
             type="button"

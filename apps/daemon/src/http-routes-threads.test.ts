@@ -245,6 +245,7 @@ void test('authenticated thread detail restores acknowledged terminal worker his
         assert.deepEqual(body.subagentTerminalOutcomes, [
           {
             ...terminalResult,
+            resultDeliveryState: 'acknowledged',
             resultRef: `subagent-result:${terminalResult.deliveryId}`,
             resultDigest: `sha256:${createHash('sha256').update(terminalResult.result, 'utf8').digest('hex')}`,
           },

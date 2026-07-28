@@ -296,6 +296,24 @@ void test('RunTranscriptEntryBlock renders durable live diagnostics and exact fa
   assert.match(subagentHtml, /자동 재시도: 불가 · 수행함 · 예산 소진/);
 });
 
+void test('RunTranscriptEntryBlock exposes terminal result retrieval waiting without reviving the child', () => {
+  const pendingResultEntry = {
+    kind: 'subagent_activity',
+    childRunId: 'child-run-delivery-pending',
+    subagentType: 'worker',
+    state: 'completed',
+    resultDeliveryState: 'pending',
+    result: '완료된 결과',
+  } as const;
+  const html = renderToStaticMarkup(
+    <RunTranscriptEntryBlock entry={pendingResultEntry} />,
+  );
+
+  assert.match(html, /worker 작업 완료 · 결과 회수 대기/);
+  assert.match(html, /결과 전달: 부모 확인 대기/);
+  assert.doesNotMatch(html, /중지/);
+});
+
 void test('formatSubagentActivityMeta derives active age from the exact observed timestamp', () => {
   const meta = formatSubagentActivityMeta(
     {

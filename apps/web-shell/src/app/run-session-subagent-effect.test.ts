@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
+import { appendSubagentTranscriptEntry } from '../lib/run-transcript-entry.js';
 import { makeApprovalRequiredFixture } from '../test-support/protocol-fixtures.js';
 import {
   createSubagentActivityEffect,
@@ -185,6 +186,60 @@ void test('createSubagentActivityEffect preserves terminal deliveryId, reason, r
       completedAt: '2026-04-18T00:00:02.000Z',
     },
   });
+});
+
+void test('createSubagentActivityEffect merges an acknowledged update for the same terminal delivery', () => {
+  const pendingEvent = {
+    runId: RUN_ID,
+    threadId: THREAD_ID,
+    seq: 4,
+    ts: '2026-07-28T13:10:00.000Z',
+    type: 'subagent_terminal',
+    payload: {
+      deliveryId: 'delivery-state-transition',
+      resultDeliveryState: 'pending',
+      parentRunId: RUN_ID,
+      childRunId: CHILD_RUN_ID,
+      subagentType: 'worker',
+      terminalState: 'completed',
+      ok: true,
+      result: 'done',
+      completedAt: '2026-07-28T13:10:00.000Z',
+    },
+  } as const;
+  const acknowledgedEvent = {
+    ...pendingEvent,
+    seq: 5,
+    ts: '2026-07-28T13:10:01.000Z',
+    payload: {
+      ...pendingEvent.payload,
+      resultDeliveryState: 'acknowledged',
+    },
+  } as const;
+  const pending = createSubagentActivityEffect(pendingEvent);
+  const acknowledged = createSubagentActivityEffect(acknowledgedEvent);
+
+  const entries = appendSubagentTranscriptEntry(
+    [pending.entry],
+    acknowledged.entry,
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(
+    Reflect.get(entries[0] ?? {}, 'resultDeliveryState'),
+    'acknowledged',
+  );
+
+  const afterStalePendingReplay = appendSubagentTranscriptEntry(
+    entries,
+    pending.entry,
+  );
+
+  assert.equal(afterStalePendingReplay, entries);
+  assert.equal(
+    Reflect.get(afterStalePendingReplay[0] ?? {}, 'resultDeliveryState'),
+    'acknowledged',
+  );
 });
 
 void test('createSubagentActivityEffect preserves terminal elapsedMs and usage telemetry', () => {

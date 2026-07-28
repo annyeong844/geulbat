@@ -44,17 +44,30 @@ void test('provider token request timeout accepts a positive operator override',
     }),
     300_000,
   );
+  assert.equal(
+    resolveProviderAuthTokenRequestTimeoutMs({
+      [TOKEN_REQUEST_TIMEOUT_ENV]: '2147483647',
+    }),
+    2_147_483_647,
+  );
 });
 
 void test('provider token request timeout rejects invalid operator policy', () => {
-  for (const value of ['0', '-1', '1.5', 'NaN', '9007199254740992']) {
+  for (const value of [
+    '0',
+    '-1',
+    '1.5',
+    'NaN',
+    '2147483648',
+    '9007199254740992',
+  ]) {
     assert.throws(
       () =>
         resolveProviderAuthTokenRequestTimeoutMs({
           [TOKEN_REQUEST_TIMEOUT_ENV]: value,
         }),
       new RegExp(
-        `${TOKEN_REQUEST_TIMEOUT_ENV} must be a positive safe integer`,
+        `${TOKEN_REQUEST_TIMEOUT_ENV} must be a positive integer no greater than 2147483647`,
         'u',
       ),
     );

@@ -169,6 +169,8 @@ interface AssistantComposerSurface {
   /** 다음 걸음 제안 — 명확할 때만 온다. 저장하지 않는다. */
   followupSuggestion?: string | null;
   onDismissFollowupSuggestion?: () => void;
+  onOpenSkills?: () => void;
+  onOpenMcpSettings?: () => void;
   // [+] 메뉴 이미지 서브패널의 프로바이더 연결 상태.
   imageProviderConnected?: {
     grok_oauth?: boolean;
@@ -298,6 +300,8 @@ export function Assistant({
     draftRequest: composerDraftRequest = null,
     followupSuggestion = null,
     onDismissFollowupSuggestion,
+    onOpenSkills,
+    onOpenMcpSettings,
     imageProviderConnected,
   } = composerSurface ?? {};
   // 열려 있는 차일드 세션 드릴다운 대상 (없으면 닫힘)
@@ -862,6 +866,8 @@ export function Assistant({
           draftRequest={composerDraftRequest}
           followupSuggestion={followupSuggestion}
           onDismissFollowupSuggestion={onDismissFollowupSuggestion}
+          onOpenSkills={onOpenSkills}
+          onOpenMcpSettings={onOpenMcpSettings}
           isBusy={isBusy}
           isRunning={canInterject}
           controls={{
@@ -871,6 +877,7 @@ export function Assistant({
             onModelIdChange: requestModelChange,
           }}
           contextUsage={contextUsage}
+          goalSnapshot={goal?.snapshot ?? null}
           workingDirectory={workspaceInput.workingDirectory}
           browseStartPath={workspaceInput.browseStartPath}
           workingDirectorySelectionPending={

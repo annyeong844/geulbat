@@ -21,6 +21,7 @@ const PROVIDER_AUTH_BUNDLED_CONFIG_PATH_ENV =
 const PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS_ENV =
   'GEULBAT_PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS';
 const PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_DEFAULT_MS = 60_000;
+const PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MAX_MS = 2_147_483_647;
 
 const PROVIDER_AUTH_AUTHORIZE_URL =
   process.env['PROVIDER_AUTH_AUTHORIZE_URL'] ??
@@ -124,17 +125,19 @@ export const PROVIDER_AUTH_REFRESH_MARGIN_MS = 60_000;
 export function resolveProviderAuthTokenRequestTimeoutMs(
   env: Record<string, string | undefined> = process.env,
 ): number {
-  const raw = trimToUndefined(
-    env[PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS_ENV],
-  );
+  const raw = trimToUndefined(env[PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS_ENV]);
   if (raw === undefined) {
     return PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_DEFAULT_MS;
   }
 
   const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+  if (
+    !Number.isSafeInteger(parsed) ||
+    parsed <= 0 ||
+    parsed > PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MAX_MS
+  ) {
     throw new Error(
-      `${PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS_ENV} must be a positive safe integer`,
+      `${PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MS_ENV} must be a positive integer no greater than ${PROVIDER_AUTH_TOKEN_REQUEST_TIMEOUT_MAX_MS}`,
     );
   }
   return parsed;
