@@ -2,11 +2,12 @@ import type { ContextUsageUpdatedEventPayload } from '@geulbat/protocol/run-even
 
 import type { ResponsesRequestMeasurement } from '../daemon/llm/provider/transport/responses-websocket.js';
 import type {
+  AgentToolExecutionContext,
   AnyTool,
   ExecuteResult,
-  ToolExecutionContext,
   ToolParseResult,
 } from '../daemon/tools/types.js';
+import { parseObjectArgs } from './loop-tool-execution-test-support.js';
 
 export function createTestContextBudgetRound(
   onContextUsage?: (snapshot: ContextUsageUpdatedEventPayload) => void,
@@ -35,15 +36,6 @@ export function createTestContextBudgetRound(
   };
 }
 
-function parseObjectArgs<TArgs extends object>(
-  raw: unknown,
-): ToolParseResult<TArgs> {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, message: 'tool arguments must be an object.' };
-  }
-  return { ok: true, value: raw as TArgs };
-}
-
 export function makePathArgumentTestTool<
   TArgs extends object = Record<string, unknown>,
 >(args: {
@@ -54,7 +46,7 @@ export function makePathArgumentTestTool<
   parseArgs?: (raw: unknown) => ToolParseResult<TArgs>;
   executeParsed: (
     parsedArgs: TArgs,
-    ctx: ToolExecutionContext,
+    ctx: AgentToolExecutionContext,
   ) => Promise<ExecuteResult>;
 }): AnyTool {
   return {

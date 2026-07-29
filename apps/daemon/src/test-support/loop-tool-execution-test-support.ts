@@ -32,7 +32,7 @@ export function registerOnce(
   daemonContext.toolRegistry.registerTool(tool);
 }
 
-function parseObjectArgs<TArgs extends object>(
+export function parseObjectArgs<TArgs extends object>(
   raw: unknown,
 ): ToolParseResult<TArgs> {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {

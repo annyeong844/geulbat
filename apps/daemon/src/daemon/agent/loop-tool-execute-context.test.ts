@@ -16,58 +16,13 @@ import {
 import { createApprovalGrantStore } from '../tools/approval-grants.js';
 import { createToolRegistryStore } from '../tools/registry.js';
 import { createDaemonContext } from '../context.js';
-import type {
-  AgentToolExecutionContext,
-  AnyTool,
-  ExecuteResult,
-  ToolParseResult,
-} from '../tools/types.js';
+import type { AgentToolExecutionContext } from '../tools/types.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
 import { makeRunContext } from '../../test-support/run-context.js';
+import { makePathArgumentTestTool } from '../../test-support/run-agent-loop.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import { testRunId } from '../../test-support/run-id.js';
 import { TEST_CHILD_MODEL_REGISTRATION } from '../../test-support/subagent-model-routing.js';
-
-function parseObjectArgs<TArgs extends object>(
-  raw: unknown,
-): ToolParseResult<TArgs> {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, message: 'tool arguments must be an object.' };
-  }
-  return { ok: true, value: raw as TArgs };
-}
-
-function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
-  name: string;
-  description: string;
-  sideEffectLevel: AnyTool['sideEffectLevel'];
-  requiresApproval: boolean;
-  parseArgs?: (raw: unknown) => ToolParseResult<TArgs>;
-  executeParsed: (
-    parsedArgs: TArgs,
-    ctx: AgentToolExecutionContext,
-  ) => Promise<ExecuteResult>;
-}): AnyTool {
-  return {
-    name: args.name,
-    description: args.description,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string' },
-      },
-      required: ['path'],
-      additionalProperties: false,
-    },
-    strict: true,
-    sideEffectLevel: args.sideEffectLevel,
-    mayMutateComputerFiles: false,
-    timeoutMs: 1_000,
-    requiresApproval: args.requiresApproval,
-    parseArgs: args.parseArgs ?? parseObjectArgs,
-    executeParsed: args.executeParsed,
-  };
-}
 
 void test('executeResolvedFunctionCall builds canonical tool execution context and resets runState to running', async () => {
   const toolName = 'execute_context_test_tool';
@@ -76,7 +31,7 @@ void test('executeResolvedFunctionCall builds canonical tool execution context a
   let capturedContext: AgentToolExecutionContext | undefined;
 
   store.registerTool(
-    makeTestTool({
+    makePathArgumentTestTool({
       name: toolName,
       description: 'test tool for execute context',
       sideEffectLevel: 'write',
@@ -206,7 +161,7 @@ void test('executeResolvedFunctionCall does not revive or execute a run cancelle
   const store = createToolRegistryStore({ builtins: [] });
   let executionCount = 0;
   store.registerTool(
-    makeTestTool({
+    makePathArgumentTestTool({
       name: toolName,
       description: 'must not execute after the run is cancelled',
       sideEffectLevel: 'write',
@@ -314,7 +269,7 @@ void test('executeResolvedFunctionCall can use an injected registry for tools ab
   const store = createToolRegistryStore({ builtins: [] });
   let seenCallId: string | undefined;
   store.registerTool(
-    makeTestTool({
+    makePathArgumentTestTool({
       name: toolName,
       description: 'test tool for local registry execution',
       sideEffectLevel: 'write',

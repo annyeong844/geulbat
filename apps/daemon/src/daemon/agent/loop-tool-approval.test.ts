@@ -39,6 +39,10 @@ import type {
   ToolParseResult,
 } from '../tools/types.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
+import {
+  parseObjectArgs,
+  registerOnce,
+} from '../../test-support/loop-tool-execution-test-support.js';
 import { createSymlinkOrSkip } from '../../test-support/symlink-test.js';
 import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
@@ -60,22 +64,6 @@ async function startApprovalCheckpoint(
     request: { workingDirectory: 'stories', permissionMode: 'basic' },
   });
   assert.equal(result.ok, true);
-}
-
-function registerOnce(
-  daemonContext: ReturnType<typeof createDaemonContext>,
-  tool: AnyTool,
-): void {
-  daemonContext.toolRegistry.registerTool(tool);
-}
-
-function parseObjectArgs<TArgs extends object>(
-  raw: unknown,
-): ToolParseResult<TArgs> {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, message: 'tool arguments must be an object.' };
-  }
-  return { ok: true, value: raw as TArgs };
 }
 
 function makeTestTool<TArgs extends object = Record<string, unknown>>(args: {
