@@ -39,10 +39,8 @@ import type {
   ToolParseResult,
 } from '../tools/types.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
-import {
-  parseObjectArgs,
-  registerOnce,
-} from '../../test-support/loop-tool-execution-test-support.js';
+import { registerOnce } from '../../test-support/loop-tool-execution-test-support.js';
+import { parseObjectArgs } from '../../test-support/run-agent-loop.js';
 import { createSymlinkOrSkip } from '../../test-support/symlink-test.js';
 import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';

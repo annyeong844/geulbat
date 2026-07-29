@@ -16,6 +16,7 @@ import type {
   ToolParseResult,
 } from '../daemon/tools/types.js';
 import { makeApprovalContext } from './approval-runtime.js';
+import { parseObjectArgs } from './run-agent-loop.js';
 import { testRunId } from './run-id.js';
 import { makeRunContext } from './run-context.js';
 import { testThreadId } from './thread-id.js';
@@ -30,15 +31,6 @@ export function registerOnce(
   tool: AnyTool,
 ): void {
   daemonContext.toolRegistry.registerTool(tool);
-}
-
-export function parseObjectArgs<TArgs extends object>(
-  raw: unknown,
-): ToolParseResult<TArgs> {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, message: 'tool arguments must be an object.' };
-  }
-  return { ok: true, value: raw as TArgs };
 }
 
 export function makeTestTool<

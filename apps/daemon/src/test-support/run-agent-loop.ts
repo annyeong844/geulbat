@@ -7,7 +7,6 @@ import type {
   ExecuteResult,
   ToolParseResult,
 } from '../daemon/tools/types.js';
-import { parseObjectArgs } from './loop-tool-execution-test-support.js';
 
 export function createTestContextBudgetRound(
   onContextUsage?: (snapshot: ContextUsageUpdatedEventPayload) => void,
@@ -34,6 +33,15 @@ export function createTestContextBudgetRound(
       onContextUsage?.(snapshot);
     },
   };
+}
+
+export function parseObjectArgs<TArgs extends object>(
+  raw: unknown,
+): ToolParseResult<TArgs> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, message: 'tool arguments must be an object.' };
+  }
+  return { ok: true, value: raw as TArgs };
 }
 
 export function makePathArgumentTestTool<
