@@ -146,6 +146,7 @@ export function createHomeShellView({
     messages: threads.messages,
     artifacts: threads.artifacts,
     subagentTerminalOutcomes: threads.subagentTerminalOutcomes,
+    messageHistory: threads.messageHistory,
     branchFromMessage: threads.branchThreadFromEntry,
     editPastUserPrompt,
     branchNotice: threads.branchNotice,

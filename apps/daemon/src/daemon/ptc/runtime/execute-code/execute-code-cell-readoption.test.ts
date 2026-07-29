@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { deferredDetachedProcessExit as deferredExit } from '../../../../test-support/ptc-execute-code-cell-process.js';
 import { makeRunContext } from '../../../../test-support/run-context.js';
 import { createPtcSessionDockerCommandFixture } from '../../../../test-support/ptc-session-docker.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
@@ -494,17 +495,6 @@ function makeDetachedHandle(args: {
       args.onTerminate?.();
     },
   };
-}
-
-function deferredExit(): {
-  promise: Promise<DetachedProcessExitInfo>;
-  resolve(value: DetachedProcessExitInfo): void;
-} {
-  let resolveExit: (value: DetachedProcessExitInfo) => void = () => undefined;
-  const promise = new Promise<DetachedProcessExitInfo>((resolve) => {
-    resolveExit = resolve;
-  });
-  return { promise, resolve: resolveExit };
 }
 
 async function withTestTimeout<T>(

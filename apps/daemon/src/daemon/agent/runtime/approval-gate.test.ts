@@ -50,16 +50,25 @@ function createTestApprovalGate(
         }
         if (existing.status === 'decided') {
           return existing.decision === decision &&
-            existing.grantScope === grantScope
+            (decision === 'aborted' ||
+              (existing.decision !== 'aborted' &&
+                existing.grantScope === grantScope))
             ? { ok: true, approval: existing }
             : { ok: false, code: 'approval_conflict' };
         }
-        const approval: RunCheckpointApproval = {
-          ...existing,
-          status: 'decided',
-          decision,
-          grantScope,
-        };
+        const approval: RunCheckpointApproval =
+          decision === 'aborted'
+            ? {
+                ...existing,
+                status: 'decided',
+                decision,
+              }
+            : {
+                ...existing,
+                status: 'decided',
+                decision,
+                grantScope,
+              };
         approvals.set(identityKey, approval);
         return { ok: true, approval };
       },
@@ -367,6 +376,74 @@ void test('clearComputerSessionRuntime aborts pending waiters for the same sessi
   assert.equal(
     await gate.resolveApproval('call-4', 'run-4', threadId, 'approved'),
     'not_found',
+  );
+});
+
+void test('an abort during durable pending registration settles the durable approval', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-approval-gate-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const runCheckpoints = createRunCheckpointStore({ stateRoot });
+  const runId = testRunId('approval-abort-during-pending-write');
+  const threadId = testThreadId(20);
+  const approvalClass = toApprovalClass('write_file');
+  await runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: 'stories', permissionMode: 'basic' },
+  });
+  let releasePendingRegistration: () => void = () => undefined;
+  const pendingRegistrationRelease = new Promise<void>((resolve) => {
+    releasePendingRegistration = resolve;
+  });
+  let reportPendingRegistration: () => void = () => undefined;
+  const pendingRegistrationStarted = new Promise<void>((resolve) => {
+    reportPendingRegistration = resolve;
+  });
+  const gate = createApprovalGate({
+    approvalGrants: createApprovalGrantStore(),
+    runCheckpoints: {
+      async recordApprovalPending(args) {
+        const result = await runCheckpoints.recordApprovalPending(args);
+        reportPendingRegistration();
+        await pendingRegistrationRelease;
+        return result;
+      },
+      async recordApprovalDecision(args) {
+        return await runCheckpoints.recordApprovalDecision(args);
+      },
+    },
+  });
+  const controller = new AbortController();
+  const wait = gate.waitForApproval(
+    'call-abort-during-pending-write',
+    runId,
+    threadId,
+    {
+      runId,
+      computerSessionId: 'session-abort-during-pending-write',
+      approvalClass,
+      sideEffectLevel: 'write',
+      permissionMode: 'basic',
+    },
+    controller.signal,
+  );
+
+  await pendingRegistrationStarted;
+  controller.abort();
+  releasePendingRegistration();
+
+  assert.equal(await wait, 'aborted');
+  assert.deepEqual(
+    (await createRunCheckpointStore({ stateRoot }).readThread(threadId))
+      ?.approvals,
+    [
+      {
+        status: 'decided',
+        callId: 'call-abort-during-pending-write',
+        approvalClass,
+        decision: 'aborted',
+      },
+    ],
   );
 });
 
@@ -719,8 +796,6 @@ void test('a pending approval is restored from the durable checkpoint after gate
       approvalClass: approvalContext.approvalClass,
     },
   ]);
-  beforeController.abort();
-  assert.equal(await oldWait, 'aborted');
 
   const afterRestart = createApprovalGate({
     approvalGrants: createApprovalGrantStore(),
@@ -760,6 +835,8 @@ void test('a pending approval is restored from the durable checkpoint after gate
     },
   );
   assert.equal(await restoredWait, 'approved');
+  beforeController.abort();
+  assert.equal(await oldWait, 'approved');
 });
 
 void test('a durable decision resumes without another approval event and restores a run grant', async (t) => {

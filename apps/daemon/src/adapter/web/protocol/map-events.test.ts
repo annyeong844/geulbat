@@ -56,6 +56,24 @@ void test('mapAgentEventToRunEvent preserves provider admission status', () => {
   });
 });
 
+void test('mapAgentEventToRunEvent preserves an anchored thread-state delta', () => {
+  const event = mapAgentEventToRunEvent(RUN_ID, THREAD_ID, 6, {
+    type: 'thread_state_delta_persisted',
+    payload: {
+      threadId: THREAD_ID,
+      snapshotVersion: '2026-07-29T00:00:00.000Z',
+      baseEntryId: 'entry-before-run',
+      messages: [],
+      artifacts: [],
+    },
+  });
+
+  assert.equal(event.type, 'thread_state_delta_persisted');
+  if (event.type === 'thread_state_delta_persisted') {
+    assert.equal(event.payload.baseEntryId, 'entry-before-run');
+  }
+});
+
 void test('mapAgentEventToRunEvent throws on invalid internal payloads', () => {
   const invalidEvent = {
     type: 'run_ack',

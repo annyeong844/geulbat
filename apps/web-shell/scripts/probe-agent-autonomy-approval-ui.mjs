@@ -22,7 +22,7 @@ const repoRoot = resolve(
   '..',
 );
 
-export class ApprovalUiProbeInputError extends Error {}
+class ApprovalUiProbeInputError extends Error {}
 
 function digest(value) {
   return `sha256:${createHash('sha256')

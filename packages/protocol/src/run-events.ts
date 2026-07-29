@@ -417,7 +417,23 @@ interface DoneEventPayload {
   ok: boolean;
 }
 
-type ThreadStatePersistedEventPayload = ThreadDetailResponse;
+export type ThreadStatePersistedEventPayload = ThreadDetailResponse;
+
+export type ThreadStatePersistedDelta = Omit<
+  ThreadDetailResponse,
+  'subagentTerminalOutcomes'
+> & {
+  /**
+   * The last entry already present before this run changed the transcript.
+   * `messages` replaces everything after this anchor. A null anchor replaces
+   * the whole visible transcript.
+   */
+  baseEntryId: string | null;
+};
+
+export type ThreadStateSettlePayload =
+  | ThreadStatePersistedEventPayload
+  | ThreadStatePersistedDelta;
 
 export interface ThreadStatePersistenceFailureDiagnostic {
   phase: string;
@@ -579,6 +595,7 @@ export interface SharedRunEventPayloadMap {
   planning_workflow_updated: PlanningWorkflowSnapshot;
   goal_updated: GoalSnapshot;
   thread_state_persisted: ThreadStatePersistedEventPayload;
+  thread_state_delta_persisted: ThreadStatePersistedDelta;
   thread_state_persist_failed: ThreadStatePersistFailedEventPayload;
   done: DoneEventPayload;
   error: ErrorEventPayload;
@@ -972,6 +989,17 @@ export function isThreadStatePersistedEventPayload(
   return isThreadDetailResponse(value);
 }
 
+export function isThreadStatePersistedDelta(
+  value: unknown,
+): value is ThreadStatePersistedDelta {
+  return (
+    isRecord(value) &&
+    (value.baseEntryId === null || isString(value.baseEntryId)) &&
+    value.subagentTerminalOutcomes === undefined &&
+    isThreadDetailResponse(value)
+  );
+}
+
 export function isThreadStatePersistFailedEventPayload(
   value: unknown,
 ): value is ThreadStatePersistFailedEventPayload {
@@ -1205,6 +1233,7 @@ const RUN_EVENT_PAYLOAD_GUARDS: {
   planning_workflow_updated: isPlanningWorkflowSnapshot,
   goal_updated: isGoalSnapshot,
   thread_state_persisted: isThreadStatePersistedEventPayload,
+  thread_state_delta_persisted: isThreadStatePersistedDelta,
   thread_state_persist_failed: isThreadStatePersistFailedEventPayload,
   tool_call: isToolCallEventPayload,
   tool_call_delta: isToolCallDeltaEventPayload,

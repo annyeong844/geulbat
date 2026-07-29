@@ -13,6 +13,8 @@ import {
   isThreadDetailDiagnostics,
   isThreadDetailResponse,
   isThreadMessage,
+  isThreadMessagePageResponse,
+  isThreadOpenResponse,
   isThreadSubagentTerminalOutcome,
   isThreadListResponse,
   isThreadRenameResponse,
@@ -100,6 +102,45 @@ void test('thread response guards validate Home thread identities without projec
         reasoningEffort: 'unbounded',
       },
       messages: [],
+    }),
+    false,
+  );
+  const messagePage = {
+    threadId: VALID_THREAD_ID,
+    messages: [
+      {
+        entryId: 'entry-latest-user',
+        role: 'user',
+        content: 'latest question',
+        timestamp: '2026-04-11T00:00:01.000Z',
+      },
+    ],
+    olderBeforeEntryId: 'entry-latest-user',
+  };
+  assert.equal(isThreadMessagePageResponse(messagePage), true);
+  assert.equal(
+    isThreadMessagePageResponse({
+      ...messagePage,
+      olderBeforeEntryId: 'entry-not-at-page-start',
+    }),
+    false,
+  );
+  assert.equal(
+    isThreadOpenResponse({
+      threadId: VALID_THREAD_ID,
+      snapshotVersion: '2026-04-11T00:00:01.000Z',
+      messagePage,
+    }),
+    true,
+  );
+  assert.equal(
+    isThreadOpenResponse({
+      threadId: VALID_THREAD_ID,
+      snapshotVersion: '2026-04-11T00:00:01.000Z',
+      messagePage: {
+        ...messagePage,
+        threadId: '22222222-2222-4222-8222-222222222222',
+      },
     }),
     false,
   );
@@ -763,6 +804,79 @@ void test('every declared thread contract field is actually validated', () => {
     isThreadDetailDiagnostics,
     { unlinkedPersistedArtifactCount: 1, missingLinkedArtifactCount: 0 },
     { unlinkedPersistedArtifactCount: 'x', missingLinkedArtifactCount: 'x' },
+  );
+
+  assertEveryFieldIsValidated(
+    'ThreadMessagePageResponse',
+    isThreadMessagePageResponse,
+    {
+      threadId: VALID_THREAD_ID as ThreadId,
+      messages: [
+        {
+          entryId: 'entry-page-start',
+          role: 'user',
+          content: 'question',
+          timestamp: '2026-04-11T00:00:00.000Z',
+        },
+      ],
+      olderBeforeEntryId: 'entry-page-start',
+    },
+    {
+      threadId: '../escape',
+      messages: [
+        {
+          entryId: 'entry-compaction',
+          role: 'compaction',
+          content: 'internal',
+          timestamp: '2026-04-11T00:00:00.000Z',
+          compactionData: {
+            kind: 'provider_native',
+            providerId: 'openai_codex_direct',
+            model: 'model-a',
+            output: [],
+            tokensBefore: 1,
+            contextWindow: 2,
+            thresholdTokens: 1,
+          },
+        },
+      ],
+      olderBeforeEntryId: '',
+    },
+  );
+
+  assertEveryFieldIsValidated(
+    'ThreadOpenResponse',
+    isThreadOpenResponse,
+    {
+      threadId: VALID_THREAD_ID as ThreadId,
+      snapshotVersion: '2026-04-11T00:00:00.000Z',
+      activeModelId: 'grok-4.5',
+      runPreferences: {
+        workingDirectory: '/workspace',
+        permissionMode: 'full_access',
+      },
+      artifacts: [],
+      diagnostics: {
+        unlinkedPersistedArtifactCount: 0,
+        missingLinkedArtifactCount: 0,
+      },
+      subagentTerminalOutcomes: [],
+      messagePage: {
+        threadId: VALID_THREAD_ID as ThreadId,
+        messages: [],
+        olderBeforeEntryId: null,
+      },
+    },
+    {
+      threadId: '../escape',
+      snapshotVersion: '',
+      activeModelId: 'invented-model',
+      runPreferences: { workingDirectory: 42 },
+      artifacts: 'not-an-array',
+      diagnostics: { unlinkedPersistedArtifactCount: -1 },
+      subagentTerminalOutcomes: 'not-an-array',
+      messagePage: {},
+    },
   );
 
   assertEveryFieldIsValidated(

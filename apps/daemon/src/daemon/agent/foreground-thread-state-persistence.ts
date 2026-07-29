@@ -8,7 +8,7 @@ import { loadThreadDetailSnapshot } from '../sessions/thread-detail.js';
 import { getErrorMessage } from '../utils/error.js';
 import type { AgentResult } from './agent-result.js';
 import type { AgentInput } from './loop-types.js';
-import { createAgentEvent } from './events.js';
+import { createAgentEvent, type AgentEventPayloadMap } from './events.js';
 import type { ResolvedExecuteForegroundRunDeps } from './execute-foreground-run-contracts.js';
 import { persistForegroundAssistantAnswer } from './foreground-assistant-persistence.js';
 
@@ -21,6 +21,7 @@ export async function persistSuccessfulForegroundOutput(args: {
   result: AgentResult;
   deps: ResolvedExecuteForegroundRunDeps;
   persistenceDiagnostics: readonly ThreadStatePersistenceFailureDiagnostic[];
+  baselineTranscriptEntryIds: readonly string[];
   toolCommittedArtifactRefs?: readonly ArtifactRef[];
 }): Promise<void> {
   const { agentInput, transcriptPrompt, result, deps, persistenceDiagnostics } =
@@ -58,6 +59,7 @@ export async function persistSuccessfulForegroundOutput(args: {
     shouldLoadSnapshot: assistantPersisted,
     deps,
     persistenceDiagnostics,
+    baselineTranscriptEntryIds: args.baselineTranscriptEntryIds,
   });
 }
 
@@ -135,8 +137,15 @@ async function publishForegroundThreadStateSnapshot(args: {
   shouldLoadSnapshot: boolean;
   deps: ResolvedExecuteForegroundRunDeps;
   persistenceDiagnostics: readonly ThreadStatePersistenceFailureDiagnostic[];
+  baselineTranscriptEntryIds: readonly string[];
 }): Promise<void> {
-  const { agentInput, shouldLoadSnapshot, deps, persistenceDiagnostics } = args;
+  const {
+    agentInput,
+    shouldLoadSnapshot,
+    deps,
+    persistenceDiagnostics,
+    baselineTranscriptEntryIds,
+  } = args;
   const { runContext } = agentInput;
 
   if (!shouldLoadSnapshot) {
@@ -149,12 +158,15 @@ async function publishForegroundThreadStateSnapshot(args: {
     async () => {
       agentInput.onEvent(
         createAgentEvent(
-          'thread_state_persisted',
-          await loadThreadDetailSnapshot({
-            workspaceRoot: runContext.stateRoot,
-            threadId: runContext.threadId,
-            includeActiveRunCommentary: true,
-          }),
+          'thread_state_delta_persisted',
+          buildThreadStatePersistedDelta(
+            await loadThreadDetailSnapshot({
+              workspaceRoot: runContext.stateRoot,
+              threadId: runContext.threadId,
+              includeActiveRunCommentary: true,
+            }),
+            baselineTranscriptEntryIds,
+          ),
         ),
       );
     },
@@ -164,6 +176,39 @@ async function publishForegroundThreadStateSnapshot(args: {
   if (!threadSnapshotLoaded) {
     emitThreadStatePersistFailed(agentInput, persistenceDiagnostics);
   }
+}
+
+function buildThreadStatePersistedDelta(
+  snapshot: Awaited<ReturnType<typeof loadThreadDetailSnapshot>>,
+  baselineTranscriptEntryIds: readonly string[],
+): AgentEventPayloadMap['thread_state_delta_persisted'] {
+  const finalIndexByEntryId = new Map(
+    snapshot.messages.map((message, index) => [message.entryId, index]),
+  );
+  let baseEntryId: string | null = null;
+  let baseMessageIndex = -1;
+  for (
+    let index = baselineTranscriptEntryIds.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const candidateEntryId = baselineTranscriptEntryIds[index];
+    if (candidateEntryId === undefined) {
+      continue;
+    }
+    const candidateMessageIndex = finalIndexByEntryId.get(candidateEntryId);
+    if (candidateMessageIndex !== undefined) {
+      baseEntryId = candidateEntryId;
+      baseMessageIndex = candidateMessageIndex;
+      break;
+    }
+  }
+
+  return {
+    ...snapshot,
+    baseEntryId,
+    messages: snapshot.messages.slice(baseMessageIndex + 1),
+  };
 }
 
 function emitThreadStatePersistFailed(

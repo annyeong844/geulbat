@@ -355,7 +355,7 @@ function reduceSingleRunSessionState(
         },
       };
     case 'run_terminal':
-      // 성공 런은 앞선 thread_state_persisted/failed 이벤트가 정본이다.
+      // 성공 런은 앞선 thread_state_persisted/delta/failed 이벤트가 정본이다.
       // 실패 done은 저장 스냅샷 없이 올 수 있으므로 정확히 같은 활성 런만 닫는다.
       if (
         action.ok ||

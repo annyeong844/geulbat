@@ -122,6 +122,12 @@ export type RunCheckpointApproval =
       approvalClass: ApprovalClass;
       decision: 'approved' | 'denied';
       grantScope: ApprovalGrantScope;
+    }
+  | {
+      status: 'decided';
+      callId: string;
+      approvalClass: ApprovalClass;
+      decision: 'aborted';
     };
 
 export type RunCheckpointTerminalEvent = TerminalAgentEvent;
@@ -363,6 +369,14 @@ function parseCheckpointApproval(value: unknown): RunCheckpointApproval {
       approvalClass: value.approvalClass,
       decision: value.decision,
       grantScope: value.grantScope,
+    };
+  }
+  if (value.status === 'decided' && value.decision === 'aborted') {
+    return {
+      status: value.status,
+      callId: value.callId,
+      approvalClass: value.approvalClass,
+      decision: value.decision,
     };
   }
   throw new Error('invalid run checkpoint approval state');

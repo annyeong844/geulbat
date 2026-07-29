@@ -114,6 +114,7 @@ void test('persistSuccessfulForegroundOutput emits thread-state failure diagnost
       },
     }),
     persistenceDiagnostics: diagnostics,
+    baselineTranscriptEntryIds: [],
   });
 
   assert.equal(transcriptReadCount, 2);
@@ -210,13 +211,17 @@ void test('persistSuccessfulForegroundOutput hands active commentary from live s
     },
     deps: makeDeps(),
     persistenceDiagnostics: [],
+    baselineTranscriptEntryIds: [userMessage.entryId],
   });
 
   const persisted = events.find(
-    (event): event is Extract<AgentEvent, { type: 'thread_state_persisted' }> =>
-      event.type === 'thread_state_persisted',
+    (
+      event,
+    ): event is Extract<AgentEvent, { type: 'thread_state_delta_persisted' }> =>
+      event.type === 'thread_state_delta_persisted',
   );
   assert.ok(persisted);
+  assert.equal(persisted.payload.baseEntryId, userMessage.entryId);
   assert.deepEqual(
     persisted.payload.messages.map((message) => [
       message.role,
@@ -224,7 +229,6 @@ void test('persistSuccessfulForegroundOutput hands active commentary from live s
       message.metadata?.phase,
     ]),
     [
-      ['user', 'Please reason before answering.', undefined],
       [
         'assistant',
         'Reasoning retained at the ownership handoff.',

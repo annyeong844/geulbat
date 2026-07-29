@@ -9,8 +9,73 @@ import { assertRunId, assertThreadId } from '@geulbat/protocol/ids';
 
 import { appendProviderRound } from './provider-round-journal.js';
 import { createRunCheckpointStore } from './run-checkpoint-store.js';
-import { loadThreadDetailSnapshot } from './thread-detail.js';
+import {
+  loadThreadDetailSnapshot,
+  selectThreadMessagePage,
+} from './thread-detail.js';
 import { appendTranscriptEntry } from './transcript-log.js';
+
+void test('thread message pages follow complete user turns and exact entry anchors', () => {
+  const threadId = assertThreadId(randomUUID());
+  const messages = [
+    {
+      entryId: 'entry-user-1',
+      role: 'user' as const,
+      content: 'first',
+      timestamp: '2026-07-29T00:00:00.000Z',
+    },
+    {
+      entryId: 'entry-tool-1',
+      role: 'tool_result' as const,
+      content: 'first tool result',
+      timestamp: '2026-07-29T00:00:01.000Z',
+    },
+    {
+      entryId: 'entry-assistant-1',
+      role: 'assistant' as const,
+      content: 'first answer',
+      timestamp: '2026-07-29T00:00:02.000Z',
+    },
+    {
+      entryId: 'entry-user-2',
+      role: 'user' as const,
+      content: 'second',
+      timestamp: '2026-07-29T00:00:03.000Z',
+    },
+    {
+      entryId: 'entry-assistant-2',
+      role: 'assistant' as const,
+      content: 'second answer',
+      timestamp: '2026-07-29T00:00:04.000Z',
+    },
+  ];
+
+  const latest = selectThreadMessagePage({ threadId, messages });
+  assert.deepEqual(
+    latest?.messages.map((message) => message.entryId),
+    ['entry-user-2', 'entry-assistant-2'],
+  );
+  assert.equal(latest?.olderBeforeEntryId, 'entry-user-2');
+
+  const older = selectThreadMessagePage({
+    threadId,
+    messages,
+    beforeEntryId: 'entry-user-2',
+  });
+  assert.deepEqual(
+    older?.messages.map((message) => message.entryId),
+    ['entry-user-1', 'entry-tool-1', 'entry-assistant-1'],
+  );
+  assert.equal(older?.olderBeforeEntryId, null);
+  assert.equal(
+    selectThreadMessagePage({
+      threadId,
+      messages,
+      beforeEntryId: 'missing-entry',
+    }),
+    null,
+  );
+});
 
 void test('thread detail restores only a catalog model owned by the recorded provider', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-thread-detail-'));

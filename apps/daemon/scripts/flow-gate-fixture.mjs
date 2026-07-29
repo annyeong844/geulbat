@@ -31,6 +31,7 @@ async function loadDaemonModules() {
     runEventJournal,
     runtimeState,
     responsesWebSocketCache,
+    providerAuthCredentials,
     shellAssets,
     mediaFiles,
     durableRunExecution,
@@ -44,6 +45,7 @@ async function loadDaemonModules() {
     import(
       srcUrl('daemon/llm/provider/transport/responses-websocket-cache.ts')
     ),
+    import(srcUrl('daemon/auth/credentials/store.ts')),
     import(srcUrl('adapter/web/shell-assets.ts')),
     import(srcUrl('daemon/sessions/media-file-store.ts')),
     import(srcUrl('daemon/durable-run-execution.ts')),
@@ -58,6 +60,8 @@ async function loadDaemonModules() {
     createDaemonRuntimeStateStore: runtimeState.createDaemonRuntimeStateStore,
     createResponsesWebSocketSessionStore:
       responsesWebSocketCache.createResponsesWebSocketSessionStore,
+    readProviderAuthFile: providerAuthCredentials.readProviderAuthFile,
+    writeProviderAuthFile: providerAuthCredentials.writeProviderAuthFile,
     recoverDurableRunsAtDaemonStartup:
       durableRunExecution.recoverDurableRunsAtDaemonStartup,
     writeThreadMediaFile: mediaFiles.writeThreadMediaFile,
@@ -128,6 +132,8 @@ function readFlowGateFixtureConfig() {
     workingDirectory: readRequiredEnv('GEULBAT_FLOW_GATE_WORKING_DIRECTORY'),
     initialCommentary: readRequiredEnv('GEULBAT_FLOW_GATE_INITIAL_COMMENTARY'),
     threadTitle: readRequiredEnv('GEULBAT_FLOW_GATE_THREAD_TITLE'),
+    planSteerPrompt: readRequiredEnv('GEULBAT_FLOW_GATE_PLAN_STEER_PROMPT'),
+    planSteerStep: readRequiredEnv('GEULBAT_FLOW_GATE_PLAN_STEER_STEP'),
     runStreamPrefix: readRequiredEnv('GEULBAT_FLOW_GATE_RUN_STREAM_PREFIX'),
     runFinalSuffix: readRequiredEnv('GEULBAT_FLOW_GATE_RUN_FINAL_SUFFIX'),
     runSettlementPrompt: readRequiredEnv(
@@ -482,6 +488,8 @@ async function startFlowGateFixtureDaemon() {
     createRunEventJournalStore,
     createDaemonRuntimeStateStore,
     createResponsesWebSocketSessionStore,
+    readProviderAuthFile,
+    writeProviderAuthFile,
     createShellAssetRoutes,
     recoverDurableRunsAtDaemonStartup,
     writeThreadMediaFile,
@@ -505,19 +513,29 @@ async function startFlowGateFixtureDaemon() {
   await daemonContext.provider.webSocketSessions.closeAll();
   daemonContext.provider.webSocketSessions =
     deterministicProvider.webSocketSessions;
-  daemonContext.provider.authRuntime.setCachedProviderCredential({
-    accessToken: 'flow-gate-provider-access',
-    refreshToken: 'flow-gate-provider-refresh',
-    accountId: 'flow-gate-provider-account',
-    expiresAt: Date.UTC(2099, 0, 1),
-  });
-  daemonContext.provider.authRuntime.setHydratedProviderAuth(true);
+  if ((await readProviderAuthFile()) === null) {
+    await writeProviderAuthFile(
+      {
+        accessToken: 'flow-gate-provider-access',
+        refreshToken: 'flow-gate-provider-refresh',
+        accountId: 'flow-gate-provider-account',
+        expiresAt: Date.UTC(2099, 0, 1),
+      },
+      'openai_codex_direct',
+      daemonContext.provider.credentialFilePermissionHardener,
+    );
+  }
+  const discoveredComputerFileScope = daemonContext.computerFileScope;
   daemonContext.computerFileScope = {
-    root: config.workingDirectory,
+    root: discoveredComputerFileScope?.root ?? config.workingDirectory,
     browseStartPath: config.workingDirectory,
-    browseShortcuts: [],
+    // Keep the production-owned array reference. WSL/Windows discovery may
+    // finish after context construction and updates this array in place; the
+    // fixture only replaces the isolated browse start, not the discovered
+    // drive/known-folder projection under test.
+    browseShortcuts: discoveredComputerFileScope?.browseShortcuts ?? [],
   };
-  daemonContext.computerFileRoot = config.workingDirectory;
+  daemonContext.computerFileRoot = daemonContext.computerFileScope.root;
 
   await recoverDurableRunsAtDaemonStartup(daemonContext);
   const recoveryFixture = await startFlowGateRecoveryFixture({

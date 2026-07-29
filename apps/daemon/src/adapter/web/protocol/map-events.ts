@@ -11,6 +11,7 @@ import {
   isSubagentSpawnedEventPayload,
   isSubagentStatusEventPayload,
   isSubagentTerminalEventPayload,
+  isThreadStatePersistedDelta,
   isThreadStatePersistedEventPayload,
   isThreadStatePersistFailedEventPayload,
   isTextDeltaEventPayload,
@@ -48,6 +49,7 @@ const agentEventPayloadGuards: {
   artifact_stream_delta: isTextDeltaEventPayload,
   artifact_committed: isArtifactCommittedEventPayload,
   thread_state_persisted: isThreadStatePersistedEventPayload,
+  thread_state_delta_persisted: isThreadStatePersistedDelta,
   thread_state_persist_failed: isThreadStatePersistFailedEventPayload,
   done: isDoneEventPayload,
   tool_call: isToolCallEventPayload,
@@ -98,6 +100,8 @@ export function mapAgentEventToRunEvent(
     case 'artifact_committed':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'thread_state_persisted':
+      return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
+    case 'thread_state_delta_persisted':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);
     case 'thread_state_persist_failed':
       return buildRunEventFromAgentEvent(runId, threadId, seq, agentEvent);

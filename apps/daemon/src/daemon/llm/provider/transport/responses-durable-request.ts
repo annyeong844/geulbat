@@ -306,6 +306,7 @@ export function createHostRoutedResponsesRequestTransport(args: {
     let stderrBuffer = '';
     let deliveredEvents = 0;
     let reachedTerminal = false;
+    let outcomeIsUnknown = false;
     try {
       for (;;) {
         const drained = handle.drainNewOutput();
@@ -344,7 +345,8 @@ export function createHostRoutedResponsesRequestTransport(args: {
               reachedTerminal = true;
               throw hydrateResponsesDurableRequestError(frame.error);
             }
-            throw new Error(
+            outcomeIsUnknown = true;
+            throw outcomeUnknownError(
               'provider request completed without a durable terminal artifact',
             );
           }
@@ -387,6 +389,7 @@ export function createHostRoutedResponsesRequestTransport(args: {
             reachedTerminal = true;
             return;
           }
+          outcomeIsUnknown = true;
           throw outcomeUnknownError(
             `provider request host exited (${describeProcessExit(wake.exit)})${
               redactHostStderr(stderrBuffer, input) === ''
@@ -399,11 +402,15 @@ export function createHostRoutedResponsesRequestTransport(args: {
     } finally {
       if (!reachedTerminal && !isDetachOnlyReason(input.signal?.reason)) {
         handle.stop();
-        await clearCoordinateIfOwned({
-          coordinatePath,
-          requestIdentity,
-          outputRef,
-        });
+        // An unknown-outcome coordinate is the durable fence that prevents the
+        // same provider request from being dispatched again without evidence.
+        if (!outcomeIsUnknown) {
+          await clearCoordinateIfOwned({
+            coordinatePath,
+            requestIdentity,
+            outputRef,
+          });
+        }
       }
     }
   }

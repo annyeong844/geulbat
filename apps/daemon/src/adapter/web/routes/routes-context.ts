@@ -31,7 +31,7 @@ export interface ThreadsRoutesContext {
   };
 }
 
-export interface ActiveThreadRunLookup {
+interface ActiveThreadRunLookup {
   getRunByThreadId(threadId: string): { runId: RunId } | undefined;
   getRunByOwnerThread(threadId: string): { runId: RunId } | undefined;
 }

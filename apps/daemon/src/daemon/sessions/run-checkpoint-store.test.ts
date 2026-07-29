@@ -661,6 +661,47 @@ void test('pending interjects survive recreation and claim wins against cancella
   );
 });
 
+void test('terminal settlement atomically discards applying and pending interjects when explicitly requested', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const store = createRunCheckpointStore({ stateRoot });
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  await store.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: '/workspace', permissionMode: 'basic' },
+  });
+  await store.enqueueInterject({
+    threadId,
+    runId,
+    interject: { receivedSeq: 1, text: 'applying' },
+  });
+  await store.enqueueInterject({
+    threadId,
+    runId,
+    interject: { receivedSeq: 2, text: 'pending' },
+  });
+  await store.claimInterject({ threadId, runId, receivedSeq: 1 });
+
+  const checkpoint = await store.settleRun({
+    threadId,
+    runId,
+    discardPendingInterjects: true,
+    terminal: {
+      eventCursor: 1,
+      event: {
+        type: 'error',
+        payload: { code: 'aborted', message: 'run cancelled' },
+      },
+    },
+  });
+
+  assert.equal(checkpoint.status, 'terminal');
+  assert.equal(checkpoint.applyingInterject, null);
+  assert.deepEqual(checkpoint.pendingInterjects, []);
+});
+
 void test('interject enqueue is idempotent but rejects sequence reuse with different text', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
   t.after(async () => rm(stateRoot, { recursive: true, force: true }));
@@ -799,6 +840,61 @@ void test('approval decision atomically persists a current-run permission mode c
       approvalClass,
       decision: 'approved',
       grantScope: 'run',
+    },
+  ]);
+});
+
+void test('approval abort durably settles a pending approval without recording a user grant', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'geulbat-run-checkpoint-'));
+  t.after(async () => rm(stateRoot, { recursive: true, force: true }));
+  const store = createRunCheckpointStore({ stateRoot });
+  const runId = assertRunId(randomUUID());
+  const threadId = assertThreadId(randomUUID());
+  const approvalClass = toApprovalClass('write_file:computer');
+  await store.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: '/workspace', permissionMode: 'basic' },
+  });
+  await store.recordApprovalPending({
+    threadId,
+    runId,
+    callId: 'call-aborted-approval',
+    approvalClass,
+  });
+
+  const aborted = await store.recordApprovalDecision({
+    threadId,
+    runId,
+    callId: 'call-aborted-approval',
+    decision: 'aborted',
+  });
+  assert.equal(aborted.ok && aborted.changed, true);
+  const duplicateAbort = await store.recordApprovalDecision({
+    threadId,
+    runId,
+    callId: 'call-aborted-approval',
+    decision: 'aborted',
+  });
+  assert.equal(duplicateAbort.ok && !duplicateAbort.changed, true);
+  assert.deepEqual(
+    await store.recordApprovalDecision({
+      threadId,
+      runId,
+      callId: 'call-aborted-approval',
+      decision: 'approved',
+      grantScope: 'once',
+    }),
+    { ok: false, code: 'approval_conflict' },
+  );
+
+  const reloaded = createRunCheckpointStore({ stateRoot });
+  assert.deepEqual((await reloaded.readThread(threadId))?.approvals, [
+    {
+      status: 'decided',
+      callId: 'call-aborted-approval',
+      approvalClass,
+      decision: 'aborted',
     },
   ]);
 });

@@ -29,16 +29,17 @@ import {
   loadThreadIndex,
   upsertThreadSummary,
 } from '../../../daemon/sessions/threads-index.js';
-import { loadThreadDetailSnapshot } from '../../../daemon/sessions/thread-detail.js';
+import {
+  loadThreadDetailSnapshot,
+  loadThreadMessagePage,
+  loadThreadOpenSnapshot,
+} from '../../../daemon/sessions/thread-detail.js';
 import { readRunAttachment } from '../../../daemon/sessions/run-attachment-store.js';
 import {
   isTranscriptCorruptionError,
   readTranscriptEntries,
 } from '../../../daemon/sessions/transcript-log.js';
-import type {
-  ActiveThreadRunLookup,
-  ThreadsRoutesContext,
-} from './routes-context.js';
+import type { ThreadsRoutesContext } from './routes-context.js';
 import {
   sendApiError,
   sendUnexpectedApiError,
@@ -47,47 +48,93 @@ import {
 export function createThreadsRoutes(args: {
   context: ThreadsRoutesContext;
 }): Router {
-  const {
-    activeRuns,
-    backgroundNotifications,
-    homeStateRoot,
-    providerTransitionCompaction,
-    threadArchiveTransfer,
-    threadProjectionPins,
-  } = args.context;
-  return createThreadsRoutesInternal({
-    activeRuns,
-    backgroundNotifications,
-    threadProjectionPins,
-    homeStateRoot,
-    providerTransitionCompaction,
-    threadArchiveTransfer,
-  });
+  const router = Router();
+  registerThreadReadRoutes(router, args.context);
+  registerThreadContentRoutes(router, args.context);
+  registerThreadProviderTransitionRoute(router, args.context);
+  registerThreadArtifactAndArchiveRoutes(router, args.context);
+  registerThreadMutationRoutes(router, args.context);
+  return router;
 }
 
-function createThreadsRoutesInternal(args: {
-  activeRuns: ActiveThreadRunLookup;
-  backgroundNotifications: ThreadsRoutesContext['backgroundNotifications'];
-  homeStateRoot: string;
-  providerTransitionCompaction: ThreadsRoutesContext['providerTransitionCompaction'];
-  threadArchiveTransfer: ThreadsRoutesContext['threadArchiveTransfer'];
-  threadProjectionPins: ThreadsRoutesContext['threadProjectionPins'];
-}): Router {
-  const router = Router();
-  const {
-    activeRuns,
-    backgroundNotifications,
-    homeStateRoot,
-    providerTransitionCompaction,
-    threadArchiveTransfer,
-    threadProjectionPins,
-  } = args;
+function registerThreadReadRoutes(
+  router: Router,
+  context: Pick<
+    ThreadsRoutesContext,
+    'backgroundNotifications' | 'homeStateRoot'
+  >,
+): void {
+  const { backgroundNotifications, homeStateRoot } = context;
 
   router.get('/api/threads', async (_req, res) => {
     try {
       res.json({ threads: await loadThreadIndex(homeStateRoot) });
     } catch (err: unknown) {
       sendUnexpectedApiError(res, 'threads/list', err);
+    }
+  });
+
+  router.get('/api/threads/:threadId/open', async (req, res) => {
+    const threadId = readThreadIdOrSendError(req, res);
+    if (!threadId) {
+      return;
+    }
+
+    try {
+      const detail = await loadThreadOpenSnapshot({
+        workspaceRoot: homeStateRoot,
+        threadId,
+      });
+      res.json({
+        ...detail,
+        subagentTerminalOutcomes:
+          backgroundNotifications.readThreadBackgroundResultHistory(threadId),
+      });
+    } catch (err: unknown) {
+      if (isTranscriptCorruptionError(err)) {
+        sendApiError(res, 'internal', 'thread transcript is corrupted');
+        return;
+      }
+      if (isArtifactStoreCorruptionError(err)) {
+        sendApiError(res, 'internal', 'thread artifact store is corrupted');
+        return;
+      }
+      sendUnexpectedApiError(res, 'threads/open', err);
+    }
+  });
+
+  router.get('/api/threads/:threadId/messages', async (req, res) => {
+    const threadId = readThreadIdOrSendError(req, res);
+    if (!threadId) {
+      return;
+    }
+    const beforeEntryId = req.query['before'];
+    if (typeof beforeEntryId !== 'string' || beforeEntryId.trim() === '') {
+      sendApiError(res, 'invalid_args', 'before entry id is required');
+      return;
+    }
+
+    try {
+      const page = await loadThreadMessagePage({
+        workspaceRoot: homeStateRoot,
+        threadId,
+        beforeEntryId,
+      });
+      if (page === null) {
+        sendApiError(
+          res,
+          'not_found',
+          `thread message anchor not found: ${beforeEntryId}`,
+        );
+        return;
+      }
+      res.json(page);
+    } catch (err: unknown) {
+      if (isTranscriptCorruptionError(err)) {
+        sendApiError(res, 'internal', 'thread transcript is corrupted');
+        return;
+      }
+      sendUnexpectedApiError(res, 'threads/messages', err);
     }
   });
 
@@ -119,6 +166,13 @@ function createThreadsRoutesInternal(args: {
       sendUnexpectedApiError(res, 'threads/detail', err);
     }
   });
+}
+
+function registerThreadContentRoutes(
+  router: Router,
+  context: Pick<ThreadsRoutesContext, 'homeStateRoot'>,
+): void {
+  const { homeStateRoot } = context;
 
   // 첨부 원본 바이트 — 대화창 이미지 렌더링용. 바이트는 불변이라 장기 캐시.
   router.get(
@@ -228,6 +282,16 @@ function createThreadsRoutesInternal(args: {
       sendUnexpectedApiError(res, 'threads/media', err);
     }
   });
+}
+
+function registerThreadProviderTransitionRoute(
+  router: Router,
+  context: Pick<
+    ThreadsRoutesContext,
+    'activeRuns' | 'homeStateRoot' | 'providerTransitionCompaction'
+  >,
+): void {
+  const { activeRuns, homeStateRoot, providerTransitionCompaction } = context;
 
   router.post(
     '/api/threads/:threadId/provider-transition',
@@ -325,6 +389,16 @@ function createThreadsRoutesInternal(args: {
       );
     },
   );
+}
+
+function registerThreadArtifactAndArchiveRoutes(
+  router: Router,
+  context: Pick<
+    ThreadsRoutesContext,
+    'homeStateRoot' | 'threadArchiveTransfer'
+  >,
+): void {
+  const { homeStateRoot, threadArchiveTransfer } = context;
 
   // 사용자 draft → 버전 커밋 — 에디터 </>에서 고친 내용을 같은 artifactId의
   // 새 버전으로 append한다 (phase5 commit path spec §5.2 update contract).
@@ -468,6 +542,24 @@ function createThreadsRoutesInternal(args: {
       sendUnexpectedApiError(res, 'threads/archive-import', err);
     }
   });
+}
+
+function registerThreadMutationRoutes(
+  router: Router,
+  context: Pick<
+    ThreadsRoutesContext,
+    | 'activeRuns'
+    | 'backgroundNotifications'
+    | 'homeStateRoot'
+    | 'threadProjectionPins'
+  >,
+): void {
+  const {
+    activeRuns,
+    backgroundNotifications,
+    homeStateRoot,
+    threadProjectionPins,
+  } = context;
 
   // 스레드 브랜치 — upToEntryId 포함 prefix를 복제한 새 스레드를 만든다.
   // 원 스레드는 불변이므로 active run이 있어도 안전하다(디스크에 settle된
@@ -608,8 +700,6 @@ function createThreadsRoutesInternal(args: {
       sendUnexpectedApiError(res, 'threads/delete', err);
     }
   });
-
-  return router;
 }
 
 // 인라인 렌더는 스크립트가 돌지 않는 형식만 원래 MIME으로 내보낸다.

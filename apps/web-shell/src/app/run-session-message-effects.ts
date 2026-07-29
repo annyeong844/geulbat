@@ -3,6 +3,7 @@ import type {
   ContextUsageUpdatedEventPayload,
   ProviderRuntimeStatusEventPayload,
   RunUsageTotals,
+  ThreadStateSettlePayload,
   ToolResultEventPayload,
 } from '@geulbat/protocol/run-events';
 import type { ApprovalRequired } from '@geulbat/protocol/run-approval';
@@ -10,7 +11,6 @@ import type { ErrorCode } from '@geulbat/protocol/errors';
 import type { RunChannelServerMessage } from '@geulbat/protocol/run-channel';
 import type { PlanningWorkflowSnapshot } from '@geulbat/protocol/planning-workflow';
 import type { GoalSnapshot } from '@geulbat/protocol/goal';
-import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 import { ASK_USER_TOOL_NAME } from '../features/assistant/ask-user/ask-user-card-view.js';
 import { UPDATE_PLAN_TOOL_NAME } from '../features/assistant/run-plan/run-plan.js';
 import { readPtcToolActivityStatus } from '../features/assistant/tool-result-view.js';
@@ -134,7 +134,7 @@ export type RunSessionMessageEffect =
   | {
       kind: 'settle_run_success';
       runId: string;
-      thread: ThreadDetailResponse;
+      thread: ThreadStateSettlePayload;
     }
   | {
       kind: 'settle_run_sync_failed';
@@ -155,7 +155,7 @@ interface RunSessionMessageEffectHandlers {
   requestComputerTreeRefresh: () => void;
   handleRunStarted: (threadId: string, runId: string) => void | Promise<void>;
   handleRunSettledSuccess: (
-    thread: ThreadDetailResponse,
+    thread: ThreadStateSettlePayload,
     runId?: string,
   ) => Promise<void>;
   handleRunSettleSyncFailed: (
@@ -256,6 +256,12 @@ export function adaptRunSessionMessage(
         text: event.payload.text,
       };
     case 'thread_state_persisted':
+      return {
+        kind: 'settle_run_success',
+        runId: event.runId,
+        thread: event.payload,
+      };
+    case 'thread_state_delta_persisted':
       return {
         kind: 'settle_run_success',
         runId: event.runId,

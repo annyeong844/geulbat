@@ -10,6 +10,7 @@ import {
 import type { ThreadArtifactVersion } from '@geulbat/protocol/artifacts';
 import type { ThreadId } from '@geulbat/protocol/ids';
 import type { RunModelId } from '@geulbat/protocol/run-contract';
+import type { ThreadStateSettlePayload } from '@geulbat/protocol/run-events';
 import type {
   ThreadDetailResponse,
   ThreadMessage,
@@ -23,6 +24,8 @@ import {
   deleteThread,
   exportThreadArchive,
   getThread,
+  getThreadMessagePage,
+  getThreadOpen,
   getThreads,
   importThreadArchive,
   ThreadDeleteConflictError,
@@ -30,7 +33,10 @@ import {
 import { saveBlobToLocalFile } from '../lib/save-local-file.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
 import { reportVisibleAppError } from './error-reporting.js';
-import { useThreadSessionSelection } from './use-thread-session-selection.js';
+import {
+  useThreadSessionSelection,
+  type ThreadStateApplyResult,
+} from './use-thread-session-selection.js';
 const logger = createLogger('thread-sessions');
 
 interface ReportThreadSessionErrorArgs {
@@ -49,6 +55,8 @@ interface UseThreadSessionsResult {
   messages: ThreadMessage[];
   artifacts: ThreadArtifactVersion[];
   subagentTerminalOutcomes: ThreadSubagentTerminalOutcome[];
+  hasOlderMessages: boolean;
+  olderMessagesLoading: boolean;
   deletingThreadId: string | null;
   pendingDeleteThread: ThreadSummary | null;
   exportingThreadId: string | null;
@@ -56,6 +64,7 @@ interface UseThreadSessionsResult {
   threadTransferNotice: string | null;
   loadThreads: () => Promise<void>;
   openThread: (threadId: string) => Promise<void>;
+  loadOlderMessages: () => Promise<void>;
   openThreadForRunSettle: (
     threadId: string,
   ) => Promise<ThreadDetailResponse | null>;
@@ -71,7 +80,9 @@ interface UseThreadSessionsResult {
   ) => void;
   trimMessagesForRegenerate: () => void;
   upsertThreadArtifactVersion: (artifact: ThreadArtifactVersion) => void;
-  applyThreadSnapshotForRunSettle: (thread: ThreadDetailResponse) => boolean;
+  applyThreadSnapshotForRunSettle: (
+    thread: ThreadStateSettlePayload,
+  ) => ThreadStateApplyResult;
   startNewSession: () => void;
   branchThreadFromEntry: (entryId: string) => Promise<void>;
   branchThreadBeforeEntry: (
@@ -224,23 +235,66 @@ export function useThreadSessions(): UseThreadSessionsResult {
     string | null
   >(null);
   const threadTransferInFlightRef = useRef(false);
+  const openThreadRequestSequenceRef = useRef(0);
+  const olderMessagesRequestRef = useRef<{
+    threadId: string;
+    beforeEntryId: string;
+  } | null>(null);
+  const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
   const {
     selectedThreadId,
-    setSelectedThreadId,
+    setSelectedThreadId: setSelectedThreadIdSelection,
     newSessionGeneration,
     activeModelId,
     runPreferences,
     messages,
     artifacts,
     subagentTerminalOutcomes,
+    olderMessagesBeforeEntryId,
     selectThreadSnapshot,
+    prependThreadMessagePage,
     applyThreadSnapshotForRunSettle: applyThreadSnapshotSelection,
     appendOptimisticUserMessage,
     trimMessagesForRegenerate,
     upsertThreadArtifactVersion,
-    clearThreadSelectionState,
-    startNewSession,
+    clearThreadSelectionState: clearThreadSelectionStateSelection,
+    startNewSession: startNewSessionSelection,
   } = useThreadSessionSelection();
+
+  const invalidateOlderMessagesRequest = useCallback(() => {
+    olderMessagesRequestRef.current = null;
+    setOlderMessagesLoading(false);
+  }, []);
+
+  const setSelectedThreadId = useCallback(
+    (threadId: string | null) => {
+      openThreadRequestSequenceRef.current += 1;
+      invalidateOlderMessagesRequest();
+      setSelectedThreadIdSelection(threadId);
+    },
+    [invalidateOlderMessagesRequest, setSelectedThreadIdSelection],
+  );
+
+  const startNewSession = useCallback(() => {
+    openThreadRequestSequenceRef.current += 1;
+    invalidateOlderMessagesRequest();
+    startNewSessionSelection();
+  }, [invalidateOlderMessagesRequest, startNewSessionSelection]);
+
+  const clearThreadSelectionState = useCallback(
+    (threadId: string) => {
+      if (selectedThreadId === threadId) {
+        openThreadRequestSequenceRef.current += 1;
+        invalidateOlderMessagesRequest();
+      }
+      clearThreadSelectionStateSelection(threadId);
+    },
+    [
+      clearThreadSelectionStateSelection,
+      invalidateOlderMessagesRequest,
+      selectedThreadId,
+    ],
+  );
   const {
     deletingThreadId,
     pendingDeleteThread,
@@ -309,16 +363,87 @@ export function useThreadSessions(): UseThreadSessionsResult {
 
   const openThread = useCallback(
     async (threadId: string) => {
-      const res = await loadThreadDetail(threadId);
-      if (res) {
+      const requestSequence = openThreadRequestSequenceRef.current + 1;
+      openThreadRequestSequenceRef.current = requestSequence;
+      invalidateOlderMessagesRequest();
+      try {
+        const res = await getThreadOpen(threadId);
+        if (openThreadRequestSequenceRef.current !== requestSequence) {
+          return;
+        }
         startTransition(() => {
-          selectThreadSnapshot(res);
+          selectThreadSnapshot({
+            threadId: res.threadId,
+            snapshotVersion: res.snapshotVersion,
+            ...(res.activeModelId === undefined
+              ? {}
+              : { activeModelId: res.activeModelId }),
+            ...(res.runPreferences === undefined
+              ? {}
+              : { runPreferences: res.runPreferences }),
+            messages: res.messagePage.messages,
+            artifacts: res.artifacts ?? [],
+            subagentTerminalOutcomes: res.subagentTerminalOutcomes ?? [],
+            olderMessagesBeforeEntryId: res.messagePage.olderBeforeEntryId,
+          });
           setThreadError(null);
         });
+      } catch (err: unknown) {
+        if (openThreadRequestSequenceRef.current !== requestSequence) {
+          return;
+        }
+        setThreadError(
+          reportThreadSessionError({
+            logContext: 'openThread failed',
+            visiblePrefix: `Unable to open thread ${threadId}.`,
+            error: err,
+          }),
+        );
       }
     },
-    [loadThreadDetail, selectThreadSnapshot],
+    [invalidateOlderMessagesRequest, selectThreadSnapshot],
   );
+
+  const loadOlderMessages = useCallback(async () => {
+    const threadId = selectedThreadId;
+    const beforeEntryId = olderMessagesBeforeEntryId;
+    if (
+      threadId === null ||
+      beforeEntryId === null ||
+      olderMessagesRequestRef.current !== null
+    ) {
+      return;
+    }
+    const request = { threadId, beforeEntryId };
+    olderMessagesRequestRef.current = request;
+    setOlderMessagesLoading(true);
+    try {
+      const page = await getThreadMessagePage(threadId, beforeEntryId);
+      if (olderMessagesRequestRef.current !== request) {
+        return;
+      }
+      startTransition(() => {
+        prependThreadMessagePage({ threadId, beforeEntryId, page });
+        setThreadError(null);
+      });
+    } catch (err: unknown) {
+      if (olderMessagesRequestRef.current !== request) {
+        return;
+      }
+      setThreadError(
+        reportThreadSessionError({
+          logContext: 'loadOlderMessages failed',
+          visiblePrefix: `Unable to load older messages for thread ${threadId}.`,
+          error: err,
+        }),
+      );
+    } finally {
+      if (olderMessagesRequestRef.current === request) {
+        olderMessagesRequestRef.current = null;
+        setOlderMessagesLoading(false);
+      }
+    }
+  }, [olderMessagesBeforeEntryId, prependThreadMessagePage, selectedThreadId]);
 
   const exportThread = useCallback(async (threadId: string) => {
     if (threadTransferInFlightRef.current) {
@@ -514,6 +639,8 @@ export function useThreadSessions(): UseThreadSessionsResult {
     messages,
     artifacts,
     subagentTerminalOutcomes,
+    hasOlderMessages: olderMessagesBeforeEntryId !== null,
+    olderMessagesLoading,
     deletingThreadId,
     pendingDeleteThread,
     exportingThreadId,
@@ -521,6 +648,7 @@ export function useThreadSessions(): UseThreadSessionsResult {
     threadTransferNotice,
     loadThreads,
     openThread,
+    loadOlderMessages,
     openThreadForRunSettle,
     requestDeleteThread,
     cancelDeleteThread,

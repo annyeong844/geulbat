@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { makeTestPtcExecuteCodeCellConfig as makeTestCellConfig } from '../../../../test-support/ptc-execute-code-runtime-cell.js';
 import { createPtcSessionDockerCommandFixture } from '../../../../test-support/ptc-session-docker.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { makeRunContext } from '../../../../test-support/run-context.js';
@@ -33,15 +34,6 @@ const TEST_CALLBACK_TRANSPORT_POLICY = Object.freeze({
   callbackTimeoutMs: 30_000,
   maxResponseBytes: 8192,
 });
-const TEST_RUNNING_CELL_REAP_AFTER_MS = 600_000;
-
-function makeTestCellConfig(initialYieldTimeMs: number) {
-  return {
-    enabled: true,
-    initialYieldTimeMs,
-    runningCellReapAfterMs: TEST_RUNNING_CELL_REAP_AFTER_MS,
-  } as const;
-}
 
 function acquireTestWarmPlacement(
   args: Parameters<PtcExecuteCodePlacementCoordinator['acquirePlacement']>[0],

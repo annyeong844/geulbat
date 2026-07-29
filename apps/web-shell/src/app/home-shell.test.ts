@@ -99,6 +99,11 @@ function createThreadsStub(): HomeThreadsInput {
     messages: [],
     artifacts: [],
     subagentTerminalOutcomes: [],
+    messageHistory: {
+      hasOlderMessages: true,
+      isLoading: false,
+      onLoadOlder: async () => {},
+    },
     deletingThreadId: thread.threadId,
     pendingDeleteThread: thread,
     exportingThreadId: thread.threadId,

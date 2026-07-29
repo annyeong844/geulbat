@@ -197,6 +197,7 @@ function observeChildRuntime(
     case 'usage_updated':
     case 'context_usage_updated':
     case 'thread_state_persisted':
+    case 'thread_state_delta_persisted':
     case 'thread_state_persist_failed':
       return undefined;
   }

@@ -708,6 +708,66 @@ void test('useRunSession applies persisted thread snapshots immediately and runs
   hook.unmount();
 });
 
+void test('useRunSession reloads the canonical snapshot when a persisted delta anchor is unavailable', async () => {
+  const harness = createRunSessionClientHarness();
+  let fullSnapshotReloads = 0;
+  const hook = await renderHook(
+    useRunSession,
+    createRunSessionArgs({
+      selectedThreadId: THREAD_ID_VALUE,
+      applyThreadSnapshotForRunSettle: (thread) =>
+        'baseEntryId' in thread ? 'missing_base' : true,
+      openThreadForRunSettle: async () => {
+        fullSnapshotReloads += 1;
+        return createPersistedThreadDetail({
+          snapshotVersion: '2026-04-16T00:00:02.000Z',
+        });
+      },
+      createClient: harness.createClient,
+    }),
+  );
+
+  await hook.run(async () => {
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 0,
+        ts: new Date().toISOString(),
+        type: 'run_ack',
+        payload: {
+          runId: RUN_ID,
+          threadId: THREAD_ID,
+        },
+      },
+    });
+    harness.emit({
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 1,
+        ts: new Date().toISOString(),
+        type: 'thread_state_delta_persisted',
+        payload: {
+          threadId: THREAD_ID,
+          snapshotVersion: '2026-04-16T00:00:02.000Z',
+          baseEntryId: 'entry-not-loaded',
+          messages: [],
+          artifacts: [],
+        },
+      },
+    });
+  });
+  await hook.flush();
+
+  assert.equal(fullSnapshotReloads, 1);
+  assert.equal(hook.result.current.isRunning, false);
+  assert.equal(hook.result.current.isSettling, false);
+  hook.unmount();
+});
+
 void test('useRunSession keeps artifact-only output visible until run settle effects complete', async () => {
   const appliedSnapshots: string[] = [];
   const harness = createRunSessionClientHarness();

@@ -90,6 +90,35 @@ function awaitingPlanningSnapshot(
   };
 }
 
+void test('assistant exposes older persisted turns through the conversation history owner', async () => {
+  let loadOlderCalls = 0;
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <Assistant
+        {...createAssistantProps({
+          conversation: {
+            history: {
+              hasOlderMessages: true,
+              isLoading: false,
+              onLoadOlder: () => {
+                loadOlderCalls += 1;
+              },
+            },
+          },
+        })}
+      />,
+    );
+  });
+
+  const loadOlder = findButtonByText(renderer, '이전 대화 불러오기');
+  assert.ok(loadOlder);
+  assert.equal(loadOlder.props.disabled, false);
+  await act(async () => loadOlder.props.onClick());
+  assert.equal(loadOlderCalls, 1);
+  await act(async () => renderer.unmount());
+});
+
 void test('trusted planning card approves the exact daemon revision without a new user prompt', async () => {
   const commands: PlanWorkflowCommand[] = [];
   const threadId = assertThreadId('123e4567-e89b-42d3-a456-426614174028');

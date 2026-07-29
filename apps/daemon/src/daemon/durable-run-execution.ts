@@ -579,7 +579,9 @@ export async function reconcilePersistedTerminalCheckpoint(
         eventCursor:
           checkpoint.eventHistory.length +
           (checkpoint.eventHistory.at(-1)?.event.type ===
-          'thread_state_persisted'
+            'thread_state_persisted' ||
+          checkpoint.eventHistory.at(-1)?.event.type ===
+            'thread_state_delta_persisted'
             ? 0
             : 1),
         event: {

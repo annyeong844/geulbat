@@ -21,7 +21,7 @@ import {
 
 const runMediaGenerationOperationSerial = createKeyedSerialRunner();
 
-export interface MediaGenerationOperationSnapshot {
+interface MediaGenerationOperationSnapshot {
   effectStarted: boolean;
   providerHandle?: string;
   candidate?: JsonValue;

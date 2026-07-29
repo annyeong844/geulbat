@@ -112,6 +112,66 @@ function createRunSettlementProviderScenario({
   };
 }
 
+function createPlanSteerProviderScenario({ prompt, step }) {
+  const callId = 'flow-gate-plan-steer-call';
+  let toolCallRequestCount = 0;
+  let waitingRequestCount = 0;
+
+  return {
+    matches(serializedRequest) {
+      return (
+        serializedRequest.includes(prompt) || serializedRequest.includes(callId)
+      );
+    },
+    dispatch(socket, serializedRequest) {
+      const isWaitingRound =
+        serializedRequest.includes('"type":"function_call_output"') &&
+        serializedRequest.includes(callId);
+      if (isWaitingRound) {
+        if (toolCallRequestCount !== 1 || waitingRequestCount !== 0) {
+          throw new Error(
+            'flow-gate provider received an invalid plan-steer waiting round',
+          );
+        }
+        waitingRequestCount += 1;
+        return;
+      }
+      if (toolCallRequestCount !== 0 || waitingRequestCount !== 0) {
+        throw new Error(
+          'flow-gate provider received a duplicate plan-steer tool-call request',
+        );
+      }
+      toolCallRequestCount += 1;
+      setImmediate(() =>
+        emitProviderEvents(socket, [
+          {
+            type: 'response.output_item.done',
+            item: {
+              id: 'flow-gate-plan-steer-function-call',
+              type: 'function_call',
+              call_id: callId,
+              name: 'update_plan',
+              arguments: JSON.stringify({
+                plan: [{ step, status: 'in_progress' }],
+              }),
+            },
+          },
+          {
+            type: 'response.completed',
+            response: {
+              usage: {
+                input_tokens: 1,
+                output_tokens: 1,
+                input_tokens_details: { cached_tokens: 0 },
+              },
+            },
+          },
+        ]),
+      );
+    },
+  };
+}
+
 function createApprovalProviderScenario({
   content,
   finalText,
@@ -392,6 +452,8 @@ export function createDeterministicProviderRuntime(
     approvalFinalText,
     approvalPrompt,
     approvalTargetPath,
+    planSteerPrompt,
+    planSteerStep,
     runFinalSuffix,
     runSettlementPrompt,
     runStreamPrefix,
@@ -404,6 +466,10 @@ export function createDeterministicProviderRuntime(
     finalSuffix: runFinalSuffix,
     prompt: runSettlementPrompt,
     streamPrefix: runStreamPrefix,
+  });
+  const planSteer = createPlanSteerProviderScenario({
+    prompt: planSteerPrompt,
+    step: planSteerStep,
   });
   const approval = createApprovalProviderScenario({
     content: approvalContent,
@@ -439,6 +505,10 @@ export function createDeterministicProviderRuntime(
         const serializedRequest = JSON.stringify(request);
         if (runSettlement.matches(serializedRequest)) {
           runSettlement.dispatch(socket);
+          return;
+        }
+        if (planSteer.matches(serializedRequest)) {
+          planSteer.dispatch(socket, serializedRequest);
           return;
         }
         if (approval.matches(serializedRequest)) {

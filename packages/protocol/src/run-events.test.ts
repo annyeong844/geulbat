@@ -1516,6 +1516,13 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
       messages: [],
       artifacts: [],
     },
+    thread_state_delta_persisted: {
+      threadId: THREAD_ID,
+      snapshotVersion: '2026-04-10T00:00:01.000Z',
+      baseEntryId: 'entry-before-current-run',
+      messages: [],
+      artifacts: [],
+    },
     thread_state_persist_failed: {
       message: 'sync failed',
     },
@@ -1581,6 +1588,31 @@ void test('RunEventPayloadMap remains aligned with shared semantic payloads', ()
       runId: RUN_ID,
       threadId: THREAD_ID,
       seq: 7,
+      type: 'thread_state_delta_persisted',
+      ts: new Date().toISOString(),
+      payload: payloads.thread_state_delta_persisted,
+    }),
+    true,
+  );
+  assert.equal(
+    isRunEvent({
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      seq: 8,
+      type: 'thread_state_delta_persisted',
+      ts: new Date().toISOString(),
+      payload: {
+        ...payloads.thread_state_delta_persisted,
+        baseEntryId: 42,
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isRunEvent({
+      runId: RUN_ID,
+      threadId: THREAD_ID,
+      seq: 9,
       type: 'thread_state_persist_failed',
       ts: new Date().toISOString(),
       payload: payloads.thread_state_persist_failed,

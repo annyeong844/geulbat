@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  deferredDetachedProcessExit as deferredExit,
+  makeDetachedSegment,
+} from '../../../../test-support/ptc-execute-code-cell-process.js';
+import { makeTestPtcExecuteCodeCellConfig as makeTestCellConfig } from '../../../../test-support/ptc-execute-code-runtime-cell.js';
 import { createPtcSessionDockerCommandFixture } from '../../../../test-support/ptc-session-docker.js';
 import { testThreadId } from '../../../../test-support/thread-id.js';
 import { makeRunContext } from '../../../../test-support/run-context.js';
@@ -13,16 +18,6 @@ import type {
   DetachedProcessHandle,
   DetachedProcessOutputSegment,
 } from './execute-code-cell-process.js';
-
-const TEST_RUNNING_CELL_REAP_AFTER_MS = 600_000;
-
-function makeTestCellConfig(initialYieldTimeMs: number) {
-  return {
-    enabled: true,
-    initialYieldTimeMs,
-    runningCellReapAfterMs: TEST_RUNNING_CELL_REAP_AFTER_MS,
-  } as const;
-}
 
 void test('createPtcExecuteCodeRuntime spills overlap from request-scoped daemon provenance', async () => {
   const stateRoot = await mkdtemp(
@@ -238,15 +233,6 @@ void test('createPtcExecuteCodeRuntime spills overlap from request-scoped daemon
   }
 });
 
-function makeDetachedSegment(
-  args: Partial<DetachedProcessOutputSegment> = {},
-): DetachedProcessOutputSegment {
-  return {
-    stdout: args.stdout ?? '',
-    stderr: args.stderr ?? '',
-  };
-}
-
 function makeDrainOnceDetachedHandle(args: {
   output: DetachedProcessOutputSegment;
   exit: Promise<DetachedProcessExitInfo>;
@@ -260,19 +246,5 @@ function makeDrainOnceDetachedHandle(args: {
     },
     exit: args.exit,
     terminate() {},
-  };
-}
-
-function deferredExit(): {
-  promise: Promise<DetachedProcessExitInfo>;
-  resolve(exit: DetachedProcessExitInfo): void;
-} {
-  let resolveExit: (exit: DetachedProcessExitInfo) => void;
-  const promise = new Promise<DetachedProcessExitInfo>((resolve) => {
-    resolveExit = resolve;
-  });
-  return {
-    promise,
-    resolve: (exit) => resolveExit(exit),
   };
 }

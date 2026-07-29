@@ -165,6 +165,57 @@ void test('persisted final answers settle only quiescent matching checkpoints', 
   });
 });
 
+void test('persisted thread deltas already own the recovery snapshot cursor', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-durable-delta-settle-'),
+  );
+  t.after(async () => await rm(stateRoot, { recursive: true, force: true }));
+  const daemonContext = createDaemonContext({ homeStateRoot: stateRoot });
+  const threadId = testThreadId(1804);
+  const runId = assertRunId('run-durable-persisted-delta');
+  const started = await daemonContext.runCheckpoints.startRun({
+    runId,
+    threadId,
+    request: { workingDirectory: stateRoot, permissionMode: 'basic' },
+  });
+  assert.equal(started.ok, true);
+  await daemonContext.runCheckpoints.appendRunEvents({
+    threadId,
+    runId,
+    events: [
+      {
+        seq: 0,
+        event: {
+          type: 'thread_state_delta_persisted',
+          payload: {
+            threadId,
+            snapshotVersion: '2026-07-28T00:00:01.000Z',
+            baseEntryId: null,
+            messages: [],
+            artifacts: [],
+          },
+        },
+      },
+    ],
+  });
+  await appendTranscriptEntry(stateRoot, threadId, {
+    role: 'assistant',
+    content: 'the durable delta answer',
+    timestamp: '2026-07-28T00:00:01.000Z',
+    metadata: { phase: 'final_answer', sourceRunId: runId },
+  });
+  const checkpoint = await daemonContext.runCheckpoints.readThread(threadId);
+  assert.ok(checkpoint);
+
+  const reconciled = await reconcilePersistedTerminalCheckpoint(
+    daemonContext,
+    checkpoint,
+  );
+
+  assert.equal(reconciled?.status, 'terminal');
+  assert.equal(reconciled?.terminal?.eventCursor, 1);
+});
+
 void test('run-scoped media defaults derive runtimes without mutating daemon singletons', () => {
   const daemonContext = createDaemonContext();
   const imageDefaults: ImageGenerationRequestDefaults[] = [];

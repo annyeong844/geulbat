@@ -15,6 +15,28 @@ import { brandThreadId } from '../lib/id-brand-helpers.js';
 const THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000001');
 const OTHER_THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000002');
 
+function threadOpenResponse<
+  T extends { threadId: string; messages: unknown[] },
+>(
+  detail: T,
+): Omit<T, 'messages'> & {
+  messagePage: {
+    threadId: string;
+    messages: T['messages'];
+    olderBeforeEntryId: null;
+  };
+} {
+  const { messages, ...metadata } = detail;
+  return {
+    ...metadata,
+    messagePage: {
+      threadId: detail.threadId,
+      messages,
+      olderBeforeEntryId: null,
+    },
+  };
+}
+
 let restoreDocument = () => {};
 let restoreFetch = () => {};
 
@@ -27,9 +49,10 @@ afterEach(() => {
 
 void test('useThreadSessions surfaces openThread failures', async () => {
   restoreDocument = installShellAuthDocument();
-  const fetchMock = installFetchSequence(() =>
-    textResponse(500, 'thread failed'),
-  );
+  const fetchMock = installFetchSequence((url) => {
+    assert.equal(url, `/api/threads/${THREAD_ID}/open`);
+    return textResponse(500, 'thread failed');
+  });
   restoreFetch = fetchMock.restore;
   const hook = await renderHook(useThreadSessions, undefined);
 
@@ -74,19 +97,21 @@ void test('useThreadSessions imports opaque archive bytes, refreshes the list, a
         ],
       }),
     () =>
-      jsonResponse({
-        threadId: OTHER_THREAD_ID,
-        snapshotVersion: '2026-07-27T00:00:00.000Z',
-        messages: [
-          {
-            entryId: 'entry-imported',
-            role: 'assistant',
-            content: 'restored',
-            timestamp: '2026-07-27T00:00:00.000Z',
-          },
-        ],
-        artifacts: [],
-      }),
+      jsonResponse(
+        threadOpenResponse({
+          threadId: OTHER_THREAD_ID,
+          snapshotVersion: '2026-07-27T00:00:00.000Z',
+          messages: [
+            {
+              entryId: 'entry-imported',
+              role: 'assistant',
+              content: 'restored',
+              timestamp: '2026-07-27T00:00:00.000Z',
+            },
+          ],
+          artifacts: [],
+        }),
+      ),
   );
   restoreFetch = fetchMock.restore;
   const hook = await renderHook(useThreadSessions, undefined);
@@ -97,7 +122,7 @@ void test('useThreadSessions imports opaque archive bytes, refreshes the list, a
 
   assert.equal(fetchMock.calls[0]?.url, '/api/thread-archives/import');
   assert.equal(fetchMock.calls[1]?.url, '/api/threads');
-  assert.equal(fetchMock.calls[2]?.url, `/api/threads/${OTHER_THREAD_ID}`);
+  assert.equal(fetchMock.calls[2]?.url, `/api/threads/${OTHER_THREAD_ID}/open`);
   assert.equal(hook.result.current.selectedThreadId, OTHER_THREAD_ID);
   assert.equal(hook.result.current.messages[0]?.content, 'restored');
   assert.equal(
@@ -198,30 +223,32 @@ void test('useThreadSessions clears the pending delete dialog after conflict', a
         ],
       }),
     () =>
-      jsonResponse({
-        threadId: THREAD_ID,
-        snapshotVersion: '2026-03-30T00:00:00.000Z',
-        messages: [
-          {
-            entryId: 'entry-conflict-open',
-            role: 'assistant',
-            content: 'hello',
-            timestamp: '2026-03-30T00:00:00.000Z',
-          },
-        ],
-        subagentTerminalOutcomes: [
-          {
-            deliveryId: 'delivery-conflict-history',
-            parentRunId: 'run-parent',
-            childRunId: 'run-child',
-            subagentType: 'worker',
-            terminalState: 'failed',
-            reason: 'daemon_restart',
-            result: 'partial result',
-            completedAt: '2026-03-30T00:00:01.000Z',
-          },
-        ],
-      }),
+      jsonResponse(
+        threadOpenResponse({
+          threadId: THREAD_ID,
+          snapshotVersion: '2026-03-30T00:00:00.000Z',
+          messages: [
+            {
+              entryId: 'entry-conflict-open',
+              role: 'assistant',
+              content: 'hello',
+              timestamp: '2026-03-30T00:00:00.000Z',
+            },
+          ],
+          subagentTerminalOutcomes: [
+            {
+              deliveryId: 'delivery-conflict-history',
+              parentRunId: 'run-parent',
+              childRunId: 'run-child',
+              subagentType: 'worker',
+              terminalState: 'failed',
+              reason: 'daemon_restart',
+              result: 'partial result',
+              completedAt: '2026-03-30T00:00:01.000Z',
+            },
+          ],
+        }),
+      ),
     () =>
       jsonResponse(
         {
@@ -272,19 +299,21 @@ void test('useThreadSessions clears selected thread state after confirmed delete
         ],
       }),
     () =>
-      jsonResponse({
-        threadId: THREAD_ID,
-        snapshotVersion: '2026-03-30T00:00:00.000Z',
-        messages: [
-          {
-            entryId: 'entry-delete-open',
-            role: 'assistant',
-            content: 'hello',
-            timestamp: '2026-03-30T00:00:00.000Z',
-          },
-        ],
-        artifacts: [],
-      }),
+      jsonResponse(
+        threadOpenResponse({
+          threadId: THREAD_ID,
+          snapshotVersion: '2026-03-30T00:00:00.000Z',
+          messages: [
+            {
+              entryId: 'entry-delete-open',
+              role: 'assistant',
+              content: 'hello',
+              timestamp: '2026-03-30T00:00:00.000Z',
+            },
+          ],
+          artifacts: [],
+        }),
+      ),
     () =>
       jsonResponse({
         ok: true,
@@ -313,50 +342,56 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
   restoreDocument = installShellAuthDocument();
   const fetchMock = installFetchSequence(
     () =>
-      jsonResponse({
-        threadId: THREAD_ID,
-        snapshotVersion: '2026-04-16T00:00:01.000Z',
-        activeModelId: 'grok-4.5',
-        messages: [
-          {
-            entryId: 'entry-first-thread',
-            role: 'assistant',
-            content: 'first thread',
-            timestamp: '2026-04-16T00:00:01.000Z',
-          },
-        ],
-        artifacts: [],
-      }),
+      jsonResponse(
+        threadOpenResponse({
+          threadId: THREAD_ID,
+          snapshotVersion: '2026-04-16T00:00:01.000Z',
+          activeModelId: 'grok-4.5',
+          messages: [
+            {
+              entryId: 'entry-first-thread',
+              role: 'assistant',
+              content: 'first thread',
+              timestamp: '2026-04-16T00:00:01.000Z',
+            },
+          ],
+          artifacts: [],
+        }),
+      ),
     () =>
-      jsonResponse({
-        threadId: OTHER_THREAD_ID,
-        snapshotVersion: '2026-04-16T00:00:02.000Z',
-        activeModelId: 'gpt-5.6-sol',
-        messages: [
-          {
-            entryId: 'entry-second-thread',
-            role: 'assistant',
-            content: 'second thread',
-            timestamp: '2026-04-16T00:00:02.000Z',
-          },
-        ],
-        artifacts: [],
-      }),
+      jsonResponse(
+        threadOpenResponse({
+          threadId: OTHER_THREAD_ID,
+          snapshotVersion: '2026-04-16T00:00:02.000Z',
+          activeModelId: 'gpt-5.6-sol',
+          messages: [
+            {
+              entryId: 'entry-second-thread',
+              role: 'assistant',
+              content: 'second thread',
+              timestamp: '2026-04-16T00:00:02.000Z',
+            },
+          ],
+          artifacts: [],
+        }),
+      ),
     () =>
-      jsonResponse({
-        threadId: THREAD_ID,
-        snapshotVersion: '2026-04-16T00:00:01.000Z',
-        activeModelId: 'grok-4.5',
-        messages: [
-          {
-            entryId: 'entry-first-thread-reopened',
-            role: 'assistant',
-            content: 'first thread reopened',
-            timestamp: '2026-04-16T00:00:01.000Z',
-          },
-        ],
-        artifacts: [],
-      }),
+      jsonResponse(
+        threadOpenResponse({
+          threadId: THREAD_ID,
+          snapshotVersion: '2026-04-16T00:00:01.000Z',
+          activeModelId: 'grok-4.5',
+          messages: [
+            {
+              entryId: 'entry-first-thread-reopened',
+              role: 'assistant',
+              content: 'first thread reopened',
+              timestamp: '2026-04-16T00:00:01.000Z',
+            },
+          ],
+          artifacts: [],
+        }),
+      ),
   );
   restoreFetch = fetchMock.restore;
   const hook = await renderHook(useThreadSessions, undefined);
@@ -379,24 +414,158 @@ void test('useThreadSessions explicit open selects a previously seen unchanged t
   hook.unmount();
 });
 
+void test('useThreadSessions ignores an older open response after the user selects another thread', async () => {
+  restoreDocument = installShellAuthDocument();
+  let resolveFirstResponse!: (response: Response) => void;
+  const firstResponse = new Promise<Response>((resolve) => {
+    resolveFirstResponse = resolve;
+  });
+  const fetchMock = installFetchSequence(
+    () => firstResponse,
+    () =>
+      jsonResponse(
+        threadOpenResponse({
+          threadId: OTHER_THREAD_ID,
+          snapshotVersion: '2026-07-29T00:00:02.000Z',
+          messages: [
+            {
+              entryId: 'entry-second-selection',
+              role: 'assistant',
+              content: 'second selection',
+              timestamp: '2026-07-29T00:00:02.000Z',
+            },
+          ],
+          artifacts: [],
+        }),
+      ),
+  );
+  restoreFetch = fetchMock.restore;
+  const hook = await renderHook(useThreadSessions, undefined);
+  let firstOpen!: Promise<void>;
+
+  await hook.run((current) => {
+    firstOpen = current.openThread(THREAD_ID);
+  });
+  await hook.run((current) => current.openThread(OTHER_THREAD_ID));
+  resolveFirstResponse(
+    jsonResponse(
+      threadOpenResponse({
+        threadId: THREAD_ID,
+        snapshotVersion: '2026-07-29T00:00:03.000Z',
+        messages: [
+          {
+            entryId: 'entry-stale-first-selection',
+            role: 'assistant',
+            content: 'must not replace the second selection',
+            timestamp: '2026-07-29T00:00:03.000Z',
+          },
+        ],
+        artifacts: [],
+      }),
+    ),
+  );
+  await hook.run(() => firstOpen);
+
+  assert.equal(hook.result.current.selectedThreadId, OTHER_THREAD_ID);
+  assert.equal(
+    hook.result.current.messages[0]?.entryId,
+    'entry-second-selection',
+  );
+  hook.unmount();
+});
+
+void test('useThreadSessions loads the immediately preceding turn into the selected thread', async () => {
+  restoreDocument = installShellAuthDocument();
+  const fetchMock = installFetchSequence(
+    () =>
+      jsonResponse({
+        threadId: THREAD_ID,
+        snapshotVersion: '2026-07-29T00:00:03.000Z',
+        artifacts: [],
+        messagePage: {
+          threadId: THREAD_ID,
+          messages: [
+            {
+              entryId: 'entry-latest-user',
+              role: 'user',
+              content: 'latest question',
+              timestamp: '2026-07-29T00:00:02.000Z',
+            },
+            {
+              entryId: 'entry-latest-answer',
+              role: 'assistant',
+              content: 'latest answer',
+              timestamp: '2026-07-29T00:00:03.000Z',
+            },
+          ],
+          olderBeforeEntryId: 'entry-latest-user',
+        },
+      }),
+    () =>
+      jsonResponse({
+        threadId: THREAD_ID,
+        messages: [
+          {
+            entryId: 'entry-older-user',
+            role: 'user',
+            content: 'older question',
+            timestamp: '2026-07-29T00:00:00.000Z',
+          },
+          {
+            entryId: 'entry-older-answer',
+            role: 'assistant',
+            content: 'older answer',
+            timestamp: '2026-07-29T00:00:01.000Z',
+          },
+        ],
+        olderBeforeEntryId: null,
+      }),
+  );
+  restoreFetch = fetchMock.restore;
+  const hook = await renderHook(useThreadSessions, undefined);
+
+  await hook.run((current) => current.openThread(THREAD_ID));
+  assert.equal(hook.result.current.hasOlderMessages, true);
+  await hook.run((current) => current.loadOlderMessages());
+
+  assert.equal(
+    fetchMock.calls[1]?.url,
+    `/api/threads/${THREAD_ID}/messages?before=entry-latest-user`,
+  );
+  assert.deepEqual(
+    hook.result.current.messages.map((message) => message.entryId),
+    [
+      'entry-older-user',
+      'entry-older-answer',
+      'entry-latest-user',
+      'entry-latest-answer',
+    ],
+  );
+  assert.equal(hook.result.current.hasOlderMessages, false);
+  assert.equal(hook.result.current.olderMessagesLoading, false);
+  hook.unmount();
+});
+
 void test('useThreadSessions branches from an entry, refreshes the list, and switches threads', async () => {
   restoreDocument = installShellAuthDocument();
   const fetchMock = installFetchSequence(
     // 원 스레드 열기
     () =>
-      jsonResponse({
-        threadId: THREAD_ID,
-        snapshotVersion: '2026-07-12T00:00:01.000Z',
-        messages: [
-          {
-            entryId: 'entry-source-answer',
-            role: 'assistant',
-            content: 'source answer',
-            timestamp: '2026-07-12T00:00:01.000Z',
-          },
-        ],
-        artifacts: [],
-      }),
+      jsonResponse(
+        threadOpenResponse({
+          threadId: THREAD_ID,
+          snapshotVersion: '2026-07-12T00:00:01.000Z',
+          messages: [
+            {
+              entryId: 'entry-source-answer',
+              role: 'assistant',
+              content: 'source answer',
+              timestamp: '2026-07-12T00:00:01.000Z',
+            },
+          ],
+          artifacts: [],
+        }),
+      ),
     // 브랜치 생성
     () =>
       jsonResponse({
@@ -425,19 +594,21 @@ void test('useThreadSessions branches from an entry, refreshes the list, and swi
       }),
     // 새 스레드 열기
     () =>
-      jsonResponse({
-        threadId: OTHER_THREAD_ID,
-        snapshotVersion: '2026-07-12T00:00:02.000Z',
-        messages: [
-          {
-            entryId: 'entry-branched-answer',
-            role: 'assistant',
-            content: 'source answer',
-            timestamp: '2026-07-12T00:00:01.000Z',
-          },
-        ],
-        artifacts: [],
-      }),
+      jsonResponse(
+        threadOpenResponse({
+          threadId: OTHER_THREAD_ID,
+          snapshotVersion: '2026-07-12T00:00:02.000Z',
+          messages: [
+            {
+              entryId: 'entry-branched-answer',
+              role: 'assistant',
+              content: 'source answer',
+              timestamp: '2026-07-12T00:00:01.000Z',
+            },
+          ],
+          artifacts: [],
+        }),
+      ),
   );
   restoreFetch = fetchMock.restore;
   const hook = await renderHook(useThreadSessions, undefined);
@@ -465,19 +636,21 @@ void test('useThreadSessions surfaces branch failures without switching threads'
   restoreDocument = installShellAuthDocument();
   const fetchMock = installFetchSequence(
     () =>
-      jsonResponse({
-        threadId: THREAD_ID,
-        snapshotVersion: '2026-07-12T00:00:01.000Z',
-        messages: [
-          {
-            entryId: 'entry-source-answer',
-            role: 'assistant',
-            content: 'source answer',
-            timestamp: '2026-07-12T00:00:01.000Z',
-          },
-        ],
-        artifacts: [],
-      }),
+      jsonResponse(
+        threadOpenResponse({
+          threadId: THREAD_ID,
+          snapshotVersion: '2026-07-12T00:00:01.000Z',
+          messages: [
+            {
+              entryId: 'entry-source-answer',
+              role: 'assistant',
+              content: 'source answer',
+              timestamp: '2026-07-12T00:00:01.000Z',
+            },
+          ],
+          artifacts: [],
+        }),
+      ),
     () => textResponse(500, 'branch failed'),
   );
   restoreFetch = fetchMock.restore;
@@ -503,31 +676,33 @@ void test('useThreadSessions branches before an entry for past-question edit', a
   const fetchMock = installFetchSequence(
     // 원 스레드 열기 — [답변, 질문, 답변] 3개
     () =>
-      jsonResponse({
-        threadId: THREAD_ID,
-        snapshotVersion: '2026-07-12T00:00:01.000Z',
-        messages: [
-          {
-            entryId: 'entry-a1',
-            role: 'assistant',
-            content: 'first answer',
-            timestamp: '2026-07-12T00:00:01.000Z',
-          },
-          {
-            entryId: 'entry-u2',
-            role: 'user',
-            content: 'past question',
-            timestamp: '2026-07-12T00:00:02.000Z',
-          },
-          {
-            entryId: 'entry-a3',
-            role: 'assistant',
-            content: 'second answer',
-            timestamp: '2026-07-12T00:00:03.000Z',
-          },
-        ],
-        artifacts: [],
-      }),
+      jsonResponse(
+        threadOpenResponse({
+          threadId: THREAD_ID,
+          snapshotVersion: '2026-07-12T00:00:01.000Z',
+          messages: [
+            {
+              entryId: 'entry-a1',
+              role: 'assistant',
+              content: 'first answer',
+              timestamp: '2026-07-12T00:00:01.000Z',
+            },
+            {
+              entryId: 'entry-u2',
+              role: 'user',
+              content: 'past question',
+              timestamp: '2026-07-12T00:00:02.000Z',
+            },
+            {
+              entryId: 'entry-a3',
+              role: 'assistant',
+              content: 'second answer',
+              timestamp: '2026-07-12T00:00:03.000Z',
+            },
+          ],
+          artifacts: [],
+        }),
+      ),
     // 브랜치 생성 — upToEntryId가 "직전" entry여야 한다
     (_url, init) => {
       branchRequestBody = String(init?.body ?? '');
@@ -540,19 +715,21 @@ void test('useThreadSessions branches before an entry for past-question edit', a
     },
     () => jsonResponse({ threads: [] }),
     () =>
-      jsonResponse({
-        threadId: OTHER_THREAD_ID,
-        snapshotVersion: '2026-07-12T00:00:04.000Z',
-        messages: [
-          {
-            entryId: 'entry-branched-a1',
-            role: 'assistant',
-            content: 'first answer',
-            timestamp: '2026-07-12T00:00:01.000Z',
-          },
-        ],
-        artifacts: [],
-      }),
+      jsonResponse(
+        threadOpenResponse({
+          threadId: OTHER_THREAD_ID,
+          snapshotVersion: '2026-07-12T00:00:04.000Z',
+          messages: [
+            {
+              entryId: 'entry-branched-a1',
+              role: 'assistant',
+              content: 'first answer',
+              timestamp: '2026-07-12T00:00:01.000Z',
+            },
+          ],
+          artifacts: [],
+        }),
+      ),
   );
   restoreFetch = fetchMock.restore;
   const hook = await renderHook(useThreadSessions, undefined);
@@ -572,25 +749,27 @@ void test('useThreadSessions branches before an entry for past-question edit', a
 void test('useThreadSessions treats first-message edit as a fresh session', async () => {
   restoreDocument = installShellAuthDocument();
   const fetchMock = installFetchSequence(() =>
-    jsonResponse({
-      threadId: THREAD_ID,
-      snapshotVersion: '2026-07-12T00:00:01.000Z',
-      messages: [
-        {
-          entryId: 'entry-first-question',
-          role: 'user',
-          content: 'first question',
-          timestamp: '2026-07-12T00:00:01.000Z',
-        },
-        {
-          entryId: 'entry-answer',
-          role: 'assistant',
-          content: 'answer',
-          timestamp: '2026-07-12T00:00:02.000Z',
-        },
-      ],
-      artifacts: [],
-    }),
+    jsonResponse(
+      threadOpenResponse({
+        threadId: THREAD_ID,
+        snapshotVersion: '2026-07-12T00:00:01.000Z',
+        messages: [
+          {
+            entryId: 'entry-first-question',
+            role: 'user',
+            content: 'first question',
+            timestamp: '2026-07-12T00:00:01.000Z',
+          },
+          {
+            entryId: 'entry-answer',
+            role: 'assistant',
+            content: 'answer',
+            timestamp: '2026-07-12T00:00:02.000Z',
+          },
+        ],
+        artifacts: [],
+      }),
+    ),
   );
   restoreFetch = fetchMock.restore;
   const hook = await renderHook(useThreadSessions, undefined);

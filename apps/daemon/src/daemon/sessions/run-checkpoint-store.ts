@@ -146,14 +146,24 @@ export interface RunCheckpointStore {
     callId: string;
     approvalClass: ApprovalClass;
   }): Promise<RunCheckpointApprovalMutationResult>;
-  recordApprovalDecision(args: {
-    threadId: ThreadId;
-    runId: RunId;
-    callId: string;
-    decision: 'approved' | 'denied';
-    grantScope: ApprovalGrantScope;
-    permissionMode?: PermissionMode;
-  }): Promise<RunCheckpointApprovalMutationResult>;
+  recordApprovalDecision(
+    args: {
+      threadId: ThreadId;
+      runId: RunId;
+      callId: string;
+    } & (
+      | {
+          decision: 'approved' | 'denied';
+          grantScope: ApprovalGrantScope;
+          permissionMode?: PermissionMode;
+        }
+      | {
+          decision: 'aborted';
+          grantScope?: undefined;
+          permissionMode?: undefined;
+        }
+    ),
+  ): Promise<RunCheckpointApprovalMutationResult>;
   recordToolResultReady(args: {
     threadId: ThreadId;
     runId: RunId;
@@ -189,6 +199,7 @@ export interface RunCheckpointStore {
     threadId: ThreadId;
     runId: RunId;
     terminal: Omit<RunCheckpointTerminalSnapshot, 'acknowledged'>;
+    discardPendingInterjects?: boolean;
   }): Promise<RunCheckpoint>;
   acknowledgeTerminalEvent(args: {
     threadId: ThreadId;
@@ -565,10 +576,14 @@ export function createRunCheckpointStore(args: {
           return { ok: false, code: 'approval_conflict' };
         }
         if (existing.status === 'decided') {
-          return existing.decision === decision &&
-            existing.grantScope === grantScope &&
-            (permissionMode === undefined ||
-              previous.request.permissionMode === permissionMode)
+          const isSameDecision =
+            existing.decision === decision &&
+            (decision === 'aborted' ||
+              (existing.decision !== 'aborted' &&
+                existing.grantScope === grantScope &&
+                (permissionMode === undefined ||
+                  previous.request.permissionMode === permissionMode)));
+          return isSameDecision
             ? {
                 ok: true,
                 checkpoint: previous,
@@ -577,12 +592,19 @@ export function createRunCheckpointStore(args: {
               }
             : { ok: false, code: 'approval_conflict' };
         }
-        const approval: RunCheckpointApproval = {
-          ...existing,
-          status: 'decided',
-          decision,
-          grantScope,
-        };
+        const approval: RunCheckpointApproval =
+          decision === 'aborted'
+            ? {
+                ...existing,
+                status: 'decided',
+                decision,
+              }
+            : {
+                ...existing,
+                status: 'decided',
+                decision,
+                grantScope,
+              };
         const approvals = [...previous.approvals];
         approvals[index] = approval;
         const checkpoint: RunCheckpoint = {
@@ -809,12 +831,26 @@ export function createRunCheckpointStore(args: {
         await runEventJournal.append({ threadId, runId, events });
       });
     },
-    async settleRun({ threadId, runId, terminal }) {
+    async settleRun({
+      threadId,
+      runId,
+      terminal,
+      discardPendingInterjects = false,
+    }) {
       const path = checkpointPath(root, threadId);
       return await runMutationSerial(path, async () => {
         const previous = await readThread(threadId);
         if (!previous || previous.runId !== runId) {
           throw new Error(`run checkpoint not found: ${runId}`);
+        }
+        if (
+          discardPendingInterjects &&
+          (terminal.event.type !== 'error' ||
+            terminal.event.payload.code !== 'aborted')
+        ) {
+          throw new Error(
+            `only an aborted terminal can discard pending interjects: ${runId}`,
+          );
         }
         if (previous.status === 'terminal') {
           if (
@@ -826,8 +862,9 @@ export function createRunCheckpointStore(args: {
           return previous;
         }
         if (
-          previous.applyingInterject !== null ||
-          previous.pendingInterjects.length > 0
+          !discardPendingInterjects &&
+          (previous.applyingInterject !== null ||
+            previous.pendingInterjects.length > 0)
         ) {
           throw new Error(
             `run checkpoint still has pending interjects: ${runId}`,
@@ -847,6 +884,8 @@ export function createRunCheckpointStore(args: {
           ...previous,
           revision: previous.revision + 1,
           status: 'terminal',
+          applyingInterject: null,
+          pendingInterjects: [],
           terminal: { ...terminal, acknowledged: false },
           updatedAt: now(),
         };

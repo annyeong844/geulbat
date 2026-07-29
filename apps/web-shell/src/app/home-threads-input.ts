@@ -14,6 +14,11 @@ interface HomeThreadsInput {
   messages: ThreadMessage[];
   artifacts: ThreadArtifactVersion[];
   subagentTerminalOutcomes: ThreadSubagentTerminalOutcome[];
+  messageHistory: {
+    hasOlderMessages: boolean;
+    isLoading: boolean;
+    onLoadOlder: () => Promise<void>;
+  };
   deletingThreadId: string | null;
   pendingDeleteThread: ThreadSummary | null;
   exportingThreadId: string | null;
@@ -40,7 +45,11 @@ interface HomeThreadsInput {
   dismissBranchNotice: () => void;
 }
 
-type HomeThreadsSource = HomeThreadsInput;
+interface HomeThreadsSource extends Omit<HomeThreadsInput, 'messageHistory'> {
+  hasOlderMessages: boolean;
+  olderMessagesLoading: boolean;
+  loadOlderMessages: () => Promise<void>;
+}
 
 export function createHomeThreadsInput(
   threads: HomeThreadsSource,
@@ -52,6 +61,11 @@ export function createHomeThreadsInput(
     messages: threads.messages,
     artifacts: threads.artifacts,
     subagentTerminalOutcomes: threads.subagentTerminalOutcomes,
+    messageHistory: {
+      hasOlderMessages: threads.hasOlderMessages,
+      isLoading: threads.olderMessagesLoading,
+      onLoadOlder: threads.loadOlderMessages,
+    },
     deletingThreadId: threads.deletingThreadId,
     pendingDeleteThread: threads.pendingDeleteThread,
     exportingThreadId: threads.exportingThreadId,

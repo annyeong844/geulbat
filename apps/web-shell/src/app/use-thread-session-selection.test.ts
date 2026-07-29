@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { renderHook } from '../test-support/hook-test.js';
-import { brandRunId } from '../lib/id-brand-helpers.js';
+import { brandRunId, brandThreadId } from '../lib/id-brand-helpers.js';
 import { useThreadSessionSelection } from './use-thread-session-selection.js';
 
-const THREAD_ID = '00000000-0000-4000-8000-000000000001';
+const THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000001');
+const OTHER_THREAD_ID = brandThreadId('00000000-0000-4000-8000-000000000002');
 
 void test('useThreadSessionSelection applies only newer snapshots for the same thread', async () => {
   const hook = await renderHook(useThreadSessionSelection, undefined);
@@ -82,6 +83,210 @@ void test('useThreadSessionSelection applies only newer snapshots for the same t
   assert.equal(
     hook.result.current.subagentTerminalOutcomes[0]?.deliveryId,
     'delivery-history',
+  );
+  hook.unmount();
+});
+
+void test('useThreadSessionSelection replaces only the transcript suffix anchored before the settled run', async () => {
+  const hook = await renderHook(useThreadSessionSelection, undefined);
+
+  await hook.run((current) =>
+    current.selectThreadSnapshot({
+      threadId: THREAD_ID,
+      snapshotVersion: '2026-04-16T00:00:01.000Z',
+      messages: [
+        {
+          entryId: 'entry-before-run',
+          role: 'assistant',
+          content: 'retained history',
+          timestamp: '2026-04-16T00:00:00.000Z',
+        },
+        {
+          entryId: 'optimistic:current-prompt',
+          role: 'user',
+          content: 'temporary prompt',
+          timestamp: '2026-04-16T00:00:01.000Z',
+        },
+      ],
+      subagentTerminalOutcomes: [
+        {
+          deliveryId: 'delivery-retained-across-delta',
+          parentRunId: brandRunId('run-parent-delta'),
+          childRunId: brandRunId('run-child-delta'),
+          subagentType: 'worker',
+          terminalState: 'failed',
+          reason: 'daemon_restart',
+          result: 'done',
+          completedAt: '2026-04-16T00:00:01.000Z',
+        },
+      ],
+    }),
+  );
+
+  const applied = await hook.run((current) =>
+    current.applyThreadSnapshotForRunSettle({
+      threadId: THREAD_ID,
+      snapshotVersion: '2026-04-16T00:00:02.000Z',
+      baseEntryId: 'entry-before-run',
+      messages: [
+        {
+          entryId: 'entry-persisted-prompt',
+          role: 'user',
+          content: 'persisted prompt',
+          timestamp: '2026-04-16T00:00:01.000Z',
+        },
+        {
+          entryId: 'entry-persisted-answer',
+          role: 'assistant',
+          content: 'persisted answer',
+          timestamp: '2026-04-16T00:00:02.000Z',
+        },
+      ],
+      artifacts: [],
+    }),
+  );
+
+  assert.equal(applied, true);
+  assert.deepEqual(
+    hook.result.current.messages.map((message) => [
+      message.entryId,
+      message.content,
+    ]),
+    [
+      ['entry-before-run', 'retained history'],
+      ['entry-persisted-prompt', 'persisted prompt'],
+      ['entry-persisted-answer', 'persisted answer'],
+    ],
+  );
+  assert.deepEqual(hook.result.current.subagentTerminalOutcomes, []);
+  hook.unmount();
+});
+
+void test('useThreadSessionSelection prepends an older page only to its exact current thread anchor', async () => {
+  const hook = await renderHook(useThreadSessionSelection, undefined);
+
+  await hook.run((current) =>
+    current.selectThreadSnapshot({
+      threadId: THREAD_ID,
+      snapshotVersion: '2026-07-29T00:00:02.000Z',
+      messages: [
+        {
+          entryId: 'entry-latest-user',
+          role: 'user',
+          content: 'latest question',
+          timestamp: '2026-07-29T00:00:01.000Z',
+        },
+        {
+          entryId: 'entry-latest-answer',
+          role: 'assistant',
+          content: 'latest answer',
+          timestamp: '2026-07-29T00:00:02.000Z',
+        },
+      ],
+      olderMessagesBeforeEntryId: 'entry-latest-user',
+    }),
+  );
+
+  await hook.run((current) =>
+    current.prependThreadMessagePage({
+      threadId: THREAD_ID,
+      beforeEntryId: 'entry-latest-user',
+      page: {
+        threadId: THREAD_ID,
+        messages: [
+          {
+            entryId: 'entry-older-user',
+            role: 'user',
+            content: 'older question',
+            timestamp: '2026-07-29T00:00:00.000Z',
+          },
+        ],
+        olderBeforeEntryId: null,
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    hook.result.current.messages.map((message) => message.entryId),
+    ['entry-older-user', 'entry-latest-user', 'entry-latest-answer'],
+  );
+  assert.equal(hook.result.current.olderMessagesBeforeEntryId, null);
+
+  await hook.run((current) =>
+    current.prependThreadMessagePage({
+      threadId: OTHER_THREAD_ID,
+      beforeEntryId: 'entry-older-user',
+      page: {
+        threadId: OTHER_THREAD_ID,
+        messages: [
+          {
+            entryId: 'entry-wrong-thread',
+            role: 'user',
+            content: 'must not attach',
+            timestamp: '2026-07-28T00:00:00.000Z',
+          },
+        ],
+        olderBeforeEntryId: null,
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    hook.result.current.messages.map((message) => message.entryId),
+    ['entry-older-user', 'entry-latest-user', 'entry-latest-answer'],
+  );
+  hook.unmount();
+});
+
+void test('useThreadSessionSelection requests a full snapshot when a persisted delta anchor is missing', async () => {
+  const hook = await renderHook(useThreadSessionSelection, undefined);
+
+  await hook.run((current) =>
+    current.selectThreadSnapshot({
+      threadId: THREAD_ID,
+      snapshotVersion: '2026-04-16T00:00:01.000Z',
+      messages: [],
+    }),
+  );
+
+  const applied = await hook.run((current) =>
+    current.applyThreadSnapshotForRunSettle({
+      threadId: THREAD_ID,
+      snapshotVersion: '2026-04-16T00:00:02.000Z',
+      baseEntryId: 'entry-not-loaded',
+      messages: [
+        {
+          entryId: 'entry-persisted-answer',
+          role: 'assistant',
+          content: 'persisted answer',
+          timestamp: '2026-04-16T00:00:02.000Z',
+        },
+      ],
+      artifacts: [],
+    }),
+  );
+
+  assert.equal(applied, 'missing_base');
+  assert.equal(hook.result.current.messages.length, 0);
+  const recovered = await hook.run((current) =>
+    current.applyThreadSnapshotForRunSettle({
+      threadId: THREAD_ID,
+      snapshotVersion: '2026-04-16T00:00:02.000Z',
+      messages: [
+        {
+          entryId: 'entry-persisted-answer',
+          role: 'assistant',
+          content: 'persisted answer',
+          timestamp: '2026-04-16T00:00:02.000Z',
+        },
+      ],
+      artifacts: [],
+    }),
+  );
+  assert.equal(recovered, true);
+  assert.equal(
+    hook.result.current.messages[0]?.entryId,
+    'entry-persisted-answer',
   );
   hook.unmount();
 });

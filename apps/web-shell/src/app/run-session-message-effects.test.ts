@@ -458,6 +458,42 @@ void test('handleRunSessionMessage settles successful runs through the provided 
   assert.deepEqual(settledThreadIds, [THREAD_ID]);
 });
 
+void test('handleRunSessionMessage routes persisted thread deltas through the same settle owner', async () => {
+  const settledBaseEntryIds: Array<string | null> = [];
+
+  await handleRunSessionMessage({
+    message: {
+      type: 'run.event',
+      event: {
+        runId: RUN_ID,
+        threadId: THREAD_ID,
+        seq: 3,
+        ts: new Date().toISOString(),
+        type: 'thread_state_delta_persisted',
+        payload: {
+          threadId: THREAD_ID,
+          snapshotVersion: '2026-04-16T00:00:02.000Z',
+          baseEntryId: 'entry-before-run',
+          messages: [],
+          artifacts: [],
+        },
+      },
+    },
+    dispatch: () => {},
+    requestComputerTreeRefresh: () => {},
+    handleRunStarted: () => {},
+    handleRunSettledSuccess: async (thread) => {
+      settledBaseEntryIds.push(
+        'baseEntryId' in thread ? thread.baseEntryId : null,
+      );
+    },
+    handleRunSettleSyncFailed: async () => {},
+    handleRunSettledError: async () => {},
+  });
+
+  assert.deepEqual(settledBaseEntryIds, ['entry-before-run']);
+});
+
 void test('handleRunSessionMessage routes thread snapshot sync failures through the dedicated failure callback', async () => {
   const syncFailures: Array<{ threadId: string; message: string }> = [];
 

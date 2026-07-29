@@ -165,7 +165,7 @@ function exerciseAtomicBatch({
   }
 }
 
-export async function runRuntimeStateFaultWorker(args) {
+async function runRuntimeStateFaultWorker(args) {
   if (parentPort === null) {
     throw new Error('fault-soak worker requires a parent message port');
   }

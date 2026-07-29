@@ -862,6 +862,7 @@ async function runBackgroundChild(args: {
         },
       };
     }
+    childRunState.abortController.signal.throwIfAborted();
     const result = await runAgentLoop(loopInput);
 
     terminalOutcome = buildChildResultTerminalOutcome({

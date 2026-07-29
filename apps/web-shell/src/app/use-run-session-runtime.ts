@@ -45,6 +45,7 @@ import type {
   ThreadDetailResponse,
   ThreadRunPreferences,
 } from '@geulbat/protocol/threads';
+import type { ThreadStateSettlePayload } from '@geulbat/protocol/run-events';
 
 import { useRunSessionConnection } from './use-run-session-connection.js';
 import { createComputerTreeRefreshController } from './run-session-computer-tree-refresh.js';
@@ -66,6 +67,7 @@ import {
   reduceRunSessionState,
 } from './run-session-state-reducer.js';
 import type { RunSessionStateAction } from './run-session-state-types.js';
+import type { ThreadStateApplyResult } from './use-thread-session-selection.js';
 import { RunChannelClient } from '../lib/run-channel/client.js';
 import { prepareThreadProviderTransition } from '../lib/api/threads.js';
 import {
@@ -161,7 +163,9 @@ interface UseRunSessionRuntimeArgs {
   openThreadForRunSettle: (
     threadId: string,
   ) => Promise<ThreadDetailResponse | null>;
-  applyThreadSnapshotForRunSettle?: (thread: ThreadDetailResponse) => boolean;
+  applyThreadSnapshotForRunSettle?: (
+    thread: ThreadStateSettlePayload,
+  ) => ThreadStateApplyResult;
   createClient?: () => RunSessionControllerClient;
   prepareStartRequest?: (request: RunRequest) => Promise<RunStartRequest>;
   prepareProviderTransitionRequest?: typeof prepareThreadProviderTransition;

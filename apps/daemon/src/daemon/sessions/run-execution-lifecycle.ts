@@ -251,6 +251,7 @@ export async function createRunExecutionLifecycle(
 
   async function commitTerminalEvent(
     event: RunCheckpointTerminalEvent,
+    discardPendingInterjects: boolean,
   ): Promise<void> {
     await args.liveRunEvents.commitTerminalRunEvent({
       runId,
@@ -263,6 +264,9 @@ export async function createRunExecutionLifecycle(
             eventCursor: envelope.seq,
             event: envelope.event,
           },
+          ...(discardPendingInterjects
+            ? { discardPendingInterjects: true }
+            : {}),
         });
       },
     });
@@ -279,6 +283,8 @@ export async function createRunExecutionLifecycle(
   async function settleTerminal(
     event: RunCheckpointTerminalEvent,
   ): Promise<void> {
+    const discardPendingInterjects =
+      event.type === 'error' && event.payload.code === 'aborted';
     if (
       intendedTerminalEvent !== undefined &&
       !isDeepStrictEqual(intendedTerminalEvent, event)
@@ -299,12 +305,12 @@ export async function createRunExecutionLifecycle(
       notifyTerminalSettled();
       return;
     }
-    if (hasPendingInterject(checkpoint)) {
+    if (hasPendingInterject(checkpoint) && !discardPendingInterjects) {
       throw new Error(`run checkpoint still has pending interjects: ${runId}`);
     }
     intendedTerminalEvent = event;
     await settleApprovedExecution(event.type === 'done' && event.payload.ok);
-    await commitTerminalEvent(event);
+    await commitTerminalEvent(event, discardPendingInterjects);
     notifyTerminalSettled();
   }
 

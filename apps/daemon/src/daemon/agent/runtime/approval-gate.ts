@@ -12,6 +12,7 @@ import type {
   RunCheckpointApproval,
   RunCheckpointStore,
 } from '../../sessions/run-checkpoint-store.js';
+import { runDetached } from '../../utils/run-detached.js';
 
 type ApprovalDecision = 'approved' | 'denied' | 'aborted';
 type DurableApprovalDecision = Exclude<ApprovalDecision, 'aborted'>;
@@ -22,6 +23,7 @@ interface PendingApprovalEntry {
   approvalGrantContext: ApprovalGrantContext;
   onComputerSessionIdChange?: (computerSessionId: string) => void;
   onPermissionModeChange?: (permissionMode: PermissionMode) => void;
+  abort: (forgetResolved: boolean) => void;
   resolve: (
     decision: ApprovalDecision,
     grantScope?: ApprovalGrantScope,
@@ -122,7 +124,7 @@ export function createApprovalGate(args: {
           entry.approvalGrantContext.computerSessionId === computerSessionId,
       );
       for (const [, entry] of pendingForSession) {
-        entry.resolve('aborted');
+        entry.abort(true);
       }
       for (const [identityKey, entry] of resolvedApprovals.entries()) {
         if (entry.computerSessionId === computerSessionId) {
@@ -139,7 +141,7 @@ export function createApprovalGate(args: {
           entry.approvalGrantContext.computerSessionId === computerSessionId,
       );
       for (const [, entry] of pendingForRun) {
-        entry.resolve('aborted');
+        entry.abort(true);
       }
       for (const [identityKey, entry] of resolvedApprovals.entries()) {
         if (
@@ -231,6 +233,10 @@ export function createApprovalGate(args: {
         validThreadId,
       );
       let settled = false;
+      let durablePendingRegistered = false;
+      let abortRequested = false;
+      let forgetResolvedOnSettlement = false;
+      let abortSettlement: Promise<void> | undefined;
       let abortHandler: (() => void) | undefined;
       let settleWait: (decision: ApprovalDecision) => void = () => undefined;
       let rejectWait: (error: unknown) => void = () => undefined;
@@ -250,14 +256,18 @@ export function createApprovalGate(args: {
         if (pendingApprovals.get(identityKey) === entry) {
           pendingApprovals.delete(identityKey);
         }
-        resolvedApprovals.set(identityKey, {
-          runId: validRunId,
-          threadId: validThreadId,
-          computerSessionId: approvalGrantContext.computerSessionId,
-          decision,
-          grantScope,
-          permissionMode,
-        });
+        if (forgetResolvedOnSettlement) {
+          resolvedApprovals.delete(identityKey);
+        } else {
+          resolvedApprovals.set(identityKey, {
+            runId: validRunId,
+            threadId: validThreadId,
+            computerSessionId: approvalGrantContext.computerSessionId,
+            decision,
+            grantScope,
+            permissionMode,
+          });
+        }
         if (abortHandler && signal) {
           signal.removeEventListener('abort', abortHandler);
         }
@@ -276,6 +286,103 @@ export function createApprovalGate(args: {
         }
         rejectWait(error);
       };
+      const settleDurableApproval = (
+        durableApproval: RunCheckpointApproval,
+      ): boolean => {
+        if (durableApproval.status === 'pending') {
+          return false;
+        }
+        if (
+          durableApproval.decision === 'approved' &&
+          !forgetResolvedOnSettlement
+        ) {
+          approvalGrants.registerApprovalGrant(
+            approvalGrantContext,
+            durableApproval.grantScope,
+          );
+        }
+        resolveOnce(
+          durableApproval.decision,
+          durableApproval.decision === 'aborted'
+            ? undefined
+            : durableApproval.grantScope,
+          durableApproval.decision === 'approved'
+            ? approvalGrantContext.permissionMode
+            : undefined,
+        );
+        return true;
+      };
+      const settleAbortDurably = (): Promise<void> => {
+        if (!abortRequested || !durablePendingRegistered || settled) {
+          return Promise.resolve();
+        }
+        if (abortSettlement !== undefined) {
+          return abortSettlement;
+        }
+        abortSettlement = (async () => {
+          try {
+            const checkpointResult =
+              await runCheckpoints.recordApprovalDecision({
+                threadId: validThreadId,
+                runId: validRunId,
+                callId,
+                decision: 'aborted',
+              });
+            if (settled) {
+              return;
+            }
+            if (checkpointResult.ok) {
+              settleDurableApproval(checkpointResult.approval);
+              return;
+            }
+            if (
+              checkpointResult.code === 'not_found' ||
+              checkpointResult.code === 'terminal'
+            ) {
+              resolveOnce('aborted');
+              return;
+            }
+            if (checkpointResult.code === 'approval_conflict') {
+              const currentResult = await runCheckpoints.recordApprovalPending({
+                threadId: validThreadId,
+                runId: validRunId,
+                callId,
+                approvalClass: approvalGrantContext.approvalClass,
+              });
+              if (settled) {
+                return;
+              }
+              if (
+                currentResult.ok &&
+                settleDurableApproval(currentResult.approval)
+              ) {
+                return;
+              }
+              if (
+                !currentResult.ok &&
+                (currentResult.code === 'not_found' ||
+                  currentResult.code === 'terminal')
+              ) {
+                resolveOnce('aborted');
+                return;
+              }
+            }
+            rejectOnce(
+              new Error(
+                `approval checkpoint unavailable: ${checkpointResult.code}`,
+              ),
+            );
+          } catch (error: unknown) {
+            rejectOnce(error);
+          }
+        })();
+        return abortSettlement;
+      };
+      const requestAbort = (forgetResolved: boolean) => {
+        abortRequested = true;
+        forgetResolvedOnSettlement ||= forgetResolved;
+        runDetached('agent/approval-abort-settlement', settleAbortDurably);
+      };
       const entry: PendingApprovalEntry = {
         runId: validRunId,
         threadId: validThreadId,
@@ -286,14 +393,13 @@ export function createApprovalGate(args: {
         ...(onComputerSessionIdChange === undefined
           ? {}
           : { onComputerSessionIdChange }),
+        abort: requestAbort,
         resolve: resolveOnce,
         reject: rejectOnce,
       };
       pendingApprovals.set(identityKey, entry);
 
-      abortHandler = () => {
-        resolveOnce('aborted');
-      };
+      abortHandler = () => requestAbort(false);
       if (signal?.aborted) {
         abortHandler();
       } else {
@@ -308,30 +414,28 @@ export function createApprovalGate(args: {
           approvalClass: approvalGrantContext.approvalClass,
         });
         if (!checkpointResult.ok) {
+          if (
+            abortRequested &&
+            (checkpointResult.code === 'not_found' ||
+              checkpointResult.code === 'terminal')
+          ) {
+            resolveOnce('aborted');
+            return await wait;
+          }
           throw new Error(
             `approval checkpoint unavailable: ${checkpointResult.code}`,
           );
         }
-        if (!settled && checkpointResult.approval.status === 'decided') {
-          const durableApproval = checkpointResult.approval;
-          if (
-            durableApproval.decision === 'approved' &&
-            durableApproval.grantScope !== undefined
-          ) {
-            approvalGrants.registerApprovalGrant(
-              approvalGrantContext,
-              durableApproval.grantScope,
-            );
+        durablePendingRegistered = true;
+        const durableDecisionSettled = settleDurableApproval(
+          checkpointResult.approval,
+        );
+        if (!durableDecisionSettled) {
+          if (abortRequested) {
+            await settleAbortDurably();
+          } else if (!settled) {
+            onPending?.();
           }
-          resolveOnce(
-            durableApproval.decision,
-            durableApproval.grantScope,
-            durableApproval.decision === 'approved'
-              ? approvalGrantContext.permissionMode
-              : undefined,
-          );
-        } else if (!settled) {
-          onPending?.();
         }
       } catch (error: unknown) {
         rejectOnce(error);

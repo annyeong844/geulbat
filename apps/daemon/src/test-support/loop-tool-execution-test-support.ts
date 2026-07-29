@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildAgentToolExecutionContextBase,
   buildToolCallExecutionRuntime,
 } from '../daemon/agent/loop-tool-runtime.js';
 import { createDaemonContext } from '../daemon/context.js';
+import type { HistoryItem } from '../daemon/llm/index.js';
+import { readTranscriptEntries } from '../daemon/sessions/transcript-log.js';
 import type {
   AnyTool,
   ExecuteResult,
@@ -113,6 +118,51 @@ export function makeExecutionRuntime(
       subagentModelRouting: TEST_AUTO_SUBAGENT_MODEL_ROUTING,
     }),
   });
+}
+
+export async function createFunctionCallRunStateFixture(args: {
+  threadId: ReturnType<typeof testThreadId>;
+  runId: string;
+  workspacePrefix: string;
+  ultraReasoning?: boolean;
+}) {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), args.workspacePrefix));
+  const daemonContext = createDaemonContext();
+  const runContext = makeRunContext({
+    threadId: args.threadId,
+    stateRoot: workspaceRoot,
+  });
+  const runState = createRunState({
+    runId: args.runId,
+    runContext,
+  });
+  const history: HistoryItem[] = [];
+
+  return {
+    daemonContext,
+    history,
+    runContext,
+    runState,
+    workspaceRoot,
+    makeRuntime(
+      runtimeServices: ReturnType<typeof createDaemonContext> = daemonContext,
+    ) {
+      return makeExecutionRuntime(runtimeServices, {
+        runContext,
+        runId: args.runId,
+        approvalContext: makeApprovalContext({
+          computerSessionId: `session-${args.runId}`,
+        }),
+        emit: () => {},
+        runState,
+        ultraReasoning: args.ultraReasoning ?? false,
+      });
+    },
+    async readTranscriptRoles() {
+      const entries = await readTranscriptEntries(workspaceRoot, args.threadId);
+      return entries.map((entry) => entry.role);
+    },
+  };
 }
 
 /**

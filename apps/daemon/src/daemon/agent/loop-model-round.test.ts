@@ -18,6 +18,7 @@ import {
   providerFinalAnswerRound,
   providerToolRound,
 } from '../../test-support/provider-response-fixtures.js';
+import { withoutProviderStatus } from '../../test-support/agent-events.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 
 const unusedProviderWebSocketSessions: Pick<
@@ -41,10 +42,6 @@ function makeEmitter(events: AgentEvent[]): AgentEventEmitter {
   return (type, payload) => {
     events.push(createAgentEvent(type, payload));
   };
-}
-
-function withoutProviderStatus(events: readonly AgentEvent[]): AgentEvent[] {
-  return events.filter((event) => event.type !== 'provider_status');
 }
 
 void test('runModelRound emits factual auth, cooldown, and provider wait states', async () => {

@@ -11,7 +11,7 @@
 // 결정적 소켓만 공급한다. 둘 다 제품 owner를 그대로 지나며 라이브 provider
 // quota를 쓰지 않는다. 새 흐름은 실제 owner-level 보장 위에 하나씩 추가한다.
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -55,6 +55,9 @@ const RUN_SETTLEMENT_PROMPT = 'flow-gate run start and settlement proof';
 const RUN_STREAM_PREFIX = 'flow-gate: streamed-before-settlement';
 const RUN_FINAL_SUFFIX = '::durably-settled';
 const RUN_FINAL_TEXT = `${RUN_STREAM_PREFIX}${RUN_FINAL_SUFFIX}`;
+const PLAN_STEER_PROMPT = 'flow-gate plan steer preservation proof';
+const PLAN_STEER_TEXT = 'flow-gate: keep the plan while steering';
+const PLAN_STEER_STEP = 'flow-gate plan remains visible';
 const APPROVAL_PROMPT = 'flow-gate approval write proof';
 const APPROVAL_CONTENT = 'flow-gate approved write\n';
 const APPROVAL_FINAL_TEXT = 'flow-gate: approved write settled';
@@ -144,6 +147,7 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
   let daemonOrigin;
   let defaultDirectory;
   let devToken;
+  let providerAuthFilePath;
   let recentDirectory;
   let spawnDaemon;
   let temporaryRoot;
@@ -200,6 +204,7 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
     );
     signal?.throwIfAborted();
     const homeStateRoot = path.join(temporaryRoot, 'home-state');
+    providerAuthFilePath = path.join(temporaryRoot, 'provider-auth.json');
     workspaceRoot = path.join(temporaryRoot, 'workspace');
     defaultDirectory = path.join(workspaceRoot, DEFAULT_DIRECTORY_NAME);
     recentDirectory = path.join(workspaceRoot, RECENT_DIRECTORY_NAME);
@@ -244,6 +249,8 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
             GEULBAT_FLOW_GATE_APPROVAL_PROMPT: APPROVAL_PROMPT,
             GEULBAT_FLOW_GATE_APPROVAL_TARGET_PATH: approvalTargetPath,
             GEULBAT_FLOW_GATE_INITIAL_COMMENTARY: INITIAL_RECOVERY_COMMENTARY,
+            GEULBAT_FLOW_GATE_PLAN_STEER_PROMPT: PLAN_STEER_PROMPT,
+            GEULBAT_FLOW_GATE_PLAN_STEER_STEP: PLAN_STEER_STEP,
             GEULBAT_FLOW_GATE_RUN_FINAL_SUFFIX: RUN_FINAL_SUFFIX,
             GEULBAT_FLOW_GATE_RUN_SETTLEMENT_PROMPT: RUN_SETTLEMENT_PROMPT,
             GEULBAT_FLOW_GATE_RUN_STREAM_PREFIX: RUN_STREAM_PREFIX,
@@ -260,10 +267,7 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
             ),
             GEULBAT_HOME_STATE_ROOT: homeStateRoot,
             GEULBAT_LLM_PROVIDER: 'openai_codex_direct',
-            GEULBAT_PROVIDER_AUTH_FILE_PATH: path.join(
-              temporaryRoot,
-              'provider-auth.json',
-            ),
+            GEULBAT_PROVIDER_AUTH_FILE_PATH: providerAuthFilePath,
             GEULBAT_REPO_ROOT: repoRoot,
             HOST: '127.0.0.1',
             PORT: String(daemonPort),
@@ -376,6 +380,17 @@ async function createIsolatedFlowGateHarness({ signal } = {}) {
         exists: payload.exists,
         matchesExpectedContent: payload.matchesExpectedContent,
         providerRequestCount: payload.providerRequestCount,
+      };
+    },
+    async readProviderAuthPersistence() {
+      const [content, metadata] = await Promise.all([
+        fs.readFile(providerAuthFilePath),
+        fs.stat(providerAuthFilePath),
+      ]);
+      return {
+        bytes: content.byteLength,
+        sha256: createHash('sha256').update(content).digest('hex'),
+        mtimeMs: metadata.mtimeMs,
       };
     },
     async readArtifactRequestCount() {
@@ -596,12 +611,28 @@ async function runReconnectReplayRecoveryFlow(page, harness) {
 
 async function runStartAndSettlementFlow(page, harness) {
   const runEventFrames = observeFlowGateRunEventFrames(page);
+  const selectedComputerPath = path.relative(
+    path.parse(harness.workspace.recentDirectory).root,
+    harness.workspace.recentDirectory,
+  );
   await page.goto(harness.appUrl, { waitUntil: 'domcontentloaded' });
   const composer = page.locator('textarea[name="assistant-message"]');
+  const approvalMode = page.locator('.composer-pill[title="승인 방식"]');
   await composer.waitFor({ state: 'visible', timeout: 15_000 });
   await page
     .locator('.assistant-title-dot.connected')
     .waitFor({ state: 'visible', timeout: 15_000 });
+  await approvalMode
+    .filter({ hasText: '수동 승인' })
+    .waitFor({ state: 'visible', timeout: 8_000 });
+  await approvalMode.click();
+  await page
+    .getByRole('menuitem')
+    .filter({ hasText: '모든 승인 건너뛰기' })
+    .click();
+  await approvalMode
+    .filter({ hasText: '승인 건너뛰기' })
+    .waitFor({ state: 'visible', timeout: 8_000 });
   await page
     .locator('[role="treeitem"]')
     .first()
@@ -630,11 +661,7 @@ async function runStartAndSettlementFlow(page, harness) {
     .getByRole('button', { name: '이 폴더 사용' })
     .click();
   await workingDirectoryDialog.waitFor({ state: 'hidden', timeout: 8_000 });
-  await waitForContextBarPath(
-    page,
-    RECENT_DIRECTORY_NAME,
-    'existing selection',
-  );
+  await waitForContextBarPath(page, selectedComputerPath, 'existing selection');
   const existingSelectionMs = performance.now() - existingSelectionStartedAt;
   await preferenceResponse;
   await composer.fill(RUN_SETTLEMENT_PROMPT);
@@ -666,12 +693,18 @@ async function runStartAndSettlementFlow(page, harness) {
   await page
     .locator('.assistant-title-dot.connected')
     .waitFor({ state: 'visible', timeout: 15_000 });
+  await approvalMode
+    .filter({ hasText: '수동 승인' })
+    .waitFor({ state: 'visible', timeout: 8_000 });
   await page.getByRole('button', { name: '새 세션' }).click();
   await waitForContextBarPath(
     page,
     harness.workspace.root,
     'new-session setup',
   );
+  await approvalMode
+    .filter({ hasText: '수동 승인' })
+    .waitFor({ state: 'visible', timeout: 8_000 });
   await page.locator('.pref-toggle', { hasText: '세션' }).click();
   const persistedThread = page
     .locator('.thread-row > div > button')
@@ -679,7 +712,10 @@ async function runStartAndSettlementFlow(page, harness) {
   await persistedThread.waitFor({ state: 'visible', timeout: 15_000 });
   const existingRestoreStartedAt = performance.now();
   await persistedThread.click();
-  await waitForContextBarPath(page, RECENT_DIRECTORY_NAME, 'existing restore');
+  await waitForContextBarPath(page, selectedComputerPath, 'existing restore');
+  await approvalMode
+    .filter({ hasText: '승인 건너뛰기' })
+    .waitFor({ state: 'visible', timeout: 8_000 });
   const existingRestoreMs = performance.now() - existingRestoreStartedAt;
   await waitForTranscriptMarkerCount(page, [
     { text: RUN_SETTLEMENT_PROMPT, count: 1 },
@@ -703,6 +739,9 @@ async function runStartAndSettlementFlow(page, harness) {
     harness.workspace.root,
     'new-session reset',
   );
+  await approvalMode
+    .filter({ hasText: '수동 승인' })
+    .waitFor({ state: 'visible', timeout: 8_000 });
   const newSessionResetMs = performance.now() - newSessionResetStartedAt;
   const browser = runEventFrames.readSingleRun();
   return {
@@ -714,10 +753,54 @@ async function runStartAndSettlementFlow(page, harness) {
         existingSelectionMs,
         existingRestoreMs,
         newSessionResetMs,
-        selectedPath: RECENT_DIRECTORY_NAME,
+        selectedPath: selectedComputerPath,
         newSessionPath: harness.workspace.root,
+        approvalMode: {
+          shellDefault: 'basic',
+          restoredThread: 'full_access',
+          newSession: 'basic',
+        },
       },
     },
+  };
+}
+
+async function runPlanSteerFlow(page, harness) {
+  await page.goto(harness.appUrl, { waitUntil: 'domcontentloaded' });
+  const composer = page.locator('textarea[name="assistant-message"]');
+  await composer.waitFor({ state: 'visible', timeout: 15_000 });
+  await page
+    .locator('.assistant-title-dot.connected')
+    .waitFor({ state: 'visible', timeout: 15_000 });
+  await composer.fill(PLAN_STEER_PROMPT);
+  await page.getByRole('button', { name: '보내기' }).click();
+
+  const planCard = page
+    .locator('.run-plan-card')
+    .filter({ hasText: PLAN_STEER_STEP });
+  const cancelRun = page.getByRole('button', { name: '중단' });
+  await planCard.waitFor({ state: 'visible', timeout: 15_000 });
+  await cancelRun.waitFor({ state: 'visible', timeout: 15_000 });
+
+  await composer.fill(PLAN_STEER_TEXT);
+  await page.getByRole('button', { name: '보내기' }).click();
+  const pendingSteer = page
+    .locator('.pending-steer-message')
+    .filter({ hasText: PLAN_STEER_TEXT });
+  await pendingSteer.waitFor({ state: 'visible', timeout: 15_000 });
+  await planCard.waitFor({ state: 'visible', timeout: 15_000 });
+  assert(
+    ((await planCard.textContent()) ?? '').includes(PLAN_STEER_STEP),
+    'queued steer removed the visible in-progress plan',
+  );
+
+  await cancelRun.click();
+  await cancelRun.waitFor({ state: 'hidden', timeout: 15_000 });
+  return {
+    planStep: PLAN_STEER_STEP,
+    steerText: PLAN_STEER_TEXT,
+    preservedWhileQueued: true,
+    cancelledExplicitly: true,
   };
 }
 
@@ -769,6 +852,7 @@ async function runApprovalFlow(page, harness) {
     )} provider requests before approval instead of one`,
   );
   const media = await harness.prepareRestartMedia();
+  const providerAuthBeforeRestart = await harness.readProviderAuthPersistence();
   const restart = await harness.restartDaemon();
 
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -776,6 +860,28 @@ async function runApprovalFlow(page, harness) {
   await page
     .locator('.assistant-title-dot.connected')
     .waitFor({ state: 'visible', timeout: 15_000 });
+  const providerAuthAfterRestart = await harness.readProviderAuthPersistence();
+  assert(
+    providerAuthAfterRestart.bytes === providerAuthBeforeRestart.bytes &&
+      providerAuthAfterRestart.sha256 === providerAuthBeforeRestart.sha256 &&
+      providerAuthAfterRestart.mtimeMs === providerAuthBeforeRestart.mtimeMs,
+    'replacement daemon rewrote or lost the persisted provider credential',
+  );
+  const providerAuthStatus = await page.evaluate(async () => {
+    const response = await fetch(
+      '/api/provider-auth/status?providerId=openai_codex_direct',
+    );
+    return {
+      status: response.status,
+      body: await response.json(),
+    };
+  });
+  assert(
+    providerAuthStatus.status === 200 &&
+      providerAuthStatus.body?.state === 'ready' &&
+      providerAuthStatus.body?.ready === true,
+    'replacement daemon did not hydrate the persisted provider credential',
+  );
   await page.locator('.pref-toggle', { hasText: '세션' }).click();
   const pendingThread = page
     .locator('.thread-row')
@@ -831,6 +937,17 @@ async function runApprovalFlow(page, harness) {
         `bytes ${rangeStart}-${rangeEnd}/${media.expectedText.length}` &&
       mediaRange.body === media.expectedText.slice(rangeStart, rangeEnd + 1),
     'replacement daemon did not serve the authenticated durable media byte range',
+  );
+  const mediaDownload = await page.evaluate(async (url) => {
+    const response = await fetch(url);
+    return {
+      status: response.status,
+      body: await response.text(),
+    };
+  }, mediaUrl);
+  assert(
+    mediaDownload.status === 200 && mediaDownload.body === media.expectedText,
+    'replacement daemon did not serve the complete authenticated durable media download',
   );
 
   await approvalDialog
@@ -925,10 +1042,19 @@ async function runApprovalFlow(page, harness) {
       afterRestartProviderRequestCount: restoredApproval.providerRequestCount,
       finalProviderRequestCount: afterApproval.providerRequestCount,
     },
+    providerAuth: {
+      beforeRestart: providerAuthBeforeRestart,
+      afterRestart: providerAuthAfterRestart,
+      status: providerAuthStatus.body.state,
+      ready: providerAuthStatus.body.ready,
+    },
     media: {
       mediaRef: media.mediaRef,
+      sameOrigin: new URL(mediaUrl).origin === new URL(harness.appUrl).origin,
       status: mediaRange.status,
       contentRange: mediaRange.contentRange,
+      downloadStatus: mediaDownload.status,
+      downloadBytes: Buffer.byteLength(mediaDownload.body),
     },
     restored: {
       activeRun: true,
@@ -936,6 +1062,7 @@ async function runApprovalFlow(page, harness) {
       artifact: true,
       childTerminalStatus: true,
       media: true,
+      providerAuth: true,
     },
   };
 }
@@ -1339,7 +1466,19 @@ async function measureDirectoryLocation(page, dialog, args) {
       return null;
     });
   const startedAt = performance.now();
-  await dialog.getByTitle(args.path, { exact: true }).click();
+  try {
+    await dialog.getByTitle(args.path, { exact: true }).click();
+  } catch (error) {
+    const locationTitles = await dialog
+      .locator('.computer-directory-picker-locations button[title]')
+      .evaluateAll((buttons) =>
+        buttons.map((button) => button.getAttribute('title')),
+      );
+    throw new Error(
+      `${args.label} directory location was not selectable: expected ${args.path}; available ${JSON.stringify(locationTitles)}`,
+      { cause: error },
+    );
+  }
   await list
     .getByRole('button', {
       name: `폴더 열기: ${args.firstDirectoryName}`,
@@ -1412,10 +1551,17 @@ async function measureBinaryPreview(page, args) {
   );
   const renderedPath =
     args.kind === 'image' ? await media.getAttribute('alt') : args.path;
+  const sourceUrl = await media.getAttribute('src');
+  assert(
+    sourceUrl !== null &&
+      new URL(sourceUrl, args.appUrl).origin === new URL(args.appUrl).origin,
+    `${args.kind} preview did not use the app origin`,
+  );
   return {
     panelOpenMs,
     firstFrameMs: performance.now() - startedAt,
     path: renderedPath ?? args.path,
+    sourceOrigin: new URL(sourceUrl, args.appUrl).origin,
     ...(args.kind === 'video' ? { decodeTrigger: 'preload_auto' } : {}),
   };
 }
@@ -1484,7 +1630,12 @@ const flows = [
             candidate.status() === 200,
           { timeout: 8_000 },
         ),
-        page.locator('[aria-label^="경로로 이동:"]').first().click(),
+        page
+          .getByRole('button', {
+            name: `경로로 이동: ${path.basename(harness.workspace.root)}`,
+            exact: true,
+          })
+          .click(),
       ]);
       assert(
         response.ok(),
@@ -1504,12 +1655,117 @@ const flows = [
       await contextBar.click();
       const dialog = page.getByRole('dialog', { name: '시작 위치 선택' });
       await dialog.waitFor({ state: 'visible', timeout: 8_000 });
-      await dialog
-        .getByTitle(harness.workspace.root, { exact: true })
-        .waitFor({ state: 'visible', timeout: 8_000 });
-      await dialog
-        .getByTitle(RECENT_DIRECTORY_NAME, { exact: true })
-        .waitFor({ state: 'visible', timeout: 8_000 });
+      const computerScope = await page.evaluate(async () => {
+        const response = await fetch('/api/files/computer-scope');
+        return {
+          status: response.status,
+          body: await response.json(),
+        };
+      });
+      assert(
+        computerScope.status === 200 &&
+          computerScope.body?.available === true &&
+          Array.isArray(computerScope.body.browseShortcuts),
+        'computer-scope owner did not return an available shortcut projection',
+      );
+      const projectedShortcuts = computerScope.body.browseShortcuts.filter(
+        (shortcut) => shortcut.path !== computerScope.body.browseStartPath,
+      );
+      const quickAccess = page.getByRole('navigation', {
+        name: '빠른 위치',
+      });
+      for (const shortcut of projectedShortcuts) {
+        await quickAccess
+          .getByRole('button', { name: shortcut.label, exact: true })
+          .first()
+          .waitFor({ state: 'visible', timeout: 8_000 });
+        const pickerShortcut = dialog
+          .getByTitle(shortcut.path === '' ? '컴퓨터' : shortcut.path, {
+            exact: true,
+          })
+          .filter({ hasText: shortcut.label })
+          .first();
+        await pickerShortcut.waitFor({ state: 'visible', timeout: 8_000 });
+      }
+      const windowsHostProjection = {
+        checked: false,
+        reason: 'windows_host_projection_not_expected',
+        drivePath: null,
+        knownFolderPath: null,
+      };
+      const windowsHostProjectionExpected =
+        process.platform === 'win32' ||
+        (process.platform === 'linux' &&
+          os.release().toLowerCase().includes('microsoft'));
+      if (windowsHostProjectionExpected) {
+        const driveShortcut = projectedShortcuts.find((shortcut) =>
+          /^Windows \([A-Z]:\)$/u.test(shortcut.label),
+        );
+        const normalizedDrivePath = driveShortcut?.path
+          .replaceAll('\\', '/')
+          .replace(/\/+$/u, '')
+          .toLowerCase();
+        const knownFolderShortcut = projectedShortcuts.find(
+          (shortcut) =>
+            !/^Windows \([A-Z]:\)$/u.test(shortcut.label) &&
+            normalizedDrivePath !== undefined &&
+            shortcut.path
+              .replaceAll('\\', '/')
+              .toLowerCase()
+              .startsWith(`${normalizedDrivePath}/`),
+        );
+        assert(
+          driveShortcut !== undefined && knownFolderShortcut !== undefined,
+          'Windows host computer-scope did not expose both a drive and a known folder',
+        );
+        await dialog
+          .getByRole('button', { name: '시작 위치 선택 닫기' })
+          .click();
+        for (const shortcut of [driveShortcut, knownFolderShortcut]) {
+          const shortcutResponse = page.waitForResponse(
+            (response) => {
+              const url = new URL(response.url());
+              return (
+                url.pathname === '/api/files/tree' &&
+                url.searchParams.get('path') === shortcut.path
+              );
+            },
+            { timeout: 15_000 },
+          );
+          await quickAccess
+            .getByRole('button', { name: shortcut.label, exact: true })
+            .first()
+            .click();
+          assert(
+            (await shortcutResponse).status() === 200,
+            `Windows host shortcut did not open: ${shortcut.path}`,
+          );
+        }
+        const homeResponse = page.waitForResponse(
+          (response) => {
+            const url = new URL(response.url());
+            return (
+              url.pathname === '/api/files/tree' &&
+              url.searchParams.get('path') ===
+                computerScope.body.browseStartPath
+            );
+          },
+          { timeout: 15_000 },
+        );
+        await quickAccess
+          .getByRole('button', { name: '홈', exact: true })
+          .click();
+        assert(
+          (await homeResponse).status() === 200,
+          'Windows host home shortcut did not restore the browse root',
+        );
+        windowsHostProjection.checked = true;
+        windowsHostProjection.reason = null;
+        windowsHostProjection.drivePath = driveShortcut.path;
+        windowsHostProjection.knownFolderPath = knownFolderShortcut.path;
+        await contextBar.click();
+        await dialog.waitFor({ state: 'visible', timeout: 8_000 });
+      }
       const defaultPath = await measureDirectoryLocation(page, dialog, {
         label: 'default',
         path: harness.workspace.root,
@@ -1518,7 +1774,10 @@ const flows = [
       });
       const recentPath = await measureDirectoryLocation(page, dialog, {
         label: 'recent',
-        path: RECENT_DIRECTORY_NAME,
+        path: path.relative(
+          path.parse(harness.workspace.recentDirectory).root,
+          harness.workspace.recentDirectory,
+        ),
         firstDirectoryName: RECENT_DIRECTORY_CHILD_NAMES[0],
         directoryNames: RECENT_DIRECTORY_CHILD_NAMES,
       });
@@ -1532,17 +1791,25 @@ const flows = [
         kind: 'image',
         fileName: IMAGE_FILE_NAME,
         path: harness.workspace.imageFile,
+        appUrl,
       });
       const video = await measureBinaryPreview(page, {
         kind: 'video',
         fileName: VIDEO_FILE_NAME,
         path: harness.workspace.videoFile,
+        appUrl,
       });
       return {
         userVisible: {
           directories: {
             default: defaultPath,
             recent: recentPath,
+            computerScopeProjection: {
+              platform: process.platform,
+              shortcutCount: projectedShortcuts.length,
+              labels: projectedShortcuts.map((shortcut) => shortcut.label),
+              windowsHost: windowsHostProjection,
+            },
           },
           media: { image, video },
         },
@@ -1674,9 +1941,11 @@ async function executeBrowserFlow(browser, name, run) {
       name,
       ok: false,
       ms: performance.now() - startedAt,
-      error: String(error?.message ?? error)
-        .split('\n')[0]
-        .slice(0, 160),
+      error: String(error?.stack ?? error?.message ?? error)
+        .split('\n')
+        .slice(0, 4)
+        .join(' | ')
+        .slice(0, 500),
       pageErrors: pageErrors.slice(0, 3),
     };
   } finally {
@@ -1791,6 +2060,13 @@ async function main() {
       (page) => runApprovalFlow(page, harness),
     );
     results.push(daemonRestartRecoveryResult);
+    results.push(
+      await executeBrowserFlow(
+        browser,
+        'plan-stays-visible-while-steer-is-queued',
+        (page) => runPlanSteerFlow(page, harness),
+      ),
+    );
     const genericResults = new Map();
     for (const flow of flows) {
       const result = await executeBrowserFlow(browser, flow.name, (page) =>

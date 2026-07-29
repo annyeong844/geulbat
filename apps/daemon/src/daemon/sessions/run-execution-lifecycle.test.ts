@@ -595,6 +595,65 @@ void test('failure settlement leaves both the plan and checkpoint recoverable wh
   assert.equal((await runCheckpoints.readThread(threadId))?.status, 'running');
 });
 
+void test('aborted settlement atomically discards pending interjects and commits the terminal event', async (t) => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'run-lifecycle-aborted-interject-'),
+  );
+  t.after(async () => await rm(stateRoot, { recursive: true, force: true }));
+  const planningWorkflows = createPlanningWorkflowStore({ stateRoot });
+  const goals = createGoalStore({ stateRoot });
+  const runCheckpoints = createRunCheckpointStore({ stateRoot });
+  const liveRunEvents = createLiveRunEventStore();
+  const threadId = testThreadId(510);
+  const runId = assertRunId('run-lifecycle-aborted-interject');
+  const lifecycle = await createRunExecutionLifecycle({
+    kind: 'initial',
+    runId,
+    threadId,
+    prompt: 'Cancel the run and discard the queued steer',
+    executionTemplate,
+    planning: {
+      requested: false,
+      intensity: undefined,
+      depth: undefined,
+    },
+    goal: { requested: false },
+    planningWorkflows,
+    goals,
+    runCheckpoints,
+    liveRunEvents,
+  });
+  const delivered = startLiveDelivery({
+    liveRunEvents,
+    runCheckpoints,
+    runId,
+    threadId,
+  });
+  await lifecycle.beginDurableExecution({
+    ...executionTemplate,
+    ...lifecycle.checkpointBindings,
+  });
+  const queued = await runCheckpoints.enqueueInterject({
+    threadId,
+    runId,
+    interject: { text: 'do not apply after cancellation', receivedSeq: 1 },
+  });
+  assert.equal(queued.ok, true);
+
+  const aborted = {
+    type: 'error',
+    payload: { code: 'aborted', message: 'run cancelled' },
+  } as const;
+  await lifecycle.settleTerminal(aborted);
+
+  const checkpoint = await runCheckpoints.readThread(threadId);
+  assert.equal(checkpoint?.status, 'terminal');
+  assert.equal(checkpoint?.applyingInterject, null);
+  assert.deepEqual(checkpoint?.pendingInterjects, []);
+  assert.deepEqual(checkpoint?.terminal?.event, aborted);
+  assert.deepEqual(delivered.at(-1), aborted);
+});
+
 void test('recovered unavailable Goal terminates without model work and settles its paired approved plan', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'run-lifecycle-goal-stop-'));
   t.after(async () => await rm(stateRoot, { recursive: true, force: true }));

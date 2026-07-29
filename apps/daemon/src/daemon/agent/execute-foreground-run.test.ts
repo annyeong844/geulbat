@@ -1,10 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { ArtifactRef } from '@geulbat/protocol/artifacts';
-import { isProviderNativeCompactionEntryData } from '@geulbat/protocol/threads';
 
 import { executeForegroundRun } from './execute-foreground-run.js';
 import type { AgentEvent } from './events.js';
@@ -14,12 +12,8 @@ import {
   appendTranscriptEntry,
   readTranscriptEntries,
 } from '../sessions/transcript-log.js';
-import { threadFilePath } from '../sessions/paths.js';
-import {
-  loadAllThreadArtifactVersions,
-  loadThreadArtifactVersionsByRefs,
-} from '../sessions/artifact-store.js';
 import { loadThreadIndex } from '../sessions/threads-index.js';
+import { withoutProviderStatus } from '../../test-support/agent-events.js';
 import { makeApprovalContext } from '../../test-support/approval-runtime.js';
 import {
   createScriptedProviderCallModel,
@@ -29,32 +23,8 @@ import {
 import { makeRunContext } from '../../test-support/run-context.js';
 import { testThreadId } from '../../test-support/thread-id.js';
 import { testRunId } from '../../test-support/run-id.js';
-import { createAgentLoopMemoryPort } from './memory/compaction-loop.js';
-import { compactThreadContextNative } from './memory/compaction-run.js';
-import { loadExistingHistory, loadInitialHistory } from './loop-history.js';
 
 const FIXED_NOW = '2026-04-02T00:00:00.000Z';
-const THREAD_STATE_PERSIST_FAILURE_MESSAGE =
-  'Run finished, but refreshing the saved thread state failed. The streamed result is still shown.';
-
-function findThreadStatePersistFailedEvent(
-  events: AgentEvent[],
-): Extract<AgentEvent, { type: 'thread_state_persist_failed' }> {
-  const event = events.find(
-    (
-      candidate,
-    ): candidate is Extract<
-      AgentEvent,
-      { type: 'thread_state_persist_failed' }
-    > => candidate.type === 'thread_state_persist_failed',
-  );
-  assert.ok(event);
-  return event;
-}
-
-function withoutProviderStatus(events: readonly AgentEvent[]): AgentEvent[] {
-  return events.filter((event) => event.type !== 'provider_status');
-}
 
 void test('handled terminal failures persist and deliver one exact acknowledgement cursor', async () => {
   const threadId = testThreadId(703);
@@ -255,7 +225,7 @@ void test('executeForegroundRun persists transcript and summary around a success
   assert.equal(seenUserPrompt, expectedModelPrompt);
   assert.deepEqual(
     withoutProviderStatus(events).map((event) => event.type),
-    ['run_ack', 'final_answer_delta', 'thread_state_persisted', 'done'],
+    ['run_ack', 'final_answer_delta', 'thread_state_delta_persisted', 'done'],
   );
 
   const transcript = await readTranscriptEntries(workspaceRoot, threadId);
@@ -286,6 +256,61 @@ void test('executeForegroundRun persists transcript and summary around a success
   assert.equal(summaries[0]?.title, 'Visible thread title');
   assert.equal(summaries[0]?.messageCount, 2);
   assert.equal(summaries[0]?.lastUpdated, FIXED_NOW);
+});
+
+void test('executeForegroundRun publishes only the current persisted turn after an existing transcript anchor', async (t) => {
+  const threadId = testThreadId(3101);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-delta-'));
+  t.after(async () => rm(workspaceRoot, { recursive: true, force: true }));
+  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
+  const runContext = makeRunContext({
+    threadId,
+    stateRoot: workspaceRoot,
+  });
+  const existing = await appendTranscriptEntry(workspaceRoot, threadId, {
+    role: 'assistant',
+    content: 'OLD_TRANSCRIPT_BODY_MUST_NOT_BE_RETRANSMITTED',
+    timestamp: '2026-04-01T23:58:00.000Z',
+  });
+  const events: AgentEvent[] = [];
+
+  await executeForegroundRun({
+    agentInput: {
+      runId: 'run-fg-delta',
+      runContext,
+      prompt: 'new model prompt',
+      runState: createRunState({
+        runId: 'run-fg-delta',
+        runContext,
+      }),
+      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
+      runtimeServices: daemonContext,
+      approvalContext: makeApprovalContext(),
+      callModelImpl: createScriptedProviderCallModel([
+        providerFinalAnswerRound('new assistant answer'),
+      ]),
+      onEvent: (event) => {
+        events.push(event);
+      },
+    },
+    transcriptPrompt: 'new visible prompt',
+    deps: {
+      now: () => FIXED_NOW,
+    },
+  });
+
+  const persisted = events.find(
+    (event) => String(event.type) === 'thread_state_delta_persisted',
+  );
+  assert.ok(persisted);
+  const serialized = JSON.stringify(persisted);
+  assert.match(serialized, new RegExp(`"baseEntryId":"${existing.entryId}"`));
+  assert.match(serialized, /new visible prompt/u);
+  assert.match(serialized, /new assistant answer/u);
+  assert.doesNotMatch(
+    serialized,
+    /OLD_TRANSCRIPT_BODY_MUST_NOT_BE_RETRANSMITTED/u,
+  );
 });
 
 void test('executeForegroundRun settles a successful ask_user turn with a canonical thread snapshot', async () => {
@@ -332,11 +357,19 @@ void test('executeForegroundRun settles a successful ask_user turn with a canoni
   assert.deepEqual(result, { ok: true, finalProse: '' });
   assert.deepEqual(
     withoutProviderStatus(events).map((event) => event.type),
-    ['run_ack', 'tool_call', 'tool_result', 'thread_state_persisted', 'done'],
+    [
+      'run_ack',
+      'tool_call',
+      'tool_result',
+      'thread_state_delta_persisted',
+      'done',
+    ],
   );
   const persisted = events.find(
-    (event): event is Extract<AgentEvent, { type: 'thread_state_persisted' }> =>
-      event.type === 'thread_state_persisted',
+    (
+      event,
+    ): event is Extract<AgentEvent, { type: 'thread_state_delta_persisted' }> =>
+      event.type === 'thread_state_delta_persisted',
   );
   assert.ok(persisted);
   assert.deepEqual(
@@ -703,765 +736,4 @@ void test('executeForegroundRun does not start the loop when required input pers
     ['delivery-persistence-failure'],
   );
   assert.deepEqual(await loadThreadIndex(workspaceRoot), []);
-});
-
-void test('executeForegroundRun commits canonical envelope artifacts and stores transcript prose separately', async () => {
-  const threadId = testThreadId(35);
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-fg-run-artifact-'),
-  );
-  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
-  const runContext = makeRunContext({
-    threadId,
-    stateRoot: workspaceRoot,
-  });
-  const runState = createRunState({
-    runId: 'run-fg-artifact',
-    runContext,
-  });
-  const events: AgentEvent[] = [];
-  const answer =
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# title\n<!-- /GEULBAT_ARTIFACT -->';
-
-  const result = await executeForegroundRun({
-    agentInput: {
-      runId: 'run-fg-artifact',
-      runContext,
-      prompt: 'hidden prompt for artifact',
-      currentFile: 'episodes/ch01.md',
-      runState,
-      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext(),
-      callModelImpl: createScriptedProviderCallModel([
-        providerFinalAnswerRound(answer),
-      ]),
-      onEvent: (event) => {
-        events.push(event);
-      },
-    },
-    transcriptPrompt: 'Visible artifact title',
-    deps: {
-      now: () => FIXED_NOW,
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: true,
-    finalProse: '',
-    artifactCandidate: {
-      renderer: 'markdown',
-      payload: '\n# title\n',
-      digest: '요약',
-    },
-  });
-  const structuralEvents = withoutProviderStatus(events);
-  assert.deepEqual(
-    structuralEvents.map((event) => event.type),
-    [
-      'run_ack',
-      'artifact_stream_delta',
-      'artifact_committed',
-      'thread_state_persisted',
-      'done',
-    ],
-  );
-  const streamedArtifactEvent = structuralEvents[1];
-  assert.equal(streamedArtifactEvent?.type, 'artifact_stream_delta');
-  if (streamedArtifactEvent?.type === 'artifact_stream_delta') {
-    assert.equal(streamedArtifactEvent.payload.text, answer);
-  }
-  const committedEvent = structuralEvents[2];
-  assert.equal(committedEvent?.type, 'artifact_committed');
-  if (committedEvent?.type === 'artifact_committed') {
-    assert.equal(committedEvent.payload.artifactId.startsWith('art_'), true);
-  }
-  const persistedThreadEvent = structuralEvents[3];
-  assert.equal(persistedThreadEvent?.type, 'thread_state_persisted');
-  if (persistedThreadEvent?.type === 'thread_state_persisted') {
-    assert.equal(persistedThreadEvent.payload.threadId, threadId);
-    assert.equal(persistedThreadEvent.payload.messages[1]?.content, '');
-    assert.ok(persistedThreadEvent.payload.artifacts);
-    assert.equal(
-      persistedThreadEvent.payload.artifacts[0]?.renderer,
-      'markdown',
-    );
-  }
-
-  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
-  assert.equal(transcript[1]?.role, 'assistant');
-  assert.equal(transcript[1]?.content, '');
-  assert.equal(transcript[1]?.metadata?.phase, 'final_answer');
-  assert.equal(transcript[1]?.metadata?.sourceFile, 'episodes/ch01.md');
-  assert.equal(transcript[1]?.metadata?.sourceRunId, 'run-fg-artifact');
-  const ref = transcript[1]?.metadata?.activeArtifactRef as
-    | ArtifactRef
-    | undefined;
-  assert.ok(ref?.artifactId);
-  assert.deepEqual(transcript[1]?.metadata?.artifactRefs, [ref]);
-
-  const artifacts = await loadThreadArtifactVersionsByRefs(
-    workspaceRoot,
-    threadId,
-    [ref!],
-  );
-  assert.equal(artifacts.length, 1);
-  assert.equal(artifacts[0]?.renderer, 'markdown');
-  assert.equal(artifacts[0]?.payload, '\n# title\n');
-  assert.equal(artifacts[0]?.digest, '요약');
-});
-
-void test('executeForegroundRun persists wrapped legacy envelope final text as plain prose', async () => {
-  const threadId = testThreadId(36);
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-fg-run-legacy-prose-'),
-  );
-  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
-  const runContext = makeRunContext({
-    threadId,
-    stateRoot: workspaceRoot,
-  });
-  const runState = createRunState({
-    runId: 'run-fg-legacy-prose',
-    runContext,
-  });
-  const events: AgentEvent[] = [];
-  const answer = [
-    'Here is the preview.',
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->',
-    '# title',
-    '<!-- /GEULBAT_ARTIFACT -->',
-    'Use it if helpful.',
-  ].join('\n');
-
-  const result = await executeForegroundRun({
-    agentInput: {
-      runId: 'run-fg-legacy-prose',
-      runContext,
-      prompt: 'hidden prompt for legacy prose',
-      currentFile: 'episodes/ch02.md',
-      runState,
-      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext(),
-      callModelImpl: createScriptedProviderCallModel([
-        providerFinalAnswerRound(answer),
-      ]),
-      onEvent: (event) => {
-        events.push(event);
-      },
-    },
-    transcriptPrompt: 'Visible legacy prose title',
-    deps: {
-      now: () => FIXED_NOW,
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: true,
-    finalProse: answer,
-  });
-  assert.deepEqual(
-    withoutProviderStatus(events).map((event) => event.type),
-    ['run_ack', 'final_answer_delta', 'thread_state_persisted', 'done'],
-  );
-
-  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
-  assert.equal(transcript[1]?.role, 'assistant');
-  assert.equal(transcript[1]?.content, answer);
-  assert.equal(transcript[1]?.metadata?.phase, 'final_answer');
-  assert.equal(transcript[1]?.metadata?.sourceFile, 'episodes/ch02.md');
-  assert.equal(transcript[1]?.metadata?.sourceRunId, 'run-fg-legacy-prose');
-  assert.equal(transcript[1]?.metadata?.activeArtifactRef, undefined);
-  assert.equal(transcript[1]?.metadata?.artifactRefs, undefined);
-});
-
-void test('executeForegroundRun surfaces malformed assistant transcript persistence without rewriting it as healthy', async () => {
-  const threadId = testThreadId(37);
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-fg-run-persist-recover-'),
-  );
-  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
-  const runContext = makeRunContext({
-    threadId,
-    stateRoot: workspaceRoot,
-  });
-  const runState = createRunState({
-    runId: 'run-fg-persist-recover',
-    runContext,
-  });
-  const events: AgentEvent[] = [];
-  const postRunPersistenceErrors: string[] = [];
-  let malformedWrites = 0;
-
-  const result = await executeForegroundRun({
-    agentInput: {
-      runId: 'run-fg-persist-recover',
-      runContext,
-      prompt: 'hidden prompt',
-      runState,
-      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext(),
-      callModelImpl: createScriptedProviderCallModel([
-        providerFinalAnswerRound('assistant answer'),
-      ]),
-      onEvent: (event) => {
-        events.push(event);
-      },
-    },
-    transcriptPrompt: 'Visible title',
-    deps: {
-      appendTranscriptEntry: async (workspace, thread, entry) => {
-        if (entry.role === 'assistant') {
-          malformedWrites += 1;
-          await appendFile(
-            threadFilePath(workspace, thread),
-            '{"role":"assistant"',
-            'utf8',
-          );
-          throw new Error('partial write');
-        }
-        return await appendTranscriptEntry(workspace, thread, entry);
-      },
-      onPostRunPersistenceError: (phase, error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        postRunPersistenceErrors.push(`${phase}: ${message}`);
-      },
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: true,
-    finalProse: 'assistant answer',
-  });
-  assert.equal(runState.status, 'completed');
-  assert.equal(malformedWrites, 1);
-  assert.deepEqual(postRunPersistenceErrors, [
-    'recover assistant transcript: transcript 00000000-0000-4000-8000-000000000025 has malformed entry at line 2',
-    'persist assistant transcript: partial write',
-    'update thread summary: transcript 00000000-0000-4000-8000-000000000025 has malformed entry at line 2',
-  ]);
-  assert.deepEqual(
-    withoutProviderStatus(events).map((event) => event.type),
-    ['run_ack', 'final_answer_delta', 'thread_state_persist_failed', 'done'],
-  );
-
-  await assert.rejects(
-    () => readTranscriptEntries(workspaceRoot, threadId),
-    (error: unknown) => {
-      assert.equal(
-        (error as { name?: unknown }).name,
-        'TranscriptCorruptionError',
-      );
-      assert.equal((error as { code?: unknown }).code, 'transcript_corrupt');
-      assert.equal((error as { lineNumber?: unknown }).lineNumber, 2);
-      return true;
-    },
-  );
-
-  const summaries = await loadThreadIndex(workspaceRoot);
-  assert.equal(summaries[0]?.messageCount, 1);
-});
-
-void test('executeForegroundRun treats post-run assistant persistence as best-effort', async () => {
-  const threadId = testThreadId(33);
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-fg-run-persist-warning-'),
-  );
-  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
-  const runContext = makeRunContext({
-    threadId,
-    stateRoot: workspaceRoot,
-  });
-  const runState = createRunState({
-    runId: 'run-fg-best-effort',
-    runContext,
-  });
-  const events: AgentEvent[] = [];
-  const postRunPersistenceErrors: string[] = [];
-
-  const result = await executeForegroundRun({
-    agentInput: {
-      runId: 'run-fg-best-effort',
-      runContext,
-      prompt: 'hidden prompt',
-      runState,
-      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext(),
-      callModelImpl: createScriptedProviderCallModel([
-        providerFinalAnswerRound('assistant answer'),
-      ]),
-      onEvent: (event) => {
-        events.push(event);
-      },
-    },
-    transcriptPrompt: 'Visible title',
-    deps: {
-      appendTranscriptEntry: async (workspace, thread, entry) => {
-        if (entry.role === 'assistant') {
-          throw new Error('disk full');
-        }
-        return await appendTranscriptEntry(workspace, thread, entry);
-      },
-      replaceTranscriptEntries: async () => {
-        throw new Error('disk full');
-      },
-      onPostRunPersistenceError: (phase, error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        postRunPersistenceErrors.push(`${phase}: ${message}`);
-      },
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: true,
-    finalProse: 'assistant answer',
-  });
-  assert.equal(runState.status, 'completed');
-  assert.deepEqual(postRunPersistenceErrors, [
-    'recover assistant transcript: disk full',
-    'persist assistant transcript: disk full',
-  ]);
-  assert.deepEqual(
-    withoutProviderStatus(events).map((event) => event.type),
-    ['run_ack', 'final_answer_delta', 'thread_state_persist_failed', 'done'],
-  );
-
-  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
-  assert.deepEqual(
-    transcript.map((entry) => entry.role),
-    ['user'],
-  );
-
-  const summaries = await loadThreadIndex(workspaceRoot);
-  assert.equal(summaries.length, 1);
-  assert.equal(summaries[0]?.messageCount, 1);
-});
-
-void test('executeForegroundRun includes post-run persistence diagnostics without an injected reporter', async () => {
-  const threadId = testThreadId(39);
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-fg-run-persist-diagnostics-'),
-  );
-  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
-  const runContext = makeRunContext({
-    threadId,
-    stateRoot: workspaceRoot,
-  });
-  const runState = createRunState({
-    runId: 'run-fg-persist-diagnostics',
-    runContext,
-  });
-  const events: AgentEvent[] = [];
-
-  const result = await executeForegroundRun({
-    agentInput: {
-      runId: 'run-fg-persist-diagnostics',
-      runContext,
-      prompt: 'hidden prompt',
-      runState,
-      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext(),
-      callModelImpl: createScriptedProviderCallModel([
-        providerFinalAnswerRound('assistant answer'),
-      ]),
-      onEvent: (event) => {
-        events.push(event);
-      },
-    },
-    transcriptPrompt: 'Visible title',
-    deps: {
-      appendTranscriptEntry: async (workspace, thread, entry) => {
-        if (entry.role === 'assistant') {
-          throw new Error('disk full');
-        }
-        return await appendTranscriptEntry(workspace, thread, entry);
-      },
-      replaceTranscriptEntries: async () => {
-        throw new Error('disk full');
-      },
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: true,
-    finalProse: 'assistant answer',
-  });
-  assert.deepEqual(
-    withoutProviderStatus(events).map((event) => event.type),
-    ['run_ack', 'final_answer_delta', 'thread_state_persist_failed', 'done'],
-  );
-  assert.deepEqual(findThreadStatePersistFailedEvent(events).payload, {
-    message: THREAD_STATE_PERSIST_FAILURE_MESSAGE,
-    diagnostics: [
-      {
-        phase: 'recover assistant transcript',
-        message: 'disk full',
-      },
-      {
-        phase: 'persist assistant transcript',
-        message: 'disk full',
-      },
-    ],
-  });
-});
-
-void test('executeForegroundRun rolls back an artifact when assistant transcript persistence cannot recover', async () => {
-  const threadId = testThreadId(38);
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-fg-run-artifact-rollback-'),
-  );
-  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
-  const runContext = makeRunContext({
-    threadId,
-    stateRoot: workspaceRoot,
-  });
-  const runState = createRunState({
-    runId: 'run-fg-artifact-rollback',
-    runContext,
-  });
-  const events: AgentEvent[] = [];
-  const postRunPersistenceErrors: string[] = [];
-  const answer =
-    '<!-- GEULBAT_ARTIFACT {"renderer":"markdown","digest":"요약"} -->\n# rolled back\n<!-- /GEULBAT_ARTIFACT -->';
-
-  const result = await executeForegroundRun({
-    agentInput: {
-      runId: 'run-fg-artifact-rollback',
-      runContext,
-      prompt: 'hidden prompt',
-      runState,
-      toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext(),
-      callModelImpl: createScriptedProviderCallModel([
-        providerFinalAnswerRound(answer),
-      ]),
-      onEvent: (event) => {
-        events.push(event);
-      },
-    },
-    transcriptPrompt: 'Visible title',
-    deps: {
-      appendTranscriptEntry: async (workspace, thread, entry) => {
-        if (entry.role === 'assistant') {
-          throw new Error('disk full');
-        }
-        return await appendTranscriptEntry(workspace, thread, entry);
-      },
-      replaceTranscriptEntries: async () => {
-        throw new Error('disk full');
-      },
-      onPostRunPersistenceError: (phase, error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        postRunPersistenceErrors.push(`${phase}: ${message}`);
-      },
-    },
-  });
-
-  assert.deepEqual(result, {
-    ok: true,
-    finalProse: '',
-    artifactCandidate: {
-      renderer: 'markdown',
-      payload: '\n# rolled back\n',
-      digest: '요약',
-    },
-  });
-  assert.equal(runState.status, 'completed');
-  assert.deepEqual(postRunPersistenceErrors, [
-    'recover assistant transcript: disk full',
-    'persist assistant transcript: disk full',
-  ]);
-  const structuralEvents = withoutProviderStatus(events);
-  assert.deepEqual(
-    structuralEvents.map((event) => event.type),
-    ['run_ack', 'artifact_stream_delta', 'thread_state_persist_failed', 'done'],
-  );
-  const streamedArtifactEvent = structuralEvents[1];
-  assert.equal(streamedArtifactEvent?.type, 'artifact_stream_delta');
-  if (streamedArtifactEvent?.type === 'artifact_stream_delta') {
-    assert.equal(streamedArtifactEvent.payload.text, answer);
-  }
-
-  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
-  assert.deepEqual(
-    transcript.map((entry) => entry.role),
-    ['user'],
-  );
-
-  const artifacts = await loadAllThreadArtifactVersions(
-    workspaceRoot,
-    threadId,
-  );
-  assert.equal(artifacts.length, 0);
-});
-
-void test('executeForegroundRun persists provider-native checkpoint before the new assistant tail and rebuilds it after restart', async () => {
-  const threadId = testThreadId(35);
-  const workspaceRoot = await mkdtemp(
-    join(tmpdir(), 'geulbat-fg-native-compaction-'),
-  );
-  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
-  const runContext = makeRunContext({
-    threadId,
-    stateRoot: workspaceRoot,
-  });
-  const summarizedContext = 'older provider context '.repeat(200);
-  await appendTranscriptEntry(workspaceRoot, threadId, {
-    role: 'user',
-    content: summarizedContext,
-    timestamp: '2026-07-17T00:00:00.000Z',
-  });
-  await appendTranscriptEntry(workspaceRoot, threadId, {
-    role: 'assistant',
-    content: summarizedContext,
-    timestamp: '2026-07-17T00:00:01.000Z',
-  });
-  const finalRound = providerFinalAnswerRound('assistant tail');
-  const memoryPort = createAgentLoopMemoryPort({
-    resolvePolicy: async () => ({
-      providerId: 'openai_codex_direct',
-      model: daemonContext.provider.requestOptions.model,
-      contextWindow: 100,
-      thresholdTokens: 90,
-      supportsParallelToolCalls: true,
-    }),
-    compactHistory: async (input) => {
-      assert.deepEqual(
-        input.history.map((item) => item.kind),
-        ['user', 'assistant'],
-      );
-      assert.ok(input.providerReplayScopeId);
-      return {
-        providerReplayScopeId: input.providerReplayScopeId,
-        output: [
-          {
-            type: 'compaction',
-            encrypted_content: 'opaque-checkpoint',
-          },
-        ],
-      };
-    },
-    compactThread: compactThreadContextNative,
-  });
-
-  const result = await executeForegroundRun({
-    agentInput: {
-      runId: 'run-fg-native-compaction',
-      runContext,
-      prompt: 'compact this thread',
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext(),
-      memoryPort,
-      callModelImpl: createScriptedProviderCallModel([
-        {
-          ...finalRound,
-          events: [
-            ...(finalRound.events ?? []),
-            {
-              type: 'response.completed',
-              response: {
-                usage: {
-                  input_tokens: 90,
-                  output_tokens: 4,
-                },
-              },
-            },
-          ],
-        },
-      ]),
-      onEvent: () => undefined,
-    },
-    transcriptPrompt: 'compact this thread',
-    deps: { now: () => FIXED_NOW },
-  });
-
-  assert.deepEqual(result, { ok: true, finalProse: 'assistant tail' });
-  const transcript = await readTranscriptEntries(workspaceRoot, threadId);
-  assert.deepEqual(
-    transcript.map((entry) => entry.role),
-    ['user', 'assistant', 'user', 'compaction', 'assistant'],
-  );
-  const compaction = transcript[3];
-  assert.equal(compaction?.role, 'compaction');
-  if (
-    compaction?.role !== 'compaction' ||
-    !isProviderNativeCompactionEntryData(compaction.compactionData)
-  ) {
-    return;
-  }
-  assert.equal(
-    compaction.compactionData.coveredThroughEntryId,
-    transcript[1]?.entryId,
-  );
-  assert.equal(
-    compaction.compactionData.firstKeptEntryId,
-    transcript[2]?.entryId,
-  );
-  const replayScopeId = compaction.compactionData.replayScopeId;
-  assert.ok(replayScopeId);
-  const restartedHistory = await loadInitialHistory(
-    workspaceRoot,
-    threadId,
-    'next prompt',
-    {
-      providerId: 'openai_codex_direct',
-      model: daemonContext.provider.requestOptions.model,
-      replayScopeId,
-    },
-  );
-  assert.equal(restartedHistory[0]?.kind, 'provider_native_compaction');
-  const retainedPrompt = restartedHistory[1];
-  assert.equal(retainedPrompt?.kind, 'user');
-  if (retainedPrompt?.kind === 'user') {
-    assert.match(retainedPrompt.text, /compact this thread$/u);
-  }
-  assert.deepEqual(restartedHistory.slice(2), [
-    {
-      kind: 'backend_item',
-      data: {
-        id: 'msg_1',
-        type: 'message',
-        phase: 'final_answer',
-        content: [{ type: 'output_text', text: 'assistant tail' }],
-      },
-      providerReplayScopeId: replayScopeId,
-    },
-    { kind: 'user', text: 'next prompt' },
-  ]);
-});
-
-void test('executeForegroundRun logs run lifecycle with run and thread identity', async () => {
-  const threadId = testThreadId(34);
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-run-logs-'));
-  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
-  const runContext = makeRunContext({
-    threadId,
-    stateRoot: workspaceRoot,
-  });
-  const runState = createRunState({
-    runId: 'run-fg-logs',
-    runContext,
-  });
-  const originalLog = console.log;
-  const logs: unknown[][] = [];
-  console.log = (...args: unknown[]) => {
-    logs.push(args);
-  };
-
-  try {
-    const result = await executeForegroundRun({
-      agentInput: {
-        runId: 'run-fg-logs',
-        runContext,
-        prompt: 'prompt',
-        runState,
-        toolSurface: { directRegistryNames: [], allowedRegistryNames: [] },
-        runtimeServices: daemonContext,
-        approvalContext: makeApprovalContext(),
-        callModelImpl: createScriptedProviderCallModel([
-          providerFinalAnswerRound('assistant answer'),
-        ]),
-        onEvent: () => {},
-      },
-      transcriptPrompt: 'Visible title',
-    });
-
-    assert.deepEqual(result, {
-      ok: true,
-      finalProse: 'assistant answer',
-    });
-  } finally {
-    console.log = originalLog;
-  }
-
-  const agentLogs = logs.filter((entry) =>
-    String(entry[0] ?? '').includes('[agent/execute-foreground-run]'),
-  );
-  assert.equal(agentLogs.length, 2);
-  assert.match(
-    String(agentLogs[0]?.[0] ?? ''),
-    /info \[agent\/execute-foreground-run\] run started/,
-  );
-  assert.doesNotMatch(String(agentLogs[0]?.[0] ?? ''), /projectId=/);
-  assert.match(String(agentLogs[0]?.[0] ?? ''), /runId="run-fg-logs"/);
-  assert.match(
-    String(agentLogs[0]?.[0] ?? ''),
-    new RegExp(`threadId="${threadId}"`),
-  );
-  assert.equal(agentLogs[0]?.length, 1);
-  assert.match(
-    String(agentLogs[1]?.[0] ?? ''),
-    /info \[agent\/execute-foreground-run\] run completed/,
-  );
-  assert.match(String(agentLogs[1]?.[0] ?? ''), /runId="run-fg-logs"/);
-  assert.equal(
-    typeof (agentLogs[1]?.[1] as { durationMs?: unknown })?.durationMs,
-    'number',
-  );
-  assert.equal((agentLogs[1]?.[1] as { ok?: unknown })?.ok, true);
-});
-
-void test('executeForegroundRun resumes a persisted turn without appending the user prompt again', async () => {
-  const threadId = testThreadId(37);
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'geulbat-fg-resume-'));
-  const daemonContext = createDaemonContext({ homeStateRoot: workspaceRoot });
-  const runContext = makeRunContext({ threadId, stateRoot: workspaceRoot });
-  const modelPrompt = 'exact persisted model prompt';
-  await appendTranscriptEntry(workspaceRoot, threadId, {
-    role: 'user',
-    content: 'visible persisted prompt',
-    metadata: { hiddenPrompt: modelPrompt },
-    timestamp: FIXED_NOW,
-  });
-  let inputPersistenceCalled = false;
-  let seenUserCount = 0;
-
-  await executeForegroundRun({
-    agentInput: {
-      runId: 'run-fg-resume',
-      runContext,
-      prompt: modelPrompt,
-      runtimeServices: daemonContext,
-      approvalContext: makeApprovalContext(),
-      historyPort: {
-        async loadInitialHistory(args) {
-          return await loadExistingHistory(
-            args.workspaceRoot,
-            args.threadId,
-            args.providerTarget,
-          );
-        },
-      },
-      callModelImpl: createScriptedProviderCallModel([
-        {
-          ...providerFinalAnswerRound('resumed answer'),
-          inspectInput(input) {
-            seenUserCount = input.history.filter(
-              (item) => item.kind === 'user',
-            ).length;
-          },
-        },
-      ]),
-      onEvent() {},
-    },
-    transcriptPrompt: 'visible persisted prompt',
-    resumeModelPrompt: modelPrompt,
-    async onInputPersisted() {
-      inputPersistenceCalled = true;
-    },
-  });
-
-  assert.equal(inputPersistenceCalled, false);
-  assert.equal(seenUserCount, 1);
-  assert.equal(
-    (await readTranscriptEntries(workspaceRoot, threadId)).filter(
-      (entry) => entry.role === 'user',
-    ).length,
-    1,
-  );
 });

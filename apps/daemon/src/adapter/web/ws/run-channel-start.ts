@@ -45,9 +45,20 @@ import {
   ensureThreadBackgroundSubscription,
   getSocketState,
 } from './run-channel-socket-runtime.js';
+import { claimSocketRunStart } from './run-channel-start-gate.js';
 import { readRunStartRequest } from './run-channel-start-request.js';
+import { normalizeAllowedPublicToolNames } from './run-request-tools.js';
 
 const logger = createLogger('run-channel/execute-run');
+const dispatchLogger = createLogger('run-channel/dispatch');
+
+interface DispatchRunStartArgs {
+  socket: WebSocket;
+  requestId: string;
+  request: RunStartRequest;
+  runtimeContext: RunChannelRuntimeContext;
+  socketState: ReturnType<typeof getSocketState>;
+}
 
 interface ExecuteRunRequestArgs {
   socket: WebSocket;
@@ -55,6 +66,50 @@ interface ExecuteRunRequestArgs {
   request: RunStartRequest;
   allowedPublicToolNames: string[] | undefined;
   runtimeContext: RunChannelRuntimeContext;
+}
+
+export async function dispatchRunStart({
+  socket,
+  requestId,
+  request,
+  runtimeContext,
+  socketState,
+}: DispatchRunStartArgs): Promise<void> {
+  const allowedPublicToolNames = normalizeAllowedPublicToolNames(request);
+  const startClaim = claimSocketRunStart(socketState, requestId);
+  if (!startClaim.ok) {
+    sendError(
+      socket,
+      requestId,
+      startClaim.status,
+      startClaim.code,
+      startClaim.message,
+    );
+    return;
+  }
+
+  try {
+    await executeRunRequest({
+      socket,
+      requestId,
+      request,
+      allowedPublicToolNames,
+      runtimeContext,
+    });
+  } catch (error: unknown) {
+    dispatchLogger
+      .withContext({
+        messageType: 'run.start',
+        requestId,
+        threadId: request.threadId,
+      })
+      .error('unexpected run.start dispatch error:', {
+        message: getErrorMessage(error),
+      });
+    sendError(socket, requestId, 500, 'internal', 'internal server error');
+  } finally {
+    startClaim.release();
+  }
 }
 
 export async function executeRunRequest({
@@ -591,7 +646,12 @@ async function projectDurableTerminalCheckpoint(
   const needsSyntheticThreadSnapshot =
     terminal.event.type === 'done' &&
     terminal.event.payload.ok &&
-    durableHistory.at(-1)?.event.type !== 'thread_state_persisted';
+    durableHistory.at(-1)?.event.type !== 'thread_state_persisted' &&
+    durableHistory.at(-1)?.event.type !== 'thread_state_delta_persisted';
+  const needsFullSnapshotForDelta =
+    terminal.event.type === 'done' &&
+    terminal.event.payload.ok &&
+    durableHistory.at(-1)?.event.type === 'thread_state_delta_persisted';
   const shouldSynthesizeThreadSnapshot =
     needsSyntheticThreadSnapshot &&
     (durableHistory.length === 0
@@ -607,7 +667,24 @@ async function projectDurableTerminalCheckpoint(
     );
   }
   const projectionHistory = [...durableHistory];
-  if (shouldSynthesizeThreadSnapshot) {
+  if (needsFullSnapshotForDelta) {
+    const delta = projectionHistory.at(-1);
+    if (delta === undefined) {
+      throw new Error(
+        `run delta projection is missing from history: ${checkpoint.runId}`,
+      );
+    }
+    projectionHistory[projectionHistory.length - 1] = {
+      ...delta,
+      event: {
+        type: 'thread_state_persisted',
+        payload: await loadThreadDetailSnapshot({
+          workspaceRoot: runtimeContext.homeStateRoot,
+          threadId: checkpoint.threadId,
+        }),
+      },
+    };
+  } else if (shouldSynthesizeThreadSnapshot) {
     projectionHistory.push({
       runId: checkpoint.runId,
       threadId: checkpoint.threadId,

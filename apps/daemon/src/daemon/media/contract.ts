@@ -10,7 +10,7 @@ import type { JsonValue } from '@geulbat/protocol/runtime-persistence';
 
 export const MEDIA_GENERATION_OPERATION_SCHEMA_VERSION = 1;
 
-export type MediaGenerationKind = 'image' | 'video';
+type MediaGenerationKind = 'image' | 'video';
 
 export interface MediaGenerationRecoveryIdentity {
   schemaVersion: typeof MEDIA_GENERATION_OPERATION_SCHEMA_VERSION;

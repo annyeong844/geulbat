@@ -889,6 +889,83 @@ void test('durable terminal recovery reprojects the thread snapshot and stable d
   }
 });
 
+void test('durable terminal recovery replaces a persisted delta with a full thread snapshot', async () => {
+  const daemonContext = createRunChannelTestDaemonContext();
+  const socket = createTestSocket();
+  const threadId = testThreadId(3401);
+  const runId = assertRunId('run-terminal-delta-reprojection');
+
+  try {
+    await appendTranscriptEntry(daemonContext.homeStateRoot, threadId, {
+      role: 'assistant',
+      content: 'full durable answer after reload',
+      timestamp: '2026-07-18T00:00:00.000Z',
+      metadata: { phase: 'final_answer', sourceRunId: runId },
+    });
+    await daemonContext.runCheckpoints.startRun({
+      runId,
+      threadId,
+      request: { workingDirectory: '', permissionMode: 'basic' },
+    });
+    await daemonContext.runCheckpoints.appendRunEvents({
+      runId,
+      threadId,
+      events: [
+        {
+          seq: 0,
+          event: {
+            type: 'thread_state_delta_persisted',
+            payload: {
+              threadId,
+              snapshotVersion: '2026-07-18T00:00:00.000Z',
+              baseEntryId: 'entry-that-a-reloaded-client-does-not-have',
+              messages: [],
+              artifacts: [],
+            },
+          },
+        },
+      ],
+    });
+    await daemonContext.runCheckpoints.settleRun({
+      runId,
+      threadId,
+      terminal: {
+        eventCursor: 1,
+        event: {
+          type: 'done',
+          payload: { answer: 'full durable answer after reload', ok: true },
+        },
+      },
+    });
+
+    assert.equal(await recoverDurableRunsForSocket(socket, daemonContext), 1);
+    const messages = socket.sentFrames.map((raw) => {
+      const message: unknown = JSON.parse(raw);
+      assert.equal(isRunChannelServerMessage(message), true);
+      if (!isRunChannelServerMessage(message)) {
+        throw new Error('invalid run channel test message');
+      }
+      return message;
+    });
+    assert.equal(messages.length, 2);
+    const snapshotMessage = messages[0];
+    assert.equal(snapshotMessage?.type, 'run.event');
+    if (snapshotMessage?.type === 'run.event') {
+      assert.equal(snapshotMessage.event.seq, 0);
+      assert.equal(snapshotMessage.event.type, 'thread_state_persisted');
+      if (snapshotMessage.event.type === 'thread_state_persisted') {
+        assert.equal(
+          snapshotMessage.event.payload.messages[0]?.content,
+          'full durable answer after reload',
+        );
+      }
+    }
+  } finally {
+    cleanupSocketState(socket, daemonContext);
+    await rm(daemonContext.homeStateRoot, { recursive: true, force: true });
+  }
+});
+
 void test('durable terminal recovery accepts a successful terminal cursor without a reserved snapshot slot', async () => {
   const daemonContext = createRunChannelTestDaemonContext();
   const socket = createTestSocket();

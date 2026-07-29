@@ -13,6 +13,8 @@ import {
   type ThreadDetailResponse,
   type ThreadId,
   type ThreadMessage,
+  type ThreadMessagePageResponse,
+  type ThreadOpenResponse,
   type ThreadRunPreferences,
 } from './contract.js';
 import { createLogger } from '@geulbat/structured-logger/logger';
@@ -62,17 +64,11 @@ export async function loadThreadDetailSnapshot(args: {
   const runPreferences = resolveThreadRunPreferences(checkpoint);
   const diagnostics = collectThreadDetailDiagnostics(messages, artifacts);
   emitThreadDetailDiagnostics(args.threadId, diagnostics);
-  const publicMessages = projectProviderCommentaryMessages(
+  const publicMessages = projectThreadPublicMessages(
     messages,
     providerRounds,
-    args.includeActiveRunCommentary === true
-      ? undefined
-      : checkpoint?.status === 'running'
-        ? checkpoint.runId
-        : undefined,
-  ).filter(
-    (message): message is ThreadDetailResponse['messages'][number] =>
-      message.role !== 'compaction',
+    checkpoint,
+    args.includeActiveRunCommentary === true,
   );
 
   return {
@@ -84,6 +80,105 @@ export async function loadThreadDetailSnapshot(args: {
     artifacts,
     ...(diagnostics ? { diagnostics } : {}),
   };
+}
+
+export async function loadThreadOpenSnapshot(args: {
+  workspaceRoot: string;
+  threadId: ThreadId;
+}): Promise<ThreadOpenResponse> {
+  const { messages, ...detail } = await loadThreadDetailSnapshot(args);
+  const messagePage = selectThreadMessagePage({
+    threadId: args.threadId,
+    messages,
+  });
+  if (messagePage === null) {
+    throw new Error('latest thread message page could not be selected');
+  }
+  return { ...detail, messagePage };
+}
+
+export async function loadThreadMessagePage(args: {
+  workspaceRoot: string;
+  threadId: ThreadId;
+  beforeEntryId: string;
+}): Promise<ThreadMessagePageResponse | null> {
+  const [messages, checkpoint, providerRounds] = await Promise.all([
+    readTranscriptEntries(args.workspaceRoot, args.threadId),
+    createRunCheckpointStore({
+      stateRoot: args.workspaceRoot,
+    }).readThread(args.threadId),
+    readProviderRoundHistory(args.workspaceRoot, args.threadId),
+  ]);
+  return selectThreadMessagePage({
+    threadId: args.threadId,
+    messages: projectThreadPublicMessages(
+      messages,
+      providerRounds,
+      checkpoint,
+      false,
+    ),
+    beforeEntryId: args.beforeEntryId,
+  });
+}
+
+export function selectThreadMessagePage(args: {
+  threadId: ThreadId;
+  messages: ThreadDetailResponse['messages'];
+  beforeEntryId?: string;
+}): ThreadMessagePageResponse | null {
+  const end =
+    args.beforeEntryId === undefined
+      ? args.messages.length
+      : args.messages.findIndex(
+          (message) => message.entryId === args.beforeEntryId,
+        );
+  if (end < 0) {
+    return null;
+  }
+  if (end === 0) {
+    return {
+      threadId: args.threadId,
+      messages: [],
+      olderBeforeEntryId: null,
+    };
+  }
+
+  // 한 페이지는 숫자 cap이 아니라 완전한 사용자 턴이다. 현재 prefix의
+  // 마지막 user부터 바로 다음 user 직전까지가 한 페이지이며, user가 없는
+  // legacy prefix는 그 prefix 전체를 하나의 완전한 페이지로 취급한다.
+  let start = 0;
+  for (let index = end - 1; index >= 0; index -= 1) {
+    if (args.messages[index]?.role === 'user') {
+      start = index;
+      break;
+    }
+  }
+  const messages = args.messages.slice(start, end);
+  return {
+    threadId: args.threadId,
+    messages,
+    olderBeforeEntryId: start === 0 ? null : (messages[0]?.entryId ?? null),
+  };
+}
+
+function projectThreadPublicMessages(
+  messages: readonly ThreadMessage[],
+  providerRounds: readonly ProviderRoundJournalRecord[],
+  checkpoint: RunCheckpoint | null,
+  includeActiveRunCommentary: boolean,
+): ThreadDetailResponse['messages'] {
+  return projectProviderCommentaryMessages(
+    messages,
+    providerRounds,
+    includeActiveRunCommentary
+      ? undefined
+      : checkpoint?.status === 'running'
+        ? checkpoint.runId
+        : undefined,
+  ).filter(
+    (message): message is ThreadDetailResponse['messages'][number] =>
+      message.role !== 'compaction',
+  );
 }
 
 function resolveThreadRunPreferences(

@@ -181,6 +181,12 @@ async function executeForegroundRunWithinActivityScope(
   runLogger.info('run started');
 
   try {
+    const baselineTranscriptEntryIds = (
+      await deps.readTranscriptEntries(
+        runContext.stateRoot,
+        runContext.threadId,
+      )
+    ).map((entry) => entry.entryId);
     const pendingBackgroundResults =
       args.resumeModelPrompt !== undefined
         ? []
@@ -300,6 +306,7 @@ async function executeForegroundRunWithinActivityScope(
         result,
         deps,
         persistenceDiagnostics,
+        baselineTranscriptEntryIds,
         toolCommittedArtifactRefs,
       });
     }

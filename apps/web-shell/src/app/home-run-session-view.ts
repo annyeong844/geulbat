@@ -99,6 +99,7 @@ interface CreateHomeRunSessionViewArgs {
   messages: ThreadMessage[];
   artifacts: ThreadArtifactVersion[];
   subagentTerminalOutcomes: ThreadSubagentTerminalOutcome[];
+  messageHistory?: NonNullable<AssistantProps['conversation']['history']>;
   branchFromMessage: (entryId: string) => Promise<void>;
   editPastUserPrompt: (entryId: string, nextPrompt: string) => Promise<void>;
   branchNotice: string | null;
@@ -110,6 +111,7 @@ export function createHomeRunSessionView({
   messages,
   artifacts,
   subagentTerminalOutcomes,
+  messageHistory,
   branchFromMessage,
   editPastUserPrompt,
   branchNotice,
@@ -123,6 +125,7 @@ export function createHomeRunSessionView({
       conversation: {
         threadId: runSession.visibleThreadId,
         messages,
+        ...(messageHistory === undefined ? {} : { history: messageHistory }),
         transcriptEntries: runSession.transcriptEntries,
         finalAnswerText: runSession.finalAnswerText,
         branchNotice,

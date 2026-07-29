@@ -2,6 +2,7 @@ import type {
   RunRequest,
   RunStartRequest,
 } from '@geulbat/protocol/run-contract';
+import type { ThreadStateSettlePayload } from '@geulbat/protocol/run-events';
 import type { ThreadDetailResponse } from '@geulbat/protocol/threads';
 
 import type { prepareThreadProviderTransition } from '../lib/api/threads.js';
@@ -14,6 +15,7 @@ import {
   createRunSessionViewModel,
   type RunSessionViewModel,
 } from './run-session-view-model.js';
+import type { ThreadStateApplyResult } from './use-thread-session-selection.js';
 
 export type { RunSessionControllerClient };
 
@@ -35,7 +37,9 @@ interface UseRunSessionArgs {
   openThreadForRunSettle: (
     threadId: string,
   ) => Promise<ThreadDetailResponse | null>;
-  applyThreadSnapshotForRunSettle?: (thread: ThreadDetailResponse) => boolean;
+  applyThreadSnapshotForRunSettle?: (
+    thread: ThreadStateSettlePayload,
+  ) => ThreadStateApplyResult;
   createClient?: () => RunSessionControllerClient;
   prepareStartRequest?: (request: RunRequest) => Promise<RunStartRequest>;
   prepareProviderTransitionRequest?: typeof prepareThreadProviderTransition;

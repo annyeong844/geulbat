@@ -21,6 +21,9 @@ function createThreadsSourceStub() {
     messages: [],
     artifacts: [],
     subagentTerminalOutcomes: [],
+    hasOlderMessages: true,
+    olderMessagesLoading: true,
+    loadOlderMessages: async () => {},
     deletingThreadId: thread.threadId,
     pendingDeleteThread: thread,
     exportingThreadId: thread.threadId,
@@ -58,6 +61,9 @@ void test('createHomeThreadsInput preserves the thread surface used by Home shel
     input.subagentTerminalOutcomes,
     threads.subagentTerminalOutcomes,
   );
+  assert.equal(input.messageHistory.hasOlderMessages, true);
+  assert.equal(input.messageHistory.isLoading, true);
+  assert.equal(input.messageHistory.onLoadOlder, threads.loadOlderMessages);
   assert.equal(input.deletingThreadId, THREAD_ID);
   assert.equal(input.pendingDeleteThread, threads.pendingDeleteThread);
   assert.equal(input.exportingThreadId, THREAD_ID);

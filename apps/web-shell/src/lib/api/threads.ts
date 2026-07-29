@@ -2,6 +2,8 @@ import {
   isThreadBranchResponse,
   isThreadDeleteResponse,
   isThreadDetailResponse,
+  isThreadMessagePageResponse,
+  isThreadOpenResponse,
   isThreadArchiveImportResponse,
   isThreadListResponse,
   isThreadRenameResponse,
@@ -14,6 +16,8 @@ import {
   type ThreadDeleteResponse,
   type ThreadDetailResponse,
   type ThreadListResponse,
+  type ThreadMessagePageResponse,
+  type ThreadOpenResponse,
   type ThreadRenameResponse,
 } from '@geulbat/protocol/threads';
 import {
@@ -65,6 +69,25 @@ export function getThread(threadId: string): Promise<ThreadDetailResponse> {
     `/api/threads/${encodeURIComponent(threadId)}`,
     undefined,
     isThreadDetailResponse,
+  );
+}
+
+export function getThreadOpen(threadId: string): Promise<ThreadOpenResponse> {
+  return apiFetch(
+    `/api/threads/${encodeURIComponent(threadId)}/open`,
+    undefined,
+    isThreadOpenResponse,
+  );
+}
+
+export function getThreadMessagePage(
+  threadId: string,
+  beforeEntryId: string,
+): Promise<ThreadMessagePageResponse> {
+  return apiFetch(
+    `/api/threads/${encodeURIComponent(threadId)}/messages?before=${encodeURIComponent(beforeEntryId)}`,
+    undefined,
+    isThreadMessagePageResponse,
   );
 }
 

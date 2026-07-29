@@ -24,7 +24,7 @@ const transcriptLogModule = new URL(
   import.meta.url,
 );
 
-export async function runDaemonHotPathMemoryWorker(options) {
+async function runDaemonHotPathMemoryWorker(options) {
   assertExplicitGcAvailable();
   const startedAt = performance.now();
   const stateRoot = await mkdtemp(

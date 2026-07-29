@@ -24,9 +24,16 @@ import {
 } from './assistant-transcript-virtual-list.js';
 import { useAssistantTranscriptScrollState } from './use-assistant-transcript-scroll-state.js';
 
+export interface AssistantMessageHistory {
+  hasOlderMessages: boolean;
+  isLoading: boolean;
+  onLoadOlder: () => Promise<void> | void;
+}
+
 interface AssistantTranscriptProps {
   threadId: string | null;
   messages: ThreadMessage[];
+  messageHistory?: AssistantMessageHistory;
   artifacts: ThreadArtifactVersion[];
   transcriptEntries: RunTranscriptEntry[];
   // 과거 런의 서브에이전트 종료 카드 — 귀속할 최종 답변 메시지 entryId 별
@@ -51,6 +58,7 @@ interface AssistantTranscriptProps {
 export const AssistantTranscript = React.memo(function AssistantTranscript({
   threadId,
   messages,
+  messageHistory,
   artifacts,
   transcriptEntries,
   anchoredSubagentEntries,
@@ -124,6 +132,20 @@ export const AssistantTranscript = React.memo(function AssistantTranscript({
         className="assistant-transcript-content"
         style={assistantStyles.transcriptContent}
       >
+        {messageHistory?.hasOlderMessages === true ? (
+          <div className="transcript-history-row">
+            <button
+              type="button"
+              className="transcript-history-button"
+              disabled={messageHistory.isLoading}
+              onClick={() => void messageHistory.onLoadOlder()}
+            >
+              {messageHistory.isLoading
+                ? '이전 대화를 불러오는 중…'
+                : '이전 대화 불러오기'}
+            </button>
+          </div>
+        ) : null}
         {messages.length === 0 &&
         transcriptEntries.length === 0 &&
         finalAnswerText === '' &&

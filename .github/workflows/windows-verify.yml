@@ -19,6 +19,8 @@ jobs:
   source-and-package:
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      GEULBAT_TEST_JOBS: 1
     steps:
       - name: Preserve canonical LF line endings
         shell: pwsh

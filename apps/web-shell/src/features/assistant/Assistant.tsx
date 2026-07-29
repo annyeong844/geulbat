@@ -33,7 +33,10 @@ import {
   type ComposerAttachment,
 } from './AssistantComposer.js';
 export type { AssistantComposerControls };
-import { AssistantTranscript } from './AssistantTranscript.js';
+import {
+  AssistantTranscript,
+  type AssistantMessageHistory,
+} from './AssistantTranscript.js';
 import type {
   TranscriptMessageEditActions,
   TranscriptRowInteractions,
@@ -80,6 +83,7 @@ interface AssistantSteering {
 interface AssistantConversation {
   threadId?: string | null;
   messages: ThreadMessage[];
+  history?: AssistantMessageHistory;
   transcriptEntries: RunTranscriptEntry[];
   finalAnswerText: string;
   // 브랜치 성공 알림 — 전환이 화면상 티가 안 나므로 명시적으로 알린다.
@@ -247,6 +251,7 @@ export function Assistant({
   const {
     threadId = null,
     messages,
+    history,
     transcriptEntries,
     finalAnswerText,
     branchNotice = null,
@@ -744,6 +749,7 @@ export function Assistant({
       <AssistantTranscript
         threadId={threadId}
         messages={visibleMessages}
+        {...(history === undefined ? {} : { messageHistory: history })}
         artifacts={artifacts}
         transcriptEntries={transcriptEntriesWithTerminalHistory}
         anchoredSubagentEntries={anchoredSubagentEntries}

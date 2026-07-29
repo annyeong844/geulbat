@@ -127,6 +127,25 @@ export interface ThreadDetailResponse {
   subagentTerminalOutcomes?: ThreadSubagentTerminalOutcome[];
 }
 
+export interface ThreadMessagePageResponse {
+  threadId: ThreadId;
+  messages: NonCompactionThreadMessage[];
+  // null means this page reaches the beginning. Otherwise this is the exact
+  // first entry in `messages`, which the caller sends back as `before`.
+  olderBeforeEntryId: string | null;
+}
+
+export interface ThreadOpenResponse {
+  threadId: ThreadId;
+  snapshotVersion: string;
+  activeModelId?: RunModelId;
+  runPreferences?: ThreadRunPreferences;
+  artifacts?: ThreadArtifactVersion[];
+  diagnostics?: ThreadDetailDiagnostics;
+  subagentTerminalOutcomes?: ThreadSubagentTerminalOutcome[];
+  messagePage: ThreadMessagePageResponse;
+}
+
 export interface ThreadDeleteResponse {
   ok: true;
   threadId: ThreadId;
@@ -649,6 +668,56 @@ export function isThreadDetailResponse(
   value: unknown,
 ): value is ThreadDetailResponse {
   return (
+    isThreadDetailMetadata(value) &&
+    Array.isArray(value.messages) &&
+    value.messages.every(isNonCompactionThreadMessage)
+  );
+}
+
+export function isThreadMessagePageResponse(
+  value: unknown,
+): value is ThreadMessagePageResponse {
+  if (
+    !isRecord(value) ||
+    typeof value.threadId !== 'string' ||
+    !isThreadId(value.threadId) ||
+    !Array.isArray(value.messages) ||
+    !value.messages.every(isNonCompactionThreadMessage) ||
+    (value.olderBeforeEntryId !== null &&
+      (typeof value.olderBeforeEntryId !== 'string' ||
+        value.olderBeforeEntryId.trim() === ''))
+  ) {
+    return false;
+  }
+  return (
+    value.olderBeforeEntryId === null ||
+    value.messages[0]?.entryId === value.olderBeforeEntryId
+  );
+}
+
+export function isThreadOpenResponse(
+  value: unknown,
+): value is ThreadOpenResponse {
+  return (
+    isThreadDetailMetadata(value) &&
+    isThreadMessagePageResponse(value.messagePage) &&
+    value.messagePage.threadId === value.threadId
+  );
+}
+
+function isThreadDetailMetadata(value: unknown): value is Record<
+  string,
+  unknown
+> & {
+  threadId: ThreadId;
+  snapshotVersion: string;
+  activeModelId?: RunModelId;
+  runPreferences?: ThreadRunPreferences;
+  artifacts?: ThreadArtifactVersion[];
+  diagnostics?: ThreadDetailDiagnostics;
+  subagentTerminalOutcomes?: ThreadSubagentTerminalOutcome[];
+} {
+  return (
     isRecord(value) &&
     typeof value.threadId === 'string' &&
     isThreadId(value.threadId) &&
@@ -657,10 +726,6 @@ export function isThreadDetailResponse(
     (value.activeModelId === undefined || isRunModelId(value.activeModelId)) &&
     (value.runPreferences === undefined ||
       isThreadRunPreferences(value.runPreferences)) &&
-    Array.isArray(value.messages) &&
-    value.messages.every(
-      (message) => isThreadMessage(message) && message.role !== 'compaction',
-    ) &&
     (value.diagnostics === undefined ||
       isThreadDetailDiagnostics(value.diagnostics)) &&
     (value.artifacts === undefined ||
@@ -670,6 +735,12 @@ export function isThreadDetailResponse(
       (Array.isArray(value.subagentTerminalOutcomes) &&
         value.subagentTerminalOutcomes.every(isThreadSubagentTerminalOutcome)))
   );
+}
+
+function isNonCompactionThreadMessage(
+  value: unknown,
+): value is NonCompactionThreadMessage {
+  return isThreadMessage(value) && value.role !== 'compaction';
 }
 
 function isThreadRunPreferences(value: unknown): value is ThreadRunPreferences {

@@ -850,6 +850,13 @@
   white-space: pre;
 }
 
+/* 이전 턴 paging — 가상 목록 위에서만 보이는 명시적 history 경계 */
+.transcript-history-row {
+  display: flex;
+  justify-content: center;
+  margin: 2px 0 10px;
+}
+
 /* 답변 다시 시도 — 마지막 답변 아래 보조 행 */
 .transcript-retry-row {
   display: flex;
@@ -857,6 +864,7 @@
   margin: 2px 0 6px;
 }
 
+.transcript-history-button,
 .transcript-retry-button {
   padding: 4px 12px;
   border: none;
@@ -869,8 +877,14 @@
   transition: background var(--transition-base);
 }
 
+.transcript-history-button:hover:not(:disabled),
 .transcript-retry-button:hover {
   background: var(--surface-container-high);
+}
+
+.transcript-history-button:disabled {
+  cursor: wait;
+  opacity: 0.7;
 }
 
 /* 보조 작업 카드 → 차일드 세션 드릴다운 */

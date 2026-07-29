@@ -97,10 +97,16 @@ void test('createHomeRunSessionView derives assistant presentation props', () =>
 
   const dismissBranchNotice = () => {};
   const editPastUserPrompt = async () => {};
+  const messageHistory = {
+    hasOlderMessages: true,
+    isLoading: false,
+    onLoadOlder: async () => {},
+  };
 
   const view = createHomeRunSessionView({
     messages: [],
     artifacts: [],
+    messageHistory,
     subagentTerminalOutcomes: [
       {
         deliveryId: 'delivery-history',
@@ -132,6 +138,7 @@ void test('createHomeRunSessionView derives assistant presentation props', () =>
   assert.deepEqual(view.assistant.conversation.transcriptEntries, [
     { kind: 'assistant_text', text: 'commentary' },
   ]);
+  assert.equal(view.assistant.conversation.history, messageHistory);
   assert.deepEqual(view.assistant.activity.subagentTerminalHistoryEntries, [
     {
       kind: 'subagent_activity',

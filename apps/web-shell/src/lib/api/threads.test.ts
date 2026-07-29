@@ -8,6 +8,8 @@ import {
   branchThread,
   deleteThread,
   exportThreadArchive,
+  getThreadMessagePage,
+  getThreadOpen,
   importThreadArchive,
   prepareThreadProviderTransition,
   ProviderTransitionPreparationError,
@@ -56,6 +58,62 @@ void test('deleteThread maps active run api conflict into ThreadDeleteConflictEr
       return true;
     },
   );
+});
+
+void test('thread open and older-message clients use their distinct validated endpoints', async (t) => {
+  const threadId = '00000000-0000-4000-8000-000000000001';
+  const requestedPaths: string[] = [];
+  installApiTestBootstrap(t, async (input) => {
+    const path = String(input);
+    requestedPaths.push(path);
+    if (path.endsWith('/open')) {
+      return new Response(
+        JSON.stringify({
+          threadId,
+          snapshotVersion: '2026-07-29T00:00:02.000Z',
+          artifacts: [],
+          messagePage: {
+            threadId,
+            messages: [
+              {
+                entryId: 'entry-latest',
+                role: 'user',
+                content: 'latest',
+                timestamp: '2026-07-29T00:00:02.000Z',
+              },
+            ],
+            olderBeforeEntryId: 'entry-latest',
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        threadId,
+        messages: [
+          {
+            entryId: 'entry-older',
+            role: 'user',
+            content: 'older',
+            timestamp: '2026-07-29T00:00:00.000Z',
+          },
+        ],
+        olderBeforeEntryId: null,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  });
+
+  const opened = await getThreadOpen(threadId);
+  const older = await getThreadMessagePage(threadId, 'entry-latest');
+
+  assert.deepEqual(requestedPaths, [
+    `/api/threads/${threadId}/open`,
+    `/api/threads/${threadId}/messages?before=entry-latest`,
+  ]);
+  assert.equal(opened.messagePage.messages[0]?.content, 'latest');
+  assert.equal(older.messages[0]?.content, 'older');
 });
 
 void test('branchThread posts upToEntryId and validates the branch response', async (t) => {
