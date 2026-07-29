@@ -114,6 +114,10 @@ jobs:
   daemon-coverage:
     name: Daemon coverage
     runs-on: ubuntu-latest
+    # Instrumented workers are substantially heavier than the ordinary test
+    # lane. Keep real file-level parallelism without saturating the hosted VM.
+    env:
+      GEULBAT_TEST_JOBS: 2
     steps:
       - name: Checkout
         uses: actions/checkout@v6
