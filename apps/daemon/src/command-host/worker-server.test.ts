@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -672,11 +672,18 @@ void test('T13: the idle signal never precedes terminal durability', async (t) =
   await client.connect(harness.socketPath);
   await client.initialize();
   const thread = threadId(31);
+  const releasePath = join(harness.stateRoot, 't13-release');
+  const releaseScript =
+    `const { existsSync } = require('node:fs');` +
+    `const releasePath = ${JSON.stringify(releasePath)};` +
+    `const poll = setInterval(() => {` +
+    `if (existsSync(releasePath)) clearInterval(poll);` +
+    `}, 10);`;
 
   const started = (
     await client.request(
       COMMAND_HOST_METHODS.start,
-      startParams(harness, thread, 'setTimeout(() => {}, 120);'),
+      startParams(harness, thread, releaseScript),
     )
   )['result'] as { ok: true; outputRef: string };
   // claim해 두면 연결이 끊겨도 세션이 살아남는다 (§8.2).
@@ -690,6 +697,7 @@ void test('T13: the idle signal never precedes terminal durability', async (t) =
 
   // 연결 0 · 이후 자식 종료 — 종료 신호는 내구화가 끝난 뒤에만 울려야 한다.
   client.destroy();
+  await writeFile(releasePath, 'release', 'utf8');
   const paths = buildHostCommandPaths({
     stateRoot: harness.stateRoot,
     threadId: thread,

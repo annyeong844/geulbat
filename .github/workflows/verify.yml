@@ -15,11 +15,15 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Higher file-process fan-out produced nondeterministic hosted-runner stalls.
+  # Two-way sharding keeps parallel execution while bounding instrumented load.
+  GEULBAT_TEST_JOBS: 2
+
 jobs:
-  verify:
+  quality:
+    name: Quality gates
     runs-on: ubuntu-latest
-    env:
-      GEULBAT_TEST_JOBS: 1
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -57,17 +61,52 @@ jobs:
       - name: Npm installable distribution
         run: npm run check:npm-installable-distribution -- --approved-client-id-file release/provider-auth-approved-client-ids.json
 
+  test:
+    name: Full test suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
       - name: Test
         run: npm test
+
+  real-app:
+    name: Real-app flow gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
 
       - name: Install Chromium for the real-app flow gate
         run: npx --no-install playwright install --with-deps chromium
 
       - name: Real-app flow gate
         run: npm run gate:flows -w apps/web-shell
-
-      - name: Daemon coverage
-        run: npm run test:cov:daemon
 
       - name: Upload real-app flow failure evidence
         if: ${{ failure() }}
@@ -76,3 +115,44 @@ jobs:
           name: real-app-flow-failure-evidence
           path: output/playwright/flow-gate/
           if-no-files-found: ignore
+
+  daemon-coverage:
+    name: Daemon coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Daemon coverage
+        run: npm run test:cov:daemon
+
+  verify:
+    name: verify
+    if: ${{ always() }}
+    needs:
+      - quality
+      - test
+      - real-app
+      - daemon-coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every verification shard
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          REAL_APP_RESULT: ${{ needs.real-app.result }}
+          DAEMON_COVERAGE_RESULT: ${{ needs.daemon-coverage.result }}
+        run: |
+          test "$QUALITY_RESULT" = success
+          test "$TEST_RESULT" = success
+          test "$REAL_APP_RESULT" = success
+          test "$DAEMON_COVERAGE_RESULT" = success

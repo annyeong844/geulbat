@@ -103,7 +103,8 @@ void test('exec_command yields a thread-bound durable result that write_stdin pa
 
   const started = await execCommandTool.execute(
     {
-      cmd: `node -e "setTimeout(() => process.stdout.write('${expected}'), 40)"`,
+      cmd: `node -e "process.stdin.resume(); setTimeout(() => process.stdout.write('${expected}'), 40)"`,
+      stdinMode: 'open',
       yieldTimeMs: 0,
     },
     {

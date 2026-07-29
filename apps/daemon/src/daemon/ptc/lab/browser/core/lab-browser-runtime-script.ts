@@ -194,6 +194,38 @@ function buildPtcLabBrowserRuntimeScript(
       return false;
     }
   }
+  async function waitForPolicyEventDispatch(page, input, startedAtMs) {
+    const remainingMs = remainingNavigationTimeoutMs(input, startedAtMs);
+    if (remainingMs <= 0) {
+      return false;
+    }
+    let timeout;
+    try {
+      return await Promise.race([
+        page
+          .evaluate(
+            () =>
+              new Promise((resolve) => {
+                setTimeout(resolve, 0);
+              })
+          )
+          .then(
+            () =>
+              new Promise((resolve) => {
+                setImmediate(() => resolve(true));
+              }),
+            () => false
+          ),
+        new Promise((resolve) => {
+          timeout = setTimeout(() => resolve(false), remainingMs);
+        })
+      ]);
+    } finally {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+    }
+  }
   async function waitForPolicyEventsToSettle(page, input, startedAtMs, hasPolicyViolation) {
     if (
       !(await waitForLoadStateOrPolicyEvent(
@@ -209,12 +241,24 @@ function buildPtcLabBrowserRuntimeScript(
     if (hasPolicyViolation()) {
       return true;
     }
-    return await waitForLoadStateOrPolicyEvent(
+    if (
+      !(await waitForLoadStateOrPolicyEvent(
+        page,
+        'networkidle',
+        input,
+        startedAtMs,
+        hasPolicyViolation
+      ))
+    ) {
+      return false;
+    }
+    if (hasPolicyViolation()) {
+      return true;
+    }
+    return await waitForPolicyEventDispatch(
       page,
-      'networkidle',
       input,
-      startedAtMs,
-      hasPolicyViolation
+      startedAtMs
     );
   }
 
