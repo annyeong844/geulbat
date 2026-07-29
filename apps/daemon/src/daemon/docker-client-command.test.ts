@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve, sep } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -58,14 +58,14 @@ void test('runDockerClientCommand fails closed instead of starting an unrouted p
   });
 });
 
-void test('daemon production sources contain no direct child-process owner', async () => {
+void test('daemon package production sources outside command-host contain no direct child-process owner', async () => {
   const packageRoot = resolve(
     dirname(fileURLToPath(import.meta.url)),
     '..',
     '..',
   );
-  const daemonSourceRoot = resolve(packageRoot, 'src', 'daemon');
-  const entries = await readdir(daemonSourceRoot, {
+  const productionSourceRoot = resolve(packageRoot, 'src');
+  const entries = await readdir(productionSourceRoot, {
     recursive: true,
     withFileTypes: true,
   });
@@ -79,6 +79,15 @@ void test('daemon production sources contain no direct child-process owner', asy
       continue;
     }
     const filePath = resolve(entry.parentPath, entry.name);
+    const sourcePathSegments = relative(productionSourceRoot, filePath).split(
+      sep,
+    );
+    if (
+      sourcePathSegments[0] === 'command-host' ||
+      sourcePathSegments.includes('test-support')
+    ) {
+      continue;
+    }
     const source = await readFile(filePath, 'utf8');
     assert.doesNotMatch(
       source,

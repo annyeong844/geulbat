@@ -7,8 +7,9 @@ import {
 } from '../contract.js';
 import { validateGeneratedImageBase64 } from '../image-candidate-validation.js';
 
-// xAI 이미지 생성 API를 데몬이 직접 호출하는 어댑터(bounded HTTPS POST).
-// OAuth bearer는 호출자(image-generation-runtime)가 provider-auth 경계로 수급한다.
+// xAI 이미지 생성 API 어댑터(bounded HTTPS POST). OAuth bearer는
+// 호출자(image-generation-runtime)가 provider-auth 경계로 수급한다. Product
+// recovery 경로는 createRequestImpl로 POST 소유권을 command-host에 넘긴다.
 
 // S0 스파이크(2026-07-12)에서 판정: 'grok-2-image'는 404(모델 소멸/미접근).
 // 현행 유효 모델은 grok-imagine-image·grok-imagine-image-quality이고,
@@ -44,10 +45,18 @@ function resolveGrokImageTimeoutMs(): number {
     : DEFAULT_GROK_IMAGE_TIMEOUT_MS;
 }
 
+export type GrokImageCreateRequest = (input: {
+  requestUrl: string;
+  headers: Headers;
+  serializedPayload: string;
+  signal?: AbortSignal;
+}) => Promise<Record<string, unknown>>;
+
 interface GrokImageProviderInput {
   request: ImageGenerationRequest;
   auth: { accessToken: string };
   signal?: AbortSignal;
+  createRequestImpl?: GrokImageCreateRequest;
   fetchImpl?: typeof fetch;
   now?: () => string;
 }
@@ -100,38 +109,86 @@ function readGrokGeneratedImage(body: unknown): GrokGeneratedImage | null {
   };
 }
 
-export async function generateImageViaGrok(
+async function createGrokImageRequest(
   input: GrokImageProviderInput,
-): Promise<GeneratedImageCandidate> {
-  const model = resolveGrokImageModel(input.request.model);
-  const url = resolveGrokImageGenerationsUrl();
-  const fetchImpl = input.fetchImpl ?? fetch;
+  fetchImpl: typeof fetch,
+  requestUrl: string,
+  headers: Headers,
+  serializedPayload: string,
+  signal: AbortSignal,
+  timeoutSignal: AbortSignal,
+): Promise<unknown> {
+  if (input.createRequestImpl === undefined) {
+    let response: Response;
+    try {
+      response = await fetchImpl(requestUrl, {
+        method: 'POST',
+        headers,
+        body: serializedPayload,
+        signal,
+      });
+    } catch (error: unknown) {
+      if (input.signal?.aborted === true) {
+        throw error;
+      }
+      throw new ImageGenerationError({
+        surface: 'provider_api',
+        reasonCode: timeoutSignal.aborted
+          ? 'provider_request_timeout'
+          : 'provider_network_failed',
+        message: timeoutSignal.aborted
+          ? 'xAI image generation request timed out'
+          : 'xAI image generation request failed before a response arrived',
+        cause: error,
+      });
+    }
 
-  const timeoutSignal = AbortSignal.timeout(resolveGrokImageTimeoutMs());
-  const signal =
-    input.signal !== undefined
-      ? AbortSignal.any([input.signal, timeoutSignal])
-      : timeoutSignal;
+    if (!response.ok) {
+      // 본문은 읽어 소비하되(소켓 정리) 진단으로 내보내지 않는다.
+      await response.text().catch(() => '');
+      throw classifyGrokFailure(response.status);
+    }
 
-  let response: Response;
+    try {
+      return await response.json();
+    } catch (error: unknown) {
+      throw new ImageGenerationError({
+        surface: 'provider_api',
+        reasonCode: 'provider_response_invalid',
+        message: 'xAI image generation returned a non-JSON response',
+        cause: error,
+      });
+    }
+  }
+
   try {
-    response = await fetchImpl(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${input.auth.accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        prompt: input.request.prompt,
-        n: 1,
-        response_format: 'b64_json',
-      }),
+    return await input.createRequestImpl({
+      requestUrl,
+      headers,
+      serializedPayload,
       signal,
     });
   } catch (error: unknown) {
-    if (input.signal?.aborted === true) {
+    if (
+      input.signal?.aborted === true ||
+      error instanceof ImageGenerationError
+    ) {
       throw error;
+    }
+    const status =
+      error !== null && typeof error === 'object'
+        ? Reflect.get(error, 'status')
+        : undefined;
+    if (typeof status === 'number' && Number.isFinite(status)) {
+      if (status >= 400) {
+        throw classifyGrokFailure(status);
+      }
+      throw new ImageGenerationError({
+        surface: 'provider_api',
+        reasonCode: 'provider_response_invalid',
+        message: 'xAI image generation returned an invalid JSON response',
+        cause: error,
+      });
     }
     throw new ImageGenerationError({
       surface: 'provider_api',
@@ -144,24 +201,40 @@ export async function generateImageViaGrok(
       cause: error,
     });
   }
+}
 
-  if (!response.ok) {
-    // 본문은 읽어 소비하되(소켓 정리) 진단으로 내보내지 않는다.
-    await response.text().catch(() => '');
-    throw classifyGrokFailure(response.status);
-  }
+export async function generateImageViaGrok(
+  input: GrokImageProviderInput,
+): Promise<GeneratedImageCandidate> {
+  const model = resolveGrokImageModel(input.request.model);
+  const url = resolveGrokImageGenerationsUrl();
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const headers = new Headers({
+    Accept: 'application/json',
+    Authorization: `Bearer ${input.auth.accessToken}`,
+    'Content-Type': 'application/json',
+  });
+  const serializedPayload = JSON.stringify({
+    model,
+    prompt: input.request.prompt,
+    n: 1,
+    response_format: 'b64_json',
+  });
 
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch (error: unknown) {
-    throw new ImageGenerationError({
-      surface: 'provider_api',
-      reasonCode: 'provider_response_invalid',
-      message: 'xAI image generation returned a non-JSON response',
-      cause: error,
-    });
-  }
+  const timeoutSignal = AbortSignal.timeout(resolveGrokImageTimeoutMs());
+  const signal =
+    input.signal !== undefined
+      ? AbortSignal.any([input.signal, timeoutSignal])
+      : timeoutSignal;
+  const body = await createGrokImageRequest(
+    input,
+    fetchImpl,
+    url,
+    headers,
+    serializedPayload,
+    signal,
+    timeoutSignal,
+  );
 
   const image = readGrokGeneratedImage(body);
   if (image === null) {

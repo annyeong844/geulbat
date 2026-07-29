@@ -8,6 +8,7 @@ import { parseVideoArtifactPayload } from '@geulbat/protocol/artifacts';
 import type { ThreadId } from '@geulbat/protocol/ids';
 
 import { createProviderAuthRuntimeStore } from '../auth/runtime-state.js';
+import type { ResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-cache.js';
 import {
   commitThreadArtifactVersion,
   loadAllThreadArtifactVersions,
@@ -672,6 +673,122 @@ void test('generateVideoArtifact replacement fails closed when the provider requ
         error.reasonCode === 'provider_outcome_unknown',
     );
     assert.equal(providerRequests, 1);
+  });
+});
+
+void test('generateVideoArtifact replacement replays one durable create response instead of billing a second provider job', async () => {
+  await withTempRoot(async (root) => {
+    const input = {
+      ...baseInput(root),
+      runId: 'run-video-create-owner-recovery',
+    };
+    const identity = createMediaGenerationRecoveryIdentity({
+      kind: 'video',
+      threadId: THREAD_ID,
+      runId: input.runId,
+      callId: 'call-video-create-owner-recovery',
+      toolArgs: { prompt: input.request.prompt },
+    });
+    let providerDispatches = 0;
+    let durableResponse: Record<string, unknown> | undefined;
+    const providerWebSocketSessions: ResponsesWebSocketSessionStore = {
+      acquireWebSocket: async () => {
+        throw new Error('video create must not acquire a daemon websocket');
+      },
+      streamDurableHttpSseEvents: async function* (request) {
+        assert.equal(
+          request.providerSessionId,
+          `media:video:${THREAD_ID}:${identity.operationId}`,
+        );
+        assert.equal(request.requestAttempt, 0);
+        if (durableResponse === undefined) {
+          providerDispatches += 1;
+          durableResponse = { request_id: 'request-from-owner' };
+        }
+        yield durableResponse;
+      },
+    };
+    const requestCreate = async (
+      providerInput: Parameters<
+        NonNullable<VideoGenerationRuntimeDeps['generateViaGrokImpl']>
+      >[0],
+      serializedPayload = '{"prompt":"a cat"}',
+    ) => {
+      assert.ok(providerInput.createRequestImpl);
+      return providerInput.createRequestImpl({
+        requestUrl: 'https://api.x.ai/v1/videos/generations',
+        headers: new Headers({
+          Accept: 'application/json',
+          Authorization: 'Bearer access-token',
+        }),
+        serializedPayload,
+      });
+    };
+
+    const first = createVideoGenerationRuntime(
+      buildDeps({
+        providerWebSocketSessions,
+        generateViaGrokImpl: async (providerInput) => {
+          await requestCreate(providerInput);
+          throw new Error(
+            'simulated daemon death before provider handle persistence',
+          );
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      first.generateVideoArtifact({
+        ...input,
+        recovery: { callId: 'call-video-create-owner-recovery', identity },
+      }),
+      /before provider handle persistence/u,
+    );
+
+    const drifted = createVideoGenerationRuntime(
+      buildDeps({
+        providerWebSocketSessions,
+        generateViaGrokImpl: async (providerInput) => {
+          await requestCreate(providerInput, '{"prompt":"a changed cat"}');
+          throw new Error('changed request must not reach the provider');
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      drifted.generateVideoArtifact({
+        ...input,
+        recovery: { callId: 'call-video-create-owner-recovery', identity },
+      }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'provider_outcome_unknown' &&
+        /request changed/u.test(error.message),
+    );
+
+    const replacement = createVideoGenerationRuntime(
+      buildDeps({
+        providerWebSocketSessions,
+        generateViaGrokImpl: async (providerInput) => {
+          const response = await requestCreate(providerInput);
+          assert.equal(response['request_id'], 'request-from-owner');
+          assert.ok(providerInput.onRequestCreated);
+          await providerInput.onRequestCreated('request-from-owner');
+          return {
+            videoUrl: 'https://signed.example/video.mp4',
+            durationSeconds: 5,
+            model: 'grok-imagine-video-1.5',
+          };
+        },
+        statThreadMediaFileImpl: statThreadMediaFile,
+        commitThreadArtifactVersionImpl: commitThreadArtifactVersion,
+      }).deps,
+    );
+    const recovered = await replacement.generateVideoArtifact({
+      ...input,
+      recovery: { callId: 'call-video-create-owner-recovery', identity },
+    });
+
+    assert.equal(providerDispatches, 1);
+    assert.equal(recovered.artifactVersion.artifactId, identity.artifactId);
   });
 });
 

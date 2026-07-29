@@ -83,6 +83,13 @@ function classifyGrokVideoFailure(status: number): ImageGenerationError {
   });
 }
 
+export type GrokVideoCreateRequest = (input: {
+  requestUrl: string;
+  headers: Headers;
+  serializedPayload: string;
+  signal?: AbortSignal;
+}) => Promise<Record<string, unknown>>;
+
 interface GrokVideoProviderInput {
   request: {
     prompt: string;
@@ -97,6 +104,7 @@ interface GrokVideoProviderInput {
   onRequestCreated?: (requestId: string) => Promise<void>;
   auth: { accessToken: string };
   signal?: AbortSignal;
+  createRequestImpl?: GrokVideoCreateRequest;
   fetchImpl?: typeof fetch;
   sleepImpl?: (ms: number) => Promise<void>;
   pollIntervalMs?: number;
@@ -151,6 +159,66 @@ async function fetchJsonOrThrow(
   }
 }
 
+async function createGrokVideoRequest(
+  input: GrokVideoProviderInput,
+  fetchImpl: typeof fetch,
+  requestUrl: string,
+  headers: Headers,
+  serializedPayload: string,
+): Promise<unknown> {
+  if (input.createRequestImpl === undefined) {
+    return fetchJsonOrThrow(
+      fetchImpl,
+      requestUrl,
+      {
+        method: 'POST',
+        headers,
+        body: serializedPayload,
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+      },
+      'create',
+    );
+  }
+  try {
+    return await input.createRequestImpl({
+      requestUrl,
+      headers,
+      serializedPayload,
+      ...(input.signal !== undefined ? { signal: input.signal } : {}),
+    });
+  } catch (error: unknown) {
+    if (
+      input.signal?.aborted === true ||
+      error instanceof ImageGenerationError
+    ) {
+      throw error;
+    }
+    const status =
+      error !== null && typeof error === 'object'
+        ? Reflect.get(error, 'status')
+        : undefined;
+    if (typeof status === 'number' && Number.isFinite(status)) {
+      if (status >= 400) {
+        throw classifyGrokVideoFailure(status);
+      }
+      throw new ImageGenerationError({
+        surface: 'provider_api',
+        reasonCode: 'provider_response_invalid',
+        message:
+          'xAI video generation create returned an invalid JSON response',
+        cause: error,
+      });
+    }
+    throw new ImageGenerationError({
+      surface: 'provider_api',
+      reasonCode: 'provider_network_failed',
+      message:
+        'xAI video generation create request failed before a response arrived',
+      cause: error,
+    });
+  }
+}
+
 export async function generateVideoViaGrok(
   input: GrokVideoProviderInput,
 ): Promise<GrokGeneratedVideo> {
@@ -160,36 +228,34 @@ export async function generateVideoViaGrok(
   const pollIntervalMs =
     input.pollIntervalMs ?? resolveGrokVideoPollIntervalMs();
   const pollTimeoutMs = input.pollTimeoutMs ?? resolveGrokVideoPollTimeoutMs();
-  const headers = {
+  const headers = new Headers({
+    Accept: 'application/json',
     Authorization: `Bearer ${input.auth.accessToken}`,
     'Content-Type': 'application/json',
-  };
+  });
 
   let requestId = input.requestId;
   if (requestId === undefined) {
-    const created = await fetchJsonOrThrow(
+    const serializedPayload = JSON.stringify({
+      model,
+      prompt: input.request.prompt,
+      duration: input.request.durationSeconds,
+      image: { url: input.sourceImageDataUrl },
+      // 상세 옵션(실측 enum — 프로토콜 가드가 상류에서 강제). 미지정이면
+      // 필드 자체를 싣지 않아 프로바이더 기본을 따른다.
+      ...(input.request.aspectRatio !== undefined
+        ? { aspect_ratio: input.request.aspectRatio }
+        : {}),
+      ...(input.request.resolution !== undefined
+        ? { resolution: input.request.resolution }
+        : {}),
+    });
+    const created = await createGrokVideoRequest(
+      input,
       fetchImpl,
       resolveGrokVideoGenerationsUrl(),
-      {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model,
-          prompt: input.request.prompt,
-          duration: input.request.durationSeconds,
-          image: { url: input.sourceImageDataUrl },
-          // 상세 옵션(실측 enum — 프로토콜 가드가 상류에서 강제). 미지정이면
-          // 필드 자체를 싣지 않아 프로바이더 기본을 따른다.
-          ...(input.request.aspectRatio !== undefined
-            ? { aspect_ratio: input.request.aspectRatio }
-            : {}),
-          ...(input.request.resolution !== undefined
-            ? { resolution: input.request.resolution }
-            : {}),
-        }),
-        ...(input.signal !== undefined ? { signal: input.signal } : {}),
-      },
-      'create',
+      headers,
+      serializedPayload,
     );
     requestId =
       isRecord(created) && typeof created.request_id === 'string'
@@ -222,7 +288,7 @@ export async function generateVideoViaGrok(
       fetchImpl,
       resolveGrokVideoStatusUrl(requestId),
       {
-        headers: { Authorization: headers.Authorization },
+        headers: { Authorization: headers.get('Authorization') ?? '' },
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
       },
       'poll',

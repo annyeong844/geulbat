@@ -429,6 +429,108 @@ void test('generateImageArtifact replacement fails closed when the provider outc
   }
 });
 
+void test('generateImageArtifact replacement replays one durable grok response without a second provider POST', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-image-durable-create-'),
+  );
+  const input = {
+    ...baseInput(),
+    providerId: 'grok_oauth' as const,
+    stateRoot,
+    runId: 'run-image-durable-create',
+  };
+  const identity = createMediaGenerationRecoveryIdentity({
+    kind: 'image',
+    threadId: THREAD_ID,
+    runId: input.runId,
+    callId: 'call-image-durable-create',
+    toolArgs: { prompt: 'a cat' },
+  });
+  const recovery = {
+    callId: 'call-image-durable-create',
+    identity,
+  };
+  const pngBase64 = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from('durable-grok-image'),
+  ]).toString('base64');
+  let providerDispatches = 0;
+  let durableSubscriptions = 0;
+  let admittedPayload: string | undefined;
+  const providerWebSocketSessions: ImageGenerationRuntimeDeps['providerWebSocketSessions'] =
+    {
+      acquireWebSocket: () => {
+        throw new Error('not used');
+      },
+      streamDurableHttpSseEvents: async function* (request) {
+        durableSubscriptions += 1;
+        assert.equal(
+          request.providerSessionId,
+          `media:image:${THREAD_ID}:${identity.operationId}`,
+        );
+        assert.equal(request.requestAttempt, 0);
+        assert.equal(request.headers.get('accept'), 'application/json');
+        if (admittedPayload === undefined) {
+          admittedPayload = request.serializedPayload;
+          providerDispatches += 1;
+        } else {
+          assert.equal(request.serializedPayload, admittedPayload);
+        }
+        yield { data: [{ b64_json: pngBase64 }] };
+      },
+    };
+
+  try {
+    const first = createImageGenerationRuntime(
+      buildDeps({
+        providerWebSocketSessions,
+        writeThreadMediaFileImpl: async () => {
+          throw new Error(
+            'simulated daemon death before image candidate persistence',
+          );
+        },
+      }).deps,
+    );
+    await assert.rejects(
+      first.generateImageArtifact({ ...input, recovery }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'artifact_commit_failed',
+    );
+    assert.equal(providerDispatches, 1);
+
+    const replacement = createImageGenerationRuntime(
+      buildDeps({
+        providerWebSocketSessions,
+        writeThreadMediaFileImpl: writeThreadMediaFile,
+        statThreadMediaFileImpl: statThreadMediaFile,
+      }).deps,
+    );
+    await assert.rejects(
+      replacement.generateImageArtifact({
+        ...input,
+        request: { prompt: 'a changed cat' },
+        recovery,
+      }),
+      (error: unknown) =>
+        error instanceof ImageGenerationError &&
+        error.reasonCode === 'provider_outcome_unknown',
+    );
+    assert.equal(providerDispatches, 1);
+    assert.equal(durableSubscriptions, 1);
+
+    const recovered = await replacement.generateImageArtifact({
+      ...input,
+      recovery,
+    });
+    assert.equal(providerDispatches, 1);
+    assert.equal(durableSubscriptions, 2);
+    assert.equal(recovered.provenance.providerId, 'grok_oauth');
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
 void test('generateImageArtifact does not mark a provider effect before local auth succeeds', async () => {
   const stateRoot = await mkdtemp(
     join(tmpdir(), 'geulbat-image-recovery-auth-'),

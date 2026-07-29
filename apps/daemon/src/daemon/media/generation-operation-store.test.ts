@@ -12,6 +12,7 @@ import {
   readMediaGenerationOperation,
   recordMediaGenerationCandidate,
   recordMediaGenerationProviderHandle,
+  recordMediaGenerationProviderRequestDigest,
 } from './generation-operation-store.js';
 
 void test('media generation operation survives replacement with one provider handle and candidate', async () => {
@@ -108,6 +109,63 @@ void test('media generation operation rejects a different argument identity befo
         identity: conflicting,
       }),
       /identity conflicts/u,
+    );
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+void test('media generation operation pins each provider request attempt before dispatch', async () => {
+  const stateRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-media-provider-request-'),
+  );
+  const threadId = testThreadId(972);
+  const identity = createMediaGenerationRecoveryIdentity({
+    kind: 'video',
+    threadId,
+    runId: 'run-media-provider-request',
+    callId: 'call-media-provider-request',
+    toolArgs: { prompt: 'one moon' },
+  });
+  try {
+    await prepareMediaGenerationOperation({
+      stateRoot,
+      threadId,
+      runId: 'run-media-provider-request',
+      callId: 'call-media-provider-request',
+      identity,
+    });
+    await recordMediaGenerationProviderRequestDigest({
+      stateRoot,
+      threadId,
+      identity,
+      requestAttempt: 0,
+      requestDigest: 'first-request',
+    });
+    await recordMediaGenerationProviderRequestDigest({
+      stateRoot,
+      threadId,
+      identity,
+      requestAttempt: 0,
+      requestDigest: 'first-request',
+    });
+    await recordMediaGenerationProviderRequestDigest({
+      stateRoot,
+      threadId,
+      identity,
+      requestAttempt: 1,
+      requestDigest: 'refreshed-auth-request',
+    });
+
+    await assert.rejects(
+      recordMediaGenerationProviderRequestDigest({
+        stateRoot,
+        threadId,
+        identity,
+        requestAttempt: 0,
+        requestDigest: 'changed-request',
+      }),
+      /provider-request-attempt-0\.json/u,
     );
   } finally {
     await rm(stateRoot, { recursive: true, force: true });

@@ -76,6 +76,41 @@ void test('generateVideoViaGrok posts the job, polls to done, and returns the vi
   });
 });
 
+void test('generateVideoViaGrok can delegate only the billable create request to a durable owner', async () => {
+  const events: string[] = [];
+  const poll = buildFetchScript([
+    {
+      assertUrl: (url) => assert.ok(url.endsWith('/videos/req-owned')),
+      response: jsonResponse(200, {
+        status: 'done',
+        video: { url: 'https://signed.example/owned.mp4', duration: 5 },
+      }),
+    },
+  ]);
+
+  const result = await generateVideoViaGrok({
+    ...BASE_INPUT,
+    fetchImpl: poll.fetchImpl,
+    createRequestImpl: async (request) => {
+      assert.equal(request.headers.get('Accept'), 'application/json');
+      assert.equal(request.headers.get('Authorization'), 'Bearer token');
+      assert.equal(
+        JSON.parse(request.serializedPayload).prompt,
+        'a waving cat',
+      );
+      events.push('create-owned');
+      return { request_id: 'req-owned' };
+    },
+    onRequestCreated: async (requestId) => {
+      events.push(`persist:${requestId}`);
+    },
+  });
+
+  assert.equal(result.videoUrl, 'https://signed.example/owned.mp4');
+  assert.deepEqual(events, ['create-owned', 'persist:req-owned']);
+  assert.deepEqual(poll.calls, ['GET https://api.x.ai/v1/videos/req-owned']);
+});
+
 void test('generateVideoViaGrok persists a new request id before polling and replacement polling skips POST', async () => {
   const events: string[] = [];
   const firstFetch: typeof fetch = (input, init) => {

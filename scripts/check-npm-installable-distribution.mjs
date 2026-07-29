@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -13,6 +20,11 @@ import {
   MODULE_RESOLUTION_ENV_OVERRIDES,
   PROVIDER_AUTH_ENV_OVERRIDES,
 } from './provider-auth-release-validation.mjs';
+import {
+  assertToolSdkReleaseTag,
+  createToolSdkReleaseBundle,
+  verifyReproduciblePackedPackages,
+} from './tool-sdk-release-bundle.mjs';
 
 const execFileAsync = promisify(execFile);
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -92,17 +104,24 @@ const ENV_KEYS_TO_SANITIZE = [
 ];
 
 export function parseCheckNpmInstallableDistributionArgs(input) {
+  let artifactOutput = null;
   let approvedClientIdFile = null;
   const approvedClientIds = [];
   let keepTemp = false;
+  let releaseTag = null;
   let scope = 'all';
   let skipBuild = false;
+  let verifyReproduciblePack = false;
 
   for (let index = 0; index < input.length; index += 1) {
     const current = input[index];
     const next = input[index + 1];
 
     switch (current) {
+      case '--artifact-output':
+        artifactOutput = readOptionValue(current, next);
+        index += 1;
+        break;
       case '--approved-client-id':
         approvedClientIds.push(readOptionValue(current, next));
         index += 1;
@@ -114,12 +133,19 @@ export function parseCheckNpmInstallableDistributionArgs(input) {
       case '--keep-temp':
         keepTemp = true;
         break;
+      case '--release-tag':
+        releaseTag = readOptionValue(current, next);
+        index += 1;
+        break;
       case '--scope':
         scope = readOptionValue(current, next);
         index += 1;
         break;
       case '--skip-build':
         skipBuild = true;
+        break;
+      case '--verify-reproducible-pack':
+        verifyReproduciblePack = true;
         break;
       case '--help':
         throw new Error(readUsage());
@@ -142,19 +168,29 @@ export function parseCheckNpmInstallableDistributionArgs(input) {
   }
   if (
     scope === 'xharness' &&
-    (approvedClientIds.length > 0 || approvedClientIdFile)
+    (approvedClientIds.length > 0 ||
+      approvedClientIdFile ||
+      artifactOutput ||
+      releaseTag ||
+      verifyReproduciblePack)
   ) {
     throw new Error(
-      `--scope xharness does not accept provider auth release options\n${readUsage()}`,
+      `--scope xharness does not accept release artifact options\n${readUsage()}`,
     );
+  }
+  if (releaseTag !== null && artifactOutput === null) {
+    throw new Error(`--release-tag requires --artifact-output\n${readUsage()}`);
   }
 
   return {
+    artifactOutput,
     approvedClientIdFile,
     approvedClientIds,
     keepTemp,
+    releaseTag,
     scope,
     skipBuild,
+    verifyReproduciblePack,
   };
 }
 
@@ -203,6 +239,7 @@ async function runNpmInstallableDistributionCheck(options) {
     path.join(tmpdir(), 'geulbat-npm-installable-'),
   );
   const packDir = path.join(tempRoot, 'pack');
+  const reproduciblePackDir = path.join(tempRoot, 'reproducible-pack');
   const installDir = path.join(tempRoot, 'install');
   const xharnessInstallDir = path.join(tempRoot, 'xharness-consumer');
   const toolSdkInstallDir = path.join(tempRoot, 'tool-sdk-consumer');
@@ -242,6 +279,22 @@ async function runNpmInstallableDistributionCheck(options) {
       packageWorkspaces,
     );
     await validatePackedPackages(packedPackages, packageWorkspaces);
+    if (options.verifyReproduciblePack) {
+      await mkdir(reproduciblePackDir, { recursive: true });
+      const repeatedPackages = await packWorkspacePackages(
+        reproduciblePackDir,
+        childEnv,
+        packageWorkspaces,
+      );
+      await verifyReproduciblePackedPackages({
+        actualPackageInfos: repeatedPackages,
+        actualPackDir: reproduciblePackDir,
+        expectedPackageInfos: packedPackages,
+        expectedPackDir: packDir,
+        packageWorkspaces,
+      });
+      console.log('reproducible npm package digests passed');
+    }
     await installPackedXHarness({
       childEnv,
       installDir: xharnessInstallDir,
@@ -282,14 +335,36 @@ async function runNpmInstallableDistributionCheck(options) {
       childEnv,
       installDir,
     });
+    await validateInstalledDaemonToolSdkConsumer({
+      childEnv,
+      installDir,
+    });
     await validateInstalledToolSdkConsumer({
       childEnv,
       installDir: toolSdkInstallDir,
     });
+    if (options.releaseTag !== null) {
+      const toolSdkManifest = await readJson(
+        path.join(REPO_ROOT, 'packages/tool-sdk/package.json'),
+      );
+      assertToolSdkReleaseTag(options.releaseTag, toolSdkManifest.version);
+    }
+    let releaseBundle;
+    if (options.artifactOutput !== null) {
+      releaseBundle = await createToolSdkReleaseBundle({
+        outputDir: options.artifactOutput,
+        packageInfos: packedPackages,
+        packageWorkspaces,
+        packDir,
+        repoRoot: REPO_ROOT,
+      });
+      console.log(`tool SDK release bundle=${releaseBundle.outputDir}`);
+    }
 
     return {
       installDir,
       packDir,
+      releaseBundle,
     };
   } finally {
     if (!options.keepTemp) {
@@ -482,6 +557,7 @@ async function validateInstalledRuntimeImports(args) {
         "await import('@geulbat/structured-logger/logger');",
         "await import('@geulbat/tool-sdk');",
         "await import('@geulbat/daemon/run-evidence');",
+        "await import('@geulbat/daemon/tool-sdk-host');",
         "await import('./node_modules/@geulbat/daemon/dist/daemon/auth/bootstrap/config.js');",
       ].join(' '),
     ],
@@ -491,6 +567,90 @@ async function validateInstalledRuntimeImports(args) {
     },
   );
   console.log('installed runtime imports passed');
+}
+
+async function validateInstalledDaemonToolSdkConsumer(args) {
+  const typeConsumerSource = `
+import {
+  createDaemonToolSdkEmbeddingHost,
+  type DaemonToolSdkEmbeddingAuthority,
+} from '@geulbat/daemon/tool-sdk-host';
+import { TOOL_SDK_RELEASE } from '@geulbat/tool-sdk';
+
+interface Principal {
+  readonly subject: string;
+}
+
+const authority: DaemonToolSdkEmbeddingAuthority<Principal> = {
+  async authenticate() {
+    return { ok: false, code: 'authentication_required' };
+  },
+  async authorizeInvocation() {
+    return { ok: false, code: 'tool_not_admitted' };
+  },
+};
+const host = createDaemonToolSdkEmbeddingHost({
+  authority,
+  computerFileRoot: '/external-consumer',
+  computerSessionId: 'external-consumer',
+  getProjectionIdentity: () => ({
+    schemaVersion: TOOL_SDK_RELEASE.projectionSchemaVersion,
+    sdkProjectionHash: ${JSON.stringify(`sha256:${'a'.repeat(64)}`)},
+    policyId: 'external-consumer-v1',
+  }),
+  stateRoot: '/external-state',
+});
+void host.transport;
+void host.close;
+`;
+  await writeFile(
+    path.join(args.installDir, 'daemon-tool-sdk-consumer.mts'),
+    typeConsumerSource,
+    'utf8',
+  );
+  await writeFile(
+    path.join(args.installDir, 'daemon-tool-sdk-tsconfig.json'),
+    `${JSON.stringify(
+      {
+        compilerOptions: {
+          exactOptionalPropertyTypes: true,
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          noEmit: true,
+          skipLibCheck: false,
+          strict: true,
+          target: 'ES2022',
+          types: [],
+        },
+        files: ['daemon-tool-sdk-consumer.mts'],
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+  await runCommand(
+    process.execPath,
+    [TYPESCRIPT_CLI_PATH, '--project', 'daemon-tool-sdk-tsconfig.json'],
+    { cwd: args.installDir, env: args.childEnv },
+  );
+
+  const runtimeConsumerPath = path.join(
+    args.installDir,
+    'external-tool-sdk-daemon-consumer.mjs',
+  );
+  await copyFile(
+    path.join(REPO_ROOT, 'scripts', 'external-tool-sdk-daemon-consumer.mjs'),
+    runtimeConsumerPath,
+  );
+  await runCommand(process.execPath, [runtimeConsumerPath], {
+    cwd: args.installDir,
+    env: {
+      ...args.childEnv,
+      GEULBAT_TOOL_OUTPUT_INLINE_MAX_BYTES: '4096',
+    },
+  });
+  console.log('installed daemon Tool SDK embedding consumer passed');
 }
 
 async function validateInstalledXHarnessConsumer(args) {
@@ -1053,7 +1213,7 @@ function readUsage() {
   return [
     'Usage:',
     '  node scripts/check-npm-installable-distribution.mjs --scope xharness [--skip-build] [--keep-temp]',
-    '  node scripts/check-npm-installable-distribution.mjs [--scope all] (--approved-client-id <client-id> | --approved-client-id-file <path>) [--skip-build] [--keep-temp]',
+    '  node scripts/check-npm-installable-distribution.mjs [--scope all] (--approved-client-id <client-id> | --approved-client-id-file <path>) [--skip-build] [--keep-temp] [--verify-reproducible-pack] [--artifact-output <directory> [--release-tag <tool-sdk-vX.Y.Z>]]',
     '',
     'The xharness scope builds, packs, installs, type-checks, and runs only the external xHarness chain plus its direct Tool SDK consumer dependency.',
     'Repeat --approved-client-id for each approved release-channel client id.',
@@ -1077,10 +1237,13 @@ async function main() {
   }
   const result = await runNpmInstallableDistributionCheck({
     approvedClientIds,
+    artifactOutput: options.artifactOutput,
     env: process.env,
     keepTemp: options.keepTemp,
+    releaseTag: options.releaseTag,
     scope: options.scope,
     skipBuild: options.skipBuild,
+    verifyReproduciblePack: options.verifyReproduciblePack,
   });
 
   console.log(

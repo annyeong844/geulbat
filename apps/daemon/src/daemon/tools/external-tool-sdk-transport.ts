@@ -195,6 +195,9 @@ export function createDaemonToolSdkTransport<Principal>(
       if (!admission.ok) {
         return authorityFailure(admission.code);
       }
+      if (isAborted(context.signal)) {
+        return failure('cancelled', 'The Tool SDK invocation was cancelled');
+      }
 
       compatibility = readCurrentCompatibility(getProjectionIdentity);
       if (!compatibility.ok) {

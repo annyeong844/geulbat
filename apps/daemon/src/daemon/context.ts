@@ -255,6 +255,7 @@ const TOOL_LIBRARY_PTC_REACHABLE_POLICY = Object.freeze({
 
 interface DaemonContextOptions {
   computerSessionId?: string | undefined;
+  computerFileScope?: ComputerFileScope | undefined;
   homeStateRoot?: string | undefined;
   hostCommands?: {
     inlineMaxBytes?: number;
@@ -425,7 +426,13 @@ export function createDaemonContext(
     backgroundNotifications.attachDurableStore(subagentTerminalDeliveries);
   }
   const approvalGrants = createApprovalGrantStore();
-  const resolvedComputerScope = resolveComputerFileScope();
+  const resolvedComputerScope =
+    options.computerFileScope === undefined
+      ? resolveComputerFileScope()
+      : {
+          scope: options.computerFileScope,
+          commandBackedDiscoveryPending: false,
+        };
   const computerFileScope = resolvedComputerScope?.scope;
   const homeStateRoot = options.homeStateRoot ?? resolveHomeStateRoot();
   const sandboxAttempts = createSandboxAttemptStore();
@@ -897,6 +904,7 @@ export function createDaemonContext(
     }),
     videoGeneration: createVideoGenerationRuntime({
       providerAuthRuntime: provider.authRuntime,
+      providerWebSocketSessions: provider.webSocketSessions,
     }),
     globalMcp,
     plugins,

@@ -32,6 +32,65 @@ interface TerminalState {
   exitCode: number;
 }
 
+export async function* iterateDurableHttpResponseEvents(
+  response: Response,
+  acceptHeader: string | null,
+): AsyncGenerator<Record<string, unknown>> {
+  const contentType = response.headers.get('content-type');
+  const expectsJson =
+    acceptHeader
+      ?.split(',')
+      .some(
+        (entry) =>
+          entry.split(';', 1)[0]?.trim().toLowerCase() === 'application/json',
+      ) === true;
+  if (expectsJson) {
+    if (contentType?.toLowerCase().includes('application/json') !== true) {
+      throw Object.assign(
+        new Error(
+          `provider HTTP response is not JSON (content-type: ${contentType ?? 'missing'})`,
+        ),
+        { status: response.status },
+      );
+    }
+    let value: unknown;
+    try {
+      value = await response.json();
+    } catch (error: unknown) {
+      throw Object.assign(
+        new Error('provider HTTP response contains invalid JSON', {
+          cause: error,
+        }),
+        { status: response.status },
+      );
+    }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw Object.assign(
+        new Error('provider HTTP JSON response is not an object'),
+        { status: response.status },
+      );
+    }
+    yield value as Record<string, unknown>;
+    return;
+  }
+
+  if (contentType?.toLowerCase().includes('text/event-stream') !== true) {
+    throw Object.assign(
+      new Error(
+        `provider HTTP response is not an event stream (content-type: ${contentType ?? 'missing'})`,
+      ),
+      { status: response.status },
+    );
+  }
+  if (response.body === null) {
+    throw Object.assign(
+      new Error('provider HTTP event stream body is missing'),
+      { status: response.status },
+    );
+  }
+  yield* iterateJsonServerSentEvents(response.body);
+}
+
 async function runResponsesDurableRequestHost(): Promise<number> {
   process.stdin.setEncoding('utf8');
   let inputBuffer = '';
@@ -215,22 +274,10 @@ async function runResponsesDurableRequestHost(): Promise<number> {
         if (!response.ok) {
           throw createHttpResponseError(response);
         }
-        const contentType = response.headers.get('content-type');
-        if (contentType?.toLowerCase().includes('text/event-stream') !== true) {
-          throw Object.assign(
-            new Error(
-              `provider HTTP response is not an event stream (content-type: ${contentType ?? 'missing'})`,
-            ),
-            { status: response.status },
-          );
-        }
-        if (response.body === null) {
-          throw Object.assign(
-            new Error('provider HTTP event stream body is missing'),
-            { status: response.status },
-          );
-        }
-        for await (const event of iterateJsonServerSentEvents(response.body)) {
+        for await (const event of iterateDurableHttpResponseEvents(
+          response,
+          new Headers(request.headers).get('accept'),
+        )) {
           recordEvent(request, event);
         }
       }

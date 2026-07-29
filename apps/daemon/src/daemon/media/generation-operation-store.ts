@@ -55,6 +55,33 @@ export async function markMediaGenerationEffectStarted(args: {
   });
 }
 
+export async function recordMediaGenerationProviderRequestDigest(args: {
+  stateRoot: string;
+  threadId: ThreadId;
+  identity: MediaGenerationRecoveryIdentity;
+  requestAttempt: number;
+  requestDigest: string;
+}): Promise<void> {
+  if (
+    !Number.isSafeInteger(args.requestAttempt) ||
+    args.requestAttempt < 0 ||
+    args.requestDigest.length === 0
+  ) {
+    throw new Error('media generation provider request digest is invalid');
+  }
+  await requirePreparedOperation(args);
+  await writeOperationStageOnce(
+    args,
+    `provider-request-attempt-${args.requestAttempt}.json`,
+    {
+      schemaVersion: MEDIA_GENERATION_OPERATION_SCHEMA_VERSION,
+      operationId: args.identity.operationId,
+      requestAttempt: args.requestAttempt,
+      requestDigest: args.requestDigest,
+    },
+  );
+}
+
 export async function recordMediaGenerationProviderHandle(args: {
   stateRoot: string;
   threadId: ThreadId;

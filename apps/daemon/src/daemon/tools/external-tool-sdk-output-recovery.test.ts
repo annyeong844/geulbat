@@ -85,6 +85,7 @@ void test('daemon SDK offloads a real large list result and recovers its public 
             runId,
             stateRoot,
             threadId: THREAD_ID,
+            workingDirectory: '',
           },
         };
       },
@@ -210,6 +211,7 @@ void test('daemon SDK offloads a broad read page and recovers its exact public D
             runId,
             stateRoot,
             threadId: THREAD_ID,
+            workingDirectory: '',
           },
         };
       },

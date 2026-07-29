@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 
 import { forceRefreshProviderAuth, getProviderAuth } from '../auth/access.js';
@@ -31,11 +32,15 @@ import {
   prepareMediaGenerationOperation,
   readMediaGenerationOperation,
   recordMediaGenerationCandidate,
+  recordMediaGenerationProviderRequestDigest,
 } from './generation-operation-store.js';
 import { buildImageArtifactCandidate } from './image-artifact-candidate.js';
 import { withImageGenerationRequestDefaults } from './image-generation-request-defaults.js';
 import { generateImageViaCodexResponses } from './providers/codex-image-provider.js';
-import { generateImageViaGrok } from './providers/grok-image-provider.js';
+import {
+  generateImageViaGrok,
+  type GrokImageCreateRequest,
+} from './providers/grok-image-provider.js';
 
 // 이미지 생성의 데몬-프라이빗 진입점. provider-auth를 유일한 인증 소유자로
 // 재사용하고(사이드 OAuth 금지), 프로바이더 어댑터에는 호출 시점 최소 인증
@@ -46,7 +51,7 @@ export interface ImageGenerationRuntimeDeps {
   providerAuthRuntime: ProviderAuthRuntimeStore;
   providerWebSocketSessions: Pick<
     ResponsesWebSocketSessionStore,
-    'acquireWebSocket'
+    'acquireWebSocket' | 'streamDurableHttpSseEvents'
   >;
   getProviderAuthImpl?: typeof getProviderAuth;
   forceRefreshProviderAuthImpl?: typeof forceRefreshProviderAuth;
@@ -177,7 +182,12 @@ export function createImageGenerationRuntime(
             parsePreparedImageCandidate(operation.candidate),
           );
         }
-        if (operation.effectStarted) {
+        if (
+          operation.effectStarted &&
+          (providerId !== 'grok_oauth' ||
+            deps.providerWebSocketSessions.streamDurableHttpSseEvents ===
+              undefined)
+        ) {
           throw new ImageGenerationError({
             surface: 'recovery',
             reasonCode: 'provider_outcome_unknown',
@@ -226,6 +236,11 @@ async function generateImageOnce(
         }),
     });
     const generate = deps.generateViaGrokImpl ?? generateImageViaGrok;
+    const createRequestImpl = createDurableGrokImageCreateRequest(
+      input,
+      deps,
+      options.allowRefresh ? 0 : 1,
+    );
     if (input.recovery !== undefined) {
       await markMediaGenerationEffectStarted({
         stateRoot: input.stateRoot,
@@ -236,6 +251,7 @@ async function generateImageOnce(
     return generate({
       request: input.request,
       auth: { accessToken: auth.accessToken },
+      ...(createRequestImpl === undefined ? {} : { createRequestImpl }),
       ...(input.signal !== undefined ? { signal: input.signal } : {}),
       ...(deps.now !== undefined ? { now: deps.now } : {}),
     });
@@ -268,6 +284,67 @@ async function generateImageOnce(
     ...(input.signal !== undefined ? { signal: input.signal } : {}),
     ...(deps.now !== undefined ? { now: deps.now } : {}),
   });
+}
+
+function createDurableGrokImageCreateRequest(
+  input: GenerateImageArtifactInput,
+  deps: ImageGenerationRuntimeDeps,
+  requestAttempt: number,
+): GrokImageCreateRequest | undefined {
+  const recovery = input.recovery;
+  const streamDurableEvents =
+    deps.providerWebSocketSessions.streamDurableHttpSseEvents;
+  if (recovery === undefined || streamDurableEvents === undefined) {
+    return undefined;
+  }
+  return async (request) => {
+    const requestDigest = createHash('sha256')
+      .update(request.requestUrl)
+      .update('\0')
+      .update(request.serializedPayload)
+      .digest('hex');
+    try {
+      await recordMediaGenerationProviderRequestDigest({
+        stateRoot: input.stateRoot,
+        threadId: input.threadId,
+        identity: recovery.identity,
+        requestAttempt,
+        requestDigest,
+      });
+    } catch (error: unknown) {
+      throw new ImageGenerationError({
+        surface: 'recovery',
+        reasonCode: 'provider_outcome_unknown',
+        message:
+          'image generation create request changed after its durable owner was admitted; a replacement request was not sent',
+        cause: error,
+      });
+    }
+    let response: Record<string, unknown> | undefined;
+    for await (const event of streamDurableEvents({
+      requestUrl: request.requestUrl,
+      headers: request.headers,
+      serializedPayload: request.serializedPayload,
+      providerSessionId: `media:image:${input.threadId}:${recovery.identity.operationId}`,
+      requestAttempt,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    })) {
+      if (response !== undefined) {
+        throw Object.assign(
+          new Error('durable image create returned more than one JSON object'),
+          { status: 200 },
+        );
+      }
+      response = event;
+    }
+    if (response === undefined) {
+      throw Object.assign(
+        new Error('durable image create returned no JSON object'),
+        { status: 200 },
+      );
+    }
+    return response;
+  };
 }
 
 // 프로바이더 성공 ≠ durable — 커밋 실패를 별도 표면으로 분류해 사용자에게

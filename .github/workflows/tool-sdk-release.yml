@@ -1,0 +1,83 @@
+name: Tool SDK Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - tool-sdk-v*
+
+concurrency:
+  group: tool-sdk-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: ${{ github.repository == 'annyeong844/geulbat' }}
+    name: Qualify Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - 24
+          - 26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Qualify exact installable artifacts
+        run: npm run check:npm-installable-distribution -- --approved-client-id-file release/provider-auth-approved-client-ids.json
+
+  release:
+    if: >-
+      ${{ github.repository == 'annyeong844/geulbat' &&
+      startsWith(github.ref, 'refs/tags/tool-sdk-v') }}
+    name: Build, attest, and publish
+    needs:
+      - qualify
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build reproducible release bundle
+        run: npm run build:tool-sdk-release -- --release-tag "${GITHUB_REF_NAME}"
+
+      - name: Attest release checksums
+        uses: actions/attest@v4
+        with:
+          subject-checksums: runtime-artifacts/tool-sdk-release/SHA256SUMS
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          runtime-artifacts/tool-sdk-release/*
+          --verify-tag
+          --generate-notes
+          --title "${GITHUB_REF_NAME}"

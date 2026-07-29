@@ -60,6 +60,7 @@ void test('daemon transport maps files.read to the real registry and re-authenti
           context: {
             callId: `external-read-${authorizationCount}`,
             computerFileRoot,
+            workingDirectory: '',
           },
         };
       },
@@ -198,6 +199,7 @@ void test('daemon transport maps files.list through the real registry and saniti
           context: {
             callId: `external-list-${authorizationCount}`,
             computerFileRoot,
+            workingDirectory: '',
           },
         };
       },
@@ -275,6 +277,7 @@ void test('daemon transport maps files.search through the real registry and publ
             callId: `external-search-${authorizationCount}`,
             computerFileRoot,
             stateRoot: computerFileRoot,
+            workingDirectory: '',
             runtimeServices: daemonContext,
           },
         };
@@ -768,7 +771,11 @@ void test('daemon transport handles result offload failures without replacing a 
     async authorizeInvocation() {
       return {
         ok: true as const,
-        context: { callId: 'offload-read', computerFileRoot },
+        context: {
+          callId: 'offload-read',
+          computerFileRoot,
+          workingDirectory: '',
+        },
       };
     },
     async authorizeOutputRecovery() {

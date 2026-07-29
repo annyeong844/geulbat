@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 
 import {
@@ -8,6 +9,7 @@ import {
 
 import { forceRefreshProviderAuth, getProviderAuth } from '../auth/access.js';
 import type { ProviderAuthRuntimeStore } from '../auth/runtime-state.js';
+import type { ResponsesWebSocketSessionStore } from '../llm/provider/transport/responses-websocket-cache.js';
 import {
   commitThreadArtifactVersion,
   loadThreadArtifactVersionsByRefs,
@@ -40,8 +42,12 @@ import {
   readMediaGenerationOperation,
   recordMediaGenerationCandidate,
   recordMediaGenerationProviderHandle,
+  recordMediaGenerationProviderRequestDigest,
 } from './generation-operation-store.js';
-import { generateVideoViaGrok } from './providers/grok-video-provider.js';
+import {
+  generateVideoViaGrok,
+  type GrokVideoCreateRequest,
+} from './providers/grok-video-provider.js';
 import { withVideoGenerationRequestDefaults } from './video-generation-request-defaults.js';
 
 // 동영상 생성의 데몬-프라이빗 진입점(video-generation-open §4.5) —
@@ -51,6 +57,7 @@ import { withVideoGenerationRequestDefaults } from './video-generation-request-d
 
 export interface VideoGenerationRuntimeDeps {
   providerAuthRuntime: ProviderAuthRuntimeStore;
+  providerWebSocketSessions?: ResponsesWebSocketSessionStore;
   getProviderAuthImpl?: typeof getProviderAuth;
   forceRefreshProviderAuthImpl?: typeof forceRefreshProviderAuth;
   generateViaGrokImpl?: typeof generateVideoViaGrok;
@@ -168,7 +175,12 @@ export function createVideoGenerationRuntime(
           );
         }
         providerHandle = operation.providerHandle;
-        if (operation.effectStarted && providerHandle === undefined) {
+        if (
+          operation.effectStarted &&
+          providerHandle === undefined &&
+          deps.providerWebSocketSessions?.streamDurableHttpSseEvents ===
+            undefined
+        ) {
           throw new ImageGenerationError({
             surface: 'recovery',
             reasonCode: 'provider_outcome_unknown',
@@ -322,6 +334,11 @@ async function generateVideoOnce(
       }),
   });
   const generate = deps.generateViaGrokImpl ?? generateVideoViaGrok;
+  const createRequestImpl = createDurableGrokVideoCreateRequest(
+    input,
+    deps,
+    options.allowRefresh ? 0 : 1,
+  );
   if (recovery !== undefined && providerHandle === undefined) {
     await markMediaGenerationEffectStarted({
       stateRoot: input.stateRoot,
@@ -347,6 +364,7 @@ async function generateVideoOnce(
     sourceImageDataUrl: source.dataUrl,
     auth: { accessToken: auth.accessToken },
     ...(providerHandle === undefined ? {} : { requestId: providerHandle }),
+    ...(createRequestImpl === undefined ? {} : { createRequestImpl }),
     ...(recovery === undefined
       ? {}
       : {
@@ -360,6 +378,67 @@ async function generateVideoOnce(
         }),
     ...(input.signal !== undefined ? { signal: input.signal } : {}),
   });
+}
+
+function createDurableGrokVideoCreateRequest(
+  input: GenerateVideoArtifactInput,
+  deps: VideoGenerationRuntimeDeps,
+  requestAttempt: number,
+): GrokVideoCreateRequest | undefined {
+  const recovery = input.recovery;
+  const streamDurableEvents =
+    deps.providerWebSocketSessions?.streamDurableHttpSseEvents;
+  if (recovery === undefined || streamDurableEvents === undefined) {
+    return undefined;
+  }
+  return async (request) => {
+    const requestDigest = createHash('sha256')
+      .update(request.requestUrl)
+      .update('\0')
+      .update(request.serializedPayload)
+      .digest('hex');
+    try {
+      await recordMediaGenerationProviderRequestDigest({
+        stateRoot: input.stateRoot,
+        threadId: input.threadId,
+        identity: recovery.identity,
+        requestAttempt,
+        requestDigest,
+      });
+    } catch (error: unknown) {
+      throw new ImageGenerationError({
+        surface: 'recovery',
+        reasonCode: 'provider_outcome_unknown',
+        message:
+          'video generation create request changed after its durable owner was admitted; a replacement request was not sent',
+        cause: error,
+      });
+    }
+    let response: Record<string, unknown> | undefined;
+    for await (const event of streamDurableEvents({
+      requestUrl: request.requestUrl,
+      headers: request.headers,
+      serializedPayload: request.serializedPayload,
+      providerSessionId: `media:video:${input.threadId}:${recovery.identity.operationId}`,
+      requestAttempt,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    })) {
+      if (response !== undefined) {
+        throw Object.assign(
+          new Error('durable video create returned more than one JSON object'),
+          { status: 200 },
+        );
+      }
+      response = event;
+    }
+    if (response === undefined) {
+      throw Object.assign(
+        new Error('durable video create returned no JSON object'),
+        { status: 200 },
+      );
+    }
+    return response;
+  };
 }
 
 // 매직 바이트 스니핑 — mp4(ftyp)·webm(EBML)만 통과(§4.5-4). 확장자는

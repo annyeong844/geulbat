@@ -41,6 +41,10 @@
     "./run-evidence": {
       "types": "./dist/run-evidence.d.ts",
       "import": "./dist/run-evidence.js"
+    },
+    "./tool-sdk-host": {
+      "types": "./dist/daemon/tools/external-tool-sdk-host.d.ts",
+      "import": "./dist/daemon/tools/external-tool-sdk-host.js"
     }
   },
   "imports": {

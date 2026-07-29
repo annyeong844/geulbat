@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "build:packages": "tsc -b packages/daemon-lifecycle/tsconfig.json packages/structured-logger/tsconfig.json packages/content-identity/tsconfig.json packages/protocol/tsconfig.json packages/artifact-runtime-policy/tsconfig.json packages/agent-loop/tsconfig.json packages/xharness/tsconfig.json packages/tool-sdk/tsconfig.json packages/tool-library/tsconfig.json",
+    "build:tool-sdk-release": "node scripts/check-npm-installable-distribution.mjs --approved-client-id-file release/provider-auth-approved-client-ids.json --verify-reproducible-pack --artifact-output runtime-artifacts/tool-sdk-release",
     "build:xharness-release": "tsc -b packages/content-identity/tsconfig.json packages/agent-loop/tsconfig.json packages/tool-library/tsconfig.json packages/tool-sdk/tsconfig.json packages/xharness/tsconfig.json",
     "build": "npm run build:packages && npm run build:app -w apps/daemon && npm run build:app -w apps/geulbat && npm run build:app -w apps/geulbat-lab && npm run build:app -w apps/web-shell",
     "check": "npm run check:docs-current-truth && npm run check:workspace-build-order && npm run build:packages && npm run build:app -w apps/daemon && npm run build:app -w apps/geulbat && npm run check:app -w apps/geulbat-lab && npm run check:app -w apps/web-shell",
