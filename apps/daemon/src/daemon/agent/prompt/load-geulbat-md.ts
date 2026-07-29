@@ -221,7 +221,7 @@ export async function loadOrCreateGeulbatInstructions(
     return loaded;
   }
   if (await hasAnyGeulbatInstructionFile(rootToWorkingDirectory)) {
-    return loaded;
+    return await loadGeulbatInstructions(workingDirectory);
   }
 
   const projectRoot = rootToWorkingDirectory[0] ?? workingDirectory;
