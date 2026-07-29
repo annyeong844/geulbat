@@ -784,14 +784,27 @@ async function runPlanSteerFlow(page, harness) {
 
   await composer.fill(PLAN_STEER_TEXT);
   await page.getByRole('button', { name: '보내기' }).click();
+  const steerMessage = page
+    .locator(
+      '[aria-label="Assistant transcript"] .transcript-message.from-user',
+    )
+    .filter({ hasText: PLAN_STEER_TEXT });
+  await steerMessage.waitFor({ state: 'visible', timeout: 15_000 });
+  assert(
+    (await steerMessage.count()) === 1,
+    'steer handoff did not preserve exactly one user transcript message',
+  );
   const pendingSteer = page
     .locator('.pending-steer-message')
     .filter({ hasText: PLAN_STEER_TEXT });
-  await pendingSteer.waitFor({ state: 'visible', timeout: 15_000 });
+  // The daemon can durably accept and apply the steer before Playwright observes
+  // the transient pending decoration. Both states must retain the same message.
+  const steerStateAtObservation =
+    (await pendingSteer.count()) === 1 ? 'pending' : 'applied';
   await planCard.waitFor({ state: 'visible', timeout: 15_000 });
   assert(
     ((await planCard.textContent()) ?? '').includes(PLAN_STEER_STEP),
-    'queued steer removed the visible in-progress plan',
+    'steer handoff removed the visible in-progress plan',
   );
 
   await cancelRun.click();
@@ -799,7 +812,8 @@ async function runPlanSteerFlow(page, harness) {
   return {
     planStep: PLAN_STEER_STEP,
     steerText: PLAN_STEER_TEXT,
-    preservedWhileQueued: true,
+    steerStateAtObservation,
+    preservedAcrossSteerHandoff: true,
     cancelledExplicitly: true,
   };
 }
@@ -2063,7 +2077,7 @@ async function main() {
     results.push(
       await executeBrowserFlow(
         browser,
-        'plan-stays-visible-while-steer-is-queued',
+        'plan-stays-visible-across-steer-handoff',
         (page) => runPlanSteerFlow(page, harness),
       ),
     );
