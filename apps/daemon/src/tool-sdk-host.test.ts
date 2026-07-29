@@ -7,6 +7,7 @@ import test from 'node:test';
 import { TOOL_SDK_RELEASE, createToolSdkClient } from '@geulbat/tool-sdk';
 
 import { createDaemonToolSdkEmbeddingHost } from './daemon/tools/external-tool-sdk-host.js';
+import { createSymlinkOrSkip } from './test-support/symlink-test.js';
 
 const PROJECTION = {
   schemaVersion: TOOL_SDK_RELEASE.projectionSchemaVersion,
@@ -105,5 +106,73 @@ void test('external embedding host binds the real daemon file root and cancels a
   assert.equal(cancelled.ok, false);
   if (!cancelled.ok) {
     assert.equal(cancelled.error.code, 'cancelled');
+  }
+});
+
+void test('external embedding host keeps search results relative to a canonical aliased root', async (t) => {
+  const temporaryRoot = await mkdtemp(
+    join(tmpdir(), 'geulbat-tool-sdk-host-alias-'),
+  );
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const stateRoot = join(temporaryRoot, 'state');
+  const canonicalComputerRoot = join(temporaryRoot, 'computer-canonical');
+  const aliasedComputerRoot = join(temporaryRoot, 'computer-alias');
+  await mkdir(stateRoot, { recursive: true });
+  await mkdir(canonicalComputerRoot, { recursive: true });
+  await writeFile(
+    join(canonicalComputerRoot, 'consumer.txt'),
+    'canonical alias consumer\n',
+    'utf8',
+  );
+  if (
+    !(await createSymlinkOrSkip(t, canonicalComputerRoot, aliasedComputerRoot))
+  ) {
+    return;
+  }
+
+  const host = createDaemonToolSdkEmbeddingHost({
+    stateRoot,
+    computerFileRoot: aliasedComputerRoot,
+    computerSessionId: 'external-consumer-alias-test',
+    getProjectionIdentity: () => PROJECTION,
+    authority: {
+      async authenticate() {
+        return { ok: true as const, principal: { subject: 'consumer' } };
+      },
+      async authorizeInvocation() {
+        return {
+          ok: true as const,
+          scope: {
+            callId: 'external-files.search',
+            runId: 'external-consumer-run',
+            threadId: '11111111-1111-4111-8111-111111111111',
+            workingDirectory: '',
+          },
+        };
+      },
+    },
+  });
+  t.after(() => host.close());
+  const client = createToolSdkClient({
+    transport: host.transport,
+    projection: PROJECTION,
+    requestedPublicTools: ['files.search'],
+    credentialProvider: {
+      async getCredential() {
+        return { scheme: 'Bearer', value: 'consumer-credential' };
+      },
+    },
+  });
+
+  assert.equal((await client.connect()).ok, true);
+  const searchResult = await client.searchFiles({
+    path: '.',
+    pattern: 'canonical alias consumer',
+    type: 'content',
+    maxResults: 5,
+  });
+  assert.equal(searchResult.ok, true);
+  if (searchResult.ok) {
+    assert.equal(searchResult.value.results[0]?.path, 'consumer.txt');
   }
 });

@@ -200,7 +200,7 @@ export const searchFilesTool = defineZodTool({
         const includeMatcher = createGlobMatcher(glob);
         const filenameResult = await filenameSearch(
           rootDir,
-          filePath.absoluteRoot,
+          rootTarget.workspaceCanonicalRoot,
           query,
           queryMatcher,
           includeMatcher,
@@ -224,7 +224,7 @@ export const searchFilesTool = defineZodTool({
         query,
         rootDir,
         glob,
-        filePath.absoluteRoot,
+        rootTarget.workspaceCanonicalRoot,
         maxResults,
         ctx.signal,
         hostRouting,
