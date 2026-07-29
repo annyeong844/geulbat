@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # Higher file-process fan-out produced nondeterministic hosted-runner stalls.
-  # Two-way sharding keeps parallel execution while bounding instrumented load.
+  # Keep the process-heavy full test lane bounded. The isolated coverage lane
+  # uses its separately measured four-way override below.
   GEULBAT_TEST_JOBS: 2
 
 jobs:
@@ -119,6 +119,10 @@ jobs:
   daemon-coverage:
     name: Daemon coverage
     runs-on: ubuntu-latest
+    env:
+      # This job owns its runner. Four-way file sharding completed the same
+      # coverage set substantially faster without competing with another lane.
+      GEULBAT_TEST_JOBS: 4
     steps:
       - name: Checkout
         uses: actions/checkout@v6
