@@ -396,6 +396,12 @@ async function runPhase(files, options) {
       }
       let result;
       const startedAt = performance.now();
+      const displayFile = relativeTestPath(
+        files[index],
+        options.cwd,
+        options.testRoot,
+      );
+      options.reportProgress(`test-file start: ${displayFile}`);
       try {
         result = {
           ...(await options.runFile(files[index], {
@@ -410,6 +416,9 @@ async function runPhase(files, options) {
       } finally {
         release();
       }
+      options.reportProgress(
+        `test-file ${result.code === 0 ? 'pass' : 'fail'}: ${displayFile} (${result.durationMs}ms)`,
+      );
       results[index] = result;
       if (result.code !== 0) {
         options.scheduler.stopScheduling = true;
@@ -466,6 +475,7 @@ export async function runTestFiles(
     lanes = [],
     outputRoot = tmpdir(),
     priorityFiles = [],
+    reportProgress = (message) => console.log(message),
     runFile = runTestFile,
     testRoot = cwd,
     onUnsafeSettlement = () => {},
@@ -520,6 +530,7 @@ export async function runTestFiles(
             jobs: 1,
             outputDirectory,
             onUnsafeSettlement: recordUnsafeSettlement,
+            reportProgress,
             runFile,
             scheduler,
             testRoot,
@@ -532,6 +543,7 @@ export async function runTestFiles(
         jobs,
         outputDirectory,
         onUnsafeSettlement: recordUnsafeSettlement,
+        reportProgress,
         runFile,
         scheduler,
         testRoot,
