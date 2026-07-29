@@ -15,6 +15,27 @@ const PROJECTION = {
   policyId: 'external-consumer-test-v1',
 } as const;
 
+void test('external embedding host rejects a missing computer file root', () => {
+  assert.throws(
+    () =>
+      createDaemonToolSdkEmbeddingHost({
+        stateRoot: '/state',
+        computerFileRoot: ' ',
+        computerSessionId: 'external-consumer-invalid-root-test',
+        getProjectionIdentity: () => PROJECTION,
+        authority: {
+          async authenticate() {
+            return { ok: true as const, principal: { subject: 'consumer' } };
+          },
+          async authorizeInvocation() {
+            throw new Error('invalid roots must fail before authorization');
+          },
+        },
+      }),
+    /requires an explicit computer file root/,
+  );
+});
+
 void test('external embedding host binds the real daemon file root and cancels after admission', async (t) => {
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'geulbat-tool-sdk-host-'));
   t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
@@ -174,5 +195,16 @@ void test('external embedding host keeps search results relative to a canonical 
   assert.equal(searchResult.ok, true);
   if (searchResult.ok) {
     assert.equal(searchResult.value.results[0]?.path, 'consumer.txt');
+  }
+
+  const filenameResult = await client.searchFiles({
+    path: '.',
+    pattern: 'consumer.txt',
+    type: 'filename',
+    maxResults: 5,
+  });
+  assert.equal(filenameResult.ok, true);
+  if (filenameResult.ok) {
+    assert.equal(filenameResult.value.results[0]?.path, 'consumer.txt');
   }
 });
