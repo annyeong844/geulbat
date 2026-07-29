@@ -73,6 +73,21 @@ import {
   TEST_INHERITED_SOL_MODEL_PIN,
 } from '../../test-support/subagent-model-routing.js';
 
+// Recovery tests construct many daemon contexts in one process. OS browse
+// discovery is unrelated to these contracts and otherwise leaves one detached
+// retry loop per context competing with the real command-host recovery cases.
+const previousComputerSessionDisabled =
+  process.env['GEULBAT_COMPUTER_SESSION_DISABLED'];
+process.env['GEULBAT_COMPUTER_SESSION_DISABLED'] = '1';
+test.after(() => {
+  if (previousComputerSessionDisabled === undefined) {
+    delete process.env['GEULBAT_COMPUTER_SESSION_DISABLED'];
+  } else {
+    process.env['GEULBAT_COMPUTER_SESSION_DISABLED'] =
+      previousComputerSessionDisabled;
+  }
+});
+
 async function injectInFlightToolInvocation(args: {
   stateRoot: string;
   threadId: string;
