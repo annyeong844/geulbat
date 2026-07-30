@@ -528,6 +528,36 @@ void test('a closed daemon runtime cannot reattach its surviving worker session'
 
   assert.deepEqual(await runtime.closeAll(), { ok: true });
   assert.deepEqual(
+    await runtime.start({
+      executable: process.execPath,
+      args: ['-e', 'process.stdin.resume()'],
+      cwd: stateRoot,
+      env: process.env,
+      stateRoot,
+      threadId: THREAD_ID,
+      runId: 'run-closed-runtime-late',
+      callId: 'call-closed-runtime-late',
+      stdinMode: 'open',
+    }),
+    {
+      ok: false,
+      reasonCode: 'runtime_closed',
+      message: 'host command runtime is closed.',
+    },
+  );
+  assert.deepEqual(
+    await runtime.waitForInitialResult({
+      stateRoot,
+      outputRef: started.outputRef,
+      yieldTimeMs: 0,
+    }),
+    {
+      ok: false,
+      reasonCode: 'not_found',
+      message: 'host command runtime is closed.',
+    },
+  );
+  assert.deepEqual(
     await runtime.interact({
       stateRoot,
       threadId: THREAD_ID,
@@ -540,6 +570,21 @@ void test('a closed daemon runtime cannot reattach its surviving worker session'
       message: 'command-host connection was lost.',
     },
   );
+  assert.deepEqual(
+    await runtime.listThreadSessions({
+      stateRoot,
+      threadId: THREAD_ID,
+    }),
+    [],
+  );
+  assert.deepEqual(await runtime.activeOutputRefs(stateRoot), {
+    ok: false,
+    reason: 'host command runtime is closed.',
+  });
+  assert.deepEqual(await runtime.describeState(stateRoot), {
+    mode: null,
+    diagnostic: 'command_host_runtime_closed',
+  });
 });
 
 void test('worker mode routes the initial wait to the owning workspace', async (t) => {
